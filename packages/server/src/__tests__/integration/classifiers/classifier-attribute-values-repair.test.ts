@@ -7,7 +7,7 @@
  *     ARRAY-shaped row NEVER surfaces the corrupted `{"0":{}}` numeric-key shape.
  *  2. Repair migration: converts array-shaped rows to a keyed map (or `{}` when
  *     unrecoverable), is idempotent, and NEVER touches valid object-map rows —
- *     for both classify_facet.attribute_values and watcher_versions.classifiers.
+ *     for both classify_facet.attribute_values and behavior_versions.classifiers.
  */
 
 import { existsSync } from 'node:fs';
@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { getDb } from '../../../db/client';
 import { loadMigrationUpSection, splitSqlStatements } from '../../../db/migration-loader';
+import { adaptImmutableMigrationToBehaviorSchema } from '../../setup/immutable-migration';
 import {
   addUserToOrganization,
   createTestAgent,
@@ -40,7 +41,9 @@ function resolveMigrationsDir(): string {
 
 async function runRepairMigration(): Promise<void> {
   const migrationsDir = resolveMigrationsDir();
-  const up = loadMigrationUpSection(migrationsDir, REPAIR_MIGRATION);
+  const up = adaptImmutableMigrationToBehaviorSchema(
+    loadMigrationUpSection(migrationsDir, REPAIR_MIGRATION),
+  );
   const sql = getDb();
   for (const statement of splitSqlStatements(up)) {
     await sql.unsafe(statement);
@@ -52,7 +55,7 @@ describe('classifier attribute_values corruption (item 4)', () => {
   let orgId: string;
   let userId: string;
   let entityId: number;
-  let watcherId: string;
+  let behaviorId: string;
 
   beforeAll(async () => {
     await cleanupTestDatabase();
@@ -77,12 +80,12 @@ describe('classifier attribute_values corruption (item 4)', () => {
     const agent = await createTestAgent({ organizationId: org.id, ownerUserId: user.id });
     const w = (await owner.behaviors.create({
       entity_id: entityId,
-      slug: 'attr-watcher',
-      name: 'Attr Watcher',
+      slug: 'attr-behavior',
+      name: 'Attr Behavior',
       prompt: 'gather signals.',
       agent_id: agent.agentId,
     })) as { behavior_id: string };
-    watcherId = w.behavior_id;
+    behaviorId = w.behavior_id;
   });
 
   it('round-trips rich object-map values through list() exactly (embedding stripped)', async () => {
@@ -91,7 +94,7 @@ describe('classifier attribute_values corruption (item 4)', () => {
       slug: 'quality',
       name: 'Quality',
       attribute_key: 'quality',
-      behavior_id: watcherId,
+      behavior_id: behaviorId,
       attribute_values: {
         high: { description: 'high quality', examples: ['excellent', 'superb'], embedding: stubEmbedding },
         low: { description: 'low quality', examples: ['poor'], embedding: stubEmbedding },
@@ -122,10 +125,10 @@ describe('classifier attribute_values corruption (item 4)', () => {
     const inserted = await sql`
       INSERT INTO classify_facet (
         organization_id, slug, name, attribute_key, status, created_by,
-        entity_id, entity_ids, watcher_id, attribute_values, min_similarity
+        entity_id, entity_ids, behavior_id, attribute_values, min_similarity
       ) VALUES (
         ${orgId}, 'legacy-array', 'Legacy Array', 'legacy', 'active', ${userId},
-        ${entityId}, ARRAY[${entityId}]::bigint[], ${Number(watcherId)},
+        ${entityId}, ARRAY[${entityId}]::bigint[], ${Number(behaviorId)},
         ${sql.json([{ embedding: [0.1, 0.2] }, { embedding: [0.3, 0.4] }])},
         0.7
       )
@@ -153,10 +156,10 @@ describe('classifier attribute_values corruption (item 4)', () => {
     const recoverable = await sql`
       INSERT INTO classify_facet (
         organization_id, slug, name, attribute_key, status, created_by,
-        entity_id, entity_ids, watcher_id, attribute_values, min_similarity
+        entity_id, entity_ids, behavior_id, attribute_values, min_similarity
       ) VALUES (
         ${orgId}, 'recoverable-array', 'Recoverable', 'rec', 'active', ${userId},
-        ${entityId}, ARRAY[${entityId}]::bigint[], ${Number(watcherId)},
+        ${entityId}, ARRAY[${entityId}]::bigint[], ${Number(behaviorId)},
         ${sql.json([
           { value: 'alpha', description: 'A', examples: ['a'], embedding: [0.1] },
           { value: 'beta', description: 'B', examples: ['b'], embedding: [0.2] },
@@ -171,10 +174,10 @@ describe('classifier attribute_values corruption (item 4)', () => {
     const unrecoverable = await sql`
       INSERT INTO classify_facet (
         organization_id, slug, name, attribute_key, status, created_by,
-        entity_id, entity_ids, watcher_id, attribute_values, min_similarity
+        entity_id, entity_ids, behavior_id, attribute_values, min_similarity
       ) VALUES (
         ${orgId}, 'unrecoverable-array', 'Unrecoverable', 'unrec', 'active', ${userId},
-        ${entityId}, ARRAY[${entityId}]::bigint[], ${Number(watcherId)},
+        ${entityId}, ARRAY[${entityId}]::bigint[], ${Number(behaviorId)},
         ${sql.json([{ embedding: [0.1] }, { embedding: [0.2] }])},
         0.7
       )
@@ -187,10 +190,10 @@ describe('classifier attribute_values corruption (item 4)', () => {
     const valid = await sql`
       INSERT INTO classify_facet (
         organization_id, slug, name, attribute_key, status, created_by,
-        entity_id, entity_ids, watcher_id, attribute_values, min_similarity
+        entity_id, entity_ids, behavior_id, attribute_values, min_similarity
       ) VALUES (
         ${orgId}, 'valid-map', 'Valid', 'valid', 'active', ${userId},
-        ${entityId}, ARRAY[${entityId}]::bigint[], ${Number(watcherId)},
+        ${entityId}, ARRAY[${entityId}]::bigint[], ${Number(behaviorId)},
         ${sql.json(validMap)}, 0.7
       )
       RETURNING id
@@ -201,7 +204,7 @@ describe('classifier attribute_values corruption (item 4)', () => {
     // behaviors.create above (UPDATE avoids hand-crafting the version row's
     // NOT NULL columns, which drift across migrations).
     const versionRow = await sql`
-      UPDATE watcher_versions
+      UPDATE behavior_versions
       SET classifiers = ${sql.json([
         {
           slug: 'vclass',
@@ -211,7 +214,7 @@ describe('classifier attribute_values corruption (item 4)', () => {
           ],
         },
       ])}
-      WHERE watcher_id = ${Number(watcherId)}
+      WHERE behavior_id = ${Number(behaviorId)}
       RETURNING id
     `;
     const versionId = Number(versionRow[0].id);
@@ -237,7 +240,7 @@ describe('classifier attribute_values corruption (item 4)', () => {
 
     // Behavior-version classifier repaired in place, def fields preserved.
     const versionAfter = await sql`
-      SELECT classifiers FROM watcher_versions WHERE id = ${versionId}
+      SELECT classifiers FROM behavior_versions WHERE id = ${versionId}
     `;
     const classifiers = versionAfter[0].classifiers as Array<Record<string, unknown>>;
     expect(classifiers[0].slug).toBe('vclass');

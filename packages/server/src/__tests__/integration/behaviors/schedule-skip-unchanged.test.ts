@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../../../index";
 import { manageBehaviors } from "../../../tools/admin/manage_behaviors";
-import { materializeDueWatcherRuns } from "../../../watchers/automation";
+import { materializeDueBehaviorRuns } from "../../../behaviors/automation";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import { createTestAgent, seedOwnerContext } from "../../setup/test-fixtures";
@@ -54,33 +54,33 @@ describe("scheduled Behavior unchanged gate", () => {
 		const behaviorId = Number(created.behavior_id);
 		const sql = getTestDb();
 		await sql`
-			UPDATE watchers
+			UPDATE behaviors
 			SET next_run_at = current_timestamp - interval '1 minute'
 			WHERE id = ${behaviorId}
 		`;
 
-		const result = await materializeDueWatcherRuns({} as Env, sql);
+		const result = await materializeDueBehaviorRuns({} as Env, sql);
 
 		expect(result).toMatchObject({
-			dueWatchers: 1,
+			dueBehaviors: 1,
 			runsCreated: 0,
 			skipped: 1,
 		});
 		const runs = await sql`
 			SELECT id FROM runs
-			WHERE watcher_id = ${behaviorId} AND run_type = 'behavior'
+			WHERE behavior_id = ${behaviorId} AND run_type = 'behavior'
 		`;
 		expect(runs).toHaveLength(0);
-		const [watcher] = await sql`
+		const [behavior] = await sql`
 			SELECT next_run_at > current_timestamp AS advanced
-			FROM watchers WHERE id = ${behaviorId}
+			FROM behaviors WHERE id = ${behaviorId}
 		`;
-		expect(watcher?.advanced).toBe(true);
+		expect(behavior?.advanced).toBe(true);
 
 		const [skippedWindow] = await sql`
 			SELECT window_start, window_end, content_analyzed
 			FROM canvas_windows
-			WHERE watcher_id = ${behaviorId}
+			WHERE behavior_id = ${behaviorId}
 		`;
 		expect(skippedWindow).toMatchObject({ content_analyzed: 0 });
 
@@ -97,21 +97,21 @@ describe("scheduled Behavior unchanged gate", () => {
 			)
 		`;
 		await sql`
-			UPDATE watchers
+			UPDATE behaviors
 			SET next_run_at = current_timestamp - interval '1 minute'
 			WHERE id = ${behaviorId}
 		`;
 
-		const nextResult = await materializeDueWatcherRuns({} as Env, sql);
+		const nextResult = await materializeDueBehaviorRuns({} as Env, sql);
 		expect(nextResult).toMatchObject({
-			dueWatchers: 1,
+			dueBehaviors: 1,
 			runsCreated: 1,
 			skipped: 0,
 		});
 		const [nextRun] = await sql`
 			SELECT approved_input
 			FROM runs
-			WHERE watcher_id = ${behaviorId} AND run_type = 'behavior'
+			WHERE behavior_id = ${behaviorId} AND run_type = 'behavior'
 		`;
 		expect(nextRun.approved_input).toMatchObject({
 			window_start: new Date(skippedWindow.window_end as string).toISOString(),
@@ -148,21 +148,21 @@ describe("scheduled Behavior unchanged gate", () => {
 		const behaviorId = Number(created.behavior_id);
 		const sql = getTestDb();
 		const makeDue = () => sql`
-			UPDATE watchers
+			UPDATE behaviors
 			SET next_run_at = current_timestamp - interval '1 minute'
 			WHERE id = ${behaviorId}
 		`;
 
 		await makeDue();
-		const first = await materializeDueWatcherRuns({} as Env, sql);
+		const first = await materializeDueBehaviorRuns({} as Env, sql);
 		await makeDue();
-		const second = await materializeDueWatcherRuns({} as Env, sql);
+		const second = await materializeDueBehaviorRuns({} as Env, sql);
 
 		expect(first).toMatchObject({ runsCreated: 0, skipped: 1 });
 		expect(second).toMatchObject({ runsCreated: 0, skipped: 1 });
 		const runs = await sql`
 			SELECT id FROM runs
-			WHERE watcher_id = ${behaviorId} AND run_type = 'behavior'
+			WHERE behavior_id = ${behaviorId} AND run_type = 'behavior'
 		`;
 		expect(runs).toHaveLength(0);
 	});

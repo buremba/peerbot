@@ -858,7 +858,7 @@ export class ApplyClient {
    * (not in the list response). Used by `lobu init --from-org` to round-trip
    * reaction scripts back to sibling `.ts` files.
    */
-  async getBehaviorDetail(watcherId: string): Promise<{
+  async getBehaviorDetail(behaviorId: string): Promise<{
     reaction_script?: string | null;
     description?: string | null;
   } | null> {
@@ -870,7 +870,7 @@ export class ApplyClient {
         };
       }>(
         "GET",
-        `/api/${this.orgSlug}/behaviors?behavior_id=${encodeURIComponent(watcherId)}`
+        `/api/${this.orgSlug}/behaviors?behavior_id=${encodeURIComponent(behaviorId)}`
       );
       return body.behavior ?? null;
     } catch (err) {
@@ -963,7 +963,7 @@ export class ApplyClient {
   }
 
   /**
-   * Update the **scalar** fields on the `watchers` row — these don't require
+   * Update the **scalar** fields on the `behaviors` row — these don't require
    * a new version. Version-bound fields (prompt / sources / reactions_guidance /
    * keying_config / classifiers) require `createBehaviorVersion`
    * instead.
@@ -1011,8 +1011,8 @@ export class ApplyClient {
   }
 
   /**
-   * Create a new watcher_versions row carrying the version-bound fields, then
-   * upgrade the watcher's `current_version_id` to that new version. Server
+   * Create a new behavior_versions row carrying the version-bound fields, then
+   * upgrade the behavior's `current_version_id` to that new version. Server
    * inherits unset fields from the previous version row.
    */
   async createBehaviorVersion(payload: {
@@ -1062,12 +1062,12 @@ export class ApplyClient {
    * matches the admin tool contract.
    */
   async setReactionScript(
-    watcherId: string,
+    behaviorId: string,
     reactionScript: string
   ): Promise<void> {
     await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
       action: "set_reaction_script",
-      behavior_id: watcherId,
+      behavior_id: behaviorId,
       reaction_script: reactionScript,
     });
   }
@@ -1077,10 +1077,10 @@ export class ApplyClient {
    * admin tool takes an array; we delete one slug's Behavior at a time so a
    * failure is attributable.
    */
-  async deleteBehavior(watcherId: string): Promise<void> {
+  async deleteBehavior(behaviorId: string): Promise<void> {
     await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
       action: "delete",
-      behavior_ids: [watcherId],
+      behavior_ids: [behaviorId],
     });
   }
 

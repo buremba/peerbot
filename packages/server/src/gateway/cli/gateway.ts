@@ -891,7 +891,7 @@ curl -X POST http://localhost:8787/api/v1/agents/{agentId}/messages \\
   // One merged OpenAPI document: the defineRoute registry (agent-session
   // orchestration, TypeBox), the openapi-auto walk of the remaining gateway
   // routes (`getOpenAPI31Document`), PLUS the full dispatch-tool surface
-  // (`POST /api/{orgSlug}/{tool}` — entities, watchers, feeds, metrics, …),
+  // (`POST /api/{orgSlug}/{tool}` — entities, behaviors, feeds, metrics, …),
   // all sourced from the same TypeBox schemas the server validates against.
   // The first-party `@lobu/client` is generated from THIS single document, so
   // the CLI and UI get a typed client for BOTH surfaces instead of only agent

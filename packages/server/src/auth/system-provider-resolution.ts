@@ -198,7 +198,7 @@ export async function resolveSystemKeyProvidersAndModel(): Promise<ResolvedSyste
  * The `pre_approved_tools` every freshly created agent starts with. A Behavior
  * reaches `complete_window` through `run_sdk` (and reads through `query_sdk`) on
  * the internal `lobu-memory` MCP server; without this pre-approval those calls
- * need an interactive approval no watcher run can satisfy, so the turn ends
+ * need an interactive approval no behavior run can satisfy, so the turn ends
  * without completing the window.
  *
  * The `lobu-memory` server itself is NOT stored per-agent — it is derived at

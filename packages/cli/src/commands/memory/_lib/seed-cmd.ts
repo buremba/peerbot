@@ -515,7 +515,7 @@ export async function seedMemoryWorkspace(
 
   // Schema (entity types / relationship types) comes from lobu.config.ts — the
   // same source `lobu apply` provisions from; seeding here is idempotent.
-  // Watchers are agent-scoped and provisioned by `lobu apply`, not seeded.
+  // Behaviors are agent-scoped and provisioned by `lobu apply`, not seeded.
   const entityTypes = state.memorySchema.entityTypes;
   const relationshipTypes = state.memorySchema.relationshipTypes;
   const dataRecords = loadDataRecords(layout.dataPath);

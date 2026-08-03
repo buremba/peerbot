@@ -103,7 +103,7 @@ export const BehaviorSourceSchema = Type.Object({
   // into the window's event set. Use it to feed a filtered set of entities the
   // agent should look at (e.g. duplicate-merge candidates) — the raw `id` it
   // projects is an entity id, not an `events.id`, so it must NOT go through the
-  // watcher_window_events FK. A plain (non-context) SQL source stays event
+  // behavior_window_events FK. A plain (non-context) SQL source stays event
   // content and its `id` must be an `events.id`.
   context: Type.Optional(Type.Boolean()),
 });
@@ -347,7 +347,7 @@ export const ManageBehaviorsSchema = Type.Object(
       { description: "Action to perform" }
     ),
 
-    // Behavior identity (the persisted DB column is watcher_id)
+    // Behavior identity (the persisted DB column is behavior_id)
     behavior_id: Type.Optional(
       Type.String({
         description:
@@ -699,7 +699,7 @@ export const ManageBehaviorsSchema = Type.Object(
 export type ManageBehaviorsArgs = Static<typeof ManageBehaviorsSchema>;
 
 /**
- * The watcher columns a `manage_behaviors` UPDATE persists — a type-only `Pick`
+ * The behavior columns a `manage_behaviors` UPDATE persists — a type-only `Pick`
  * of {@link ManageBehaviorsArgs} so the field TYPES are reused from the single
  * source (no re-typing); the STORED shape is these fields after the
  * write-normalization {@link normalizeBehaviorUpdatePatch} applies.
@@ -725,7 +725,7 @@ export type BehaviorUpdatePatch = Pick<
 >;
 
 /**
- * Canonical tag normalization for a watcher write — trim, drop empties, dedupe,
+ * Canonical tag normalization for a behavior write — trim, drop empties, dedupe,
  * preserving first-seen order. The SINGLE source for how tags are STORED: the
  * server's `toTextArrayParam` (SQL array param) and `normalizeBehaviorUpdatePatch`
  * (review `proposedAfter`) both go through this, so the displayed tags equal the
@@ -980,8 +980,8 @@ export interface ManageBehaviorsProposal {
   args: ManageBehaviorsArgs;
   /** Resolved `actor.ownerAgentId ?? actor.id` at queue time; null for humans. */
   actingAgentId: string | null;
-  /** Session `actingWatcherId` at queue time, if any. */
-  actingWatcherId: string | null;
+  /** Session `actingBehaviorId` at queue time, if any. */
+  actingBehaviorId: string | null;
 }
 // The REST/list helper is a projection of the canonical flattened tool schema,
 // not a second hand-maintained contract that can drift from manage_behaviors.

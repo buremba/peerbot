@@ -16,14 +16,14 @@ import type { ToolContext } from '../../registry';
 interface ToolConfigChangeParams {
   /**
    * Override when the mutated row's org is resolved from data rather than
-   * the caller (watcher tools can act on entity-derived orgs). Defaults to
+   * the caller (behavior tools can act on entity-derived orgs). Defaults to
    * `ctx.organizationId`.
    */
   organizationId?: string;
   resourceKind: ConfigResourceKind;
   resourceId: string | number;
   op: 'created' | 'updated' | 'deleted';
-  /** Human-readable summary (e.g. "Watcher 'inbox' paused"). */
+  /** Human-readable summary (e.g. "Behavior 'inbox' paused"). */
   summary: string;
   /** Full post-change state (redacted by the writer); null for deletes. */
   state: Record<string, unknown> | null;

@@ -2,10 +2,10 @@
 
 `platform: "webhook"` turns a connection into a push-source: any external
 system that emits webhooks (Sentry, GitHub, Stripe, healthchecks, CI) POSTs
-JSON to Lobu and the payload lands as an `events` row. Watchers pick those
+JSON to Lobu and the payload lands as an `events` row. Behaviors pick those
 rows up through their normal checkpointed SQL sources — no new machinery, no
 Chat SDK instance, no per-pod state. Reaction latency is bounded by the
-watcher cadence (cron), not by the delivery.
+behavior cadence (cron), not by the delivery.
 
 ## Create one
 
@@ -74,10 +74,10 @@ Without `dedupeHeader`, the idempotency key is `sha256(raw body)` — so two
 heartbeat) collapse to one stored event. Set `dedupeHeader` to the provider's
 delivery-id header for periodic or repeating senders.
 
-## React with a watcher
+## React with a behavior
 
 ```sql
--- watcher source; the window bounds are injected automatically
+-- behavior source; the window bounds are injected automatically
 SELECT id, title, payload_data, occurred_at
 FROM events
 WHERE connector_key = 'webhook:<connectionId>'
@@ -93,6 +93,6 @@ plan:
    `semanticType: "alert"`, `titlePath: "/event/title"`.
 2. In Sentry: project → Settings → Integrations → WebHooks → add
    `https://<gateway>/lobu/api/v1/webhooks/<connectionId>?token=<token>`.
-3. Add a watcher on the agent (1-min cron) with the source above and a
+3. Add a behavior on the agent (1-min cron) with the source above and a
    prompt that triages each issue and posts a summary to a Slack channel via
    the agent's existing Slack connection.

@@ -112,7 +112,7 @@ export async function requireWriteAccess(
 
 /**
  * Check if the caller may write at the organization level (no entity scope).
- * Used by org-scoped resources like watchers that have their own organization_id.
+ * Used by org-scoped resources like behaviors that have their own organization_id.
  */
 async function canWriteOrg(sql: DbClient, ctx: ToolContext): Promise<boolean> {
   if (!ctx.organizationId) return false;

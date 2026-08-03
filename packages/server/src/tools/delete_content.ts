@@ -109,7 +109,7 @@ async function deleteContentImpl(
 
   // Deleting a `guidance` target tombstones it out of every agent prompt — the
   // same removal that supersede performs. Authorship is admin-gated (and rejects
-  // system contexts), so removal is too: a watcher/automation must not be able
+  // system contexts), so removal is too: a behavior/automation must not be able
   // to erase admin org-context either. memberRole is owner/admin only.
   await assertCanRemoveGuidance(ctx.organizationId, targetIds, ctx.memberRole);
 

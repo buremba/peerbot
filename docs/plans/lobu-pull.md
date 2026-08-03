@@ -88,7 +88,7 @@ Provide a one-way Lobu Cloud org → `lobu.config.ts` converger. Mental model: `
 ### v2.1 — round-trip parity guarantees
 
 - **Cloud-side raw `SKILL.md` storage** so pull can write the *exact* body the operator wrote (and apply can preserve it). Requires a server change — separate PR. Until then v2.0 emits the placeholder body described in decision #4.
-- **Watcher pull** — depends on apply v2 watcher push. Same reasoning as apply.
+- **Behavior pull** — depends on apply v2 behavior push. Same reasoning as apply.
 - **Memory-data pull** (entities, relationships, knowledge events) — depends on apply v3.
 - **`installedAt` and other volatile fields** — pull omits them in v2.0 (see decision #6 of cross-cutting concerns); v2.1 adds a `--preserve-timestamps` flag if anyone asks.
 
@@ -241,7 +241,7 @@ Pull v2.0 has **no server-side dependency** — every endpoint already exists. I
 - ❌ Conflict-merge UI (3-way merge of cloud / local / last-applied)
 - ❌ Partial-pull-with-edit-detection (file-level smart merge — out)
 - ❌ Pulling secret values to disk (security boundary — never)
-- ❌ Watcher pull (v2.1, depends on apply v2)
+- ❌ Behavior pull (v2.1, depends on apply v2)
 - ❌ Memory-data pull — entities, relationships, knowledge events (v3)
 - ❌ Raw `SKILL.md` body round-trip (v2.1, requires server change)
 - ❌ Multi-org pull in a single invocation (wrapper script for now)

@@ -20,7 +20,7 @@ describe("agent delete archives its Behaviors", () => {
 
 	/**
 	 * The legacy agent_channel_bindings table unlinked channels through an FK
-	 * cascade when an agent was deleted. watchers has no FK on agent_id, so
+	 * cascade when an agent was deleted. behaviors has no FK on agent_id, so
 	 * the DB trigger must archive the deleted agent's Behaviors — otherwise
 	 * chat routing keeps resolving a nonexistent agent forever.
 	 */
@@ -77,7 +77,7 @@ describe("agent delete archives its Behaviors", () => {
 		await sql`DELETE FROM agents WHERE id = ${agent.agentId}`;
 
 		const rows = await sql`
-			SELECT id, status FROM watchers
+			SELECT id, status FROM behaviors
 			WHERE id IN (${doomedBehavior}, ${survivorBehavior})
 			ORDER BY id ASC
 		`;
@@ -173,7 +173,7 @@ describe("agent delete archives its Behaviors", () => {
 		`;
 
 		const rows = await sql`
-			SELECT id, organization_id, status FROM watchers
+			SELECT id, organization_id, status FROM behaviors
 			WHERE id IN (${behaviorA}, ${behaviorB})
 			ORDER BY id ASC
 		`;

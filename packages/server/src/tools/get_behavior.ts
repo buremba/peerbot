@@ -1,8 +1,8 @@
 /**
  * Tool: get_behavior (Incremental Time Windows)
  *
- * Query a single watcher's analysis windows by date range and granularity.
- * Returns time-windowed watcher data sourced from canvas_state event chains
+ * Query a single behavior's analysis windows by date range and granularity.
+ * Returns time-windowed behavior data sourced from canvas_state event chains
  * (a window = one canvas_state supersede chain; its ROOT event id is window_id).
  */
 
@@ -20,17 +20,17 @@ import type {
   BehaviorTrigger,
   KeyingConfig,
   PendingAnalysis,
-  WatcherMetadata,
-  WatcherSource,
-  WatcherVersionInfo,
-  WatcherWindow,
-  WatcherWindowReaction,
-} from '../types/watchers';
+  BehaviorMetadata,
+  BehaviorSource,
+  BehaviorVersionInfo,
+  BehaviorWindow,
+  BehaviorWindowReaction,
+} from '../types/behaviors';
 import {
   PendingAnalysisSchema,
-  WatcherMetadataSchema,
-  WatcherWindowSchema,
-} from '../types/watchers';
+  BehaviorMetadataSchema,
+  BehaviorWindowSchema,
+} from '../types/behaviors';
 import {
   buildEntityLinkUnion,
   STANDARD_IDENTITY_NAMESPACES,
@@ -59,8 +59,8 @@ import {
   nextBehaviorWindowStart,
   parseBigintArray,
 } from '../utils/window-utils';
-import { buildLatestWatcherRunJoinSql } from '../watchers/automation';
-import { computeBehaviorHealth } from '../watchers/behavior-health';
+import { buildLatestBehaviorRunJoinSql } from '../behaviors/automation';
+import { computeBehaviorHealth } from '../behaviors/behavior-health';
 import type { ToolContext } from './registry';
 import { withValidatedArgs } from './validate-args';
 
@@ -151,11 +151,11 @@ type WindowGap = Static<typeof WindowGapSchema>;
 /**
  * Result of `get_behavior`. TypeBox-first (single source of truth): the handler's
  * return type is `Static<>`-derived, and the same schema is the tool's
- * `outputSchema`. Nested watcher types come from `types/watchers.ts`.
+ * `outputSchema`. Nested behavior types come from `types/behaviors.ts`.
  */
 export const GetBehaviorResultSchema = Type.Object({
-  windows: Type.Array(WatcherWindowSchema),
-  behavior: Type.Optional(WatcherMetadataSchema),
+  windows: Type.Array(BehaviorWindowSchema),
+  behavior: Type.Optional(BehaviorMetadataSchema),
   pending_analysis: Type.Optional(PendingAnalysisSchema),
   gaps: Type.Optional(Type.Array(WindowGapSchema)),
   pagination: Type.Object({
@@ -185,8 +185,8 @@ export type GetBehaviorResult = Static<typeof GetBehaviorResultSchema>;
 /** Row type for window query results (from buildWindowsSelectClause) */
 interface WindowRow {
   window_id: number;
-  watcher_id: string;
-  watcher_name: string;
+  behavior_id: string;
+  behavior_name: string;
   granularity: string;
   window_start: string;
   window_end: string;
@@ -209,9 +209,9 @@ interface ClassificationStatsRow {
   count: number;
 }
 
-/** Row type for watcher query */
-interface WatcherQueryRow {
-  watcher_id: string;
+/** Row type for behavior query */
+interface BehaviorQueryRow {
+  behavior_id: string;
   name: string | null;
   slug: string | null;
   status: string;
@@ -224,14 +224,14 @@ interface WatcherQueryRow {
   version: number;
   current_version_id: number | null;
   entity_ids: string | number[];
-  sources: WatcherSource[] | null;
+  sources: BehaviorSource[] | null;
   reaction_script: string | null;
   organization_id: string | null;
-  watcher_run_id: number | null;
-  watcher_run_status: string | null;
-  watcher_run_error: string | null;
-  watcher_run_created_at: string | null;
-  watcher_run_completed_at: string | null;
+  behavior_run_id: number | null;
+  behavior_run_status: string | null;
+  behavior_run_error: string | null;
+  behavior_run_created_at: string | null;
+  behavior_run_completed_at: string | null;
   // Selected version row (pinned current_version unless template_version overrides)
   sel_version_id: number | null;
   sel_version: number | null;
@@ -249,12 +249,12 @@ interface WatcherQueryRow {
   entity_scopes: Array<{ namespace: string; identifier: string }> | null;
 }
 
-function parseWatcherSources(value: unknown): WatcherSource[] {
-  if (Array.isArray(value)) return value as WatcherSource[];
+function parseBehaviorSources(value: unknown): BehaviorSource[] {
+  if (Array.isArray(value)) return value as BehaviorSource[];
   if (typeof value === 'string') {
     try {
       const parsed = JSON.parse(value);
-      return Array.isArray(parsed) ? (parsed as WatcherSource[]) : [];
+      return Array.isArray(parsed) ? (parsed as BehaviorSource[]) : [];
     } catch {
       return [];
     }
@@ -262,15 +262,15 @@ function parseWatcherSources(value: unknown): WatcherSource[] {
   return [];
 }
 
-async function requireWatcherReadAccess(
+async function requireBehaviorReadAccess(
   sql: DbClient,
-  watcherId: string,
+  behaviorId: string,
   ctx: ToolContext
 ): Promise<void> {
   const rows = await sql`
     SELECT organization_id, entity_ids
-    FROM watchers
-    WHERE id = ${watcherId}
+    FROM behaviors
+    WHERE id = ${behaviorId}
     LIMIT 1
   `;
   if (rows.length === 0) return;
@@ -278,7 +278,7 @@ async function requireWatcherReadAccess(
   const row = rows[0] as { organization_id: string | null; entity_ids: unknown };
   if (!row.organization_id || row.organization_id !== ctx.organizationId) {
     throw new ToolUserError(
-      `Access denied: Behavior ${watcherId} is not accessible to your organization`,
+      `Access denied: Behavior ${behaviorId} is not accessible to your organization`,
       403
     );
   }
@@ -340,7 +340,7 @@ async function getBehaviorImpl(
     );
   }
 
-  await requireWatcherReadAccess(pgSql, args.behavior_id, ctx);
+  await requireBehaviorReadAccess(pgSql, args.behavior_id, ctx);
 
   const page = Math.max(1, args.page || 1);
   const pageSize = Math.min(500, Math.max(1, args.page_size || 50));
@@ -370,7 +370,7 @@ async function getBehaviorImpl(
   };
 
   if (args.behavior_id) {
-    whereClauses.push(`iw.watcher_id = ${addParam(args.behavior_id)}`);
+    whereClauses.push(`iw.behavior_id = ${addParam(args.behavior_id)}`);
   } else if (args.entity_id) {
     whereClauses.push(`${addParam(args.entity_id)} = ANY(i.entity_ids)`);
     whereClauses.push(`i.status = 'active'`);
@@ -445,7 +445,7 @@ async function getBehaviorImpl(
     const countQuery = `
       SELECT COUNT(*) as count
       FROM ${buildWindowsCountFromClause()}
-      LEFT JOIN watcher_versions cv ON i.current_version_id = cv.id
+      LEFT JOIN behavior_versions cv ON i.current_version_id = cv.id
       WHERE ${whereClause}
     `;
     const countResult = await sql.unsafe(countQuery, params.slice(0, -2));
@@ -464,7 +464,7 @@ async function getBehaviorImpl(
   // query for the page; capped per page so a chatty reaction can't bloat the
   // response. Surfaced on each window so the UI can show what the reaction
   // did (or why it failed).
-  const reactionsMap: Map<number, WatcherWindowReaction[]> = new Map();
+  const reactionsMap: Map<number, BehaviorWindowReaction[]> = new Map();
   if (windowIds.length > 0) {
     // PG array literal, not a JS array bind: the pool runs fetch_types:false,
     // so postgres.js ships a one-element JS array as a scalar and PG throws
@@ -473,7 +473,7 @@ async function getBehaviorImpl(
     const windowIdsLiteral = `{${windowIds.join(',')}}`;
     const reactionRows = (await sql.unsafe(
       `SELECT id, window_id, reaction_type, tool_name, tool_args, tool_result, created_at
-       FROM watcher_reactions
+       FROM behavior_reactions
        WHERE window_id = ANY($1::bigint[])
        ORDER BY created_at DESC
        LIMIT 500`,
@@ -502,28 +502,28 @@ async function getBehaviorImpl(
     }
   }
 
-  // Fire watcher metadata query early (awaited after classification stats).
-  // This single statement is the consolidated "Q-meta": watcher row +
+  // Fire behavior metadata query early (awaited after classification stats).
+  // This single statement is the consolidated "Q-meta": behavior row +
   // selected version row + entities (with parent
-  // info) + identity scopes for the watcher's primary entity + MAX(window_end)
+  // info) + identity scopes for the behavior's primary entity + MAX(window_end)
   // + latest run via lateral. Replaces what used to be five separate
-  // round-trips (entityCheck/watcherEntityQuery, watcher row, fetchEntityIdentityScopes,
+  // round-trips (entityCheck/behaviorEntityQuery, behavior row, fetchEntityIdentityScopes,
   // MAX(window_end) lookup, version row).
   //
-  // The version row is *the requested version* — usually the watcher's
+  // The version row is *the requested version* — usually the behavior's
   // pinned current_version, but the optional template_version arg can
   // override it. We pass the resolved version number as $2; when it equals
   // the pinned version, we read off `cv` directly (the join is already there);
   // when it differs, the JOIN still resolves
-  // the right row via (watcher_id, version) which is unique.
+  // the right row via (behavior_id, version) which is unique.
   //
   // Two override mechanisms:
-  //   - template_version_id (preferred): an exact watcher_versions.id. Used
+  //   - template_version_id (preferred): an exact behavior_versions.id. Used
   //     by the worker run loop to read the snapshotted version even after a
   //     mid-run group edit. Joins by id so it works regardless of which
-  //     watcher in the group owns the version row.
+  //     behavior in the group owns the version row.
   //   - template_version (legacy): a version *number*. Resolves via the
-  //     group's root watcher_id (watcher_group_id), since after the group-
+  //     group's root behavior_id (behavior_group_id), since after the group-
   //     edit refactor version chains live on the group root, not on each
   //     non-root assignment.
   //
@@ -533,11 +533,11 @@ async function getBehaviorImpl(
   const requestedVersion = args.template_version ?? null;
   const requestedVersionId = args.template_version_id ?? null;
   const namespacesLiteral = STANDARD_IDENTITY_NAMESPACES.map((n) => `'${n}'`).join(',');
-  const watcherQueryPromise = args.behavior_id
+  const behaviorQueryPromise = args.behavior_id
     ? sql.unsafe(
         `
       SELECT
-        i.id as watcher_id,
+        i.id as behavior_id,
         i.name,
         i.slug,
         i.status,
@@ -564,12 +564,12 @@ async function getBehaviorImpl(
         sv.keying_config as sel_version_keying_config,
         sv.reactions_guidance as sel_version_reactions_guidance,
         -- Latest window end for the unprocessedCount bound.
-        (SELECT MAX(window_end) FROM canvas_windows WHERE watcher_id = i.id) as latest_window_end,
+        (SELECT MAX(window_end) FROM canvas_windows WHERE behavior_id = i.id) as latest_window_end,
         -- Latest window START drives the next_window preview, so it chains off
         -- exactly what computePendingWindow chains off. Chaining the preview off
         -- the END instead makes the two disagree by a full period on a legacy
         -- row stored with an inclusive 23:59:59.999 end.
-        (SELECT window_start FROM canvas_windows WHERE watcher_id = i.id
+        (SELECT window_start FROM canvas_windows WHERE behavior_id = i.id
           ORDER BY window_start DESC LIMIT 1) as latest_window_start,
         -- Identity scopes for the primary entity (entity_ids[1]) — drives
         -- the entity-link UNION in the unprocessedCount query.
@@ -580,22 +580,22 @@ async function getBehaviorImpl(
            AND ei.namespace IN (${namespacesLiteral})
         ) as entity_scopes,
         -- Latest run via lateral
-        wr.id as watcher_run_id,
-        wr.status as watcher_run_status,
-        wr.error_message as watcher_run_error,
-        wr.created_at as watcher_run_created_at,
-        wr.completed_at as watcher_run_completed_at
-      FROM watchers i
-      LEFT JOIN watcher_versions sv
+        wr.id as behavior_run_id,
+        wr.status as behavior_run_status,
+        wr.error_message as behavior_run_error,
+        wr.created_at as behavior_run_created_at,
+        wr.completed_at as behavior_run_completed_at
+      FROM behaviors i
+      LEFT JOIN behavior_versions sv
         ON sv.id = COALESCE(
              $3::bigint,
-             (SELECT id FROM watcher_versions
-                WHERE watcher_id = i.watcher_group_id
+             (SELECT id FROM behavior_versions
+                WHERE behavior_id = i.behavior_group_id
                   AND version = COALESCE($2::int, i.version)
                 LIMIT 1)
            )
-       AND sv.watcher_id = i.watcher_group_id
-      ${buildLatestWatcherRunJoinSql('i', 'wr')}
+       AND sv.behavior_id = i.behavior_group_id
+      ${buildLatestBehaviorRunJoinSql('i', 'wr')}
       WHERE i.id = $1
     `,
         [args.behavior_id, requestedVersion, requestedVersionId]
@@ -616,7 +616,7 @@ async function getBehaviorImpl(
           cc.slug as classifier_slug,
           value as value,
           CAST(COUNT(*) AS INTEGER) as count
-        FROM watcher_window_events iwc
+        FROM behavior_window_events iwc
         JOIN event_classifications cls ON iwc.event_id = cls.event_id
         JOIN classify_facet cc ON cls.classifier_id = cc.id
         CROSS JOIN unnest(cls."values") AS t(value)
@@ -657,13 +657,13 @@ async function getBehaviorImpl(
   }
 
   // ============================================
-  // Step 4.6: Await watcher details (query fired before classification stats)
+  // Step 4.6: Await behavior details (query fired before classification stats)
   // ============================================
 
-  let watcherRow: WatcherQueryRow | null = null;
-  if (watcherQueryPromise) {
-    const watcherQuery = await watcherQueryPromise;
-    watcherRow = watcherQuery.length > 0 ? (watcherQuery[0] as unknown as WatcherQueryRow) : null;
+  let behaviorRow: BehaviorQueryRow | null = null;
+  if (behaviorQueryPromise) {
+    const behaviorQuery = await behaviorQueryPromise;
+    behaviorRow = behaviorQuery.length > 0 ? (behaviorQuery[0] as unknown as BehaviorQueryRow) : null;
   }
 
   // ============================================
@@ -672,7 +672,7 @@ async function getBehaviorImpl(
 
   // Format windows and include previous window data for trend calculation
   // Windows are sorted by window_start DESC, so "next" in array is "previous" chronologically
-  const formattedWindows: WatcherWindow[] = typedWindows.map((w, index, arr) => {
+  const formattedWindows: BehaviorWindow[] = typedWindows.map((w, index, arr) => {
     const previousWindow = arr[index + 1]; // Next in array = previous chronologically
     const windowIdNum = ensureNumber(w.window_id);
     const stats = classificationStatsMap.get(windowIdNum);
@@ -682,8 +682,8 @@ async function getBehaviorImpl(
       : undefined;
     return {
       window_id: ensureNumber(w.window_id),
-      behavior_id: String(w.watcher_id),
-      behavior_name: w.watcher_name,
+      behavior_id: String(w.behavior_id),
+      behavior_name: w.behavior_name,
       granularity: w.granularity,
       // window_start/end and created_at come back from postgres.js as Date
       // objects (raw timestamp columns, no ::text cast), while the outputSchema
@@ -706,21 +706,21 @@ async function getBehaviorImpl(
   });
 
   // ============================================
-  // Step 6: Fetch watcher metadata (for specific watcher queries)
+  // Step 6: Fetch behavior metadata (for specific behavior queries)
   // ============================================
 
-  let watcherMetadata: WatcherMetadata | undefined;
+  let behaviorMetadata: BehaviorMetadata | undefined;
 
-  if (args.behavior_id && watcherRow) {
-    const pinnedVersion = watcherRow.version;
+  if (args.behavior_id && behaviorRow) {
+    const pinnedVersion = behaviorRow.version;
 
     // The selected version row (prompt/schema/template) was folded into the
-    // watcher metadata query above via a `LEFT JOIN watcher_versions sv …`,
+    // behavior metadata query above via a `LEFT JOIN behavior_versions sv …`,
     // resolved against `args.template_version ?? i.version`. Reads from
-    // watcherRow directly — no separate round-trip.
+    // behaviorRow directly — no separate round-trip.
     //
     // available_versions list is opt-in (edit sheet) — still its own query.
-    // Reads from the group root's chain (watcher_group_id) so non-root
+    // Reads from the group root's chain (behavior_group_id) so non-root
     // assignments see the same version history as the root.
     const versionsQuery = args.include_versions
       ? await sql`
@@ -728,30 +728,30 @@ async function getBehaviorImpl(
             wv.version,
             wv.name,
             wv.created_at,
-            (wv.id = ${watcherRow.current_version_id}) as is_current
-          FROM watcher_versions wv
-          WHERE wv.watcher_id = (
-            SELECT watcher_group_id FROM watchers WHERE id = ${args.behavior_id}
+            (wv.id = ${behaviorRow.current_version_id}) as is_current
+          FROM behavior_versions wv
+          WHERE wv.behavior_id = (
+            SELECT behavior_group_id FROM behaviors WHERE id = ${args.behavior_id}
           )
           ORDER BY wv.version DESC
         `
       : ([] as unknown[]);
 
-    const version: Record<string, unknown> | null = watcherRow.sel_version_id
+    const version: Record<string, unknown> | null = behaviorRow.sel_version_id
       ? {
-          version_id: watcherRow.sel_version_id,
-          version: watcherRow.sel_version,
-          name: watcherRow.sel_version_name,
-          description: watcherRow.sel_version_description,
-          prompt: watcherRow.sel_version_prompt,
-          version_sources: watcherRow.sel_version_version_sources,
-          classifiers: watcherRow.sel_version_classifiers,
-          keying_config: watcherRow.sel_version_keying_config,
-          reactions_guidance: watcherRow.sel_version_reactions_guidance,
+          version_id: behaviorRow.sel_version_id,
+          version: behaviorRow.sel_version,
+          name: behaviorRow.sel_version_name,
+          description: behaviorRow.sel_version_description,
+          prompt: behaviorRow.sel_version_prompt,
+          version_sources: behaviorRow.sel_version_version_sources,
+          classifiers: behaviorRow.sel_version_classifiers,
+          keying_config: behaviorRow.sel_version_keying_config,
+          reactions_guidance: behaviorRow.sel_version_reactions_guidance,
         }
       : null;
 
-    const availableVersions: WatcherVersionInfo[] | undefined = args.include_versions
+    const availableVersions: BehaviorVersionInfo[] | undefined = args.include_versions
       ? (
           versionsQuery as unknown as Array<{
             version: number;
@@ -767,31 +767,31 @@ async function getBehaviorImpl(
         }))
       : undefined;
 
-    // Sources come from watcher row (or version if present)
-    const watcherSources = parseWatcherSources(watcherRow.sources);
+    // Sources come from behavior row (or version if present)
+    const behaviorSources = parseBehaviorSources(behaviorRow.sources);
 
     // Computed health (item 3, #2033) — pure derivation over the
     // already-selected schedule/run columns; no extra query.
     const behaviorHealth = computeBehaviorHealth({
-      status: watcherRow.status,
-      nextRunAt: watcherRow.next_run_at,
-      latestRunStatus: watcherRow.watcher_run_status,
-      latestRunCreatedAt: watcherRow.watcher_run_created_at,
-      latestRunError: watcherRow.watcher_run_error,
+      status: behaviorRow.status,
+      nextRunAt: behaviorRow.next_run_at,
+      latestRunStatus: behaviorRow.behavior_run_status,
+      latestRunCreatedAt: behaviorRow.behavior_run_created_at,
+      latestRunError: behaviorRow.behavior_run_error,
     });
 
-    watcherMetadata = {
-      behavior_id: String(watcherRow.watcher_id),
-      behavior_name: watcherRow.name || (version?.name as string) || 'Behavior',
-      slug: watcherRow.slug || '',
-      status: watcherRow.status as 'active' | 'archived',
-      triggers: watcherRow.triggers ?? [],
-      next_run_at: watcherRow.next_run_at,
-      agent_id: watcherRow.agent_id,
-      device_worker_id: watcherRow.device_worker_id ?? null,
-      scheduler_client_id: watcherRow.scheduler_client_id,
+    behaviorMetadata = {
+      behavior_id: String(behaviorRow.behavior_id),
+      behavior_name: behaviorRow.name || (version?.name as string) || 'Behavior',
+      slug: behaviorRow.slug || '',
+      status: behaviorRow.status as 'active' | 'archived',
+      triggers: behaviorRow.triggers ?? [],
+      next_run_at: behaviorRow.next_run_at,
+      agent_id: behaviorRow.agent_id,
+      device_worker_id: behaviorRow.device_worker_id ?? null,
+      scheduler_client_id: behaviorRow.scheduler_client_id,
       version: pinnedVersion,
-      sources: watcherSources,
+      sources: behaviorSources,
       prompt: version?.prompt as string | undefined,
       description: (version?.description as string) || undefined,
       keying_config: (version?.keying_config as KeyingConfig | null | undefined) ?? undefined,
@@ -799,12 +799,12 @@ async function getBehaviorImpl(
       reactions_guidance:
         (version?.reactions_guidance as string | null | undefined) ?? undefined,
       ...(availableVersions !== undefined && { available_versions: availableVersions }),
-      reaction_script: watcherRow.reaction_script || undefined,
+      reaction_script: behaviorRow.reaction_script || undefined,
       behavior_run:
-        watcherRow.watcher_run_id && watcherRow.watcher_run_status
+        behaviorRow.behavior_run_id && behaviorRow.behavior_run_status
           ? {
-              run_id: Number(watcherRow.watcher_run_id),
-              status: watcherRow.watcher_run_status as
+              run_id: Number(behaviorRow.behavior_run_id),
+              status: behaviorRow.behavior_run_status as
                 | 'pending'
                 | 'claimed'
                 | 'running'
@@ -812,9 +812,9 @@ async function getBehaviorImpl(
                 | 'failed'
                 | 'cancelled'
                 | 'timeout',
-              error_message: watcherRow.watcher_run_error ?? undefined,
-              created_at: watcherRow.watcher_run_created_at,
-              completed_at: watcherRow.watcher_run_completed_at,
+              error_message: behaviorRow.behavior_run_error ?? undefined,
+              created_at: behaviorRow.behavior_run_created_at,
+              completed_at: behaviorRow.behavior_run_completed_at,
             }
           : undefined,
       health: behaviorHealth.health,
@@ -828,70 +828,70 @@ async function getBehaviorImpl(
   // ============================================
   // Step 6.5: Compute pending analysis info
   // ============================================
-  // Count content NOT in any window for this watcher (using watcher_window_events)
+  // Count content NOT in any window for this behavior (using behavior_window_events)
   // Calculate next window bounds based on schedule
   // Generate processing instructions for client-driven Behavior generation
 
   let pendingAnalysis: PendingAnalysis | undefined;
 
-  if (args.behavior_id && watcherRow) {
-    const watcherEntityIds = parseBigintArray(watcherRow.entity_ids);
-    const watcherEntityId = watcherEntityIds[0] ?? 0;
-    const timeGranularity = inferBehaviorGranularityFromSchedule(watcherRow.schedule);
+  if (args.behavior_id && behaviorRow) {
+    const behaviorEntityIds = parseBigintArray(behaviorRow.entity_ids);
+    const behaviorEntityId = behaviorEntityIds[0] ?? 0;
+    const timeGranularity = inferBehaviorGranularityFromSchedule(behaviorRow.schedule);
 
-    // Identity scopes + latest window end were folded into the watcher
-    // metadata query above. Read both off watcherRow — no extra round-trip.
+    // Identity scopes + latest window end were folded into the behavior
+    // metadata query above. Read both off behaviorRow — no extra round-trip.
     // Scopes drive the entity-link UNION (only emit branches for namespaces
     // the entity actually owns); latestEnd bounds the unprocessedCount scan
     // so the planner uses idx_events_entity_ids_occurred_at.
-    const entityScopes: EntityIdentityScope[] = (watcherRow.entity_scopes ?? []).filter((s) =>
+    const entityScopes: EntityIdentityScope[] = (behaviorRow.entity_scopes ?? []).filter((s) =>
       (STANDARD_IDENTITY_NAMESPACES as readonly string[]).includes(s.namespace)
     );
-    const latestEnd = watcherRow.latest_window_end;
-    const latestStart = watcherRow.latest_window_start;
-    // Two entity-link fragments: one with `$1 = watcher_id` reserved (for
-    // queries that join on the watcher's windows), one without (for queries
+    const latestEnd = behaviorRow.latest_window_end;
+    const latestStart = behaviorRow.latest_window_start;
+    // Two entity-link fragments: one with `$1 = behavior_id` reserved (for
+    // queries that join on the behavior's windows), one without (for queries
     // that only need the entity scope). Sharing one fragment and passing a
     // phantom `$1` fails the postgres.js parse step when the entity has zero
     // identity scopes (query has zero placeholders, bind has one).
-    const entityLinkWatcherScoped = buildEntityLinkUnion({
-      entityIdLiteral: watcherEntityId,
+    const entityLinkBehaviorScoped = buildEntityLinkUnion({
+      entityIdLiteral: behaviorEntityId,
       scopes: entityScopes,
       baseParamIndex: 2,
     });
     const entityLinkOnly = buildEntityLinkUnion({
-      entityIdLiteral: watcherEntityId,
+      entityIdLiteral: behaviorEntityId,
       scopes: entityScopes,
       baseParamIndex: 1,
     });
-    const entityScopeCondition = entityLinkWatcherScoped.sql;
+    const entityScopeCondition = entityLinkBehaviorScoped.sql;
     const entityScopeOnlyCondition = entityLinkOnly.sql;
-    const entityLinkParams = entityLinkWatcherScoped.params;
+    const entityLinkParams = entityLinkBehaviorScoped.params;
     const entityLinkOnlyParams = entityLinkOnly.params;
 
     // Bound the entity-scoped scans by `f.occurred_at >= latestEnd` only when
-    // the watcher has actually produced a window. Without the bound the
+    // the behavior has actually produced a window. Without the bound the
     // planner walks the entity's full event history; with it, the planner
     // uses `idx_events_entity_ids_occurred_at` for an indexed range scan.
     //
-    // For fresh watchers (latestEnd === null), bound by 90 days ago. The
+    // For fresh behaviors (latestEnd === null), bound by 90 days ago. The
     // older "unbounded so the badge reflects the full backlog" path blows
     // the 10s frontend timeout on high-volume entities (e.g. 78K+ events
-    // → 9.5s scan, then "Failed to load watcher"). 90 days matches the
+    // → 9.5s scan, then "Failed to load behavior"). 90 days matches the
     // per-month histogram's natural horizon, keeps the scan indexed, and
     // the badge is a notification — not a backlog audit.
-    const FRESH_WATCHER_LOOKBACK_DAYS = 90;
+    const FRESH_BEHAVIOR_LOOKBACK_DAYS = 90;
     const effectiveBound =
       latestEnd ??
-      new Date(Date.now() - FRESH_WATCHER_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
+      new Date(Date.now() - FRESH_BEHAVIOR_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
     const occurredAtBound = `f.occurred_at >= $${2 + entityLinkParams.length}::timestamptz`;
-    const occurredAtBoundNoWatcher = `f.occurred_at >= $${1 + entityLinkOnlyParams.length}::timestamptz`;
-    const watcherScopedParams = [args.behavior_id, ...entityLinkParams, effectiveBound];
-    const noWatcherParams = [...entityLinkOnlyParams, effectiveBound];
+    const occurredAtBoundNoBehavior = `f.occurred_at >= $${1 + entityLinkOnlyParams.length}::timestamptz`;
+    const behaviorScopedParams = [args.behavior_id, ...entityLinkParams, effectiveBound];
+    const noBehaviorParams = [...entityLinkOnlyParams, effectiveBound];
 
     const notInWindowClause = `NOT EXISTS (
-        SELECT 1 FROM watcher_window_events iwc
-        WHERE iwc.event_id = f.id AND iwc.watcher_id = $1
+        SELECT 1 FROM behavior_window_events iwc
+        WHERE iwc.event_id = f.id AND iwc.behavior_id = $1
       )`;
 
     // unprocessed_count drives the badge ("N pending analysis"). Cap the
@@ -916,7 +916,7 @@ async function getBehaviorImpl(
           AND ${notInWindowClause}
         LIMIT ${UNPROCESSED_COUNT_CAP}
       ) capped`,
-      watcherScopedParams
+      behaviorScopedParams
     );
 
     const histogramPromise = args.include_pending_ranges
@@ -925,20 +925,20 @@ async function getBehaviorImpl(
             `SELECT DATE_TRUNC('month', f.occurred_at) as month, COUNT(*) as total
               FROM current_event_records f
               WHERE ${entityScopeOnlyCondition}
-                ${occurredAtBoundNoWatcher ? `AND ${occurredAtBoundNoWatcher}` : ''}
+                ${occurredAtBoundNoBehavior ? `AND ${occurredAtBoundNoBehavior}` : ''}
               GROUP BY DATE_TRUNC('month', f.occurred_at)
               ORDER BY month`,
-            noWatcherParams
+            noBehaviorParams
           ),
           sql.unsafe(
             `SELECT DATE_TRUNC('month', f.occurred_at) as month, COUNT(DISTINCT f.id) as linked
               FROM current_event_records f
-              JOIN watcher_window_events iwc ON f.id = iwc.event_id
+              JOIN behavior_window_events iwc ON f.id = iwc.event_id
               WHERE ${entityScopeCondition}
                 ${occurredAtBound ? `AND ${occurredAtBound}` : ''}
-                AND iwc.watcher_id = $1
+                AND iwc.behavior_id = $1
               GROUP BY DATE_TRUNC('month', f.occurred_at)`,
-            watcherScopedParams
+            behaviorScopedParams
           ),
         ])
       : Promise.resolve([[], []] as [unknown[], unknown[]]);
@@ -969,7 +969,7 @@ async function getBehaviorImpl(
         // No windows yet — find the earliest unprocessed event for this
         // entity. Unbounded by occurred_at: pi review (#481) flagged that
         // a 90-day default would silently strip pre-existing backlogs from
-        // the next_window calculation when a user creates a watcher on top
+        // the next_window calculation when a user creates a behavior on top
         // of long-since-ingested data.
         const earliestResult = await sql.unsafe(
           `SELECT MIN(f.occurred_at) as earliest
@@ -1039,20 +1039,20 @@ async function getBehaviorImpl(
   // ============================================
   // Step 7: Diagnostic warnings for the no-windows case
   // ============================================
-  // Replaces the previous cold-path block (a watchers re-fetch + a
+  // Replaces the previous cold-path block (a behaviors re-fetch + a
   // 5-table-join entity_context aggregate that ran ~20s/call in prod for
   // entities with any volume — measured via pg_stat_statements). Both
-  // produced fields (`watcher_statuses`, `entity_context`) had zero UI
+  // produced fields (`behavior_statuses`, `entity_context`) had zero UI
   // consumers; the only live output was the warnings, which we can derive
   // from data already in scope.
 
   const warnings: string[] = [];
 
-  if (formattedWindows.length === 0 && watcherRow) {
-    if (watcherRow.status === 'archived') {
-      warnings.push(`Behavior "${watcherRow.name ?? args.behavior_id}" is archived.`);
+  if (formattedWindows.length === 0 && behaviorRow) {
+    if (behaviorRow.status === 'archived') {
+      warnings.push(`Behavior "${behaviorRow.name ?? args.behavior_id}" is archived.`);
     } else {
-      warnings.push(`Behavior "${watcherRow.name ?? args.behavior_id}" has no windows yet.`);
+      warnings.push(`Behavior "${behaviorRow.name ?? args.behavior_id}" has no windows yet.`);
     }
   }
 
@@ -1066,7 +1066,7 @@ async function getBehaviorImpl(
     );
   }
 
-  // Detect gaps between consecutive windows (single-watcher queries only)
+  // Detect gaps between consecutive windows (single-behavior queries only)
   let windowGaps: WindowGap[] | undefined;
   if (args.behavior_id && formattedWindows.length > 1) {
     const sorted = [...formattedWindows].sort(
@@ -1086,17 +1086,17 @@ async function getBehaviorImpl(
     if (gaps.length > 0) windowGaps = gaps;
   }
 
-  const organizationSlug = watcherRow?.organization_id
-    ? await getOrganizationSlug(watcherRow.organization_id)
+  const organizationSlug = behaviorRow?.organization_id
+    ? await getOrganizationSlug(behaviorRow.organization_id)
     : null;
   const viewUrl =
-    organizationSlug && watcherRow?.agent_id
-      ? buildBehaviorUrl(organizationSlug, watcherRow.agent_id, args.behavior_id, baseUrl)
+    organizationSlug && behaviorRow?.agent_id
+      ? buildBehaviorUrl(organizationSlug, behaviorRow.agent_id, args.behavior_id, baseUrl)
       : undefined;
 
   const result: GetBehaviorResult = {
     windows: formattedWindows,
-    ...(watcherMetadata && { behavior: watcherMetadata }),
+    ...(behaviorMetadata && { behavior: behaviorMetadata }),
     ...(pendingAnalysis && { pending_analysis: pendingAnalysis }),
     ...(windowGaps && { gaps: windowGaps }),
     pagination: {

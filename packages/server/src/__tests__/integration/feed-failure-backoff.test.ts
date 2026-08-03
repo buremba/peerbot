@@ -275,7 +275,7 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
     const behaviorRuns = (await sql`
       SELECT id, status, approved_input
       FROM runs
-      WHERE watcher_id = ${behaviorId}
+      WHERE behavior_id = ${behaviorId}
         AND run_type = 'behavior'
       ORDER BY id ASC
     `) as Array<{
@@ -308,7 +308,7 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
     });
     await completeWorkerJob(b.ctx);
     const runsAfter = (await sql`
-      SELECT count(*)::int AS n FROM runs WHERE watcher_id = ${behaviorId}
+      SELECT count(*)::int AS n FROM runs WHERE behavior_id = ${behaviorId}
     `) as Array<{ n: number }>;
     expect(Number(runsAfter[0]?.n)).toBe(behaviorRuns.length);
   });
@@ -362,7 +362,7 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
     const sql = getTestDb();
     const firstRuns = (await sql`
       SELECT approved_input FROM runs
-      WHERE watcher_id = ${behaviorId} AND run_type = 'behavior'
+      WHERE behavior_id = ${behaviorId} AND run_type = 'behavior'
       ORDER BY id ASC
     `) as Array<{ approved_input: Record<string, unknown> | null }>;
     expect(firstRuns).toHaveLength(1);
@@ -408,7 +408,7 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
     }
     const secondRuns = (await sql`
       SELECT approved_input FROM runs
-      WHERE watcher_id = ${behaviorId} AND run_type = 'behavior'
+      WHERE behavior_id = ${behaviorId} AND run_type = 'behavior'
       ORDER BY id ASC
     `) as Array<{ approved_input: Record<string, unknown> | null }>;
     expect(secondRuns).toHaveLength(2);

@@ -196,7 +196,7 @@ describe("validateToolArgs error humanization", () => {
           Type.Union([
             Type.Literal("connectors"),
             Type.Literal("skills"),
-            Type.Literal("watchers"),
+            Type.Literal("behaviors"),
           ])
         )
       ),
@@ -212,7 +212,7 @@ describe("validateToolArgs error humanization", () => {
     expect(msg).not.toMatch(/Expected union value/);
     expect(msg).toMatch(/connectors/);
     expect(msg).toMatch(/skills/);
-    expect(msg).toMatch(/watchers/);
+    expect(msg).toMatch(/behaviors/);
   });
 
   it("reports a missing required field AND an unknown field together (not just the first)", () => {
@@ -400,9 +400,9 @@ describe("registry outputSchema normalization (MCP spec: must be an object schem
     // The 8 admin tools declare Type.Union result schemas → bare `{ anyOf }`.
     // A spec-strict host rejects an outputSchema without top-level type:object.
     const byName = new Map(getAllTools().map((t) => [t.name, t]));
-    const watchers = byName.get("manage_behaviors") as { outputSchema?: any } | undefined;
-    expect(watchers?.outputSchema?.type).toBe("object");
-    expect(Array.isArray(watchers?.outputSchema?.anyOf)).toBe(true);
+    const behaviors = byName.get("manage_behaviors") as { outputSchema?: any } | undefined;
+    expect(behaviors?.outputSchema?.type).toBe("object");
+    expect(Array.isArray(behaviors?.outputSchema?.anyOf)).toBe(true);
   });
 
   it("leaves an already-object result schema (search_memory) untouched", () => {

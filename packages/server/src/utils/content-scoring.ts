@@ -38,8 +38,8 @@ interface NormalizedScoreFilters {
   window_id?: number;
   /** Restrict to content some behavior has analyzed. The handler always passed
    *  this; the builder used to ignore it — the same dropped-filter class. */
-  analyzed_by_watcher_id?: number;
-  exclude_watcher_id?: number; // Exclude content already in any window for this watcher
+  analyzed_by_behavior_id?: number;
+  exclude_behavior_id?: number; // Exclude content already in any window for this behavior
   classification_filters?: Array<{ classifier_slug: string; value: string }>;
   classification_source?: 'user' | 'embedding' | 'llm';
   semantic_type?: string | string[];
@@ -190,29 +190,29 @@ async function buildFilterConditionsAndJoins(
 
   if (filters?.window_id !== undefined) {
     const validatedWindowId = validateNumericId(filters.window_id, 'window_id');
-    additionalJoins.push('JOIN watcher_window_events iwc ON iwc.event_id = f.id');
+    additionalJoins.push('JOIN behavior_window_events iwc ON iwc.event_id = f.id');
     params.push(validatedWindowId);
     filterConditions.push(`iwc.window_id = $${paramIndex++}`);
   }
 
-  if (filters?.analyzed_by_watcher_id !== undefined) {
-    const validatedWatcherId = validateNumericId(
-      filters.analyzed_by_watcher_id,
-      'analyzed_by_watcher_id'
+  if (filters?.analyzed_by_behavior_id !== undefined) {
+    const validatedBehaviorId = validateNumericId(
+      filters.analyzed_by_behavior_id,
+      'analyzed_by_behavior_id'
     );
-    params.push(validatedWatcherId);
+    params.push(validatedBehaviorId);
     filterConditions.push(`EXISTS (
-      SELECT 1 FROM watcher_window_events iwc
-      WHERE iwc.event_id = f.id AND iwc.watcher_id = $${paramIndex++}
+      SELECT 1 FROM behavior_window_events iwc
+      WHERE iwc.event_id = f.id AND iwc.behavior_id = $${paramIndex++}
     )`);
   }
 
-  if (filters?.exclude_watcher_id !== undefined) {
-    const validatedWatcherId = validateNumericId(filters.exclude_watcher_id, 'exclude_watcher_id');
-    params.push(validatedWatcherId);
+  if (filters?.exclude_behavior_id !== undefined) {
+    const validatedBehaviorId = validateNumericId(filters.exclude_behavior_id, 'exclude_behavior_id');
+    params.push(validatedBehaviorId);
     filterConditions.push(`NOT EXISTS (
-      SELECT 1 FROM watcher_window_events exc_iwc
-      WHERE exc_iwc.event_id = f.id AND exc_iwc.watcher_id = $${paramIndex++}
+      SELECT 1 FROM behavior_window_events exc_iwc
+      WHERE exc_iwc.event_id = f.id AND exc_iwc.behavior_id = $${paramIndex++}
     )`);
   }
 

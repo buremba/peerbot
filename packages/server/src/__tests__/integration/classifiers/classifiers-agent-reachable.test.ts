@@ -2,14 +2,14 @@
  * The classification engine was reachable in principle and unreachable in
  * practice. Two independent gaps, both pinned here.
  *
- * 1. `create` REQUIRED `behavior_id` and inserted it as `classify_facet.watcher_id`.
+ * 1. `create` REQUIRED `behavior_id` and inserted it as `classify_facet.behavior_id`.
  *    Every engine template lookup in `classification-query.ts` filters
- *    `cf.watcher_id IS NULL`. So every classifier creatable
+ *    `cf.behavior_id IS NULL`. So every classifier creatable
  *    through the tool or the ClientSDK was invisible to the engine forever —
  *    `apply` and the reconciliation cron would both report a clean, successful,
  *    zero-result run. Measured in prod 2026-07-31: the `buremba` org held 5
  *    classifiers, all Behavior-owned, and 0 classifications; the org with
- *    working classifications held 23, all `watcher_id IS NULL` and predating the
+ *    working classifications held 23, all `behavior_id IS NULL` and predating the
  *    required-`behavior_id` rule.
  *
  * 2. `apply` existed on the MCP tool but not in the agent-facing SDK, so no
@@ -85,15 +85,15 @@ describe('classifiers reachable by agents', () => {
 
     // The whole point: no owning Behavior means the engine can see it.
     const rows = (await sql`
-      SELECT watcher_id, status FROM classify_facet
+      SELECT behavior_id, status FROM classify_facet
       WHERE slug = 'agent-made' AND organization_id = ${org.id}
-    `) as unknown as Array<{ watcher_id: number | null; status: string }>;
+    `) as unknown as Array<{ behavior_id: number | null; status: string }>;
     expect(rows).toHaveLength(1);
-    expect(rows[0].watcher_id).toBeNull();
+    expect(rows[0].behavior_id).toBeNull();
     expect(rows[0].status).toBe('active');
 
     // And `list` must show it back to the agent that created it — the old
-    // `fc.watcher_id IS NOT NULL` list filter hid every org-level classifier.
+    // `fc.behavior_id IS NOT NULL` list filter hid every org-level classifier.
     const listed = await manageClassifiers(
       { action: 'list' } as never,
       {} as never,
@@ -141,7 +141,7 @@ describe('classifiers reachable by agents', () => {
 
     const agent = await createTestAgent({ organizationId: org.id, ownerUserId: user.id });
     const [behavior] = (await sql`
-      INSERT INTO watchers (organization_id, agent_id, watcher_group_id, name, created_by, status)
+      INSERT INTO behaviors (organization_id, agent_id, behavior_group_id, name, created_by, status)
       VALUES (${org.id}, ${agent.agentId}, 0, 'owner', ${user.id}, 'active')
       RETURNING id
     `) as unknown as Array<{ id: number }>;
@@ -162,10 +162,10 @@ describe('classifiers reachable by agents', () => {
     expect(created.success).toBe(true);
 
     const rows = (await sql`
-      SELECT watcher_id FROM classify_facet
+      SELECT behavior_id FROM classify_facet
       WHERE slug = 'behavior-made' AND organization_id = ${org.id}
-    `) as unknown as Array<{ watcher_id: number | null }>;
-    expect(Number(rows[0].watcher_id)).toBe(Number(behavior.id));
+    `) as unknown as Array<{ behavior_id: number | null }>;
+    expect(Number(rows[0].behavior_id)).toBe(Number(behavior.id));
 
     // Deliberate, not a bug: the embedding engine matches org-level classifiers
     // only. `apply` must say so instead of reporting a successful empty run.

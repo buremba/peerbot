@@ -10,11 +10,11 @@
 import { type Static, Type } from '@sinclair/typebox';
 import type { CardElement } from 'chat';
 import { getDb, pgTextArray } from '../../db/client';
-import { WATCHER_CANVAS_NAMESPACE } from '../../utils/canvas-events';
+import { BEHAVIOR_CANVAS_NAMESPACE } from '../../utils/canvas-events';
 import { emit } from '../../events/emitter';
 import { createNotificationForUsers } from '../../notifications/service';
 import logger from '../../utils/logger';
-import { trackWatcherReaction } from '../../utils/watcher-reactions';
+import { trackBehaviorReaction } from '../../utils/behavior-reactions';
 import type { ToolContext } from '../registry';
 import { action, defineActionTool } from './action-tool';
 
@@ -136,22 +136,22 @@ async function handleSend(
     body = body ? `${body}\n\n${dataStr}` : dataStr;
   }
 
-  // Anchor watcher-sourced notifications to the watcher's canvas entity so they
+  // Anchor behavior-sourced notifications to the behavior's canvas entity so they
   // thread under the canvas. behavior_source is caller input, so validate the
-  // (watcher_id, window_id) pair against the caller's org before anchoring —
+  // (behavior_id, window_id) pair against the caller's org before anchoring —
   // otherwise any org member could thread a notification under an unrelated
-  // watcher's canvas. Resolve the lazy canvas entity via its entity_identities
-  // claim; a mismatched pair or a watcher with no canvas yet anchors nothing.
+  // behavior's canvas. Resolve the lazy canvas entity via its entity_identities
+  // claim; a mismatched pair or a behavior with no canvas yet anchors nothing.
   let canvasEntityIds: number[] | undefined;
   if (args.behavior_source) {
     const rows = await getDb()<{ entity_id: number | string }>`
       SELECT ei.entity_id
       FROM entity_identities ei
-      JOIN watchers w
+      JOIN behaviors w
         ON w.id = ${args.behavior_source.behavior_id}
        AND w.organization_id = ${ctx.organizationId}
       WHERE ei.organization_id = ${ctx.organizationId}
-        AND ei.namespace = ${WATCHER_CANVAS_NAMESPACE}
+        AND ei.namespace = ${BEHAVIOR_CANVAS_NAMESPACE}
         AND ei.identifier = ${String(args.behavior_source.behavior_id)}
         AND ei.deleted_at IS NULL
         AND (
@@ -160,7 +160,7 @@ async function handleSend(
             -- window_id is the canvas ROOT event id; validate the pair.
             SELECT 1 FROM canvas_windows ww
             WHERE ww.id = ${args.behavior_source.window_id ?? null}
-              AND ww.watcher_id = w.id
+              AND ww.behavior_id = w.id
           )
         )
       LIMIT 1
@@ -184,17 +184,17 @@ async function handleSend(
     emit(ctx.organizationId, { keys: ['notifications', 'notifications-unread-count'] });
   }
 
-  // Track watcher reaction if attribution source is provided
+  // Track behavior reaction if attribution source is provided
   if (notification.created && args.behavior_source) {
-    await trackWatcherReaction({
+    await trackBehaviorReaction({
       organizationId: ctx.organizationId,
-      watcherId: args.behavior_source.behavior_id,
+      behaviorId: args.behavior_source.behavior_id,
       windowId: args.behavior_source.window_id,
       reactionType: 'notification_sent',
       toolName: 'notify',
       toolArgs: { title: args.title, recipients: args.recipients },
     }).catch((err) => {
-      logger.warn({ err, behaviorSource: args.behavior_source }, 'trackWatcherReaction failed');
+      logger.warn({ err, behaviorSource: args.behavior_source }, 'trackBehaviorReaction failed');
     });
   }
 

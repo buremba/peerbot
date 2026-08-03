@@ -30,14 +30,14 @@ describe("resolveRunInitiator", () => {
 			resolveRunInitiator({
 				userId: null,
 				agentId: "personal-agent",
-				actingWatcherId: 42,
+				actingBehaviorId: 42,
 				actingWindowId: 7,
 				actingRunId: 99,
 			}),
 		).toEqual({
 			initiatorKind: "behavior",
 			initiatorRef: {
-				watcher_id: 42,
+				behavior_id: 42,
 				window_id: 7,
 				run_id: 99,
 			},
@@ -65,7 +65,7 @@ describe("resolveRunInitiator", () => {
 describe("runPermalinkResource", () => {
 	const behavior = {
 		initiatorKind: "behavior",
-		initiatorRef: { watcher_id: 42, window_id: 7, run_id: 99 },
+		initiatorRef: { behavior_id: 42, window_id: 7, run_id: 99 },
 	};
 
 	it("sends a Behavior's run to that Behavior's drill-down", () => {
@@ -111,10 +111,10 @@ describe("runPermalinkResource", () => {
 		-1,
 		1.5,
 		"not-a-number",
-	])("falls back when a behavior ref carries watcher id %j", (watcherId) => {
+	])("falls back when a behavior ref carries behavior id %j", (behaviorId) => {
 		expect(
 			runPermalinkResource(
-				{ initiatorKind: "behavior", initiatorRef: { watcher_id: watcherId } },
+				{ initiatorKind: "behavior", initiatorRef: { behavior_id: behaviorId } },
 				500,
 				"personal-agent",
 			),

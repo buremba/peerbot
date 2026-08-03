@@ -10,6 +10,7 @@ import type { Env } from "../../../index";
 import { manageBehaviors } from "../../../tools/admin/manage_behaviors";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase } from "../../setup/test-db";
+import { adaptImmutableMigrationToBehaviorSchema } from "../../setup/immutable-migration";
 import {
 	createTestAgent,
 	createTestConnection,
@@ -118,14 +119,15 @@ describe("Behavior channel-subscription migration", () => {
 		}
 		const scheduledBehaviorId = Number(scheduled.behavior_id);
 		await sql`
-			UPDATE watchers SET triggers = '[]'::jsonb
+			UPDATE behaviors SET triggers = '[]'::jsonb
 			WHERE id = ${scheduledBehaviorId}
 		`;
 		const migrationsDir = resolveMigrationsDir();
-		const triggerUp = loadMigrationUpSection(migrationsDir, TRIGGER_MIGRATION);
-		const subscriptionUp = loadMigrationUpSection(
-			migrationsDir,
-			SUBSCRIPTION_MIGRATION,
+		const triggerUp = adaptImmutableMigrationToBehaviorSchema(
+			loadMigrationUpSection(migrationsDir, TRIGGER_MIGRATION),
+		);
+		const subscriptionUp = adaptImmutableMigrationToBehaviorSchema(
+			loadMigrationUpSection(migrationsDir, SUBSCRIPTION_MIGRATION),
 		);
 		let captured:
 			| {
@@ -209,7 +211,7 @@ describe("Behavior channel-subscription migration", () => {
 						triggers,
 						tags @> ARRAY['system:chat-link']::text[] AS tagged,
 						execution_config
-					FROM watchers
+					FROM behaviors
 					WHERE organization_id = ${org.id}
 					  AND agent_id = ${agent.agentId}
 					  AND status = 'active'
@@ -220,7 +222,7 @@ describe("Behavior channel-subscription migration", () => {
 				`;
 				const [behaviorCount] = await tx<{ count: number }>`
 					SELECT COUNT(*)::int AS count
-					FROM watchers
+					FROM behaviors
 					WHERE organization_id = ${org.id}
 					  AND agent_id = ${agent.agentId}
 					  AND status = 'active'
@@ -230,7 +232,7 @@ describe("Behavior channel-subscription migration", () => {
 					count: number;
 				}>`
 					SELECT COUNT(*)::int AS count
-					FROM watchers w
+					FROM behaviors w
 					WHERE w.organization_id = ${org.id}
 					  AND w.status = 'active'
 					  AND w.tags @> ARRAY['system:chat-link']::text[]
@@ -244,7 +246,7 @@ describe("Behavior channel-subscription migration", () => {
 					SELECT to_regclass('public.behavior_message_subscriptions')::text AS name
 				`;
 				const [scheduledBehavior] = await tx<{ triggers: unknown }>`
-					SELECT triggers FROM watchers WHERE id = ${scheduledBehaviorId}
+					SELECT triggers FROM behaviors WHERE id = ${scheduledBehaviorId}
 				`;
 				const [bridgeArtifacts] = await tx<{ count: number }>`
 					SELECT (
@@ -330,10 +332,11 @@ describe("Behavior channel-subscription migration", () => {
 			slug: "slackinst-null-conn-migration",
 		});
 		const migrationsDir = resolveMigrationsDir();
-		const triggerUp = loadMigrationUpSection(migrationsDir, TRIGGER_MIGRATION);
-		const subscriptionUp = loadMigrationUpSection(
-			migrationsDir,
-			SUBSCRIPTION_MIGRATION,
+		const triggerUp = adaptImmutableMigrationToBehaviorSchema(
+			loadMigrationUpSection(migrationsDir, TRIGGER_MIGRATION),
+		);
+		const subscriptionUp = adaptImmutableMigrationToBehaviorSchema(
+			loadMigrationUpSection(migrationsDir, SUBSCRIPTION_MIGRATION),
 		);
 		const sql = getDb();
 		let captured:
@@ -383,7 +386,7 @@ describe("Behavior channel-subscription migration", () => {
 
 				const [behaviorCount] = await tx<{ count: number }>`
 					SELECT COUNT(*)::int AS count
-					FROM watchers
+					FROM behaviors
 					WHERE organization_id = ${org.id}
 					  AND agent_id = ${agent.agentId}
 					  AND status = 'active'
@@ -429,14 +432,14 @@ describe("Behavior channel-subscription migration", () => {
 			slug: "slackinst-rollback",
 		});
 		const migrationsDir = resolveMigrationsDir();
-		const triggerUp = loadMigrationUpSection(migrationsDir, TRIGGER_MIGRATION);
-		const subscriptionUp = loadMigrationUpSection(
-			migrationsDir,
-			SUBSCRIPTION_MIGRATION,
+		const triggerUp = adaptImmutableMigrationToBehaviorSchema(
+			loadMigrationUpSection(migrationsDir, TRIGGER_MIGRATION),
 		);
-		const subscriptionDown = loadMigrationDownSection(
-			migrationsDir,
-			SUBSCRIPTION_MIGRATION,
+		const subscriptionUp = adaptImmutableMigrationToBehaviorSchema(
+			loadMigrationUpSection(migrationsDir, SUBSCRIPTION_MIGRATION),
+		);
+		const subscriptionDown = adaptImmutableMigrationToBehaviorSchema(
+			loadMigrationDownSection(migrationsDir, SUBSCRIPTION_MIGRATION),
 		);
 		const sql = getDb();
 		let captured:
@@ -496,7 +499,7 @@ describe("Behavior channel-subscription migration", () => {
 				`;
 				const [afterDown] = await tx<{ archived: number }>`
 					SELECT COUNT(*)::int AS archived
-					FROM watchers
+					FROM behaviors
 					WHERE organization_id = ${org.id}
 					  AND tags @> ARRAY['system:chat-link']::text[]
 					  AND status = 'archived'

@@ -3,7 +3,7 @@
  *
  * Queries run against a virtual schema of org-scoped CTEs. Table references
  * in user queries are resolved to:
- *   - Core tables (entities, events, connections, watchers, event_classifications)
+ *   - Core tables (entities, events, connections, behaviors, event_classifications)
  *     → CTE with organization_id filter
  *   - Any other name → treated as an entity_type slug, filtered from entities
  *
@@ -31,7 +31,6 @@ import {
   type ColumnDef,
   formatUnknownTablesError,
   QUERYABLE_TABLE_NAMES,
-  RETIRED_RELATION_NAMES,
   SAFE_COLUMN_DEFS,
   validateTableQuery,
 } from './table-schema';
@@ -463,7 +462,7 @@ export function buildScopedQuery(
   // Per-channel membership gate for the `channel_messages` table (alias has
   // `connection_id` + `channel_id`): on an ACL-enforced Slack connection, restrict
   // to channels the requester is `member_of`. A headless/null principal sees only
-  // non-enforced channels — this is what keeps a watcher's streaming @feed source
+  // non-enforced channels — this is what keeps a behavior's streaming @feed source
   // from leaking enforced-channel content into the shared recap.
   const channelMessagesVisibility = (alias: string): string => {
     const vis = compileChannelMessagesVisibility(scope, idx + 1, alias);
@@ -570,7 +569,7 @@ export function buildScopedQuery(
         `"${safeName}" AS (SELECT ${sel(table, 'ev')} FROM public.current_event_records ev ` +
         `WHERE ${eventOrgScope('ev')}`;
 
-      // Entity scoping: filter events to the watcher's entities
+      // Entity scoping: filter events to the behavior's entities
       if (context.entityIds && context.entityIds.length > 0) {
         const placeholders = context.entityIds.map((id) => {
           idx++;
@@ -611,7 +610,7 @@ export function buildScopedQuery(
           ')'
       );
     } else if (table === 'behaviors') {
-      // Scoped on `watchers.organization_id` (NOT NULL), NOT through an
+      // Scoped on `behaviors.organization_id` (NOT NULL), NOT through an
       // entity-existence join.
       //
       // The old predicate was `EXISTS (SELECT 1 FROM entities ent WHERE ent.id =
@@ -624,11 +623,11 @@ export function buildScopedQuery(
       // cross-org visibility the way an EXISTS over a joined table could).
       // security-allowed: see block comment above the for-loop
       ctes.push(
-        `"${safeName}" AS (SELECT ${sel(table, 'i')} FROM public.watchers i ` +
+        `"${safeName}" AS (SELECT ${sel(table, 'i')} FROM public.behaviors i ` +
           `WHERE i.organization_id = ${orgP})`
       );
     } else if (table === 'canvas_windows') {
-      // Watcher windows as canvas chains (view over events; migration
+      // Behavior windows as canvas chains (view over events; migration
       // 20260703000000) — org-scoped directly, the view carries organization_id.
       // security-allowed: see block comment above the for-loop
       ctes.push(
@@ -654,15 +653,15 @@ export function buildScopedQuery(
           '))'
       );
     } else if (table === 'behavior_versions') {
-      // `watcher_versions` carries no organization_id of its own, so it inherits
+      // `behavior_versions` carries no organization_id of its own, so it inherits
       // the parent Behavior's. Same fix as the `behaviors` CTE: the previous
       // entity-existence join hid every version of an entity-less Behavior. The
       // INNER JOIN is the tenancy boundary — a version whose parent is missing
       // or in another org yields no row, so this stays fail-closed.
       // security-allowed: see block comment above the for-loop
       ctes.push(
-        `"${safeName}" AS (SELECT ${sel(table, 'wv')} FROM public.watcher_versions wv ` +
-          'JOIN public.watchers w ON w.id = wv.watcher_id ' +
+        `"${safeName}" AS (SELECT ${sel(table, 'wv')} FROM public.behavior_versions wv ` +
+          'JOIN public.behaviors w ON w.id = wv.behavior_id ' +
           `WHERE w.organization_id = ${orgP})`
       );
     } else if (table === 'oauth_clients') {
@@ -710,8 +709,8 @@ export function buildScopedQuery(
       //   1. connection visibility — a PRIVATE connection's transcript is visible
       //      only to its creator (org-visible connections to everyone). Resolved
       //      by slug because channel_messages.connection_id is the runtime id, not
-      //      connections.id. A null principal (headless watcher) → org-only.
-      //   2. time window (incremental mode) — only rows inside the watcher window,
+      //      connections.id. A null principal (headless behavior) → org-only.
+      //   2. time window (incremental mode) — only rows inside the behavior window,
       //      so a channel @feed reads its window, not the whole history.
       //   3. per-channel membership (channelMessagesVisibility) — ACL-enforced
       //      channels require member_of; stale/enforced fail closed.
@@ -794,7 +793,7 @@ export function buildScopedQuery(
  * Inspect a SELECT/WITH query's top-level projection and report whether it
  * surfaces an `id` column.
  *
- * Watcher-mode content aggregation keys every row by `row.id` (see
+ * Behavior-mode content aggregation keys every row by `row.id` (see
  * queryContentData in get_content.ts) and the signed window_token only carries
  * those numeric ids. A source query that omits `id` (e.g. `SELECT origin_id,
  * payload_text FROM events`) therefore produces zero content_ids — which makes
@@ -918,7 +917,7 @@ export async function executeDataSources(
         const tableRefs = extractTableRefs(query);
 
         // Auth/identity tables (oauth_tokens, oauth_clients, user) must not be
-        // referenceable from a view-template / watcher data source — these
+        // referenceable from a view-template / behavior data source — these
         // results surface to public/member readers via resolve_path. Mirror
         // query_sql's non-admin gate. (Entity-type slugs are never in this set.)
         const restricted = tableRefs.filter((t) =>
@@ -927,23 +926,6 @@ export async function executeDataSources(
         if (restricted.length > 0) {
           throw new Error(
             `Source '${name}': table(s) require admin access: ${[...new Set(restricted)].join(', ')}`
-          );
-        }
-
-        // A source saved against a RETIRED relation name must fail loudly. The
-        // agent-facing relations were renamed (`watchers` → `behaviors`), and
-        // unknown refs compile as entity-type CTEs rather than erroring — so a
-        // previously-saved `FROM watchers` would silently resolve to a
-        // nonexistent entity type and return ZERO ROWS instead of the Behaviors
-        // it used to. This check runs on every execution (not just save, where
-        // `validateEntitySlugs` applies) precisely because the rows it protects
-        // were saved BEFORE the rename.
-        const retired = tableRefs.filter((t) => RETIRED_RELATION_NAMES.has(t));
-        if (retired.length > 0) {
-          throw new Error(
-            `Source '${name}': table(s) renamed: ${[...new Set(retired)]
-              .map((t) => `${t} → ${RETIRED_RELATION_NAMES.get(t)}`)
-              .join(', ')}. Update the query to use the current name.`
           );
         }
 

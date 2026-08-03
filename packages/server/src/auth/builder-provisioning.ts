@@ -2,7 +2,7 @@
  * Builder-agent auto-provisioning.
  *
  * Every org gets a dedicated "builder" agent — the org's setup/console agent
- * that manages agents, connections, watchers, and workflows on the user's
+ * that manages agents, connections, behaviors, and workflows on the user's
  * behalf. `organization.system_agent_id` points at it.
  *
  *   - resolves the system-key model providers into a concrete `models` list up
@@ -47,7 +47,7 @@ const BUILDER_AGENT_NAME = "Builder";
 const BUILDER_AGENT_IDENTITY =
 	"You are the organization's Builder — its setup and management assistant. " +
 	"You help the owner configure their workspace: creating and editing agents, " +
-	"wiring up connections and integrations, setting up watchers and scheduled " +
+	"wiring up connections and integrations, setting up behaviors and scheduled " +
 	"workflows, and keeping the org healthy. " +
 	"Be concrete and action-oriented; prefer making the change over describing it. " +
 	"If you don't yet have access to something the user wants to manage, say so " +

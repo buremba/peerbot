@@ -29,17 +29,17 @@ async function insertDevice(userId: string, orgId: string): Promise<string> {
   return String(rows[0].id);
 }
 
-async function pinWatcher(opts: {
+async function pinBehavior(opts: {
   orgId: string;
   agentId: string;
   deviceWorkerId: string;
   createdBy: string;
   status?: string;
 }): Promise<void> {
-  const id = await getNextNumericId(sql, 'watchers');
+  const id = await getNextNumericId(sql, 'behaviors');
   await sql`
-    INSERT INTO watchers (
-      id, status, created_by, organization_id, agent_id, watcher_group_id,
+    INSERT INTO behaviors (
+      id, status, created_by, organization_id, agent_id, behavior_group_id,
       notification_channel, notification_priority, min_cooldown_seconds,
       device_worker_id, slug, created_at, updated_at
     ) VALUES (
@@ -66,8 +66,8 @@ describe('resolveDeviceClaimableOrgs (cross-org device pins)', () => {
     const deviceWorkerId = await insertDevice(user.id, orgA.id);
     const agentB = await createTestAgent({ organizationId: orgB.id, ownerUserId: user.id });
     const agentC = await createTestAgent({ organizationId: orgC.id, ownerUserId: user.id });
-    await pinWatcher({ orgId: orgB.id, agentId: agentB.agentId, deviceWorkerId, createdBy: user.id });
-    await pinWatcher({ orgId: orgC.id, agentId: agentC.agentId, deviceWorkerId, createdBy: user.id });
+    await pinBehavior({ orgId: orgB.id, agentId: agentB.agentId, deviceWorkerId, createdBy: user.id });
+    await pinBehavior({ orgId: orgC.id, agentId: agentC.agentId, deviceWorkerId, createdBy: user.id });
 
     const result = await resolveDeviceClaimableOrgs(sql, {
       deviceWorkerId,
@@ -80,7 +80,7 @@ describe('resolveDeviceClaimableOrgs (cross-org device pins)', () => {
     expect(result).not.toContain(orgC.id); // pinned but not a member
   });
 
-  it('does not grant scope from an archived watcher pin', async () => {
+  it('does not grant scope from an archived behavior pin', async () => {
     const user = await createTestUser();
     const orgA = await createTestOrganization();
     const orgB = await createTestOrganization();
@@ -89,7 +89,7 @@ describe('resolveDeviceClaimableOrgs (cross-org device pins)', () => {
 
     const deviceWorkerId = await insertDevice(user.id, orgA.id);
     const agentB = await createTestAgent({ organizationId: orgB.id, ownerUserId: user.id });
-    await pinWatcher({
+    await pinBehavior({
       orgId: orgB.id,
       agentId: agentB.agentId,
       deviceWorkerId,

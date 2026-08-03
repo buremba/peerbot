@@ -42,7 +42,7 @@ interface CreateNotificationParams {
 	 */
 	card?: CardElement | null;
 	/**
-	 * Optional entity ids to anchor the notification event to (e.g. a watcher's
+	 * Optional entity ids to anchor the notification event to (e.g. a behavior's
 	 * canvas entity, so the notification threads under the canvas). Stamped onto
 	 * the notification event's `entity_ids`.
 	 */
@@ -51,7 +51,7 @@ interface CreateNotificationParams {
 
 /**
  * Forward a notification to the org's active chat-bot connections so it lands
- * in the bound channel — e.g. a watcher digest posting to #leads.
+ * in the bound channel — e.g. a behavior digest posting to #leads.
  *
  * Resolves connections + their Behavior subscriptions straight from Postgres and
  * posts in-process via the chat manager. Every app pod loads every active

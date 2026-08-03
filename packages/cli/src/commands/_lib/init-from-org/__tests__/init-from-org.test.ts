@@ -384,8 +384,8 @@ describe("lobu init --from-org", () => {
       rules: [{ source: "lead", target: "pilot" }],
     });
 
-    // ── watchers ───────────────────────────────────────────────────────────
-    const w = state.watchers[0];
+    // ── behaviors ───────────────────────────────────────────────────────────
+    const w = state.behaviors[0];
     expect(w?.slug).toBe("account-health");
     expect(w?.agent).toBe("sales");
     expect(w?.name).toBe("Account health");
@@ -410,7 +410,7 @@ describe("lobu init --from-org", () => {
       active_run: "coalesce",
       skip_if_unchanged: true,
     });
-    // No keyingConfig means this round-trips as an untyped watcher that uses
+    // No keyingConfig means this round-trips as an untyped behavior that uses
     // the worker's free-form `{ summary }` fallback.
     expect(w?.keyingConfig).toBeUndefined();
     expect(w?.sources).toEqual([
@@ -500,7 +500,7 @@ describe("lobu init --from-org", () => {
     const { state } = await loadDesiredStateFromConfig({ cwd: dir });
     expect(state.agents[0]?.metadata.agentId).toBe("lone");
     expect(state.memorySchema.entityTypes).toHaveLength(0);
-    expect(state.watchers).toHaveLength(0);
+    expect(state.behaviors).toHaveLength(0);
     expect(state.connectors.connections).toHaveLength(0);
   });
 

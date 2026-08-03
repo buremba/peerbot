@@ -24,20 +24,20 @@ DELETE FROM notification_targets
     AND events.metadata->>'seed' = 'peek';
 DELETE FROM events WHERE organization_id = :'ORG' AND metadata->>'seed' = 'peek';
 DELETE FROM runs WHERE organization_id = :'ORG' AND run_metadata->>'seed' = 'peek';
-DELETE FROM watchers WHERE organization_id = :'ORG' AND tags @> ARRAY['seed-peek']::text[];
+DELETE FROM behaviors WHERE organization_id = :'ORG' AND tags @> ARRAY['seed-peek']::text[];
 DELETE FROM connections WHERE organization_id = :'ORG' AND slug IN ('seed-gmail', 'seed-slack');
 
 -- ---------------------------------------------------------------------------
--- Behaviors (watchers). Resolve seed rows by their org-scoped slug/tags rather
+-- Behaviors (behaviors). Resolve seed rows by their org-scoped slug/tags rather
 -- than fixed global ids: the DB assigns each id and dependent rows reference the
 -- captured value. The top-of-script cleanup already removes prior seed rows, so
--- no id upsert is needed (a fixed id could retag/delete an unrelated watcher).
--- watcher_group_id (NOT NULL, unconstrained) is set to each watcher's own id so
+-- no id upsert is needed (a fixed id could retag/delete an unrelated behavior).
+-- behavior_group_id (NOT NULL, unconstrained) is set to each behavior's own id so
 -- each seed behavior stays its own group.
 -- ---------------------------------------------------------------------------
-INSERT INTO watchers (
+INSERT INTO behaviors (
   organization_id, agent_id, name, slug, description, status,
-  schedule, triggers, model_config, sources, created_by, watcher_group_id,
+  schedule, triggers, model_config, sources, created_by, behavior_group_id,
   created_at, updated_at, notification_channel, notification_priority, tags
 ) VALUES (
   :'ORG', 'owletto-default', 'Daily spend digest', 'daily-spend-digest',
@@ -47,9 +47,9 @@ INSERT INTO watchers (
   ARRAY['seed-peek']::text[]
 ) RETURNING id AS w_spend \gset
 
-INSERT INTO watchers (
+INSERT INTO behaviors (
   organization_id, agent_id, name, slug, description, status,
-  schedule, triggers, model_config, sources, created_by, watcher_group_id,
+  schedule, triggers, model_config, sources, created_by, behavior_group_id,
   created_at, updated_at, notification_channel, notification_priority, tags
 ) VALUES (
   :'ORG', 'owletto-default', 'Inbox triage', 'inbox-triage',
@@ -59,12 +59,12 @@ INSERT INTO watchers (
   ARRAY['seed-peek']::text[]
 ) RETURNING id AS w_inbox \gset
 
-INSERT INTO watchers (
+INSERT INTO behaviors (
   organization_id, agent_id, name, slug, description, status,
-  schedule, triggers, model_config, sources, created_by, watcher_group_id,
+  schedule, triggers, model_config, sources, created_by, behavior_group_id,
   created_at, updated_at, notification_channel, notification_priority, tags
 ) VALUES (
-  :'ORG', 'lobu-builder', 'Stale workspace watcher', 'stale-workspace-watcher',
+  :'ORG', 'lobu-builder', 'Stale workspace behavior', 'stale-workspace-behavior',
   'Alert when a workspace has no activity for 7 days.',
   'active', '0 10 * * 1', '[]'::jsonb, '{}'::jsonb, '[]'::jsonb,
   :'USER', 0, now() - interval '3 days', now(), 'canvas', 'normal',
@@ -72,14 +72,14 @@ INSERT INTO watchers (
 ) RETURNING id AS w_stale \gset
 
 -- Each seed behavior is its own group (group_id = own id).
-UPDATE watchers SET watcher_group_id = id
+UPDATE behaviors SET behavior_group_id = id
   WHERE organization_id = :'ORG' AND id IN (:w_spend, :w_inbox, :w_stale);
 
 -- ---------------------------------------------------------------------------
 -- Behavior runs (run_type = 'behavior') — the agent-scoped activity feed.
 -- ---------------------------------------------------------------------------
 INSERT INTO runs (
-  organization_id, run_type, status, watcher_id,
+  organization_id, run_type, status, behavior_id,
   created_at, run_at, completed_at, error_message,
   items_collected, created_by_user_id, run_metadata
 ) VALUES
@@ -224,7 +224,7 @@ $jsonl${"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-19T09:00
 {"type":"message","id":"m5","parentId":"m4","timestamp":"2026-07-19T09:00:12Z","message":{"role":"assistant","content":[{"type":"text","text":"## Daily Spend Digest — Jul 18\n\n**Total: €1,847.30 across 12 transactions**\n\n### Flagged (over €500)\n- **AWS Production** — €640.00 (monthly infra)\n- **Booking.com** — €589.00 (hotel, Lisbon)\n\n### Recurring\n- Netflix €15.99, Spotify €10.99, Notion €9.00\n\n### Notes\nSpend is 23% above your 30-day average (€1,503). The Lisbon hotel is the main driver. No unusual or suspicious transactions detected."}]}}$jsonl$,
 128, 'completed', now() - interval '25 hours'
 FROM runs r
-WHERE r.run_metadata->>'seed' = 'peek' AND r.watcher_id = :w_spend AND r.status = 'completed'
+WHERE r.run_metadata->>'seed' = 'peek' AND r.behavior_id = :w_spend AND r.status = 'completed'
 ON CONFLICT (organization_id, agent_id, conversation_id, run_id) DO UPDATE SET snapshot_jsonl = EXCLUDED.snapshot_jsonl;
 
 INSERT INTO agent_transcript_snapshot
@@ -236,7 +236,7 @@ $jsonl${"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-18T09:00
 {"type":"message","id":"m3","parentId":"m2","timestamp":"2026-07-18T09:00:40Z","message":{"role":"assistant","content":[{"type":"text","text":"⚠️ The Revolut connector returned 502 Bad Gateway after 3 retries. I cannot complete the digest without transaction data. The run will be marked as failed — it will retry on the next scheduled run."}]}}$jsonl$,
 64, 'failed', now() - interval '49 hours'
 FROM runs r
-WHERE r.run_metadata->>'seed' = 'peek' AND r.watcher_id = :w_spend AND r.status = 'failed'
+WHERE r.run_metadata->>'seed' = 'peek' AND r.behavior_id = :w_spend AND r.status = 'failed'
 ON CONFLICT (organization_id, agent_id, conversation_id, run_id) DO UPDATE SET snapshot_jsonl = EXCLUDED.snapshot_jsonl;
 
 INSERT INTO agent_transcript_snapshot
@@ -250,21 +250,21 @@ $jsonl${"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-20T22:00
 {"type":"message","id":"m5","parentId":"m4","timestamp":"2026-07-20T22:00:14Z","message":{"role":"assistant","content":[{"type":"text","text":"## Inbox Triage — 5 emails needing attention\n\n### 🔴 Needs reply\n1. **Sara Chen** (re: Q3 roadmap feedback) — waiting on your sign-off\n2. **Stripe** (re: payout failed) — action required\n\n### 🟡 FYI\n3. **GitHub** — security alert resolved\n4. **Linear** — weekly digest\n\n### ✅ No action\n5. **Notion** — product update\n\nI've drafted suggested replies for items 1-2 and saved them as drafts."}]}}$jsonl$,
 128, 'completed', now() - interval '2 hours'
 FROM runs r
-WHERE r.run_metadata->>'seed' = 'peek' AND r.watcher_id = :w_inbox AND r.status = 'completed' AND r.items_collected = 5
+WHERE r.run_metadata->>'seed' = 'peek' AND r.behavior_id = :w_inbox AND r.status = 'completed' AND r.items_collected = 5
 ON CONFLICT (organization_id, agent_id, conversation_id, run_id) DO UPDATE SET snapshot_jsonl = EXCLUDED.snapshot_jsonl;
 
 INSERT INTO agent_transcript_snapshot
   (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl, byte_size, terminal_status, created_at)
 SELECT :'ORG', 'lobu-builder',
-  'seed-watch-stale-workspace-watcher-run-' || r.id, r.id,
-$jsonl${"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-20T19:00:01Z","message":{"role":"user","content":"Run this Behavior now: Stale workspace watcher. Alert when a workspace has no activity for 7 days."}}
+  'seed-watch-stale-workspace-behavior-run-' || r.id, r.id,
+$jsonl${"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-20T19:00:01Z","message":{"role":"user","content":"Run this Behavior now: Stale workspace behavior. Alert when a workspace has no activity for 7 days."}}
 {"type":"message","id":"m2","parentId":"m1","timestamp":"2026-07-20T19:00:03Z","message":{"role":"assistant","content":[{"type":"text","text":"Checking all workspaces for activity in the last 7 days..."}]}}
 {"type":"message","id":"m3","parentId":"m2","timestamp":"2026-07-20T19:00:07Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"list_workspaces","input":{"inactive_days":7}}]}}
 {"type":"message","id":"m4","parentId":"m3","timestamp":"2026-07-20T19:00:11Z","message":{"role":"toolResult","content":[{"type":"tool_result","tool_use_id":"tu1","content":"1 stale workspace found: 'acme-demo' (last activity 11 days ago)"}]}}
 {"type":"message","id":"m5","parentId":"m4","timestamp":"2026-07-20T19:00:14Z","message":{"role":"assistant","content":[{"type":"text","text":"## Stale Workspace Report\n\nFound **1 workspace** with no activity in 7+ days:\n\n- **acme-demo** — last active 11 days ago\n\nThis workspace has 3 idle behaviors and 2 disconnected connectors. Consider archiving it or pinging the owner."}]}}$jsonl$,
 128, 'completed', now() - interval '5 hours'
 FROM runs r
-WHERE r.run_metadata->>'seed' = 'peek' AND r.watcher_id = :w_stale AND r.status = 'completed'
+WHERE r.run_metadata->>'seed' = 'peek' AND r.behavior_id = :w_stale AND r.status = 'completed'
 ON CONFLICT (organization_id, agent_id, conversation_id, run_id) DO UPDATE SET snapshot_jsonl = EXCLUDED.snapshot_jsonl;
 
 -- Second Inbox-triage run (items_collected = 8) — so its run isn't an empty transcript either.
@@ -279,13 +279,13 @@ $jsonl${"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-20T22:30
 {"type":"message","id":"m5","parentId":"m4","timestamp":"2026-07-20T22:30:15Z","message":{"role":"assistant","content":[{"type":"text","text":"## Inbox Triage — 8 emails needing attention\n\n### 🔴 Needs reply\n1. **Acme Legal** (re: contract redlines) — deadline Friday\n2. **Priya Patel** (re: design review) — waiting on you\n3. **AWS Support** (re: case #4821) — response needed\n\n### 🟡 FYI\n4-6. GitHub, Linear, Vercel digests\n\n### ✅ No action\n7-8. Newsletters\n\nDrafted replies for items 1-3."}]}}$jsonl$,
 160, 'completed', now() - interval '90 minutes'
 FROM runs r
-WHERE r.run_metadata->>'seed' = 'peek' AND r.watcher_id = :w_inbox AND r.status = 'completed' AND r.items_collected = 8
+WHERE r.run_metadata->>'seed' = 'peek' AND r.behavior_id = :w_inbox AND r.status = 'completed' AND r.items_collected = 8
 ON CONFLICT (organization_id, agent_id, conversation_id, run_id) DO UPDATE SET snapshot_jsonl = EXCLUDED.snapshot_jsonl;
 
 COMMIT;
 
 \echo '--- seed summary ---'
-SELECT 'watchers (seeded)' AS what, count(*) FROM watchers WHERE tags @> ARRAY['seed-peek']::text[]
+SELECT 'behaviors (seeded)' AS what, count(*) FROM behaviors WHERE tags @> ARRAY['seed-peek']::text[]
 UNION ALL SELECT 'runs (seeded)', count(*) FROM runs WHERE run_metadata->>'seed' = 'peek'
 UNION ALL SELECT 'events (seeded)', count(*) FROM events WHERE metadata->>'seed' = 'peek'
 UNION ALL SELECT 'notif targets (seeded)', count(*) FROM notification_targets JOIN events ON events.id = notification_targets.event_id WHERE events.metadata->>'seed' = 'peek'

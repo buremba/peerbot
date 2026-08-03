@@ -5,7 +5,7 @@
 > and the broader proactivity policy remain future work.
 
 Design of record for consolidating the agent config surface. Supersedes the
-separate "Reach", "Watchers", and "Schedules" tabs. Written after review by
+separate "Reach", "Behaviors", and "Schedules" tabs. Written after review by
 GPT‑5.5 (xhigh) and Grok, and a use‑case gauntlet.
 
 Status: **model + UX locked; workflow execution has a small new mechanism +
@@ -68,10 +68,10 @@ decides reply‑vs‑silence and must be per‑context.
 
 ## 3. Backend mapping
 
-- **Behaviors are canonical `watchers` rows.** The `triggers` JSON array holds
+- **Behaviors are canonical `behaviors` rows.** The `triggers` JSON array holds
   event and schedule activations; an empty array is manual-only. Prompt,
   sources, version history, execution settings, and activity remain on the
-  existing watcher/version/run spine. No parallel Behavior table was added.
+  existing behavior/version/run spine. No parallel Behavior table was added.
 - **`manage_behaviors` is the canonical declarative writer** for API, MCP, CLI,
   and UI. The CLI `Project.behaviors` shape maps to the same trigger contract,
   and generated clients expose the same integer `connection_id` API.
@@ -94,9 +94,9 @@ decides reply‑vs‑silence and must be per‑context.
 - **Chat links are Behaviors only.** A one-shot migration backfills legacy
   `agent_channel_bindings` into tagged Event Behaviors, then drops that table.
   Runtime routing and ACL readers use active message triggers from
-  `watchers.triggers` (via the `behavior_message_subscriptions` view). No
+  `behaviors.triggers` (via the `behavior_message_subscriptions` view). No
   dual-write bridge remains.
-- **Runs / Activity** use the existing `runs`, watcher windows, and chat
+- **Runs / Activity** use the existing `runs`, behavior windows, and chat
   transcript paths. Event turns finish with their normal response and do not
   advance a cron schedule.
 - **Surfaces** = a *keyed* event, updated by **upsert‑via‑supersede**
@@ -150,8 +150,8 @@ Four conditions, **one mechanism** (suspend → resume on signal):
   run**, not a fresh behavior. This is the one genuinely‑new mechanism (§5).
 
 ### v1 scope (simplification)
-- **Enable** agent self‑wake and watcher‑resume **by default** for workflow
-  agents. The per‑agent / per‑watcher **disable toggles are deferred**.
+- **Enable** agent self‑wake and behavior‑resume **by default** for workflow
+  agents. The per‑agent / per‑behavior **disable toggles are deferred**.
 - Self‑wake capability should be scoped to *self‑wake* (least privilege), not the
   full `manage_schedules` admin surface — a follow‑up hardening, not a v1 blocker.
 
@@ -211,7 +211,7 @@ checkbox can't provide:
 
 ## 8. Deferred (explicit)
 
-- Per‑agent / per‑watcher **disable** toggles for self‑wake / resume (v1 enables
+- Per‑agent / per‑behavior **disable** toggles for self‑wake / resume (v1 enables
   by default).
 - **Branching / parallel** workflow builder (Option B) — only when branching,
   loops, parallel waits, or subflows appear.
@@ -225,8 +225,8 @@ checkbox can't provide:
 The consolidation changes the existing Behavior contract rather than adding a
 new engine or admin tool:
 
-- `manage_watchers` is removed; `manage_behaviors` owns the full prior watcher
-  action set plus canonical trigger writes.
+- The superseded admin tool is removed; `manage_behaviors` owns the full
+  Behavior action set plus canonical trigger writes.
 - `bind_channel`/binding CRUD is removed. Link/claim flows create or update a
   tagged chat Event Behavior through the same service.
 - Connector definitions expose `behavior_events`; connector stream items may
@@ -349,7 +349,7 @@ catalog methods are removed.
   live default per org), not a new `org_settings.defaultModel` string. It reuses
   the per‑modality `model` field the row already has and adds no new table. An
   explicit org‑settings model ref was considered and deferred as heavier.
-- **Behavior override storage** is `watchers.execution_config.model` for every
+- **Behavior override storage** is `behaviors.execution_config.model` for every
   activation kind. Chat, connector event, schedule, and manual dispatch share
   the same model-resolution layer.
 

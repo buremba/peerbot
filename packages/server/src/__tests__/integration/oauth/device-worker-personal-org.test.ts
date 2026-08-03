@@ -2,7 +2,7 @@
  * Device clients (Owletto Mac app, Chrome extension, local `lobu run` worker)
  * ALWAYS bind to the user's personal org — never the active/selected org and
  * never the `resource` slug the client passes. Personal device data belongs in
- * the private workspace; team orgs reach a device by pinning a watcher /
+ * the private workspace; team orgs reach a device by pinning a behavior /
  * connection to it (resolveDeviceClaimableOrgs), not by re-binding the token.
  *
  * These tests pin that invariant on the two server surfaces a device client

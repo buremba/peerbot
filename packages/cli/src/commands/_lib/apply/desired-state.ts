@@ -89,9 +89,9 @@ export interface DesiredRelationshipType {
   metadata?: Record<string, unknown>;
 }
 
-export interface DesiredWatcher {
+export interface DesiredBehavior {
   slug: string;
-  /** Owning agent id. Every watcher belongs to exactly one agent. */
+  /** Owning agent id. Every behavior belongs to exactly one agent. */
   agent: string;
   name?: string;
   description?: string;
@@ -105,7 +105,7 @@ export interface DesiredWatcher {
   prompt: string;
   /**
    * Ordered skill names as written in config — the authoring input, resolved
-   * into {@link DesiredWatcher.skillSnapshots} at load time.
+   * into {@link DesiredBehavior.skillSnapshots} at load time.
    */
   skills?: string[];
   /**
@@ -119,22 +119,22 @@ export interface DesiredWatcher {
   sources?: BehaviorSource[];
   /**
    * Reaction script — TypeScript source compiled + executed in an isolate at
-   * watcher-firing time. Authored as a sibling `.ts` file referenced by
+   * behavior-firing time. Authored as a sibling `.ts` file referenced by
    * `defineBehavior({ reaction: reactionFromFile("./reactions/foo.reaction.ts") })`;
    * the CLI reads it and pushes raw source via `set_reaction_script`.
    */
   reactionScript?: { sourcePath: string; sourceCode: string };
-  /** LLM guidance for the watcher's downstream reaction agent. */
+  /** LLM guidance for the behavior's downstream reaction agent. */
   reactionsGuidance?: string;
-  /** UUID of a device worker to pin this watcher's runs to (see `device_workers.id`). */
+  /** UUID of a device worker to pin this behavior's runs to (see `device_workers.id`). */
   deviceWorkerId?: string;
-  /** MCP client id that should auto-run this watcher. */
+  /** MCP client id that should auto-run this behavior. */
   schedulerClientId?: string;
   /** Where firings surface — defaults to canvas server-side. */
   notificationChannel?: "canvas" | "notification" | "both";
   /** Priority class used by the dispatcher interrupt budget. */
   notificationPriority?: "low" | "normal" | "high";
-  /** Minimum seconds between two firings of this watcher (0 = no cooldown). */
+  /** Minimum seconds between two firings of this behavior (0 = no cooldown). */
   minCooldownSeconds?: number;
   /** Free-form tags for filtering. */
   tags?: string[];
@@ -284,7 +284,7 @@ export interface DesiredState {
   agents: DesiredAgent[];
   /**
    * When true (`defineConfig({ prune: true })`), `lobu apply` deletes org-owned
-   * definitions (entity/relationship types, watchers, connector definitions)
+   * definitions (entity/relationship types, behaviors, connector definitions)
    * absent from this config — including ones created in the UI. Data,
    * connections, auth profiles, and agents are never pruned. Default false.
    */
@@ -305,7 +305,7 @@ export interface DesiredState {
     relationshipTypes: DesiredRelationshipType[];
   };
   /** Behaviors declared via `defineBehavior`. */
-  watchers: DesiredWatcher[];
+  behaviors: DesiredBehavior[];
   /**
    * Connectors: local `*.connector.ts` definitions (declared via
    * `connectorFromFile`), `defineConnection`s, and `defineAuthProfile`s.
@@ -444,28 +444,28 @@ const MAX_COMPILED_INSTRUCTIONS_BYTES = 32 * 1024;
  * over {@link MAX_COMPILED_INSTRUCTIONS_BYTES}.
  */
 function resolveBehaviorSkills(
-  watcher: DesiredWatcher,
+  behavior: DesiredBehavior,
   agentSkills: SkillConfigEntry[]
 ): Array<{ name: string; content: string }> {
-  const names = watcher.skills ?? [];
+  const names = behavior.skills ?? [];
   if (names.length === 0) return [];
   const byName = new Map(agentSkills.map((skill) => [skill.name, skill]));
   const resolved = names.map((name) => {
     if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
       throw new ValidationError(
-        `Behavior "${watcher.slug}" cannot pin skill "${name}" — names may contain only letters, numbers, ".", "_", and "-"`
+        `Behavior "${behavior.slug}" cannot pin skill "${name}" — names may contain only letters, numbers, ".", "_", and "-"`
       );
     }
     const skill = byName.get(name);
     if (!skill) {
       throw new ValidationError(
-        `Behavior "${watcher.slug}" references skill "${name}", but agent "${watcher.agent}" declares no skill with that name in its skills library`
+        `Behavior "${behavior.slug}" references skill "${name}", but agent "${behavior.agent}" declares no skill with that name in its skills library`
       );
     }
     const body = skill.content?.trim();
     if (!body) {
       throw new ValidationError(
-        `Behavior "${watcher.slug}" references skill "${name}", but its body is empty — a pinned skill needs text`
+        `Behavior "${behavior.slug}" references skill "${name}", but its body is empty — a pinned skill needs text`
       );
     }
     return { name, content: body };
@@ -479,7 +479,7 @@ function resolveBehaviorSkills(
   );
   if (bytes > MAX_COMPILED_INSTRUCTIONS_BYTES) {
     throw new ValidationError(
-      `Behavior "${watcher.slug}" pins ${bytes} bytes of skill text — the maximum is ${MAX_COMPILED_INSTRUCTIONS_BYTES} (${MAX_COMPILED_INSTRUCTIONS_BYTES / 1024}KB)`
+      `Behavior "${behavior.slug}" pins ${bytes} bytes of skill text — the maximum is ${MAX_COMPILED_INSTRUCTIONS_BYTES} (${MAX_COMPILED_INSTRUCTIONS_BYTES / 1024}KB)`
     );
   }
   return resolved;
@@ -944,28 +944,28 @@ const REACTION_SCRIPT_MAX_BYTES = 256 * 1024;
  */
 function resolveReactionScript(
   cwd: string,
-  watcherSlug: string,
+  behaviorSlug: string,
   rel: string
 ): { sourcePath: string; sourceCode: string } {
   const trimmed = rel.trim();
   if (!trimmed) {
     throw new ValidationError(
-      `Behavior "${watcherSlug}" \`reaction\` must be a path to a sibling .ts file (e.g. \`reaction: reactionFromFile("./reactions/foo.reaction.ts")\`)`
+      `Behavior "${behaviorSlug}" \`reaction\` must be a path to a sibling .ts file (e.g. \`reaction: reactionFromFile("./reactions/foo.reaction.ts")\`)`
     );
   }
   if (trimmed.startsWith("/") || trimmed.includes("\\")) {
     throw new ValidationError(
-      `Behavior "${watcherSlug}" \`reaction\` must be a relative POSIX path (./foo.reaction.ts) — absolute paths and backslashes are not allowed`
+      `Behavior "${behaviorSlug}" \`reaction\` must be a relative POSIX path (./foo.reaction.ts) — absolute paths and backslashes are not allowed`
     );
   }
   if (trimmed.split("/").some((seg) => seg === "..")) {
     throw new ValidationError(
-      `Behavior "${watcherSlug}" \`reaction\` must not contain \`..\` segments — keep the script under the config directory`
+      `Behavior "${behaviorSlug}" \`reaction\` must not contain \`..\` segments — keep the script under the config directory`
     );
   }
   if (!trimmed.endsWith(".ts")) {
     throw new ValidationError(
-      `Behavior "${watcherSlug}" \`reaction\` must end in \`.ts\` (got ${JSON.stringify(trimmed)})`
+      `Behavior "${behaviorSlug}" \`reaction\` must end in \`.ts\` (got ${JSON.stringify(trimmed)})`
     );
   }
   const baseDir = resolve(cwd);
@@ -981,7 +981,7 @@ function resolveReactionScript(
     isAbsolute(relPath)
   ) {
     throw new ValidationError(
-      `Behavior "${watcherSlug}" \`reaction\` resolves outside the config directory (${abs})`
+      `Behavior "${behaviorSlug}" \`reaction\` resolves outside the config directory (${abs})`
     );
   }
   let sourceCode: string;
@@ -989,12 +989,12 @@ function resolveReactionScript(
     sourceCode = readFileSync(abs, "utf-8");
   } catch {
     throw new ValidationError(
-      `Behavior "${watcherSlug}" \`reaction\` ${trimmed} does not exist (resolved to ${abs})`
+      `Behavior "${behaviorSlug}" \`reaction\` ${trimmed} does not exist (resolved to ${abs})`
     );
   }
   if (Buffer.byteLength(sourceCode, "utf8") > REACTION_SCRIPT_MAX_BYTES) {
     throw new ValidationError(
-      `Behavior "${watcherSlug}" \`reaction\` exceeds the ${REACTION_SCRIPT_MAX_BYTES}-byte cap — reaction scripts should be a few hundred lines, not a vendored library`
+      `Behavior "${behaviorSlug}" \`reaction\` exceeds the ${REACTION_SCRIPT_MAX_BYTES}-byte cap — reaction scripts should be a few hundred lines, not a vendored library`
     );
   }
   return { sourcePath: abs, sourceCode };
@@ -1060,7 +1060,7 @@ export async function loadProjectConfig(
 /**
  * Load desired state from a TypeScript entrypoint (`lobu.config.ts`): import the
  * `defineConfig()` project, map it to `DesiredState`, then attach the
- * file-based artifacts (agent-dir markdown + skills, watcher reaction scripts,
+ * file-based artifacts (agent-dir markdown + skills, behavior reaction scripts,
  * local connector source).
  */
 export async function loadDesiredStateFromConfig(
@@ -1098,38 +1098,38 @@ export async function loadDesiredStateFromConfig(
   //
   // The bodies are no longer folded into `prompt`: the prompt is the author's
   // task statement (or empty), and skills ride alongside as pinned files.
-  for (const watcher of state.watchers) {
-    watcher.skillSnapshots = resolveBehaviorSkills(
-      watcher,
-      skillsByAgentId.get(watcher.agent) ?? []
+  for (const behavior of state.behaviors) {
+    behavior.skillSnapshots = resolveBehaviorSkills(
+      behavior,
+      skillsByAgentId.get(behavior.agent) ?? []
     );
   }
 
   // Behavior reaction scripts: a sibling `.ts` file referenced by path. The
   // mapper stays pure; resolve + read the source here (raw, server compiles
-  // it) and attach it. state.watchers[i] aligns with typedProject.behaviors[i]
+  // it) and attach it. state.behaviors[i] aligns with typedProject.behaviors[i]
   // (the mapper maps them in order).
-  (typedProject.behaviors ?? []).forEach((watcher, i) => {
+  (typedProject.behaviors ?? []).forEach((behavior, i) => {
     // Gate on absence, not truthiness — a present-but-empty
     // `reactionFromFile("")` must reach the validator (which rejects it),
-    // matching parseWatcher.
-    if (watcher.reaction === undefined) return;
-    const dw = state.watchers[i];
+    // matching parseBehavior.
+    if (behavior.reaction === undefined) return;
+    const dw = state.behaviors[i];
     if (!dw) return;
     // `reaction` is typed ReactionSource, but jiti evaluates the config without
     // typechecking, so a stale `reaction: "./x.reaction.ts"` string slips
     // through and would read `.path` as undefined. Reject it with a clear
     // message instead of a downstream TypeError. (An empty `reactionFromFile("")`
     // keeps a string path and still reaches the validator, which rejects it.)
-    const reactionPath = (watcher.reaction as { path?: unknown }).path;
+    const reactionPath = (behavior.reaction as { path?: unknown }).path;
     if (typeof reactionPath !== "string") {
       throw new Error(
-        `Behavior "${watcher.slug}": set reaction with reactionFromFile("./x.reaction.ts"), not a bare string path.`
+        `Behavior "${behavior.slug}": set reaction with reactionFromFile("./x.reaction.ts"), not a bare string path.`
       );
     }
     dw.reactionScript = resolveReactionScript(
       opts.cwd,
-      watcher.slug,
+      behavior.slug,
       reactionPath
     );
   });

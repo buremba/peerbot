@@ -429,7 +429,7 @@ function ensureTrailingNewline(s: string): string {
   return s.endsWith("\n") ? s : `${s}\n`;
 }
 
-// ── Entity / relationship / watcher / connection / auth (inverse maps) ──────
+// ── Entity / relationship / behavior / connection / auth (inverse maps) ──────
 
 function emitEntityType(
   e: RemoteEntityType,
@@ -546,7 +546,7 @@ function emitBehavior(
   if (w.skills?.length) {
     fields.push(`skills: [${w.skills.map((s) => str(s.name)).join(", ")}]`);
   }
-  // A watcher's output schema is owned by its entity type (keying_config.entityType)
+  // A behavior's output schema is owned by its entity type (keying_config.entityType)
   // or falls back to the worker's free-form `{ summary }` — never inline. Emit
   // `keyingConfig` (the entity connection) only.
   if (w.keying_config) {
@@ -805,7 +805,7 @@ interface FetchedState {
   }>;
   entityTypes: RemoteEntityType[];
   relationshipTypes: RemoteRelationshipType[];
-  watchers: Array<{ watcher: RemoteBehavior; reactionScript: string | null }>;
+  behaviors: Array<{ behavior: RemoteBehavior; reactionScript: string | null }>;
   authProfiles: RemoteAuthProfile[];
   connections: Array<{ connection: RemoteConnection; feeds: RemoteFeed[] }>;
   /** connector_key → auth_schema (for emitting real credential field keys). */
@@ -820,7 +820,7 @@ async function fetchOrgState(
     agentList,
     entityTypes,
     relationshipTypes,
-    watcherList,
+    behaviorList,
     authProfiles,
     connectionList,
     connectorDefinitions,
@@ -862,21 +862,21 @@ async function fetchOrgState(
       }))
   );
 
-  // reaction_script isn't on the list response — fetch each watcher's detail.
-  const watchers = await Promise.all(
-    watcherList
+  // reaction_script isn't on the list response — fetch each behavior's detail.
+  const behaviors = await Promise.all(
+    behaviorList
       .slice()
       .sort((a, b) => a.slug.localeCompare(b.slug))
-      .map(async (watcher) => {
+      .map(async (behavior) => {
         let reactionScript: string | null = null;
-        if (watcher.behavior_id) {
-          const detail = await client.getBehaviorDetail(watcher.behavior_id);
+        if (behavior.behavior_id) {
+          const detail = await client.getBehaviorDetail(behavior.behavior_id);
           reactionScript = detail?.reaction_script ?? null;
-          if (detail?.description && !watcher.description) {
-            watcher.description = detail.description;
+          if (detail?.description && !behavior.description) {
+            behavior.description = detail.description;
           }
         }
-        return { watcher, reactionScript };
+        return { behavior, reactionScript };
       })
   );
 
@@ -916,7 +916,7 @@ async function fetchOrgState(
     relationshipTypes: relationshipTypes
       .filter(isOwnDeclarable)
       .sort((a, b) => a.slug.localeCompare(b.slug)),
-    watchers,
+    behaviors,
     authProfiles: authProfiles
       .slice()
       .sort((a, b) => a.slug.localeCompare(b.slug)),
@@ -954,48 +954,48 @@ function generateProject(
   const agentsById = new Map(
     state.agents.map(({ agent, settings }) => [agent.agentId, settings])
   );
-  for (const { watcher } of state.watchers) {
+  for (const { behavior } of state.behaviors) {
     if (
-      !watcher.prompt?.trim() &&
-      !watcher.skills?.length &&
-      behaviorRequiresInstructions(watcher.triggers)
+      !behavior.prompt?.trim() &&
+      !behavior.skills?.length &&
+      behaviorRequiresInstructions(behavior.triggers)
     ) {
       warnings.push(
-        `Behavior "${watcher.slug}" has no stored instructions but is not event-turn-only — give it a prompt or attach at least one skill before the next \`lobu apply\`.`
+        `Behavior "${behavior.slug}" has no stored instructions but is not event-turn-only — give it a prompt or attach at least one skill before the next \`lobu apply\`.`
       );
     }
     const library =
-      agentsById.get(watcher.agent_id ?? "")?.skillsConfig?.skills ?? [];
-    for (const snapshot of watcher.skills ?? []) {
+      agentsById.get(behavior.agent_id ?? "")?.skillsConfig?.skills ?? [];
+    for (const snapshot of behavior.skills ?? []) {
       const current = library.find(
         (skill) => !skill.system && skill.name === snapshot.name
       );
       if (!current) {
         warnings.push(
-          `Behavior "${watcher.slug}" pins skill "${snapshot.name}", but that skill is absent from agent "${watcher.agent_id ?? ""}"'s current library — restore it or remove the Behavior reference before \`lobu apply\`.`
+          `Behavior "${behavior.slug}" pins skill "${snapshot.name}", but that skill is absent from agent "${behavior.agent_id ?? ""}"'s current library — restore it or remove the Behavior reference before \`lobu apply\`.`
         );
         continue;
       }
       if (!current.content?.trim()) {
         warnings.push(
-          `Behavior "${watcher.slug}" pins skill "${snapshot.name}", but its current agent-library body is empty — restore the body or remove the Behavior reference before \`lobu apply\`.`
+          `Behavior "${behavior.slug}" pins skill "${snapshot.name}", but its current agent-library body is empty — restore the body or remove the Behavior reference before \`lobu apply\`.`
         );
         continue;
       }
       if (current.enabled === false) {
         warnings.push(
-          `Behavior "${watcher.slug}" pins disabled skill "${snapshot.name}" — the generated config declares it as enabled, so the next \`lobu apply\` will re-enable it and publish the current body.`
+          `Behavior "${behavior.slug}" pins disabled skill "${snapshot.name}" — the generated config declares it as enabled, so the next \`lobu apply\` will re-enable it and publish the current body.`
         );
       }
       if (current.content.trim() !== snapshot.content.trim()) {
         warnings.push(
-          `Behavior "${watcher.slug}" pins an older body of skill "${snapshot.name}" — the generated config uses the agent library's current body, so the next \`lobu apply\` will publish that upgrade.`
+          `Behavior "${behavior.slug}" pins an older body of skill "${snapshot.name}" — the generated config uses the agent library's current body, so the next \`lobu apply\` will publish that upgrade.`
         );
       }
     }
   }
 
-  // Agents first (watchers reference their handles).
+  // Agents first (behaviors reference their handles).
   const agentHandles = new Map<string, string>();
   const agentDecls: string[] = [];
   for (const { agent, settings } of state.agents) {
@@ -1079,25 +1079,25 @@ function generateProject(
   }
 
   // Behaviors last.
-  const watcherDecls: string[] = [];
-  const watcherHandles: string[] = [];
+  const behaviorDecls: string[] = [];
+  const behaviorHandles: string[] = [];
   const connectionHandlesById = new Map<number, string>();
   for (let index = 0; index < state.connections.length; index++) {
     const connection = state.connections[index]?.connection;
     const handle = connHandles[index];
     if (connection && handle) connectionHandlesById.set(connection.id, handle);
   }
-  for (const { watcher, reactionScript } of state.watchers) {
+  for (const { behavior, reactionScript } of state.behaviors) {
     const { handle, reactionFile } = emitBehavior(
-      watcher,
+      behavior,
       reactionScript,
       agentHandles,
       connectionHandlesById,
       imports,
       minter
     );
-    watcherDecls.push(handle.decl);
-    watcherHandles.push(handle.name);
+    behaviorDecls.push(handle.decl);
+    behaviorHandles.push(handle.name);
     if (reactionFile) files.push(reactionFile);
   }
 
@@ -1119,8 +1119,8 @@ function generateProject(
       `authProfiles: [${[...authHandles.values()].join(", ")}]`
     );
   }
-  if (watcherHandles.length > 0) {
-    configFields.push(`behaviors: [${watcherHandles.join(", ")}]`);
+  if (behaviorHandles.length > 0) {
+    configFields.push(`behaviors: [${behaviorHandles.join(", ")}]`);
   }
 
   const blocks: string[] = [];
@@ -1132,7 +1132,7 @@ function generateProject(
   pushBlock(relDecls);
   pushBlock(authDecls);
   pushBlock(connDecls);
-  pushBlock(watcherDecls);
+  pushBlock(behaviorDecls);
 
   const header = [
     "// lobu.config.ts — bootstrapped by `lobu init --from-org`",

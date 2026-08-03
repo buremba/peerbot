@@ -16,11 +16,8 @@
  * by admins" is not sufficient — `connections` and `feeds` are deliberately NOT
  * in ADMIN_ONLY_QUERYABLE_TABLES, and query_sql is member-safe.
  *
- * NAMING: `name` here is the AGENT-FACING relation name, which is not always the
- * physical table. The agent-facing product name is Behavior, so the engine's
- * `watchers` / `watcher_versions` tables are exposed as `behaviors` /
- * `behavior_versions` (see {@link PHYSICAL_TABLE_BY_RELATION}); column
- * identifiers stay internal vocabulary (`watcher_id` remains the join key).
+ * NAMING: `name` is both the agent-facing relation name and the physical table
+ * name. Behavior vocabulary is canonical through the full stack.
  * A column listed here MUST exist on the physical table: `buildColumnList`
  * emits an explicit projection into the generated CTE, so a stale name breaks
  * EVERY query against the relation — including ones that reference no column at
@@ -443,7 +440,7 @@ export const QUERYABLE_SCHEMA = {
         ),
       ],
     },
-    // behaviors — physical table `watchers` (internal engine vocabulary).
+    // behaviors
     {
       name: 'behaviors',
       columns: cols(
@@ -473,8 +470,8 @@ export const QUERYABLE_SCHEMA = {
         'reaction_script_compiled',
         'reaction_input_schema',
         'connection_id',
-        'source_watcher_id',
-        'watcher_group_id',
+        'source_behavior_id',
+        'behavior_group_id',
         // Scalar columns added in earlier features (device pinning, notification
         // routing, run rate-limiting) that were missing from this list — drift
         // test caught it.
@@ -502,7 +499,7 @@ export const QUERYABLE_SCHEMA = {
         'id',
         'event_id',
         'classifier_id',
-        'watcher_id',
+        'behavior_id',
         'window_id',
         'values',
         'confidences',
@@ -517,8 +514,8 @@ export const QUERYABLE_SCHEMA = {
         'excerpts'
       ),
     },
-    // behavior_versions — physical table `watcher_versions`.
-    // NO `sources` column: that lives on `watchers`; a version row carries
+    // behavior_versions
+    // NO `sources` column: that lives on `behaviors`; a version row carries
     // `version_sources`. It was listed here and, because the CTE emits an
     // explicit projection, `wv."sources"` was injected into every query — the
     // relation was 100% unqueryable with an error naming a column no caller
@@ -527,7 +524,7 @@ export const QUERYABLE_SCHEMA = {
       name: 'behavior_versions',
       columns: cols(
         'id',
-        'watcher_id',
+        'behavior_id',
         'version',
         'name',
         'description',
@@ -544,15 +541,15 @@ export const QUERYABLE_SCHEMA = {
         'version_sources'
       ),
     },
-    // canvas_windows (VIEW; replaces the retired watcher_windows table): one row
-    // per watcher window = canvas_state chain ROOT; id is the root event id and
-    // matches event_classifications/watcher_window_events/runs.window_id.
+    // canvas_windows (VIEW; replaces the retired behavior_windows table): one row
+    // per behavior window = canvas_state chain ROOT; id is the root event id and
+    // matches event_classifications/behavior_window_events/runs.window_id.
     {
       name: 'canvas_windows',
       columns: cols(
         'id',
         'organization_id',
-        'watcher_id',
+        'behavior_id',
         'granularity',
         'window_start',
         'window_end',
@@ -755,38 +752,9 @@ export const QUERYABLE_SCHEMA = {
 export const QUERYABLE_TABLE_NAMES = new Set(QUERYABLE_SCHEMA.tables.map((t) => t.name));
 
 /**
- * Exposed relation name → physical table, for the relations whose agent-facing
- * name differs from the engine's.
- *
- * The agent-facing product name is Behavior; `watcher` is internal engine/DB
- * vocabulary that must not reach an agent (AGENTS.md hard invariant). The
- * allowlist error enumerates {@link QUERYABLE_TABLE_NAMES} verbatim to the
- * caller, so exposing the physical names both leaked the vocabulary and told the
- * agent that `behaviors` — the name every other tool uses — does not exist.
- *
- * Only the RELATION is renamed. Column identifiers stay internal
- * (`behavior_versions.watcher_id`, `event_classifications.watcher_id`) because
- * they are the real join keys and renaming them would desync the projection
- * from the physical row.
- *
- * Every entry must be consumed by the CTE builder in `execute-data-sources`;
- * a relation with no physical mapping falls through to the entity-type-slug
- * branch and silently returns entities instead of erroring.
- */
-const PHYSICAL_TABLE_BY_RELATION: ReadonlyMap<string, string> = new Map([
-  ['behaviors', 'watchers'],
-  ['behavior_versions', 'watcher_versions'],
-]);
-
-/** Physical table backing an exposed relation (identity when not renamed). */
-export function physicalTableFor(relation: string): string {
-  return PHYSICAL_TABLE_BY_RELATION.get(relation) ?? relation;
-}
-
-/**
  * Queryable tables that stay OWNER/ADMIN-only even when query_sql / metric_series
  * are member-accessible: the auth + identity tables. Members can read the
- * org's operational data (entities, events, connections, feeds, watchers, …) but
+ * org's operational data (entities, events, connections, feeds, behaviors, …) but
  * not enumerate every OAuth token/app or the full user roster. Secret columns
  * (credentials, client_secret, token_hash, email, phone) are excluded from the
  * schema above, and the secret-carrying `config` jsonb is redacted in-place;
@@ -893,27 +861,6 @@ function outputAliases(sql: string): Set<string> {
   return out;
 }
 
-/**
- * Physical table → exposed relation, so a caller who reached for the internal
- * engine name is redirected instead of being told the table simply does not
- * exist. Derived from {@link PHYSICAL_TABLE_BY_RELATION} so the two cannot drift.
- */
-const RELATION_BY_PHYSICAL_TABLE: ReadonlyMap<string, string> = new Map(
-  [...PHYSICAL_TABLE_BY_RELATION].map(([relation, physical]) => [physical, relation])
-);
-
-/**
- * Retired relation name → the name that replaced it, for callers that persisted
- * a query BEFORE the rename. Same map as {@link RELATION_BY_PHYSICAL_TABLE}: a
- * physical name that is no longer an exposed relation is exactly a retired one.
- *
- * `execute-data-sources` compiles an unknown table ref as an entity-type CTE
- * rather than erroring, so without this a saved `FROM watchers` silently returns
- * ZERO ROWS instead of failing. Stored queries are not rewritten by the rename,
- * so the retired name must stay recognizable — as an ERROR, never as an alias.
- */
-export const RETIRED_RELATION_NAMES: ReadonlyMap<string, string> = RELATION_BY_PHYSICAL_TABLE;
-
 /** Build one actionable error covering all unknown tables in a query. */
 export function formatUnknownTablesError(tableNames: Iterable<string>): string {
   const names = [...new Set(tableNames)].sort();
@@ -922,19 +869,9 @@ export function formatUnknownTablesError(tableNames: Iterable<string>): string {
       ? `Unknown table '${names[0]}'`
       : `Unknown tables ${names.map((name) => `'${name}'`).join(', ')}`;
   const queryableTables = [...QUERYABLE_TABLE_NAMES].sort().join(', ');
-  // A caller who wrote the internal engine name gets the exposed relation, not
-  // a dead end. Built from the reverse map so it can never name a relation that
-  // is not actually queryable.
-  const redirects = names
-    .map((name) => {
-      const relation = RELATION_BY_PHYSICAL_TABLE.get(name);
-      return relation ? `'${name}' is internal — query '${relation}' instead.` : null;
-    })
-    .filter((hint): hint is string => hint !== null);
   return (
     `${subject} — not in the queryable allowlist, so the query did not run. ` +
     `This is an error, not an empty result. ` +
-    (redirects.length > 0 ? `${redirects.join(' ')} ` : '') +
     `Queryable tables are: ${queryableTables}.`
   );
 }

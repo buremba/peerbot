@@ -219,9 +219,9 @@ describe('resolve_path contract', () => {
     const withBootstrap = (await resolvePath(fixture, {
       path: `/${fixture.orgSlug}`,
       include_bootstrap: true,
-    })) as { bootstrap?: { entity_types?: unknown[]; recent_watchers?: unknown[] } };
+    })) as { bootstrap?: { entity_types?: unknown[]; recent_behaviors?: unknown[] } };
     expect(withBootstrap.bootstrap?.entity_types?.length).toBeGreaterThan(0);
-    expect(withBootstrap.bootstrap).not.toHaveProperty('recent_watchers');
+    expect(withBootstrap.bootstrap).not.toHaveProperty('recent_behaviors');
   });
 
   it('strips audit requests from bootstrap content without altering ordinary payloads', async () => {

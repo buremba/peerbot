@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { buildEntityName } from '../../utils/promote-keyed-entities';
-import type { KeyingConfig } from '../../types/watchers';
+import type { KeyingConfig } from '../../types/behaviors';
 
 const base: KeyingConfig = {
   entity_path: 'items',

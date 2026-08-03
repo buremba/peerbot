@@ -1,7 +1,7 @@
 /**
  * Unit coverage for execution_config validation + the owner/admin gate on
  * elevated permission modes. The end-to-end persistence/round-trip is covered
- * in __tests__/integration/watchers/watchers-crud.test.ts; this pins the
+ * in __tests__/integration/behaviors/behaviors-crud.test.ts; this pins the
  * validation rules and the privilege gate without the integration harness.
  *
  * Shape/type/range validation moved to the tool boundary (lobu#1137):

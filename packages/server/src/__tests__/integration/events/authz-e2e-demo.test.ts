@@ -40,7 +40,7 @@ function memberCtx(organizationId: string, userId: string): ToolContext {
   };
 }
 
-/** A headless / service caller — no requesting user (watcher, scheduled job). */
+/** A headless / service caller — no requesting user (behavior, scheduled job). */
 function headlessCtx(organizationId: string): ToolContext {
   return {
     organizationId,

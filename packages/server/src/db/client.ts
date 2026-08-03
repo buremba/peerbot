@@ -344,7 +344,7 @@ export function getLockDb(): Sql {
         // other poolers reject unsupported startup parameters and the whole
         // reserve() fails with "unsupported startup parameter: lock_timeout".
         // Callers SET lock_timeout on the reserved session instead
-        // (see withWatcherGroupLock).
+        // (see withBehaviorGroupLock).
       },
     });
     logger.info('[DB] PostgreSQL advisory-lock pool created');

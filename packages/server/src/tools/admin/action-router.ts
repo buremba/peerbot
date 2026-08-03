@@ -26,7 +26,7 @@ export function errorLogLevel(error: unknown): 'warn' | 'error' {
 }
 
 function enforceActionAccess(toolName: string, action: string, ctx: ToolContext): void {
-  // Watcher reactions and other in-process system calls historically run with
+  // Behavior reactions and other in-process system calls historically run with
   // userId=null + isAuthenticated=true. Preserve that path while enforcing the
   // policy table for real user/OAuth sessions that reach handlers via run / query.
   if (isSystemContext(ctx)) return;
@@ -78,7 +78,7 @@ export async function routeAction<TResult>(
 
 /**
  * Requires a field to be present, throwing a descriptive error if missing.
- * Common pattern for requiring entity_id, watcher_id, etc. per action.
+ * Common pattern for requiring entity_id, behavior_id, etc. per action.
  */
 export function requireField<T>(value: T | undefined | null, fieldName: string, action: string): T {
   if (value === undefined || value === null) {

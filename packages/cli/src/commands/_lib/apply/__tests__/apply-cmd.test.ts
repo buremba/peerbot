@@ -26,7 +26,7 @@ function stateWith(connectors: DesiredState["connectors"]): DesiredState {
     agents: [],
     prune: false,
     memorySchema: { entityTypes: [], relationshipTypes: [] },
-    watchers: [],
+    behaviors: [],
     connectors,
     providers: [],
     requiredSecrets: [],
@@ -170,7 +170,7 @@ describe("executePlan — BYO chat connection dependencies", () => {
       feeds: [],
       sourceFile: "lobu.config.ts",
     };
-    const watcher: DesiredState["watchers"][number] = {
+    const behavior: DesiredState["behaviors"][number] = {
       slug: "reply-in-support",
       agent: "triage",
       prompt: "Reply helpfully.",
@@ -191,7 +191,7 @@ describe("executePlan — BYO chat connection dependencies", () => {
       authProfiles: [],
       connections: [connection],
     });
-    state.watchers = [watcher];
+    state.behaviors = [behavior];
     const plan: DiffPlan = {
       rows: [
         {
@@ -201,10 +201,10 @@ describe("executePlan — BYO chat connection dependencies", () => {
           desired: connection,
         },
         {
-          kind: "watcher",
+          kind: "behavior",
           verb: "create",
-          id: watcher.slug,
-          desired: watcher,
+          id: behavior.slug,
+          desired: behavior,
         },
       ],
       counts: { create: 2, update: 0, noop: 0, drift: 0, delete: 0 },
@@ -215,7 +215,7 @@ describe("executePlan — BYO chat connection dependencies", () => {
       agentSettings: new Map(),
       entityTypes: [],
       relationshipTypes: [],
-      watchers: [],
+      behaviors: [],
       connectorDefinitions: [
         {
           key: "slack",
@@ -275,11 +275,11 @@ describe("executePlan — atomic Behavior triggers+prompt update", () => {
       authProfiles: [],
       connections: [],
     });
-    state.watchers = [desired];
+    state.behaviors = [desired];
     const plan: DiffPlan = {
       rows: [
         {
-          kind: "watcher",
+          kind: "behavior",
           verb: "update",
           id: desired.slug,
           desired,
@@ -295,7 +295,7 @@ describe("executePlan — atomic Behavior triggers+prompt update", () => {
       agentSettings: new Map(),
       entityTypes: [],
       relationshipTypes: [],
-      watchers: [
+      behaviors: [
         {
           slug: "digest",
           behavior_id: "42",
@@ -352,11 +352,11 @@ describe("executePlan — atomic Behavior triggers+prompt update", () => {
       authProfiles: [],
       connections: [],
     });
-    state.watchers = [desired];
+    state.behaviors = [desired];
     const plan: DiffPlan = {
       rows: [
         {
-          kind: "watcher",
+          kind: "behavior",
           verb: "update",
           id: desired.slug,
           desired,
@@ -372,7 +372,7 @@ describe("executePlan — atomic Behavior triggers+prompt update", () => {
       agentSettings: new Map(),
       entityTypes: [],
       relationshipTypes: [],
-      watchers: [
+      behaviors: [
         {
           slug: desired.slug,
           behavior_id: "43",

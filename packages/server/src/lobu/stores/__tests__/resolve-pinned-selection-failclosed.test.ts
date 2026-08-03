@@ -40,7 +40,7 @@ describe("resolvePinnedSelection — fail closed on total DB failure", () => {
     }));
     vi.doMock("../../../gateway/services/conversations-store.js", () => ({
       classifyConversation: () => ({ kind: "owned", storedPlatform: "web" }),
-      isWatcherConversationId: () => false,
+      isBehaviorConversationId: () => false,
     }));
 
     const { resolvePinnedSelection } = await import("../sandbox-store.js");

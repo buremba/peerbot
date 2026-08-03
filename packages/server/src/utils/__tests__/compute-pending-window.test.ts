@@ -41,7 +41,7 @@ import { cleanupTestDatabase, getTestDb } from '../../__tests__/setup/test-db';
 import { createTestOrganization, createTestUser } from '../../__tests__/setup/test-fixtures';
 
 /**
- * Insert a canvas ROOT event for `watcherId` covering [start, end).
+ * Insert a canvas ROOT event for `behaviorId` covering [start, end).
  *
  * Written as a raw `canvas_state` event because that is what a window IS — the
  * view derives from it. `end` is caller-supplied precisely so both boundary
@@ -50,7 +50,7 @@ import { createTestOrganization, createTestUser } from '../../__tests__/setup/te
 async function seedWindow(opts: {
   orgId: string;
   userId: string;
-  watcherId: number;
+  behaviorId: number;
   granularity: string;
   start: string;
   end: string;
@@ -61,11 +61,11 @@ async function seedWindow(opts: {
       organization_id, origin_id, semantic_type, payload_type, payload_data,
       occurred_at, created_by, metadata
     ) VALUES (
-      ${opts.orgId}, ${`canvas_${opts.watcherId}_${opts.start}`}, 'canvas_state',
+      ${opts.orgId}, ${`canvas_${opts.behaviorId}_${opts.start}`}, 'canvas_state',
       'json_template', ${sql.json({ items: [] } as never)},
       ${opts.end}, ${opts.userId},
       ${sql.json({
-        watcher_id: opts.watcherId,
+        behavior_id: opts.behaviorId,
         granularity: opts.granularity,
         window_start: opts.start,
         window_end: opts.end,
@@ -93,11 +93,11 @@ describe('computePendingWindow', () => {
   // end must still roll the period forward to the next midnight.
   it('rolls forward to the next aligned period after an inclusive-end window', async () => {
     const { orgId, userId } = await seedOrg();
-    const watcherId = 9001;
+    const behaviorId = 9001;
     await seedWindow({
       orgId,
       userId,
-      watcherId,
+      behaviorId,
       granularity: 'daily',
       start: '2026-07-30T00:00:00.000Z',
       end: '2026-07-30T23:59:59.999Z', // inclusive convention
@@ -105,7 +105,7 @@ describe('computePendingWindow', () => {
 
     const { windowStart, windowEnd } = await computePendingWindow(
       getTestDb(),
-      watcherId,
+      behaviorId,
       'daily'
     );
 
@@ -116,11 +116,11 @@ describe('computePendingWindow', () => {
 
   it('rolls forward identically when the previous end was exclusive', async () => {
     const { orgId, userId } = await seedOrg();
-    const watcherId = 9002;
+    const behaviorId = 9002;
     await seedWindow({
       orgId,
       userId,
-      watcherId,
+      behaviorId,
       granularity: 'daily',
       start: '2026-07-30T00:00:00.000Z',
       end: '2026-07-31T00:00:00.000Z', // exclusive convention
@@ -128,7 +128,7 @@ describe('computePendingWindow', () => {
 
     const { windowStart, windowEnd } = await computePendingWindow(
       getTestDb(),
-      watcherId,
+      behaviorId,
       'daily'
     );
 
@@ -140,11 +140,11 @@ describe('computePendingWindow', () => {
   // without a data migration rewriting window identities.
   it('recovers from an already-misaligned stored window', async () => {
     const { orgId, userId } = await seedOrg();
-    const watcherId = 9003;
+    const behaviorId = 9003;
     await seedWindow({
       orgId,
       userId,
-      watcherId,
+      behaviorId,
       granularity: 'daily',
       start: '2026-07-29T23:59:59.999Z', // corrupt start, as found on prod
       end: '2026-07-30T23:59:59.999Z',
@@ -152,7 +152,7 @@ describe('computePendingWindow', () => {
 
     const { windowStart, windowEnd } = await computePendingWindow(
       getTestDb(),
-      watcherId,
+      behaviorId,
       'daily'
     );
 
@@ -174,7 +174,7 @@ describe('computePendingWindow', () => {
       await seedWindow({
         orgId,
         userId,
-        watcherId: c.id,
+        behaviorId: c.id,
         granularity: 'daily',
         start: c.start,
         end: c.end,
@@ -188,7 +188,7 @@ describe('computePendingWindow', () => {
         'daily'
       );
       const duration = windowEnd.getTime() - windowStart.getTime();
-      expect(duration, `watcher ${c.id} window duration`).toBe(DAY_MS);
+      expect(duration, `behavior ${c.id} window duration`).toBe(DAY_MS);
       expect(windowStart.toISOString().endsWith('T00:00:00.000Z')).toBe(true);
     }
   });
@@ -199,7 +199,7 @@ describe('computePendingWindow', () => {
   // Behavior mints future windows instead.
   it('re-dispatches the CURRENT period rather than minting a future one', async () => {
     const { orgId, userId } = await seedOrg();
-    const watcherId = 9004;
+    const behaviorId = 9004;
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
     const todayIso = today.toISOString();
@@ -209,7 +209,7 @@ describe('computePendingWindow', () => {
     await seedWindow({
       orgId,
       userId,
-      watcherId,
+      behaviorId,
       granularity: 'daily',
       start: todayIso,
       end: tomorrowIso,
@@ -217,7 +217,7 @@ describe('computePendingWindow', () => {
 
     const { windowStart, windowEnd } = await computePendingWindow(
       getTestDb(),
-      watcherId,
+      behaviorId,
       'daily'
     );
 
@@ -229,11 +229,11 @@ describe('computePendingWindow', () => {
   // Backfill must still walk forward one period at a time when genuinely behind.
   it('catches up one period per run when behind', async () => {
     const { orgId, userId } = await seedOrg();
-    const watcherId = 9005;
+    const behaviorId = 9005;
     await seedWindow({
       orgId,
       userId,
-      watcherId,
+      behaviorId,
       granularity: 'daily',
       start: '2026-01-10T00:00:00.000Z',
       end: '2026-01-11T00:00:00.000Z',
@@ -241,7 +241,7 @@ describe('computePendingWindow', () => {
 
     const { windowStart, windowEnd } = await computePendingWindow(
       getTestDb(),
-      watcherId,
+      behaviorId,
       'daily'
     );
 
@@ -251,11 +251,11 @@ describe('computePendingWindow', () => {
 
   it('aligns weekly windows to the week boundary', async () => {
     const { orgId, userId } = await seedOrg();
-    const watcherId = 9006;
+    const behaviorId = 9006;
     await seedWindow({
       orgId,
       userId,
-      watcherId,
+      behaviorId,
       granularity: 'weekly',
       start: '2026-06-22T00:00:00.000Z', // a Monday
       end: '2026-06-28T23:59:59.999Z', // inclusive, as stored on prod
@@ -263,7 +263,7 @@ describe('computePendingWindow', () => {
 
     const { windowStart, windowEnd } = await computePendingWindow(
       getTestDb(),
-      watcherId,
+      behaviorId,
       'weekly'
     );
 

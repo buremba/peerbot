@@ -248,7 +248,7 @@ export class TaskScheduler {
     }
 
     // Per-tick outcome counter — the scheduler heartbeat that backs the
-    // "watcher-automation silent / failing" alerts. Counts every dispatched
+    // "behavior-automation silent / failing" alerts. Counts every dispatched
     // task; alerts filter by job name. Re-throw is preserved so the runs-queue
     // retry path is unchanged.
     try {
@@ -258,7 +258,7 @@ export class TaskScheduler {
       });
       // Label is `task`, NOT `job`: Prometheus reserves `job` for the scrape
       // target and overwrites any same-named metric label, which silently
-      // collapses per-task series (and broke the watcher-automation alert).
+      // collapses per-task series (and broke the behavior-automation alert).
       incrementCounter('lobu_scheduled_job_runs_total', {
         task: data.name,
         outcome: 'success',

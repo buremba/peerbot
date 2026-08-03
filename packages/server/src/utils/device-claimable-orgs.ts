@@ -3,7 +3,7 @@
  *
  * Base scope (computed in the /api/workers/* auth middleware) is the token's
  * bound org plus the user's personal org. On top of that, a device may claim
- * runs in any org where it has a pinned watcher/connection AND its owner is
+ * runs in any org where it has a pinned behavior/connection AND its owner is
  * still a member of that org.
  *
  * The pin IS the consent: `evaluateDeviceWorkerAccess` only lets a device's
@@ -13,8 +13,8 @@
  * still follows the pinned/capability rules in the poll, so the device only
  * ever runs the resource it was actually pinned to.
  *
- * Only `active` watchers and non-deleted connections count — an archived
- * watcher or deleted connection must not keep an org in scope.
+ * Only `active` behaviors and non-deleted connections count — an archived
+ * behavior or deleted connection must not keep an org in scope.
  */
 import type { DbClient } from '../db/client';
 
@@ -25,7 +25,7 @@ export async function resolveDeviceClaimableOrgs(
   const rows = (await sql`
     SELECT DISTINCT src.organization_id
     FROM (
-      SELECT organization_id FROM watchers
+      SELECT organization_id FROM behaviors
         WHERE device_worker_id = ${params.deviceWorkerId} AND status = 'active'
       UNION
       SELECT organization_id FROM connections
@@ -47,7 +47,7 @@ export async function resolveDeviceClaimableOrgs(
  * Whether a user-scoped device worker may act on a run (claim / complete /
  * heartbeat). True when the run's org is in the worker's base scope, OR the
  * worker's user owns the device the run is pinned to — via either a pinned
- * connection (`device_owner`) or a pinned watcher (`watcher_device_owner`).
+ * connection (`device_owner`) or a pinned behavior (`behavior_device_owner`).
  * Pinning is the owner's consent, so a device may finish a run it was attached
  * to in any org, mirroring the claim-side scope.
  */
@@ -55,13 +55,13 @@ export function runInWorkerScope(
   run: {
     organization_id: string;
     device_owner: string | null;
-    watcher_device_owner: string | null;
+    behavior_device_owner: string | null;
   },
   ctx: { workerUserId: string | null; orgIds: string[] }
 ): boolean {
   if (ctx.orgIds.includes(run.organization_id)) return true;
   if (!ctx.workerUserId) return false;
   return (
-    run.device_owner === ctx.workerUserId || run.watcher_device_owner === ctx.workerUserId
+    run.device_owner === ctx.workerUserId || run.behavior_device_owner === ctx.workerUserId
   );
 }

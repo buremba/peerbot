@@ -17,7 +17,7 @@ import {
 } from "../authz/entity-mutation-gate";
 import {
 	mutationPrincipalId,
-	watcherIdFromPrincipalId,
+	behaviorIdFromPrincipalId,
 } from "../authz/entity-policy";
 import {
 	createDbClientFromEnv,
@@ -179,22 +179,22 @@ interface EntityUpdateOptions {
 	policyPrincipalKind?: MutationPrincipalKind;
 	/** Attribution for a deferred approval of blocked fields. Defaults to 'agent'. */
 	attribution?: MutationAttribution;
-	/** Watcher-run window, so a deferred approval groups into its per-window batch. */
+	/** Behavior-run window, so a deferred approval groups into its per-window batch. */
 	windowId?: number | null;
 	/**
-	 * The resolved acting-principal id (`watcher:<id>` / agent id / null), from the
+	 * The resolved acting-principal id (`behavior:<id>` / agent id / null), from the
 	 * shared {@link resolveActingPrincipal} seam. Used directly for per-principal
 	 * policy matching — the caller owns identity resolution, not this function.
 	 */
 	principalId?: string | null;
 	/**
-	 * The watcher's owning agent, folded into the gate so the agent's envelope
-	 * binds a watcher's direct update (a reaction script) — see the gate's
+	 * The behavior's owning agent, folded into the gate so the agent's envelope
+	 * binds a behavior's direct update (a reaction script) — see the gate's
 	 * `ownerAgentId`. Null for agent/user writes.
 	 */
 	ownerAgentId?: string | null;
 	/**
-	 * False iff a watcher whose owning agent couldn't be resolved — the gate fails
+	 * False iff a behavior whose owning agent couldn't be resolved — the gate fails
 	 * closed (deny). See the gate's `ownerResolved`. Defaults true.
 	 */
 	ownerResolved?: boolean;
@@ -263,7 +263,7 @@ export interface EntityData {
   organization_id?: string;
 
   // Attribution: entities.created_by is NOT NULL and FK → user. Set explicitly by
-  // the approval-apply path to the approving human (a watcher/agent proposer isn't
+  // the approval-apply path to the approving human (a behavior/agent proposer isn't
   // a user row). Falls back to "system" — which is only valid where a matching
   // user exists — when omitted.
   created_by?: string | null;
@@ -280,12 +280,12 @@ export interface EntityData {
   metadata?: Record<string, any>;
 
   // Optional human-correction note: on a human update it is stored on the
-  // field_controls marker for every field this edit claims, so the watcher (and
+  // field_controls marker for every field this edit claims, so the behavior (and
   // the UI) can show WHY the value was set. Ignored for agent/system writes.
   field_note?: string | null;
 
   // Approve/affirm: field names whose CURRENT value the human endorses as-is.
-  // No value change, but ownership is claimed so a watcher can't later overwrite
+  // No value change, but ownership is claimed so a behavior can't later overwrite
   // them without an approval. This is the "approve" half of the recap feedback
   // loop; "correct" is a normal metadata update. Ignored for agent/system writes.
   affirm_fields?: string[] | null;
@@ -585,9 +585,9 @@ export async function updateEntity(
 		: [];
 
 	// A genuine human edit (a real user, not an agent run) claims per-field
-	// ownership so a watcher can't later overwrite it without an approval. Every
-	// non-human write (chat agent or watcher reaction via manage_entity) is an
-	// ownership-aware watcher-source merge: unowned fields write, owned fields
+	// ownership so a behavior can't later overwrite it without an approval. Every
+	// non-human write (chat agent or behavior reaction via manage_entity) is an
+	// ownership-aware behavior-source merge: unowned fields write, owned fields
 	// are blocked and surfaced to the caller for an approval. There is no
 	// plain-merge branch — the only caller is agent-attributed.
 	const isHumanEdit = !!ctx.userId && !ctx.agentId;
@@ -733,7 +733,7 @@ export async function updateEntity(
 				metadata: existing,
 				controls: existingControls,
 				fields: metadataUpdates,
-				source: isHumanEdit ? "human" : "watcher",
+				source: isHumanEdit ? "human" : "behavior",
 				actorId: isHumanEdit
 					? ctx.userId
 					: (ctx.agentId ?? ctx.clientId ?? null),
@@ -743,7 +743,7 @@ export async function updateEntity(
 				requireApproval,
 			});
 			mergedMetadata = merge.nextMetadata;
-			// A human edit claims ownership of the fields it sets; a watcher-source
+			// A human edit claims ownership of the fields it sets; a behavior-source
 			// merge never claims ownership, so leave field_controls untouched.
 			mergedControls = isHumanEdit ? merge.nextControls : null;
 			fieldMerge = {
@@ -809,9 +809,9 @@ export async function updateEntity(
 					blockedPaths.map((p) => [p, blocked[p].current]),
 				),
 				attribution: opts?.attribution ?? "agent",
-				// The approval card groups by the acting watcher; recover its numeric
-				// id from the resolved principalId (`watcher:<id>`), null otherwise.
-				watcherId: watcherIdFromPrincipalId(opts?.principalId ?? null),
+				// The approval card groups by the acting behavior; recover its numeric
+				// id from the resolved principalId (`behavior:<id>`), null otherwise.
+				behaviorId: behaviorIdFromPrincipalId(opts?.principalId ?? null),
 				windowId: opts?.windowId ?? null,
 			}),
 		};
@@ -835,7 +835,7 @@ export async function getEntity(
   const includeDeleted = opts?.includeDeleted ?? false;
 
   // Operational counts always scope to the caller's org. When `e` is a
-  // public-catalog entity, totals reflect the caller's events/feeds/watchers/
+  // public-catalog entity, totals reflect the caller's events/feeds/behaviors/
   // children that reference it — never cross-tenant activity around the
   // public row.
   //
@@ -862,7 +862,7 @@ export async function getEntity(
           AND ${sql.unsafe(feedLinkedToBusinessEntitySql('e.id', 'f', 'c', 'e.organization_id'))}
       ) as active_connections,
       (
-        SELECT COUNT(*) FROM watchers i
+        SELECT COUNT(*) FROM behaviors i
         WHERE e.id = ANY(i.entity_ids)
           AND i.organization_id = ${ctx.organizationId}
       ) as behaviors_count,
@@ -984,10 +984,10 @@ export async function deleteEntity(
         (SELECT COUNT(*) FROM entity_relationships r
           WHERE r.from_entity_id = ANY(${entityTreeIdsLiteral}::bigint[])
              OR r.to_entity_id = ANY(${entityTreeIdsLiteral}::bigint[]))::int AS relationships,
-        (SELECT COUNT(*) FROM watchers w
+        (SELECT COUNT(*) FROM behaviors w
           WHERE w.entity_ids && ${entityTreeIdsLiteral}::bigint[]
             AND w.entity_ids <@ ${entityTreeIdsLiteral}::bigint[])::int AS behaviors_deleted,
-        (SELECT COUNT(*) FROM watchers w
+        (SELECT COUNT(*) FROM behaviors w
           WHERE w.entity_ids && ${entityTreeIdsLiteral}::bigint[]
             AND NOT (w.entity_ids <@ ${entityTreeIdsLiteral}::bigint[]))::int AS behaviors_detached,
         (SELECT COUNT(*) FROM feeds f
@@ -1032,84 +1032,84 @@ export async function deleteEntity(
       `;
 
       // Canvas-on-events: window_id link rows carry canvas root event ids, so
-      // key the cleanup on the denormalized watcher_id.
+      // key the cleanup on the denormalized behavior_id.
       await tx`
-        DELETE FROM watcher_window_events
-        WHERE watcher_id IN (
+        DELETE FROM behavior_window_events
+        WHERE behavior_id IN (
           SELECT id
-          FROM watchers
+          FROM behaviors
           WHERE entity_ids && ${entityTreeIdsLiteral}::bigint[]
             AND entity_ids <@ ${entityTreeIdsLiteral}::bigint[]
         )
       `;
-      // Before hard-deleting watchers: if any of those rows are group roots
-      // (id = watcher_group_id) with surviving siblings, transfer ownership
-      // of the shared watcher_versions chain to a sibling so the upcoming
+      // Before hard-deleting behaviors: if any of those rows are group roots
+      // (id = behavior_group_id) with surviving siblings, transfer ownership
+      // of the shared behavior_versions chain to a sibling so the upcoming
       // ON DELETE CASCADE doesn't wipe out the version row that the rest
       // of the group still depends on.
       await tx`
-        UPDATE watcher_versions wv
-        SET watcher_id = s.new_root
+        UPDATE behavior_versions wv
+        SET behavior_id = s.new_root
         FROM (
           SELECT r.old_root, MIN(s.id) AS new_root
           FROM (
             SELECT w.id AS old_root
-            FROM watchers w
-            WHERE w.id = w.watcher_group_id
+            FROM behaviors w
+            WHERE w.id = w.behavior_group_id
               AND w.entity_ids && ${entityTreeIdsLiteral}::bigint[]
               AND w.entity_ids <@ ${entityTreeIdsLiteral}::bigint[]
           ) r
-          JOIN watchers s
-            ON s.watcher_group_id = r.old_root
+          JOIN behaviors s
+            ON s.behavior_group_id = r.old_root
            AND s.id <> r.old_root
            AND NOT (
              COALESCE(s.entity_ids, '{}'::bigint[]) && ${entityTreeIdsLiteral}::bigint[]
              AND COALESCE(s.entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
            )
            AND NOT EXISTS (
-             SELECT 1 FROM watcher_versions vv WHERE vv.watcher_id = s.id
+             SELECT 1 FROM behavior_versions vv WHERE vv.behavior_id = s.id
            )
           GROUP BY r.old_root
         ) s
-        WHERE wv.watcher_id = s.old_root
+        WHERE wv.behavior_id = s.old_root
       `;
       await tx`
-        UPDATE watchers w
-        SET watcher_group_id = s.new_root,
-            source_watcher_id = CASE WHEN w.source_watcher_id = s.old_root THEN s.new_root ELSE w.source_watcher_id END
+        UPDATE behaviors w
+        SET behavior_group_id = s.new_root,
+            source_behavior_id = CASE WHEN w.source_behavior_id = s.old_root THEN s.new_root ELSE w.source_behavior_id END
         FROM (
           SELECT r.old_root, MIN(s.id) AS new_root
           FROM (
             SELECT w.id AS old_root
-            FROM watchers w
-            WHERE w.id = w.watcher_group_id
+            FROM behaviors w
+            WHERE w.id = w.behavior_group_id
               AND w.entity_ids && ${entityTreeIdsLiteral}::bigint[]
               AND w.entity_ids <@ ${entityTreeIdsLiteral}::bigint[]
           ) r
-          JOIN watchers s
-            ON s.watcher_group_id = r.old_root
+          JOIN behaviors s
+            ON s.behavior_group_id = r.old_root
            AND s.id <> r.old_root
            AND NOT (
              COALESCE(s.entity_ids, '{}'::bigint[]) && ${entityTreeIdsLiteral}::bigint[]
              AND COALESCE(s.entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
            )
            AND NOT EXISTS (
-             SELECT 1 FROM watcher_versions vv WHERE vv.watcher_id = s.id
+             SELECT 1 FROM behavior_versions vv WHERE vv.behavior_id = s.id
            )
           GROUP BY r.old_root
         ) s
-        WHERE w.watcher_group_id = s.old_root
+        WHERE w.behavior_group_id = s.old_root
       `;
       await tx`
-        DELETE FROM watchers
+        DELETE FROM behaviors
         WHERE entity_ids && ${entityTreeIdsLiteral}::bigint[]
           AND entity_ids <@ ${entityTreeIdsLiteral}::bigint[]
       `;
-      // Detach survivors: prune tree ids from watchers that also span entities
+      // Detach survivors: prune tree ids from behaviors that also span entities
       // outside the tree. Fully-contained rows were deleted above, so pruning
       // can never leave an empty entity set behind — no orphan sweep needed.
       await tx`
-        UPDATE watchers
+        UPDATE behaviors
         SET entity_ids = ARRAY(
           SELECT linked_id
           FROM unnest(entity_ids) AS linked_id
@@ -1343,7 +1343,7 @@ export async function listEntities(
         AND c.deleted_at IS NULL
         AND ${feedLinkedToBusinessEntitySql('e.id', 'f', 'c', 'e.organization_id')}
     ) ac ON true
-    LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM watchers i WHERE e.id = ANY(i.entity_ids)) ic ON true
+    LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM behaviors i WHERE e.id = ANY(i.entity_ids)) ic ON true
     LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM entities c WHERE c.parent_id = e.id) cc ON true
     WHERE ${whereClause}
   `;

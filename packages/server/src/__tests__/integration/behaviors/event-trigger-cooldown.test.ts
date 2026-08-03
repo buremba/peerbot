@@ -128,7 +128,7 @@ async function behaviorWithCooldown(
 	// Guard the fixture itself: if the contract ever stops persisting the field,
 	// every assertion below would pass vacuously against cooldown 0.
 	const [row] = await sql`
-    SELECT min_cooldown_seconds FROM watchers WHERE id = ${behaviorId}
+    SELECT min_cooldown_seconds FROM behaviors WHERE id = ${behaviorId}
   `;
 	expect(Number(row.min_cooldown_seconds)).toBe(cooldownSeconds);
 
@@ -152,7 +152,7 @@ async function priorActivation(
 ): Promise<void> {
 	const sql = getTestDb();
 	await sql`
-    UPDATE watchers
+    UPDATE behaviors
     SET last_event_activation_at = now() - make_interval(secs => ${secondsAgo})
     WHERE id = ${fixture.behaviorId}
   `;
@@ -187,7 +187,7 @@ async function behaviorRunCount(fixture: Fixture): Promise<number> {
 	const [row] = await sql`
     SELECT count(*)::int AS n
     FROM runs
-    WHERE watcher_id = ${fixture.behaviorId} AND run_type = 'behavior'
+    WHERE behavior_id = ${fixture.behaviorId} AND run_type = 'behavior'
   `;
 	return Number(row.n);
 }
@@ -232,7 +232,7 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 
 	it("consumes the window on the activation itself, not on run completion", async () => {
 		// A burst that starts a run and immediately re-fires must be debounced by
-		// the run it just started. `watchers.last_fired_at` is stamped when a run
+		// the run it just started. `behaviors.last_fired_at` is stamped when a run
 		// reaches a TERMINAL state, so a cooldown built on it would only take
 		// effect after the first run happened to finish — hence the dedicated
 		// dispatch-time cursor. `active_run: "queue"` so the second signal is
@@ -259,7 +259,7 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 			[1, 2].map((n) =>
 				createBehaviorEventRun({
 					organizationId: fixture.organizationId,
-					watcherId: fixture.behaviorId,
+					behaviorId: fixture.behaviorId,
 					agentId: fixture.workspace.agentId,
 					trigger: activation.trigger,
 					signal: {
@@ -301,7 +301,7 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 		const queue = (deliveryId: string) =>
 			createBehaviorEventRun({
 				organizationId: fixture.organizationId,
-				watcherId: fixture.behaviorId,
+				behaviorId: fixture.behaviorId,
 				agentId: fixture.workspace.agentId,
 				trigger: activation.trigger,
 				signal: { ...fixture.signal, delivery_id: deliveryId },
@@ -310,14 +310,14 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 		expect((await queue("event:coalesce:1")).disposition).toBe("queued");
 		const [claimed] = await getTestDb()`
 			SELECT last_event_activation_at
-			FROM watchers
+			FROM behaviors
 			WHERE id = ${fixture.behaviorId}
 		`;
 		expect((await queue("event:coalesce:2")).disposition).toBe("coalesced");
 		expect(await behaviorRunCount(fixture)).toBe(1);
 		const [afterCoalesce] = await getTestDb()`
 			SELECT last_event_activation_at
-			FROM watchers
+			FROM behaviors
 			WHERE id = ${fixture.behaviorId}
 		`;
 		expect(afterCoalesce.last_event_activation_at).toEqual(
@@ -332,7 +332,7 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 		await sql.begin(async (tx) => {
 			await lockBehaviorForActivation(tx, fixture.behaviorId);
 			await tx`
-				UPDATE watchers
+				UPDATE behaviors
 				SET last_event_activation_at = now()
 				WHERE id = ${fixture.behaviorId}
 			`;
@@ -370,7 +370,7 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 			);
 			const [row] = await getTestDb()`
 				SELECT last_event_activation_at
-				FROM watchers
+				FROM behaviors
 				WHERE id = ${fixture.behaviorId}
 			`;
 			expect(row.last_event_activation_at).toBeNull();
@@ -392,7 +392,7 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 	it("suppresses an activation for a Behavior that no longer exists", async () => {
 		const fixture = await behaviorWithCooldown(1800);
 		const sql = getTestDb();
-		await sql`DELETE FROM watchers WHERE id = ${fixture.behaviorId}`;
+		await sql`DELETE FROM behaviors WHERE id = ${fixture.behaviorId}`;
 
 		expect(await claimBehaviorCooldownStandalone(fixture.behaviorId)).toBe(
 			false,

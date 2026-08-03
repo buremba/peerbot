@@ -229,8 +229,8 @@ async function handleCreate(
   }
 
   const entityId = args.entity_id ?? null;
-  // Optional on purpose. `behavior_id` becomes `classify_facet.watcher_id`, and
-  // every embedding-engine lookup filters `cf.watcher_id IS NULL` — so while
+  // Optional on purpose. `behavior_id` becomes `classify_facet.behavior_id`, and
+  // every embedding-engine lookup filters `cf.behavior_id IS NULL` — so while
   // this was required, EVERY classifier creatable through this tool or the
   // ClientSDK was invisible to the engine, and `apply`/the reconciliation cron
   // reported clean zero-result runs over it. Omit it for an org-level
@@ -238,11 +238,11 @@ async function handleCreate(
   const behaviorId = args.behavior_id ?? null;
 
   if (behaviorId !== null) {
-    const watcher = await sql`
-      SELECT id FROM watchers
+    const behavior = await sql`
+      SELECT id FROM behaviors
       WHERE id = ${behaviorId} AND organization_id = ${ctx.organizationId}
     `;
-    if (watcher.length === 0) {
+    if (behavior.length === 0) {
       return {
         success: false,
         action: 'create',
@@ -306,7 +306,7 @@ async function handleCreate(
   const classifierResult = await sql`
     INSERT INTO classify_facet (
       organization_id, slug, name, description, attribute_key, status, created_by,
-      entity_id, entity_ids, watcher_id, attribute_values, min_similarity, fallback_value
+      entity_id, entity_ids, behavior_id, attribute_values, min_similarity, fallback_value
     ) VALUES (
       ${ctx.organizationId},
       ${args.slug}, ${args.name}, ${args.description || null}, ${args.attribute_key},
@@ -314,7 +314,7 @@ async function handleCreate(
       CASE WHEN ${entityId}::bigint IS NULL THEN ARRAY[]::bigint[] ELSE ARRAY[${entityId}]::bigint[] END,
       ${behaviorId}, ${sql.json(withEmbeddings)}, ${args.min_similarity ?? 0.7}, ${args.fallback_value ?? null}
     )
-    RETURNING id, slug, name, attribute_key, entity_id, entity_ids, watcher_id as behavior_id
+    RETURNING id, slug, name, attribute_key, entity_id, entity_ids, behavior_id
   `;
   const classifier = classifierResult[0];
 
@@ -341,9 +341,9 @@ async function handleList(
   // repeated E2E runs left deprecated rows visible in the ordinary list (#2051).
   const statusFilter = args.status ?? 'active';
 
-  // No watcher_id filter: org-level classifiers (watcher_id IS NULL) are the
+  // No behavior_id filter: org-level classifiers (behavior_id IS NULL) are the
   // kind `create` now produces by default and the only kind the engine matches.
-  // The old `fc.watcher_id IS NOT NULL` condition hid every one of them from
+  // The old `fc.behavior_id IS NOT NULL` condition hid every one of them from
   // the agent that had just created it (and left the NULLS LAST ordering below
   // dead).
   const conditions: string[] = ['fc.organization_id = $1'];
@@ -367,7 +367,7 @@ async function handleList(
       fc.id, fc.slug, fc.name, fc.description, fc.attribute_key, fc.entity_ids,
       et.slug AS entity_type, fc.status, fc.created_at, fc.updated_at,
       fc.min_similarity, fc.fallback_value, fc.attribute_values,
-      fc.watcher_id as behavior_id,
+      fc.behavior_id,
       w.name as behavior_name,
       CASE
         WHEN fc.entity_ids IS NULL OR cardinality(fc.entity_ids) = 0 THEN 'global'
@@ -377,11 +377,11 @@ async function handleList(
     FROM classify_facet fc
     LEFT JOIN entities e ON e.id = ANY(fc.entity_ids)
     LEFT JOIN entity_types et ON et.id = e.entity_type_id
-    LEFT JOIN watchers w ON fc.watcher_id = w.id
+    LEFT JOIN behaviors w ON fc.behavior_id = w.id
     ${whereClause}
     ORDER BY
       CASE WHEN fc.entity_ids IS NULL OR cardinality(fc.entity_ids) = 0 THEN 0 WHEN e.parent_id IS NULL THEN 1 ELSE 2 END,
-      fc.watcher_id NULLS LAST,
+      fc.behavior_id NULLS LAST,
       fc.created_at DESC`,
     params
   );
@@ -675,14 +675,14 @@ async function runApply(
   const embeddingModel = resolveEmbeddingModel(args.embedding_model);
 
   // Mirrors the engine's classifier-template lookup exactly (org + active +
-  // watcher_id IS NULL). Diverging here would report a watcher-owned classifier
+  // behavior_id IS NULL). Diverging here would report a behavior-owned classifier
   // as "found" and then blame its zero results on min_similarity.
   const classifierRows = (await sql`
     SELECT cf.id AS classifier_id
     FROM classify_facet cf
     WHERE cf.slug = ${args.classifier_slug}
       AND cf.status = 'active'
-      AND cf.watcher_id IS NULL
+      AND cf.behavior_id IS NULL
       AND cf.organization_id = ${ctx.organizationId}
   `) as unknown as Array<{ classifier_id: number }>;
 
@@ -853,10 +853,10 @@ async function updateSingleClassification(
   await sql.begin(async (tx) => {
     await tx`
       DELETE FROM event_classifications
-      WHERE event_id = ${contentId} AND classifier_id = ${classifier.classifier_id} AND source = ${source} AND watcher_id IS NULL
+      WHERE event_id = ${contentId} AND classifier_id = ${classifier.classifier_id} AND source = ${source} AND behavior_id IS NULL
     `;
     await tx`
-      INSERT INTO event_classifications (event_id, classifier_id, watcher_id, window_id, "values", confidences, source, is_manual, reasoning)
+      INSERT INTO event_classifications (event_id, classifier_id, behavior_id, window_id, "values", confidences, source, is_manual, reasoning)
       VALUES (${contentId}, ${classifier.classifier_id}, NULL, NULL, ${valuesLiteral}::text[], ${sql.json(confidences)}, ${source}, true, ${reasoning || null})
     `;
   });

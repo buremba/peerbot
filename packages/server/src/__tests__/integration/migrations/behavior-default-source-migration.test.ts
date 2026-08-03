@@ -16,8 +16,9 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { Env } from '../../../index';
 import { getDb } from '../../../db/client';
 import { loadMigrationUpSection } from '../../../db/migration-loader';
+import { adaptImmutableMigrationToBehaviorSchema } from '../../setup/immutable-migration';
 import { manageBehaviors } from '../../../tools/admin/manage_behaviors';
-import { DEFAULT_BEHAVIOR_SOURCE_QUERY } from '../../../watchers/source-refs';
+import { DEFAULT_BEHAVIOR_SOURCE_QUERY } from '../../../behaviors/source-refs';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, seedOwnerContext } from '../../setup/test-fixtures';
@@ -77,7 +78,7 @@ describe('behavior default-source migration replay', () => {
     const sql = getTestDb();
 
     // Recreate the pre-deploy state: one legacy default source and one
-    // authored custom source, on both the watcher row and its version row.
+    // authored custom source, on both the behavior row and its version row.
     // sql.json, not a ::jsonb-cast string — the prod value options serialize a
     // plain string param into a double-encoded JSON string.
     const preDeploySources = [
@@ -85,21 +86,25 @@ describe('behavior default-source migration replay', () => {
       { name: 'github', query: AUTHORED_CUSTOM },
     ];
     await sql`
-      UPDATE watchers SET sources = ${sql.json(preDeploySources)} WHERE id = ${behaviorId}
+      UPDATE behaviors SET sources = ${sql.json(preDeploySources)} WHERE id = ${behaviorId}
     `;
     await sql`
-      UPDATE watcher_versions SET version_sources = ${sql.json(preDeploySources)}
-      WHERE id = (SELECT current_version_id FROM watchers WHERE id = ${behaviorId})
+      UPDATE behavior_versions SET version_sources = ${sql.json(preDeploySources)}
+      WHERE id = (SELECT current_version_id FROM behaviors WHERE id = ${behaviorId})
     `;
 
-    await executeSection(loadMigrationUpSection(resolveMigrationsDir(), MIGRATION));
+    await executeSection(
+      adaptImmutableMigrationToBehaviorSchema(
+        loadMigrationUpSection(resolveMigrationsDir(), MIGRATION),
+      ),
+    );
 
-    const [watcher] = await sql`SELECT sources FROM watchers WHERE id = ${behaviorId}`;
+    const [behavior] = await sql`SELECT sources FROM behaviors WHERE id = ${behaviorId}`;
     const [version] = await sql`
-      SELECT version_sources FROM watcher_versions
-      WHERE id = (SELECT current_version_id FROM watchers WHERE id = ${behaviorId})
+      SELECT version_sources FROM behavior_versions
+      WHERE id = (SELECT current_version_id FROM behaviors WHERE id = ${behaviorId})
     `;
-    for (const sources of [watcher.sources, version.version_sources]) {
+    for (const sources of [behavior.sources, version.version_sources]) {
       const byName = Object.fromEntries(
         (sources as Array<{ name: string; query: string }>).map((s) => [s.name, s.query])
       );

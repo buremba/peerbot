@@ -85,7 +85,7 @@ export async function buildAgentSettingsUrl(
  * {@link buildAgentSettingsUrl}: `?run_id=<id>` prefills the Behavior edit form
  * with the proposed change for Approve/Reject.
  *
- * A Behavior is owned by an agent (`watchers.agent_id`), so the route is nested
+ * A Behavior is owned by an agent (`behaviors.agent_id`), so the route is nested
  * under that agent — the caller passes the owning agent id (from the current
  * Behavior row). Returns null when any required piece is missing; the producer
  * falls back to the run permalink.
@@ -377,7 +377,7 @@ export function buildConnectionUrl(
  *
  * Which kind to use:
  *  - `run`   — the link's identity is one execution (an operation approval, a
- *    watcher/scheduled run). Survives the supersede chain by construction: a
+ *    behavior/scheduled run). Survives the supersede chain by construction: a
  *    run's events share one run_id and run-scoped reads were never masked by
  *    `superseded_by IS NULL`.
  *  - `event` — a point in the log (a specific card). Read-side chain resolution

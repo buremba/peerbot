@@ -117,7 +117,7 @@ async function bindingsForBuilder(orgId: string): Promise<
           NULLIF(trigger->'match'->>'channel_key', ''),
           (trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
         ) AS channel_id
-      FROM watchers w
+      FROM behaviors w
       CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
       WHERE w.status = 'active'
         AND w.organization_id = ${orgId}

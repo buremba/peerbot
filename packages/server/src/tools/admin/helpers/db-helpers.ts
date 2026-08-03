@@ -33,7 +33,7 @@ export async function callerIsAdmin(
  * interpolate the table name into sql.unsafe() while keeping the id parameterized.
  */
 const VALID_TABLES = [
-  'watchers',
+  'behaviors',
   'entities',
   'connections',
   'feeds',
@@ -51,7 +51,7 @@ type ValidTable = (typeof VALID_TABLES)[number];
  * @param sql - Database client (or use getDb() default)
  * @param table - Table name (must be in VALID_TABLES whitelist)
  * @param id - Record id (number or numeric string)
- * @param label - Human-readable label for error messages (e.g. "Watcher")
+ * @param label - Human-readable label for error messages (e.g. "Behavior")
  */
 export async function requireExists(
   sql: DbClient,
@@ -72,7 +72,7 @@ export async function requireExists(
 /**
  * Validate that every entity id in `entityIds` belongs to `organizationId`.
  *
- * Feeds and watchers carry an `entity_ids` array used to link synced events to
+ * Feeds and behaviors carry an `entity_ids` array used to link synced events to
  * in-org entities. A cross-org entity id (e.g. a feed in org A pointing at an
  * entity owned by org B) means synced events never link to a valid in-org
  * entity — a silent data-correctness bug. We reject it at create/update time.
@@ -109,7 +109,7 @@ export async function assertEntityIdsInOrg(
  * Tables whose `id` column is allocated via SELECT MAX(id) + 1. Whitelisted so
  * the table name can be safely interpolated into sql.unsafe().
  */
-const NUMERIC_ID_TABLES = ['watchers', 'watcher_window_events', 'watcher_versions'] as const;
+const NUMERIC_ID_TABLES = ['behaviors', 'behavior_window_events', 'behavior_versions'] as const;
 
 type NumericIdTable = (typeof NUMERIC_ID_TABLES)[number];
 
@@ -125,7 +125,7 @@ type NumericIdTable = (typeof NUMERIC_ID_TABLES)[number];
  * before the INSERT executes — same race as without the lock).
  *
  * Without the advisory lock, two concurrent completions on DIFFERENT rows
- * (e.g. two device workers completing two different watcher runs) can both
+ * (e.g. two device workers completing two different behavior runs) can both
  * compute the same `MAX(id)+1` and one will fail on the target table's PK
  * conflict. With the lock + caller-side tx, the second caller blocks until
  * the first commits (and thus sees the first INSERT in its `MAX(id)`).

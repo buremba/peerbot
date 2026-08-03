@@ -83,7 +83,7 @@ import type {
   DesiredOrgProvider,
   DesiredRelationshipType,
   DesiredState,
-  DesiredWatcher,
+  DesiredBehavior,
 } from "./desired-state.js";
 
 /** Source label recorded on connector docs (mirrors the YAML manifest path). */
@@ -502,8 +502,8 @@ function mapRelationshipType(rel: RelationshipType): DesiredRelationshipType {
 /**
  * The config API authors `keyingConfig` in camelCase (`entityType`, `entityPath`,
  * `keyFields`, `keyOutputField`), but the server stores it verbatim into
- * `keying_config` and reads snake_case keys (`watcher-extraction-schema.ts`,
- * `promote-keyed-entities.ts`). Without this translation an entity-typed watcher
+ * `keying_config` and reads snake_case keys (`behavior-extraction-schema.ts`,
+ * `promote-keyed-entities.ts`). Without this translation an entity-typed behavior
  * authored via config silently lands as untyped (schema derivation + promotion
  * both miss `entity_type`). Translate the known keys; pass any extra keys through.
  */
@@ -536,20 +536,20 @@ const MAX_BEHAVIOR_SKILLS = 5;
  * triggers and instructions change, apply sends them together through
  * create_version so the final pair is validated atomically.
  */
-function assertBehaviorSkills(watcher: DesiredWatcher): void {
-  const skills = watcher.skills ?? [];
+function assertBehaviorSkills(behavior: DesiredBehavior): void {
+  const skills = behavior.skills ?? [];
   const duplicates = skills.filter((name, i) => skills.indexOf(name) !== i);
   if (duplicates.length > 0) {
     throw new ValidationError(
-      `Behavior "${watcher.slug}" lists duplicate skill(s): ${[...new Set(duplicates)].join(", ")} — each skill may appear once (the compile is ordered, not repeated)`
+      `Behavior "${behavior.slug}" lists duplicate skill(s): ${[...new Set(duplicates)].join(", ")} — each skill may appear once (the compile is ordered, not repeated)`
     );
   }
   if (skills.length > MAX_BEHAVIOR_SKILLS) {
     throw new ValidationError(
-      `Behavior "${watcher.slug}" references ${skills.length} skills — the maximum is ${MAX_BEHAVIOR_SKILLS}`
+      `Behavior "${behavior.slug}" references ${skills.length} skills — the maximum is ${MAX_BEHAVIOR_SKILLS}`
     );
   }
-  const triggers = watcher.triggers ?? [];
+  const triggers = behavior.triggers ?? [];
   const requiresSkills =
     triggers.length === 0 ||
     triggers.some(
@@ -559,17 +559,16 @@ function assertBehaviorSkills(watcher: DesiredWatcher): void {
   // "run this skill" has no task statement to write, and one that spells its
   // task out inline needs no skill — demanding both would be stricter than the
   // server and would reject configs the API accepts.
-  if (requiresSkills && skills.length === 0 && !watcher.prompt.trim()) {
+  if (requiresSkills && skills.length === 0 && !behavior.prompt.trim()) {
     throw new ValidationError(
-      `Behavior "${watcher.slug}" needs instructions: schedule triggers, event triggers with execution "window", and Behaviors with no triggers run on stored instructions alone, so give it a "prompt", at least one skill, or both. Only event triggers with execution "turn" may omit both.`
+      `Behavior "${behavior.slug}" needs instructions: schedule triggers, event triggers with execution "window", and Behaviors with no triggers run on stored instructions alone, so give it a "prompt", at least one skill, or both. Only event triggers with execution "turn" may omit both.`
     );
   }
 }
 
-function mapBehavior(behavior: Behavior): DesiredWatcher {
-  const watcher = behavior;
-  const sources = watcher.sources
-    ? Object.entries(watcher.sources).map(([name, value]) => {
+function mapBehavior(behavior: Behavior): DesiredBehavior {
+  const sources = behavior.sources
+    ? Object.entries(behavior.sources).map(([name, value]) => {
         if (typeof value === "string") return { name, query: value };
         return {
           name,
@@ -579,17 +578,17 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
       })
     : undefined;
   let hasSchedule = false;
-  const triggers = watcher.triggers?.map((trigger) => {
+  const triggers = behavior.triggers?.map((trigger) => {
     if (trigger.kind === "schedule") {
       if (hasSchedule) {
         throw new ValidationError(
-          `Behavior "${watcher.slug}" has more than one schedule trigger`
+          `Behavior "${behavior.slug}" has more than one schedule trigger`
         );
       }
       const err = cronError(trigger.cron);
       if (err) {
         throw new ValidationError(
-          `Behavior "${watcher.slug}" has an invalid schedule trigger "${trigger.cron}": ${err}`
+          `Behavior "${behavior.slug}" has an invalid schedule trigger "${trigger.cron}": ${err}`
         );
       }
       hasSchedule = true;
@@ -617,7 +616,7 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
     } as const;
     if (connection !== undefined && trigger.connection_id !== undefined) {
       throw new ValidationError(
-        `Behavior "${watcher.slug}" trigger must use either connection or connection_id, not both`
+        `Behavior "${behavior.slug}" trigger must use either connection or connection_id, not both`
       );
     }
     if (connection === undefined) return normalizedEventTrigger;
@@ -626,7 +625,7 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
       connectorKey(connection.connector) !== trigger.connector_key
     ) {
       throw new ValidationError(
-        `Behavior "${watcher.slug}" trigger is ${trigger.connector_key}, but connection "${connection.slug}" uses ${connectorKey(connection.connector)}`
+        `Behavior "${behavior.slug}" trigger is ${trigger.connector_key}, but connection "${connection.slug}" uses ${connectorKey(connection.connector)}`
       );
     }
     const connectionSlug =
@@ -634,41 +633,41 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
     return { ...normalizedEventTrigger, connectionSlug };
   });
   return {
-    slug: watcher.slug,
-    agent: agentId(watcher.agent),
+    slug: behavior.slug,
+    agent: agentId(behavior.agent),
     // The author's task statement, carried straight through. Skill BODIES are
     // no longer folded in here — the loader resolves them into `skillSnapshots`
     // (see `resolveBehaviorSkills` in desired-state.ts), because the mapper is
     // pure and cannot read skill files. "" is legitimate for a Behavior whose
     // whole job is its skills, and for event-turn Behaviors with neither.
-    prompt: watcher.prompt ?? "",
-    ...(watcher.skills?.length ? { skills: watcher.skills } : {}),
-    ...(watcher.keyingConfig !== undefined
+    prompt: behavior.prompt ?? "",
+    ...(behavior.skills?.length ? { skills: behavior.skills } : {}),
+    ...(behavior.keyingConfig !== undefined
       ? {
           keyingConfig:
-            watcher.keyingConfig === null
+            behavior.keyingConfig === null
               ? null
-              : normalizeKeyingConfig(watcher.keyingConfig),
+              : normalizeKeyingConfig(behavior.keyingConfig),
         }
       : {}),
-    ...(watcher.name ? { name: watcher.name } : {}),
-    ...(watcher.description ? { description: watcher.description } : {}),
+    ...(behavior.name ? { name: behavior.name } : {}),
+    ...(behavior.description ? { description: behavior.description } : {}),
     triggers: triggers ?? [],
     ...(sources ? { sources } : {}),
-    ...(watcher.notification?.channel
-      ? { notificationChannel: watcher.notification.channel }
+    ...(behavior.notification?.channel
+      ? { notificationChannel: behavior.notification.channel }
       : {}),
-    ...(watcher.notification?.priority
-      ? { notificationPriority: watcher.notification.priority }
+    ...(behavior.notification?.priority
+      ? { notificationPriority: behavior.notification.priority }
       : {}),
-    ...(watcher.minCooldownSeconds !== undefined
-      ? { minCooldownSeconds: watcher.minCooldownSeconds }
+    ...(behavior.minCooldownSeconds !== undefined
+      ? { minCooldownSeconds: behavior.minCooldownSeconds }
       : {}),
-    ...(watcher.tags ? { tags: watcher.tags } : {}),
-    ...(watcher.reactionsGuidance
-      ? { reactionsGuidance: watcher.reactionsGuidance }
+    ...(behavior.tags ? { tags: behavior.tags } : {}),
+    ...(behavior.reactionsGuidance
+      ? { reactionsGuidance: behavior.reactionsGuidance }
       : {}),
-    ...(watcher.agentKind ? { agentKind: watcher.agentKind } : {}),
+    ...(behavior.agentKind ? { agentKind: behavior.agentKind } : {}),
   };
 }
 
@@ -885,7 +884,7 @@ export function mapProjectToDesiredState(
   const relationshipTypes = (project.relationships ?? []).map(
     mapRelationshipType
   );
-  const watchers =
+  const behaviors =
     only === "agents" ? [] : (project.behaviors ?? []).map(mapBehavior);
   const authProfiles = only
     ? []
@@ -912,33 +911,33 @@ export function mapProjectToDesiredState(
   assertUniqueBy(agents, (a) => a.metadata.agentId, "agent id");
   assertUniqueBy(entityTypes, (e) => e.slug, "entity type key");
   assertUniqueBy(relationshipTypes, (r) => r.slug, "relationship type key");
-  assertUniqueBy(watchers, (w) => w.slug, "Behavior slug");
+  assertUniqueBy(behaviors, (w) => w.slug, "Behavior slug");
   assertUniqueBy(authProfiles, (p) => p.slug, "auth profile slug");
   assertUniqueBy(connections, (c) => c.slug, "connection slug");
   assertUniqueBy(providers, (p) => p.slug, "provider slug");
 
   const agentIds = new Set(project.agents.map((agent) => agent.id));
-  for (const watcher of watchers) {
-    if (!agentIds.has(watcher.agent)) {
+  for (const behavior of behaviors) {
+    if (!agentIds.has(behavior.agent)) {
       throw new ValidationError(
-        `Behavior "${watcher.slug}" names agent "${watcher.agent}", but no agent with that id is declared in lobu.config.ts`
+        `Behavior "${behavior.slug}" names agent "${behavior.agent}", but no agent with that id is declared in lobu.config.ts`
       );
     }
-    assertBehaviorSkills(watcher);
-    for (const trigger of watcher.triggers ?? []) {
+    assertBehaviorSkills(behavior);
+    for (const trigger of behavior.triggers ?? []) {
       if (trigger.kind !== "event" || !trigger.connectionSlug) continue;
       const connection = (project.connections ?? []).find(
         (candidate) => candidate.slug === trigger.connectionSlug
       );
       if (!connection) {
         throw new ValidationError(
-          `Behavior "${watcher.slug}" references connection "${trigger.connectionSlug}", but it is not declared in lobu.config.ts`
+          `Behavior "${behavior.slug}" references connection "${trigger.connectionSlug}", but it is not declared in lobu.config.ts`
         );
       }
       const declaredConnector = connectorKey(connection.connector);
       if (declaredConnector !== trigger.connector_key) {
         throw new ValidationError(
-          `Behavior "${watcher.slug}" trigger is ${trigger.connector_key}, but connection "${trigger.connectionSlug}" uses ${declaredConnector}`
+          `Behavior "${behavior.slug}" trigger is ${trigger.connector_key}, but connection "${trigger.connectionSlug}" uses ${declaredConnector}`
         );
       }
     }
@@ -955,7 +954,7 @@ export function mapProjectToDesiredState(
     prune: project.prune ?? false,
     ...(Object.keys(memory).length > 0 ? { memory } : {}),
     memorySchema: { entityTypes, relationshipTypes },
-    watchers,
+    behaviors,
     connectors: { definitions: [], authProfiles, connections },
     providers,
     requiredSecrets: [...required].sort(),

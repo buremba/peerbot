@@ -353,7 +353,7 @@ describe("loadDesiredStateFromConfig", () => {
     );
   });
 
-  test("loads a watcher reaction script (raw source) referenced by path", async () => {
+  test("loads a behavior reaction script (raw source) referenced by path", async () => {
     dir = mkdtempSync(join(import.meta.dir, "reaction-"));
     mkdirSync(join(dir, "reactions"));
     writeFileSync(
@@ -383,7 +383,7 @@ describe("loadDesiredStateFromConfig", () => {
     );
 
     const { state } = await loadDesiredStateFromConfig({ cwd: dir });
-    const rs = state.watchers[0]?.reactionScript;
+    const rs = state.behaviors[0]?.reactionScript;
     expect(rs?.sourcePath).toContain("health.reaction.ts");
     expect(rs?.sourceCode).toContain("client.knowledge.save");
   });
@@ -415,7 +415,7 @@ describe("loadDesiredStateFromConfig", () => {
     );
     rmSync(dir, { recursive: true, force: true });
     // Present-but-empty must be rejected (not silently skipped) — parity with
-    // parseWatcher, which validates whenever the field is present.
+    // parseBehavior, which validates whenever the field is present.
     await expect(write("")).rejects.toThrow(/sibling \.ts file/);
     rmSync(dir, { recursive: true, force: true });
     await expect(write("./notes.md")).rejects.toThrow(/must end in `\.ts`/);
@@ -442,7 +442,7 @@ describe("loadDesiredStateFromConfig", () => {
     );
   });
 
-  test("attaches the reaction to the right watcher when only one of several has one", async () => {
+  test("attaches the reaction to the right behavior when only one of several has one", async () => {
     dir = mkdtempSync(join(import.meta.dir, "reactionidx-"));
     mkdirSync(join(dir, "reactions"));
     writeFileSync(
@@ -463,10 +463,10 @@ describe("loadDesiredStateFromConfig", () => {
     );
 
     const { state } = await loadDesiredStateFromConfig({ cwd: dir });
-    expect(state.watchers[0]?.slug).toBe("first");
-    expect(state.watchers[0]?.reactionScript).toBeUndefined();
-    expect(state.watchers[1]?.slug).toBe("second");
-    expect(state.watchers[1]?.reactionScript?.sourcePath).toContain(
+    expect(state.behaviors[0]?.slug).toBe("first");
+    expect(state.behaviors[0]?.reactionScript).toBeUndefined();
+    expect(state.behaviors[1]?.slug).toBe("second");
+    expect(state.behaviors[1]?.reactionScript?.sourcePath).toContain(
       "second.reaction.ts"
     );
   });
@@ -491,13 +491,13 @@ describe("loadDesiredStateFromConfig", () => {
     // Order follows the Behavior's list, not the library's. Descriptions are
     // not part of the snapshot, so a description-only skill edit must not churn
     // versions.
-    expect(state.watchers[0]?.skillSnapshots).toEqual([
+    expect(state.behaviors[0]?.skillSnapshots).toEqual([
       { name: "style", content: "Style rules." },
       { name: "triage", content: "Triage rules." },
     ]);
     // The task statement is the author's and is NOT overwritten by the skill
     // bodies — that conflation is what #2320's follow-up removed.
-    expect(state.watchers[0]?.prompt).toBe("Do the thing.");
+    expect(state.behaviors[0]?.prompt).toBe("Do the thing.");
   });
 
   test("a skills-only Behavior keeps an empty prompt rather than inheriting skill text", async () => {
@@ -516,8 +516,8 @@ describe("loadDesiredStateFromConfig", () => {
       ].join("\n")
     );
     const { state } = await loadDesiredStateFromConfig({ cwd: dir });
-    expect(state.watchers[0]?.prompt).toBe("");
-    expect(state.watchers[0]?.skillSnapshots).toEqual([
+    expect(state.behaviors[0]?.prompt).toBe("");
+    expect(state.behaviors[0]?.skillSnapshots).toEqual([
       { name: "triage", content: "Triage rules." },
     ]);
   });

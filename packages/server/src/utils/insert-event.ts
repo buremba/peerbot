@@ -525,7 +525,7 @@ interface ChangeEventParams {
  * originId, so a retry can't double-write past a unique origin constraint);
  * if both attempts fail the dropped audit row is logged at ERROR with full
  * event context so it's visible in alerting rather than silently lost.
- * Used for entity updates, watcher archival, connection/feed deletion, etc.
+ * Used for entity updates, behavior archival, connection/feed deletion, etc.
  */
 export function recordChangeEvent(params: ChangeEventParams): void {
   if (params.entityIds.length === 0) return;
@@ -573,7 +573,7 @@ interface LifecycleEventParams {
    * Entity-type slug used by dashboard SQL to pivot lifecycle rows
    * (`metadata->>'entity_type'`). Kept as a free-form string so new entity
    * types can emit without touching this file — keep slugs short, lowercase,
-   * singular: `agent`, `connection`, `watcher`, `device`, `member`, `client`.
+   * singular: `agent`, `connection`, `behavior`, `device`, `member`, `client`.
    */
   entityType: string;
   op: LifecycleOp;

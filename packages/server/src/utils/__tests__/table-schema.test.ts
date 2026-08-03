@@ -2,7 +2,6 @@ import { describe, expect, inject, it } from 'vitest';
 import { validateAndScopeQuery } from '../execute-data-sources';
 import {
   buildColumnList,
-  physicalTableFor,
   QUERYABLE_SCHEMA,
   QUERYABLE_TABLE_NAMES,
   SAFE_COLUMN_DEFS,
@@ -15,8 +14,7 @@ describe('QUERYABLE_TABLE_NAMES', () => {
       'entities',
       'events',
       'connections',
-      // Agent-facing relation names: the engine's `watchers` /
-      // `watcher_versions` are exposed as Behavior vocabulary.
+      // Behavior vocabulary is canonical in both query_sql and Postgres.
       'behaviors',
       'event_classifications',
       'behavior_versions',
@@ -33,10 +31,10 @@ describe('QUERYABLE_TABLE_NAMES', () => {
     }
   });
 
-  it('should not expose the retired watcher_windows table (canvas-on-events)', () => {
+  it('should not expose the retired behavior_windows table (canvas-on-events)', () => {
     // Windows are canvas_state event chains now; schema exposure is removed
     // ahead of the two-phase table drop.
-    expect(QUERYABLE_TABLE_NAMES.has('watcher_windows')).toBe(false);
+    expect(QUERYABLE_TABLE_NAMES.has('behavior_windows')).toBe(false);
   });
 
   it('should not include non-allowlisted tables', () => {
@@ -144,8 +142,8 @@ describe('validateAndScopeQuery', () => {
  * projection into the generated CTE, so a schema column that does not exist in
  * the database is injected into every query against that relation — including
  * `SELECT 1 AS one FROM behavior_versions`, which references no column at all.
- * `behavior_versions` listed `sources` (a `watchers` column that has never
- * existed on `watcher_versions`) and was therefore 100% unqueryable in prod,
+ * `behavior_versions` listed `sources` (a `behaviors` column that has never
+ * existed on `behavior_versions`) and was therefore 100% unqueryable in prod,
  * with an error naming a column no caller ever wrote, while this gate stayed
  * green. A one-directional drift check is a half gate.
  *
@@ -209,11 +207,7 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
     const { getDb, pgTextArray } = await import('../../db/client');
     const sql = getDb();
 
-    // Query by PHYSICAL table: an exposed relation may be renamed for the
-    // agent-facing surface (behaviors → watchers). Looking up the relation name
-    // in information_schema would find nothing and silently skip the table —
-    // exactly the "guard skips its own surface" failure mode.
-    const physicalNames = QUERYABLE_SCHEMA.tables.map((t) => physicalTableFor(t.name));
+    const physicalNames = QUERYABLE_SCHEMA.tables.map((t) => t.name);
 
     const rows = await sql`
       SELECT table_name, column_name
@@ -232,7 +226,7 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
 
     const byRelation = new Map<string, Set<string>>();
     for (const t of QUERYABLE_SCHEMA.tables) {
-      const physical = byPhysical.get(physicalTableFor(t.name));
+      const physical = byPhysical.get(t.name);
       if (physical) byRelation.set(t.name, physical);
     }
     return byRelation;

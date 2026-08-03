@@ -25,7 +25,7 @@ import type {
   DesiredOrgProvider,
   DesiredRelationshipType,
   DesiredState,
-  DesiredWatcher,
+  DesiredBehavior,
 } from "./desired-state.js";
 import { declaredConnectorKeys, referencedConnectorKeys } from "./shared.js";
 
@@ -70,16 +70,16 @@ export interface RelationshipTypeDiffRow
   kind: "relationship-type";
 }
 
-export interface WatcherDiffRow
-  extends ResourceRow<DesiredWatcher, RemoteBehavior> {
-  kind: "watcher";
+export interface BehaviorDiffRow
+  extends ResourceRow<DesiredBehavior, RemoteBehavior> {
+  kind: "behavior";
   /**
    * Field names that require a `create_version` + `upgrade` (vs a plain
    * `update`). Apply uses this to route writes to the right admin action.
    */
   versionBoundFields?: string[];
   /**
-   * True when the desired watcher declares a `reaction_script` — server stores
+   * True when the desired behavior declares a `reaction_script` — server stores
    * it write-only, so the diff can't tell whether it changed; apply always
    * re-pushes (idempotent). Matches the auth-profile credentials pattern.
    */
@@ -123,7 +123,7 @@ export interface InferenceProviderDiffRow
    * True when the desired provider declares an API key — the server stores it
    * write-only (can't be read back), so the diff can't tell whether it changed;
    * apply always re-pushes (idempotent). Matches the auth-profile credentials /
-   * watcher reaction-script pattern.
+   * behavior reaction-script pattern.
    */
   keyDeclared?: boolean;
   /**
@@ -138,7 +138,7 @@ export type DiffRow =
   | SettingsDiffRow
   | EntityTypeDiffRow
   | RelationshipTypeDiffRow
-  | WatcherDiffRow
+  | BehaviorDiffRow
   | ConnectorDefinitionDiffRow
   | AuthProfileDiffRow
   | ConnectionDiffRow
@@ -454,24 +454,24 @@ function diffRelationshipType(
 }
 
 /**
- * Watcher drift fields split into two routing categories:
- *   - **scalar** lives on the `watchers` row → `manage_behaviors update`.
- *   - **version-bound** lives on the `watcher_versions` row → must go through
+ * Behavior drift fields split into two routing categories:
+ *   - **scalar** lives on the `behaviors` row → `manage_behaviors update`.
+ *   - **version-bound** lives on the `behavior_versions` row → must go through
  *     `create_version` + `upgrade` (server-side bumps `current_version_id`).
  * The diff returns both lists; apply-cmd routes accordingly.
  *
  * Reaction scripts aren't returned by Behavior lists (write-only on the row),
  * so we can't compare them — apply always re-pushes when declared (idempotent).
- * Remote watchers without a desired model are reported as drift, never deleted.
+ * Remote behaviors without a desired model are reported as drift, never deleted.
  */
-function diffWatcher(
-  desired: DesiredWatcher,
+function diffBehavior(
+  desired: DesiredBehavior,
   remote: RemoteBehavior | undefined
-): WatcherDiffRow {
+): BehaviorDiffRow {
   const reactionScriptDeclared = desired.reactionScript !== undefined;
   if (!remote) {
     return {
-      kind: "watcher",
+      kind: "behavior",
       verb: "create",
       id: desired.slug,
       desired,
@@ -543,7 +543,7 @@ function diffWatcher(
   ) {
     versionBound.push("skills");
   }
-  // Sources live on the watchers row but are written as part of create_version
+  // Sources live on the behaviors row but are written as part of create_version
   // when changed (server copies them to the version's per-assignment scope).
   // Diff against `remote.sources` (also from the row) and route through
   // create_version so the version chain stays consistent.
@@ -574,10 +574,16 @@ function diffWatcher(
   const changed = [...scalar, ...versionBound];
   if (reactionScriptDeclared) changed.push("reaction_script");
   if (changed.length === 0) {
-    return { kind: "watcher", verb: "noop", id: desired.slug, desired, remote };
+    return {
+      kind: "behavior",
+      verb: "noop",
+      id: desired.slug,
+      desired,
+      remote,
+    };
   }
   return {
-    kind: "watcher",
+    kind: "behavior",
     verb: "update",
     id: desired.slug,
     desired,
@@ -873,7 +879,7 @@ export interface RemoteSnapshot {
   agentSettings: Map<string, AgentSettings | null>;
   entityTypes: RemoteEntityType[];
   relationshipTypes: RemoteRelationshipType[];
-  watchers: RemoteBehavior[];
+  behaviors: RemoteBehavior[];
   connectorDefinitions: RemoteConnectorDefinition[];
   authProfiles: RemoteAuthProfile[];
   connections: RemoteConnection[];
@@ -889,7 +895,7 @@ export interface RemoteSnapshot {
  */
 type DesiredStateForDiff = Pick<
   DesiredState,
-  "agents" | "memorySchema" | "watchers" | "connectors" | "providers"
+  "agents" | "memorySchema" | "behaviors" | "connectors" | "providers"
 >;
 
 interface ComputeDiffOptions {
@@ -898,7 +904,7 @@ interface ComputeDiffOptions {
   /**
    * When true, the config declares `prune: true`: it's the source of truth for
    * *definitions*, so a remote definition (entity type, relationship type,
-   * watcher, connector definition) absent from desired is emitted as a `delete`
+   * behavior, connector definition) absent from desired is emitted as a `delete`
    * row instead of an ignored `drift` — INCLUDING definitions created via the
    * dashboard/API. Data (entity/relationship instances), connections, auth
    * profiles, feeds, and agents are never pruned. Default (false)
@@ -1030,20 +1036,23 @@ export function computeDiff(
       }
     }
 
-    const remoteWatcherBySlug = new Map(
-      remote.watchers.map((w) => [w.slug, w])
+    const remoteBehaviorBySlug = new Map(
+      remote.behaviors.map((w) => [w.slug, w])
     );
-    const desiredWatcherSlugs = new Set(desired.watchers.map((w) => w.slug));
-    for (const watcher of desired.watchers) {
-      rows.push(diffWatcher(watcher, remoteWatcherBySlug.get(watcher.slug)));
+    const desiredBehaviorSlugs = new Set(desired.behaviors.map((w) => w.slug));
+    for (const behavior of desired.behaviors) {
+      rows.push(
+        diffBehavior(behavior, remoteBehaviorBySlug.get(behavior.slug))
+      );
     }
-    for (const remoteWatcher of remote.watchers) {
-      if (!desiredWatcherSlugs.has(remoteWatcher.slug)) {
+    for (const remoteBehavior of remote.behaviors) {
+      if (!desiredBehaviorSlugs.has(remoteBehavior.slug)) {
         rows.push({
-          kind: "watcher",
-          verb: prune && !isSystemSlug(remoteWatcher.slug) ? "delete" : "drift",
-          id: remoteWatcher.slug,
-          remote: remoteWatcher,
+          kind: "behavior",
+          verb:
+            prune && !isSystemSlug(remoteBehavior.slug) ? "delete" : "drift",
+          id: remoteBehavior.slug,
+          remote: remoteBehavior,
         });
       }
     }

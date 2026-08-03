@@ -116,16 +116,16 @@ export async function listOrgInstalled(
 		const behaviors = Array.isArray(listed.behaviors) ? listed.behaviors : [];
 		result.behaviors = {
 			kind: "behaviors",
-			items: behaviors.map((watcher: Record<string, unknown>) => ({
-				id: String(watcher.behavior_id ?? ""),
-				name: String(watcher.name ?? watcher.watcher_name ?? "Behavior"),
+			items: behaviors.map((behavior: Record<string, unknown>) => ({
+				id: String(behavior.behavior_id ?? ""),
+				name: String(behavior.name ?? behavior.behavior_name ?? "Behavior"),
 				detail: {
-					slug: watcher.slug,
-					status: watcher.status,
-					agent_id: watcher.agent_id,
-					entity_id: watcher.entity_id,
-					schedule: watcher.schedule,
-					version: watcher.version,
+					slug: behavior.slug,
+					status: behavior.status,
+					agent_id: behavior.agent_id,
+					entity_id: behavior.entity_id,
+					schedule: behavior.schedule,
+					version: behavior.version,
 				},
 			})),
 		};

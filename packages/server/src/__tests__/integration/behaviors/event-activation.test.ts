@@ -6,7 +6,7 @@ import {
 import type { Env } from "../../../index";
 import { manageBehaviors } from "../../../tools/admin/manage_behaviors";
 import { getBehavior } from "../../../tools/get_behavior";
-import { dispatchPendingWatcherRuns } from "../../../watchers/automation";
+import { dispatchPendingBehaviorRuns } from "../../../behaviors/automation";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
@@ -108,7 +108,7 @@ describe("Behavior connector-event activation", () => {
 
 		const sql = getTestDb();
 		const [stored] = await sql`
-			SELECT triggers FROM watchers WHERE id = ${behaviorId}
+			SELECT triggers FROM behaviors WHERE id = ${behaviorId}
 		`;
 		expect(stored?.triggers).toEqual([trigger]);
 		const detail = await getBehavior(
@@ -120,7 +120,7 @@ describe("Behavior connector-event activation", () => {
 		const runs = await sql`
 			SELECT approved_input
 			FROM runs
-			WHERE watcher_id = ${behaviorId}
+			WHERE behavior_id = ${behaviorId}
 			ORDER BY id ASC
 		`;
 		expect(runs).toHaveLength(2);
@@ -195,7 +195,7 @@ describe("Behavior connector-event activation", () => {
 		]);
 		const sql = getTestDb();
 		const runs = await sql`
-			SELECT approved_input FROM runs WHERE watcher_id = ${behaviorId}
+			SELECT approved_input FROM runs WHERE behavior_id = ${behaviorId}
 		`;
 		expect(runs).toHaveLength(1);
 		expect(runs[0]?.approved_input).toMatchObject({
@@ -288,7 +288,7 @@ describe("Behavior connector-event activation", () => {
 		const runs = await getTestDb()`
 			SELECT approved_input
 			FROM runs
-			WHERE watcher_id = ${behaviorId}
+			WHERE behavior_id = ${behaviorId}
 			ORDER BY id ASC
 		`;
 		expect(runs).toHaveLength(2);
@@ -346,7 +346,7 @@ describe("Behavior connector-event activation", () => {
 		const behaviorId = Number(created.behavior_id);
 		const sql = getTestDb();
 		await sql`
-			UPDATE watchers
+			UPDATE behaviors
 			SET next_run_at = NOW() - INTERVAL '1 hour'
 			WHERE id = ${behaviorId}
 		`;
@@ -371,12 +371,12 @@ describe("Behavior connector-event activation", () => {
 			WHERE id = ${activation.runId}
 		`;
 
-		await dispatchPendingWatcherRuns({ runIds: [activation.runId] });
+		await dispatchPendingBehaviorRuns({ runIds: [activation.runId] });
 
 		const [stored] = await sql`
 			SELECT r.status, w.next_run_at
 			FROM runs r
-			JOIN watchers w ON w.id = r.watcher_id
+			JOIN behaviors w ON w.id = r.behavior_id
 			WHERE r.id = ${activation.runId}
 		`;
 		expect(stored.status).toBe("failed");
@@ -444,9 +444,9 @@ describe("Behavior connector-event activation", () => {
 			{ behaviorId: alwaysRunId, created: true, disposition: "queued" },
 		]);
 		const runs = await getTestDb()`
-			SELECT watcher_id FROM runs WHERE run_type = 'behavior'
+			SELECT behavior_id FROM runs WHERE run_type = 'behavior'
 		`;
-		expect(runs.map((run) => Number(run.watcher_id))).toEqual([alwaysRunId]);
+		expect(runs.map((run) => Number(run.behavior_id))).toEqual([alwaysRunId]);
 	});
 
 	it("rejects events and delivery modes the connector does not support", async () => {

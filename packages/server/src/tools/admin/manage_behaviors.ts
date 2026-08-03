@@ -1,18 +1,18 @@
 /**
  * Tool: manage_behaviors
  *
- * Manage Behavior definitions backed by the existing watcher execution engine.
+ * Manage Behavior definitions backed by the existing behavior execution engine.
  *
  * Actions:
- * - create: Create watcher with prompt/schema/sources directly
+ * - create: Create behavior with prompt/schema/sources directly
  * - update: Modify config (model, schedule, sources)
- * - create_version: Create a new version for a watcher (prompt/schema/sources)
- * - create_from_version: Create a new watcher from an existing version
+ * - create_version: Create a new version for a behavior (prompt/schema/sources)
+ * - create_from_version: Create a new behavior from an existing version
  * - complete_window: Complete a window using window_token from read_knowledge
- * - trigger: Manually trigger a watcher run
- * - delete: Remove watcher
+ * - trigger: Manually trigger a behavior run
+ * - delete: Remove behavior
  * - set_reaction_script: Attach automated TypeScript reaction
- * - get_versions: View version history for a watcher
+ * - get_versions: View version history for a behavior
  * - get_version_details: Get full config for a specific version
  * - get_component_reference: Get available components and data types documentation
  * - submit_feedback: Submit feedback on a Behavior window
@@ -51,7 +51,7 @@ import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
 import { getOrgUrlContext } from '../view-urls';
 import { defineFlatActionTool, flatAction } from './action-tool';
-import { requireWatcherAccess } from './manage_behaviors/shared';
+import { requireBehaviorAccess } from './manage_behaviors/shared';
 import {
   handleCreate,
   handleUpdate,
@@ -111,10 +111,10 @@ async function manageBehaviorsImpl(
   // Field-level `update` validation runs before any access check or write-gate
   // so the human-immediate and agent-approval paths reject identically (a
   // version-owned / no-op update can never queue or apply). See
-  // {@link assertWatcherUpdateArgs} for the version-owned / entity_ids / status
+  // {@link assertBehaviorUpdateArgs} for the version-owned / entity_ids / status
   // rationale.
   if (args.action === 'update') {
-    assertWatcherUpdateArgs(args);
+    assertBehaviorUpdateArgs(args);
   }
 
   // Validate organization access based on action type
@@ -131,31 +131,31 @@ async function manageBehaviorsImpl(
       await requireOrgReadAccess(pgSql, ctx);
     }
   } else if (args.action === 'update' && args.behavior_id) {
-    await requireWatcherAccess(pgSql, [args.behavior_id], ctx, 'write');
+    await requireBehaviorAccess(pgSql, [args.behavior_id], ctx, 'write');
   } else if (args.action === 'trigger' && args.behavior_id) {
-    await requireWatcherAccess(pgSql, [args.behavior_id], ctx, 'write');
+    await requireBehaviorAccess(pgSql, [args.behavior_id], ctx, 'write');
   } else if (args.action === 'delete' && args.behavior_ids && args.behavior_ids.length > 0) {
     // delete alone allows missing ids to fall through to its per-id aggregate
     // ("not found or already archived"); every other action stays a hard 403.
-    await requireWatcherAccess(pgSql, args.behavior_ids, ctx, 'write', {
+    await requireBehaviorAccess(pgSql, args.behavior_ids, ctx, 'write', {
       allowMissing: true,
     });
   } else if (args.action === 'complete_window' && args.entity_id) {
     await requireWriteAccess(pgSql, args.entity_id, ctx);
   } else if (args.action === 'create_version' && args.behavior_id) {
-    await requireWatcherAccess(pgSql, [args.behavior_id], ctx, 'write');
+    await requireBehaviorAccess(pgSql, [args.behavior_id], ctx, 'write');
   } else if (args.action === 'set_reaction_script' && args.behavior_id) {
-    await requireWatcherAccess(pgSql, [args.behavior_id], ctx, 'write');
+    await requireBehaviorAccess(pgSql, [args.behavior_id], ctx, 'write');
   } else if (args.action === 'submit_feedback' && args.behavior_id) {
-    await requireWatcherAccess(pgSql, [args.behavior_id], ctx, 'write');
+    await requireBehaviorAccess(pgSql, [args.behavior_id], ctx, 'write');
   } else if (args.action === 'get_feedback' && args.behavior_id) {
-    await requireWatcherAccess(pgSql, [args.behavior_id], ctx, 'read');
+    await requireBehaviorAccess(pgSql, [args.behavior_id], ctx, 'read');
   } else if (args.action === 'list_promoted' && args.behavior_id) {
-    await requireWatcherAccess(pgSql, [args.behavior_id], ctx, 'read');
+    await requireBehaviorAccess(pgSql, [args.behavior_id], ctx, 'read');
   } else if (args.action === 'get_versions' && args.behavior_id) {
-    await requireWatcherAccess(pgSql, [args.behavior_id], ctx, 'read');
+    await requireBehaviorAccess(pgSql, [args.behavior_id], ctx, 'read');
   } else if (args.action === 'get_version_details' && args.behavior_id) {
-    await requireWatcherAccess(pgSql, [args.behavior_id], ctx, 'read');
+    await requireBehaviorAccess(pgSql, [args.behavior_id], ctx, 'read');
   } else if (args.action === 'create_from_version' && args.entity_ids) {
     for (const eid of args.entity_ids) {
       await requireWriteAccess(pgSql, eid, ctx);
@@ -167,30 +167,30 @@ async function manageBehaviorsImpl(
   // stored triggers + only an explicit prompt write. That incomplete pre-check
   // let event-turn → schedule transitions keep an empty prompt.
 
-  // A watcher IS agent config — it's an autonomous-execution definition (prompt,
+  // A behavior IS agent config — it's an autonomous-execution definition (prompt,
   // SQL source, reaction). Gate its create/update/delete under the `agent_config`
   // write class, exactly like editing an agent. A human member applies immediately
   // (resolveWritePolicyDecision returns 'allow' for users); a non-human principal
   // follows the org policy (default: create/update need approval, delete denied).
   // This closes the two-step self-escalation: an agent whose own agent_config
-  // writes require approval can no longer freely mint a watcher to escape its
+  // writes require approval can no longer freely mint a behavior to escape its
   // envelope.
   //
-  // TOCTOU: gateWatcherWrite's escalation guard reads the affected watcher owners
-  // (resolveEffectiveWatcherOwners) and the mutation writes them, but on SEPARATE
-  // pooled connections. A concurrent reassign of the target watcher's agent_id
+  // TOCTOU: gateBehaviorWrite's escalation guard reads the affected behavior owners
+  // (resolveEffectiveBehaviorOwners) and the mutation writes them, but on SEPARATE
+  // pooled connections. A concurrent reassign of the target behavior's agent_id
   // could slip between the check and the write, so the guard would pass on owner A
-  // while the behavior lands on a now-B-owned watcher. We serialize both the guard
+  // while the behavior lands on a now-B-owned behavior. We serialize both the guard
   // AND the mutation under ONE session-level advisory lock keyed by the target's
-  // watcher_group_id. EVERY mutating action that has a resolvable target group
+  // behavior_group_id. EVERY mutating action that has a resolvable target group
   // takes the lock — human or non-human — because the racing reassign is itself an
   // `update` that flows through this same path, so the lock makes them mutually
   // exclusive. Actions with no existing target group (`create`) skip the lock.
   //
   // `require_approval` queues a pending run + card (does NOT apply); `allow`
   // proceeds to the handler; `deny` / foreign-owner still throw.
-  return withWatcherGroupLock(args, ctx, async () => {
-    const gated = await gateWatcherWrite(args, ctx);
+  return withBehaviorGroupLock(args, ctx, async () => {
+    const gated = await gateBehaviorWrite(args, ctx);
     if (gated) return gated;
     return runManageBehaviors(args, env, ctx);
   });
@@ -198,26 +198,26 @@ async function manageBehaviorsImpl(
 
 /**
  * Namespace half of the (int, int) advisory-lock key. Pairs with the
- * watcher_group_id so unrelated lock users never collide with a bare group id.
- * Distinct from the `watcher_create_version` key version-actions.ts takes inside
+ * behavior_group_id so unrelated lock users never collide with a bare group id.
+ * Distinct from the `behavior_create_version` key version-actions.ts takes inside
  * its own handler — that's a different, tx-scoped lock; nesting two distinct
  * advisory keys is safe. This one is SESSION scope so it can span the guard read
  * and the mutation write, which run on different pooled connections.
  */
-const WATCHER_GROUP_LOCK_NS = 'watcher_group_ownership';
+const BEHAVIOR_GROUP_LOCK_NS = 'behavior_group_ownership';
 
 /**
- * Resolve the watcher_group_id whose ownership this action touches — the row the
+ * Resolve the behavior_group_id whose ownership this action touches — the row the
  * escalation guard reads and the mutation writes must not have its owner changed
  * underneath us. Returns null when there is no pre-existing group to race on:
  *   - `create` mints a brand-new row (no target yet).
  *   - `update` targets args.behavior_id → its group.
  *   - `create_version` / `set_reaction_script` write GROUP-WIDE off args.behavior_id.
- *   - `create_from_version` reads a SOURCE version → lock the source watcher's group
+ *   - `create_from_version` reads a SOURCE version → lock the source behavior's group
  *     so a concurrent reassign of the source can't change the owner we clone.
  * All lookups are org-scoped.
  */
-async function resolveTargetWatcherGroupId(
+async function resolveTargetBehaviorGroupId(
   args: ManageBehaviorsArgs,
   ctx: ToolContext
 ): Promise<number | null> {
@@ -228,23 +228,23 @@ async function resolveTargetWatcherGroupId(
     args.action === 'set_reaction_script'
   ) {
     if (args.behavior_id == null) return null;
-    const rows = await sql<{ watcher_group_id: number | null }>`
-      SELECT watcher_group_id FROM watchers
+    const rows = await sql<{ behavior_group_id: number | null }>`
+      SELECT behavior_group_id FROM behaviors
       WHERE id = ${Number(args.behavior_id)} AND organization_id = ${ctx.organizationId}
       LIMIT 1
     `;
-    const gid = rows.length > 0 ? rows[0].watcher_group_id : null;
+    const gid = rows.length > 0 ? rows[0].behavior_group_id : null;
     return gid == null ? null : Number(gid);
   }
   if (args.action === 'create_from_version') {
     if (args.version_id == null) return null;
-    const rows = await sql<{ watcher_group_id: number | null }>`
-      SELECT w.watcher_group_id
-      FROM watcher_versions wv JOIN watchers w ON w.id = wv.watcher_id
+    const rows = await sql<{ behavior_group_id: number | null }>`
+      SELECT w.behavior_group_id
+      FROM behavior_versions wv JOIN behaviors w ON w.id = wv.behavior_id
       WHERE wv.id = ${Number(args.version_id)} AND w.organization_id = ${ctx.organizationId}
       LIMIT 1
     `;
-    const gid = rows.length > 0 ? rows[0].watcher_group_id : null;
+    const gid = rows.length > 0 ? rows[0].behavior_group_id : null;
     return gid == null ? null : Number(gid);
   }
   return null;
@@ -252,7 +252,7 @@ async function resolveTargetWatcherGroupId(
 
 /**
  * Run `fn` (guard + mutation) while holding a SESSION-level Postgres advisory
- * lock on the action's target watcher_group_id. A session lock (vs. the
+ * lock on the action's target behavior_group_id. A session lock (vs. the
  * tx-scoped `pg_advisory_xact_lock`) is required because the guard read and the
  * mutation write happen on different pooled connections and across separate
  * transactions — a tx-scoped lock would release at the guard's implicit commit,
@@ -273,13 +273,13 @@ async function resolveTargetWatcherGroupId(
  * Only the mutating write-gate actions with a resolvable target group are locked;
  * read-only actions and `create` (no pre-existing group) run `fn` directly.
  */
-async function withWatcherGroupLock<T>(
+async function withBehaviorGroupLock<T>(
   args: ManageBehaviorsArgs,
   ctx: ToolContext,
   fn: () => Promise<T>
 ): Promise<T> {
-  if (watcherWriteAction(args.action) === null) return fn();
-  const groupId = await resolveTargetWatcherGroupId(args, ctx);
+  if (behaviorWriteAction(args.action) === null) return fn();
+  const groupId = await resolveTargetBehaviorGroupId(args, ctx);
   if (groupId == null) return fn();
 
   const reserved = await getLockDb().reserve();
@@ -288,7 +288,7 @@ async function withWatcherGroupLock<T>(
     // connect). Bounds advisory-lock wait: 55P03 → coded 409 below.
     await reserved`SELECT set_config('lock_timeout', '30s', false)`;
     try {
-      await reserved`SELECT pg_advisory_lock(hashtext(${WATCHER_GROUP_LOCK_NS}), ${groupId})`;
+      await reserved`SELECT pg_advisory_lock(hashtext(${BEHAVIOR_GROUP_LOCK_NS}), ${groupId})`;
     } catch (err) {
       // lock_timeout expiry (55P03): another holder kept the group busy past
       // the bound. We do NOT hold the lock here — surface a clean retryable
@@ -304,7 +304,7 @@ async function withWatcherGroupLock<T>(
     try {
       return await fn();
     } finally {
-      await reserved`SELECT pg_advisory_unlock(hashtext(${WATCHER_GROUP_LOCK_NS}), ${groupId})`;
+      await reserved`SELECT pg_advisory_unlock(hashtext(${BEHAVIOR_GROUP_LOCK_NS}), ${groupId})`;
     }
   } finally {
     reserved.release();
@@ -313,7 +313,7 @@ async function withWatcherGroupLock<T>(
 
 /** Maps a manage_behaviors action to its agent_config write verb, or null for a
  * read-only / non-definition action that the write-gate doesn't govern. */
-function watcherWriteAction(
+function behaviorWriteAction(
   action: ManageBehaviorsArgs['action']
 ): 'create' | 'update' | 'delete' | null {
   switch (action) {
@@ -340,17 +340,17 @@ function watcherWriteAction(
  *
  *  - `create`: the supplied `args.agent_id` (handleCreate requires it).
  *  - `create_from_version`: IGNORES args.agent_id — the clone inherits the SOURCE
- *    version's watcher.agent_id.
+ *    version's behavior.agent_id.
  *  - `update`: DOES apply args.agent_id → the target's new owner is
  *    `args.agent_id ?? current owner`.
  *  - `create_version` / `set_reaction_script`: IGNORE args.agent_id and write
- *    GROUP-WIDE (WHERE watcher_group_id = …) → EVERY owner in the target's group is
+ *    GROUP-WIDE (WHERE behavior_group_id = …) → EVERY owner in the target's group is
  *    affected; a mixed-owner group means A editing its assignment also rewrites B's
  *    prompt/reaction code. Validate ALL of them.
  *
  * All lookups are org-scoped so a caller can't probe another org.
  */
-async function resolveEffectiveWatcherOwners(
+async function resolveEffectiveBehaviorOwners(
   args: ManageBehaviorsArgs,
   ctx: ToolContext
 ): Promise<Array<string | null>> {
@@ -362,7 +362,7 @@ async function resolveEffectiveWatcherOwners(
       if (!args.version_id) return [];
       const rows = await sql<{ agent_id: string | null }>`
         SELECT w.agent_id
-        FROM watcher_versions wv JOIN watchers w ON w.id = wv.watcher_id
+        FROM behavior_versions wv JOIN behaviors w ON w.id = wv.behavior_id
         WHERE wv.id = ${Number(args.version_id)} AND w.organization_id = ${ctx.organizationId}
         LIMIT 1
       `;
@@ -372,7 +372,7 @@ async function resolveEffectiveWatcherOwners(
       if (args.agent_id != null) return [args.agent_id];
       if (args.behavior_id == null) return [];
       const rows = await sql<{ agent_id: string | null }>`
-        SELECT agent_id FROM watchers
+        SELECT agent_id FROM behaviors
         WHERE id = ${Number(args.behavior_id)} AND organization_id = ${ctx.organizationId}
         LIMIT 1
       `;
@@ -381,12 +381,12 @@ async function resolveEffectiveWatcherOwners(
     case 'create_version':
     case 'set_reaction_script': {
       if (args.behavior_id == null) return [];
-      // Group-wide: EVERY owner in the target watcher's group is affected.
+      // Group-wide: EVERY owner in the target behavior's group is affected.
       const rows = await sql<{ agent_id: string | null }>`
-        SELECT DISTINCT agent_id FROM watchers
+        SELECT DISTINCT agent_id FROM behaviors
         WHERE organization_id = ${ctx.organizationId}
-          AND watcher_group_id = (
-            SELECT watcher_group_id FROM watchers
+          AND behavior_group_id = (
+            SELECT behavior_group_id FROM behaviors
             WHERE id = ${Number(args.behavior_id)} AND organization_id = ${ctx.organizationId}
             LIMIT 1
           )
@@ -399,7 +399,7 @@ async function resolveEffectiveWatcherOwners(
 }
 
 /** Human label for each gated action, used in card titles + notifications. */
-function watcherActionLabel(args: ManageBehaviorsArgs): string {
+function behaviorActionLabel(args: ManageBehaviorsArgs): string {
   switch (args.action) {
     case 'create':
       return `Create Behavior "${args.slug ?? args.name ?? 'new'}"`;
@@ -419,10 +419,10 @@ function watcherActionLabel(args: ManageBehaviorsArgs): string {
 }
 
 /**
- * Fetch a compact current watcher row for the approval card diff. Returns null
+ * Fetch a compact current behavior row for the approval card diff. Returns null
  * when there is no single target (create / bulk delete / missing id).
  */
-async function fetchCurrentWatcher(
+async function fetchCurrentBehavior(
   organizationId: string,
   args: ManageBehaviorsArgs
 ): Promise<Record<string, unknown> | null> {
@@ -430,7 +430,7 @@ async function fetchCurrentWatcher(
   const sql = getDb();
   const rows = await sql`
     SELECT id, slug, name, description, agent_id, schedule, timezone, triggers, status
-    FROM watchers
+    FROM behaviors
     WHERE organization_id = ${organizationId} AND id = ${Number(args.behavior_id)}
     LIMIT 1
   `;
@@ -442,16 +442,16 @@ async function fetchCurrentWatcher(
  * for the gated write so a malformed proposal is rejected at request time, not
  * at approve time.
  *
- * Watcher definition writes have no per-field pre-image; the proposal is the
+ * Behavior definition writes have no per-field pre-image; the proposal is the
  * full original args for a straight re-run on approve (a stale approval may
  * clobber a newer edit — acceptable for launch). Acting principal is persisted
  * so apply can re-run the foreign-owner guard against the original actor.
  */
-function buildWatcherProposal(
+function buildBehaviorProposal(
   args: ManageBehaviorsArgs,
-  acting: { actingAgentId: string | null; actingWatcherId: string | null }
+  acting: { actingAgentId: string | null; actingBehaviorId: string | null }
 ): ManageBehaviorsProposal {
-  const writeAction = watcherWriteAction(args.action);
+  const writeAction = behaviorWriteAction(args.action);
   if (!writeAction) {
     throw new ToolUserError(`action "${args.action}" is not a gated Behavior write`);
   }
@@ -494,7 +494,7 @@ function buildWatcherProposal(
   return {
     args,
     actingAgentId: acting.actingAgentId,
-    actingWatcherId: acting.actingWatcherId,
+    actingBehaviorId: acting.actingBehaviorId,
   };
 }
 
@@ -503,10 +503,10 @@ function buildWatcherProposal(
  * else present on the proposed args is a mutation input humans must be able to
  * review (reaction script, execution_config, explicit null clears, …).
  */
-const WATCHER_APPROVAL_ROUTING_KEYS = new Set(['action']);
+const BEHAVIOR_APPROVAL_ROUTING_KEYS = new Set(['action']);
 
 /** Display sentinel for an explicit null clear (field present, value null). */
-const WATCHER_APPROVAL_CLEARED = '(cleared)';
+const BEHAVIOR_APPROVAL_CLEARED = '(cleared)';
 
 /**
  * Fields `handleUpdate` actually patches — mirrors its `updatedFields.push`
@@ -515,13 +515,13 @@ const WATCHER_APPROVAL_CLEARED = '(cleared)';
  * are intentionally ABSENT: `handleUpdate` writes
  * none of them, so an `update` carrying any used to pass validation and return
  * success with `updated_fields: []` — a silent no-op the caller believed
- * applied. {@link assertWatcherUpdateArgs} rejects them up front (before the
+ * applied. {@link assertBehaviorUpdateArgs} rejects them up front (before the
  * write-gate), so neither the human-immediate nor the agent-approval path can
  * queue or apply a version-owned change via `update`.
  */
-const VERSION_OWNED_WATCHER_FIELDS = ['name', 'description', 'prompt', 'sources'] as const;
+const VERSION_OWNED_BEHAVIOR_FIELDS = ['name', 'description', 'prompt', 'sources'] as const;
 
-const WATCHER_PATCHABLE_FIELDS = [
+const BEHAVIOR_PATCHABLE_FIELDS = [
   'model_config',
   'execution_config',
   // schedule/timezone are projections of triggers (resolveBehaviorTriggerWrite);
@@ -544,13 +544,13 @@ const WATCHER_PATCHABLE_FIELDS = [
  * identically and never reach `handleUpdate` (which would otherwise return a
  * silent `updated_fields: []`).
  */
-function assertWatcherUpdateArgs(args: ManageBehaviorsArgs): void {
+function assertBehaviorUpdateArgs(args: ManageBehaviorsArgs): void {
   if (args.behavior_id == null) {
     throw new ToolUserError('behavior_id is required for update action');
   }
   const present = (keys: readonly string[]): string[] =>
     keys.filter((k) => args[k as keyof ManageBehaviorsArgs] !== undefined);
-  const versionOwned = present(VERSION_OWNED_WATCHER_FIELDS);
+  const versionOwned = present(VERSION_OWNED_BEHAVIOR_FIELDS);
   if (versionOwned.length > 0) {
     throw new ToolUserError(
       `update cannot change version-owned field(s) ${versionOwned.map((f) => `'${f}'`).join(', ')} — use action: 'create_version' to publish a new Behavior version (name/description/prompt/sources inherit from the current version when omitted, and the persisted name cascades on set_as_current).`
@@ -561,7 +561,7 @@ function assertWatcherUpdateArgs(args: ManageBehaviorsArgs): void {
       "update cannot change entity_ids — entity targeting is set at create / create_from_version. To re-target per entity, clone a version with action: 'create_from_version'."
     );
   }
-  if (present(WATCHER_PATCHABLE_FIELDS).length === 0) {
+  if (present(BEHAVIOR_PATCHABLE_FIELDS).length === 0) {
     throw new ToolUserError(
       "update changes runtime config only (e.g. triggers, agent_id, tags, model_config) and needs at least one such field. It cannot change status — a Behavior is retired via action: 'delete' (→ archived); name/description/prompt/sources are version-owned (action: 'create_version')."
     );
@@ -569,20 +569,20 @@ function assertWatcherUpdateArgs(args: ManageBehaviorsArgs): void {
 }
 
 /**
- * Flat watcher mutation fields for the events-tab ActionApprovalCard fallback.
+ * Flat behavior mutation fields for the events-tab ActionApprovalCard fallback.
  * Includes every proposed arg that is present (including explicit `null`
  * clears); only `action` is omitted (shown in the title). Absent fields
  * (`undefined`) are excluded so the card does not invent values.
  */
-function pickWatcherApprovalDisplayFields(args: ManageBehaviorsArgs): Record<string, unknown> {
+function pickBehaviorApprovalDisplayFields(args: ManageBehaviorsArgs): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
-    if (WATCHER_APPROVAL_ROUTING_KEYS.has(key)) continue;
+    if (BEHAVIOR_APPROVAL_ROUTING_KEYS.has(key)) continue;
     if (value === undefined) continue;
     // Explicit null = clear (e.g. schedule: null). Render as a visible sentinel
     // so the card can show the clear rather than dropping the field.
     if (value === null) {
-      out[key] = WATCHER_APPROVAL_CLEARED;
+      out[key] = BEHAVIOR_APPROVAL_CLEARED;
       continue;
     }
     if (Array.isArray(value)) {
@@ -608,7 +608,7 @@ function pickWatcherApprovalDisplayFields(args: ManageBehaviorsArgs): Record<str
 }
 
 /** Human-readable titles for common Behavior approval fields. */
-const WATCHER_APPROVAL_FIELD_TITLES: Record<string, string> = {
+const BEHAVIOR_APPROVAL_FIELD_TITLES: Record<string, string> = {
   slug: 'Slug',
   name: 'Name',
   description: 'Description',
@@ -641,12 +641,12 @@ const WATCHER_APPROVAL_FIELD_TITLES: Record<string, string> = {
   name_pattern: 'Name pattern',
 };
 
-function buildWatcherApprovalInputSchema(fields: Record<string, unknown>): Record<string, unknown> {
+function buildBehaviorApprovalInputSchema(fields: Record<string, unknown>): Record<string, unknown> {
   const properties: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(fields)) {
-    const baseTitle = WATCHER_APPROVAL_FIELD_TITLES[key] ?? key;
-    const title = value === WATCHER_APPROVAL_CLEARED ? `${baseTitle} (cleared)` : baseTitle;
-    // Every field is readOnly: the watcher approval card is a review-and-decide
+    const baseTitle = BEHAVIOR_APPROVAL_FIELD_TITLES[key] ?? key;
+    const title = value === BEHAVIOR_APPROVAL_CLEARED ? `${baseTitle} (cleared)` : baseTitle;
+    // Every field is readOnly: the behavior approval card is a review-and-decide
     // surface, not an editor. The apply path always executes the ORIGINAL
     // proposal.args, so an editable field would silently discard the reviewer's
     // change. readOnly makes the form render the proposed value as inspectable
@@ -683,13 +683,13 @@ function buildWatcherApprovalInputSchema(fields: Record<string, unknown>): Recor
  * `acting` is the principal resolved at gate time (same seam as the foreign-
  * owner check) and is persisted on the proposal so apply can re-validate.
  */
-async function queueWatcherWriteForApproval(
+async function queueBehaviorWriteForApproval(
   args: ManageBehaviorsArgs,
   ctx: ToolContext,
-  acting: { actingAgentId: string | null; actingWatcherId: string | null }
+  acting: { actingAgentId: string | null; actingBehaviorId: string | null }
 ): Promise<ManageBehaviorsResult> {
-  const proposal = buildWatcherProposal(args, acting);
-  const writeAction = watcherWriteAction(args.action)!;
+  const proposal = buildBehaviorProposal(args, acting);
+  const writeAction = behaviorWriteAction(args.action)!;
 
   // create attributes ownership via created_by — fail at request time rather
   // than after the human approves an unattributable create.
@@ -697,7 +697,7 @@ async function queueWatcherWriteForApproval(
     throw new ToolUserError('create requires an authenticated caller to own the new Behavior');
   }
 
-  const current = await fetchCurrentWatcher(ctx.organizationId, args);
+  const current = await fetchCurrentBehavior(ctx.organizationId, args);
   if (args.action === 'update' && !current) {
     throw new ToolUserError(`Behavior "${args.behavior_id}" not found`, 404);
   }
@@ -721,12 +721,12 @@ async function queueWatcherWriteForApproval(
   `;
   const runId = Number((inserted[0] as { id: unknown }).id);
 
-  const label = watcherActionLabel(args);
+  const label = behaviorActionLabel(args);
   // Flat display fields for the events-tab fallback card (ActionApprovalCard
   // only renders input when interactionInputSchema is present). Keep the
   // nested proposal in metadata for the apply path / history replay.
-  const displayInput = pickWatcherApprovalDisplayFields(args);
-  const inputSchema = buildWatcherApprovalInputSchema(displayInput);
+  const displayInput = pickBehaviorApprovalDisplayFields(args);
+  const inputSchema = buildBehaviorApprovalInputSchema(displayInput);
   const event = await insertEvent({
     entityIds: args.entity_id != null ? [args.entity_id] : [],
     organizationId: ctx.organizationId,
@@ -744,7 +744,7 @@ async function queueWatcherWriteForApproval(
       action_key: MANAGE_BEHAVIORS_ACTION_KEY,
       action: args.action,
       resourceKind: InteractionResourceKind.Behavior,
-      watcher_id: args.behavior_id ?? null,
+      behavior_id: args.behavior_id ?? null,
       proposal,
       current: current ?? null,
       initiator: {
@@ -762,8 +762,8 @@ async function queueWatcherWriteForApproval(
   const eventId = Number(event.id);
 
   const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
-  // An `update` is config-shaped, so its review surface is the watcher edit form
-  // prefilled via `?run_id=` (WI-0.3, watcher parity with manage_agents): the
+  // An `update` is config-shaped, so its review surface is the behavior edit form
+  // prefilled via `?run_id=` (WI-0.3, behavior parity with manage_agents): the
   // reviewer sees the proposed change in the real form and Approves/Rejects. The
   // route is nested under the OWNING agent (an update may reassign the owner via
   // args.agent_id, so prefer the proposed owner, else the current one). create /
@@ -814,17 +814,17 @@ async function queueWatcherWriteForApproval(
  * equal `actingAgentId`. Pass null to skip (humans are ungoverned here — same
  * as the gate's `actor.kind === 'user'` branch). Throws ToolUserError 403.
  *
- * Uses {@link resolveEffectiveWatcherOwners} so the check matches what each
+ * Uses {@link resolveEffectiveBehaviorOwners} so the check matches what each
  * handler actually persists (not the supplied args.agent_id alone).
  */
-async function assertWatcherOwnersMatchActingAgent(
+async function assertBehaviorOwnersMatchActingAgent(
   args: ManageBehaviorsArgs,
   ctx: ToolContext,
   actingAgentId: string | null,
   actorKind: string = 'agent'
 ): Promise<void> {
   if (actingAgentId == null) return;
-  const owners = await resolveEffectiveWatcherOwners(args, ctx);
+  const owners = await resolveEffectiveBehaviorOwners(args, ctx);
   const foreign = owners.find((o) => o !== actingAgentId);
   if (foreign !== undefined) {
     throw new ToolUserError(
@@ -839,14 +839,14 @@ async function assertWatcherOwnersMatchActingAgent(
  * manage_operations' approve handler once a human confirms. Re-runs the original
  * write handler with the held args. `ownerUserId` is the original requester
  * (persisted on the run), so an approving admin doesn't become the created
- * watcher's `created_by`.
+ * behavior's `created_by`.
  *
- * Re-takes the watcher-group advisory lock and re-runs the foreign-owner guard
+ * Re-takes the behavior-group advisory lock and re-runs the foreign-owner guard
  * against the PERSISTED acting agent (not the approver). If ownership changed
  * between queue and approve (e.g. group reassigned to another agent), the apply
  * fails closed — the approve handler supersedes the card to 'failed'.
  *
- * Watcher definition writes have no per-field pre-image; this is a straight
+ * Behavior definition writes have no per-field pre-image; this is a straight
  * re-run — a stale approval may clobber a newer edit (acceptable for launch)
  * when ownership is still valid.
  */
@@ -857,14 +857,14 @@ export async function applyManageBehaviorsProposal(
   ownerUserId: string | null
 ): Promise<ManageBehaviorsResult> {
   const args = proposal.args;
-  const writeAction = watcherWriteAction(args.action);
+  const writeAction = behaviorWriteAction(args.action);
   // create attributes ownership to the ORIGINAL requester, not the approver.
   const applyCtx: ToolContext = writeAction === 'create' ? { ...ctx, userId: ownerUserId } : ctx;
   // Lock + re-gate under the same session advisory lock as the request path so
   // a concurrent reassign can't slip between the ownership re-check and the write.
-  return withWatcherGroupLock(args, applyCtx, async () => {
+  return withBehaviorGroupLock(args, applyCtx, async () => {
     // Humans leave actingAgentId null — skip, matching the gate.
-    await assertWatcherOwnersMatchActingAgent(
+    await assertBehaviorOwnersMatchActingAgent(
       args,
       applyCtx,
       proposal.actingAgentId ?? null,
@@ -876,7 +876,7 @@ export async function applyManageBehaviorsProposal(
     // approve handler supersedes the card to 'failed'. Humans (null actingAgentId)
     // are ungoverned here, matching the request-path gate.
     if (proposal.actingAgentId != null) {
-      const writeGateAction = watcherWriteAction(args.action);
+      const writeGateAction = behaviorWriteAction(args.action);
       if (writeGateAction) {
         const decision = await resolveWritePolicyDecision({
           organizationId: applyCtx.organizationId,
@@ -902,45 +902,45 @@ export async function applyManageBehaviorsProposal(
 }
 
 /**
- * Enforce the `agent_config` write-gate for a watcher definition write. No-op for
+ * Enforce the `agent_config` write-gate for a behavior definition write. No-op for
  * read-only actions and for human members (whose decision is always 'allow').
  * Returns a pending_approval result when the policy requires approval (queued
  * via the same runs/events primitive manage_agents uses); throws on deny or
  * foreign-owner escalation; returns null when the write may apply now.
  */
-async function gateWatcherWrite(
+async function gateBehaviorWrite(
   args: ManageBehaviorsArgs,
   ctx: ToolContext
 ): Promise<ManageBehaviorsResult | null> {
-  const action = watcherWriteAction(args.action);
+  const action = behaviorWriteAction(args.action);
   if (!action) return null;
-  // Resolve the actor through the shared seam. A reaction script editing watchers
-  // acts as its own watcher (ctx.actingWatcherId) — the seam folds that watcher's
+  // Resolve the actor through the shared seam. A reaction script editing behaviors
+  // acts as its own behavior (ctx.actingBehaviorId) — the seam folds that behavior's
   // owning agent so the agent's agent_config envelope binds and the reaction can't
   // self-escalate. manage_behaviors has no behavior_source arg, so only the session
-  // watcher applies.
+  // behavior applies.
   const actor = await resolveActingPrincipal(getDb(), {
     organizationId: ctx.organizationId,
     userId: ctx.userId,
     agentId: ctx.agentId,
-    sessionWatcherId: ctx.actingWatcherId ?? null,
+    sessionBehaviorId: ctx.actingBehaviorId ?? null,
   });
   // Non-human principal identity captured for the ownership guard AND (when
   // queued) the proposal. Same formula the gate has always used.
   const actingAgentId = actor.kind !== 'user' ? (actor.ownerAgentId ?? actor.id) : null;
-  const actingWatcherId = ctx.actingWatcherId != null ? String(ctx.actingWatcherId) : null;
+  const actingBehaviorId = ctx.actingBehaviorId != null ? String(ctx.actingBehaviorId) : null;
 
   // Escalation guard: a non-human caller must not end up installing behavior OWNED by
-  // another agent. A watcher's `agent_id` IS its policy principal, so if restricted
-  // agent A could create/clone/edit a watcher (or a group-shared prompt/reaction)
+  // another agent. A behavior's `agent_id` IS its policy principal, so if restricted
+  // agent A could create/clone/edit a behavior (or a group-shared prompt/reaction)
   // that stays owned by looser agent B, every later run would fold B's (looser)
   // envelope instead of A's, side-stepping A's deny rules. We validate what each
-  // handler ACTUALLY persists (see resolveEffectiveWatcherOwners) — NOT the supplied
+  // handler ACTUALLY persists (see resolveEffectiveBehaviorOwners) — NOT the supplied
   // `agent_id` (create_from_version/create_version/set_reaction_script ignore it) —
   // and ALL owners a group-wide write touches. EVERY affected owner must be the actor
   // itself. Humans are ungoverned here and may own/assign freely.
   // MUST run BEFORE queueing so a foreign-owner proposal never becomes a pending card.
-  await assertWatcherOwnersMatchActingAgent(args, ctx, actingAgentId, actor.kind);
+  await assertBehaviorOwnersMatchActingAgent(args, ctx, actingAgentId, actor.kind);
 
   const decision = await resolveWritePolicyDecision({
     organizationId: ctx.organizationId,
@@ -953,9 +953,9 @@ async function gateWatcherWrite(
   });
   if (decision === 'allow') return null;
   if (decision === 'require_approval') {
-    return queueWatcherWriteForApproval(args, ctx, {
+    return queueBehaviorWriteForApproval(args, ctx, {
       actingAgentId,
-      actingWatcherId,
+      actingBehaviorId,
     });
   }
   throw new ToolUserError(

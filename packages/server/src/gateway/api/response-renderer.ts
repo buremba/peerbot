@@ -15,7 +15,7 @@ import { labelProviderErrorBody } from "../../utils/url-builder.js";
 import type { ThreadResponsePayload } from "../infrastructure/queue/types.js";
 import type { ResponseRenderer } from "../platform/response-renderer.js";
 import type { SseManager } from "../services/sse-manager.js";
-import { resolveWatcherRunsByMessageIds } from "../../watchers/run-completion.js";
+import { resolveBehaviorRunsByMessageIds } from "../../behaviors/run-completion.js";
 import { readCurrentSuggestion } from "../suggestions/persist-suggestion.js";
 
 const logger = createLogger("api-response-renderer");
@@ -111,7 +111,7 @@ export class ApiResponseRenderer implements ResponseRenderer {
 
     logger.info(`Broadcast completion to session ${sessionId}`);
 
-    await this.resolveWatcherRunsFromPayload(payload, { ok: true });
+    await this.resolveBehaviorRunsFromPayload(payload, { ok: true });
   }
 
   /**
@@ -175,7 +175,7 @@ export class ApiResponseRenderer implements ResponseRenderer {
     const spec = code ? AGENT_ERRORS[code] : undefined;
     if (spec?.silent) {
       // Silent codes (SESSION_TIMEOUT) are retried and must not surface.
-      await this.resolveWatcherRunsFromPayload(payload, {
+      await this.resolveBehaviorRunsFromPayload(payload, {
         ok: false,
         error: "agent error",
       });
@@ -202,20 +202,20 @@ export class ApiResponseRenderer implements ResponseRenderer {
 
     logger.error(`Broadcast error to session ${sessionId}: ${errorText}`);
 
-    await this.resolveWatcherRunsFromPayload(payload, {
+    await this.resolveBehaviorRunsFromPayload(payload, {
       ok: false,
       error: typeof errorText === "string" ? errorText : "agent error",
     });
   }
 
   /**
-   * Resolve any watcher runs whose dispatched messageId matches the terminal
+   * Resolve any behavior runs whose dispatched messageId matches the terminal
    * event. Checks both the immediate messageId and processedMessageIds since
    * a single turn can batch-process multiple messages. Durable and replica-
    * safe: keyed on runs.dispatched_message_id, idempotent via the active-
    * status guard, so it's correct on whichever replica claims the row.
    */
-  private async resolveWatcherRunsFromPayload(
+  private async resolveBehaviorRunsFromPayload(
     payload: ThreadResponsePayload,
     result: { ok: true } | { ok: false; error: string }
   ): Promise<void> {
@@ -225,9 +225,9 @@ export class ApiResponseRenderer implements ResponseRenderer {
       if (id) ids.add(id);
     }
     try {
-      await resolveWatcherRunsByMessageIds(ids, result);
+      await resolveBehaviorRunsByMessageIds(ids, result);
     } catch (error) {
-      logger.error("Failed to resolve watcher runs from terminal API payload", {
+      logger.error("Failed to resolve behavior runs from terminal API payload", {
         error,
       });
     }

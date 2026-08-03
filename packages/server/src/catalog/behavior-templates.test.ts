@@ -4,7 +4,7 @@ import { runScript } from "../sandbox/run-script";
 import {
 	compileReactionScript,
 	extractReactionInputSchema,
-} from "../watchers/reaction-executor";
+} from "../behaviors/reaction-executor";
 import { BEHAVIOR_CATALOG_TEMPLATES } from "./behavior-templates";
 
 const duplicateMergeTemplate = BEHAVIOR_CATALOG_TEMPLATES.find(

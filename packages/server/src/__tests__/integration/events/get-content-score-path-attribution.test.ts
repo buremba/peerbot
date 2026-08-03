@@ -174,7 +174,7 @@ describe('getContent > score path honours forwarded filters', () => {
 
     const sql = getTestDb();
     await sql`
-      INSERT INTO watcher_window_events (window_id, event_id, watcher_id)
+      INSERT INTO behavior_window_events (window_id, event_id, behavior_id)
       VALUES
         (${chatgptEventId}, ${chatgptEventId}, ${BEHAVIOR_A}),
         (${cliEventId}, ${cliEventId}, ${BEHAVIOR_B})

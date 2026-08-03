@@ -5,7 +5,7 @@ import { isUnresolvedModelRef } from "../model-sentinel.js";
  * Enforce the EXACT-model allow-list against a requested model ref. This is the
  * pure core of the universal dispatch gate applied in the deployment manager —
  * the single point every dispatch lane (direct API, Listen bridge,
- * chat-instance, watcher HTTP, scheduled-job direct enqueue) converges on
+ * chat-instance, behavior HTTP, scheduled-job direct enqueue) converges on
  * before a worker runs.
  *
  * Decision B semantics — NO org-default escalation:

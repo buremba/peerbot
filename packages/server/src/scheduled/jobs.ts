@@ -12,7 +12,7 @@ import type { CoreServices } from '../gateway/services/core-services';
 import { getChatInstanceManager } from '../lobu/gateway';
 import { cleanupExpiredMcpSessions } from '../mcp-handler';
 import logger from '../utils/logger';
-import { runWatcherAutomationTick } from '../watchers/automation';
+import { runBehaviorAutomationTick } from '../behaviors/automation';
 import { checkStalledExecutions } from './check-stalled-executions';
 import { runConnectorHealthCheck } from '../connectors/connector-health';
 import { retryPendingFeedAutoPausedSignals } from '../behaviors/platform-events';
@@ -208,7 +208,7 @@ function registerMaintenanceTasks(
   //
   // Also redelivers feed.auto_paused signals if activation was lost after a
   // hard pause (idempotent delivery_id). Remediation Behaviors come from the
-  // Behavior catalog — not auto-created watchers.
+  // Behavior catalog — not auto-created behaviors.
   scheduler.register(
     'connector-health-alert',
     async () => {
@@ -305,7 +305,7 @@ function registerMaintenanceTasks(
   );
 
   // Stale device-worker reaper — deletes device_workers rows that are unseen
-  // for 30+ days AND have no pinned connections/watchers/auth-profiles. Safety
+  // for 30+ days AND have no pinned connections/behaviors/auth-profiles. Safety
   // net for orphaning that identity-reuse-at-mint can't cover (extension
   // uninstall, "clear extension data", abandoned second machine): those rows
   // have no live credential anywhere, so they're dead and only clutter the
@@ -347,20 +347,20 @@ function registerMaintenanceTasks(
     { cron: '31 3 * * *' },
   );
 
-  // Watcher automation: reconcile in-flight runs, materialize newly-due runs,
+  // Behavior automation: reconcile in-flight runs, materialize newly-due runs,
   // dispatch pending runs. The orphaned-runs reset is bounded and idempotent
   // so it runs every tick — no per-pod first-tick latch needed.
   //
   // Each phase is isolated: a throw in one (e.g. the `malformed array literal`
   // bug that wedged reconcile, lobu#1046) must NOT abort the later phases —
-  // otherwise a single fault stops materialize+dispatch and no watcher fires.
+  // otherwise a single fault stops materialize+dispatch and no behavior fires.
   scheduler.register(
-    'watcher-automation',
+    'behavior-automation',
     async () => {
-      const { errors, ...summary } = await runWatcherAutomationTick(env);
+      const { errors, ...summary } = await runBehaviorAutomationTick(env);
       logger.info(
         { ...summary, ...(errors.length > 0 ? { errors } : {}) },
-        '[task] watcher-automation completed',
+        '[task] behavior-automation completed',
       );
     },
     { cron: '* * * * *' },

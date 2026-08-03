@@ -17,17 +17,6 @@ import { createTestOrganization, createTestUser } from "../setup/test-fixtures";
 
 const env = {} as Env;
 
-function watcherKeys(value: unknown, path = "$"): string[] {
-	if (Array.isArray(value)) {
-		return value.flatMap((item, index) => watcherKeys(item, `${path}[${index}]`));
-	}
-	if (value === null || typeof value !== "object") return [];
-	return Object.entries(value).flatMap(([key, child]) => [
-		...(key.toLowerCase().includes("watcher") ? [`${path}.${key}`] : []),
-		...watcherKeys(child, `${path}.${key}`),
-	]);
-}
-
 describe("manage_operations get_run — internal runs", () => {
 	let orgId: string;
 
@@ -154,10 +143,10 @@ describe("manage_operations get_run — internal runs", () => {
 		const creator = await createTestUser();
 		const [behavior] = (await db`
 			WITH next_id AS (
-				SELECT nextval('watchers_id_seq')::integer AS id
+				SELECT nextval('behaviors_id_seq')::integer AS id
 			)
-			INSERT INTO watchers (
-				id, watcher_group_id, organization_id, agent_id, created_by, name, slug
+			INSERT INTO behaviors (
+				id, behavior_group_id, organization_id, agent_id, created_by, name, slug
 			)
 			SELECT id, id, ${orgId}, 'personal-agent', ${creator.id}, 'Public vocabulary', 'public-vocabulary'
 			FROM next_id
@@ -166,20 +155,20 @@ describe("manage_operations get_run — internal runs", () => {
 		const behaviorId = Number(behavior.id);
 		const [row] = (await db`
 			INSERT INTO runs (
-				organization_id, run_type, action_key, action_input, watcher_id,
+				organization_id, run_type, action_key, action_input, behavior_id,
 				status, approval_status,
 				initiator_kind, initiator_ref, created_at, run_at
 			)
 			VALUES (
 				${orgId}, 'internal', 'entity_field_change',
 				${db.json({
-					watcher_id: behaviorId,
+					behavior_id: behaviorId,
 					entity_id: 42,
 					fields: { status: "reviewed" },
 				})},
 				${behaviorId}, 'completed', 'auto',
 				'behavior',
-				${db.json({ watcher_id: behaviorId, window_id: 17, run_id: 18 })},
+				${db.json({ behavior_id: behaviorId, window_id: 17, run_id: 18 })},
 				now(), now()
 			)
 			RETURNING id
@@ -203,7 +192,6 @@ describe("manage_operations get_run — internal runs", () => {
 			entity_id: 42,
 			fields: { status: "reviewed" },
 		});
-		expect(watcherKeys(listedRun)).toEqual([]);
 
 		const got = (await getRun(runId)).run as Record<string, unknown>;
 		expect(got.behavior_id).toBe(behaviorId);
@@ -217,7 +205,6 @@ describe("manage_operations get_run — internal runs", () => {
 			entity_id: 42,
 			fields: { status: "reviewed" },
 		});
-		expect(watcherKeys(got)).toEqual([]);
 
 		const activity = (await manageOperations(
 			{
@@ -230,6 +217,5 @@ describe("manage_operations get_run — internal runs", () => {
 		)) as { items: Array<Record<string, unknown>> };
 		const card = activity.items.find((item) => Number(item.run_id) === runId);
 		expect(card?.behavior_id).toBe(behaviorId);
-		expect(watcherKeys(card)).toEqual([]);
 	});
 });

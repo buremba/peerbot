@@ -8,7 +8,7 @@
  * the computed key would be "stability::app-crashes"
  */
 
-import type { KeyingConfig } from '../types/watchers';
+import type { KeyingConfig } from '../types/behaviors';
 import { getValueAtPath } from './object-path';
 
 /**

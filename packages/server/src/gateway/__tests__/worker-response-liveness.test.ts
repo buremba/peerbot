@@ -98,7 +98,7 @@ function mintToken(opts?: {
     ...(opts?.omitOrganizationId ? {} : { organizationId: "org-1" }),
     ...(opts?.omitConnectionId ? {} : { connectionId: "connection-1" }),
     platform: "slack",
-    source: "watcher-run",
+    source: "behavior-run",
     ...(opts?.omitResponseThreadId
       ? {}
       : { responseThreadId: "slack:chan-1:conv-1" }),
@@ -264,7 +264,7 @@ describe("POST /worker/response — authoritative tenant", () => {
       responseChannel: "chan-1",
       responseThreadId: "slack:chan-1:conv-1",
       teamId: "team-1",
-      source: "watcher-run",
+      source: "behavior-run",
       senderId: "user-1",
     });
     expect(input.customEvent?.data?.event).toMatchObject({
@@ -277,7 +277,7 @@ describe("POST /worker/response — authoritative tenant", () => {
       connectionId: "connection-1",
       agentId: "agent-1",
       organizationId: "org-1",
-      source: "watcher-run",
+      source: "behavior-run",
       question: "Proceed?",
     });
   });
@@ -338,7 +338,7 @@ describe("POST /worker/response — authoritative tenant", () => {
       chatId: "chan-1",
       responseChannel: "chan-1",
       teamId: "team-1",
-      source: "watcher-run",
+      source: "behavior-run",
       senderId: "user-1",
     });
     expect(
@@ -353,7 +353,7 @@ describe("POST /worker/response — authoritative tenant", () => {
       platform: "slack",
       agentId: "agent-1",
       organizationId: "org-1",
-      source: "watcher-run",
+      source: "behavior-run",
     });
   });
 });

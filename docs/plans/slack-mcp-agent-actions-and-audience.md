@@ -4,7 +4,7 @@
 
 > **Architecture update (2026-07-17):** Reach/listening is now a canonical Event
 > Behavior and internal audience readers project active message triggers
-> directly from `watchers.triggers`. `agent_channel_bindings` references below
+> directly from `behaviors.triggers`. `agent_channel_bindings` references below
 > are historical context, not a current table.
 
 Status: DESIGN. Verified against code on branch `feat/authz-audience-ui` (base `0c4cec56c`) and against live Slack docs/endpoints, 2026-06-28.

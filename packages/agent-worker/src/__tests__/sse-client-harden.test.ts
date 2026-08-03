@@ -191,8 +191,8 @@ describe("handleEvent job validation", () => {
       "job",
       makeJobEvent({
         platformMetadata: {
-          source: "watcher-run",
-          intent: { kind: "watcher_run", runId: 42, watcherId: 7 },
+          source: "behavior-run",
+          intent: { kind: "behavior_run", runId: 42, behaviorId: 7 },
         },
       })
     );
@@ -200,7 +200,7 @@ describe("handleEvent job validation", () => {
     expect(handleThreadMessage).toHaveBeenCalledTimes(1);
     expect(
       handleThreadMessage.mock.calls[0]?.[0].platformMetadata.intent
-    ).toEqual({ kind: "watcher_run", runId: 42, watcherId: 7 });
+    ).toEqual({ kind: "behavior_run", runId: 42, behaviorId: 7 });
   });
 });
 
@@ -668,7 +668,7 @@ describe("live steering classification", () => {
 
   test("keeps automation and attachments as follow-up turns", () => {
     for (const source of [
-      "watcher-run",
+      "behavior-run",
       "scheduled-job",
       "connector-repair",
       "internal",

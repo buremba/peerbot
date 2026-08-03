@@ -689,7 +689,7 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
 
   // Device data ALWAYS lands in the user's personal org — device tokens are
   // force-bound there (see oauth/device/approve + mint-child-token), and a
-  // team org reaches a device by pinning a watcher/connection to it
+  // team org reaches a device by pinning a behavior/connection to it
   // (resolveDeviceClaimableOrgs), not by re-binding the device. So auto-wire
   // targets the personal org regardless of where a legacy device_workers row
   // is still homed (older pairings may still carry a team org_id; they

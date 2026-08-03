@@ -123,7 +123,7 @@ function mintToken(opts: {
     organizationId: "org-1",
     connectionId: "connection-1",
     responseThreadId: "slack:chan-1:thread-1",
-    source: "watcher-run",
+    source: "behavior-run",
     runId: opts.runId,
     messageId: opts.messageId,
     ...(opts.adminGrant
@@ -174,7 +174,7 @@ describe("POST /worker/token/refresh", () => {
     expect(data!.messageId).toBe("m1");
     expect(data!.connectionId).toBe("connection-1");
     expect(data!.responseThreadId).toBe("slack:chan-1:thread-1");
-    expect(data!.source).toBe("watcher-run");
+    expect(data!.source).toBe("behavior-run");
     expect(data!.deploymentName).toBe(DEPLOYMENT);
     expect(data!.organizationId).toBe("org-1");
     expect(data!.adminTools).toEqual(["manage_agents"]);

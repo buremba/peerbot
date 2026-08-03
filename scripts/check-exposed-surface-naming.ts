@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 /**
- * Guard: keep the product name "Behavior" on the agent-facing surface.
+ * Guard: keep "Behavior" canonical across the live repository.
  *
- * The word "watcher" remains an internal engine/DB term, but must not appear in:
+ * The retired term may remain only in immutable migration history and the
+ * negative fixtures for this guard. It must not appear in:
  *
  *   - MCP tool schemas, names, descriptions, or titles
  *   - ClientSDK discovery metadata, aliases, or namespace method names
@@ -17,13 +18,10 @@
  * Comments are ignored except in the published connector-sdk declaration file,
  * where JSDoc is part of the public contract.
  *
- * Internal identifiers such as `actingWatcherId`, DB table/column names, and
- * implementation comments remain allowed outside those exposed constructs.
- * Source only — never dist/ or tests.
- *
  * Run: bun scripts/check-exposed-surface-naming.ts
  */
 
+import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -470,7 +468,55 @@ function scanFullText(file: string, violations: Violation[]): void {
   }
 }
 
+const CANONICAL_SCAN_EXCLUSIONS = new Set([
+  "CHANGELOG.md",
+  "scripts/check-exposed-surface-naming.ts",
+  "scripts/__tests__/check-exposed-surface-naming.test.ts",
+  "packages/server/src/__tests__/integration/db/behavior-schema-vocabulary.test.ts",
+  // Migration fixtures must name the retired side to prove rollback/replay.
+  "packages/server/src/__tests__/setup/immutable-migration.ts",
+  "packages/server/src/__tests__/integration/migrations/behavior-vocabulary-migration.test.ts",
+  "packages/server/src/__tests__/integration/migrations/invalid-index-heal-migration.test.ts",
+  "packages/server/src/__tests__/integration/behaviors/stale-behavior-approval-migration.test.ts",
+]);
+
+function isCanonicalScanException(file: string): boolean {
+  return (
+    CANONICAL_SCAN_EXCLUSIONS.has(file) ||
+    file.startsWith("db/migrations/") ||
+    file === "AGENTS.md" ||
+    file.endsWith("/AGENTS.md")
+  );
+}
+
+/** Scan every tracked live text file, including the Owletto submodule. */
+function scanCanonicalVocabulary(violations: Violation[]): void {
+  const repositories = [REPO_ROOT, join(REPO_ROOT, "packages/owletto")];
+  for (const repository of repositories) {
+    const prefix = repository === REPO_ROOT ? "" : "packages/owletto/";
+    const output = execFileSync("git", ["-C", repository, "ls-files", "-z"], {
+      encoding: "utf8",
+    });
+    for (const path of output.split("\0")) {
+      if (!path) continue;
+      const repoPath = `${prefix}${path}`;
+      if (isCanonicalScanException(repoPath)) continue;
+      const file = join(repository, path);
+      let content: string;
+      try {
+        content = readFileSync(file, "utf8");
+      } catch {
+        continue;
+      }
+      if (content.includes("\0") || !BANNED.test(content)) continue;
+      scanFullText(file, violations);
+    }
+  }
+}
+
 const violations: Violation[] = [];
+
+scanCanonicalVocabulary(violations);
 
 // Public connector type declarations: JSDoc is published with the types.
 scanFullText(
@@ -544,7 +590,7 @@ unique.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
 
 if (unique.length > 0) {
   console.error(
-    `check-exposed-surface-naming: "watcher" is banned on the agent-facing surface ` +
+    `check-exposed-surface-naming: "watcher" is banned from live repository vocabulary ` +
       `(use Behavior / behavior_*). Found ${unique.length} occurrence(s):\n`
   );
   for (const violation of unique) {
@@ -553,13 +599,13 @@ if (unique.length > 0) {
     );
   }
   console.error(
-    `\nScope: MCP tool schemas/descriptions, ClientSDK discovery and callable ` +
-      `method names, public response types, and the reaction client types. Internal engine ` +
-      `names outside exposed schema constructs remain allowed.`
+    `\nScope: all tracked live code and documentation, plus semantic scans of ` +
+      `MCP schemas, ClientSDK types, query_sql, and reaction contracts. Only ` +
+      `immutable migration replay and negative naming fixtures are exempt.`
   );
   process.exit(1);
 }
 
 console.log(
-  "check-exposed-surface-naming: clean — no agent-facing 'watcher' on exposed surface."
+  "check-exposed-surface-naming: clean — Behavior is canonical across live tracked files."
 );

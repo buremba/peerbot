@@ -107,7 +107,7 @@ export function resolveEffectiveEnv(env: Env, job: PollResponse): Env {
 }
 
 /**
- * Execute a run (sync, action, or watcher).
+ * Execute a run (sync, action, or behavior).
  *
  * Dispatches to sync, action, or behavior execution based on run_type.
  */

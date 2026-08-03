@@ -25,24 +25,24 @@ import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 
-type WatcherDispatchSource = 'scheduled' | 'manual' | 'event';
+type BehaviorDispatchSource = 'scheduled' | 'manual' | 'event';
 
-export interface WatcherRunPayload {
-  watcher_id: number;
+export interface BehaviorRunPayload {
+  behavior_id: number;
   agent_id: string;
   window_start: string;
   window_end: string;
-  dispatch_source: WatcherDispatchSource;
+  dispatch_source: BehaviorDispatchSource;
   /**
-   * Snapshot of the watcher's `current_version_id` at run-creation time.
+   * Snapshot of the behavior's `current_version_id` at run-creation time.
    * The agent and `complete_window` use this fixed version for the entire
    * extraction lifecycle so a mid-run group edit cannot validate v1's output
    * against v2's schema.
    */
   version_id: number | null;
   /**
-   * When non-null, the watcher is pinned to a user-owned device worker.
-   * The server-side dispatcher (`packages/server/src/watchers/automation.ts`)
+   * When non-null, the behavior is pinned to a user-owned device worker.
+   * The server-side dispatcher (`packages/server/src/behaviors/automation.ts`)
    * MUST refuse to claim such rows — they are claimed exclusively by the
    * matching device worker via `/api/workers/poll`. Mirrors the
    * `connections.device_worker_id` lane that the worker poll already
@@ -81,7 +81,7 @@ function behaviorEventTriggerKey(trigger: BehaviorEventTrigger): string {
   });
 }
 
-const WATCHER_EXECUTION_UNIQUE_INDEX = 'idx_runs_executing_per_behavior';
+const BEHAVIOR_EXECUTION_UNIQUE_INDEX = 'idx_runs_executing_per_behavior';
 
 /**
  * Claim one pending Behavior run while holding the durable per-Behavior row
@@ -89,22 +89,22 @@ const WATCHER_EXECUTION_UNIQUE_INDEX = 'idx_runs_executing_per_behavior';
  * replicas cannot promote different queued runs from the same Behavior at the
  * same time.
  */
-export async function claimPendingWatcherRun(
+export async function claimPendingBehaviorRun(
   tx: DbClient,
   params: {
     runId: number;
-    watcherId: number;
+    behaviorId: number;
     claimedBy: string;
     status: 'claimed' | 'running';
   }
 ): Promise<boolean> {
-  const watcher = await tx`
+  const behavior = await tx`
     SELECT id
-    FROM watchers
-    WHERE id = ${params.watcherId}
+    FROM behaviors
+    WHERE id = ${params.behaviorId}
     FOR UPDATE SKIP LOCKED
   `;
-  if (watcher.length === 0) return false;
+  if (behavior.length === 0) return false;
 
   try {
     const claimed = await tx.savepoint(
@@ -118,13 +118,13 @@ export async function claimPendingWatcherRun(
             END,
             claimed_by = ${params.claimedBy}
         WHERE r.id = ${params.runId}
-          AND r.watcher_id = ${params.watcherId}
+          AND r.behavior_id = ${params.behaviorId}
           AND r.run_type = 'behavior'
           AND r.status = 'pending'
           AND NOT EXISTS (
             SELECT 1
             FROM runs active
-            WHERE active.watcher_id = r.watcher_id
+            WHERE active.behavior_id = r.behavior_id
               AND active.run_type = 'behavior'
               AND active.status IN ('claimed', 'running')
           )
@@ -134,9 +134,9 @@ export async function claimPendingWatcherRun(
     return claimed.length > 0;
   } catch (error) {
     // During a rolling deployment an older replica may still claim without
-    // taking the watcher row lock. The unique index remains authoritative;
+    // taking the behavior row lock. The unique index remains authoritative;
     // contain that expected contention inside the savepoint and skip the run.
-    if (isUniqueViolation(error, WATCHER_EXECUTION_UNIQUE_INDEX)) return false;
+    if (isUniqueViolation(error, BEHAVIOR_EXECUTION_UNIQUE_INDEX)) return false;
     throw error;
   }
 }
@@ -466,14 +466,14 @@ export async function createSyncRun(
   }
 }
 
-async function findActiveWatcherRun(
+async function findActiveBehaviorRun(
   sql: DbClient,
-  watcherId: number
+  behaviorId: number
 ): Promise<{ id: number; status: string } | null> {
   const existing = await sql`
     SELECT id, status
     FROM runs
-    WHERE watcher_id = ${watcherId}
+    WHERE behavior_id = ${behaviorId}
       AND run_type = 'behavior'
       AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
     ORDER BY created_at ASC
@@ -488,32 +488,32 @@ async function findActiveWatcherRun(
   };
 }
 
-async function createWatcherRunWithClient(
+async function createBehaviorRunWithClient(
   sql: DbClient,
   params: {
     organizationId: string;
-    watcherId: number;
+    behaviorId: number;
     agentId: string;
     windowStart: string;
     windowEnd: string;
-    dispatchSource: WatcherDispatchSource;
+    dispatchSource: BehaviorDispatchSource;
     deviceWorkerId?: string | null;
     agentKind?: string | null;
     sourceFingerprint?: string;
   }
 ): Promise<{ runId: number; status: string; created: boolean }> {
-  const existing = await findActiveWatcherRun(sql, params.watcherId);
+  const existing = await findActiveBehaviorRun(sql, params.behaviorId);
   if (existing) {
     logger.info(
-      `[queue] Reusing active watcher run ${existing.id} for watcher ${params.watcherId}`
+      `[queue] Reusing active behavior run ${existing.id} for behavior ${params.behaviorId}`
     );
     return { runId: existing.id, status: existing.status, created: false };
   }
 
-  // Snapshot the watcher's current_version_id at run-creation time so the
+  // Snapshot the behavior's current_version_id at run-creation time so the
   // entire run uses a fixed version even if the group is edited mid-run.
   const versionRows = await sql`
-    SELECT current_version_id FROM watchers WHERE id = ${params.watcherId} LIMIT 1
+    SELECT current_version_id FROM behaviors WHERE id = ${params.behaviorId} LIMIT 1
   `;
   const snapshotVersionId =
     versionRows.length > 0 && versionRows[0].current_version_id != null
@@ -534,8 +534,8 @@ async function createWatcherRunWithClient(
       ? params.agentKind.trim()
       : null;
 
-  const payload: WatcherRunPayload = {
-    watcher_id: params.watcherId,
+  const payload: BehaviorRunPayload = {
+    behavior_id: params.behaviorId,
     agent_id: params.agentId,
     window_start: params.windowStart,
     window_end: params.windowEnd,
@@ -547,7 +547,7 @@ async function createWatcherRunWithClient(
   };
   const idempotencyKey = [
     'behavior',
-    params.watcherId,
+    params.behaviorId,
     params.dispatchSource,
     params.windowStart,
     params.windowEnd,
@@ -557,7 +557,7 @@ async function createWatcherRunWithClient(
     INSERT INTO runs (
       organization_id,
       run_type,
-      watcher_id,
+      behavior_id,
       approval_status,
       status,
       approved_input,
@@ -566,7 +566,7 @@ async function createWatcherRunWithClient(
     ) VALUES (
       ${params.organizationId},
       'behavior',
-      ${params.watcherId},
+      ${params.behaviorId},
       'auto',
       'pending',
       ${sql.json(payload)},
@@ -580,20 +580,20 @@ async function createWatcherRunWithClient(
   const status = String((inserted[0] as { status: unknown }).status);
 
   logger.info(
-    `[queue] Created watcher run ${runId} for watcher ${params.watcherId} (${params.dispatchSource})`
+    `[queue] Created behavior run ${runId} for behavior ${params.behaviorId} (${params.dispatchSource})`
   );
 
   return { runId, status, created: true };
 }
 
-export async function createWatcherRun(
+export async function createBehaviorRun(
   params: {
     organizationId: string;
-    watcherId: number;
+    behaviorId: number;
     agentId: string;
     windowStart: string;
     windowEnd: string;
-    dispatchSource: WatcherDispatchSource;
+    dispatchSource: BehaviorDispatchSource;
     deviceWorkerId?: string | null;
     agentKind?: string | null;
     sourceFingerprint?: string;
@@ -604,15 +604,15 @@ export async function createWatcherRun(
 
   try {
     if (db) {
-      return await createWatcherRunWithClient(sql, params);
+      return await createBehaviorRunWithClient(sql, params);
     }
 
-    return await sql.begin(async (tx) => createWatcherRunWithClient(tx, params));
+    return await sql.begin(async (tx) => createBehaviorRunWithClient(tx, params));
   } catch (error) {
     if (isUniqueViolation(error, 'runs_idempotency_key_uniq')) {
       const idempotencyKey = [
         'behavior',
-        params.watcherId,
+        params.behaviorId,
         params.dispatchSource,
         params.windowStart,
         params.windowEnd,
@@ -629,7 +629,7 @@ export async function createWatcherRun(
         : null;
       if (existing) {
         logger.info(
-          `[queue] Reusing concurrent watcher run ${existing.id} for watcher ${params.watcherId}`
+          `[queue] Reusing concurrent behavior run ${existing.id} for behavior ${params.behaviorId}`
         );
         return { runId: existing.id, status: existing.status, created: false };
       }
@@ -642,9 +642,9 @@ export async function createWatcherRun(
       const rows = await sql`
         SELECT id, status
         FROM runs
-        WHERE watcher_id = ${params.watcherId}
+        WHERE behavior_id = ${params.behaviorId}
           AND run_type = 'behavior'
-          AND watcher_id IS NOT NULL
+          AND behavior_id IS NOT NULL
           AND status = 'pending'
           AND COALESCE(approved_input->>'dispatch_source', 'scheduled') <> 'event'
         LIMIT 1
@@ -654,13 +654,13 @@ export async function createWatcherRun(
         : null;
       if (existing) {
         logger.info(
-          `[queue] Reusing concurrent pending non-event watcher run ${existing.id} for watcher ${params.watcherId}`
+          `[queue] Reusing concurrent pending non-event behavior run ${existing.id} for behavior ${params.behaviorId}`
         );
         return { runId: existing.id, status: existing.status, created: false };
       }
     }
 
-    logger.error({ error, watcherId: params.watcherId }, '[queue] Failed to create watcher run');
+    logger.error({ error, behaviorId: params.behaviorId }, '[queue] Failed to create behavior run');
     throw error;
   }
 }
@@ -697,7 +697,7 @@ export type BehaviorEventRunResult =
 export async function createBehaviorEventRun(
   params: {
     organizationId: string;
-    watcherId: number;
+    behaviorId: number;
     agentId: string;
     trigger: BehaviorEventTrigger;
     signal: ConnectorTriggerSignal;
@@ -708,12 +708,12 @@ export async function createBehaviorEventRun(
 ): Promise<BehaviorEventRunResult> {
   const sql = db ?? getDb();
   const execute = async (tx: DbClient): Promise<BehaviorEventRunResult> => {
-    await lockBehaviorForActivation(tx, params.watcherId);
+    await lockBehaviorForActivation(tx, params.behaviorId);
 
     const duplicate = await tx`
       SELECT id, status
       FROM runs
-      WHERE watcher_id = ${params.watcherId}
+      WHERE behavior_id = ${params.behaviorId}
         AND run_type = 'behavior'
         AND COALESCE(approved_input->'delivery_ids', '[]'::jsonb)
             @> ${tx.json([params.signal.delivery_id])}::jsonb
@@ -743,7 +743,7 @@ export async function createBehaviorEventRun(
       const pending = await tx`
         SELECT id, status, approved_input
         FROM runs
-        WHERE watcher_id = ${params.watcherId}
+        WHERE behavior_id = ${params.behaviorId}
           AND run_type = 'behavior'
           AND status = 'pending'
           AND approved_input->>'dispatch_source' = 'event'
@@ -753,14 +753,14 @@ export async function createBehaviorEventRun(
         FOR UPDATE
       `;
       if (pending.length > 0) {
-        const input = (pending[0]?.approved_input ?? {}) as WatcherRunPayload;
+        const input = (pending[0]?.approved_input ?? {}) as BehaviorRunPayload;
         const signals = input.trigger_signals ??
           (input.trigger_signal ? [input.trigger_signal] : []);
         const deliveryIds = input.delivery_ids ??
           signals.map((signal) => signal.delivery_id);
         const currentWindowStart = Date.parse(input.window_start);
         const currentWindowEnd = Date.parse(input.window_end);
-        const nextInput: WatcherRunPayload = {
+        const nextInput: BehaviorRunPayload = {
           ...input,
           window_start: Number.isFinite(currentWindowStart) &&
               currentWindowStart <= safeOccurredAt.getTime()
@@ -801,7 +801,7 @@ export async function createBehaviorEventRun(
     // `min_cooldown_seconds`. We hold the per-Behavior advisory lock, so the
     // read-and-consume inside this claim cannot interleave with another
     // replica handling a concurrent delivery.
-    if (!(await claimBehaviorCooldown(tx, params.watcherId))) {
+    if (!(await claimBehaviorCooldown(tx, params.behaviorId))) {
       return {
         runId: null,
         status: 'suppressed',
@@ -812,15 +812,15 @@ export async function createBehaviorEventRun(
 
     const versionRows = await tx`
       SELECT current_version_id
-      FROM watchers
-      WHERE id = ${params.watcherId}
+      FROM behaviors
+      WHERE id = ${params.behaviorId}
       LIMIT 1
     `;
     const versionId = versionRows[0]?.current_version_id == null
       ? null
       : Number(versionRows[0]?.current_version_id);
-    const payload: WatcherRunPayload = {
-      watcher_id: params.watcherId,
+    const payload: BehaviorRunPayload = {
+      behavior_id: params.behaviorId,
       agent_id: params.agentId,
       window_start: signalWindowStart,
       window_end: signalWindowEnd,
@@ -837,12 +837,12 @@ export async function createBehaviorEventRun(
     };
     const inserted = await tx`
       INSERT INTO runs (
-        organization_id, run_type, watcher_id, approval_status, status,
+        organization_id, run_type, behavior_id, approval_status, status,
         approved_input, idempotency_key, created_at
       ) VALUES (
-        ${params.organizationId}, 'behavior', ${params.watcherId}, 'auto',
+        ${params.organizationId}, 'behavior', ${params.behaviorId}, 'auto',
         'pending', ${tx.json(payload)},
-        ${`behavior:${params.watcherId}:${params.signal.delivery_id}`},
+        ${`behavior:${params.behaviorId}:${params.signal.delivery_id}`},
         current_timestamp
       )
       RETURNING id, status
@@ -866,7 +866,7 @@ export async function createBehaviorEventRun(
       const rows = await sql`
         SELECT id, status
         FROM runs
-        WHERE idempotency_key = ${`behavior:${params.watcherId}:${params.signal.delivery_id}`}
+        WHERE idempotency_key = ${`behavior:${params.behaviorId}:${params.signal.delivery_id}`}
         ORDER BY created_at DESC
         LIMIT 1
       `;
@@ -988,7 +988,7 @@ export async function createConnectorOperationRun(params: {
    * approve time against the principal that queued it, not the approver (sol
    * review #5). Null for a human requester (no per-principal policy applies).
    */
-  policyPrincipalKind?: 'agent' | 'watcher' | 'user' | null;
+  policyPrincipalKind?: 'agent' | 'behavior' | 'user' | null;
   policyPrincipalId?: string | null;
   /**
    * Optional transaction handle. When passed, the run INSERT (and its

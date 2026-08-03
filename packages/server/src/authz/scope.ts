@@ -50,7 +50,7 @@ export function authzScopeFromToolContext(ctx: {
 
 /**
  * A headless/service scope: no principal, so only org-visible rows are returned
- * (fail-closed for private data). Use for watchers / scheduled jobs / internal
+ * (fail-closed for private data). Use for behaviors / scheduled jobs / internal
  * reads that run without a requesting user.
  */
 export function headlessScope(organizationId: string): AuthzScope {

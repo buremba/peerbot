@@ -737,7 +737,7 @@ credentialRoutes.post('/local-init', async (c) => {
   // /api/workers/* middleware checks for `device_worker:run` / `mcp:admin`
   // in mcpAuthInfo.scopes, and a Better Auth session carries no scopes.
   // Mint a worker-scoped PAT alongside the session so the menu bar's
-  // watcher poll loop and the Chrome extension's device-worker poll both
+  // behavior poll loop and the Chrome extension's device-worker poll both
   // work zero-config. PostgreSQL still holds the truth (PAT hash in
   // `personal_access_tokens`, session row in `session`); nothing on disk.
   const workerPat = await new PersonalAccessTokenService(sql).create(

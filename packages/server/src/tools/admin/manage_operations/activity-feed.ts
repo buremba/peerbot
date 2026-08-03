@@ -117,15 +117,15 @@ export function runHref(
 	row: {
 		id: number;
 		run_type: string;
-		watcher_id: number | null;
+		behavior_id: number | null;
 		connection_id: number | null;
 		connector_key: string | null;
 		approval_status: string | null;
 		agent_id: string | null;
 	},
 ): string | null {
-	if (row.run_type === "behavior" && row.watcher_id != null && row.agent_id) {
-		return `/${ownerSlug}/agents/${row.agent_id}/behaviors/${row.watcher_id}`;
+	if (row.run_type === "behavior" && row.behavior_id != null && row.agent_id) {
+		return `/${ownerSlug}/agents/${row.agent_id}/behaviors/${row.behavior_id}`;
 	}
 	if (
 		(row.run_type === "sync" || row.run_type === "action") &&
@@ -153,8 +153,8 @@ export function runHref(
 
 function runTitle(row: {
 	run_type: string;
-	watcher_name: string | null;
-	watcher_id: number | null;
+	behavior_name: string | null;
+	behavior_id: number | null;
 	feed_display_name: string | null;
 	feed_key: string | null;
 	connection_display_name: string | null;
@@ -164,9 +164,9 @@ function runTitle(row: {
 }): string {
 	if (row.run_type === "behavior") {
 		return (
-			row.watcher_name ??
-			(row.watcher_id != null
-				? `Behavior #${row.watcher_id}`
+			row.behavior_name ??
+			(row.behavior_id != null
+				? `Behavior #${row.behavior_id}`
 				: `Run #${row.id}`)
 		);
 	}
@@ -197,7 +197,7 @@ function runTitle(row: {
 function collapseKeyForRun(row: {
 	run_type: string;
 	connection_id: number | null;
-	watcher_id: number | null;
+	behavior_id: number | null;
 	connector_key: string | null;
 	feed_id: number | null;
 }): string | null {
@@ -208,8 +208,8 @@ function collapseKeyForRun(row: {
 		}
 		return null;
 	}
-	if (row.run_type === "behavior" && row.watcher_id != null) {
-		return `watcher:${row.watcher_id}`;
+	if (row.run_type === "behavior" && row.behavior_id != null) {
+		return `behavior:${row.behavior_id}`;
 	}
 	return null;
 }
@@ -372,24 +372,24 @@ export async function listOrgActivity(opts: {
 		if (runKinds.length > 0) {
 			const sql = getDb();
 			// When agent-scoped, restrict to that agent's Behavior runs. The join to
-			// `watchers` already exposes `w.agent_id`; a non-null agentId turns the
-			// LEFT JOIN into an effective inner filter (runs with no watcher, i.e.
+			// `behaviors` already exposes `w.agent_id`; a non-null agentId turns the
+			// LEFT JOIN into an effective inner filter (runs with no behavior, i.e.
 			// bare syncs/actions, are dropped — they aren't agent-owned).
 			const agentFilter = opts.agentId
 				? sql`AND w.agent_id = ${opts.agentId}`
 				: sql``;
 			const rows = (await sql`
-        SELECT r.id, r.run_type, r.watcher_id, r.connection_id, r.feed_id,
+        SELECT r.id, r.run_type, r.behavior_id, r.connection_id, r.feed_id,
                r.connector_key, r.action_key AS operation_key,
                r.approval_status, r.status, r.error_message, r.items_collected,
                r.created_at, r.completed_at,
                f.feed_key, f.display_name AS feed_display_name,
                c.display_name AS connection_display_name,
-               w.name AS watcher_name, w.agent_id
+               w.name AS behavior_name, w.agent_id
         FROM runs r
         LEFT JOIN feeds f ON f.id = r.feed_id
         LEFT JOIN connections c ON c.id = r.connection_id
-        LEFT JOIN watchers w ON w.id = r.watcher_id
+        LEFT JOIN behaviors w ON w.id = r.behavior_id
         WHERE r.organization_id = ${opts.organizationId}
           AND r.run_type = ANY(${pgTextArray(runKinds)}::text[])
           ${agentFilter}
@@ -398,7 +398,7 @@ export async function listOrgActivity(opts: {
       `) as unknown as Array<{
 				id: number;
 				run_type: string;
-				watcher_id: number | null;
+				behavior_id: number | null;
 				connection_id: number | null;
 				feed_id: number | null;
 				connector_key: string | null;
@@ -411,7 +411,7 @@ export async function listOrgActivity(opts: {
 				feed_key: string | null;
 				feed_display_name: string | null;
 				connection_display_name: string | null;
-				watcher_name: string | null;
+				behavior_name: string | null;
 				agent_id: string | null;
 			}>;
 
@@ -444,7 +444,7 @@ export async function listOrgActivity(opts: {
 					href: runHref(opts.ownerSlug, r),
 					run_id: r.id,
 					connection_id: r.connection_id ?? undefined,
-					behavior_id: r.watcher_id ?? undefined,
+					behavior_id: r.behavior_id ?? undefined,
 					collapseKey: collapseKeyForRun(r),
 					itemsCollected: r.items_collected,
 				});

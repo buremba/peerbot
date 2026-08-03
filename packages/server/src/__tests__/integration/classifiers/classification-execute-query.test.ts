@@ -31,7 +31,7 @@ function basisVector(slot: number): number[] {
   return v;
 }
 
-/** Seed a global (no-watcher, no-entity) classify_facet with two basis-vector attributes. */
+/** Seed a global (no-behavior, no-entity) classify_facet with two basis-vector attributes. */
 async function seedFacet(opts: {
   orgId: string;
   createdBy: string;
@@ -53,7 +53,7 @@ async function seedFacet(opts: {
   const [row] = (await sql`
     INSERT INTO classify_facet (
       organization_id, slug, name, attribute_key, status, created_by,
-      watcher_id, entity_ids, min_similarity, fallback_value, attribute_values
+      behavior_id, entity_ids, min_similarity, fallback_value, attribute_values
     ) VALUES (
       ${opts.orgId}, ${opts.slug}, ${`${opts.slug} classifier`}, ${opts.slug}, 'active', ${opts.createdBy},
       NULL, NULL, ${opts.minSimilarity}, ${opts.fallbackValue}, ${sql.json(attributeValues as never)}

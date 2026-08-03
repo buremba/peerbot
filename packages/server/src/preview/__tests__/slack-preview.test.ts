@@ -49,7 +49,7 @@ let USER_ID = "";
 
 async function clearChatBehaviors(): Promise<void> {
   await getDb()`
-    UPDATE watchers
+    UPDATE behaviors
     SET status = 'archived', updated_at = current_timestamp
     WHERE status = 'active'
       AND tags @> ARRAY['system:chat-link']::text[]

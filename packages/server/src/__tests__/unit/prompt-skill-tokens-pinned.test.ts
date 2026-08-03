@@ -15,7 +15,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { assertPromptSkillTokensPinned } from "../../tools/admin/manage_behaviors/shared";
-import { extractSkillNamesFromPromptTokens } from "../../watchers/source-refs";
+import { extractSkillNamesFromPromptTokens } from "../../behaviors/source-refs";
 
 const chip = (name: string, label = name) =>
 	`@[skill:${name}:${label}](/acme/agents/a/skills/${name})`;

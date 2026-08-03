@@ -634,7 +634,7 @@ describe('first-party tool-name coverage', () => {
   // entry is dead code — kept here so the test fails the day someone wires
   // it up without first registering the tool. Empty this set when cleaned up.
   const KNOWN_DEAD_NAMES = new Set<string>([
-    // useDeleteWindow in web/src/hooks/use-watchers.ts has no caller;
+    // useDeleteWindow in web/src/hooks/use-behaviors.ts has no caller;
     // manage_queue was never registered. Delete the hook or add the tool.
     'manage_queue',
   ]);

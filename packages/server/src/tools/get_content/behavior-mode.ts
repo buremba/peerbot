@@ -1,7 +1,7 @@
 /**
  * Tool: read_knowledge — behavior mode.
  *
- * When behavior_id is provided, fetch content for all of the watcher's
+ * When behavior_id is provided, fetch content for all of the behavior's
  * sources, compute the pending window, and generate a window_token for the
  * complete_window action.
  */
@@ -11,31 +11,31 @@ import type { ContentItem } from '@lobu/connector-sdk';
 import { inferBehaviorGranularityFromSchedule } from '@lobu/connector-sdk';
 import { type DbClient, parsePgNumberArray } from '../../db/client';
 import type { Env } from '../../index';
-import type { KeyingConfig, UnprocessedRange, WatcherSource } from '../../types/watchers';
+import type { KeyingConfig, UnprocessedRange, BehaviorSource } from '../../types/behaviors';
 import { parseDateAlias, toEndOfDay } from '../../utils/date-aliases';
 import { type DataSourceContext, executeDataSources } from '../../utils/execute-data-sources';
 import logger from '../../utils/logger';
 import { runMetric } from '../../metrics/run-metric';
-import { getRecentFeedbackSummary } from '../../utils/watcher-feedback';
-import { getAvailableOperations, getPastReactionsSummary } from '../../utils/watcher-reactions';
-import { deriveWatcherExtractionSchema } from '../../utils/watcher-extraction-schema';
+import { getRecentFeedbackSummary } from '../../utils/behavior-feedback';
+import { getAvailableOperations, getPastReactionsSummary } from '../../utils/behavior-reactions';
+import { deriveBehaviorExtractionSchema } from '../../utils/behavior-extraction-schema';
 import { computePendingWindow, foldUnprocessedRanges } from '../../utils/window-utils';
 import {
   DEFAULT_BEHAVIOR_SOURCE_QUERY,
-  type NormalizedWatcherSource,
-  normalizeWatcherSources,
-} from '../../watchers/source-refs';
+  type NormalizedBehaviorSource,
+  normalizeBehaviorSources,
+} from '../../behaviors/source-refs';
 import type { GetContentArgs } from './schema';
 import type { ClassifierConfig, GetContentResult } from './types';
 import { parseJson, parseRecordArray } from './types';
 import { stableJson } from '../../utils/insert-event';
 
 // ============================================
-// Content Query (inlined from watcher-content-query)
+// Content Query (inlined from behavior-content-query)
 // ============================================
 
 interface ContentQueryParams {
-  sources: WatcherSource[];
+  sources: BehaviorSource[];
   window_start: string;
   window_end: string;
   organizationId: string;
@@ -55,8 +55,8 @@ interface ContentQueryParams {
 }
 
 function isMetricSource(
-  source: NormalizedWatcherSource
-): source is NormalizedWatcherSource & {
+  source: NormalizedBehaviorSource
+): source is NormalizedBehaviorSource & {
   ref: { type: 'metric'; entityType: string; measure: string };
 } {
   return source.kind === 'metric' && source.ref?.type === 'metric';
@@ -80,7 +80,7 @@ async function queryContentData(
     windowStart: params.window_start,
     windowEnd: params.window_end,
   };
-  const normalizedSources = await normalizeWatcherSources(
+  const normalizedSources = await normalizeBehaviorSources(
     sql,
     params.organizationId,
     params.sources
@@ -101,8 +101,8 @@ async function queryContentData(
 
           const nextParams = [...queryParams];
           const where: string[] = [
-            '_watcher_page.id IS NOT NULL',
-            '_watcher_page.occurred_at IS NOT NULL',
+            '_behavior_page.id IS NOT NULL',
+            '_behavior_page.occurred_at IS NOT NULL',
           ];
           if (page.beforeOccurredAt && page.beforeId) {
             nextParams.push(page.beforeOccurredAt);
@@ -110,8 +110,8 @@ async function queryContentData(
             nextParams.push(page.beforeId);
             const idParam = `$${nextParams.length}`;
             where.push(
-              `(_watcher_page.occurred_at < ${occurredAtParam}::timestamptz OR ` +
-                `(_watcher_page.occurred_at = ${occurredAtParam}::timestamptz AND _watcher_page.id < ${idParam}::bigint))`
+              `(_behavior_page.occurred_at < ${occurredAtParam}::timestamptz OR ` +
+                `(_behavior_page.occurred_at = ${occurredAtParam}::timestamptz AND _behavior_page.id < ${idParam}::bigint))`
             );
           }
           nextParams.push(page.limit + 1);
@@ -120,9 +120,9 @@ async function queryContentData(
           return {
             // security-allowed: scopedQuery is an internally-built SQL fragment; where[] entries use $N placeholders.
             sql:
-              `SELECT * FROM (${scopedQuery}) AS _watcher_page ` +
+              `SELECT * FROM (${scopedQuery}) AS _behavior_page ` +
               `WHERE ${where.join(' AND ')} ` +
-              'ORDER BY _watcher_page.occurred_at DESC NULLS LAST, _watcher_page.id DESC ' +
+              'ORDER BY _behavior_page.occurred_at DESC NULLS LAST, _behavior_page.id DESC ' +
               `LIMIT ${limitParam}`,
             params: nextParams,
           };
@@ -153,8 +153,8 @@ async function queryContentData(
   );
 
   // Source-aware totals for token estimation. The old count was keyed on the
-  // watcher's entity_ids, which read 0 for @feed / @connection / org-scoped
-  // watchers even when content existed. Count over each normalized event source,
+  // behavior's entity_ids, which read 0 for @feed / @connection / org-scoped
+  // behaviors even when content existed. Count over each normalized event source,
   // scoped the same way as the content query (org / entity_ids / window).
   // @metric / @entity sources are context, not content, so they're excluded.
   // Char estimates use to_jsonb(row)->>'payload_text' so custom SQL/default
@@ -261,25 +261,25 @@ async function queryContentData(
  * A skipped window is persisted as durable zero-content cursor progress, so
  * subsequent ticks fingerprint the next period instead of retrying stale time.
  */
-export async function fingerprintWatcherSources(args: {
+export async function fingerprintBehaviorSources(args: {
   sql: DbClient;
-  watcherId: number;
+  behaviorId: number;
   windowStart: string;
   windowEnd: string;
 }): Promise<{ fingerprint: string; empty: boolean }> {
   const rows = await args.sql`
     SELECT w.organization_id, w.entity_ids, w.sources, w.created_by, v.version_sources
-    FROM watchers w
-    LEFT JOIN watcher_versions v ON v.id = w.current_version_id
-    WHERE w.id = ${args.watcherId}
+    FROM behaviors w
+    LEFT JOIN behavior_versions v ON v.id = w.current_version_id
+    WHERE w.id = ${args.behaviorId}
     LIMIT 1
   `;
   const row = rows[0];
-  if (!row) throw new Error(`Behavior ${args.watcherId} not found`);
+  if (!row) throw new Error(`Behavior ${args.behaviorId} not found`);
   const versionSources = parseJson(row.version_sources) || [];
   const sources = (
     versionSources.length > 0 ? versionSources : parseJson(row.sources) || []
-  ) as WatcherSource[];
+  ) as BehaviorSource[];
   const result = await queryContentData(args.sql, {
     sources,
     window_start: args.windowStart,
@@ -303,7 +303,7 @@ export async function fingerprintWatcherSources(args: {
           return !(
             typeof metadata === 'object' &&
             metadata !== null &&
-            Number((metadata as Record<string, unknown>).watcher_id) === args.watcherId
+            Number((metadata as Record<string, unknown>).behavior_id) === args.behaviorId
           );
         })
         .sort((left, right) => stableJson(left).localeCompare(stableJson(right))),
@@ -334,15 +334,15 @@ export async function handleBehaviorMode(
 ): Promise<GetContentResult> {
   const { generateWindowToken } = await import('../../utils/jwt');
 
-  const watcherId = args.behavior_id!;
+  const behaviorId = args.behavior_id!;
 
   // Workers pass `template_version_id` (snapshotted at run-creation time)
   // so the prompt/schema we hand back matches the version this run was
   // queued for, even if the group has been edited since. The version row
-  // is owned by the group root (watcher_id = i.watcher_group_id), and we
-  // require it to live in the same group to prevent cross-watcher pinning.
+  // is owned by the group root (behavior_id = i.behavior_group_id), and we
+  // require it to live in the same group to prevent cross-behavior pinning.
   const pinnedVersionId = args.template_version_id ?? null;
-  const watcherResult = await sql`
+  const behaviorResult = await sql`
     SELECT
       i.id,
       i.entity_ids,
@@ -354,50 +354,50 @@ export async function handleBehaviorMode(
       cv.reactions_guidance,
       cv.version_sources,
       (SELECT COALESCE(json_agg(json_build_object('id', e.id, 'name', e.name, 'type', et.slug, 'metadata', e.metadata, 'field_controls', e.field_controls)), '[]'::json) FROM entities e JOIN entity_types et ON et.id = e.entity_type_id WHERE e.id = ANY(i.entity_ids)) as entities
-    FROM watchers i
-    LEFT JOIN watcher_versions cv
+    FROM behaviors i
+    LEFT JOIN behavior_versions cv
       ON cv.id = COALESCE(${pinnedVersionId}::bigint, i.current_version_id)
-     AND cv.watcher_id = i.watcher_group_id
-    WHERE i.id = ${watcherId}
+     AND cv.behavior_id = i.behavior_group_id
+    WHERE i.id = ${behaviorId}
       AND i.organization_id = ${context.organizationId}
     LIMIT 1
   `;
 
-  if (watcherResult.length === 0) {
-    throw new Error(`Behavior ${watcherId} not found`);
+  if (behaviorResult.length === 0) {
+    throw new Error(`Behavior ${behaviorId} not found`);
   }
 
-  const watcher = watcherResult[0];
+  const behavior = behaviorResult[0];
 
-  const versionSources = parseJson(watcher.version_sources) || [];
-  const watcherSources =
-    versionSources.length > 0 ? versionSources : parseJson(watcher.sources) || [];
-  const timeGranularity = inferBehaviorGranularityFromSchedule(watcher.schedule as string | null);
+  const versionSources = parseJson(behavior.version_sources) || [];
+  const behaviorSources =
+    versionSources.length > 0 ? versionSources : parseJson(behavior.sources) || [];
+  const timeGranularity = inferBehaviorGranularityFromSchedule(behavior.schedule as string | null);
   // The extraction contract is derived from the bound entity type's
   // metadata_schema (entity-typed) — never read from a stored inline schema.
-  const templateExtractionSchema = await deriveWatcherExtractionSchema(
+  const templateExtractionSchema = await deriveBehaviorExtractionSchema(
     sql,
-    watcher.organization_id as string,
-    parseJson(watcher.template_keying_config) as KeyingConfig | null,
-    watcherId
+    behavior.organization_id as string,
+    parseJson(behavior.template_keying_config) as KeyingConfig | null,
+    behaviorId
   );
 
-  const watcherEntityIds = parsePgNumberArray(watcher.entity_ids);
-  let sources: WatcherSource[];
-  if (watcherSources.length > 0) {
-    sources = watcherSources;
+  const behaviorEntityIds = parsePgNumberArray(behavior.entity_ids);
+  let sources: BehaviorSource[];
+  if (behaviorSources.length > 0) {
+    sources = behaviorSources;
   } else {
     sources = [{ name: 'content', query: DEFAULT_BEHAVIOR_SOURCE_QUERY }];
   }
 
-  // Fetch classifiers attached to this watcher
+  // Fetch classifiers attached to this behavior
   const classifiersResult = await sql`
     SELECT
       cc.slug,
       cc.extraction_config,
       cc.attribute_values
     FROM classify_facet cc
-    WHERE cc.watcher_id = ${watcherId}
+    WHERE cc.behavior_id = ${behaviorId}
       AND cc.status = 'active'
     ORDER BY cc.slug
   `;
@@ -415,7 +415,7 @@ export async function handleBehaviorMode(
     windowStart = parseDateAlias(args.since).date;
     windowEnd = toEndOfDay(parseDateAlias(args.until).date);
   } else {
-    ({ windowStart, windowEnd } = await computePendingWindow(sql, watcherId, timeGranularity));
+    ({ windowStart, windowEnd } = await computePendingWindow(sql, behaviorId, timeGranularity));
   }
 
   // NOTE: Window creation is deferred to complete_window action
@@ -426,21 +426,21 @@ export async function handleBehaviorMode(
   const windowStartIso = windowStart.toISOString();
   const windowEndIso = windowEnd.toISOString();
 
-  const sourceEntityIds = watcherEntityIds;
+  const sourceEntityIds = behaviorEntityIds;
   const entityIdPlaceholders = sourceEntityIds.map((_, i) => `$${i + 1}`).join(',');
 
   // A headless Behavior run acts on behalf of its durable author. Interactive
   // reads keep the verified caller's own connection visibility.
-  const visibilityUserId = context.userId ?? (watcher.created_by as string);
+  const visibilityUserId = context.userId ?? (behavior.created_by as string);
 
   // Run content query and total stats in parallel
   const contentData = await queryContentData(sql, {
     sources,
     window_start: windowStartIso,
     window_end: windowEndIso,
-    organizationId: watcher.organization_id as string,
+    organizationId: behavior.organization_id as string,
     userId: visibilityUserId,
-    entityIds: watcherEntityIds,
+    entityIds: behaviorEntityIds,
     page: {
       sourceName: 'content',
       limit: contentLimit,
@@ -467,7 +467,7 @@ export async function handleBehaviorMode(
   // NOTE: window_id is NOT included - it will be created by complete_window.
   const windowToken = await generateWindowToken(
     {
-      watcher_id: watcherId,
+      behavior_id: behaviorId,
       window_start: windowStartIso,
       window_end: windowEndIso,
       granularity: timeGranularity,
@@ -480,9 +480,9 @@ export async function handleBehaviorMode(
   // Bound entities ride the payload as structured rows (id, name, type,
   // metadata, field_controls) — field_controls marks human-owned field values
   // the agent must not clobber without new evidence.
-  const boundEntities: unknown[] = Array.isArray(watcher.entities)
-    ? watcher.entities
-    : (parseJson(watcher.entities) ?? []);
+  const boundEntities: unknown[] = Array.isArray(behavior.entities)
+    ? behavior.entities
+    : (parseJson(behavior.entities) ?? []);
 
   // Compute unprocessed ranges when no specific date range requested
   // This helps agents understand what months need processing
@@ -508,12 +508,12 @@ export async function handleBehaviorMode(
           DATE_TRUNC('month', c.occurred_at) as month,
           COUNT(DISTINCT c.id) as linked
         FROM current_event_records c
-        JOIN watcher_window_events iwc ON c.id = iwc.event_id
+        JOIN behavior_window_events iwc ON c.id = iwc.event_id
         WHERE c.entity_ids && ARRAY[${entityIdPlaceholders}]::bigint[]
-          AND iwc.watcher_id = $${sourceEntityIds.length + 1}
+          AND iwc.behavior_id = $${sourceEntityIds.length + 1}
         GROUP BY DATE_TRUNC('month', c.occurred_at)
       `,
-        [...sourceEntityIds, watcherId]
+        [...sourceEntityIds, behaviorId]
       ),
     ]);
 
@@ -526,14 +526,14 @@ export async function handleBehaviorMode(
     const rangesWithUnprocessed = unprocessedRanges.filter((r) => r.unprocessed_content > 0);
     if (rangesWithUnprocessed.length > 0) {
       logger.info(
-        `[get_content] Watcher ${watcherId} has ${rangesWithUnprocessed.length} months with unprocessed content`
+        `[get_content] Behavior ${behaviorId} has ${rangesWithUnprocessed.length} months with unprocessed content`
       );
     }
   }
 
   // Build past reactions history for self-learning
   let pastReactions: string | undefined;
-  const reactionsGuidance = (watcher.reactions_guidance as string) || undefined;
+  const reactionsGuidance = (behavior.reactions_guidance as string) || undefined;
   let availableOperations:
     | Array<{
         connection_id: number;
@@ -547,9 +547,9 @@ export async function handleBehaviorMode(
   let pastFeedback: string | undefined;
   try {
     const [pastReactionsResult, operations, feedbackSummary] = await Promise.all([
-      getPastReactionsSummary(watcherId, 30),
-      getAvailableOperations(watcherEntityIds),
-      getRecentFeedbackSummary(watcherId, 10),
+      getPastReactionsSummary(behaviorId, 30),
+      getAvailableOperations(behaviorEntityIds),
+      getRecentFeedbackSummary(behaviorId, 10),
     ]);
     pastReactions = pastReactionsResult;
     availableOperations = operations.length > 0 ? operations : undefined;

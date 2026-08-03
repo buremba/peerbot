@@ -17,7 +17,7 @@ import { cleanupTestDatabase } from '../../setup/test-db';
 describe('classifier CRUD', () => {
   let owner: TestApiClient;
   let entityId: number;
-  let watcherId: string;
+  let behaviorId: string;
 
   beforeAll(async () => {
     await cleanupTestDatabase();
@@ -43,12 +43,12 @@ describe('classifier CRUD', () => {
     });
     const w = (await owner.behaviors.create({
       entity_id: entityId,
-      slug: 'cls-watcher',
-      name: 'Classifier Watcher',
+      slug: 'cls-behavior',
+      name: 'Classifier Behavior',
       prompt: 'gather signals.',
       agent_id: agent.agentId,
     })) as { behavior_id: string };
-    watcherId = w.behavior_id;
+    behaviorId = w.behavior_id;
   });
 
   it('creates → reads back → deletes a classifier', async () => {
@@ -59,7 +59,7 @@ describe('classifier CRUD', () => {
       slug: 'sentiment',
       name: 'Sentiment',
       attribute_key: 'sentiment',
-      behavior_id: watcherId,
+      behavior_id: behaviorId,
       attribute_values: {
         positive: {
           description: 'positive sentiment',
@@ -76,7 +76,7 @@ describe('classifier CRUD', () => {
     expect(created.data?.classifier_id).toBeGreaterThan(0);
     const classifierId = created.data!.classifier_id;
 
-    // List with no filter — the classifier is attached to a watcher, not an
+    // List with no filter — the classifier is attached to a behavior, not an
     // entity, so list({entity_id}) wouldn't include it.
     const list = (await owner.classifiers.list({})) as {
       data?: { classifiers?: Array<{ id: number }> };
@@ -94,7 +94,7 @@ describe('classifier CRUD', () => {
         slug: 'blocked-cls',
         name: 'Blocked',
         attribute_key: 'sentiment',
-        behavior_id: watcherId,
+        behavior_id: behaviorId,
         attribute_values: {
           v: { description: 'v', examples: ['v'], embedding: stubEmbedding },
         },

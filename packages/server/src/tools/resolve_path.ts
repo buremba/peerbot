@@ -558,7 +558,7 @@ async function _resolvePath(
     const [
       [eventsCount],
       [connectionsCount],
-      [watchersCount],
+      [behaviorsCount],
       entityTabs,
       entityTypeTabs,
       { cleanTemplate: entityCleanTpl, templateData: entityTemplateData },
@@ -580,7 +580,7 @@ async function _resolvePath(
              AND ${feedLinkedToBusinessEntitySql('$2::int', 'f', 'cn', '$1')}`,
           [workspace.id, Number(entityRow.id)],
         ),
-        sql`SELECT COUNT(*) as cnt FROM watchers i
+        sql`SELECT COUNT(*) as cnt FROM behaviors i
               WHERE ${Number(entityRow.id)}::int = ANY(i.entity_ids)
                 AND i.organization_id = ${workspace.id}
                 AND i.status = 'active'`,
@@ -648,7 +648,7 @@ async function _resolvePath(
       created_at: createdAt,
       total_content: Number(eventsCount?.cnt) || 0,
       active_connections: Number(connectionsCount?.cnt) || 0,
-      behaviors_count: Number(watchersCount?.cnt) || 0,
+      behaviors_count: Number(behaviorsCount?.cnt) || 0,
     };
   }
 
@@ -1065,7 +1065,7 @@ async function fetchScopeSummary(
       ) AS active_connections,
       (
         SELECT COUNT(*)::int
-        FROM watchers w
+        FROM behaviors w
         WHERE w.organization_id = ${organizationId}
           AND w.status = 'active'
       ) AS behaviors_count

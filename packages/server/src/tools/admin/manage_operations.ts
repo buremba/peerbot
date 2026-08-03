@@ -33,10 +33,10 @@ import { compileConnectionRowVisibility } from "../../authz/connection-visibilit
 import {
 	agentExistsInOrg,
 	resolveActingPrincipal,
-	resolveWatcherOwner,
+	resolveBehaviorOwner,
 	resolveWriteEffects,
 	resolveWritePolicyDecision,
-	watcherIdFromPrincipalId,
+	behaviorIdFromPrincipalId,
 } from "../../authz/entity-policy";
 import { authzScopeFromToolContext } from "../../authz/scope";
 import {
@@ -80,7 +80,7 @@ import {
 	buildConnectionsUrl,
 	buildResourcePermalink,
 } from "../../utils/url-builder";
-import { trackWatcherReaction } from "../../utils/watcher-reactions";
+import { trackBehaviorReaction } from "../../utils/behavior-reactions";
 import { dispatchChromeActionToExtension } from "../../worker-api/dispatch-chrome-action";
 import { isAdminOrOwnerRole } from "../access-control";
 import type { ToolContext } from "../registry";
@@ -880,7 +880,7 @@ async function handleListAvailable(
     organizationId: ctx.organizationId,
     userId: ctx.userId,
     agentId: ctx.agentId,
-    sessionWatcherId: ctx.actingWatcherId ?? null,
+    sessionBehaviorId: ctx.actingBehaviorId ?? null,
   });
   // Fetch the FULL filtered set (offset 0, no caller limit), drop per-op-disabled
   // ops across the WHOLE set, THEN paginate. Filtering a single page and subtracting
@@ -1054,15 +1054,15 @@ async function handleExecute(
 	// policy governs non-human principals); with no policy row, the class default
 	// is auto, so the connection mode alone decides — today's behavior is intact.
 	// Resolve WHO is acting through the single seam — merges the explicit
-	// behavior_source and the reaction session's own watcher, looks up the owning
-	// agent, and pins autonomous mode for a watcher. Persisted with the run so the
+	// behavior_source and the reaction session's own behavior, looks up the owning
+	// agent, and pins autonomous mode for a behavior. Persisted with the run so the
 	// approve-time recheck re-evaluates in the SAME mode/principal.
 	const actor = await resolveActingPrincipal(sql, {
 		organizationId: ctx.organizationId,
 		userId: ctx.userId,
 		agentId: ctx.agentId,
-		explicitWatcherId: args.behavior_source?.behavior_id ?? null,
-		sessionWatcherId: ctx.actingWatcherId ?? null,
+		explicitBehaviorId: args.behavior_source?.behavior_id ?? null,
+		sessionBehaviorId: ctx.actingBehaviorId ?? null,
 	});
 	// Agent write-policy applies to WRITE ops only. Reads stay available under
 	// connection action_modes alone (default auto) — same idea as MCP readOnlyHint.
@@ -1208,9 +1208,9 @@ async function handleExecute(
 		// Telemetry + notification run AFTER the run+event are durably committed,
 		// so they never reference a rolled-back run and stay off the hot path.
 		if (args.behavior_source) {
-			await trackWatcherReaction({
+			await trackBehaviorReaction({
 				organizationId: ctx.organizationId,
-				watcherId: args.behavior_source.behavior_id,
+				behaviorId: args.behavior_source.behavior_id,
 				windowId: args.behavior_source.window_id,
 				reactionType: "action_executed",
 				toolName: "manage_operations",
@@ -1270,9 +1270,9 @@ async function handleExecute(
 	});
 
 	if (args.behavior_source) {
-		await trackWatcherReaction({
+		await trackBehaviorReaction({
 			organizationId: ctx.organizationId,
-			watcherId: args.behavior_source.behavior_id,
+			behaviorId: args.behavior_source.behavior_id,
 			windowId: args.behavior_source.window_id,
 			reactionType: "action_executed",
 			toolName: "manage_operations",
@@ -1383,7 +1383,7 @@ function publicBehaviorFields(value: unknown): unknown {
 		return value;
 	}
 	const {
-		watcher_id: behaviorId,
+		behavior_id: behaviorId,
 		...publicRef
 	} = value as Record<string, unknown>;
 	return behaviorId == null
@@ -1482,7 +1482,7 @@ async function handleListRuns(
     where = sql`${where} AND r.approval_status = ${args.approval_status}`;
   }
   if (args.behavior_ids && args.behavior_ids.length > 0) {
-    where = sql`${where} AND r.watcher_id = ANY(${pgBigintArray(args.behavior_ids)}::bigint[])`;
+    where = sql`${where} AND r.behavior_id = ANY(${pgBigintArray(args.behavior_ids)}::bigint[])`;
   }
 
   const countQuery = sql`SELECT COUNT(*)::int AS total FROM runs r WHERE ${where}`;
@@ -1492,7 +1492,7 @@ async function handleListRuns(
     pageWhere = sql`${pageWhere} AND (r.created_at, r.id) < (${args.before_created_at}::timestamptz, ${args.before_id})`;
   }
   const query = sql`
-    SELECT r.id, r.run_type, r.watcher_id AS behavior_id, r.connection_id, r.feed_id, r.connector_key, r.connector_version,
+    SELECT r.id, r.run_type, r.behavior_id, r.connection_id, r.feed_id, r.connector_key, r.connector_version,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.items_collected, r.checkpoint,
            r.created_at, r.completed_at,
@@ -1533,7 +1533,7 @@ async function handleGetRun(
   // a run visible in the list is always fetchable here. Only the chat-message
   // transport lane (the list's default exclusion) stays unfetchable.
   const rows = await sql`
-    SELECT r.id, r.watcher_id AS behavior_id, r.connection_id, r.connector_key,
+    SELECT r.id, r.behavior_id, r.connection_id, r.connector_key,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.run_type,
            r.created_at, r.completed_at,
@@ -1655,16 +1655,6 @@ export async function supersedeActionEvent(
 				? { error_message: extraMetadata.error_message }
 				: {}),
 			...extraMetadata,
-			// Superseding copies the prior metadata forward, so a durable approval
-			// written before the Behaviors rename (#2034) would keep minting NEW
-			// rows carrying `resourceKind: "watcher"` every time it is resolved.
-			// Canonicalize on write: history keeps whatever it recorded, but nothing
-			// emitted from here reintroduces the pre-rename value. Must stay below
-			// both spreads so neither the prior row nor a caller can restore it.
-			...(priorMetadata.resourceKind === "watcher" ||
-			extraMetadata.resourceKind === "watcher"
-				? { resourceKind: "behavior" }
-				: {}),
 		},
 		authorName: orig.author_name ?? null,
 		},
@@ -2123,7 +2113,7 @@ async function isPendingEntityRunOwner(
  * user session, never from any non-human context. This is the security floor
  * beneath {@link requireApprovalAuthority}'s role check.
  *
- * Rejecting `ctx.clientId` alone is not enough: an in-process watcher/system
+ * Rejecting `ctx.clientId` alone is not enough: an in-process behavior/system
  * context runs with `userId=null` and NO client id, so it would slip past a
  * client-id-only guard AND past {@link isSystemContext}'s role bypass — letting
  * an automation approve a run it queued (sol review #3). We therefore require a
@@ -2229,7 +2219,7 @@ async function tryApproveEntityChangeRun(
 			"stale" in result
 				? Object.keys((result as { stale: Record<string, unknown> }).stale)
 				: [];
-		// The human re-edited every proposed field after the watcher queued this — the
+		// The human re-edited every proposed field after the behavior queued this — the
 		// proposal is stale. Resolve the run without clobbering the newer human value.
 		const allStale =
 			operation === "update" &&
@@ -2577,7 +2567,7 @@ async function handleApprove(
 	const builderResult = await tryApproveBuilderRun(args, ctx, env);
 	if (builderResult) return builderResult;
 
-	// Watcher field-change gate (run_type='internal', action_key='entity_field_change'):
+	// Behavior field-change gate (run_type='internal', action_key='entity_field_change'):
 	// approve applies the proposed value to the entity (now human-owned).
 	const fieldChangeResult = await tryApproveEntityChangeRun(args, ctx, env);
 	if (fieldChangeResult) return fieldChangeResult;
@@ -2626,18 +2616,18 @@ async function handleApprove(
 	);
 	const recheckPrincipalKind =
 		pendingRun.policy_principal_kind === "agent" ||
-		pendingRun.policy_principal_kind === "watcher"
+		pendingRun.policy_principal_kind === "behavior"
 			? pendingRun.policy_principal_kind
 			: "user";
-	// A watcher-attributed run must fold its OWNING AGENT'S envelope at recheck too,
+	// A behavior-attributed run must fold its OWNING AGENT'S envelope at recheck too,
 	// exactly as at queue time — else an agent-level deny installed before approval
-	// would be missed. Re-resolve the owner from the persisted `watcher:<id>` id
+	// would be missed. Re-resolve the owner from the persisted `behavior:<id>` id
 	// (no need to persist it separately).
-	const recheckWatcherId = watcherIdFromPrincipalId(
+	const recheckBehaviorId = behaviorIdFromPrincipalId(
 		pendingRun.policy_principal_id,
 	);
-	// Re-resolve the principal's resolvability from persistence. A WATCHER principal
-	// re-resolves its owning agent via `watcher:<id>`. A direct AGENT principal must be
+	// Re-resolve the principal's resolvability from persistence. A BEHAVIOR principal
+	// re-resolves its owning agent via `behavior:<id>`. A direct AGENT principal must be
 	// existence-checked too: if the agent was DELETED between queue and approve, the
 	// r16 cascade removed its deny/approval rows, so folding candidates for a gone
 	// agent would fall back to the looser org default (connector_action → auto) and let
@@ -2646,10 +2636,10 @@ async function handleApprove(
 	// cancelling the approval. (Same fail-closed invariant resolveActingPrincipal
 	// enforces for live sessions; this is the persisted-principal path.)
 	let recheckOwner: { ownerAgentId: string | null; resolved: boolean };
-	if (recheckWatcherId != null) {
-		recheckOwner = await resolveWatcherOwner(
+	if (recheckBehaviorId != null) {
+		recheckOwner = await resolveBehaviorOwner(
 			sql,
-			recheckWatcherId,
+			recheckBehaviorId,
 			ctx.organizationId,
 		);
 	} else if (
@@ -2828,7 +2818,7 @@ async function handleReject(
 	const builderReject = await tryRejectBuilderRun(args, ctx, reason, reviewer);
 	if (builderReject) return builderReject;
 
-	// Watcher field-change gate? Cancel it; the entity keeps its human-owned value.
+	// Behavior field-change gate? Cancel it; the entity keeps its human-owned value.
 	const fieldChangeReject = await tryRejectEntityChangeRun(args, ctx);
 	if (fieldChangeReject) return fieldChangeReject;
 
@@ -2864,7 +2854,7 @@ async function handleReject(
 	};
 }
 
-/** Pending proposal runs a single watcher run produced, grouped by its window. */
+/** Pending proposal runs a single behavior run produced, grouped by its window. */
 async function pendingRunIdsForWindow(
 	windowId: number,
 	organizationId: string,
@@ -2923,8 +2913,8 @@ async function pendingActionRunIdsForScope(
 	}
 	if (scope.behavior_id !== undefined) {
 		where = sql`${where}
-      AND r.policy_principal_kind = 'watcher'
-      AND r.policy_principal_id = ${`watcher:${scope.behavior_id}`}`;
+      AND r.policy_principal_kind = 'behavior'
+      AND r.policy_principal_id = ${`behavior:${scope.behavior_id}`}`;
 	}
 	if (scope.older_than_days !== undefined) {
 		where = sql`${where} AND r.created_at < NOW() - (${scope.older_than_days}::int * interval '1 day')`;
@@ -3066,18 +3056,18 @@ async function handleApproveBatch(
 }
 
 /**
- * The watcher + touched entities behind a window's proposal runs. Resolved from
- * the change_set event the watcher run recorded for this window (it carries both
- * watcher_id and the entity_ids the run touched), so the rejection feedback can
- * be keyed to the watcher and associated with those entities.
+ * The behavior + touched entities behind a window's proposal runs. Resolved from
+ * the change_set event the behavior run recorded for this window (it carries both
+ * behavior_id and the entity_ids the run touched), so the rejection feedback can
+ * be keyed to the behavior and associated with those entities.
  */
 async function resolveWindowRevisionContext(
 	windowId: number,
 	organizationId: string,
-): Promise<{ watcherId: number | null; entityIds: number[] }> {
+): Promise<{ behaviorId: number | null; entityIds: number[] }> {
 	const sql = getDb();
-	const rows = await sql<{ watcher_id: string | null; entity_ids: unknown }>`
-    SELECT (metadata->>'watcher_id')::bigint AS watcher_id, entity_ids
+	const rows = await sql<{ behavior_id: string | null; entity_ids: unknown }>`
+    SELECT (metadata->>'behavior_id')::bigint AS behavior_id, entity_ids
     FROM events
     WHERE organization_id = ${organizationId}
       AND semantic_type = 'change_set'
@@ -3085,9 +3075,9 @@ async function resolveWindowRevisionContext(
     ORDER BY id DESC
     LIMIT 1
   `;
-	if (rows.length === 0) return { watcherId: null, entityIds: [] };
+	if (rows.length === 0) return { behaviorId: null, entityIds: [] };
 	return {
-		watcherId: rows[0].watcher_id != null ? Number(rows[0].watcher_id) : null,
+		behaviorId: rows[0].behavior_id != null ? Number(rows[0].behavior_id) : null,
 		// entity_ids arrives as a raw PG array string under fetch_types:false — never
 		// call .map on it directly. parsePgNumberArray handles both string and array.
 		entityIds: parsePgNumberArray(rows[0].entity_ids),
@@ -3095,12 +3085,12 @@ async function resolveWindowRevisionContext(
 }
 
 /**
- * Reject every pending proposal a watcher run produced, feeding the reason back
- * so the watcher's next run revises (the conversational revision loop — no inline
+ * Reject every pending proposal a behavior run produced, feeding the reason back
+ * so the behavior's next run revises (the conversational revision loop — no inline
  * diff editor). Reuses the single-run reject path per proposal, then records the
- * reason as a `correction` feedback event keyed to the watcher — the SAME channel
- * getRecentFeedbackSummary injects into future watcher runs. That closes the loop
- * for real: the run view shows why the batch was rejected AND the watcher's next
+ * reason as a `correction` feedback event keyed to the behavior — the SAME channel
+ * getRecentFeedbackSummary injects into future behavior runs. That closes the loop
+ * for real: the run view shows why the batch was rejected AND the behavior's next
  * turn reads "Past Corrections from User Feedback" and adjusts, rather than the
  * feedback sitting inert (sol review #10).
  */
@@ -3129,18 +3119,18 @@ async function handleRejectBatch(
 		if (!("error" in result)) rejected += 1;
 	}
 	// The `correction` feedback event is a WINDOW concept — it is keyed to the
-	// watcher that produced the proposals so its next turn reads the rejection
+	// behavior that produced the proposals so its next turn reads the rejection
 	// and revises. A scope-targeted batch over queued connector operations has no
 	// such producing run, so it records no correction; each rejected row still
 	// supersedes its own card through the single-run reject path.
 	if (rejected > 0 && args.window_id !== undefined) {
-		const { watcherId, entityIds } = await resolveWindowRevisionContext(
+		const { behaviorId, entityIds } = await resolveWindowRevisionContext(
 			args.window_id,
 			ctx.organizationId,
 		);
 		// A `correction` event — the durable, run-linked revision channel. Keyed to
-		// the watcher (getRecentFeedbackSummary reads by watcher_id) and associated
-		// with the entities the run touched, so both the watcher's next turn and the
+		// the behavior (getRecentFeedbackSummary reads by behavior_id) and associated
+		// with the entities the run touched, so both the behavior's next turn and the
 		// entity/run views surface it. field_path='$batch_reject' marks it a
 		// whole-run rejection (distinct from a single-field correction); the reason
 		// rides `note`, which the summary renders verbatim.
@@ -3153,9 +3143,9 @@ async function handleRejectBatch(
 			semanticType: "correction",
 			createdBy: ctx.userId ?? null,
 			metadata: {
-				kind: "watcher_batch_reject",
+				kind: "behavior_batch_reject",
 				window_id: args.window_id,
-				watcher_id: watcherId,
+				behavior_id: behaviorId,
 				field_path: "$batch_reject",
 				mutation: "set",
 				note: reason,

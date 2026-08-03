@@ -211,7 +211,7 @@ export const StreamBatchSchema = Type.Object({
 
 // ── complete family ─────────────────────────────────────────────────────────
 
-/** `POST /api/workers/complete` (sync/watcher run terminal report). */
+/** `POST /api/workers/complete` (sync/behavior run terminal report). */
 export const CompleteRequestSchema = Type.Composite([
   Type.Object({
     run_id: Type.Integer(),

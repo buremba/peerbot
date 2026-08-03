@@ -77,7 +77,7 @@ Summary: 2 create, 0 update, 0 noop, 0 drift"
 
 exports[`renderSummary renders zero-row plan 1`] = `"Summary: 0 create, 0 update, 0 noop, 0 drift"`;
 
-exports[`renderPlan — behavior labels (not watcher) plan create/update/drift rows print behavior, never watcher 1`] = `
+exports[`renderPlan — Behavior labels plan create/update/drift rows use Behavior vocabulary 1`] = `
 "
 Plan:
 

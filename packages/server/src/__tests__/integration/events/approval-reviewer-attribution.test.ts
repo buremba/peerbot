@@ -95,34 +95,6 @@ describe('approval reviewer attribution', () => {
     expect(approved.metadata.reviewed_by_name).toBe('Ada Approver');
   });
 
-  // Superseding spreads the prior row's metadata forward. A durable approval
-  // written before the Behaviors rename (#2034) therefore keeps minting NEW
-  // rows tagged `resourceKind: "watcher"` every time it is resolved — so the
-  // legacy set is open, not closed, and no one-shot backfill can drain it.
-  // The SPA matches `resourceKind === "behavior"` with no fallback, so such a
-  // row renders no approval card. Canonicalizing on write closes the source.
-  it('canonicalizes a legacy watcher resourceKind when superseding', async () => {
-    const org = await createTestOrganization();
-    const reviewer = await createTestUser({ name: 'Ada Approver' });
-    const runId = await insertActionRun(org.id);
-    await insertPendingApprovalEvent(org.id, runId, {
-      resourceKind: 'watcher',
-    });
-
-    const approvedId = await supersedeActionEvent(
-      runId,
-      org.id,
-      'confirmed',
-      'behavior — executing',
-      'Operation confirmed',
-      {},
-      { userId: reviewer.id, name: reviewer.name }
-    );
-
-    const approved = await metadataFor(approvedId!);
-    expect(approved.metadata.resourceKind).toBe('behavior');
-  });
-
   it('leaves a non-legacy resourceKind untouched when superseding', async () => {
     const org = await createTestOrganization();
     const runId = await insertActionRun(org.id);

@@ -63,7 +63,7 @@ describe("F12 headless interaction-card delivery (e2e)", () => {
     await apiPlatform.initialize(apiServices as never);
 
     // 2) Mount the REAL interaction route and POST with a REAL per-run worker
-    //    token whose `source` marks the run headless (a watcher run).
+    //    token whose `source` marks the run headless (a behavior run).
     const app = new Hono();
     app.route("/", createInteractionRoutes(interactionService));
     const runJobToken = generateWorkerToken("user", conversationId, "deploy-1", {
@@ -71,7 +71,7 @@ describe("F12 headless interaction-card delivery (e2e)", () => {
       agentId: "agent",
       organizationId: "org",
       platform: "api",
-      source: "watcher-run",
+      source: "behavior-run",
       runId: 1,
     });
 
@@ -83,7 +83,7 @@ describe("F12 headless interaction-card delivery (e2e)", () => {
       },
       body: JSON.stringify({
         interactionType: "question",
-        question: "Proceed with the watcher action?",
+        question: "Proceed with the behavior action?",
         options: ["yes", "no"],
       }),
     });
@@ -93,7 +93,7 @@ describe("F12 headless interaction-card delivery (e2e)", () => {
     expect(sends).toHaveLength(1);
     const cardPayload = sends[0]!.payload;
     expect(sends[0]!.topic).toBe("thread_response");
-    expect(cardPayload.platformMetadata).toEqual({ source: "watcher-run" });
+    expect(cardPayload.platformMetadata).toEqual({ source: "behavior-run" });
     expect(cardPayload.customEvent?.requireSseOwner).toBe(true);
 
     // 4) The owner-gate consumer (no SSE connection anywhere) DELIVERS it on

@@ -63,7 +63,7 @@ while :; do
         AND jsonb_typeof(action_input) = 'object'
         AND action_input->>'agentId' IS NOT NULL
         AND action_input->>'conversationId' IS NOT NULL
-        AND action_input->>'conversationId' !~ '_watcher_\\d+_run_\\d+\$'
+        AND action_input->>'conversationId' !~ '_behavior_\\d+_run_\\d+\$'
     ), classified AS (
       SELECT
         org, agent, conv, uid, msg, at,

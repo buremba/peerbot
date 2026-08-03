@@ -109,7 +109,7 @@ export function getTestDb(): postgres.Sql {
       // Share prod's value-serialization config (fetch_types:false + JSON/bigint
       // handling) so tests exercise the SAME client behavior as production. A
       // forgiving test client masked the `= ANY(${jsArray})` bug that wedged
-      // watchers for 12 days (it only throws under fetch_types:false).
+      // behaviors for 12 days (it only throws under fetch_types:false).
       ...PROD_PG_VALUE_OPTIONS,
     });
   }
@@ -510,8 +510,7 @@ async function fixSchemaConstraints(db: postgres.Sql): Promise<void> {
   try {
     // runs.run_type needs the connector lanes plus the lobu-queue lanes. Keep
     // this in sync with db/migrations/20260429060000_extend_runs_for_lobu_queue.sql
-    // and db/migrations/20260720140000_rename_run_type_watcher_to_behavior.sql
-    // (the 'watcher' lane was renamed to 'behavior').
+    // and the 20260720140000 run-type vocabulary migration.
     await db.unsafe(`
       ALTER TABLE IF EXISTS runs DROP CONSTRAINT IF EXISTS runs_run_type_check;
       ALTER TABLE IF EXISTS runs ADD CONSTRAINT runs_run_type_check

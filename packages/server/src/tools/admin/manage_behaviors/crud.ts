@@ -13,9 +13,9 @@ import { recordToolConfigChange } from '../helpers/config-audit';
 import logger from '../../../utils/logger';
 import { buildBehaviorUrl, getOrganizationSlug, getPublicWebUrl } from '../../../utils/url-builder';
 import {
-  createClassifiersForWatcher,
+  createClassifiersForBehavior,
   enableClassifiersOnEntity,
-} from '../../../watchers/classifier-extraction';
+} from '../../../behaviors/classifier-extraction';
 import { assertDeviceWorkerAccess } from '../behavior-device-access';
 import { assertValidExecutionConfig } from '../behavior-execution-config';
 import { assertEntityIdsInOrg, getNextNumericId, requireExists } from '../helpers/db-helpers';
@@ -30,22 +30,22 @@ import {
   assertAgentExists,
   assertKeyingConfigEntityTypeExists,
   assertKeyingConfigShape,
-  assertWatcherVersionConfigValid,
-  assertWatcherSourcesResolve,
+  assertBehaviorVersionConfigValid,
+  assertBehaviorSourcesResolve,
   assertBehaviorSkillsResolve,
   assertPromptSkillTokensPinned,
   parseJsonInput,
   toJsonParam,
   toTextArrayParam,
   summarizeResults,
-  type WatcherOperationResult,
+  type BehaviorOperationResult,
 } from './shared';
 import { getErrorMessage } from '@lobu/core';
-import { DEFAULT_BEHAVIOR_SOURCE_QUERY, extractSourcesFromPromptTokens, mergePromptSources } from '../../../watchers/source-refs';
+import { DEFAULT_BEHAVIOR_SOURCE_QUERY, extractSourcesFromPromptTokens, mergePromptSources } from '../../../behaviors/source-refs';
 import {
   compileReactionScript,
   extractReactionInputSchema,
-} from '../../../watchers/reaction-executor';
+} from '../../../behaviors/reaction-executor';
 import {
   assertBehaviorInstructions,
   assertBehaviorTriggerConnections,
@@ -101,8 +101,8 @@ export async function handleCreate(
   // the trigger shape runs on instructions alone — event-turn Behaviors may
   // omit it and run on the built-in default (see assertBehaviorInstructions,
   // called after triggers resolve below). The output contract is not authored
-  // here: an entity-typed watcher (keying_config.entity_type) derives it from
-  // entity_types.metadata_schema at runtime, and an untyped watcher uses the
+  // here: an entity-typed behavior (keying_config.entity_type) derives it from
+  // entity_types.metadata_schema at runtime, and an untyped behavior uses the
   // worker's free-form summary fallback.
   if (!args.slug) {
     throw new ToolUserError('slug is required for create action');
@@ -113,12 +113,12 @@ export async function handleCreate(
     );
   }
   assertValidExecutionConfig(args.execution_config, ctx);
-  // A device pin runs the watcher's agent CLI on the device owner's machine —
+  // A device pin runs the behavior's agent CLI on the device owner's machine —
   // validate the caller may target this device (own it, or org owner/admin
   // over a device attached to the org) before storing it.
   await assertDeviceWorkerAccess(sql, args.device_worker_id, ctx);
 
-  // entity_id is optional: omit it for an org-scoped/global watcher.
+  // entity_id is optional: omit it for an org-scoped/global behavior.
   const entityId = args.entity_id;
 
   // Parse JSON inputs
@@ -149,8 +149,8 @@ export async function handleCreate(
           },
         ];
 
-  // Validate watcher config
-  assertWatcherVersionConfigValid({
+  // Validate behavior config
+  assertBehaviorVersionConfigValid({
     prompt: args.prompt,
     classifiers,
     sources,
@@ -158,10 +158,10 @@ export async function handleCreate(
 
   if (!args.agent_id) {
     // The scheduler joins on `agent_id IS NOT NULL` (see
-    // packages/server/src/watchers/automation.ts:469), so a watcher without
+    // packages/server/src/behaviors/automation.ts:469), so a behavior without
     // an agent has no way to execute. Schema-wise `agent_id` is `Type.Optional`
     // because the field is shared across all manage_behaviors actions, but
-    // create enforces it: a watcher with no owning agent is a zombie row.
+    // create enforces it: a behavior with no owning agent is a zombie row.
     throw new ToolUserError(
       'agent_id is required to create a Behavior (the agent that executes it).'
     );
@@ -219,7 +219,7 @@ export async function handleCreate(
   // (keying_config.entity_type). Resolve them BEFORE the row is written.
   await assertAgentExists(sql, organizationId, args.agent_id);
   await assertKeyingConfigEntityTypeExists(sql, organizationId, keyingConfig);
-  await assertWatcherSourcesResolve(
+  await assertBehaviorSourcesResolve(
     sql,
     organizationId,
     sources,
@@ -236,7 +236,7 @@ export async function handleCreate(
 
   // Check slug uniqueness within org
   const existingSlug = await sql`
-    SELECT id FROM watchers
+    SELECT id FROM behaviors
     WHERE organization_id = ${organizationId} AND slug = ${args.slug}
     LIMIT 1
   `;
@@ -261,39 +261,39 @@ export async function handleCreate(
   // pg_advisory_xact_lock, which only serializes when a real transaction is
   // open. Called on the pooled autocommit connection it releases immediately,
   // so concurrent creates would both compute MAX(id)+1 and collide on the PK.
-  let watcherId!: number;
+  let behaviorId!: number;
   let versionId!: number;
 
   try {
     await sql.begin(async (tx) => {
-      watcherId = await getNextNumericId(tx, 'watchers');
-      versionId = await getNextNumericId(tx, 'watcher_versions');
+      behaviorId = await getNextNumericId(tx, 'behaviors');
+      versionId = await getNextNumericId(tx, 'behavior_versions');
       const entityIdsArray = entityId ? [entityId] : [];
 
       const nextRunAtVal = triggerWrite.schedule
         ? nextRunAt(triggerWrite.schedule, new Date(), triggerWrite.timezone)
         : null;
 
-      // 1. Create watcher row
+      // 1. Create behavior row
       await tx`
-      INSERT INTO watchers (
+      INSERT INTO behaviors (
         id, name, slug, organization_id, entity_ids,
         schedule, timezone, next_run_at, triggers, agent_id, scheduler_client_id, model_config, sources, version,
         current_version_id, tags, status, created_by, created_at, updated_at,
-        watcher_group_id,
+        behavior_group_id,
         device_worker_id, agent_kind,
         notification_channel, notification_priority, min_cooldown_seconds,
         execution_config,
         reaction_script, reaction_script_compiled, reaction_input_schema
       ) VALUES (
-        ${watcherId}, ${args.name ?? args.slug}, ${args.slug}, ${organizationId},
+        ${behaviorId}, ${args.name ?? args.slug}, ${args.slug}, ${organizationId},
         ${`{${entityIdsArray.join(',')}}`}::bigint[],
         ${triggerWrite.schedule}, ${triggerWrite.timezone}, ${nextRunAtVal}, ${tx.json(triggerWrite.triggers)},
         ${args.agent_id ?? null}, ${args.scheduler_client_id ?? null},
         ${sql.json(args.model_config || {})}, ${sql.json(sources)},
         1, NULL, ${toTextArrayParam(args.tags || [])}::text[],
         'active', ${createdBy}, NOW(), NOW(),
-        ${watcherId},
+        ${behaviorId},
         ${args.device_worker_id ?? null}, ${args.agent_kind ?? null},
         ${args.notification_channel ?? 'canvas'},
         ${args.notification_priority ?? 'normal'},
@@ -304,32 +304,32 @@ export async function handleCreate(
       )
     `;
 
-      // 2. Create watcher_versions row (v1)
+      // 2. Create behavior_versions row (v1)
       // Reaction fields (reaction_script/reaction_script_compiled/
-      // reaction_input_schema) intentionally live on the watchers row only, not
-      // on watcher_versions. Reactions are group-shared and unversioned (see
-      // handleCreateFromVersion, which copies them off watchers, and
+      // reaction_input_schema) intentionally live on the behaviors row only, not
+      // on behavior_versions. Reactions are group-shared and unversioned (see
+      // handleCreateFromVersion, which copies them off behaviors, and
       // handleSetReactionScript, which writes them group-wide). Don't add them
-      // here: watcher_versions has no such columns.
+      // here: behavior_versions has no such columns.
       await tx`
-      INSERT INTO watcher_versions (
-        id, watcher_id, version, name, description,
+      INSERT INTO behavior_versions (
+        id, behavior_id, version, name, description,
         prompt, version_sources, skills,
         keying_config, classifiers,
         reactions_guidance, change_notes, created_by, created_at
       ) VALUES (
-        ${versionId}, ${watcherId}, 1, ${args.name ?? args.slug}, ${args.description ?? null},
+        ${versionId}, ${behaviorId}, 1, ${args.name ?? args.slug}, ${args.description ?? null},
         ${args.prompt ?? ''}, ${toJsonParam(tx, sources)}, ${tx.json(skills)},
         ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
         ${args.reactions_guidance ?? null}, ${'Initial version'}, ${createdBy}, NOW()
       )
     `;
 
-      // 3. Point watcher to the newly created current version
+      // 3. Point behavior to the newly created current version
       await tx`
-      UPDATE watchers
+      UPDATE behaviors
       SET current_version_id = ${versionId}
-      WHERE id = ${watcherId}
+      WHERE id = ${behaviorId}
     `;
 
       // 4. Auto-create classifiers (entity-level only)
@@ -338,7 +338,7 @@ export async function handleCreate(
           throw new Error('Authenticated user is required to create Behavior classifiers');
         }
 
-        await createClassifiersForWatcher(tx, watcherId as number, entityId, classifiers as any[], {
+        await createClassifiersForBehavior(tx, behaviorId as number, entityId, classifiers as any[], {
           createdBy: ctx.userId,
           organizationId: ctx.organizationId,
         });
@@ -349,9 +349,9 @@ export async function handleCreate(
     });
   } catch (err) {
     // The slug precheck above is not a lock: two concurrent replicas can both
-    // pass it and race idx_watchers_org_slug. Translate that 23505 to the SAME
+    // pass it and race idx_behaviors_org_slug. Translate that 23505 to the SAME
     // coded 409 the precheck emits so callers see one stable duplicate signal.
-    if (isUniqueViolation(err, 'idx_watchers_org_slug')) {
+    if (isUniqueViolation(err, 'idx_behaviors_org_slug')) {
       throw new ToolUserError(
         `Behavior with slug '${args.slug}' already exists in this organization`,
         409
@@ -365,10 +365,10 @@ export async function handleCreate(
   let viewUrl: string | undefined;
 
   if (organizationSlug && args.agent_id) {
-    viewUrl = buildBehaviorUrl(organizationSlug, args.agent_id, watcherId as number, baseUrl);
+    viewUrl = buildBehaviorUrl(organizationSlug, args.agent_id, behaviorId as number, baseUrl);
   }
 
-  logger.info(`[manage_behaviors] Created watcher ${watcherId} with slug '${args.slug}'`);
+  logger.info(`[manage_behaviors] Created behavior ${behaviorId} with slug '${args.slug}'`);
 
   await syncBehaviorChannelFeedsBestEffort({
     organizationId,
@@ -379,9 +379,9 @@ export async function handleCreate(
   if (organizationId) {
     recordLifecycleEvent({
       organizationId,
-      entityType: 'watcher',
+      entityType: 'behavior',
       op: 'created',
-      entityId: watcherId,
+      entityId: behaviorId,
       summary: `Behavior "${args.name ?? args.slug}" created`,
       extra: { slug: args.slug, agent_id: args.agent_id ?? null },
     });
@@ -389,13 +389,13 @@ export async function handleCreate(
     recordToolConfigChange(ctx, {
       organizationId,
       resourceKind: 'behavior',
-      resourceId: watcherId,
+      resourceId: behaviorId,
       op: 'created',
       summary: `Behavior '${args.name ?? args.slug}' created`,
       // Post-insert state composed from the inserted values (the row is not
       // refetched); includes the v1 version-bound fields (prompt, sources, …).
       state: {
-        id: watcherId,
+        id: behaviorId,
         name: args.name ?? args.slug,
         slug: args.slug,
         status: 'active',
@@ -429,7 +429,7 @@ export async function handleCreate(
 
   return {
     action: 'create',
-    behavior_id: String(watcherId),
+    behavior_id: String(behaviorId),
     version: 1,
     status: 'active',
     sources,
@@ -457,12 +457,12 @@ export async function handleUpdate(
   // undefined = unchanged and null = clear the pin both pass without a lookup.
   await assertDeviceWorkerAccess(sql, args.device_worker_id, ctx);
 
-  await requireExists(sql, 'watchers', args.behavior_id, 'Behavior');
+  await requireExists(sql, 'behaviors', args.behavior_id, 'Behavior');
   const currentRows = await sql`
     SELECT w.organization_id, w.agent_id, w.schedule, w.timezone, w.triggers,
            cv.prompt AS current_prompt, cv.skills AS current_skills
-    FROM watchers w
-    LEFT JOIN watcher_versions cv ON cv.id = w.current_version_id
+    FROM behaviors w
+    LEFT JOIN behavior_versions cv ON cv.id = w.current_version_id
     WHERE w.id = ${args.behavior_id}
     LIMIT 1
   `;
@@ -495,10 +495,10 @@ export async function handleUpdate(
     );
   }
 
-  // Match the invariant from handleCreate: a watcher with no agent_id is
+  // Match the invariant from handleCreate: a behavior with no agent_id is
   // a zombie the scheduler will never run (automation joins on
   // `agent_id IS NOT NULL`). Reject explicit nulling, and reject updates
-  // that would leave a scheduled watcher orphaned.
+  // that would leave a scheduled behavior orphaned.
   if (args.agent_id === null) {
     throw new ToolUserError(
       'agent_id cannot be set to null — every Behavior must have an owning agent.'
@@ -561,7 +561,7 @@ export async function handleUpdate(
       : null;
 
   const updatedRows = await sql`
-    UPDATE watchers SET
+    UPDATE behaviors SET
       updated_at = NOW(),
       model_config = CASE WHEN ${has('model_config')} THEN ${toJsonParam(sql, patch.model_config)} ELSE model_config END,
       execution_config = CASE WHEN ${has('execution_config')} THEN ${toJsonParam(sql, patch.execution_config)} ELSE execution_config END,
@@ -581,7 +581,7 @@ export async function handleUpdate(
     RETURNING *
   `;
 
-  logger.info(`[manage_behaviors] Updated watcher ${args.behavior_id}: ${updatedFields.join(', ')}`);
+  logger.info(`[manage_behaviors] Updated behavior ${args.behavior_id}: ${updatedFields.join(', ')}`);
 
   const updatedRow = (updatedRows[0] ?? null) as Record<string, unknown> | null;
   await syncBehaviorChannelFeedsBestEffort({
@@ -616,7 +616,7 @@ export async function handleDelete(
   ctx: ToolContext
 ): Promise<{
   action: 'delete';
-  results: WatcherOperationResult[];
+  results: BehaviorOperationResult[];
   summary: { total: number; successful: number; failed: number };
 }> {
   const sql = getDb();
@@ -625,18 +625,18 @@ export async function handleDelete(
     throw new Error('behavior_ids is required and cannot be empty');
   }
 
-  const results: WatcherOperationResult[] = [];
+  const results: BehaviorOperationResult[] = [];
 
-  for (const watcherId of args.behavior_ids) {
+  for (const behaviorId of args.behavior_ids) {
     try {
-      // Org-scope the mutation: requireWatcherAccess now lets ids that aren't
-      // in-org at check time fall through to this aggregate, and watcher ids are
+      // Org-scope the mutation: requireBehaviorAccess now lets ids that aren't
+      // in-org at check time fall through to this aggregate, and behavior ids are
       // sequential integers — so a racing cross-tenant insert between check and
       // write must not be archivable. organization_id fences that TOCTOU.
       const updated = await sql`
-        UPDATE watchers
+        UPDATE behaviors
         SET status = 'archived', updated_at = NOW()
-        WHERE id = ${watcherId}
+        WHERE id = ${behaviorId}
           AND organization_id = ${ctx.organizationId}
           AND status != 'archived'
         RETURNING id, name, entity_ids, organization_id, triggers
@@ -644,61 +644,61 @@ export async function handleDelete(
 
       if (updated.length === 0) {
         results.push({
-          behavior_id: watcherId,
+          behavior_id: behaviorId,
           success: false,
           message: 'Behavior not found or already archived',
         });
       } else {
-        const watcher = updated[0];
-        const entityIds = Array.isArray(watcher.entity_ids) ? watcher.entity_ids : [];
+        const behavior = updated[0];
+        const entityIds = Array.isArray(behavior.entity_ids) ? behavior.entity_ids : [];
 
         // Record change event in knowledge for audit trail
-        if (entityIds.length > 0 && watcher.organization_id) {
+        if (entityIds.length > 0 && behavior.organization_id) {
           recordChangeEvent({
             entityIds: entityIds.map(Number),
-            organizationId: watcher.organization_id as string,
-            title: `Behavior archived: ${watcher.name || watcherId}`,
-            content: `Behavior "${watcher.name || watcherId}" (id: ${watcherId}) was archived.`,
+            organizationId: behavior.organization_id as string,
+            title: `Behavior archived: ${behavior.name || behaviorId}`,
+            content: `Behavior "${behavior.name || behaviorId}" (id: ${behaviorId}) was archived.`,
             metadata: {
-              action: 'watcher_archived',
-              watcher_id: watcherId,
-              watcher_name: watcher.name,
+              action: 'behavior_archived',
+              behavior_id: behaviorId,
+              behavior_name: behavior.name,
             },
           });
         }
-        if (watcher.organization_id) {
+        if (behavior.organization_id) {
           await syncBehaviorChannelFeedsBestEffort({
-            organizationId: watcher.organization_id as string,
-            before: (watcher.triggers ?? []) as ManageBehaviorsArgs['triggers'],
+            organizationId: behavior.organization_id as string,
+            before: (behavior.triggers ?? []) as ManageBehaviorsArgs['triggers'],
             sql,
           });
           recordLifecycleEvent({
-            organizationId: watcher.organization_id as string,
-            entityType: 'watcher',
+            organizationId: behavior.organization_id as string,
+            entityType: 'behavior',
             op: 'deleted',
-            entityId: watcherId,
-            summary: `Behavior "${watcher.name || watcherId}" archived`,
+            entityId: behaviorId,
+            summary: `Behavior "${behavior.name || behaviorId}" archived`,
           });
 
           recordToolConfigChange(ctx, {
-            organizationId: watcher.organization_id as string,
+            organizationId: behavior.organization_id as string,
             resourceKind: 'behavior',
-            resourceId: watcherId,
+            resourceId: behaviorId,
             op: 'deleted',
-            summary: `Behavior '${watcher.name || watcherId}' archived`,
+            summary: `Behavior '${behavior.name || behaviorId}' archived`,
             state: null,
           });
         }
 
         results.push({
-          behavior_id: watcherId,
+          behavior_id: behaviorId,
           success: true,
           message: 'Behavior archived successfully',
         });
       }
     } catch (error) {
       results.push({
-        behavior_id: watcherId,
+        behavior_id: behaviorId,
         success: false,
         message: getErrorMessage(error),
       });
@@ -734,18 +734,18 @@ export async function handleCreateFromVersion(
   // `args.entity_ids` back to `number[] | undefined`, losing this guard.
   const entityIds = args.entity_ids;
 
-  // Fetch the source version + the source watcher's reaction script AND its
+  // Fetch the source version + the source behavior's reaction script AND its
   // derived input schema. Reaction script + its `reaction_input_schema` contract
-  // live on the watchers row, not on watcher_versions, so they have to be copied
+  // live on the behaviors row, not on behavior_versions, so they have to be copied
   // explicitly when assigning the template to a new entity. Without this copy the
   // new assignment would have no reactions — or (dropping the input schema) a
   // reaction with no extraction contract, silently running free-form.
   const versionRows = await sql`
     SELECT wv.*, w.organization_id, w.schedule, w.timezone, w.triggers, w.sources, w.agent_id, w.scheduler_client_id,
-           w.model_config, w.execution_config, w.tags, w.watcher_group_id,
+           w.model_config, w.execution_config, w.tags, w.behavior_group_id,
            w.reaction_script, w.reaction_script_compiled, w.reaction_input_schema
-    FROM watcher_versions wv
-    JOIN watchers w ON w.id = wv.watcher_id
+    FROM behavior_versions wv
+    JOIN behaviors w ON w.id = wv.behavior_id
     WHERE wv.id = ${args.version_id}
     LIMIT 1
   `;
@@ -758,7 +758,7 @@ export async function handleCreateFromVersion(
     );
   }
   if (!version.agent_id) {
-    // Source watcher has no agent — cloning would silently inherit null and
+    // Source behavior has no agent — cloning would silently inherit null and
     // produce active zombies the scheduler skips. Same invariant as handleCreate.
     throw new ToolUserError(
       `Source Behavior version ${args.version_id} has no agent_id; assign an agent on the source before cloning.`
@@ -771,7 +771,7 @@ export async function handleCreateFromVersion(
   // batch of Behaviors the scheduler will never run.
   await assertAgentExists(sql, organizationId, version.agent_id as string);
 
-  // Reject cross-org entity_ids before cloning: a watcher attached to another
+  // Reject cross-org entity_ids before cloning: a behavior attached to another
   // org's entity links its synced/extracted content to a non-existent in-org
   // entity (silent data-correctness bug). Names are fetched org-scoped below.
   await assertEntityIdsInOrg(sql, organizationId, entityIds);
@@ -795,7 +795,7 @@ export async function handleCreateFromVersion(
   }>;
   if (clonedSources.length > 0) {
     for (const entityId of entityIds) {
-      await assertWatcherSourcesResolve(sql, organizationId, clonedSources, [entityId]);
+      await assertBehaviorSourcesResolve(sql, organizationId, clonedSources, [entityId]);
     }
   }
 
@@ -807,12 +807,12 @@ export async function handleCreateFromVersion(
   }> = [];
   // Audit/lifecycle payloads are collected inside the transaction and emitted
   // only after it commits — a rollback must not leak "created" events for
-  // watchers that never landed (events is append-only; we can't take them back).
+  // behaviors that never landed (events is append-only; we can't take them back).
   const auditPayloads: Array<{
     entityId: number;
-    watcherId: number;
-    watcherName: string;
-    watcherSlug: string;
+    behaviorId: number;
+    behaviorName: string;
+    behaviorSlug: string;
     sources: unknown;
     sharedVersionId: number;
     groupId: number;
@@ -822,7 +822,7 @@ export async function handleCreateFromVersion(
   //  1. getNextNumericId relies on pg_advisory_xact_lock, which only serializes
   //     when a real transaction is open. On the pooled autocommit connection the
   //     lock releases immediately, so concurrent assignments would both compute
-  //     MAX(id)+1 and collide on the watchers PK.
+  //     MAX(id)+1 and collide on the behaviors PK.
   //  2. Atomicity: a mid-loop failure (e.g. a slug clash on the 3rd entity)
   //     would otherwise leave a partial fan-out — some assignments created,
   //     some not. All-or-nothing is the correct contract here.
@@ -833,20 +833,20 @@ export async function handleCreateFromVersion(
         if (!entity) throw new Error(`Entity ${entityId} not found`);
 
         const namePattern = args.name_pattern ?? `${version.name}: {{entity_name}}`;
-        const watcherName = namePattern.replace(/\{\{entity_name\}\}/g, entity.name as string);
-        const watcherSlug = `${version.name}-${entity.slug}`
+        const behaviorName = namePattern.replace(/\{\{entity_name\}\}/g, entity.name as string);
+        const behaviorSlug = `${version.name}-${entity.slug}`
           .toLowerCase()
           .replace(/[^a-z0-9-]/g, '-');
 
-        const watcherId = await getNextNumericId(tx, 'watchers');
-        // The new assignment shares the source's existing watcher_versions row
+        const behaviorId = await getNextNumericId(tx, 'behaviors');
+        // The new assignment shares the source's existing behavior_versions row
         // rather than getting its own duplicate copy. version_id (the arg) is
-        // the row in watcher_versions we're cloning from; that becomes the
+        // the row in behavior_versions we're cloning from; that becomes the
         // assignment's current_version_id directly. The version row itself is
-        // owned by the group root (watcher_group_id), so all assignments in
+        // owned by the group root (behavior_group_id), so all assignments in
         // the group point at the same chain.
         const sharedVersionId = Number(args.version_id);
-        const groupId = (version.watcher_group_id ?? version.watcher_id) as number;
+        const groupId = (version.behavior_group_id ?? version.behavior_id) as number;
         // Entity clones must not inherit chat-link steer/reply triggers (or the
         // system:chat-link tag): those bind a live channel responder, and
         // cloning them would create a second agent turn for the same message.
@@ -854,7 +854,7 @@ export async function handleCreateFromVersion(
         // After stripping, the residual trigger shape must still satisfy the
         // instruction rule (chat-link-only sources become manual/empty triggers
         // and require a non-empty prompt).
-        // The clone SHARES the source's watcher_versions row, so its pinned
+        // The clone SHARES the source's behavior_versions row, so its pinned
         // skills come along with it — they satisfy the rule here exactly as they
         // will at dispatch.
         assertBehaviorInstructions(
@@ -870,21 +870,21 @@ export async function handleCreateFromVersion(
         ).filter((tag) => tag !== 'system:chat-link');
 
         await tx`
-          INSERT INTO watchers (
+          INSERT INTO behaviors (
             id, name, slug, organization_id, entity_ids,
             schedule, timezone, next_run_at, triggers, agent_id, scheduler_client_id, model_config, execution_config, sources, version,
             current_version_id, tags, status, created_by, created_at, updated_at,
-            watcher_group_id, source_watcher_id,
+            behavior_group_id, source_behavior_id,
             reaction_script, reaction_script_compiled, reaction_input_schema
           ) VALUES (
-            ${watcherId}, ${watcherName}, ${watcherSlug}, ${organizationId},
+            ${behaviorId}, ${behaviorName}, ${behaviorSlug}, ${organizationId},
             ${`{${entityId}}`}::bigint[],
             ${version.schedule ?? null}, ${version.timezone ?? null}, ${version.schedule ? nextRunAt(version.schedule as string, new Date(), version.timezone as string | null) : null}, ${toJsonParam(tx, cloneTriggers)},
             ${version.agent_id ?? null}, ${version.scheduler_client_id ?? null},
             ${toJsonParam(tx, version.model_config)}, ${toJsonParam(tx, version.execution_config)}, ${toJsonParam(tx, clonedSources)},
             ${(version.version as number) ?? 1}, ${sharedVersionId}, ${toTextArrayParam(cloneTags)}::text[],
             'active', ${createdBy}, NOW(), NOW(),
-            ${groupId}, ${version.watcher_id},
+            ${groupId}, ${version.behavior_id},
             ${(version.reaction_script as string | null) ?? null},
             ${(version.reaction_script_compiled as string | null) ?? null},
             ${toJsonParam(tx, version.reaction_input_schema)}
@@ -892,15 +892,15 @@ export async function handleCreateFromVersion(
         `;
 
         created.push({
-          behavior_id: String(watcherId),
+          behavior_id: String(behaviorId),
           entity_id: entityId,
-          name: watcherName,
+          name: behaviorName,
         });
         auditPayloads.push({
           entityId,
-          watcherId,
-          watcherName,
-          watcherSlug,
+          behaviorId,
+          behaviorName,
+          behaviorSlug,
           sources: clonedSources,
           sharedVersionId,
           groupId,
@@ -919,8 +919,8 @@ export async function handleCreateFromVersion(
   } catch (err) {
     // The derived slug is not pre-checked and is not locked: two concurrent
     // assignments (or a re-run) can produce the same slug and race
-    // idx_watchers_org_slug. Surface a coded 409 instead of leaking a raw 23505.
-    if (isUniqueViolation(err, 'idx_watchers_org_slug')) {
+    // idx_behaviors_org_slug. Surface a coded 409 instead of leaking a raw 23505.
+    if (isUniqueViolation(err, 'idx_behaviors_org_slug')) {
       throw new ToolUserError(
         `A Behavior assignment with a colliding slug already exists in this organization`,
         409
@@ -933,25 +933,25 @@ export async function handleCreateFromVersion(
   for (const p of auditPayloads) {
     recordLifecycleEvent({
       organizationId,
-      entityType: 'watcher',
+      entityType: 'behavior',
       op: 'created',
-      entityId: p.watcherId,
-      summary: `Behavior "${p.watcherName}" created`,
-      extra: { slug: p.watcherSlug, via: 'create_from_version' },
+      entityId: p.behaviorId,
+      summary: `Behavior "${p.behaviorName}" created`,
+      extra: { slug: p.behaviorSlug, via: 'create_from_version' },
     });
 
     recordToolConfigChange(ctx, {
       organizationId,
       resourceKind: 'behavior',
-      resourceId: p.watcherId,
+      resourceId: p.behaviorId,
       op: 'created',
-      summary: `Behavior '${p.watcherName}' created from version ${args.version_id}`,
+      summary: `Behavior '${p.behaviorName}' created from version ${args.version_id}`,
       // Composed from the cloned insert values (row not refetched); the
       // version-bound fields come from the shared source version row.
       state: {
-        id: p.watcherId,
-        name: p.watcherName,
-        slug: p.watcherSlug,
+        id: p.behaviorId,
+        name: p.behaviorName,
+        slug: p.behaviorSlug,
         status: 'active',
         entity_ids: [p.entityId],
         schedule: version.schedule ?? null,
@@ -961,8 +961,8 @@ export async function handleCreateFromVersion(
         scheduler_client_id: version.scheduler_client_id ?? null,
         version: (version.version as number) ?? 1,
         current_version_id: p.sharedVersionId,
-        watcher_group_id: p.groupId,
-        source_watcher_id: version.watcher_id,
+        behavior_group_id: p.groupId,
+        source_behavior_id: version.behavior_id,
         sources: p.sources,
         prompt: version.prompt ?? null,
         keying_config: version.keying_config ?? null,

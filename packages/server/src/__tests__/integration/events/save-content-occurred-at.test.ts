@@ -4,9 +4,9 @@
  *
  * The tool schema has always promised "Defaults to now if omitted", but the
  * implementation passed NULL through to insertEvent. A NULL occurred_at makes
- * the event invisible to every watcher window (window content is an events CTE
+ * the event invisible to every behavior window (window content is an events CTE
  * filtered on occurred_at within [window_start, window_end)), so agent-saved
- * knowledge silently never reached watchers.
+ * knowledge silently never reached behaviors.
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';

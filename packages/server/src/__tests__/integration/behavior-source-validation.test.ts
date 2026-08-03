@@ -112,7 +112,7 @@ describe("behavior custom-SQL source validation", () => {
 			throw new Error("setup: create failed");
 		}
 		const [row] = await getTestDb()<{ current_version_id: number }[]>`
-			SELECT current_version_id FROM watchers WHERE id = ${String(created.behavior_id)}
+			SELECT current_version_id FROM behaviors WHERE id = ${String(created.behavior_id)}
 		`;
 		return {
 			ctx,
@@ -251,7 +251,7 @@ describe("behavior custom-SQL source validation", () => {
 
 		// Simulate a referenced table being dropped after the version was authored.
 		await getTestDb()`
-			UPDATE watcher_versions
+			UPDATE behavior_versions
 			SET version_sources = ${getTestDb().json([
 				{ name: "src", query: "SELECT id FROM evetns" },
 			])}
@@ -271,7 +271,7 @@ describe("behavior custom-SQL source validation", () => {
 		).rejects.toThrow(/unknown table or entity type|evetns/i);
 
 		const [{ n }] = await getTestDb()<{ n: string }[]>`
-			SELECT COUNT(*)::text AS n FROM watchers
+			SELECT COUNT(*)::text AS n FROM behaviors
 			WHERE organization_id = ${organizationId} AND ${targetEntityId} = ANY(entity_ids)
 		`;
 		expect(Number(n)).toBe(0);

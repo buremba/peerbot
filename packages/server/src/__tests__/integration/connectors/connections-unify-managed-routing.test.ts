@@ -70,7 +70,7 @@ describe("connections-unify managed-install routing", () => {
 
 	afterAll(async () => {
 		const sql = getDb();
-		await sql`DELETE FROM watchers WHERE organization_id IN (${orgId}, ${orgB})`;
+		await sql`DELETE FROM behaviors WHERE organization_id IN (${orgId}, ${orgB})`;
 		await sql`DELETE FROM connections WHERE organization_id IN (${orgId}, ${orgB})`;
 		await sql`DELETE FROM app_installations WHERE organization_id IN (${orgId}, ${orgB})`;
 	});

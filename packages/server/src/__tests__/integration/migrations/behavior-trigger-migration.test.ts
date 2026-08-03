@@ -8,6 +8,7 @@ import {
 } from "../../../db/migration-loader";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase } from "../../setup/test-db";
+import { adaptImmutableMigrationToBehaviorSchema } from "../../setup/immutable-migration";
 import { createTestAgent, seedOwnerContext } from "../../setup/test-fixtures";
 
 const TRIGGER_MIGRATION = "20260717121000_behavior_triggers.sql";
@@ -46,11 +47,14 @@ describe("Behavior trigger migration", () => {
 			agentId: "schedule-backfill-agent",
 		});
 		const migrationsDir = resolveMigrationsDir();
-		const up = loadMigrationUpSection(migrationsDir, TRIGGER_MIGRATION);
-		const down = loadMigrationDownSection(migrationsDir, TRIGGER_MIGRATION);
-		const subscriptionDown = loadMigrationDownSection(
-			migrationsDir,
-			SUBSCRIPTION_MIGRATION,
+		const up = adaptImmutableMigrationToBehaviorSchema(
+			loadMigrationUpSection(migrationsDir, TRIGGER_MIGRATION),
+		);
+		const down = adaptImmutableMigrationToBehaviorSchema(
+			loadMigrationDownSection(migrationsDir, TRIGGER_MIGRATION),
+		);
+		const subscriptionDown = adaptImmutableMigrationToBehaviorSchema(
+			loadMigrationDownSection(migrationsDir, SUBSCRIPTION_MIGRATION),
 		);
 		const sql = getDb();
 		const canonicalWrite = [
@@ -84,47 +88,47 @@ describe("Behavior trigger migration", () => {
 		try {
 			await sql.begin(async (tx: typeof sql) => {
 				// Pre-migration row: schedule columns only (empty triggers).
-				const [ids] = await tx<{ watcherId: number }>`
-          SELECT (COALESCE(MAX(id), 0) + 1)::int AS "watcherId" FROM watchers
+				const [ids] = await tx<{ behaviorId: number }>`
+          SELECT (COALESCE(MAX(id), 0) + 1)::int AS "behaviorId" FROM behaviors
         `;
-				const watcherId = ids.watcherId;
+				const behaviorId = ids.behaviorId;
 				await tx`
-          INSERT INTO watchers (
+          INSERT INTO behaviors (
             id, name, slug, organization_id, entity_ids, schedule, timezone,
             next_run_at, agent_id, model_config, sources, version, tags, status,
-            created_by, created_at, updated_at, watcher_group_id, triggers
+            created_by, created_at, updated_at, behavior_group_id, triggers
           ) VALUES (
-            ${watcherId}, 'Legacy schedule insert', 'legacy-schedule-insert',
+            ${behaviorId}, 'Legacy schedule insert', 'legacy-schedule-insert',
             ${org.id}, '{}'::bigint[], '0 9 * * *', 'Europe/London', NOW(),
             ${agent.agentId}, '{}'::jsonb, '[]'::jsonb, 1, '{}'::text[],
-            'active', ${user.id}, NOW(), NOW(), ${watcherId}, '[]'::jsonb
+            'active', ${user.id}, NOW(), NOW(), ${behaviorId}, '[]'::jsonb
           )
         `;
 
 				await tx.unsafe(up);
 				const [backfilled] = await tx<{ triggers: unknown }>`
-          SELECT triggers FROM watchers WHERE id = ${watcherId}
+          SELECT triggers FROM behaviors WHERE id = ${behaviorId}
         `;
 
 				// App-style canonical write of triggers + schedule projections.
 				await tx`
-          UPDATE watchers
+          UPDATE behaviors
           SET schedule = '30 8 * * *', timezone = 'UTC',
               triggers = ${tx.json(canonicalWrite)}
-          WHERE id = ${watcherId}
+          WHERE id = ${behaviorId}
         `;
 				const [canonical] = await tx<{ triggers: unknown }>`
-          SELECT triggers FROM watchers WHERE id = ${watcherId}
+          SELECT triggers FROM behaviors WHERE id = ${behaviorId}
         `;
 
 				// Clean cut: schedule-only updates do NOT rewrite triggers.
 				await tx`
-          UPDATE watchers
+          UPDATE behaviors
           SET schedule = '15 7 * * 1', timezone = 'America/New_York'
-          WHERE id = ${watcherId}
+          WHERE id = ${behaviorId}
         `;
 				const [scheduleOnly] = await tx<{ triggers: unknown }>`
-          SELECT triggers FROM watchers WHERE id = ${watcherId}
+          SELECT triggers FROM behaviors WHERE id = ${behaviorId}
         `;
 
 				await tx.unsafe(subscriptionDown);
@@ -133,10 +137,10 @@ describe("Behavior trigger migration", () => {
           SELECT (
             SELECT COUNT(*)::int FROM pg_trigger
             WHERE NOT tgisinternal
-              AND tgname = 'sync_legacy_watcher_schedule_trigger'
+              AND tgname = 'sync_legacy_behavior_schedule_trigger'
           ) + (
             SELECT COUNT(*)::int FROM pg_proc
-            WHERE proname = 'sync_legacy_watcher_schedule_trigger'
+            WHERE proname = 'sync_legacy_behavior_schedule_trigger'
           ) AS count
         `;
 				captured = {
@@ -177,30 +181,30 @@ describe("Behavior trigger migration", () => {
 			agentId: "legacy-scheduler-race-agent",
 		});
 		const sql = getDb();
-		const [ids] = await sql<{ watcherId: number }>`
-      SELECT (COALESCE(MAX(id), 0) + 1)::int AS "watcherId" FROM watchers
+		const [ids] = await sql<{ behaviorId: number }>`
+      SELECT (COALESCE(MAX(id), 0) + 1)::int AS "behaviorId" FROM behaviors
     `;
-		const watcherId = ids.watcherId;
+		const behaviorId = ids.behaviorId;
 		await sql`
-      INSERT INTO watchers (
+      INSERT INTO behaviors (
         id, name, slug, organization_id, entity_ids, schedule, timezone,
         next_run_at, agent_id, model_config, sources, version, tags, status,
-        created_by, created_at, updated_at, watcher_group_id
+        created_by, created_at, updated_at, behavior_group_id
       ) VALUES (
-        ${watcherId}, 'Legacy scheduler race', 'legacy-scheduler-race',
+        ${behaviorId}, 'Legacy scheduler race', 'legacy-scheduler-race',
         ${org.id}, '{}'::bigint[], '0 9 * * *', 'UTC', NOW(),
         ${agent.agentId}, '{}'::jsonb, '[]'::jsonb, 1, '{}'::text[],
-        'active', ${user.id}, NOW(), NOW(), ${watcherId}
+        'active', ${user.id}, NOW(), NOW(), ${behaviorId}
       )
     `;
 
 		const insertLegacyRun = (suffix: string) => sql`
       INSERT INTO runs (
-        organization_id, run_type, watcher_id, approval_status, status,
+        organization_id, run_type, behavior_id, approval_status, status,
         approved_input, idempotency_key, created_at
       ) VALUES (
-        ${org.id}, 'behavior', ${watcherId}, 'auto', 'pending',
-        ${sql.json({ watcher_id: watcherId, agent_id: agent.agentId })},
+        ${org.id}, 'behavior', ${behaviorId}, 'auto', 'pending',
+        ${sql.json({ behavior_id: behaviorId, agent_id: agent.agentId })},
         ${`legacy-scheduler-race:${suffix}`}, NOW()
       )
       RETURNING id

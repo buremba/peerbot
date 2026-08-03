@@ -2,8 +2,8 @@
  * A classifier slug is a tenant-scoped name, not a global one.
  *
  * `classify_facet_unique_per_insight` was UNIQUE NULLS NOT DISTINCT
- * (entity_id, watcher_id, slug) — no organization_id. Org-level classifiers are
- * exactly (entity_id NULL, watcher_id NULL, slug), which is what
+ * (entity_id, behavior_id, slug) — no organization_id. Org-level classifiers are
+ * exactly (entity_id NULL, behavior_id NULL, slug), which is what
  * `manage_classifiers create` produces and the only kind `apply` and the
  * reconciliation job can match. So the FIRST tenant to create `sentiment` took
  * the name away from every other tenant in the install, and the second one's
@@ -19,7 +19,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { manageClassifiers } from '../../../tools/admin/manage_classifiers';
-import { createClassifiersForWatcher } from '../../../watchers/classifier-extraction';
+import { createClassifiersForBehavior } from '../../../behaviors/classifier-extraction';
 import type { ToolContext } from '../../../tools/registry';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
@@ -126,7 +126,7 @@ describe('classifier slugs are scoped per organization', () => {
     const b = await orgWithOwner('Entity Tenant B', 'ent-b@test.example.com');
     const sql = getTestDb();
 
-    // The NULLS NOT DISTINCT arms still have to work: entity_id/watcher_id are
+    // The NULLS NOT DISTINCT arms still have to work: entity_id/behavior_id are
     // nullable and their NULLs must keep colliding WITHIN a tenant. Here both
     // rows carry the same non-null entity_id, so only organization_id separates
     // them — the exact case the old 3-column key conflated.
@@ -162,27 +162,27 @@ describe('classifier slugs are scoped per organization', () => {
       value_field: 'value',
     };
     const sql = getTestDb();
-    const watcherId = 9001;
+    const behaviorId = 9001;
     const entityId = 9002;
 
-    const [firstId] = await createClassifiersForWatcher(sql, watcherId, entityId, [def], {
+    const [firstId] = await createClassifiersForBehavior(sql, behaviorId, entityId, [def], {
       createdBy: 'system',
       organizationId: a.org.id,
     });
 
     // Re-apply in the same tenant: the conflict arm fires — same row, name refreshed.
-    const [againId] = await createClassifiersForWatcher(
+    const [againId] = await createClassifiersForBehavior(
       sql,
-      watcherId,
+      behaviorId,
       entityId,
       [{ ...def, name: 'Extracted v2' }],
       { createdBy: 'system', organizationId: a.org.id }
     );
     expect(againId).toBe(firstId);
 
-    // Same (entity, watcher, slug) in ANOTHER tenant: a new row, not an update
+    // Same (entity, behavior, slug) in ANOTHER tenant: a new row, not an update
     // of tenant A's — the exact pair the old 3-column key conflated.
-    const [otherId] = await createClassifiersForWatcher(sql, watcherId, entityId, [def], {
+    const [otherId] = await createClassifiersForBehavior(sql, behaviorId, entityId, [def], {
       createdBy: 'system',
       organizationId: b.org.id,
     });

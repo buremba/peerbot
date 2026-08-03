@@ -4,7 +4,7 @@
  *
  * The events table is append-only — the contract is advertised in the
  * `save_memory` MCP tool description and depended on by
- * `get_content.include_superseded` plus `watcher_window_events` FK
+ * `get_content.include_superseded` plus `behavior_window_events` FK
  * cascades. `deleteContent` must:
  *   1. Insert a tombstone event whose `supersedes_event_id` points at the
  *      target.

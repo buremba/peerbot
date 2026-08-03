@@ -71,7 +71,7 @@ import {
 } from "../../utils/relationship-validation";
 import { validateEntityMetadata } from "../../utils/schema-validation";
 import { buildEntityUrl } from "../../utils/url-builder";
-import { trackWatcherReaction } from "../../utils/watcher-reactions";
+import { trackBehaviorReaction } from "../../utils/behavior-reactions";
 import { isAdminOrOwnerRole } from "../access-control";
 import { MEMBER_ENTITY_TYPE_SLUG } from "../constants";
 import type { ToolContext } from "../registry";
@@ -98,8 +98,8 @@ function capitalize(value: string): string {
 /**
  * The acting principal for an entity mutation, resolved through the shared seam
  * ({@link resolveActingPrincipal}): merges the explicit `behavior_source` and the
- * reaction session's own watcher, looks up the owning agent, and pins autonomous
- * mode for a watcher — so a reaction can't dodge its agent's envelope by omitting
+ * reaction session's own behavior, looks up the owning agent, and pins autonomous
+ * mode for a behavior — so a reaction can't dodge its agent's envelope by omitting
  * behavior_source.
  */
 function actingPrincipalFor(
@@ -110,19 +110,19 @@ function actingPrincipalFor(
 		organizationId: ctx.organizationId,
 		userId: ctx.userId,
 		agentId: ctx.agentId,
-		explicitWatcherId: args?.behavior_source?.behavior_id ?? null,
-		sessionWatcherId: ctx.actingWatcherId ?? null,
+		explicitBehaviorId: args?.behavior_source?.behavior_id ?? null,
+		sessionBehaviorId: ctx.actingBehaviorId ?? null,
 	});
 }
 
 function attributionFor(actor: ActingPrincipal): ApprovalAttributionType {
-	return actor.kind === "watcher"
+	return actor.kind === "behavior"
 		? ApprovalAttribution.Behavior
 		: ApprovalAttribution.Agent;
 }
 
 /**
- * Entity read gate for agents/watchers. Humans skip (role ACL is separate).
+ * Entity read gate for agents/behaviors. Humans skip (role ACL is separate).
  * Default is auto (unrestricted within org); a policy can deny by type.
  */
 async function assertEntityReadAllowed(
@@ -213,7 +213,7 @@ async function manageEntityImpl(
 ): Promise<ManageEntityResult> {
   const result = await runManageEntity(args, env, ctx);
 
-  // Track watcher reaction for mutating actions
+  // Track behavior reaction for mutating actions
 	if (args.behavior_source && "action" in result) {
     const reactionType =
 			result.action === "create"
@@ -228,9 +228,9 @@ async function manageEntityImpl(
 				result.action === "create" && "entity" in result
           ? (result as any).entity.id
           : args.entity_id;
-      await trackWatcherReaction({
+      await trackBehaviorReaction({
         organizationId: ctx.organizationId,
-        watcherId: args.behavior_source.behavior_id,
+        behaviorId: args.behavior_source.behavior_id,
         windowId: args.behavior_source.window_id,
         reactionType,
 				toolName: "manage_entity",
@@ -323,11 +323,11 @@ async function handleCreate(
 		principalKind: actor.kind,
 		sql: getDb(),
 		attribution,
-		// The TRUSTED reaction-session watcher/window WINS (same precedence as
+		// The TRUSTED reaction-session behavior/window WINS (same precedence as
 		// resolveActingPrincipal): a reaction can't retag its deferral into another
-		// watcher's approval batch by passing a foreign behavior_source. The
+		// behavior's approval batch by passing a foreign behavior_source. The
 		// caller-supplied source is only honored OUTSIDE a reaction session.
-		watcherId: ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null,
+		behaviorId: ctx.actingBehaviorId ?? args.behavior_source?.behavior_id ?? null,
 		windowId: ctx.actingWindowId ?? args.behavior_source?.window_id ?? null,
 		principalId: actor.id,
 		ownerAgentId: actor.ownerAgentId,
@@ -628,7 +628,7 @@ function redactMemberEmail(
 
 /**
  * Fold a duplicate entity (`entity_id`, the loser) into the one it really is
- * (`winner_entity_id`). Humans must be admin/owner. Agents and watchers may
+ * (`winner_entity_id`). Humans must be admin/owner. Agents and behaviors may
  * auto-merge only when the entity type policy proves the match; every other
  * candidate queues human review. The heavy lifting (merge attributes, move
  * identities and edges, tombstone + forward each loser, flatten chains) is in
@@ -758,8 +758,8 @@ async function handleMerge(
 				entity_ids: loserIds,
 				winner_entity_id: winnerId,
 				evidence: resolution.evidence,
-				watcher_id:
-					ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null,
+				behavior_id:
+					ctx.actingBehaviorId ?? args.behavior_source?.behavior_id ?? null,
 				window_id:
 					ctx.actingWindowId ?? args.behavior_source?.window_id ?? null,
 				source_run_id: ctx.actingRunId ?? null,
@@ -815,8 +815,8 @@ async function handleMerge(
 					: {
 							decision: "auto_merge",
 							sourceRunId: ctx.actingRunId ?? null,
-							watcherId:
-								ctx.actingWatcherId ??
+							behaviorId:
+								ctx.actingBehaviorId ??
 								args.behavior_source?.behavior_id ??
 								null,
 							windowId:
@@ -1351,8 +1351,8 @@ async function handleDelete(
 		principalKind: deleteActor.kind,
 		sql: getDb(),
 		attribution,
-		// Trusted reaction-session watcher/window WINS — see the create path.
-		watcherId: ctx.actingWatcherId ?? args?.behavior_source?.behavior_id ?? null,
+		// Trusted reaction-session behavior/window WINS — see the create path.
+		behaviorId: ctx.actingBehaviorId ?? args?.behavior_source?.behavior_id ?? null,
 		windowId: ctx.actingWindowId ?? args?.behavior_source?.window_id ?? null,
 		principalId: deleteActor.id,
 		ownerAgentId: deleteActor.ownerAgentId,

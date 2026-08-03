@@ -1,10 +1,10 @@
 /**
  * Entity merge — fold a duplicate `loser` entity into the `winner` it really is.
  *
- * The world-model keystone: when a bridge event (or a reviewer/watcher) reveals
+ * The world-model keystone: when a bridge event (or a reviewer/behavior) reveals
  * two entities are the same real thing, this fuses them WITHOUT rewriting the
  * append-only `events` table. It runs off the ingest hot path — a user-configured
- * watcher's agent, or an admin, calls it via `manage_entity(action='merge')`; the
+ * behavior's agent, or an admin, calls it via `manage_entity(action='merge')`; the
  * resolver only ever LOGS a "merge candidate", never fuses inline.
  *
  * Two disjoint event populations recall the winner afterward:
@@ -37,7 +37,7 @@ import logger from "./logger";
 export interface MergeResolutionProvenance {
 	decision: "auto_merge" | "human";
 	sourceRunId?: number | null;
-	watcherId?: number | null;
+	behaviorId?: number | null;
 	windowId?: number | null;
 	policyHash?: string | null;
 	evidence?: ResolutionEvidence[];
@@ -407,10 +407,10 @@ async function applyMergeInTransaction(
 	await tx`
     INSERT INTO entity_merge_operations
       (organization_id, winner_entity_id, loser_entity_id, source_run_id,
-       watcher_id, window_id, decision, policy_hash, evidence, ledger, merged_by)
+       behavior_id, window_id, decision, policy_hash, evidence, ledger, merged_by)
     VALUES
       (${orgId}, ${winnerId}, ${loserId}, ${resolution.sourceRunId ?? null},
-       ${resolution.watcherId ?? null}, ${resolution.windowId ?? null},
+       ${resolution.behaviorId ?? null}, ${resolution.windowId ?? null},
        ${resolution.decision}, ${resolution.policyHash ?? null},
        ${tx.json(resolution.evidence ?? [])}, ${tx.json(ledger)}, ${mergedBy})
   `;

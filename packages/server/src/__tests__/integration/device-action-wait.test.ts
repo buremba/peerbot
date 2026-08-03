@@ -329,7 +329,7 @@ describe('waitForDeviceActionRun', () => {
   });
 
   // Exercises the REAL exported helper (not the mirror) for the abortSignal
-  // path added so a watcher reaction hitting its wall-clock budget cancels the
+  // path added so a behavior reaction hitting its wall-clock budget cancels the
   // poll loop instead of leaking it. An already-aborted signal short-circuits
   // on the first iteration, so this stays fast despite the real 60s budget.
   it('aborts the wait + finalizes the run as timeout when the abort signal fires', async () => {

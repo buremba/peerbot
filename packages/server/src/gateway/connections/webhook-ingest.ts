@@ -5,9 +5,9 @@
  * no mention/DM handlers, no thread semantics. It is a push-source primitive —
  * any external system (Sentry, GitHub, Stripe, healthchecks) POSTs JSON to
  * `POST /api/v1/webhooks/:connectionId` and the payload is persisted as an
- * `events` row (`connector_key = 'webhook:<connectionId>'`). Watchers consume
+ * `events` row (`connector_key = 'webhook:<connectionId>'`). Behaviors consume
  * those rows through their existing checkpointed SQL sources; reaction latency
- * is bounded by the watcher cadence, not by this handler.
+ * is bounded by the behavior cadence, not by this handler.
  *
  * Request pipeline (persist BEFORE ack — a 202 issued before the insert
  * commits would lose the delivery on pod crash, and providers won't retry a
@@ -148,7 +148,7 @@ function isQueryTokenAllowed(config: WebhookIngestConfig): boolean {
 /**
  * Whether to project the payload into `payload_text` so the row is embedded
  * and recallable via `search_memory`. Off by default — store-only rows stay
- * cheap and keep high-volume webhook noise out of semantic memory; watchers
+ * cheap and keep high-volume webhook noise out of semantic memory; behaviors
  * read them via SQL regardless. Accepts the string spelling because
  * declarative (`lobu apply`) configs carry string values only.
  */

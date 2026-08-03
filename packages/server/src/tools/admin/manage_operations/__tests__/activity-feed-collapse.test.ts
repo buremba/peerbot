@@ -51,12 +51,12 @@ describe("collapseAdjacentActivityCards", () => {
 });
 
 describe("runHref", () => {
-	it("links watcher runs to the canonical Behavior route", () => {
+	it("links behavior runs to the canonical Behavior route", () => {
 		expect(
 			runHref("acme", {
 				id: 42,
 				run_type: "behavior",
-				watcher_id: 7,
+				behavior_id: 7,
 				connection_id: null,
 				connector_key: null,
 				approval_status: null,

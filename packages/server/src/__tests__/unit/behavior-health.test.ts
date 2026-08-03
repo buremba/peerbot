@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { computeBehaviorHealth } from "../../watchers/behavior-health";
+import { computeBehaviorHealth } from "../../behaviors/behavior-health";
 
 const NOW = 1_700_000_000_000;
 

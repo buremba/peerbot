@@ -33,7 +33,7 @@ function buildState(
     agents,
     prune: false,
     memorySchema: { entityTypes: [], relationshipTypes: [] },
-    watchers: [],
+    behaviors: [],
     connectors: { definitions: [], authProfiles: [], connections: [] },
     providers: [],
     requiredSecrets: [],
@@ -47,7 +47,7 @@ function emptyRemote(): RemoteSnapshot {
     agentSettings: new Map(),
     entityTypes: [],
     relationshipTypes: [],
-    watchers: [],
+    behaviors: [],
     connectorDefinitions: [],
     authProfiles: [],
     connections: [],
@@ -550,7 +550,7 @@ describe("computeDiff — --only flag", () => {
     expect(plan.rows.some((r) => r.kind === "agent")).toBe(true);
     expect(plan.rows.some((r) => r.kind === "entity-type")).toBe(false);
     expect(plan.rows.some((r) => r.kind === "relationship-type")).toBe(false);
-    expect(plan.rows.some((r) => r.kind === "watcher")).toBe(false);
+    expect(plan.rows.some((r) => r.kind === "behavior")).toBe(false);
   });
 
   test("only=memory: entity-type rows included, agent rows excluded", () => {

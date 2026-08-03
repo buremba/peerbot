@@ -134,11 +134,11 @@ describe("BehaviorSubscriptionService connection-scoped routing", () => {
 		if (!createdBy) throw new Error("Expected an organization member");
 		const digestId = 9001;
 		await sql`
-			INSERT INTO watchers (
+			INSERT INTO behaviors (
 				id, name, slug, description, organization_id, entity_ids,
 				schedule, next_run_at, triggers, agent_id, model_config,
 				execution_config, sources, version, current_version_id, tags,
-				status, created_by, created_at, updated_at, watcher_group_id
+				status, created_by, created_at, updated_at, behavior_group_id
 			) VALUES (
 				${digestId}, 'Channel digest', 'channel-digest',
 				'Background digest', ${ORG_A}, '{}'::bigint[],
@@ -204,7 +204,7 @@ describe("BehaviorSubscriptionService connection-scoped routing", () => {
 
 		const [behavior] = await sql<{ status: string }>`
 			SELECT status
-			FROM watchers
+			FROM behaviors
 			WHERE organization_id = ${ORG_A}
 			  AND tags @> ARRAY['system:chat-link']::text[]
 		`;
@@ -281,7 +281,7 @@ describe("BehaviorSubscriptionService connection-scoped routing", () => {
 
 		const [behavior] = await sql<{ created_by: string }>`
 			SELECT created_by
-			FROM watchers
+			FROM behaviors
 			WHERE organization_id = ${ORG_A}
 			  AND tags @> ARRAY['system:chat-link']::text[]
 			LIMIT 1
@@ -292,9 +292,9 @@ describe("BehaviorSubscriptionService connection-scoped routing", () => {
 	test("allocates chat Behavior IDs after canonical Behavior writes", async () => {
 		const sql = getDb();
 		await sql`
-			INSERT INTO watchers (
+			INSERT INTO behaviors (
 				id, name, slug, organization_id, agent_id, created_by,
-				watcher_group_id
+				behavior_group_id
 			)
 			SELECT 1, 'Existing Behavior', 'existing-behavior', ${ORG_A},
 				'agent-a', m."userId", 1
@@ -304,8 +304,8 @@ describe("BehaviorSubscriptionService connection-scoped routing", () => {
 			LIMIT 1
 		`;
 		await sql`
-			INSERT INTO watcher_versions (
-				id, watcher_id, version, name, prompt, created_by
+			INSERT INTO behavior_versions (
+				id, behavior_id, version, name, prompt, created_by
 			)
 			SELECT 1, 1, 1, 'Existing Behavior', 'Already persisted.', m."userId"
 			FROM member m
@@ -314,8 +314,8 @@ describe("BehaviorSubscriptionService connection-scoped routing", () => {
 			LIMIT 1
 		`;
 		await sql`
-			SELECT setval('watchers_id_seq', 1, false),
-			       setval('watcher_template_versions_id_seq', 1, false)
+			SELECT setval('behaviors_id_seq', 1, false),
+			       setval('behavior_template_versions_id_seq', 1, false)
 		`;
 
 		const svc = new BehaviorSubscriptionService();
@@ -325,7 +325,7 @@ describe("BehaviorSubscriptionService connection-scoped routing", () => {
 		});
 
 		const ids = await sql<{ id: number }>`
-			SELECT id FROM watchers WHERE organization_id = ${ORG_A} ORDER BY id
+			SELECT id FROM behaviors WHERE organization_id = ${ORG_A} ORDER BY id
 		`;
 		expect(ids.map(({ id }) => Number(id))).toEqual([1, 2]);
 	});
@@ -339,13 +339,13 @@ describe("BehaviorSubscriptionService connection-scoped routing", () => {
 		const sql = getDb();
 		const [behavior] = await sql<{ id: number; triggers: unknown[] }>`
 			SELECT id, triggers
-			FROM watchers
+			FROM behaviors
 			WHERE organization_id = ${ORG_A}
 			  AND tags @> ARRAY['system:chat-link']::text[]
 			LIMIT 1
 		`;
 		await sql`
-			UPDATE watchers
+			UPDATE behaviors
 			SET triggers = ${sql.json([
 				...behavior.triggers,
 				{
@@ -368,7 +368,7 @@ describe("BehaviorSubscriptionService connection-scoped routing", () => {
 		const [updated] = await sql<{
 			triggers: Array<{ match: { team_id?: string } }>;
 		}>`
-			SELECT triggers FROM watchers WHERE id = ${behavior.id}
+			SELECT triggers FROM behaviors WHERE id = ${behavior.id}
 		`;
 		expect(updated.triggers.map((trigger) => trigger.match.team_id)).toEqual([
 			"T1",

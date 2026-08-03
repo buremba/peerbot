@@ -1,15 +1,15 @@
 /**
  * POST /api/workers/me/behaviors/:behavior_id/trigger
  *
- * Manually fire a watcher run from the device that owns it. The Mac app's
+ * Manually fire a behavior run from the device that owns it. The Mac app's
  * "Run now" action posts here. Unlike the scheduled path, this:
- *   - does NOT advance `watchers.next_run_at` (manual fires shouldn't shift
+ *   - does NOT advance `behaviors.next_run_at` (manual fires shouldn't shift
  *     the cron schedule);
  *   - is idempotent against active runs — re-trigger while a previous run is
  *     pending/claimed/running returns the existing `run_id` with
  *     `already_queued: true`;
  *   - requires the calling token's bound `device_workers.id` to match
- *     `watchers.device_worker_id`. No cross-device triggering.
+ *     `behaviors.device_worker_id`. No cross-device triggering.
  *
  * Auth: same `/api/workers/*` middleware. `device_worker:run` scope (granted
  * to Mac-app PATs minted via the device-link flow).
@@ -20,21 +20,21 @@ import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
-import { enqueueWatcherRunForWatcher } from '../watchers/automation';
+import { enqueueBehaviorRunForBehavior } from '../behaviors/automation';
 
 export async function triggerBehaviorForDevice(c: Context<{ Bindings: Env }>) {
   const behaviorIdParam = c.req.param('behavior_id');
   if (!behaviorIdParam) {
     return c.json({ error: 'behavior_id is required' }, 400);
   }
-  const watcherId = Number(behaviorIdParam);
-  if (!Number.isFinite(watcherId) || watcherId <= 0) {
+  const behaviorId = Number(behaviorIdParam);
+  if (!Number.isFinite(behaviorId) || behaviorId <= 0) {
     return c.json({ error: 'Invalid behavior_id' }, 400);
   }
 
   // The middleware already verified the token has `device_worker:run` (or
   // mcp:write/admin). The trigger surface is user-scoped only — trusted
-  // server workers shouldn't be triggering device-pinned watchers, that's
+  // server workers shouldn't be triggering device-pinned behaviors, that's
   // what the scheduled path is for.
   if (c.var.workerAuthMode !== 'user') {
     return c.json({ error: 'Endpoint is user-scoped only' }, 403);
@@ -80,16 +80,16 @@ export async function triggerBehaviorForDevice(c: Context<{ Bindings: Env }>) {
     return c.json({ error: 'Internal error' }, 500);
   }
 
-  // Load the watcher and enforce two checks:
-  //   (1) the watcher is in the caller's org scope (auth middleware computed
+  // Load the behavior and enforce two checks:
+  //   (1) the behavior is in the caller's org scope (auth middleware computed
   //       `workerOrgIds` from the token-bound org + the user's personal org);
-  //   (2) `watchers.device_worker_id` matches the caller's device. Even if
-  //       the user owns both devices, A cannot trigger a watcher pinned to B
+  //   (2) `behaviors.device_worker_id` matches the caller's device. Even if
+  //       the user owns both devices, A cannot trigger a behavior pinned to B
   //       — that's a different pairing in the UI.
-  const watcherRows = (await sql`
+  const behaviorRows = (await sql`
     SELECT id, organization_id, agent_id, status, device_worker_id::text AS device_worker_id
-    FROM watchers
-    WHERE id = ${watcherId}
+    FROM behaviors
+    WHERE id = ${behaviorId}
     LIMIT 1
   `) as unknown as Array<{
     id: number;
@@ -98,46 +98,46 @@ export async function triggerBehaviorForDevice(c: Context<{ Bindings: Env }>) {
     status: string;
     device_worker_id: string | null;
   }>;
-  const watcher = watcherRows[0];
-  if (!watcher) {
+  const behavior = behaviorRows[0];
+  if (!behavior) {
     return c.json({ error: 'Behavior not found' }, 404);
   }
 
-  // Org scope: the watcher's org must be in the caller's base scope OR be a
+  // Org scope: the behavior's org must be in the caller's base scope OR be a
   // cross-org pin the caller still has access to. The pin to THIS device is
   // verified next (the consent); here we just confirm membership of the
-  // watcher's org for the cross-org case, mirroring the poll's membership gate.
+  // behavior's org for the cross-org case, mirroring the poll's membership gate.
   const orgIds = c.var.workerOrgIds ?? [];
-  if (!orgIds.includes(watcher.organization_id)) {
+  if (!orgIds.includes(behavior.organization_id)) {
     // workerUserId is guaranteed non-null by the guard above.
     const memberRows = (await sql`
       SELECT 1 FROM "member"
-      WHERE "organizationId" = ${watcher.organization_id} AND "userId" = ${workerUserId}
+      WHERE "organizationId" = ${behavior.organization_id} AND "userId" = ${workerUserId}
       LIMIT 1
     `) as unknown as Array<unknown>;
     if (memberRows.length === 0) {
       return c.json({ error: 'Forbidden' }, 403);
     }
   }
-  if (!watcher.device_worker_id || watcher.device_worker_id !== resolvedDeviceWorkerId) {
+  if (!behavior.device_worker_id || behavior.device_worker_id !== resolvedDeviceWorkerId) {
     return c.json({ error: 'Behavior is not pinned to this device' }, 403);
   }
-  if ((watcher.status ?? 'active') !== 'active') {
+  if ((behavior.status ?? 'active') !== 'active') {
     return c.json({ error: 'Behavior is not active' }, 409);
   }
-  if (!watcher.agent_id) {
+  if (!behavior.agent_id) {
     return c.json({ error: 'Behavior has no agent assigned' }, 409);
   }
 
-  // Enqueue (or re-use) the run. `enqueueWatcherRunForWatcher` delegates to
-  // `createWatcherRun`, which checks for an active run in the same watcher_id
+  // Enqueue (or re-use) the run. `enqueueBehaviorRunForBehavior` delegates to
+  // `createBehaviorRun`, which checks for an active run in the same behavior_id
   // lane and reuses it (returns `created: false`). That gives us broad
   // idempotency across pending/claimed/running — re-trigger never starts a
   // second run while the first is still in flight. We intentionally do NOT
-  // advance `watchers.next_run_at` here so a manual fire doesn't shift the
+  // advance `behaviors.next_run_at` here so a manual fire doesn't shift the
   // cron schedule.
   try {
-    const result = await enqueueWatcherRunForWatcher(watcherId, 'manual');
+    const result = await enqueueBehaviorRunForBehavior(behaviorId, 'manual');
     return c.json(
       {
         run_id: result.runId,
@@ -149,7 +149,7 @@ export async function triggerBehaviorForDevice(c: Context<{ Bindings: Env }>) {
     );
   } catch (err) {
     logger.error(
-      { error: errorMessage(err), watcherId },
+      { error: errorMessage(err), behaviorId },
       '[triggerBehaviorForDevice] enqueue failed'
     );
     return c.json({ error: errorMessage(err) }, 500);

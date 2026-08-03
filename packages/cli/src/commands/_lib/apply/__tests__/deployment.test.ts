@@ -14,7 +14,7 @@ function baseState(overrides: Partial<DesiredState> = {}): DesiredState {
     agents: [],
     prune: false,
     memorySchema: { entityTypes: [], relationshipTypes: [] },
-    watchers: [],
+    behaviors: [],
     connectors: { definitions: [], authProfiles: [], connections: [] },
     providers: [],
     requiredSecrets: [],
@@ -96,8 +96,8 @@ describe("buildCountsByKind", () => {
     const rows = [
       { kind: "agent", verb: "create" },
       { kind: "agent", verb: "noop" },
-      { kind: "watcher", verb: "update" },
-      { kind: "watcher", verb: "update" },
+      { kind: "behavior", verb: "update" },
+      { kind: "behavior", verb: "update" },
       { kind: "connection", verb: "drift" },
       { kind: "feed", verb: "delete" },
     ] as unknown as DiffRow[];

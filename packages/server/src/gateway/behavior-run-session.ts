@@ -4,8 +4,8 @@
  *
  * A Behavior run is dispatched with `intent.kind === "behavior_run"`; the
  * enqueue path (routes/public/agent.ts) turns that into
- * `platformMetadata.source = "watcher-run"`, which `buildWorkerTokenClaims`
- * lifts into the token as `WorkerTokenData.source`. `watcher` is the internal
+ * `platformMetadata.source = "behavior-run"`, which `buildWorkerTokenClaims`
+ * lifts into the token as `WorkerTokenData.source`. `behavior` is the internal
  * engine vocabulary for a Behavior, so the wire value keeps its historical
  * spelling — nothing agent-facing reads it.
  *
@@ -22,8 +22,8 @@
  * conversation — a human is in that thread and the library is theirs.
  *
  * Why the worker's 5-minute session-context cache needs no isolation key: a
- * Behavior run opens its own session (`thread: watcher-<runId>`, `forceNew`,
- * see `watchers/automation.ts`), and the deployment name hashes the
+ * Behavior run opens its own session (`thread: behavior-<runId>`, `forceNew`,
+ * see `behaviors/automation.ts`), and the deployment name hashes the
  * conversation id — so a run's worker process is never the process that also
  * serves that agent's chat. If a future dispatch path ever runs a Behavior on
  * a shared conversation, that cache becomes the place this decision leaks.
@@ -37,7 +37,7 @@ import {
 } from "../behaviors/skill-snapshots.js";
 import { parseBehaviorRunConversationId } from "./permissions/behavior-run-intent.js";
 
-export const BEHAVIOR_RUN_SOURCE = "watcher-run";
+export const BEHAVIOR_RUN_SOURCE = "behavior-run";
 
 export type BehaviorRunSkillResolver = (args: {
 	conversationId: string;
@@ -65,19 +65,19 @@ export async function resolveBehaviorRunSkills(
 	const rows = await db`
 		SELECT version.skills
 		FROM runs behavior_run
-		JOIN watchers behavior
-		  ON behavior.id = behavior_run.watcher_id
+		JOIN behaviors behavior
+		  ON behavior.id = behavior_run.behavior_id
 		 AND behavior.organization_id = behavior_run.organization_id
 		 AND behavior.agent_id = ${args.agentId}
-		JOIN watcher_versions version
+		JOIN behavior_versions version
 		  ON version.id = COALESCE(
 		       NULLIF(behavior_run.approved_input->>'version_id', '')::bigint,
 		       behavior.current_version_id
 		     )
-		 AND version.watcher_id = behavior.watcher_group_id
+		 AND version.behavior_id = behavior.behavior_group_id
 		WHERE behavior_run.id = ${intent.runId}
 		  AND behavior_run.run_type = 'behavior'
-		  AND behavior_run.watcher_id = ${intent.behaviorId}
+		  AND behavior_run.behavior_id = ${intent.behaviorId}
 		  AND behavior_run.organization_id = ${args.organizationId}
 		LIMIT 1
 	`;

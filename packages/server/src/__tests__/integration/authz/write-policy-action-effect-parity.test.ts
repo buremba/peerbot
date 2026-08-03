@@ -133,12 +133,12 @@ describe("write-policy action/effect decision parity", () => {
 		expect(policy.deliveryTarget.channelId).toBe("chan_ops");
 	});
 
-	it("agent_config: per-principal watcher policy resolves each action", async () => {
+	it("agent_config: per-principal behavior policy resolves each action", async () => {
 		await seedPolicy({
 			orgId,
 			resourceClass: "agent_config",
-			principalKind: "watcher",
-			principalId: "watcher:1",
+			principalKind: "behavior",
+			principalId: "behavior:1",
 			effects: [
 				{ action: "create", effect: "approval" },
 				{ action: "update", effect: "approval" },
@@ -148,8 +148,8 @@ describe("write-policy action/effect decision parity", () => {
 		const base = {
 			organizationId: orgId,
 			resourceClass: "agent_config" as const,
-			principalKind: "watcher" as const,
-			principalId: "watcher:1",
+			principalKind: "behavior" as const,
+			principalId: "behavior:1",
 		};
 		expect(await resolveWritePolicyDecision({ ...base, action: "create" })).toBe(
 			"require_approval",
@@ -170,11 +170,11 @@ describe("write-policy action/effect decision parity", () => {
 	});
 
 	it("connector_action: execute effect (backfilled from create_mode) governs the decision", async () => {
-		// all-watchers: execute → approval
+		// all-behaviors: execute → approval
 		await seedPolicy({
 			orgId,
 			resourceClass: "connector_action",
-			principalKind: "watcher",
+			principalKind: "behavior",
 			effects: [{ action: "execute", effect: "approval" }],
 		});
 		// specific agent: execute → deny
@@ -189,8 +189,8 @@ describe("write-policy action/effect decision parity", () => {
 			await resolveWritePolicyDecision({
 				organizationId: orgId,
 				resourceClass: "connector_action",
-				principalKind: "watcher",
-				principalId: "watcher:9",
+				principalKind: "behavior",
+				principalId: "behavior:9",
 				action: "execute",
 			}),
 		).toBe("require_approval");

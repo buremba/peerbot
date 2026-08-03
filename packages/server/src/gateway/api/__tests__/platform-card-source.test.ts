@@ -51,13 +51,13 @@ describe("ApiPlatform interaction-card source stamping (F12)", () => {
       "api",
       "Proceed?",
       ["yes", "no"],
-      "watcher-run"
+      "behavior-run"
     );
 
     expect(ctx.sends).toHaveLength(1);
     const { topic, payload } = ctx.sends[0]!;
     expect(topic).toBe("thread_response");
-    expect(payload.platformMetadata).toEqual({ source: "watcher-run" });
+    expect(payload.platformMetadata).toEqual({ source: "behavior-run" });
     expect(payload.customEvent?.requireSseOwner).toBe(true);
   });
 

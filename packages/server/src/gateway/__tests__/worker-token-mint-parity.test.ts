@@ -66,7 +66,7 @@ describe("worker-token mint parity (real mint, not generateWorkerToken)", () => 
     platform: "slack",
     platformMetadata: {
       connectionId: CONN,
-      source: "watcher-run",
+      source: "behavior-run",
       responseThreadId: "slack:DM:123.456",
     },
   };
@@ -86,7 +86,7 @@ describe("worker-token mint parity (real mint, not generateWorkerToken)", () => 
     // Per-run token is run-scoped (snapshot route requires runId equality).
     expect(decoded?.runId).toBe(42);
     expect(decoded?.connectionId).toBe(CONN);
-    expect(decoded?.source).toBe("watcher-run");
+    expect(decoded?.source).toBe("behavior-run");
     expect(decoded?.responseThreadId).toBe("slack:DM:123.456");
 
     // The route does exactly this with the decoded context — must not throw.
@@ -110,7 +110,7 @@ describe("worker-token mint parity (real mint, not generateWorkerToken)", () => 
     expect(decoded?.responseThreadId).toBe("slack:DM:123.456");
     // The omitted-claim divergence this audit fixed: WORKER_TOKEN now carries
     // `source` so headless cards aren't dead-lettered on the fallback path.
-    expect(decoded?.source).toBe("watcher-run");
+    expect(decoded?.source).toBe("behavior-run");
     expect(() =>
       assertRoutableInteraction(decoded?.connectionId, "slack", "question")
     ).not.toThrow();
@@ -195,7 +195,7 @@ describe("worker-token mint parity (real mint, not generateWorkerToken)", () => 
     // this is the state MessageConsumer produced before #1274.
     const token = buildRunJobToken({
       ...baseArgs,
-      platformMetadata: { source: "watcher-run" }, // connectionId omitted
+      platformMetadata: { source: "behavior-run" }, // connectionId omitted
       runId: 42,
     });
     const decoded = verifyWorkerToken(token as string);

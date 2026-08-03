@@ -210,7 +210,7 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
       'A connector may be INSTALLED for this org yet absent from the global catalog, so always check installed connectors before concluding a source is unsupported:',
       '- Find the connector: `search_sdk` with the source/topic word (e.g. "website", "slack") returns any matching live connector + its feed keys + lifecycle. Or list them: `query_sdk` → `client.catalog.listInstalled({ kinds: ["connectors"] })` (installed = ready to configure; each item\'s `detail.feeds_schema` keys are the feed_key values) and `client.catalog.listCatalog({ kinds: ["connectors"] })` (global, installable) and `client.connections.list()` (already configured).',
       '- Lifecycle: `run_sdk` → `client.connections.connect({ connector_key })` → `client.feeds.create({ connection_id, feed_key, config })` → `client.feeds.trigger({ feed_id })`; then verify with `query_sql` on the events table and search with `search_memory`.',
-      'For reads beyond search_memory, prefer `query_sdk` with a TS script. For writes (entity CRUD, watchers, classifiers, connections, feeds, view templates, operations), use `run_sdk`. Use `search_sdk` to discover method names.',
+      'For reads beyond search_memory, prefer `query_sdk` with a TS script. For writes (entity CRUD, behaviors, classifiers, connections, feeds, view templates, operations), use `run_sdk`. Use `search_sdk` to discover method names.',
       '',
       '### Saving (do this automatically)',
       'When the user shares any of these, save immediately:',

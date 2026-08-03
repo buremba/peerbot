@@ -22,7 +22,7 @@ describe("REST behavior window vocabulary", () => {
 		await cleanupTestDatabase();
 	});
 
-	it("returns behavior_* keys and no watcher_* keys", async () => {
+	it("returns canonical behavior_* keys", async () => {
 		const { org, user, ctx } = await seedOwnerContext();
 		const entity = await createTestEntity({
 			name: "Window Vocab Co",
@@ -58,7 +58,7 @@ describe("REST behavior window vocabulary", () => {
 		expect(Number.isFinite(behaviorId)).toBe(true);
 
 		const windowId = await createCanvasWindow({
-			watcherId: behaviorId,
+			behaviorId: behaviorId,
 			organizationId: org.id,
 			granularity: "day",
 			windowStart: "2026-07-21T00:00:00.000Z",
@@ -84,9 +84,6 @@ describe("REST behavior window vocabulary", () => {
 		expect(response.status).toBe(200);
 
 		const body = (await response.json()) as Record<string, unknown>;
-		expect(body).not.toHaveProperty("watcher_id");
-		expect(body).not.toHaveProperty("watcher_slug");
-		expect(body).not.toHaveProperty("watcher_name");
 		expect(String(body.behavior_id)).toBe(String(behaviorId));
 		expect(body.behavior_slug).toBe("window-vocab");
 		expect(body.behavior_name).toBe("Window vocab");

@@ -1,13 +1,13 @@
 /**
- * Default agent + watcher auto-provisioning for the Mac-app bootstrap org.
+ * Default agent + behavior auto-provisioning for the Mac-app bootstrap org.
  *
- * The Owletto Mac app's onboarding expects a usable agent + a daily watcher
+ * The Owletto Mac app's onboarding expects a usable agent + a daily behavior
  * already wired up the first time the device polls. Without this, the user
  * lands on an empty dashboard and has no clear next step.
  *
  * Sticky against deletion: a sentinel timestamp is written to
  * `organization.metadata` (JSON-as-text) per provisioning step. If the user
- * later deletes the agent or watcher via the web UI, the sentinel stays —
+ * later deletes the agent or behavior via the web UI, the sentinel stays —
  * we do NOT auto-recreate. The sentinels live alongside the existing
  * `personal_org_for_user_id` marker so we keep one source of truth for
  * org-scoped lifecycle flags.
@@ -15,9 +15,9 @@
  * Provisioning timing:
  *   - **Agent** is provisioned at server boot, immediately after
  *     `ensureBootstrapPat` lands the bootstrap user/org/member.
- *   - **Watcher** is provisioned the first time the user's Mac device
+ *   - **Behavior** is provisioned the first time the user's Mac device
  *     polls `/api/workers/poll` (when the device_workers row is freshly
- *     INSERTed). Deferring it is what lets us pin the watcher to that
+ *     INSERTed). Deferring it is what lets us pin the behavior to that
  *     exact device via `device_worker_id`.
  */
 
@@ -27,7 +27,7 @@ import type { DbClient } from "../db/client";
 import { getDb } from "../db/client";
 import { getNextNumericId } from "../tools/admin/helpers/db-helpers";
 import { nextRunAt } from "../utils/cron";
-import { DEFAULT_BEHAVIOR_SOURCE_QUERY } from "../watchers/source-refs";
+import { DEFAULT_BEHAVIOR_SOURCE_QUERY } from "../behaviors/source-refs";
 import logger from "../utils/logger";
 import {
 	resolveNewAgentProvisioningDefaults,
@@ -35,7 +35,7 @@ import {
 } from "./system-provider-resolution";
 
 export const DEFAULT_AGENT_SENTINEL = "default_agent_provisioned";
-export const DEFAULT_WATCHER_SENTINEL = "default_watcher_provisioned";
+export const DEFAULT_BEHAVIOR_SENTINEL = "default_behavior_provisioned";
 
 export const DEFAULT_AGENT_ID = "owletto-default";
 const DEFAULT_AGENT_NAME = "Owletto Personal";
@@ -46,10 +46,10 @@ const DEFAULT_AGENT_IDENTITY =
 	"If you don't have access to recent history or context, say so " +
 	"clearly and suggest what the user could connect or track next.";
 
-export const DEFAULT_WATCHER_SLUG = "daily-checkin";
-const DEFAULT_WATCHER_NAME = "Daily check-in";
-export const DEFAULT_WATCHER_SCHEDULE = "0 9 * * *";
-const DEFAULT_WATCHER_PROMPT =
+export const DEFAULT_BEHAVIOR_SLUG = "daily-checkin";
+const DEFAULT_BEHAVIOR_NAME = "Daily check-in";
+export const DEFAULT_BEHAVIOR_SCHEDULE = "0 9 * * *";
+const DEFAULT_BEHAVIOR_PROMPT =
 	"Summarize what the user worked on yesterday in 1-2 sentences. " +
 	"Suggest 1-3 concrete priorities for today. " +
 	"If you don't have recent history or context for this user, " +
@@ -344,21 +344,21 @@ export async function ensureDefaultAgent(
 }
 
 /**
- * Provision the default daily-check-in watcher for the bootstrap org, pinned
+ * Provision the default daily-check-in behavior for the bootstrap org, pinned
  * to the given device worker, exactly once.
  *
  * Deferred to the first `/api/workers/poll` from the user's first Mac so the
  * `device_worker_id` lane is set correctly — the dispatcher then skips this
- * watcher and only the matching device claims it via poll.
+ * behavior and only the matching device claims it via poll.
  *
  * Same three guards as `ensureDefaultAgent`: org sentinel, fall-back slug
- * uniqueness check, and the watchers (organization_id, slug) constraint
+ * uniqueness check, and the behaviors (organization_id, slug) constraint
  * (enforced manually via SELECT + INSERT in a transaction).
  *
  * Best-effort: errors are logged and swallowed so a partial provisioning
  * failure doesn't break the poll response.
  */
-export async function ensureDefaultWatcher(params: {
+export async function ensureDefaultBehavior(params: {
 	organizationId: string;
 	agentId: string;
 	deviceWorkerId: string;
@@ -371,7 +371,7 @@ export async function ensureDefaultWatcher(params: {
 	try {
 		const provisioned = await hasOrgSentinel(
 			params.organizationId,
-			DEFAULT_WATCHER_SENTINEL,
+			DEFAULT_BEHAVIOR_SENTINEL,
 			sql,
 		);
 		if (provisioned) {
@@ -380,7 +380,7 @@ export async function ensureDefaultWatcher(params: {
 
 		// The agent we pin to must actually exist. If the user deleted the
 		// default agent before the device first polled, fall back to ANY agent
-		// in the org so the watcher still has a valid foreign key. If there's
+		// in the org so the behavior still has a valid foreign key. If there's
 		// no agent at all (zombied org), set the sentinel and skip — there's
 		// nothing useful we can wire up.
 		const agentRows = (await sql`
@@ -403,7 +403,7 @@ export async function ensureDefaultWatcher(params: {
 			await writeOrgSentinel(
 				sql,
 				params.organizationId,
-				DEFAULT_WATCHER_SENTINEL,
+				DEFAULT_BEHAVIOR_SENTINEL,
 				new Date().toISOString(),
 			);
 			return { created: false, reason: "no_agent" };
@@ -411,22 +411,22 @@ export async function ensureDefaultWatcher(params: {
 
 		// Slug-uniqueness guard (matches the implicit uniqueness handleCreate enforces).
 		const slugClash = (await sql`
-      SELECT 1 FROM watchers
+      SELECT 1 FROM behaviors
       WHERE organization_id = ${params.organizationId}
-        AND slug = ${DEFAULT_WATCHER_SLUG}
+        AND slug = ${DEFAULT_BEHAVIOR_SLUG}
       LIMIT 1
     `) as unknown as Array<unknown>;
 		if (slugClash.length > 0) {
 			await writeOrgSentinel(
 				sql,
 				params.organizationId,
-				DEFAULT_WATCHER_SENTINEL,
+				DEFAULT_BEHAVIOR_SENTINEL,
 				new Date().toISOString(),
 			);
 			return { created: false, reason: "slug_taken" };
 		}
 
-		// The `watchers.created_by` FK references `user(id)` ON DELETE RESTRICT.
+		// The `behaviors.created_by` FK references `user(id)` ON DELETE RESTRICT.
 		// Pick the org owner (any member with role='owner', falling back to any
 		// member) so the row stays attributable. The `system` user fallback is
 		// for tests and local dev where the bootstrap path may not have run yet.
@@ -447,12 +447,12 @@ export async function ensureDefaultWatcher(params: {
 		if (!createdBy) {
 			logger.warn(
 				{ organizationId: params.organizationId },
-				"[default-provisioning] No user available to attribute watcher creation — skipping",
+				"[default-provisioning] No user available to attribute behavior creation — skipping",
 			);
 			await writeOrgSentinel(
 				sql,
 				params.organizationId,
-				DEFAULT_WATCHER_SENTINEL,
+				DEFAULT_BEHAVIOR_SENTINEL,
 				new Date().toISOString(),
 			);
 			return { created: false, reason: "no_agent" };
@@ -466,28 +466,28 @@ export async function ensureDefaultWatcher(params: {
 		// next_run_at are derived projections (same path as manage_behaviors
 		// create). Writing only the schedule column left triggers as '[]',
 		// so a later triggers-touching update would reproject schedule to NULL
-		// and unschedule the default watcher.
+		// and unschedule the default behavior.
 		const triggerWrite = resolveBehaviorTriggerWrite({
-			triggers: [{ kind: "schedule", cron: DEFAULT_WATCHER_SCHEDULE }],
+			triggers: [{ kind: "schedule", cron: DEFAULT_BEHAVIOR_SCHEDULE }],
 		});
 		const scheduledNextRun = triggerWrite.schedule
 			? nextRunAt(triggerWrite.schedule, new Date(), triggerWrite.timezone)
 			: null;
 
 		await sql.begin(async (tx) => {
-			const watcherId = await getNextNumericId(tx, "watchers");
-			const versionId = await getNextNumericId(tx, "watcher_versions");
+			const behaviorId = await getNextNumericId(tx, "behaviors");
+			const versionId = await getNextNumericId(tx, "behavior_versions");
 
 			await tx`
-        INSERT INTO watchers (
+        INSERT INTO behaviors (
           id, name, slug, organization_id, entity_ids,
           schedule, timezone, next_run_at, triggers, agent_id, scheduler_client_id, model_config, sources, version,
           current_version_id, tags, status, created_by, created_at, updated_at,
-          watcher_group_id,
+          behavior_group_id,
           device_worker_id, agent_kind,
           notification_channel, notification_priority, min_cooldown_seconds
         ) VALUES (
-          ${watcherId}, ${DEFAULT_WATCHER_NAME}, ${DEFAULT_WATCHER_SLUG},
+          ${behaviorId}, ${DEFAULT_BEHAVIOR_NAME}, ${DEFAULT_BEHAVIOR_SLUG},
           ${params.organizationId}, ${"{}"}::bigint[],
           ${triggerWrite.schedule}, ${triggerWrite.timezone}, ${scheduledNextRun},
           ${tx.json(triggerWrite.triggers)},
@@ -495,37 +495,37 @@ export async function ensureDefaultWatcher(params: {
           ${tx.json({})}, ${tx.json(sources)},
           1, NULL, ${"{}"}::text[],
           'active', ${createdBy}, NOW(), NOW(),
-          ${watcherId},
+          ${behaviorId},
           ${params.deviceWorkerId}::uuid, NULL,
           'canvas', 'normal', 3600
         )
       `;
 
 			await tx`
-        INSERT INTO watcher_versions (
-          id, watcher_id, version, name, description,
+        INSERT INTO behavior_versions (
+          id, behavior_id, version, name, description,
           prompt, version_sources,
           keying_config, classifiers,
           reactions_guidance, change_notes, created_by, created_at
         ) VALUES (
-          ${versionId}, ${watcherId}, 1, ${DEFAULT_WATCHER_NAME}, NULL,
-          ${DEFAULT_WATCHER_PROMPT}, ${tx.json(sources)},
+          ${versionId}, ${behaviorId}, 1, ${DEFAULT_BEHAVIOR_NAME}, NULL,
+          ${DEFAULT_BEHAVIOR_PROMPT}, ${tx.json(sources)},
           NULL, NULL,
           NULL, 'Initial version', ${createdBy}, NOW()
         )
       `;
 
 			await tx`
-        UPDATE watchers
+        UPDATE behaviors
         SET current_version_id = ${versionId}
-        WHERE id = ${watcherId}
+        WHERE id = ${behaviorId}
       `;
 		});
 
 		await writeOrgSentinel(
 			sql,
 			params.organizationId,
-			DEFAULT_WATCHER_SENTINEL,
+			DEFAULT_BEHAVIOR_SENTINEL,
 			new Date().toISOString(),
 		);
 
@@ -534,9 +534,9 @@ export async function ensureDefaultWatcher(params: {
 				organizationId: params.organizationId,
 				agentId: resolvedAgentId,
 				deviceWorkerId: params.deviceWorkerId,
-				slug: DEFAULT_WATCHER_SLUG,
+				slug: DEFAULT_BEHAVIOR_SLUG,
 			},
-			"[default-provisioning] Provisioned default watcher pinned to device",
+			"[default-provisioning] Provisioned default behavior pinned to device",
 		);
 		return { created: true, reason: "inserted" };
 	} catch (err) {
@@ -546,7 +546,7 @@ export async function ensureDefaultWatcher(params: {
 				deviceWorkerId: params.deviceWorkerId,
 				err: getErrorMessage(err),
 			},
-			"[default-provisioning] Default-watcher provisioning failed (non-fatal)",
+			"[default-provisioning] Default-behavior provisioning failed (non-fatal)",
 		);
 		return { created: false, reason: "sentinel" };
 	}

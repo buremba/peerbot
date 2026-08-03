@@ -248,7 +248,7 @@ async function fetchTargetContent(
        FROM classify_facet cf
        WHERE cf.slug IN (${classifierPlaceholders})
          AND cf.status = 'active'
-         AND cf.watcher_id IS NULL
+         AND cf.behavior_id IS NULL
          AND cf.organization_id = $${enabledClassifiers.length + 1}`,
       [...enabledClassifiers, options.organizationId]
     );
@@ -349,7 +349,7 @@ async function fetchClassifierTemplates(
      FROM classify_facet cf
      WHERE cf.slug IN (${classifierPlaceholders})
        AND cf.status = 'active'
-       AND cf.watcher_id IS NULL
+       AND cf.behavior_id IS NULL
        AND cf.organization_id = $${enabledClassifiers.length + 1}`,
     [...enabledClassifiers, organizationId]
   );
@@ -545,7 +545,7 @@ async function fetchAllClassifierVersions(
     `SELECT cf.slug, cf.id as classifier_id
      FROM classify_facet cf
      WHERE cf.status = 'active'
-       AND cf.watcher_id IS NULL
+       AND cf.behavior_id IS NULL
        AND cf.organization_id = $1`,
     [organizationId]
   );
@@ -600,7 +600,7 @@ export async function upsertClassifications(
     const whereClauses = batch
       .map(
         (_, j) =>
-          `(event_id = $${j * 2 + 1} AND classifier_id = $${j * 2 + 2} AND source = 'embedding' AND COALESCE(watcher_id, 0) = 0)`
+          `(event_id = $${j * 2 + 1} AND classifier_id = $${j * 2 + 2} AND source = 'embedding' AND COALESCE(behavior_id, 0) = 0)`
       )
       .join(' OR ');
     const params = batch.flatMap((d) => [d.event_id, d.classifier_id]);
@@ -619,7 +619,7 @@ export async function upsertClassifications(
     const batch = allClassifications.slice(i, i + BATCH_SIZE);
 
     // Each row BINDS 8 params (event_id, classifier_id, values, confidences, met_threshold,
-    // threshold, best_match_attribute, embedding_confidence); watcher_id/window_id are NULL and
+    // threshold, best_match_attribute, embedding_confidence); behavior_id/window_id are NULL and
     // source/is_manual are literals. The stride MUST be 8 — the old `j * 10` overran by 2 per row,
     // so any batch with >1 classification mis-mapped params (row 2 read $11.. while its params sat
     // at $9..) and Postgres rejected it. Single-classification batches were unaffected (j=0).
@@ -646,7 +646,7 @@ export async function upsertClassifications(
 
     await sql.unsafe(
       `INSERT INTO event_classifications (
-         event_id, classifier_id, watcher_id, window_id,
+         event_id, classifier_id, behavior_id, window_id,
          "values", confidences, source, is_manual,
          met_threshold, threshold, best_match_attribute, embedding_confidence
        )

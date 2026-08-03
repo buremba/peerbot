@@ -120,10 +120,10 @@ export async function listPendingToolsForRun(
       AND right(
         pending.payload->>'conversationId',
         length(
-          '_watcher_' || behavior_run.watcher_id::text ||
+          '_behavior_' || behavior_run.behavior_id::text ||
           '_run_' || behavior_run.id::text
         )
-      ) = '_watcher_' || behavior_run.watcher_id::text ||
+      ) = '_behavior_' || behavior_run.behavior_id::text ||
           '_run_' || behavior_run.id::text
     ORDER BY mcp_id, tool_name
   `;

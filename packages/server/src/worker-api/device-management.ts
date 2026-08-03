@@ -218,7 +218,7 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
     // Device clients (Owletto Chrome extension via the Mac bridge) ALWAYS bind
     // to the user's personal org — never the calling token's org. Personal
     // device data (browser context, captured pages, …) belongs in the user's
-    // private workspace; a team org reaches the device by pinning a watcher /
+    // private workspace; a team org reaches the device by pinning a behavior /
     // connection to it (see resolveDeviceClaimableOrgs), not by re-binding the
     // device token. Ignoring `c.var.organizationId` here is what makes a Mac
     // app whose own token is bound to a team org still land Chrome's data in

@@ -2,8 +2,8 @@
  * Integration tests for `auth/default-provisioning.ts`.
  *
  * Pins the sentinel behavior pi flagged: deletion stickiness (a removed
- * agent / watcher is NOT auto-recreated on the next run), provisioning
- * timing (watcher creation requires a device row), and idempotency.
+ * agent / behavior is NOT auto-recreated on the next run), provisioning
+ * timing (behavior creation requires a device row), and idempotency.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -11,11 +11,11 @@ import { generateSecureToken } from '../../../auth/oauth/utils';
 import {
   DEFAULT_AGENT_ID,
   DEFAULT_AGENT_SENTINEL,
-  DEFAULT_WATCHER_SCHEDULE,
-  DEFAULT_WATCHER_SENTINEL,
-  DEFAULT_WATCHER_SLUG,
+  DEFAULT_BEHAVIOR_SCHEDULE,
+  DEFAULT_BEHAVIOR_SENTINEL,
+  DEFAULT_BEHAVIOR_SLUG,
   ensureDefaultAgent,
-  ensureDefaultWatcher,
+  ensureDefaultBehavior,
   hasOrgSentinel,
 } from '../../../auth/default-provisioning';
 import { normalizeBehaviorTriggers } from '../../../behaviors/triggers';
@@ -274,23 +274,23 @@ describe('ensureDefaultAgent', () => {
   });
 });
 
-describe('ensureDefaultWatcher', () => {
+describe('ensureDefaultBehavior', () => {
   async function setupOrgWithDeviceAndAgent(): Promise<{
     orgId: string;
     deviceWorkerId: string;
     userId: string;
   }> {
-    const orgId = `org-watcher-${generateSecureToken(4)}`;
+    const orgId = `org-behavior-${generateSecureToken(4)}`;
     await seedOrg(orgId);
     const sql = getTestDb();
 
     const userId = `user_${generateSecureToken(4)}`;
     await sql`
       INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
-      VALUES (${userId}, 'Watcher User', ${`${userId}@test.local`}, true, NOW(), NOW())
+      VALUES (${userId}, 'Behavior User', ${`${userId}@test.local`}, true, NOW(), NOW())
       ON CONFLICT (id) DO NOTHING
     `;
-    // Add the user as the org owner so `watchers.created_by` has a valid FK target.
+    // Add the user as the org owner so `behaviors.created_by` has a valid FK target.
     await sql`
       INSERT INTO "member" (id, "userId", "organizationId", role, "createdAt")
       VALUES (${`member_${generateSecureToken(4)}`}, ${userId}, ${orgId}, 'owner', NOW())
@@ -312,10 +312,10 @@ describe('ensureDefaultWatcher', () => {
     await cleanupTestDatabase();
   });
 
-  it('creates the daily-checkin watcher pinned to the device', async () => {
+  it('creates the daily-checkin behavior pinned to the device', async () => {
     const { orgId, deviceWorkerId } = await setupOrgWithDeviceAndAgent();
 
-    const result = await ensureDefaultWatcher({
+    const result = await ensureDefaultBehavior({
       organizationId: orgId,
       agentId: DEFAULT_AGENT_ID,
       deviceWorkerId,
@@ -324,55 +324,55 @@ describe('ensureDefaultWatcher', () => {
     expect(result.reason).toBe('inserted');
 
     const sql = getTestDb();
-    const watchers = await sql`
+    const behaviors = await sql`
       SELECT id, slug, agent_id, device_worker_id::text AS device_worker_id,
              schedule, timezone, triggers, status
-      FROM watchers
+      FROM behaviors
       WHERE organization_id = ${orgId}
     `;
-    expect(watchers).toHaveLength(1);
-    const w = watchers[0];
-    expect(String(w.slug)).toBe(DEFAULT_WATCHER_SLUG);
+    expect(behaviors).toHaveLength(1);
+    const w = behaviors[0];
+    expect(String(w.slug)).toBe(DEFAULT_BEHAVIOR_SLUG);
     expect(String(w.agent_id)).toBe(DEFAULT_AGENT_ID);
     expect(String(w.device_worker_id)).toBe(deviceWorkerId);
-    expect(String(w.schedule)).toBe(DEFAULT_WATCHER_SCHEDULE);
+    expect(String(w.schedule)).toBe(DEFAULT_BEHAVIOR_SCHEDULE);
     expect(String(w.status)).toBe('active');
 
     // triggers is the canonical activation contract; schedule/timezone are its
     // projection. Must match manage_behaviors create with a schedule trigger.
     const expectedTriggers = normalizeBehaviorTriggers([
-      { kind: 'schedule', cron: DEFAULT_WATCHER_SCHEDULE },
+      { kind: 'schedule', cron: DEFAULT_BEHAVIOR_SCHEDULE },
     ]);
     expect(w.triggers).toEqual(expectedTriggers);
     const scheduleTrigger = (w.triggers as Array<{ kind: string; cron?: string }>).find(
       (t) => t.kind === 'schedule',
     );
-    expect(scheduleTrigger?.cron).toBe(DEFAULT_WATCHER_SCHEDULE);
+    expect(scheduleTrigger?.cron).toBe(DEFAULT_BEHAVIOR_SCHEDULE);
     expect(String(w.schedule)).toBe(scheduleTrigger?.cron);
     expect(w.timezone).toBe(
       (scheduleTrigger as { timezone?: string | null } | undefined)?.timezone ?? null,
     );
 
     const versions = await sql`
-      SELECT prompt FROM watcher_versions WHERE watcher_id = ${w.id}
+      SELECT prompt FROM behavior_versions WHERE behavior_id = ${w.id}
     `;
     expect(versions).toHaveLength(1);
     expect(String(versions[0].prompt)).toMatch(/yesterday/i);
 
-    expect(await hasOrgSentinel(orgId, DEFAULT_WATCHER_SENTINEL)).toBe(true);
+    expect(await hasOrgSentinel(orgId, DEFAULT_BEHAVIOR_SENTINEL)).toBe(true);
   });
 
   it('is idempotent — second call is a no-op', async () => {
     const { orgId, deviceWorkerId } = await setupOrgWithDeviceAndAgent();
 
-    const first = await ensureDefaultWatcher({
+    const first = await ensureDefaultBehavior({
       organizationId: orgId,
       agentId: DEFAULT_AGENT_ID,
       deviceWorkerId,
     });
     expect(first.created).toBe(true);
 
-    const second = await ensureDefaultWatcher({
+    const second = await ensureDefaultBehavior({
       organizationId: orgId,
       agentId: DEFAULT_AGENT_ID,
       deviceWorkerId,
@@ -381,23 +381,23 @@ describe('ensureDefaultWatcher', () => {
     expect(second.reason).toBe('sentinel');
 
     const sql = getTestDb();
-    const watchers = await sql`SELECT id FROM watchers WHERE organization_id = ${orgId}`;
-    expect(watchers).toHaveLength(1);
+    const behaviors = await sql`SELECT id FROM behaviors WHERE organization_id = ${orgId}`;
+    expect(behaviors).toHaveLength(1);
   });
 
   it('is sticky against deletion — recreate refused after sentinel set', async () => {
     const { orgId, deviceWorkerId } = await setupOrgWithDeviceAndAgent();
 
-    await ensureDefaultWatcher({
+    await ensureDefaultBehavior({
       organizationId: orgId,
       agentId: DEFAULT_AGENT_ID,
       deviceWorkerId,
     });
 
     const sql = getTestDb();
-    await sql`DELETE FROM watchers WHERE organization_id = ${orgId} AND slug = ${DEFAULT_WATCHER_SLUG}`;
+    await sql`DELETE FROM behaviors WHERE organization_id = ${orgId} AND slug = ${DEFAULT_BEHAVIOR_SLUG}`;
 
-    const again = await ensureDefaultWatcher({
+    const again = await ensureDefaultBehavior({
       organizationId: orgId,
       agentId: DEFAULT_AGENT_ID,
       deviceWorkerId,
@@ -405,8 +405,8 @@ describe('ensureDefaultWatcher', () => {
     expect(again.created).toBe(false);
     expect(again.reason).toBe('sentinel');
 
-    const watchers = await sql`SELECT id FROM watchers WHERE organization_id = ${orgId}`;
-    expect(watchers).toHaveLength(0);
+    const behaviors = await sql`SELECT id FROM behaviors WHERE organization_id = ${orgId}`;
+    expect(behaviors).toHaveLength(0);
   });
 
   it('falls back to another agent when the default has been deleted', async () => {
@@ -420,22 +420,22 @@ describe('ensureDefaultWatcher', () => {
       VALUES ('fallback-agent', ${orgId}, 'Fallback')
     `;
 
-    const result = await ensureDefaultWatcher({
+    const result = await ensureDefaultBehavior({
       organizationId: orgId,
       agentId: DEFAULT_AGENT_ID,
       deviceWorkerId,
     });
     expect(result.created).toBe(true);
 
-    const watchers = await sql`
-      SELECT agent_id FROM watchers WHERE organization_id = ${orgId}
+    const behaviors = await sql`
+      SELECT agent_id FROM behaviors WHERE organization_id = ${orgId}
     `;
-    expect(watchers).toHaveLength(1);
-    expect(String(watchers[0].agent_id)).toBe('fallback-agent');
+    expect(behaviors).toHaveLength(1);
+    expect(String(behaviors[0].agent_id)).toBe('fallback-agent');
   });
 
   it('skips silently when the org has no agents at all', async () => {
-    const orgId = `org-watcher-noagent-${generateSecureToken(4)}`;
+    const orgId = `org-behavior-noagent-${generateSecureToken(4)}`;
     await seedOrg(orgId);
     const sql = getTestDb();
     const userId = `user_${generateSecureToken(4)}`;
@@ -455,7 +455,7 @@ describe('ensureDefaultWatcher', () => {
     `) as unknown as Array<{ id: string }>;
     const deviceWorkerId = String(inserted[0].id);
 
-    const result = await ensureDefaultWatcher({
+    const result = await ensureDefaultBehavior({
       organizationId: orgId,
       agentId: DEFAULT_AGENT_ID,
       deviceWorkerId,
@@ -464,6 +464,6 @@ describe('ensureDefaultWatcher', () => {
     expect(result.reason).toBe('no_agent');
 
     // Sentinel still set so we don't keep retrying on every poll.
-    expect(await hasOrgSentinel(orgId, DEFAULT_WATCHER_SENTINEL)).toBe(true);
+    expect(await hasOrgSentinel(orgId, DEFAULT_BEHAVIOR_SENTINEL)).toBe(true);
   });
 });

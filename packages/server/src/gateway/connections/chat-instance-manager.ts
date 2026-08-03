@@ -880,7 +880,7 @@ export class ChatInstanceManager {
    * Post a message to a channel as the bot — a one-shot outbound post, NOT an
    * inbound message that triggers an agent run (that's `routePlatformMessage`).
    * Used by the notification fan-out (`deliverToBotConnections`) to surface a
-   * watcher digest / approval in a bound channel.
+   * behavior digest / approval in a bound channel.
    *
    * `content` is any `chat` `AdapterPostableMessage` — `{ markdown }` (rendered
    * to each platform's native format rather than HTML-escaped), `{ card }` (a
@@ -957,7 +957,7 @@ export class ChatInstanceManager {
       /**
        * Subscribe to the thread this message opens/continues, so the bot
        * RECEIVES (and captures) replies to it. Without this, a thread the bot
-       * opens proactively (e.g. a watcher's lunch thread) is invisible to it —
+       * opens proactively (e.g. a behavior's lunch thread) is invisible to it —
        * Slack only delivers thread replies for subscribed threads. Used by
        * send_message; a one-off notify does NOT subscribe.
        */

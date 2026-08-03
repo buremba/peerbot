@@ -2,10 +2,10 @@
 #
 # Classifier collapse (P4 phase 5a) — out-of-band collision dedup of event_classifications,
 # the precondition for the new stable-key unique index idx_cc_unique_per_source_v2
-# (event_id, classifier_id, source, COALESCE(watcher_id,0)).
+# (event_id, classifier_id, source, COALESCE(behavior_id,0)).
 #
-# WHY: today uniqueness is per (event_id, classifier_VERSION_id, source, watcher). Collapsing the
-# key onto the stable classifier_id can collide IFF a single (event, classifier, source, watcher)
+# WHY: today uniqueness is per (event_id, classifier_VERSION_id, source, behavior). Collapsing the
+# key onto the stable classifier_id can collide IFF a single (event, classifier, source, behavior)
 # was classified under TWO versions of the same classifier (same source). In practice this is
 # ZERO — each classifier is permanently v1, the hot path delete-then-reinserts by the current
 # version, and version switches (the only multi-version source) are a zero-caller headless API.
@@ -29,10 +29,10 @@ while :; do
   # Each batch: find up to BATCH colliding stable keys, keep MAX(id) per key, delete the rest.
   N=$("${PSQL[@]}" "
     WITH dupes AS (
-      SELECT event_id, classifier_id, source, COALESCE(watcher_id, 0) AS w, MAX(id) AS keep_id
+      SELECT event_id, classifier_id, source, COALESCE(behavior_id, 0) AS w, MAX(id) AS keep_id
       FROM event_classifications
       WHERE classifier_id IS NOT NULL
-      GROUP BY event_id, classifier_id, source, COALESCE(watcher_id, 0)
+      GROUP BY event_id, classifier_id, source, COALESCE(behavior_id, 0)
       HAVING count(*) > 1
       LIMIT ${BATCH}
     ), del AS (
@@ -41,7 +41,7 @@ while :; do
       WHERE ec.event_id = d.event_id
         AND ec.classifier_id = d.classifier_id
         AND ec.source = d.source
-        AND COALESCE(ec.watcher_id, 0) = d.w
+        AND COALESCE(ec.behavior_id, 0) = d.w
         AND ec.id <> d.keep_id
       RETURNING 1
     ) SELECT count(*) FROM del;

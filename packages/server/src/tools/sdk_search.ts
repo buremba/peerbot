@@ -118,14 +118,14 @@ async function agentConfigBlanketDenied(
 	ctx: ToolContext,
 	action: WriteAction
 ): Promise<boolean> {
-	if (!ctx.organizationId || (!ctx.agentId && !ctx.actingWatcherId)) {
+	if (!ctx.organizationId || (!ctx.agentId && !ctx.actingBehaviorId)) {
 		return false;
 	}
 	const actor = await resolveActingPrincipal(getDb(), {
 		organizationId: ctx.organizationId,
 		userId: ctx.userId,
 		agentId: ctx.agentId,
-		sessionWatcherId: ctx.actingWatcherId ?? null,
+		sessionBehaviorId: ctx.actingBehaviorId ?? null,
 	});
 	if (actor.kind === "user") return false;
 	const effect = await resolveWriteEffect({
@@ -144,7 +144,7 @@ async function agentConfigBlanketDenied(
 /** Paths hidden for this agent principal by agent_config blanket policy. */
 async function deniedAgentsSdkPaths(ctx: ToolContext): Promise<Set<string>> {
 	const denied = new Set<string>();
-	if (!ctx.agentId && !ctx.actingWatcherId) return denied;
+	if (!ctx.agentId && !ctx.actingBehaviorId) return denied;
 
 	const actions: WriteAction[] = ["read", "create", "update", "delete"];
 	const denyByAction = new Map<WriteAction, boolean>();

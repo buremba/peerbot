@@ -882,7 +882,7 @@ export async function createTestDeviceCode(
 // ============================================
 
 /**
- * Insert a canvas_state ROOT event (a watcher "window" in canvas-on-events) and
+ * Insert a canvas_state ROOT event (a behavior "window" in canvas-on-events) and
  * return its event id — the value the read/write paths treat as `window_id`.
  * Mirrors the complete_window write path: metadata carries canonical UTC ISO
  * window_start/window_end (matching Date.toISOString()) so the row collides on
@@ -890,7 +890,7 @@ export async function createTestDeviceCode(
  * event's provenance run and stamps model/run_metadata on that run.
  */
 export async function createCanvasWindow(options: {
-  watcherId: number;
+  behaviorId: number;
   organizationId: string;
   granularity?: string;
   windowStart: Date | string;
@@ -924,7 +924,7 @@ export async function createCanvasWindow(options: {
       ${sql.json(options.extractedData ?? {})},
       'canvas_state',
       ${sql.json({
-        watcher_id: options.watcherId,
+        behavior_id: options.behaviorId,
         granularity,
         window_start: windowStartIso,
         window_end: windowEndIso,

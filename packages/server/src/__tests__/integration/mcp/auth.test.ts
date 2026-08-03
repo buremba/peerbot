@@ -1206,7 +1206,7 @@ describe('MCP Authentication', () => {
       expect(toolNames).not.toContain('list_metrics');
       expect(toolNames).not.toContain('query_metric');
       expect(toolNames).not.toContain('metric_series');
-      expect(toolNames).not.toContain('list_watchers');
+      expect(toolNames).not.toContain('list_behaviors');
       expect(toolNames).not.toContain('manage_entity');
       expect(toolNames).not.toContain('read_knowledge');
       expect(toolNames).not.toContain('execute');

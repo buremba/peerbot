@@ -8,7 +8,7 @@ import {
   createBehaviorEventRun,
 } from "../runs/queue-service";
 import logger from "../utils/logger";
-import { dispatchPendingWatcherRuns } from "../watchers/automation";
+import { dispatchPendingBehaviorRuns } from "../behaviors/automation";
 import { matchingBehaviorTriggers } from "./event-trigger";
 
 export interface MatchingBehaviorActivation {
@@ -109,8 +109,8 @@ export async function findMatchingBehaviorActivations(
 		SELECT w.id, w.organization_id, w.agent_id, w.device_worker_id::text AS device_worker_id,
 		       w.agent_kind, w.triggers, w.execution_config->>'model' AS model,
 		       w.min_cooldown_seconds, v.prompt
-		FROM watchers w
-		JOIN watcher_versions v ON v.id = w.current_version_id
+		FROM behaviors w
+		JOIN behavior_versions v ON v.id = w.current_version_id
 		WHERE w.status = 'active'
 		  AND w.agent_id IS NOT NULL
 		  AND ${triggerFilter}
@@ -196,7 +196,7 @@ export async function queueBehaviorActivations(args: {
     const queued = await createBehaviorEventRun(
       {
         organizationId: match.organizationId,
-        watcherId: match.behaviorId,
+        behaviorId: match.behaviorId,
         agentId: match.agentId,
         trigger: match.trigger,
         signal: args.signal,
@@ -251,7 +251,7 @@ export async function dispatchBehaviorRunsBestEffort(
     .map((result) => result.runId);
   if (runIds.length === 0) return;
   try {
-    await dispatchPendingWatcherRuns({ runIds });
+    await dispatchPendingBehaviorRuns({ runIds });
   } catch (error) {
     logger.error(
       { error, runIds },

@@ -176,7 +176,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         jsonrpc: '2.0',
         id: 3,
         method: 'tools/call',
-        params: { name: 'search_sdk', arguments: { query: 'watchers' } },
+        params: { name: 'search_sdk', arguments: { query: 'behaviors' } },
       },
       headers: { 'mcp-session-id': sessionId },
       token,
@@ -187,7 +187,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(body.result?.isError).not.toBe(true);
     expect(body.result?.structuredContent).toEqual(
       expect.objectContaining({
-        query: 'watchers',
+        query: 'behaviors',
         match_count: expect.any(Number),
         results: expect.any(Array),
       })

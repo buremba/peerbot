@@ -16,7 +16,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const outDir = join(here, '..', 'dist', 'catalogs');
 
 await mkdir(outDir, { recursive: true });
-await rm(join(outDir, 'watchers.json'), { force: true });
+await rm(join(outDir, 'behaviors.json'), { force: true });
 
 const start = Date.now();
 const [connectors, skills] = await Promise.all([

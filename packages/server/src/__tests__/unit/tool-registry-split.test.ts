@@ -175,8 +175,7 @@ describe("tool registry split", () => {
 	});
 
 	it("keeps only Behavior-native admin tools dispatchable", () => {
-		expect(getTool("list_watchers")).toBeUndefined();
-		expect(getTool("get_watcher")).toBeUndefined();
+		expect(getTool("list_behaviors")).toBeUndefined();
 		expect(getTool("get_behavior")).toBeDefined();
 		expect(getTool("manage_entity")).toBeDefined();
 		expect(isInternalDispatchTool("manage_behaviors")).toBe(true);

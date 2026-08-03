@@ -3,9 +3,8 @@
  * (`tool_approval` transport via POST /internal/interactions/create).
  *
  * Why this exists: resourceKind / attribution were scattered string literals
- * across plugin-mcp, server tools, gateway routes, and the SPA. A rename on
- * one side (e.g. watcher → behavior) silently broke card routing on another
- * (plugin-mcp kept emitting "watcher" while owletto routed on "behavior").
+ * across plugin-mcp, server tools, gateway routes, and the SPA. Changing a
+ * discriminator on one side without the others silently broke card routing.
  *
  * Contract:
  *  - Worker and server approval emitters import the named constants below.

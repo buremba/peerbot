@@ -108,8 +108,7 @@ describe("interaction-envelope SPA/core parity", () => {
     ]);
     expect([...APPROVAL_ATTRIBUTIONS]).toEqual(["agent", "behavior"]);
     expect(isInteractionResourceKind("behavior")).toBe(true);
-    expect(isInteractionResourceKind("watcher")).toBe(false);
     expect(isApprovalAttribution("agent")).toBe(true);
-    expect(isApprovalAttribution("watcher")).toBe(false);
+    expect(isApprovalAttribution("behavior")).toBe(true);
   });
 });

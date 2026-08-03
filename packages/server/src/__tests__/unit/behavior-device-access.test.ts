@@ -1,8 +1,8 @@
 /**
- * Unit coverage for the device-worker ownership gate on watcher pins
- * (watchers.device_worker_id). A device pin runs the watcher's agent CLI on the
+ * Unit coverage for the device-worker ownership gate on behavior pins
+ * (behaviors.device_worker_id). A device pin runs the behavior's agent CLI on the
  * device owner's machine, so a member-write actor must not be able to pin a
- * watcher to another user's device. This pins the pure decision matrix
+ * behavior to another user's device. This pins the pure decision matrix
  * (owner/admin/member/system × owned/foreign/missing device); the DB-backed
  * wrapper + persistence is exercised in the integration suite.
  */

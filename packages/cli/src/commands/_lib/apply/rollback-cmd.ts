@@ -219,7 +219,7 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
   // wants integer ids — resolve against the live connections, exactly as
   // apply does.
   resolveBehaviorConnectionRefs(
-    sanitized.state.watchers,
+    sanitized.state.behaviors,
     new Map(remote.connections.map((c) => [c.slug, c.id])),
     false
   );

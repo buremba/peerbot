@@ -282,7 +282,7 @@ export const TASKS: EvalTask[] = [
       const sql = db();
       const n = await countRows(
         sql<{ n: number }[]>`
-          SELECT count(*)::int AS n FROM watchers
+          SELECT count(*)::int AS n FROM behaviors
           WHERE organization_id = ${org.org.id} AND status = 'active'`
       );
       if (n === 0) return { pass: false, detail: "no Behavior created" };

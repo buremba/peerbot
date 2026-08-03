@@ -2,7 +2,7 @@
  * JWT utilities for window tokens
  *
  * Window tokens are signed JWTs that encode the exact event IDs returned to
- * the watcher worker. complete_window links those IDs deterministically.
+ * the behavior worker. complete_window links those IDs deterministically.
  */
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
@@ -23,7 +23,7 @@ export function deriveJwtSecret(encryptionKey: string): string {
 }
 
 interface WindowTokenPayload {
-  watcher_id: number;
+  behavior_id: number;
   window_start: string;
   window_end: string;
   granularity: string; // Required for window creation
@@ -98,7 +98,7 @@ function getJwtSecret(env: Env): string {
 /**
  * Generate a signed window token
  *
- * @param payload - Token payload containing watcher_id, dates, and content IDs
+ * @param payload - Token payload containing behavior_id, dates, and content IDs
  * @param env - Environment with JWT secret
  * @returns Signed JWT token string
  */

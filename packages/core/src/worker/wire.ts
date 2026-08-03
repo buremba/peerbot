@@ -95,7 +95,7 @@ export interface MessagePayload {
 
   /**
    * Ephemeral context prepended to the user prompt for this turn only.
-   * Not stored in the transcript snapshot — use for watcher preprompts, etc.
+   * Not stored in the transcript snapshot — use for behavior preprompts, etc.
    */
   ephemeralContext?: string;
 

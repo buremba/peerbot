@@ -390,16 +390,16 @@ routes.get("/", async (c) => {
 
 	const [
 		runtimeClientCounts,
-		watcherCounts,
+		behaviorCounts,
 		userCounts,
 		platformRows,
 		providerRows,
 	] = await Promise.all([
 		countRuntimeMessagingClientsByAgent(orgId),
-		// Watchers owned by each agent (active only).
+		// Behaviors owned by each agent (active only).
 		sql`
         SELECT agent_id, count(*)::int as count
-        FROM watchers
+        FROM behaviors
         WHERE organization_id = ${orgId} AND status = 'active' AND agent_id IS NOT NULL
         GROUP BY agent_id
       `,
@@ -441,8 +441,8 @@ routes.get("/", async (c) => {
 		}
 		for (const clientId of runtimeIds) ids.add(clientId);
 	}
-	const watcherCountMap = new Map(
-		watcherCounts.map((r: any) => [r.agent_id, r.count])
+	const behaviorCountMap = new Map(
+		behaviorCounts.map((r: any) => [r.agent_id, r.count])
 	);
 	const userCountMap = new Map(
 		userCounts.map((r: any) => [r.agent_id, r.count])
@@ -467,7 +467,7 @@ routes.get("/", async (c) => {
 			connectionCount: countMap.get(a.agentId) ?? 0,
 			activeConnectionCount: activeCountMap.get(a.agentId) ?? 0,
 			clientCount: clientCountMap.get(a.agentId)?.size ?? 0,
-			watcherCount: watcherCountMap.get(a.agentId) ?? 0,
+			behaviorCount: behaviorCountMap.get(a.agentId) ?? 0,
 			userCount: userCountMap.get(a.agentId) ?? 0,
 			platforms: platformsMap.get(a.agentId) ?? [],
 			providers: providersMap.get(a.agentId) ?? [],
@@ -1447,8 +1447,8 @@ routes.get("/:agentId/config/pending/:runId", async (c) => {
 	// for an update. A create has no existing agent to render; a delete would show
 	// ordinary config fields + a generic Approve that silently DELETES the agent —
 	// so both 404 here (they keep the run-permalink review path). manage_behaviors
-	// proposals (`{ args, actingAgentId, ... }`, watcher-shaped, agent_id in args)
-	// belong to a separate watcher review surface. Anything else 404s.
+	// proposals (`{ args, actingAgentId, ... }`, behavior-shaped, agent_id in args)
+	// belong to a separate behavior review surface. Anything else 404s.
 	const rawProposal = row.proposal ?? null;
 	if (
 		row.tool !== "manage_agents" ||
@@ -1477,17 +1477,17 @@ routes.get("/:agentId/config/pending/:runId", async (c) => {
 	});
 });
 
-// GET /:agentId/behaviors/:watcherId/pending/:runId — the Behavior parity of the
+// GET /:agentId/behaviors/:behaviorId/pending/:runId — the Behavior parity of the
 // agent config-prefill endpoint above. A pending `manage_behaviors` update run is
-// reviewed on the watcher edit form (nested under its owning agent), prefilled
+// reviewed on the behavior edit form (nested under its owning agent), prefilled
 // via `?run_id=`. Returns the held proposal so the form can render + approve it.
 //
-// AuthZ: org-scoped by middleware; the held proposal must target `:watcherId`
+// AuthZ: org-scoped by middleware; the held proposal must target `:behaviorId`
 // AND be owned by `:agentId`. A manage_behaviors proposal is `{ args, ... }` with
-// watcher_id / agent_id nested INSIDE `args` (unlike manage_agents, top-level) —
+// behavior_id / agent_id nested INSIDE `args` (unlike manage_agents, top-level) —
 // hence a separate endpoint rather than folding into the agent one.
-routes.get("/:agentId/behaviors/:watcherId/pending/:runId", async (c) => {
-	const { agentId, watcherId } = c.req.param();
+routes.get("/:agentId/behaviors/:behaviorId/pending/:runId", async (c) => {
+	const { agentId, behaviorId } = c.req.param();
 	const organizationId = c.get("organizationId") as string;
 	const runId = Number(c.req.param("runId"));
 	if (!Number.isInteger(runId) || runId <= 0) {
@@ -1519,8 +1519,8 @@ routes.get("/:agentId/behaviors/:watcherId/pending/:runId", async (c) => {
 	const row = rows[0];
 	if (!row) return c.json({ error: "No pending proposal for this run" }, 404);
 
-	// Scoped to manage_behaviors UPDATE: the watcher edit form reviews a single
-	// existing watcher's config. create / create_from_version / set_reaction_script
+	// Scoped to manage_behaviors UPDATE: the behavior edit form reviews a single
+	// existing behavior's config. create / create_from_version / set_reaction_script
 	// aren't a single-form review (they keep the run-permalink path), so 404 here.
 	const rawProposal = row.proposal ?? null;
 	if (
@@ -1533,7 +1533,7 @@ routes.get("/:agentId/behaviors/:watcherId/pending/:runId", async (c) => {
 	}
 
 	// manage_behaviors proposal nests the target under `args`. The held proposal
-	// must target the watcher in the path, and its owning agent (args.agent_id ??
+	// must target the behavior in the path, and its owning agent (args.agent_id ??
 	// current owner) must be the agent in the path. Don't leak cross-target/agent
 	// existence — same 404 as "no pending proposal".
 	const args = (rawProposal as { args?: Record<string, unknown> }).args ?? null;
@@ -1541,7 +1541,7 @@ routes.get("/:agentId/behaviors/:watcherId/pending/:runId", async (c) => {
 		return c.json({ error: "No pending proposal for this run" }, 404);
 	}
 	const targetBehaviorId = args.behavior_id ?? null;
-	if (String(targetBehaviorId) !== String(watcherId)) {
+	if (String(targetBehaviorId) !== String(behaviorId)) {
 		return c.json({ error: "No pending proposal for this run" }, 404);
 	}
 	const current = row.current ?? null;

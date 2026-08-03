@@ -269,22 +269,22 @@ Dropped three orgs that were either duplicates or no longer in scope:
 
 - `venture-capital` — entity content was fully duplicated in `market`
   (companies/investors/funds/products/sectors all matched by name).
-  Dropped: org row + 12,504 events + 13 founder watchers + 55 connections
+  Dropped: org row + 12,504 events + 13 founder behaviors + 55 connections
   + 78 feeds + 8,271 runs.
 - `careops` (Healthcare) — out of scope; dropped the workspace, agent,
-  watchers, connections, and the seed entities (1 patient, 1 appointment,
+  behaviors, connections, and the seed entities (1 patient, 1 appointment,
   1 treatment, 26 members).
 - `market-intelligence` — folded into `market`. All 21 brand entities
   matched existing market companies by name, so brands were remapped to
-  the company rows; 275,147 events, 9 watchers, 78 connections, 84 feeds,
+  the company rows; 275,147 events, 9 behaviors, 78 connections, 84 feeds,
   9,290 runs, 23 event_classifiers, 10 connector definitions, 2 agents,
   4 auth_profiles, 1 oauth client all moved over via `organization_id`
-  rewrite. Entity_ids[] arrays in events/watchers/feeds rewritten via
+  rewrite. Entity_ids[] arrays in events/behaviors/feeds rewritten via
   the brand→company id map. The 235 MI relationships were exact
   duplicates of existing market `mentions` triples and soft-deleted
   before the org drop.
 
-Followup: events + watchers have no FK to organization, so the org drop
+Followup: events + behaviors have no FK to organization, so the org drop
 left the rows orphaned and required an explicit cleanup. A separate PR
 adds `ON DELETE CASCADE` so future drops are clean.
 
@@ -315,7 +315,7 @@ The "invite the public-org admin agent into your tenant as a viewer"
 pattern (described above) needs:
 
 - A way for the admin agent to declare which entity types it's interested
-  in (could be a `requires_review` watcher in the admin's public catalog).
+  in (could be a `requires_review` behavior in the admin's public catalog).
 - A small UI nudge in the tenant when the agent posts back "this looks
   canonical, want me to ask the catalog admin to incorporate it?"
 

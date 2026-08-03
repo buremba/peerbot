@@ -24,7 +24,7 @@ import {
 import {
   type DesiredConnectorDefinition,
   type DesiredState,
-  type DesiredWatcher,
+  type DesiredBehavior,
   loadDesiredStateFromConfig,
   normalizeConnectionConfigScope,
   resolveConnectorSchemas,
@@ -79,19 +79,19 @@ export interface PendingAuthEntry {
 
 /** Resolve declarative connection slugs to the integer API contract. */
 export function resolveBehaviorConnectionRefs(
-  watchers: DesiredWatcher[],
+  behaviors: DesiredBehavior[],
   connectionIdBySlug: ReadonlyMap<string, number>,
   requireResolved: boolean
 ): void {
-  for (const watcher of watchers) {
-    if (!watcher.triggers) continue;
-    watcher.triggers = watcher.triggers.map((trigger) => {
+  for (const behavior of behaviors) {
+    if (!behavior.triggers) continue;
+    behavior.triggers = behavior.triggers.map((trigger) => {
       if (trigger.kind !== "event" || !trigger.connectionSlug) return trigger;
       const connectionId = connectionIdBySlug.get(trigger.connectionSlug);
       if (connectionId === undefined) {
         if (requireResolved) {
           throw new ApiError(
-            `behavior "${watcher.slug}" references connection "${trigger.connectionSlug}" which has no remote ID — create the connection first, or omit --only so apply can create it`
+            `behavior "${behavior.slug}" references connection "${trigger.connectionSlug}" which has no remote ID — create the connection first, or omit --only so apply can create it`
           );
         }
         return trigger;
@@ -366,7 +366,7 @@ export async function fetchRemoteSnapshot(
       remote.rules = rules.map((r) => ({ source: r.source, target: r.target }));
     }
   }
-  const watchers = only === "agents" ? [] : await client.listBehaviors();
+  const behaviors = only === "agents" ? [] : await client.listBehaviors();
 
   // Connectors run only on a full apply (`--only` skips them). A pruning config
   // also fetches them even when it declares none, so prune can delete a
@@ -376,8 +376,8 @@ export async function fetchRemoteSnapshot(
   const fetchConnectors = !only && (hasConnectors || prune);
   const fetchBehaviorConnections =
     only === "memory" &&
-    state.watchers.some((watcher) =>
-      watcher.triggers?.some(
+    state.behaviors.some((behavior) =>
+      behavior.triggers?.some(
         (trigger) =>
           trigger.kind === "event" && trigger.connectionSlug !== undefined
       )
@@ -411,7 +411,7 @@ export async function fetchRemoteSnapshot(
     agentSettings,
     entityTypes,
     relationshipTypes,
-    watchers,
+    behaviors,
     connectorDefinitions,
     authProfiles,
     connections,
@@ -832,21 +832,25 @@ export async function executePlan(
   const applyBehaviors = async (
     connectionIdBySlug: ReadonlyMap<string, number>
   ): Promise<void> => {
-    if (rowsByKind("watcher").length === 0) return;
-    resolveBehaviorConnectionRefs(ctx.state.watchers, connectionIdBySlug, true);
+    if (rowsByKind("behavior").length === 0) return;
+    resolveBehaviorConnectionRefs(
+      ctx.state.behaviors,
+      connectionIdBySlug,
+      true
+    );
 
     // 6) Behaviors — create (full payload + reaction script) or update (scalar
     //    row fields via `update`, version-bound fields via `create_version`,
     //    reaction script via `set_reaction_script`). Drift detection lives in
-    //    `diffWatcher`; this loop just routes to the right admin action.
-    const remoteWatcherBySlug = new Map(
-      ctx.remote.watchers.map((w) => [w.slug, w])
+    //    `diffBehavior`; this loop just routes to the right admin action.
+    const remoteBehaviorBySlug = new Map(
+      ctx.remote.behaviors.map((w) => [w.slug, w])
     );
-    for (const row of rowsByKind("watcher")) {
-      if (row.kind !== "watcher") continue;
+    for (const row of rowsByKind("behavior")) {
+      if (row.kind !== "behavior") continue;
       if (!row.desired) continue;
       const w = row.desired;
-      let watcherId: string | undefined;
+      let behaviorId: string | undefined;
       if (row.verb === "create") {
         const created = await ctx.client.createBehavior({
           slug: w.slug,
@@ -868,11 +872,11 @@ export async function executePlan(
           keying_config: w.keyingConfig,
           classifiers: w.classifiers,
         });
-        watcherId = created.behavior_id;
+        behaviorId = created.behavior_id;
       } else if (row.verb === "update") {
-        const remote = remoteWatcherBySlug.get(w.slug);
-        watcherId = remote?.behavior_id;
-        if (!watcherId) {
+        const remote = remoteBehaviorBySlug.get(w.slug);
+        behaviorId = remote?.behavior_id;
+        if (!behaviorId) {
           throw new ApiError(
             `update behavior "${w.slug}" failed: remote row is missing behavior_id (refetch may be stale)`
           );
@@ -895,7 +899,7 @@ export async function executePlan(
         // a) Scalar fields → manage_behaviors update
         if (scalarForUpdate.length > 0) {
           await ctx.client.updateBehavior({
-            behavior_id: watcherId,
+            behavior_id: behaviorId,
             ...(scalarForUpdate.includes("triggers")
               ? { triggers: w.triggers ?? [] }
               : {}),
@@ -936,7 +940,7 @@ export async function executePlan(
           triggersWithInstructions
         ) {
           await ctx.client.createBehaviorVersion({
-            behavior_id: watcherId,
+            behavior_id: behaviorId,
             ...(versionBound.has("prompt") ? { prompt: w.prompt } : {}),
             ...(versionBound.has("skills")
               ? { skills: w.skillSnapshots ?? [] }
@@ -961,16 +965,16 @@ export async function executePlan(
       }
       // c) Reaction script — push when declared (idempotent server-side, no
       //    drift signal available because it's not returned by Behavior lists).
-      if (w.reactionScript && watcherId) {
+      if (w.reactionScript && behaviorId) {
         await ctx.client.setReactionScript(
-          watcherId,
+          behaviorId,
           w.reactionScript.sourceCode
         );
       }
       printText(
         renderProgress(
           row.verb,
-          "watcher",
+          "behavior",
           row.id,
           row.changedFields ? `(${row.changedFields.join(", ")})` : undefined
         )
@@ -1170,14 +1174,14 @@ export async function executePlan(
 async function deleteRemovedDefinitions(ctx: ApplyContext): Promise<void> {
   const deletes = ctx.plan.rows.filter((r) => r.verb === "delete");
   if (deletes.length === 0) return;
-  const watcherIdBySlug = new Map(
-    ctx.remote.watchers.map((w) => [w.slug, w.behavior_id])
+  const behaviorIdBySlug = new Map(
+    ctx.remote.behaviors.map((w) => [w.slug, w.behavior_id])
   );
   const steps: Array<[DiffRow["kind"], (id: string) => Promise<void>]> = [
     [
-      "watcher",
+      "behavior",
       async (id) => {
-        const wid = watcherIdBySlug.get(id);
+        const wid = behaviorIdBySlug.get(id);
         if (!wid) {
           throw new ApiError(
             `delete behavior "${id}": remote behavior_id missing`
@@ -1449,7 +1453,7 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   // `executePlan`, AFTER plan confirmation.
   const remote = await fetchRemoteSnapshot(client, state, opts.only, prune);
   resolveBehaviorConnectionRefs(
-    state.watchers,
+    state.behaviors,
     new Map(
       remote.connections.map((connection) => [connection.slug, connection.id])
     ),

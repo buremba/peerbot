@@ -11,7 +11,7 @@ import type { ContentItem } from '@lobu/connector-sdk';
 
 export type { ContentItem };
 
-/** Classifier configuration returned for watcher mode (for worker embedding generation) */
+/** Classifier configuration returned for behavior mode (for worker embedding generation) */
 export interface ClassifierConfig {
   slug: string;
   extraction_config: Record<string, unknown> | null;

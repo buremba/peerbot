@@ -15,8 +15,8 @@ import {
 	getOrganizationSlug,
 	getPublicWebUrl,
 } from "../../../utils/url-builder";
-import { buildLatestWatcherRunJoinSql } from "../../../watchers/automation";
-import { computeBehaviorHealth } from "../../../watchers/behavior-health";
+import { buildLatestBehaviorRunJoinSql } from "../../../behaviors/automation";
+import { computeBehaviorHealth } from "../../../behaviors/behavior-health";
 import type { ToolContext } from "../../registry";
 import { batchCountUnanalyzedContent } from "./shared";
 
@@ -67,8 +67,8 @@ export async function handleList(
       i.notification_priority,
       i.min_cooldown_seconds,
       i.agent_kind,
-      i.watcher_group_id::text AS behavior_group_id,
-      i.source_watcher_id::text AS source_behavior_id,
+      i.behavior_group_id::text AS behavior_group_id,
+      i.source_behavior_id::text AS source_behavior_id,
       wr.id as behavior_run_id,
       wr.status as behavior_run_status,
       wr.error_message as behavior_run_error,
@@ -84,7 +84,7 @@ export async function handleList(
       parent.slug as parent_slug,
       pet.slug as parent_entity_type,
       i.current_version_id,
-      (SELECT COUNT(*) FROM canvas_windows iw WHERE iw.watcher_id = i.id) as windows_count
+      (SELECT COUNT(*) FROM canvas_windows iw WHERE iw.behavior_id = i.id) as windows_count
   `;
 
 	if (args.include_details) {
@@ -99,13 +99,13 @@ export async function handleList(
 	}
 
 	query += `
-    FROM watchers i
+    FROM behaviors i
     LEFT JOIN entities e ON e.id = ANY(i.entity_ids)
     LEFT JOIN entity_types et ON et.id = e.entity_type_id
     LEFT JOIN entities parent ON e.parent_id = parent.id
     LEFT JOIN entity_types pet ON pet.id = parent.entity_type_id
-    LEFT JOIN watcher_versions cv ON i.current_version_id = cv.id
-    ${buildLatestWatcherRunJoinSql("i", "wr")}
+    LEFT JOIN behavior_versions cv ON i.current_version_id = cv.id
+    ${buildLatestBehaviorRunJoinSql("i", "wr")}
   `;
 
 	const conditions: string[] = [];
@@ -139,7 +139,7 @@ export async function handleList(
 		params.push(args.status);
 		paramCount++;
 	} else {
-		// Default to active watchers only (exclude archived)
+		// Default to active behaviors only (exclude archived)
 		conditions.push(`i.status = 'active'`);
 	}
 
@@ -161,11 +161,11 @@ export async function handleList(
 	const result = await sql.unsafe(query, params);
 
 	const baseUrl = getPublicWebUrl(ctx.requestUrl, ctx.baseUrl);
-	const watcherIds = (result as any[]).map((i) => Number(i.behavior_id));
+	const behaviorIds = (result as any[]).map((i) => Number(i.behavior_id));
 
 	let counts: Map<number, { pending: number; historical: number }>;
 	try {
-		counts = await batchCountUnanalyzedContent(watcherIds);
+		counts = await batchCountUnanalyzedContent(behaviorIds);
 	} catch (error) {
 		logger.error(
 			{ error },
@@ -185,28 +185,17 @@ export async function handleList(
 		if (slug) orgSlugMap.set(orgId, slug);
 	}
 
-	const watchersWithPendingCount = (result as any[]).map((watcher) => {
-		const watcherId = Number(watcher.behavior_id);
-		const countData = counts.get(watcherId) || { pending: 0, historical: 0 };
-		const orgSlug = orgSlugMap.get(watcher.organization_id as string) ?? null;
+	const behaviorsWithPendingCount = (result as any[]).map((behavior) => {
+		const behaviorId = Number(behavior.behavior_id);
+		const countData = counts.get(behaviorId) || { pending: 0, historical: 0 };
+		const orgSlug = orgSlugMap.get(behavior.organization_id as string) ?? null;
 
 		const viewUrl =
-			orgSlug && watcher.agent_id
-				? buildBehaviorUrl(orgSlug, watcher.agent_id, watcherId, baseUrl)
+			orgSlug && behavior.agent_id
+				? buildBehaviorUrl(orgSlug, behavior.agent_id, behaviorId, baseUrl)
 				: undefined;
 
-		const { organization_id: _orgId, ...rest } = watcher;
-
-		// Old persisted run-error rows can carry the internal `client.watchers.*`
-		// namespace (the SDK alias was renamed watchers→behaviors; forward-path
-		// templates already emit `client.behaviors.*`, but archived error_message
-		// rows still hold the legacy string). Rewrite it at read time so the
-		// public projection never surfaces the internal vocabulary.
-		if (typeof (rest as Record<string, unknown>).behavior_run_error === "string") {
-			(rest as Record<string, unknown>).behavior_run_error = (
-				(rest as Record<string, unknown>).behavior_run_error as string
-			).replaceAll("client.watchers.", "client.behaviors.");
-		}
+		const { organization_id: _orgId, ...rest } = behavior;
 
 		if (!args.include_details) {
 			delete (rest as Record<string, unknown>).prompt;
@@ -216,9 +205,9 @@ export async function handleList(
 		}
 
 		// Stringify `behavior_id` to match the rest of the manage_behaviors
-		// contract: `handleCreate` returns `String(watcherId)`, the input schema
+		// contract: `handleCreate` returns `String(behaviorId)`, the input schema
 		// declares `behavior_id` as a string, and downstream callers (CLI
-		// `apply-cmd.ts` → `updateWatcher`, MCP tools) forward whatever they
+		// `apply-cmd.ts` → `updateBehavior`, MCP tools) forward whatever they
 		// receive straight back. Without the cast the raw integer leaks through
 		// and a follow-up `update`/`upgrade` call fails the schema gate with
 		// `/behavior_id: Expected string`. Same bug pattern for `current_version_id`
@@ -232,12 +221,10 @@ export async function handleList(
 		// Computed health (item 3, #2033) — derived from the
 		// already-selected schedule/run columns, no extra query.
 		const behaviorHealth = computeBehaviorHealth({
-			status: watcher.status,
-			nextRunAt: watcher.next_run_at,
-			latestRunStatus: watcher.behavior_run_status,
-			latestRunCreatedAt: watcher.behavior_run_created_at,
-			// Use the vocab-rewritten error so last_scheduling_error also carries the
-			// public `client.behaviors.*` namespace, not the legacy internal one.
+			status: behavior.status,
+			nextRunAt: behavior.next_run_at,
+			latestRunStatus: behavior.behavior_run_status,
+			latestRunCreatedAt: behavior.behavior_run_created_at,
 			latestRunError: (rest as Record<string, unknown>).behavior_run_error as
 				| string
 				| null
@@ -258,5 +245,5 @@ export async function handleList(
 		};
 	});
 
-	return { action: "list", behaviors: watchersWithPendingCount };
+	return { action: "list", behaviors: behaviorsWithPendingCount };
 }

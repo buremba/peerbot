@@ -15,7 +15,7 @@ export interface OperationsExecuteInput {
 	operation_key: string;
 	input?: Record<string, unknown>;
 	/**
-	 * Watcher provenance when this operation fires from a reaction. Both ids are
+	 * Behavior provenance when this operation fires from a reaction. Both ids are
 	 * numeric.
 	 */
 	behavior_source?: { behavior_id: number; window_id: number };

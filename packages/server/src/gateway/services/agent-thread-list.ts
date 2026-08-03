@@ -267,9 +267,9 @@ export async function listAgentThreads(args: {
 		}
 	}
 
-	// Behavior activity comes from bounded `watchers` config rather than
+	// Behavior activity comes from bounded `behaviors` config rather than
 	// aggregating append-only transcript history. A Behavior is not a conversation,
-	// so it keeps the existing `watcher_<id>` route key without a `conversations`
+	// so it keeps the existing `behavior_<id>` route key without a `conversations`
 	// row. Reading status and name live also drops archived rows immediately.
 	if (scope === "all") {
 		const sql = getDb();
@@ -279,7 +279,7 @@ export async function listAgentThreads(args: {
 			last_run_completed_at: Date;
 		}>`
       SELECT id, name, last_run_completed_at
-      FROM public.watchers
+      FROM public.behaviors
       WHERE organization_id = ${organizationId}
         AND agent_id = ${agentId}
         AND status = 'active'
@@ -287,8 +287,8 @@ export async function listAgentThreads(args: {
       ORDER BY last_run_completed_at DESC
     `;
 		for (const row of behaviorRows) {
-			// `watcher_<id>` is the key the panel has always rendered and routed on.
-			const key = `watcher_${row.id}`;
+			// `behavior_<id>` is the key the panel has always rendered and routed on.
+			const key = `behavior_${row.id}`;
 			const at = row.last_run_completed_at.getTime();
 			byKey.set(key, {
 				id: key,

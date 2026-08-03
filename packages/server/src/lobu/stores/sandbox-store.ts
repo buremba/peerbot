@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { getDb } from "../../db/client.js";
 import {
 	classifyConversation,
-	isWatcherConversationId,
+	isBehaviorConversationId,
 } from "../../gateway/services/conversations-store.js";
 import { sandboxSecretName } from "./provider-secrets.js";
 
@@ -209,12 +209,12 @@ export async function resolvePinnedSelection(args: {
 }): Promise<AgentRuntimeSelection> {
 	const { organizationId, agentId, conversationId } = args;
 	if (!organizationId || !agentId) return {};
-	// Watcher runs are ephemeral and deliberately have NO conversations row (the
-	// live dual-write excludes them via isWatcherConversationId). Honor the same
-	// exclusion here: never pin and never materialize a listing row for a watcher —
-	// resolve the agent's current selection live. A repointed watcher just picks up
-	// the new realm on its next run, which is the desired behavior for watchers.
-	if (isWatcherConversationId(conversationId)) {
+	// Behavior runs are ephemeral and deliberately have NO conversations row (the
+	// live dual-write excludes them via isBehaviorConversationId). Honor the same
+	// exclusion here: never pin and never materialize a listing row for a behavior —
+	// resolve the agent's current selection live. A repointed behavior just picks up
+	// the new realm on its next run, which is the desired behavior for behaviors.
+	if (isBehaviorConversationId(conversationId)) {
 		return resolveAgentRuntimeSelection(agentId, organizationId);
 	}
 	// The conversations row is keyed on the STORED platform (api→web, lowercased) —

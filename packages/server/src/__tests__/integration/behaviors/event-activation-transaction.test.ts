@@ -157,7 +157,7 @@ describe("Behavior activation transactionality", () => {
 		const runs = await sql`
 			SELECT id, status, approved_input
 			FROM runs
-			WHERE watcher_id = ${behaviorId}
+			WHERE behavior_id = ${behaviorId}
 			ORDER BY id ASC
 		`;
 		expect(runs).toHaveLength(2);

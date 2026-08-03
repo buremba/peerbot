@@ -40,7 +40,7 @@ const ConnectedEventSchema = z.object({
 
 // Platform metadata is a transport envelope for platform-specific details.
 // Known chat fields are typed below, but gateway callers may include nested
-// objects such as watcher run intent metadata, file descriptors, or provider
+// objects such as behavior run intent metadata, file descriptors, or provider
 // context. Preserve those values instead of rejecting otherwise valid jobs.
 const PlatformMetadataSchema = z
   .object({
@@ -1154,7 +1154,7 @@ export class GatewayClient {
 }
 
 const AUTOMATION_SOURCES = new Set([
-  "watcher-run",
+  "behavior-run",
   "scheduled-job",
   "connector-repair",
   "internal",

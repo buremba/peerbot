@@ -1,6 +1,6 @@
 /**
  * S0 spike: the events CTE in `buildScopedQuery` (query_sql / metrics /
- * watchers / client.query) must intersect with PER-USER connection visibility,
+ * behaviors / client.query) must intersect with PER-USER connection visibility,
  * not just org scope — otherwise a multi-user agent's `client.query` can read
  * another user's private-connection events. The content-search/recall seams
  * already apply `buildConnectionVisibilityClause`; this pins that the

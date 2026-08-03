@@ -9,9 +9,9 @@
  *     manage_operations applies the held mutation and supersedes the pending card.
  *
  * Covers:
- *   - agent create → pending_approval (NOT 403), no watcher row yet
- *   - approve → watcher exists, run completed, event superseded 'completed'
- *   - reject → no watcher, run cancelled, event superseded 'rejected'
+ *   - agent create → pending_approval (NOT 403), no behavior row yet
+ *   - approve → behavior exists, run completed, event superseded 'completed'
+ *   - reject → no behavior, run cancelled, event superseded 'rejected'
  *   - human create still applies immediately
  *   - foreign-owner escalation still 403s before queueing
  */
@@ -46,10 +46,10 @@ type PendingApproval = {
 	proposal?: { args?: { action?: string; slug?: string } };
 };
 
-async function watcherExists(orgId: string, slug: string): Promise<boolean> {
+async function behaviorExists(orgId: string, slug: string): Promise<boolean> {
 	const sql = getTestDb();
 	const rows = await sql`
-		SELECT 1 FROM watchers WHERE organization_id = ${orgId} AND slug = ${slug}
+		SELECT 1 FROM behaviors WHERE organization_id = ${orgId} AND slug = ${slug}
 	`;
 	return rows.length > 0;
 }
@@ -147,18 +147,18 @@ describe("manage_behaviors — builder gate e2e", () => {
 			"manage_behaviors",
 			{
 				action: "create",
-				slug: "human-watcher",
-				name: "Human Watcher",
+				slug: "human-behavior",
+				name: "Human Behavior",
 				prompt: "Track things.",
 				agent_id: agentId,
 			},
 			TEST_ENV,
 			ownerCtx
 		)) as { action: string; behavior_id?: string; status?: string };
-		// Immediate apply returns the watcher status ('active'), not pending_approval.
+		// Immediate apply returns the behavior status ('active'), not pending_approval.
 		expect(res.status).not.toBe("pending_approval");
 		expect(res.behavior_id).toBeDefined();
-		expect(await watcherExists(orgId, "human-watcher")).toBe(true);
+		expect(await behaviorExists(orgId, "human-behavior")).toBe(true);
 
 		const sql = getTestDb();
 		const runRows = await sql`
@@ -169,12 +169,12 @@ describe("manage_behaviors — builder gate e2e", () => {
 		expect(runRows.length).toBe(0);
 	});
 
-	it("agent create produces a pending run + approval event and does NOT create the watcher yet", async () => {
+	it("agent create produces a pending run + approval event and does NOT create the behavior yet", async () => {
 		const res = (await executeTool(
 			"manage_behaviors",
 			{
 				action: "create",
-				slug: "agent-proposed-watcher",
+				slug: "agent-proposed-behavior",
 				name: "Agent Proposed",
 				prompt: "Track launches.",
 				agent_id: agentId,
@@ -186,7 +186,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 		expect(res.status).toBe("pending_approval");
 		expect(typeof res.run_id).toBe("number");
 		expect(res.action).toBe("create");
-		expect(res.proposal?.args?.slug).toBe("agent-proposed-watcher");
+		expect(res.proposal?.args?.slug).toBe("agent-proposed-behavior");
 
 		const sql = getTestDb();
 		const runRows = await sql`
@@ -226,7 +226,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 			user_id: ownerId,
 		});
 
-		expect(await watcherExists(orgId, "agent-proposed-watcher")).toBe(false);
+		expect(await behaviorExists(orgId, "agent-proposed-behavior")).toBe(false);
 	});
 
 	it("agent can propose a skills-only Behavior without failing approval preflight", async () => {
@@ -250,16 +250,16 @@ describe("manage_behaviors — builder gate e2e", () => {
 
 		expect(res.status).toBe("pending_approval");
 		expect(res.proposal?.args?.slug).toBe("agent-proposed-skills-only");
-		expect(await watcherExists(orgId, "agent-proposed-skills-only")).toBe(false);
+		expect(await behaviorExists(orgId, "agent-proposed-skills-only")).toBe(false);
 	});
 
-	it("approve applies the held create: watcher exists, run completed, event superseded", async () => {
+	it("approve applies the held create: behavior exists, run completed, event superseded", async () => {
 		const created = (await executeTool(
 			"manage_behaviors",
 			{
 				action: "create",
-				slug: "approved-watcher",
-				name: "Approved Watcher",
+				slug: "approved-behavior",
+				name: "Approved Behavior",
 				prompt: "Track approved items.",
 				agent_id: agentId,
 			},
@@ -267,7 +267,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 			agentCtx
 		)) as PendingApproval;
 		expect(created.status).toBe("pending_approval");
-		expect(await watcherExists(orgId, "approved-watcher")).toBe(false);
+		expect(await behaviorExists(orgId, "approved-behavior")).toBe(false);
 
 		const approveRes = (await executeTool(
 			"manage_operations",
@@ -277,7 +277,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 		)) as { approved?: true };
 		expect(approveRes.approved).toBe(true);
 
-		expect(await watcherExists(orgId, "approved-watcher")).toBe(true);
+		expect(await behaviorExists(orgId, "approved-behavior")).toBe(true);
 
 		const sql = getTestDb();
 		const runRows = await sql`
@@ -296,13 +296,13 @@ describe("manage_behaviors — builder gate e2e", () => {
 		expect(eventRows[0]?.interaction_status).toBe("completed");
 	});
 
-	it("reject cancels the held create: no watcher, run cancelled, event superseded 'rejected'", async () => {
+	it("reject cancels the held create: no behavior, run cancelled, event superseded 'rejected'", async () => {
 		const created = (await executeTool(
 			"manage_behaviors",
 			{
 				action: "create",
-				slug: "rejected-watcher",
-				name: "Rejected Watcher",
+				slug: "rejected-behavior",
+				name: "Rejected Behavior",
 				prompt: "Track rejected items.",
 				agent_id: agentId,
 			},
@@ -319,7 +319,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 		)) as { rejected?: true };
 		expect(rejectRes.rejected).toBe(true);
 
-		expect(await watcherExists(orgId, "rejected-watcher")).toBe(false);
+		expect(await behaviorExists(orgId, "rejected-behavior")).toBe(false);
 
 		const sql = getTestDb();
 		const runRows = await sql`
@@ -366,13 +366,13 @@ describe("manage_behaviors — builder gate e2e", () => {
 	});
 
 	it("approve of update with invalid timezone marks run failed (not completed)", async () => {
-		// Seed a watcher via the human path so there is a target to update.
+		// Seed a behavior via the human path so there is a target to update.
 		const created = (await executeTool(
 			"manage_behaviors",
 			{
 				action: "create",
-				slug: "tz-fail-watcher",
-				name: "TZ Fail Watcher",
+				slug: "tz-fail-behavior",
+				name: "TZ Fail Behavior",
 				prompt: "Track timezone failures.",
 				agent_id: agentId,
 			},
@@ -380,7 +380,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 			ownerCtx
 		)) as { behavior_id?: string; status?: string };
 		expect(created.behavior_id).toBeDefined();
-		const watcherId = created.behavior_id!;
+		const behaviorId = created.behavior_id!;
 
 		// Agent proposes an update with a bad timezone — queues for approval.
 		// handleUpdate returns `{ error }` (does not throw); the apply boundary
@@ -389,7 +389,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 			"manage_behaviors",
 			{
 				action: "update",
-				behavior_id: watcherId,
+				behavior_id: behaviorId,
 				triggers: [
 					{
 						kind: "schedule",
@@ -431,7 +431,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 		expect(eventRows[0]?.interaction_status).toBe("failed");
 	});
 
-	it("rejects a no-op update (only watcher_id, no patch fields)", async () => {
+	it("rejects a no-op update (only behavior_id, no patch fields)", async () => {
 		const created = (await executeTool(
 			"manage_behaviors",
 			{
@@ -444,11 +444,11 @@ describe("manage_behaviors — builder gate e2e", () => {
 			TEST_ENV,
 			ownerCtx
 		)) as { behavior_id?: string };
-		const watcherId = created.behavior_id!;
+		const behaviorId = created.behavior_id!;
 		await expect(
 			executeTool(
 				"manage_behaviors",
-				{ action: "update", behavior_id: watcherId },
+				{ action: "update", behavior_id: behaviorId },
 				TEST_ENV,
 				agentCtx
 			)
@@ -468,19 +468,19 @@ describe("manage_behaviors — builder gate e2e", () => {
 			TEST_ENV,
 			ownerCtx
 		)) as { behavior_id?: string };
-		const watcherId = created.behavior_id!;
+		const behaviorId = created.behavior_id!;
 		await expect(
 			executeTool(
 				"manage_behaviors",
-				{ action: "set_reaction_script", behavior_id: watcherId },
+				{ action: "set_reaction_script", behavior_id: behaviorId },
 				TEST_ENV,
 				agentCtx
 			)
 		).rejects.toThrow(/reaction_script is required/i);
 	});
 
-	it("stale cross-owner approval is rejected on apply after the watcher is reassigned", async () => {
-		// Agent A creates a watcher it owns (queue + approve so A is the owner).
+	it("stale cross-owner approval is rejected on apply after the behavior is reassigned", async () => {
+		// Agent A creates a behavior it owns (queue + approve so A is the owner).
 		const created = (await executeTool(
 			"manage_behaviors",
 			{
@@ -493,15 +493,15 @@ describe("manage_behaviors — builder gate e2e", () => {
 			TEST_ENV,
 			ownerCtx
 		)) as { behavior_id?: string };
-		const watcherId = created.behavior_id!;
-		expect(watcherId).toBeDefined();
+		const behaviorId = created.behavior_id!;
+		expect(behaviorId).toBeDefined();
 
 		// Agent A queues an update. The proposal captures A as the acting agent.
 		const pending = (await executeTool(
 			"manage_behaviors",
 			{
 				action: "update",
-				behavior_id: watcherId,
+				behavior_id: behaviorId,
 				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
 			},
 			TEST_ENV,
@@ -509,11 +509,11 @@ describe("manage_behaviors — builder gate e2e", () => {
 		)) as PendingApproval;
 		expect(pending.status).toBe("pending_approval");
 
-		// Race: the watcher is reassigned to agent B while the approval is pending.
+		// Race: the behavior is reassigned to agent B while the approval is pending.
 		const sql = getTestDb();
 		await sql`
-			UPDATE watchers SET agent_id = ${otherAgentId}
-			WHERE id = ${watcherId} AND organization_id = ${orgId}
+			UPDATE behaviors SET agent_id = ${otherAgentId}
+			WHERE id = ${behaviorId} AND organization_id = ${orgId}
 		`;
 
 		// Approving must NOT apply A's held mutation to B-owned behavior: the
@@ -529,11 +529,11 @@ describe("manage_behaviors — builder gate e2e", () => {
 		expect(approveRes.message).not.toMatch(/applied/i);
 
 		// The held edit was NOT applied.
-		const watcherRows = await sql`
-			SELECT schedule FROM watchers
-			WHERE id = ${watcherId} AND organization_id = ${orgId}
+		const behaviorRows = await sql`
+			SELECT schedule FROM behaviors
+			WHERE id = ${behaviorId} AND organization_id = ${orgId}
 		`;
-		expect(watcherRows[0]?.schedule).not.toBe("0 9 * * *");
+		expect(behaviorRows[0]?.schedule).not.toBe("0 9 * * *");
 
 		// Run marked failed; card superseded to failed.
 		const runRows = await sql`

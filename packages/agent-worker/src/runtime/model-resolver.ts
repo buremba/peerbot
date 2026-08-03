@@ -245,7 +245,7 @@ export function resolveModelRef(
   }
 
   // A per-behavior model override can deliberately select another installed
-  // provider (for example, a watcher using z-ai while its base agent uses
+  // provider (for example, a behavior using z-ai while its base agent uses
   // Claude). Prefer that explicit provider only when the prefix names a real
   // installed provider, and route its Lobu ID to the upstream runtime slug
   // (for example, claude → anthropic). This preserves model namespaces such as

@@ -1,6 +1,6 @@
 /**
  * Entity-mutation gate — a pluggable interceptor pipeline that sits in front of
- * every user-facing entity write (create/update/delete + watcher promotion).
+ * every user-facing entity write (create/update/delete + behavior promotion).
  *
  * Core mutation code (manage_entity, entity-management.updateEntity,
  * promote-keyed-entities, complete-window) is POLICY-BLIND: it builds one
@@ -48,7 +48,7 @@ import {
 	buildFieldChangeDeferral,
 } from "./approval-interceptor";
 
-export type MutationPrincipalKind = "user" | "agent" | "watcher";
+export type MutationPrincipalKind = "user" | "agent" | "behavior";
 
 /** Attribution for a deferred (queued-for-approval) mutation. */
 export type MutationAttribution = ApprovalAttribution;
@@ -61,36 +61,36 @@ interface EntityMutationBase {
 	principalKind: MutationPrincipalKind;
 	/** Caller's DbClient or open transaction — interceptors query policy on it. */
 	sql: DbClient;
-	/** Attribution + watcher id used by an interceptor to label a deferral. */
+	/** Attribution + behavior id used by an interceptor to label a deferral. */
 	attribution: MutationAttribution;
-	watcherId?: number | null;
+	behaviorId?: number | null;
 	/**
 	 * Stable identity of the acting non-human principal, for per-principal policy
-	 * matching (a policy row may target one agent or watcher). Agent → agent id;
-	 * watcher → `watcher:<id>`; system/automation token (no agent id) → null.
+	 * matching (a policy row may target one agent or behavior). Agent → agent id;
+	 * behavior → `behavior:<id>`; system/automation token (no agent id) → null.
 	 * Null means "any principal of this kind". Plumbed here now; consumed by the
 	 * per-principal resolver in a later commit.
 	 */
 	principalId?: string | null;
 	/**
-	 * The OWNING AGENT of a watcher, when the acting principal is a watcher. The
-	 * write is then governed by BOTH the watcher's own rows AND its agent's,
-	 * folded max-restrictive — so an agent's envelope binds its watcher, while a
-	 * pre-existing watcher-specific restriction can only tighten (the agent
-	 * envelope never loosens it away). Null when not a watcher, or a watcher with
-	 * no agent. `watchers.agent_id` is the sole principal-ownership edge, so this
+	 * The OWNING AGENT of a behavior, when the acting principal is a behavior. The
+	 * write is then governed by BOTH the behavior's own rows AND its agent's,
+	 * folded max-restrictive — so an agent's envelope binds its behavior, while a
+	 * pre-existing behavior-specific restriction can only tighten (the agent
+	 * envelope never loosens it away). Null when not a behavior, or a behavior with
+	 * no agent. `behaviors.agent_id` is the sole principal-ownership edge, so this
 	 * is the only ancestor a write ever folds.
 	 */
 	ownerAgentId?: string | null;
 	/**
-	 * False iff the acting principal is a watcher whose owning agent could not be
+	 * False iff the acting principal is a behavior whose owning agent could not be
 	 * resolved (its row is gone). Threaded to the gate so it FAILS CLOSED (deny)
-	 * rather than run the write as an unowned watcher against the looser org default.
-	 * Defaults true (agent/user writes, and watchers whose owner resolved).
+	 * rather than run the write as an unowned behavior against the looser org default.
+	 * Defaults true (agent/user writes, and behaviors whose owner resolved).
 	 */
 	ownerResolved?: boolean;
 	/**
-	 * The watcher-run window that produced this mutation, if any. Threaded so a
+	 * The behavior-run window that produced this mutation, if any. Threaded so a
 	 * deferred approval lands on the `runs.window_id` COLUMN — that's what groups a
 	 * run's N proposals into ONE batch approval card, and (with the window in the
 	 * dedup key) keeps identical proposals from different windows distinct.
@@ -200,7 +200,7 @@ export function deferEntityFieldChange(args: {
 	fields: Record<string, unknown>;
 	current: Record<string, unknown>;
 	attribution: MutationAttribution;
-	watcherId?: number | null;
+	behaviorId?: number | null;
 	/** Groups this proposal's run into a per-window batch approval card. */
 	windowId?: number | null;
 }): DeferredMutation {
@@ -212,7 +212,7 @@ export function deferEntityCreate(args: {
 	entityData: EntityData;
 	proposal: Record<string, unknown>;
 	attribution: MutationAttribution;
-	watcherId?: number | null;
+	behaviorId?: number | null;
 	/** Groups this proposal's run into a per-window batch approval card. */
 	windowId?: number | null;
 }): DeferredMutation {

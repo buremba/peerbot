@@ -69,8 +69,8 @@ export function resolveBehaviorVisibilityUserId(
     ? parseBehaviorRunConversationId(ctx.sourceContext.conversationId)
     : null;
   const verifiedBehaviorId =
-    ctx.actingWatcherId != null
-      ? Number(ctx.actingWatcherId)
+    ctx.actingBehaviorId != null
+      ? Number(ctx.actingBehaviorId)
       : (fromConversation?.behaviorId ?? null);
 
   if (
@@ -164,14 +164,14 @@ async function getContentImpl(
     await requireReadAccess(pgSql, args.entity_id, ctx);
   }
 
-  // Agent/watcher: entity-type read policy (same envelope as manage_entity /
+  // Agent/behavior: entity-type read policy (same envelope as manage_entity /
   // search_memory). Humans skip — role ACL is separate.
-  if (ctx.agentId || ctx.actingWatcherId) {
+  if (ctx.agentId || ctx.actingBehaviorId) {
     const actor = await resolveActingPrincipal(getDb(), {
       organizationId: ctx.organizationId,
       userId: ctx.userId,
       agentId: ctx.agentId,
-      sessionWatcherId: ctx.actingWatcherId ?? null,
+      sessionBehaviorId: ctx.actingBehaviorId ?? null,
     });
     if (actor.kind !== 'user') {
       const typeSlugs = new Set<string>();
@@ -440,10 +440,10 @@ async function getContentImpl(
         ...(args.engagement_max !== undefined && { engagement_max: args.engagement_max }),
         ...(args.window_id !== undefined && { window_id: args.window_id }),
         ...(args.analyzed_by_behavior_id !== undefined && {
-          analyzed_by_watcher_id: args.analyzed_by_behavior_id,
+          analyzed_by_behavior_id: args.analyzed_by_behavior_id,
         }),
         ...(args.exclude_behavior_id !== undefined && {
-          exclude_watcher_id: args.exclude_behavior_id,
+          exclude_behavior_id: args.exclude_behavior_id,
         }),
         ...(classificationFilters?.length && { classification_filters: classificationFilters }),
         ...(args.classification_source && { classification_source: args.classification_source }),
@@ -477,8 +477,8 @@ async function getContentImpl(
         ...(args.client_ids?.length && { client_id: args.client_ids }),
         visibility_scope: visibilityScope,
         window_id: args.window_id,
-        analyzed_by_watcher_id: args.analyzed_by_behavior_id,
-        exclude_watcher_id: args.exclude_behavior_id,
+        analyzed_by_behavior_id: args.analyzed_by_behavior_id,
+        exclude_behavior_id: args.exclude_behavior_id,
         platform: effectivePlatform,
         since: args.since,
         until: args.until,
@@ -642,7 +642,7 @@ async function getContentImpl(
       );
     }
 
-    // Entity summary: when searching org-wide (query provided, no entity_id/watcher_id)
+    // Entity summary: when searching org-wide (query provided, no entity_id/behavior_id)
     if (args.query && !args.entity_id && !args.behavior_id && contentItems.length > 0) {
       const entityCountMap = new Map<number, number>();
       for (const item of contentItems) {

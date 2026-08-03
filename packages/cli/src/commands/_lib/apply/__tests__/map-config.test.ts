@@ -202,7 +202,7 @@ describe("mapProjectToDesiredState", () => {
       defineConfig({ agents: [agent], behaviors: [behavior] })
     );
 
-    expect(state.watchers[0]?.keyingConfig).toBeNull();
+    expect(state.behaviors[0]?.keyingConfig).toBeNull();
   });
 
   test("BYO chat connection carries credentialMode + resolves secret config", () => {
@@ -478,7 +478,7 @@ describe("mapProjectToDesiredState", () => {
       slug: "github-main",
       connector: "github",
     });
-    const watcher = defineBehavior({
+    const behavior = defineBehavior({
       agent: crm,
       slug: "health",
       skills: ["s"],
@@ -501,11 +501,11 @@ describe("mapProjectToDesiredState", () => {
     const state = mapProjectToDesiredState(
       defineConfig({
         agents: [crm],
-        behaviors: [watcher],
+        behaviors: [behavior],
         connections: [github],
       })
     );
-    const dw = state.watchers[0];
+    const dw = state.behaviors[0];
     expect(dw?.agent).toBe("crm");
     expect(dw?.sources).toEqual([
       { name: "accounts", query: "SELECT 1" },
@@ -532,15 +532,15 @@ describe("mapProjectToDesiredState", () => {
     });
 
     resolveBehaviorConnectionRefs(
-      state.watchers,
+      state.behaviors,
       new Map([["github-main", 91]]),
       true
     );
-    expect(state.watchers[0]?.triggers?.[0]).toMatchObject({
+    expect(state.behaviors[0]?.triggers?.[0]).toMatchObject({
       connector_key: "github",
       connection_id: 91,
     });
-    expect(state.watchers[0]?.triggers?.[0]).not.toHaveProperty(
+    expect(state.behaviors[0]?.triggers?.[0]).not.toHaveProperty(
       "connectionSlug"
     );
   });
@@ -615,9 +615,9 @@ describe("mapProjectToDesiredState", () => {
     ).toThrow(/either connection or connection_id/i);
   });
 
-  test("maps watcher reactionsGuidance + agentKind", () => {
+  test("maps behavior reactionsGuidance + agentKind", () => {
     const crm = defineAgent({ id: "crm" });
-    const watcher = defineBehavior({
+    const behavior = defineBehavior({
       agent: crm,
       slug: "w",
       skills: ["s"],
@@ -625,15 +625,15 @@ describe("mapProjectToDesiredState", () => {
       agentKind: "notifier",
     });
     const dw = mapProjectToDesiredState(
-      defineConfig({ agents: [crm], behaviors: [watcher] })
-    ).watchers[0];
+      defineConfig({ agents: [crm], behaviors: [behavior] })
+    ).behaviors[0];
     expect(dw?.reactionsGuidance).toBe("Notify the account owner.");
     expect(dw?.agentKind).toBe("notifier");
   });
 
   test("normalizes keyingConfig camelCase → snake_case for the server", () => {
     const crm = defineAgent({ id: "crm" });
-    const watcher = defineBehavior({
+    const behavior = defineBehavior({
       agent: crm,
       slug: "pricing",
       skills: ["s"],
@@ -645,10 +645,10 @@ describe("mapProjectToDesiredState", () => {
       },
     });
     const dw = mapProjectToDesiredState(
-      defineConfig({ agents: [crm], behaviors: [watcher] })
-    ).watchers[0];
-    // Server reads snake_case (watcher-extraction-schema.ts / promote-keyed-entities.ts);
-    // camelCase would silently land the watcher as untyped.
+      defineConfig({ agents: [crm], behaviors: [behavior] })
+    ).behaviors[0];
+    // Server reads snake_case (behavior-extraction-schema.ts / promote-keyed-entities.ts);
+    // camelCase would silently land the behavior as untyped.
     expect(dw?.keyingConfig).toEqual({
       entity_type: "price",
       entity_path: "prices",
@@ -657,15 +657,15 @@ describe("mapProjectToDesiredState", () => {
     });
   });
 
-  test("throws when a watcher names an unknown agent", () => {
-    const watcher = defineBehavior({
+  test("throws when a behavior names an unknown agent", () => {
+    const behavior = defineBehavior({
       agent: "ghost",
       slug: "x",
       skills: ["s"],
     });
     expect(() =>
       mapProjectToDesiredState(
-        defineConfig({ agents: [], behaviors: [watcher] })
+        defineConfig({ agents: [], behaviors: [behavior] })
       )
     ).toThrow(/ghost/);
   });
@@ -788,7 +788,7 @@ describe("mapProjectToDesiredState", () => {
 
   test("rejects an invalid cron schedule", () => {
     const crm = defineAgent({ id: "crm" });
-    const watcher = defineBehavior({
+    const behavior = defineBehavior({
       agent: crm,
       slug: "w",
       skills: ["s"],
@@ -796,14 +796,14 @@ describe("mapProjectToDesiredState", () => {
     });
     expect(() =>
       mapProjectToDesiredState(
-        defineConfig({ agents: [crm], behaviors: [watcher] })
+        defineConfig({ agents: [crm], behaviors: [behavior] })
       )
     ).toThrow(/invalid schedule/);
   });
 
   test("rejects a sub-minute cron schedule (parity with TOML/server)", () => {
     const crm = defineAgent({ id: "crm" });
-    const watcher = defineBehavior({
+    const behavior = defineBehavior({
       agent: crm,
       slug: "w",
       skills: ["s"],
@@ -811,7 +811,7 @@ describe("mapProjectToDesiredState", () => {
     });
     expect(() =>
       mapProjectToDesiredState(
-        defineConfig({ agents: [crm], behaviors: [watcher] })
+        defineConfig({ agents: [crm], behaviors: [behavior] })
       )
     ).toThrow(/too frequent/);
   });
@@ -917,9 +917,9 @@ describe("mapProjectToDesiredState", () => {
       defineConfig({ agents: [crm], behaviors: [listen, packs] })
     );
     // The mapper cannot read skill files — the loader resolves their snapshots.
-    expect(state.watchers[0]?.prompt).toBe("");
-    expect(state.watchers[0]?.skills).toBeUndefined();
-    expect(state.watchers[1]?.skills).toEqual(["triage", "sql-style"]);
+    expect(state.behaviors[0]?.prompt).toBe("");
+    expect(state.behaviors[0]?.skills).toBeUndefined();
+    expect(state.behaviors[1]?.skills).toEqual(["triage", "sql-style"]);
   });
 
   test("rejects duplicate and over-cap Behavior skills", () => {
@@ -1051,7 +1051,7 @@ describe("mapProjectToDesiredState", () => {
       env,
       "agents"
     );
-    expect(state.watchers).toEqual([]);
+    expect(state.behaviors).toEqual([]);
   });
 
   test("--only memory validates Behavior handles without reconciling connections", () => {
@@ -1084,7 +1084,7 @@ describe("mapProjectToDesiredState", () => {
       env,
       "memory"
     );
-    expect(state.watchers[0]?.triggers?.[0]).toMatchObject({
+    expect(state.behaviors[0]?.triggers?.[0]).toMatchObject({
       connectionSlug: "github-main",
     });
     expect(state.connectors.connections).toEqual([]);

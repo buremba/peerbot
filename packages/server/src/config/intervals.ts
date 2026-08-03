@@ -47,26 +47,26 @@ export const intervals = {
     return parseEnvInt('RUNS_REAPER_TICK_MS', 30_000);
   },
 
-  /** Coarse TTL for watcher runs that never heartbeat — generous (2h) so a
+  /** Coarse TTL for behavior runs that never heartbeat — generous (2h) so a
    *  long but live non-heartbeating turn isn't killed prematurely. */
-  get watcherRunStaleInterval(): string {
-    return parseEnvInterval('WATCHER_RUN_STALE_INTERVAL', '2 hours');
+  get behaviorRunStaleInterval(): string {
+    return parseEnvInterval('BEHAVIOR_RUN_STALE_INTERVAL', '2 hours');
   },
 
   /** ~4 missed 30s device heartbeats. A heartbeating executor that goes
    *  silent this long is crashed/abandoned; a live one (beats every ~30s)
    *  never lapses. */
-  get watcherRunHeartbeatStaleInterval(): string {
-    return parseEnvInterval('WATCHER_RUN_HEARTBEAT_STALE_INTERVAL', '3 minutes');
+  get behaviorRunHeartbeatStaleInterval(): string {
+    return parseEnvInterval('BEHAVIOR_RUN_HEARTBEAT_STALE_INTERVAL', '3 minutes');
   },
 
-  /** Stale-claim threshold for watcher orphan recovery: a run stuck in
+  /** Stale-claim threshold for behavior orphan recovery: a run stuck in
    *  `claimed` this long without progressing to `running` is taken to be from
    *  a crashed dispatcher (real session-create + fetch + POST takes seconds,
    *  not minutes). Any tighter and we'd race a legitimate slow dispatch on
    *  the same row. */
-  get watcherOrphanedClaimThreshold(): string {
-    return parseEnvInterval('WATCHER_ORPHANED_CLAIM_THRESHOLD', '5 minutes');
+  get behaviorOrphanedClaimThreshold(): string {
+    return parseEnvInterval('BEHAVIOR_ORPHANED_CLAIM_THRESHOLD', '5 minutes');
   },
 
   /** Poll cadence for the embedded in-process connector-worker daemon. */

@@ -19,10 +19,10 @@ This RFC scopes that as **three small, independently-reviewable PRs**, then a ro
 
 ## 0. The requirement
 Admins governing an org must be able to say, for any governed write — adding an
-entity, changing a schema, adding an entity type, creating an agent/watcher/schedule,
+entity, changing a schema, adding an entity type, creating an agent/behavior/schedule,
 installing a connector, running a connector action — whether it **commits**, **needs
 human approval**, or is **denied**; and to scope that decision by resource type and by
-**which principal** (a specific agent or watcher) is acting. Humans are governed by
+**which principal** (a specific agent or behavior) is acting. Humans are governed by
 role (a code manifest), not by this policy surface.
 
 ## 1. Locked decisions
@@ -34,9 +34,9 @@ role (a code manifest), not by this policy surface.
    The role floor is a **safety floor**: if role says deny, policy cannot override.
 3. **Users are never gated by policy** — the `principalKind==="user" → allow`
    invariant (`entity-policy.ts:243,270`) stays. No user-principal policy rows.
-4. **Agents & watchers ARE principals** — policy may target `principal_kind`
-   (agent|watcher) + optional `principal_id`. NULL = any. This is the newly-requested
-   capability: "watcher #6 may auto-create person entities; every other agent needs
+4. **Agents & behaviors ARE principals** — policy may target `principal_kind`
+   (agent|behavior) + optional `principal_id`. NULL = any. This is the newly-requested
+   capability: "behavior #6 may auto-create person entities; every other agent needs
    approval."
 5. **Per-principal policy is an effect SELECTOR, not a grant.** Enforcement order:
    `hard invariants > org/resource ownership > role/MCP/capability floor > write-policy
@@ -101,7 +101,7 @@ threading (3 call sites), the principal axis, and the UI.
   approvals silently fall back to generic admin fan-out. (Fable.)
 - `manage_agents` currently queues approval **unconditionally for everyone incl. human
   admins** (`:497-507`). **RESOLVED: human admin agent edits apply immediately** (drop
-  the human-gating); agent/watcher-authored changes follow policy. Note as an
+  the human-gating); agent/behavior-authored changes follow policy. Note as an
   intentional behavior change in the PR. (Fable-flagged.)
 - Adapter extraction is real work: the agent adapter's `isStale` must be BUILT.
 - Code-API naming: separate `target_scope_*` from `principal_*` even if physical
@@ -110,15 +110,15 @@ threading (3 call sites), the principal axis, and the UI.
 ## 4. Schema (columns added to entity_approval_policies; renamed to write_approval_policies in the LATER contract PR — see §6e.1)
 ```
 id, organization_id,
-resource_class     text NOT NULL,   -- entity | entity_type | agent | watcher | schedule
+resource_class     text NOT NULL,   -- entity | entity_type | agent | behavior | schedule
                                     --   | feed | classifier | connector | connector_action
 target_scope_kind  text NOT NULL,   -- v1: global | entity_type  (per-class equivalents)
                                     --   v1.1+: field_path | entity_id | entity_predicate
                                     --   later: connection_id | connector_slug | connection_op
 target_scope_value text NULL,
 predicate          jsonb NULL,       -- RESERVED in v1 (unused); populated in v1.1
-principal_kind     text NULL,        -- agent | watcher ; NULL = any
-principal_id       text NULL,        -- specific agent/watcher id ; NULL = any of kind
+principal_kind     text NULL,        -- agent | behavior ; NULL = any
+principal_id       text NULL,        -- specific agent/behavior id ; NULL = any of kind
 create_mode/update_mode/delete_mode text
    CHECK (... IN ('auto','approval','deny'))          -- 'disabled' only for connector_action
 approval_connection_id/channel_id/team_id/channel_name,
@@ -137,7 +137,7 @@ policy, unconditionally.
 half-state) — INCLUDING batched approvals (§6b). Reviewability comes from clean stacked
 commits read in order, NOT from separate PRs:
 1. `M1a expand (additive columns, deploy-safe) + principal identity plumbing` — agent AND
-   watcher ids threaded; NO rename, NO column drop (§6e.1). No behavior change.
+   behavior ids threaded; NO rename, NO column drop (§6e.1). No behavior change.
 2. `M1b cutover + per-principal resolver + additive API + tests` — new code reads new
    columns; backfill verbatim-move; scope-keyed API gains resource_class/principal_* additively
    (§6e.2); resolver understands deny before CHECK admits it (§6f R5).
@@ -157,13 +157,13 @@ The sub-sections below detail each commit's content.
 M1a (deploy-safe, additive): ADD `resource_class DEFAULT 'entity'`, `target_scope_*`,
 `principal_*`, `predicate jsonb NULL` columns to the EXISTING `entity_approval_policies`
 table; widen mode CHECK. **No rename, no column drop** — old pods keep working (§6e.1).
-Thread principal identity (agent → agentId, watcher → watcherId, system → NULL; §6d.1)
+Thread principal identity (agent → agentId, behavior → behaviorId, system → NULL; §6d.1)
 through the gate request + the 3 call sites (`manage_entity`, `promote-keyed-entities`,
 `entity-management`). Behavior identical (defaults preserve today's decisions).
 
 **Commit 2 — per-principal policy for entities (the new capability; backend + tests).**
 Resolver consumes `principal_kind`/`principal_id`; add the second specificity axis +
-restrictive-wins. Prove red→fix→green: watcher #N auto-allowed while other agents gated;
+restrictive-wins. Prove red→fix→green: behavior #N auto-allowed while other agents gated;
 tie-break; users never gated; field-ownership approval still fires (regression guard).
 
 **Commit 3 — batched approvals + conversational revision (§6b).**
@@ -191,7 +191,7 @@ Carries the one intentional behavior change — kept as its own commit for a cle
   scope via field-path predicates (or reinstate `field_path` scope if per-field union is
   cleaner). **Note: the entity-filter DSL does NOT exist today (Fable, verified) — this
   is net-new, which is why it's deferred.**
-- **v1.2 — more classes**: watcher · schedule · feed · classifier.
+- **v1.2 — more classes**: behavior · schedule · feed · classifier.
 - **LAST — connectors + connector-action consolidation**: add the `connector_action`
   class; `resolveActionMode` stops reading `connection.config.action_modes`, asks the
   same policy resolver (the hooks become the single decision authority); migrate the
@@ -210,12 +210,12 @@ Carries the one intentional behavior change — kept as its own commit for a cle
 
 ## 6b. Batched approvals + conversational revision (operational follow-on)
 **Problem:** today it's one `runs` row + one Slack card per proposal (dedupe is
-per-*entity*, `entity-field-approval.ts:303`, not batch grouping). A watcher window
-creating 100 entities ⇒ 100 cards. Unusable at watcher scale.
+per-*entity*, `entity-field-approval.ts:303`, not batch grouping). A behavior window
+creating 100 entities ⇒ 100 cards. Unusable at behavior scale.
 
 **Grouping key must be ADDED (correction, §6e.3):** entity-change proposal runs carry NO
 window_id today (`manage_operations.ts:695` is a different path — connector-action reactions).
-The `runs.window_id`/`runs.watcher_id` COLUMNS exist (baseline.sql:1868-1890) but proposals
+The `runs.window_id`/`runs.behavior_id` COLUMNS exist (baseline.sql:1868-1890) but proposals
 don't set them. Thread windowId through the gate → deferral builders → propose INSERT, into
 the `runs.window_id` COLUMN (not `action_input` — preserves the md5 dedupe identity). Group on
 that column.
@@ -232,7 +232,7 @@ that column.
   through the agent. The human does judgment, never data entry. This CUTS the per-item
   inline-editor UI entirely.
 - **Revision loop = reject-with-reason re-dispatches the agent (DECIDED).** Rejecting a
-  batch or an item with a reason re-runs the watcher/agent with that reason as context;
+  batch or an item with a reason re-runs the behavior/agent with that reason as context;
   it produces a revised batch that returns for approval. **This closes the feedback-loop
   gap** identified in the original investigation (reject reason is captured on
   `runs.error_message` today but dead-ends).
@@ -241,14 +241,14 @@ that column.
   proposal, not the live entity. Small; reuses the existing proposal storage.
 
 **Sequencing:** NOT v1. Highest-value operational follow-on — build right after the core
-lands, BEFORE pushing watchers-at-scale on customers (100 cards makes the feature
-unusable for exactly watchers' main use case).
+lands, BEFORE pushing behaviors-at-scale on customers (100 cards makes the feature
+unusable for exactly behaviors' main use case).
 
 ## 6e. Blocking gaps from Fable review (deploy-safety — MUST close)
 1. **Migration is NOT deploy-window safe — needs two-phase (CRITICAL).** Migrations run in
    a Helm **pre-upgrade hook BEFORE new pods roll out** (`docker/app/start.sh:48-53`; a past
    incident is documented there). A bare `RENAME` → old pods hit the new schema → every
-   agent/watcher entity write throws (`loadCandidatePolicies` errors; only
+   agent/behavior entity write throws (`loadCandidatePolicies` errors; only
    `principalKind==="user"` short-circuits before the query) + settings API 500s for the
    whole rollout. **DECIDED: additive-expand / cutover / contract, three migrations:**
    - **M1a (expand, deploy-safe):** CREATE the NEW columns on the EXISTING
@@ -274,12 +274,12 @@ unusable for exactly watchers' main use case).
    per-principal commit (Commit 2), NOT the UI commit. Kills the "id-based CRUD breaks the
    shipped UI" contradiction — we do NOT move to id-based endpoints, only id-based storage.
 3. **§6b window_id claim was WRONG — corrected.** `manage_operations.ts:695` is
-   `trackWatcherReaction` for connector-action runs (writes `watcher_reactions.window_id`), a
+   `trackBehaviorReaction` for connector-action runs (writes `behavior_reactions.window_id`), a
    DIFFERENT path. Entity-change proposal runs carry NO window_id: the deferral builders
    don't accept it (`entity-mutation-gate.ts:165-183`), `promote-keyed-entities.ts` has
    `windowId` in scope but doesn't pass it, and `proposeEntityChange` sets neither
-   `runs.window_id` nor `runs.watcher_id` columns (which EXIST, baseline.sql:1868-1890 —
-   watcher_id currently lives only in `action_input`). **DECIDED: thread windowId through the
+   `runs.window_id` nor `runs.behavior_id` columns (which EXIST, baseline.sql:1868-1890 —
+   behavior_id currently lives only in `action_input`). **DECIDED: thread windowId through the
    gate request → deferral builders → propose INSERT, writing the `runs.window_id` COLUMN
    (NOT into action_input — that would change the `md5(action_input)` dedupe identity across
    window retries). Grouping reads the column.** This is §6c/Commit 4 scope.
@@ -306,35 +306,35 @@ unusable for exactly watchers' main use case).
   widen CHECK in the same commit as the resolver change.** Don't let M1a admit `deny` while
   the resolver still normalizes it.
 
-## 6c. Watcher-run change-set is FIRST-CLASS — diff ≠ approval (DECIDED)
-**Correction to §6b framing.** The diff of "what a watcher run changed" is a property of
+## 6c. Behavior-run change-set is FIRST-CLASS — diff ≠ approval (DECIDED)
+**Correction to §6b framing.** The diff of "what a behavior run changed" is a property of
 the RUN, not of the approval flow. A run that AUTO-applies 100 changes must be just as
 inspectable as one that needed approval. Do NOT encapsulate the change-set inside
 `entity-field-approval.ts`.
 
 **Two layers:**
-1. **Run change-set (always visible, any policy outcome).** Every watcher/agent run
-   records its create/update/delete change-set, grouped by `watcher_run_id`/`window_id`,
+1. **Run change-set (always visible, any policy outcome).** Every behavior/agent run
+   records its create/update/delete change-set, grouped by `behavior_run_id`/`window_id`,
    viewable as a diff on the RUN itself — whether auto-applied, approval-gated, or denied.
-   This is observability ("what did watcher #6 do at 3pm?"), independent of gating.
+   This is observability ("what did behavior #6 do at 3pm?"), independent of gating.
 2. **Approval is an OVERLAY.** When policy = approval, the same change-set gets
    approve/reject + reviewer routing. When policy = auto, the change-set still exists and
    is still viewable; it just applied without a gate.
 
-**Already partially exists** (grounds this, not net-new): `watcher_run_id` threaded through
+**Already partially exists** (grounds this, not net-new): `behavior_run_id` threaded through
 `complete_window` (`manage_behaviors/complete-window.ts`);
-`promoted-entities-recap.tsx` + `watcher-summary-view.tsx` in owletto render a run recap.
+`promoted-entities-recap.tsx` + `behavior-summary-view.tsx` in owletto render a run recap.
 The work is to make the change-set the FIRST-CLASS primitive both the recap AND the batch
 approval read from — one source, two views (mirrors "one writer many mirrors").
 
 **This also fixes Codex gap #6**: the batch grouping contract lives on the RUN change-set
-(`watcher_run_id`), not invented inside the approval flow.
+(`behavior_run_id`), not invented inside the approval flow.
 
 ## 6d. Blocking gaps from final review (Codex — MUST close before coding)
 1. **Principal identity mapping — SPECIFY exactly.** Not just `agentId`. Define
-   principal resolution for every context: agent run → `(agent, agentId)`; watcher run →
-   `(watcher, watcherId)`; system/automation token (no agent id) → `(agent, NULL)`; user →
-   never a policy principal. Today `watcherId` is *attribution*, not policy identity —
+   principal resolution for every context: agent run → `(agent, agentId)`; behavior run →
+   `(behavior, behaviorId)`; system/automation token (no agent id) → `(agent, NULL)`; user →
+   never a policy principal. Today `behaviorId` is *attribution*, not policy identity —
    promote it. This is Commit 1 scope, not deferrable.
 2. **Effect model is resource-class-aware, not one flat CHECK.** `disabled` applies ONLY
    to connector_action; `deny` for entities means the entity code must handle a deny
@@ -375,8 +375,8 @@ A `gpt-5.6-sol` review of the full branch found 10 findings. Resolved on-branch:
   (16/8) outrank target scope (≤7), inverting the RFC's target-first order. Replaced
   with a tuple comparator: scope-specificity → principal-specificity → restrictive-wins
   (`deny>disabled>approval>auto`) → id. Inverse regression added.
-- **#2 watcher_source principal spoof (high, FIXED):** caller-supplied `watcher_source`
-  could reclassify an agent as `watcher:<id>` to dodge its agent policy.
+- **#2 behavior_source principal spoof (high, FIXED):** caller-supplied `behavior_source`
+  could reclassify an agent as `behavior:<id>` to dodge its agent policy.
   `classifyMutationPrincipal`/`mutationPrincipalId` now prefer trusted `ctx.agentId`.
 - **Display bug (FIXED in owletto):** `deny`/`disabled` rendered as "Auto"; now
   "Denied"/"Disabled".
@@ -386,7 +386,7 @@ Deferred (tracked follow-ups, NOT in v1):
 - **#5** re-evaluate connector_action `deny`/`disabled` at execute time, not only queue.
 - **#7** `normalizeMode` unknown → `deny` (fail-closed), not `auto`.
 - **#8** legacy `manage_agents` pending runs without `proposal.base` must fail closed.
-- **#9** thread `window_id` through `manage_entity` watcher writes (not only promotion).
+- **#9** thread `window_id` through `manage_entity` behavior writes (not only promotion).
 - **#4** add `window_id` to the entity-change dedup key (cross-window collapse).
 - **#6** bare rename outage — ACCEPTED tradeoff (user chose clean-cut).
 

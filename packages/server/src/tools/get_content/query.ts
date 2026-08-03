@@ -400,21 +400,21 @@ export async function fetchIncludeSuperseded(opts: {
   }
   if (args.window_id !== undefined) {
     conditions.push(
-      `EXISTS (SELECT 1 FROM watcher_window_events iwf WHERE iwf.event_id = e.id AND iwf.window_id = $${paramIndex})`
+      `EXISTS (SELECT 1 FROM behavior_window_events iwf WHERE iwf.event_id = e.id AND iwf.window_id = $${paramIndex})`
     );
     queryParams.push(args.window_id);
     paramIndex += 1;
   }
   if (args.analyzed_by_behavior_id !== undefined) {
     conditions.push(
-      `EXISTS (SELECT 1 FROM watcher_window_events iwf WHERE iwf.event_id = e.id AND iwf.watcher_id = $${paramIndex})`
+      `EXISTS (SELECT 1 FROM behavior_window_events iwf WHERE iwf.event_id = e.id AND iwf.behavior_id = $${paramIndex})`
     );
     queryParams.push(args.analyzed_by_behavior_id);
     paramIndex += 1;
   }
   if (args.exclude_behavior_id !== undefined) {
     conditions.push(
-      `NOT EXISTS (SELECT 1 FROM watcher_window_events exc_iwe WHERE exc_iwe.event_id = e.id AND exc_iwe.watcher_id = $${paramIndex})`
+      `NOT EXISTS (SELECT 1 FROM behavior_window_events exc_iwe WHERE exc_iwe.event_id = e.id AND exc_iwe.behavior_id = $${paramIndex})`
     );
     queryParams.push(args.exclude_behavior_id);
     paramIndex += 1;
@@ -581,19 +581,19 @@ export async function fetchClassificationStats(opts: {
   }
   let windowJoinSql = '';
   if (args.window_id) {
-    windowJoinSql = `JOIN watcher_window_events iwf ON iwf.event_id = f.id AND iwf.window_id = $${paramIndex}`;
+    windowJoinSql = `JOIN behavior_window_events iwf ON iwf.event_id = f.id AND iwf.window_id = $${paramIndex}`;
     params.push(args.window_id);
     paramIndex++;
   }
   if (args.analyzed_by_behavior_id !== undefined) {
     conditions.push(
-      `EXISTS (SELECT 1 FROM watcher_window_events iwf WHERE iwf.event_id = f.id AND iwf.watcher_id = $${paramIndex++})`
+      `EXISTS (SELECT 1 FROM behavior_window_events iwf WHERE iwf.event_id = f.id AND iwf.behavior_id = $${paramIndex++})`
     );
     params.push(args.analyzed_by_behavior_id);
   }
   if (args.exclude_behavior_id !== undefined) {
     conditions.push(
-      `NOT EXISTS (SELECT 1 FROM watcher_window_events exc_iwe WHERE exc_iwe.event_id = f.id AND exc_iwe.watcher_id = $${paramIndex++})`
+      `NOT EXISTS (SELECT 1 FROM behavior_window_events exc_iwe WHERE exc_iwe.event_id = f.id AND exc_iwe.behavior_id = $${paramIndex++})`
     );
     params.push(args.exclude_behavior_id);
   }

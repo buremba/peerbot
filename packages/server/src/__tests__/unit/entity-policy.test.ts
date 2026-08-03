@@ -142,19 +142,19 @@ function stubSql(seeds: PolicyRowSeed[]): DbClient {
 }
 
 describe("classifyMutationPrincipal", () => {
-	test("a genuine watcher (no agentId) classifies as watcher", () => {
+	test("a genuine behavior (no agentId) classifies as behavior", () => {
 		expect(
-			classifyMutationPrincipal({ watcherSource: { watcher_id: 5 } }),
-		).toBe("watcher");
+			classifyMutationPrincipal({ behaviorSource: { behavior_id: 5 } }),
+		).toBe("behavior");
 	});
 
-	test("SECURITY: a trusted agentId beats a caller-supplied watcher_source", () => {
-		// An agent run cannot demote itself to a watcher (and escape its agent
-		// policy) by tagging the write with a watcher_source it controls.
+	test("SECURITY: a trusted agentId beats a caller-supplied behavior_source", () => {
+		// An agent run cannot demote itself to a behavior (and escape its agent
+		// policy) by tagging the write with a behavior_source it controls.
 		expect(
 			classifyMutationPrincipal({
 				agentId: "agent-A",
-				watcherSource: { watcher_id: 5 },
+				behaviorSource: { behavior_id: 5 },
 			}),
 		).toBe("agent");
 	});
@@ -175,16 +175,16 @@ describe("classifyMutationPrincipal", () => {
 });
 
 describe("mutationPrincipalId", () => {
-	test("a genuine watcher (no agentId) resolves to watcher:<id>", () => {
-		expect(mutationPrincipalId({ agentId: null, watcherId: 6 })).toBe(
-			"watcher:6",
+	test("a genuine behavior (no agentId) resolves to behavior:<id>", () => {
+		expect(mutationPrincipalId({ agentId: null, behaviorId: 6 })).toBe(
+			"behavior:6",
 		);
 	});
 
-	test("SECURITY: agentId wins over a caller-supplied watcherId — no spoofing", () => {
-		// An agent supplying watcher_source:{watcher_id:6} still resolves to its own
-		// agent id, so it is matched against ITS agent policy, not watcher:6's.
-		expect(mutationPrincipalId({ agentId: "agent-A", watcherId: 6 })).toBe(
+	test("SECURITY: agentId wins over a caller-supplied behaviorId — no spoofing", () => {
+		// An agent supplying behavior_source:{behavior_id:6} still resolves to its own
+		// agent id, so it is matched against ITS agent policy, not behavior:6's.
+		expect(mutationPrincipalId({ agentId: "agent-A", behaviorId: 6 })).toBe(
 			"agent-A",
 		);
 	});
@@ -225,7 +225,7 @@ describe("evaluateEntityMutation", () => {
 		expect(
 			await evaluateEntityMutation({
 				organizationId: ORG,
-				principalKind: "watcher",
+				principalKind: "behavior",
 				action: "delete",
 				entityTypeSlug: "task",
 				sql,
@@ -309,19 +309,19 @@ describe("evaluateEntityMutation", () => {
 
 	test("principal-kind row (any id) applies to every agent of that kind", async () => {
 		const sql = stubSql([
-			{ principal_kind: "watcher", delete_mode: "deny" },
+			{ principal_kind: "behavior", delete_mode: "deny" },
 		]);
 		expect(
 			await evaluateEntityMutation({
 				organizationId: ORG,
-				principalKind: "watcher",
-				principalId: "watcher:5",
+				principalKind: "behavior",
+				principalId: "behavior:5",
 				action: "delete",
 				entityTypeSlug: "task",
 				sql,
 			}),
 		).toBe("deny");
-		// An agent (different kind) is not matched by a watcher-kind row.
+		// An agent (different kind) is not matched by a behavior-kind row.
 		expect(
 			await evaluateEntityMutation({
 				organizationId: ORG,
@@ -528,14 +528,14 @@ describe("resolveWritePolicyDecision (connector_action)", () => {
 			await resolveWritePolicyDecision({
 				organizationId: ORG,
 				resourceClass: "connector_action",
-				principalKind: "watcher",
-				principalId: "watcher:9",
+				principalKind: "behavior",
+				principalId: "behavior:9",
 				action: "execute",
 				sql: stubSql([
 					{
 						resource_class: "connector_action",
-						principal_kind: "watcher",
-						principal_id: "watcher:9",
+						principal_kind: "behavior",
+						principal_id: "behavior:9",
 						create_mode: "deny",
 					},
 				]),
@@ -615,7 +615,7 @@ describe("evaluateEntityFieldUpdates", () => {
 	test("human-owned field requires approval even when policy is auto", async () => {
 		const decisions = await evaluateEntityFieldUpdates({
 			...baseArgs,
-			principalKind: "watcher",
+			principalKind: "behavior",
 			fields: { rationale: "human", status: "none" },
 			sql: stubSql([]),
 		});
@@ -683,22 +683,22 @@ describe("evaluateEntityFieldUpdates", () => {
 		expect(decisions.status).toBe("deny");
 	});
 
-	test("per-principal update policy gates only the pinned watcher", async () => {
+	test("per-principal update policy gates only the pinned behavior", async () => {
 		const sql = stubSql([
-			{ principal_kind: "watcher", principal_id: "watcher:6", update_mode: "approval" },
+			{ principal_kind: "behavior", principal_id: "behavior:6", update_mode: "approval" },
 		]);
 		const pinned = await evaluateEntityFieldUpdates({
 			...baseArgs,
-			principalKind: "watcher",
-			principalId: "watcher:6",
+			principalKind: "behavior",
+			principalId: "behavior:6",
 			fields: { status: "none" },
 			sql,
 		});
 		expect(pinned.status).toBe("require_approval");
 		const other = await evaluateEntityFieldUpdates({
 			...baseArgs,
-			principalKind: "watcher",
-			principalId: "watcher:7",
+			principalKind: "behavior",
+			principalId: "behavior:7",
 			fields: { status: "none" },
 			sql,
 		});

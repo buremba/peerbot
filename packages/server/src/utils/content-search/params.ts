@@ -74,7 +74,7 @@ export function buildStandardWhereSql(entityLinkSql: string): string {
           AND ($12::text[] IS NULL OR f.client_id = ANY($12::text[]))`;
 }
 
-export const WINDOW_JOIN_SQL = `LEFT JOIN watcher_window_events iwf
+export const WINDOW_JOIN_SQL = `LEFT JOIN behavior_window_events iwf
           ON iwf.event_id = f.id
           AND ($5::int IS NOT NULL)
           AND iwf.window_id = $5::int`;

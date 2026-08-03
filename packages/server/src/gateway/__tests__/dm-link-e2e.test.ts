@@ -138,7 +138,7 @@ describe("DM /lobu link <code> — real consume→bind chain", () => {
 			expect(binding[0]?.organization_id).toBe(organizationId);
 		} finally {
 			await sql`
-				DELETE FROM watchers
+				DELETE FROM behaviors
 				WHERE EXISTS (
 					SELECT 1
 					FROM jsonb_array_elements(COALESCE(triggers, '[]'::jsonb)) trigger

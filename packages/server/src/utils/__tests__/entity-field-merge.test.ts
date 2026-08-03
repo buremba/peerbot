@@ -40,28 +40,28 @@ describe("computeFieldMerge", () => {
 		expect(r.nextControls).toEqual({}); // no ownership claimed for an unchanged field
 	});
 
-	it("watcher writes a NON-owned field freely (no ownership mark)", () => {
+	it("behavior writes a NON-owned field freely (no ownership mark)", () => {
 		const r = computeFieldMerge({
 			metadata: { score: 10 },
 			controls: {},
 			fields: { score: 42 },
-			source: "watcher",
+			source: "behavior",
 			actorId: null,
 			note: null,
 			nowIso: NOW,
 		});
 		expect(r.applied).toEqual({ score: { old: 10, new: 42 } });
 		expect(r.nextMetadata.score).toBe(42);
-		expect(r.nextControls).toEqual({}); // watcher writes never claim ownership
+		expect(r.nextControls).toEqual({}); // behavior writes never claim ownership
 		expect(r.blocked).toEqual({});
 	});
 
-	it("watcher is BLOCKED from overwriting a field that policy requires approval for", () => {
+	it("behavior is BLOCKED from overwriting a field that policy requires approval for", () => {
 		const r = computeFieldMerge({
 			metadata: { score: 10 },
 			controls: {},
 			fields: { score: 42 },
-			source: "watcher",
+			source: "behavior",
 			actorId: null,
 			note: null,
 			nowIso: NOW,
@@ -73,12 +73,12 @@ describe("computeFieldMerge", () => {
 		expect(r.blocked).toEqual({ score: { current: 10, proposed: 42 } });
 	});
 
-	it("watcher is BLOCKED from overwriting a human-owned field", () => {
+	it("behavior is BLOCKED from overwriting a human-owned field", () => {
 		const r = computeFieldMerge({
 			metadata: { status: "done" },
 			controls: { status: { note: "CI red", set_by: "usr_1", set_at: NOW } },
-			fields: { status: "todo" }, // watcher wants to revert it
-			source: "watcher",
+			fields: { status: "todo" }, // behavior wants to revert it
+			source: "behavior",
 			actorId: null,
 			note: null,
 			nowIso: NOW,
@@ -91,12 +91,12 @@ describe("computeFieldMerge", () => {
 		});
 	});
 
-	it("watcher proposing the SAME value as the owned field is not a conflict", () => {
+	it("behavior proposing the SAME value as the owned field is not a conflict", () => {
 		const r = computeFieldMerge({
 			metadata: { status: "done" },
 			controls: { status: { set_by: "usr_1", set_at: NOW } },
 			fields: { status: "done" },
-			source: "watcher",
+			source: "behavior",
 			actorId: null,
 			note: null,
 			nowIso: NOW,
@@ -106,12 +106,12 @@ describe("computeFieldMerge", () => {
 		expect(r.blocked).toEqual({});
 	});
 
-	it("mixed batch: watcher applies un-owned, blocks owned, in one pass", () => {
+	it("mixed batch: behavior applies un-owned, blocks owned, in one pass", () => {
 		const r = computeFieldMerge({
 			metadata: { status: "done", score: 10 },
 			controls: { status: { set_by: "usr_1", set_at: NOW } },
 			fields: { status: "todo", score: 99 },
-			source: "watcher",
+			source: "behavior",
 			actorId: null,
 			note: null,
 			nowIso: NOW,
@@ -217,12 +217,12 @@ describe("computeFieldMerge", () => {
 		expect(r.nextControls).toEqual({});
 	});
 
-	it("approve: a watcher cannot affirm (only humans claim ownership)", () => {
+	it("approve: a behavior cannot affirm (only humans claim ownership)", () => {
 		const r = computeFieldMerge({
 			metadata: { severity: "high" },
 			controls: {},
 			fields: {},
-			source: "watcher",
+			source: "behavior",
 			actorId: null,
 			note: null,
 			nowIso: NOW,

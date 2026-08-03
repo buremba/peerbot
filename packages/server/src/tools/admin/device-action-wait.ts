@@ -30,7 +30,7 @@ export async function waitForDeviceActionRun(
   runId: number,
   organizationId: string,
   /**
-   * Abort the wait early (e.g. a watcher reaction hit its wall-clock budget).
+   * Abort the wait early (e.g. a behavior reaction hit its wall-clock budget).
    * On abort we stop polling and finalize the run as `timeout` so the orphaned
    * poll loop and any in-flight device work don't leak past the caller.
    */

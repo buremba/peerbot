@@ -32,11 +32,11 @@ export const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 	// stay admin-only. `get_auth_profile` is public-read because it returns the
 	// same sanitized metadata as list; `test_auth_profile` stays owner-admin.
 	manage_auth_profiles: new Set(["create_auth_profile", "update_auth_profile"]),
-	// `complete_window` is how watcher AGENTS report results — server-side
+	// `complete_window` is how behavior AGENTS report results — server-side
 	// agent workers and device CLI runs (the Owletto Mac dispatcher wires the
 	// gateway MCP into the spawned CLI; device tokens carry mcp:write, not
 	// admin). The handler still enforces org/entity write access via
-	// requireWatcherAccess; watcher ADMINISTRATION (create/update/delete/…)
+	// requireBehaviorAccess; behavior ADMINISTRATION (create/update/delete/…)
 	// stays admin-tier below.
 	manage_behaviors: new Set(["complete_window"]),
 	// `approve`/`reject` (and their `*_batch` forms) are write-tier so the

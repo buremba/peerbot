@@ -2,9 +2,9 @@
  * Server-side verification of a `behavior_run` session intent.
  *
  * `POST /api/v1/agents` accepts `intent: {kind:"behavior_run", runId, behaviorId}`
- * from the request body and turns it into `userId = watcher_<behaviorId>` /
+ * from the request body and turns it into `userId = behavior_<behaviorId>` /
  * `thread = run_<runId>`, hence a conversationId ending
- * `_watcher_<behaviorId>_run_<runId>`. Downstream consumers — the MCP
+ * `_behavior_<behaviorId>_run_<runId>`. Downstream consumers — the MCP
  * tool-approval gate among them — read a Behavior's identity out of that
  * suffix.
  *
@@ -20,13 +20,13 @@ import { type DbClient, getDb } from "../../db/client.js";
 import logger from "../../utils/logger.js";
 
 /**
- * `claimPendingWatcherRun`'s `claimedBy` for the server-side Behavior
+ * `claimPendingBehaviorRun`'s `claimedBy` for the server-side Behavior
  * dispatcher. Device-pinned Behaviors are claimed by their worker instead and
  * do not take this route.
  */
 const SERVER_DISPATCHER = "lobu-dispatcher";
 const INTERNAL_SERVICE_CLIENT = "lobu-internal";
-const BEHAVIOR_CONVERSATION_SUFFIX = /_watcher_(\d+)_run_(\d+)$/;
+const BEHAVIOR_CONVERSATION_SUFFIX = /_behavior_(\d+)_run_(\d+)$/;
 
 export interface BehaviorRunIntent {
 	runId: number;
@@ -90,7 +90,7 @@ export async function verifyBehaviorRunIntent(
 	        ON service_token.token_hash = ${tokenHash}
 	      WHERE behavior_run.id = ${runId}
 	        AND behavior_run.run_type = 'behavior'
-	        AND behavior_run.watcher_id = ${behaviorId}
+	        AND behavior_run.behavior_id = ${behaviorId}
 	        AND behavior_run.organization_id = ${args.organizationId}
 	        AND behavior_run.claimed_by = ${SERVER_DISPATCHER}
 	        AND behavior_run.status = 'claimed'

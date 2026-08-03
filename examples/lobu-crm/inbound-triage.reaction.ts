@@ -78,8 +78,8 @@ export default async (
   await client.notifications.send({
     title: `Inbound triage — ${actions.length} action(s), ${data.new_leads?.length ?? 0} new lead(s)`,
     body: summary,
-    watcher_source: {
-      watcher_id: ctx.window.watcher_id,
+    behavior_source: {
+      behavior_id: ctx.window.behavior_id,
       window_id: ctx.window.id,
     },
   });

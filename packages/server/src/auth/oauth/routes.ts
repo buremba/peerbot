@@ -930,7 +930,7 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
   // `device_worker:run` tokens drive personal devices — the Owletto Mac app,
   // the Chrome extension, and the local `lobu run` worker. Device data
   // (WhatsApp, Photos, browser context, …) always belongs in the user's
-  // personal org; team orgs reach a device by pinning a watcher/connection
+  // personal org; team orgs reach a device by pinning a behavior/connection
   // (see resolveDeviceClaimableOrgs), not by re-binding the device token.
   // So a device-worker grant is FORCE-bound to the personal org, ignoring
   // the resource slug, the active org, and the consent picker.

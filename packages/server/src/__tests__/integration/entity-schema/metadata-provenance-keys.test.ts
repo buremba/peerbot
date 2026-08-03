@@ -1,7 +1,7 @@
 /**
- * Watcher-promotion provenance keys must survive metadata round-trips.
+ * Behavior-promotion provenance keys must survive metadata round-trips.
  *
- * `promote-keyed-entities.ts` stamps `watcher_id` / `stable_key` / `window_id`
+ * `promote-keyed-entities.ts` stamps `behavior_id` / `stable_key` / `window_id`
  * (plus `source`) onto a promoted entity's metadata via raw SQL — outside
  * schema validation. Under an `additionalProperties: false` entity-type schema
  * that meant a promoted entity's metadata could never be written back through
@@ -19,7 +19,7 @@ import {
 import { cleanupTestDatabase } from '../../setup/test-db';
 import { TestApiClient } from '../../setup/test-mcp-client';
 
-describe('entity metadata validation > watcher provenance keys', () => {
+describe('entity metadata validation > behavior provenance keys', () => {
   let owner: TestApiClient;
 
   beforeAll(async () => {
@@ -48,7 +48,7 @@ describe('entity metadata validation > watcher provenance keys', () => {
     } as never);
   });
 
-  it('accepts watcher_id/stable_key/window_id on update under additionalProperties: false', async () => {
+  it('accepts behavior_id/stable_key/window_id on update under additionalProperties: false', async () => {
     const created = (await owner.entities.create({
       type: 'strict-task',
       name: 'Promoted task round-trip',
@@ -62,8 +62,8 @@ describe('entity metadata validation > watcher provenance keys', () => {
       metadata: {
         action: 'Ship the fix',
         status: 'done',
-        source: 'watcher_promotion',
-        watcher_id: 5,
+        source: 'behavior_promotion',
+        behavior_id: 5,
         stable_key: 'ship-the-fix',
         window_id: 4288453,
       },

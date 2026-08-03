@@ -41,7 +41,7 @@ export const OWNER_ROUTE_SEGMENTS = [
  */
 export const REMOVED_OWNER_SEGMENTS = [
   "events",
-  "watchers",
+  "behaviors",
   "connections",
   "sources",
   // Redirect-only shims deleted 2026-07-28: environments → connectors,
@@ -109,7 +109,7 @@ export const RESERVED_ENTITY_TYPE_SLUGS = [
   "entity-types",
   "organization",
   "user",
-  "watcher",
+  "behavior",
   "content",
   "source",
   "connector",

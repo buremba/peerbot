@@ -85,7 +85,7 @@ export default async (
   }
   const connectionId = Number(connRows[0].id);
   const behaviorSource = {
-    watcher_id: ctx.window.watcher_id,
+    behavior_id: ctx.window.behavior_id,
     window_id: ctx.window.id,
   };
 
@@ -94,7 +94,7 @@ export default async (
     connection_id: connectionId,
     operation_key: "search_restaurants",
     input: { query: restaurant },
-    watcher_source: behaviorSource,
+    behavior_source: behaviorSource,
   });
   if (search.status !== "completed") {
     client.log(
@@ -119,7 +119,7 @@ export default async (
     connection_id: connectionId,
     operation_key: "read_menu",
     input: { restaurant_url: pick.url, max_scrolls: 6 },
-    watcher_source: behaviorSource,
+    behavior_source: behaviorSource,
   });
   if (menu.status !== "completed") {
     client.log(
@@ -148,7 +148,7 @@ export default async (
   await client.notifications.send({
     title: `${pick.name} — live menu (${items.length} items)`,
     body,
-    watcher_source: behaviorSource,
+    behavior_source: behaviorSource,
   });
 
   client.log(

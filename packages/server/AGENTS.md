@@ -12,7 +12,7 @@ Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
 ## Boundaries and vocabulary
 - Connections are rows, not processes. Agents bind to connections/channels; replicas hydrate connection instances on demand from DB rows and must not assume boot warm-start.
 - Connectors collect external data into feeds/events; chat platforms deliver conversations/messages. Do not blur connector sync with chat transport.
-- Behaviors are the UI umbrella: Listen, Watch, Schedule. A watcher owns windows; a window's living state is a canvas (`semantic_type='canvas_state'`). Artifacts are stored files, not watcher state.
+- Behaviors are the UI umbrella: Listen, Watch, Schedule. A Behavior owns windows; a window's living state is a canvas (`semantic_type='canvas_state'`). Artifacts are stored files, not Behavior state.
 - Platform isolation: InteractionService events carry `platform`; each renderer filters on its own platform and never another's.
 
 ## Connections, feeds, and routing

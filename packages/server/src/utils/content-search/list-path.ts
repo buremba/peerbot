@@ -32,7 +32,7 @@ import {
   type ContentSearchResult,
 } from './types';
 import { buildEntityTypesFilterClause } from './entity-types-filter';
-import { buildConnectionVisibilityClause, buildExcludeWatcherClause, buildOrgScopeWhere } from './visibility';
+import { buildConnectionVisibilityClause, buildExcludeBehaviorClause, buildOrgScopeWhere } from './visibility';
 import { buildStandardParams, buildStandardWhereSql, WINDOW_JOIN_SQL } from './params';
 
 /**
@@ -40,7 +40,7 @@ import { buildStandardParams, buildStandardWhereSql, WINDOW_JOIN_SQL } from './p
  *
  * The two branches differ only in how they assemble `whereExpr` (the full
  * WHERE body, excluding the date cursor clause) and whether they need the
- * `watcher_window_events` join (`joinSql`). Everything past the count — the
+ * `behavior_window_events` join (`joinSql`). Everything past the count — the
  * empty-result short-circuit, the `candidate_set/result_set` vs `result_set`
  * CTE pair, param indexing, dedup, and the response shape — is identical, so
  * it lives here. The generated SQL and parameter binding are unchanged.
@@ -301,13 +301,13 @@ export async function listContentInternal(
     if (options.window_id != null) {
       baseParams.push(options.window_id);
       baseConditions.push(
-        `EXISTS (SELECT 1 FROM watcher_window_events iwf WHERE iwf.event_id = f.id AND iwf.window_id = $${baseParams.length})`
+        `EXISTS (SELECT 1 FROM behavior_window_events iwf WHERE iwf.event_id = f.id AND iwf.window_id = $${baseParams.length})`
       );
     }
-    if (options.analyzed_by_watcher_id != null) {
-      baseParams.push(options.analyzed_by_watcher_id);
+    if (options.analyzed_by_behavior_id != null) {
+      baseParams.push(options.analyzed_by_behavior_id);
       baseConditions.push(
-        `EXISTS (SELECT 1 FROM watcher_window_events iwf WHERE iwf.event_id = f.id AND iwf.watcher_id = $${baseParams.length})`
+        `EXISTS (SELECT 1 FROM behavior_window_events iwf WHERE iwf.event_id = f.id AND iwf.behavior_id = $${baseParams.length})`
       );
     }
     if (options.engagement_min != null) {
@@ -359,8 +359,8 @@ export async function listContentInternal(
     baseConditions.push(...classificationExists.clauses);
     const whereSql = baseConditions.length > 0 ? baseConditions.join(' AND ') : '1=1';
     const filterParamsBeforeExclude = [...baseParams, ...classificationExists.params];
-    const excludeClause = buildExcludeWatcherClause(
-      options.exclude_watcher_id,
+    const excludeClause = buildExcludeBehaviorClause(
+      options.exclude_behavior_id,
       filterParamsBeforeExclude.length + 1
     );
     const filterParamsBeforeVisibility = [...filterParamsBeforeExclude, ...excludeClause.params];
@@ -442,8 +442,8 @@ export async function listContentInternal(
     baseParamIndex: paramsAfterEntityLink.length + 1,
   });
   const paramsBeforeExclude = [...paramsAfterEntityLink, ...orgScope.params];
-  const excludeClause = buildExcludeWatcherClause(
-    options.exclude_watcher_id,
+  const excludeClause = buildExcludeBehaviorClause(
+    options.exclude_behavior_id,
     paramsBeforeExclude.length + 1
   );
   const paramsBeforeVisibility = [...paramsBeforeExclude, ...excludeClause.params];

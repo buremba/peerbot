@@ -1,5 +1,5 @@
 /**
- * Window utilities for watcher time windows
+ * Window utilities for behavior time windows
  *
  * Computes pending window dates based on schedule (cron) or granularity label.
  */
@@ -11,7 +11,7 @@ import {
   type BehaviorTimeGranularity,
 } from '@lobu/connector-sdk';
 import type { DbClient } from '../db/client';
-import type { UnprocessedRange } from '../types/watchers';
+import type { UnprocessedRange } from '../types/behaviors';
 
 interface WindowDates {
   windowStart: Date;
@@ -32,7 +32,7 @@ interface MonthlyLinkedRow {
 
 /**
  * Fold two month-bucketed aggregates — total events per month vs. events linked
- * to a watcher's windows per month — into the `UnprocessedRange[]` histogram.
+ * to a behavior's windows per month — into the `UnprocessedRange[]` histogram.
  *
  * Shared by `get_content` (Behavior mode) and `get_behavior` (pending analysis).
  *
@@ -90,7 +90,7 @@ export function foldUnprocessedRanges(
 }
 
 /**
- * Compute the pending window dates for a watcher.
+ * Compute the pending window dates for a behavior.
  *
  * Returns a period-aligned window of exactly one granularity period:
  * `[aligned start, start + 1 period)`. The end is EXCLUSIVE.
@@ -119,7 +119,7 @@ export function foldUnprocessedRanges(
  */
 export async function computePendingWindow(
   sql: DbClient,
-  watcherId: number,
+  behaviorId: number,
   granularity: BehaviorTimeGranularity
 ): Promise<WindowDates> {
   // Latest period this Behavior has a chain root for (canvas_windows = one row
@@ -130,7 +130,7 @@ export async function computePendingWindow(
   const lastWindow = await sql`
     SELECT window_start
     FROM canvas_windows
-    WHERE watcher_id = ${watcherId}
+    WHERE behavior_id = ${behaviorId}
     ORDER BY window_start DESC
     LIMIT 1
   `;
@@ -193,7 +193,7 @@ export function nextBehaviorWindowStart(
 }
 
 /**
- * Build the SELECT clause for watcher windows queries.
+ * Build the SELECT clause for behavior windows queries.
  *
  * This is used by the get_behavior tool for both the main query and fallback granularity queries.
  * Extracts common SQL to avoid duplication.
@@ -209,23 +209,23 @@ export function nextBehaviorWindowStart(
 /** FROM fragment for callers that need `iw` joined to versions (the SELECT clause). */
 export function buildWindowsFromWithVersions(): string {
   return `canvas_windows iw
-    JOIN watchers i ON iw.watcher_id = i.id
-    LEFT JOIN watcher_versions watcher_v ON i.current_version_id = watcher_v.id
-    LEFT JOIN watcher_versions window_v ON iw.version_id = window_v.id`;
+    JOIN behaviors i ON iw.behavior_id = i.id
+    LEFT JOIN behavior_versions behavior_v ON i.current_version_id = behavior_v.id
+    LEFT JOIN behavior_versions window_v ON iw.version_id = window_v.id`;
 }
 
 /** Bare FROM fragment for the COUNT(*) pagination fallback (no version joins). */
 export function buildWindowsCountFromClause(): string {
   return `canvas_windows iw
-    JOIN watchers i ON iw.watcher_id = i.id`;
+    JOIN behaviors i ON iw.behavior_id = i.id`;
 }
 
 export function buildWindowsSelectClause(): string {
   return `
     SELECT
       iw.id as window_id,
-      iw.watcher_id,
-      COALESCE(window_v.name, watcher_v.name, i.name) as watcher_name,
+      iw.behavior_id,
+      COALESCE(window_v.name, behavior_v.name, i.name) as behavior_name,
       iw.granularity,
       iw.window_start,
       iw.window_end,

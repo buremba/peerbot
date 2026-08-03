@@ -171,9 +171,9 @@ describe("GET /:agentId/config/pending/:runId", () => {
 	});
 
 	test("404 for a manage_behaviors run (real shape: agent_id nested in args)", async () => {
-		// buildWatcherProposal returns `{ args, actingAgentId, actingWatcherId }`
-		// with agent_id INSIDE args — a watcher-shaped proposal can't prefill the
-		// agent config form, so this endpoint excludes it (watcher review is a
+		// buildBehaviorProposal returns `{ args, actingAgentId, actingBehaviorId }`
+		// with agent_id INSIDE args — a behavior-shaped proposal can't prefill the
+		// agent config form, so this endpoint excludes it (behavior review is a
 		// separate surface). Fixture matches the real ManageBehaviorsProposal shape.
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
@@ -186,7 +186,7 @@ describe("GET /:agentId/config/pending/:runId", () => {
 					prompt: "x",
 				},
 				actingAgentId: null,
-				actingWatcherId: null,
+				actingBehaviorId: null,
 			},
 		});
 
@@ -235,36 +235,36 @@ describe("GET /:agentId/config/pending/:runId", () => {
 	});
 });
 
-const WATCHER_ID = 501;
+const BEHAVIOR_ID = 501;
 
-// The endpoint reads the watcher's owner + target from the held proposal/event
-// metadata (`current.agent_id`, `args.behavior_id`), NOT from the `watchers`
-// table — so no watcher row needs seeding; the proposal fixtures carry it all.
+// The endpoint reads the behavior's owner + target from the held proposal/event
+// metadata (`current.agent_id`, `args.behavior_id`), NOT from the `behaviors`
+// table — so no behavior row needs seeding; the proposal fixtures carry it all.
 
-/** A real ManageBehaviorsProposal: `{ args: {...}, actingAgentId, actingWatcherId }`
+/** A real ManageBehaviorsProposal: `{ args: {...}, actingAgentId, actingBehaviorId }`
  *  with behavior_id / agent_id nested INSIDE args. */
-function watcherProposal(
+function behaviorProposal(
 	args: Record<string, unknown>
 ): Record<string, unknown> {
-	return { args, actingAgentId: null, actingWatcherId: null };
+	return { args, actingAgentId: null, actingBehaviorId: null };
 }
 
-describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
-	test("returns the held manage_behaviors update proposal for the target watcher", async () => {
+describe("GET /:agentId/behaviors/:behaviorId/pending/:runId", () => {
+	test("returns the held manage_behaviors update proposal for the target behavior", async () => {
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
 			tool: "manage_behaviors",
-			proposal: watcherProposal({
+			proposal: behaviorProposal({
 				action: "update",
-				behavior_id: WATCHER_ID,
-				name: "New Watcher Name",
+				behavior_id: BEHAVIOR_ID,
+				name: "New Behavior Name",
 				prompt: "Watch for X",
 			}),
-			current: { id: WATCHER_ID, agent_id: AGENT, name: "Old" },
+			current: { id: BEHAVIOR_ID, agent_id: AGENT, name: "Old" },
 		});
 
 		const res = await app.request(
-			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
+			`/${AGENT}/behaviors/${BEHAVIOR_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as {
@@ -278,9 +278,9 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 		expect(body.resourceKind).toBe("behavior");
 		expect(body.action).toBe("update");
 		expect((body.proposal as { args?: { name?: string } }).args?.name).toBe(
-			"New Watcher Name"
+			"New Behavior Name"
 		);
-		expect(body.current).toMatchObject({ id: WATCHER_ID });
+		expect(body.current).toMatchObject({ id: BEHAVIOR_ID });
 	});
 
 	test("returns a normalized proposedAfter (displayed == applied)", async () => {
@@ -290,9 +290,9 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
 			tool: "manage_behaviors",
-			proposal: watcherProposal({
+			proposal: behaviorProposal({
 				action: "update",
-				behavior_id: WATCHER_ID,
+				behavior_id: BEHAVIOR_ID,
 				triggers: [
 					{
 						kind: "schedule",
@@ -302,10 +302,10 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 				],
 				name: "ignored-version-owned",
 			}),
-			current: { id: WATCHER_ID, agent_id: AGENT },
+			current: { id: BEHAVIOR_ID, agent_id: AGENT },
 		});
 		const res = await app.request(
-			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
+			`/${AGENT}/behaviors/${BEHAVIOR_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as {
@@ -337,16 +337,16 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
 			tool: "manage_behaviors",
-			proposal: watcherProposal({
+			proposal: behaviorProposal({
 				action: "update",
-				behavior_id: WATCHER_ID,
+				behavior_id: BEHAVIOR_ID,
 				agent_id: AGENT,
 				name: "N",
 			}),
-			current: { id: WATCHER_ID, agent_id: "old-owner" },
+			current: { id: BEHAVIOR_ID, agent_id: "old-owner" },
 		});
 		const res = await app.request(
-			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
+			`/${AGENT}/behaviors/${BEHAVIOR_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(200);
 	});
@@ -355,35 +355,35 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
 			tool: "manage_behaviors",
-			proposal: watcherProposal({
+			proposal: behaviorProposal({
 				action: "create",
-				behavior_id: WATCHER_ID,
+				behavior_id: BEHAVIOR_ID,
 				agent_id: AGENT,
 			}),
 		});
 		const res = await app.request(
-			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
+			`/${AGENT}/behaviors/${BEHAVIOR_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(404);
 	});
 
-	test("404 for a manage_agents run on the watcher endpoint (wrong tool)", async () => {
+	test("404 for a manage_agents run on the behavior endpoint (wrong tool)", async () => {
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
 			tool: "manage_agents",
 			proposal: { action: "update", agent_id: AGENT, name: "X" },
 		});
 		const res = await app.request(
-			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
+			`/${AGENT}/behaviors/${BEHAVIOR_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(404);
 	});
 
-	test("404 when the proposal targets a DIFFERENT watcher", async () => {
+	test("404 when the proposal targets a DIFFERENT behavior", async () => {
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
 			tool: "manage_behaviors",
-			proposal: watcherProposal({
+			proposal: behaviorProposal({
 				action: "update",
 				behavior_id: 999,
 				name: "X",
@@ -391,26 +391,26 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 			current: { id: 999, agent_id: AGENT },
 		});
 		const res = await app.request(
-			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
+			`/${AGENT}/behaviors/${BEHAVIOR_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(404);
 	});
 
-	test("404 when the watcher is owned by a DIFFERENT agent (authz boundary)", async () => {
+	test("404 when the behavior is owned by a DIFFERENT agent (authz boundary)", async () => {
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
 			tool: "manage_behaviors",
-			proposal: watcherProposal({
+			proposal: behaviorProposal({
 				action: "update",
-				behavior_id: WATCHER_ID,
+				behavior_id: BEHAVIOR_ID,
 				name: "X",
 			}),
-			current: { id: WATCHER_ID, agent_id: "other-agent" },
+			current: { id: BEHAVIOR_ID, agent_id: "other-agent" },
 		});
-		// Path agent is AGENT, but the watcher's owner (current + no args.agent_id)
+		// Path agent is AGENT, but the behavior's owner (current + no args.agent_id)
 		// is other-agent → 404.
 		const res = await app.request(
-			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
+			`/${AGENT}/behaviors/${BEHAVIOR_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(404);
 	});
@@ -426,15 +426,15 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 		const runId = await insertPendingProposal({
 			organizationId: "other-w-org",
 			tool: "manage_behaviors",
-			proposal: watcherProposal({
+			proposal: behaviorProposal({
 				action: "update",
-				behavior_id: WATCHER_ID,
+				behavior_id: BEHAVIOR_ID,
 				name: "X",
 			}),
-			current: { id: WATCHER_ID, agent_id: AGENT },
+			current: { id: BEHAVIOR_ID, agent_id: AGENT },
 		});
 		const res = await app.request(
-			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
+			`/${AGENT}/behaviors/${BEHAVIOR_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(404);
 	});
@@ -442,7 +442,7 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 	test("400 on a non-numeric run id", async () => {
 		const app = await importAgentRoutes();
 		const res = await app.request(
-			`/${AGENT}/behaviors/${WATCHER_ID}/pending/not-a-number`
+			`/${AGENT}/behaviors/${BEHAVIOR_ID}/pending/not-a-number`
 		);
 		expect(res.status).toBe(400);
 	});

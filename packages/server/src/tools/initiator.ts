@@ -12,7 +12,7 @@ type InitiatorSource = Partial<
 		| "agentId"
 		| "clientId"
 		| "sourceContext"
-		| "actingWatcherId"
+		| "actingBehaviorId"
 		| "actingWindowId"
 		| "actingRunId"
 	>
@@ -25,11 +25,11 @@ type RunInitiatorColumns = {
 };
 
 export function resolveRunInitiator(ctx: InitiatorSource): RunInitiatorColumns {
-	if (ctx.actingWatcherId != null) {
+	if (ctx.actingBehaviorId != null) {
 		return {
 			initiatorKind: "behavior",
 			initiatorRef: {
-				watcher_id: ctx.actingWatcherId,
+				behavior_id: ctx.actingBehaviorId,
 				window_id: ctx.actingWindowId ?? null,
 				run_id: ctx.actingRunId ?? null,
 			},
@@ -79,7 +79,7 @@ export function runPermalinkResource(
 	}
 	// Reject the empty cases before coercing: Number(null) and Number("") are
 	// both 0, a valid-looking id that would build a link to "Behavior 0".
-	const rawBehaviorId = initiator.initiatorRef?.watcher_id;
+	const rawBehaviorId = initiator.initiatorRef?.behavior_id;
 	if (rawBehaviorId == null || rawBehaviorId === "") {
 		return { kind: "run", runId };
 	}

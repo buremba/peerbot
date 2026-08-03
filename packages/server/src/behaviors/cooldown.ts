@@ -3,14 +3,14 @@ import { getDb } from "../db/client";
 import logger from "../utils/logger";
 
 /**
- * `watchers.min_cooldown_seconds` debounce for event-triggered Behaviors.
+ * `behaviors.min_cooldown_seconds` debounce for event-triggered Behaviors.
  *
  * A Behavior activates on an event through two substrates: background targets
  * become durable `behavior` runs via `createBehaviorEventRun`, and
  * `reply_to_source` targets are handed to the chat transport and never write a
  * run row at all. A predicate over `runs` would therefore be a silent no-op on
  * exactly one half of the feature, so both paths claim the same cursor
- * (`watchers.last_event_activation_at`) through this module.
+ * (`behaviors.last_event_activation_at`) through this module.
  *
  * The claim must be serialized, or two concurrent deliveries both read "no
  * recent activation" and both fire. It reuses the advisory lock
@@ -26,12 +26,12 @@ const BEHAVIOR_ACTIVATION_LOCK_NAMESPACE = "behavior_event_run";
  */
 export async function lockBehaviorForActivation(
   tx: DbClient,
-  watcherId: number,
+  behaviorId: number,
 ): Promise<void> {
   await tx`
     SELECT pg_advisory_xact_lock(
       hashtext(${BEHAVIOR_ACTIVATION_LOCK_NAMESPACE}),
-      ${watcherId}
+      ${behaviorId}
     )
   `;
 }
@@ -50,7 +50,7 @@ export async function lockBehaviorForActivation(
  */
 export async function claimBehaviorCooldown(
   tx: DbClient,
-  watcherId: number,
+  behaviorId: number,
 ): Promise<boolean> {
   const rows = await tx`
     SELECT
@@ -59,14 +59,14 @@ export async function claimBehaviorCooldown(
         AND last_event_activation_at >
             clock_timestamp() - make_interval(secs => min_cooldown_seconds)
         AS within_cooldown
-    FROM watchers
-    WHERE id = ${watcherId}
+    FROM behaviors
+    WHERE id = ${behaviorId}
     LIMIT 1
   `;
   const row = rows[0];
   if (!row) {
     logger.warn(
-      { watcherId },
+      { behaviorId },
       "[cooldown] Behavior row missing while claiming an activation — suppressing",
     );
     return false;
@@ -75,15 +75,15 @@ export async function claimBehaviorCooldown(
   if (!(cooldownSeconds > 0)) return true;
   if (row.within_cooldown === true) {
     logger.info(
-      { watcherId, cooldownSeconds },
+      { behaviorId, cooldownSeconds },
       "[cooldown] Suppressing Behavior activation inside its min_cooldown_seconds window",
     );
     return false;
   }
   await tx`
-    UPDATE watchers
+    UPDATE behaviors
     SET last_event_activation_at = clock_timestamp()
-    WHERE id = ${watcherId}
+    WHERE id = ${behaviorId}
   `;
   return true;
 }
@@ -101,18 +101,18 @@ export async function claimBehaviorCooldown(
  * ordinary cooldown suppression.
  */
 export async function claimBehaviorCooldownStandalone(
-  watcherId: number,
+  behaviorId: number,
   db?: DbClient,
 ): Promise<boolean> {
   const sql = db ?? getDb();
   try {
     return await sql.begin(async (tx: DbClient) => {
-      await lockBehaviorForActivation(tx, watcherId);
-      return await claimBehaviorCooldown(tx, watcherId);
+      await lockBehaviorForActivation(tx, behaviorId);
+      return await claimBehaviorCooldown(tx, behaviorId);
     });
   } catch (error) {
     logger.error(
-      { error, watcherId },
+      { error, behaviorId },
       "[cooldown] Could not claim a Behavior cooldown window — activation failed",
     );
     throw error;

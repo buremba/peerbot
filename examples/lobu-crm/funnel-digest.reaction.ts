@@ -10,7 +10,7 @@
  *      classification; and
  *   2. push it to the team via `client.notifications.send` — which fans out to
  *      the org's active bot connections (the #leads Slack connection) and the
- *      in-app inbox. `watcher_source` is the persisted provenance field.
+ *      in-app inbox. `behavior_source` is the persisted provenance field.
  */
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
@@ -76,8 +76,8 @@ export default async (
   await client.notifications.send({
     title: `Weekly funnel digest — ${ctx.window.window_end.slice(0, 10)}`,
     body: content,
-    watcher_source: {
-      watcher_id: ctx.window.watcher_id,
+    behavior_source: {
+      behavior_id: ctx.window.behavior_id,
       window_id: ctx.window.id,
     },
   });

@@ -23,7 +23,7 @@ type ClassifierList = { data?: { classifiers?: Array<{ id: number; status: strin
 
 describe('classifier list — default excludes deprecated', () => {
   let owner: TestApiClient;
-  let watcherId: string;
+  let behaviorId: string;
   let activeId: number;
   let deprecatedId: number;
 
@@ -40,12 +40,12 @@ describe('classifier list — default excludes deprecated', () => {
 
     const agent = await createTestAgent({ organizationId: org.id, ownerUserId: user.id });
     const w = (await owner.behaviors.create({
-      slug: 'cls-list-watcher',
-      name: 'Classifier List Watcher',
+      slug: 'cls-list-behavior',
+      name: 'Classifier List Behavior',
       prompt: 'gather signals.',
       agent_id: agent.agentId,
     })) as { behavior_id: string };
-    watcherId = w.behavior_id;
+    behaviorId = w.behavior_id;
 
     const stubEmbedding = Array.from({ length: 768 }, () => 0);
     const mkClassifier = async (slug: string): Promise<number> => {
@@ -53,7 +53,7 @@ describe('classifier list — default excludes deprecated', () => {
         slug,
         name: slug,
         attribute_key: 'sentiment',
-        behavior_id: watcherId,
+        behavior_id: behaviorId,
         attribute_values: {
           positive: { description: 'p', examples: ['great'], embedding: stubEmbedding },
         },

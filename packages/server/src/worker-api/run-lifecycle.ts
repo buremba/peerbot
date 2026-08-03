@@ -1,7 +1,7 @@
 /**
  * Run lifecycle endpoints.
  *
- * Handlers for the in-flight and completion phases of connector/watcher/auth
+ * Handlers for the in-flight and completion phases of connector/behavior/auth
  * runs: heartbeat, stream, complete, complete-behavior, complete-action,
  * complete-auth, complete-embeddings, fetch-events, emit-auth-artifact,
  * poll-auth-signal.
@@ -54,8 +54,8 @@ import { stripNulDeep } from "../utils/strip-nul";
 import {
 	bumpDeviceFinalizeNudge,
 	resolveFinalizeNudgeBudget,
-} from "../watchers/run-completion";
-import { advanceScheduleAfterTerminalFailure } from "../watchers/schedule-cursor";
+} from "../behaviors/run-completion";
+import { advanceScheduleAfterTerminalFailure } from "../behaviors/schedule-cursor";
 import { authorizeRunForWorker } from "./shared";
 
 type DbClient = ReturnType<typeof getDb>;
@@ -942,9 +942,9 @@ const MISSING_COMPLETE_WINDOW_NUDGE =
 /**
  * POST /api/workers/me/runs/:runId/complete-behavior
  *
- * Device-side EXIT REPORT for a watcher run executed by a local CLI agent
+ * Device-side EXIT REPORT for a behavior run executed by a local CLI agent
  * (Claude Code, agy, etc.) on the user's machine. The Owletto Mac app's
- * `WatcherDispatcher` posts here once the subprocess exits.
+ * `BehaviorDispatcher` posts here once the subprocess exits.
  *
  * The agent is expected to complete window Behaviors itself — via Lobu MCP
  * tools (`query_sdk` / `run_sdk` → `completeWindow`) and/or the local
@@ -1008,7 +1008,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 	// exit-report decision; the status-and-claim predicates on the writes below
 	// remain authoritative if this read races another terminal path.
 	const runRows = (await sql`
-    SELECT id, organization_id, watcher_id, approved_input, run_type,
+    SELECT id, organization_id, behavior_id, approved_input, run_type,
            claimed_at, claimed_by, status, window_id
     FROM runs
     WHERE id = ${runId}
@@ -1016,7 +1016,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
   `) as unknown as Array<{
 		id: number;
 		organization_id: string;
-		watcher_id: number | null;
+		behavior_id: number | null;
 		approved_input: Record<string, unknown> | null;
 		run_type: string;
 		claimed_at: string | Date | null;
@@ -1029,14 +1029,14 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 	if (run.run_type !== "behavior") {
 		return c.json({ error: "Not a Behavior run" }, 409);
 	}
-	if (run.watcher_id == null) {
-		return c.json({ error: "Behavior run missing watcher_id" }, 500);
+	if (run.behavior_id == null) {
+		return c.json({ error: "Behavior run missing behavior_id" }, 500);
 	}
 	if (run.claimed_by !== body.worker_id) {
 		return c.json({ ok: true, status: run.status, idempotent: true });
 	}
 
-	const watcherId = Number(run.watcher_id);
+	const behaviorId = Number(run.behavior_id);
 	const approved = (run.approved_input ?? {}) as Record<string, unknown>;
 
 	// Fix 2 (pi round-2): device-identity binding pinned to the OAuth token, not
@@ -1175,13 +1175,13 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
       `) as unknown as Array<{ id: number }>;
 			if (failedRows.length === 0) return false;
 			await tx`
-        UPDATE watchers
+        UPDATE behaviors
         SET last_fired_at = NOW(), updated_at = NOW()
-        WHERE id = ${watcherId}
+        WHERE id = ${behaviorId}
       `;
 			await advanceScheduleAfterTerminalFailure(
 				tx,
-				watcherId,
+				behaviorId,
 				typeof approved.dispatch_source === "string"
 					? approved.dispatch_source
 					: null
@@ -1200,9 +1200,9 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 		// and put the actual ran/errored detail under `extra`.
 		recordLifecycleEvent({
 			organizationId: run.organization_id,
-			entityType: "watcher",
+			entityType: "behavior",
 			op: "updated",
-			entityId: String(watcherId),
+			entityId: String(behaviorId),
 			summary:
 				outcome === "failed"
 					? `Behavior run ${runId} failed on device CLI: ${detail ?? "unknown error"}`
@@ -1267,7 +1267,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 			// complete_window, so runs it left on the pipeline default get the device
 			// stamp. An explicit model passed by the agent wins. Provenance now lives
 			// on the RUN row (model_used / run_metadata.execution_time_ms), not the
-			// retired watcher_windows table — the canvas is the window projection and
+			// retired behavior_windows table — the canvas is the window projection and
 			// reads pull execution_time_ms from run timestamps / run_metadata.
 			await sql`
         UPDATE runs
@@ -1297,9 +1297,9 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
       `;
 		}
 		await sql`
-      UPDATE watchers
+      UPDATE behaviors
       SET last_fired_at = NOW(), updated_at = NOW()
-      WHERE id = ${watcherId}
+      WHERE id = ${behaviorId}
     `;
 		emitCompletionEvent("completed");
 		return c.json({ ok: true, status: "completed", window_id: run.window_id });
@@ -1355,9 +1355,9 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 			});
 		}
 		await sql`
-      UPDATE watchers
+      UPDATE behaviors
       SET last_fired_at = NOW(), updated_at = NOW()
-      WHERE id = ${watcherId}
+      WHERE id = ${behaviorId}
     `;
 		emitCompletionEvent("completed");
 		return c.json({
@@ -1370,16 +1370,16 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 
 	// Window Behavior: agent never called completeWindow. Bounded device-held
 	// resume (same finalize_nudges budget as cloud) so the Mac can re-spawn.
-	const watcherRows = (await sql`
+	const behaviorRows = (await sql`
     SELECT execution_config
-    FROM watchers
-    WHERE id = ${watcherId}
+    FROM behaviors
+    WHERE id = ${behaviorId}
     LIMIT 1
   `) as unknown as Array<{
 		execution_config: Record<string, unknown> | null;
 	}>;
 	const budget = resolveFinalizeNudgeBudget(
-		watcherRows[0]?.execution_config ?? null
+		behaviorRows[0]?.execution_config ?? null
 	);
 	const nudgeCount = Number(approved.finalize_nudge_count ?? 0);
 	const attemptsSoFar = Number.isFinite(nudgeCount) ? nudgeCount : 0;

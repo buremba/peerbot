@@ -56,7 +56,7 @@ import { resolveRunInitiator, runPermalinkResource } from "../initiator";
 import type { ToolContext } from "../registry";
 import { getOrgUrlContext } from "../view-urls";
 
-/** Synthetic runs.action_key tagging a watcher field-change held for approval. */
+/** Synthetic runs.action_key tagging a behavior field-change held for approval. */
 export const ENTITY_FIELD_CHANGE_ACTION_KEY = "entity_field_change";
 export const ENTITY_CHANGE_ACTION_KEY = "entity_change";
 export const ENTITY_CHANGE_ACTION_KEYS = [
@@ -68,13 +68,13 @@ export const ENTITY_CHANGE_ACTION_KEYS = [
 export interface EntityFieldChangeProposal {
 	operation?: "update";
 	entity_id: number;
-	/** field_path -> proposed value (what the watcher/agent wanted to write). */
+	/** field_path -> proposed value (what the behavior/agent wanted to write). */
 	fields: Record<string, unknown>;
 	/** field_path -> current human-owned value (for the diff card). */
 	current?: Record<string, unknown>;
-	watcher_id?: number | null;
+	behavior_id?: number | null;
 	/**
-	 * The watcher-run window that produced this proposal, if any. Stamped onto the
+	 * The behavior-run window that produced this proposal, if any. Stamped onto the
 	 * `runs.window_id` COLUMN so a run that produced N proposals groups them
 	 * into ONE batch approval card. Stripped from action_input before the insert.
 	 */
@@ -106,7 +106,7 @@ export interface EntityDeleteProposal {
 		parent_id?: number | null;
 		metadata?: Record<string, unknown> | null;
 	};
-	watcher_id?: number | null;
+	behavior_id?: number | null;
 	/** See EntityFieldChangeProposal.window_id — batches proposals by run window. */
 	window_id?: number | null;
 	attribution?: ApprovalAttributionType;
@@ -117,7 +117,7 @@ export interface EntityCreateProposal {
 	operation: "create";
 	entity_data: EntityData;
 	proposal: Record<string, unknown>;
-	watcher_id?: number | null;
+	behavior_id?: number | null;
 	/** See EntityFieldChangeProposal.window_id — batches proposals by run window. */
 	window_id?: number | null;
 	attribution?: ApprovalAttributionType;
@@ -139,11 +139,11 @@ export interface EntityMergeProposal {
 		identifier: string;
 		identity_ids?: number[];
 	}>;
-	watcher_id?: number | null;
+	behavior_id?: number | null;
 	window_id?: number | null;
 	/** Window copied into action_input because runs.window_id is transport grouping. */
 	source_window_id?: number | null;
-	/** Watcher run that discovered this candidate (the approval run is separate). */
+	/** Behavior run that discovered this candidate (the approval run is separate). */
 	source_run_id?: number | null;
 	policy_hash?: string | null;
 	resolution_fingerprint?: string | null;
@@ -300,35 +300,35 @@ function entityChangeIdempotencyKey(
 		.digest("hex");
 	return `entity-change:${digest}`;
 }
-async function loadWatcherLabel(
+async function loadBehaviorLabel(
 	ctx: ToolContext,
-	watcherId: number | null | undefined,
+	behaviorId: number | null | undefined,
 	attribution: ApprovalAttributionType | undefined,
 ): Promise<{
 	actorLabel: string;
-	watcherName: string | null;
-	watcherAgentId: string | null;
+	behaviorName: string | null;
+	behaviorAgentId: string | null;
 }> {
 	if (attribution !== ApprovalAttribution.Behavior) {
-		return { actorLabel: "An agent", watcherName: null, watcherAgentId: null };
+		return { actorLabel: "An agent", behaviorName: null, behaviorAgentId: null };
 	}
-	if (!watcherId) {
-		return { actorLabel: "A Behavior", watcherName: null, watcherAgentId: null };
+	if (!behaviorId) {
+		return { actorLabel: "A Behavior", behaviorName: null, behaviorAgentId: null };
 	}
 	const rows = await getDb()<{
 		name: string | null;
 		agent_id: string | null;
 	}>`
     SELECT name, agent_id
-    FROM watchers
-    WHERE id = ${watcherId}
+    FROM behaviors
+    WHERE id = ${behaviorId}
       AND organization_id = ${ctx.organizationId}
     LIMIT 1
   `;
 	return {
-		actorLabel: rows[0]?.name ?? `Behavior ${watcherId}`,
-		watcherName: rows[0]?.name ?? null,
-		watcherAgentId: rows[0]?.agent_id ?? null,
+		actorLabel: rows[0]?.name ?? `Behavior ${behaviorId}`,
+		behaviorName: rows[0]?.name ?? null,
+		behaviorAgentId: rows[0]?.agent_id ?? null,
 	};
 }
 
@@ -470,8 +470,8 @@ async function resolveProposalFieldOwner(
 }
 
 /**
- * Queue a watcher field-change for approval. Returns the pending run/event ids.
- * Called post-commit from the watcher promotion path.
+ * Queue a behavior field-change for approval. Returns the pending run/event ids.
+ * Called post-commit from the behavior promotion path.
  */
 export async function proposeEntityFieldChange(
 	ctx: ToolContext,
@@ -726,9 +726,9 @@ export async function proposeEntityChange(
 	const attribution = proposal.attribution ?? ApprovalAttribution.Behavior;
 	const actorNoun =
 		attribution === ApprovalAttribution.Agent ? "An agent" : "A Behavior";
-	const [{ actorLabel, watcherName, watcherAgentId }, entity] =
+	const [{ actorLabel, behaviorName, behaviorAgentId }, entity] =
 		await Promise.all([
-			loadWatcherLabel(ctx, proposal.watcher_id, attribution),
+			loadBehaviorLabel(ctx, proposal.behavior_id, attribution),
 			operation === "create"
 				? Promise.resolve(null)
 				: loadEntitySnapshot(ctx, changedEntityId(proposal)),
@@ -834,9 +834,9 @@ export async function proposeEntityChange(
 											deleteProposal.force_delete_tree ?? false,
 									}
 								: null,
-					watcher_id: proposal.watcher_id ?? null,
-					watcher_name: watcherName,
-					watcher_agent_id: watcherAgentId,
+					behavior_id: proposal.behavior_id ?? null,
+					behavior_name: behaviorName,
+					behavior_agent_id: behaviorAgentId,
 					// The run window this proposal belongs to, if any. Stamped so the UI can
 					// tell this proposal is part of a BATCH (the change-set card owns the
 					// Approve/Reject decision) and suppress this card's own duplicate buttons.
@@ -904,12 +904,12 @@ export async function proposeEntityChange(
 		const inserted = await tx<{ id: number }>`
 			INSERT INTO runs (
 				organization_id, run_type, action_key, action_input, window_id,
-				watcher_id, created_by_user_id, initiator_kind, initiator_ref,
+				behavior_id, created_by_user_id, initiator_kind, initiator_ref,
 				approval_status, status, idempotency_key, created_at
 			) VALUES (
 				${ctx.organizationId}, 'internal', ${actionKey},
 				${tx.json(actionInputProposal as unknown as Record<string, unknown>)},
-				${windowId ?? null}, ${proposal.watcher_id ?? null},
+				${windowId ?? null}, ${proposal.behavior_id ?? null},
 				${initiatorColumns.createdByUserId},
 				${initiatorColumns.initiatorKind},
 				${tx.json(initiatorColumns.initiatorRef)},
@@ -939,8 +939,8 @@ export async function proposeEntityChange(
 	}>`
 		SELECT r.initiator_kind, r.initiator_ref, w.agent_id AS initiator_agent_id
 		FROM runs r
-		LEFT JOIN watchers w
-			ON w.id = r.watcher_id AND w.organization_id = r.organization_id
+		LEFT JOIN behaviors w
+			ON w.id = r.behavior_id AND w.organization_id = r.organization_id
 		WHERE r.id = ${runId} AND r.organization_id = ${ctx.organizationId}
 	`;
 	const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
@@ -1235,7 +1235,7 @@ export async function applyEntityChangeProposal(
 			{
 				...createProposal.entity_data,
 				organization_id: ctx.organizationId,
-				// The watcher that PROPOSED the create is not a real user row, so
+				// The behavior that PROPOSED the create is not a real user row, so
 				// entities.created_by (NOT NULL, FK → user) must attribute the create to
 				// the human who APPROVED it. Approval is human-gated (requireHuman-
 				// ApprovalContext), so ctx.userId is a verified user here — using it
@@ -1264,7 +1264,7 @@ export async function applyEntityChangeProposal(
 			resolution: {
 				decision: "human" as const,
 				sourceRunId: mergeProposal.source_run_id ?? null,
-				watcherId: mergeProposal.watcher_id ?? null,
+				behaviorId: mergeProposal.behavior_id ?? null,
 				windowId:
 					mergeProposal.source_window_id ?? mergeProposal.window_id ?? null,
 				policyHash: resolved.policyHash,

@@ -19,10 +19,10 @@
  *    full four-lane set here. The browser-worker (Chrome) lane runs out
  *    of a service-worker and also heartbeats now (owletto#186) but uses
  *    its own `chrome.alarms` cadence — it shares this WHERE clause.
- *  - `watcher` — driven in-process by the embedded gateway. Lifecycle is
+ *  - `behavior` — driven in-process by the embedded gateway. Lifecycle is
  *    handled by the durable terminal-event resolution (run-completion.ts)
- *    + the dedicated `sweepStaleWatcherRuns` / `resetOrphanedWatcherRuns`
- *    helpers in watchers/automation.ts.
+ *    + the dedicated `sweepStaleBehaviorRuns` / `resetOrphanedBehaviorRuns`
+ *    helpers in behaviors/automation.ts.
  *  - lobu-queue lanes (`chat_message`, `schedule`, `agent_run`, `internal`,
  *    `task`) — claimed by RunsQueue with its own per-claim heartbeat on
  *    `claimed_at` and own 5-min stale sweep. Not touched here.
@@ -34,7 +34,7 @@
  * `setInterval` started by `startStaleRunReaper` in the gateway boot path
  * (server-lifecycle.ts). The 5-minute `checkStalledExecutions` cron no longer
  * calls it (the two firing it was redundant); the cron now only does the
- * surrounding housekeeping (watcher reconcile/sweep, connect-token expiry,
+ * surrounding housekeeping (behavior reconcile/sweep, connect-token expiry,
  * 30-day retention).
  */
 
@@ -46,7 +46,7 @@ import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { expireStaleConnectTokens } from '../utils/connect-tokens';
 import logger from '../utils/logger';
-import { reconcileWatcherRuns, sweepStaleWatcherRuns } from '../watchers/automation';
+import { reconcileBehaviorRuns, sweepStaleBehaviorRuns } from '../behaviors/automation';
 import { buildStaleRunWhereSql } from './stale-run-sweeper';
 
 /** Advisory-lock key for cross-pod coordination of the stale-run reaper.
@@ -354,7 +354,7 @@ function stopStaleRunReaper(): void {
 
 /**
  * Periodic housekeeping run by the 5-minute `check-stalled-executions`
- * TaskScheduler cron: watcher reconcile + stale watcher sweep + connect-token
+ * TaskScheduler cron: behavior reconcile + stale behavior sweep + connect-token
  * expiry + 30-day retention. These don't justify a dedicated interval each.
  *
  * Stale-run reaping is NOT done here — it is owned exclusively by the 30s
@@ -367,14 +367,14 @@ export async function checkStalledExecutions(_env: Env): Promise<void> {
   // Isolate each phase so a throw in one (e.g. the `malformed array literal`
   // bug, lobu#1046) doesn't disable the rest of the housekeeping.
   try {
-    await reconcileWatcherRuns(sql);
+    await reconcileBehaviorRuns(sql);
   } catch (error) {
-    logger.error({ error }, '[StalledRuns] reconcileWatcherRuns failed');
+    logger.error({ error }, '[StalledRuns] reconcileBehaviorRuns failed');
   }
   try {
-    await sweepStaleWatcherRuns(sql);
+    await sweepStaleBehaviorRuns(sql);
   } catch (error) {
-    logger.error({ error }, '[StalledRuns] sweepStaleWatcherRuns failed');
+    logger.error({ error }, '[StalledRuns] sweepStaleBehaviorRuns failed');
   }
 
   try {

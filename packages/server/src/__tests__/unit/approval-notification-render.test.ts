@@ -22,14 +22,14 @@ describe("approval notification rendering", () => {
 	test("field change: body + card with escaping, diff lines, why, review link", () => {
 		const details: ActionApprovalDetails = {
 			kind: "entity_field_change",
-			actorLabel: "Watcher <One>",
+			actorLabel: "Behavior <One>",
 			entityId: 7,
 			entityType: "topic",
 			entityName: "App & Crashes",
 			entityUrl: "https://app.lobu.ai/acme/topic/app-crashes",
 			fields: { severity: "critical", $name: "New <Name>" },
 			current: { severity: "high", $name: "Old Name" },
-			reason: "Watcher proposes updating severity (currently set by you).",
+			reason: "Behavior proposes updating severity (currently set by you).",
 		};
 		const approvalUrl = "https://app.lobu.ai/acme/runs/42";
 
@@ -37,7 +37,7 @@ describe("approval notification rendering", () => {
 			"Review topic fields: Severity, Name",
 		);
 		expect(formatActionApprovalBody({ approvalUrl, details })).toBe(
-			String.raw`**Watcher \<One\>** wants to update [App & Crashes](https://app.lobu.ai/acme/topic/app-crashes):` +
+			String.raw`**Behavior \<One\>** wants to update [App & Crashes](https://app.lobu.ai/acme/topic/app-crashes):` +
 				"\n" +
 				"- Severity: ~high~\n→ critical\n" +
 				"- Name: ~Old Name~\n\u2192 New " + String.raw`\<Name\>` + "\n" +
@@ -45,7 +45,7 @@ describe("approval notification rendering", () => {
 				"\n[Review in Lobu](https://app.lobu.ai/acme/runs/42)",
 		);
 		expect(cardText(buildActionApprovalCard({ runId: 42, approvalUrl, details }))).toBe(
-			"*Requested by:* Watcher &lt;One&gt;\n" +
+			"*Requested by:* Behavior &lt;One&gt;\n" +
 				"*Entity:* <https://app.lobu.ai/acme/topic/app-crashes|App &amp; Crashes>\n" +
 				"\n*Severity*\n~high~\n→ critical\n" +
 				"\n*Name*\n~Old Name~\n→ New &lt;Name&gt;\n" +
@@ -62,7 +62,7 @@ describe("approval notification rendering", () => {
 			reason: null,
 		};
 		expect(formatActionApprovalBody({ details })).toBe(
-			"**A watcher** wants to update Topic (#9):\n" +
+			"**A behavior** wants to update Topic (#9):\n" +
 				'- Status: ~Not set~\n→ { "nested": true }\n' +
 				"\nThis change needs a human approval before it is applied.",
 		);
@@ -76,28 +76,28 @@ describe("approval notification rendering", () => {
 		const details: ActionApprovalDetails = {
 			kind: "entity_change",
 			operation: "create",
-			actorLabel: "A watcher",
+			actorLabel: "A behavior",
 			entityType: "topic",
 			entityName: "Slow & Loading",
 			proposal: { entity_type: "topic", name: "Slow & Loading", parent_id: 3 },
-			reason: 'A watcher proposes creating topic "Slow & Loading".',
+			reason: 'A behavior proposes creating topic "Slow & Loading".',
 		};
 		const approvalUrl = "https://app.lobu.ai/acme/runs/44";
 		expect(formatActionApprovalTitle("entity_change", details)).toBe(
 			"Review creating topic",
 		);
 		expect(formatActionApprovalBody({ approvalUrl, details })).toBe(
-			"**A watcher** wants to create Slow & Loading.\n" +
+			"**A behavior** wants to create Slow & Loading.\n" +
 				"- Entity type: topic\n- Name: Slow & Loading\n- Parent id: 3\n" +
-				'\nA watcher proposes creating topic "Slow & Loading".\n' +
+				'\nA behavior proposes creating topic "Slow & Loading".\n' +
 				"\n[Review in Lobu](https://app.lobu.ai/acme/runs/44)",
 		);
 		expect(cardText(buildActionApprovalCard({ runId: 44, approvalUrl, details }))).toBe(
-			"*Requested by:* A watcher\n" +
+			"*Requested by:* A behavior\n" +
 				"*Entity:* Slow &amp; Loading\n" +
 				"\n*Proposed action:* Create this entity\n" +
 				"*Entity type:* topic\n*Name:* Slow &amp; Loading\n*Parent id:* 3\n" +
-				'\n*Why approval is needed:* A watcher proposes creating topic "Slow &amp; Loading".',
+				'\n*Why approval is needed:* A behavior proposes creating topic "Slow &amp; Loading".',
 		);
 	});
 
@@ -144,7 +144,7 @@ describe("approval notification rendering", () => {
 		const details: ActionApprovalDetails = {
 			kind: "entity_change",
 			operation: "merge",
-			actorLabel: "A watcher",
+			actorLabel: "A behavior",
 			entityId: 12,
 			entityType: "person",
 			entityName: "Duplicate Person",
@@ -161,7 +161,7 @@ describe("approval notification rendering", () => {
 			"Review merging person",
 		);
 		expect(formatActionApprovalBody({ details })).toContain(
-			"**A watcher** wants to merge Duplicate Person (#12).",
+			"**A behavior** wants to merge Duplicate Person (#12).",
 		);
 		expect(cardText(buildActionApprovalCard({ details }))).toContain(
 			"*Proposed action:* Merge these entities",
@@ -285,7 +285,7 @@ describe("approval notification rendering", () => {
 				details: {
 					kind: "entity_change",
 					operation: "delete",
-					actorLabel: "A watcher",
+					actorLabel: "A behavior",
 					entityId: 1,
 					entityType: "topic",
 					entityName: "X",

@@ -7,7 +7,7 @@
  * per-item failures so one bad row can't abort the batch:
  *
  *   - scheduled/check-due-feeds.ts        → sync runs for due feeds
- *   - watchers/automation.ts              → watcher runs for due watchers
+ *   - behaviors/automation.ts              → behavior runs for due behaviors
  *   - scheduled/trigger-embed-backfill.ts → embed_backfill runs per org batch
  *
  * The SQL stays entirely in each caller's `fetchDue` / `createRun` callbacks;

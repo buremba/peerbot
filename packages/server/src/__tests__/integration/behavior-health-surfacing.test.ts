@@ -9,19 +9,15 @@
  *   active behaviors and stuck-pending behavior runs in `issues[]` — previously
  *   it filtered run_type='sync' ONLY, so behaviors were invisible to alerting.
  *
- * Note on run_type: the watcher→behavior rename (#2034) migrated the
- * runs.run_type enum value 'watcher'→'behavior', so behavior runs now carry
- * run_type='behavior' and the CHECK constraint rejects 'watcher'. The
- * `watcher_id` COLUMN and the `watchers` table stay (internal seam). These
- * tests insert run_type='behavior' to match the migrated schema + the code
- * under test.
+ * Behavior runs use the canonical run_type='behavior' lane and behavior_id
+ * foreign key throughout the scheduler and health paths.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../../index";
 import { getSchedulerHealth } from "../../scheduled/scheduler-health";
 import { manageBehaviors } from "../../tools/admin/manage_behaviors";
-import { computeBehaviorHealth } from "../../watchers/behavior-health";
+import { computeBehaviorHealth } from "../../behaviors/behavior-health";
 import { initWorkspaceProvider } from "../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import { createTestAgent, seedOwnerContext } from "../setup/test-fixtures";
@@ -112,7 +108,7 @@ describe("behavior health surfacing (#2033)", () => {
     const sql = getTestDb();
     // Push next_run_at well into the past → missed firing.
     await sql`
-      UPDATE watchers
+      UPDATE behaviors
       SET next_run_at = current_timestamp - interval '30 minutes'
       WHERE id = ${behaviorId}
     `;
@@ -131,7 +127,7 @@ describe("behavior health surfacing (#2033)", () => {
     const { behaviorId, ctx } = await createScheduledBehavior();
     const sql = getTestDb();
     await sql`
-      UPDATE watchers
+      UPDATE behaviors
       SET next_run_at = current_timestamp + interval '5 minutes'
       WHERE id = ${behaviorId}
     `;
@@ -150,13 +146,13 @@ describe("behavior health surfacing (#2033)", () => {
     // On schedule (future) so the ONLY unhealthy signal is the failed run —
     // proving health reflects the run outcome, not just the scheduler cursor.
     await sql`
-      UPDATE watchers
+      UPDATE behaviors
       SET next_run_at = current_timestamp + interval '5 minutes'
       WHERE id = ${behaviorId}
     `;
     await sql`
       INSERT INTO runs
-        (organization_id, run_type, watcher_id, status, approval_status,
+        (organization_id, run_type, behavior_id, status, approval_status,
          error_message, created_at, completed_at)
       VALUES
         (${ctx.organizationId}, 'behavior', ${behaviorId}, 'failed', 'auto',
@@ -175,11 +171,11 @@ describe("behavior health surfacing (#2033)", () => {
     expect(row?.last_scheduling_error).toBe("No model is configured");
   });
 
-  it("3.3: list emits behavior_* lineage keys, never the internal watcher_* names", async () => {
+  it("3.3: list emits canonical behavior_* lineage keys", async () => {
     const { behaviorId, ctx } = await createScheduledBehavior();
     await getTestDb()`
-      UPDATE watchers
-      SET source_watcher_id = id
+      UPDATE behaviors
+      SET source_behavior_id = id
       WHERE id = ${behaviorId}
     `;
     const result = await manageBehaviors({ action: "list" }, {} as Env, ctx);
@@ -190,45 +186,6 @@ describe("behavior health surfacing (#2033)", () => {
     expect(row).toBeDefined();
     expect(row?.behavior_group_id).toBe(String(behaviorId));
     expect(row?.source_behavior_id).toBe(String(behaviorId));
-    expect(row).not.toHaveProperty("watcher_group_id");
-    expect(row).not.toHaveProperty("source_watcher_id");
-  });
-
-  it("3.4: legacy client.watchers.* in a run error is rewritten to client.behaviors.*", async () => {
-    const { behaviorId, ctx } = await createScheduledBehavior();
-    const sql = getTestDb();
-    await sql`
-      UPDATE watchers
-      SET next_run_at = current_timestamp + interval '5 minutes'
-      WHERE id = ${behaviorId}
-    `;
-    // An archived run error persisted with the pre-rename internal namespace.
-    await sql`
-      INSERT INTO runs
-        (organization_id, run_type, watcher_id, status, approval_status,
-         error_message, created_at, completed_at)
-      VALUES
-        (${ctx.organizationId}, 'behavior', ${behaviorId}, 'failed', 'auto',
-         'Agent never called client.watchers.completeWindow()',
-         current_timestamp - interval '2 minutes',
-         current_timestamp - interval '1 minute')
-    `;
-
-    const result = await manageBehaviors({ action: "list" }, {} as Env, ctx);
-    if (result.action !== "list") throw new Error("expected list result");
-    const row = result.behaviors.find(
-      (b) => String((b as { behavior_id?: unknown }).behavior_id) === String(behaviorId),
-    ) as
-      | { behavior_run_error?: string | null; last_scheduling_error?: string | null }
-      | undefined;
-    // Both the raw error field and the health-echoed error carry the public vocab.
-    expect(row?.behavior_run_error).toBe(
-      "Agent never called client.behaviors.completeWindow()",
-    );
-    expect(row?.last_scheduling_error).toBe(
-      "Agent never called client.behaviors.completeWindow()",
-    );
-    expect(JSON.stringify(row)).not.toContain("client.watchers.");
   });
 
   it("3.2: getSchedulerHealth surfaces an overdue behavior in issues[]", async () => {
@@ -236,7 +193,7 @@ describe("behavior health surfacing (#2033)", () => {
     const sql = getTestDb();
     // Overdue by 2 hours → past the 1-hour behavior overdue threshold.
     await sql`
-      UPDATE watchers
+      UPDATE behaviors
       SET next_run_at = current_timestamp - interval '2 hours'
       WHERE id = ${behaviorId}
     `;
@@ -253,15 +210,15 @@ describe("behavior health surfacing (#2033)", () => {
     const sql = getTestDb();
     // Keep next_run_at in the future so the ONLY issue is the stuck run.
     await sql`
-      UPDATE watchers
+      UPDATE behaviors
       SET next_run_at = current_timestamp + interval '5 minutes'
       WHERE id = ${behaviorId}
     `;
     const orgId = ctx.organizationId;
-    // A pending watcher run created 3 hours ago — past the 2h stale interval.
+    // A pending behavior run created 3 hours ago — past the 2h stale interval.
     await sql`
       INSERT INTO runs
-        (organization_id, run_type, watcher_id, status, approval_status, created_at)
+        (organization_id, run_type, behavior_id, status, approval_status, created_at)
       VALUES
         (${orgId}, 'behavior', ${behaviorId}, 'pending', 'auto',
          current_timestamp - interval '3 hours')

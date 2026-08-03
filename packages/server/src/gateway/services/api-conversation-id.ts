@@ -1,6 +1,6 @@
 /**
  * Composite conversation ids for the web-panel Agent API (`POST /api/v1/agents`).
- * Watcher automation is exempt from org scoping — pass `organizationId: undefined`
+ * Behavior automation is exempt from org scoping — pass `organizationId: undefined`
  * for that path (see `routes/public/agent.ts`).
  */
 

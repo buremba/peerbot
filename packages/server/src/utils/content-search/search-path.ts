@@ -31,7 +31,7 @@ import {
   type ContentSearchResult,
 } from './types';
 import { buildEntityTypesFilterClause } from './entity-types-filter';
-import { buildConnectionVisibilityClause, buildExcludeWatcherClause, buildOrgScopeWhere } from './visibility';
+import { buildConnectionVisibilityClause, buildExcludeBehaviorClause, buildOrgScopeWhere } from './visibility';
 import { getErrorMessage } from "@lobu/core";
 
 export async function searchContentBySingleQuery(
@@ -109,11 +109,11 @@ export async function searchContentBySingleQuery(
     organization_id: options.organization_id,
     baseParamIndex: 13,
   });
-  // Exclude-watcher param slot sits immediately after orgScope so its $N index
+  // Exclude-behavior param slot sits immediately after orgScope so its $N index
   // is stable regardless of whether an embedding param follows.
   const excludeParamIdx = 13 + orgScope.params.length;
-  const excludeClause = buildExcludeWatcherClause(
-    options.exclude_watcher_id,
+  const excludeClause = buildExcludeBehaviorClause(
+    options.exclude_behavior_id,
     excludeParamIdx
   );
   // Connection-visibility predicate. Same helper used by every other
@@ -323,7 +323,7 @@ export async function searchContentBySingleQuery(
     // (useDateFeed is false here, so there is no cursor block before it).
     const tsqueryParamIdx = offsetParamIdx + 1;
     const candidateFilterJoins = `LEFT JOIN connections c ON c.id = f.connection_id
-          LEFT JOIN watcher_window_events iwf
+          LEFT JOIN behavior_window_events iwf
             ON iwf.event_id = f.id
             AND ($6::int IS NOT NULL)
             AND iwf.window_id = $6::int`;
@@ -383,7 +383,7 @@ export async function searchContentBySingleQuery(
         FROM current_event_records f
         ${useCandidatePath ? 'JOIN search_candidates sc ON sc.id = f.id' : ''}
         LEFT JOIN connections c ON c.id = f.connection_id
-        LEFT JOIN watcher_window_events iwf
+        LEFT JOIN behavior_window_events iwf
           ON iwf.event_id = f.id
           AND ($6::int IS NOT NULL)
           AND iwf.window_id = $6::int
@@ -396,7 +396,7 @@ export async function searchContentBySingleQuery(
         SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, ${bestSimSelect} AS best_sim, f.search_tsv
         FROM current_event_records f
         LEFT JOIN connections c ON c.id = f.connection_id
-        LEFT JOIN watcher_window_events iwf
+        LEFT JOIN behavior_window_events iwf
           ON iwf.event_id = f.id
           AND ($6::int IS NOT NULL)
           AND iwf.window_id = $6::int

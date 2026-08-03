@@ -28,7 +28,7 @@ import { ensureMemberEntityType } from '../utils/member-entity-type';
 import { requireWriteAccess } from '../utils/organization-access';
 import { isUniqueViolation } from '../utils/pg-errors';
 import { validateTemplateHandlers } from '../utils/validate-json-template';
-import { trackWatcherReaction } from '../utils/watcher-reactions';
+import { trackBehaviorReaction } from '../utils/behavior-reactions';
 import { isSystemContext } from './access-control';
 import { MEMBER_ENTITY_TYPE_SLUG } from './constants';
 import type { ToolContext } from './registry';
@@ -235,7 +235,7 @@ async function saveContentImpl(
 ): Promise<SaveContentResult> {
   // SDK delegates (`client.knowledge.save`) skip `checkToolAccess`, so apply
   // the same member+scope gate here. System contexts (userId=null + auth=true)
-  // bypass — watcher reactions don't carry a user identity.
+  // bypass — behavior reactions don't carry a user identity.
   if (!isSystemContext(ctx)) {
     if (!ctx.memberRole) {
       throw new ToolUserError('save_memory requires workspace membership with write access.', 403);
@@ -258,7 +258,7 @@ async function saveContentImpl(
   // are injected into EVERY agent's system prompt (workspace instructions +
   // worker session context), which makes authorship a prompt-injection
   // surface. Fail closed: only org owners/admins may author it — system
-  // contexts (watcher reactions, memberRole=null) and plain members are
+  // contexts (behavior reactions, memberRole=null) and plain members are
   // rejected. This is the single choke point for both the MCP tool and the
   // SDK delegate (`client.knowledge.save`).
   const isOrgGuidance = semanticType === GUIDANCE_SEMANTIC_TYPE;
@@ -531,7 +531,7 @@ async function saveContentImpl(
         authorName: args.author,
         sourceUrl: args.source_url ?? parentSourceUrl,
         // The schema promises "Defaults to now if omitted" — honor it. A NULL
-        // occurred_at makes the event invisible to watcher windows (window
+        // occurred_at makes the event invisible to behavior windows (window
         // content filters on occurred_at within [window_start, window_end)).
         occurredAt: args.occurred_at ?? new Date().toISOString(),
         semanticType,
@@ -602,18 +602,18 @@ async function saveContentImpl(
     inserted ? 'Content saved via save_memory' : 'Content save replay returned existing event'
   );
 
-  // Track watcher reaction if attribution source is provided
+  // Track behavior reaction if attribution source is provided
   if (inserted && args.behavior_source) {
-    await trackWatcherReaction({
+    await trackBehaviorReaction({
       organizationId: ctx.organizationId,
-      watcherId: args.behavior_source.behavior_id,
+      behaviorId: args.behavior_source.behavior_id,
       windowId: args.behavior_source.window_id,
       reactionType: 'content_saved',
       toolName: 'save_memory',
       toolArgs: { entity_ids: finalEntityIds, semantic_type: semanticType, title: args.title },
       entityId: finalEntityIds[0],
     }).catch((err) => {
-      logger.warn({ err, behaviorSource: args.behavior_source }, 'trackWatcherReaction failed');
+      logger.warn({ err, behaviorSource: args.behavior_source }, 'trackBehaviorReaction failed');
     });
   }
 

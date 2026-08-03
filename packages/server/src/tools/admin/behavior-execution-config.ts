@@ -4,7 +4,7 @@ import { isAdminOrOwnerRole } from '../access-control';
 /**
  * execution_config keys that are SERVER-ONLY and must never reach a
  * device-worker — its strict payload decode (`additionalProperties: false`)
- * would reject an unknown field and brick every run of that watcher. Stripped
+ * would reject an unknown field and brick every run of that behavior. Stripped
  * at the device boundary (worker-api/poll.ts) via stripServerOnlyExecutionConfig.
  */
 export const SERVER_ONLY_EXECUTION_CONFIG_KEYS = ['finalize_nudges'] as const;
@@ -12,7 +12,7 @@ export const SERVER_ONLY_EXECUTION_CONFIG_KEYS = ['finalize_nudges'] as const;
 /**
  * Remove SERVER_ONLY_EXECUTION_CONFIG_KEYS from an execution_config before it
  * is handed to a device-worker. Returns null for an absent config, or one that
- * is left empty after stripping (so a watcher configured with ONLY server-only
+ * is left empty after stripping (so a behavior configured with ONLY server-only
  * keys sends the device `null`, i.e. "use defaults", rather than `{}`).
  */
 export function stripServerOnlyExecutionConfig(
@@ -28,7 +28,7 @@ export function stripServerOnlyExecutionConfig(
 }
 
 // Permission modes that let the spawned agent act unattended without prompting.
-// Restricted to org owner/admin: a member-write actor can pin a watcher to
+// Restricted to org owner/admin: a member-write actor can pin a behavior to
 // another user's device, so allowing them to set these would be a privilege
 // escalation (unattended privileged execution on the device owner's machine).
 const ELEVATED_PERMISSION_MODES = new Set(['bypassPermissions', 'dontAsk']);

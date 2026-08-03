@@ -6,7 +6,7 @@
  *
  *   - the connector-lane reaper (scheduled/check-stalled-executions.ts) —
  *     sync/action/embed_backfill/auth, single 120s threshold
- *   - the watcher sweep (watchers/automation.ts) — 3min heartbeat-stale fast
+ *   - the behavior sweep (behaviors/automation.ts) — 3min heartbeat-stale fast
  *     path + 2h coarse TTL for runs that never heartbeated
  *
  * Both share one predicate shape: a run with a live heartbeat signal is
@@ -34,7 +34,7 @@ interface StaleRunSweepSpec {
 	 *    the claim doesn't stamp a heartbeat, so presence means the executor
 	 *    beat at least once).
 	 *  - 'beat-after-claim': only rows whose `last_heartbeat_at` advanced past
-	 *    `claimed_at` (watcher lane — the claim seeds
+	 *    `claimed_at` (behavior lane — the claim seeds
 	 *    `last_heartbeat_at = claimed_at`, so equality means "never beat" and
 	 *    a non-heartbeating client falls through to the coarse path).
 	 */

@@ -1122,11 +1122,11 @@ app.get("/api/:orgSlug/behaviors/windows/:windowId", mcpAuth, async (c) => {
 	try {
 		// Canvas-on-events: windowId is the canvas ROOT event id; canvas_windows
 		// resolves the chain (head payload + run provenance). Content links are
-		// counted off watcher_window_events.window_id (re-keyed to the root id).
+		// counted off behavior_window_events.window_id (re-keyed to the root id).
 		const windowResult = await sql`
       SELECT
         iw.id,
-        iw.watcher_id AS behavior_id,
+        iw.behavior_id,
         iw.granularity,
         iw.window_start,
         iw.window_end,
@@ -1145,15 +1145,15 @@ app.get("/api/:orgSlug/behaviors/windows/:windowId", mcpAuth, async (c) => {
         parent.name as parent_name,
         CAST(COUNT(iwf.event_id) AS INTEGER) as content_count
       FROM canvas_windows iw
-      JOIN watchers i ON i.id = iw.watcher_id
+      JOIN behaviors i ON i.id = iw.behavior_id
       JOIN entities e ON e.id = ANY(i.entity_ids)
       JOIN entity_types et ON et.id = e.entity_type_id
       LEFT JOIN entities parent ON e.parent_id = parent.id
-      LEFT JOIN watcher_window_events iwf ON iwf.window_id = iw.id
+      LEFT JOIN behavior_window_events iwf ON iwf.window_id = iw.id
       WHERE iw.id = ${windowId}
         AND e.organization_id = ${organizationId}
         AND i.status = 'active'
-      GROUP BY iw.id, iw.watcher_id, iw.granularity, iw.window_start, iw.window_end,
+      GROUP BY iw.id, iw.behavior_id, iw.granularity, iw.window_start, iw.window_end,
                iw.version_id, iw.created_at, iw.extracted_data, iw.content_analyzed,
                iw.client_id, iw.model_used, iw.run_metadata,
                i.entity_ids, i.slug, i.name, e.name, et.slug, parent.name
@@ -1350,8 +1350,8 @@ app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 	//  - KIND-WIDE agent rows (principal_kind 'agent', principal_id NULL) — an
 	//    "all agents" policy that applies to every agent. Omitting these made the
 	//    matrix show/permit values LOOSER than the resolver enforces.
-	// Agent = rows pinned to THIS agent id (the editable overrides). A watcher-kind
-	// row is NOT the agent's envelope (watchers inherit the agent envelope in
+	// Agent = rows pinned to THIS agent id (the editable overrides). A behavior-kind
+	// row is NOT the agent's envelope (behaviors inherit the agent envelope in
 	// autonomous mode; they have no separate principal here).
 	const floor = all.filter(
 		(p) =>
@@ -2730,7 +2730,7 @@ app.get("/.well-known/ai-plugin.json", (c) => {
 		description_for_human:
 			"Build searchable workspace knowledge from customer content across platforms",
 		description_for_model:
-			"Access workspace knowledge and customer content from Reddit, Trustpilot, App Stores, and other platforms. Search knowledge, retrieve saved knowledge, and get watchers and analytics.",
+			"Access workspace knowledge and customer content from Reddit, Trustpilot, App Stores, and other platforms. Search knowledge, retrieve saved knowledge, and get behaviors and analytics.",
 		auth: {
 			type: "none",
 		},

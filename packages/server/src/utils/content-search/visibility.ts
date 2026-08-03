@@ -1,6 +1,6 @@
 /**
  * Visibility and org-scope WHERE clause helpers:
- * buildOrgScopeWhere, buildConnectionVisibilityClause, buildExcludeWatcherClause.
+ * buildOrgScopeWhere, buildConnectionVisibilityClause, buildExcludeBehaviorClause.
  */
 
 import { compileConnectionFkVisibility } from '../../authz/connection-visibility';
@@ -10,26 +10,26 @@ import { validateNumericId } from '../sql-validation';
 
 /**
  * Build NOT EXISTS clause to exclude content already in any window for a given
- * watcher. The watcher id is both validated (integer check) and bound as a query
+ * behavior. The behavior id is both validated (integer check) and bound as a query
  * parameter — validation guards against obvious injection attempts and the
  * parameter binding is the real defense.
  *
- * @param excludeWatcherId - Watcher ID to exclude content for
+ * @param excludeBehaviorId - Behavior ID to exclude content for
  * @param baseParamIndex - Next 1-based `$N` index to allocate for bound params
  * @param tableAlias - Alias for the content table (default: 'f')
  * @returns `{ sql, params }` — empty strings/arrays when no filter is applied
  */
-export function buildExcludeWatcherClause(
-  excludeWatcherId: number | undefined,
+export function buildExcludeBehaviorClause(
+  excludeBehaviorId: number | undefined,
   baseParamIndex: number,
   tableAlias = 'f'
 ): { sql: string; params: unknown[] } {
-  if (excludeWatcherId === undefined) return { sql: '', params: [] };
-  const validated = validateNumericId(excludeWatcherId, 'exclude_watcher_id');
+  if (excludeBehaviorId === undefined) return { sql: '', params: [] };
+  const validated = validateNumericId(excludeBehaviorId, 'exclude_behavior_id');
   return {
     sql: ` AND NOT EXISTS (
-    SELECT 1 FROM watcher_window_events exc_iwe
-    WHERE exc_iwe.event_id = ${tableAlias}.id AND exc_iwe.watcher_id = $${baseParamIndex}::bigint
+    SELECT 1 FROM behavior_window_events exc_iwe
+    WHERE exc_iwe.event_id = ${tableAlias}.id AND exc_iwe.behavior_id = $${baseParamIndex}::bigint
   )`,
     params: [validated],
   };

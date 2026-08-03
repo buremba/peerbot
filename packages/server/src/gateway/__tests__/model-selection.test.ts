@@ -8,7 +8,7 @@ import {
 describe("enforceModelAllowList (universal dispatch gate — decision A/B)", () => {
   test("#1: an out-of-list model on a LISTED provider is REPLACED with the first listed real model", () => {
     // models=["openai/gpt-5"], requested "openai/gpt-4o" (same provider, diff
-    // model). This is the exact direct-API / watcher / schedule bypass case.
+    // model). This is the exact direct-API / behavior / schedule bypass case.
     const r = enforceModelAllowList("openai/gpt-4o", ["openai/gpt-5"]);
     expect(r.replaced).toBe(true);
     expect(r.model).toBe("openai/gpt-5");

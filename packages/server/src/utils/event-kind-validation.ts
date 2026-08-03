@@ -3,7 +3,7 @@
  *
  * Validates event semantic types and metadata against the producer's event_kinds schema.
  * Two entry points:
- *  - validateSaveContentSemanticType: for user/watcher content (resolves $member.event_kinds)
+ *  - validateSaveContentSemanticType: for user/behavior content (resolves $member.event_kinds)
  *  - validateConnectorEventSemanticType: for connector content (resolves feeds_schema eventKinds)
  *
  * Returns human-readable errors with valid kinds, expected schema, and fuzzy suggestions.
@@ -275,7 +275,7 @@ function validateKindAgainstDefinitions(
 }
 
 /**
- * Validate kind + metadata for user/watcher content.
+ * Validate kind + metadata for user/behavior content.
  * Resolves against the org's $member.event_kinds, merged with entity type
  * event_kinds when entityIds are provided.
  */

@@ -1,11 +1,11 @@
 /**
  * manage_behaviors `update` — version-owned fields must not be silently dropped.
  *
- * Bug (red→fix→green): `WATCHER_UPDATE_PATCH_KEYS` advertised `name`,
+ * Bug (red→fix→green): `BEHAVIOR_UPDATE_PATCH_KEYS` advertised `name`,
  * `description`, `prompt`, `sources`, and `entity_ids` as valid
  * `update` patch fields, but `handleUpdate`'s UPDATE SET clause writes none of
  * them — `name`/`description`/`prompt`/`sources` are version-owned (live in
- * `watcher_versions`; the watchers-row `name` is cascaded by version
+ * `behavior_versions`; the behaviors-row `name` is cascaded by version
  * activation), `entity_ids` is `create_from_version`-only. (`status` was also
  * listed but isn't on `ManageBehaviorsArgs` — it's a `list` filter; the entry
  * was dead.) So an `update` carrying any of them passed validation and
@@ -17,7 +17,7 @@
  *   sources                 → "[create/create_version]" (update was a doc lie)
  *   entity_ids              → "[create_from_version]"
  *
- * Fix: drop those keys from `WATCHER_UPDATE_PATCH_KEYS` AND explicitly reject
+ * Fix: drop those keys from `BEHAVIOR_UPDATE_PATCH_KEYS` AND explicitly reject
  * them on `update` with a pointer to `create_version`, so a caller can never
  * believe a version-owned change applied.
  */
@@ -51,10 +51,10 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 	let ownerId: string;
 	let ownerCtx: AuthContext;
 	let agentId: string;
-	let watcherId: string;
+	let behaviorId: string;
 	const previewConnectionId = "preview-update-version";
-	let previewUpdate: { watcherId: string; triggers: BehaviorTrigger[] };
-	let previewVersion: { watcherId: string; triggers: BehaviorTrigger[] };
+	let previewUpdate: { behaviorId: string; triggers: BehaviorTrigger[] };
+	let previewVersion: { behaviorId: string; triggers: BehaviorTrigger[] };
 
 	const baseCtx = (orgIdValue: string, userId: string): AuthContext => ({
 		organizationId: orgIdValue,
@@ -77,7 +77,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 		await cleanupTestDatabase();
 		await initWorkspaceProvider();
 
-		const org = await createTestOrganization({ name: "watcher update fields" });
+		const org = await createTestOrganization({ name: "behavior update fields" });
 		orgId = org.id;
 		const owner = await createTestUser({ email: "wu-owner@test.com" });
 		ownerId = owner.id;
@@ -92,11 +92,11 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 		agentId = agent.agentId;
 
 		const previewHostOrg = await createTestOrganization({
-			name: "Watcher update preview host",
+			name: "Behavior update preview host",
 		});
 		const previewHostAgent = await createTestAgent({
 			organizationId: previewHostOrg.id,
-			agentId: "watcher-update-preview-host",
+			agentId: "behavior-update-preview-host",
 		});
 		await insertChatConnectionRow({
 			id: previewConnectionId,
@@ -120,17 +120,17 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 			TEST_ENV,
 			ownerCtx
 		)) as { behavior_id?: string };
-		watcherId = created.behavior_id!;
+		behaviorId = created.behavior_id!;
 	});
 
-	async function fetchWatcherName(): Promise<string> {
+	async function fetchBehaviorName(): Promise<string> {
 		const sql = getTestDb();
-		const rows = await sql`SELECT name FROM watchers WHERE id = ${watcherId}`;
+		const rows = await sql`SELECT name FROM behaviors WHERE id = ${behaviorId}`;
 		return (rows[0] as { name: string }).name;
 	}
 
 	async function createCrossOrgPreviewBehavior(suffix: string): Promise<{
-		watcherId: string;
+		behaviorId: string;
 		triggers: BehaviorTrigger[];
 	}> {
 		const sql = getTestDb();
@@ -147,34 +147,34 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 			triggers: BehaviorTrigger[];
 		}>`
 			SELECT id, triggers
-			FROM watchers
+			FROM behaviors
 			WHERE organization_id = ${orgId}
 			  AND agent_id = ${agentId}
 			  AND tags @> ARRAY['system:chat-link']::text[]
 			ORDER BY id DESC
 			LIMIT 1
 		`;
-		return { watcherId: String(behavior.id), triggers: behavior.triggers };
+		return { behaviorId: String(behavior.id), triggers: behavior.triggers };
 	}
 
 	it("rejects `update` with name only (version-owned) — points to create_version", async () => {
 		await expect(
 			executeTool(
 				"manage_behaviors",
-				{ action: "update", behavior_id: watcherId, name: "Renamed" },
+				{ action: "update", behavior_id: behaviorId, name: "Renamed" },
 				TEST_ENV,
 				ownerCtx
 			)
 		).rejects.toThrow(/create_version/i);
 		// Name unchanged — no silent partial apply.
-		expect(await fetchWatcherName()).toBe("Original");
+		expect(await fetchBehaviorName()).toBe("Original");
 	});
 
 	it("rejects `update` with description only — points to create_version", async () => {
 		await expect(
 			executeTool(
 				"manage_behaviors",
-				{ action: "update", behavior_id: watcherId, description: "New desc" },
+				{ action: "update", behavior_id: behaviorId, description: "New desc" },
 				TEST_ENV,
 				ownerCtx
 			)
@@ -185,7 +185,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 		await expect(
 			executeTool(
 				"manage_behaviors",
-				{ action: "update", behavior_id: watcherId, prompt: "New prompt" },
+				{ action: "update", behavior_id: behaviorId, prompt: "New prompt" },
 				TEST_ENV,
 				ownerCtx
 			)
@@ -198,7 +198,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 				"manage_behaviors",
 				{
 					action: "update",
-					behavior_id: watcherId,
+					behavior_id: behaviorId,
 					sources: [{ name: "content", query: "SELECT id FROM events" }],
 				},
 				TEST_ENV,
@@ -216,7 +216,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 				"manage_behaviors",
 				{
 					action: "update",
-					behavior_id: watcherId,
+					behavior_id: behaviorId,
 					name: "Should Not Apply",
 					triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
 				},
@@ -224,7 +224,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 				ownerCtx
 			)
 		).rejects.toThrow(/create_version/i);
-		expect(await fetchWatcherName()).toBe("Original");
+		expect(await fetchBehaviorName()).toBe("Original");
 	});
 
 	it("still applies legitimate triggers without name", async () => {
@@ -233,7 +233,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 			"manage_behaviors",
 			{
 				action: "update",
-				behavior_id: watcherId,
+				behavior_id: behaviorId,
 				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
 			},
 			TEST_ENV,
@@ -242,20 +242,20 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 		expect(res.updated_fields).toContain("triggers");
 	});
 
-	it("create_version with a new name cascades to the watchers row", async () => {
-		// Positive path: the documented way to rename a watcher.
+	it("create_version with a new name cascades to the behaviors row", async () => {
+		// Positive path: the documented way to rename a behavior.
 		await executeTool(
 			"manage_behaviors",
 			{
 				action: "create_version",
-				behavior_id: watcherId,
+				behavior_id: behaviorId,
 				name: "Renamed Via Version",
 				set_as_current: true,
 			},
 			TEST_ENV,
 			ownerCtx
 		);
-		expect(await fetchWatcherName()).toBe("Renamed Via Version");
+		expect(await fetchBehaviorName()).toBe("Renamed Via Version");
 	});
 
 	it("updates metadata when a cross-org preview trigger is resent unchanged", async () => {
@@ -263,7 +263,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 			"manage_behaviors",
 			{
 				action: "update",
-				behavior_id: previewUpdate.watcherId,
+				behavior_id: previewUpdate.behaviorId,
 				triggers: previewUpdate.triggers,
 				tags: ["system:chat-link", "edited"],
 			},
@@ -285,7 +285,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 				"manage_behaviors",
 				{
 					action: "update",
-					behavior_id: previewUpdate.watcherId,
+					behavior_id: previewUpdate.behaviorId,
 					triggers: changedTriggers,
 				},
 				TEST_ENV,
@@ -299,7 +299,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 			"manage_behaviors",
 			{
 				action: "create_version",
-				behavior_id: previewVersion.watcherId,
+				behavior_id: previewVersion.behaviorId,
 				prompt: "Updated preview response instructions.",
 			},
 			TEST_ENV,
@@ -308,8 +308,8 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 		expect(result.version).toBe(2);
 		const [stored] = await getTestDb()<{ prompt: string }>`
 			SELECT prompt
-			FROM watcher_versions
-			WHERE watcher_id = ${previewVersion.watcherId}
+			FROM behavior_versions
+			WHERE behavior_id = ${previewVersion.behaviorId}
 			  AND version = 2
 		`;
 		expect(stored.prompt).toBe("Updated preview response instructions.");
@@ -346,10 +346,10 @@ describe("manage_behaviors create_version — source replacement semantics (#204
 		allowCrossOrg: false,
 	});
 
-	// Sources live on the per-assignment watchers.sources column.
+	// Sources live on the per-assignment behaviors.sources column.
 	async function fetchSources(): Promise<Array<{ name: string; query: string }>> {
 		const sql = getTestDb();
-		const rows = await sql`SELECT sources FROM watchers WHERE id = ${behaviorId}`;
+		const rows = await sql`SELECT sources FROM behaviors WHERE id = ${behaviorId}`;
 		const raw = (rows[0] as { sources: unknown }).sources;
 		return (raw ?? []) as Array<{ name: string; query: string }>;
 	}

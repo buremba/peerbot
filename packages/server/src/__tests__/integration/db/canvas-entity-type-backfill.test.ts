@@ -6,14 +6,14 @@
  * `canvas` type `ensureCanvasEntity` looked for. This migration repoints those
  * rows onto a per-org `$canvas` type.
  *
- * Selection is by the live `watcher_canvas` identity claim — the authoritative
- * per-watcher canvas identity — NOT by `metadata->>'source'`, which is
+ * Selection is by the live `behavior_canvas` identity claim — the authoritative
+ * per-behavior canvas identity — NOT by `metadata->>'source'`, which is
  * user-editable. Proves:
  *   - a claimed canvas moves to `$canvas`
  *   - a real `$member` row does not move
- *   - a row that merely *claims* source=watcher_canvas in metadata, with no
+ *   - a row that merely *claims* source=behavior_canvas in metadata, with no
  *     identity row, does not move
- *   - a row whose only `watcher_canvas` identity is soft-deleted does not move
+ *   - a row whose only `behavior_canvas` identity is soft-deleted does not move
  *     (the claim must be live: `deleted_at IS NULL`)
  *   - re-running is a no-op (migrations may be replayed)
  *   - exactly one `$canvas` type per org
@@ -27,6 +27,7 @@ import { dirname, join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { getDb } from '../../../db/client';
 import { loadMigrationUpSection } from '../../../db/migration-loader';
+import { adaptImmutableMigrationToBehaviorSchema } from '../../setup/immutable-migration';
 import { createTestOrganization, createTestUser } from '../../setup/test-fixtures';
 
 const MIGRATION = '20260722010000_canvas_entity_type_backfill.sql';
@@ -61,7 +62,9 @@ describe('$canvas backfill migration', () => {
     const orgId = (await createTestOrganization()).id;
     const user = await createTestUser({ email: `canvas-bf-${Date.now()}@test.com` });
     const sql = getDb();
-    const upSection = loadMigrationUpSection(resolveMigrationsDir(), MIGRATION);
+    const upSection = adaptImmutableMigrationToBehaviorSchema(
+      loadMigrationUpSection(resolveMigrationsDir(), MIGRATION),
+    );
 
     const result: Captured = {
       claimedCanvasSlug: null,
@@ -97,15 +100,15 @@ describe('$canvas backfill migration', () => {
           INSERT INTO entities
             (organization_id, entity_type_id, name, slug, metadata, created_by, created_at, updated_at)
           VALUES (
-            ${orgId}, ${memberType.id}, 'Canvas · watcher 1', 'watcher-canvas-1',
-            ${tx.json({ watcher_id: 1, source: 'watcher_canvas' })},
+            ${orgId}, ${memberType.id}, 'Canvas · behavior 1', 'behavior-canvas-1',
+            ${tx.json({ behavior_id: 1, source: 'behavior_canvas' })},
             ${user.id}, current_timestamp, current_timestamp
           )
           RETURNING id
         `;
         await tx`
           INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier)
-          VALUES (${orgId}, ${canvas.id}, 'watcher_canvas', '1')
+          VALUES (${orgId}, ${canvas.id}, 'behavior_canvas', '1')
         `;
 
         // A genuine workspace member — must survive untouched.
@@ -126,13 +129,13 @@ describe('$canvas backfill migration', () => {
             (organization_id, entity_type_id, name, slug, metadata, created_by, created_at, updated_at)
           VALUES (
             ${orgId}, ${memberType.id}, 'Fake Canvas', 'fake-canvas',
-            ${tx.json({ source: 'watcher_canvas' })},
+            ${tx.json({ source: 'behavior_canvas' })},
             ${user.id}, current_timestamp, current_timestamp
           )
           RETURNING id
         `;
 
-        // Held a `watcher_canvas` claim once, but it is now soft-deleted. The
+        // Held a `behavior_canvas` claim once, but it is now soft-deleted. The
         // backfill matches only live claims (`deleted_at IS NULL`), so a stale
         // claim must NOT move the entity; else replaying with historical rows
         // would re-type former canvases.
@@ -140,15 +143,15 @@ describe('$canvas backfill migration', () => {
           INSERT INTO entities
             (organization_id, entity_type_id, name, slug, metadata, created_by, created_at, updated_at)
           VALUES (
-            ${orgId}, ${memberType.id}, 'Canvas · watcher 2', 'watcher-canvas-2',
-            ${tx.json({ watcher_id: 2, source: 'watcher_canvas' })},
+            ${orgId}, ${memberType.id}, 'Canvas · behavior 2', 'behavior-canvas-2',
+            ${tx.json({ behavior_id: 2, source: 'behavior_canvas' })},
             ${user.id}, current_timestamp, current_timestamp
           )
           RETURNING id
         `;
         await tx`
           INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier, deleted_at)
-          VALUES (${orgId}, ${deletedCanvas.id}, 'watcher_canvas', '2', current_timestamp)
+          VALUES (${orgId}, ${deletedCanvas.id}, 'behavior_canvas', '2', current_timestamp)
         `;
 
         await tx.unsafe(upSection);
@@ -195,7 +198,7 @@ describe('$canvas backfill migration', () => {
     expect(captured.metadataOnlySlug).toBe('$member');
   });
 
-  it('ignores an entity whose only watcher_canvas identity is soft-deleted', () => {
+  it('ignores an entity whose only behavior_canvas identity is soft-deleted', () => {
     expect(captured.deletedIdentitySlug).toBe('$member');
   });
 

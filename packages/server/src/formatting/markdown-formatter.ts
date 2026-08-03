@@ -759,7 +759,7 @@ function formatGetBehaviorResult(result: any, _options: FormatterOptions): strin
 /**
  * Format unprocessed ranges as markdown with read_knowledge call examples
  */
-function formatUnprocessedRanges(ranges: any[], watcherId?: string): string {
+function formatUnprocessedRanges(ranges: any[], behaviorId?: string): string {
   const rangesToProcess = ranges.filter((r: any) => r.unprocessed_content > 0);
   if (rangesToProcess.length === 0) return '';
 
@@ -767,7 +767,7 @@ function formatUnprocessedRanges(ranges: any[], watcherId?: string): string {
     (sum: number, r: any) => sum + r.unprocessed_content,
     0
   );
-  const id = watcherId || '<watcher_id>';
+  const id = behaviorId || '<behavior_id>';
 
   let md = `## 📋 Ranges To Process (${totalUnprocessed} unprocessed items)\n\n`;
   md += `Process these ${rangesToProcess.length} range(s) sequentially:\n\n`;
@@ -778,7 +778,7 @@ function formatUnprocessedRanges(ranges: any[], watcherId?: string): string {
     md += `### ${i + 1}. ${range.month} (${range.unprocessed_content} items${isPartial ? `, ${range.processed_content} already processed` : ''})\n\n`;
     md += '```\n';
     md += 'read_knowledge(\n';
-    md += `  watcher_id: ${id},\n`;
+    md += `  behavior_id: ${id},\n`;
     md += `  since: "${range.window_start.slice(0, 10)}",\n`;
     md += `  until: "${range.window_end.slice(0, 10)}",\n`;
     md += `  limit: ${Math.min(range.total_content, 2000)}\n`;
@@ -794,7 +794,7 @@ function formatUnprocessedRanges(ranges: any[], watcherId?: string): string {
 }
 
 /**
- * Format extracted watcher data (recursive)
+ * Format extracted behavior data (recursive)
  */
 function formatExtractedData(data: any, indent: number = 0): string {
   const prefix = '  '.repeat(indent);
@@ -940,16 +940,16 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
 
   if (action === 'list' && behaviors && behaviors.length > 0) {
     md += `## Behaviors (${behaviors.length})\n\n`;
-    for (const watcher of behaviors) {
-      md += `### ${watcher.name || watcher.template_slug}\n`;
-      md += `- **ID**: \`${watcher.behavior_id}\`\n`;
-      md += `- **Template**: ${watcher.template_slug} (v${watcher.template_version})\n`;
-      md += `- **Status**: ${watcher.status}\n`;
-      md += `- **Entity**: ${watcher.entity_name} (${watcher.entity_type})\n`;
-      if (watcher.schedule) {
-        md += `- **Schedule**: ${watcher.schedule}\n`;
+    for (const behavior of behaviors) {
+      md += `### ${behavior.name || behavior.template_slug}\n`;
+      md += `- **ID**: \`${behavior.behavior_id}\`\n`;
+      md += `- **Template**: ${behavior.template_slug} (v${behavior.template_version})\n`;
+      md += `- **Status**: ${behavior.status}\n`;
+      md += `- **Entity**: ${behavior.entity_name} (${behavior.entity_type})\n`;
+      if (behavior.schedule) {
+        md += `- **Schedule**: ${behavior.schedule}\n`;
       }
-      md += `- **Pending Content**: ${watcher.pending_content_count ?? 'N/A'}\n`;
+      md += `- **Pending Content**: ${behavior.pending_content_count ?? 'N/A'}\n`;
       md += '\n';
     }
   } else if (action === 'list') {

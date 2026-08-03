@@ -4,16 +4,16 @@ import { resolveActingPrincipal } from "../entity-policy";
 
 /**
  * The single seam every write surface resolves identity through. It merges the
- * two channels an acting watcher arrives on (an explicit `watcher_source` and the
- * reaction session's own watcher), looks up the owning agent —
+ * two channels an acting behavior arrives on (an explicit `behavior_source` and the
+ * reaction session's own behavior), looks up the owning agent —
  * so no call site has to merge them and a reaction can't dodge its agent's
  * envelope by omitting attribution.
  *
- * The stub routes by query text: the watcher-owner JOIN (`FROM watchers`) returns a
+ * The stub routes by query text: the behavior-owner JOIN (`FROM behaviors`) returns a
  * row iff `ownerAgentId` is set; the direct-agent existence probe (`FROM agents`,
  * no join) returns a row iff `agentExists`. This lets a test model an agent that was
  * deleted out from under a live session (agentExists=false) distinctly from a
- * missing watcher.
+ * missing behavior.
  */
 function stubSql(
 	ownerAgentId: string | null,
@@ -21,7 +21,7 @@ function stubSql(
 ): DbClient {
 	const sql = (strings: TemplateStringsArray) => {
 		const text = strings.join(" ");
-		if (text.includes("FROM watchers")) {
+		if (text.includes("FROM behaviors")) {
 			return Promise.resolve(
 				ownerAgentId == null ? [] : [{ agent_id: ownerAgentId }],
 			);
@@ -32,40 +32,40 @@ function stubSql(
 	return sql as unknown as DbClient;
 }
 
-/** A stub where the watcher row is GONE — the owner JOIN returns no rows. */
-function stubSqlNoWatcher(): DbClient {
+/** A stub where the behavior row is GONE — the owner JOIN returns no rows. */
+function stubSqlNoBehavior(): DbClient {
 	return stubSql(null);
 }
 
 const ORG = "org-1";
 
 describe("resolveActingPrincipal", () => {
-	it("the trusted session watcher wins over the agent id AND a caller tag", async () => {
-		// The session watcher is stamped by the executor (trusted), so it binds even
+	it("the trusted session behavior wins over the agent id AND a caller tag", async () => {
+		// The session behavior is stamped by the executor (trusted), so it binds even
 		// with an agentId and a different explicit tag present. It folds its owner.
 		const actor = await resolveActingPrincipal(stubSql("owner-agent"), {
 			organizationId: ORG,
 			agentId: "agent-1",
-			explicitWatcherId: 7,
-			sessionWatcherId: 9,
+			explicitBehaviorId: 7,
+			sessionBehaviorId: 9,
 		});
 		expect(actor).toEqual({
-			kind: "watcher",
-			// The trusted SESSION watcher (9) wins over the caller-supplied tag (7).
-			id: "watcher:9",
+			kind: "behavior",
+			// The trusted SESSION behavior (9) wins over the caller-supplied tag (7).
+			id: "behavior:9",
 			ownerAgentId: "owner-agent",
 			ownerResolved: true,
 		});
 	});
 
-	it("an authed agent's caller-supplied tag for a FOREIGN watcher is ignored", async () => {
-		// The exploit: a restricted agent tags a watcher owned by someone else (or a
+	it("an authed agent's caller-supplied tag for a FOREIGN behavior is ignored", async () => {
+		// The exploit: a restricted agent tags a behavior owned by someone else (or a
 		// nonexistent id) to null out ownerAgentId and skip its own deny rows. The
 		// explicit tag must NOT override the authenticated agent identity.
 		const actor = await resolveActingPrincipal(stubSql("other-owner"), {
 			organizationId: ORG,
 			agentId: "agent-1",
-			explicitWatcherId: 7,
+			explicitBehaviorId: 7,
 		});
 		expect(actor).toEqual({
 			kind: "agent",
@@ -75,55 +75,55 @@ describe("resolveActingPrincipal", () => {
 		});
 	});
 
-	it("an authed agent tagging its OWN watcher is honored (owner matches)", async () => {
+	it("an authed agent tagging its OWN behavior is honored (owner matches)", async () => {
 		const actor = await resolveActingPrincipal(stubSql("agent-1"), {
 			organizationId: ORG,
 			agentId: "agent-1",
-			explicitWatcherId: 7,
+			explicitBehaviorId: 7,
 		});
 		expect(actor).toEqual({
-			kind: "watcher",
-			id: "watcher:7",
+			kind: "behavior",
+			id: "behavior:7",
 			ownerAgentId: "agent-1",
 			ownerResolved: true,
 		});
 	});
 
-	it("an explicit watcher_source binds the watcher + folds its owning agent", async () => {
+	it("an explicit behavior_source binds the behavior + folds its owning agent", async () => {
 		const actor = await resolveActingPrincipal(stubSql("owner-agent"), {
 			organizationId: ORG,
-			explicitWatcherId: 7,
+			explicitBehaviorId: 7,
 		});
 		expect(actor).toEqual({
-			kind: "watcher",
-			id: "watcher:7",
+			kind: "behavior",
+			id: "behavior:7",
 			ownerAgentId: "owner-agent",
 			ownerResolved: true,
 		});
 	});
 
-	it("the reaction SESSION watcher binds even with no explicit watcher_source", async () => {
-		// This is the reaction root fix: a script that omits watcher_source still
-		// acts as its watcher, so its agent's envelope binds.
+	it("the reaction SESSION behavior binds even with no explicit behavior_source", async () => {
+		// This is the reaction root fix: a script that omits behavior_source still
+		// acts as its behavior, so its agent's envelope binds.
 		const actor = await resolveActingPrincipal(stubSql("owner-agent"), {
 			organizationId: ORG,
-			sessionWatcherId: 9,
+			sessionBehaviorId: 9,
 		});
 		expect(actor).toEqual({
-			kind: "watcher",
-			id: "watcher:9",
+			kind: "behavior",
+			id: "behavior:9",
 			ownerAgentId: "owner-agent",
 			ownerResolved: true,
 		});
 	});
 
-	it("the trusted session watcher wins over an explicit tag (no retag to dodge policy)", async () => {
+	it("the trusted session behavior wins over an explicit tag (no retag to dodge policy)", async () => {
 		const actor = await resolveActingPrincipal(stubSql("owner-agent"), {
 			organizationId: ORG,
-			explicitWatcherId: 7,
-			sessionWatcherId: 9,
+			explicitBehaviorId: 7,
+			sessionBehaviorId: 9,
 		});
-		expect(actor.id).toBe("watcher:9");
+		expect(actor.id).toBe("behavior:9");
 	});
 
 	it("a plain user turn has no owner to fold", async () => {
@@ -139,17 +139,17 @@ describe("resolveActingPrincipal", () => {
 		});
 	});
 
-	it("a session watcher whose row is GONE resolves ownerResolved=false (gate fails closed)", async () => {
-		// The reaction's watcher was hard-deleted mid-flight. We still act as the
-		// watcher, but the owner lookup fails → ownerResolved=false, so the gate must
+	it("a session behavior whose row is GONE resolves ownerResolved=false (gate fails closed)", async () => {
+		// The reaction's behavior was hard-deleted mid-flight. We still act as the
+		// behavior, but the owner lookup fails → ownerResolved=false, so the gate must
 		// deny rather than run the write against the looser org default.
-		const actor = await resolveActingPrincipal(stubSqlNoWatcher(), {
+		const actor = await resolveActingPrincipal(stubSqlNoBehavior(), {
 			organizationId: ORG,
-			sessionWatcherId: 9,
+			sessionBehaviorId: 9,
 		});
 		expect(actor).toEqual({
-			kind: "watcher",
-			id: "watcher:9",
+			kind: "behavior",
+			id: "behavior:9",
 			ownerAgentId: null,
 			ownerResolved: false,
 		});
@@ -173,16 +173,16 @@ describe("resolveActingPrincipal", () => {
 		});
 	});
 
-	it("a session watcher whose OWNING AGENT was deleted resolves ownerResolved=false", async () => {
-		// There is no watcher→agent FK, so an in-flight watcher's agent_id can dangle
+	it("a session behavior whose OWNING AGENT was deleted resolves ownerResolved=false", async () => {
+		// There is no behavior→agent FK, so an in-flight behavior's agent_id can dangle
 		// after the owner is deleted. The owner JOIN requires the agent row, so the
 		// lookup returns no rows → ownerResolved=false → gate denies. (stubSql(null)
 		// models the JOIN finding nothing because the agent side is gone.)
 		const actor = await resolveActingPrincipal(stubSql(null), {
 			organizationId: ORG,
-			sessionWatcherId: 9,
+			sessionBehaviorId: 9,
 		});
 		expect(actor.ownerResolved).toBe(false);
-		expect(actor.kind).toBe("watcher");
+		expect(actor.kind).toBe("behavior");
 	});
 });

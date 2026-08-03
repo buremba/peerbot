@@ -65,7 +65,7 @@ interface ChatInteractionEnvelope {
 /**
  * `platformMetadata.source` values for turns dispatched server-side with no
  * SSE client on any pod. These bypass the API owner-gate in routeToRenderer.
- * Producers: routes/public/agent.ts (watcher-run/direct-api from session
+ * Producers: routes/public/agent.ts (behavior-run/direct-api from session
  * intent), services/agent-threads.ts (internal default), connectors/
  * scheduled/jobs.ts.
  *
@@ -449,11 +449,11 @@ export class UnifiedThreadResponseConsumer {
       // and the same raised-retry send opts as terminal rows so the re-queue
       // window covers the cross-pod hand-off and the browser's POST→connect gap.
       //
-      // Headless rows are exempt: turns dispatched server-side (watcher runs,
+      // Headless rows are exempt: turns dispatched server-side (behavior runs,
       // connector repair, scheduled jobs, internal threads) never open an SSE
       // connection on ANY pod, so gating them re-queues 30x, dead-letters the
-      // row, and skips the renderer side-effects (watcher run resolution most
-      // critically — a failed watcher run otherwise surfaces only via the 2h
+      // row, and skips the renderer side-effects (behavior run resolution most
+      // critically — a failed behavior run otherwise surfaces only via the 2h
       // stale sweep). No pod is "the owner"; the first claimer delivers, and
       // the SSE broadcast is a harmless no-op. `source` is stamped at dispatch
       // (routes/public/agent.ts from session intent; agent-threads/repair/

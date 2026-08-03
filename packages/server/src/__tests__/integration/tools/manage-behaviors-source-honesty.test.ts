@@ -19,7 +19,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import type { Env } from "../../../index";
 import type { AuthContext } from "../../../tools/execute";
 import { executeTool } from "../../../tools/execute";
-import { DEFAULT_BEHAVIOR_SOURCE_QUERY } from "../../../watchers/source-refs";
+import { DEFAULT_BEHAVIOR_SOURCE_QUERY } from "../../../behaviors/source-refs";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
@@ -91,7 +91,7 @@ describe("manage_behaviors — create_version source ownership", () => {
 
 	async function storedSources(behaviorId: string): Promise<Sources> {
 		const sql = getTestDb();
-		const rows = await sql`SELECT sources FROM watchers WHERE id = ${behaviorId}`;
+		const rows = await sql`SELECT sources FROM behaviors WHERE id = ${behaviorId}`;
 		return (rows[0] as { sources: Sources | null }).sources ?? [];
 	}
 
@@ -198,7 +198,7 @@ describe("manage_behaviors — create_version source ownership", () => {
 			organization_id: orgId,
 		});
 		const [root] = await sql<{ current_version_id: number }>`
-			SELECT current_version_id FROM watchers WHERE id = ${behaviorId}
+			SELECT current_version_id FROM behaviors WHERE id = ${behaviorId}
 		`;
 		const assigned = (await executeTool(
 			"manage_behaviors",

@@ -39,7 +39,7 @@ export interface NotificationsSendInput {
 	connection_id?: string;
 	/** Arbitrary JSON payload appended to the body as formatted JSON. */
 	data?: Record<string, unknown>;
-	/** Attribution when sent from a watcher reaction — both ids are numeric. */
+	/** Attribution when sent from a behavior reaction — both ids are numeric. */
 	behavior_source?: { behavior_id: number; window_id: number };
 }
 

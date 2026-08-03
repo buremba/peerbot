@@ -869,7 +869,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       ownership.organizationId ?? metadataOrgId ?? callerOrgId;
 
     // A `behavior_run` intent decides this session's userId/thread, and hence
-    // the `_watcher_<id>_run_<id>` conversation suffix that downstream gates
+    // the `_behavior_<id>_run_<id>` conversation suffix that downstream gates
     // read a Behavior's identity out of. Verify both the dispatcher claim and
     // its short-lived internal token HERE — the one place the intent enters
     // the system — so downstream code can trust the packed correlation.
@@ -909,11 +909,11 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     // (resolveBuilderAdminGrant) keys on this run's userId, so trusting a
     // client value would let any caller name an admin to mint the grant.
     const userId = behaviorIntent
-      ? // Internal correlation key: the `..._watcher_<id>_run_<id>` conversationId
+      ? // Internal correlation key: the `..._behavior_<id>_run_<id>` conversationId
         // shape is prod-proven and drives worker dispatch + SSE owner-routing
-        // (see the conversationId comment below). Keep the internal `watcher_`
+        // (see the conversationId comment below). Keep the internal `behavior_`
         // wire prefix even though the public intent field is `behaviorId`.
-        `watcher_${behaviorIntent.behaviorId}`
+        `behavior_${behaviorIntent.behaviorId}`
       : isSystemAgentSession
         ? (systemCallerUserId as string)
         : requestedUserId || authUserId || agentId;
@@ -924,7 +924,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     const effectiveDryRun = behaviorIntent ? false : dryRun || false;
 
     // Build composite conversationId for user-specific sessions.
-    // Uses _ separator (colons not allowed in BullMQ custom IDs). Watcher
+    // Uses _ separator (colons not allowed in BullMQ custom IDs). Behavior
     // automation gets one deterministic one-shot session per run and never
     // resumes human/API sessions such as marketing_marketing.
     //
@@ -936,13 +936,13 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     // suffix prevents `forceNew` from silently overwriting another tenant's
     // session at setSession time.
     //
-    // Watcher sessions are EXEMPT: their conversationId is already globally
-    // unique via the DB-serial watcherId + runId, and downstream correlation
-    // relies on the exact `..._watcher_<id>_run_<id>` shape — the worker
+    // Behavior sessions are EXEMPT: their conversationId is already globally
+    // unique via the DB-serial behaviorId + runId, and downstream correlation
+    // relies on the exact `..._behavior_<id>_run_<id>` shape — the worker
     // session key AND the API/SSE owner-routing key (unified-thread-consumer)
     // both derive from this conversationId. Injecting `_<org>_` mid-id splits
-    // `watcher_<id>` from `run_<id>`, breaking watcher→worker dispatch (caught
-    // by the sdk-e2e gate). Keep the prod-proven shape for the watcher path.
+    // `behavior_<id>` from `run_<id>`, breaking behavior→worker dispatch (caught
+    // by the sdk-e2e gate). Keep the prod-proven shape for the behavior path.
     const conversationId = buildApiConversationId({
       agentId,
       userId,
@@ -950,7 +950,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       threadId: effectiveThread || undefined,
     });
     // Validate the packed id, not individual request fields: a caller can place
-    // `_watcher_<id>_run_<id>` across userId/thread boundaries or entirely
+    // `_behavior_<id>_run_<id>` across userId/thread boundaries or entirely
     // inside either field. Only the verified internal intent may create the
     // suffix consumed by the unattended-tool policy.
     if (
@@ -1639,7 +1639,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
 
       // `!`-bash from web/direct-API chat (the primary `!` surface — ChatGPT-UI
       // style clients driving the conversation's sandbox without the LLM). Gated
-      // to genuine user chat: a watcher_run's injected text must stay ordinary
+      // to genuine user chat: a behavior_run's injected text must stay ordinary
       // text, never a deterministic shell trigger. The Chat SDK bridge does the
       // same for platform inbound.
       const bangBash =

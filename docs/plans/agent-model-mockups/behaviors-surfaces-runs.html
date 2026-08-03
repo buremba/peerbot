@@ -165,7 +165,7 @@
     <div class="grp">Detail examples</div>
     <button data-s="d-proactive">Behavior · proactive reply<span class="tag">Listen + output attrs</span></button>
     <button data-s="d-approval">Behavior · needs approval<span class="tag">governance gate</span></button>
-    <button data-s="d-watch">Behavior · Watch editor<span class="tag">the watcher builder, re-homed</span></button>
+    <button data-s="d-watch">Behavior · Watch editor<span class="tag">the behavior builder, re-homed</span></button>
     <button data-s="board">Surface · Errors board<span class="tag">upsert / maintained</span></button>
     <div class="grp">Shape</div>
     <button data-s="persona">Persona<span class="tag">soul + proactivity</span></button>
@@ -191,7 +191,7 @@
     <section class="screen on" id="behaviors">
       <div class="wrap">
         <h2>Behaviors</h2>
-        <p class="sub">How Ada acts. Each behavior is one sentence — <b style="color:var(--text)">when something happens, Ada does something</b>. One list, three kinds: <span class="kind listen">Listen</span> (chat), <span class="kind watch">Watch</span> (data), <span class="kind schedule">Schedule</span> (clock). Reach, Watchers and Schedules folded in.</p>
+        <p class="sub">How Ada acts. Each behavior is one sentence — <b style="color:var(--text)">when something happens, Ada does something</b>. One list, three kinds: <span class="kind listen">Listen</span> (chat), <span class="kind watch">Watch</span> (data), <span class="kind schedule">Schedule</span> (clock). Reach, Behaviors and Schedules folded in.</p>
 
         <div class="facets">
           <div class="facet"><span class="on">All</span><span>Listen</span><span>Watch</span><span>Schedule</span></div>
@@ -254,7 +254,7 @@
         <div class="rowline"><h3>1 · Kind</h3></div>
         <div class="sgrid" style="grid-template-columns:1fr 1fr 1fr">
           <div class="card" style="margin:0;border-color:var(--accent-line);background:var(--accent-soft)"><div class="st"><span class="kind listen">Listen</span></div><h4 style="margin-top:9px">A chat channel</h4><p class="cap" style="margin:4px 0 0">Real-time. She replies in Slack/Telegram. (was Reach)</p></div>
-          <div class="card" style="margin:0"><div class="st"><span class="kind watch">Watch</span></div><h4 style="margin-top:9px">A data feed</h4><p class="cap" style="margin:4px 0 0">New items match a rule — incrementally. (was Watchers)</p></div>
+          <div class="card" style="margin:0"><div class="st"><span class="kind watch">Watch</span></div><h4 style="margin-top:9px">A data feed</h4><p class="cap" style="margin:4px 0 0">New items match a rule — incrementally. (was Behaviors)</p></div>
           <div class="card" style="margin:0"><div class="st"><span class="kind schedule">Schedule</span></div><h4 style="margin-top:9px">A clock</h4><p class="cap" style="margin:4px 0 0">A cron cadence. (was Schedules)</p></div>
         </div>
         <div class="card" style="margin-top:14px">
@@ -358,11 +358,11 @@
       </div>
     </section>
 
-    <!-- WATCH EDITOR (watcher builder re-homed) -->
+    <!-- WATCH EDITOR (behavior builder re-homed) -->
     <section class="screen" id="d-watch">
       <div class="wrap">
         <div class="h"><span class="back" data-go="behaviors">←</span><div><h2>Triage new P0 GitHub issues</h2><p class="sub" style="margin-top:6px"><span class="kind watch">Watch</span> · GitHub · lobu</p></div></div>
-        <div class="rehome">This <b>is the old Watchers builder</b> — now the edit view of a Watch behavior. The list shows the one sentence; open it and you get the full builder as structured sections. Nothing lost.</div>
+        <div class="rehome">This <b>is the old Behaviors builder</b> — now the edit view of a Watch behavior. The list shows the one sentence; open it and you get the full builder as structured sections. Nothing lost.</div>
 
         <div class="card">
           <h4><span class="secnum">1</span>When it fires</h4><p class="cap">Pick a feed and a filter — no SQL. Only new items since the last run (incremental window).</p>
@@ -375,7 +375,7 @@
         </div>
 
         <div class="card">
-          <h4><span class="secnum">2</span>What Ada does</h4><p class="cap">The reaction — was the watcher's reaction_script.</p>
+          <h4><span class="secnum">2</span>What Ada does</h4><p class="cap">The reaction — was the behavior's reaction_script.</p>
           <textarea class="tin">Assess severity from the stack + affected users, tag the owning team, and draft a one-line triage summary with a suggested owner.</textarea>
         </div>
 
@@ -396,7 +396,7 @@
               <div class="field"><label>Model</label><select class="tin"><option>Default (org)</option></select></div>
               <div class="field"><label>Versions &amp; tuning</label>
                 <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="ver">Current · <b>v3</b></span><span class="hint" style="margin:0">trained by 12 👍/👎 signals · <a style="color:var(--accent)">history</a></span></div>
-                <div class="hint">The watcher's version + feedback loop lives here — and you give the feedback on <b>Runs</b> (below).</div>
+                <div class="hint">The behavior's version + feedback loop lives here — and you give the feedback on <b>Runs</b> (below).</div>
               </div>
             </div>
           </div>

@@ -101,8 +101,8 @@ describe("manage_operations batch scope (connector-approval lane)", () => {
         ${orgId}, 'action', 'pending', 'pending',
         ${opts.connectionId ?? null},
         ${opts.connectorKey}, ${opts.actionKey},
-        ${opts.behaviorId === undefined ? null : "watcher"},
-        ${opts.behaviorId === undefined ? null : `watcher:${opts.behaviorId}`},
+        ${opts.behaviorId === undefined ? null : "behavior"},
+        ${opts.behaviorId === undefined ? null : `behavior:${opts.behaviorId}`},
         NOW() - (${opts.ageDays ?? 0}::int * interval '1 day')
       )
       RETURNING id
@@ -209,7 +209,7 @@ describe("manage_operations batch scope (connector-approval lane)", () => {
 		expect(await approvalStatusOf(sibling)).toBe("pending");
 	});
 
-	it("behavior_id matches the trusted watcher principal stored on action runs", async () => {
+	it("behavior_id matches the trusted behavior principal stored on action runs", async () => {
 		const target = await seedPendingAction({
 			connectorKey: "github",
 			actionKey: "create_issue",

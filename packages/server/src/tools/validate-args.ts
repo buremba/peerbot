@@ -12,7 +12,7 @@
  * Coercion before validation (`Value.Convert`) is load-bearing: the callers
  * of this boundary are LLMs and external MCP clients,
  * and the historical failure class was round-trip type drift (a list action
- * returns `watcher_id` as a number, the update schema gates on Type.String —
+ * returns `behavior_id` as a number, the update schema gates on Type.String —
  * see #1131). Coercing `123` → `"123"` and `"5"` → `5` makes that whole
  * class a non-issue instead of a per-tool audit.
  */

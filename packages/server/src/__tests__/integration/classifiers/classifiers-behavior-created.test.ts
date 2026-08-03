@@ -4,7 +4,7 @@
  * `manage_classifiers` create/apply/classify/delete sit in `OWNER_ADMIN_ACTIONS`,
  * but `action-router.ts` returns early for a system context — so a Behavior
  * reaction (`userId: null`, `memberRole: null`, `isAuthenticated: true`, exactly
- * what `watchers/reaction-executor.ts` builds) is NOT stopped by the admin gate.
+ * what `behaviors/reaction-executor.ts` builds) is NOT stopped by the admin gate.
  * It got all the way to the INSERT and died there instead:
  *
  *     null value in column "created_by" of relation "classify_facet"
@@ -47,7 +47,7 @@ const ATTRIBUTE_VALUES = {
 };
 
 /**
- * Mirrors the reaction context in `watchers/reaction-executor.ts`: no user, no
+ * Mirrors the reaction context in `behaviors/reaction-executor.ts`: no user, no
  * member role, authenticated, scope check not applicable. Deliberately sets no
  * `agentId` — the reaction executor doesn't either.
  */
@@ -88,13 +88,13 @@ describe('a Behavior can define and use its own classifier', () => {
 
     // NOT NULL satisfied without inventing a user row.
     const rows = (await sql`
-      SELECT created_by, watcher_id FROM classify_facet
+      SELECT created_by, behavior_id FROM classify_facet
       WHERE slug = 'agent-invented' AND organization_id = ${org.id}
-    `) as unknown as Array<{ created_by: string; watcher_id: number | null }>;
+    `) as unknown as Array<{ created_by: string; behavior_id: number | null }>;
     expect(rows).toHaveLength(1);
     expect(rows[0].created_by).toBe('system');
     // Org-level, so the embedding engine can actually match it.
-    expect(rows[0].watcher_id).toBeNull();
+    expect(rows[0].behavior_id).toBeNull();
 
     // The point of defining it: the same Behavior can immediately use it.
     const event = await createTestEvent({

@@ -14,8 +14,8 @@ import type { ManageBehaviorsArgs, ManageBehaviorsResult } from '../manage_behav
 import {
   assertKeyingConfigEntityTypeExists,
   assertKeyingConfigShape,
-  assertWatcherVersionConfigValid,
-  assertWatcherSourcesResolve,
+  assertBehaviorVersionConfigValid,
+  assertBehaviorSourcesResolve,
   assertBehaviorSkillsResolve,
   assertPromptSkillTokensPinned,
   parseJsonInput,
@@ -53,23 +53,23 @@ export async function handleCreateVersion(
     throw new Error('behavior_id is required for create_version action');
   }
 
-  // Get current watcher + resolve the group root. Versioned config
+  // Get current behavior + resolve the group root. Versioned config
   // (prompt/schema/template/classifiers) is shared across the entire group
   // and version rows live on the group root, so we read from and write to
-  // `watcher_id = watcher_group_id`. The arg's watcher_id is only used to
+  // `behavior_id = behavior_group_id`. The arg's behavior_id is only used to
   // identify the group and to apply the per-assignment writes (sources,
   // schedule, scheduler_client_id) to that specific row.
-  const watcherRows = await sql`
-    SELECT i.id, i.version, i.current_version_id, i.watcher_group_id, i.sources, i.organization_id,
+  const behaviorRows = await sql`
+    SELECT i.id, i.version, i.current_version_id, i.behavior_group_id, i.sources, i.organization_id,
            i.entity_ids, i.schedule, i.timezone, i.triggers, i.agent_id
-    FROM watchers i WHERE i.id = ${args.behavior_id}
+    FROM behaviors i WHERE i.id = ${args.behavior_id}
   `;
-  if (watcherRows.length === 0) {
+  if (behaviorRows.length === 0) {
     throw new Error(`Behavior ${args.behavior_id} not found`);
   }
 
-  const groupId = Number(watcherRows[0].watcher_group_id);
-  const previousVersion = Number(watcherRows[0].version);
+  const groupId = Number(behaviorRows[0].behavior_group_id);
+  const previousVersion = Number(behaviorRows[0].version);
   const nextVersion = previousVersion + 1;
 
   // Load current version (from the group root's chain) to inherit fields
@@ -79,8 +79,8 @@ export async function handleCreateVersion(
       name, description, prompt, version_sources, skills,
       keying_config, classifiers,
       reactions_guidance
-    FROM watcher_versions
-    WHERE watcher_id = ${groupId}
+    FROM behavior_versions
+    WHERE behavior_id = ${groupId}
     ORDER BY version DESC LIMIT 1
   `;
   if (prevRows.length === 0) {
@@ -109,7 +109,7 @@ export async function handleCreateVersion(
   // Interactive authoring clients send an explicit replacement when their
   // source-chip set changes.
   const storedSources = normalizeStoredJsonField(
-    watcherRows[0].sources,
+    behaviorRows[0].sources,
     [] as Array<{ name: string; query: string }>
   );
   const sources = args.sources !== undefined ? args.sources : storedSources;
@@ -144,17 +144,17 @@ export async function handleCreateVersion(
     parseJsonInput<unknown[]>(args.classifiers, 'classifiers') ??
     normalizeStoredJsonField(prev.classifiers, undefined as unknown[] | undefined);
 
-  // Validate. The output contract is not authored on the watcher: an
-  // entity-typed watcher (keying_config.entity_type) derives it from that
-  // entity type's metadata_schema at runtime, and an untyped watcher runs
+  // Validate. The output contract is not authored on the behavior: an
+  // entity-typed behavior (keying_config.entity_type) derives it from that
+  // entity type's metadata_schema at runtime, and an untyped behavior runs
   // the worker's free-form summary fallback.
-  assertWatcherVersionConfigValid({ prompt, classifiers, sources });
+  assertBehaviorVersionConfigValid({ prompt, classifiers, sources });
 
   // Resolve every source against the org now (broken source → 422, not silent
   // empty context at read_knowledge): @refs are existence-checked, custom SQL is
-  // planned (LIMIT 0) for bad columns/syntax. The watcher row carries the org +
+  // planned (LIMIT 0) for bad columns/syntax. The behavior row carries the org +
   // entity_ids so {{entityId}} validates as it runs.
-  const versionOrganizationId = watcherRows[0].organization_id as string | null;
+  const versionOrganizationId = behaviorRows[0].organization_id as string | null;
   if (versionOrganizationId) {
     // Only validate a CALLER-SUPPLIED keying_config. An inherited value comes
     // from the stored previous version, and a metadata-only bump (name/schedule)
@@ -162,17 +162,17 @@ export async function handleCreateVersion(
     if (args.keying_config !== undefined) {
       await assertKeyingConfigEntityTypeExists(sql, versionOrganizationId, keyingConfig);
     }
-    await assertWatcherSourcesResolve(
+    await assertBehaviorSourcesResolve(
       sql,
       versionOrganizationId,
       sources,
-      parsePgNumberArray(watcherRows[0].entity_ids),
+      parsePgNumberArray(behaviorRows[0].entity_ids),
     );
     // Only check a CALLER-SUPPLIED skill set, for the same reason keying_config
     // is gated above: inherited snapshots were already valid when pinned, and a
     // name-only bump must not start failing because a skill was since renamed or
     // disabled in the library. The stored text still runs either way.
-    const versionAgentId = watcherRows[0].agent_id as string | null;
+    const versionAgentId = behaviorRows[0].agent_id as string | null;
     if (args.skills !== undefined && skills.length > 0) {
       if (!versionAgentId) {
         throw new ToolUserError(
@@ -191,9 +191,9 @@ export async function handleCreateVersion(
 
   const triggerWrite = resolveBehaviorTriggerWrite({
     triggers: args.triggers,
-    currentTriggers: watcherRows[0].triggers ?? [],
+    currentTriggers: behaviorRows[0].triggers ?? [],
   });
-  const previousTriggers = watcherRows[0].triggers ?? [];
+  const previousTriggers = behaviorRows[0].triggers ?? [];
   const triggersChanged =
     args.triggers !== undefined &&
     !behaviorTriggersEqual(previousTriggers, triggerWrite.triggers);
@@ -212,7 +212,7 @@ export async function handleCreateVersion(
   const setAsCurrent = args.set_as_current !== false;
   if (setAsCurrent) {
     const siblingRows = await sql`
-      SELECT id, triggers FROM watchers WHERE watcher_group_id = ${groupId}
+      SELECT id, triggers FROM behaviors WHERE behavior_group_id = ${groupId}
     `;
     for (const sibling of siblingRows) {
       const siblingTriggers =
@@ -237,33 +237,33 @@ export async function handleCreateVersion(
   let lockedNextVersion = nextVersion;
   await sql.begin(async (tx) => {
     // Serialize concurrent create_version calls on the same group. The
-    // unique (watcher_id, version) index would otherwise reject one of two
+    // unique (behavior_id, version) index would otherwise reject one of two
     // simultaneous N+1 inserts and surface as a 500. The advisory lock is
     // tx-scoped (auto-released on commit/rollback) and keyed by group id,
     // so unrelated groups are unaffected.
-    await tx`SELECT pg_advisory_xact_lock(hashtext('watcher_create_version'), ${groupId})`;
+    await tx`SELECT pg_advisory_xact_lock(hashtext('behavior_create_version'), ${groupId})`;
 
     // Re-resolve the latest id and version under the lock so we don't race
     // with a call that already committed while we were computing nextVersion.
-    versionId = await getNextNumericId(tx, 'watcher_versions');
+    versionId = await getNextNumericId(tx, 'behavior_versions');
     const latestRows = await tx`
-      SELECT MAX(version) AS v FROM watcher_versions WHERE watcher_id = ${groupId}
+      SELECT MAX(version) AS v FROM behavior_versions WHERE behavior_id = ${groupId}
     `;
     lockedNextVersion =
       latestRows.length > 0 && latestRows[0].v != null ? Number(latestRows[0].v) + 1 : nextVersion;
 
     // The new version row is owned by the group root, not the assignment
-    // the caller named. Every watcher in the group will later point at
+    // the caller named. Every behavior in the group will later point at
     // this row via current_version_id.
     // version_sources is intentionally NULL on the new version row: sources
     // are per-assignment now, so storing one assignment's sources in the
     // shared version row would let one assignment's source list override
     // every other assignment's sources via get_content's preference order.
-    // get_content falls through to watchers.sources when version_sources is
+    // get_content falls through to behaviors.sources when version_sources is
     // empty, which is the right per-assignment behavior.
     await tx`
-      INSERT INTO watcher_versions (
-        id, watcher_id, version, name, description,
+      INSERT INTO behavior_versions (
+        id, behavior_id, version, name, description,
         prompt, version_sources, skills,
         keying_config, classifiers,
         reactions_guidance, change_notes, created_by, created_at
@@ -278,9 +278,9 @@ export async function handleCreateVersion(
       )
     `;
 
-    // Update watcher to new version if set_as_current (default: true).
+    // Update behavior to new version if set_as_current (default: true).
     // Group-shared fields (current_version_id, version, name) cascade to
-    // every watcher in the group; per-assignment fields (sources,
+    // every behavior in the group; per-assignment fields (sources,
     // schedule, scheduler_client_id) update only the targeted row.
     if (setAsCurrent) {
       const shouldUpdateTriggers = args.triggers !== undefined;
@@ -291,10 +291,10 @@ export async function handleCreateVersion(
       const touchesCadence = shouldUpdateTriggers;
       const effectiveSchedule = touchesCadence
         ? scheduleValue
-        : ((watcherRows[0].schedule as string | null) ?? null);
+        : ((behaviorRows[0].schedule as string | null) ?? null);
       const effectiveTimezone = touchesCadence
         ? timezoneValue
-        : ((watcherRows[0].timezone as string | null) ?? null);
+        : ((behaviorRows[0].timezone as string | null) ?? null);
       const nextRunAtVal =
         touchesCadence && effectiveSchedule
           ? nextRunAt(effectiveSchedule, new Date(), effectiveTimezone)
@@ -302,18 +302,18 @@ export async function handleCreateVersion(
 
       // Group-shared cascade
       await tx`
-        UPDATE watchers
+        UPDATE behaviors
         SET
           current_version_id = ${versionId},
           version = ${lockedNextVersion},
           name = ${args.name ?? (prev.name as string)},
           updated_at = NOW()
-        WHERE watcher_group_id = ${groupId}
+        WHERE behavior_group_id = ${groupId}
       `;
 
       // Per-assignment writes (only the row the caller named)
       await tx`
-        UPDATE watchers
+        UPDATE behaviors
         SET
           sources = ${tx.json(sources)},
           scheduler_client_id = CASE WHEN ${args.scheduler_client_id !== undefined} THEN ${args.scheduler_client_id ?? null} ELSE scheduler_client_id END,
@@ -342,7 +342,7 @@ export async function handleCreateVersion(
       resourceId: args.behavior_id,
       op: 'updated',
       summary: `Behavior '${args.name ?? (prev.name as string) ?? args.behavior_id}' version ${lockedNextVersion} created`,
-      // Composed from the values just written (watcher row not refetched);
+      // Composed from the values just written (behavior row not refetched);
       // carries the new version-bound fields.
       state: {
         id: args.behavior_id,
@@ -408,18 +408,18 @@ export async function handleGetVersions(args: ManageBehaviorsArgs): Promise<{
     throw new Error('behavior_id is required for get_versions action');
   }
 
-  const watcherRows = await sql`
-    SELECT id, name, slug, current_version_id, watcher_group_id FROM watchers WHERE id = ${args.behavior_id}
+  const behaviorRows = await sql`
+    SELECT id, name, slug, current_version_id, behavior_group_id FROM behaviors WHERE id = ${args.behavior_id}
   `;
-  if (watcherRows.length === 0) {
+  if (behaviorRows.length === 0) {
     throw new Error(`Behavior ${args.behavior_id} not found`);
   }
 
-  const currentVersionId = watcherRows[0].current_version_id;
-  // Version rows live on the group root (watcher_group_id), not on each
+  const currentVersionId = behaviorRows[0].current_version_id;
+  // Version rows live on the group root (behavior_group_id), not on each
   // assignment — see handleCreateVersion. Resolve the root so get_versions
   // works for assignments created via create_from_version.
-  const groupId = Number(watcherRows[0].watcher_group_id ?? watcherRows[0].id);
+  const groupId = Number(behaviorRows[0].behavior_group_id ?? behaviorRows[0].id);
 
   const versionRows = await sql`
     SELECT
@@ -430,8 +430,8 @@ export async function handleGetVersions(args: ManageBehaviorsArgs): Promise<{
       v.created_at,
       v.created_by,
       v.change_notes
-    FROM watcher_versions v
-    WHERE v.watcher_id = ${groupId}
+    FROM behavior_versions v
+    WHERE v.behavior_id = ${groupId}
     ORDER BY v.version DESC
   `;
 
@@ -473,14 +473,14 @@ export async function handleGetVersionDetails(
 
   // Version rows live on the group root while sources live on the assignment.
   // Resolve both so assignment ids behave consistently with get_versions.
-  const watcherRows = await sql`
-    SELECT id, watcher_group_id, sources
-    FROM watchers WHERE id = ${args.behavior_id}
+  const behaviorRows = await sql`
+    SELECT id, behavior_group_id, sources
+    FROM behaviors WHERE id = ${args.behavior_id}
   `;
-  if (watcherRows.length === 0) {
+  if (behaviorRows.length === 0) {
     throw new Error(`Behavior ${args.behavior_id} not found`);
   }
-  const groupId = Number(watcherRows[0].watcher_group_id ?? watcherRows[0].id);
+  const groupId = Number(behaviorRows[0].behavior_group_id ?? behaviorRows[0].id);
 
   let rows;
   if (args.version !== undefined) {
@@ -490,8 +490,8 @@ export async function handleGetVersionDetails(
         version_sources, skills,
         keying_config, classifiers,
         reactions_guidance
-      FROM watcher_versions
-      WHERE watcher_id = ${groupId} AND version = ${args.version}
+      FROM behavior_versions
+      WHERE behavior_id = ${groupId} AND version = ${args.version}
       LIMIT 1
     `;
   } else {
@@ -501,8 +501,8 @@ export async function handleGetVersionDetails(
         v.version_sources, v.skills,
         v.keying_config, v.classifiers,
         v.reactions_guidance
-      FROM watcher_versions v
-      JOIN watchers w ON v.id = w.current_version_id
+      FROM behavior_versions v
+      JOIN behaviors w ON v.id = w.current_version_id
       WHERE w.id = ${args.behavior_id}
       LIMIT 1
     `;
@@ -540,7 +540,7 @@ export async function handleGetVersionDetails(
       versionSources.length > 0
         ? versionSources
         : normalizeStoredJsonField(
-            watcherRows[0].sources,
+            behaviorRows[0].sources,
             [] as Array<{ name: string; query: string }>
           ),
     keying_config: normalizeStoredJsonField(v.keying_config, undefined as unknown),

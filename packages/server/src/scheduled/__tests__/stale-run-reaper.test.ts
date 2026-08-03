@@ -364,9 +364,9 @@ describe("reapStaleRuns — connector lanes", () => {
 		expect(await statusOf(id)).toBe("timeout");
 	});
 
-	test("watcher lane is excluded from this reaper", async () => {
-		// Watcher runs have their own dedicated 2h sweep in watchers/automation.ts.
-		const watcherId = await seedRun({
+	test("behavior lane is excluded from this reaper", async () => {
+		// Behavior runs have their own dedicated 2h sweep in behaviors/automation.ts.
+		const behaviorId = await seedRun({
 			status: "running",
 			lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 10,
 			claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 10,
@@ -374,7 +374,7 @@ describe("reapStaleRuns — connector lanes", () => {
 		});
 		const result = await reapStaleRuns();
 		expect(result.reaped).toBe(0);
-		expect(await statusOf(watcherId)).toBe("running");
+		expect(await statusOf(behaviorId)).toBe("running");
 	});
 
 	test("back-to-back calls do not double-fail the same row", async () => {

@@ -16,7 +16,7 @@
  * org-management surface. `set_system_agent` is the only writer of
  * organization.system_agent_id here (default-org provisioning is the other).
  *
- * Agent/watcher principals: list/get honor agent_config `read` (default auto;
+ * Agent/behavior principals: list/get honor agent_config `read` (default auto;
  * per-target deny tightens via target_agent_id — max-restrictive fold, so
  * targets cannot loosen a blanket deny). Humans skip the write-gate (role
  * tier is separate). create/update/delete still go through the write-gate.
@@ -87,7 +87,7 @@ async function actingPrincipalFor(ctx: ToolContext): Promise<ActingPrincipal> {
     organizationId: ctx.organizationId,
     userId: ctx.userId,
     agentId: ctx.agentId,
-    sessionWatcherId: ctx.actingWatcherId ?? null,
+    sessionBehaviorId: ctx.actingBehaviorId ?? null,
   });
 }
 
@@ -891,7 +891,7 @@ async function manageAgentsImpl(
 /**
  * Route one agent write through the `agent_config` write-gate class. The policy
  * decides per (principal, action): a human member applies immediately, an
- * agent/watcher-driven write follows the org's policy (default: create/update
+ * agent/behavior-driven write follows the org's policy (default: create/update
  * queue an approval, delete is denied). `require_approval` → queue a pending run
  * + card; `allow` → run the apply* handler now; `deny` → refuse.
  */
@@ -901,11 +901,11 @@ async function dispatchAgentWrite(
   ctx: ToolContext,
   env: Env
 ): Promise<ManageAgentsResult> {
-  // Resolve identity through the shared seam so a watcher reaction (which sets
-  // ctx.actingWatcherId but no agentId) binds its owning agent's `agent_config`
+  // Resolve identity through the shared seam so a behavior reaction (which sets
+  // ctx.actingBehaviorId but no agentId) binds its owning agent's `agent_config`
   // envelope — otherwise it would gate as a null-id agent and skip the owner's
   // approval/deny override. manage_agents has no behavior_source arg, so only the
-  // trusted session watcher applies.
+  // trusted session behavior applies.
   const actor = await actingPrincipalFor(ctx);
   // update/delete name the target agent; create has no target (blanket only).
   const targetAgentId =
@@ -943,8 +943,8 @@ async function dispatchAgentWrite(
 }
 
 // create/update/delete consult the agent_config write-gate (human immediate;
-// agent/watcher may queue approval). list/get honor agent_config `read` for
-// agent/watcher principals. set_system_agent stays human/admin immediate.
+// agent/behavior may queue approval). list/get honor agent_config `read` for
+// agent/behavior principals. set_system_agent stays human/admin immediate.
 const runManageAgents = defineFlatActionTool<ManageAgentsArgs, ManageAgentsResult>(
   'manage_agents',
   {

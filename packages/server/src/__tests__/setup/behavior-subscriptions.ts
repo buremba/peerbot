@@ -66,12 +66,12 @@ export async function createTestBehaviorSubscription(opts: {
 		)
 		ON CONFLICT (id) DO NOTHING
 	`;
-	const ids = await sql<{ watcher_id: number; version_id: number }>`
+	const ids = await sql<{ behavior_id: number; version_id: number }>`
 		SELECT
-		  nextval('watchers_id_seq')::integer AS watcher_id,
-		  nextval('watcher_template_versions_id_seq')::integer AS version_id
+		  nextval('behaviors_id_seq')::integer AS behavior_id,
+		  nextval('behavior_template_versions_id_seq')::integer AS version_id
 	`;
-	const watcherId = ids[0]!.watcher_id;
+	const behaviorId = ids[0]!.behavior_id;
 	const versionId = ids[0]!.version_id;
 	const platform = opts.platform ?? connection.connector_key;
 	const prefix = `${platform}:`;
@@ -95,31 +95,31 @@ export async function createTestBehaviorSubscription(opts: {
 		},
 	];
 	await sql`
-		INSERT INTO watchers (
+		INSERT INTO behaviors (
 			id, name, slug, description, organization_id, entity_ids,
 			triggers, agent_id, model_config, execution_config, sources, version,
-			current_version_id, tags, status, created_by, watcher_group_id
+			current_version_id, tags, status, created_by, behavior_group_id
 		) VALUES (
-			${watcherId}, ${`Messages in ${opts.channelId}`}, ${`test-chat-${watcherId}`},
+			${behaviorId}, ${`Messages in ${opts.channelId}`}, ${`test-chat-${behaviorId}`},
 			'Test chat subscription', ${opts.organizationId}, '{}'::bigint[],
 			${sql.json(triggers)}, ${opts.agentId}, '{}'::jsonb,
 			${opts.model ? sql.json({ model: opts.model }) : null}, '[]'::jsonb, 1,
-			NULL, ARRAY['system:chat-link']::text[], 'active', ${createdBy}, ${watcherId}
+			NULL, ARRAY['system:chat-link']::text[], 'active', ${createdBy}, ${behaviorId}
 		)
 	`;
 	await sql`
-		INSERT INTO watcher_versions (
-			id, watcher_id, version, name, prompt, version_sources,
+		INSERT INTO behavior_versions (
+			id, behavior_id, version, name, prompt, version_sources,
 			change_notes, created_by
 		) VALUES (
-			${versionId}, ${watcherId}, 1, ${`Messages in ${opts.channelId}`},
+			${versionId}, ${behaviorId}, 1, ${`Messages in ${opts.channelId}`},
 			'Respond helpfully to the incoming message.', '[]'::jsonb,
 			'Test subscription', ${createdBy}
 		)
 	`;
 	await sql`
-		UPDATE watchers SET current_version_id = ${versionId}
-		WHERE id = ${watcherId}
+		UPDATE behaviors SET current_version_id = ${versionId}
+		WHERE id = ${behaviorId}
 	`;
 }
 
@@ -129,7 +129,7 @@ export async function archiveTestBehaviorSubscriptions(opts: {
 }): Promise<void> {
 	const sql = getTestDb();
 	await sql`
-		UPDATE watchers
+		UPDATE behaviors
 		SET status = 'archived', updated_at = current_timestamp
 		WHERE organization_id = ${opts.organizationId}
 		  ${opts.agentId ? sql`AND agent_id = ${opts.agentId}` : sql``}
@@ -177,7 +177,7 @@ export async function listTestBehaviorSubscriptions(filters?: {
 					c.config->'chatMetadata'->>'teamId'
 				) AS team_id,
 				c.id AS connection_id
-			FROM watchers w
+			FROM behaviors w
 			CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
 			JOIN connections c
 			  ON c.id = CASE

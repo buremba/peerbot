@@ -1,0 +1,607 @@
+import type { DbClient } from '../db/client';
+import { slugToRuntimeConnectionId } from '../lobu/stores/connections-projection';
+import type { BehaviorSource } from '../types/behaviors';
+import { executeDataSources } from '../utils/execute-data-sources';
+
+/**
+ * Validate a custom-SQL Behavior source at save time. Runs the SAME scoped
+ * query the reader uses, wrapped in `SELECT ... LIMIT 0` so Postgres plans and
+ * type-checks it (undefined column → 42703, syntax error, admin-table access)
+ * without materializing any rows, and throws on failure. A structurally valid
+ * query that merely matches 0 rows passes.
+ *
+ * `entityIds` mirrors what the runtime reader supplies (the Behavior's own
+ * entity_ids). It is passed through so `{{entityId}}` substitutes exactly as it
+ * will at run time: an entity-bound Behavior validates its `{{entityId}}` source
+ * cleanly, while an ORG-SCOPED Behavior (no entity_ids) leaves `{{entityId}}`
+ * unresolved and is rejected here — the same source would fail on every runtime
+ * read, so catching it at save is the point. `validateEntitySlugs` also rejects
+ * typoed table names that would otherwise compile as empty entity-type CTEs.
+ */
+async function validateCustomSqlSource(
+  sql: DbClient,
+  organizationId: string,
+  entityIds: number[],
+  source: BehaviorSource
+): Promise<void> {
+  await executeDataSources(
+    { [source.name]: { query: source.query } },
+    {
+      organizationId,
+      // Only supply entity ids the Behavior actually has, so {{entityId}} on an
+      // org-scoped Behavior stays unresolved and fails validation (matching the
+      // runtime). {{query.*}} substitutes to NULL with an empty query map.
+      entityIds: entityIds.length > 0 ? entityIds : undefined,
+      query: {},
+    },
+    sql,
+    {
+      throwOnError: true,
+      validateEntitySlugs: true,
+      wrapQuery: (scopedSql) => `SELECT * FROM (${scopedSql}) AS _validate LIMIT 0`,
+    }
+  );
+}
+
+// 'channel' is a chat-transcript source (streaming feed → channel_messages). It
+// is prompt CONTEXT, not events: its rows must never be signed as event
+// content_ids (channel_messages.id is not an events.id — complete_window links
+// content_ids into behavior_window_events.event_id, an FK to events).
+export type BehaviorSourceKind = 'event' | 'entity' | 'metric' | 'channel';
+
+export type BehaviorSourceRef =
+  | { type: 'feed'; value: string }
+  | { type: 'connection'; value: string }
+  | { type: 'connector'; value: string }
+  | { type: 'channel'; value: string }
+  | { type: 'entity'; value: string }
+  | { type: 'metric'; entityType: string; measure: string };
+
+export interface NormalizedBehaviorSource extends BehaviorSource {
+  kind: BehaviorSourceKind;
+  ref?: BehaviorSourceRef;
+}
+
+const REF_RE = /^@([a-z_][a-z0-9_-]*):(.+)$/i;
+const SAFE_REF_VALUE_RE = /^[#@a-zA-Z0-9._:/-]+$/;
+const SAFE_SLUG_RE = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
+const SAFE_CONNECTOR_RE = /^[a-zA-Z0-9._-]+$/;
+
+function assertSafeRefValue(label: string, value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) throw new Error(`${label} reference is empty`);
+  if (!SAFE_REF_VALUE_RE.test(trimmed)) {
+    throw new Error(`${label} reference contains unsupported characters`);
+  }
+  return trimmed;
+}
+
+function assertSafeSlug(label: string, value: string): string {
+  const trimmed = assertSafeRefValue(label, value);
+  if (!SAFE_SLUG_RE.test(trimmed)) {
+    throw new Error(`${label} reference must be a plain slug`);
+  }
+  return trimmed;
+}
+
+function sqlString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/**
+ * Default all-events source for a Behavior authored with no sources.
+ *
+ * Excludes the server's bookkeeping rows — `change` (config/lifecycle/entity
+ * audit trails) and `audit` (tool-invocation log). Historically these were
+ * invisible to Behavior windows by accident (they were inserted with
+ * occurred_at NULL, which no window matched); once insertEvent started
+ * stamping occurred_at, a Behavior's own creation bookkeeping would land in
+ * its first window and defeat `skip_if_unchanged`, and every config edit
+ * would read as new workspace content. Explicitly authored sources are
+ * untouched — a source that wants the audit trail can still select it.
+ */
+export const DEFAULT_BEHAVIOR_SOURCE_QUERY =
+  "SELECT * FROM events WHERE semantic_type NOT IN ('change', 'audit') ORDER BY occurred_at DESC";
+
+function eventSelect(where: string): string {
+  return (
+    'SELECT id, organization_id, entity_ids, origin_id, title, payload_type, payload_text, ' +
+    'payload_data, payload_template, attachments, author_name, source_url, occurred_at, score, ' +
+    'metadata, created_at, origin_parent_id, origin_type, connector_key, connection_id, feed_key, ' +
+    'feed_id, semantic_type ' +
+    `FROM events WHERE ${where} ORDER BY occurred_at DESC`
+  );
+}
+
+export function parseBehaviorSourceRef(query: string): BehaviorSourceRef | null {
+  const trimmed = query.trim();
+  if (!trimmed.startsWith('@')) return null;
+
+  const match = REF_RE.exec(trimmed);
+  if (!match) {
+    throw new Error(
+      'source refs must use @feed:, @connection:, @connector:, @channel:, @entity:, or @metric:'
+    );
+  }
+
+  const type = match[1].toLowerCase();
+  const rawValue = match[2].trim();
+  switch (type) {
+    case 'feed':
+      return { type: 'feed', value: assertSafeRefValue('@feed', rawValue) };
+    case 'connection':
+      return { type: 'connection', value: assertSafeRefValue('@connection', rawValue) };
+    case 'connector':
+      return { type: 'connector', value: assertSafeRefValue('@connector', rawValue) };
+    case 'channel':
+      return { type: 'channel', value: assertSafeRefValue('@channel', rawValue) };
+    case 'entity':
+      return { type: 'entity', value: assertSafeSlug('@entity', rawValue) };
+    case 'metric': {
+      const value = assertSafeRefValue('@metric', rawValue);
+      const dot = value.indexOf('.');
+      if (dot <= 0 || dot === value.length - 1) {
+        throw new Error('@metric refs must be shaped like @metric:<entity_type>.<measure>');
+      }
+      const entityType = value.slice(0, dot);
+      const measure = value.slice(dot + 1);
+      if (!SAFE_SLUG_RE.test(entityType) || !SAFE_SLUG_RE.test(measure)) {
+        throw new Error('@metric entity type and measure must be plain identifiers');
+      }
+      return { type: 'metric', entityType, measure };
+    }
+    default:
+      throw new Error(`unsupported source ref @${type}:`);
+  }
+}
+
+// ── Prompt-token extraction ────────────────────────────────────────────────
+// The owletto composer serializes a picked reference into the behavior prompt as
+// an inline token `@[kind:id:label](path)` (see owletto's src/lib/references.ts,
+// mirrored in agent-worker's lobu-refs.ts). The backend — not the frontend —
+// derives the behavior's `sources[]` from these tokens, so the UI just sends the
+// raw prompt and there is no client/server gap. This is a small local mirror of
+// the codec because the server cannot import the owletto submodule.
+const PROMPT_REF_TOKEN = /@\[([a-z]+):([^:\]]*):([^\]]*)\]\(([^)\s]*)\)/g;
+const SQL_PATH_PREFIX = '#sql=';
+
+/** Which prompt-token kinds become a behavior source, and the `@mode` each uses.
+ *  `entity` scopes the behavior (not a source); `sql` is handled separately (its
+ *  query rides inline in the path). behavior/member/event never become sources. */
+const PROMPT_KIND_TO_MODE: Record<string, string> = {
+  feed: 'feed',
+  connection: 'connection',
+  connector: 'connector',
+  channel: 'channel',
+  metric: 'metric',
+};
+
+/** Slugify a token label into a safe output-field name. */
+function promptSourceSlug(value: string): string {
+  return (
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'source'
+  );
+}
+
+/**
+ * Derive behavior `sources[]` from the `@`-mention tokens in a prompt. Each
+ * feed/connection/connector/metric token becomes `{ name, query: '@mode:id' }`;
+ * a `sql` token carries its raw query URL-encoded in the path (`#sql=…`), which
+ * is decoded to the SELECT itself. Entities are excluded (they scope the
+ * behavior). De-dupes by query; names are made unique with a numeric suffix.
+ *
+ * Returns [] for a prompt with no source tokens. Malformed tokens are skipped
+ * rather than thrown — the downstream `assertBehaviorSourcesResolve` is what
+ * enforces that every derived source actually resolves against the org.
+ */
+export function extractSourcesFromPromptTokens(prompt: string): BehaviorSource[] {
+  const sources: BehaviorSource[] = [];
+  const seenQuery = new Set<string>();
+  const usedNames = new Set<string>();
+
+  const push = (label: string, fallback: string, query: string) => {
+    if (seenQuery.has(query)) return;
+    seenQuery.add(query);
+    let name = promptSourceSlug(label || fallback);
+    if (usedNames.has(name)) {
+      let i = 2;
+      while (usedNames.has(`${name}_${i}`)) i += 1;
+      name = `${name}_${i}`;
+    }
+    usedNames.add(name);
+    sources.push({ name, query });
+  };
+
+  for (const m of prompt.matchAll(PROMPT_REF_TOKEN)) {
+    const [, kind, id, label, path] = m;
+    if (!kind) continue;
+    if (kind === 'sql') {
+      if (!path?.startsWith(SQL_PATH_PREFIX)) continue;
+      let query: string;
+      try {
+        query = decodeURIComponent(path.slice(SQL_PATH_PREFIX.length)).trim();
+      } catch {
+        continue;
+      }
+      if (!query) continue;
+      push(label ?? '', 'sql_source', query);
+      continue;
+    }
+    const mode = PROMPT_KIND_TO_MODE[kind];
+    if (!mode) continue;
+    const value = (id ?? '').trim();
+    if (!value) continue;
+    push(label ?? '', value, `@${mode}:${value}`);
+  }
+
+  return sources;
+}
+
+/**
+ * Skill names referenced by `@[skill:<name>:<label>](…)` tokens in a prompt.
+ *
+ * Deliberately NOT part of `PROMPT_KIND_TO_MODE` — a skill is not a source, and
+ * this does not derive anything the caller did not send. The caller supplies
+ * `skills[{name, content}]` and the pinned body comes from THAT; resolving the
+ * body here would re-read the live library at save time and silently upgrade a
+ * pin, which is the one thing the snapshot model exists to prevent.
+ *
+ * De-duped, order preserved. Malformed tokens are skipped, matching
+ * `extractSourcesFromPromptTokens`.
+ */
+export function extractSkillNamesFromPromptTokens(prompt: string): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const m of prompt.matchAll(PROMPT_REF_TOKEN)) {
+    const [, kind, id] = m;
+    if (kind !== 'skill') continue;
+    const name = (id ?? '').trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
+}
+
+/**
+ * Merge prompt-derived sources into an explicit sources list, de-duping by
+ * query and keeping output-field names unique. Explicit sources win (they keep
+ * their names/order); prompt sources fill in the rest.
+ */
+export function mergePromptSources(
+  explicit: BehaviorSource[],
+  fromPrompt: BehaviorSource[]
+): BehaviorSource[] {
+  const merged = [...explicit];
+  const seenQuery = new Set(explicit.map((s) => s.query.trim()));
+  const usedNames = new Set(explicit.map((s) => s.name));
+  for (const src of fromPrompt) {
+    if (seenQuery.has(src.query.trim())) continue;
+    seenQuery.add(src.query.trim());
+    let name = src.name;
+    if (usedNames.has(name)) {
+      let i = 2;
+      while (usedNames.has(`${name}_${i}`)) i += 1;
+      name = `${name}_${i}`;
+    }
+    usedNames.add(name);
+    merged.push({ name, query: src.query });
+  }
+  return merged;
+}
+
+export function behaviorSourceKindForRef(ref: BehaviorSourceRef | null): BehaviorSourceKind {
+  if (!ref) return 'event';
+  if (ref.type === 'entity') return 'entity';
+  if (ref.type === 'metric') return 'metric';
+  return 'event';
+}
+
+export function validateBehaviorSourceRef(name: string, query: string): BehaviorSourceKind | null {
+  try {
+    const ref = parseBehaviorSourceRef(query);
+    return ref ? behaviorSourceKindForRef(ref) : null;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`source "${name}": ${message}`);
+  }
+}
+
+function numericRef(value: string): number | null {
+  if (!/^\d+$/.test(value)) return null;
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+interface ResolvedFeed {
+  id: number;
+  kind: string;
+  /** `connections.slug` of the feed's connection (for the channel-messages path). */
+  connectionSlug: string;
+  feedKey: string;
+}
+
+async function resolveFeeds(
+  sql: DbClient,
+  organizationId: string,
+  value: string
+): Promise<ResolvedFeed[]> {
+  const id = numericRef(value);
+  const rows = await sql<{
+    id: number | string;
+    kind: string | null;
+    feed_key: string;
+    connection_slug: string;
+  }>`
+    SELECT f.id, f.kind, f.feed_key, c.slug AS connection_slug
+    FROM feeds f
+    JOIN connections c ON c.id = f.connection_id
+    WHERE f.organization_id = ${organizationId}
+      AND f.deleted_at IS NULL
+      AND c.deleted_at IS NULL
+      AND (
+        ${id}::bigint IS NOT NULL AND f.id = ${id}::bigint
+        OR f.feed_key = ${value}
+        OR f.display_name = ${value}
+      )
+    ORDER BY f.id
+    LIMIT 100
+  `;
+  return rows
+    .map((r) => ({
+      id: Number(r.id),
+      kind: r.kind ?? 'collected',
+      connectionSlug: String(r.connection_slug),
+      feedKey: String(r.feed_key),
+    }))
+    .filter((r) => Number.isSafeInteger(r.id) && r.id > 0);
+}
+
+/** Strip a `platform:` prefix off a streaming feed_key to the bare channel id
+ *  that `channel_messages.channel_id` stores (mirror of read_feed). */
+function bareChannelId(feedKey: string): string {
+  return feedKey.includes(':') ? feedKey.slice(feedKey.indexOf(':') + 1) : feedKey;
+}
+
+/** Compile a set of streaming (chat-channel) feeds to a read over
+ *  `channel_messages`. The rows are membership-gated by the channel_messages CTE
+ *  in execute-data-sources — a headless behavior run reads only non-enforced
+ *  channels, so enforced-channel content never reaches the shared recap. */
+function channelMessagesSelect(feeds: ResolvedFeed[]): string {
+  const tuples = feeds
+    .map(
+      (f) =>
+        `(${sqlString(slugToRuntimeConnectionId(f.connectionSlug))}, ${sqlString(
+          bareChannelId(f.feedKey)
+        )})`
+    )
+    .join(', ');
+  return (
+    'SELECT id, organization_id, connection_id, platform, channel_id, thread_id, ' +
+    'platform_message_id, author_id, author_name, author_entity_id, is_bot, text, ' +
+    'occurred_at, created_at ' +
+    `FROM channel_messages WHERE (connection_id, channel_id) IN (${tuples}) ` +
+    'ORDER BY occurred_at DESC'
+  );
+}
+
+async function resolveConnectionId(
+  sql: DbClient,
+  organizationId: string,
+  value: string
+): Promise<number> {
+  const id = numericRef(value);
+  const rows = await sql<{ id: number | string }>`
+    SELECT id
+    FROM connections
+    WHERE organization_id = ${organizationId}
+      AND deleted_at IS NULL
+      AND (
+        ${id}::bigint IS NOT NULL AND id = ${id}::bigint
+        OR slug = ${value}
+        OR display_name = ${value}
+      )
+    ORDER BY id
+    LIMIT 2
+  `;
+  if (rows.length === 0) throw new Error(`@connection:${value} did not match any connection`);
+  if (rows.length > 1) throw new Error(`@connection:${value} matched more than one connection`);
+  return Number(rows[0].id);
+}
+
+async function compileRefToQuery(
+  sql: DbClient,
+  organizationId: string,
+  ref: BehaviorSourceRef
+): Promise<{ query: string | null; kind: BehaviorSourceKind }> {
+  switch (ref.type) {
+    case 'feed': {
+      const feeds = await resolveFeeds(sql, organizationId, ref.value);
+      if (feeds.length === 0) throw new Error(`@feed:${ref.value} did not match any feed`);
+      const collected = feeds.filter((f) => f.kind === 'collected');
+      const streaming = feeds.filter((f) => f.kind === 'streaming');
+      // A `virtual` feed is an external live query with no stored rows — it has no
+      // read seam here, so reject it (loud) rather than compile to empty.
+      const other = feeds.find((f) => f.kind !== 'collected' && f.kind !== 'streaming');
+      if (collected.length === 0 && streaming.length === 0 && other) {
+        throw new Error(
+          `@feed:${ref.value} is a ${other.kind} feed; only collected or streaming feeds can be an @feed source`
+        );
+      }
+      // Don't mix data planes in one source — a collected feed reads `events`, a
+      // streaming feed reads `channel_messages`; a single SELECT can't span both.
+      if (collected.length > 0 && streaming.length > 0) {
+        throw new Error(
+          `@feed:${ref.value} matched both collected and streaming feeds; reference one kind`
+        );
+      }
+      if (streaming.length > 0) {
+        // 'channel' kind → prompt context only, NOT event-id-signed (see the type).
+        return { query: channelMessagesSelect(streaming), kind: 'channel' };
+      }
+      return {
+        query: eventSelect(`feed_id IN (${collected.map((f) => f.id).join(',')})`),
+        kind: 'event',
+      };
+    }
+    case 'connection': {
+      const id = await resolveConnectionId(sql, organizationId, ref.value);
+      return { query: eventSelect(`connection_id = ${id}`), kind: 'event' };
+    }
+    case 'connector': {
+      if (!SAFE_CONNECTOR_RE.test(ref.value)) {
+        throw new Error('@connector refs must be plain connector keys');
+      }
+      return { query: eventSelect(`connector_key = ${sqlString(ref.value)}`), kind: 'event' };
+    }
+    case 'channel': {
+      const raw = ref.value.startsWith('#') ? ref.value.slice(1) : ref.value;
+      const channel = sqlString(raw);
+      const hashChannel = sqlString(`#${raw}`);
+      return {
+        query: eventSelect(
+          [
+            `metadata->>'channel' IN (${channel}, ${hashChannel})`,
+            `metadata->>'channel_name' IN (${channel}, ${hashChannel})`,
+            `metadata->>'channel_id' = ${raw ? channel : "''"}`,
+            `payload_data->>'channel' IN (${channel}, ${hashChannel})`,
+            `payload_data->>'channel_name' IN (${channel}, ${hashChannel})`,
+            `payload_data->>'channel_id' = ${raw ? channel : "''"}`,
+          ].join(' OR ')
+        ),
+        kind: 'event',
+      };
+    }
+    case 'entity':
+      return {
+        query:
+          'SELECT id, entity_type, entity_type_id, parent_id, name, slug, metadata, created_at, updated_at ' +
+          `FROM entities WHERE entity_type = ${sqlString(ref.value)} AND deleted_at IS NULL ` +
+          'ORDER BY updated_at DESC',
+        kind: 'entity',
+      };
+    case 'metric':
+      return { query: null, kind: 'metric' };
+  }
+}
+
+/**
+ * Save-time resolution: every @ref must resolve in the org NOW, so a typo fails
+ * at create/create_version/update (loud, 422) instead of at read_knowledge
+ * (silent empty rows, or a swallowed metric error). This is the operational-
+ * confidence counterpart to the syntax-only {@link validateBehaviorSourceRef}:
+ * it walks the same compile path the reader uses, plus existence checks for
+ * @entity (type) and @metric (type + declared measure) that the reader otherwise
+ * discovers by returning empty. @feed / @connection misses throw via
+ * {@link normalizeBehaviorSources}; @connector checks a connection uses that key;
+ * @channel is free-form (no static registry) and left unchecked.
+ */
+export async function resolveBehaviorSourcesForSave(
+  sql: DbClient,
+  organizationId: string,
+  sources: BehaviorSource[],
+  // The Behavior's own entity_ids (empty for an org-scoped Behavior). Threaded
+  // into custom-SQL validation so {{entityId}} resolves exactly as at run time.
+  entityIds: number[] = []
+): Promise<void> {
+  for (const source of sources) {
+    const ref = parseBehaviorSourceRef(source.query);
+    if (!ref) {
+      // Custom SQL — validate it (see validateCustomSqlSource for the mechanism
+      // and its limits) so a typo'd source fails here instead of silently
+      // returning 0 rows forever at read time.
+      await validateCustomSqlSource(sql, organizationId, entityIds, source);
+      continue;
+    }
+
+    if (ref.type === 'entity') {
+      const exists = await sql<{ id: number }>`
+        SELECT id FROM entity_types
+        WHERE slug = ${ref.value}
+          AND organization_id = ${organizationId}
+          AND deleted_at IS NULL
+        LIMIT 1
+      `;
+      if (exists.length === 0) {
+        throw new Error(
+          `source "${source.name}": @entity:${ref.value} is not an entity type in this organization`
+        );
+      }
+      continue;
+    }
+
+    if (ref.type === 'metric') {
+      const rows = await sql<{ id: number; metrics_config: unknown }>`
+        SELECT id, metrics_config FROM entity_types
+        WHERE slug = ${ref.entityType}
+          AND organization_id = ${organizationId}
+          AND deleted_at IS NULL
+        LIMIT 1
+      `;
+      if (rows.length === 0) {
+        throw new Error(
+          `source "${source.name}": @metric:${ref.entityType}.${ref.measure} — entity type "${ref.entityType}" not found in this organization`
+        );
+      }
+      const measures = (
+        (rows[0].metrics_config as { measures?: Record<string, unknown> } | null) ?? {}
+      ).measures ?? {};
+      if (!(ref.measure in measures)) {
+        throw new Error(
+          `source "${source.name}": @metric:${ref.entityType}.${ref.measure} — measure "${ref.measure}" is not declared on entity type "${ref.entityType}"`
+        );
+      }
+      continue;
+    }
+
+    if (ref.type === 'connector') {
+      const exists = await sql<{ id: number }>`
+        SELECT id FROM connections
+        WHERE organization_id = ${organizationId}
+          AND deleted_at IS NULL
+          AND connector_key = ${ref.value}
+        LIMIT 1
+      `;
+      if (exists.length === 0) {
+        throw new Error(
+          `source "${source.name}": @connector:${ref.value} — no connection in this organization uses connector key "${ref.value}"`
+        );
+      }
+    }
+  }
+
+  // Resolve feed/connection refs (throws on miss with the same message the
+  // reader produces) so the full set is validated, not just the structured ones.
+  await normalizeBehaviorSources(sql, organizationId, sources);
+}
+
+export async function normalizeBehaviorSources(
+  sql: DbClient,
+  organizationId: string,
+  sources: BehaviorSource[]
+): Promise<NormalizedBehaviorSource[]> {
+  const normalized: NormalizedBehaviorSource[] = [];
+  for (const source of sources) {
+    const ref = parseBehaviorSourceRef(source.query);
+    if (!ref) {
+      // A `context: true` SQL source is entity context, not event content: its
+      // rows reach the agent but are never linked into behavior_window_events
+      // (so its `id` may be an entity id, sidestepping the events FK). A plain
+      // SQL source stays event content and its `id` must be an `events.id`.
+      normalized.push({ ...source, kind: source.context ? 'entity' : 'event' });
+      continue;
+    }
+    const { query, kind } = await compileRefToQuery(sql, organizationId, ref);
+    normalized.push({
+      name: source.name,
+      query: query ?? source.query,
+      kind,
+      ref,
+    });
+  }
+  return normalized;
+}

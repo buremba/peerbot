@@ -27,7 +27,7 @@ interface SchedulerHealthStatus {
       failed: number;
       timeout: number;
     };
-    /** Behavior (watcher-lane) scheduling health — item 3.2, #2033. */
+    /** Behavior (behavior-lane) scheduling health — item 3.2, #2033. */
     activeBehaviors: number;
     overdueBehaviors: number;
     behaviorsOverdueByHours: number;
@@ -41,7 +41,7 @@ interface SchedulerHealthStatus {
 
 const OVERDUE_THRESHOLD_HOURS = 1; // Alert if feeds are overdue by more than 1 hour
 const EXECUTION_GAP_THRESHOLD_HOURS = 2; // Alert if no runs are created in 2 hours
-// Behaviors are dispatched by reconcileWatcherRuns on a 5-minute cron, so an
+// Behaviors are dispatched by reconcileBehaviorRuns on a 5-minute cron, so an
 // active behavior can sit up to one cron period past next_run_at between ticks.
 // Alert only once it is overdue by more than an hour — matches the feed
 // threshold and avoids flapping on normal tick jitter.
@@ -110,10 +110,10 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
     };
 
     // Behavior-lane scheduling health (item 3.2, #2033). Previously this
-    // health check filtered run_type='sync' ONLY, so behaviors (the watcher
-    // lane) were invisible to the overdue/alarm path even though they share the
+    // health check filtered run_type='sync' ONLY, so Behavior runs were
+    // invisible to the overdue/alarm path even though they share the
     // same "scheduler stopped firing" failure mode. Surface overdue active
-    // behaviors (by watchers.next_run_at) and pending behavior runs stuck past
+    // behaviors (by behaviors.next_run_at) and pending behavior runs stuck past
     // the stale interval, feeding the SAME issues[] the feed path uses.
     const behaviorStats = await sql`
       SELECT
@@ -129,14 +129,14 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
             THEN EXTRACT(EPOCH FROM (current_timestamp - next_run_at)) / 3600.0
           ELSE NULL
         END) AS max_overdue_hours
-      FROM watchers
+      FROM behaviors
     `;
 
     const activeBehaviors = Number(behaviorStats[0]?.active_behaviors || 0);
     const overdueBehaviors = Number(behaviorStats[0]?.overdue_behaviors || 0);
     const behaviorsOverdueByHours = Number(behaviorStats[0]?.max_overdue_hours || 0);
 
-    // Pending behavior runs stuck past WATCHER_RUN_STALE_INTERVAL — the reaper
+    // Pending behavior runs stuck past BEHAVIOR_RUN_STALE_INTERVAL — the reaper
     // should have timed these out; a growing count means the reaper/dispatch is
     // wedged.
     const staleBehaviorRunStats = await sql.unsafe(
@@ -145,7 +145,7 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
       FROM runs
       WHERE run_type = 'behavior'
         AND status = 'pending'
-        AND created_at < current_timestamp - INTERVAL '${intervals.watcherRunStaleInterval}'
+        AND created_at < current_timestamp - INTERVAL '${intervals.behaviorRunStaleInterval}'
     `
     );
     const stalePendingBehaviorRuns = Number(

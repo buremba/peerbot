@@ -359,7 +359,7 @@ export function createServerLifecycle(
 		const lobuApp = await initLobuGateway();
 
 		// 4. Task scheduler. Every periodic platform-internal job — token
-		// refresh, MCP DB cleanup, watcher automation — runs as a row in
+		// refresh, MCP DB cleanup, behavior automation — runs as a row in
 		// `public.runs` with cron-driven self-rescheduling.
 		const taskScheduler = await bootTaskScheduler(getLobuCoreServices(), env);
 

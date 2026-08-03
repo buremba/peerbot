@@ -24,10 +24,10 @@ describe("resolveBehaviorVisibilityUserId", () => {
     expect(
       resolveBehaviorVisibilityUserId(
         ctx({
-          actingWatcherId: 71,
+          actingBehaviorId: 71,
           sourceContext: {
             source: BEHAVIOR_RUN_SOURCE,
-            conversationId: "personal-agent_watcher_71_run_9",
+            conversationId: "personal-agent_behavior_71_run_9",
           },
         }),
         71
@@ -39,10 +39,10 @@ describe("resolveBehaviorVisibilityUserId", () => {
     expect(() =>
       resolveBehaviorVisibilityUserId(
         ctx({
-          actingWatcherId: 71,
+          actingBehaviorId: 71,
           sourceContext: {
             source: BEHAVIOR_RUN_SOURCE,
-            conversationId: "personal-agent_watcher_71_run_9",
+            conversationId: "personal-agent_behavior_71_run_9",
           },
         }),
         99

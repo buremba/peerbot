@@ -6,7 +6,7 @@
  *   - first turn INSERTs a row; a later turn bumps last_activity_at and keeps the
  *     original title (COALESCE), never clobbering with a null,
  *   - a platform conversation is keyed by (platform, conversation_id),
- *   - watcher conversation ids are excluded (they stay derived),
+ *   - behavior conversation ids are excluded (they stay derived),
  *   - platform is stored explicitly (an opaque no-colon id is not mislabeled),
  *   - listAgentThreads (scope=user) surfaces the owned row via the entity.
  */
@@ -16,7 +16,7 @@ import { listAgentThreads } from "../../gateway/services/agent-thread-list";
 import { buildApiConversationId } from "../../gateway/services/api-conversation-id";
 import {
 	classifyConversation,
-	isWatcherConversationId,
+	isBehaviorConversationId,
 	listConversations,
 	upsertConversation,
 } from "../../gateway/services/conversations-store";
@@ -47,7 +47,7 @@ describe("conversations dual-write", () => {
 		await cleanupTestDatabase();
 	});
 
-	it("classifies + excludes watcher ids like the dispatch guard", () => {
+	it("classifies + excludes behavior ids like the dispatch guard", () => {
 		expect(classifyConversation("api")).toEqual({
 			kind: "owned",
 			storedPlatform: "web",
@@ -61,8 +61,8 @@ describe("conversations dual-write", () => {
 		expect(classifyConversation("telegram").kind).toBe("platform");
 		// platform is lowercase-canonicalized (it's part of the PK).
 		expect(classifyConversation("Slack").storedPlatform).toBe("slack");
-		expect(isWatcherConversationId(`${AGENT}_watcher_5_run_9`)).toBe(true);
-		expect(isWatcherConversationId("ag_u_o_thread")).toBe(false);
+		expect(isBehaviorConversationId(`${AGENT}_behavior_5_run_9`)).toBe(true);
+		expect(isBehaviorConversationId("ag_u_o_thread")).toBe(false);
 	});
 
 	it("INSERTs on first turn and refreshes on later turns without losing title", async () => {
@@ -218,7 +218,7 @@ describe("conversations dual-write", () => {
 		});
 		expect(threads.every((t) => t.platform === "web")).toBe(true);
 		expect(threads.some((t) => t.id === "dw-thread")).toBe(true);
-		// platform + watcher rows never leak into scope=user
+		// platform + behavior rows never leak into scope=user
 		expect(threads.some((t) => t.conversationId === "slack:CX:ts")).toBe(false);
 	});
 });

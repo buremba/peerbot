@@ -92,7 +92,7 @@ describe("channel streaming feeds", () => {
     // Clear only the feed/binding/transcript state between cases; keep the org +
     // role fixtures (TestWorkspace) so the typed clients stay valid.
     await sql`DELETE FROM channel_messages WHERE organization_id = ${orgId}`;
-    await sql`DELETE FROM watchers WHERE organization_id = ${orgId}`;
+    await sql`DELETE FROM behaviors WHERE organization_id = ${orgId}`;
     await sql`DELETE FROM feeds WHERE organization_id = ${orgId}`;
     await sql`DELETE FROM connections WHERE organization_id = ${orgId}`;
     // ACL/graph state the membership-gate test materializes.

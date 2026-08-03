@@ -1,4 +1,4 @@
-# PLAN — Cost & Usage Tracking for Agents / Watchers / Users / Orgs
+# PLAN — Cost & Usage Tracking for Agents / Behaviors / Users / Orgs
 
 > **Status (2026-07-15):** **Planning** — PR #1410 closed unmerged; no `run_usage` table on main.
 
@@ -12,11 +12,11 @@ Line refs below are **as supplied by research and may have drifted** — the imp
 Purpose: **internal cost VISIBILITY + per-dimension SHOWBACK**, plus **soft + hard spend caps over a sliding window**. Explicitly **no external billing/invoicing now** (maybe later — design must not preclude it).
 
 Locked product decisions:
-- Breakdowns surfaced: **per-org, per-agent, per-watcher, per-user/per-thread** (all four).
+- Breakdowns surfaced: **per-org, per-agent, per-behavior, per-user/per-thread** (all four).
 - Money: **tokens always; USD where the model registry has a real price, else NULL + `unpriced` flag** (never a fake $0).
 - Caps: **soft (alert) AND hard (block)**, over a sliding interval.
-- Hard-cap dimensions in v1: **org + watcher** (most-restrictive configured cap wins). Agent/user get visibility + soft alerts, not blocking, in v1.
-- Over-budget UX: **block + tell the user** — headless/watcher runs terminalize with a "budget exceeded" error event; chat turns get a user-facing over-budget reply via the existing terminal-delivery path.
+- Hard-cap dimensions in v1: **org + behavior** (most-restrictive configured cap wins). Agent/user get visibility + soft alerts, not blocking, in v1.
+- Over-budget UX: **block + tell the user** — headless/behavior runs terminalize with a "budget exceeded" error event; chat turns get a user-facing over-budget reply via the existing terminal-delivery path.
 - In-flight runs: **only gate the NEXT admission** — never kill a running worker; bounded overshoot accepted (Cloudflare/Vercel model).
 - Gate failure mode: **fail OPEN** — on infra error (DB blip, lock timeout, unparseable usage) the run proceeds; block only on a cleanly-computed breach. Matches Lobu's guardrail doctrine.
 
@@ -40,13 +40,13 @@ Three slices, shipped in order:
 
 ### 4.1 `run_usage` (new table — the authoritative ledger)
 One row per run. Denormalize every dimension so all rollups are a plain `GROUP BY` (no JSONB extraction, no new migration per dimension):
-- Identity: `org_id`, `agent_id`, `conversation_id`, `user_id`, `watcher_id`, `run_id`, `source` (chat/watcher/scheduled/connector-repair/internal), `model`, `provider`.
-- Tokens (distinct buckets — **never one `input_tokens`**): `input`, `output`, `cache_read`, `cache_write`. (Cache-read ≈0.1× input on Anthropic; collapsing overstates cache-heavy watcher loops ~5–10×.)
+- Identity: `org_id`, `agent_id`, `conversation_id`, `user_id`, `behavior_id`, `run_id`, `source` (chat/behavior/scheduled/connector-repair/internal), `model`, `provider`.
+- Tokens (distinct buckets — **never one `input_tokens`**): `input`, `output`, `cache_read`, `cache_write`. (Cache-read ≈0.1× input on Anthropic; collapsing overstates cache-heavy behavior loops ~5–10×.)
 - Money: `usd` (nullable), `unpriced` (bool), and the **resolved unit rates frozen onto the row** at write time so a later price-table edit never restates history.
 - Caps support (slice 3): `state` (`reserved` | `final`), `estimate_usd` (the reservation amount), `occurred_at`.
-- Keys: `UNIQUE(run_id)` (or reuse the snapshot key `UNIQUE(org, agent, conv, run_id)`), `ON CONFLICT DO NOTHING` for ret/duplicate safety. Indexes on `(org_id, occurred_at)` and each capped dimension `(watcher_id, occurred_at)`.
+- Keys: `UNIQUE(run_id)` (or reuse the snapshot key `UNIQUE(org, agent, conv, run_id)`), `ON CONFLICT DO NOTHING` for ret/duplicate safety. Indexes on `(org_id, occurred_at)` and each capped dimension `(behavior_id, occurred_at)`.
 - Add to `QUERYABLE_SCHEMA` (`packages/server/src/utils/table-schema.ts:32-344`) so `metric_series` / `query_sql` can chart it. **Cost/USD views gate to admin** — see §8.
-- **Backfillable from `agent_transcript_snapshot`** — that table already stores every past run's full `session.jsonl` blob (keyed org/agent/conversation/run_id + terminal_status). So `run_usage` is not a new place we start collecting; we parse the blobs we already keep into queryable columns, and can **reconstruct retroactive cost history** for all prior runs in one backfill job. (Decided: **B — separate lean table**, not columns on the snapshot table, because retention decouples — prune fat blobs early, keep cheap cost rows ~13mo — and non-transcript runs (device-CLI watchers, connectors) have no snapshot but still need a cost row.)
+- **Backfillable from `agent_transcript_snapshot`** — that table already stores every past run's full `session.jsonl` blob (keyed org/agent/conversation/run_id + terminal_status). So `run_usage` is not a new place we start collecting; we parse the blobs we already keep into queryable columns, and can **reconstruct retroactive cost history** for all prior runs in one backfill job. (Decided: **B — separate lean table**, not columns on the snapshot table, because retention decouples — prune fat blobs early, keep cheap cost rows ~13mo — and non-transcript runs (device-CLI behaviors, connectors) have no snapshot but still need a cost row.)
 - Migration must pass the **squawk CI gate** (`CREATE TABLE IF NOT EXISTS`, fold unique into a constraint, `squawk-ignore` for concurrent-index/ban-drop; verify locally — `make review`/pi don't run squawk).
 
 Why a new table (rejected alternatives, fatal flaw each):
@@ -70,7 +70,7 @@ Capture and showback need **no** user config — every run is metered automatica
 cost_budgets(organization_id, scope, scope_id, window,
              soft_limit_usd, hard_limit_usd, enabled, created_by, created_at, updated_at,
              UNIQUE(organization_id, scope, scope_id, window))
-  -- scope: 'org' | 'watcher' (scope_id null = org-wide); window: 'daily'|'weekly'|'monthly'
+  -- scope: 'org' | 'behavior' (scope_id null = org-wide); window: 'daily'|'weekly'|'monthly'
   -- null hard_limit = visibility-only; null soft_limit = no alert
 
 model_price_overrides(organization_id, provider, model,
@@ -82,7 +82,7 @@ model_price_overrides(organization_id, provider, model,
 1. **owletto web UI — primary.** A "Cost" settings page: a *Budgets* editor (add a cap: scope · window · soft/hard $) and a *Price overrides* editor (model → rates). For non-technical workforce admins. Gated to owner/admin (§8).
 2. **CLI — `lobu.config.ts` → `lobu apply`.** Code-first orgs declare budgets/overrides in config; `apply` reconciles them into the two tables via the existing desired-state path (same as agents/Behaviors/connections). **No MCP tool** (decided).
 
-**Behavior overlap:** the existing `watchers.execution_config.max_budget_usd` is a *per-run* ceiling (claude-CLI flag), kept as-is. The new *sliding-window* Behavior cap lives in `cost_budgets` (`scope='watcher'`); the Behavior panel surfaces/links the budget editor — one budgets model, no two-places-to-set-a-cap.
+**Behavior overlap:** the existing `behaviors.execution_config.max_budget_usd` is a *per-run* ceiling (claude-CLI flag), kept as-is. The new *sliding-window* Behavior cap lives in `cost_budgets` (`scope='behavior'`); the Behavior panel surfaces/links the budget editor — one budgets model, no two-places-to-set-a-cap.
 
 ## 5. Capture
 
@@ -100,14 +100,14 @@ Natural persist-once seam: `LobuWorker.cleanup()` on the success path holds the 
 ### 5.4 Known capture gaps to handle
 - Usage currently reaches PG only on `terminalStatus==='completed'` (`worker.ts:291-297`). **Capture on ALL terminal states incl. failure/timeout/cancelled** — a timed-out 200k-token run still cost money, and runaway loops live exactly there.
 - A **provider change deletes `session.jsonl` and purges snapshots** (`session-runner.ts:710-760`) — another reason to capture per-run at completion, not rely on the file surviving.
-- **Device-worker CLI watcher runs** (Owletto local claude/codex) report back **no cost** today (`run-lifecycle.ts:604-622`) and have no `session.jsonl` on the gateway side. Cloud Lobu worker runs are covered; the device-CLI path needs separate handling (claude/codex CLIs can emit cost JSON) — scope as a follow-up, flag in v1 that device-CLI watcher spend is not captured.
+- **Device-worker CLI behavior runs** (Owletto local claude/codex) report back **no cost** today (`run-lifecycle.ts:604-622`) and have no `session.jsonl` on the gateway side. Cloud Lobu worker runs are covered; the device-CLI path needs separate handling (claude/codex CLIs can emit cost JSON) — scope as a follow-up, flag in v1 that device-CLI behavior spend is not captured.
 
 ## 6. Cost computation (tokens → USD)
 
 **Adopt `@pydantic/genai-prices` as the price map — do NOT hand-maintain pricing, and do NOT price via pi-ai's `calculateCost` alone.** Verified this session: pi-ai's `calculateCost` (`node_modules/@mariozechner/pi-ai/dist/models.js:22`) is a **flat 4-field formula** (`cost.{input,output,cacheRead,cacheWrite}/1e6 × usage.*`) with **no context-tier and no cache-write split** — `getModel("anthropic","claude-sonnet-4-5")` returns `{input:3,output:15,cacheRead:0.3,cacheWrite:3.75}`, zero tier fields. For a 1M-context backend, **every run crossing 200k input is systematically undercharged** (Sonnet input 3→6, cache-read 0.3→0.6, cache-write 3.75→7.5 above 200k). pi-ai inherits this from models.dev, so tokenlens (same upstream) shares the gap.
 
 - **`@pydantic/genai-prices`** (MIT, pydantic-ai team, active — npm v0.0.66, 2026-06) is the only TS-native lib that models the shapes we hit: `cache_read`/`cache_write`, **tiered prices** (>200k cliff), and **time-versioned rates** (a backfilled run prices at the rate in effect on its date). Synchronous, offline pure fn `calcPrice(usage, modelId, {providerId})` over a vendored catalog — safe in the completion seam under N>1. **Vendor the catalog offline; wire `updatePrices()` as a low-frequency daily background refresh** into a file / small PG table so new models track without a dep bump while `calcPrice` stays sync/offline in the hot path.
-- **VERIFIED this session** (installed + ran the npm package): it's a genuine JS port (ESM+CJS, typed, only dep `yargs`, `node>=20`) — *not* a Python wrapper. It imports and computes in Node, and its catalog carries the real tiers, e.g. `claude-sonnet-4-5 input_mtok = {base:3, tiers:[{start:200000, price:6}]}`. Measured a 250k-in/50k-out run: **pi-ai flat `$1.50` vs genai-prices tiered `$2.625` — a 43% undercharge** that pi-ai would silently bake in. Below 200k both return identical `$0.30`, so the swap only changes large-context runs (exactly the watcher/agent loops we care about). It's `v0.0.x` (young) → **pin the exact version + vendor the catalog + wrap behind our own `priceUsage()` adapter** so it's swappable.
+- **VERIFIED this session** (installed + ran the npm package): it's a genuine JS port (ESM+CJS, typed, only dep `yargs`, `node>=20`) — *not* a Python wrapper. It imports and computes in Node, and its catalog carries the real tiers, e.g. `claude-sonnet-4-5 input_mtok = {base:3, tiers:[{start:200000, price:6}]}`. Measured a 250k-in/50k-out run: **pi-ai flat `$1.50` vs genai-prices tiered `$2.625` — a 43% undercharge** that pi-ai would silently bake in. Below 200k both return identical `$0.30`, so the swap only changes large-context runs (exactly the behavior/agent loops we care about). It's `v0.0.x` (young) → **pin the exact version + vendor the catalog + wrap behind our own `priceUsage()` adapter** so it's swappable.
 - **TOKEN-SEMANTICS MISMATCH — must normalize in the adapter (found this session):** genai-prices treats `input_tokens` as the **grand total** prompt tokens with `cache_read_tokens`/`cache_write_tokens` as **subsets** (it computes uncached = input − cache_read − cache_write, and *throws* `"Uncached … cannot be negative"` if you pass them as separate counts). Anthropic's API returns them **separately** (`input_tokens` = uncached only, plus `cache_read_input_tokens`, plus `cache_creation_input_tokens`). The `priceUsage()` adapter MUST map our captured buckets into genai-prices' total+subset convention (`input_tokens = uncached + cache_read + cache_write`) and unit-test both conventions, or cache-heavy runs mis-price or error.
 - **Greedy specific-then-default:** price `cacheRead`/`cacheWrite` at their own rates first, then `input`/`output` on the remainder (genai-prices handles this) — cache tokens never double-counted. Cache nuance differs per provider (Anthropic: uncached / cache-read ≈0.1× / cache-creation ≈1.25–2×; OpenAI: cache reads only) — another reason to use a lib that encodes it rather than the flat formula.
 - **Per-org override table stays** for genuinely BYO/self-hosted/$0-in-catalog models (§4.3); genai-prices also exposes a custom-pricing hook for unknown-but-real models. The `model-resolver` zero-price trap (`model-resolver.ts:148`, dynamic openai-compat/Bedrock fabricate `cost:{0,0,0,0}`; alias `z-ai`→`zai`, `model-resolver.ts:49-51`) is exactly what routes a model to the override table.
@@ -116,14 +116,14 @@ Natural persist-once seam: `LobuWorker.cleanup()` on the success path holds the 
 
 ## 7. Granularity / rollups
 
-`organization_id` is the only reliably non-null dim across run types; for chat/agent/schedule runs `agent_id`/`user_id`/`conversation_id` live **only inside `runs.action_input` JSONB**, and there is **no `agent_id` column on `runs`** (`runs-queue.ts:353-387`). `watcher_id` IS first-class on `runs` for watcher runs (`queue-service.ts:357-387`). → **Denormalize all dims onto `run_usage` at write time** so every rollup is a cheap `GROUP BY` and a future dimension (per-skill, per-connector) is never a migration. All six rollups (per-run/thread/agent/user/org/watcher) become cheap.
+`organization_id` is the only reliably non-null dim across run types; for chat/agent/schedule runs `agent_id`/`user_id`/`conversation_id` live **only inside `runs.action_input` JSONB**, and there is **no `agent_id` column on `runs`** (`runs-queue.ts:353-387`). `behavior_id` IS first-class on `runs` for behavior runs (`queue-service.ts:357-387`). → **Denormalize all dims onto `run_usage` at write time** so every rollup is a cheap `GROUP BY` and a future dimension (per-skill, per-connector) is never a migration. All six rollups (per-run/thread/agent/user/org/behavior) become cheap.
 
 ## 8. Surfacing (owletto)
 
 - **Per-org spend chip** on Agents landing `StatsStrip` ("Spend (14d)") — add a `Stat` at `packages/owletto/src/app/$owner/agents/index.tsx:43-64`, fed by a new `metric_series` SQL mirroring `lifecycleCumulativeStatsSql`; reuses `POST /api/{slug}/metric_series`.
 - **Per-org spend tile** on workspace home — `DashboardMetricCard` at `packages/owletto/src/components/workspace-dashboard-home.tsx:390-421`.
 - **Per-agent usage/cost tab** — register in `AGENT_TABS` at `packages/owletto/src/components/agents/agents-workbench.tsx:45-56`.
-- **Per-watcher** spend over time on the watcher detail/tab.
+- **Per-behavior** spend over time on the behavior detail/tab.
 - **Per-user** has no home today (Members page redirects to the `$member` entity, `members/index.tsx:54-65`) — needs a new members stat strip.
 - DESIGN_GUIDELINES: chip reserves a skeleton (`series:[]`), landing loader awaits nothing, `<Card>` is the only elevated container, `metric_series` queries bucketed ≤365 rows / ≤5s / ≤2000 rows. Read `packages/owletto/DESIGN_GUIDELINES.md` before UI work.
 
@@ -133,16 +133,16 @@ Natural persist-once seam: `LobuWorker.cleanup()` on the success path holds the 
 
 Distills to: **a per-dimension running spend counter over a sliding window, gated at claim→spawn, reconciled at completion — all via Postgres, no in-memory accumulator.** (Running-counter-at-admission, the Cloudflare/Vercel model; LiteLLM's inline pre-call reserve is only partly applicable since Lobu has no inline hop inside the worker.)
 
-- **Gate location:** immediately AFTER a successful claim, BEFORE spawn — at `RunsQueue.claimOne()` (`runs-queue.ts`, chat/agent) and `poll.ts` claim (connector/watcher/auth); chat ingest at the `message-consumer.ts` admission point (where the input-guardrail trip already terminalizes).
+- **Gate location:** immediately AFTER a successful claim, BEFORE spawn — at `RunsQueue.claimOne()` (`runs-queue.ts`, chat/agent) and `poll.ts` claim (connector/behavior/auth); chat ingest at the `message-consumer.ts` admission point (where the input-guardrail trip already terminalizes).
 - **Counter = the `run_usage` table itself:** hard cap = `SUM(usd) WHERE <dim>=$x AND occurred_at > now() - $window` over raw rows (exact; per-window run cardinality is low). Dashboard gauge can use pre-aggregated per-(dim,hour) buckets + partial-bucket interpolation (~6% error, fine).
 - **Algorithm:** sliding-window-counter. Reject fixed-window (boundary doubling unacceptable for money) and token/leaky-bucket (built for rate, not a cumulative $ ceiling).
-- **Reserve→reconcile (post-hoc cost):** at the gate insert a `state='reserved', usd=estimate` row (estimate = recent avg actual usd for this agent/watcher/source over last K completed runs; cold-start fallback = `max_output_tokens × registry price`). The committed row is visible to the next claim's SUM — that's what stops N concurrent under-budget claims from collectively blowing the cap. Wrap read-decide-reserve in `n_xact_lock(BUDGET_NS, hash(dim_key))` (mirrors `insert-event.ts` dedup lock) so same-dimension claims serialize and different dimensions never contend. At completion, in the won-`RETURNING` branch, `UPDATE` the reserved row → `state='final'` with real buckets + frozen usd; over/under-shoot self-heals.
+- **Reserve→reconcile (post-hoc cost):** at the gate insert a `state='reserved', usd=estimate` row (estimate = recent avg actual usd for this agent/behavior/source over last K completed runs; cold-start fallback = `max_output_tokens × registry price`). The committed row is visible to the next claim's SUM — that's what stops N concurrent under-budget claims from collectively blowing the cap. Wrap read-decide-reserve in `n_xact_lock(BUDGET_NS, hash(dim_key))` (mirrors `insert-event.ts` dedup lock) so same-dimension claims serialize and different dimensions never contend. At completion, in the won-`RETURNING` branch, `UPDATE` the reserved row → `state='final'` with real buckets + frozen usd; over/under-shoot self-heals.
 - **Reconcile seams:** `finalizeRun()` (`run-lifecycle.ts:55-77`) and `RunsQueue.markCompleted()` (`runs-queue.ts:681-692`) — both guarded `UPDATE ... WHERE status=... AND claimed_by=$me RETURNING`; write usage only in the branch the RETURNING proves you won → exactly-once per pod.
 - **Orphan settlement (highest-consequence bug):** when a run is reaped (worker crash / 2h timeout / stale-claim sweep / `check-stalled-executions.ts` / `recoverStaleClaimedRowsOnStartup`), the **same sweep settles its reserved row** (delete or mark final $0) — else leaked reservations permanently inflate the window and false-positive-wedge the cap. Test crash/timeout/reaper paths explicitly.
 - **Soft cap = pure alert lane (slice 2):** a single-claimant Postgres threshold sweep (`connection-health`-style) emits a `budget-trip` event (guardrail-trip-style) + notify at 85%/95%; never blocks. A periodic sweep is sufficient (Langfuse confirms inline isn't needed); debounce per dimension+window to avoid flapping.
 - **Hard cap = refuse to spawn (slice 3):** over cap → don't dispatch; terminalize with a "budget exceeded" terminal error routed through the existing `thread_response` terminal-delivery path; chat gets a user-facing over-budget reply. Write the `budget-trip` event.
 - **Fail-open / fail-closed:** fail OPEN on any infra error in the SUM/lock/reserve/parse step (log + spawn anyway). Fail CLOSED only on an explicit cleanly-computed breach. Bounded concurrent overshoot is accepted (Cloudflare/Vercel parity).
-- **First concrete cap dimension:** keep `watchers.execution_config.max_budget_usd` as the existing per-run device-CLI ceiling (`BehaviorExecutionConfigSchema`; `WatcherDispatcher.buildArguments`) and add the first sliding-window Behavior cap in `cost_budgets` (`scope='watcher'`).
+- **First concrete cap dimension:** keep `behaviors.execution_config.max_budget_usd` as the existing per-run device-CLI ceiling (`BehaviorExecutionConfigSchema`; `BehaviorDispatcher.buildArguments`) and add the first sliding-window Behavior cap in `cost_budgets` (`scope='behavior'`).
 
 ## 10. Multi-replica & idempotency
 
@@ -155,10 +155,10 @@ Distills to: **a per-dimension running spend counter over a sliding window, gate
 1. **PR-0 (spike, no merge):** verify cache-token population per provider (§5.2), AND feed 3–4 real usage shapes (a >200k Anthropic run, a cache-heavy run, a Bedrock `us.anthropic.*` run, a z.ai/GLM run) through `@pydantic/genai-prices` `calcPrice` — diff USD vs pi-ai `calculateCost` to quantify the >200k undercharge and confirm provider/model-ID matching (the main pricing integration risk). Gate.
 2. **PR-1 (core):** widen `SessionEntry.message.usage` schema + fix the two `/session/stats` readers (§5.1). `make clean-workers`.
 3. **PR-2 (ledger):** `run_usage` migration (squawk-clean) + add to `QUERYABLE_SCHEMA`; worker emits structured `usage` in completion response; gateway computes USD via `@pydantic/genai-prices` (§6) (+`unpriced` flag) and writes `run_usage` + append-only `events` row at `finalizeRun`/`markCompleted`, incl. failed/timeout terminal states. Idempotency under re-claim is the load-bearing test.
-4. **PR-3 (showback UI):** per-org chip + dashboard tile, per-agent tab, per-watcher view, per-user members strip — admin-gated (§8).
+4. **PR-3 (showback UI):** per-org chip + dashboard tile, per-agent tab, per-behavior view, per-user members strip — admin-gated (§8).
 5. **PR-4 (price overrides):** per-org price-override table so BYO/self-hosted models price correctly.
-6. **PR-5 (soft caps):** threshold sweep + `budget-trip` events + notify at 85/95% for org + watcher.
-7. **PR-6 (hard caps):** reserve→reconcile gate at claim seams + `message-consumer` admission; orphan-reservation settlement in the stale sweep; fail-open/fail-closed wired; enforce watcher `max_budget_usd` + org cap; over-budget terminal error + chat reply.
+6. **PR-5 (soft caps):** threshold sweep + `budget-trip` events + notify at 85/95% for org + behavior.
+7. **PR-6 (hard caps):** reserve→reconcile gate at claim seams + `message-consumer` admission; orphan-reservation settlement in the stale sweep; fail-open/fail-closed wired; enforce behavior `max_budget_usd` + org cap; over-budget terminal error + chat reply.
 
 Each PR: `make review BASE=origin/main` in a worktree (`make task-setup NAME=<slug>` first); **E2E before merge is a hard gate** for the behavioral PRs (red→green reproducer in the body).
 
@@ -170,7 +170,7 @@ Open items to confirm during build (sensible defaults chosen, not yet blessed):
 - **Who can see cost** — recommend admin/owner-only for dollar views (§8). The one interview question not yet explicitly answered.
 - **Window vocabulary** — recommend user-facing `daily/weekly/monthly` (rolling `WHERE occurred_at > now()-interval`) with a raw-interval escape hatch in config, not UI.
 - **Estimate K** (lookback runs for the reservation estimate) — tune empirically; reconcile makes a mediocre estimate self-correcting, don't over-engineer v1.
-- **Device-CLI watcher cost capture** (§5.4) — follow-up; flag as uncaptured in v1.
+- **Device-CLI behavior cost capture** (§5.4) — follow-up; flag as uncaptured in v1.
 
 ## 13. Confidence
 
@@ -185,9 +185,9 @@ Design synthesis: **high (~85)**. Build-vs-buy verdict and the "every platform i
 | 3 | Token-count semantics (total+subset vs separate) | **NEW, found this session** — genai-prices `input_tokens`=grand total, cache_read/write are subsets (throws if passed separately); Anthropic returns them separately. Adapter must normalize + unit-test. | Pricing accuracy → resolve in PR-2 adapter |
 | 4 | `provider`+`model` → catalog id mapping | **Spike (PR-0)** — feed real ids (Bedrock `us.anthropic.*`, z.ai/GLM, dynamic openai-compat); match logic is `starts_with`/`regex`; unmatched → override table + `unpriced` flag. | Accuracy, not the ledger |
 | 5 | Cache tokens populated per provider? | **Spike (PR-0)** — inspect real `session.jsonl`: do third-party openai-compat endpoints fill `cache_read`/`cache_write` or return 0? | Accuracy |
-| 6 | Always a `runs` row at completion with the dims? | **Verify before PR-2** — `org_id` always; `watcher_id` first-class for watcher runs; `agent_id`/`user_id`/`conversation_id` live in `action_input` JSONB → denormalize onto `run_usage`. Confirm chat/agent runs always create a `runs` row. | Ledger correctness |
+| 6 | Always a `runs` row at completion with the dims? | **Verify before PR-2** — `org_id` always; `behavior_id` first-class for behavior runs; `agent_id`/`user_id`/`conversation_id` live in `action_input` JSONB → denormalize onto `run_usage`. Confirm chat/agent runs always create a `runs` row. | Ledger correctness |
 | 7 | Threading structured `usage` through completion response | **Build detail (PR-1/PR-2)** — worker aggregates from its own `session.jsonl` at cleanup, adds `usage` to `signalCompletion`/`buildBaseResponse`. | No |
-| 8 | Device-CLI watcher runs (Owletto) cost | **Out of scope v1** — no gateway-side `session.jsonl`, report no cost today; flag as uncaptured; later via claude/codex CLI cost output. Cloud watcher path unaffected. | No |
+| 8 | Device-CLI behavior runs (Owletto) cost | **Out of scope v1** — no gateway-side `session.jsonl`, report no cost today; flag as uncaptured; later via claude/codex CLI cost output. Cloud behavior path unaffected. | No |
 | 9 | Caps estimate source (cold start) | **Sequencing** — caps (slice 3) ship *after* the ledger has accrued history; cold-start fallback = model worst-case (`max_output × tiered price`). | No (later slice) |
 | 10 | Who-can-see gating + window vocab | **Product confirm** — defaults admin-only / `daily·weekly·monthly` (§8, §12). | No (UI slice) |
 
@@ -211,11 +211,11 @@ The only items that gate *correctness* (not *starting*) are #3 (adapter normaliz
 **Why closed instead of merged:** the design is right (validated by an adversarial Claude review + a codex/pi review — both said keep `run_usage`, don't reuse `events`/`runs`/snapshots/the entity-metric layer). But it's **infrastructure ahead of its consumer** — nothing renders or enforces the data yet, so realized value is zero until a UI/caps slice lands. Decision: stop, ship a thin validated slice first rather than the full plan.
 
 **Lean resume path (do this first, not §11 PR-3..6):**
-- One **per-org "Spend (14d)" tile** off `run_usage` via the existing `metric_series` endpoint. Ship it, see if anyone looks. Only then build per-agent/watcher/user breakdowns and caps.
+- One **per-org "Spend (14d)" tile** off `run_usage` via the existing `metric_series` endpoint. Ship it, see if anyone looks. Only then build per-agent/behavior/user breakdowns and caps.
 
 **Gaps/refinements to fold in when resuming (from the reviews — all cheap, free pre-merge):**
 - Add a `pricing_version` column to `run_usage` (genai-prices pinned `0.0.66`) so reprice-vs-frozen is decidable later. `priced_at ≈ created_at`.
-- Add index `(organization_id, user_id, occurred_at)` — per-user is a wanted breakdown; only org/agent/watcher indexes exist.
+- Add index `(organization_id, user_id, occurred_at)` — per-user is a wanted breakdown; only org/agent/behavior indexes exist.
 - Scale-when-needed (not now): `usd_micros bigint` for hot-path sums; time-partition + BRIN on `occurred_at`; normalize `run_usage_model_segments` only if per-model becomes a queried dimension (jsonb is audit-only today).
 
 **Caps design (confirmed independently by codex/pi AND the earlier research — do NOT use raw `SUM(run_usage)` for hard caps):**
@@ -223,6 +223,6 @@ The only items that gate *correctness* (not *starting*) are #3 (adapter normaliz
 - Hard caps from post-run actuals alone are impossible → the honest guarantee is "hard admission cap with **bounded overshoot**" unless a per-run ceiling or per-call gate is added.
 - **Unpriced models leak caps** → a capped tenant needs a policy: block unknown-price models, require a configured rate, or reserve a conservative ceiling.
 
-**Dogfooding (cleaner framing from pi):** don't fake entities, and don't abuse the external-warehouse "reflected" seam. Make the metric layer **entity-backed OR fact-backed**, with a first-class **fact-backed measure source** over `run_usage` (dims: org/agent/watcher/user/provider/model/source; measures: spend, tokens, unpriced count, run count) so cost shows up in `list_metrics`/`query_metric` like any governed metric.
+**Dogfooding (cleaner framing from pi):** don't fake entities, and don't abuse the external-warehouse "reflected" seam. Make the metric layer **entity-backed OR fact-backed**, with a first-class **fact-backed measure source** over `run_usage` (dims: org/agent/behavior/user/provider/model/source; measures: spend, tokens, unpriced count, run count) so cost shows up in `list_metrics`/`query_metric` like any governed metric.
 
 **Honest verdict:** the *design* wasn't over-engineered (validated minimal-correct), but the *scope/sequencing* was — we built the full multi-dimension, caps-ready backend before validating anyone wants the numbers. The process (multiple workflows + 3 review rounds + 2 external reviews) was heavy but caught real bugs (silent GLM mispricing, unqueryable ledger, migration blocker). Resume only if the per-org tile proves the need.

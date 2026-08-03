@@ -30,7 +30,7 @@ function buildState(
     agents,
     prune: false,
     memorySchema: { entityTypes: [], relationshipTypes: [] },
-    watchers: [],
+    behaviors: [],
     connectors: { definitions: [], authProfiles: [], connections: [] },
     providers: [],
     requiredSecrets: [],
@@ -44,7 +44,7 @@ function emptyRemote(): RemoteSnapshot {
     agentSettings: new Map(),
     entityTypes: [],
     relationshipTypes: [],
-    watchers: [],
+    behaviors: [],
     connectorDefinitions: [],
     authProfiles: [],
     connections: [],
@@ -240,7 +240,7 @@ describe("apply diff — memory schema", () => {
           },
         ],
       },
-      watchers: [],
+      behaviors: [],
       requiredSecrets: [],
     };
     const plan = computeDiff(desired, emptyRemote());
@@ -255,7 +255,7 @@ describe("apply diff — memory schema", () => {
         entityTypes: [{ slug: "company", name: "Company" }],
         relationshipTypes: [],
       },
-      watchers: [],
+      behaviors: [],
       requiredSecrets: [],
     };
     const remote: RemoteSnapshot = {
@@ -284,7 +284,7 @@ describe("apply diff — memory schema", () => {
           },
         ],
       },
-      watchers: [],
+      behaviors: [],
       requiredSecrets: [],
     };
     const remote: RemoteSnapshot = {
@@ -315,7 +315,7 @@ describe("apply diff — memory schema", () => {
           },
         ],
       },
-      watchers: [],
+      behaviors: [],
       requiredSecrets: [],
     };
     const remote: RemoteSnapshot = {
@@ -392,8 +392,8 @@ describe("apply diff — empty container preservation", () => {
   });
 });
 
-describe("apply diff — watchers", () => {
-  const desiredWatcher = {
+describe("apply diff — behaviors", () => {
+  const desiredBehavior = {
     slug: "weekly-digest",
     agent: "triage",
     name: "Weekly digest",
@@ -401,19 +401,19 @@ describe("apply diff — watchers", () => {
     triggers: [{ kind: "schedule" as const, cron: "0 9 * * 1" }],
   };
 
-  test("create when watcher missing remotely", () => {
-    const desired = buildState([], { watchers: [desiredWatcher] });
+  test("create when behavior missing remotely", () => {
+    const desired = buildState([], { behaviors: [desiredBehavior] });
     const plan = computeDiff(desired, emptyRemote());
-    const row = plan.rows.find((r) => r.kind === "watcher");
+    const row = plan.rows.find((r) => r.kind === "behavior");
     expect(row?.verb).toBe("create");
     expect(row?.id).toBe("weekly-digest");
   });
 
   test("noop when remote matches every field the diff covers", () => {
-    const desired = buildState([], { watchers: [desiredWatcher] });
+    const desired = buildState([], { behaviors: [desiredBehavior] });
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
-      watchers: [
+      behaviors: [
         {
           slug: "weekly-digest",
           name: "Weekly digest",
@@ -424,7 +424,7 @@ describe("apply diff — watchers", () => {
       ],
     };
     const plan = computeDiff(desired, remote);
-    const row = plan.rows.find((r) => r.kind === "watcher");
+    const row = plan.rows.find((r) => r.kind === "behavior");
     expect(row?.verb).toBe("noop");
     expect(plan.counts.create).toBe(0);
   });
@@ -446,12 +446,12 @@ describe("apply diff — watchers", () => {
     );
     // The loader compiles skills[] into prompt before diffing; this test maps
     // directly, so stand in for the compile step.
-    if (desired.watchers[0]) desired.watchers[0].prompt = "Produce a digest.";
+    if (desired.behaviors[0]) desired.behaviors[0].prompt = "Produce a digest.";
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
       agents: [{ agentId: "triage", name: "triage" }],
       agentSettings: new Map([["triage", null]]),
-      watchers: [
+      behaviors: [
         {
           slug: "minimal-schedule",
           agent_id: "triage",
@@ -471,16 +471,16 @@ describe("apply diff — watchers", () => {
     };
 
     const row = computeDiff(desired, remote).rows.find(
-      (candidate) => candidate.kind === "watcher"
+      (candidate) => candidate.kind === "behavior"
     );
     expect(row?.verb).toBe("noop");
   });
 
   test("update when a schedule trigger changes remotely", () => {
-    const desired = buildState([], { watchers: [desiredWatcher] });
+    const desired = buildState([], { behaviors: [desiredBehavior] });
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
-      watchers: [
+      behaviors: [
         {
           slug: "weekly-digest",
           name: "Weekly digest",
@@ -491,7 +491,7 @@ describe("apply diff — watchers", () => {
       ],
     };
     const plan = computeDiff(desired, remote);
-    const row = plan.rows.find((r) => r.kind === "watcher");
+    const row = plan.rows.find((r) => r.kind === "behavior");
     expect(row?.verb).toBe("update");
     expect(row?.changedFields).toContain("triggers");
     expect(
@@ -500,10 +500,10 @@ describe("apply diff — watchers", () => {
   });
 
   test("update with version-bound drift when prompt changes remotely", () => {
-    const desired = buildState([], { watchers: [desiredWatcher] });
+    const desired = buildState([], { behaviors: [desiredBehavior] });
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
-      watchers: [
+      behaviors: [
         {
           slug: "weekly-digest",
           name: "Weekly digest",
@@ -514,7 +514,7 @@ describe("apply diff — watchers", () => {
       ],
     };
     const plan = computeDiff(desired, remote);
-    const row = plan.rows.find((r) => r.kind === "watcher");
+    const row = plan.rows.find((r) => r.kind === "behavior");
     expect(row?.verb).toBe("update");
     expect(
       (row as { versionBoundFields?: string[] }).versionBoundFields
@@ -523,11 +523,11 @@ describe("apply diff — watchers", () => {
 
   test("explicit null keying clears a remote entity binding", () => {
     const desired = buildState([], {
-      watchers: [{ ...desiredWatcher, keyingConfig: null }],
+      behaviors: [{ ...desiredBehavior, keyingConfig: null }],
     });
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
-      watchers: [
+      behaviors: [
         {
           slug: "weekly-digest",
           name: "Weekly digest",
@@ -545,7 +545,7 @@ describe("apply diff — watchers", () => {
     };
 
     const row = computeDiff(desired, remote).rows.find(
-      (candidate) => candidate.kind === "watcher"
+      (candidate) => candidate.kind === "behavior"
     );
     expect(row?.verb).toBe("update");
     expect(row?.changedFields).toContain("keying_config");
@@ -556,9 +556,9 @@ describe("apply diff — watchers", () => {
 
   test("reaction_script declared → always re-pushed (idempotent)", () => {
     const desired = buildState([], {
-      watchers: [
+      behaviors: [
         {
-          ...desiredWatcher,
+          ...desiredBehavior,
           reactionScript: {
             sourcePath: "/abs/path/r.ts",
             sourceCode: "export default async () => {};",
@@ -568,7 +568,7 @@ describe("apply diff — watchers", () => {
     });
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
-      watchers: [
+      behaviors: [
         {
           slug: "weekly-digest",
           name: "Weekly digest",
@@ -579,7 +579,7 @@ describe("apply diff — watchers", () => {
       ],
     };
     const plan = computeDiff(desired, remote);
-    const row = plan.rows.find((r) => r.kind === "watcher");
+    const row = plan.rows.find((r) => r.kind === "behavior");
     expect(row?.verb).toBe("update");
     expect(row?.changedFields).toEqual(["reaction_script"]);
     expect(
@@ -587,14 +587,14 @@ describe("apply diff — watchers", () => {
     ).toBe(true);
   });
 
-  test("drift when remote watcher not declared in models", () => {
-    const desired = buildState([], { watchers: [] });
+  test("drift when remote behavior not declared in models", () => {
+    const desired = buildState([], { behaviors: [] });
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
-      watchers: [{ slug: "orphan-watcher" }],
+      behaviors: [{ slug: "orphan-behavior" }],
     };
     const plan = computeDiff(desired, remote);
-    const row = plan.rows.find((r) => r.kind === "watcher");
+    const row = plan.rows.find((r) => r.kind === "behavior");
     expect(row?.verb).toBe("drift");
     expect(plan.counts.drift).toBe(1);
   });
@@ -608,19 +608,13 @@ describe("renderSummary", () => {
   });
 });
 
-describe("renderPlan — behavior labels (not watcher)", () => {
-  /** Labels/headings only — not substrings of resource slugs. */
-  function expectNoWatcherLabels(text: string): void {
-    expect(text).not.toMatch(/(?:^|\n)\s*watchers?:\s*(?:\n|$)/);
-    expect(text).not.toMatch(/[+=~?-]\s+watcher\s+\S/);
-  }
-
-  test("plan create/update/drift rows print behavior, never watcher", () => {
+describe("renderPlan — Behavior labels", () => {
+  test("plan create/update/drift rows use Behavior vocabulary", () => {
     const plan: DiffPlan = {
       rows: [
-        { kind: "watcher", verb: "update", id: "weekly-digest" },
-        { kind: "watcher", verb: "create", id: "new-digest" },
-        { kind: "watcher", verb: "drift", id: "orphaned-digest" },
+        { kind: "behavior", verb: "update", id: "weekly-digest" },
+        { kind: "behavior", verb: "create", id: "new-digest" },
+        { kind: "behavior", verb: "drift", id: "orphaned-digest" },
       ],
       counts: { create: 1, update: 1, noop: 0, drift: 1, delete: 0 },
       notes: [],
@@ -631,14 +625,12 @@ describe("renderPlan — behavior labels (not watcher)", () => {
     expect(text).toContain("behavior new-digest");
     expect(text).toContain("behavior weekly-digest");
     expect(text).toContain("behavior orphaned-digest");
-    expectNoWatcherLabels(text);
     expect(text).toMatchSnapshot();
   });
 
-  test("renderProgress uses the behavior label for watcher-kind rows", () => {
-    const line = renderProgress("create", "watcher", "weekly-digest");
+  test("renderProgress uses the behavior label for behavior-kind rows", () => {
+    const line = renderProgress("create", "behavior", "weekly-digest");
     expect(line).toContain("behavior weekly-digest");
-    expectNoWatcherLabels(line);
   });
 });
 
@@ -1271,7 +1263,7 @@ describe("apply diff — prune", () => {
       ...emptyRemote(),
       entityTypes: [{ slug: "lead", properties: {} }, { slug: "stale-entity" }],
       relationshipTypes: [{ slug: "stale-rel" }],
-      watchers: [{ slug: "stale-watcher", behavior_id: "42" }],
+      behaviors: [{ slug: "stale-behavior", behavior_id: "42" }],
       // stale-conn is dropped from config but exempt (drift); the connector "x"
       // it still uses must therefore be spared from prune.
       connections: [
@@ -1303,17 +1295,17 @@ describe("apply diff — prune", () => {
     ).toBe("drift");
   });
 
-  test("prune deletes removed entity/relationship/watcher/connector definitions", () => {
+  test("prune deletes removed entity/relationship/behavior/connector definitions", () => {
     const plan = computeDiff(desiredKeepingLead(), remoteWithExtras(), {
       prune: true,
     });
     const deletes = plan.rows.filter((r) => r.verb === "delete");
     const deletedIds = deletes.map((r) => `${r.kind}:${r.id}`).sort();
     expect(deletedIds).toEqual([
+      "behavior:stale-behavior",
       "connector-definition:orphan-connector",
       "entity-type:stale-entity",
       "relationship-type:stale-rel",
-      "watcher:stale-watcher",
     ]);
     expect(plan.counts.delete).toBe(4);
     // The kept entity type is a noop, not a delete.
@@ -1395,7 +1387,7 @@ describe("apply diff — prune", () => {
         { slug: "channel", organization_id: "org_self" },
       ],
       relationshipTypes: [{ slug: "$system-rel", organization_id: "org_self" }],
-      watchers: [{ slug: "$system-watcher" }],
+      behaviors: [{ slug: "$system-behavior" }],
     };
     const plan = computeDiff(desiredKeepingLead(), remote, {
       prune: true,
@@ -1407,9 +1399,9 @@ describe("apply diff — prune", () => {
     expect(verbOf("entity-type", "$resource")).toBe("drift");
     expect(verbOf("entity-type", "goal")).toBe("delete");
     expect(verbOf("entity-type", "channel")).toBe("delete");
-    // $ on rel/watcher still uses slug heuristic
+    // $ on rel/behavior still uses slug heuristic
     expect(verbOf("relationship-type", "$system-rel")).toBe("drift");
-    expect(verbOf("watcher", "$system-watcher")).toBe("drift");
+    expect(verbOf("behavior", "$system-behavior")).toBe("drift");
   });
 
   test("matching prefers the org's own type over a foreign public type with the same slug", () => {

@@ -1,20 +1,20 @@
 /**
- * Promote keyed watcher-window rows into real child entities (P2 phase 1).
+ * Promote keyed behavior-window rows into real child entities (P2 phase 1).
  *
  * `computeStableKeys()` stamps a deterministic stable-key string onto each
  * extracted entity (at `keyingConfig.key_output_field`). That key dead-ended:
  * nothing turned the keyed rows into rows in the `entities` table. This module
  * closes that gap. For each keyed row it upserts a child entity, idempotent by
  * stable key. The stable key is persisted as an `entity_identities` row in a
- * dedicated `watcher_key` namespace (identifier = `<watcherId>::<stableKey>`),
+ * dedicated `behavior_key` namespace (identifier = `<behaviorId>::<stableKey>`),
  * so a re-run — or a second replica racing the same window — resolves to the
  * existing entity instead of creating a duplicate. The partial unique index
  * `idx_entity_identities_live_unique (organization_id, namespace, identifier)
  * WHERE deleted_at IS NULL` is the lock.
  *
  * Origin provenance (the window that first produced the entity, its stable key,
- * and the watcher) is stamped onto the entity's own `metadata` at creation —
- * `metadata.window_id` / `stable_key` / `watcher_id`. There is NO separate
+ * and the behavior) is stamped onto the entity's own `metadata` at creation —
+ * `metadata.window_id` / `stable_key` / `behavior_id`. There is NO separate
  * observation event: an entity is promoted once (it's an identity, not a time
  * series), so its origin lives on the row itself.
  *
@@ -43,10 +43,10 @@ import {
 } from '../authz/entity-mutation-gate';
 import {
   mutationPrincipalId,
-  resolveWatcherOwner,
+  resolveBehaviorOwner,
 } from '../authz/entity-policy';
 import type { DbClient } from '../db/client';
-import type { KeyingConfig } from '../types/watchers';
+import type { KeyingConfig } from '../types/behaviors';
 import {
   type AppliedChange,
   type BlockedChange,
@@ -57,7 +57,7 @@ import logger from './logger';
 import { isUniqueViolation } from './pg-errors';
 
 /** Namespace for the stable-key identity claim in `entity_identities`. */
-const WATCHER_KEY_NAMESPACE = 'watcher_key';
+const BEHAVIOR_KEY_NAMESPACE = 'behavior_key';
 
 /** Agent-authored field naming the content a promoted row came from. */
 const SOURCE_EVENT_ID_FIELD = 'source_event_id';
@@ -68,7 +68,7 @@ export interface PromoteKeyedEntitiesParams {
   /** Extracted data AFTER `computeStableKeys` has stamped the keys. */
   extractedData: Record<string, unknown>;
   keyingConfig: KeyingConfig;
-  watcherId: number;
+  behaviorId: number;
   organizationId: string;
   /** The finalized window identity (canvas ROOT event id) this completion produced/reused. */
   windowId: number;
@@ -80,12 +80,12 @@ export interface PromoteKeyedEntitiesParams {
    * dropped (the row still promotes — only the unverifiable claim is removed).
    */
   validContentIds: Set<number>;
-  /** The watcher's bound parent entity (entity_ids[0]); null when unbound. */
+  /** The behavior's bound parent entity (entity_ids[0]); null when unbound. */
   parentEntityId: number | null;
   /**
    * Attribution for created entities — MUST be a live `user(id)` because
    * `entities.created_by` is NOT NULL with an ON DELETE RESTRICT FK. The
-   * watcher's own `created_by` satisfies this. When null, an org owner/admin is
+   * behavior's own `created_by` satisfies this. When null, an org owner/admin is
    * resolved as a fallback; if none exists, entity creation is skipped.
    */
   createdBy?: string | null;
@@ -94,7 +94,7 @@ export interface PromoteKeyedEntitiesParams {
 /**
  * One entity this run touched inline, for the first-class run change-set. Emitted
  * for auto-applied changes too — the diff is a property of the run, not of the
- * approval flow, so a fully-auto watcher run still shows exactly what it changed.
+ * approval flow, so a fully-auto behavior run still shows exactly what it changed.
  */
 export interface PromotedEntityChange {
   entityId: number;
@@ -137,7 +137,7 @@ function hasNonEmptyKey(stableKey: unknown): stableKey is string {
 
 /**
  * Resolve a live `user(id)` to attribute created entities to. Prefers the
- * caller-supplied `created_by` (the watcher's creator — already a live user);
+ * caller-supplied `created_by` (the behavior's creator — already a live user);
  * otherwise falls back to an org owner/admin, mirroring entity-link-upsert's
  * `resolveOrgCreator`. Returns null when the org has no member to attribute to.
  */
@@ -203,7 +203,7 @@ export function buildEntityName(
 }
 
 /**
- * Resolve an entity-type slug → entity_types(id), searching the watcher's own
+ * Resolve an entity-type slug → entity_types(id), searching the behavior's own
  * org first then any public catalog (same precedence as createEntity). Skips
  * derived (view-backed) types — they have no stored rows to insert into.
  */
@@ -245,8 +245,8 @@ const SLUG_DISAMBIGUATION_ATTEMPTS = 5;
  * promotion runs inside the window-completion transaction — roll the whole
  * completion back; since the slug is deterministic, every retry re-hits it and
  * the window is permanently poison-pilled. The entity's real identity is its
- * `watcher_key` claim, so the slug is cosmetic: retry with `-2`, `-3`, … and
- * finally an identifier-derived suffix (unique per watcher+key). Each attempt is
+ * `behavior_key` claim, so the slug is cosmetic: retry with `-2`, `-3`, … and
+ * finally an identifier-derived suffix (unique per behavior+key). Each attempt is
  * savepoint-isolated so a failed INSERT doesn't abort the outer transaction.
  */
 async function insertEntityWithUniqueSlug(params: {
@@ -286,7 +286,7 @@ async function insertEntityWithUniqueSlug(params: {
       throw err;
     }
   }
-  // Readable suffixes exhausted: the identifier is unique per (watcher, key), so
+  // Readable suffixes exhausted: the identifier is unique per (behavior, key), so
   // this slug is collision-free among promotions (and effectively so against any
   // sibling). A final failure here propagates to the per-row guard in the loop.
   const inserted = await insertWithSlug(`${params.baseSlug}-${slugify(params.identifier)}`);
@@ -313,26 +313,26 @@ async function upsertKeyedEntity(params: {
   /** Extracted entity field values to sync into metadata (excludes the stable key). */
   fieldValues: Record<string, unknown>;
   createdBy: string;
-  /** Watcher whose run is promoting this entity — used for per-principal policy. */
-  watcherId: number;
+  /** Behavior whose run is promoting this entity — used for per-principal policy. */
+  behaviorId: number;
   /**
-   * The agent that owns this watcher (watchers.agent_id). The gate resolves the
-   * principal to this agent id so the agent's own envelope binds the watcher's
-   * writes; null when the watcher row is missing (see watcherOwnerResolved).
+   * The agent that owns this behavior (behaviors.agent_id). The gate resolves the
+   * principal to this agent id so the agent's own envelope binds the behavior's
+   * writes; null when the behavior row is missing (see behaviorOwnerResolved).
    */
-  watcherAgentId: string | null;
+  behaviorAgentId: string | null;
   /**
-   * False iff the watcher row was gone when we resolved its owner — the gate then
+   * False iff the behavior row was gone when we resolved its owner — the gate then
    * fails closed (deny) rather than promote under no agent envelope.
    */
-  watcherOwnerResolved: boolean;
+  behaviorOwnerResolved: boolean;
   /** Org policy: creates of this type queue an approval instead of inserting. */
   createNeedsApproval: boolean;
 }): Promise<{
   entityId: number;
   created: boolean;
   blocked: Record<string, BlockedChange>;
-  /** Fields the watcher actually wrote inline (auto-applied), old→new. */
+  /** Fields the behavior actually wrote inline (auto-applied), old→new. */
   applied: Record<string, AppliedChange>;
   blockedCreate: boolean;
 }> {
@@ -348,7 +348,7 @@ async function upsertKeyedEntity(params: {
     FROM entity_identities ei
     JOIN entities e ON e.id = ei.entity_id
     WHERE ei.organization_id = ${organizationId}
-      AND ei.namespace = ${WATCHER_KEY_NAMESPACE}
+      AND ei.namespace = ${BEHAVIOR_KEY_NAMESPACE}
       AND ei.identifier = ${identifier}
       AND ei.deleted_at IS NULL
       AND e.deleted_at IS NULL
@@ -361,17 +361,17 @@ async function upsertKeyedEntity(params: {
     const decision = await runMutationGate({
       action: 'update',
       organizationId,
-      // The watcher is the acting principal (its OWN rows bind); its owning agent
+      // The behavior is the acting principal (its OWN rows bind); its owning agent
       // is folded in as the ancestor via `ownerAgentId` so the agent's envelope
-      // ALSO binds — max-restrictive, so the agent can tighten but a watcher-
+      // ALSO binds — max-restrictive, so the agent can tighten but a behavior-
       // specific restriction is never loosened away.
-      principalKind: 'watcher',
+      principalKind: 'behavior',
       sql: tx,
       attribution: ApprovalAttribution.Behavior,
-      watcherId: params.watcherId,
-      principalId: mutationPrincipalId({ watcherId: params.watcherId }),
-      ownerAgentId: params.watcherAgentId,
-      ownerResolved: params.watcherOwnerResolved,
+      behaviorId: params.behaviorId,
+      principalId: mutationPrincipalId({ behaviorId: params.behaviorId }),
+      ownerAgentId: params.behaviorAgentId,
+      ownerResolved: params.behaviorOwnerResolved,
       entityTypeSlug: params.entityTypeSlug,
       entityId,
       fields: Object.fromEntries(
@@ -383,7 +383,7 @@ async function upsertKeyedEntity(params: {
     // rolling back the window completion.
     if (decision.outcome === 'deny') {
       throw new Error(
-        `Mutation gate denied watcher update to entity ${entityId}: ${decision.reason}`
+        `Mutation gate denied behavior update to entity ${entityId}: ${decision.reason}`
       );
     }
     const requireApproval = [...decision.requireApproval];
@@ -391,7 +391,7 @@ async function upsertKeyedEntity(params: {
       tx,
       entityId,
       fields: params.fieldValues,
-      source: 'watcher',
+      source: 'behavior',
       actorId: null,
       requireApproval,
     });
@@ -432,7 +432,7 @@ async function upsertKeyedEntity(params: {
     INSERT INTO entity_identities (
       organization_id, entity_id, namespace, identifier, source_connector
     ) VALUES (
-      ${organizationId}, ${entityId}, ${WATCHER_KEY_NAMESPACE}, ${identifier}, 'watcher'
+      ${organizationId}, ${entityId}, ${BEHAVIOR_KEY_NAMESPACE}, ${identifier}, 'behavior'
     )
     ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
     DO NOTHING
@@ -449,7 +449,7 @@ async function upsertKeyedEntity(params: {
     SELECT entity_id
     FROM entity_identities
     WHERE organization_id = ${organizationId}
-      AND namespace = ${WATCHER_KEY_NAMESPACE}
+      AND namespace = ${BEHAVIOR_KEY_NAMESPACE}
       AND identifier = ${identifier}
       AND deleted_at IS NULL
     LIMIT 1
@@ -489,7 +489,7 @@ export async function promoteKeyedEntities(
     tx,
     extractedData,
     keyingConfig,
-    watcherId,
+    behaviorId,
     organizationId,
     windowId,
     parentEntityId,
@@ -510,7 +510,7 @@ export async function promoteKeyedEntities(
   const entityTypeId = await resolveEntityTypeId(tx, organizationId, entityTypeSlug);
   if (entityTypeId == null) {
     logger.warn(
-      { watcherId, organizationId, entityTypeSlug, entityPath: keyingConfig.entity_path },
+      { behaviorId, organizationId, entityTypeSlug, entityPath: keyingConfig.entity_path },
       '[promote-keyed-entities] target entity type not found (or derived) — skipping promotion'
     );
     return result;
@@ -519,21 +519,21 @@ export async function promoteKeyedEntities(
   const createdBy = await resolveCreator(tx, organizationId, params.createdBy);
   if (createdBy == null) {
     logger.warn(
-      { watcherId, organizationId },
+      { behaviorId, organizationId },
       '[promote-keyed-entities] no live user to attribute created entities to — skipping promotion'
     );
     return result;
   }
 
-  // A watcher IS an agent's autonomous mode: resolve the owning agent so its
-  // write envelope binds these promotions (watchers.agent_id is NOT NULL). The
+  // A behavior IS an agent's autonomous mode: resolve the owning agent so its
+  // write envelope binds these promotions (behaviors.agent_id is NOT NULL). The
   // principal resolves to the agent id — the same id the agent uses when acting
-  // attended — and mode 'autonomous' lets the agent set a stricter watcher-only
+  // attended — and mode 'autonomous' lets the agent set a stricter behavior-only
   // envelope. Without this, an agent's own delete=deny would NOT bind its own
-  // watcher (the write would fall through to the looser org default).
-  const watcherOwner = await resolveWatcherOwner(tx, watcherId, organizationId);
+  // behavior (the write would fall through to the looser org default).
+  const behaviorOwner = await resolveBehaviorOwner(tx, behaviorId, organizationId);
 
-  // Gate decision for creates of this type (watchers are never human): resolved
+  // Gate decision for creates of this type (behaviors are never human): resolved
   // once per promotion — every row in this window is the same entity type, so
   // one create decision governs them all. We only read the outcome here (the
   // probe's deferral is discarded); each held-back row builds its own deferral
@@ -542,18 +542,18 @@ export async function promoteKeyedEntities(
   const createGate = await runMutationGate({
     action: 'create',
     organizationId,
-    // The watcher is the acting principal (its OWN rows bind, e.g. a watcher-
+    // The behavior is the acting principal (its OWN rows bind, e.g. a behavior-
     // specific deny). Its owning agent is folded in as the ancestor via
     // `ownerAgentId` so the agent's envelope ALSO binds — max-restrictive, so
-    // the agent envelope can tighten but a watcher-specific restriction can only
+    // the agent envelope can tighten but a behavior-specific restriction can only
     // tighten further, never be loosened away.
-    principalKind: 'watcher',
+    principalKind: 'behavior',
     sql: tx,
     attribution: ApprovalAttribution.Behavior,
-    watcherId,
-    principalId: mutationPrincipalId({ watcherId }),
-    ownerAgentId: watcherOwner.ownerAgentId,
-    ownerResolved: watcherOwner.resolved,
+    behaviorId,
+    principalId: mutationPrincipalId({ behaviorId }),
+    ownerAgentId: behaviorOwner.ownerAgentId,
+    ownerResolved: behaviorOwner.resolved,
     entityTypeSlug,
     entityData: { entity_type: entityTypeSlug, name: '' },
     proposal: {},
@@ -561,7 +561,7 @@ export async function promoteKeyedEntities(
   const createNeedsApproval = createGate.outcome !== 'allow';
   if (createGate.outcome === 'deny') {
     logger.warn(
-      { watcherId, organizationId, entityTypeSlug, reason: createGate.reason },
+      { behaviorId, organizationId, entityTypeSlug, reason: createGate.reason },
       '[promote-keyed-entities] mutation gate denied creates for this type — new rows will be skipped'
     );
   }
@@ -578,7 +578,7 @@ export async function promoteKeyedEntities(
     if (seenKeys.has(stableKey)) continue;
     seenKeys.add(stableKey);
 
-    const identifier = `${watcherId}::${stableKey}`;
+    const identifier = `${behaviorId}::${stableKey}`;
     const name = buildEntityName(entityRecord, keyingConfig, stableKey);
     const slug = slugify(name) || stableKey;
     // The extracted record's data fields (everything except the computed stable
@@ -596,7 +596,7 @@ export async function promoteKeyedEntities(
       if (typeof claimed !== 'number' || !validContentIds.has(claimed)) {
         logger.warn(
           {
-            watcherId,
+            behaviorId,
             organizationId,
             windowId,
             stableKey,
@@ -610,9 +610,9 @@ export async function promoteKeyedEntities(
     }
     const metadata: Record<string, unknown> = {
       ...fieldValues,
-      watcher_id: watcherId,
+      behavior_id: behaviorId,
       stable_key: stableKey,
-      source: 'watcher_promotion',
+      source: 'behavior_promotion',
       // Origin provenance lives on the entity itself — the window that first
       // produced it. (No separate append-only observation event in phase 1;
       // the entity is upserted once, so this is its origin, not a time series.)
@@ -633,9 +633,9 @@ export async function promoteKeyedEntities(
           metadata,
           fieldValues,
           createdBy,
-          watcherId,
-          watcherAgentId: watcherOwner.ownerAgentId,
-          watcherOwnerResolved: watcherOwner.resolved,
+          behaviorId,
+          behaviorAgentId: behaviorOwner.ownerAgentId,
+          behaviorOwnerResolved: behaviorOwner.resolved,
           createNeedsApproval,
         })
       );
@@ -659,7 +659,7 @@ export async function promoteKeyedEntities(
               },
               proposal: createProposal,
               attribution: ApprovalAttribution.Behavior,
-              watcherId,
+              behaviorId,
               windowId,
             })
           );
@@ -669,7 +669,7 @@ export async function promoteKeyedEntities(
       result.promoted += 1;
       if (created) result.created += 1;
       // Record the applied change on the run's change-set. A brand-new entity is
-      // a `created` change; an existing entity is `updated` only if the watcher
+      // a `created` change; an existing entity is `updated` only if the behavior
       // actually wrote a field inline (an all-blocked or no-op sync adds nothing).
       if (created) {
         result.changes.push({ entityId, name, kind: 'created', applied: {} });
@@ -684,7 +684,7 @@ export async function promoteKeyedEntities(
             fields: Object.fromEntries(blockedFields.map((f) => [f, blocked[f].proposed])),
             current: Object.fromEntries(blockedFields.map((f) => [f, blocked[f].current])),
             attribution: ApprovalAttribution.Behavior,
-            watcherId,
+            behaviorId,
             windowId,
           })
         );
@@ -698,7 +698,7 @@ export async function promoteKeyedEntities(
       // dedupes). Slug clashes are already recovered inside upsertKeyedEntity, so
       // reaching here means a genuinely unexpected error for this row.
       logger.error(
-        { err, watcherId, windowId, stableKey, organizationId },
+        { err, behaviorId, windowId, stableKey, organizationId },
         '[promote-keyed-entities] skipped a keyed row after an unrecoverable error — window completion not blocked'
       );
     }
@@ -706,7 +706,7 @@ export async function promoteKeyedEntities(
 
   logger.info(
     {
-      watcherId,
+      behaviorId,
       windowId,
       entityTypeSlug,
       promoted: result.promoted,

@@ -17,20 +17,20 @@ import { ensureCanvasEntity, findCanvasHead } from '../../../utils/canvas-events
 import { insertEvent } from '../../../utils/insert-event';
 import { isUniqueViolation } from '../../../utils/pg-errors';
 import { computeStableKeys } from '../../../utils/stable-keys';
-import { deriveWatcherExtractionSchema } from '../../../utils/watcher-extraction-schema';
-import { trackWatcherReaction } from '../../../utils/watcher-reactions';
+import { deriveBehaviorExtractionSchema } from '../../../utils/behavior-extraction-schema';
+import { trackBehaviorReaction } from '../../../utils/behavior-reactions';
 import {
   getFieldsToStrip,
-  processWatcherClassifications,
+  processBehaviorClassifications,
   stripFields,
-} from '../../../watchers/classifier-extraction';
-import { advanceWatcherSchedule } from '../../../watchers/schedule-cursor';
-import { executeReaction } from '../../../watchers/reaction-executor';
+} from '../../../behaviors/classifier-extraction';
+import { advanceBehaviorSchedule } from '../../../behaviors/schedule-cursor';
+import { executeReaction } from '../../../behaviors/reaction-executor';
 import { getNextNumericId } from '../helpers/db-helpers';
-import type { KeyingConfig } from '../../../types/watchers';
+import type { KeyingConfig } from '../../../types/behaviors';
 import type { ToolContext } from '../../registry';
 import type { ManageBehaviorsArgs } from '../manage_behaviors';
-import { normalizeExtractedData, parseJson, requireWatcherAccess } from './shared';
+import { normalizeExtractedData, parseJson, requireBehaviorAccess } from './shared';
 import { getErrorMessage } from '@lobu/core';
 
 // Initialize AJV for JSON Schema validation
@@ -74,13 +74,13 @@ export async function handleCompleteWindow(
   // back. A completion payload must never introduce or replace that key.
   delete provenanceMetadata.prompt_rendered;
   // Public arg is `behavior_run_id`; the persisted provenance jsonb key stays
-  // the internal `watcher_run_id` (run_metadata is not part of the API surface).
-  const watcherRunIdRaw = args.behavior_run_id ?? provenanceMetadata.watcher_run_id;
-  let watcherRunId =
-    watcherRunIdRaw !== undefined &&
-    watcherRunIdRaw !== null &&
-    Number.isFinite(Number(watcherRunIdRaw))
-      ? Number(watcherRunIdRaw)
+  // the internal `behavior_run_id` (run_metadata is not part of the API surface).
+  const behaviorRunIdRaw = args.behavior_run_id ?? provenanceMetadata.behavior_run_id;
+  let behaviorRunId =
+    behaviorRunIdRaw !== undefined &&
+    behaviorRunIdRaw !== null &&
+    Number.isFinite(Number(behaviorRunIdRaw))
+      ? Number(behaviorRunIdRaw)
       : null;
 
   // ============================================
@@ -123,11 +123,11 @@ export async function handleCompleteWindow(
   }
 
   const firstToken = tokenPayloads[0];
-  const { watcher_id: watcherId, window_start, window_end, granularity } = firstToken;
+  const { behavior_id: behaviorId, window_start, window_end, granularity } = firstToken;
 
   for (const token of tokenPayloads) {
     if (
-      token.watcher_id !== watcherId ||
+      token.behavior_id !== behaviorId ||
       token.window_start !== window_start ||
       token.window_end !== window_end ||
       token.granularity !== granularity
@@ -137,28 +137,28 @@ export async function handleCompleteWindow(
   }
 
   const pgSql = createDbClientFromEnv(env);
-  await requireWatcherAccess(pgSql, [String(watcherId)], ctx, 'write');
+  await requireBehaviorAccess(pgSql, [String(behaviorId)], ctx, 'write');
 
-  if (watcherRunId == null) {
+  if (behaviorRunId == null) {
     const runRows = await sql`
       SELECT id
       FROM runs
-      WHERE watcher_id = ${watcherId}
+      WHERE behavior_id = ${behaviorId}
         AND run_type = 'behavior'
         AND status = 'running'
       ORDER BY created_at DESC
       LIMIT 1
     `;
     if (runRows.length > 0 && runRows[0].id != null) {
-      watcherRunId = Number(runRows[0].id);
-      provenanceMetadata.watcher_run_id = watcherRunId;
+      behaviorRunId = Number(runRows[0].id);
+      provenanceMetadata.behavior_run_id = behaviorRunId;
     }
-  } else if (provenanceMetadata.watcher_run_id == null) {
-    provenanceMetadata.watcher_run_id = watcherRunId;
+  } else if (provenanceMetadata.behavior_run_id == null) {
+    provenanceMetadata.behavior_run_id = behaviorRunId;
   }
 
   // ============================================
-  // STEP 2: Combined query - watcher + classifiers + template schema
+  // STEP 2: Combined query - behavior + classifiers + template schema
   // ============================================
   // Resolve the version this run was started against. The agent extracted
   // data using that version's prompt/schema; we MUST validate against the
@@ -167,17 +167,17 @@ export async function handleCompleteWindow(
   // Resolution order:
   //   1. explicit args.template_version_id (the agent passes this back)
   //   2. runs.approved_input.version_id (snapshotted at run-creation)
-  //   3. watchers.current_version_id (fallback for callers outside a run)
+  //   3. behaviors.current_version_id (fallback for callers outside a run)
   //
-  // The run lookup is scoped by watcher_id so a wrong/stale watcher_run_id
-  // can't read another watcher's snapshot.
+  // The run lookup is scoped by behavior_id so a wrong/stale behavior_run_id
+  // can't read another behavior's snapshot.
   let snapshotVersionId: number | null =
     typeof args.template_version_id === 'number' ? args.template_version_id : null;
-  if (snapshotVersionId == null && watcherRunId != null) {
+  if (snapshotVersionId == null && behaviorRunId != null) {
     const runRows = await sql`
       SELECT (approved_input->>'version_id')::bigint AS version_id
       FROM runs
-      WHERE id = ${watcherRunId} AND watcher_id = ${watcherId}
+      WHERE id = ${behaviorRunId} AND behavior_id = ${behaviorId}
       LIMIT 1
     `;
     if (runRows.length > 0 && runRows[0].version_id != null) {
@@ -185,9 +185,9 @@ export async function handleCompleteWindow(
     }
   }
 
-  // The version row must belong to this watcher's group — prevents pinning
+  // The version row must belong to this behavior's group — prevents pinning
   // to another group's version via a forged template_version_id arg.
-  const watcherRows = await sql`
+  const behaviorRows = await sql`
     SELECT
       i.id,
       i.schedule,
@@ -196,17 +196,17 @@ export async function handleCompleteWindow(
       i.created_by,
       wv.id as version_id,
       wv.keying_config
-    FROM watchers i
-    LEFT JOIN watcher_versions wv
+    FROM behaviors i
+    LEFT JOIN behavior_versions wv
       ON wv.id = COALESCE(${snapshotVersionId}::bigint, i.current_version_id)
-     AND wv.watcher_id = i.watcher_group_id
-    WHERE i.id = ${watcherId}
+     AND wv.behavior_id = i.behavior_group_id
+    WHERE i.id = ${behaviorId}
     LIMIT 1
   `;
 
-  if (watcherRows.length === 0) {
+  if (behaviorRows.length === 0) {
     throw new Error(
-      `Behavior ${watcherId} not found. ` +
+      `Behavior ${behaviorId} not found. ` +
         "It may have been deleted. Use manage_behaviors with action='list' to see available Behaviors."
     );
   }
@@ -219,7 +219,7 @@ export async function handleCompleteWindow(
       cc.id as version_id,
       cc.extraction_config
     FROM classify_facet cc
-    WHERE cc.watcher_id = ${watcherId}
+    WHERE cc.behavior_id = ${behaviorId}
       AND cc.status = 'active'
       AND cc.extraction_config IS NOT NULL
   `;
@@ -233,34 +233,34 @@ export async function handleCompleteWindow(
   }));
 
   const resolvedVersionId =
-    watcherRows[0].version_id != null ? Number(watcherRows[0].version_id) : null;
-  const keyingConfig = parseJson(watcherRows[0].keying_config) as KeyingConfig | null;
+    behaviorRows[0].version_id != null ? Number(behaviorRows[0].version_id) : null;
+  const keyingConfig = parseJson(behaviorRows[0].keying_config) as KeyingConfig | null;
 
   // The org + bound parent entity the promoted child entities hang under. The
-  // watcher's first bound entity is the parent; unbound watchers promote at the
+  // behavior's first bound entity is the parent; unbound behaviors promote at the
   // root (parent_id NULL). `entities.created_by` is NOT NULL with an
-  // ON DELETE RESTRICT FK to user(id); the watcher's own `created_by` is a
+  // ON DELETE RESTRICT FK to user(id); the behavior's own `created_by` is a
   // guaranteed-live user (same FK), so it's the correct attribution.
-  const watcherOrgId = watcherRows[0].organization_id as string;
-  const watcherCreatedBy = (watcherRows[0].created_by as string | null) ?? null;
+  const behaviorOrgId = behaviorRows[0].organization_id as string;
+  const behaviorCreatedBy = (behaviorRows[0].created_by as string | null) ?? null;
   // entity_ids is bigint[]; the prod pool runs fetch_types:false, so postgres.js
   // hands it back as the literal string "{4}" (NOT a JS array) — parse it.
-  const boundEntityIds = parsePgNumberArray(watcherRows[0].entity_ids);
+  const boundEntityIds = parsePgNumberArray(behaviorRows[0].entity_ids);
   const parentEntityId = boundEntityIds.length > 0 ? boundEntityIds[0] : null;
 
   // ============================================
   // STEP 2.5: Validate extracted_data against the extraction schema.
   // The schema is DERIVED from the bound entity type's metadata_schema
-  // (keying_config.entity_type) — schema lives on the type, never on the watcher.
+  // (keying_config.entity_type) — schema lives on the type, never on the behavior.
   // Same helper the worker payload uses, so the contract the device extracts
-  // against and the contract we validate against never drift. An untyped watcher
+  // against and the contract we validate against never drift. An untyped behavior
   // (no entity_type) gets null here and skips validation (free-form summary).
   // ============================================
-  const extractionSchema: Record<string, any> | null = await deriveWatcherExtractionSchema(
+  const extractionSchema: Record<string, any> | null = await deriveBehaviorExtractionSchema(
     getDb(),
-    watcherOrgId,
+    behaviorOrgId,
     keyingConfig,
-    watcherId
+    behaviorId
   );
   if (extractionSchema) {
     const validate = ajv.compile(extractionSchema);
@@ -353,7 +353,7 @@ export async function handleCompleteWindow(
   //
   // Transaction for data writes.
   // ============================================
-  // Owned-field changes and policy-held creates a watcher proposed but couldn't
+  // Owned-field changes and policy-held creates a behavior proposed but couldn't
   // apply; surfaced out of the transaction as deferred approvals and flushed once
   // the window commits.
   let deferredApprovals: DeferredMutation[] = [];
@@ -361,7 +361,7 @@ export async function handleCompleteWindow(
     // ============================================
     // STEP 7: Canvas-on-events write — THE window storage.
     //
-    // A watcher "window" (canvas) is a supersede chain of
+    // A behavior "window" (canvas) is a supersede chain of
     // `semantic_type='canvas_state'` events; the chain ROOT
     // (supersedes_event_id IS NULL) is the window identity and its event id is
     // the `windowId` returned by complete_window. A fresh completion inserts a
@@ -380,10 +380,10 @@ export async function handleCompleteWindow(
     let headSuperseded = false;
     const canvasEntityId = await ensureCanvasEntity({
       tx,
-      watcherId: Number(watcherId),
-      organizationId: watcherOrgId,
+      behaviorId: Number(behaviorId),
+      organizationId: behaviorOrgId,
       parentEntityId,
-      createdBy: watcherCreatedBy,
+      createdBy: behaviorCreatedBy,
     });
     const canvasEntityIds = canvasEntityId != null ? [canvasEntityId] : [];
     // events.client_id has an FK to oauth_clients — but callers pass PAT/device
@@ -399,7 +399,7 @@ export async function handleCompleteWindow(
       if (knownClient.length === 0) canvasClientId = null;
     }
     const canvasPeriodMeta = {
-      watcher_id: Number(watcherId),
+      behavior_id: Number(behaviorId),
       granularity: timeGranularity,
       window_start,
       window_end,
@@ -408,7 +408,7 @@ export async function handleCompleteWindow(
     };
 
     const existingHead = await findCanvasHead(tx, {
-      watcherId: Number(watcherId),
+      behaviorId: Number(behaviorId),
       granularity: timeGranularity,
       windowStart: window_start,
     });
@@ -427,7 +427,7 @@ export async function handleCompleteWindow(
         await insertEvent(
           {
             entityIds: canvasEntityIds,
-            organizationId: watcherOrgId,
+            organizationId: behaviorOrgId,
             originId: `canvas_${crypto.randomUUID()}`,
             payloadType: 'json_template',
             payloadData: cleanedExtractedData,
@@ -436,9 +436,9 @@ export async function handleCompleteWindow(
               ...canvasPeriodMeta,
               root_event_id: existingHead.rootEventId,
             },
-            runId: watcherRunId,
+            runId: behaviorRunId,
             occurredAt: window_end,
-            createdBy: watcherCreatedBy,
+            createdBy: behaviorCreatedBy,
             clientId: canvasClientId,
             supersedesEventId: existingHead.id,
           },
@@ -447,7 +447,7 @@ export async function handleCompleteWindow(
       } catch (err) {
         if (isUniqueViolation(err, 'idx_events_superseded_by')) {
           throw new ToolUserError(
-            `Canvas for Behavior ${watcherId} period ${window_start} was concurrently updated. Retry with the latest state.`,
+            `Canvas for Behavior ${behaviorId} period ${window_start} was concurrently updated. Retry with the latest state.`,
             409
           );
         }
@@ -458,7 +458,7 @@ export async function handleCompleteWindow(
         // An explicit replace states "this analysis covers THIS content set":
         // clear the previous completion's links so STEP 8 re-links exactly the
         // new batch.
-        await tx`DELETE FROM watcher_window_events WHERE window_id = ${windowId}`;
+        await tx`DELETE FROM behavior_window_events WHERE window_id = ${windowId}`;
       }
     } else {
       // No chain yet → insert the ROOT. A root omits metadata.root_event_id (its
@@ -469,15 +469,15 @@ export async function handleCompleteWindow(
         const rootEvent = await insertEvent(
           {
             entityIds: canvasEntityIds,
-            organizationId: watcherOrgId,
+            organizationId: behaviorOrgId,
             originId: `canvas_${crypto.randomUUID()}`,
             payloadType: 'json_template',
             payloadData: cleanedExtractedData,
             semanticType: 'canvas_state',
             metadata: canvasPeriodMeta,
-            runId: watcherRunId,
+            runId: behaviorRunId,
             occurredAt: window_end,
-            createdBy: watcherCreatedBy,
+            createdBy: behaviorCreatedBy,
             clientId: canvasClientId,
           },
           { sql: tx }
@@ -485,12 +485,12 @@ export async function handleCompleteWindow(
         windowId = Number(rootEvent.id);
         windowCreated = true;
         logger.info(
-          `[complete_window] Created canvas window ${windowId} for watcher ${watcherId} (${window_start} - ${window_end})`
+          `[complete_window] Created canvas window ${windowId} for behavior ${behaviorId} (${window_start} - ${window_end})`
         );
       } catch (err) {
         if (isUniqueViolation(err, 'idx_canvas_chain_root')) {
           throw new ToolUserError(
-            `Window already exists for Behavior ${watcherId} for period ${window_start} to ${window_end}. ` +
+            `Window already exists for Behavior ${behaviorId} for period ${window_start} to ${window_end}. ` +
               'Use replace_existing: true to replace it, or query a different time period.',
             409
           );
@@ -504,19 +504,19 @@ export async function handleCompleteWindow(
     // Build VALUES clause for bulk insert
     // ============================================
     if (batchContentIds.length > 0) {
-      let nextWindowEventId = await getNextNumericId(tx, 'watcher_window_events');
+      let nextWindowEventId = await getNextNumericId(tx, 'behavior_window_events');
       const valuePlaceholders: string[] = [];
       const insertParams: unknown[] = [];
       let pIdx = 1;
       for (const contentId of batchContentIds) {
         valuePlaceholders.push(`($${pIdx}, $${pIdx + 1}, $${pIdx + 2}, $${pIdx + 3}, NOW())`);
-        insertParams.push(nextWindowEventId, windowId, contentId, Number(watcherId));
+        insertParams.push(nextWindowEventId, windowId, contentId, Number(behaviorId));
         nextWindowEventId += 1;
         pIdx += 4;
       }
 
       await tx.unsafe(
-        `INSERT INTO watcher_window_events (id, window_id, event_id, watcher_id, created_at)
+        `INSERT INTO behavior_window_events (id, window_id, event_id, behavior_id, created_at)
          VALUES ${valuePlaceholders.join(', ')}
          ON CONFLICT DO NOTHING`,
         insertParams
@@ -532,8 +532,8 @@ export async function handleCompleteWindow(
     // STEP 8.5: Promote keyed rows into child entities (P2 phase 1)
     // computeStableKeys (STEP 2.6) stamped a deterministic stable key onto each
     // extracted entity; promote those keyed rows into real child entities under
-    // the watcher's bound entity. Origin provenance (window_id / stable_key /
-    // watcher_id) is stamped onto each child's metadata — no separate event.
+    // the behavior's bound entity. Origin provenance (window_id / stable_key /
+    // behavior_id) is stamped onto each child's metadata — no separate event.
     // Runs on `tx` so the entity + identity writes commit atomically with the
     // window itself. Idempotent across re-runs and concurrent replicas
     // (entity_identities live-unique key).
@@ -543,45 +543,45 @@ export async function handleCompleteWindow(
         tx,
         extractedData,
         keyingConfig,
-        watcherId: Number(watcherId),
-        organizationId: watcherOrgId,
+        behaviorId: Number(behaviorId),
+        organizationId: behaviorOrgId,
         windowId,
         parentEntityId,
-        createdBy: watcherCreatedBy,
+        createdBy: behaviorCreatedBy,
         validContentIds,
       });
-      // Owned-field changes and policy-held creates the watcher couldn't apply —
+      // Owned-field changes and policy-held creates the behavior couldn't apply —
       // flush each AFTER the window transaction commits (approvals must not ride
       // the tx).
       deferredApprovals = promote.deferred;
 
       // Record the applied change-set as a FIRST-CLASS event on the run — even
       // for fully-auto promotions. The diff is a property of the run, not of the
-      // approval flow: a watcher run that auto-applied 100 entity changes still
+      // approval flow: a behavior run that auto-applied 100 entity changes still
       // shows exactly what it changed. Rides the window tx (it describes writes
       // that just committed on this same tx) and is scoped to the run + the
       // entities it touched, so the run view and the entity views both resolve it.
-      if (promote.changes.length > 0 && watcherRunId && Number.isFinite(watcherRunId)) {
+      if (promote.changes.length > 0 && behaviorRunId && Number.isFinite(behaviorRunId)) {
         const createdCount = promote.changes.filter((c) => c.kind === 'created').length;
         const updatedCount = promote.changes.length - createdCount;
         await insertEvent(
           {
             entityIds: promote.changes.map((c) => c.entityId),
-            organizationId: watcherOrgId,
-            originId: `run_${watcherRunId}_changeset`,
+            organizationId: behaviorOrgId,
+            originId: `run_${behaviorRunId}_changeset`,
             title: `Behavior applied ${createdCount} new + ${updatedCount} updated`,
             content: `This run created ${createdCount} and updated ${updatedCount} entities.`,
             semanticType: 'change_set',
-            runId: watcherRunId,
+            runId: behaviorRunId,
             metadata: {
-              kind: 'watcher_change_set',
+              kind: 'behavior_change_set',
               window_id: windowId,
-              watcher_id: Number(watcherId),
+              behavior_id: Number(behaviorId),
               created_count: createdCount,
               updated_count: updatedCount,
               changes: promote.changes,
             },
-            createdBy: watcherCreatedBy,
+            createdBy: behaviorCreatedBy,
           },
           { sql: tx }
         );
@@ -592,9 +592,9 @@ export async function handleCompleteWindow(
     // STEP 9: Process classifications
     // If this fails (e.g., embeddings service down), the transaction rolls back
     // ============================================
-    await processWatcherClassifications(
+    await processBehaviorClassifications(
       tx,
-      watcherId,
+      behaviorId,
       windowId,
       extractedData,
       classifiers,
@@ -604,12 +604,12 @@ export async function handleCompleteWindow(
 
     let runMarkedCompleted = false;
     let completedDispatchSource: string | null = null;
-    if (watcherRunId && Number.isFinite(watcherRunId)) {
+    if (behaviorRunId && Number.isFinite(behaviorRunId)) {
       // Provenance now lives on the RUN row (model_used, run_metadata), not on
-      // the retired watcher_windows table. window_id is stamped to the canvas
-      // ROOT event id. Scope by watcher_id so a wrong/stale watcher_run_id
-      // (passed in run_metadata) cannot mark another watcher's run completed
-      // against this watcher's window. Stamp provenance whenever the run is
+      // the retired behavior_windows table. window_id is stamped to the canvas
+      // ROOT event id. Scope by behavior_id so a wrong/stale behavior_run_id
+      // (passed in run_metadata) cannot mark another behavior's run completed
+      // against this behavior's window. Stamp provenance whenever the run is
       // still terminable so an idempotent replay refreshing a running run still
       // records model/metadata.
       const completedRows = await tx`
@@ -627,8 +627,8 @@ export async function handleCompleteWindow(
             run_metadata = COALESCE(run_metadata, '{}'::jsonb) || ${sql.json(provenanceMetadata)},
             completed_at = current_timestamp,
             error_message = NULL
-        WHERE id = ${watcherRunId}
-          AND watcher_id = ${watcherId}
+        WHERE id = ${behaviorRunId}
+          AND behavior_id = ${behaviorId}
           AND run_type = 'behavior'
           AND status IN ('running', 'claimed')
         RETURNING id, approved_input->>'dispatch_source' AS dispatch_source
@@ -653,8 +653,8 @@ export async function handleCompleteWindow(
                 END
               ),
               run_metadata = COALESCE(run_metadata, '{}'::jsonb) || ${sql.json(provenanceMetadata)}
-          WHERE id = ${watcherRunId}
-            AND watcher_id = ${watcherId}
+          WHERE id = ${behaviorRunId}
+            AND behavior_id = ${behaviorId}
             AND run_type = 'behavior'
         `;
       }
@@ -667,17 +667,17 @@ export async function handleCompleteWindow(
       (windowCreated || headSuperseded || runMarkedCompleted) &&
       completedDispatchSource !== 'event'
     ) {
-      await advanceWatcherSchedule(tx, watcherId);
+      await advanceBehaviorSchedule(tx, behaviorId);
     }
 
     logger.info(
-      `[manage_behaviors] Completed window ${windowId} for watcher ${watcherId} ` +
+      `[manage_behaviors] Completed window ${windowId} for behavior ${behaviorId} ` +
         `(${window_start} - ${window_end}), linked ${batchContentIds.length} content items`
     );
 
     return {
       action: 'complete_window' as const,
-      behavior_id: String(watcherId),
+      behavior_id: String(behaviorId),
       window_id: windowId,
       window_start,
       window_end,
@@ -688,7 +688,7 @@ export async function handleCompleteWindow(
   });
 
   // Post-commit: flush any deferred approvals (owned-field changes + policy-held
-  // creates) the watcher couldn't apply inline. Done after the window transaction
+  // creates) the behavior couldn't apply inline. Done after the window transaction
   // so the durable approval (run + event + notify) is never rolled back with the
   // window, and a failure here never undoes the committed sync. Best-effort each.
   for (const d of deferredApprovals) {
@@ -696,7 +696,7 @@ export async function handleCompleteWindow(
       .queue(ctx, env)
       .catch((err) =>
         logger.error(
-          { err, watcherId, action: d.display.action },
+          { err, behaviorId, action: d.display.action },
           '[complete-window] failed to queue deferred entity approval'
         )
       );
@@ -704,29 +704,29 @@ export async function handleCompleteWindow(
 
   // Execute the reaction script inline in the isolated reaction sandbox.
   // Fire on linked content OR on a freshly created window: device-run and
-  // other self-sourcing watchers link no server-side content — their signal
+  // other self-sourcing behaviors link no server-side content — their signal
   // is the extracted_data itself, and the reaction script decides what to do
   // with it. Idempotent replays (no new window, nothing linked) still skip,
   // so a retried completion can't double-fire a reaction.
   let reactionStatus: 'success' | 'failed' | 'skipped' = 'skipped';
   let reactionError: string | undefined;
 
-  // Fetch watcher metadata once — used for both reaction script and auto-notify
-  const watcherMetaSql = getDb();
-  const watcherMetaRows = await watcherMetaSql`
+  // Fetch behavior metadata once — used for both reaction script and auto-notify
+  const behaviorMetaSql = getDb();
+  const behaviorMetaRows = await behaviorMetaSql`
     SELECT w.reaction_script_compiled, w.entity_ids,
            w.organization_id, w.current_version_id,
            w.name, o.slug AS organization_slug,
-           wv.version as watcher_version
-    FROM watchers w
+           wv.version as behavior_version
+    FROM behaviors w
     JOIN organization o ON o.id = w.organization_id
-    LEFT JOIN watcher_versions wv ON w.current_version_id = wv.id
+    LEFT JOIN behavior_versions wv ON w.current_version_id = wv.id
     WHERE w.id = ${result.behavior_id}
   `;
 
   try {
-    const sql = watcherMetaSql;
-    const scriptRows = watcherMetaRows;
+    const sql = behaviorMetaSql;
+    const scriptRows = behaviorMetaRows;
     if (
       (result.content_linked > 0 || result.window_created || result.head_superseded) &&
       scriptRows.length > 0 &&
@@ -747,12 +747,12 @@ export async function handleCompleteWindow(
             `
           : [];
 
-      // Fetch watcher name from version, slug from template (pre-consolidation)
-      const watcherMeta = await sql`
-        SELECT w.id, COALESCE(wv.name, 'watcher-' || w.id) as name,
-               COALESCE(w.slug, 'watcher-' || w.id) as slug
-        FROM watchers w
-        LEFT JOIN watcher_versions wv ON w.current_version_id = wv.id
+      // Fetch behavior name from version, slug from template (pre-consolidation)
+      const behaviorMeta = await sql`
+        SELECT w.id, COALESCE(wv.name, 'behavior-' || w.id) as name,
+               COALESCE(w.slug, 'behavior-' || w.id) as slug
+        FROM behaviors w
+        LEFT JOIN behavior_versions wv ON w.current_version_id = wv.id
         WHERE w.id = ${result.behavior_id}
       `;
 
@@ -766,7 +766,7 @@ export async function handleCompleteWindow(
         })),
         window: {
           id: result.window_id,
-          run_id: watcherRunId,
+          run_id: behaviorRunId,
           behavior_id: Number(result.behavior_id),
           window_start: result.window_start,
           window_end: result.window_end,
@@ -775,9 +775,9 @@ export async function handleCompleteWindow(
         },
         behavior: {
           id: Number(result.behavior_id),
-          slug: (watcherMeta[0]?.slug ?? `watcher-${result.behavior_id}`) as string,
-          name: (watcherMeta[0]?.name ?? `watcher-${result.behavior_id}`) as string,
-          version: Number(row.watcher_version ?? 1),
+          slug: (behaviorMeta[0]?.slug ?? `behavior-${result.behavior_id}`) as string,
+          name: (behaviorMeta[0]?.name ?? `behavior-${result.behavior_id}`) as string,
+          version: Number(row.behavior_version ?? 1),
         },
         organization_id: orgId,
         organization_slug: String(row.organization_slug),
@@ -791,9 +791,9 @@ export async function handleCompleteWindow(
           env: env as Record<string, string | undefined>,
         });
 
-        await trackWatcherReaction({
+        await trackBehaviorReaction({
           organizationId: orgId,
-          watcherId: Number(result.behavior_id),
+          behaviorId: Number(result.behavior_id),
           windowId: result.window_id,
           reactionType: 'script_execution',
           toolName: 'reaction_executor',
@@ -805,7 +805,7 @@ export async function handleCompleteWindow(
           reactionStatus = 'success';
           logger.info(
             {
-              watcher_id: result.behavior_id,
+              behavior_id: result.behavior_id,
               window_id: result.window_id,
               attempt,
             },
@@ -815,7 +815,7 @@ export async function handleCompleteWindow(
         }
         if (attempt < MAX_ATTEMPTS) {
           logger.warn(
-            { watcher_id: result.behavior_id, attempt, error: execResult.error },
+            { behavior_id: result.behavior_id, attempt, error: execResult.error },
             'Reaction script failed, retrying...'
           );
           await new Promise((r) => setTimeout(r, 1000));
@@ -823,7 +823,7 @@ export async function handleCompleteWindow(
           reactionStatus = 'failed';
           reactionError = execResult.error;
           logger.error(
-            { watcher_id: result.behavior_id, error: execResult.error },
+            { behavior_id: result.behavior_id, error: execResult.error },
             'Reaction script failed after all retries'
           );
         }

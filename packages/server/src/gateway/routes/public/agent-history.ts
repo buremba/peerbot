@@ -34,7 +34,7 @@ import { isAdminOrOwnerRole } from "../../../tools/access-control.js";
 import { getCachedMembershipRole } from "../../../workspace/multi-tenant.js";
 import { buildApiConversationId } from "../../services/api-conversation-id.js";
 import { findConversationById } from "../../services/conversations-store.js";
-import { readWatcherRunThreads } from "../../services/watcher-run-thread.js";
+import { readBehaviorRunThreads } from "../../services/behavior-run-thread.js";
 import {
 	createOwnershipResolver,
 	resolveSettingsLookupUserId,
@@ -753,9 +753,7 @@ export function createAgentHistoryRoutes(deps: {
 				ORDER BY run_id
 			`;
 			interactions = rows.map((r) => {
-				// Normalize the legacy stored `resource_kind: "watcher"` to the public
-				// "behavior" value so old and new events emit one canonical discriminator.
-				const rawResourceKind =
+				const resourceKind =
 					r.resource_kind ??
 					(r.tool === "manage_behaviors"
 						? "behavior"
@@ -764,8 +762,6 @@ export function createAgentHistoryRoutes(deps: {
 							: r.tool === "entity_field_change" || r.tool === "entity_change"
 								? "entity"
 								: null);
-				const resourceKind =
-					rawResourceKind === "watcher" ? "behavior" : rawResourceKind;
 				// manage_behaviors stores proposal as `{ args }`; SPA expects flat fields.
 				const rawProposal = r.proposal ?? null;
 				const proposal =
@@ -908,8 +904,8 @@ export function createAgentHistoryRoutes(deps: {
 		return c.json(data);
 	});
 
-	// A watcher's recent completed runs as ready-to-stitch transcripts — the
-	// read-only run history rendered as one conversation. Watcher conversation
+	// A behavior's recent completed runs as ready-to-stitch transcripts — the
+	// read-only run history rendered as one conversation. Behavior conversation
 	// ids are org-less but the snapshot row carries the org; the service bridges
 	// that, so we just hand it the requester's resolved org.
 	app.get("/behaviors/:behaviorId/thread", async (c) => {
@@ -917,15 +913,15 @@ export function createAgentHistoryRoutes(deps: {
 		if (!scope) return errorResponse(c, "Unauthorized", 401);
 		if (!scope.organizationId) return c.json({ runs: [] });
 
-		const watcherId = Number(c.req.param("behaviorId"));
-		if (!Number.isFinite(watcherId)) {
+		const behaviorId = Number(c.req.param("behaviorId"));
+		if (!Number.isFinite(behaviorId)) {
 			return errorResponse(c, "Invalid behavior id", 400);
 		}
 		const limit = Math.min(parseInt(c.req.query("limit") || "20", 10), 50);
 
-		const data = await readWatcherRunThreads({
+		const data = await readBehaviorRunThreads({
 			agentId: scope.agentId,
-			watcherId,
+			behaviorId,
 			organizationId: scope.organizationId,
 			limit,
 		});

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { KeyingConfig } from '../types/watchers';
+import type { KeyingConfig } from '../types/behaviors';
 import { computeStableKeys } from './stable-keys';
 
 // Helper type for entities with dynamic keys

@@ -16,7 +16,7 @@ interface AccessControlContext {
 }
 
 /**
- * Watcher reactions and other in-process system calls run with
+ * Behavior reactions and other in-process system calls run with
  * `userId=null + isAuthenticated=true` and no member role. They bypass
  * role/scope policy checks at the handler boundary.
  */

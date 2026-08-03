@@ -3,8 +3,8 @@ import { ToolUserError } from '../../utils/errors';
 import { isAdminOrOwnerRole } from '../access-control';
 
 /**
- * Ownership/access enforcement for pinning a watcher to a device worker
- * (`watchers.device_worker_id`). A device-worker watcher run spawns an agent
+ * Ownership/access enforcement for pinning a behavior to a device worker
+ * (`behaviors.device_worker_id`). A device-worker behavior run spawns an agent
  * CLI on the *device owner's* machine, so an unvalidated pin lets a member-write
  * actor target another user's device — privilege escalation. This mirrors the
  * shape of behavior-execution-config.ts: a pure decision function (unit-tested)

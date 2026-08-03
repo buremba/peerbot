@@ -11,7 +11,7 @@
  * the reader after a bug that does not exist.
  *   1. precheck ignored `embedding_model` → a stale-model vector counted as
  *      embedded, and its (absent) score was blamed on `below_threshold`.
- *   2. precheck omitted `watcher_id IS NULL` → a Behavior-owned classifier of
+ *   2. precheck omitted `behavior_id IS NULL` → a Behavior-owned classifier of
  *      the same slug counted as "found", and its zero results likewise.
  *   3. precheck read `events` while the engine reads `current_event_records` →
  *      a superseded event counted as reachable, same false blame.
@@ -82,7 +82,7 @@ describe('manage_classifiers apply — skip reasons', () => {
     await sql`
       INSERT INTO classify_facet (
         organization_id, slug, name, attribute_key, status, created_by,
-        watcher_id, entity_ids, min_similarity, fallback_value, attribute_values
+        behavior_id, entity_ids, min_similarity, fallback_value, attribute_values
       ) VALUES (
         ${org.id}, 'apply-reasons', 'apply reasons classifier', 'apply-reasons', 'active', ${user.id},
         NULL, NULL, 0.5, NULL, ${sql.json(attributeValues as never)}
@@ -220,18 +220,18 @@ describe('manage_classifiers apply — skip reasons', () => {
     const sql = getTestDb();
 
     // Only a Behavior-scoped classifier carries this slug. The engine ignores it
-    // (it selects `watcher_id IS NULL`), so `apply` must fail loudly rather than
+    // (it selects `behavior_id IS NULL`), so `apply` must fail loudly rather than
     // report a successful run that classified nothing.
     const agent = await createTestAgent({ organizationId: org.id, ownerUserId: user.id });
     const [behavior] = (await sql`
-      INSERT INTO watchers (organization_id, agent_id, watcher_group_id, name, created_by, status)
+      INSERT INTO behaviors (organization_id, agent_id, behavior_group_id, name, created_by, status)
       VALUES (${org.id}, ${agent.agentId}, 0, 'owning behavior', ${user.id}, 'active')
       RETURNING id
     `) as unknown as Array<{ id: number }>;
     await sql`
       INSERT INTO classify_facet (
         organization_id, slug, name, attribute_key, status, created_by,
-        watcher_id, entity_ids, min_similarity, fallback_value, attribute_values
+        behavior_id, entity_ids, min_similarity, fallback_value, attribute_values
       ) VALUES (
         ${org.id}, 'behavior-owned', 'behavior owned', 'behavior-owned', 'active', ${user.id},
         ${behavior.id}, NULL, 0.5, NULL,

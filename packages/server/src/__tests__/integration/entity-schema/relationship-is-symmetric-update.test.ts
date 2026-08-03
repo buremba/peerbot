@@ -10,7 +10,7 @@
  * (`manage_entity.ts:1230` canonicalizes a→b / b→a as one edge when
  * symmetric). Flipping it on a populated type would not migrate existing rows
  * and would change dedup semantics for new ones — so it is intentionally
- * immutable post-create, like watcher version-owned fields.
+ * immutable post-create, like behavior version-owned fields.
  *
  * Fix: reject `is_symmetric` on `update` with a pointer to recreate, instead
  * of silently dropping it. (Owletto only sends `is_symmetric` on the create

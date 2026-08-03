@@ -117,8 +117,8 @@ describe("WorkerGateway session context", () => {
     expect(chat.skillsInstructions).not.toContain("Built-in System Skills");
 
     const behaviorRun = await fetchContext(
-      "watcher-run",
-      "agent-1_watcher_42_run_99"
+      "behavior-run",
+      "agent-1_behavior_42_run_99"
     );
     expect(behaviorRun.skillsConfig).toEqual([
       {
@@ -199,7 +199,7 @@ describe("WorkerGateway session context", () => {
 
     const skills = await resolveBehaviorRunSkills(
       {
-        conversationId: "agent-1_watcher_42_run_99",
+        conversationId: "agent-1_behavior_42_run_99",
         organizationId: "org-1",
         agentId: "agent-1",
       },

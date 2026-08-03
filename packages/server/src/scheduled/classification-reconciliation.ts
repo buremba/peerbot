@@ -91,7 +91,7 @@ export async function runClassificationReconciliation(_env: Env): Promise<{
               FROM classify_facet fc
               WHERE fc.organization_id = ent.organization_id
                 AND fc.status = 'active'
-                AND fc.watcher_id IS NULL
+                AND fc.behavior_id IS NULL
                 AND fc.slug = ANY(ent.enabled_classifiers)
                 AND NOT EXISTS (
                   SELECT 1 FROM event_classifications ec

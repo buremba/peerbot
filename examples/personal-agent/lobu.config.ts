@@ -283,7 +283,7 @@ const channel = defineEntityType({
 });
 
 // Collaborative actions for Burak + personal-agent (hourly-task-collaborator
-// keys + merges on `action`). Schema is owned here — the watcher does not
+// keys + merges on `action`). Schema is owned here — the behavior does not
 // declare its own extraction schema.
 const task = defineEntityType({
   key: "task",
@@ -339,18 +339,18 @@ const task = defineEntityType({
       type: "string",
       description: "Originating Lobu event id when applicable",
     },
-    // Written by the entity-typed watcher keying pipeline
+    // Written by the entity-typed behavior keying pipeline
     stable_key: {
       type: "string",
-      description: "Stable dedupe key from the task watcher",
+      description: "Stable dedupe key from the task behavior",
     },
-    watcher_id: {
+    behavior_id: {
       type: "string",
-      description: "Watcher that last wrote this task",
+      description: "Behavior that last wrote this task",
     },
     window_id: {
       type: "string",
-      description: "Watcher window that produced this task",
+      description: "Behavior window that produced this task",
     },
   },
 });

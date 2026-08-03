@@ -7,7 +7,7 @@
  *   - one Behavior entry per Behavior (platform "behavior", carrying behaviorId),
  * sorted newest-first — and that a Behavior's per-run snapshot never leaks in as
  * its own platform row. Also drives the two read endpoints the feed links to:
- * readConversationMessages (platform, by raw id) and readWatcherRunThreads.
+ * readConversationMessages (platform, by raw id) and readBehaviorRunThreads.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -17,7 +17,7 @@ import {
 	readConversationMessages,
 } from "../../gateway/services/agent-thread-list";
 import { buildApiConversationId } from "../../gateway/services/api-conversation-id";
-import { readWatcherRunThreads } from "../../gateway/services/watcher-run-thread";
+import { readBehaviorRunThreads } from "../../gateway/services/behavior-run-thread";
 import { insertEvent } from "../../utils/insert-event";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import { createTestBehaviorSubscription } from "../setup/behavior-subscriptions";
@@ -35,10 +35,10 @@ const SLACK_UNBOUND_CONV = "slack:CSECRET:1781641725.99"; // channel the agent i
 const CSECRET_CONN_RUNTIME_ID = "slackinst-csecret"; // managed connection owning CSECRET, initially no chat-link
 const TELEGRAM_DM_CONV = "telegram:6570514069"; // an unbound DM, gated on org role
 const TELEGRAM_LEGACY_CONV = "telegram:111222333"; // platform row with is_direct NULL (unknown)
-const WATCHER_ID = 990001;
-const ARCHIVED_WATCHER_ID = 990003; // completed a run, then archived
+const BEHAVIOR_ID = 990001;
+const ARCHIVED_BEHAVIOR_ID = 990003; // completed a run, then archived
 const OTHER_AGENT = "thread-list-other-agent";
-const OTHER_WATCHER_ID = 990002;
+const OTHER_BEHAVIOR_ID = 990002;
 
 function sessionJsonl(text: string): string {
 	return [
@@ -82,7 +82,7 @@ describe("listAgentThreads scope=all", () => {
 		const sql = getTestDb();
 
 		// A transcript snapshot backs the read endpoints (readConversationMessages
-		// and readWatcherRunThreads). Ordinary conversation listing reads the
+		// and readBehaviorRunThreads). Ordinary conversation listing reads the
 		// `conversations` entity, so one appears only when it also has that row.
 		const insertSnapshot = async (
 			conversationId: string,
@@ -129,7 +129,7 @@ describe("listAgentThreads scope=all", () => {
 		);
 		// The agent is bound to channel C123 (per-agent fence) — so its transcript
 		// is listable; CSECRET has no binding and must never surface.
-		const connId = `conn_${WATCHER_ID}`;
+		const connId = `conn_${BEHAVIOR_ID}`;
 		await insertChatConnectionRow({
 			id: connId,
 			organizationId: org,
@@ -211,42 +211,42 @@ describe("listAgentThreads scope=all", () => {
 			},
 		);
 
-		// A watcher + one of its run snapshots.
+		// A behavior + one of its run snapshots.
 		await sql`
-      INSERT INTO watchers
-        (id, organization_id, agent_id, created_by, watcher_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
-      VALUES (${WATCHER_ID}, ${org}, ${AGENT}, ${userId}, 0, 'Test Watcher', 'active', 'notification', 'normal', 0, now(), now())`;
+      INSERT INTO behaviors
+        (id, organization_id, agent_id, created_by, behavior_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
+      VALUES (${BEHAVIOR_ID}, ${org}, ${AGENT}, ${userId}, 0, 'Test Behavior', 'active', 'notification', 'normal', 0, now(), now())`;
 		await sql`
-      INSERT INTO watchers
-        (id, organization_id, agent_id, created_by, watcher_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
-      VALUES (${OTHER_WATCHER_ID}, ${org}, ${OTHER_AGENT}, ${userId}, 0, 'Other Agent Watcher', 'active', 'notification', 'normal', 0, now(), now())`;
+      INSERT INTO behaviors
+        (id, organization_id, agent_id, created_by, behavior_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
+      VALUES (${OTHER_BEHAVIOR_ID}, ${org}, ${OTHER_AGENT}, ${userId}, 0, 'Other Agent Behavior', 'active', 'notification', 'normal', 0, now(), now())`;
 		await sql`
 			INSERT INTO runs
-			  (run_type, status, organization_id, watcher_id, approval_status,
+			  (run_type, status, organization_id, behavior_id, approval_status,
 			   run_metadata, created_at, completed_at)
 			VALUES
-			  ('behavior', 'completed', ${org}, ${OTHER_WATCHER_ID}, 'auto',
-			   ${sql.json({ prompt_rendered: "Other agent secret watcher task" })},
+			  ('behavior', 'completed', ${org}, ${OTHER_BEHAVIOR_ID}, 'auto',
+			   ${sql.json({ prompt_rendered: "Other agent secret behavior task" })},
 			   '2026-06-28T00:31:00Z', '2026-06-28T00:32:00Z')
 		`;
-		const [watcherRun] = await sql<{ id: number }[]>`
+		const [behaviorRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, watcher_id, window_id,
+			  (run_type, status, organization_id, behavior_id, window_id,
 			   approval_status, run_metadata, created_at, completed_at)
 			VALUES
-			  ('behavior', 'completed', ${org}, ${WATCHER_ID}, 700001,
-			   'auto', ${sql.json({ prompt_rendered: "Rendered watcher task" })},
+			  ('behavior', 'completed', ${org}, ${BEHAVIOR_ID}, 700001,
+			   'auto', ${sql.json({ prompt_rendered: "Rendered behavior task" })},
 			   '2026-06-28T00:29:00Z', '2026-06-28T00:30:00Z')
 			RETURNING id`;
-		const watcherJsonl = sessionJsonl("watcher run output");
-		const watcherConversationId = `${AGENT}_watcher_${WATCHER_ID}_run_${watcherRun.id}`;
+		const behaviorJsonl = sessionJsonl("behavior run output");
+		const behaviorConversationId = `${AGENT}_behavior_${BEHAVIOR_ID}_run_${behaviorRun.id}`;
 		await sql`
 			INSERT INTO agent_transcript_snapshot
 			  (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl,
 			   byte_size, terminal_status, created_at)
 			VALUES
-			  (${org}, ${AGENT}, ${watcherConversationId},
-			   ${watcherRun.id}, ${watcherJsonl}, ${Buffer.byteLength(watcherJsonl)},
+			  (${org}, ${AGENT}, ${behaviorConversationId},
+			   ${behaviorRun.id}, ${behaviorJsonl}, ${Buffer.byteLength(behaviorJsonl)},
 			   'completed', '2026-06-28T00:30:00Z')
 		`;
 
@@ -259,43 +259,43 @@ describe("listAgentThreads scope=all", () => {
 		// the old query kept it listed. The listing now filters on live `status`, so
 		// it drops out with no lifecycle sync anywhere.
 		await sql`
-      INSERT INTO watchers
-        (id, organization_id, agent_id, created_by, watcher_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
-      VALUES (${ARCHIVED_WATCHER_ID}, ${org}, ${AGENT}, ${userId}, 0, 'Archived Watcher', 'archived', 'notification', 'normal', 0, now(), now())`;
+      INSERT INTO behaviors
+        (id, organization_id, agent_id, created_by, behavior_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
+      VALUES (${ARCHIVED_BEHAVIOR_ID}, ${org}, ${AGENT}, ${userId}, 0, 'Archived Behavior', 'archived', 'notification', 'normal', 0, now(), now())`;
 		const [archivedRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, watcher_id, approval_status,
+			  (run_type, status, organization_id, behavior_id, approval_status,
 			   run_metadata, created_at, completed_at)
 			VALUES
-			  ('behavior', 'completed', ${org}, ${ARCHIVED_WATCHER_ID}, 'auto',
-			   ${sql.json({ prompt_rendered: "Archived watcher task" })},
+			  ('behavior', 'completed', ${org}, ${ARCHIVED_BEHAVIOR_ID}, 'auto',
+			   ${sql.json({ prompt_rendered: "Archived behavior task" })},
 			   '2026-06-28T00:40:00Z', '2026-06-28T00:41:00Z')
 			RETURNING id`;
-		const archivedJsonl = sessionJsonl("archived watcher run output");
+		const archivedJsonl = sessionJsonl("archived behavior run output");
 		await sql`
 			INSERT INTO agent_transcript_snapshot
 			  (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl,
 			   byte_size, terminal_status, created_at)
 			VALUES
-			  (${org}, ${AGENT}, ${`${AGENT}_watcher_${ARCHIVED_WATCHER_ID}_run_${archivedRun.id}`},
+			  (${org}, ${AGENT}, ${`${AGENT}_behavior_${ARCHIVED_BEHAVIOR_ID}_run_${archivedRun.id}`},
 			   ${archivedRun.id}, ${archivedJsonl}, ${Buffer.byteLength(archivedJsonl)},
 			   'completed', '2026-06-28T00:41:00Z')
 		`;
 
 		const [approvalRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, watcher_id, window_id,
+			  (run_type, status, organization_id, behavior_id, window_id,
 			   approval_status, action_key, created_at)
 			VALUES
-			  ('internal', 'pending', ${org}, ${WATCHER_ID}, 700001,
+			  ('internal', 'pending', ${org}, ${BEHAVIOR_ID}, 700001,
 			   'pending', 'entity_field_change', now())
 			RETURNING id`;
 		await insertEvent({
 			entityIds: [],
 			organizationId: org,
-			originId: `watcher-approval-${approvalRun.id}`,
-			title: "Approve watcher change",
-			content: "A watcher proposed changing a contact.",
+			originId: `behavior-approval-${approvalRun.id}`,
+			title: "Approve behavior change",
+			content: "A behavior proposed changing a contact.",
 			semanticType: "operation",
 			runId: approvalRun.id,
 			interactionType: "approval",
@@ -364,7 +364,7 @@ describe("listAgentThreads scope=all", () => {
 		expect(threads.map((t) => t.id)).toContain(SLACK_CONV);
 	});
 
-	it("returns web + platform + watcher entries with correct platforms, newest-first", async () => {
+	it("returns web + platform + behavior entries with correct platforms, newest-first", async () => {
 		const threads = await listAgentThreads({
 			agentId: AGENT,
 			organizationId: org,
@@ -380,8 +380,8 @@ describe("listAgentThreads scope=all", () => {
 		expect(slack?.conversationId).toBe(SLACK_CONV);
 
 		const behavior = byPlatform.get("behavior");
-		expect(behavior?.behaviorId).toBe(WATCHER_ID);
-		expect(behavior?.title).toBe("Test Watcher");
+		expect(behavior?.behaviorId).toBe(BEHAVIOR_ID);
+		expect(behavior?.title).toBe("Test Behavior");
 		expect(behavior?.createdAt).toBe(behavior?.updatedAt);
 
 		// Newest VISIBLE is the bound Slack channel at 02:00 — the unbound channel
@@ -389,8 +389,8 @@ describe("listAgentThreads scope=all", () => {
 		expect(threads[0]?.platform).toBe("slack");
 		expect(threads[0]?.id).toBe(SLACK_CONV);
 
-		// A watcher's per-run snapshot must NOT surface as its own platform row.
-		expect(threads.some((t) => t.id.includes("_watcher_"))).toBe(false);
+		// A behavior's per-run snapshot must NOT surface as its own platform row.
+		expect(threads.some((t) => t.id.includes("_behavior_"))).toBe(false);
 	});
 
 	it("drops an archived Behavior even though its completed runs remain", async () => {
@@ -405,13 +405,13 @@ describe("listAgentThreads scope=all", () => {
 		// still terminal_status='completed' — permanent history. The old query
 		// ignored the current Behavior status and listed it.
 		expect(
-			threads.some((t) => t.behaviorId === ARCHIVED_WATCHER_ID),
+			threads.some((t) => t.behaviorId === ARCHIVED_BEHAVIOR_ID),
 		).toBe(false);
-		expect(threads.some((t) => t.title === "Archived Watcher")).toBe(false);
+		expect(threads.some((t) => t.title === "Archived Behavior")).toBe(false);
 
 		// The live Behavior beside it is untouched — this is a lifecycle filter,
 		// not a blanket exclusion of Behaviors.
-		expect(threads.some((t) => t.behaviorId === WATCHER_ID)).toBe(true);
+		expect(threads.some((t) => t.behaviorId === BEHAVIOR_ID)).toBe(true);
 	});
 
 	it("orders a Behavior by its stored last-run stamp, not by run history", async () => {
@@ -421,9 +421,9 @@ describe("listAgentThreads scope=all", () => {
 			userId,
 			scope: "all",
 		});
-		const behavior = threads.find((t) => t.behaviorId === WATCHER_ID);
+		const behavior = threads.find((t) => t.behaviorId === BEHAVIOR_ID);
 
-		expect(behavior?.id).toBe(`watcher_${WATCHER_ID}`);
+		expect(behavior?.id).toBe(`behavior_${BEHAVIOR_ID}`);
 		// The stamped value, not max(created_at) over the snapshots.
 		expect(behavior?.updatedAt).toBe(
 			new Date("2026-06-28T00:30:00Z").getTime(),
@@ -529,7 +529,7 @@ describe("listAgentThreads scope=all", () => {
 			(
 				await sql<{ agent_id: string }[]>`
 					SELECT w.agent_id
-					FROM watchers w
+					FROM behaviors w
 					CROSS JOIN LATERAL jsonb_array_elements(w.triggers) t
 					WHERE w.organization_id = ${org}
 					  AND w.status = 'active'
@@ -565,7 +565,7 @@ describe("listAgentThreads scope=all", () => {
 		expect(created).toBe(false);
 	});
 
-	it("scope=user (default) excludes platform + watcher conversations", async () => {
+	it("scope=user (default) excludes platform + behavior conversations", async () => {
 		const threads = await listAgentThreads({
 			agentId: AGENT,
 			organizationId: org,
@@ -587,18 +587,18 @@ describe("listAgentThreads scope=all", () => {
 		expect(JSON.stringify(data.messages)).toContain("hello from slack");
 	});
 
-	it("readWatcherRunThreads returns the watcher's runs", async () => {
-		const data = await readWatcherRunThreads({
+	it("readBehaviorRunThreads returns the behavior's runs", async () => {
+		const data = await readBehaviorRunThreads({
 			agentId: AGENT,
 			organizationId: org,
-			watcherId: WATCHER_ID,
+			behaviorId: BEHAVIOR_ID,
 			limit: 20,
 		});
 		expect(data.runs).toHaveLength(1);
 		expect(JSON.stringify(data.runs[0]?.messages)).toContain(
-			"watcher run output",
+			"behavior run output",
 		);
-		expect(data.runs[0]?.task).toBe("Rendered watcher task");
+		expect(data.runs[0]?.task).toBe("Rendered behavior task");
 		expect(data.runs[0]?.pendingActionCount).toBe(1);
 		expect(data.runs[0]?.actions).toEqual([
 			expect.objectContaining({
@@ -613,28 +613,28 @@ describe("listAgentThreads scope=all", () => {
 		expect(data).not.toHaveProperty("interactions");
 	});
 
-	it("does not read a different agent's watcher in the same organization", async () => {
-		const data = await readWatcherRunThreads({
+	it("does not read a different agent's behavior in the same organization", async () => {
+		const data = await readBehaviorRunThreads({
 			agentId: AGENT,
 			organizationId: org,
-			watcherId: OTHER_WATCHER_ID,
+			behaviorId: OTHER_BEHAVIOR_ID,
 			limit: 20,
 		});
 
 		expect(data.runs).toEqual([]);
 		expect(JSON.stringify(data)).not.toContain(
-			"Other agent secret watcher task",
+			"Other agent secret behavior task",
 		);
 	});
 
-	it("keeps terminal approval decisions attached to their watcher run", async () => {
+	it("keeps terminal approval decisions attached to their behavior run", async () => {
 		const sql = getTestDb();
-		const [watcherRun] = await sql<{ id: number }[]>`
+		const [behaviorRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, watcher_id, window_id,
+			  (run_type, status, organization_id, behavior_id, window_id,
 			   approval_status, created_at, completed_at)
 			VALUES
-			  ('behavior', 'completed', ${org}, ${WATCHER_ID}, 700002,
+			  ('behavior', 'completed', ${org}, ${BEHAVIOR_ID}, 700002,
 			   'auto', '2026-06-28T04:00:00Z', '2026-06-28T04:01:00Z')
 			RETURNING id
 		`;
@@ -644,25 +644,25 @@ describe("listAgentThreads scope=all", () => {
 			  (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl,
 			   byte_size, terminal_status, created_at)
 			VALUES
-			  (${org}, ${AGENT}, ${`${AGENT}_watcher_${WATCHER_ID}_run_${watcherRun.id}`},
-			   ${watcherRun.id}, ${jsonl}, ${Buffer.byteLength(jsonl)}, 'completed',
+			  (${org}, ${AGENT}, ${`${AGENT}_behavior_${BEHAVIOR_ID}_run_${behaviorRun.id}`},
+			   ${behaviorRun.id}, ${jsonl}, ${Buffer.byteLength(jsonl)}, 'completed',
 			   '2026-06-28T04:01:00Z')
 		`;
 		const [approvalRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, watcher_id, window_id,
+			  (run_type, status, organization_id, behavior_id, window_id,
 			   approval_status, action_key, action_input, created_at, completed_at)
 			VALUES
-			  ('internal', 'cancelled', ${org}, ${WATCHER_ID}, 700002,
+			  ('internal', 'cancelled', ${org}, ${BEHAVIOR_ID}, 700002,
 			   'rejected', 'entity_change',
-			   ${sql.json({ source_run_id: watcherRun.id, operation: "merge" })},
+			   ${sql.json({ source_run_id: behaviorRun.id, operation: "merge" })},
 			   '2026-06-28T04:01:00Z', '2026-06-28T04:02:00Z')
 			RETURNING id
 		`;
 		await insertEvent({
 			entityIds: [],
 			organizationId: org,
-			originId: `watcher-rejected-${approvalRun.id}`,
+			originId: `behavior-rejected-${approvalRun.id}`,
 			title: "Merge kept separate",
 			content: "The reviewer kept these entities separate.",
 			semanticType: "operation",
@@ -679,14 +679,14 @@ describe("listAgentThreads scope=all", () => {
 			},
 		});
 
-		const data = await readWatcherRunThreads({
+		const data = await readBehaviorRunThreads({
 			agentId: AGENT,
 			organizationId: org,
-			watcherId: WATCHER_ID,
+			behaviorId: BEHAVIOR_ID,
 			limit: 20,
 		});
 		const run = data.runs.find(
-			(candidate) => candidate.runId === watcherRun.id,
+			(candidate) => candidate.runId === behaviorRun.id,
 		);
 		expect(run?.pendingActionCount).toBe(0);
 		expect(run?.actions).toEqual([
@@ -700,33 +700,33 @@ describe("listAgentThreads scope=all", () => {
 		]);
 	});
 
-	it("keeps pending approvals visible when the watcher run has no transcript", async () => {
+	it("keeps pending approvals visible when the behavior run has no transcript", async () => {
 		const sql = getTestDb();
-		const [watcherRun] = await sql<{ id: number }[]>`
+		const [behaviorRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, watcher_id, window_id,
+			  (run_type, status, organization_id, behavior_id, window_id,
 			   approval_status, run_metadata, created_at, completed_at)
 			VALUES
-			  ('behavior', 'completed', ${org}, ${WATCHER_ID}, 700003,
+			  ('behavior', 'completed', ${org}, ${BEHAVIOR_ID}, 700003,
 			   'auto', ${sql.json({ prompt_rendered: "Run without a transcript" })},
 			   '2026-06-28T05:00:00Z', '2026-06-28T05:01:00Z')
 			RETURNING id
 		`;
 		const [approvalRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, watcher_id, window_id,
+			  (run_type, status, organization_id, behavior_id, window_id,
 			   approval_status, action_key, action_input, created_at)
 			VALUES
-			  ('internal', 'pending', ${org}, ${WATCHER_ID}, 700003,
+			  ('internal', 'pending', ${org}, ${BEHAVIOR_ID}, 700003,
 			   'pending', 'entity_change',
-			   ${sql.json({ source_run_id: watcherRun.id, operation: "merge" })},
+			   ${sql.json({ source_run_id: behaviorRun.id, operation: "merge" })},
 			   '2026-06-28T05:01:00Z')
 			RETURNING id
 		`;
 		await insertEvent({
 			entityIds: [],
 			organizationId: org,
-			originId: `watcher-no-transcript-${approvalRun.id}`,
+			originId: `behavior-no-transcript-${approvalRun.id}`,
 			title: "Review merge without transcript",
 			content: "A durable approval must remain visible.",
 			semanticType: "operation",
@@ -740,14 +740,14 @@ describe("listAgentThreads scope=all", () => {
 			},
 		});
 
-		const data = await readWatcherRunThreads({
+		const data = await readBehaviorRunThreads({
 			agentId: AGENT,
 			organizationId: org,
-			watcherId: WATCHER_ID,
+			behaviorId: BEHAVIOR_ID,
 			limit: 20,
 		});
 		const run = data.runs.find(
-			(candidate) => candidate.runId === watcherRun.id,
+			(candidate) => candidate.runId === behaviorRun.id,
 		);
 		expect(run?.task).toBe("Run without a transcript");
 		expect(run?.messages).toEqual([]);

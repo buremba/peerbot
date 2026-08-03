@@ -16,7 +16,7 @@ const stubEmbedding = Array.from({ length: 768 }, () => 0);
 type SeededClassifier = {
   workspace: TestWorkspace;
   entityId: number;
-  watcherId: number;
+  behaviorId: number;
   classifierId: number;
   eventId: number;
 };
@@ -40,10 +40,10 @@ async function seedClassifier(workspace: TestWorkspace, slug: string): Promise<S
     organizationId: workspace.org.id,
     ownerUserId: workspace.users.owner.id,
   });
-  const watcher = (await workspace.owner.behaviors.create({
+  const behavior = (await workspace.owner.behaviors.create({
     entity_id: entity.entity.id,
-    slug: `${slug}-watcher`,
-    name: `${slug} Watcher`,
+    slug: `${slug}-behavior`,
+    name: `${slug} Behavior`,
     prompt: 'collect signals.',
     agent_id: agent.agentId,
   })) as { behavior_id: string };
@@ -52,7 +52,7 @@ async function seedClassifier(workspace: TestWorkspace, slug: string): Promise<S
     slug,
     name: `${slug} Classifier`,
     attribute_key: slug,
-    behavior_id: watcher.behavior_id,
+    behavior_id: behavior.behavior_id,
     attribute_values: {
       positive: {
         description: 'positive signal',
@@ -77,7 +77,7 @@ async function seedClassifier(workspace: TestWorkspace, slug: string): Promise<S
   return {
     workspace,
     entityId: entity.entity.id,
-    watcherId: Number(watcher.behavior_id),
+    behaviorId: Number(behavior.behavior_id),
     classifierId: created.data!.classifier_id,
     eventId: event.id,
   };

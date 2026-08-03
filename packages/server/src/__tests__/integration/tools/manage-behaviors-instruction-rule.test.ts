@@ -156,8 +156,8 @@ describe("manage_behaviors — instruction-presence rule", () => {
 		const sql = getTestDb();
 		const [v1] = await sql`
 			SELECT version.prompt, version.skills
-			FROM watchers behavior
-			JOIN watcher_versions version ON version.id = behavior.current_version_id
+			FROM behaviors behavior
+			JOIN behavior_versions version ON version.id = behavior.current_version_id
 			WHERE behavior.id = ${Number(created.behavior_id)}
 		`;
 		expect(v1.prompt).toBe("");
@@ -183,8 +183,8 @@ describe("manage_behaviors — instruction-presence rule", () => {
 
 		const [v2] = await sql`
 			SELECT version.prompt, version.skills
-			FROM watchers behavior
-			JOIN watcher_versions version ON version.id = behavior.current_version_id
+			FROM behaviors behavior
+			JOIN behavior_versions version ON version.id = behavior.current_version_id
 			WHERE behavior.id = ${Number(created.behavior_id)}
 		`;
 		expect(v2.prompt).toBe("");
@@ -405,7 +405,7 @@ describe("manage_behaviors — instruction-presence rule", () => {
 		const rootId = root.behavior_id!;
 
 		const [rootRow] = await sql`
-			SELECT current_version_id, watcher_group_id FROM watchers WHERE id = ${Number(rootId)}
+			SELECT current_version_id, behavior_group_id FROM behaviors WHERE id = ${Number(rootId)}
 		`;
 		const versionId = Number(rootRow.current_version_id);
 
@@ -425,8 +425,8 @@ describe("manage_behaviors — instruction-presence rule", () => {
 		const siblingId = Number(cloned.created![0].behavior_id);
 
 		const siblings = await sql`
-			SELECT id, triggers FROM watchers
-			WHERE watcher_group_id = ${Number(rootRow.watcher_group_id)}
+			SELECT id, triggers FROM behaviors
+			WHERE behavior_group_id = ${Number(rootRow.behavior_group_id)}
 			ORDER BY id
 		`;
 		expect(siblings).toHaveLength(2);
@@ -451,7 +451,7 @@ describe("manage_behaviors — instruction-presence rule", () => {
 
 		// Sibling still scheduled after the rejected write.
 		const [siblingAfter] = await sql`
-			SELECT triggers FROM watchers WHERE id = ${siblingId}
+			SELECT triggers FROM behaviors WHERE id = ${siblingId}
 		`;
 		const siblingTriggers = siblingAfter.triggers as Array<{ kind: string }>;
 		expect(siblingTriggers.some((t) => t.kind === "schedule")).toBe(true);

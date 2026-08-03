@@ -5,7 +5,7 @@
  * from the config (see packages/cli/.../apply/diff.ts computeDiff({ prune })).
  * This suite verifies the destructive half the CLI depends on, against a real
  * Postgres:
- *   - definition deletes work (entity/relationship type, watcher);
+ *   - definition deletes work (entity/relationship type, behavior);
  *   - an entity-type / relationship-type delete REFUSES while instances exist,
  *     so prune can never cascade into data (data is exempt).
  */
@@ -164,10 +164,10 @@ describe('prune (server gate)', () => {
       expect(foreign?.name).toBe('Foreign Only');
     });
 
-    it('deletes a watcher', async () => {
+    it('deletes a behavior', async () => {
       const agent = await createTestAgent({ organizationId: orgId });
       const created = (await owner.behaviors.create({
-        slug: 'prune-watcher',
+        slug: 'prune-behavior',
         agent_id: agent.agentId,
         prompt: 'Watch for things.',
       })) as { behavior_id?: string };
@@ -179,7 +179,7 @@ describe('prune (server gate)', () => {
       const list = (await owner.behaviors.list({})) as {
         behaviors?: Array<{ slug: string }>;
       };
-      expect((list.watchers ?? []).some((w) => w.slug === 'prune-watcher')).toBe(false);
+      expect((list.behaviors ?? []).some((w) => w.slug === 'prune-behavior')).toBe(false);
     });
 
     it('re-creates a relationship type with the same slug after delete (prune → re-add)', async () => {

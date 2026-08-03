@@ -194,22 +194,22 @@ export async function handleSubmitFeedback(
   }
 
   const sql = getDb();
-  const watcherId = Number(args.behavior_id);
+  const behaviorId = Number(args.behavior_id);
 
   // Scope to the caller's current org so a member of org A can't write
-  // feedback against a watcher in org B by passing its watcher_id. window_id is
+  // feedback against a behavior in org B by passing its behavior_id. window_id is
   // the canvas ROOT event id — canvas_windows resolves the period metadata.
   const windowCheck = await sql`
     SELECT ww.id, ww.granularity, ww.window_start, ww.window_end,
            w.organization_id, w.created_by, w.entity_ids
     FROM canvas_windows ww
-    JOIN watchers w ON w.id = ww.watcher_id
+    JOIN behaviors w ON w.id = ww.behavior_id
     WHERE ww.id = ${args.window_id}
-      AND ww.watcher_id = ${watcherId}
+      AND ww.behavior_id = ${behaviorId}
       AND w.organization_id = ${ctx.organizationId}
   `;
   if (windowCheck.length === 0) {
-    throw new Error(`Window ${args.window_id} not found for Behavior ${watcherId}`);
+    throw new Error(`Window ${args.window_id} not found for Behavior ${behaviorId}`);
   }
   const organizationId = windowCheck[0].organization_id as string;
   const windowGranularity = windowCheck[0].granularity as string;
@@ -244,7 +244,7 @@ export async function handleSubmitFeedback(
           ${organizationId}, 'correction', '{}'::bigint[],
           jsonb_build_object(
             'window_id', ${args.window_id}::bigint,
-            'watcher_id', ${watcherId}::bigint,
+            'behavior_id', ${behaviorId}::bigint,
             'field_path', ${c.field_path}::text,
             'mutation', ${mutation}::text,
             'corrected_value', ${correctedValueJson}::jsonb,
@@ -267,13 +267,13 @@ export async function handleSubmitFeedback(
       await tx.savepoint(async (sp) => {
         const spSql = sp as unknown as typeof tx;
         const head = await findCanvasHead(spSql, {
-          watcherId,
+          behaviorId,
           granularity: windowGranularity,
           windowStart,
         });
         if (!head) {
           logger.info(
-            { watcherId, windowId: args.window_id },
+            { behaviorId, windowId: args.window_id },
             '[submit_feedback] no canvas_state chain yet — skipping materialization'
           );
           return;
@@ -292,7 +292,7 @@ export async function handleSubmitFeedback(
         const parentEntityId = parsePgNumberArray(windowCheck[0].entity_ids)[0] ?? null;
         const canvasEntityId = await ensureCanvasEntity({
           tx: spSql,
-          watcherId,
+          behaviorId,
           organizationId,
           parentEntityId,
           createdBy: (windowCheck[0].created_by as string | null) ?? ctx.userId ?? null,
@@ -308,7 +308,7 @@ export async function handleSubmitFeedback(
               payloadData: nextPayload,
               semanticType: 'canvas_state',
               metadata: {
-                watcher_id: watcherId,
+                behavior_id: behaviorId,
                 granularity: windowGranularity,
                 window_start: windowStart,
                 window_end: windowEnd,
@@ -324,7 +324,7 @@ export async function handleSubmitFeedback(
         } catch (err) {
           if (isUniqueViolation(err, 'idx_events_superseded_by')) {
             throw new ToolUserError(
-              `Canvas for Behavior ${watcherId} was concurrently updated. Reload the latest state and retry.`,
+              `Canvas for Behavior ${behaviorId} was concurrently updated. Reload the latest state and retry.`,
               409
             );
           }
@@ -337,7 +337,7 @@ export async function handleSubmitFeedback(
       // rolled back to the savepoint only: keep the advisory events.
       if (err instanceof ToolUserError) throw err;
       logger.warn(
-        { err, watcherId, windowId: args.window_id },
+        { err, behaviorId, windowId: args.window_id },
         '[submit_feedback] canvas materialization failed (advisory events kept)'
       );
     }
@@ -364,11 +364,11 @@ export async function handleGetFeedback(
   if (!args.behavior_id) throw new Error('behavior_id is required');
 
   const sql = getDb();
-  const watcherId = Number(args.behavior_id);
+  const behaviorId = Number(args.behavior_id);
   const limit = args.limit ?? 50;
 
-  // Scope to the caller's current org so a member of org A can't enumerate feedback for a watcher
-  // in org B by passing its watcher_id. Correction-events (P1): read from the events spine
+  // Scope to the caller's current org so a member of org A can't enumerate feedback for a behavior
+  // in org B by passing its behavior_id. Correction-events (P1): read from the events spine
   // (semantic_type='correction'); the feedback id is the event id for current rows,
   // or recovered from origin_id 'wwff_<id>' for historical (pre-3b) rows.
   // created_by is the author user id, or NULL once that user is deleted (events.created_by FK
@@ -386,7 +386,7 @@ export async function handleGetFeedback(
         LEFT JOIN canvas_windows w
           ON w.id = (e.metadata->>'window_id')::bigint
         WHERE e.semantic_type = 'correction'
-          AND (e.metadata->>'watcher_id')::bigint = ${watcherId}
+          AND (e.metadata->>'behavior_id')::bigint = ${behaviorId}
           AND (e.metadata->>'window_id')::bigint = ${args.window_id}
           AND e.organization_id = ${ctx.organizationId}
         ORDER BY e.created_at DESC
@@ -402,7 +402,7 @@ export async function handleGetFeedback(
         LEFT JOIN canvas_windows w
           ON w.id = (e.metadata->>'window_id')::bigint
         WHERE e.semantic_type = 'correction'
-          AND (e.metadata->>'watcher_id')::bigint = ${watcherId}
+          AND (e.metadata->>'behavior_id')::bigint = ${behaviorId}
           AND e.organization_id = ${ctx.organizationId}
         ORDER BY e.created_at DESC
         LIMIT ${limit}
@@ -431,16 +431,16 @@ export async function handleGetFeedback(
 // ============================================
 
 /**
- * List the entities a watcher promoted (its keyed children) — the behavior's
+ * List the entities a behavior promoted (its keyed children) — the behavior's
  * durable product. Each row carries the entity's metadata (the extracted
  * field values) plus `field_controls` (which fields a human already owns).
  * The web activity view uses only the count + entity_type for its outputs
  * strip; field ownership/corrections live on the entity page. Promoted
- * children stamp `metadata.watcher_id` / `source='watcher_promotion'` at
+ * children stamp `metadata.behavior_id` / `source='behavior_promotion'` at
  * promotion time.
  *
  * Org-scoped so a member of org A can't enumerate org B's promoted entities by
- * passing a watcher_id (auth also gates on requireWatcherAccess 'read').
+ * passing a behavior_id (auth also gates on requireBehaviorAccess 'read').
  */
 export async function handleListPromoted(
   args: ManageBehaviorsArgs,
@@ -449,7 +449,7 @@ export async function handleListPromoted(
   if (!args.behavior_id) throw new Error('behavior_id is required');
 
   const sql = getDb();
-  const watcherId = String(Number(args.behavior_id));
+  const behaviorId = String(Number(args.behavior_id));
   const limit = args.limit ?? 200;
 
   const rows = await sql`
@@ -458,8 +458,8 @@ export async function handleListPromoted(
     JOIN entity_types et ON et.id = e.entity_type_id
     WHERE e.organization_id = ${ctx.organizationId}
       AND e.deleted_at IS NULL
-      AND e.metadata->>'source' = 'watcher_promotion'
-      AND e.metadata->>'watcher_id' = ${watcherId}
+      AND e.metadata->>'source' = 'behavior_promotion'
+      AND e.metadata->>'behavior_id' = ${behaviorId}
     ORDER BY e.name
     LIMIT ${limit}
   `;

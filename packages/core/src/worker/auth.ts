@@ -40,7 +40,7 @@ export interface WorkerTokenData {
   timestamp: number;
   platform?: string;
   /**
-   * Headless run origin (`platformMetadata.source`, e.g. watcher-run /
+   * Headless run origin (`platformMetadata.source`, e.g. behavior-run /
    * scheduled-job / connector-repair / internal). Carried so interaction
    * cards emitted from a headless turn can be stamped headless and exempted
    * from the SSE-owner gate — no browser SSE connection exists on any pod for

@@ -13,10 +13,10 @@ import {
 } from '../../../utils/organization-access';
 import { queryProjectsIdColumn } from '../../../utils/execute-data-sources';
 import {
-  validateWatcherSourceRef,
-  resolveWatcherSourcesForSave,
+  validateBehaviorSourceRef,
+  resolveBehaviorSourcesForSave,
   extractSkillNamesFromPromptTokens,
-} from '../../../watchers/source-refs';
+} from '../../../behaviors/source-refs';
 import type { ToolContext } from '../../registry';
 import { Value } from '@sinclair/typebox/value';
 import {
@@ -28,16 +28,16 @@ import {
 // Types
 // ============================================
 
-export interface WatcherOperationResult {
+export interface BehaviorOperationResult {
   behavior_id: string;
   success: boolean;
   message: string;
   version?: number;
 }
 
-type WatcherAccessMode = 'read' | 'write';
+type BehaviorAccessMode = 'read' | 'write';
 
-interface WatcherAccessRow {
+interface BehaviorAccessRow {
   id: string | number;
   organization_id: string | null;
   entity_ids: unknown;
@@ -142,7 +142,7 @@ export function toTextArrayParam(values: string[]): string {
   );
 }
 
-export function summarizeResults(results: WatcherOperationResult[]) {
+export function summarizeResults(results: BehaviorOperationResult[]) {
   const successful = results.filter((r) => r.success).length;
   return {
     total: results.length,
@@ -152,10 +152,10 @@ export function summarizeResults(results: WatcherOperationResult[]) {
 }
 
 // ============================================
-// Watcher config validation
+// Behavior config validation
 // ============================================
 
-function validateWatcherConfig(input: {
+function validateBehaviorConfig(input: {
   prompt?: string;
   classifiers?: unknown[];
   sources?: Array<{ name: string; query: string }>;
@@ -171,10 +171,10 @@ function validateWatcherConfig(input: {
     return 'prompt must be a string';
   }
 
-  // The output contract is no longer authored on the watcher. An entity-typed
-  // watcher (keying_config.entity_type) derives it from that entity type's
-  // metadata_schema at runtime; an untyped watcher runs the worker's free-form
-  // summary fallback. There is no inline watcher schema input.
+  // The output contract is no longer authored on the behavior. An entity-typed
+  // behavior (keying_config.entity_type) derives it from that entity type's
+  // metadata_schema at runtime; an untyped behavior runs the worker's free-form
+  // summary fallback. There is no inline behavior schema input.
 
   if (input.classifiers !== undefined) {
     if (!Array.isArray(input.classifiers)) {
@@ -204,9 +204,9 @@ function validateWatcherConfig(input: {
 
   if (input.sources) {
     for (const source of input.sources) {
-      let refKind: ReturnType<typeof validateWatcherSourceRef>;
+      let refKind: ReturnType<typeof validateBehaviorSourceRef>;
       try {
-        refKind = validateWatcherSourceRef(source.name, source.query);
+        refKind = validateBehaviorSourceRef(source.name, source.query);
       } catch (err) {
         return err instanceof Error ? err.message : String(err);
       }
@@ -216,7 +216,7 @@ function validateWatcherConfig(input: {
       if (!trimmed.startsWith('SELECT') && !trimmed.startsWith('WITH')) {
         return `source "${source.name}": query must be a SELECT statement (read-only)`;
       }
-      // Watcher-mode content aggregation keys every row by `id` and the signed
+      // Behavior-mode content aggregation keys every row by `id` and the signed
       // window_token only carries those ids; a source that omits `id` yields
       // content_linked: 0 at complete_window and SILENTLY skips the reaction.
       // Reject it at save time so the failure is loud, not invisible.
@@ -230,18 +230,18 @@ function validateWatcherConfig(input: {
 }
 
 /**
- * Run the shared watcher-version validation (config shape + classifier/schema
+ * Run the shared behavior-version validation (config shape + classifier/schema
  * source-path compatibility) and throw a `ToolUserError` (422) on the first
  * failure. Schedule validation is intentionally left to the caller because
  * `create` and `create_version` surface schedule errors with different error
  * types.
  */
-export function assertWatcherVersionConfigValid(parsed: {
+export function assertBehaviorVersionConfigValid(parsed: {
   prompt?: string;
   classifiers?: unknown[];
   sources?: Array<{ name: string; query: string }>;
 }): void {
-  const validation = validateWatcherConfig({
+  const validation = validateBehaviorConfig({
     prompt: parsed.prompt,
     classifiers: parsed.classifiers,
     sources: parsed.sources,
@@ -382,10 +382,10 @@ export function assertPromptSkillTokensPinned(
  * Resolve every @ref source against the org at save time so a typo fails here
  * (loud 422) rather than silently producing empty context at read_knowledge.
  * Custom-SQL sources are skipped (id projection is already enforced by
- * {@link assertWatcherVersionConfigValid}). Call after the organization id is
- * known and before the watcher/version row is persisted.
+ * {@link assertBehaviorVersionConfigValid}). Call after the organization id is
+ * known and before the behavior/version row is persisted.
  */
-export async function assertWatcherSourcesResolve(
+export async function assertBehaviorSourcesResolve(
   sql: DbClient,
   organizationId: string,
   sources: Array<{ name: string; query: string }>,
@@ -394,7 +394,7 @@ export async function assertWatcherSourcesResolve(
   entityIds: number[] = []
 ): Promise<void> {
   try {
-    await resolveWatcherSourcesForSave(sql, organizationId, sources, entityIds);
+    await resolveBehaviorSourcesForSave(sql, organizationId, sources, entityIds);
   } catch (err) {
     throw new ToolUserError(
       `Behavior validation failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -410,10 +410,10 @@ export async function assertWatcherSourcesResolve(
 /**
  * Resolve `agent_id` against the caller's org before it is persisted.
  *
- * `watchers.agent_id` is NOT NULL but carries NO foreign key to `agents`, so a
+ * `behaviors.agent_id` is NOT NULL but carries NO foreign key to `agents`, so a
  * typo'd or cross-org id is accepted by the database and only surfaces as a
  * Behavior that reports status 'active' / health 'healthy' and never runs — the
- * scheduler joins watchers to agents on `agent_id` (see watchers/automation.ts),
+ * scheduler joins behaviors to agents on `agent_id` (see behaviors/automation.ts),
  * so an unresolvable owner silently drops the row out of every scheduling pass.
  * `behaviors.create` already documents `throws: ["EntityNotFound"]` for this
  * case in src/sandbox/method-metadata.ts; this honours that contract.
@@ -494,14 +494,14 @@ export function assertKeyingConfigShape(keyingConfig: unknown): void {
  *
  * An entity-typed Behavior derives its whole output contract from the named
  * type's `metadata_schema`. When the type does not exist,
- * `deriveWatcherExtractionSchema()` returns null and complete_window SKIPS
+ * `deriveBehaviorExtractionSchema()` returns null and complete_window SKIPS
  * extraction validation entirely — so a typo does not fail loudly, it silently
  * VOIDS the contract the Behavior was created to enforce. Its sibling
  * `entity_id` is already existence-checked at create, so validating here makes
  * the pair consistent.
  *
  * Uses the same tenant-first-then-public-catalog visibility rule as
- * `resolveEntityTypeMetadataSchema()` (watcher-extraction-schema.ts) so a type
+ * `resolveEntityTypeMetadataSchema()` (behavior-extraction-schema.ts) so a type
  * that derivation CAN see is never rejected here — checking existence only, as
  * a type legitimately may carry no metadata_schema yet.
  */
@@ -533,10 +533,10 @@ export async function assertKeyingConfigEntityTypeExists(
 }
 
 // ============================================
-// Watcher access control
+// Behavior access control
 // ============================================
 
-function parseWatcherEntityIds(raw: unknown): number[] {
+function parseBehaviorEntityIds(raw: unknown): number[] {
   if (Array.isArray(raw)) return raw.map(Number).filter((id) => Number.isFinite(id));
   if (typeof raw === 'string') {
     return raw
@@ -549,55 +549,55 @@ function parseWatcherEntityIds(raw: unknown): number[] {
   return [];
 }
 
-async function getWatcherAccessRows(
-  watcherIds: string[],
+async function getBehaviorAccessRows(
+  behaviorIds: string[],
   organizationId: string | null | undefined,
-): Promise<WatcherAccessRow[]> {
-  if (watcherIds.length === 0) return [];
+): Promise<BehaviorAccessRow[]> {
+  if (behaviorIds.length === 0) return [];
   const sql = getDb();
-  // Always scope the read to the caller's org so a TOCTOU swap of watcher_id
+  // Always scope the read to the caller's org so a TOCTOU swap of behavior_id
   // to another tenant's row cannot surface foreign organization_id/entity_ids
   // into the access check (and so mutating paths that reuse these ids stay
   // org-bound at the first load).
   if (!organizationId) return [];
-  const placeholders = watcherIds.map((_, idx) => `$${idx + 2}`).join(',');
-  return sql.unsafe<WatcherAccessRow>(
-    `SELECT id, organization_id, entity_ids FROM watchers
+  const placeholders = behaviorIds.map((_, idx) => `$${idx + 2}`).join(',');
+  return sql.unsafe<BehaviorAccessRow>(
+    `SELECT id, organization_id, entity_ids FROM behaviors
      WHERE organization_id = $1 AND id IN (${placeholders})`,
-    [organizationId, ...watcherIds],
+    [organizationId, ...behaviorIds],
   );
 }
 
 /**
- * Existence probe across all orgs for the given watcher ids, reading ONLY the
+ * Existence probe across all orgs for the given behavior ids, reading ONLY the
  * id column — never organization_id/entity_ids. The org-scoped
- * {@link getWatcherAccessRows} load stays the single source of truth for every
+ * {@link getBehaviorAccessRows} load stays the single source of truth for every
  * actual access decision (TOCTOU-safe); this probe exists purely to tell a
  * cross-org id (exists under another tenant — a 403 access fault) apart from an
  * id that exists nowhere (which a mutation handler must be allowed to report
  * per-id, e.g. delete's all-failed "not found or already archived" aggregate).
  */
-async function findExistingWatcherIds(watcherIds: string[]): Promise<Set<string>> {
-  if (watcherIds.length === 0) return new Set();
+async function findExistingBehaviorIds(behaviorIds: string[]): Promise<Set<string>> {
+  if (behaviorIds.length === 0) return new Set();
   const sql = getDb();
-  const placeholders = watcherIds.map((_, idx) => `$${idx + 1}`).join(',');
+  const placeholders = behaviorIds.map((_, idx) => `$${idx + 1}`).join(',');
   const rows = await sql.unsafe<{ id: string | number }>(
-    `SELECT id FROM watchers WHERE id IN (${placeholders})`,
-    watcherIds,
+    `SELECT id FROM behaviors WHERE id IN (${placeholders})`,
+    behaviorIds,
   );
   return new Set(rows.map((row) => String(row.id)));
 }
 
-export async function requireWatcherAccess(
+export async function requireBehaviorAccess(
   sql: DbClient,
-  watcherIds: string[],
+  behaviorIds: string[],
   ctx: ToolContext,
-  mode: WatcherAccessMode,
+  mode: BehaviorAccessMode,
   opts?: { allowMissing?: boolean }
 ): Promise<void> {
-  const uniqueWatcherIds = [...new Set(watcherIds)];
-  const rows = await getWatcherAccessRows(uniqueWatcherIds, ctx.organizationId);
-  if (rows.length !== uniqueWatcherIds.length) {
+  const uniqueBehaviorIds = [...new Set(behaviorIds)];
+  const rows = await getBehaviorAccessRows(uniqueBehaviorIds, ctx.organizationId);
+  if (rows.length !== uniqueBehaviorIds.length) {
     // Some requested ids are absent from the caller's org. By default this is a
     // hard 403 — the strict gate every action but delete relies on, so no
     // action reaches a handler with an id it did not prove in-org.
@@ -608,9 +608,9 @@ export async function requireWatcherAccess(
     // (exists under another tenant) is STILL a 403 — never fall through for it,
     // or a caller could probe/hit foreign rows on the sequential id space.
     const foundIds = new Set(rows.map((row) => String(row.id)));
-    const missingIds = uniqueWatcherIds.filter((id) => !foundIds.has(String(id)));
+    const missingIds = uniqueBehaviorIds.filter((id) => !foundIds.has(String(id)));
     if (opts?.allowMissing) {
-      const existElsewhere = await findExistingWatcherIds(missingIds);
+      const existElsewhere = await findExistingBehaviorIds(missingIds);
       if (existElsewhere.size > 0) {
         throw new ToolUserError(
           'Access denied: one or more Behaviors were not found in your organization',
@@ -626,8 +626,8 @@ export async function requireWatcherAccess(
   }
 
   for (const row of rows) {
-    const watcherOrgId = row.organization_id ? String(row.organization_id) : null;
-    if (!watcherOrgId || watcherOrgId !== ctx.organizationId) {
+    const behaviorOrgId = row.organization_id ? String(row.organization_id) : null;
+    if (!behaviorOrgId || behaviorOrgId !== ctx.organizationId) {
       // Cross-org access attempt is a client/permission fault, not a server
       // error — surface it as a 403 ToolUserError so the REST layer returns the
       // right status and it stays out of the operational alert feed.
@@ -637,7 +637,7 @@ export async function requireWatcherAccess(
       );
     }
 
-    const entityIds = parseWatcherEntityIds(row.entity_ids);
+    const entityIds = parseBehaviorEntityIds(row.entity_ids);
     if (entityIds.length > 0) {
       for (const entityId of entityIds) {
         if (mode === 'write') {
@@ -665,79 +665,79 @@ import { entityLinkMatchSql } from '../../../utils/content-search';
 import { getErrorMessage } from '@lobu/core';
 
 /**
- * Batch count unanalyzed content for multiple watchers in a single query.
- * Returns a map of watcher_id -> count of content not yet in any window for that watcher.
+ * Batch count unanalyzed content for multiple behaviors in a single query.
+ * Returns a map of behavior_id -> count of content not yet in any window for that behavior.
  */
 export async function batchCountUnanalyzedContent(
-  watcherIds: number[]
+  behaviorIds: number[]
 ): Promise<Map<number, { pending: number; historical: number }>> {
-  if (watcherIds.length === 0) {
+  if (behaviorIds.length === 0) {
     return new Map();
   }
 
   const sql = getDb();
 
-  const placeholders = watcherIds.map((_, i) => `$${i + 1}`).join(', ');
+  const placeholders = behaviorIds.map((_, i) => `$${i + 1}`).join(', ');
 
   // The "total content" count joins current_event_records on the entity link
-  // for every watcher in the result. On high-volume entities this scans
+  // for every behavior in the result. On high-volume entities this scans
   // 100K+ rows per Behavior and dominates list latency (8-12s on
-  // prod for orgs with even a single Reddit-Digest-class watcher).
+  // prod for orgs with even a single Reddit-Digest-class behavior).
   //
-  // Cap the per-watcher total at TOTAL_CAP rows. The badge derived from
+  // Cap the per-behavior total at TOTAL_CAP rows. The badge derived from
   // `pending_count = total - analyzed` becomes "TOTAL_CAP+ - analyzed"
   // semantics above the cap; the only consumer is a list-row badge that
   // doesn't need exact counts above a threshold.
   const TOTAL_CAP = 1000;
   const result = await sql.unsafe(
     `
-    WITH watcher_entities AS (
-      SELECT i.id as watcher_id, unnest(i.entity_ids) as entity_id
-      FROM watchers i
+    WITH behavior_entities AS (
+      SELECT i.id as behavior_id, unnest(i.entity_ids) as entity_id
+      FROM behaviors i
       WHERE i.id IN (${placeholders})
         AND array_length(i.entity_ids, 1) > 0
     ),
     analyzed_counts AS (
-      -- Canvas-on-events: window_id link rows carry a denormalized watcher_id, so
-      -- count analyzed events directly off watcher_window_events without a join
-      -- through the retired watcher_windows table.
+      -- Canvas-on-events: window_id link rows carry a denormalized behavior_id, so
+      -- count analyzed events directly off behavior_window_events without a join
+      -- through the retired behavior_windows table.
       SELECT
-        ie.watcher_id,
+        ie.behavior_id,
         COUNT(DISTINCT iwc.event_id) as analyzed_count
-      FROM (SELECT DISTINCT watcher_id FROM watcher_entities) ie
-      LEFT JOIN watcher_window_events iwc ON iwc.watcher_id = ie.watcher_id
-      GROUP BY ie.watcher_id
+      FROM (SELECT DISTINCT behavior_id FROM behavior_entities) ie
+      LEFT JOIN behavior_window_events iwc ON iwc.behavior_id = ie.behavior_id
+      GROUP BY ie.behavior_id
     ),
     total_counts AS (
       SELECT
-        wid AS watcher_id,
+        wid AS behavior_id,
         (SELECT COUNT(*) FROM (
-          SELECT 1 FROM watcher_entities ie
+          SELECT 1 FROM behavior_entities ie
           JOIN current_event_records f ON ${entityLinkMatchSql('ie.entity_id::bigint', 'f')}
-          WHERE ie.watcher_id = wid
+          WHERE ie.behavior_id = wid
           LIMIT ${TOTAL_CAP}
         ) capped) AS total_count
-      FROM (SELECT DISTINCT watcher_id AS wid FROM watcher_entities) per_watcher
+      FROM (SELECT DISTINCT behavior_id AS wid FROM behavior_entities) per_behavior
     )
     SELECT
-      ac.watcher_id,
+      ac.behavior_id,
       CAST(GREATEST(COALESCE(tc.total_count, 0) - COALESCE(ac.analyzed_count, 0), 0) AS INTEGER) as pending_count,
       0 as historical_count
     FROM analyzed_counts ac
-    LEFT JOIN total_counts tc ON tc.watcher_id = ac.watcher_id
+    LEFT JOIN total_counts tc ON tc.behavior_id = ac.behavior_id
     `,
-    watcherIds
+    behaviorIds
   );
 
   const counts = new Map<number, { pending: number; historical: number }>();
   for (const row of result) {
-    counts.set(Number(row.watcher_id), {
+    counts.set(Number(row.behavior_id), {
       pending: (row.pending_count as number) ?? 0,
       historical: (row.historical_count as number) ?? 0,
     });
   }
 
-  for (const id of watcherIds) {
+  for (const id of behaviorIds) {
     if (!counts.has(id)) {
       counts.set(id, { pending: 0, historical: 0 });
     }

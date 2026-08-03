@@ -2,7 +2,7 @@
  * Data-source column masking + admin-table gate.
  *
  * Regression: `executeDataSources` (the runtime path for view-template
- * `data_sources` and watcher source queries) called `buildScopedQuery` with NO
+ * `data_sources` and behavior source queries) called `buildScopedQuery` with NO
  * options, so the org-scoped CTEs fell back to `SELECT *` and exposed EVERY
  * physical column — including the ones the schema deliberately excludes
  * (connections.credentials, oauth_tokens.token_hash, …). It also never applied

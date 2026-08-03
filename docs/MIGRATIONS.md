@@ -104,7 +104,7 @@ ALTER TABLE events DROP CONSTRAINT events_title_not_null;
 
 A single `DELETE FROM connections WHERE id IN (...)` triggers an internal `UPDATE events SET connection_id = NULL WHERE connection_id IN (...)`. For a connection with 92k events that's a 13s blocking UPDATE — visible to ops as "the admin action hung the API."
 
-**Safe pattern:** keep cascades for *small* parent tables only. For parents that fan out to events, watcher_window_events, or anything else 100k+ rows wide:
+**Safe pattern:** keep cascades for *small* parent tables only. For parents that fan out to events, behavior_window_events, or anything else 100k+ rows wide:
 
 1. Make sure the **child FK column is indexed** (e.g. `idx_events_connection_id`) — without it, the cascade falls back to a seq scan and the UPDATE goes from 13s to minutes.
 2. Manage the dependent nulling in application code with batched UPDATEs (e.g. 1k rows per loop, sleep between).

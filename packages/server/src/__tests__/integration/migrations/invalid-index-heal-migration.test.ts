@@ -8,6 +8,7 @@ import {
 } from "../../../db/migration-loader";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase } from "../../setup/test-db";
+import { adaptImmutableMigrationSection } from "../../setup/immutable-migration";
 
 /**
  * Concurrent CREATE INDEX IF NOT EXISTS silently no-ops when an INVALID
@@ -33,11 +34,11 @@ const HEAL_MIGRATIONS = [
 			"20260717121009_behavior_triggers_index_heal.sql",
 			"20260717121010_behavior_triggers_index.sql",
 		],
-		index: "idx_watchers_triggers_gin",
+		index: "idx_behaviors_triggers_gin",
 		/** Plain (non-unique) index definition used only to seed an INVALID carcass. */
 		seedSql: `
-      CREATE INDEX IF NOT EXISTS idx_watchers_triggers_gin
-        ON watchers (id)
+      CREATE INDEX IF NOT EXISTS idx_behaviors_triggers_gin
+        ON behaviors (id)
     `,
 	},
 	{
@@ -45,9 +46,10 @@ const HEAL_MIGRATIONS = [
 			"20260717121019_watcher_run_execution_index_heal.sql",
 			"20260717121020_watcher_run_execution_index.sql",
 		],
-		index: "idx_runs_executing_watcher_per_watcher",
+		index: "idx_runs_executing_behavior_per_behavior",
+		transient: true,
 		seedSql: `
-      CREATE INDEX IF NOT EXISTS idx_runs_executing_watcher_per_watcher
+      CREATE INDEX IF NOT EXISTS idx_runs_executing_behavior_per_behavior
         ON runs (id)
     `,
 	},
@@ -56,9 +58,10 @@ const HEAL_MIGRATIONS = [
 			"20260717121024_pending_non_event_watcher_run_index_heal.sql",
 			"20260717121025_pending_non_event_watcher_run_index.sql",
 		],
-		index: "idx_runs_pending_non_event_watcher_per_watcher",
+		index: "idx_runs_pending_non_event_behavior_per_behavior",
+		transient: true,
 		seedSql: `
-      CREATE INDEX IF NOT EXISTS idx_runs_pending_non_event_watcher_per_watcher
+      CREATE INDEX IF NOT EXISTS idx_runs_pending_non_event_behavior_per_behavior
         ON runs (id)
     `,
 	},
@@ -151,9 +154,10 @@ describe("INVALID concurrent-index heal in transaction:false migrations", () => 
 
 	it.each(HEAL_MIGRATIONS)(
 		"replays $files over an INVALID $index and leaves a VALID index",
-		async ({ files, index, seedSql }) => {
+		async ({ files, index, seedSql, ...fixture }) => {
 			const migrationsDir = resolveMigrationsDir();
 			const sql = getDb();
+			const original = await indexValidity(index);
 
 			// Drop any live index from prior suite setup, then seed a same-named
 			// INVALID carcass the way a crashed CREATE INDEX CONCURRENTLY would.
@@ -177,16 +181,24 @@ describe("INVALID concurrent-index heal in transaction:false migrations", () => 
 			// Apply the pair in order: the companion heal migration drops the
 			// INVALID carcass, then the transaction:false migration rebuilds it
 			// CONCURRENTLY. Statement-at-a-time mirrors the runtime runner.
-			for (const file of files) {
-				const up = loadMigrationUp(migrationsDir, file);
-				await executeMigrationSection(
-					(statement) => sql.unsafe(statement),
-					up,
-				);
-			}
+			try {
+				for (const file of files) {
+					const up = adaptImmutableMigrationSection(
+						loadMigrationUp(migrationsDir, file),
+					);
+					await executeMigrationSection(
+						(statement) => sql.unsafe(statement),
+						up,
+					);
+				}
 
-			const after = await indexValidity(index);
-			expect(after).toEqual({ exists: true, valid: true });
+				const after = await indexValidity(index);
+				expect(after).toEqual({ exists: true, valid: true });
+			} finally {
+				if ("transient" in fixture || !original.exists) {
+					await sql.unsafe(`DROP INDEX IF EXISTS public.${index}`);
+				}
+			}
 		},
 	);
 });

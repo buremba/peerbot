@@ -84,7 +84,7 @@ function makeAuthFetch(
   /**
    * A minimal fetch stub that handles the OAuth userinfo endpoint (for org
    * resolution) and returns empty lists for every GET (agents, entity-types,
-   * watchers, etc.) and a success body for POSTs.
+   * behaviors, etc.) and a success body for POSTs.
    *
    * MUTATING calls (POST that creates/patches, PATCH) are tracked in
    * `mutateCalls` so tests can assert no writes happen in dry-run mode.
@@ -175,7 +175,7 @@ describe("applyCommand --dry-run", () => {
     // The snapshot phase uses POST for manage_entity_schema (list), manage_behaviors,
     // manage_connections (list) — these are read-only POSTs. The key invariant is:
     // no agent-create (POST /agents), no agent-patch (PATCH /agents/*), no settings
-    // patch, no watcher create, and no connection/feed creates.
+    // patch, no behavior create, and no connection/feed creates.
     const writingCalls = mutateCalls.filter((c) => {
       // PATCH always writes
       if (c.method === "PATCH") return true;

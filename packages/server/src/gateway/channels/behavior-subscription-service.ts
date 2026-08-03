@@ -209,7 +209,7 @@ async function loadChatBehaviorSubscriptions(
 	const rows = await sql`
 		SELECT s.*
 		FROM behavior_message_subscriptions s
-		JOIN watchers w ON w.id = s.behavior_id
+		JOIN behaviors w ON w.id = s.behavior_id
 		WHERE true
 		  ${behaviorOrgFilter}
 		  ${agentFilter}
@@ -282,7 +282,7 @@ export class BehaviorSubscriptionService {
 		const slug = runtimeConnectionIdToSlug(connectionId);
 		const native = nativeChannelId("slack", channelId);
 		await sql`
-			UPDATE watchers w
+			UPDATE behaviors w
 			SET triggers = (
 				SELECT jsonb_agg(
 					CASE
@@ -432,7 +432,7 @@ export class BehaviorSubscriptionService {
 
 			const existing = await tx<{ behavior_id: number }>`
 				SELECT w.id AS behavior_id
-				FROM watchers w
+				FROM behaviors w
 				CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
 				WHERE w.status = 'active'
 				  AND w.organization_id = ${organizationId}
@@ -456,7 +456,7 @@ export class BehaviorSubscriptionService {
 				// on the same Behavior — only replace the chat message.created
 				// trigger for this connection+channel.
 				const [row] = await tx<{ triggers: unknown }>`
-					SELECT triggers FROM watchers WHERE id = ${existing[0].behavior_id}
+					SELECT triggers FROM behaviors WHERE id = ${existing[0].behavior_id}
 				`;
 				const prev = Array.isArray(row?.triggers) ? row.triggers : [];
 				const native = nativeChannelId(platform, channelId);
@@ -481,7 +481,7 @@ export class BehaviorSubscriptionService {
 					return false;
 				});
 				await tx`
-					UPDATE watchers
+					UPDATE behaviors
 					SET agent_id = ${agentId},
 						triggers = ${tx.json([...kept, trigger])},
 						execution_config = CASE
@@ -501,36 +501,36 @@ export class BehaviorSubscriptionService {
 				agentId,
 				options.configuredBy,
 			);
-			const watcherId = await getNextNumericId(tx, "watchers");
-			const versionId = await getNextNumericId(tx, "watcher_versions");
+			const behaviorId = await getNextNumericId(tx, "behaviors");
+			const versionId = await getNextNumericId(tx, "behavior_versions");
 			await tx`
-				INSERT INTO watchers (
+				INSERT INTO behaviors (
 					id, name, slug, description, organization_id, entity_ids,
 					schedule, next_run_at, triggers, agent_id, model_config,
 					execution_config, sources, version, current_version_id, tags,
-					status, created_by, created_at, updated_at, watcher_group_id
+					status, created_by, created_at, updated_at, behavior_group_id
 				) VALUES (
-					${watcherId}, ${`Messages in ${channelId}`}, ${`chat-${platform}-${watcherId}`},
+					${behaviorId}, ${`Messages in ${channelId}`}, ${`chat-${platform}-${behaviorId}`},
 					'Chat subscription', ${organizationId}, '{}'::bigint[],
 					NULL, NULL, ${tx.json([trigger])}, ${agentId}, '{}'::jsonb,
 					${model ? tx.json({ model }) : null}, '[]'::jsonb, 1, NULL,
 					ARRAY[${CHAT_LINK_TAG}]::text[], 'active', ${createdBy},
-					current_timestamp, current_timestamp, ${watcherId}
+					current_timestamp, current_timestamp, ${behaviorId}
 				)
 			`;
 			await tx`
-				INSERT INTO watcher_versions (
-					id, watcher_id, version, name, description, prompt,
+				INSERT INTO behavior_versions (
+					id, behavior_id, version, name, description, prompt,
 					version_sources, change_notes, created_by, created_at
 				) VALUES (
-					${versionId}, ${watcherId}, 1, ${`Messages in ${channelId}`},
+					${versionId}, ${behaviorId}, 1, ${`Messages in ${channelId}`},
 					'Chat subscription', ${CHAT_LINK_PROMPT}, '[]'::jsonb,
 					'Created from chat link', ${createdBy}, current_timestamp
 				)
 			`;
 			await tx`
-				UPDATE watchers SET current_version_id = ${versionId}
-				WHERE id = ${watcherId}
+				UPDATE behaviors SET current_version_id = ${versionId}
+				WHERE id = ${behaviorId}
 			`;
 		};
 		if (options.sql) await write(sql);
@@ -560,7 +560,7 @@ export class BehaviorSubscriptionService {
 		const write = async (tx: DbClient): Promise<boolean> => {
 			const rows = await tx<{ id: number; platform: string }>`
 				SELECT w.id, trigger->>'connector_key' AS platform
-				FROM watchers w
+				FROM behaviors w
 				CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
 				WHERE w.status = 'active'
 				  AND w.organization_id = ${orgId}
@@ -576,7 +576,7 @@ export class BehaviorSubscriptionService {
 			const archived = rows[0];
 			if (!archived) return false;
 			await tx`
-				UPDATE watchers
+				UPDATE behaviors
 				SET status = 'archived', updated_at = current_timestamp
 				WHERE id = ANY(${pgBigintArray(rows.map((row) => row.id))}::bigint[])
 			`;
@@ -638,7 +638,7 @@ export class BehaviorSubscriptionService {
 						NULLIF(trigger->'match'->>'channel_key', ''),
 						(trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
 					) AS channel_id
-				FROM watchers w
+				FROM behaviors w
 				CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
 				WHERE w.status = 'active'
 				  AND w.organization_id = ${orgId}
@@ -652,7 +652,7 @@ export class BehaviorSubscriptionService {
 			`;
 			if (rows.length > 0) {
 				await tx`
-					UPDATE watchers
+					UPDATE behaviors
 					SET status = 'archived', updated_at = current_timestamp
 					WHERE id = ANY(${pgBigintArray(rows.map((row) => row.behavior_id))}::bigint[])
 				`;

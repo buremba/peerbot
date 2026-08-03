@@ -84,7 +84,7 @@ a real `slack` connector rather than inventing bundled connectors.
 | 3 | run-operation | "run the ping operation" | a completed `runs` row (`run_type='action'`) |
 | 4 | create-entity | "add a company Acme, 50 employees" | a `company` entity with a metadata field = 50 |
 | 5 | query-entities | "how many companies + names" | reply names all 3 seeded companies + count 3 |
-| 6 | create-watcher | "watch + notify on pricing" | an active `watchers` row |
+| 6 | create-behavior | "watch + notify on pricing" | an active `behaviors` row |
 | 7 | save-and-recall-memory | "remember target market is fintech, then recall" | an `events` row mentioning fintech + reply recalls it |
 | 8 | sql-discovery | "what tables; how to find pages" | reply names real `events` table + a real column, no hallucinated table |
 | 9 | org-discovery | "which workspace + connectors" | reply names the real org + a real installed connector |
@@ -114,7 +114,7 @@ regenerate).
 | run-operation | 100% (2/2) | 100% | 7.0 | 0.0 |
 | create-entity | 0% (0/2) | 100% | 8.5 | 0.0 |
 | query-entities | 100% (2/2) | 100% | 3.0 | 0.0 |
-| create-watcher | 50% (1/2) | 100% | 9.5 | 1.0 |
+| create-behavior | 50% (1/2) | 100% | 9.5 | 1.0 |
 | save-and-recall-memory | 100% (2/2) | 0% | 1.0 | 0.0 |
 | sql-discovery | 0% (0/2) | 50% | 4.5 | 0.0 |
 | org-discovery | 50% (1/2) | 100% | 4.5 | 0.0 |
@@ -136,8 +136,8 @@ regenerate).
 | create-entity | 2 | ❌ | ❌ | — | y | 10 | 1 | 11 | Acme created but metadata empty (no 50) |
 | query-entities | 1 | ✅ | ✅ | ✅ | y | 3 | 1 | 4 | names all 3 companies + count |
 | query-entities | 2 | ✅ | ✅ | ✅ | y | 3 | 1 | 4 | names all 3 companies + count |
-| create-watcher | 1 | ✅ | ✅ | — | y | 12 | 1 | 13 | 1 active watcher |
-| create-watcher | 2 | ❌ | ❌ | — | y | 7 | 1 | 8 | no watcher created |
+| create-behavior | 1 | ✅ | ✅ | — | y | 12 | 1 | 13 | 1 active behavior |
+| create-behavior | 2 | ❌ | ❌ | — | y | 7 | 1 | 8 | no behavior created |
 | save-and-recall-memory | 1 | ✅ | ✅ | ✅ | n | 1 | 1 | 2 | saved + recalls fintech |
 | save-and-recall-memory | 2 | ✅ | ✅ | ✅ | n | 1 | 1 | 2 | saved + recalls fintech |
 | sql-discovery | 1 | ❌ | ✅ | ❌ | y | 8 | 1 | 9 | reply didn't name the events table |
@@ -188,7 +188,7 @@ Each failing task×trial in the owner-scope run, classified honestly:
 - **(d) Flash run-to-run variance (weak agent, not the surface).** On several
   trials Flash replied with 0–1 tool calls — answering "I'll do that" / a
   plausible answer from its head without calling a tool (`disc=n`, 1 turn; e.g.
-  `connect-website` trial 2, `sql-discovery` trial 2, `create-watcher` trial 2).
+  `connect-website` trial 2, `sql-discovery` trial 2, `create-behavior` trial 2).
   The same task passes on the other trial or in the other battery. This is model
   non-determinism, not a missing affordance — and it dominates the delta between
   the 68% and 59% batteries.
@@ -259,7 +259,7 @@ the 2-trial run:
 | entity-relationship | **4/4** | 4/4 | up from 1/2 — #1958 link guidance landed |
 | run-operation | 3/4 | 4/4 | solid |
 | create-entity | 2/4 | 3/4 | up from 0/2 but still the shakiest two-hop |
-| create-watcher | 2/4 | 4/4 | discovers reliably; completion variable |
+| create-behavior | 2/4 | 4/4 | discovers reliably; completion variable |
 | org-discovery | 2/4 | 4/4 | reply-echo strictness |
 | schedule-a-job | 2/4 | 2/4 | discovery itself is variable here |
 | sql-discovery | 1/4 | 3/4 | strict table-name reply echo |
@@ -278,6 +278,6 @@ Each task now carries a `tier` (`read` | `member-write` | `admin`). Under
 so the runner scores it a **pass when the agent discovered the operation and hit
 the admin gate** ("correctly blocked") rather than counting it as a discovery
 failure. This makes a `--scope default` battery an honest measure of the *member*
-experience — connector/watcher/schedule tasks are admin-gated and expected to
+experience — connector/behavior/schedule tasks are admin-gated and expected to
 stop at the gate, while read + member-write tasks (query, create-entity,
 save-memory, link) must complete. Run it with `./run.sh --scope default`.

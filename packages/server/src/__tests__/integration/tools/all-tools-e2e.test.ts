@@ -17,7 +17,7 @@
  *
  * Coverage classes (documentary `coverage` field on each plan entry):
  *   - 'round-trip': performs a real mutation/read whose effect we assert
- *     (e.g. manage_entity create→delete, watcher create→get-versions).
+ *     (e.g. manage_entity create→delete, behavior create→get-versions).
  *   - 'reachable':  invoked with valid minimal args and asserted to return a
  *     structured result.
  *
@@ -64,7 +64,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 	let orgSlug: string;
 	let agentId: string;
 	let entityId: number;
-	let watcherId: string;
+	let behaviorId: string;
 	let authCtx: AuthContext;
 
 	/**
@@ -100,7 +100,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 				note: "returns the orgs the seeded owner belongs to (must include ours)",
 			},
 			search_sdk: {
-				args: { query: "watchers" },
+				args: { query: "behaviors" },
 				coverage: "reachable",
 				note: "returns ClientSDK method metadata for the namespace",
 			},
@@ -235,7 +235,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 				note: "lists the seeded Behavior attached to the entity",
 			},
 			get_behavior: {
-				args: () => ({ behavior_id: watcherId, entity_id: entityId }),
+				args: () => ({ behavior_id: behaviorId, entity_id: entityId }),
 				coverage: "round-trip",
 				note: "reads back the Behavior seeded in beforeAll",
 			},
@@ -337,21 +337,21 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 		);
 
 		// Seed one Behavior so get_behavior / manage_behaviors list are real round-trips.
-		const watcher = (await executeTool(
+		const behavior = (await executeTool(
 			"manage_behaviors",
 			{
 				action: "create",
 				entity_id: entityId,
-				slug: "coverage-watcher",
-				name: "Coverage Watcher",
+				slug: "coverage-behavior",
+				name: "Coverage Behavior",
 				prompt: "Track coverage signals.",
 				agent_id: agentId,
 			},
 			TEST_ENV,
 			authCtx
 		)) as { behavior_id: string };
-		expect(watcher.behavior_id).toBeDefined();
-		watcherId = watcher.behavior_id;
+		expect(behavior.behavior_id).toBeDefined();
+		behaviorId = behavior.behavior_id;
 	});
 
 	it("covers every registry tool in the args fixture (catches new uncovered tools)", () => {

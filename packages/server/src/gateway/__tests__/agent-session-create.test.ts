@@ -440,21 +440,21 @@ describe("POST /api/v1/agents — default-agent resolution", () => {
 });
 
 /**
- * Watcher session-id shape.
+ * Behavior session-id shape.
  *
- * Watcher dispatch correlation — the worker session key AND the API/SSE
+ * Behavior dispatch correlation — the worker session key AND the API/SSE
  * owner-routing key (unified-thread-consumer) — both derive from the
- * conversationId and rely on the exact `..._watcher_<watcherId>_run_<runId>`
+ * conversationId and rely on the exact `..._behavior_<behaviorId>_run_<runId>`
  * shape. The org-scope suffix added for the default-agent / pinned-API paths
- * must NOT be spliced into watcher conversationIds: `_<org>_` between
- * `watcher_<id>` and `run_<id>` breaks watcher→worker dispatch (the sdk-e2e
- * watcher gate went red on exactly this). Tenant isolation for watchers rides
+ * must NOT be spliced into behavior conversationIds: `_<org>_` between
+ * `behavior_<id>` and `run_<id>` breaks behavior→worker dispatch (the sdk-e2e
+ * behavior gate went red on exactly this). Tenant isolation for behaviors rides
  * `session.organizationId` (still set) + the route guard, not the id string.
  */
 describe("POST /api/v1/agents — behavior_run intent verification", () => {
-  const ORG_ID = "org-watcher";
-  const OTHER_ORG = "org-watcher-other";
-  const AGENT = "watcher-agent";
+  const ORG_ID = "org-behavior";
+  const OTHER_ORG = "org-behavior-other";
+  const AGENT = "behavior-agent";
   const SEED_USER = "intent-seed-user";
   const INTERNAL_SERVICE_TOKEN = "intent-internal-service-token";
   const ORDINARY_ACCESS_TOKEN = "intent-ordinary-access-token";
@@ -474,7 +474,7 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
     const sql = getDb();
     const orgId = opts.organizationId ?? ORG_ID;
     await seedAgentRow(AGENT, { organizationId: orgId });
-    // watchers.created_by is FK-constrained to `user`.
+    // behaviors.created_by is FK-constrained to `user`.
     await sql`
       INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
       VALUES (${SEED_USER}, ${SEED_USER}, ${`${SEED_USER}@example.com`},
@@ -482,9 +482,9 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
       ON CONFLICT (id) DO NOTHING
     `;
     const [behavior] = (await sql`
-      WITH next_id AS (SELECT nextval('watchers_id_seq')::integer AS id)
-      INSERT INTO watchers (
-        id, watcher_group_id, organization_id, agent_id, created_by, name, slug
+      WITH next_id AS (SELECT nextval('behaviors_id_seq')::integer AS id)
+      INSERT INTO behaviors (
+        id, behavior_group_id, organization_id, agent_id, created_by, name, slug
       )
       SELECT id, id, ${orgId}, ${AGENT}, ${SEED_USER},
              'Intent fixture', 'intent-fixture-' || id
@@ -494,7 +494,7 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
     const behaviorId = Number(behavior.id);
     const [run] = (await sql`
       INSERT INTO runs (
-        organization_id, run_type, watcher_id, status, claimed_by, created_at
+        organization_id, run_type, behavior_id, status, claimed_by, created_at
       ) VALUES (
         ${orgId}, 'behavior', ${behaviorId},
         ${opts.status ?? "claimed"}, ${opts.claimedBy ?? "lobu-dispatcher"},
@@ -505,7 +505,7 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
     return { behaviorId, runId: Number(run.id) };
   }
 
-  function makeWatcherApp() {
+  function makeBehaviorApp() {
     const sessions = new Map<string, { conversationId: string }>();
     return createAgentApi({
       queueProducer: {} as never,
@@ -533,7 +533,7 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
       agentMetadataStore: {
         async getMetadata(id: string) {
           // Non-empty org metadata → tokenOrganizationId resolves, so the
-          // suffix WOULD be added on a non-watcher path. The watcher exemption
+          // suffix WOULD be added on a non-behavior path. The behavior exemption
           // is what keeps it out.
           return id === AGENT
             ? {
@@ -550,7 +550,7 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
     body: Record<string, unknown>,
     accessToken = INTERNAL_SERVICE_TOKEN,
   ): Promise<Response> {
-    return makeWatcherApp().request("/api/v1/agents", {
+    return makeBehaviorApp().request("/api/v1/agents", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -604,14 +604,14 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
     `;
   });
 
-  test("a dispatched run keeps the watcher_<id>_run_<id> shape, no org suffix", async () => {
+  test("a dispatched run keeps the behavior_<id>_run_<id> shape, no org suffix", async () => {
     const { behaviorId, runId } = await seedDispatchedRun();
     const res = await post(intentBody(runId, behaviorId));
 
     expect(res.status).toBe(201);
     const body = (await res.json()) as { agentId?: string };
-    // Exact prod-proven shape: `<agentId>_watcher_<watcherId>_run_<runId>`.
-    expect(body.agentId).toBe(`${AGENT}_watcher_${behaviorId}_run_${runId}`);
+    // Exact prod-proven shape: `<agentId>_behavior_<behaviorId>_run_<runId>`.
+    expect(body.agentId).toBe(`${AGENT}_behavior_${behaviorId}_run_${runId}`);
     expect(body.agentId).not.toContain(ORG_ID);
   });
 
@@ -675,7 +675,7 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
 
   /**
    * The invariant is not "these inputs 400" — it is that NO session without a
-   * verified intent ever carries the `_watcher_<id>_run_<id>` correlation the
+   * verified intent ever carries the `_behavior_<id>_run_<id>` correlation the
    * unattended-tool policy reads. Two mechanisms deliver that, and which one
    * fires depends on whether an org resolves: `buildApiConversationId`
    * interleaves the org id between userId and thread (breaking the shape), and
@@ -683,10 +683,10 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
    * property covers both, and keeps passing if either mechanism changes.
    */
   for (const [name, userId, thread] of [
-    ["exact fields", "watcher_5", "run_1"],
-    ["split suffix", "caller_watcher_5", "run_1"],
-    ["suffix packed into userId", "caller_watcher_5_run_1", undefined],
-    ["suffix packed into thread", "caller", "topic_watcher_5_run_1"],
+    ["exact fields", "behavior_5", "run_1"],
+    ["split suffix", "caller_behavior_5", "run_1"],
+    ["suffix packed into userId", "caller_behavior_5_run_1", undefined],
+    ["suffix packed into thread", "caller", "topic_behavior_5_run_1"],
   ] as const) {
     test(`an unverified session never carries the Behavior suffix — ${name}`, async () => {
       const res = await post({
@@ -717,7 +717,7 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
     const res = await post({
       agentId: AGENT,
       userId: "caller",
-      thread: "topic_watcher_5_run_1",
+      thread: "topic_behavior_5_run_1",
       forceNew: true,
     });
     expect(res.status).toBe(400);

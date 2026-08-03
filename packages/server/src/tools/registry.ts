@@ -84,23 +84,23 @@ export interface ToolContext {
   /** Durable Lobu/Lobu agent identity bound to this MCP session, when provided. */
   agentId?: string | null;
   /**
-   * The watcher whose reaction script is driving these tool calls, when the
-   * session IS a watcher reaction (set by the reaction executor). Every gated
-   * write then resolves this watcher's owning agent and evaluates autonomously,
+   * The behavior whose reaction script is driving these tool calls, when the
+   * session IS a behavior reaction (set by the reaction executor). Every gated
+   * write then resolves this behavior's owning agent and evaluates autonomously,
    * WITHOUT the script having to pass `behavior_source` — so a reaction can never
    * escape its agent's envelope by simply omitting the attribution. Null for all
    * non-reaction sessions.
    */
-  actingWatcherId?: number | null;
+  actingBehaviorId?: number | null;
   /**
-   * The watcher-run WINDOW driving this reaction (its root event id), set by the
-   * reaction executor alongside {@link actingWatcherId}. Threaded into a deferred
+   * The behavior-run WINDOW driving this reaction (its root event id), set by the
+   * reaction executor alongside {@link actingBehaviorId}. Threaded into a deferred
    * approval's `runs.window_id` so proposals from the same window batch into one
    * approval card and identical proposals from DIFFERENT windows stay distinct —
    * even when the script omits an explicit `behavior_source`. Null off-reaction.
    */
   actingWindowId?: number | null;
-  /** Durable watcher run driving this reaction. Used only for provenance. */
+  /** Durable behavior run driving this reaction. Used only for provenance. */
   actingRunId?: number | null;
   /** Verified source conversation for worker-originated tool calls, when any. */
   sourceContext?: ToolSourceContext | null;

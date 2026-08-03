@@ -809,7 +809,7 @@ export async function gatherRecall(
 export const search = withValidatedArgs('search_memory', SearchSchema, searchImpl);
 
 /**
- * Drop entity hits the acting agent/watcher is not allowed to read. Humans skip.
+ * Drop entity hits the acting agent/behavior is not allowed to read. Humans skip.
  * Default entity read is auto (unrestricted); a type-scoped deny removes those
  * results so search can't leak around manage_entity get/list.
  */
@@ -818,14 +818,14 @@ async function filterEntitiesByReadPolicy<T extends { entity_type: string }>(
   entities: T[]
 ): Promise<T[]> {
   if (entities.length === 0 || !ctx.organizationId) return entities;
-  // Human-driven tools (no agent/watcher) keep full org entity search.
-  if (!ctx.agentId && !ctx.actingWatcherId) return entities;
+  // Human-driven tools (no agent/behavior) keep full org entity search.
+  if (!ctx.agentId && !ctx.actingBehaviorId) return entities;
   const actor = await resolveActingPrincipal(getDb(), {
     organizationId: ctx.organizationId,
     userId: ctx.userId,
     agentId: ctx.agentId,
-    explicitWatcherId: null,
-    sessionWatcherId: ctx.actingWatcherId ?? null,
+    explicitBehaviorId: null,
+    sessionBehaviorId: ctx.actingBehaviorId ?? null,
   });
   if (actor.kind === 'user') return entities;
   const typeCache = new Map<string, boolean>();
@@ -1085,7 +1085,7 @@ async function fetchTopEntitiesByType(
 // ============================================
 
 // Build the entity SELECT projection. The count subqueries (events,
-// connections, watchers, children) are tenant-private operational data:
+// connections, behaviors, children) are tenant-private operational data:
 // running them globally for a public-catalog entity would leak other
 // tenants' activity volumes through aggregate counts. Each count is
 // gated on `e.organization_id = $callerOrg` so we return zeros for
@@ -1134,7 +1134,7 @@ function entitySelectColumns(callerOrgParamIdx: number, scope: AuthzScope): stri
     COALESCE((SELECT COUNT(*) FROM entities c WHERE c.parent_id = e.id AND c.organization_id = e.organization_id), 0)
   ELSE 0 END as children_count,
   CASE WHEN ${ownOrg} THEN
-    COALESCE((SELECT COUNT(*) FROM watchers i WHERE e.id = ANY(i.entity_ids) AND i.organization_id = e.organization_id), 0)
+    COALESCE((SELECT COUNT(*) FROM behaviors i WHERE e.id = ANY(i.entity_ids) AND i.organization_id = e.organization_id), 0)
   ELSE 0 END as behavior_count`;
 }
 
@@ -1223,7 +1223,7 @@ async function queryEntities(
   // and canonical hits in one call. The result row carries the org_id so the
   // agent can tell which is which. The same param index is reused by the
   // count subqueries in entitySelectColumns(orgParamIdx, scope), which gate
-  // operational counts (events, connections, watchers) on caller-org rows
+  // operational counts (events, connections, behaviors) on caller-org rows
   // so cross-org public results don't leak other tenants' activity.
   const includePublic = args.include_public_catalogs ?? true;
   const orgParamIdx = addParam(scope.organizationId);

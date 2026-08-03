@@ -43,7 +43,7 @@ desired state (lobu.config.ts + agent dirs)
 5. **Same base host for `/api` and `/mcp`.** The shared API-base helper gives the API root; apply hits `/api/:orgSlug/agents/...`, MCP commands hit `/mcp/:orgSlug` — same server, different paths.
 6. **Skills**: normalized via the existing file-loader transformation into `agents.skills_config` (already a JSON column). Sent through `PATCH /:agentId/config`. Raw `SKILL.md` round-trip is v2.
 7. **Secrets**: deferred to v3. v1 reads `$VAR` references in `lobu.config.ts`, queries the org's existing-secrets list, fails the plan loudly if any are missing. v1 never reads `.env` and never uploads values.
-8. **Memory data deferred to v3**. v1 ships memory **schema** only (entity + relationship types via existing admin tools). Watchers, entities, relationships, knowledge are out.
+8. **Memory data deferred to v3**. v1 ships memory **schema** only (entity + relationship types via existing admin tools). Behaviors, entities, relationships, knowledge are out.
 9. **Agent ID collision (PR B in old plan)** — explicitly out of scope. Document the constraint in `lobu apply` error messages: "agent IDs must currently be globally unique across cloud orgs; this will change with [link to issue]." Don't block apply on this.
 10. **Default flow**: GET current state → render diff → prompt to confirm. `--dry-run` shows diff and exits. `--yes` skips prompt for CI use. No `--prune`, no `--force` in v1.
 
@@ -61,7 +61,7 @@ CLI-visible:
 - `lobu pull` for cloud → files
 - `--prune` flag (requires adding `managed_by` marker)
 - Drift detection (current vs last-applied state, requires state table)
-- Watchers
+- Behaviors
 - Raw `SKILL.md` round-trip (richer cloud-side storage)
 - Org-scoped agent IDs (touches RLS, FKs — independent product call)
 
@@ -149,7 +149,7 @@ Pi flagged these — explicit do-not-copy list for the CLI agent:
 3. Treating HTTP 200 as success without checking `{ error }` payload. CLI inspects payload.
 4. Casting parsed YAML/TOML to `Record<string, unknown>` without validation. Use existing Zod schemas from `packages/core/src/lobu-toml-schema.ts`.
 5. Dry-run that says "would create" without showing actual diff. `--dry-run` runs the GET phase + diff render, same output as the prompt-confirm phase.
-6. Watcher fallback to "first seeded entity" when ref unresolvable (apply doesn't sync watchers in v1, but the principle: never invent a target).
+6. Behavior fallback to "first seeded entity" when ref unresolvable (apply doesn't sync behaviors in v1, but the principle: never invent a target).
 7. Topological retry loop with bounded iteration count. Apply uses an explicit dependency order: agents → settings → connections → entity types → relationship types. Fail fast if dependencies are unresolvable.
 
 ## Testing strategy
@@ -220,7 +220,7 @@ PR-1 and PR-2 are independent and can land in any order. PR-3's tests run agains
 - ❌ `--prune` (v2)
 - ❌ `--force` (v2)
 - ❌ `lobu pull` (v2)
-- ❌ Watcher sync (v2)
+- ❌ Behavior sync (v2)
 - ❌ Raw `SKILL.md` round-trip (v2)
 - ❌ Org-scoped agent IDs / RLS rework (v2, separate product call)
 - ❌ Secret value upload (v3)

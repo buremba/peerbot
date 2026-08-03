@@ -16,6 +16,7 @@ export interface OrgSummary {
 	name: string;
 	is_member: boolean;
 	visibility: "public" | "private";
+	managed_auth?: OrgInfo["managed_auth"];
 }
 
 export interface OrganizationsNamespace {
@@ -34,6 +35,17 @@ export interface OrganizationsNamespace {
 export function buildOrganizationsNamespace(
 	ctx: ToolContext,
 ): OrganizationsNamespace {
+	const summarize = (organization: OrgInfo): OrgSummary => ({
+		id: organization.id,
+		slug: organization.slug,
+		name: organization.name,
+		is_member: organization.is_member,
+		visibility: organization.visibility,
+		...(organization.managed_auth
+			? { managed_auth: organization.managed_auth }
+			: {}),
+	});
+
 	return {
 		async list(options) {
 			const provider = getWorkspaceProvider();
@@ -41,13 +53,7 @@ export function buildOrganizationsNamespace(
 				options?.search,
 				ctx.userId,
 			);
-			return orgs.map((o: OrgInfo) => ({
-				id: o.id,
-				slug: o.slug,
-				name: o.name,
-				is_member: o.is_member,
-				visibility: o.visibility,
-			}));
+			return orgs.map(summarize);
 		},
 		async current() {
 			const provider = getWorkspaceProvider();
@@ -66,13 +72,7 @@ export function buildOrganizationsNamespace(
 					visibility: "public",
 				};
 			}
-			return {
-				id: current.id,
-				slug: current.slug,
-				name: current.name,
-				is_member: current.is_member,
-				visibility: current.visibility,
-			};
+			return summarize(current);
 		},
 	};
 }

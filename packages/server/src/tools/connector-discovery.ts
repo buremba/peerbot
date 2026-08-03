@@ -21,13 +21,21 @@ import { manageCatalog } from './admin/manage_catalog';
 import { manageConnections } from './admin/manage_connections';
 import type { Env } from '../index';
 import type { ToolContext } from './registry';
+import { getWorkspaceProvider } from '../workspace';
+import type { OrgInfo } from '../workspace/types';
 
 export interface ConnectorDiscoveryDeps {
   manageCatalog: typeof manageCatalog;
   manageConnections: typeof manageConnections;
+  listOrganizations: (userId: string) => Promise<OrgInfo[]>;
 }
 
-const DEFAULT_DEPS: ConnectorDiscoveryDeps = { manageCatalog, manageConnections };
+const DEFAULT_DEPS: ConnectorDiscoveryDeps = {
+  manageCatalog,
+  manageConnections,
+  listOrganizations: (userId) =>
+    getWorkspaceProvider().listOrganizations(undefined, userId),
+};
 
 function asArray<T = Record<string, unknown>>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
@@ -89,13 +97,14 @@ export async function searchLiveConnectors(
   if (!ctx.userId) return [];
   const lines: string[] = [];
   try {
-    const [inst, cat] = await Promise.all([
+    const [inst, cat, organizations] = await Promise.all([
       manageCatalog({ action: 'list_installed', kinds: ['connectors'] } as never, env, ctx) as Promise<{
         installed?: { connectors?: { items?: unknown } };
       }>,
       manageCatalog({ action: 'list_catalog', kinds: ['connectors'] } as never, env, ctx) as Promise<{
         catalogs?: { connectors?: { entries?: unknown } };
       }>,
+      deps.listOrganizations(ctx.userId),
     ]);
     const installed = asArray<{
       id: string;
@@ -109,6 +118,32 @@ export async function searchLiveConnectors(
       detail?: { installable?: boolean; installability_message?: string; installability_reason?: string };
     }>(cat.catalogs?.connectors?.entries);
     const installedIds = new Set(installed.map((i) => i.id));
+    const managedOffers = new Map<
+      string,
+      Array<{
+        organizationSlug: string;
+        joinRequired: boolean;
+        connectMethod: 'connections.connectManaged';
+        localBootstrapCommand: string;
+      }>
+    >();
+    for (const organization of organizations) {
+      for (const offer of organization.managed_auth?.connectors ?? []) {
+        const entries = managedOffers.get(offer.connector_key) ?? [];
+        entries.push({
+          organizationSlug: offer.managed_by_org,
+          joinRequired: organization.managed_auth?.join_required ?? !organization.is_member,
+          connectMethod: organization.managed_auth!.connect_method,
+          localBootstrapCommand: organization.managed_auth!.local_bootstrap_command,
+        });
+        managedOffers.set(offer.connector_key, entries);
+      }
+    }
+    const withManagedAuth = (connectorKey: string, line: string): string => {
+      const offer = managedOffers.get(connectorKey)?.[0];
+      if (!offer) return line;
+      return `${line} Managed OAuth is available from public org '${offer.organizationSlug}' (Lobu login and one-time provider consent required; ${offer.joinRequired ? 'membership is added automatically' : 'already joined'}). Start it with run_sdk → client.${offer.connectMethod}({ managed_by_org: '${offer.organizationSlug}', connector_key: '${connectorKey}' }); after consent, \`${offer.localBootstrapCommand}\` generates the local managedBy config so provider data stays local.`;
+    };
 
     // Only the installed connectors that MATCH the query need a status — resolve
     // their connections. Two targeted probes per connector rather than a single
@@ -154,24 +189,24 @@ export async function searchLiveConnectors(
         : `This connector has no data feeds — it exposes operations/actions. Discover them via query_sdk → client.operations.listAvailable({ connector_key: '${i.id}' }) and run with client.operations.execute.`;
       const status = bestStatus(i.id);
       if (status && USABLE.has(status)) {
-        lines.push(
+        lines.push(withManagedAuth(i.id,
           `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED and CONNECTED (active connection).${feedKeysNote} ${useHint} Get the connection_id via query_sdk → client.connections.list({ connector_key: '${i.id}' }).`
-        );
+        ));
       } else if (status) {
         // Connection exists but is NOT usable (revoked/error/paused/pending) —
         // repair it before use.
-        lines.push(
+        lines.push(withManagedAuth(i.id,
           `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED with a connection that needs attention (status: ${status}).${feedKeysNote} Reauthenticate/repair before use: run_sdk → client.connections.reauthenticate(<connection_id>) (or reconnect). Find the connection via query_sdk → client.connections.list({ connector_key: '${i.id}' }).`
-        );
+        ));
       } else if (hasFeeds) {
-        lines.push(
+        lines.push(withManagedAuth(i.id,
           `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED, not yet configured.${feedKeysNote} Lifecycle: run_sdk → client.connections.connect({ connector_key: '${i.id}' }) → client.feeds.create({ connection_id, feed_key: ${feedKeyHint}, config }) → client.feeds.trigger({ feed_id }); then query_sql on events or search_memory to read. Use search_sdk 'feeds.create feeds.trigger' for signatures.`
-        );
+        ));
       } else {
         // Feedless connector, not yet connected — connect, then use operations.
-        lines.push(
+        lines.push(withManagedAuth(i.id,
           `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED, not yet connected. It has no data feeds — it exposes operations/actions. Lifecycle: run_sdk → client.connections.connect({ connector_key: '${i.id}' }); then query_sdk → client.operations.listAvailable({ connector_key: '${i.id}' }) and run with client.operations.execute.`
-        );
+        ));
       }
     }
     for (const c of catalog) {
@@ -189,9 +224,9 @@ export async function searchLiveConnectors(
         );
         continue;
       }
-      lines.push(
+      lines.push(withManagedAuth(c.id,
         `connector '${c.id}' (${c.name ?? c.id}) — in the global CATALOG, not yet installed here. Install with run_sdk → client.connections.installConnector({ connector_id: '${c.id}' }), then connect + create feed.`
-      );
+      ));
     }
   } catch {
     return [];

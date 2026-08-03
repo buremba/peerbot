@@ -68,6 +68,21 @@ export async function handleConnect(
 	args: Extract<ConnectionsArgs, { action: "connect" }>,
 	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
+	return handleConnectImpl(args, ctx, {});
+}
+
+export async function handleRequiredManagedConnect(
+	args: Extract<ConnectionsArgs, { action: "connect" }>,
+	ctx: ToolContext,
+): Promise<ManageConnectionsResult> {
+	return handleConnectImpl(args, ctx, { requireManaged: true });
+}
+
+async function handleConnectImpl(
+	args: Extract<ConnectionsArgs, { action: "connect" }>,
+	ctx: ToolContext,
+	options: { requireManaged?: boolean },
+): Promise<ManageConnectionsResult> {
   const sql = getDb();
   const { organizationId, userId } = ctx;
 	const resumeCall = buildSafeConnectionResumeCall(
@@ -200,6 +215,7 @@ export async function handleConnect(
       AND c.connector_key = ${args.connector_key}
       AND c.status = 'pending_auth'
       AND c.deleted_at IS NULL
+			${options.requireManaged ? sql`AND c.config->>'consent_only' = 'true'` : sql``}
       ${explicitSlug ? sql`AND c.slug = ${explicitSlug}` : sql``}
       ${deviceBinding.deviceWorkerId ? sql`AND c.device_worker_id = ${deviceBinding.deviceWorkerId}` : sql``}
       ${userId ? sql`AND c.created_by = ${userId}` : sql``}
@@ -449,6 +465,12 @@ export async function handleConnect(
         provider: authSelection.oauthMethod.provider,
       })
     : false;
+	if (options.requireManaged && !isManagedConnect) {
+		return {
+			error:
+				"Managed OAuth is no longer available for this connector. Discover managed_auth offers again before retrying.",
+		};
+	}
   const connectionConfigToInsert =
     isManagedConnect || splitConfig.connectionConfig
       ? {

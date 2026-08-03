@@ -42,7 +42,7 @@ export const METHOD_METADATA: Record<string, MethodMetadata> = {
 	// organizations
 	"organizations.list": {
 		summary:
-			"List organizations the authenticated user belongs to, plus public orgs they can read.",
+			"List organizations the authenticated user belongs to, plus public orgs they can read. Public managed-OAuth providers carry structured managed_auth metadata with connector keys, the connect method, consent/login requirements, and the local bootstrap command.",
 		access: "read",
 		example: "const orgs = await client.organizations.list();",
 	},
@@ -699,6 +699,15 @@ export default async (_ctx, client) => {
     config: { feed_urls: ['https://example.com/feed.xml'] },
   });
 };`,
+	},
+	"connections.connectManaged": {
+		summary:
+			"Use a live managed OAuth offer from organizations.list. Validates the public provider, automatically joins the signed-in user to that org, and returns a consent URL. The cloud keeps only the caller-owned consent grant with zero feeds; after consent, `lobu init --from-org <managed_by_org>` generates the local `managedBy` connection config so data access runs locally.",
+		access: "write",
+		signature:
+			"connections.connectManaged(input: { managed_by_org: string; connector_key: string; display_name?: string; slug?: string; config?: object }): Promise<unknown>",
+		example:
+			"await client.connections.connectManaged({ managed_by_org: '<organizations.list offer>', connector_key: 'google.gmail' });",
 	},
 	"connections.update": {
 		summary:

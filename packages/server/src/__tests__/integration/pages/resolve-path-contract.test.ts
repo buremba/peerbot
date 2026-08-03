@@ -19,6 +19,8 @@ import { TestApiClient } from '../../setup/test-mcp-client';
 import { applyMerge } from '../../../utils/entity-merge';
 
 interface Fixture {
+  orgId: string;
+  ownerId: string;
   orgSlug: string;
   token: string;
   memberToken: string;
@@ -95,6 +97,8 @@ async function seedFixture(): Promise<Fixture> {
     await createTestAccessToken(member.id, org.id, oauthClient.client_id)
   ).token;
   return {
+    orgId: org.id,
+    ownerId: user.id,
     orgSlug: org.slug,
     token,
     memberToken,
@@ -218,5 +222,36 @@ describe('resolve_path contract', () => {
     })) as { bootstrap?: { entity_types?: unknown[]; recent_watchers?: unknown[] } };
     expect(withBootstrap.bootstrap?.entity_types?.length).toBeGreaterThan(0);
     expect(withBootstrap.bootstrap).not.toHaveProperty('recent_watchers');
+  });
+
+  it('strips audit requests from bootstrap content without altering ordinary payloads', async () => {
+    const sql = getTestDb();
+    await sql`
+      INSERT INTO events
+        (organization_id, origin_id, title, semantic_type, origin_type, payload_type,
+         payload_data, created_by)
+      VALUES
+        (${fixture.orgId}, 'resolve-audit-request', 'Audit request', 'audit',
+         'tool_invocation', 'empty', ${sql.json({ request: { sql: 'SELECT 1' } })},
+         ${fixture.ownerId}),
+        (${fixture.orgId}, 'resolve-ordinary-request', 'Ordinary request', 'note',
+         'manual', 'empty', ${sql.json({ request: { method: 'GET' } })},
+         ${fixture.ownerId})
+    `;
+
+    const resolved = (await resolvePath(fixture, {
+      path: `/${fixture.orgSlug}`,
+      include_bootstrap: true,
+    })) as {
+      bootstrap?: {
+        recent_content?: Array<{ title?: string; payload_data?: Record<string, unknown> }>;
+      };
+    };
+    const audit = resolved.bootstrap?.recent_content?.find((item) => item.title === 'Audit request');
+    const ordinary = resolved.bootstrap?.recent_content?.find(
+      (item) => item.title === 'Ordinary request'
+    );
+    expect(audit?.payload_data).not.toHaveProperty('request');
+    expect(ordinary?.payload_data).toEqual({ request: { method: 'GET' } });
   });
 });

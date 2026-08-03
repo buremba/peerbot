@@ -1109,7 +1109,12 @@ async function fetchRecentContent(
       ev.title,
       ev.payload_type,
       ev.payload_text,
-      ev.payload_data,
+      -- Bootstrap has no per-row author/admin gate, so never serve exact audit requests.
+      CASE
+        WHEN ev.semantic_type = 'audit' AND ev.origin_type = 'tool_invocation'
+          THEN ev.payload_data - 'request'
+        ELSE ev.payload_data
+      END AS payload_data,
       ev.payload_template,
       ev.source_url,
       ev.author_name,

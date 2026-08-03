@@ -25,17 +25,13 @@ rules:
     resources: ["deployments"]
     resourceNames:
       - {{ include "lobu.fullname" . }}-app
-      {{- if .Values.worker.enabled }}
       - {{ include "lobu.fullname" . }}-worker
-      {{- end }}
     verbs: ["get"]
   - apiGroups: ["apps"]
     resources: ["deployments/scale"]
     resourceNames:
       - {{ include "lobu.fullname" . }}-app
-      {{- if .Values.worker.enabled }}
       - {{ include "lobu.fullname" . }}-worker
-      {{- end }}
     verbs: ["get", "patch", "update"]
   - apiGroups: [""]
     resources: ["pods"]

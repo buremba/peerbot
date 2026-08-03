@@ -56,6 +56,14 @@ jobs:
           grep -q 'migration failed with status' /tmp/lobu-quiesced-upgrade.yaml
           grep -q '"helm.sh/hook-weight": "0"' /tmp/lobu-quiesced-upgrade.yaml
 
+          helm template lobu charts/lobu --namespace lobu --is-upgrade \
+            --set migrations.enabled=true \
+            --set worker.enabled=false \
+            >/tmp/lobu-worker-disabled-upgrade.yaml
+          grep -q 'name: WORKER_DEPLOYMENT' /tmp/lobu-worker-disabled-upgrade.yaml
+          grep -q 'name: WORKER_SELECTOR' /tmp/lobu-worker-disabled-upgrade.yaml
+          test "$(grep -c -- '- lobu-worker' /tmp/lobu-worker-disabled-upgrade.yaml)" -eq 2
+
       - name: Exercise migration failure recovery
         run: sh charts/lobu/tests/migrate-upgrade-recovery.sh
 

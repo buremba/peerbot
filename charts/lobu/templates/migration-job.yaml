@@ -103,12 +103,10 @@ spec:
               value: {{ printf "%s-app" (include "lobu.fullname" .) | quote }}
             - name: APP_SELECTOR
               value: {{ printf "app.kubernetes.io/instance=%s,app.kubernetes.io/component=api" .Release.Name | quote }}
-            {{- if .Values.worker.enabled }}
             - name: WORKER_DEPLOYMENT
               value: {{ printf "%s-worker" (include "lobu.fullname" .) | quote }}
             - name: WORKER_SELECTOR
               value: {{ printf "app.kubernetes.io/instance=%s,app.kubernetes.io/component=worker" .Release.Name | quote }}
-            {{- end }}
             - name: QUIESCE_TIMEOUT
               value: {{ printf "%ds" (int .Values.migrations.quiesceBeforeUpgrade.timeoutSeconds) | quote }}
             {{- end }}

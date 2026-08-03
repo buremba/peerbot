@@ -1,9 +1,10 @@
 -- migrate:up
 
--- Schema lives on the entity type, so entity-producing Behaviors derive their
--- extraction schema from that type's metadata_schema and store no inline
--- extraction_schema (NULL = "derive from durable outputs"). Relax the NOT NULL
--- so these Behaviors can omit it. Existing rows keep their inline schema.
+-- Schema lives on the entity type: a watcher that names keying_config.entity_type
+-- derives its extraction schema from that type's metadata_schema, so it stores NO
+-- inline extraction_schema (NULL = "derive from the entity type"). Relax the
+-- NOT NULL so entity-typed watchers can omit it. Existing watchers keep their
+-- inline schema unchanged. DROP NOT NULL is a fast catalog-only change.
 ALTER TABLE public.watcher_versions ALTER COLUMN extraction_schema DROP NOT NULL;
 
 -- migrate:down

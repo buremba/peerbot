@@ -211,10 +211,10 @@ describe("sdkSearch", () => {
 	});
 
 	it("substring-matches across paths and summaries", async () => {
-		// "derive" appears in behaviors.create's summary (entity-type contract).
+		// "Canvas" appears in behaviors.create's summary (output contract).
 		// behaviors.create is admin-tier (matches manage_behaviors.create being
 		// owner-admin), so only an admin-tier caller discovers it.
-		const result = await sdkSearch({ query: "derive" }, stubEnv, adminCtx);
+		const result = await sdkSearch({ query: "Canvas" }, stubEnv, adminCtx);
 		expect(result.match_count).toBeGreaterThan(0);
 	});
 

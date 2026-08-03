@@ -140,9 +140,11 @@ function rewriteInternalToolName(
 	publicMethod: string,
 ): unknown {
 	if (!sdkNamespace || !(err instanceof ToolUserError)) return err;
+	const internalValidatorPrefix = /Invalid arguments for manage_[a-z_]+/;
+	if (!internalValidatorPrefix.test(err.message)) return err;
 	const rewritten = err.message
 		.replace(
-			/Invalid arguments for manage_[a-z_]+/,
+			internalValidatorPrefix,
 			`Invalid arguments for client.${sdkNamespace}.${publicMethod}`,
 		)
 		// The valid-args list is scoped to the INTERNAL action (`for action

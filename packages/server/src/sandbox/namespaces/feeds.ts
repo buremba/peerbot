@@ -16,15 +16,29 @@ export interface FeedsCreateInput {
 	display_name?: string;
 	entity_ids?: number[];
 	config?: Record<string, unknown>;
-	schedule?: string;
+	schedule?: string | null;
 	/** IANA zone the schedule is evaluated in; omit for server time (UTC). */
 	timezone?: string;
+	/** Read live through connector query/search instead of scheduling collection. */
+	virtual?: boolean;
 }
 
 export interface FeedsNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
-	list(input?: { connection_id?: number; feed_ids?: number[] }): Promise<unknown>;
-	get(input: { feed_id: number; search_term?: string }): Promise<unknown>;
+	list(input?: {
+		connection_id?: number;
+		feed_ids?: number[];
+		entity_id?: number;
+		status?: "active" | "paused";
+		health?: "healthy" | "failing";
+		limit?: number;
+		offset?: number;
+	}): Promise<unknown>;
+	get(input: {
+		feed_id: number;
+		limit?: number;
+		search_term?: string;
+	}): Promise<unknown>;
 	readMany(input: {
 		feed_ids: number[];
 		limit?: number;
@@ -36,10 +50,11 @@ export interface FeedsNamespace {
 	update(input: {
 		feed_id: number;
 		display_name?: string;
-		status?: string;
+		status?: "active" | "paused";
 		entity_ids?: number[];
 		config?: Record<string, unknown>;
-		schedule?: string;
+		replace_config?: boolean;
+		schedule?: string | null;
 		/** IANA zone for the schedule; null clears it (server time). */
 		timezone?: string | null;
 	}): Promise<unknown>;

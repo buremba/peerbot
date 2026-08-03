@@ -677,13 +677,13 @@ export default async (_ctx, client) => {
 	},
 	"connections.connect": {
 		summary:
-			"Recommended connector setup entry point. Handles every auth family; the result's `status` tells you what to do next. status 'active' (auth-none, e.g. rss or hackernews) or 'pending_auth' (OAuth waiting on the user) BOTH carry a `connection_id`. status 'setup_required' is a continuation — `connection_id` is OPTIONAL there (may be absent); follow `next_action` / `resume_call` / `completion_check` and only call feeds.create once the result actually carries a connection_id. Once you have a connection_id you must create a feed on it to collect data — connect() alone syncs nothing.",
+			"Recommended connector setup entry point. Handles every auth family; the result's `status` tells you what to do next. status 'active' (auth-none, e.g. rss or hackernews) or 'pending_auth' (OAuth waiting on the user) BOTH carry a `connection_id`. status 'setup_required' is a continuation — `connection_id` is OPTIONAL there (may be absent); follow `next_action` / `resume_call` / `completion_check`. After auth is complete, create a feed and either schedule or trigger it; connect() alone syncs nothing.",
 		access: "admin",
 		example:
 			"const c = await client.connections.connect({ connector_key: 'rss' }); // c.connection_id",
-		usageExample: `// Two-hop: connect() creates the connection; feeds.create() starts the
-// collection. connect() ALONE does not sync anything — you must create a feed
-// on the returned connection_id with a connector-declared feed_key
+		usageExample: `// Three-hop: connect() creates the connection, feeds.create() defines the
+// sync target, and feeds.trigger() collects now. The feed can instead carry a
+// schedule. Use the returned connection_id with a connector-declared feed_key
 // (search_sdk '<connector>' lists the feed keys, e.g. rss → 'articles').
 export default async (_ctx, client) => {
   const c = await client.connections.connect({ connector_key: 'rss' });
@@ -693,11 +693,12 @@ export default async (_ctx, client) => {
   // via client.catalog.listInstalled({ kinds: ['connectors'] }) (each entry's
   // detail.feeds_schema[feed_key]) if you're unsure what to pass. For rss's
   // 'articles' feed that's { feed_urls: [...] }.
-  return client.feeds.create({
+  const { feed } = await client.feeds.create({
     connection_id: c.connection_id,
     feed_key: 'articles',
     config: { feed_urls: ['https://example.com/feed.xml'] },
   });
+  return client.feeds.trigger({ feed_id: feed.id });
 };`,
 	},
 	"connections.connectManaged": {
@@ -861,7 +862,7 @@ export default async (_ctx, client) => {
 			"Get a feed by id. Collected feeds return feed metadata and recent runs, not stored records; search collected records with knowledge.search/search_memory or client.query. Virtual feeds return live rows.",
 		access: "read",
 		signature:
-			"feeds.get(input: { feed_id: number; limit?: number }): Promise<unknown>",
+			"feeds.get(input: { feed_id: number; limit?: number; search_term?: string }): Promise<unknown>",
 		example: "const feed = await client.feeds.get({ feed_id: 42 });",
 	},
 	"feeds.readMany": {
@@ -869,20 +870,25 @@ export default async (_ctx, client) => {
 			"Read several feeds in parallel with per-feed successes/failures. Collected feeds return metadata and recent runs; virtual feeds return live rows. Search collected records with knowledge.search/search_memory or client.query.",
 		access: "read",
 		signature:
-			"feeds.readMany(input: { feed_ids: number[]; limit?: number }): Promise<unknown>",
+			"feeds.readMany(input: { feed_ids: number[]; limit?: number; timeout_ms?: number; search_term?: string }): Promise<unknown>",
 		example:
 			"const feeds = await client.feeds.readMany({ feed_ids: [42, 43], limit: 25 });",
 	},
 	"feeds.create": {
 		summary:
-			"Create a data-sync feed for a connection — this is what actually starts collecting data. Needs the `connection_id` from connections.connect and a connector-declared `feed_key` (search_sdk '<connector>' lists the keys, e.g. rss → 'articles'). Pass connector-specific settings (like the feed urls) in `config`.",
+			"Create a collected or virtual feed for a connection. A collected feed is manual-only unless `schedule` is set; call feeds.trigger to collect immediately. A virtual feed reads live and never syncs. Needs the `connection_id` from connections.connect and a connector-declared `feed_key` (search_sdk '<connector>' lists the keys, e.g. rss → 'articles'). Pass connector-specific settings (like feed URLs) in `config`.",
 		access: "admin",
 		signature:
-			"feeds.create(input: { connection_id: number; feed_key: string; config?: object; display_name?: string; schedule?: string }): Promise<unknown>",
+			"feeds.create(input: { connection_id: number; feed_key: string; display_name?: string; entity_ids?: number[]; config?: object; schedule?: string | null; timezone?: string; virtual?: boolean }): Promise<unknown>",
 		example:
 			"await client.feeds.create({ connection_id: 42, feed_key: 'articles', config: { feed_urls: ['https://example.com/feed.xml'] } });",
 	},
-	"feeds.update": { summary: "Update a feed.", access: "admin" },
+	"feeds.update": {
+		summary: "Update a feed.",
+		access: "admin",
+		signature:
+			"feeds.update(input: { feed_id: number; display_name?: string; status?: 'active' | 'paused'; entity_ids?: number[]; config?: object; replace_config?: boolean; schedule?: string | null; timezone?: string | null }): Promise<unknown>",
+	},
 	"feeds.delete": {
 		summary: "Delete a feed.",
 		access: "admin",

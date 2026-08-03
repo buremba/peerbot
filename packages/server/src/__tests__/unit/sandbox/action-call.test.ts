@@ -224,6 +224,24 @@ describe("createActionCaller", () => {
 		expect(thrown.message).toBe("Invalid arguments for manage_feeds: boom");
 	});
 
+	it("leaves non-validator errors from namespaced callers untouched", async () => {
+		const message =
+			"Connector rejected the request — valid arguments are: retry_after";
+		const handler = async () => {
+			throw new ToolUserError(message);
+		};
+		const { action } = createActionCaller(
+			handler as never,
+			{} as never,
+			{} as never,
+			"feeds",
+		);
+		const thrown = (await action("trigger_feed", {}).catch(
+			(e: unknown) => e,
+		)) as ToolUserError;
+		expect(thrown.message).toBe(message);
+	});
+
 	it("returns a queued approval even when its mutation success is false", async () => {
 		const queued = {
 			success: false,

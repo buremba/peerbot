@@ -260,7 +260,7 @@ async function handleConnectImpl(
       instructions:
         "A pending connection already exists. Send the connect_url to the user to complete OAuth authorization." +
         (pendingScopeWarning ? ` ${pendingScopeWarning}` : "") +
-        ` Poll with action='get' until status='active'.`,
+        " Poll with client.connections.get(connection_id) via query_sdk until status='active'.",
     };
   }
 
@@ -774,6 +774,6 @@ async function handleConnectImpl(
     instructions:
       `Send the connect_url to the user to complete OAuth authorization with ${oauthMethod.provider}.` +
       (personalScopeWarning ? ` ${personalScopeWarning}` : "") +
-      ` Poll this connection with action='get' until status='active'.`,
+      " Poll with client.connections.get(connection_id) via query_sdk until status='active'.",
   };
 }

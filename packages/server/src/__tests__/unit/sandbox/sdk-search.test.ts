@@ -319,6 +319,31 @@ describe("sdkSearch", () => {
 	});
 
 	it.each([
+		["feeds.get", ["limit?: number", "search_term?: string"]],
+		["feeds.readMany", ["timeout_ms?: number", "search_term?: string"]],
+		[
+			"feeds.create",
+			[
+				"entity_ids?: number[]",
+				"timezone?: string",
+				"virtual?: boolean",
+				"manual-only",
+				"feeds.trigger",
+			],
+		],
+		[
+			"feeds.update",
+			["replace_config?: boolean", "schedule?: string | null", "timezone?: string | null"],
+		],
+	])("documents the complete public %s contract", async (path, fields) => {
+		const result = await sdkSearch({ query: path }, stubEnv, adminCtx);
+		expect(result.match_count).toBe(1);
+		for (const field of fields) {
+			expect(result.results[0], path).toContain(field);
+		}
+	});
+
+	it.each([
 		[
 			"operations.getRun",
 			"operations.getRun(run_id: number)",

@@ -1427,7 +1427,7 @@ async function formatEntityResult(
     const pausedConnections = connections?.filter((c) => c.status === 'paused').length || 0;
 
     if (activeConnections === 0 && pausedConnections === 0) {
-      suggestion = `Entity "${primaryEntity.name}" found with no connections. Use client.connections.connect({ connector_key: '<connector_key>' }) via run_sdk to add one and start collection.`;
+      suggestion = `Entity "${primaryEntity.name}" found with no connections. Use search_sdk to choose a connector and feed, then run_sdk with client.connections.connect({ connector_key: '<connector_key>' }), client.feeds.create({ connection_id: <connection_id>, feed_key: '<feed_key>', entity_ids: [${primaryEntity.id}], config: {} }) to target this entity, and client.feeds.trigger({ feed_id: <feed_id> }) to collect now.`;
     } else if (activeConnections === 0 && pausedConnections > 0) {
       suggestion = `Entity "${primaryEntity.name}" has ${pausedConnections} paused connection(s). Reactivate a connection to resume collection.`;
     } else {

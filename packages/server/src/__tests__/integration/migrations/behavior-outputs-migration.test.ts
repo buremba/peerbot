@@ -13,7 +13,7 @@ import { cleanupTestDatabase } from '../../setup/test-db';
 import { createTestAgent } from '../../setup/test-fixtures';
 import { TestApiClient, TestWorkspace } from '../../setup/test-mcp-client';
 
-const MIGRATION = '20260803140000_behavior_outputs.sql';
+const MIGRATION = '20260803191113_behavior_outputs.sql';
 
 function resolveMigrationsDir(): string {
   let dir = __dirname;

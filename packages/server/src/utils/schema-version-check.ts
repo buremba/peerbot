@@ -19,6 +19,7 @@
 
 import { readdirSync } from 'node:fs';
 import type { DbClient } from '../db/client';
+import { assertUniqueMigrationVersions } from '../db/migration-loader';
 import logger from './logger';
 
 const MIGRATION_FILENAME_RE = /^(\d+)_[^/]+\.sql$/;
@@ -40,6 +41,8 @@ export function readExpectedSchemaVersion(migrationsDir: string): string | null 
     );
     return null;
   }
+
+  assertUniqueMigrationVersions(entries);
 
   let max: string | null = null;
   for (const name of entries) {

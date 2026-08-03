@@ -24,9 +24,23 @@ if (!databaseUrl) {
 }
 
 function listMigrationFiles(dir) {
-  return readdirSync(dir)
+  const files = readdirSync(dir)
     .filter((file) => file.endsWith(".sql"))
     .sort();
+  const ownerByVersion = new Map();
+  for (const file of files) {
+    const version = /^(\d+)_[^/]+\.sql$/.exec(file)?.[1];
+    if (!version) continue;
+    const owner = ownerByVersion.get(version);
+    if (owner) {
+      throw new Error(
+        `Duplicate migration version ${version}: ${owner} and ${file}. ` +
+          "Each schema_migrations ledger version must identify exactly one file."
+      );
+    }
+    ownerByVersion.set(version, file);
+  }
+  return files;
 }
 
 function parseTransactionOption(markerLine) {
@@ -160,6 +174,7 @@ async function applyMigration(sqlClient, section, version) {
   await recordMigration(sqlClient, version);
 }
 
+const migrationFiles = listMigrationFiles(migrationsDir);
 const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
 let migrationLockHeld = false;
 
@@ -180,7 +195,7 @@ try {
   );
   const applied = new Set(appliedRows.map((r) => r.version));
 
-  for (const file of listMigrationFiles(migrationsDir)) {
+  for (const file of migrationFiles) {
     const version = file.split("_")[0] ?? "";
     if (applied.has(version)) continue;
     const up = loadMigrationUp(migrationsDir, file);

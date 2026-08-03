@@ -391,6 +391,8 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 		expect(created.next_steps?.join("\n")).not.toMatch(/manage_[a-z_]+/);
 		expect(created.next_steps?.join("\n")).toContain("client.connections.connect");
 		expect(created.next_steps?.join("\n")).toContain("client.feeds.trigger");
+		expect(created.next_steps?.join("\n")).toContain("kind: 'schedule'");
+		expect(created.next_steps?.join("\n")).toContain("timezone: '<IANA timezone>'");
 		const maybeId = created.entity?.id;
 		expect(maybeId).toBeDefined();
 		const id = maybeId as number;

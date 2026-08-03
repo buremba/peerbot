@@ -375,7 +375,7 @@ async function handleCreate(
 		// Root entity (no parent)
 		nextSteps.push(
 			`Use client.connections.connect({ connector_key: '<connector_key>' }), client.feeds.create({ connection_id: <connection_id>, feed_key: '<feed_key>', entity_ids: [${entity.id}], config: {} }) to target this entity, then client.feeds.trigger({ feed_id: <feed_id> }) to collect now.`,
-			`Use client.behaviors.create({ entity_id: ${entity.id}, slug: '<slug>', agent_id: '<agent_id>', prompt: '<prompt>', sources: [] }) to schedule a Behavior.`,
+			`Use client.behaviors.create({ entity_id: ${entity.id}, slug: '<slug>', agent_id: '<agent_id>', prompt: '<prompt>', sources: [], triggers: [{ kind: 'schedule', cron: '<cron>', timezone: '<IANA timezone>' }] }) to schedule a Behavior.`,
 		);
 	} else {
 		// Child entity (has parent)

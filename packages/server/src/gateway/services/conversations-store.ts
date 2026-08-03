@@ -1,4 +1,5 @@
 import { createLogger } from "@lobu/core";
+import { channelResourceIdentity } from "../../authz/channel-about.js";
 import { getDb } from "../../db/client.js";
 
 const logger = createLogger("conversations-store");
@@ -51,6 +52,7 @@ export interface ConversationUpsert {
 	kind: ConversationKind;
 	userId?: string | null;
 	title?: string | null;
+	locationLabel?: string | null;
 	/**
 	 * Platform rows only: true for a 1:1 DM with the bot, false for a group
 	 * channel. Null = unknown (the inbound carried no hint, or the row predates
@@ -82,11 +84,11 @@ export async function upsertConversation(
 		await sql`
       INSERT INTO public.conversations (
         organization_id, agent_id, platform, conversation_id, thread_id,
-        kind, user_id, title, is_direct, last_activity_at
+        kind, user_id, title, is_direct, location_label, last_activity_at
       ) VALUES (
         ${row.organizationId}, ${row.agentId}, ${row.platform},
         ${row.conversationId}, ${row.threadId}, ${row.kind},
-        ${row.userId ?? null}, ${row.title ?? null}, ${row.isDirect ?? null},
+        ${row.userId ?? null}, ${row.title ?? null}, ${row.isDirect ?? null}, ${row.locationLabel ?? null},
         ${row.lastActivityAt}
       )
       ON CONFLICT (organization_id, agent_id, platform, conversation_id)
@@ -102,6 +104,7 @@ export async function upsertConversation(
         -- first turn that knows wins. This is what backfills rows written before
         -- the column existed — they fill in on their next inbound message.
         is_direct = COALESCE(public.conversations.is_direct, EXCLUDED.is_direct),
+		location_label = COALESCE(public.conversations.location_label, EXCLUDED.location_label),
         updated_at = now()
     `;
 	} catch (err) {
@@ -128,6 +131,7 @@ export interface ConversationListRow {
 	kind: ConversationKind;
 	userId: string | null;
 	title: string | null;
+	locationLabel: string | null;
 	/**
 	 * Platform rows: true = 1:1 DM with the bot, false = group channel, null =
 	 * unknown. A known DM may use the owner/admin bypass; otherwise the read path
@@ -136,6 +140,32 @@ export interface ConversationListRow {
 	isDirect: boolean | null;
 	lastActivityAt: Date;
 	createdAt: Date;
+}
+
+export async function resolveConversationLocationLabel(args: {
+	organizationId: string;
+	platform: string;
+	teamId?: string | null;
+	channelId: string;
+	isDirect: boolean | null;
+	senderDisplayName?: string | null;
+}): Promise<string | null> {
+	if (args.isDirect) return args.senderDisplayName?.trim() || null;
+	const { namespace, key } = channelResourceIdentity(
+		args.platform,
+		args.teamId,
+		args.channelId,
+	);
+	const sql = getDb();
+	const rows = await sql<{ name: string | null }>`
+    SELECT e.name FROM entity_identities ei
+    JOIN entities e ON e.id = ei.entity_id AND e.organization_id = ei.organization_id
+    WHERE ei.organization_id = ${args.organizationId} AND ei.namespace = ${namespace}
+      AND ei.identifier = ${key} AND ei.deleted_at IS NULL AND e.deleted_at IS NULL LIMIT 1
+  `;
+	const name = rows[0]?.name?.trim();
+	if (!name) return null;
+	return args.platform === "slack" ? `#${name.replace(/^#/, "")}` : name;
 }
 
 /** Audience a conversation listing is built for. See {@link listConversations}. */
@@ -165,11 +195,12 @@ export async function findConversationById(args: {
 		kind: ConversationKind;
 		user_id: string | null;
 		title: string | null;
+		location_label: string | null;
 		is_direct: boolean | null;
 		last_activity_at: Date | null;
 		created_at: Date;
 	}>`
-    SELECT platform, conversation_id, thread_id, kind, user_id, title,
+    SELECT platform, conversation_id, thread_id, kind, user_id, title, location_label,
            is_direct, last_activity_at, created_at
     FROM public.conversations
     WHERE organization_id = ${organizationId}
@@ -187,6 +218,7 @@ export async function findConversationById(args: {
 		kind: r.kind,
 		userId: r.user_id,
 		title: r.title,
+		locationLabel: r.location_label,
 		isDirect: r.is_direct,
 		lastActivityAt: r.last_activity_at ?? r.created_at,
 		createdAt: r.created_at,
@@ -208,11 +240,12 @@ export async function getConversation(args: {
 		kind: ConversationKind;
 		user_id: string | null;
 		title: string | null;
+		location_label: string | null;
 		is_direct: boolean | null;
 		last_activity_at: Date | null;
 		created_at: Date;
 	}>`
-    SELECT platform, conversation_id, thread_id, kind, user_id, title,
+    SELECT platform, conversation_id, thread_id, kind, user_id, title, location_label,
            is_direct, last_activity_at, created_at
     FROM public.conversations
     WHERE organization_id = ${organizationId}
@@ -231,6 +264,7 @@ export async function getConversation(args: {
 		kind: r.kind,
 		userId: r.user_id,
 		title: r.title,
+		locationLabel: r.location_label,
 		isDirect: r.is_direct,
 		lastActivityAt: r.last_activity_at ?? r.created_at,
 		createdAt: r.created_at,
@@ -332,11 +366,12 @@ export async function listConversations(args: {
 		kind: ConversationKind;
 		user_id: string | null;
 		title: string | null;
+		location_label: string | null;
 		is_direct: boolean | null;
 		last_activity_at: Date | null;
 		created_at: Date;
 	}>`
-    SELECT platform, conversation_id, thread_id, kind, user_id, title,
+    SELECT platform, conversation_id, thread_id, kind, user_id, title, location_label,
            is_direct, last_activity_at, created_at
     FROM public.conversations
     WHERE organization_id = ${organizationId}
@@ -365,6 +400,7 @@ export async function listConversations(args: {
 		kind: r.kind,
 		userId: r.user_id,
 		title: r.title,
+		locationLabel: r.location_label,
 		isDirect: r.is_direct,
 		lastActivityAt: r.last_activity_at ?? r.created_at,
 		createdAt: r.created_at,

@@ -14,6 +14,7 @@ import {
   SCOPE_CHECK_NOT_APPLICABLE,
 } from '../auth/tool-access';
 import type { Env } from '../index';
+import { recordMcpConversationActivity } from '../lobu/stores/mcp-client-conversations';
 import { trackMCPToolCall } from '../sentry';
 import { parseApplyId } from '../utils/apply-context';
 import { ToolNotRegisteredError, ToolUserError } from '../utils/errors';
@@ -52,6 +53,8 @@ export interface AuthContext {
    * Audit rows carry it so a client's activity can be grouped per session.
    */
   mcpSessionId?: string | null;
+  /** Host conversation correlation, separate from the transport session. */
+  mcpConversationId?: string | null;
   instructions?: string;
   /** `x-lobu-apply-id` when the call belongs to a `lobu apply` run. */
   applyId?: string | null;
@@ -294,6 +297,12 @@ export async function executeTool(
       durationMs: Date.now() - startTime,
       ctx: toolContext,
     });
+    await recordMcpConversationActivity({
+      ctx: toolContext,
+      toolName,
+      actionLabel: tool.annotations?.title,
+      failed: isSoftErrorResult(result),
+    });
     return result;
   } catch (error) {
     // Stamp the correlation id onto typed errors so the response boundaries can
@@ -307,6 +316,12 @@ export async function executeTool(
       error,
       durationMs: Date.now() - startTime,
       ctx: toolContext,
+    });
+    await recordMcpConversationActivity({
+      ctx: toolContext,
+      toolName,
+      actionLabel: tool.annotations?.title,
+      failed: true,
     });
     throw error;
   }
@@ -355,5 +370,6 @@ export function toToolContext(authCtx: AuthContext): ToolContext {
     baseUrl: authCtx.baseUrl,
     applyId: authCtx.applyId ?? null,
     mcpSessionId: authCtx.mcpSessionId ?? null,
+    mcpConversationId: authCtx.mcpConversationId ?? null,
   };
 }

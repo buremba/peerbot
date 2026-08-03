@@ -183,9 +183,10 @@ export async function advanceWatcherSchedule(
 }
 
 /**
- * Advance after terminal failure unless the run came from an event. Event
- * delivery is independent of the cron cursor, so advancing it would skip the
- * next scheduled activation. Call inside the failure transaction.
+ * Advance after terminal failure unless the run came from an event with no
+ * explicit retry boundary. Ordinary event delivery is independent of the cron
+ * cursor, but a provider quota boundary must park any scheduled activation too.
+ * Call inside the failure transaction.
  *
  * Shared deliberately: three paths mark a Behavior run failed — agent dispatch
  * (`failWatcherRun`), turn resolution (`resolveWatcherRunsByMessageIds`), and
@@ -199,6 +200,6 @@ export async function advanceScheduleAfterTerminalFailure(
 	dispatchSource: string | null | undefined,
 	notBefore?: Date | null
 ): Promise<void> {
-	if (dispatchSource === "event") return;
+	if (dispatchSource === "event" && notBefore == null) return;
 	await advanceWatcherSchedule(sql, watcherId, notBefore);
 }

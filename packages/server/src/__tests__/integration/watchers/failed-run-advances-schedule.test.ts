@@ -241,6 +241,34 @@ describe("a terminally failed Behavior run advances next_run_at", () => {
     expect(after.getTime()).toBe(staleCursor.getTime());
   });
 
+  it("parks a scheduled Behavior after a quota-exhausted event dispatch", async () => {
+    const resetAt = new Date(Date.now() + 6 * 60 * 60 * 1000);
+    const providerReset = resetAt
+      .toISOString()
+      .replace("T", " ")
+      .replace(/\.\d{3}Z$/, "");
+    const { watcherId, runId } = await createDueWatcherWithDispatchedRun({
+      slug: "park-event-until-provider-reset",
+      messageId: "msg-event-provider-reset",
+      dispatchSource: "event",
+    });
+
+    await resolveWatcherRunsByMessageIds(["msg-event-provider-reset"], {
+      ok: false,
+      error: `429 Weekly/Monthly Limit Exhausted. Your limit will reset at ${providerReset}`,
+      errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+    });
+
+    const sql = getTestDb();
+    const [run] = await sql`SELECT status FROM runs WHERE id = ${runId}`;
+    expect(run.status).toBe("failed");
+
+    const after = await cursorOf(watcherId);
+    const expectedNotBefore =
+      Math.floor(resetAt.getTime() / 1000) * 1000 + 60_000;
+    expect(after.getTime()).toBe(expectedNotBefore);
+  });
+
   it("leaves the cursor alone while a finalize nudge requeues the run", async () => {
     const { watcherId, staleCursor } = await createDueWatcherWithDispatchedRun({
       slug: "no-advance-on-requeue",

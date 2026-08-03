@@ -460,6 +460,14 @@ export function assertOutputsShape(outputs: unknown): void {
           400
         );
       }
+      const referenceField = hasEntity ? 'entity' : 'event';
+      const reference = target[referenceField];
+      if (typeof reference === 'string' && reference !== reference.trim()) {
+        throw new ToolUserError(
+          `Invalid outputs.${name}.${referenceField}: surrounding whitespace is not allowed.`,
+          400
+        );
+      }
       if (target.event === 'guidance') {
         throw new ToolUserError(
           `Invalid outputs.${name}: Behaviors cannot author organization-wide guidance events.`,

@@ -120,6 +120,7 @@ export const BehaviorEntityOutputSchema = Type.Object(
   {
     entity: Type.String({
       minLength: 1,
+      pattern: "^\\S(?:[\\s\\S]*\\S)?$",
       description:
         "Stored entity-type slug for every row in this output array.",
     }),
@@ -150,6 +151,7 @@ export const BehaviorEventOutputSchema = Type.Object(
   {
     event: Type.String({
       minLength: 1,
+      pattern: "^\\S(?:[\\s\\S]*\\S)?$",
       description:
         "Semantic type assigned to every event in this output array.",
     }),

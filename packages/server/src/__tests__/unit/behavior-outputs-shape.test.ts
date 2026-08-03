@@ -82,6 +82,15 @@ describe('assertOutputsShape', () => {
     expect(() => assertOutputsShape({ items: { event: 'guidance' } })).toThrow(/cannot author/);
   });
 
+  it('rejects surrounding whitespace in persisted output references', () => {
+    expect(() => assertOutputsShape({ alerts: { event: ' observation ' } })).toThrow(
+      /surrounding whitespace/
+    );
+    expect(() =>
+      assertOutputsShape({ items: { entity: ' person ', key: ['id'] } })
+    ).toThrow(/surrounding whitespace/);
+  });
+
   it('enforces the same contract for serialized wire input', () => {
     const parsed = parseJsonInput(JSON.stringify(valid), 'outputs');
     expect(() => assertOutputsShape(parsed)).not.toThrow();

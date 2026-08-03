@@ -1204,43 +1204,27 @@ describe("prepare_reply browser targeting", () => {
 		expect(click?.input).not.toHaveProperty("allowed_click");
 	});
 
-	test("per-call browser_connection_id beats the connection default", () => {
-		expect(
-			resolveTargetBrowserConnectionId(
-				{ browser_connection_id: 432 },
-				{ interactive_browser_connection_id: 369 },
-			),
-		).toBe(432);
-	});
-
-	test("falls back to the connection's configured browser", () => {
-		expect(
-			resolveTargetBrowserConnectionId(
-				{},
-				{ interactive_browser_connection_id: 432 },
-			),
-		).toBe(432);
+	test("accepts a per-call browser_connection_id", () => {
+		expect(resolveTargetBrowserConnectionId({ browser_connection_id: 432 })).toBe(
+			432,
+		);
 	});
 
 	test("returns null when neither is set, so the scrape pin still wins", () => {
-		expect(resolveTargetBrowserConnectionId({}, {})).toBeNull();
-	});
-
-	test("accepts a numeric string — JSON config round-trips ids as strings", () => {
-		expect(
-			resolveTargetBrowserConnectionId(
-				{},
-				{ interactive_browser_connection_id: "432" },
-			),
-		).toBe(432);
+		expect(resolveTargetBrowserConnectionId({})).toBeNull();
 	});
 
 	test("rejects a non-id rather than silently ignoring it and using the wrong browser", () => {
 		expect(() =>
-			resolveTargetBrowserConnectionId({ browser_connection_id: "macbook" }, {}),
+			resolveTargetBrowserConnectionId({ browser_connection_id: "432" }),
 		).toThrow(/positive integer chrome connection id/);
 		expect(() =>
-			resolveTargetBrowserConnectionId({ browser_connection_id: 0 }, {}),
+			resolveTargetBrowserConnectionId({ browser_connection_id: 0 }),
+		).toThrow(/positive integer chrome connection id/);
+		expect(() =>
+			resolveTargetBrowserConnectionId({
+				browser_connection_id: Number.MAX_SAFE_INTEGER + 1,
+			}),
 		).toThrow(/positive integer chrome connection id/);
 	});
 });
@@ -1305,7 +1289,7 @@ describe("prepare_reply tab survival", () => {
 		expect(calls.some((c) => c.action === "release_tab")).toBe(false);
 	});
 
-	test("reports released:false rather than failing when the extension has no release_tab", async () => {
+	test("fails when the tab cannot be released to the user", async () => {
 		const { dispatcher } = stagingDispatcher();
 		const inner = dispatcher.dispatch;
 		dispatcher.dispatch = async (
@@ -1316,14 +1300,12 @@ describe("prepare_reply tab survival", () => {
 			return inner(action, input);
 		};
 
-		const result = await prepareXReply(dispatcher, {
-			tweetUrl: "2083959735481716957",
-			body: "old extension build",
-		});
-		// Still staged and usable — just doomed on the 5-minute timer, and the
-		// caller can now SEE that instead of trusting prepared: true.
-		expect(result.prepared).toBe(true);
-		expect(result.released).toBe(false);
+		await expect(
+			prepareXReply(dispatcher, {
+				tweetUrl: "2083959735481716957",
+				body: "must survive the action run",
+			}),
+		).rejects.toThrow("unknown tool");
 	});
 
 	test("does not stamp holder_agent_id / holder_thread_id", async () => {

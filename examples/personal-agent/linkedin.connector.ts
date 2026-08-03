@@ -807,11 +807,8 @@ type PrepareCommentResult = {
   body: string;
   /** How the composer was filled: evaluate or the a11y type_ref fallback. */
   method: "type_ref" | "evaluate";
-  /**
-   * Whether the tab was handed to the user. False means the extension has no
-   * `release_tab`, so the reaper will close the tab — and the draft — shortly.
-   */
-  released?: boolean;
+  /** Whether the tab was handed to the user so the reaper cannot close it. */
+  released: true;
   /** Whether the in-page handoff banner was injected. */
   banner_shown?: boolean;
   /** Truncated reason shown on the banner (if any). */
@@ -1556,24 +1553,16 @@ export async function prepareLinkedInComment(
 
   // Hand the tab to the human. Until this point it is an extension-owned
   // scratch tab, which the reaper force-closes after ~5 minutes — taking the
-  // staged draft with it while this function still returns prepared: true.
-  // Released, it is an ordinary user tab the reaper ignores.
+  // staged draft with it. Released, it is an ordinary user tab the reaper
+  // ignores.
   //
   // Deliberately last, after the composer-filled check above: a run that fails
   // earlier leaves the tab owned, and a tab with no draft in it SHOULD be
   // reaped.
-  let released = false;
-  try {
-    // No allowed_origins: release_tab gates on run tab-ownership, not on the
-    // page's origin, so passing them would only add a way for the handover to
-    // fail — and a failed handover is a reaped draft.
-    await safeDispatch.dispatch("release_tab", { tab_id: tabId });
-    released = true;
-  } catch {
-    // Older extension builds have no release_tab. Reported as `released` so the
-    // caller can tell a durable draft from a doomed one instead of trusting
-    // prepared: true — the exact blind spot that let this bug survive.
-  }
+  // No allowed_origins: release_tab gates on run tab-ownership, not on the
+  // page's origin, so passing them would only add a way for the handover to
+  // fail — and a failed handover is a reaped draft.
+  await safeDispatch.dispatch("release_tab", { tab_id: tabId });
 
   return {
     prepared: true,
@@ -1581,7 +1570,7 @@ export async function prepareLinkedInComment(
     post_url: postUrl,
     body,
     method,
-    released,
+    released: true,
     banner_shown: bannerShown,
     reason_preview: reasonPreview,
     agent_id: handoff?.agentId,

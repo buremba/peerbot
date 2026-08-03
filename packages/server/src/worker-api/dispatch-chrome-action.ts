@@ -6,8 +6,8 @@
  * the same org. We:
  *
  *   1. Look up the parent connector run's org (+ optional data connection) from runs.
- *   2. Pick an online chrome connection / extension (prefer parent connection's
- *      chrome-extension pin when set — browser affinity for LinkedIn/X/etc.).
+ *   2. Pick an online chrome connection / extension (prefer an explicit target,
+ *      then the parent connection's chrome-extension scrape pin).
  *   3. Enqueue an action run via `createConnectorOperationRun` (the same
  *      helper `manage_operations.execute` uses for device-bound calls).
  *   4. Await completion via the shared `waitForDeviceActionRun` (also
@@ -535,13 +535,8 @@ async function resolveTargetBrowserWorker(
   rawTarget: unknown,
   sql: ReturnType<typeof getDb>
 ): Promise<{ deviceWorkerId: string } | { error: string }> {
-  const targetId =
-    typeof rawTarget === 'number'
-      ? rawTarget
-      : typeof rawTarget === 'string' && rawTarget.trim() !== ''
-        ? Number(rawTarget)
-        : Number.NaN;
-  if (!Number.isInteger(targetId) || targetId <= 0) {
+  const targetId = typeof rawTarget === 'number' ? rawTarget : Number.NaN;
+  if (!Number.isSafeInteger(targetId) || targetId <= 0) {
     return {
       error: `${TARGET_BROWSER_CONNECTION_INPUT_KEY} must be a positive integer chrome connection id, got ${JSON.stringify(rawTarget)}`,
     };
@@ -561,6 +556,7 @@ async function resolveTargetBrowserWorker(
     FROM connections con
     JOIN device_workers dw ON dw.id = con.device_worker_id
       AND dw.organization_id = con.organization_id
+      AND dw.user_id = con.created_by
     WHERE con.id = ${targetId}
       AND con.organization_id = ${organizationId}
       AND con.connector_key = 'chrome'
@@ -755,7 +751,8 @@ export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {
 
   // Authorize: parent run must exist, be a running connector execution claimed
   // by this worker. Both sync() and execute() receive chrome_dispatcher.
-  // connection_id drives browser affinity when pinned to a chrome-extension.
+  // connection_id supplies scrape affinity; an explicit action target
+  // overrides it.
   const parentRows = (await sql`
     SELECT r.organization_id, r.status, r.claimed_by, r.run_type, r.connection_id,
            r.created_by_user_id

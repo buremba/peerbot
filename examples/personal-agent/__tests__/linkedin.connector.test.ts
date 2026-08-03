@@ -1907,7 +1907,12 @@ describe("prepare_comment helpers", () => {
             value: { ok: true, reason: "typed", preview: "hi" },
           };
         }
-        if (key === "focus_tab" || key === "show_notification") return {};
+        if (
+          key === "focus_tab" ||
+          key === "show_notification" ||
+          key === "release_tab"
+        )
+          return {};
         throw new Error(`unexpected ${key}`);
       },
     };
@@ -2099,9 +2104,8 @@ describe("prepare_comment helpers", () => {
   });
 
   // The tab is the only copy of the draft. An extension-owned tab is reaped
-  // after ~5 minutes, so without release_tab the draft silently disappears
-  // while prepare_comment still reports prepared: true.
-  test("reports released: false instead of claiming success on an extension with no release_tab", async () => {
+  // after ~5 minutes, so release failure must fail the action.
+  test("fails when the tab cannot be released to the user", async () => {
     const dispatcher = {
       dispatch: async (key: string) => {
         if (key === "navigate") {
@@ -2121,16 +2125,14 @@ describe("prepare_comment helpers", () => {
         return {};
       },
     };
-    const result = await prepareLinkedInComment(dispatcher, {
-      postUrl: "7312345678901234567",
-      body: "hi",
-      focus: false,
-      notify: false,
-    });
-    // Still staged — but the caller can now tell a durable draft from a doomed
-    // one rather than trusting prepared: true.
-    expect(result.prepared).toBe(true);
-    expect(result.released).toBe(false);
+    await expect(
+      prepareLinkedInComment(dispatcher, {
+        postUrl: "7312345678901234567",
+        body: "hi",
+        focus: false,
+        notify: false,
+      })
+    ).rejects.toThrow("Invalid operation_key 'release_tab'");
   });
 
   test("never releases a tab when the composer was never filled", async () => {
@@ -2207,7 +2209,12 @@ describe("prepare_comment helpers", () => {
           expect(input.text).toBe("hi");
           return {};
         }
-        if (key === "focus_tab" || key === "show_notification") return {};
+        if (
+          key === "focus_tab" ||
+          key === "show_notification" ||
+          key === "release_tab"
+        )
+          return {};
         throw new Error(`unexpected ${key} ${JSON.stringify(input)}`);
       },
     };

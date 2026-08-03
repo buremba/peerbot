@@ -1885,35 +1885,20 @@ export const TARGET_BROWSER_CONNECTION_INPUT_KEY =
 	"target_browser_connection_id";
 
 /**
- * Which browser should show the staged draft: the per-call input wins, then the
- * connection's configured default. Null means "no opinion" — the dispatcher
- * falls back to the scrape pin (previous behaviour).
- *
- * `config.interactive_browser_connection_id` is honoured if a connection row
- * carries it, but no connection config schema declares it, so it is not
- * user-selectable today, and only the gateway's inline action path passes
- * connection config at all (the worker-fleet path does not — see the NOTE in
- * connector-worker `daemon/executor.ts`). `browser_connection_id` on the call
- * is the supported way to name a browser.
+ * Which browser should show the staged draft. Null means "no opinion" — the
+ * dispatcher falls back to the scrape pin (previous behaviour).
  */
 export function resolveTargetBrowserConnectionId(
 	input: Record<string, unknown>,
-	config: Record<string, unknown>,
 ): number | null {
-	for (const raw of [
-		input.browser_connection_id,
-		config.interactive_browser_connection_id,
-	]) {
-		if (raw == null) continue;
-		const value = typeof raw === "string" ? Number(raw.trim()) : raw;
-		if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
-			throw new Error(
-				`prepare_reply: browser_connection_id must be a positive integer chrome connection id, got ${JSON.stringify(raw)}`,
-			);
-		}
-		return value;
+	const raw = input.browser_connection_id;
+	if (raw == null) return null;
+	if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw <= 0) {
+		throw new Error(
+			`prepare_reply: browser_connection_id must be a positive integer chrome connection id, got ${JSON.stringify(raw)}`,
+		);
 	}
-	return null;
+	return raw;
 }
 
 /** Cap the explanation shown in the in-page banner. Mirrors linkedin. */
@@ -2065,11 +2050,8 @@ export interface PrepareReplyResult {
 	submit_blocked: boolean;
 	/** Whether the in-page handoff banner was injected. */
 	banner_shown?: boolean;
-	/**
-	 * Whether the tab was handed to the user. False means the extension has no
-	 * release_tab (older build) and the reaper will close the draft in ~5 min.
-	 */
-	released?: boolean;
+	/** Whether the tab was handed to the user so the reaper cannot close it. */
+	released: true;
 	/** Truncated reason shown on the banner (if any). */
 	reason_preview?: string;
 	message: string;
@@ -2387,9 +2369,9 @@ export async function prepareXReply(
 
 	// Hand the tab to the human. Until this point it is an extension-owned
 	// scratch tab, which the reaper force-closes after ~5 minutes — with the
-	// draft in it, while this function still returns prepared: true (measured
-	// 2026-08-02: staged 23:45:09, gone by 23:52:28). Released, it is an
-	// ordinary user tab the reaper ignores.
+	// draft in it. Before release_tab was required, the action still returned
+	// prepared: true (measured 2026-08-02: staged 23:45:09, gone by 23:52:28).
+	// Released, it is an ordinary user tab the reaper ignores.
 	//
 	// Deliberately last, after the staged-text check: a run that fails earlier
 	// leaves the tab owned, and a tab with no draft in it SHOULD be reaped.
@@ -2397,17 +2379,7 @@ export async function prepareXReply(
 	// The one dispatch here without allowed_origins: release_tab gates on run
 	// tab-ownership, not on the page's origin, so an origin list would only add
 	// a way for the handover to fail — and a failed handover is a reaped draft.
-	let released = false;
-	try {
-		await safeDispatch.dispatch("release_tab", { tab_id: tabId });
-		released = true;
-	} catch {
-		// Older extension builds have no release_tab. The draft is staged and
-		// correct; it will just be reaped on the old 5-minute timer. Reported
-		// as `released` so the caller can tell a durable draft from a doomed one
-		// instead of trusting prepared: true — the exact blind spot that let
-		// this bug survive.
-	}
+	await safeDispatch.dispatch("release_tab", { tab_id: tabId });
 
 	// X's own verdict, not ours. Still `prepared: true` — the draft IS in the
 	// composer and the human is about to look at it, so trimming it there beats
@@ -2422,7 +2394,7 @@ export async function prepareXReply(
 		method: "type_ref",
 		staged_text: staged,
 		banner_shown: bannerShown,
-		released,
+		released: true,
 		...(reasonPreview ? { reason_preview: reasonPreview } : {}),
 		submitted: false,
 		submit_blocked: submitBlocked,
@@ -2642,7 +2614,7 @@ export default class XConnector extends ConnectorRuntime {
 						browser_connection_id: {
 							type: "integer",
 							description:
-								"Chrome connection to open the draft in. Set this to the machine you are actually sitting at — otherwise the draft is staged in whichever browser syncs the timeline. This is the only configurable way to pick a browser: the connection-level fallback (config.interactive_browser_connection_id) is honoured when present but is not exposed in any connection config schema, so it is not selectable in the UI.",
+								"Chrome connection to open the draft in. Set this to the machine you are actually sitting at — otherwise the draft is staged in whichever browser syncs the timeline.",
 						},
 					},
 				},
@@ -2701,10 +2673,7 @@ export default class XConnector extends ConnectorRuntime {
 				...(typeof ctx.input.reason === "string"
 					? { reason: ctx.input.reason }
 					: {}),
-				targetBrowserConnectionId: resolveTargetBrowserConnectionId(
-					ctx.input,
-					ctx.config,
-				),
+				targetBrowserConnectionId: resolveTargetBrowserConnectionId(ctx.input),
 			});
 			return { success: true, output: { ...output } };
 		} catch (error) {

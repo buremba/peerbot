@@ -114,7 +114,7 @@ describe('dispatchChromeAction target browser routing', () => {
     const org = await createTestOrganization({ name: 'Target browser garbage' });
     const runId = await seedParentRun(org.id);
 
-    for (const bad of ['macbook', 0, -3, 1.5]) {
+    for (const bad of ['macbook', '432', 0, -3, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
       const body = await dispatchWithTarget(runId, bad);
       expect(body.status).toBe('failed');
       expect(body.error_message).toContain(
@@ -183,6 +183,76 @@ describe('dispatchChromeAction target browser routing', () => {
       ) VALUES (
         ${org.id}, 'chrome', 'chrome-private-owner', 'Chrome', 'active',
         ${owner.id}, 'private', ${worker.id}::uuid, NOW(), NOW()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    const runId = await seedParentRun(org.id, caller.id);
+
+    const body = await dispatchWithTarget(runId, Number(conn.id));
+    expect(body.status).toBe('failed');
+    expect(body.error_message).toContain(
+      'is not an active chrome connection paired to a browser in this organization'
+    );
+  });
+
+  it("accepts the requester's private chrome connection", async () => {
+    const org = await createTestOrganization({ name: 'Private browser owner' });
+    const caller = await createTestUser({ email: 'private-browser-owner@test.com' });
+    await addUserToOrganization(caller.id, org.id);
+
+    const [worker] = (await sql`
+      INSERT INTO device_workers (
+        user_id, worker_id, platform, capabilities, label, organization_id, last_seen_at
+      ) VALUES (
+        ${caller.id}, 'ext-private-caller', 'chrome-extension',
+        ${sql.json(['browser.tabs', 'browser.debugger'])}, 'Caller Ext',
+        ${org.id}, NOW() - INTERVAL '1 day'
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: string }>;
+    const [conn] = (await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status,
+        created_by, visibility, device_worker_id, created_at, updated_at
+      ) VALUES (
+        ${org.id}, 'chrome', 'chrome-private-caller', 'Chrome', 'active',
+        ${caller.id}, 'private', ${worker.id}::uuid, NOW(), NOW()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    const runId = await seedParentRun(org.id, caller.id);
+
+    const body = await dispatchWithTarget(runId, Number(conn.id));
+    expect(body.status).toBe('failed');
+    expect(body.error_message).toContain(
+      'The browser this action is set to open in is offline'
+    );
+  });
+
+  it("refuses the requester's connection when pinned to another member's browser", async () => {
+    const org = await createTestOrganization({ name: 'Mismatched browser owner' });
+    const caller = await createTestUser({ email: 'mismatched-connection-owner@test.com' });
+    const deviceOwner = await createTestUser({ email: 'mismatched-device-owner@test.com' });
+    await addUserToOrganization(caller.id, org.id);
+    await addUserToOrganization(deviceOwner.id, org.id);
+
+    const [worker] = (await sql`
+      INSERT INTO device_workers (
+        user_id, worker_id, platform, capabilities, label, organization_id, last_seen_at
+      ) VALUES (
+        ${deviceOwner.id}, 'ext-mismatched-owner', 'chrome-extension',
+        ${sql.json(['browser.tabs', 'browser.debugger'])}, 'Other Member Ext',
+        ${org.id}, NOW()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: string }>;
+    const [conn] = (await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status,
+        created_by, visibility, device_worker_id, created_at, updated_at
+      ) VALUES (
+        ${org.id}, 'chrome', 'chrome-mismatched-owner', 'Chrome', 'active',
+        ${caller.id}, 'private', ${worker.id}::uuid, NOW(), NOW()
       )
       RETURNING id
     `) as unknown as Array<{ id: number }>;

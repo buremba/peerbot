@@ -467,7 +467,7 @@ routes.get("/", async (c) => {
 			connectionCount: countMap.get(a.agentId) ?? 0,
 			activeConnectionCount: activeCountMap.get(a.agentId) ?? 0,
 			clientCount: clientCountMap.get(a.agentId)?.size ?? 0,
-			watcherCount: watcherCountMap.get(a.agentId) ?? 0,
+			behaviorCount: watcherCountMap.get(a.agentId) ?? 0,
 			userCount: userCountMap.get(a.agentId) ?? 0,
 			platforms: platformsMap.get(a.agentId) ?? [],
 			providers: providersMap.get(a.agentId) ?? [],

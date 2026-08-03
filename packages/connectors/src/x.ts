@@ -1943,11 +1943,9 @@ export function truncateHandoffReason(
  */
 export function buildInjectHandoffBannerExpression(opts: {
 	reason?: string;
-	title?: string;
 }): string {
-	const title = opts.title ?? "Lobu staged this reply";
 	const reason = truncateHandoffReason(opts.reason);
-	const titleLit = JSON.stringify(title);
+	const titleLit = JSON.stringify("Lobu staged this reply");
 	const reasonLit = JSON.stringify(reason ?? null);
 	return `(async()=>{
   const TITLE = ${titleLit};

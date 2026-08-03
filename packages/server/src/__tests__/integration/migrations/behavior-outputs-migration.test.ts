@@ -3,7 +3,10 @@ import { dirname, join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { getDb } from '../../../db/client';
 import { loadMigrationUpSection } from '../../../db/migration-loader';
-import { computeStableKey } from '../../../utils/stable-keys';
+import {
+  computeStableKey,
+  formatBehaviorEntityIdentity,
+} from '../../../utils/stable-keys';
 import { ensureMemberEntityType } from '../../../utils/member-entity-type';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase } from '../../setup/test-db';
@@ -170,8 +173,18 @@ describe('Behavior outputs migration', () => {
         },
       },
       identities: [
-        `${watcherId}::items::${computeStableKey({ external_id: 'ISSUE-1' }, ['external_id'])}`,
-        `${watcherId}::items::${computeStableKey({ external_id: 'items::ISSUE-2' }, ['external_id'])}`,
+        formatBehaviorEntityIdentity(
+          watcherId,
+          'items',
+          'issue',
+          computeStableKey({ external_id: 'ISSUE-1' }, ['external_id'])
+        ),
+        formatBehaviorEntityIdentity(
+          watcherId,
+          'items',
+          'issue',
+          computeStableKey({ external_id: 'items::ISSUE-2' }, ['external_id'])
+        ),
       ].sort(),
       legacyColumnPresent: false,
       draftReplyRegistered: true,
@@ -204,10 +217,12 @@ describe('Behavior outputs migration', () => {
       outputs: { items: { entity: 'fresh-issue', key: ['external_id'] } },
     })) as { behavior_id: string };
     const watcherId = Number(created.behavior_id);
-    const expected = `${watcherId}::items::${computeStableKey(
-      { external_id: 'ISSUE-3' },
-      ['external_id']
-    )}`;
+    const expected = formatBehaviorEntityIdentity(
+      watcherId,
+      'items',
+      'fresh-issue',
+      computeStableKey({ external_id: 'ISSUE-3' }, ['external_id'])
+    );
     const sql = getDb();
     const up = loadMigrationUpSection(resolveMigrationsDir(), MIGRATION);
     let captured: string | undefined;

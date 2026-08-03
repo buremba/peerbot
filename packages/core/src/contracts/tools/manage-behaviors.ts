@@ -128,7 +128,7 @@ export const BehaviorEntityOutputSchema = Type.Object(
       maxItems: 4,
       uniqueItems: true,
       description:
-        "One to four fields whose exact non-blank string (up to 256 UTF-8 bytes), safe-integer, or boolean values compose each row's stable identity across Behavior runs. Every key field is required in every row; changing the fields, their order, or the output name changes identity. Use durable source IDs rather than editable labels.",
+        "One to four fields whose exact non-blank string (up to 256 UTF-8 bytes), safe-integer, or boolean values compose each row's stable identity across Behavior runs. Every key field is required in every row; changing the fields, their order, the output name, or the entity type changes identity. Use durable source IDs rather than editable labels.",
     }),
     name: Type.Optional(
       Type.Array(Type.String({ minLength: 1 }), {

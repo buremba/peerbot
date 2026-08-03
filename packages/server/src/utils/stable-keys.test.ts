@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeStableKey } from './stable-keys';
+import { computeStableKey, formatBehaviorEntityIdentity } from './stable-keys';
 
 describe('computeStableKey', () => {
   it('encodes an exact, typed composite tuple deterministically', () => {
@@ -45,5 +45,12 @@ describe('computeStableKey', () => {
     const row = { name: 'Performance Issues' };
     expect(computeStableKey(row, ['name'])).toMatch(/^v1~/);
     expect(row).toEqual({ name: 'Performance Issues' });
+  });
+
+  it('scopes the same tuple to its declared entity type', () => {
+    const stableKey = computeStableKey({ id: 'ACME-1' }, ['id']);
+    expect(formatBehaviorEntityIdentity(42, 'records', 'company', stableKey)).not.toBe(
+      formatBehaviorEntityIdentity(42, 'records', 'contact', stableKey)
+    );
   });
 });

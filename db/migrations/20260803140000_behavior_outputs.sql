@@ -199,6 +199,7 @@ BEGIN
         ei.identifier AS current_identifier,
         preferred_output.watcher_id,
         preferred_output.output_name,
+        preferred_output.entity_type,
         preferred_output.key_fields,
         e.metadata
       FROM entity_identities ei
@@ -272,7 +273,7 @@ BEGIN
       END LOOP;
 
       target_identifier := move.watcher_id::text || '::' ||
-        move.output_name || '::' || stable_key;
+        move.output_name || '::' || move.entity_type || '::' || stable_key;
       IF move.current_identifier = target_identifier THEN
         handled_identity_ids := array_append(handled_identity_ids, move.identity_id);
       ELSE

@@ -4,7 +4,7 @@
  * For each row in one declared entity output, this module computes an internal
  * stable key and upserts a child entity. The key is persisted as an
  * `entity_identities` row in a dedicated `watcher_key` namespace (identifier =
- * `<watcherId>::<outputName>::<stableKey>`),
+ * `<watcherId>::<outputName>::<entityTypeSlug>::<stableKey>`),
  * so a re-run — or a second replica racing the same window — resolves to the
  * existing entity instead of creating a duplicate. The partial unique index
  * `idx_entity_identities_live_unique (organization_id, namespace, identifier)
@@ -52,7 +52,7 @@ import {
 } from './entity-field-merge';
 import logger from './logger';
 import { isUniqueViolation } from './pg-errors';
-import { computeStableKey } from './stable-keys';
+import { computeStableKey, formatBehaviorEntityIdentity } from './stable-keys';
 
 /** Namespace for the stable-key identity claim in `entity_identities`. */
 const WATCHER_KEY_NAMESPACE = 'watcher_key';
@@ -562,8 +562,12 @@ export async function promoteBehaviorEntityOutput(
   });
 
   for (const { entityRecord, stableKey } of keyedRows) {
-
-    const identifier = `${watcherId}::${outputName}::${stableKey}`;
+    const identifier = formatBehaviorEntityIdentity(
+      watcherId,
+      outputName,
+      entityTypeSlug,
+      stableKey
+    );
     const name = buildEntityName(entityRecord, output, stableKey);
     const slug = slugify(name) || stableKey;
     // The extracted record's data fields (everything except the computed stable

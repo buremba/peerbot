@@ -11,6 +11,16 @@ export const MAX_STABLE_KEY_COMPONENT_BYTES = 256;
 
 const STABLE_KEY_VERSION = 'v1';
 
+/** Scope a stable tuple to the Behavior output and its declared entity type. */
+export function formatBehaviorEntityIdentity(
+  watcherId: number,
+  outputName: string,
+  entityTypeSlug: string,
+  stableKey: string
+): string {
+  return `${watcherId}::${outputName}::${entityTypeSlug}::${stableKey}`;
+}
+
 function encode(value: string): string {
   return Buffer.from(value, 'utf8').toString('base64url');
 }

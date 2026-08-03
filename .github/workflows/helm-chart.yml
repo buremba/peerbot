@@ -65,10 +65,16 @@ jobs:
           chart_package="$(ls /tmp/lobu-*.tgz | head -1)"
           helm push "$chart_package" oci://ghcr.io/${{ github.repository_owner }}/charts
 
-      - name: Make chart package public
+      - name: Verify chart package is public
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OWNER: ${{ github.repository_owner }}
         run: |
-          gh api -X PATCH "/orgs/${OWNER}/packages/container/charts%2Flobu/visibility" \
-            -f visibility=public || true
+          visibility="$(
+            gh api "/orgs/${OWNER}/packages/container/charts%2Flobu" \
+              --jq '.visibility'
+          )"
+          if [ "$visibility" != "public" ]; then
+            echo "::error::ghcr.io/${OWNER}/charts/lobu is ${visibility}, not public. GitHub package visibility can only be changed from the package settings UI."
+            exit 1
+          fi

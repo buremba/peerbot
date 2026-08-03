@@ -113,4 +113,17 @@ describe("release package publication ordering", () => {
     expect(runBodies).not.toContain("${{ inputs.bump }}");
     expect(publish).toContain('run_id="$IMAGE_RUN_ID"');
   });
+
+  it("fails closed when the published Helm chart is not public", () => {
+    const publish = jobBlock(workflow("helm-chart.yml"), "publish");
+
+    expect(publish).not.toContain("/visibility");
+    expect(publish).not.toContain("|| true");
+    expect(publish).toContain(
+      'gh api "/orgs/${OWNER}/packages/container/charts%2Flobu"'
+    );
+    expect(publish).toContain("--jq '.visibility'");
+    expect(publish).toContain('if [ "$visibility" != "public" ]');
+    expect(publish).toContain("exit 1");
+  });
 });

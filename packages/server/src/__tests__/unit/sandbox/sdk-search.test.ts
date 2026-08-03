@@ -1,6 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import type { ToolContext } from "../../../tools/registry";
-import { sdkSearch } from "../../../tools/sdk_search";
+import {
+	isSdkOnlyDiscoveryQuery,
+	sdkSearch,
+} from "../../../tools/sdk_search";
 
 const stubEnv = {} as never;
 
@@ -27,6 +30,20 @@ const adminCtx: ToolContext = {
 };
 
 describe("sdkSearch", () => {
+	it.each(["agents", "entitySchema", "AUTHprofiles", "client.feeds", "feeds.create"])(
+		"treats exact SDK query %s as method-only discovery",
+		(query) => {
+			expect(isSdkOnlyDiscoveryQuery(query)).toBe(true);
+		},
+	);
+
+	it.each(["google.calendar", "website", "connections sync run"])(
+		"still allows connector discovery for %s",
+		(query) => {
+			expect(isSdkOnlyDiscoveryQuery(query)).toBe(false);
+		},
+	);
+
 	it("returns drill-down for an exact path", async () => {
 		const result = await sdkSearch(
 			{ query: "behaviors.list" },
@@ -298,6 +315,31 @@ describe("sdkSearch", () => {
 			expect(result.match_count, path).toBe(1);
 			expect(result.results[0], path).toContain("client.");
 			expect(result.results[0], path).toMatch(/\(\{/);
+		}
+	});
+
+	it.each([
+		["feeds.get", ["limit?: number", "search_term?: string"]],
+		["feeds.readMany", ["timeout_ms?: number", "search_term?: string"]],
+		[
+			"feeds.create",
+			[
+				"entity_ids?: number[]",
+				"timezone?: string",
+				"virtual?: boolean",
+				"manual-only",
+				"feeds.trigger",
+			],
+		],
+		[
+			"feeds.update",
+			["replace_config?: boolean", "schedule?: string | null", "timezone?: string | null"],
+		],
+	])("documents the complete public %s contract", async (path, fields) => {
+		const result = await sdkSearch({ query: path }, stubEnv, adminCtx);
+		expect(result.match_count).toBe(1);
+		for (const field of fields) {
+			expect(result.results[0], path).toContain(field);
 		}
 	});
 

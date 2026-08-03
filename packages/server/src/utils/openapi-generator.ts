@@ -255,7 +255,7 @@ export function generateOpenAPISpec(serverUrl: string) {
     servers: [
       {
         url: serverUrl,
-        description: 'Get watchers for entities',
+        description: 'Manage workspace knowledge and Behaviors',
       },
     ],
     paths,

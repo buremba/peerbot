@@ -232,7 +232,7 @@ export async function handleCompleteWindow(
   if (watcherRows.length === 0) {
     throw new Error(
       `Behavior ${watcherId} not found. ` +
-        "It may have been deleted. Use manage_behaviors with action='list' to see available Behaviors."
+        'It may have been deleted. Use client.behaviors.list() via query_sdk to see available Behaviors.'
     );
   }
 

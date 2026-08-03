@@ -140,15 +140,26 @@ function rewriteInternalToolName(
 	publicMethod: string,
 ): unknown {
 	if (!sdkNamespace || !(err instanceof ToolUserError)) return err;
+	const internalValidatorPrefix = /Invalid arguments for manage_[a-z_]+/;
+	if (!internalValidatorPrefix.test(err.message)) return err;
 	const rewritten = err.message
 		.replace(
-			/Invalid arguments for manage_[a-z_]+/,
+			internalValidatorPrefix,
 			`Invalid arguments for client.${sdkNamespace}.${publicMethod}`,
 		)
 		// The valid-args list is scoped to the INTERNAL action (`for action
 		// 'read_feed'`) — drop that fragment once the public method already names
 		// the call, so no internal action name survives in the message.
-		.replace(/ for action '[a-z_]+'/, "");
+		.replace(/ for action '[a-z_]+'/, "")
+		// A shared admin-tool schema lists every field for every action. That list
+		// is both internal (`action`) and wrong for named SDK methods (for example,
+		// conversations.list used to advertise send-only fields). Keep the actual
+		// unknown/missing-field detail, then route the caller to the authoritative
+		// public signature instead of leaking the raw union schema.
+		.replace(
+			/ — valid arguments are: .+$/,
+			` — run search_sdk '${sdkNamespace}.${publicMethod}' for the public signature`,
+		);
 	if (rewritten === err.message) return err;
 	// ClientSdkActionError carries extra fields — but it is raised by THIS module
 	// from a result value, never by the arg validator, so a match here is always

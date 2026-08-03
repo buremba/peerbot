@@ -374,14 +374,14 @@ async function handleCreate(
 	if (!entity.parent_id) {
 		// Root entity (no parent)
 		nextSteps.push(
-			`Use manage_connections(action='create') to install a connector, then manage_feeds(action='create_feed', entity_ids=[${entity.id}]) to target this entity.`,
-			`Use manage_behaviors(action='create', entity_id=${entity.id}) to schedule Behaviors.`,
+			`Use client.connections.connect({ connector_key: '<connector_key>' }), client.feeds.create({ connection_id: <connection_id>, feed_key: '<feed_key>', entity_ids: [${entity.id}], config: {} }) to target this entity, then client.feeds.trigger({ feed_id: <feed_id> }) to collect now.`,
+			`Use client.behaviors.create({ entity_id: ${entity.id}, slug: '<slug>', agent_id: '<agent_id>', prompt: '<prompt>', sources: [], triggers: [{ kind: 'schedule', cron: '<cron>', timezone: '<IANA timezone>' }] }) to schedule a Behavior.`,
 		);
 	} else {
 		// Child entity (has parent)
 		nextSteps.push(
 			`${entityTypeLabel} belongs to ${entity.parent_name ? `"${entity.parent_name}"` : "parent"} (ID: ${entity.parent_id}).`,
-			`Use manage_connections(action='create') to install a connector, then manage_feeds(action='create_feed', entity_ids=[${entity.id}]) to target this entity.`,
+			`Use client.connections.connect({ connector_key: '<connector_key>' }), client.feeds.create({ connection_id: <connection_id>, feed_key: '<feed_key>', entity_ids: [${entity.id}], config: {} }) to target this entity, then client.feeds.trigger({ feed_id: <feed_id> }) to collect now.`,
 		);
 	}
 

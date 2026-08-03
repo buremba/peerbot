@@ -238,6 +238,24 @@ function normalizeQueryTerm(term: string): string {
 	return lower.startsWith("client.") ? lower.slice("client.".length) : lower;
 }
 
+/** Whether a discovery query names only the ClientSDK surface, not a connector. */
+export function isSdkOnlyDiscoveryQuery(query: string): boolean {
+	const q = query.trim();
+	const normalized = normalizeQueryTerm(q);
+	const firstSegment = normalized.split(".")[0];
+	const isSdkNamespace = NAMESPACES.some(
+		(ns) => ns.toLowerCase() === firstSegment,
+	);
+	const isExactNamespace = NAMESPACES.some(
+		(ns) => ns.toLowerCase() === normalized,
+	);
+	return (
+		/^client\b/i.test(q) ||
+		isExactNamespace ||
+		(q.includes(".") && isSdkNamespace)
+	);
+}
+
 export const sdkSearch = withValidatedArgs(
 	"search_sdk",
 	SdkSearchSchema,
@@ -252,20 +270,16 @@ async function sdkSearchImpl(
 	// Unified-catalog search (executor pattern): a query like "website" or "slack"
 	// names a CONNECTOR, not an SDK method, so pure method search returns nothing
 	// useful. Search live connectors and surface them (+ lifecycle) ABOVE method
-	// docs. Skip the connector lookup ONLY for genuine method paths — a
-	// `client.`-prefixed term, or a dotted path whose FIRST segment is a real SDK
-	// namespace (`feeds.create`). A dotted CONNECTOR id (`google.calendar`) must
-	// still be searched: its first segment (`google`) is not an SDK namespace.
+	// docs. Skip the connector lookup ONLY for genuine SDK intent — a bare
+	// namespace, a `client.`-prefixed term, or a dotted path whose FIRST segment
+	// is a real SDK namespace (`feeds.create`). A dotted CONNECTOR id
+	// (`google.calendar`) must still be searched: its first segment (`google`) is
+	// not an SDK namespace.
 	const q = args.query.trim();
-	// NAMESPACES preserves SDK casing (entitySchema, authProfiles); the query is
-	// lowercased — compare case-insensitively so `entitySchema.listTypes` is
-	// recognized as a method path.
-	const firstSegment = normalizeQueryTerm(q).split(".")[0];
-	const isSdkNamespace = NAMESPACES.some(
-		(ns) => ns.toLowerCase() === firstSegment
-	);
-	const looksLikeMethodPath =
-		/^client\b/i.test(q) || (q.includes(".") && isSdkNamespace);
+	// Bare namespaces are just as explicit as dotted method paths. Searching the
+	// connector catalog for `agents`/`feeds` used to prepend unrelated connector
+	// matches ahead of the namespace methods the caller explicitly requested.
+	const looksLikeMethodPath = isSdkOnlyDiscoveryQuery(q);
 	const connectorHits = looksLikeMethodPath
 		? []
 		: await searchLiveConnectors(q, env, ctx);

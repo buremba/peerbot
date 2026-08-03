@@ -2262,7 +2262,7 @@ async function requireApprovalAuthority(
 		return;
 	}
 	throw new Error(
-		`Action manage_operations.${action} requires admin or owner access. Ask an organization owner to grant elevated access.`,
+		`This operation (${action}) requires admin or owner access. Ask an organization owner to grant elevated access.`,
 	);
 }
 

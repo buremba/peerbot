@@ -29,7 +29,7 @@ export interface KnowledgeSearchInput {
 
 export interface KnowledgeSaveInput {
 	entity_ids?: number[];
-	content: string;
+	content?: string;
 	semantic_type: string;
 	metadata?: Record<string, unknown>;
 	title?: string;

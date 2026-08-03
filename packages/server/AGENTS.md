@@ -6,6 +6,7 @@ Read root `AGENTS.md` first. This package owns the gateway, auth, connections, f
 Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
 - This package is **biome-excluded**. Never run biome on it — edit surgically, matching each file's existing style. CI will not catch the reflow.
 - The DB client sets `fetch_types: false`, so a raw JS array bound as a parameter always fails. CI enforces this via `scripts/check-raw-array-params.mjs`; see GOTCHAS "DB & SQL" for the safe binding forms before reaching for a workaround.
+- Data-derived SQL `LIKE` prefixes must escape `\\`, `%`, and `_` and declare `ESCAPE '\\'`; prefer equality or an indexable range when possible. Identifiers such as Slack team ids legitimately contain `_`, so an unescaped prefix can cross tenant boundaries.
 - Hoisted `vi.mock()` silently fails in the integration suite (shared module registry). Use `vi.resetModules()` + `vi.doMock()` + dynamic import, and verify by co-running sibling test files.
 - Dropping a column from a queryable table is a two-phase change across two releases — `QUERYABLE_SCHEMA` emits explicit column lists.
 
@@ -41,6 +42,9 @@ Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
 
 ## Connector operations and feed health
 - Built-in connector definitions/catalog install in server; connector implementation details belong in `packages/connectors/AGENTS.md`.
+- The active `connector_definitions` row is capability truth. Definitions may come from bundled source, organization-scoped `connector_versions`, or device manifests, so a grep under `packages/connectors` cannot prove an action is absent; inspect the active row and `operations.listAvailable`.
+- Organization-scoped compiled code shadows the shared artifact for the active version. `refreshConnectorDefinitions` skips keys with no bundled source, but re-syncs every active key that does have bundled source and can reset its definition version/schema to bundled metadata; inspect the active definition after deploy instead of assuming an override survived.
+- A data connection's `device_worker_id` is scrape affinity, not evidence that the browser is in front of the user. Connector-initiated browser actions currently inherit that pin. Until an interactive flow carries an explicit Chrome connection, a `completed` action proves execution on the selected extension, not that the user can see it; verify the resolved Chrome connection/worker before claiming delivery.
 - Connector health scans `connections` + `feeds`; chat connections are not collector connections and should not trip zero-feed collector health rules.
 - Feed hard auto-pause emits `feed.auto_paused` (Behavior signal + lifecycle event). Prefer a normal Behavior over new special-case agent subsystems.
 

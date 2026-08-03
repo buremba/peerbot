@@ -32,7 +32,7 @@ export interface EntitySchemaNamespace {
 		icon?: string;
 		color?: string;
 		metadata_schema?: Record<string, unknown>;
-		event_kinds?: Record<string, unknown>;
+		event_kinds?: Record<string, unknown> | null;
 		/**
 		 * Make the type derived (a SQL view); `null`/omit ⇒ a stored type. With
 		 * `connection`, the view runs LIVE against that connection's external DB
@@ -49,7 +49,7 @@ export interface EntitySchemaNamespace {
 		icon?: string;
 		color?: string;
 		metadata_schema?: Record<string, unknown>;
-		event_kinds?: Record<string, unknown>;
+		event_kinds?: Record<string, unknown> | null;
 		/** Set/clear the derived view; omit to leave backing unchanged. With
 		 *  `connection`, the view reads live from that external connection (pushdown). */
 		backing?: { sql: string; connection?: string } | null;

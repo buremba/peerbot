@@ -1427,7 +1427,7 @@ async function formatEntityResult(
     const pausedConnections = connections?.filter((c) => c.status === 'paused').length || 0;
 
     if (activeConnections === 0 && pausedConnections === 0) {
-      suggestion = `Entity "${primaryEntity.name}" found with no connections. Use manage_connections to add one and start collection.`;
+      suggestion = `Entity "${primaryEntity.name}" found with no connections. Use client.connections.connect({ connector_key: '<connector_key>' }) via run_sdk to add one and start collection.`;
     } else if (activeConnections === 0 && pausedConnections > 0) {
       suggestion = `Entity "${primaryEntity.name}" has ${pausedConnections} paused connection(s). Reactivate a connection to resume collection.`;
     } else {

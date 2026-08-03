@@ -527,7 +527,7 @@ export async function assertOutputEntityTypesExist(
     `;
     if (rows.length === 0) {
       throw new ToolUserError(
-        `Unknown entity type '${entityType}' in outputs.${name}. Use manage_entity_schema(schema_type="entity_type", action="list") to list available types or create a custom type first.`,
+        `Unknown entity type '${entityType}' in outputs.${name}. Use client.entitySchema.listTypes() to list available types or client.entitySchema.createType(...) to create a custom type first.`,
         422
       );
     }

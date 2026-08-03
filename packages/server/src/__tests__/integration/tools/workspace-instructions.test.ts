@@ -89,6 +89,26 @@ describe('buildWorkspaceInstructions render fixes', () => {
       )
     `;
 
+    // Legacy engine vocabulary can still exist in stored, user-authored schemas.
+    // It must not leak through the public MCP tool descriptions: the agent-facing
+    // product name is Behavior, and raw internal field names are not actionable.
+    await sql`
+      INSERT INTO entity_types (slug, name, description, metadata_schema, organization_id)
+      VALUES (
+        'legacy-automation',
+        'Legacy Automation',
+        'Created by a watcher',
+        ${sql.json({
+          type: 'object',
+          properties: {
+            window_id: { type: 'number', description: 'Watcher window that produced it' },
+            watcher_id: { type: 'number', description: 'Watcher that wrote it' },
+          },
+        })},
+        ${org.id}
+      )
+    `;
+
     // Relationship type with a description.
     await sql`
       INSERT INTO entity_relationship_types (slug, name, description, organization_id)
@@ -141,6 +161,13 @@ describe('buildWorkspaceInstructions render fixes', () => {
     const out = await buildWorkspaceInstructions(org.id);
     // jsonb canonicalizes key order (shorter keys first): sku before price.
     expect(out).toContain('- legacy ("Legacy") — fields: sku, price (Unit price in EUR)');
+  });
+
+  it('uses Behavior terminology and hides internal watcher fields in MCP instructions', async () => {
+    const out = await buildWorkspaceInstructions(org.id);
+    expect(out).not.toMatch(/watchers?/i);
+    expect(out).not.toContain('watcher_id');
+    expect(out).toContain('window_id (Behavior window that produced it)');
   });
 
   it('renders relationship type descriptions', async () => {

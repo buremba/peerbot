@@ -1,6 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import type { ToolContext } from "../../../tools/registry";
-import { sdkSearch } from "../../../tools/sdk_search";
+import {
+	isSdkOnlyDiscoveryQuery,
+	sdkSearch,
+} from "../../../tools/sdk_search";
 
 const stubEnv = {} as never;
 
@@ -27,6 +30,20 @@ const adminCtx: ToolContext = {
 };
 
 describe("sdkSearch", () => {
+	it.each(["agents", "entitySchema", "AUTHprofiles", "client.feeds", "feeds.create"])(
+		"treats exact SDK query %s as method-only discovery",
+		(query) => {
+			expect(isSdkOnlyDiscoveryQuery(query)).toBe(true);
+		},
+	);
+
+	it.each(["google.calendar", "website", "connections sync run"])(
+		"still allows connector discovery for %s",
+		(query) => {
+			expect(isSdkOnlyDiscoveryQuery(query)).toBe(false);
+		},
+	);
+
 	it("returns drill-down for an exact path", async () => {
 		const result = await sdkSearch(
 			{ query: "behaviors.list" },

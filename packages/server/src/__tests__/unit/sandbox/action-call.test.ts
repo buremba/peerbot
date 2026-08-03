@@ -171,7 +171,7 @@ describe("createActionCaller", () => {
 		// recover against `client.feeds.get`.
 		const handler = async () => {
 			throw new ToolUserError(
-				"Invalid arguments for manage_feeds: /feed_id: Expected required property",
+				"Invalid arguments for manage_feeds: unknown argument(s): limit — valid arguments for action 'read_feed' are: action, feed_id, connection_id",
 			);
 		};
 		const { action } = createActionCaller(
@@ -186,7 +186,10 @@ describe("createActionCaller", () => {
 		expect(thrown).toBeInstanceOf(ToolUserError);
 		expect(thrown.message).not.toMatch(/manage_feeds/);
 		expect(thrown.message).toMatch(/client\.feeds\.get/);
-		expect(thrown.message).toMatch(/feed_id/);
+		expect(thrown.message).toMatch(/unknown argument\(s\): limit/);
+		expect(thrown.message).not.toMatch(/\baction\b/);
+		expect(thrown.message).not.toMatch(/connection_id/);
+		expect(thrown.message).toContain("search_sdk 'feeds.get'");
 	});
 
 	it("derives a CAMEL-CASE public method from a snake_case action when none is supplied", async () => {

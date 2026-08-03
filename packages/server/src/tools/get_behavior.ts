@@ -336,7 +336,7 @@ async function getBehaviorImpl(
 
   if (!args.behavior_id) {
     throw new Error(
-      "behavior_id is required. Use manage_behaviors with action='list' to discover Behaviors."
+      "behavior_id is required. Use client.behaviors.list() via query_sdk to discover Behaviors."
     );
   }
 

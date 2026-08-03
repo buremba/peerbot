@@ -92,14 +92,16 @@ describe('entity-management schema search path', () => {
     const user = await createTestUser();
     await addUserToOrganization(user.id, tenant.id, 'owner');
 
-    await expect(
-      createEntity({
+    const createUnknown = createEntity({
         entity_type: 'never_registered_anywhere',
         name: 'Should Fail',
         organization_id: tenant.id,
         created_by: user.id,
-      } as Parameters<typeof createEntity>[0])
-    ).rejects.toThrow(/Unknown entity type/i);
+      } as Parameters<typeof createEntity>[0]);
+
+    await expect(createUnknown).rejects.toThrow(/Unknown entity type/i);
+    await expect(createUnknown).rejects.toThrow(/client\.entitySchema\.listTypes\(\)/);
+    await expect(createUnknown).rejects.not.toThrow(/manage_entity_schema/);
   });
 
   it('does not search private orgs that the caller is not a member of', async () => {

@@ -458,7 +458,7 @@ export async function createEntity(
   `;
 	if (typeRow.length === 0) {
 		throw new ToolUserError(
-			`Unknown entity type '${data.entity_type}'. Use manage_entity_schema(schema_type="entity_type", action="list") to list available types or create a custom type first.`,
+			`Unknown entity type '${data.entity_type}'. Use client.entitySchema.listTypes() to list available types or client.entitySchema.createType(...) to create a custom type first.`,
 			400,
 		);
 	}

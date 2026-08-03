@@ -454,7 +454,7 @@ async function handleConnectImpl(
   if (splitConfig.feedConfig) {
     return {
       error:
-        "Feed-scoped config belongs on feeds. Create the connection first, then use manage_feeds(action='create_feed') for sync target settings.",
+        'Feed-scoped config belongs on feeds. Create the connection first, then use client.feeds.create({ connection_id, feed_key, config }) for sync target settings.',
       setup_url: setupUrl,
     };
   }

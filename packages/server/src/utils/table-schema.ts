@@ -91,6 +91,14 @@ const SQL_URI_CREDENTIAL_PATTERN =
  */
 const COLUMN_REF = '$COL$';
 
+/**
+ * Placeholder for the row's table qualifier inside an {@link ColumnDef.expr},
+ * so an expression can read SIBLING columns of the same row. Substituted with
+ * `alias.` (or the empty string when the caller has no alias, which is
+ * unambiguous because such a CTE selects from a single table).
+ */
+const ROW_REF = '$ROW$';
+
 /** SQL test for "this jsonb key is a denylisted secret name". */
 const SQL_KEY_IS_SECRET = (keyExpr: string) => {
   // Mirrors `normalizeKey` in `@lobu/core/utils/secret-redaction`: splits
@@ -343,43 +351,61 @@ export const QUERYABLE_SCHEMA = {
     // events (excludes: embedding)
     {
       name: 'events',
-      columns: cols(
-        'id',
-        'organization_id',
-        'entity_ids',
-        'origin_id',
-        'title',
-        'payload_type',
-        'payload_text',
-        'payload_data',
-        'payload_template',
-        'attachments',
-        'author_name',
-        'source_url',
-        'occurred_at',
-        'score',
-        'metadata',
-        'created_at',
-        'origin_parent_id',
-        'origin_type',
-        'connector_key',
-        'connection_id',
-        'feed_key',
-        'feed_id',
-        'run_id',
-        'semantic_type',
-        'content_length',
-        'search_tsv',
-        'client_id',
-        'created_by',
-        'interaction_type',
-        'interaction_status',
-        'interaction_input_schema',
-        'interaction_input',
-        'interaction_output',
-        'interaction_error',
-        'supersedes_event_id'
-      ),
+      columns: [
+        ...cols(
+          'id',
+          'organization_id',
+          'entity_ids',
+          'origin_id',
+          'title',
+          'payload_type',
+          'payload_text'
+        ),
+        // A tool-invocation audit row retains the caller's VERBATIM request,
+        // readable only by its author or a workspace admin (see
+        // `hydrateToolInvocationRequests`). `query_sql` has no per-row caller
+        // gate, so it drops that key here. The CASE is load-bearing: an
+        // unconditional `- 'request'` would silently delete a legitimate
+        // `request` key from every OTHER event — connector-ingested payloads
+        // and `save_memory` structured data are caller-shaped.
+        {
+          name: 'payload_data',
+          type: 'jsonb',
+          expr:
+            `CASE WHEN ${ROW_REF}semantic_type = 'audit' ` +
+            `AND ${ROW_REF}origin_type = 'tool_invocation' ` +
+            `THEN ${COLUMN_REF} - 'request' ELSE ${COLUMN_REF} END`,
+        },
+        ...cols(
+          'payload_template',
+          'attachments',
+          'author_name',
+          'source_url',
+          'occurred_at',
+          'score',
+          'metadata',
+          'created_at',
+          'origin_parent_id',
+          'origin_type',
+          'connector_key',
+          'connection_id',
+          'feed_key',
+          'feed_id',
+          'run_id',
+          'semantic_type',
+          'content_length',
+          'search_tsv',
+          'client_id',
+          'created_by',
+          'interaction_type',
+          'interaction_status',
+          'interaction_input_schema',
+          'interaction_input',
+          'interaction_output',
+          'interaction_error',
+          'supersedes_event_id'
+        ),
+      ],
     },
     // connections (excludes: credentials; `config` is REDACTED, not excluded —
     // see redactedConfigColumn)
@@ -801,6 +827,10 @@ export function buildColumnList(
           : alias
             ? c.expr.replace(/^(\w+)/, `${alias}.$1`)
             : c.expr;
+        // `$ROW$` qualifies SIBLING columns of the same row, so an expression
+        // can branch on another column (the events `payload_data` CASE reads
+        // `semantic_type`/`origin_type`).
+        prefixed = prefixed.split(ROW_REF).join(alias ? `${alias}.` : '');
         // `$DECLARED$` resolves to the connector's declared secret key set for
         // the row. It needs a table alias to correlate on, and the correlation
         // differs per table: `connections` carries `connector_key` directly,

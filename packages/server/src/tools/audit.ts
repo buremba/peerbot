@@ -6,6 +6,7 @@ import { AUDIT_SEMANTIC_TYPE } from './constants';
 import { getTool, type ToolContext } from './registry';
 
 const MAX_PREVIEW_CHARS = 500;
+const MAX_REQUEST_BYTES = 256 * 1024;
 // These tools retain their exact request on the audit event. Other tools
 // retain only the sanitized summary below.
 const REQUEST_EVENT_TOOLS = new Set(['run_sdk', 'query_sdk', 'query_sql']);
@@ -37,6 +38,25 @@ interface ToolInvocationAuditParams {
   error?: unknown;
   durationMs: number;
   ctx: ToolContext;
+}
+
+function captureRequest(params: ToolInvocationAuditParams): Record<string, unknown> | null {
+  if (!REQUEST_EVENT_TOOLS.has(params.toolName)) return null;
+
+  try {
+    const serialized = JSON.stringify(params.args);
+    const bytes = Buffer.byteLength(serialized, 'utf8');
+    if (bytes > MAX_REQUEST_BYTES) {
+      return { request_status: 'too_large', request_bytes: bytes };
+    }
+    return {
+      request_status: 'complete',
+      request: params.args,
+    };
+  } catch (error) {
+    logger.warn({ error, toolName: params.toolName }, 'Failed to capture tool request');
+    return { request_status: 'unavailable' };
+  }
 }
 
 function sha256(value: string): string {
@@ -237,10 +257,8 @@ export async function recordToolInvocationAudit(
   try {
     const payload = buildPayload(params);
     if (!payload) return;
-    // Verbatim by contract, append-only and org-scoped like the containing event.
-    if (REQUEST_EVENT_TOOLS.has(params.toolName)) {
-      payload.request = params.args;
-    }
+    const request = captureRequest(params);
+    if (request) Object.assign(payload, request);
     const success = payload.success === true;
     await insertEvent({
       entityIds: [],

@@ -1,9 +1,11 @@
 -- migrate:up
 
 -- Exact requests for run_sdk, query_sdk, and query_sql now live directly on
--- their append-only audit event as payload_data.request. Cancel pending sweep
--- ticks; old pods may seed another during rollout, which the unknown-handler
--- path will fail through the normal retry budget.
+-- their append-only audit event as `payload_data.request`. Generic read paths
+-- strip that key; `read_knowledge` restores it only for the author or an admin.
+-- Bodies are bounded per row but no longer expire. Cancel pending sweep ticks;
+-- old pods may seed another during rollout, which the unknown-handler path
+-- fails through the normal retry budget.
 UPDATE public.runs
 SET status = 'cancelled',
     completed_at = now(),

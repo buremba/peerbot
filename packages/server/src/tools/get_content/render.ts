@@ -6,13 +6,73 @@
 
 import type { ContentItem } from '@lobu/connector-sdk';
 import { parseJsonObject } from '@lobu/core';
-import { type DbClient, parsePgNumberArray, pgTextArray } from '../../db/client';
+import { type DbClient, parsePgNumberArray, pgBigintArray, pgTextArray } from '../../db/client';
 import logger from '../../utils/logger';
 import { buildResourcePermalink } from '../../utils/url-builder';
 import { resolveEntityRender } from '../../utils/default-entity-template';
 import { resolveEventKindDefinition } from '../../utils/event-kind-validation';
 import type { ContentRow } from './types';
 import { parseRecordArray, toNumberOrUndefined } from './types';
+import { isAdminOrOwnerRole } from '../access-control';
+
+/**
+ * A tool-invocation audit row retains the caller's VERBATIM request (see
+ * `recordToolInvocationAudit`), which only its author or a workspace admin may
+ * read. Content rows arrive with that key still on `payload_data`, so this
+ * strips it from EVERY audit item first — an unauthorized caller, an
+ * unrecognized role, and a failed re-read all leave it stripped — and puts it
+ * back only on the rows whose `created_by` clears the gate.
+ */
+export async function hydrateToolInvocationRequests(opts: {
+  sql: DbClient;
+  items: ContentItem[];
+  organizationId: string;
+  userId: string | null;
+  memberRole: string | null;
+}): Promise<void> {
+  const { sql, items, organizationId, userId, memberRole } = opts;
+  const isAdmin = isAdminOrOwnerRole(memberRole);
+  const auditPayloads = new Map<number, Record<string, unknown>>();
+
+  for (const item of items) {
+    if (item.semantic_type !== 'audit' || item.origin_type !== 'tool_invocation') continue;
+    const payload = item.payload_data as Record<string, unknown> | null | undefined;
+    if (!payload) continue;
+    const hadRequest = payload.request !== undefined || payload.request_status !== undefined;
+    delete payload.request;
+    delete payload.request_status;
+    delete payload.request_bytes;
+    if (hadRequest) auditPayloads.set(Number(item.id), payload);
+  }
+
+  if (auditPayloads.size === 0 || (!isAdmin && userId == null)) return;
+
+  const rows = await sql<{
+    id: number;
+    created_by: string | null;
+    payload_data: Record<string, unknown>;
+  }>`
+    SELECT id, created_by, payload_data
+    FROM events
+    WHERE organization_id = ${organizationId}
+      AND id = ANY(${pgBigintArray([...auditPayloads.keys()])}::bigint[])
+      AND semantic_type = 'audit'
+      AND origin_type = 'tool_invocation'
+  `;
+
+  for (const row of rows) {
+    if (!isAdmin && row.created_by !== userId) continue;
+    const payload = auditPayloads.get(Number(row.id));
+    if (!payload) continue;
+    const stored = parseJsonObject(row.payload_data);
+    if (typeof stored.request_status !== 'string') continue;
+    payload.request_status = stored.request_status;
+    if (stored.request_status === 'too_large') payload.request_bytes = stored.request_bytes;
+    if (stored.request_status === 'complete' && stored.request !== undefined) {
+      payload.request = stored.request;
+    }
+  }
+}
 
 /**
  * Fetch excerpts for evidence highlighting when filtering by a single

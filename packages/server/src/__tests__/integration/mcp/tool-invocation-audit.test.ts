@@ -38,6 +38,16 @@ async function latestAuditRow(orgId: string, toolName: string): Promise<AuditRow
   return rows[0] ?? null;
 }
 
+async function readAuditEvent(eventId: string | number, ctx: AuthContext) {
+  const result = (await executeTool(
+    'read_knowledge',
+    { content_ids: [Number(eventId)], limit: 1 },
+    {} as Env,
+    ctx
+  )) as { content: Array<{ payload_data: Record<string, unknown> }> };
+  return result.content[0]?.payload_data ?? {};
+}
+
 describe('tool invocation audit coverage', () => {
   let token: string;
   let orgId: string;
@@ -122,6 +132,7 @@ describe('tool invocation audit coverage', () => {
     const row = await latestAuditRow(orgId, 'query_sql');
     expect(row).not.toBeNull();
     expect(row!.payload_data.org_slug).toBe(orgSlug);
+    expect(row!.payload_data.request_status).toBe('complete');
     expect(row!.payload_data.request).toEqual({
       sql: 'SELECT id FROM events',
       sort_by: 'id',
@@ -130,9 +141,19 @@ describe('tool invocation audit coverage', () => {
     });
     expect(row!.payload_data).not.toHaveProperty('response');
     expect(row!.metadata).toHaveProperty('mcp_session_id', null);
+
+    expect(await readAuditEvent(row!.id, authCtxFor('session'))).toMatchObject({
+      request_status: 'complete',
+      request: {
+        sql: 'SELECT id FROM events',
+        sort_by: 'id',
+        limit: 1,
+        org_slug: orgSlug,
+      },
+    });
   });
 
-  it('makes the exact request available through the event itself', async () => {
+  it('keeps the request on the event but exposes it only through the authorized event read path', async () => {
     const row = await latestAuditRow(orgId, 'query_sql');
     expect(row).not.toBeNull();
     const eventId = String(row!.id);
@@ -146,12 +167,50 @@ describe('tool invocation audit coverage', () => {
       {} as Env,
       authCtxFor('session')
     )) as { rows: Array<{ payload_data: Record<string, unknown> }> };
-    expect(sqlResult.rows[0].payload_data.request).toEqual({
+    expect(sqlResult.rows[0].payload_data).not.toHaveProperty('request');
+
+    const memberPayload = await readAuditEvent(eventId, {
+      ...authCtxFor('session'),
+      userId: 'another-user',
+      memberRole: 'member',
+    });
+    // A non-author member gets neither the request nor the marker that one exists.
+    expect(memberPayload).not.toHaveProperty('request');
+    expect(memberPayload).not.toHaveProperty('request_status');
+    expect(memberPayload).not.toHaveProperty('request_bytes');
+
+    const adminPayload = await readAuditEvent(eventId, {
+      ...authCtxFor('session'),
+      userId: 'another-user',
+      memberRole: 'admin',
+    });
+    expect(adminPayload.request).toEqual({
       sql: 'SELECT id FROM events',
       sort_by: 'id',
       limit: 1,
       org_slug: orgSlug,
     });
+  });
+
+  it('strips `request` from audit rows ONLY, leaving other events untouched', async () => {
+    // `payload_data` is caller-shaped everywhere else (connector payloads,
+    // save_memory structured data), so the query_sql projection must key off
+    // the audit discriminators rather than deleting the name globally.
+    const sql = getDb();
+    const [own] = await sql<Array<{ id: string }>>`
+      INSERT INTO events (organization_id, origin_id, semantic_type, payload_type, payload_data)
+      VALUES (${orgId}, ${`audit-strip-scope:${Date.now()}`}, 'note', 'empty',
+              ${sql.json({ request: { method: 'GET' } })})
+      RETURNING id
+    `;
+
+    const result = (await executeTool(
+      'query_sql',
+      { sql: `SELECT payload_data FROM events WHERE id = ${own.id}`, limit: 1 },
+      {} as Env,
+      authCtxFor('session')
+    )) as { rows: Array<{ payload_data: Record<string, unknown> }> };
+    expect(result.rows[0].payload_data).toEqual({ request: { method: 'GET' } });
   });
 
   it('retains the exact request while the preview keeps its redaction policy', async () => {
@@ -167,11 +226,28 @@ describe('tool invocation audit coverage', () => {
       ctx: authCtxFor('pat') as never,
     });
 
-    // `request` is verbatim by contract — it is the reconstruction surface.
     const row = await latestAuditRow(orgId, 'query_sql');
     expect(row!.payload_data.request).toEqual({
       sql: `${sql}; -- sk_live_ABCDEFGHIJKLMNOP`,
       api_key: 'sk-live-STORED-VERBATIM',
+    });
+    const sqlResult = (await executeTool(
+      'query_sql',
+      { sql: `SELECT payload_data FROM events WHERE id = ${row!.id}`, limit: 1 },
+      {} as Env,
+      authCtxFor('session')
+    )) as { rows: Array<{ payload_data: Record<string, unknown> }> };
+    expect(JSON.stringify(sqlResult.rows[0].payload_data)).not.toContain(
+      'sk_live_ABCDEFGHIJKLMNOP'
+    );
+    expect(JSON.stringify(sqlResult.rows[0].payload_data)).not.toContain(
+      'sk-live-STORED-VERBATIM'
+    );
+    expect(await readAuditEvent(row!.id, authCtxFor('pat'))).toMatchObject({
+      request: {
+        sql: `${sql}; -- sk_live_ABCDEFGHIJKLMNOP`,
+        api_key: 'sk-live-STORED-VERBATIM',
+      },
     });
 
     // The DISPLAY preview on the same row is unaffected by that contract: it
@@ -223,6 +299,9 @@ describe('tool invocation audit coverage', () => {
 
     const row = await latestAuditRow(orgId, 'query_sdk');
     expect(row!.payload_data.request).toEqual({ script });
+    expect(await readAuditEvent(row!.id, authCtxFor('session'))).toMatchObject({
+      request: { script },
+    });
   });
 
   it('audits a failed generic call with the error captured', async () => {
@@ -340,7 +419,7 @@ describe('tool invocation audit coverage', () => {
     }
   );
 
-  it('retains large requests directly on their audit event', async () => {
+  it('bounds large requests directly on their audit event', async () => {
     const script = 'x'.repeat(300 * 1024);
     await recordToolInvocationAudit({
       toolName: 'run_sdk',
@@ -350,7 +429,17 @@ describe('tool invocation audit coverage', () => {
       ctx: authCtxFor('pat') as never,
     });
     const row = await latestAuditRow(orgId, 'run_sdk');
-    expect(row!.payload_data.request).toEqual({ script });
+    expect(row!.payload_data).toMatchObject({
+      request_status: 'too_large',
+      request_bytes: expect.any(Number),
+    });
+    // Over the cap the body is dropped, not truncated — a partial script is a
+    // misleading reconstruction surface.
+    expect(row!.payload_data).not.toHaveProperty('request');
+    expect(await readAuditEvent(row!.id, authCtxFor('pat'))).toMatchObject({
+      request_status: 'too_large',
+      request_bytes: expect.any(Number),
+    });
   });
 
   it('fully redacts secrets embedded in NON-secret string fields (quoted values, Basic auth, comma-delimited)', async () => {

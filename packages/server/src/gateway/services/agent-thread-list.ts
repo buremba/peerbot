@@ -28,6 +28,7 @@ export interface AgentThreadSummary {
 	 *  conversation id for platform conversations (read-only). */
 	id: string;
 	title: string;
+	locationLabel?: string | null;
 	createdAt: number;
 	updatedAt: number;
 	/** "web" for the app's own threads; "behavior" for behavior activity; otherwise
@@ -255,7 +256,8 @@ export async function listAgentThreads(args: {
 			}
 			byKey.set(row.conversationId, {
 				id: row.conversationId,
-				title: row.title ?? row.conversationId,
+				title: row.title ?? "Conversation",
+				locationLabel: row.locationLabel,
 				createdAt,
 				updatedAt: at,
 				// Label from the EXPLICIT stored platform, not by parsing the id — an

@@ -2,7 +2,12 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import { getDb } from '../../../db/client';
+import {
+  recordMcpConversationActivity,
+  setCurrentMcpConversationTitle,
+} from '../../../lobu/stores/mcp-client-conversations';
 import { recordToolInvocationAudit } from '../../../tools/audit';
+import { isSoftErrorResult } from '../../../tools/execute';
 import type { ToolContext } from '../../../tools/registry';
 import { insertEvent } from '../../../utils/insert-event';
 import { cleanupTestDatabase } from '../../setup/test-db';
@@ -46,12 +51,20 @@ describe('client sessions activity route', () => {
     overrides: Partial<ToolContext> = {},
     result: Record<string, unknown> = { ok: true }
   ): Promise<void> {
+    const ctx = auditCtx({ mcpSessionId: sessionId, ...overrides });
     await recordToolInvocationAudit({
       toolName,
       args: { query: 'probe' },
       result,
       durationMs: 3,
-      ctx: auditCtx({ mcpSessionId: sessionId, ...overrides }),
+      ctx,
+    });
+    // The route reads the write-time projection, so seed it exactly the way
+    // `executeTool` does after each audit row.
+    await recordMcpConversationActivity({
+      ctx,
+      toolName,
+      failed: isSoftErrorResult(result),
     });
   }
 
@@ -100,10 +113,10 @@ describe('client sessions activity route', () => {
     // depend on sub-millisecond insertion timing.
     const db = getDb();
     await db`
-      UPDATE events SET occurred_at = now() - interval '1 hour'
-      WHERE organization_id = ${orgId}
-        AND semantic_type = 'audit'
-        AND metadata->>'mcp_session_id' = 'sess-alpha'
+      UPDATE mcp_client_conversations
+      SET first_activity_at = now() - interval '2 hours',
+        last_activity_at = now() - interval '1 hour'
+      WHERE organization_id = ${orgId} AND conversation_id = 'sess-alpha'
     `;
     await recordCall('sess-beta', 'search_sdk');
 
@@ -116,9 +129,60 @@ describe('client sessions activity route', () => {
     await recordCall('sess-stale', 'search_memory');
     const sql = getDb();
     await sql`
-      UPDATE events SET occurred_at = now() - interval '30 days'
-      WHERE organization_id = ${orgId}
-        AND metadata->>'mcp_session_id' = 'sess-stale'
+      UPDATE mcp_client_conversations
+      SET first_activity_at = now() - interval '30 days',
+        last_activity_at = now() - interval '30 days'
+      WHERE organization_id = ${orgId} AND conversation_id = 'sess-stale'
+    `;
+
+    for (let index = 0; index < 10; index += 1) {
+      await recordCall('sess-tool-cap', `tool_${index}`);
+    }
+    await sql`
+      UPDATE mcp_client_conversations
+      SET first_activity_at = now() - interval '2 hours',
+        last_activity_at = now() - interval '2 hours'
+      WHERE organization_id = ${orgId} AND conversation_id = 'sess-tool-cap'
+    `;
+
+    // PAT callers have a synthetic `pat_<id>` client identity but no matching
+    // oauth_clients row. The projection keeps that identity in its key while
+    // storing a null display-client foreign key.
+    await recordCall('sess-pat', 'search_memory', {
+      clientId: 'pat_1',
+      tokenType: 'pat',
+    } as Partial<ToolContext>);
+    await sql`
+      UPDATE mcp_client_conversations
+      SET first_activity_at = now() - interval '3 hours',
+        last_activity_at = now() - interval '3 hours'
+      WHERE organization_id = ${orgId} AND conversation_id = 'sess-pat'
+    `;
+
+    // One host conversation can reconnect through multiple transport sessions.
+    // Pending approvals from an earlier transport must remain attached.
+    await recordCall('transport-old', 'search_memory', {
+      mcpConversationId: 'host-conversation',
+    });
+    await recordCall('transport-new', 'query_sql', {
+      mcpConversationId: 'host-conversation',
+    });
+    await insertEvent({
+      entityIds: [],
+      organizationId: orgId,
+      originId: 'host-conversation-approval',
+      title: 'Earlier transport approval',
+      semanticType: 'operation',
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+      clientId,
+      metadata: { mcp_session_id: 'transport-old' },
+    });
+    await sql`
+      UPDATE mcp_client_conversations
+      SET first_activity_at = now() - interval '5 hours',
+        last_activity_at = now() - interval '4 hours'
+      WHERE organization_id = ${orgId} AND conversation_id = 'host-conversation'
     `;
   });
 
@@ -138,28 +202,57 @@ describe('client sessions activity route', () => {
         tools: string[];
         pendingInteractionCount: number;
         lastCallAt: number;
+        lastAction: string;
       }>;
     };
 
     const ids = body.sessions.map((s) => s.sessionId);
-    expect(ids).toEqual(['sess-beta', 'sess-alpha']);
+    expect(ids).toEqual([
+      'sess-beta',
+      'sess-alpha',
+      'sess-tool-cap',
+      'sess-pat',
+      'host-conversation',
+    ]);
     expect(ids).not.toContain('sess-foreign');
     expect(ids).not.toContain('sess-stale');
 
     const alpha = body.sessions.find((s) => s.sessionId === 'sess-alpha')!;
     expect(alpha.callCount).toBe(2);
     expect(alpha.failedCount).toBe(1);
-    expect(alpha.tools).toEqual(['query_sql', 'search_memory']);
+    // The projection appends each new tool in first-use order.
+    expect(alpha.tools).toEqual(['search_memory', 'query_sql']);
     expect(alpha.clientId).toBe(clientId);
     expect(alpha.clientName).toBe(clientName);
     expect(alpha.userId).toBe(ownerId);
     expect(alpha.agentId).toBe('session-agent');
     expect(alpha.firstCallAt).toBeLessThanOrEqual(alpha.lastCallAt);
     expect(alpha.pendingInteractionCount).toBe(1);
+    // `last_action` stores the raw tool name even when the tool declares an
+    // `annotations.title`; the route is the only place it gets formatted.
+    const [stored] = await getDb()<{ last_action: string }>`
+      SELECT last_action FROM mcp_client_conversations
+      WHERE organization_id = ${orgId} AND conversation_id = 'sess-alpha'
+    `;
+    expect(stored.last_action).toBe('query_sql');
+    expect(alpha.lastAction).toBe('Query SQL');
 
     const beta = body.sessions.find((s) => s.sessionId === 'sess-beta')!;
     expect(beta.callCount).toBe(1);
     expect(beta.pendingInteractionCount).toBe(0);
+
+    const capped = body.sessions.find((s) => s.sessionId === 'sess-tool-cap')!;
+    expect(capped.tools).toHaveLength(8);
+
+    // Listed despite `pat_1` not being an oauth_clients row.
+    const pat = body.sessions.find((s) => s.sessionId === 'sess-pat')!;
+    expect(pat.clientId).toBeNull();
+    expect(pat.clientName).toBeNull();
+    expect(pat.callCount).toBe(1);
+
+    const host = body.sessions.find((s) => s.sessionId === 'host-conversation')!;
+    expect(host.callCount).toBe(2);
+    expect(host.pendingInteractionCount).toBe(1);
   });
 
   it('honors the bounded result limit', async () => {
@@ -167,6 +260,32 @@ describe('client sessions activity route', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { sessions: Array<{ sessionId: string }> };
     expect(body.sessions.map((session) => session.sessionId)).toEqual(['sess-beta']);
+  });
+
+  it('hides a title-only row and retains its title after the first tool call', async () => {
+    const ctx = auditCtx({
+      mcpSessionId: 'title-transport',
+      mcpConversationId: 'host-title-lifecycle',
+    });
+    await setCurrentMcpConversationTitle(ctx, 'Launch planning');
+
+    const before = await get(`/api/${orgSlug}/clients/sessions`, { token });
+    expect(before.status).toBe(200);
+    const beforeBody = (await before.json()) as {
+      sessions: Array<{ sessionId: string }>;
+    };
+    expect(beforeBody.sessions.some((s) => s.sessionId === 'host-title-lifecycle')).toBe(false);
+
+    await recordCall('title-transport', 'search_sdk', {
+      mcpConversationId: 'host-title-lifecycle',
+    });
+    const after = await get(`/api/${orgSlug}/clients/sessions`, { token });
+    expect(after.status).toBe(200);
+    const afterBody = (await after.json()) as {
+      sessions: Array<{ sessionId: string; title: string | null; callCount: number }>;
+    };
+    const titled = afterBody.sessions.find((s) => s.sessionId === 'host-title-lifecycle');
+    expect(titled).toMatchObject({ title: 'Launch planning', callCount: 1 });
   });
 
   it('rejects unauthenticated requests', async () => {

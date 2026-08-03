@@ -74,6 +74,14 @@ const mcpSessionStore = new McpSessionStore();
 
 type SessionAuthContext = AuthContext & { instructions?: string };
 
+export function hostConversationIdFromMeta(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const id = (value as Record<string, unknown>)['openai/session'];
+  if (typeof id !== 'string') return null;
+  const trimmed = id.trim();
+  return trimmed && trimmed.length <= 512 ? trimmed : null;
+}
+
 // Periodic cleanup of stale IN-MEMORY sessions. This must stay as a per-pod
 // setInterval — each pod owns its own `sessions` Map of live MCP transports
 // and only it can call `entry.transport.close?.()`. The DB-side cleanup
@@ -289,10 +297,14 @@ function createServerForContext(
   // tools/call — access control + execution + formatting
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+    const callAuthCtx = {
+      ...authCtx,
+      mcpConversationId: hostConversationIdFromMeta(request.params._meta),
+    };
 
     // Regular tool execution
     try {
-      const result = await executeTool(name, args ?? {}, env, authCtx);
+      const result = await executeTool(name, args ?? {}, env, callAuthCtx);
 
       if (authCtx.agentId && authCtx.organizationId) {
         await touchAgentLastUsed(authCtx.organizationId, authCtx.agentId);

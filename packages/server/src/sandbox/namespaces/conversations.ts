@@ -7,6 +7,7 @@
  */
 
 import type { Env } from "../../index";
+import { setCurrentMcpConversationTitle } from "../../lobu/stores/mcp-client-conversations";
 import { manageConversations } from "../../tools/admin/manage_conversations";
 import type { ToolContext } from "../../tools/registry";
 import { createActionCaller } from "./action-call";
@@ -38,6 +39,8 @@ export interface ConversationsSendInput {
 }
 
 export interface ConversationsNamespace {
+  /** Set display-only text for the current MCP host conversation. */
+  setTitle(input: { title: string }): Promise<{ title: string }>;
   manage(input: Record<string, unknown>): Promise<unknown>;
   list(input: ConversationsListInput): Promise<unknown>;
   get(input: ConversationsGetInput): Promise<unknown>;
@@ -56,6 +59,7 @@ export function buildConversationsNamespace(
   );
 
   return {
+    setTitle: (input) => setCurrentMcpConversationTitle(ctx, input.title),
     manage,
     list: (input) => action("list", input),
     get: (input) => action("get", input),

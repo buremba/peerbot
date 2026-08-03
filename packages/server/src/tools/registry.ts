@@ -77,6 +77,8 @@ export interface ToolSourceContext {
 export interface ToolContext {
   /** User's organization ID - REQUIRED for all operations */
   organizationId: string;
+  /** Host-provided conversation correlation id, when the MCP client exposes one. */
+  mcpConversationId?: string | null;
   /** User ID from OAuth token, PAT, or session (null for anonymous public reads) */
   userId: string | null;
   /** Caller's role in the organization (null for non-members reading a public workspace). */

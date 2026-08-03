@@ -49,6 +49,7 @@ import { threadIdFromApiConversationId } from "../services/api-conversation-id.j
 import {
   classifyConversation,
   isBehaviorConversationId,
+  resolveConversationLocationLabel,
   upsertConversation,
 } from "../services/conversations-store.js";
 import { resolveAgentToolingDeclaration } from "../agent-tooling/resolver.js";
@@ -499,6 +500,29 @@ export class MessageConsumer {
           kind === "platform" && typeof isDirectHint === "boolean"
             ? isDirectHint
             : null;
+        let locationLabel: string | null = null;
+        if (kind === "platform") {
+          try {
+            locationLabel = await resolveConversationLocationLabel({
+              organizationId: data.organizationId,
+              platform: storedPlatform,
+              teamId:
+                platformMetadataString(data.platformMetadata, "teamId") ??
+                data.teamId,
+              channelId: data.channelId,
+              isDirect,
+              senderDisplayName: platformMetadataString(
+                data.platformMetadata,
+                "senderDisplayName",
+              ),
+            });
+          } catch (err) {
+            logger.warn(
+              { err },
+              "conversation location label could not be resolved",
+            );
+          }
+        }
         await upsertConversation({
           organizationId: data.organizationId,
           agentId: data.agentId,
@@ -509,6 +533,7 @@ export class MessageConsumer {
           userId: data.userId,
           title: data.messageText?.slice(0, 200) || null,
           isDirect,
+          locationLabel,
           lastActivityAt: new Date(),
         });
       }

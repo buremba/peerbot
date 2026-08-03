@@ -98,6 +98,22 @@ const HEAL_MIGRATIONS = [
 		seedSql: `
       CREATE INDEX IF NOT EXISTS uniq_preview_connection_per_platform_all
         ON connections (id)
+		`,
+	},
+	{
+		files: ["20260803155100_mcp_activity_scope_client_idx.sql"],
+		index: "mcp_activity_scope_client_recent",
+		seedSql: `
+      CREATE INDEX IF NOT EXISTS mcp_activity_scope_client_recent
+        ON mcp_client_conversations (conversation_id)
+		`,
+	},
+	{
+		files: ["20260803160000_events_mcp_session_activity_idx.sql"],
+		index: "events_mcp_session_activity",
+		seedSql: `
+      CREATE INDEX IF NOT EXISTS events_mcp_session_activity
+        ON events (id)
     `,
 	},
 ] as const;

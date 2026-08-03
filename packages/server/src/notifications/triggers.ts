@@ -1,6 +1,7 @@
 import { Actions, Button, Card, CardText, LinkButton } from "chat";
 import { getDb } from "../db/client";
 import { emit } from "../events/emitter";
+import type { McpActivityAttribution } from "../lobu/stores/mcp-client-conversations";
 import { buildResourcePermalink } from "../utils/url-builder";
 import { createNotificationForUsers } from "./service";
 
@@ -472,6 +473,7 @@ export async function notifyActionApprovalNeeded(params: {
 	teamId?: string | null;
 	/** Field owner — routes the Slack card to their DM before the channel tier. */
 	ownerUserId?: string | null;
+	mcpActivity?: McpActivityAttribution | null;
 	details?: ActionApprovalDetails;
 }): Promise<void> {
 	await notifyOrgAdmins(params.orgId, (orgSlug) => {
@@ -499,6 +501,7 @@ export async function notifyActionApprovalNeeded(params: {
 			channelId: params.channelId,
 			teamId: params.teamId,
 			ownerUserId: params.ownerUserId,
+			mcpActivity: params.mcpActivity,
 		};
 	});
 }

@@ -52,7 +52,6 @@ export class OAuthClientsStore {
     clientId: string;
     organizationId?: string | null;
     userId?: string | null;
-    agentId?: string | null;
     userAgent?: string | null;
     clientInfo?: Record<string, unknown> | null;
     capabilities?: Record<string, unknown> | null;
@@ -61,7 +60,6 @@ export class OAuthClientsStore {
       last_seen_at: Date.now(),
     };
 
-    if (params.agentId) patch.last_agent_id = params.agentId;
     if (params.userAgent) patch.last_user_agent = params.userAgent;
     if (params.clientInfo) patch.last_client_info = params.clientInfo;
     if (params.capabilities) patch.last_capabilities = params.capabilities;

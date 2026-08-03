@@ -3,6 +3,7 @@
  */
 
 import { type Static, Type } from '@sinclair/typebox';
+import { markAcceptedInternalFields } from '../validate-args';
 
 // ============================================
 // Typebox Schema
@@ -58,6 +59,13 @@ export const GetContentSchema = Type.Object({
     Type.Array(Type.String(), {
       description:
         'OAuth client IDs to filter by (events.client_id — the connected client that produced the event, e.g. a ChatGPT or CLI registration). Pass several ids to cover one client that registered more than once.',
+    })
+  ),
+  mcp_activity_id: Type.Optional(
+    Type.String({
+      maxLength: 512,
+      description:
+        'Internal Connected App filter: exact materialized MCP conversation or transport-session activity id. Requires client_ids.',
     })
   ),
   platforms: Type.Optional(
@@ -240,6 +248,20 @@ export const GetContentSchema = Type.Object({
     )
   ),
 });
+
+const GET_CONTENT_INTERNAL_FIELDS = ['mcp_activity_id'];
+// The Connected App UI receives this exact pair from an authenticated internal
+// endpoint. It is accepted by the REST/tool boundary but is not an MCP or SDK
+// discovery affordance: external callers have no route that constructs it.
+markAcceptedInternalFields(GetContentSchema, GET_CONTENT_INTERNAL_FIELDS);
+
+export const PublicGetContentSchema = Type.Object(
+  Object.fromEntries(
+    Object.entries(GetContentSchema.properties).filter(
+      ([key]) => !GET_CONTENT_INTERNAL_FIELDS.includes(key)
+    )
+  )
+);
 
 export type GetContentArgs = Static<typeof GetContentSchema>;
 

@@ -2,8 +2,9 @@ import type { CardElement } from "chat";
 import { getDb, pgTextArray } from "../db/client";
 import { resolveBoundChannelRows } from "../gateway/channels/bound-channels";
 import { getChatInstanceManager, isLobuGatewayRunning } from "../lobu/gateway";
-import logger from "../utils/logger";
+import type { McpActivityAttribution } from "../lobu/stores/mcp-client-conversations";
 import { resolveSlackUserIdForUser } from "../lobu/stores/chat-identity.js";
+import logger from "../utils/logger";
 
 interface CreateNotificationParams {
 	organizationId: string;
@@ -47,6 +48,8 @@ interface CreateNotificationParams {
 	 * the notification event's `entity_ids`.
 	 */
 	entityIds?: number[];
+	/** Exact MCP conversation or transport session that caused this notification. */
+	mcpActivity?: McpActivityAttribution | null;
 }
 
 /**
@@ -310,7 +313,7 @@ export async function createNotificationForUsers(
 		const inserted = (await tx`
       INSERT INTO events
         (organization_id, entity_ids, title, payload_text, payload_type, semantic_type,
-         occurred_at, metadata)
+         occurred_at, client_id, metadata)
       VALUES (
         ${params.organizationId},
         ${entityIdsValue}::bigint[],
@@ -319,6 +322,7 @@ export async function createNotificationForUsers(
         'text',
         'notification',
         now(),
+        ${params.mcpActivity?.clientId ?? null},
         ${sql.json({
 					notification_type: params.type,
 					resource_type: params.resourceType ?? null,
@@ -326,6 +330,12 @@ export async function createNotificationForUsers(
 					resource_url: params.resourceUrl ?? null,
 					...(params.idempotencyKey
 						? { _lobu_idempotency_key: params.idempotencyKey }
+						: {}),
+					...(params.mcpActivity?.transportSessionId
+						? { mcp_session_id: params.mcpActivity.transportSessionId }
+						: {}),
+					...(params.mcpActivity?.hostConversationId
+						? { mcp_conversation_id: params.mcpActivity.hostConversationId }
 						: {}),
 				})}
       )
@@ -365,6 +375,8 @@ export async function listNotifications(opts: {
 	cursor?: number | null;
 	limit?: number;
 	unreadOnly?: boolean;
+	clientIds?: string[];
+	mcpActivityId?: string | null;
 }): Promise<{
 	notifications: Record<string, unknown>[];
 	nextCursor: number | null;
@@ -373,6 +385,8 @@ export async function listNotifications(opts: {
 	const limit = Math.min(opts.limit ?? 20, 50);
 	const cursor = opts.cursor ?? null;
 	const unreadOnly = opts.unreadOnly ?? false;
+	const clientIds = opts.clientIds?.length ? opts.clientIds : null;
+	const mcpActivityId = opts.mcpActivityId?.trim() || null;
 
 	const rows = (await sql`
     SELECT
@@ -409,6 +423,15 @@ export async function listNotifications(opts: {
       AND t.user_id = ${opts.userId}
       AND (${cursor}::bigint IS NULL OR e.id < ${cursor})
       AND (${!unreadOnly} OR t.read_at IS NULL)
+			${clientIds
+				? sql`AND e.client_id = ANY(${pgTextArray(clientIds)}::text[])`
+				: sql``}
+			${mcpActivityId
+				? sql`AND COALESCE(
+					e.metadata->>'mcp_conversation_id',
+					e.metadata->>'mcp_session_id'
+				) = ${mcpActivityId}`
+				: sql``}
     -- Order strictly by e.id so the (e.id < cursor) keyset pagination is
     -- consistent. delivered_at would tie-break for concurrent inserts but
     -- doesn't match the cursor — using it as the primary key risked

@@ -5,10 +5,50 @@ import type { ToolContext } from "../../tools/registry.js";
 const logger = createLogger("mcp-client-conversations");
 const MAX_TITLE_LENGTH = 200;
 
-function currentConversation(ctx: ToolContext) {
-	const conversationId = (ctx.mcpConversationId ?? ctx.mcpSessionId)?.trim();
-	if (!conversationId || conversationId.length > 512) return null;
-	return { clientIdentity: ctx.clientId?.trim() || "", conversationId };
+export interface McpActivityAttribution {
+	clientIdentity: string;
+	clientId: string | null;
+	activityId: string;
+	activityKind: "conversation" | "session";
+	transportSessionId: string | null;
+	hostConversationId: string | null;
+}
+
+function boundedId(value: string | null | undefined): string | null {
+	const trimmed = value?.trim();
+	return trimmed && trimmed.length <= 512 ? trimmed : null;
+}
+
+export function currentMcpActivityAttribution(
+	ctx: ToolContext,
+): McpActivityAttribution | null {
+	const hostConversationId = boundedId(ctx.mcpConversationId);
+	const transportSessionId = boundedId(ctx.mcpSessionId);
+	const isConversation =
+		hostConversationId !== null && hostConversationId !== transportSessionId;
+	const activityId = isConversation
+		? hostConversationId
+		: (transportSessionId ?? hostConversationId);
+	if (!activityId) return null;
+	return {
+		clientIdentity: ctx.clientId?.trim() || "",
+		clientId: oauthClientId(ctx),
+		activityId,
+		activityKind: isConversation ? "conversation" : "session",
+		transportSessionId,
+		hostConversationId: isConversation ? hostConversationId : null,
+	};
+}
+
+export function currentMcpActivityEventMetadata(ctx: ToolContext): {
+	mcp_session_id: string | null;
+	mcp_conversation_id: string | null;
+} {
+	const attribution = currentMcpActivityAttribution(ctx);
+	return {
+		mcp_session_id: attribution?.transportSessionId ?? null,
+		mcp_conversation_id: attribution?.hostConversationId ?? null,
+	};
 }
 
 function oauthClientId(ctx: ToolContext): string | null {
@@ -16,8 +56,8 @@ function oauthClientId(ctx: ToolContext): string | null {
 }
 
 function transportSessionIds(ctx: ToolContext): string[] {
-	const sessionId = ctx.mcpSessionId?.trim();
-	return sessionId && sessionId.length <= 512 ? [sessionId] : [];
+	const sessionId = currentMcpActivityAttribution(ctx)?.transportSessionId;
+	return sessionId ? [sessionId] : [];
 }
 
 export function normalizeMcpConversationTitle(value: string): string {
@@ -36,7 +76,7 @@ export async function recordMcpConversationActivity(args: {
 	toolName: string;
 	failed: boolean;
 }): Promise<void> {
-	const identity = currentConversation(args.ctx);
+	const identity = currentMcpActivityAttribution(args.ctx);
 	if (!identity) return;
 	try {
 		const sql = getDb();
@@ -51,7 +91,7 @@ export async function recordMcpConversationActivity(args: {
         organization_id, client_identity, conversation_id, transport_session_ids,
         client_id, user_id, agent_id, last_action, tools, call_count, failed_count
       ) VALUES (
-        ${args.ctx.organizationId}, ${identity.clientIdentity}, ${identity.conversationId},
+        ${args.ctx.organizationId}, ${identity.clientIdentity}, ${identity.activityId},
         ${sql.json(sessionIds)}, ${clientId}, ${args.ctx.userId ?? null},
         ${args.ctx.agentId ?? null}, ${label}, ${sql.json([args.toolName])}, 1, ${args.failed ? 1 : 0}
       )
@@ -85,7 +125,7 @@ export async function setCurrentMcpConversationTitle(
 	ctx: ToolContext,
 	value: string,
 ) {
-	const identity = currentConversation(ctx);
+	const identity = currentMcpActivityAttribution(ctx);
 	if (!identity)
 		throw new Error(
 			"No current MCP conversation is available for this client session.",
@@ -104,7 +144,7 @@ export async function setCurrentMcpConversationTitle(
       organization_id, client_identity, conversation_id, transport_session_ids,
       client_id, user_id, agent_id, title, last_action
     ) VALUES (
-      ${ctx.organizationId}, ${identity.clientIdentity}, ${identity.conversationId},
+      ${ctx.organizationId}, ${identity.clientIdentity}, ${identity.activityId},
       ${sql.json(sessionIds)}, ${clientId}, ${ctx.userId ?? null},
       ${ctx.agentId ?? null}, ${title}, 'set_title'
     )

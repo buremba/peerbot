@@ -185,29 +185,6 @@ routes.get("/", mcpAuth, async (c) => {
 		const oauthClients =
 			await oauthClientsStore.listClientsByOrganization(organizationId);
 
-		const referencedAgentIds = new Set<string>();
-		for (const client of oauthClients) {
-			const metadata = asRecord(client.metadata);
-			const lastAgentId =
-				typeof metadata?.last_agent_id === "string"
-					? metadata.last_agent_id
-					: null;
-			if (lastAgentId) referencedAgentIds.add(lastAgentId);
-		}
-
-		const agentNames = new Map<string, string>();
-		if (referencedAgentIds.size > 0) {
-			const rows = await sql`
-        SELECT id, name
-        FROM agents
-        WHERE organization_id = ${organizationId}
-          AND id = ANY(${pgTextArray([...referencedAgentIds])}::text[])
-      `;
-			for (const row of rows as Array<{ id: string; name: string }>) {
-				agentNames.set(row.id, row.name);
-			}
-		}
-
 		const memberEntitySlugs = new Map<string, string>();
 		const ownerUserIds = [
 			...new Set(
@@ -239,7 +216,9 @@ routes.get("/", mcpAuth, async (c) => {
 			}
 		}
 
-		const mcpClients = oauthClients
+		// MCP registrations are Connected Apps, not agent assignments. An
+		// agent-filtered inventory therefore contains messaging identities only.
+		const mcpClients = (agentId ? [] : oauthClients)
 			.map((client) => {
 				const metadata = asRecord(client.metadata);
 				const clientInfo = asRecord(metadata?.last_client_info);
@@ -247,13 +226,6 @@ routes.get("/", mcpAuth, async (c) => {
 				const lastSeenAt =
 					asTimestamp(metadata?.last_seen_at) ??
 					client.client_id_issued_at * 1000;
-				const assignedAgentId =
-					typeof metadata?.last_agent_id === "string"
-						? metadata.last_agent_id
-						: null;
-
-				if (agentId && assignedAgentId !== agentId) return null;
-
 				// Identity is what the client REGISTERED as. `clientInfo.name` is
 				// rewritten on every MCP `initialize` and names the process
 				// driving the connection, not the app — an Owletto Mac build
@@ -283,10 +255,6 @@ routes.get("/", mcpAuth, async (c) => {
 							: client.client_id,
 					identifier: client.client_id,
 					platform: softwareId,
-					assignedAgentId,
-					assignedAgentName: assignedAgentId
-						? (agentNames.get(assignedAgentId) ?? assignedAgentId)
-						: null,
 					status: client.active_token_count > 0 ? "connected" : "disconnected",
 					authState: client.active_token_count > 0 ? "authorized" : "revoked",
 					lastSeenAt,
@@ -310,10 +278,7 @@ routes.get("/", mcpAuth, async (c) => {
 						clientInfo,
 					},
 				};
-			})
-			.filter(
-				(client): client is NonNullable<typeof client> => client !== null,
-			);
+			});
 
 		const messagingClients = await listMessagingClients({
 			organizationId,

@@ -101,17 +101,17 @@ export async function searchContentBySingleQuery(
   const searchEntityScopes =
     entityId != null ? await fetchEntityIdentityScopes(sql, entityId) : [];
 
-  // Slots $11/$12 are the agent_id memory-scope and client_id filters — they
-  // bump orgScope to $13. Keep this in step with buildStandardParams: the two
+  // Slots $11-$13 are the agent, client, and exact MCP-conversation filters —
+  // they bump orgScope to $14. Keep this in step with buildStandardParams: the two
   // param lists are positional mirrors, so an added slot shifts BOTH.
   const orgScope = buildOrgScopeWhere({
     entity_id: entityId,
     organization_id: options.organization_id,
-    baseParamIndex: 13,
+    baseParamIndex: 14,
   });
   // Exclude-watcher param slot sits immediately after orgScope so its $N index
   // is stable regardless of whether an embedding param follows.
-  const excludeParamIdx = 13 + orgScope.params.length;
+  const excludeParamIdx = 14 + orgScope.params.length;
   const excludeClause = buildExcludeWatcherClause(
     options.exclude_watcher_id,
     excludeParamIdx
@@ -179,6 +179,7 @@ export async function searchContentBySingleQuery(
           AND ($10::text IS NULL OR f.interaction_status = $10::text)
           AND ($11::text IS NULL OR f.metadata->>'agent_id' = $11::text)
           AND ($12::text[] IS NULL OR f.client_id = ANY($12::text[]))
+          AND ($13::text[] IS NULL OR f.metadata->>'mcp_session_id' = ANY($13::text[]))
           ${excludeClause.sql}
           ${visibilityClause.sql}
           ${orgScope.sql}${entityTypesClause.sql}`;
@@ -472,11 +473,14 @@ export async function searchContentBySingleQuery(
     // Slot $11 — per-agent memory scope. See buildStandardParams for the
     // mirror call site.
     options.agent_id ?? null,
-    // Slot $12 — per-OAuth-client scope. Together with $11 this bumps orgScope
-    // to $13 (set above).
+    // Slot $12 — per-OAuth-client scope. The conversation slot after it bumps
+    // orgScope to $14 (set above).
     options.client_id
       ? pgTextArray(Array.isArray(options.client_id) ? options.client_id : [options.client_id])
       : null,
+    // Slot $13 — exact MCP host-conversation transport ids. Preserve [] as
+    // an empty Postgres array so a corrupt/title-only projection fails closed.
+    options.mcp_session_ids !== undefined ? pgTextArray(options.mcp_session_ids) : null,
     ...orgScope.params,
     ...excludeClause.params,
     ...visibilityClause.params,

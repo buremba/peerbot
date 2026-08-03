@@ -182,8 +182,9 @@ describe('getContent > client_id scopes events to one OAuth client', () => {
   });
 
   it('search path: client_id still scopes when a search_term shifts the param slots', async () => {
-    // The search path binds client_id at fixed slot $12 and pushes orgScope to
-    // $13. If those indexes drift, this returns the wrong rows rather than
+    // The search path binds client_id at fixed slot $12, reserves $13 for the
+    // exact-conversation filter, and pushes orgScope to $14. If those indexes
+    // drift, this returns the wrong rows rather than
     // erroring — which is exactly what makes it worth asserting.
     const result = await getContent(
       { query: "query", client_ids: [CLI_A, CLI_B], limit: 100 } as never,

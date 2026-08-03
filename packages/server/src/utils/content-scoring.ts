@@ -29,6 +29,8 @@ interface NormalizedScoreFilters {
   agent_id?: string;
   /** OAuth client attribution, a real indexed column (mirrors params.ts $12). */
   client_id?: string | string[];
+  /** Exact MCP conversation transport ids resolved from its materialized identity. */
+  mcp_session_ids?: string[];
   platform?: string;
   since?: Date;
   until?: Date;
@@ -161,6 +163,12 @@ async function buildFilterConditionsAndJoins(
     const clientIds = Array.isArray(filters.client_id) ? filters.client_id : [filters.client_id];
     params.push(pgTextArray(clientIds));
     filterConditions.push(`f.client_id = ANY($${paramIndex++}::text[])`);
+  }
+  if (filters?.mcp_session_ids !== undefined) {
+    params.push(pgTextArray(filters.mcp_session_ids));
+    filterConditions.push(
+      `f.metadata->>'mcp_session_id' = ANY($${paramIndex++}::text[])`
+    );
   }
 
   if (filters?.platform) {

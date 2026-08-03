@@ -2243,9 +2243,10 @@ export async function prepareXReply(
 		url: tweetUrl,
 		open_in_new_tab: true,
 		wait_for_load: true,
-		// X does not reliably paint the composer in a background tab, so this is
-		// part of staging correctness rather than a presentation preference.
-		focus: true,
+		// Deliberately not asking navigate to focus: it opens a background
+		// scratch tab (tabs.create active:false) and only reads `focus` on the
+		// `persistent` sticky-anchor path. The tab is brought forward by the
+		// explicit focus_tab dispatch below, once the draft is actually in it.
 		allowed_origins: X_ALLOWED_ORIGINS,
 	});
 	const tabId = nav.tab_id;

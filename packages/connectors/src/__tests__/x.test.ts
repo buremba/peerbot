@@ -1250,7 +1250,7 @@ describe("prepare_reply browser targeting", () => {
 // draft vanishes while the run still reports prepared:true, so nothing at
 // runtime reveals the bug. These tests are the only guard.
 describe("prepare_reply tab survival", () => {
-	test("opens a focused, non-persistent tab and hands it over with release_tab", async () => {
+	test("opens a non-persistent tab, focuses it, and hands it over with release_tab", async () => {
 		const { dispatcher, calls } = stagingDispatcher();
 
 		await prepareXReply(dispatcher, {
@@ -1260,12 +1260,14 @@ describe("prepare_reply tab survival", () => {
 
 		const nav = calls.find((c) => c.action === "navigate");
 		expect(nav).toBeDefined();
-		// Focused, or X does not paint the composer and staging fails outright
-		// with "could not locate the reply composer".
-		expect(nav?.input.focus).toBe(true);
 		// NOT persistent: the sticky anchor survives the reaper too, but it
 		// opens its own window and X would not render the composer in it.
 		expect(nav?.input.persistent).toBeUndefined();
+		// The tab is brought forward by focus_tab, not by a navigate flag —
+		// navigate opens a background scratch tab and only honours `focus` on
+		// the persistent path.
+		const focused = calls.find((c) => c.action === "focus_tab");
+		expect(focused?.input.tab_id).toBe(42);
 
 		// The tab must be handed to the user, or the reaper closes the draft.
 		const release = calls.find((c) => c.action === "release_tab");

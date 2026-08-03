@@ -2166,7 +2166,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft for the human to Post; verify_staged_comment checks whether that draft appeared as a comment.",
-    version: "3.5.0",
+    version: "3.6.0",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com

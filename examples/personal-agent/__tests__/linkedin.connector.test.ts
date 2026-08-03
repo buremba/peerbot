@@ -1832,7 +1832,7 @@ describe("prepare_comment helpers", () => {
       { required: ["post_url"] },
       { required: ["activity_id"] },
     ]);
-    expect(c.definition.version).toBe("3.5.0");
+    expect(c.definition.version).toBe("3.6.0");
     expect(String(action?.description ?? "")).toMatch(/NEVER submits/i);
   });
 

@@ -2738,7 +2738,7 @@ async function handleApprove(
       AND organization_id = ${ctx.organizationId}
       AND approval_status = 'pending'
       AND run_type = 'action'
-    RETURNING id, connection_id, action_key, action_input
+    RETURNING id, connection_id, action_key, action_input, created_by_user_id
   `;
 	if (runRows.length === 0) {
 		return { error: "Run not found or not pending approval" };
@@ -2749,6 +2749,7 @@ async function handleApprove(
 		connection_id: number;
 		action_key: string;
 		action_input: Record<string, unknown> | null;
+		created_by_user_id: string | null;
 	};
 
 	const reviewer = await resolveReviewer(ctx);
@@ -2779,6 +2780,7 @@ async function handleApprove(
 		resolved.connection,
 		resolved.operation,
 		(run.action_input ?? {}) as Record<string, unknown>,
+		run.created_by_user_id,
 		env,
 	);
 

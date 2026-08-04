@@ -152,6 +152,13 @@ interface QuerySqlCoverage {
 const MAX_SUGGESTED_VIRTUAL_FEEDS = 5;
 const VIRTUAL_FEED_SUGGESTED_LIMIT = 25;
 
+// Cost-attribution ledger: a single expensive user/derived query is how an org
+// degrades the shared DB for everyone (precedent: the 3.5s subscription view).
+// Anything at or above this gets an alertable, structured entry so expensive
+// queries can be rolled up per org in Loki and cross-referenced against
+// pg_stat_statements for the normalized SQL.
+const SLOW_QUERY_COST_MS = 500;
+
 /**
  * Coerce + clamp the page bounds. TypeBox schemas aren't runtime-validated in
  * this codebase, so a non-number limit/offset would otherwise interpolate as a
@@ -633,12 +640,26 @@ export async function querySqlImpl(
         })
       );
 
+    const executionTimeMs = Date.now() - startTime;
+    if (executionTimeMs >= SLOW_QUERY_COST_MS) {
+      logger.warn(
+        {
+          org_id: targetOrgId,
+          user_id: ctx.userId,
+          execution_time_ms: executionTimeMs,
+          row_count: rows.length,
+          total_count: totalCount,
+          tables: tableRefs,
+        },
+        'query_sql slow/expensive query (cost ledger)'
+      );
+    }
     return {
       rows,
       columns,
       total_count: totalCount,
       has_more: offset + limit < totalCount,
-      execution_time_ms: Date.now() - startTime,
+      execution_time_ms: executionTimeMs,
       coverage: await virtualFeedCoverageForEventsQuery(
         tableRefs,
         authzScopeFromToolContext({ organizationId: targetOrgId, userId: ctx.userId }),

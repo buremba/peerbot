@@ -57,7 +57,7 @@ import {
 } from "../watchers/run-completion";
 import {
 	advanceScheduleAfterTerminalFailure,
-	parseProviderQuotaResetAt,
+	deviceProviderQuotaResetNotBefore,
 } from "../watchers/schedule-cursor";
 import { authorizeRunForWorker } from "./shared";
 
@@ -1188,7 +1188,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 				typeof approved.dispatch_source === "string"
 					? approved.dispatch_source
 					: null,
-				parseProviderQuotaResetAt(reason)
+				deviceProviderQuotaResetNotBefore(reason)
 			);
 			return true;
 		});

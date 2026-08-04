@@ -222,6 +222,9 @@ export class UnifiedThreadResponseConsumer {
       // polling transport leased to another replica) — then fail the job so the retry lands
       // somewhere that can, instead of silently completing an undelivered reply.
       const chatConnectionId = data.platformMetadata?.connectionId as string | undefined;
+      if (chatConnectionId && data.error) {
+        await this.chatResponseBridge?.parkQuotaExhaustedBehavior(data);
+      }
       if (await this.chatResponseBridge?.ensureDeliverable(data)) {
         const sessionKey = `${data.userId}:${data.originalMessageId || data.messageId}`;
         await this.routeToRenderer(this.chatResponseBridge!, data, sessionKey);
@@ -397,6 +400,13 @@ export class UnifiedThreadResponseConsumer {
     const isApiRow =
       (data.platform || data.teamId) === "api" &&
       !data.platformMetadata?.connectionId;
+
+    // Preserve the original terminal error before output guardrails replace the
+    // user-visible text. The API renderer consumes this field only for durable
+    // Behavior scheduling; it is never included in an SSE event.
+    if (typeof data.error === "string") {
+      data = { ...data, bookkeepingError: data.error };
+    }
 
     // Finalize the conversation's suggestion set at the terminal boundary,
     // BEFORE the SSE owner-gate below. This must run whether or not any pod

@@ -5,6 +5,7 @@ import { materializeDueWatcherRuns } from "../../../watchers/automation";
 import { resolveWatcherRunsByMessageIds } from "../../../watchers/run-completion";
 import {
   advanceWatcherSchedule,
+  deviceProviderQuotaResetNotBefore,
   parseProviderQuotaResetAt,
   providerQuotaResetNotBefore,
 } from "../../../watchers/schedule-cursor";
@@ -157,6 +158,22 @@ describe("provider quota reset parsing", () => {
     ).toBeNull();
   });
 
+  it("requires quota evidence for unclassified device stderr", () => {
+    const now = new Date("2026-07-31T10:00:00.000Z");
+    expect(
+      deviceProviderQuotaResetNotBefore(
+        "429 Limit Exhausted. Your limit will reset at 2026-07-31 12:00:00",
+        now
+      )?.toISOString()
+    ).toBe("2026-07-31T12:01:00.000Z");
+    expect(
+      deviceProviderQuotaResetNotBefore(
+        "Authentication session resets at 2026-07-31 12:00:00",
+        now
+      )
+    ).toBeNull();
+  });
+
   it("requires the structured quota code", () => {
     const message = "Your limit will reset at 2026-07-31 12:00:00";
     const now = new Date("2026-07-31T10:00:00.000Z");
@@ -222,10 +239,10 @@ describe("a terminally failed Behavior run advances next_run_at", () => {
         userId: "watcher-test",
         teamId: "api",
         timestamp: Date.now(),
-        error: `429 Weekly/Monthly Limit Exhausted. Your limit will reset at ${providerReset}`,
+        error: "Message blocked by guardrail: require-tool",
+        bookkeepingError: `429 Weekly/Monthly Limit Exhausted. Your limit will reset at ${providerReset}`,
         errorCode: "PROVIDER_QUOTA_EXHAUSTED",
-      },
-      "test-session"
+      }
     );
 
     const sql = getTestDb();
@@ -359,28 +376,25 @@ describe("a terminally failed Behavior run advances next_run_at", () => {
         dispatchSource: "event",
       });
 
-    await chatResponseBridge(organizationId).handleError(
-      {
-        messageId: "msg-chat-provider-reset",
-        channelId: "chat-provider-reset",
-        conversationId: "chat-provider-reset",
-        userId: "watcher-test",
-        teamId: "telegram",
+    await chatResponseBridge(organizationId).parkQuotaExhaustedBehavior({
+      messageId: "msg-chat-provider-reset",
+      channelId: "chat-provider-reset",
+      conversationId: "chat-provider-reset",
+      userId: "watcher-test",
+      teamId: "telegram",
+      organizationId,
+      platform: "telegram",
+      timestamp: Date.now(),
+      error: `429 Limit Exhausted. Your limit will reset at ${providerReset}`,
+      errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+      platformMetadata: {
+        connectionId: "chat-test",
+        chatId: "chat-provider-reset",
         organizationId,
-        platform: "telegram",
-        timestamp: Date.now(),
-        error: `429 Limit Exhausted. Your limit will reset at ${providerReset}`,
-        errorCode: "PROVIDER_QUOTA_EXHAUSTED",
-        platformMetadata: {
-          connectionId: "chat-test",
-          chatId: "chat-provider-reset",
-          organizationId,
-          agentId,
-          behaviorId: watcherId,
-        },
+        agentId,
+        behaviorId: watcherId,
       },
-      "test-session"
-    );
+    });
 
     const after = await cursorOf(watcherId);
     const expectedNotBefore =
@@ -401,28 +415,25 @@ describe("a terminally failed Behavior run advances next_run_at", () => {
         dispatchSource: "event",
       });
 
-    await chatResponseBridge(organizationId).handleError(
-      {
-        messageId: "msg-cross-org-provider-reset",
-        channelId: "cross-org-provider-reset",
-        conversationId: "cross-org-provider-reset",
-        userId: "watcher-test",
-        teamId: "telegram",
+    await chatResponseBridge(organizationId).parkQuotaExhaustedBehavior({
+      messageId: "msg-cross-org-provider-reset",
+      channelId: "cross-org-provider-reset",
+      conversationId: "cross-org-provider-reset",
+      userId: "watcher-test",
+      teamId: "telegram",
+      organizationId: "another-organization",
+      platform: "telegram",
+      timestamp: Date.now(),
+      error: `429 Limit Exhausted. Your limit will reset at ${providerReset}`,
+      errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+      platformMetadata: {
+        connectionId: "chat-test",
+        chatId: "cross-org-provider-reset",
         organizationId: "another-organization",
-        platform: "telegram",
-        timestamp: Date.now(),
-        error: `429 Limit Exhausted. Your limit will reset at ${providerReset}`,
-        errorCode: "PROVIDER_QUOTA_EXHAUSTED",
-        platformMetadata: {
-          connectionId: "chat-test",
-          chatId: "cross-org-provider-reset",
-          organizationId: "another-organization",
-          agentId,
-          behaviorId: watcherId,
-        },
+        agentId,
+        behaviorId: watcherId,
       },
-      "test-session"
-    );
+    });
 
     expect((await cursorOf(watcherId)).getTime()).toBe(staleCursor.getTime());
   });
@@ -440,28 +451,25 @@ describe("a terminally failed Behavior run advances next_run_at", () => {
         dispatchSource: "event",
       });
 
-    await chatResponseBridge(organizationId).handleError(
-      {
-        messageId: "msg-cross-agent-provider-reset",
-        channelId: "cross-agent-provider-reset",
-        conversationId: "cross-agent-provider-reset",
-        userId: "watcher-test",
-        teamId: "telegram",
+    await chatResponseBridge(organizationId).parkQuotaExhaustedBehavior({
+      messageId: "msg-cross-agent-provider-reset",
+      channelId: "cross-agent-provider-reset",
+      conversationId: "cross-agent-provider-reset",
+      userId: "watcher-test",
+      teamId: "telegram",
+      organizationId,
+      platform: "telegram",
+      timestamp: Date.now(),
+      error: `429 Limit Exhausted. Your limit will reset at ${providerReset}`,
+      errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+      platformMetadata: {
+        connectionId: "chat-test",
+        chatId: "cross-agent-provider-reset",
         organizationId,
-        platform: "telegram",
-        timestamp: Date.now(),
-        error: `429 Limit Exhausted. Your limit will reset at ${providerReset}`,
-        errorCode: "PROVIDER_QUOTA_EXHAUSTED",
-        platformMetadata: {
-          connectionId: "chat-test",
-          chatId: "cross-agent-provider-reset",
-          organizationId,
-          agentId: "another-agent",
-          behaviorId: watcherId,
-        },
+        agentId: "another-agent",
+        behaviorId: watcherId,
       },
-      "test-session"
-    );
+    });
 
     expect((await cursorOf(watcherId)).getTime()).toBe(staleCursor.getTime());
   });

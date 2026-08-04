@@ -181,9 +181,8 @@ export class ChatResponseBridge implements ResponseRenderer {
    * so the durable thread-response job retries instead of delivering an error
    * while leaving the Behavior immediately due.
    */
-  private async parkQuotaExhaustedBehavior(
-    payload: ThreadResponsePayload,
-    ctx: ResponseContext
+  async parkQuotaExhaustedBehavior(
+    payload: ThreadResponsePayload
   ): Promise<void> {
     const notBefore = providerQuotaResetNotBefore(
       payload.error ?? "",
@@ -191,7 +190,8 @@ export class ChatResponseBridge implements ResponseRenderer {
     );
     if (!notBefore) return;
 
-    const behaviorId = readPlatformMetadata(payload.platformMetadata).behaviorId;
+    const metadata = readPlatformMetadata(payload.platformMetadata);
+    const behaviorId = metadata.behaviorId;
     if (
       typeof behaviorId !== "number" ||
       !Number.isSafeInteger(behaviorId) ||
@@ -200,10 +200,9 @@ export class ChatResponseBridge implements ResponseRenderer {
       return;
     }
 
-    const organizationId = this.resolveOrganizationId(payload, ctx);
-    if (!organizationId) return;
-    const agentId = this.resolveAgentId(payload, ctx);
-    if (!agentId) return;
+    const organizationId = payload.organizationId ?? metadata.organizationId;
+    const agentId = metadata.agentId;
+    if (!organizationId || !agentId) return;
 
     const sql = getDb();
     await sql.begin(async (tx) => {
@@ -696,8 +695,6 @@ export class ChatResponseBridge implements ResponseRenderer {
 
     const ctx = this.extractResponseContext(payload);
     if (!ctx) return;
-
-    await this.parkQuotaExhaustedBehavior(payload, ctx);
 
     const { connectionId, channelId } = ctx;
     const key = `${channelId}:${payload.conversationId}`;

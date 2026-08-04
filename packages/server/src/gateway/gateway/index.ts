@@ -372,11 +372,12 @@ export class WorkerGateway {
    * Resolve the reply-to-source Behavior selected for this exact queued turn.
    *
    * platformMetadata in a worker response is attacker-controlled. The signed
-   * per-run token carries only runs.id; re-reading that durable gateway-written
-   * row binds the Behavior id to the planner decision without putting per-turn
-   * state on the deployment-lifetime fallback token. Missing per-run identity
-   * degrades safely to no schedule mutation. Database errors propagate so a
-   * terminal quota reply is retried rather than delivered with an untrusted id.
+   * per-run token carries the queued runs.id rather than a Behavior id;
+   * re-reading that durable gateway-written row binds the Behavior id to the
+   * planner decision without putting per-turn state on the deployment-lifetime
+   * fallback token. Missing per-run identity degrades safely to no schedule
+   * mutation. Database errors propagate so a terminal quota reply is retried
+   * rather than delivered with an untrusted id.
    */
   private async resolveTrustedBehaviorId(
     tokenData: WorkerTokenData

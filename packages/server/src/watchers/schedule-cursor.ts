@@ -108,7 +108,24 @@ export function providerQuotaResetNotBefore(
 }
 
 /**
- * Move a watcher's `next_run_at` forward to the next cron tick after now.
+ * Device CLI reports do not carry a structured error code, so require both an
+ * explicit reset timestamp and provider-quota wording before moving a durable
+ * schedule. This prevents unrelated stderr such as "session resets at ..."
+ * from parking a Behavior.
+ */
+export function deviceProviderQuotaResetNotBefore(
+	message: string,
+	now: Date = new Date()
+): Date | null {
+	const hasQuotaEvidence =
+		/credit balance is too low|insufficient (?:credits?|balance|funds|quota)\b|billing_hard_limit_reached|payment required|exceeded your current quota|out of credits?\b|weekly\/monthly limit exhausted|limit exhausted|rate[-\s]?limit|quota (?:exceeded|exhausted)|too many requests|\b429\b|resource_exhausted/i.test(
+			message
+		);
+	return hasQuotaEvidence ? parseProviderQuotaResetAt(message, now) : null;
+}
+
+/**
+ * Move a watcher's `next_run_at` forward without shortening its current park.
  *
  * The target is `nextRunAt(schedule, now)` unless the caller supplies a later
  * `notBefore` boundary. The write never moves an existing cursor backward, so
@@ -190,13 +207,8 @@ export async function advanceWatcherSchedule(
  * Advance after terminal failure unless the run came from an event with no
  * explicit retry boundary. Ordinary event delivery is independent of the cron
  * cursor, but a provider quota boundary must park any scheduled activation too.
- * Call inside the failure transaction.
- *
- * Shared deliberately: three paths mark a Behavior run failed — agent dispatch
- * (`failWatcherRun`), turn resolution (`resolveWatcherRunsByMessageIds`), and
- * the device-CLI `/complete-behavior` endpoint. Written out three times the
- * carve-out drifts, and a diff-scoped reviewer only ever sees one copy. Keep it
- * here rather than re-inlining.
+ * Call inside the caller's terminal-state transaction. Run-backed failures and
+ * reply-to-source turns share this policy so their event carve-out cannot drift.
  */
 export async function advanceScheduleAfterTerminalFailure(
 	sql: DbClient,

@@ -83,7 +83,8 @@ export class ApiResponseRenderer implements ResponseRenderer {
 
     // Complete durable Behavior bookkeeping before delivering the terminal SSE
     // event. A database failure must reject the thread-response job so it can
-    // retry; delivering first would acknowledge the turn with its run still due.
+    // retry; delivering first could acknowledge a turn whose run is unresolved
+    // and whose schedule is still due.
     await this.resolveWatcherRunsFromPayload(payload, { ok: true });
 
     // Resolve the current suggestion set for this conversation and decide
@@ -191,7 +192,9 @@ export class ApiResponseRenderer implements ResponseRenderer {
 
     await this.resolveWatcherRunsFromPayload(payload, {
       ok: false,
-      error: typeof errorText === "string" ? errorText : "agent error",
+      error:
+        payload.bookkeepingError ??
+        (typeof errorText === "string" ? errorText : "agent error"),
       errorCode: code,
     });
 

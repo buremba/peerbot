@@ -38,6 +38,7 @@ function createConsumer(overrides?: {
   };
   const sseManager = {
     broadcast: mock(() => undefined),
+    hasActiveConnection: mock(() => true),
   };
   const consumer = new UnifiedThreadResponseConsumer(
     queue as any,
@@ -425,12 +426,52 @@ describe("UnifiedThreadResponseConsumer dead-letters instead of silent drops", (
   });
 });
 
+describe("UnifiedThreadResponseConsumer API guardrail bookkeeping", () => {
+  test("preserves the raw provider error while redacting user-visible output", async () => {
+    const handleError = mock(async () => undefined);
+    const { consumer } = createConsumer({
+      renderer: { handleError, handleCompletion: mock(async () => undefined) },
+    });
+    const scanner = (consumer as any).outputGuardrail;
+    scanner.registry = {};
+    scanner.settingsStore = {};
+    scanner.scanFinal = mock(async () => ({
+      guardrail: "require-tool",
+      reason: "required tool was not called",
+    }));
+
+    const raw =
+      "429 Limit Exhausted. Your limit will reset at 2026-08-04 06:00:00";
+    await consumer.handleThreadResponse({
+      id: "job-api-quota",
+      data: {
+        messageId: "m-api-quota",
+        channelId: "api:quota",
+        conversationId: "api:quota",
+        userId: "u1",
+        teamId: "api",
+        platform: "api",
+        timestamp: 0,
+        error: raw,
+        errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+        toolsUsed: [],
+        platformMetadata: { agentId: "agent-1", organizationId: "org-1" },
+      },
+    });
+
+    const delivered = handleError.mock.calls[0]?.[0] as any;
+    expect(delivered.error).toMatch(/Message blocked by guardrail/);
+    expect(delivered.bookkeepingError).toBe(raw);
+  });
+});
+
 describe("UnifiedThreadResponseConsumer Chat SDK hydrate-on-claim", () => {
   test("throws for Chat SDK connection responses this replica cannot serve", async () => {
     // ensureDeliverable=false means hydration failed (deleted/stopped row or
     // an exclusive transport leased elsewhere) — fail the job so the retry
     // can land on a replica that can serve it.
     const chatResponseBridge = {
+      parkQuotaExhaustedBehavior: mock(async () => undefined),
       ensureDeliverable: mock(async () => false),
       handleCompletion: mock(async () => undefined),
       handleError: mock(async () => undefined),
@@ -446,8 +487,36 @@ describe("UnifiedThreadResponseConsumer Chat SDK hydrate-on-claim", () => {
     expect(platformRegistry.get).not.toHaveBeenCalled();
   });
 
+  test("parks quota errors before checking whether the chat connection is deliverable", async () => {
+    const chatResponseBridge = {
+      parkQuotaExhaustedBehavior: mock(async () => undefined),
+      ensureDeliverable: mock(async () => false),
+      handleCompletion: mock(async () => undefined),
+      handleError: mock(async () => undefined),
+    };
+    const { consumer } = createConsumer({ chatResponseBridge });
+
+    await expect(
+      consumer.handleThreadResponse({
+        id: "job-quota",
+        data: {
+          ...basePayload,
+          processedMessageIds: undefined,
+          error:
+            "429 Limit Exhausted. Your limit will reset at 2026-08-04 06:00:00",
+          errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+        },
+      })
+    ).rejects.toThrow(/cannot be served by this gateway instance/);
+
+    expect(chatResponseBridge.parkQuotaExhaustedBehavior).toHaveBeenCalledTimes(1);
+    expect(chatResponseBridge.ensureDeliverable).toHaveBeenCalledTimes(1);
+    expect(chatResponseBridge.handleError).not.toHaveBeenCalled();
+  });
+
   test("routes Chat SDK responses after hydrating on the claiming replica", async () => {
     const chatResponseBridge = {
+      parkQuotaExhaustedBehavior: mock(async () => undefined),
       ensureDeliverable: mock(async () => true),
       handleCompletion: mock(async () => undefined),
       handleError: mock(async () => undefined),

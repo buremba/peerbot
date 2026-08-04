@@ -1,5 +1,3 @@
-# The parent repository pins the exact Owletto revision so CI can validate the
-# same macOS client source that ships with each Lobu commit.
 [submodule "packages/owletto"]
 	path = packages/owletto
 	url = https://github.com/lobu-ai/owletto.git

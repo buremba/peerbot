@@ -65,7 +65,6 @@ const exchangeOAuthCode = mock(
 );
 const openDm = mock(async () => "D-INSTALLER");
 const postMessage = mock(async () => undefined);
-
 async function loadCoordinator() {
 	const mod = await import("../connections/slack-connection-coordinator.js");
 	return mod.completeSlackPendingInstall;
@@ -182,12 +181,18 @@ describe("completeSlackPendingInstall — installer claim DM", () => {
 		];
 		expect(botToken).toBe("xoxb-installer-token");
 		expect(channel).toBe("D-INSTALLER");
+		expect(text).toContain(
+			"<https://app.lobu.ai/connector/slack/connection?ref=T-CLAIM|Choose the Lobu organization for this installation>",
+		);
+		expect(text).toContain("`/lobu link CODE`");
+		expect(text).toContain("Lobu's hosted Slack workspace");
+		expect(text).toContain("workspace link from `lobu run`");
 
 		// The posted text embeds the provider-agnostic connect URL with the team id
 		// as the ref — no secret token (authority is the Slack workspace-admin
 		// check at claim time).
 		const match = text.match(
-			/https:\/\/app\.lobu\.ai\/connector\/slack\/connection\?ref=([^&\s]+)/,
+			/https:\/\/app\.lobu\.ai\/connector\/slack\/connection\?ref=([^&\s|>]+)/,
 		);
 		expect(match).not.toBeNull();
 		const [, refParam] = match as RegExpMatchArray;

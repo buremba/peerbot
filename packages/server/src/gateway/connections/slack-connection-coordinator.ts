@@ -116,8 +116,8 @@ export async function completeSlackPendingInstall(
 }
 
 /**
- * DM the installer a single-use claim link so they can connect the freshly
- * parked (pending) workspace to their Lobu account. Best-effort: any failure is
+ * DM the installer the organization-selection link for the freshly parked
+ * (pending) workspace. Best-effort: any failure is
  * logged and swallowed — the install stays parked and claimable via the app.
  */
 async function dmProviderClaimLink(
@@ -135,7 +135,7 @@ async function dmProviderClaimLink(
     return;
   }
   const claimUrl = `${webBase}/connector/slack/connection?ref=${encodeURIComponent(teamId)}`;
-  const text = `👋 Thanks for adding Lobu to your workspace! Connect it to your Lobu account to finish setup: ${claimUrl}`;
+  const text = `👋 Thanks for adding Lobu! <${claimUrl}|Choose the Lobu organization for this installation>. Using Lobu's hosted Slack workspace instead? Leave this installation unconnected, open the workspace link from \`lobu run\`, and run the shown \`/lobu link CODE\` command in the channel or DM you want to use.`;
   try {
     const dm = await web.openDm(botToken, installerUserId);
     await web.postMessage(botToken, dm, text);
@@ -612,7 +612,7 @@ export class SlackConnectionCoordinator {
     const webBase = getConfiguredPublicOrigin()?.replace(/\/+$/, "");
     if (!webBase) return ack;
     const claimUrl = `${webBase}/connector/slack/connection?ref=${encodeURIComponent(teamId)}`;
-    const text = `👋 This Slack workspace isn't connected to Lobu yet. A workspace admin can connect it here: ${claimUrl}`;
+    const text = `👋 This Slack installation isn't connected to a Lobu organization yet. A workspace admin can <${claimUrl}|choose its Lobu organization>. Using Lobu's hosted Slack workspace instead? Leave this installation unconnected, open the workspace link from \`lobu run\`, and run the shown \`/lobu link CODE\` command there.`;
     try {
       await createSlackWebApi().postMessage(botToken, event.channel, text);
     } catch (error) {

@@ -11,9 +11,13 @@ nothing runs locally besides the reviewer, reviews of different commits
 execute concurrently with no host-wide lock; a duplicate run of the same
 commit is refused so the `pi-review` status has exactly one owner per sha. Codex harnesses use Claude; other
 environments, including Claude Code, use Codex. Set
-`REVIEWER_CLI=codex|claude` to override automatic selection. The script
-also accepts `CLAUDE_REVIEW_MODEL`, `CLAUDE_REVIEW_EFFORT`, and
-`CODEX_REVIEW_MODEL` overrides. Claude reviews fail closed unless
+`REVIEWER_CLI=codex|claude|pi` to override automatic selection (`pi` is
+never chosen by `auto`; it is the explicit third reviewer for when the
+codex/claude CLIs are out of quota or unauthenticated). The script
+also accepts `CLAUDE_REVIEW_MODEL`, `CLAUDE_REVIEW_EFFORT`,
+`CODEX_REVIEW_MODEL`, `PI_REVIEW_MODEL` (default `gpt-5.6-terra`; the
+ChatGPT account backend rejects `gpt-5.6-sol`), and
+`PI_REVIEW_PROVIDER` overrides. Claude reviews fail closed unless
 `CLAUDE_REVIEW_MODEL` is `fable`, `opus`, or a full `claude-opus-*` model ID;
 Sonnet, Haiku, empty, and arbitrary model values are rejected before the
 review starts. It posts a `pi-review` commit status

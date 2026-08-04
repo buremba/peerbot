@@ -557,9 +557,20 @@ export async function querySqlImpl(
   if ('error' in bounds) return errorResult(bounds.error, startTime);
   const { limit, offset } = bounds;
 
-  const countSql = `SELECT count(*)::int AS c FROM (${scopedSql}) AS _t ${searchWhere}`;
   const orderBy = args.sort_by ? `ORDER BY "${args.sort_by}" ${sortOrder}` : '';
-  const dataSql = `SELECT * FROM (${scopedSql}) AS _t ${searchWhere} ${orderBy} LIMIT ${limit} OFFSET ${offset}`;
+  // Single execution: the scoped subquery can be expensive (derived entity views
+  // aggregate large event ranges), so run it ONCE and take the total from a
+  // window count instead of a second full `SELECT count(*) FROM (subquery)`
+  // pass. Windows evaluate before LIMIT, so the count covers the full filtered
+  // set exactly like the old separate COUNT did. Two fallbacks keep the exact
+  // legacy contract: an empty/out-of-range page carries no row to bear the
+  // window count (run the explicit COUNT then), and if the caller's own query
+  // projects a column named like the internal window alias, re-run the plain
+  // two-query shape rather than clobber their column.
+  const TOTAL_COL = '__lobu_total_count__';
+  const countSql = `SELECT count(*)::int AS c FROM (${scopedSql}) AS _t ${searchWhere}`;
+  const dataSql = `SELECT *, COUNT(*) OVER () AS "${TOTAL_COL}" FROM (${scopedSql}) AS _t ${searchWhere} ${orderBy} LIMIT ${limit} OFFSET ${offset}`;
+  const plainDataSql = `SELECT * FROM (${scopedSql}) AS _t ${searchWhere} ${orderBy} LIMIT ${limit} OFFSET ${offset}`;
 
   try {
     const sql = getDb();
@@ -570,23 +581,60 @@ export async function querySqlImpl(
     const txPromise = sql.begin(async (tx: typeof sql) => {
       await tx`SET TRANSACTION READ ONLY`;
       await tx`SET LOCAL statement_timeout = '5s'`;
-      const cnt = await tx.unsafe(countSql, params);
       const data = await tx.unsafe(dataSql, params);
-      return [cnt, data] as const;
+      const rows = Array.isArray(data) ? (data as Array<Record<string, unknown>>) : [];
+      // Duplicate TOTAL_COL in the result columns means the caller's query
+      // itself projects that name — fall back to the classic two-query shape
+      // so the caller's column survives untouched.
+      const aliasCollision =
+        ((data as any)?.columns ?? []).filter((col: { name: string }) => col.name === TOTAL_COL)
+          .length > 1;
+      if (rows.length === 0 || aliasCollision) {
+        const cnt = await tx.unsafe(countSql, params);
+        const totalCount = Number(cnt[0]?.c ?? 0);
+        if (aliasCollision) {
+          const plain = await tx.unsafe(plainDataSql, params);
+          return {
+            rows: plain,
+            columns: (plain as any)?.columns,
+            totalCount,
+            columnsHaveWindowCol: false,
+          };
+        }
+        // Empty page: columns still come from the window query, so the
+        // internal alias must be stripped from them too.
+        return { rows, columns: (data as any)?.columns, totalCount, columnsHaveWindowCol: true };
+      }
+      return {
+        rows,
+        columns: (data as any)?.columns,
+        totalCount: Number(rows[0][TOTAL_COL]) || 0,
+        stripWindowCol: true,
+        columnsHaveWindowCol: true,
+      };
     });
-    const [countResult, dataResult] = await raceAbort(txPromise, ctx.abortSignal);
+    const result = await raceAbort(txPromise, ctx.abortSignal);
 
-    const totalCount = countResult[0]?.c ?? 0;
+    const rawRows = result.rows as Array<Record<string, unknown>>;
+    const totalCount = result.totalCount;
+    const rows = result.stripWindowCol
+      ? rawRows.map((row) => {
+          const { [TOTAL_COL]: _total, ...rest } = row;
+          return rest;
+        })
+      : rawRows;
 
-    const columns = ((dataResult as any).columns ?? []).map(
-      (col: { name: string; type: number }) => ({
-        name: col.name,
-        type: oidToTypeName(col.type),
-      })
-    );
+    const columns = (result.columns ?? [])
+      .filter((col: { name: string }) => !(result.columnsHaveWindowCol && col.name === TOTAL_COL))
+      .map(
+        (col: { name: string; type: number }) => ({
+          name: col.name,
+          type: oidToTypeName(col.type),
+        })
+      );
 
     return {
-      rows: Array.isArray(dataResult) ? dataResult : [],
+      rows,
       columns,
       total_count: totalCount,
       has_more: offset + limit < totalCount,

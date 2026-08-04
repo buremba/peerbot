@@ -263,13 +263,18 @@ async function etHandleList(
 
   const mappedTypes = resolved.map((row) => mapRowToEntityType(row));
   // Stored + derived counts share one path with list/detail (entity-management).
+  // Derived types are excluded here: their backing SQL is expensive (multi-second
+  // on large event tables) and this list endpoint is called on every page load —
+  // a live badge count is not worth that. They report entity_count 0.
   const counts = await getEntityCountsByTypes(
-    mappedTypes.map((t) => ({
-      id: Number(t.id),
-      slug: t.slug,
-      backing_sql: t.backing_sql,
-      backing_source: t.backing_source,
-    })),
+    mappedTypes
+      .filter((t) => t.backing_sql == null)
+      .map((t) => ({
+        id: Number(t.id),
+        slug: t.slug,
+        backing_sql: null,
+        backing_source: null,
+      })),
     ctx
   );
 
@@ -399,15 +404,21 @@ async function etHandleGet(
 
   const [resolved] = await resolveUsernames([rows[0] as Record<string, unknown>], 'created_by');
   const mapped = mapRowToEntityType(resolved);
-  mapped.entity_count = await countEntitiesOfType(
-    {
-      id: Number(mapped.id),
-      slug: mapped.slug,
-      backing_sql: mapped.backing_sql,
-      backing_source: mapped.backing_source,
-    },
-    ctx
-  );
+  // Derived counts run the full backing SQL (multi-second on large event
+  // tables) and this endpoint is called on every entity page open. The page
+  // header shows the list response's total_count instead, so derived types
+  // report 0 here. Same policy as the schema list + resolve_path bootstrap.
+  mapped.entity_count = mapped.backing_sql
+    ? 0
+    : await countEntitiesOfType(
+        {
+          id: Number(mapped.id),
+          slug: mapped.slug,
+          backing_sql: mapped.backing_sql,
+          backing_source: mapped.backing_source,
+        },
+        ctx
+      );
   // Classify the view's measure columns on read (never persisted).
   if (mapped.backing_sql) mapped.measure_columns = measureColumns(mapped.backing_sql);
   // Authored type-level list-view templates, with their data_sources run live.
@@ -625,15 +636,19 @@ async function etHandleUpdate(
   if (updated.length === 0) throw new Error(`Entity type '${args.slug}' not found after update`);
 
   const result = mapRowToEntityType(updated[0] as Record<string, unknown>);
-  result.entity_count = await countEntitiesOfType(
-    {
-      id: Number(result.id),
-      slug: result.slug,
-      backing_sql: result.backing_sql,
-      backing_source: result.backing_source,
-    },
-    ctx
-  );
+  // Same policy as get/list: never run a derived backing SQL just to echo a
+  // count back from a schema update.
+  result.entity_count = result.backing_sql
+    ? 0
+    : await countEntitiesOfType(
+        {
+          id: Number(result.id),
+          slug: result.slug,
+          backing_sql: result.backing_sql,
+          backing_source: result.backing_source,
+        },
+        ctx
+      );
 
   await recordAudit(
     sql,

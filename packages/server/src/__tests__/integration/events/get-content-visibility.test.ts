@@ -306,6 +306,48 @@ describe('getContent > connection visibility folded into WHERE', () => {
     expect(collected.has(alicePrivateEventId)).toBe(true);
     expect(collected.has(systemEventId)).toBe(true);
   });
+
+  it('org-wide cursor pagination keeps total exact on every page', async () => {
+    // Org-wide (no entity_id) listings run count + list in parallel; the
+    // ContentSearchResponse.total contract must hold on cursor pages too —
+    // callers (agents reading read_knowledge) rely on it, not just the UI's
+    // first-page display.
+    const ctx = authedCtx(aliceUser.id);
+
+    const page1 = await getContent(
+      {
+        limit: 2,
+        sort_by: 'date',
+        sort_order: 'desc',
+      } as never,
+      {} as never,
+      ctx
+    );
+    expect(page1.total).toBe(3);
+    expect(page1.content.length).toBe(2);
+    expect(page1.page.has_older).toBe(true);
+
+    const last = page1.content[page1.content.length - 1];
+    const page2 = await getContent(
+      {
+        limit: 2,
+        sort_by: 'date',
+        sort_order: 'desc',
+        before_occurred_at: last.occurred_at,
+        before_id: last.id,
+      } as never,
+      {} as never,
+      ctx
+    );
+    // The cursor page must still carry the exact total, never 0.
+    expect(page2.total).toBe(3);
+
+    const collected = new Set([
+      ...page1.content.map((c) => c.id),
+      ...page2.content.map((c) => c.id),
+    ]);
+    expect(collected.size).toBe(3);
+  });
 });
 
 describe('getContent > response shape (view_url present, stats opt-in)', () => {

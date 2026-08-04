@@ -1265,52 +1265,62 @@ export async function listEntities(
 		}
 	}
 
-	const conditions: string[] = ["e.deleted_at IS NULL"];
+	const conditions: string[] = ["{e}.deleted_at IS NULL"];
 	const params: unknown[] = [];
 	let paramIdx = 1;
 
 	// Organization filter
-	conditions.push(`e.organization_id = $${paramIdx++}`);
+	conditions.push(`{e}.organization_id = $${paramIdx++}`);
 	params.push(ctx.organizationId);
 
 	if (filters.entity_type) {
-		conditions.push(`et.slug = $${paramIdx++}`);
+		conditions.push(`{et}.slug = $${paramIdx++}`);
 		params.push(filters.entity_type);
 	}
 
 	if (filters.parent_id !== undefined) {
 		if (filters.parent_id === null) {
-			conditions.push("e.parent_id IS NULL");
+			conditions.push("{e}.parent_id IS NULL");
 		} else {
-			conditions.push(`e.parent_id = $${paramIdx++}`);
+			conditions.push(`{e}.parent_id = $${paramIdx++}`);
 			params.push(filters.parent_id);
 		}
 	}
 
 	if (filters.search) {
 		conditions.push(
-			`(e.name ILIKE $${paramIdx} OR e.metadata->>'domain' ILIKE $${paramIdx})`,
+			`({e}.name ILIKE $${paramIdx} OR {e}.metadata->>'domain' ILIKE $${paramIdx})`,
 		);
 		params.push(`%${filters.search}%`);
 		paramIdx++;
 	}
 
 	if (filters.category) {
-		conditions.push(`e.metadata->>'category' = $${paramIdx++}`);
+		conditions.push(`{e}.metadata->>'category' = $${paramIdx++}`);
 		params.push(filters.category);
 	}
 
 	if (filters.main_market) {
-		conditions.push(`e.metadata->>'main_market' = $${paramIdx++}`);
+		conditions.push(`{e}.metadata->>'main_market' = $${paramIdx++}`);
 		params.push(filters.main_market);
 	}
 
 	if (filters.market) {
-		conditions.push(`e.metadata->>'market' = $${paramIdx++}`);
+		conditions.push(`{e}.metadata->>'market' = $${paramIdx++}`);
 		params.push(filters.market);
 	}
 
-	const whereClause = conditions.join(" AND ");
+	// Render the shared conditions for a given pair of table aliases. The
+	// outer query uses e/et; the page-id prefetch subquery below re-binds the
+	// very same $N params to e2/et2 (single statement, single param list).
+	const renderWhere = (eAlias: string, etAlias: string) =>
+		conditions
+			.map((c) =>
+				c.replace(/\{e\}\./g, `${eAlias}.`).replace(/\{et\}\./g, `${etAlias}.`),
+			)
+			.join(" AND ");
+
+	const whereClause = renderWhere("e", "et");
 
 	const sortColumnMap: Record<string, string> = {
 		name: "e.name",
@@ -1353,6 +1363,25 @@ export async function listEntities(
     params
   );
 
+  // Two-stage page fetch. The four per-row count LATERALs make enrichment
+  // expensive (~ms..100ms per row), and with ORDER BY + LIMIT the planner
+  // still evaluates them for EVERY filter-matching row before the top-N sort
+  // picks the page (2,042 market companies ≈ 8s per page load). When sorting
+  // by a plain entity column we resolve the page ids first — filters + ORDER
+  // BY only, no LATERALs — and enrich just those rows. Sorts by computed
+  // columns (total_content, …) need the counts for ordering, so they keep the
+  // single-query shape.
+  const plainSort = sortBy === 'name' || sortBy === 'created_at';
+  const pageIdClause = plainSort
+    ? `AND e.id = ANY(ARRAY(
+         SELECT e2.id FROM entities e2
+         JOIN entity_types et2 ON et2.id = e2.entity_type_id
+         WHERE ${renderWhere('e2', 'et2')}
+         ORDER BY ${sortColumnMap[sortBy].replace(/^e\./, 'e2.')} ${sortOrderSql}, e2.id ASC
+         LIMIT ${limit + 1} OFFSET ${offset}
+       ))`
+    : '';
+
   const result = await sql.unsafe<CreatedEntity>(
     `SELECT
       e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at,
@@ -1362,9 +1391,10 @@ export async function listEntities(
       COALESCE(cc.cnt, 0) as children_count,
       pe.name as parent_name, pe.slug as parent_slug, pet.slug as parent_entity_type
     ${baseQuery}
+    ${pageIdClause}
     ORDER BY ${orderBy}
     LIMIT ${limit + 1}
-    OFFSET ${offset}`,
+    ${plainSort ? '' : `OFFSET ${offset}`}`,
     params
   );
 

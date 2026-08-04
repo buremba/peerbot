@@ -50,6 +50,7 @@ async function executeListQuery(args: {
   joinSql: string;
   whereExpr: string;
   countParams: any[];
+  entityId: number | null;
   threadEntityLinkSqlForP: string | undefined;
   needClassifications: boolean;
   useDateFeed: boolean;
@@ -63,28 +64,10 @@ async function executeListQuery(args: {
 }): Promise<ContentSearchResponse> {
   const { sql, joinSql, whereExpr, countParams } = args;
 
-  const countResult = await sql.unsafe<{ total: number | string }>(
-    `SELECT COUNT(*) as total FROM current_event_records f
+  const countSql = `SELECT COUNT(*) as total FROM current_event_records f
       LEFT JOIN connections c ON c.id = f.connection_id
       ${joinSql}
-      WHERE ${whereExpr}`,
-    countParams
-  );
-  const total = parseInt(String(countResult[0]?.total ?? '0'), 10);
-
-  // Short-circuit on empty matches. Even with the trimmed entity-link UNION,
-  // the enrichment query — recursive thread_meta + classifications +
-  // parent/root LEFT JOINs — pays a real planner cost on a large events table
-  // when run via postgres.js's extended protocol even if result_set is empty
-  // server-side. One extra round-trip on the cheap count beats that.
-  if (total === 0) {
-    return emptyListResponse({
-      limit: args.limit,
-      effectiveOffset: args.effectiveOffset,
-      useDateFeed: args.useDateFeed,
-      cursor: args.cursor,
-    });
-  }
+      WHERE ${whereExpr}`;
 
   const cursorClause = buildDateCursorClause(
     args.cursor,
@@ -144,7 +127,49 @@ async function executeListQuery(args: {
     ? [...queryBaseParams, args.fetchLimit]
     : [...queryBaseParams, args.limit, args.effectiveOffset];
 
-  const rawRows = (await args.sql.unsafe(querySQL, queryParams)) as any[];
+  let total: number;
+  let rawRows: any[];
+
+  if (args.entityId == null) {
+    // Org-wide listing (the activity feed). The COUNT is one of the two
+    // expensive scans here — it re-evaluates the full visibility predicate
+    // across every live event — so run count + list in parallel instead of
+    // serializing two full scans. The total stays exact on every page
+    // (cursor pages included): ContentSearchResponse.total is part of the
+    // read_knowledge contract and callers rely on it.
+    const [countResult, rows] = await Promise.all([
+      sql.unsafe<{ total: number | string }>(countSql, countParams),
+      args.sql.unsafe(querySQL, queryParams) as Promise<any[]>,
+    ]);
+    total = parseInt(String(countResult[0]?.total ?? '0'), 10);
+    rawRows = rows;
+    if (total === 0 && rawRows.length === 0) {
+      return emptyListResponse({
+        limit: args.limit,
+        effectiveOffset: args.effectiveOffset,
+        useDateFeed: args.useDateFeed,
+        cursor: args.cursor,
+      });
+    }
+  } else {
+    // Entity-scoped listing: count FIRST so empty matches short-circuit before
+    // paying the enrichment planner cost — recursive thread_meta +
+    // classifications + parent/root LEFT JOINs cost real planning time on a
+    // large events table even when result_set is empty server-side. Entities
+    // can legitimately have zero content, and callers rely on exact totals
+    // across cursor pages, so keep both semantics here.
+    const countResult = await sql.unsafe<{ total: number | string }>(countSql, countParams);
+    total = parseInt(String(countResult[0]?.total ?? '0'), 10);
+    if (total === 0) {
+      return emptyListResponse({
+        limit: args.limit,
+        effectiveOffset: args.effectiveOffset,
+        useDateFeed: args.useDateFeed,
+        cursor: args.cursor,
+      });
+    }
+    rawRows = (await args.sql.unsafe(querySQL, queryParams)) as any[];
+  }
 
   const content = args.needClassifications
     ? deduplicateWithClassifications(rawRows)
@@ -391,6 +416,7 @@ export async function listContentInternal(
       joinSql: '',
       whereExpr: `${whereSql} ${excludeClause.sql} ${visibilityClause.sql}${entityTypesClause.sql}`,
       countParams: allFilterParams,
+      entityId: entityId ?? null,
       threadEntityLinkSqlForP: threadEntityLinkSql,
       needClassifications,
       useDateFeed,
@@ -470,6 +496,7 @@ export async function listContentInternal(
   return executeListQuery({
     sql,
     joinSql: WINDOW_JOIN_SQL,
+    entityId: entityId ?? null,
     whereExpr: `${standardWhereSql}
           AND ${connectionCondition}
           AND ${feedCondition}

@@ -990,14 +990,20 @@ async function listEntityTypes(
     ORDER BY et.name ASC
   `;
 
-  // Same stored+derived count path as manage_entity_schema list / entity list.
+  // Stored-type counts only. Derived types would re-run their full backing
+  // SQL (e.g. the subscription report: 2-5s, authz-wrapped, list + count) on
+  // every resolve_path call just for a bootstrap badge; the agent context does
+  // not need it. Same policy as manage_entity_schema list/get and the entity
+  // list: the exact row count stays available from the derived list response.
   const counts = await getEntityCountsByTypes(
-    rows.map((row) => ({
-      id: Number(row.id),
-      slug: String(row.slug),
-      backing_sql: (row.backing_sql as string | null) ?? null,
-      backing_source: (row.backing_source as string | null) ?? null,
-    })),
+    rows
+      .filter((row) => row.backing_sql == null)
+      .map((row) => ({
+        id: Number(row.id),
+        slug: String(row.slug),
+        backing_sql: null,
+        backing_source: null,
+      })),
     ctx
   );
 

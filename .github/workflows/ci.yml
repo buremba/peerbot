@@ -159,6 +159,17 @@ jobs:
           bun test packages/connectors --coverage
           mv coverage/lcov.info coverage/connectors.lcov.info
 
+      - name: embeddings (bun:test)
+        # Previously unrun in CI: the embeddings HTTP suite and the
+        # orphan-reap subprocess regression (forks the real server under
+        # Node via tsx; binds ports 18951-18953). No Postgres needed.
+        # Bounded: if the orphan regression reappears the most likely
+        # symptom is this step hanging on an open child handle.
+        timeout-minutes: 5
+        run: |
+          bun test packages/embeddings --coverage
+          mv coverage/lcov.info coverage/embeddings.lcov.info
+
       - name: example connectors (bun:test)
         # Unbundled connectors live under examples/; mock @lobu/connector-sdk
         # so Playwright/Baileys never load in CI.
@@ -170,7 +181,7 @@ jobs:
         if: always()
         uses: codecov/codecov-action@v7
         with:
-          files: coverage/core-cli.lcov.info,coverage/plugin-runtime.lcov.info,coverage/agent-worker.lcov.info,coverage/server-units.lcov.info,coverage/server-units-auth.lcov.info,coverage/server-units-activity.lcov.info,coverage/server-units-compiler.lcov.info,coverage/connector-worker.lcov.info,coverage/client-promptfoo.lcov.info,coverage/connector-sdk.lcov.info,coverage/connectors.lcov.info
+          files: coverage/core-cli.lcov.info,coverage/plugin-runtime.lcov.info,coverage/agent-worker.lcov.info,coverage/server-units.lcov.info,coverage/server-units-auth.lcov.info,coverage/server-units-activity.lcov.info,coverage/server-units-compiler.lcov.info,coverage/connector-worker.lcov.info,coverage/client-promptfoo.lcov.info,coverage/connector-sdk.lcov.info,coverage/connectors.lcov.info,coverage/embeddings.lcov.info
           flags: unit
           fail_ci_if_error: false
 

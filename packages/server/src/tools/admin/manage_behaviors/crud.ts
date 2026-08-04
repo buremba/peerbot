@@ -206,9 +206,8 @@ export async function handleCreate(
   // unresolvable id is accepted by the INSERT and only shows up as a Behavior
   // that never runs (agent_id) or one whose output contract is silently voided
   // (agent_id). The executor matrix catches unresolvable executors up front —
-  // every automated trigger must resolve to its own respond_with override or
-  // the Behavior-level agent/device; manual-only Behaviors (no triggers) may
-  // be executor-less.
+  // every automated Behavior needs an executor; manual-only Behaviors (no
+  // triggers) may be executor-less.
   const executorDefaults: BehaviorExecutorDefaults = {
     agentId: args.agent_id ?? null,
     deviceWorkerId: args.device_worker_id ?? null,
@@ -232,9 +231,8 @@ export async function handleCreate(
   });
   assertBehaviorOutputsUseWindowExecution(triggerWrite.triggers, outputs);
   await assertBehaviorTriggerConnections(sql, organizationId, triggerWrite.triggers);
-  // Executor matrix (after triggers resolve): every automated trigger must
-  // resolve to its own respond_with override or the Behavior-level
-  // agent/device; manual-only Behaviors (no triggers) may be executor-less.
+  // Executor matrix (after triggers resolve): every automated Behavior needs
+  // an executor; manual-only Behaviors (no triggers) may be executor-less.
   assertBehaviorExecutorsResolve(
     triggerWrite.triggers as BehaviorTriggerInput[],
     executorDefaults
@@ -242,7 +240,6 @@ export async function handleCreate(
   await assertBehaviorExecutorsAuthorized(
     sql,
     organizationId,
-    triggerWrite.triggers as BehaviorTriggerInput[],
     executorDefaults,
     ctx
   );
@@ -535,12 +532,10 @@ export async function handleUpdate(
     );
   }
 
-  // Executor matrix on the EFFECTIVE state (patch over the current row): every
-  // automated trigger in the resulting trigger shape must resolve to its own
-  // respond_with override or the Behavior-level agent/device. This replaces the
-  // old zombie rule — clearing agent_id is fine when a device pin or per-trigger
-  // responders still resolve, and manual-only Behaviors (no triggers) may be
-  // executor-less.
+  // Executor matrix on the EFFECTIVE state (patch over the current row): an
+  // automated Behavior needs an executor. Clearing agent_id is fine when a
+  // device pin remains (device precedence), and manual-only Behaviors (no
+  // triggers) may be executor-less.
   const effectiveDefaults: BehaviorExecutorDefaults = {
     agentId: args.agent_id !== undefined ? args.agent_id : currentRow.agent_id,
     deviceWorkerId:
@@ -557,7 +552,6 @@ export async function handleUpdate(
   await assertBehaviorExecutorsAuthorized(
     sql,
     ctx.organizationId,
-    triggerWrite.triggers as BehaviorTriggerInput[],
     effectiveDefaults,
     ctx
   );

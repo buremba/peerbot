@@ -7,7 +7,7 @@ import {
   type BehaviorEventRunQueued,
   createBehaviorEventRun,
 } from "../runs/queue-service";
-import { resolveTriggerExecutor } from "../tools/admin/manage_behaviors/executors";
+import { resolveBehaviorExecutor } from "../tools/admin/manage_behaviors/executors";
 import logger from "../utils/logger";
 import { dispatchPendingWatcherRuns } from "../watchers/automation";
 import { matchingBehaviorTriggers } from "./event-trigger";
@@ -147,11 +147,10 @@ export async function findMatchingBehaviorActivations(
       signal,
     );
     if (!trigger) continue;
-    // Per-trigger executor resolution ("when -> who"): the matched trigger's
-    // respond_with override wins, else the Behavior-level agent/device. The
-    // create/update matrix guarantees automated triggers resolve; skip
-    // defensively if a legacy row slips through.
-    const executor = resolveTriggerExecutor(trigger, {
+    // Executor resolution: a Behavior has exactly one executor (agent or
+    // device pin). The create/update matrix guarantees automated Behaviors
+    // resolve; skip defensively if a legacy row slips through.
+    const executor = resolveBehaviorExecutor({
       agentId: row.agent_id as string | null,
       deviceWorkerId:
         typeof row.device_worker_id === "string" ? row.device_worker_id : null,

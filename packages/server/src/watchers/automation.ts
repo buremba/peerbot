@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
-	resolveTriggerExecutor,
+	resolveBehaviorExecutor,
 } from "../tools/admin/manage_behaviors/executors";
 import {
 	inferBehaviorGranularityFromSchedule,
@@ -240,27 +240,18 @@ async function enqueueWatcherRunForRecord(
 		throw new Error(`Behavior ${watcher.id} is not active.`);
 	}
 
-	// Executor resolution ("when -> who"): a schedule trigger's respond_with
-	// override wins, else the Behavior-level agent/device. Manual activations
-	// may legitimately resolve to nothing — the run stays pending for any
-	// connected MCP client to execute and complete.
-	const scheduleTrigger = (watcher.triggers ?? []).find(
-		(candidate): candidate is { respond_with?: unknown } =>
-			Boolean(candidate) &&
-			typeof candidate === "object" &&
-			(candidate as Record<string, unknown>).kind === "schedule",
-	);
-	const executor = resolveTriggerExecutor(
-		scheduleTrigger as { respond_with?: never } | undefined,
-		{
-			agentId: watcher.agent_id ?? null,
-			deviceWorkerId: watcher.device_worker_id ?? null,
-			agentKind: watcher.agent_kind ?? null,
-		},
-	);
+	// Executor resolution: a Behavior has exactly one executor (agent or
+	// device pin). Manual activations may legitimately resolve to nothing —
+	// the run stays pending for any connected MCP client to execute and
+	// complete.
+	const executor = resolveBehaviorExecutor({
+		agentId: watcher.agent_id ?? null,
+		deviceWorkerId: watcher.device_worker_id ?? null,
+		agentKind: watcher.agent_kind ?? null,
+	});
 	if (!executor && dispatchSource !== "manual") {
 		throw new Error(
-			`Behavior ${watcher.id} has no executor for ${dispatchSource} activation (need agent_id, device_worker_id, or a trigger respond_with).`
+			`Behavior ${watcher.id} has no executor for ${dispatchSource} activation (need agent_id or device_worker_id).`
 		);
 	}
 
@@ -279,15 +270,8 @@ async function enqueueWatcherRunForRecord(
 			windowStart: windowStart.toISOString(),
 			windowEnd: windowEnd.toISOString(),
 			dispatchSource,
-			// An explicit agent executor (e.g. a respond_with override on a
-			// device-pinned Behavior) must NOT inherit the row pin, or the run
-			// stays device-lane and the override is silently ignored.
 			deviceWorkerId:
-				executor == null
-					? (watcher.device_worker_id ?? null)
-					: executor.kind === "device"
-						? executor.deviceWorkerId
-						: null,
+				executor?.kind === "device" ? executor.deviceWorkerId : null,
 			agentKind:
 				executor?.kind === "device" ? executor.agentKind : null,
 			sourceFingerprint,

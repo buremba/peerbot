@@ -7,44 +7,6 @@ const BehaviorTriggerMatchValueSchema = Type.Union([
   Type.Null(),
 ]);
 
-/**
- * Per-trigger executor override ("when -> who"). A Behavior is an org-level
- * goal with one durable contract (prompt / outputs / reaction / budget); its
- * triggers may route activations to different executors:
- *
- *  - `agent`  — a managed Lobu agent executes the run (server dispatch lane).
- *  - `device` — the pinned device worker's local CLI executes it (device
- *    lane); `agent_kind` picks the local executor, omitted = device default.
- *
- * Omit to use the Behavior's own executor (`agent_id` / `device_worker_id`).
- * Every event/schedule trigger must resolve to an executor (its own override
- * or the Behavior default); manual activations are open — any connected MCP
- * client may complete them, so manual triggers carry no executor.
- */
-export const BehaviorRespondWithSchema = Type.Union(
-  [
-    Type.Object(
-      {
-        kind: Type.Literal("agent"),
-        agent_id: Type.String({ minLength: 1, maxLength: 128 }),
-      },
-      { additionalProperties: false }
-    ),
-    Type.Object(
-      {
-        kind: Type.Literal("device"),
-        device_worker_id: Type.String({ minLength: 1, maxLength: 64 }),
-        agent_kind: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
-      },
-      { additionalProperties: false }
-    ),
-  ],
-  {
-    description:
-      "Executor override for this activation: a managed agent, or a device worker (with optional local executor kind). Omit to use the Behavior's own executor. Manual activations are open to any connected client and ignore this field.",
-  }
-);
-export type BehaviorRespondWith = Static<typeof BehaviorRespondWithSchema>;
 
 /**
  * Connector event activation for a Behavior. Triggers and context sources are
@@ -102,7 +64,6 @@ export const BehaviorEventTriggerSchema = Type.Object(
         default: true,
       })
     ),
-    respond_with: Type.Optional(BehaviorRespondWithSchema),
   },
   { additionalProperties: false }
 );
@@ -122,7 +83,6 @@ export const BehaviorScheduleTriggerSchema = Type.Object(
       })
     ),
     skip_if_unchanged: Type.Optional(Type.Boolean({ default: true })),
-    respond_with: Type.Optional(BehaviorRespondWithSchema),
   },
   { additionalProperties: false }
 );

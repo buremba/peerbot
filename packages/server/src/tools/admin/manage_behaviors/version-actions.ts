@@ -229,10 +229,10 @@ export async function handleCreateVersion(
   }
 
   // Executor matrix on the LIVE row (set_as_current writes triggers to it):
-  // same rules as create/update — automated triggers need a Behavior-level
-  // executor, and every referenced executor must be authorized. Without this,
-  // create_version (the primary authoring path — `lobu apply`, owletto edit)
-  // could land zombie triggers or unvalidated respond_with overrides.
+  // same rules as create/update — automated Behaviors need an executor, and
+  // every referenced executor must be authorized. Without this, create_version
+  // (the primary authoring path — `lobu apply`, owletto edit) could land
+  // zombie triggers.
   const setAsCurrentForMatrix = args.set_as_current !== false;
   if (setAsCurrentForMatrix && versionOrganizationId && triggersChanged) {
     const rowDefaults: BehaviorExecutorDefaults = {
@@ -248,7 +248,6 @@ export async function handleCreateVersion(
     await assertBehaviorExecutorsAuthorized(
       sql,
       versionOrganizationId,
-      triggerWrite.triggers as BehaviorTriggerInput[],
       rowDefaults,
       ctx
     );

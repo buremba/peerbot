@@ -101,9 +101,11 @@ describe('derived entity routing (list + resolve_path)', () => {
     expect(Number(byName.acme.metadata.purchases)).toBe(2);
   });
 
-  it('entity_type list/get entity_count matches derived list total (not stored-row COUNT)', async () => {
-    // Regression: Memory rail + schema list used COUNT(entities) only, so
-    // derived types always showed 0 even when list rows existed.
+  it('entity list reports the true derived total while schema list/get/bootstrap skip the live derived count', async () => {
+    // Policy: the entity LIST runs the backing SQL anyway (it needs the rows),
+    // so it reports the exact total via a single-pass window count. Schema
+    // list/get and the resolve_path bootstrap must NOT re-run the backing SQL
+    // just for a badge count — those hot paths report 0 for derived types.
     const list = (await api.entities.list({ entity_type: 'spend-vendor' })) as {
       entities: unknown[];
       metadata?: { total_count?: number };
@@ -115,13 +117,13 @@ describe('derived entity routing (list + resolve_path)', () => {
       entity_types?: Array<{ slug: string; entity_count?: number }>;
     };
     const spend = types.entity_types?.find((t) => t.slug === 'spend-vendor');
-    expect(spend?.entity_count).toBe(listTotal);
+    expect(spend?.entity_count).toBe(0);
 
     const got = (await api.entity_schema.getType('spend-vendor')) as {
       entity_type?: { entity_count?: number; backing_sql?: string | null };
     };
     expect(got.entity_type?.backing_sql).toBeTruthy();
-    expect(got.entity_type?.entity_count).toBe(listTotal);
+    expect(got.entity_type?.entity_count).toBe(0);
 
     const resolved = (await resolvePath({
       path: `/${orgSlug}`,
@@ -132,7 +134,7 @@ describe('derived entity routing (list + resolve_path)', () => {
     const bootstrapType = resolved.bootstrap?.entity_types?.find(
       (type) => type.slug === 'spend-vendor'
     );
-    expect(bootstrapType?.entity_count).toBe(listTotal);
+    expect(bootstrapType?.entity_count).toBe(0);
   });
 
   it('keeps type lists available when a connector-backed derived count fails', async () => {

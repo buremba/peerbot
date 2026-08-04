@@ -557,9 +557,14 @@ export async function querySqlImpl(
   if ('error' in bounds) return errorResult(bounds.error, startTime);
   const { limit, offset } = bounds;
 
-  const countSql = `SELECT count(*)::int AS c FROM (${scopedSql}) AS _t ${searchWhere}`;
   const orderBy = args.sort_by ? `ORDER BY "${args.sort_by}" ${sortOrder}` : '';
-  const dataSql = `SELECT * FROM (${scopedSql}) AS _t ${searchWhere} ${orderBy} LIMIT ${limit} OFFSET ${offset}`;
+  // Single execution: the scoped subquery can be expensive (derived entity views
+  // aggregate large event ranges), so run it ONCE and take the total from a
+  // window count instead of a second full `SELECT count(*) FROM (subquery)`
+  // pass. Windows evaluate before LIMIT, so the count covers the full filtered
+  // set exactly like the old separate COUNT did.
+  const TOTAL_COL = '__lobu_total_count__';
+  const dataSql = `SELECT *, COUNT(*) OVER () AS "${TOTAL_COL}" FROM (${scopedSql}) AS _t ${searchWhere} ${orderBy} LIMIT ${limit} OFFSET ${offset}`;
 
   try {
     const sql = getDb();
@@ -570,23 +575,33 @@ export async function querySqlImpl(
     const txPromise = sql.begin(async (tx: typeof sql) => {
       await tx`SET TRANSACTION READ ONLY`;
       await tx`SET LOCAL statement_timeout = '5s'`;
-      const cnt = await tx.unsafe(countSql, params);
       const data = await tx.unsafe(dataSql, params);
-      return [cnt, data] as const;
+      return data;
     });
-    const [countResult, dataResult] = await raceAbort(txPromise, ctx.abortSignal);
+    const dataResult = await raceAbort(txPromise, ctx.abortSignal);
 
-    const totalCount = countResult[0]?.c ?? 0;
+    const rawRows = Array.isArray(dataResult)
+      ? (dataResult as Array<Record<string, unknown>>)
+      : [];
+    // Empty page: total is unknowable from rows alone. offset=0 with no rows is a
+    // true 0; an out-of-range offset reports 0 (has_more is false either way).
+    const totalCount = rawRows.length > 0 ? Number(rawRows[0][TOTAL_COL]) || 0 : 0;
+    const rows = rawRows.map((row) => {
+      const { [TOTAL_COL]: _total, ...rest } = row;
+      return rest;
+    });
 
-    const columns = ((dataResult as any).columns ?? []).map(
-      (col: { name: string; type: number }) => ({
-        name: col.name,
-        type: oidToTypeName(col.type),
-      })
-    );
+    const columns = ((dataResult as any).columns ?? [])
+      .filter((col: { name: string }) => col.name !== TOTAL_COL)
+      .map(
+        (col: { name: string; type: number }) => ({
+          name: col.name,
+          type: oidToTypeName(col.type),
+        })
+      );
 
     return {
-      rows: Array.isArray(dataResult) ? dataResult : [],
+      rows,
       columns,
       total_count: totalCount,
       has_more: offset + limit < totalCount,

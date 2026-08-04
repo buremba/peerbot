@@ -1,5 +1,22 @@
 # Changelog
 
+## [14.14.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.13.0...lobu-v14.14.0) (2026-08-04)
+
+
+### Features
+
+* **repo:** require human UI proof before release ([#2478](https://github.com/lobu-ai/lobu/issues/2478)) ([6155791](https://github.com/lobu-ai/lobu/commit/6155791de5a679c7190a935713d9481d09050e84))
+* **ui:** simplify agent onboarding surfaces ([#2481](https://github.com/lobu-ai/lobu/issues/2481)) ([e997b5e](https://github.com/lobu-ai/lobu/commit/e997b5e48eb813a34e10e305e3282b36225a1359))
+
+
+### Bug Fixes
+
+* **embeddings:** exit the forked server when its parent dies ([#2480](https://github.com/lobu-ai/lobu/issues/2480)) ([411497a](https://github.com/lobu-ai/lobu/commit/411497aef5c464c04acdb22c9ce9b401c3258528))
+* **server:** pair admin allowlist with its canonical actor ([#2427](https://github.com/lobu-ai/lobu/issues/2427)) ([f6418d0](https://github.com/lobu-ai/lobu/commit/f6418d0e4fe2a599f89f235468ba6c39d1f027d4))
+* **server:** park Behaviors until provider quota reset ([#2467](https://github.com/lobu-ai/lobu/issues/2467)) ([0bf2c43](https://github.com/lobu-ai/lobu/commit/0bf2c43d6ab45ad36fd9b4c1829f92056aca295e))
+* **server:** secure first managed OAuth connect ([#2469](https://github.com/lobu-ai/lobu/issues/2469)) ([d928e6c](https://github.com/lobu-ai/lobu/commit/d928e6c24a90f0659c9ea8cb7bf6fb870baa0dde))
+* **slack:** clarify and fence hosted workspace linking ([#2482](https://github.com/lobu-ai/lobu/issues/2482)) ([5867a6b](https://github.com/lobu-ai/lobu/commit/5867a6b5dd24773cf86d50aad51edd748ecd3313))
+
 ## [14.13.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.12.0...lobu-v14.13.0) (2026-08-04)
 
 

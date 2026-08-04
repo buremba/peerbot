@@ -3,7 +3,7 @@
   "name": "io.github.lobu-ai/lobu",
   "title": "Lobu",
   "description": "Shared, permission-aware company context for AI agents, with event-sourced provenance, approvals, and audit over MCP.",
-  "version": "3.0.8",
+  "version": "0.2.0",
   "repository": {
     "url": "https://github.com/lobu-ai/lobu",
     "source": "github"

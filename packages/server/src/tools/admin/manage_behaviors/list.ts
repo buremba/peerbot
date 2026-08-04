@@ -83,7 +83,8 @@ export async function handleList(
       parent.slug as parent_slug,
       pet.slug as parent_entity_type,
       i.current_version_id,
-      (SELECT COUNT(*) FROM canvas_windows iw WHERE iw.watcher_id = i.id) as windows_count
+      (SELECT COUNT(*) FROM canvas_windows iw WHERE iw.watcher_id = i.id) as windows_count,
+      (SELECT COUNT(DISTINCT iw.client_id) FROM canvas_windows iw WHERE iw.watcher_id = i.id AND iw.client_id IS NOT NULL) as processing_client_count
   `;
 
 	if (args.include_details) {

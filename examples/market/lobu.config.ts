@@ -1,35 +1,33 @@
 import {
   connectorFromFile,
   defineAgent,
+  defineBehavior,
   defineConfig,
-  defineSkill,
   defineEntityType,
   defineRelationshipType,
-  defineBehavior,
+  defineSkill,
   secret,
 } from "@lobu/cli/config";
 import type ExaNewsFeedConnector from "./exa-news-feed.connector.ts";
 
-const SECTOR_ENUM = ["bio-health", "ai", "fintech", "crypto", "consumer"];
-
 const founderActivityTrackerSkill = defineSkill({
   name: "founder-activity-tracker",
   content:
-    'You are a venture capital analyst tracking the public activity of startup founders in your portfolio. The founders are the entities bound to this Behavior and recent activity is in `founder_posts`. Return only high-importance findings in `signals` as standard observation event drafts. Put the readable finding in `content`; put `{ kind: "founder_activity", founder, activity_type, importance: "high" }` in `metadata`, and use `parent_event_id` when a source post supports the finding. Return an empty array when there is no notable activity.\n',
+    'Track high-signal public activity from people connected to organizations through `founded_by`. Return notable findings in `signals` as observation event drafts. Put the readable finding in `content`; put `{ kind: "founder_activity", person, activity_type, importance: "high" }` in `metadata`, and use `parent_event_id` when a source post supports the finding. Return an empty array when there is no notable activity.\n',
 });
 
 const opportunityMatcherSkill = defineSkill({
   name: "opportunity-matcher",
   content:
-    "You are a community intelligence agent for a private founder community managed by a venture capital fund.\nYour job is to monitor founder activity and identify high-quality introduction opportunities between portfolio founders.\n\nThe community members are the entities bound to this Behavior — the payload's `entities` array carries each member's name, type, and metadata (title, role). Their recent activity arrives in the payload's `content` source.\n\n## Instructions\n1. Scan all new content for signals: launches, posts, hiring announcements, funding news, project updates, and collaboration signals.\n2. For each signal, identify which other community founders are likely to care and explain why.\n3. Suggest a concrete action: warm intro draft, shared-interest notification, or flagging for community ops review.\n4. Only suggest introductions where there is a clear, specific overlap — not generic \"both work in tech\" matches.\n5. Rate each signal's strength (high/medium/low) based on timeliness and relevance.\n",
+    "Monitor public activity from founders and organizations, identify specific collaboration or introduction opportunities, explain the overlap, and recommend a concrete next action. Only return high-signal matches grounded in current source events.\n",
 });
 
-const vcTracking = defineAgent({
+const marketIntelligence = defineAgent({
   id: "vc-tracking",
   skills: [founderActivityTrackerSkill, opportunityMatcherSkill],
   name: "vc-tracking",
   description:
-    "Track companies, founders, and investment opportunities for venture firms",
+    "Track organizations, people, products, funding events, and market signals",
   dir: ".",
   providers: [
     {
@@ -49,37 +47,32 @@ const vcTracking = defineAgent({
   },
 });
 
-const company = defineEntityType({
+// The database slug remains `company` for compatibility. Publicly this is the
+// canonical Organization type: operating companies, investment firms,
+// accelerators, venture funds, nonprofits, and other institutions.
+const organization = defineEntityType({
   key: "company",
-  name: "Company",
-  description: "Portfolio company or deal pipeline company",
+  name: "Organization",
+  description:
+    "Canonical public identity for an organization. Roles are represented by organization_type and relationships, not separate entity types.",
   properties: {
-    market: {
+    organization_type: {
       type: "string",
+      enum: [
+        "operating_company",
+        "investment_firm",
+        "accelerator",
+        "venture_fund",
+        "nonprofit",
+        "government",
+        "other",
+      ],
       "x-table-column": true,
-      "x-table-label": "Market",
-    },
-    sector: {
-      type: "string",
-      enum: SECTOR_ENUM,
-      "x-table-column": true,
-      "x-table-label": "Sector",
-    },
-    category: {
-      type: "string",
-      enum: ["portfolio", "recruiter", "prospect"],
-      "x-table-column": true,
-      "x-table-label": "Category",
-    },
-    location: {
-      type: "string",
-      "x-table-column": true,
-      "x-table-label": "Location",
+      "x-table-label": "Organization Type",
     },
     domain: {
       type: "string",
-      description:
-        "Normalized company domain used by identity-engine hosted_domain facts",
+      description: "Normalized public domain",
       "x-identity-namespace": {
         namespace: "hosted_domain",
         normalize: "lowercase",
@@ -87,15 +80,11 @@ const company = defineEntityType({
       "x-table-column": true,
       "x-table-label": "Domain",
     },
+    link: { type: "string", format: "uri" },
     one_liner: { type: "string" },
-    team_size: { type: "integer" },
-    founding_year: { type: "integer" },
-    funding_raised: { type: "string" },
-    valuation: { type: "string" },
-    revenue: { type: "string" },
-    growth_rate: { type: "string" },
-    traction_score: { type: "number" },
-    thesis: { type: "string" },
+    description: { type: "string" },
+    categories: { type: "array", items: { type: "string" } },
+    location: { type: "string" },
     stage: {
       type: "string",
       enum: [
@@ -109,81 +98,59 @@ const company = defineEntityType({
         "public",
       ],
     },
-    linkedin_url: { type: "string", format: "uri" },
-    logo_url: { type: "string", format: "uri", description: "Brand logo URL" },
-    tagline: { type: "string", description: "One-line brand tagline" },
-    brand_voice: {
+    operating_status: {
       type: "string",
-      description: "Brand voice / tone-of-voice notes",
+      enum: ["active", "acquired", "inactive", "closed"],
     },
-    social_handles: {
-      type: "object",
-      description:
-        "Brand social handles by platform (twitter, linkedin, github, …)",
-      properties: {
-        twitter: { type: "string" },
-        linkedin: { type: "string" },
-        github: { type: "string" },
-        youtube: { type: "string" },
-        instagram: { type: "string" },
-        tiktok: { type: "string" },
-      },
-      additionalProperties: { type: "string" },
-    },
+    stage_focus: { type: "array", items: { type: "string" } },
+    sector_focus: { type: "array", items: { type: "string" } },
+    portfolio_url: { type: "string", format: "uri" },
+    canonical_path: { type: "string" },
+    indexability: { type: "string", enum: ["noindex", "index"] },
   },
 });
 
-const founder = defineEntityType({
-  key: "founder",
-  name: "Founder",
-  description: "Company founder or co-founder",
+const person = defineEntityType({
+  key: "person",
+  name: "Person",
+  description:
+    "Canonical public identity for a real-world person. Founder, employee, executive, and investor are relationship roles.",
   properties: {
-    role: { type: "string", "x-table-column": true, "x-table-label": "Role" },
-    sector: {
-      type: "string",
-      enum: SECTOR_ENUM,
-      "x-table-column": true,
-      "x-table-label": "Sector",
-    },
-    location: {
-      type: "string",
-      "x-table-column": true,
-      "x-table-label": "Location",
-    },
-    specialties: {
-      type: "array",
-      items: { type: "string" },
-      "x-table-column": true,
-      "x-table-label": "Specialties",
-    },
+    full_name: { type: "string" },
+    headline: { type: "string" },
+    role: { type: "string" },
+    specialties: { type: "array", items: { type: "string" } },
     background: { type: "string" },
     linkedin_url: { type: "string", format: "uri" },
     twitter_handle: { type: "string" },
-    education: { type: "string" },
-    career_history: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
-          company: { type: "string" },
-          start: { type: "string" },
-          end: { type: "string" },
-        },
-      },
-    },
-    notable_exits: { type: "array", items: { type: "string" } },
-    provenance: {
-      type: "string",
-      enum: ["inbound", "outbound", "referral", "event", "portfolio"],
-    },
+    canonical_path: { type: "string" },
+    indexability: { type: "string", enum: ["noindex", "index"] },
   },
 });
 
-const fundRound = defineEntityType({
+const product = defineEntityType({
+  key: "product",
+  name: "Product",
+  description:
+    "Distinct product or platform. Pricing plans and commercial offers remain sourced events, not product entities.",
+  properties: {
+    product_type: { type: "string" },
+    tagline: { type: "string" },
+    description: { type: "string" },
+    link: { type: "string", format: "uri" },
+    categories: { type: "array", items: { type: "string" } },
+    key_features: { type: "array", items: { type: "string" } },
+    availability: { type: "string" },
+    canonical_path: { type: "string" },
+    indexability: { type: "string", enum: ["noindex", "index"] },
+  },
+});
+
+const fundingRound = defineEntityType({
   key: "fund-round",
-  name: "Fund Round",
-  description: "Investment round (seed, series A, etc.)",
+  name: "Funding Round",
+  description:
+    "Non-indexed materialized projection of an append-only financing event. Participant and lead roles are represented through participated_in relationships.",
   properties: {
     round_type: {
       type: "string",
@@ -205,295 +172,339 @@ const fundRound = defineEntityType({
       "x-table-column": true,
       "x-table-label": "Amount (USD)",
     },
-    date: {
+    currency: { type: "string" },
+    announced_at: { type: "string", format: "date-time" },
+    status: {
       type: "string",
-      format: "date",
-      "x-table-column": true,
-      "x-table-label": "Date",
+      enum: ["announced", "closed", "cancelled", "rumoured"],
     },
-    lead_investor_slug: {
-      type: "string",
-      "x-table-column": true,
-      "x-table-label": "Lead Investor",
-      "x-link-entity-type": "investor",
-      "x-link-lookup-field": "slug",
-    },
-    post_money_usd: { type: "number" },
-    participants: { type: "array", items: { type: "string" } },
-  },
-});
-
-const investor = defineEntityType({
-  key: "investor",
-  name: "Investor",
-  description: "VC firm, angel investor, or fund",
-  properties: {
-    investor_type: {
-      type: "string",
-      enum: [
-        "vc_firm",
-        "angel",
-        "corporate",
-        "accelerator",
-        "family_office",
-        "partner",
-      ],
-      "x-table-column": true,
-      "x-table-label": "Type",
-    },
-    sector_focus: {
+    source_urls: {
       type: "array",
-      items: { type: "string" },
-      "x-table-column": true,
-      "x-table-label": "Sector Focus",
+      items: { type: "string", format: "uri" },
     },
-    website: {
+    projection_kind: { type: "string", enum: ["financing_event"] },
+    projection_status: {
       type: "string",
-      format: "uri",
-      "x-table-column": true,
-      "x-table-label": "Website",
+      enum: ["materialized", "superseded", "disputed"],
     },
-    sector: {
-      type: "string",
-      enum: SECTOR_ENUM,
-      "x-table-column": true,
-      "x-table-label": "Sector",
-    },
-    bio: { type: "string" },
-    fund_size: { type: "string" },
-    stage_focus: { type: "array", items: { type: "string" } },
-    linkedin_url: { type: "string", format: "uri" },
-    portfolio_url: { type: "string", format: "uri" },
-    typical_check_size: { type: "string" },
+    indexability: { type: "string", enum: ["noindex", "index"] },
   },
 });
 
 const jobPosting = defineEntityType({
   key: "job-posting",
   name: "Job Posting",
-  description: "Open role at a market.company",
+  description: "Public job posting associated with an organization",
   properties: {
-    role: { type: "string", "x-table-column": true, "x-table-label": "Role" },
     title: { type: "string", "x-table-column": true, "x-table-label": "Title" },
     company_id: {
       type: "integer",
-      description: "FK to market.company",
+      description: "FK to Market organization",
       "x-table-column": true,
-      "x-table-label": "Company",
+      "x-table-label": "Organization",
       "x-link-entity-type": "company",
     },
-    posted_by_founder_id: {
+    posted_by_person_id: {
       type: "integer",
-      description: "FK to market.founder if posted by a verified founder",
-      "x-link-entity-type": "founder",
+      description: "FK to canonical public person",
+      "x-link-entity-type": "person",
     },
     posted_by_member_id: {
       type: "integer",
-      description:
-        "FK to market.$member if posted by an authorized member who isn't a founder",
+      description: "FK to authenticated workspace member",
       "x-link-entity-type": "$member",
     },
     city_id: {
       type: "integer",
-      description: "FK to atlas.city (cross-org reference, optional)",
+      description: "FK to local Market city",
       "x-table-column": true,
       "x-table-label": "City",
+      "x-link-entity-type": "city",
     },
     description: { type: "string" },
-    status: {
-      type: "string",
-      enum: ["open", "filled", "closed"],
-      "x-table-column": true,
-      "x-table-label": "Status",
-    },
+    status: { type: "string", enum: ["open", "filled", "closed"] },
     posted_at: { type: "string", format: "date-time" },
     expires_at: { type: "string", format: "date-time" },
   },
 });
 
-const product = defineEntityType({
-  key: "product",
-  name: "Product",
-  description: "Company product tracked for reviews and market signals",
+const industry = defineEntityType({
+  key: "industry",
+  name: "Industry",
+  description: "Local reference taxonomy for organizations and products",
   properties: {
-    tagline: {
-      type: "string",
-      "x-table-column": true,
-      "x-table-label": "Tagline",
+    parent_id: {
+      type: "integer",
+      description: "FK to parent Market industry",
+      "x-link-entity-type": "industry",
     },
-    target_audience: {
+    taxonomy_source: {
       type: "string",
-      "x-table-column": true,
-      "x-table-label": "Target Audience",
+      enum: ["NAICS", "BICS", "custom"],
     },
-    value_proposition: {
-      type: "string",
-      "x-table-column": true,
-      "x-table-label": "Value Proposition",
-    },
-    key_features: { type: "array", items: { type: "string" } },
-    differentiators: { type: "string" },
+    code: { type: "string" },
+    description: { type: "string" },
   },
 });
 
-const sector = defineEntityType({
-  key: "sector",
-  name: "Sector",
-  description: "Investment thesis / practice area",
+const country = defineEntityType({
+  key: "country",
+  name: "Country",
+  description: "Local reference identity for a sovereign country",
   properties: {
-    sector_key: {
-      type: "string",
-      enum: SECTOR_ENUM,
-      "x-table-column": true,
-      "x-table-label": "Sector Key",
-    },
-    description: {
-      type: "string",
-      "x-table-column": true,
-      "x-table-label": "Description",
-    },
-    lead_partner_slug: {
-      type: "string",
-      "x-table-column": true,
-      "x-table-label": "Lead Partner",
-      "x-link-entity-type": "investor",
-      "x-link-lookup-field": "slug",
-    },
-    color: { type: "string" },
+    iso2: { type: "string", minLength: 2, maxLength: 2 },
+    iso3: { type: "string", minLength: 3, maxLength: 3 },
+    currency: { type: "string" },
+    official_name: { type: "string" },
   },
 });
 
-const educatedAt = defineRelationshipType({
-  key: "educated_at",
-  name: "Educated At",
+const region = defineEntityType({
+  key: "region",
+  name: "Region",
+  description: "Local reference identity for an administrative region",
+  properties: {
+    country_id: {
+      type: "integer",
+      description: "FK to local Market country",
+      "x-link-entity-type": "country",
+    },
+    iso_3166_2: { type: "string" },
+  },
+});
+
+const city = defineEntityType({
+  key: "city",
+  name: "City",
+  description: "Local reference identity for a city, town, or metro area",
+  properties: {
+    country_id: {
+      type: "integer",
+      description: "FK to local Market country",
+      "x-link-entity-type": "country",
+    },
+    region_id: {
+      type: "integer",
+      description: "FK to local Market region",
+      "x-link-entity-type": "region",
+    },
+    timezone: { type: "string" },
+  },
+});
+
+const technology = defineEntityType({
+  key: "technology",
+  name: "Technology",
   description:
-    "Founder was educated at a university (cross-org reference into atlas.university)",
-  rules: [{ source: "founder", target: "university" }],
+    "Local reference identity for a technology, framework, library, or platform",
+  properties: {
+    category: { type: "string" },
+    homepage_url: { type: "string", format: "uri" },
+    open_source: { type: "boolean" },
+  },
+});
+
+const university = defineEntityType({
+  key: "university",
+  name: "University",
+  description: "Local reference identity for a higher-education institution",
+  properties: {
+    country_id: {
+      type: "integer",
+      description: "FK to local Market country",
+      "x-link-entity-type": "country",
+    },
+    city_id: {
+      type: "integer",
+      description: "FK to local Market city",
+      "x-link-entity-type": "city",
+    },
+    homepage_url: { type: "string", format: "uri" },
+  },
 });
 
 const foundedBy = defineRelationshipType({
   key: "founded_by",
   name: "Founded By",
-  description: "Company was founded by this person",
+  description: "An organization was founded by a public person",
+  rules: [{ source: "company", target: "person" }],
 });
 
-const headquarteredIn = defineRelationshipType({
-  key: "headquartered_in",
-  name: "Headquartered In",
+const productOf = defineRelationshipType({
+  key: "product_of",
+  name: "Product Of",
+  description: "A product is made or operated by an organization",
+  rules: [{ source: "product", target: "company" }],
+});
+
+const roundOf = defineRelationshipType({
+  key: "round_of",
+  name: "Round Of",
   description:
-    "Company is headquartered in a city (cross-org reference into atlas.city)",
-  rules: [{ source: "company", target: "city" }],
+    "A materialized funding-round projection belongs to an organization",
+  rules: [{ source: "fund-round", target: "company" }],
+});
+
+const participatedIn = defineRelationshipType({
+  key: "participated_in",
+  name: "Participated In",
+  description:
+    "An organization participated in a funding round; metadata.lead identifies a lead or co-lead",
+  rules: [{ source: "company", target: "fund-round" }],
+});
+
+const partnerAt = defineRelationshipType({
+  key: "partner_at",
+  name: "Partner At",
+  description:
+    "A public person is an investment professional at an organization",
+  rules: [{ source: "person", target: "company" }],
+});
+
+const worksAt = defineRelationshipType({
+  key: "works_at",
+  name: "Works At",
+  description: "A public person currently works at an organization",
+  rules: [{ source: "person", target: "company" }],
+});
+
+const previouslyAt = defineRelationshipType({
+  key: "previously_at",
+  name: "Previously At",
+  description: "A public person previously worked at an organization",
+  rules: [{ source: "person", target: "company" }],
+});
+
+const educatedAt = defineRelationshipType({
+  key: "educated_at",
+  name: "Educated At",
+  description: "A public person studied at a university",
+  rules: [{ source: "person", target: "university" }],
 });
 
 const inIndustry = defineRelationshipType({
   key: "in_industry",
   name: "In Industry",
+  description: "An organization or product is classified in an industry",
+  rules: [
+    { source: "company", target: "industry" },
+    { source: "product", target: "industry" },
+  ],
+});
+
+const focusesOn = defineRelationshipType({
+  key: "focuses_on",
+  name: "Focuses On",
   description:
-    "Company is in an industry (cross-org reference into atlas.industry)",
-  rules: [{ source: "company", target: "industry" }],
+    "A public person or organization has a documented focus on an industry",
+  rules: [
+    { source: "person", target: "industry" },
+    { source: "company", target: "industry" },
+  ],
 });
 
-const inSector = defineRelationshipType({
-  key: "in_sector",
-  name: "In Sector",
-});
-
-const investedIn = defineRelationshipType({
-  key: "invested_in",
-  name: "Invested In",
-  description: "Investor has invested in this company",
-});
-
-const mentions = defineRelationshipType({
-  key: "mentions",
-  name: "Mentions",
-  description:
-    "Loose reference — one entity is mentioned in the context of another",
+const headquarteredIn = defineRelationshipType({
+  key: "headquartered_in",
+  name: "Headquartered In",
+  description: "An organization is headquartered in a city",
+  rules: [{ source: "company", target: "city" }],
 });
 
 const operatesIn = defineRelationshipType({
   key: "operates_in",
   name: "Operates In",
-  description:
-    "Company operates in a country or region (cross-org reference into atlas.country or atlas.region)",
+  description: "An organization operates in a country or region",
   rules: [
     { source: "company", target: "country" },
     { source: "company", target: "region" },
   ],
 });
 
-const previouslyAt = defineRelationshipType({
-  key: "previously_at",
-  name: "Previously At",
-});
-
-const primaryRelationshipOwner = defineRelationshipType({
-  key: "primary_relationship_owner",
-  name: "Primary Relationship Owner",
-});
-
-const roundLedBy = defineRelationshipType({
-  key: "round_led_by",
-  name: "Round Led By",
-});
-
-const roundOf = defineRelationshipType({
-  key: "round_of",
-  name: "Round Of",
-});
-
-const sourcedBy = defineRelationshipType({
-  key: "sourced_by",
-  name: "Sourced By",
-});
-
 const usesTechnology = defineRelationshipType({
   key: "uses_technology",
   name: "Uses Technology",
-  description:
-    "Company uses a technology in its stack (cross-org reference into atlas.technology)",
-  rules: [{ source: "company", target: "technology" }],
-});
-
-const worksAt = defineRelationshipType({
-  key: "works_at",
-  name: "Works At",
+  description: "An organization or product publicly uses a technology",
   rules: [
-    { source: "$member", target: "company" },
-    { source: "founder", target: "company" },
+    { source: "company", target: "technology" },
+    { source: "product", target: "technology" },
   ],
 });
 
+const investedIn = defineRelationshipType({
+  key: "invested_in",
+  name: "Invested In",
+  description:
+    "A public person or organization invested in another organization",
+  rules: [
+    { source: "person", target: "company" },
+    { source: "company", target: "company" },
+  ],
+});
+
+const acquiredBy = defineRelationshipType({
+  key: "acquired_by",
+  name: "Acquired By",
+  description: "An organization was acquired by another organization",
+  rules: [{ source: "company", target: "company" }],
+});
+
+const subsidiaryOf = defineRelationshipType({
+  key: "subsidiary_of",
+  name: "Subsidiary Of",
+  description: "An organization is a subsidiary of another organization",
+  rules: [{ source: "company", target: "company" }],
+});
+
+const brandOf = defineRelationshipType({
+  key: "brand_of",
+  name: "Brand Of",
+  description: "A brand or organization belongs to a parent organization",
+  rules: [{ source: "company", target: "company" }],
+});
+
+const integratesWith = defineRelationshipType({
+  key: "integrates_with",
+  name: "Integrates With",
+  description: "A product or organization publicly supports an integration",
+});
+
+const competitorOf = defineRelationshipType({
+  key: "competitor_of",
+  name: "Competitor Of",
+  description:
+    "Two organizations or products compete in a defined market category",
+});
+
 const founderActivityTracker = defineBehavior({
-  agent: vcTracking,
+  agent: marketIntelligence,
   slug: "founder-activity-tracker",
   name: "Founder Activity Tracker",
   triggers: [{ kind: "schedule", cron: "0 10 * * *" }],
   notification: { priority: "normal" },
-  tags: ["vc", "founders", "daily"],
+  tags: ["market", "people", "daily"],
   minCooldownSeconds: 600,
   outputs: { signals: { event: "observation" } },
   skills: ["founder-activity-tracker"],
   sources: {
     founder_posts:
-      "SELECT id, title, payload_text, author_name, source_url, occurred_at, score, origin_type, connector_key FROM events WHERE connector_key IN ('x') AND origin_type IN ('tweet', 'reply') ORDER BY occurred_at DESC LIMIT 300\n",
+      "SELECT id, title, payload_text, author_name, source_url, occurred_at, score, origin_type, connector_key FROM events WHERE connector_key = 'x' AND origin_type IN ('tweet', 'reply') ORDER BY occurred_at DESC LIMIT 300\n",
   },
   reactionsGuidance:
-    "When a founder signals hiring activity, fundraising, or pivots, flag for the investment team.\nTrack founders going quiet as a potential concern.\nAlert on any public statements about competitors or market conditions.\n",
+    "Flag meaningful hiring, fundraising, product, strategy, or market-positioning changes for review.\n",
 });
 
 const opportunityMatcher = defineBehavior({
-  agent: vcTracking,
+  agent: marketIntelligence,
   slug: "opportunity-matcher",
   name: "Opportunity Matcher",
   triggers: [{ kind: "schedule", cron: "0 */12 * * *" }],
   notification: { priority: "normal" },
-  tags: ["vc", "matching"],
+  tags: ["market", "matching"],
   minCooldownSeconds: 600,
   skills: ["opportunity-matcher"],
   sources: {
     content:
-      "SELECT id, title, payload_text, author_name, source_url, occurred_at, score, origin_type, connector_key FROM events WHERE entity_id IN (SELECT id FROM entities WHERE entity_type = 'founder') ORDER BY occurred_at DESC LIMIT 300\n",
+      "SELECT id, title, payload_text, author_name, source_url, occurred_at, score, origin_type, connector_key FROM events WHERE entity_ids && ARRAY(SELECT id FROM entities WHERE entity_type = 'person') ORDER BY occurred_at DESC LIMIT 300\n",
   },
 });
 
@@ -506,33 +517,41 @@ export default defineConfig({
   org: "market",
   orgName: "Market",
   orgDescription:
-    "Track companies, founders, and investment opportunities for venture firms",
-  agents: [vcTracking],
+    "Public market graph for organizations, people, products, financing events, and sourced signals",
+  agents: [marketIntelligence],
   entities: [
-    company,
-    founder,
-    fundRound,
-    investor,
-    jobPosting,
+    organization,
+    person,
     product,
-    sector,
+    fundingRound,
+    jobPosting,
+    industry,
+    country,
+    region,
+    city,
+    technology,
+    university,
   ],
   relationships: [
-    educatedAt,
     foundedBy,
-    headquarteredIn,
-    inIndustry,
-    inSector,
-    investedIn,
-    mentions,
-    operatesIn,
-    previouslyAt,
-    primaryRelationshipOwner,
-    roundLedBy,
+    productOf,
     roundOf,
-    sourcedBy,
-    usesTechnology,
+    participatedIn,
+    partnerAt,
     worksAt,
+    previouslyAt,
+    educatedAt,
+    inIndustry,
+    focusesOn,
+    headquarteredIn,
+    operatesIn,
+    usesTechnology,
+    investedIn,
+    acquiredBy,
+    subsidiaryOf,
+    brandOf,
+    integratesWith,
+    competitorOf,
   ],
   behaviors: [founderActivityTracker, opportunityMatcher],
 });

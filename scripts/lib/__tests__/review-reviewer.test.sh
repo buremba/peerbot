@@ -37,6 +37,8 @@ assert_auto_selected codex CODEX_CI=0
   fail "codex override was not honored"
 [ "$(review_select_reviewer claude)" = "claude" ] ||
   fail "claude override was not honored"
+[ "$(review_select_reviewer pi)" = "pi" ] ||
+  fail "pi override was not honored"
 
 if review_select_reviewer invalid >/dev/null 2>&1; then
   fail "invalid reviewer override unexpectedly succeeded"
@@ -72,7 +74,7 @@ case "$failure_message" in
   *) fail "fail-closed message does not explain fallback policy" ;;
 esac
 case "$failure_message" in
-  *"REVIEWER_CLI=claude|codex"*) ;;
+  *"REVIEWER_CLI=claude|codex|pi"*) ;;
   *) fail "fail-closed message does not explain the explicit override" ;;
 esac
 
@@ -89,6 +91,22 @@ schema_arg_count="$(grep -F -- '--json-schema "$(cat "$SCHEMA_FILE")"' "$review_
 
 grep -Fq '2> "$diagnostic_file"' "$review_script" ||
   fail "inline Codex reviewer stderr must be retained for fail-closed diagnostics"
+
+# pi reviewer arm contract: explicit opt-in invocation, ephemeral session, and a
+# read-only-shaped tool allowlist (read,bash — no edit/write). The allowlist is
+# not an OS sandbox; that trust parity with the claude arm is documented in
+# review.sh itself.
+grep -Fq 'PI_REVIEW_MODEL="${PI_REVIEW_MODEL:-gpt-5.6-terra}"' "$review_script" ||
+  fail "pi reviewer must default to the gpt-5.6-terra model"
+grep -Fq 'pi -p' "$review_script" ||
+  fail "review.sh must keep its pi invocation arm"
+grep -Fq -- '--no-session' "$review_script" ||
+  fail "pi reviewer arm must run an ephemeral session"
+grep -Fq -- '--tools "read,bash"' "$review_script" ||
+  fail "pi reviewer arm must keep its read-only-shaped tool allowlist"
+if grep -E -- 'pi[^|]*--tools [^[:space:]]*(edit|write)' "$review_script"; then
+  fail "pi reviewer arm must not carry edit/write tools"
+fi
 
 if grep -Eiq 'herdr|CLAUDE_REVIEW_HERDR' "$review_script"; then
   fail "review.sh must not reference Herdr (inline-only reviewer)"
@@ -114,6 +132,8 @@ grep -Fq 'claude -p' "$review_fix_script" ||
   fail "review-fix.sh must keep its claude invocation arm"
 grep -Eq -- '--tools [^[:space:]]*Edit[^[:space:]]*Write' "$review_fix_script" ||
   fail "review-fix.sh claude arm must carry the Edit/Write tools that make it a fixer"
+grep -Fq -- '--tools "read,bash,edit,write"' "$review_fix_script" ||
+  fail "review-fix.sh pi arm must carry the edit/write tools that make it a fixer"
 if grep -Fq 'command -v codex >/dev/null' "$review_fix_script"; then
   fail "review-fix.sh must not gate every run on codex being installed"
 fi

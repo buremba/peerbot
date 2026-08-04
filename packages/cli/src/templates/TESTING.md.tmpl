@@ -1,227 +1,136 @@
-# Testing Your Lobu
+# Testing Your Lobu Project
 
-This bot provides HTTP APIs for testing and automation. These endpoints allow AI agents and developers to interact with your bot programmatically.
+Use this checklist to prove the paths the user selected. Replace placeholders
+with ids returned by Lobu; do not invent agent, connection, feed, Behavior, or
+event ids.
 
-## 1. Messaging API
+## Local runtime
 
-Send messages to your bot with optional file uploads.
-
-> Examples below use `"platform": "slack"`; substitute your platform's connector key (telegram, discord, whatsapp, teams, gchat) if you scaffolded with a different one.
-
-### Endpoint
-```
-POST http://localhost:{{GATEWAY_PORT}}/lobu/api/v1/agents/{agentId}/messages
-```
-
-### Authentication
-
-**Bearer Token in Header:**
-```
-Authorization: Bearer xoxb-your-bot-token
-```
-
-The bot token must be provided in the `Authorization` header, not in the request body.
-
-### Request Format
-
-#### JSON Request (Simple Message)
-```bash
-curl -X POST http://localhost:{{GATEWAY_PORT}}/lobu/api/v1/agents/{agentId}/messages \
-  -H "Authorization: Bearer xoxb-your-bot-token" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "platform": "slack",
-    "channel": "general",
-    "content": "what is 2+2?"
-  }'
-```
-
-#### Multipart Request (With File Upload)
-```bash
-curl -X POST http://localhost:{{GATEWAY_PORT}}/lobu/api/v1/agents/{agentId}/messages \
-  -H "Authorization: Bearer xoxb-your-bot-token" \
-  -F "platform=slack" \
-  -F "channel=C12345678" \
-  -F "content=please review this file" \
-  -F "file=@/path/to/document.pdf"
-```
-
-### Parameters
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `platform` | Yes | Platform name (currently: "slack") |
-| `channel` | Yes | Channel ID (e.g., `C12345678`) or name (e.g., `general`, `#general`) |
-| `content` | Yes | Message text to send (use `@me` to mention the bot) |
-| `threadId` | No | Thread ID to reply to (for thread continuity) |
-| `files` | No | File attachments (multipart/form-data, up to 10 files) |
-
-### Response Format
-
-```json
-{
-  "success": true,
-  "channel": "C12345678",
-  "messageId": "1234567890.123456",
-  "threadId": "1234567890.123456",
-  "threadUrl": "https://app.slack.com/client/T12345/C12345678/thread/1234567890.123456"
-}
-```
-
-**Note about `threadId`:**
-- When posting a new message (no `threadId` parameter), `threadId` equals `messageId`
-- When replying to a thread (with `threadId` parameter), `threadId` is the original thread's ID
-
-### Bot Mentions
-
-Use the `@me` placeholder to mention the bot in a platform-agnostic way:
-
-```json
-{
-  "content": "@me what is 2+2?"
-}
-```
-
-The API automatically replaces `@me` with the correct bot mention for the platform:
-- **Slack**: `<@U12345>` 
-- **Discord** (future): `<@123456>`
-- **Telegram** (future): `@botname`
-
-If you don't want to mention the bot, simply omit `@me` from your message.
-
-### Example: Simple Text Message (with @me)
+Validate the authored project before booting it:
 
 ```bash
-curl -X POST http://localhost:{{GATEWAY_PORT}}/lobu/api/v1/agents/{agentId}/messages \
-  -H "Authorization: Bearer xoxb-your-bot-token" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "platform": "slack",
-    "channel": "general",
-    "content": "@me what is 2+2?"
-  }'
+npx @lobu/cli@latest validate
+npx @lobu/cli@latest run
 ```
 
-### Example: Without Bot Mention
+Leave `lobu run` running. With the embedded database default, it creates and
+selects the `local` context, applies the project to the embedded runtime, and
+prints the authoritative Web UI URL. Open that exact URL and verify the expected
+agent, connections, feeds, and Behaviors are visible. With an external
+`DATABASE_URL`, authenticate and apply to that runtime explicitly instead of
+using the `local` commands below.
+
+From another terminal, verify local MCP connectivity:
 
 ```bash
-curl -X POST http://localhost:{{GATEWAY_PORT}}/lobu/api/v1/agents/{agentId}/messages \
-  -H "Authorization: Bearer xoxb-your-bot-token" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "platform": "slack",
-    "channel": "general",
-    "content": "just a regular message"
-  }'
+npx @lobu/cli@latest memory health --context local
 ```
 
-### Example: Thread Reply
+Send a harmless direct message through the Agent API. `--dry-run` prevents
+side-effecting tool calls, while the prompt keeps the check independent of
+tools:
 
 ```bash
-curl -X POST http://localhost:{{GATEWAY_PORT}}/lobu/api/v1/agents/{agentId}/messages \
-  -H "Authorization: Bearer xoxb-your-bot-token" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "platform": "slack",
-    "channel": "C12345678",
-    "content": "tell me more about that",
-    "threadId": "1234567890.123456"
-  }'
+npx @lobu/cli@latest chat "Reply with exactly LOCAL_E2E_OK. Do not call tools." \
+  --context local --agent "<agent-id>" --dry-run --new
 ```
 
-### Example: Single File Upload
+Require the streamed response to contain `LOCAL_E2E_OK`. If the user selected a
+configured chat platform, send a separate DM or channel message through that
+platform and verify the reply there; a successful direct API check does not
+prove Slack, Telegram, or another platform works.
+
+## Connector and feed
+
+Discover the live ids and current state instead of copying ids from config:
 
 ```bash
-curl -X POST http://localhost:{{GATEWAY_PORT}}/lobu/api/v1/agents/{agentId}/messages \
-  -H "Authorization: Bearer xoxb-your-bot-token" \
-  -F "platform=slack" \
-  -F "channel=dev-channel" \
-  -F "content=@me analyze this CSV" \
-  -F "files=@data.csv"
+npx @lobu/cli@latest memory exec \
+  'export default async (_ctx, client) => ({ connections: await client.connections.list(), feeds: await client.feeds.list() });' \
+  --context local
 ```
 
-### Example: Multiple File Upload
+Before consent to access provider data, inspect only the installed catalog,
+connection, auth-profile, and feed metadata. `lobu validate` already checks the
+auth/config shape. For a `browser_session` profile only, resolve the local
+device-bound path without executing it:
 
 ```bash
-curl -X POST http://localhost:{{GATEWAY_PORT}}/lobu/api/v1/agents/{agentId}/messages \
-  -H "Authorization: Bearer xoxb-your-bot-token" \
-  -F "platform=slack" \
-  -F "channel=dev-channel" \
-  -F "content=@me review these documents" \
-  -F "files=@document1.pdf" \
-  -F "files=@document2.pdf" \
-  -F "files=@spreadsheet.xlsx"
+npx @lobu/cli@latest connector run <connector-key> \
+  --auth-profile <browser-session-profile-slug> --check
 ```
 
-### Channel Name Resolution
+`connector run` does not support managed OAuth or env-backed profiles because
+their durable credentials never leave the gateway. Do not use it as a generic
+connector check. For those profiles, confirm the connection is active and its
+declared config matches the installed catalog schema; wait for consent before a
+server-side feed dry-run, because that dry-run may read upstream provider data.
 
-The API automatically resolves channel names to IDs:
-- `"general"` → `"C12345678"`
-- `"#general"` → `"C12345678"`
-- `"C12345678"` → `"C12345678"` (already an ID)
-
-### Error Handling
-
-```json
-{
-  "success": false,
-  "error": "Failed to send message",
-  "details": "Channel \"nonexistent\" not found"
-}
-```
-
-Common errors:
-- `400`: Missing required fields (`platform`, `channel`, or `message`)
-- `401`: Missing or invalid `Authorization` header
-- `404`: Platform not found
-- `500`: Platform API error (invalid token, channel not found, etc.)
-- `501`: Platform doesn't support `sendMessage`
-
-### Platform-Agnostic Design
-
-The messaging API is designed to work across multiple chat platforms:
-
-**Current Support:**
-- Slack (bot mentions: `<@U12345>`, uses `@me` placeholder)
-
-**Future Support:**
-- Discord (bot mentions: `<@123456>`, uses `@me` placeholder)
-- Telegram (bot mentions: `@botname`, uses `@me` placeholder)
-
-The `@me` placeholder ensures your code works across all platforms without modification.
-
----
-
-## 2. Complete E2E Testing Example
-
-Testing a full conversation:
+After the user explicitly approves provider-data access, dry-run a collected
+feed server-side first:
 
 ```bash
-# Step 1: Send initial message
-RESPONSE=$(curl -s -X POST http://localhost:{{GATEWAY_PORT}}/lobu/api/v1/agents/{agentId}/messages \
-  -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "platform": "slack",
-    "channel": "test-channel",
-    "content": "@me give me three options"
-  }')
-
-THREAD_ID=$(echo $RESPONSE | jq -r '.threadId')
-echo "Thread ID: $THREAD_ID"
-
-# Step 2: Verify bot response
-# (Check thread for follow-up message)
+npx @lobu/cli@latest memory exec \
+  'export default async (_ctx, client) => client.feeds.trigger({ feed_id: Number("<feed-id>"), dry_run: true });' \
+  --context local
 ```
 
----
+A feed dry-run records the run but does not persist collected events, entities,
+attachments, checkpoint changes, or feed sync state. It cannot undo an upstream
+side effect performed by connector code. Inspect the run until it reaches a
+terminal state with `client.feeds.get({ feed_id: Number("<feed-id>") })`. After
+the dry-run is healthy and the user approves a real collection, trigger without
+`dry_run`, then read the feed again and verify the expected event or entity
+exists.
 
-## 3. Notes for AI Agents
+Virtual feeds are read live rather than triggered. Verify those with
+`client.feeds.readMany({ feed_ids: [Number("<feed-id>")] })`.
+If the connector declares no collected or virtual feed, as with some chat
+integrations, skip feed verification and prove its inbound message path instead.
 
-These APIs enable your AI agents to:
-- **Test connectivity**: Verify bot deployment is working
-- **E2E testing**: Automate full conversation flows
-- **CI/CD integration**: Run automated tests before deployment
-- **Development**: Quickly test bot behavior without manual Slack interaction
+## Behaviors and resulting data
 
-The messaging endpoint is **platform-agnostic** by design. While Slack is currently supported, the same API structure will work for Discord, Teams, and other platforms in the future.
+List configured Behaviors, then trigger each selected Behavior by its returned
+id:
+
+```bash
+npx @lobu/cli@latest memory exec \
+  'export default async (_ctx, client) => client.behaviors.list();' \
+  --context local
+
+npx @lobu/cli@latest memory exec \
+  'export default async (_ctx, client) => client.behaviors.trigger({ behavior_id: "<behavior-id>" });' \
+  --context local
+```
+
+The trigger returns a `run_id`; poll
+`client.operations.getRun(Number("<run-id>"))` until it reaches a terminal
+status. Keep external actions approval-gated unless the user explicitly approves
+them. If the Behavior declares persisted output, search for a distinctive value
+from that output:
+
+```bash
+npx @lobu/cli@latest memory run search_memory \
+  '{"query":"<distinctive output>"}' --context local
+```
+
+Show the returned event or entity and its returned `view_url`. For a Canvas-only
+or reaction-only Behavior, show the completed run and use the Behavior's
+`view_url` from `client.behaviors.list()` instead. Never construct a Lobu URL
+from an id.
+
+## Cloud deployment
+
+Local success does not select a cloud target. If the user asks to deploy, list
+contexts, explicitly select the intended cloud context, and preview the exact
+plan:
+
+```bash
+npx @lobu/cli@latest context list
+npx @lobu/cli@latest context use "<cloud-name>"
+npx @lobu/cli@latest apply --dry-run
+```
+
+Show the target organization and plan, then wait for confirmation before the
+real `lobu apply`. Repeat the selected Web UI, direct chat, MCP, connector,
+Behavior, and chat-platform checks against the deployed target.

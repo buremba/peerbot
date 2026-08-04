@@ -1,6 +1,6 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test clean dev dev-db dev-embedded build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean dev-recover clean-merged e2e-browser bump review review-fix pre-pr owletto-mac owletto-mac-e2e
+.PHONY: help setup build test clean dev dev-db dev-embedded build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean dev-recover clean-merged e2e-browser bump review review-fix ui-review pre-pr owletto-mac owletto-mac-e2e
 
 # Default target
 help:
@@ -24,6 +24,7 @@ help:
 	@echo "  make bump SUBMODULE=<path> [TARGET=<ref>]  - Lightweight worktree + commit + PR for a trivial submodule pointer bump (skips bun install, .env, ports)"
 	@echo "  make review [BASE=<branch>]                - Run the cross-harness LLM reviewer against the local diff (deterministic suites run in CI); posts pi-review status and PR comment"
 	@echo "  make review-fix [BASE=<branch>]            - Pre-review fixer: reviewer CLI with write access fixes review-grade findings in the tree; posts nothing"
+	@echo "  make ui-review [ARTIFACT=<https-url>]       - Gate an Owletto pointer on exact-SHA visual proof and human approval; OPEN=1 opens its PR"
 	@echo "  make owletto-mac [INSTALL=1] [OPEN=1]      - Build Owletto.app with the Developer ID identity (TCC grants match the notarized release); INSTALL=1 replaces /Applications/Owletto.app, OPEN=1 launches it"
 	@echo "  make owletto-mac-e2e [SKIP_BUILD=1]        - Build/install the signed Owletto.app then probe prod computer_use (permissions + list_windows) via the paired device connection"
 
@@ -270,6 +271,14 @@ review:
 # inspect its diff, commit, then run `make review` once on the settled HEAD.
 review-fix:
 	@./scripts/review-fix.sh $(if $(BASE),--base $(BASE),)
+
+# Visual counterpart to `make review`: non-Owletto PRs pass as not applicable.
+# Pointer PRs post/update proof on the exact merged Owletto PR, attach a
+# `ui-review` status to this Lobu head, and stay pending until an admin posts
+# the SHA-bound approval command shown in that proof. ARTIFACT and OPEN are
+# read directly by scripts/ui-review.ts, avoiding shell interpolation of URLs.
+ui-review:
+	@bun scripts/ui-review.ts
 
 # Fast, deterministic CI gates that need NO database — the exact checks that
 # `make review` (LLM-verdict only) does NOT run. Run this before opening/updating

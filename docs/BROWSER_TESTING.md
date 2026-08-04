@@ -1,6 +1,6 @@
 # Browser-driven verification (authenticated)
 
-For any UI verification that needs a signed-in session (past the auth wall), use the `agent-browser` CLI with a session cookie minted from the DB. The user's regular Chrome doesn't expose a remote-debug port, so `--auto-connect` will land on the wrong tab — mint a cookie instead.
+For any UI verification that needs a signed-in session (past the auth wall), mint a session cookie from the DB and drive the **paired Owletto extension** through the Lobu connector-operations bridge (`lobu call manage_operations`, or the SDK `operations` namespace). This runs in the user's real logged-in Chrome — no separate headless browser, no CDP, no extra browser tooling to install.
 
 ## Scope
 
@@ -20,10 +20,16 @@ SECRET=$(grep '^BETTER_AUTH_SECRET=' .env | cut -d= -f2-)
 SECRET=$(kubectl exec -n summaries-prod \
   $(kubectl get pod -n summaries-prod -l app.kubernetes.io/name=lobu-app -o name | head -1 | sed 's|pod/||') \
   -- printenv BETTER_AUTH_SECRET)
+```
 
-# Session token from the DB (prod DB serves both targets)
-DB="$(grep '^DATABASE_URL=' .env | cut -d= -f2-)"
-TOKEN=$(psql "$DB" -tAc "SELECT token FROM session WHERE \"userId\" = '<user_id>' AND \"expiresAt\" > NOW() ORDER BY \"updatedAt\" DESC LIMIT 1")
+Session token from the DB. With no local `DATABASE_URL` set, exec psql inside the prod DB pod (the prod DB serves both targets):
+
+```bash
+DBURL=$(kubectl exec -n summaries-prod <lobu-app-pod> -- printenv DATABASE_URL)
+PGPASS=$(printf '%s' "$DBURL" | sed -E 's#.*://[^:]+:([^@]+)@.*#\1#')
+TOKEN=$(kubectl exec -n summaries-prod lobu-ai-prod-db-1 -- \
+  env PGPASSWORD="$PGPASS" psql -h lobu-ai-prod-db-pooler -U summaries -d owletto -tAc \
+  "SELECT token FROM session WHERE \"userId\" = '<user_id>' AND \"expiresAt\" > NOW() ORDER BY \"updatedAt\" DESC LIMIT 1")
 ```
 
 ## Sign the cookie
@@ -40,51 +46,68 @@ SIGNED=$(SECRET="$SECRET" TOKEN="$TOKEN" node -e '
 
 Cookie name is `__Secure-better-auth.session_token` whenever the baseURL is `https://` (prod and Tailscale dev qualify; only plain-http localhost uses the unprefixed `better-auth.session_token`).
 
-## Drive the browser
+## Find the Chrome connection
+
+Browser actions dispatch to a paired Chrome extension connection (usually org `buremba`):
 
 ```bash
-agent-browser --session lobu-verify open "https://app.lobu.ai/"
-agent-browser --session lobu-verify eval "document.cookie='__Secure-better-auth.session_token=$SIGNED; path=/; secure; samesite=lax'"
-agent-browser --session lobu-verify open "https://app.lobu.ai/<path>"
-agent-browser --session lobu-verify wait --text "<expected text>" --timeout 25000
-agent-browser --session lobu-verify snapshot -i      # find @refs
-agent-browser --session lobu-verify click @e13        # interact
-agent-browser --session lobu-verify screenshot --full /tmp/out.png
-agent-browser --session lobu-verify close
+lobu call manage_connections --org buremba --arg action=list --raw
 ```
 
-## Driving the paired Owletto extension (connector debugging)
+Pick the `chrome` connector with `status: active` on the machine whose browser you want to drive. `operations.listAvailable({ connection_id })` reports per-target `readiness` and `execution_targets` — use it to check the device is actually online before a long verification.
 
-The cookie-forging above and `claude-in-chrome` both drive a *separate* browser that lacks the user's real logged-in sessions — Revolut, for instance, redirects them to `sso.revolut.com/signin`. To run JS or browser actions in the **paired Owletto extension** (the Chrome that holds the user's live sessions, which is what extension-scrape connectors like Revolut/LinkedIn use), go through the connector-operations bridge instead. No deploy required.
+## Drive the browser
 
-`lobu connector run` is the wrong tool here — it only does local Playwright/CDP against a `browser_session` auth profile, so it errors `Missing --auth-profile` for device-worker connectors (Revolut has no auth profile).
+Multi-step verifications are one `run_sdk` script (the tab id threads through every call):
 
-For one-off actions, the `lobu call` CLI is the quickest path (usually org `buremba`; connection id from `lobu call manage_connections --org buremba --arg action=list --raw`):
+```bash
+lobu call run_sdk --arg script='
+export default async (ctx, client) => {
+  const CHROME = <chrome-connection-id>;
+  const COOKIE = "<SIGNED>";
+  // 1. Open the app origin in a fresh background tab.
+  const nav = await client.operations.execute({
+    connection_id: CHROME, operation_key: "navigate",
+    input: { url: "https://app.lobu.ai/", open_in_new_tab: true, wait_for_load: true },
+  });
+  const tab = nav.output.tab_id;
+  // 2. Plant the signed session cookie.
+  await client.operations.execute({
+    connection_id: CHROME, operation_key: "evaluate",
+    input: { tab_id: tab, expression: `document.cookie='"'"'__Secure-better-auth.session_token=${COOKIE}; path=/; secure; samesite=lax'"'"'`, await_promise: false },
+  });
+  // 3. Navigate the SAME tab to the authenticated page.
+  await client.operations.execute({
+    connection_id: CHROME, operation_key: "navigate",
+    input: { tab_id: tab, url: "https://app.lobu.ai/<path>", wait_for_load: true },
+  });
+  // 4. Assert on the DOM (title/text/refs), or use get_accessibility_tree / screenshot.
+  const probe = await client.operations.execute({
+    connection_id: CHROME, operation_key: "evaluate",
+    input: { tab_id: tab, expression: `(async () => { await new Promise(r => setTimeout(r, 3000)); return { title: document.title, snippet: document.body.innerText.slice(0, 300) }; })()`, await_promise: true },
+  });
+  // 5. Clean up the tab when done.
+  await client.operations.execute({ connection_id: CHROME, operation_key: "close_tab", input: { tab_id: tab } });
+  return probe.output;
+};
+' --raw
+```
+
+For one-off actions, `lobu call manage_operations` is quicker:
 
 ```bash
 lobu call manage_operations --org buremba --arg action=execute \
   --arg connection_id=<chrome-connection-id> --arg operation_key=navigate \
-  --arg input:='{"url":"https://app.slack.com/...","wait_for_load":true,"open_in_new_tab":true}' --raw
+  --arg input:='{"url":"https://app.lobu.ai/<path>","wait_for_load":true,"open_in_new_tab":true}' --raw
 ```
 
-For multi-step scripts, use the SDK `operations` namespace via `lobu memory exec` / `run_sdk`:
+Chrome ops: `navigate` (new tab, existing `tab_id`, or `persistent` agent window), `evaluate`, `get_accessibility_tree` (`filter: interactive|visible|all`), `wait_for_selector`, `click_ref`, `type_ref`, `screenshot`, `show_notification`, `network_intercept_*`, `close_tab`.
 
-```js
-// chrome connection id: client.connections.list() → connector_key 'chrome'
-const ops = await client.operations.listAvailable({ connection_id: CHROME_CONN_ID });
-// navigate opens a fresh background tab in the paired Chrome and returns tab_id
-const nav = await client.operations.execute({
-  connection_id: CHROME_CONN_ID, operation_key: 'navigate',
-  input: { url: 'https://app.revolut.com/transactions', open_in_new_tab: true, wait_for_load: true },
-});
-// evaluate runs arbitrary JS on that tab and returns the JSON-serialised result
-await client.operations.execute({
-  connection_id: CHROME_CONN_ID, operation_key: 'evaluate',
-  input: { tab_id: nav.output.tab_id, expression: '(async()=>{ /* read DOM */ return out })()', await_promise: true },
-});
-```
+## Driving the paired Owletto extension (connector debugging)
 
-`operations.execute` → `dispatchChromeActionToExtension` (`worker-api/dispatch-chrome-action.ts`) → device-worker queue → the paired extension — the same bridge the office-bot Deliveroo connector uses. Chrome ops: `navigate`, `evaluate`, `get_accessibility_tree`, `wait_for_selector`, `click_ref`, `type_ref`, `screenshot`, `show_notification`, `network_intercept_*`, `close_tab`.
+The recipe above drives the same **paired Owletto extension** that extension-scrape connectors (Revolut, LinkedIn) use — the Chrome that holds the user's live sessions. Anything said there applies: `operations.execute` → `dispatchChromeActionToExtension` → device-worker queue → the paired extension. No deploy required.
+
+`lobu connector run` is the wrong tool here — it only does local Playwright/CDP against a `browser_session` auth profile, so it errors `Missing --auth-profile` for device-worker connectors (Revolut has no auth profile).
 
 Gotchas:
 - `search_sdk operations` surfaces the `operations` namespace and current method signatures. Use `Object.keys(client)` inside a `run_sdk` script only when checking discovery/runtime parity.

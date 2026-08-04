@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { ApiResponseRenderer } from "../../../gateway/api/response-renderer";
+import { ChatResponseBridge } from "../../../gateway/connections/chat-response-bridge";
 import { materializeDueWatcherRuns } from "../../../watchers/automation";
 import { resolveWatcherRunsByMessageIds } from "../../../watchers/run-completion";
-import { advanceWatcherSchedule } from "../../../watchers/schedule-cursor";
+import {
+  advanceWatcherSchedule,
+  deviceProviderQuotaResetNotBefore,
+  parseProviderQuotaResetAt,
+  providerQuotaResetNotBefore,
+} from "../../../watchers/schedule-cursor";
 import { getTestDb } from "../../setup/test-db";
 import { createTestAgent, createTestEntity } from "../../setup/test-fixtures";
 import { TestWorkspace } from "../../setup/test-mcp-client";
@@ -69,6 +76,7 @@ async function createDueWatcherWithDispatchedRun(opts: {
   return {
     sql,
     organizationId: workspace.org.id,
+    agentId: agent.agentId,
     watcherId,
     runId: Number(run.id),
     staleCursor,
@@ -81,6 +89,108 @@ async function cursorOf(watcherId: number): Promise<Date> {
     await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
   return new Date(row.next_run_at as string);
 }
+
+function chatResponseBridge(organizationId: string): ChatResponseBridge {
+  const target = { post: async () => ({ id: "posted" }) };
+  const manager = {
+    getInstance: () => ({
+      connection: {
+        platform: "telegram",
+        organizationId,
+      },
+      chat: {
+        channel: () => target,
+      },
+    }),
+    getPublicGatewayUrl: () => "",
+  };
+  return new ChatResponseBridge(
+    manager as unknown as ConstructorParameters<typeof ChatResponseBridge>[0]
+  );
+}
+
+describe("provider quota reset parsing", () => {
+  it("treats a date-only reset as UTC and adds boundary grace", () => {
+    const reset = parseProviderQuotaResetAt(
+      "429 Limit Exhausted. Your limit will reset at 2026-07-31",
+      new Date("2026-07-30T12:00:00.000Z")
+    );
+
+    expect(reset?.toISOString()).toBe("2026-07-31T00:01:00.000Z");
+  });
+
+  it("ignores missing or already-past reset timestamps", () => {
+    const now = new Date("2026-07-31T12:00:00.000Z");
+
+    expect(parseProviderQuotaResetAt("429 Limit Exhausted", now)).toBeNull();
+    expect(
+      parseProviderQuotaResetAt("Your limit will reset at 2026-07-31", now)
+    ).toBeNull();
+  });
+
+  it("keeps the boundary grace when the reset time just passed", () => {
+    const now = new Date("2026-07-31T12:00:30.000Z");
+
+    expect(
+      parseProviderQuotaResetAt(
+        "Your limit will reset at 2026-07-31 12:00:00",
+        now
+      )?.toISOString()
+    ).toBe("2026-07-31T12:01:00.000Z");
+  });
+
+  it.each([
+    "2026-02-31",
+    "2026-07-31 24:00:00",
+    "2026-07-31 12:60:00",
+    "2026-07-31 12:00:60",
+    "2026-07-31 12:00:00+24:00",
+    "2026-07-31 12:00:00+bad",
+    "2026-07-31 12:00:000",
+    "2026-07-31T12:00:00.1234Z",
+    "2026-07-31x",
+  ])("rejects invalid reset timestamp %s", (timestamp) => {
+    expect(
+      parseProviderQuotaResetAt(
+        `Your limit will reset at ${timestamp}`,
+        new Date("2026-01-01T00:00:00.000Z")
+      )
+    ).toBeNull();
+  });
+
+  it("requires quota evidence for unclassified device stderr", () => {
+    const now = new Date("2026-07-31T10:00:00.000Z");
+    expect(
+      deviceProviderQuotaResetNotBefore(
+        "429 Limit Exhausted. Your limit will reset at 2026-07-31 12:00:00",
+        now
+      )?.toISOString()
+    ).toBe("2026-07-31T12:01:00.000Z");
+    expect(
+      deviceProviderQuotaResetNotBefore(
+        "Authentication session resets at 2026-07-31 12:00:00",
+        now
+      )
+    ).toBeNull();
+  });
+
+  it("requires the structured quota code", () => {
+    const message = "Your limit will reset at 2026-07-31 12:00:00";
+    const now = new Date("2026-07-31T10:00:00.000Z");
+
+    expect(
+      providerQuotaResetNotBefore(
+        message,
+        "PROVIDER_QUOTA_EXHAUSTED",
+        now
+      )?.toISOString()
+    ).toBe("2026-07-31T12:01:00.000Z");
+    expect(
+      providerQuotaResetNotBefore(message, "NO_MODEL_CONFIGURED", now)
+    ).toBeNull();
+    expect(providerQuotaResetNotBefore(message, undefined, now)).toBeNull();
+  });
+});
 
 describe("a terminally failed Behavior run advances next_run_at", () => {
   it("advances the cursor when the agent turn returns an error", async () => {
@@ -105,6 +215,47 @@ describe("a terminally failed Behavior run advances next_run_at", () => {
     const after = await cursorOf(watcherId);
     expect(after.getTime()).toBeGreaterThan(staleCursor.getTime());
     expect(after.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("parks a quota-exhausted Behavior through the provider reset boundary", async () => {
+    const resetAt = new Date(Date.now() + 6 * 60 * 60 * 1000);
+    const providerReset = resetAt
+      .toISOString()
+      .replace("T", " ")
+      .replace(/\.\d{3}Z$/, "");
+    const { watcherId, runId } = await createDueWatcherWithDispatchedRun({
+      slug: "park-until-provider-reset",
+      messageId: "msg-provider-reset",
+    });
+
+    const renderer = new ApiResponseRenderer({
+      broadcast() {},
+    } as unknown as ConstructorParameters<typeof ApiResponseRenderer>[0]);
+    await renderer.handleError(
+      {
+        messageId: "msg-provider-reset",
+        channelId: "api-provider-reset",
+        conversationId: "api-provider-reset",
+        userId: "watcher-test",
+        teamId: "api",
+        timestamp: Date.now(),
+        error: "Message blocked by guardrail: require-tool",
+        bookkeepingError: `429 Weekly/Monthly Limit Exhausted. Your limit will reset at ${providerReset}`,
+        errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+      }
+    );
+
+    const sql = getTestDb();
+    const [run] = await sql`SELECT status, error_message FROM runs WHERE id = ${runId}`;
+    expect(run.status).toBe("failed");
+    expect(run.error_message).toBe(
+      "Message blocked by guardrail: require-tool"
+    );
+
+    const after = await cursorOf(watcherId);
+    const expectedNotBefore =
+      Math.floor(resetAt.getTime() / 1000) * 1000 + 60_000;
+    expect(after.getTime()).toBe(expectedNotBefore);
   });
 
   it("advances the cursor when the agent never calls complete_window", async () => {
@@ -151,6 +302,179 @@ describe("a terminally failed Behavior run advances next_run_at", () => {
 
     const after = await cursorOf(watcherId);
     expect(after.getTime()).toBe(staleCursor.getTime());
+  });
+
+  it("parks a scheduled Behavior after a quota-exhausted event dispatch", async () => {
+    const resetAt = new Date(Date.now() + 6 * 60 * 60 * 1000);
+    const providerReset = resetAt
+      .toISOString()
+      .replace("T", " ")
+      .replace(/\.\d{3}Z$/, "");
+    const { watcherId, runId } = await createDueWatcherWithDispatchedRun({
+      slug: "park-event-until-provider-reset",
+      messageId: "msg-event-provider-reset",
+      dispatchSource: "event",
+    });
+
+    await resolveWatcherRunsByMessageIds(["msg-event-provider-reset"], {
+      ok: false,
+      error: `429 Weekly/Monthly Limit Exhausted. Your limit will reset at ${providerReset}`,
+      errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+    });
+
+    const sql = getTestDb();
+    const [run] = await sql`SELECT status FROM runs WHERE id = ${runId}`;
+    expect(run.status).toBe("failed");
+
+    const after = await cursorOf(watcherId);
+    const expectedNotBefore =
+      Math.floor(resetAt.getTime() / 1000) * 1000 + 60_000;
+    expect(after.getTime()).toBe(expectedNotBefore);
+  });
+
+  it("does not shorten a quota park when another run finishes later", async () => {
+    const resetAt = new Date(Date.now() + 6 * 60 * 60 * 1000);
+    const providerReset = resetAt
+      .toISOString()
+      .replace("T", " ")
+      .replace(/\.\d{3}Z$/, "");
+    const { sql, watcherId } = await createDueWatcherWithDispatchedRun({
+      slug: "preserve-provider-reset",
+      messageId: "msg-provider-reset-first",
+    });
+    await resolveWatcherRunsByMessageIds(["msg-provider-reset-first"], {
+      ok: false,
+      error: `429 Limit Exhausted. Your limit will reset at ${providerReset}`,
+      errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+    });
+    await sql`
+      INSERT INTO runs (organization_id, run_type, watcher_id, status,
+                        dispatched_message_id, approved_input)
+      SELECT organization_id, 'behavior', ${watcherId}, 'running',
+             'msg-ordinary-error-second',
+             ${sql.json({ finalize_nudge_count: 99, dispatch_source: "scheduled" })}
+      FROM watchers
+      WHERE id = ${watcherId}
+    `;
+    await resolveWatcherRunsByMessageIds(["msg-ordinary-error-second"], {
+      ok: false,
+      error: "provider disconnected",
+    });
+
+    const expectedNotBefore =
+      Math.floor(resetAt.getTime() / 1000) * 1000 + 60_000;
+    expect((await cursorOf(watcherId)).getTime()).toBe(expectedNotBefore);
+  });
+
+  it("parks a reply-to-source Behavior on a coded quota error", async () => {
+    const resetAt = new Date(Date.now() + 6 * 60 * 60 * 1000);
+    const providerReset = resetAt
+      .toISOString()
+      .replace("T", " ")
+      .replace(/\.\d{3}Z$/, "");
+    const { watcherId, organizationId, agentId } =
+      await createDueWatcherWithDispatchedRun({
+        slug: "park-chat-reply-until-provider-reset",
+        messageId: "msg-chat-provider-reset",
+        dispatchSource: "event",
+      });
+
+    await chatResponseBridge(organizationId).parkQuotaExhaustedBehavior({
+      messageId: "msg-chat-provider-reset",
+      channelId: "chat-provider-reset",
+      conversationId: "chat-provider-reset",
+      userId: "watcher-test",
+      teamId: "telegram",
+      organizationId,
+      platform: "telegram",
+      timestamp: Date.now(),
+      error: `429 Limit Exhausted. Your limit will reset at ${providerReset}`,
+      errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+      platformMetadata: {
+        connectionId: "chat-test",
+        chatId: "chat-provider-reset",
+        organizationId,
+        agentId,
+        behaviorId: watcherId,
+      },
+    });
+
+    const after = await cursorOf(watcherId);
+    const expectedNotBefore =
+      Math.floor(resetAt.getTime() / 1000) * 1000 + 60_000;
+    expect(after.getTime()).toBe(expectedNotBefore);
+  });
+
+  it("does not park a reply-to-source Behavior from another organization", async () => {
+    const resetAt = new Date(Date.now() + 6 * 60 * 60 * 1000);
+    const providerReset = resetAt
+      .toISOString()
+      .replace("T", " ")
+      .replace(/\.\d{3}Z$/, "");
+    const { watcherId, staleCursor, organizationId, agentId } =
+      await createDueWatcherWithDispatchedRun({
+        slug: "reject-cross-org-chat-parking",
+        messageId: "msg-cross-org-provider-reset",
+        dispatchSource: "event",
+      });
+
+    await chatResponseBridge(organizationId).parkQuotaExhaustedBehavior({
+      messageId: "msg-cross-org-provider-reset",
+      channelId: "cross-org-provider-reset",
+      conversationId: "cross-org-provider-reset",
+      userId: "watcher-test",
+      teamId: "telegram",
+      organizationId: "another-organization",
+      platform: "telegram",
+      timestamp: Date.now(),
+      error: `429 Limit Exhausted. Your limit will reset at ${providerReset}`,
+      errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+      platformMetadata: {
+        connectionId: "chat-test",
+        chatId: "cross-org-provider-reset",
+        organizationId: "another-organization",
+        agentId,
+        behaviorId: watcherId,
+      },
+    });
+
+    expect((await cursorOf(watcherId)).getTime()).toBe(staleCursor.getTime());
+  });
+
+  it("does not park another agent's Behavior in the same organization", async () => {
+    const resetAt = new Date(Date.now() + 6 * 60 * 60 * 1000);
+    const providerReset = resetAt
+      .toISOString()
+      .replace("T", " ")
+      .replace(/\.\d{3}Z$/, "");
+    const { watcherId, staleCursor, organizationId } =
+      await createDueWatcherWithDispatchedRun({
+        slug: "reject-cross-agent-chat-parking",
+        messageId: "msg-cross-agent-provider-reset",
+        dispatchSource: "event",
+      });
+
+    await chatResponseBridge(organizationId).parkQuotaExhaustedBehavior({
+      messageId: "msg-cross-agent-provider-reset",
+      channelId: "cross-agent-provider-reset",
+      conversationId: "cross-agent-provider-reset",
+      userId: "watcher-test",
+      teamId: "telegram",
+      organizationId,
+      platform: "telegram",
+      timestamp: Date.now(),
+      error: `429 Limit Exhausted. Your limit will reset at ${providerReset}`,
+      errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+      platformMetadata: {
+        connectionId: "chat-test",
+        chatId: "cross-agent-provider-reset",
+        organizationId,
+        agentId: "another-agent",
+        behaviorId: watcherId,
+      },
+    });
+
+    expect((await cursorOf(watcherId)).getTime()).toBe(staleCursor.getTime());
   });
 
   it("leaves the cursor alone while a finalize nudge requeues the run", async () => {

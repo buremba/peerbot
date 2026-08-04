@@ -81,6 +81,17 @@ export class ApiResponseRenderer implements ResponseRenderer {
       return;
     }
 
+    // Error rows are terminalized in handleError before delivery. Running the
+    // success resolver again after the error was already broadcast creates a
+    // redundant DB dependency and can cause duplicate delivery on retry.
+    if (!payload.error) {
+      // Complete durable Behavior bookkeeping before delivering the terminal SSE
+      // event. A database failure must reject the thread-response job so it can
+      // retry; delivering first could acknowledge a turn whose run is unresolved
+      // and whose schedule is still due.
+      await this.resolveWatcherRunsFromPayload(payload, { ok: true });
+    }
+
     // Resolve the current suggestion set for this conversation and decide
     // whether to attach it to `complete` (this turn produced it), clear it
     // (this turn produced none — stale chips must not linger), or leave it
@@ -110,8 +121,6 @@ export class ApiResponseRenderer implements ResponseRenderer {
     });
 
     logger.info(`Broadcast completion to session ${sessionId}`);
-
-    await this.resolveWatcherRunsFromPayload(payload, { ok: true });
   }
 
   /**
@@ -178,12 +187,23 @@ export class ApiResponseRenderer implements ResponseRenderer {
       await this.resolveWatcherRunsFromPayload(payload, {
         ok: false,
         error: "agent error",
+        errorCode: code,
       });
       return;
     }
     const errorText =
       spec?.message ??
       labelProviderErrorBody(payload.error, payload.errorContext?.provider);
+
+    await this.resolveWatcherRunsFromPayload(payload, {
+      ok: false,
+      // Persist only the guarded/user-visible text. The raw provider string is
+      // used solely to parse a reset boundary and must never reappear through
+      // Behavior run metadata.
+      error: typeof errorText === "string" ? errorText : "agent error",
+      errorCode: code,
+      quotaResetError: payload.bookkeepingError,
+    });
 
     const errorEvent = {
       type: "error",
@@ -201,11 +221,6 @@ export class ApiResponseRenderer implements ResponseRenderer {
     this.sseManager.broadcast(sessionId, "agent-error", errorEvent);
 
     logger.error(`Broadcast error to session ${sessionId}: ${errorText}`);
-
-    await this.resolveWatcherRunsFromPayload(payload, {
-      ok: false,
-      error: typeof errorText === "string" ? errorText : "agent error",
-    });
   }
 
   /**
@@ -217,20 +232,21 @@ export class ApiResponseRenderer implements ResponseRenderer {
    */
   private async resolveWatcherRunsFromPayload(
     payload: ThreadResponsePayload,
-    result: { ok: true } | { ok: false; error: string }
+    result:
+      | { ok: true }
+      | {
+          ok: false;
+          error: string;
+          errorCode?: string;
+          quotaResetError?: string;
+        }
   ): Promise<void> {
     const ids = new Set<string>();
     if (payload.messageId) ids.add(payload.messageId);
     for (const id of payload.processedMessageIds ?? []) {
       if (id) ids.add(id);
     }
-    try {
-      await resolveWatcherRunsByMessageIds(ids, result);
-    } catch (error) {
-      logger.error("Failed to resolve watcher runs from terminal API payload", {
-        error,
-      });
-    }
+    await resolveWatcherRunsByMessageIds(ids, result);
   }
 
   /**

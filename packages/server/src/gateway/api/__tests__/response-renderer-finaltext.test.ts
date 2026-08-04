@@ -12,6 +12,11 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { ApiResponseRenderer } from "../response-renderer.js";
 import type { ThreadResponsePayload } from "../../infrastructure/queue/types.js";
 
+const resolveRunsMock = mock(async () => ({ resolved: 0 }));
+mock.module("../../../watchers/run-completion.js", () => ({
+  resolveWatcherRunsByMessageIds: resolveRunsMock,
+}));
+
 function makeRenderer() {
   const broadcasts: Array<{ key: string; event: string; data: any }> = [];
   const sseManager = {
@@ -22,6 +27,11 @@ function makeRenderer() {
   const renderer = new ApiResponseRenderer(sseManager as never);
   return { renderer, broadcasts };
 }
+
+beforeEach(() => {
+  resolveRunsMock.mockReset();
+  resolveRunsMock.mockResolvedValue({ resolved: 0 });
+});
 
 const basePayload = (over: Partial<ThreadResponsePayload>): ThreadResponsePayload =>
   ({
@@ -61,6 +71,16 @@ describe("ApiResponseRenderer.handleCompletion finalText repair", () => {
 
     const complete = broadcasts.find((b) => b.event === "complete");
     expect(complete?.data.finalText).toBeUndefined();
+  });
+
+  test("retries durable run resolution before broadcasting completion", async () => {
+    const { renderer, broadcasts } = makeRenderer();
+    resolveRunsMock.mockRejectedValueOnce(new Error("database unavailable"));
+
+    await expect(
+      renderer.handleCompletion(basePayload({ finalText: "done" }), "session-key")
+    ).rejects.toThrow("database unavailable");
+    expect(broadcasts).toEqual([]);
   });
 });
 
@@ -115,6 +135,7 @@ describe("ApiResponseRenderer.handleCompletion suggestion embed", () => {
     // undefined = "no change" to the SPA.
     expect(broadcasts.find((b) => b.event === "complete")?.data.suggestions).toBeUndefined();
     expect(readMock).not.toHaveBeenCalled();
+    expect(resolveRunsMock).not.toHaveBeenCalled();
   });
 });
 
@@ -140,5 +161,42 @@ describe("ApiResponseRenderer.handleError targeting context", () => {
         errorContext: { provider: "z-ai", model: "glm-5.2" },
       });
     }
+  });
+
+  test("uses raw provider text only for quota parsing, not persisted run text", async () => {
+    const { renderer } = makeRenderer();
+    const raw = "429 Limit Exhausted. Your limit will reset at 2026-08-04 12:00:00";
+
+    await renderer.handleError(basePayload({
+      error: "Message blocked by guardrail: require-tool",
+      bookkeepingError: raw,
+      errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+    }), "session-key");
+
+    expect(resolveRunsMock).toHaveBeenCalledWith(
+      new Set(["m1"]),
+      {
+        ok: false,
+        error: "Message blocked by guardrail: require-tool",
+        errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+        quotaResetError: raw,
+      }
+    );
+  });
+
+  test("retries durable run resolution before broadcasting an error", async () => {
+    const { renderer, broadcasts } = makeRenderer();
+    resolveRunsMock.mockRejectedValueOnce(new Error("database unavailable"));
+
+    await expect(
+      renderer.handleError(
+        basePayload({
+          error: "Your limit will reset at 2026-08-04 12:00:00",
+          errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+        }),
+        "session-key"
+      )
+    ).rejects.toThrow("database unavailable");
+    expect(broadcasts).toEqual([]);
   });
 });

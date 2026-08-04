@@ -3,9 +3,20 @@ import { getDb, pgTextArray } from "../db/client";
 import { listPendingToolsForRun } from "../gateway/auth/mcp/pending-tool-store";
 import logger from "../utils/logger";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
-import { advanceScheduleAfterTerminalFailure } from "./schedule-cursor";
+import {
+	advanceScheduleAfterTerminalFailure,
+	providerQuotaResetNotBefore,
+} from "./schedule-cursor";
 
-type WatcherTerminalResult = { ok: true } | { ok: false; error: string };
+type WatcherTerminalResult =
+	| { ok: true }
+	| {
+			ok: false;
+			error: string;
+			errorCode?: string;
+			/** Raw provider text used only to parse a quota reset boundary. */
+			quotaResetError?: string;
+		};
 
 /**
  * How many times a watcher run that finished its agent turn WITHOUT calling
@@ -159,7 +170,8 @@ export async function markWatcherRunCompleted(
 async function markWatcherRunFailed(
 	sql: DbClient,
 	runId: number,
-	message: string
+	message: string,
+	notBefore?: Date | null
 ): Promise<boolean> {
 	return sql.begin(async (tx) => {
 		const [failed] = await tx<{
@@ -178,7 +190,8 @@ async function markWatcherRunFailed(
 		await advanceScheduleAfterTerminalFailure(
 			tx,
 			failed.watcher_id == null ? null : Number(failed.watcher_id),
-			failed.dispatch_source
+			failed.dispatch_source,
+			notBefore
 		);
 		return true;
 	});
@@ -243,7 +256,20 @@ export async function resolveWatcherRunsByMessageIds(
 		if (!Number.isFinite(runId)) continue;
 
 		if (!result.ok) {
-			if (await markWatcherRunFailed(sql, runId, result.error)) resolved++;
+			const notBefore = providerQuotaResetNotBefore(
+				result.quotaResetError ?? result.error,
+				result.errorCode
+			);
+			if (
+				await markWatcherRunFailed(
+					sql,
+					runId,
+					result.error,
+					notBefore
+				)
+			) {
+				resolved++;
+			}
 			continue;
 		}
 

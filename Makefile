@@ -154,6 +154,7 @@ test-unit:
 	@bun test packages/connector-worker
 	@bun test packages/client packages/promptfoo-provider
 	@bun test packages/connector-sdk
+	@bun test packages/embeddings
 	@bun test examples/personal-agent
 	@bun test examples/brand-intelligence
 

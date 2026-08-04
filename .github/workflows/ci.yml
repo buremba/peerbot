@@ -163,6 +163,9 @@ jobs:
         # Previously unrun in CI: the embeddings HTTP suite and the
         # orphan-reap subprocess regression (forks the real server under
         # Node via tsx; binds ports 18951-18953). No Postgres needed.
+        # Bounded: if the orphan regression reappears the most likely
+        # symptom is this step hanging on an open child handle.
+        timeout-minutes: 5
         run: |
           bun test packages/embeddings --coverage
           mv coverage/lcov.info coverage/embeddings.lcov.info

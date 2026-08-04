@@ -1,5 +1,21 @@
 # Changelog
 
+## [14.13.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.12.0...lobu-v14.13.0) (2026-08-04)
+
+
+### Features
+
+* **server:** show exact MCP client activity ([#2473](https://github.com/lobu-ai/lobu/issues/2473)) ([32a3f96](https://github.com/lobu-ai/lobu/commit/32a3f96eb0fa9f43a8ae189d22d6aa1dc4da10d1))
+
+
+### Bug Fixes
+
+* **cli:** make onboarding runnable end to end ([#2477](https://github.com/lobu-ai/lobu/issues/2477)) ([546ea2b](https://github.com/lobu-ai/lobu/commit/546ea2b5d9ec6e93dc9ece312f4eeda4b2243f63))
+* **db:** apply skipped Behavior output migration [dup-version-rename] ([#2472](https://github.com/lobu-ai/lobu/issues/2472)) ([a8705c1](https://github.com/lobu-ai/lobu/commit/a8705c194f78e667d2465361149bc0f6b0b68c5d))
+* **example:** preserve Behavior source linkage ([#2474](https://github.com/lobu-ai/lobu/issues/2474)) ([3f7ac7b](https://github.com/lobu-ai/lobu/commit/3f7ac7b36b16e2ec1ba4c494c2826480529463ac))
+* **server:** close MCP discovery contract gaps ([#2466](https://github.com/lobu-ai/lobu/issues/2466)) ([648b4dd](https://github.com/lobu-ai/lobu/commit/648b4dd920387eca86bc3735306c7f37d49395cc))
+* **server:** preserve backslashes in score filters ([#2462](https://github.com/lobu-ai/lobu/issues/2462)) ([e53af13](https://github.com/lobu-ai/lobu/commit/e53af131d6a79d9555db1f2aa580f0d7d7416e4e))
+
 ## [14.12.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.11.0...lobu-v14.12.0) (2026-08-03)
 
 

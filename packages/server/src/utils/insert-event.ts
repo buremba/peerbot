@@ -354,7 +354,8 @@ export async function insertEvent(
       connector_key, connection_id, feed_key, feed_id, run_id,
       semantic_type, client_id, created_by,
       interaction_type, interaction_status, interaction_input_schema, interaction_input,
-      interaction_output, interaction_error, supersedes_event_id
+      interaction_output, interaction_error, supersedes_event_id,
+      linked_org_ids
     ) VALUES (
       ${entityIdsValue}::bigint[],
       ${params.organizationId},
@@ -386,7 +387,21 @@ export async function insertEvent(
       ${params.interactionInput ? sql.json(params.interactionInput) : null},
       ${params.interactionOutput ? sql.json(params.interactionOutput) : null},
       ${params.interactionError ?? null},
-      ${supersedesEventId}
+      ${supersedesEventId},
+      (
+        SELECT COALESCE(array_agg(DISTINCT x.o), '{}'::text[])
+        FROM (
+          SELECT ent.organization_id AS o
+          FROM public.entities ent
+          WHERE ent.id = ANY(${entityIdsValue}::bigint[])
+          UNION ALL
+          SELECT c.organization_id AS o
+          FROM public.connections c
+          WHERE c.id = ${params.connectionId ?? null}
+        ) x
+        WHERE x.o IS NOT NULL
+          AND (x.o <> ${params.organizationId}::text OR ${params.organizationId}::text IS NULL)
+      )
     )
     RETURNING id, entity_ids, origin_id, title, semantic_type, created_at
   `;

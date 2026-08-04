@@ -6,6 +6,7 @@
 import { compileConnectionFkVisibility } from '../../authz/connection-visibility';
 import { compileResourceVisibility } from '../../authz/resource-visibility';
 import type { AuthzScope } from '../../authz/scope';
+import { useLinkedOrgScope } from '../linked-org-ids';
 import { validateNumericId } from '../sql-validation';
 
 /**
@@ -57,6 +58,15 @@ export function buildOrgScopeWhere(options: {
   if (options.entity_id || !options.organization_id) return { sql: '', params: [] };
 
   const p = `$${options.baseParamIndex}::text`;
+  // Denormalized bridge (events.linked_org_ids, write-once at INSERT): folds
+  // the entity + connection branches into one GIN-indexed condition instead
+  // of per-row OR/EXISTS subplans. Gated until the one-time backfill is done.
+  if (useLinkedOrgScope()) {
+    return {
+      sql: `AND (f.organization_id = ${p} OR f.linked_org_ids @> ARRAY[${p}]::text[])`,
+      params: [options.organization_id],
+    };
+  }
   const directCond = `f.organization_id = ${p}`;
   const entityCond = `EXISTS (SELECT 1 FROM entities ent_org WHERE ent_org.id = ANY(f.entity_ids) AND ent_org.organization_id = ${p})`;
   const connCond = `c.organization_id = ${p}`;

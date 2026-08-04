@@ -255,8 +255,9 @@ first."* Cleaner than retroactive revalidation, no migration cost.
 
 ### 6. Catalog curation pass (data, not code)
 
-Existing public orgs (`market`, `atlas`, `agent-community`, …) hold the
-canonical entities. The 4–5-entity verticals (`leadership`, `sales`,
+Existing public orgs (`market`, `agent-community`, …) hold the canonical
+entities. Market keeps its geography and taxonomy reference types local; Atlas
+is no longer a sibling public catalog. The 4–5-entity verticals (`leadership`, `sales`,
 `devops`, …) are likely template seeds, not curated catalogs.
 
 Before recommending these as references in agent prompts, do a one-off

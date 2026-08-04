@@ -8,6 +8,45 @@ const BehaviorTriggerMatchValueSchema = Type.Union([
 ]);
 
 /**
+ * Per-trigger executor override ("when -> who"). A Behavior is an org-level
+ * goal with one durable contract (prompt / outputs / reaction / budget); its
+ * triggers may route activations to different executors:
+ *
+ *  - `agent`  — a managed Lobu agent executes the run (server dispatch lane).
+ *  - `device` — the pinned device worker's local CLI executes it (device
+ *    lane); `agent_kind` picks the local executor, omitted = device default.
+ *
+ * Omit to use the Behavior's own executor (`agent_id` / `device_worker_id`).
+ * Every event/schedule trigger must resolve to an executor (its own override
+ * or the Behavior default); manual activations are open — any connected MCP
+ * client may complete them, so manual triggers carry no executor.
+ */
+export const BehaviorRespondWithSchema = Type.Union(
+  [
+    Type.Object(
+      {
+        kind: Type.Literal("agent"),
+        agent_id: Type.String({ minLength: 1, maxLength: 128 }),
+      },
+      { additionalProperties: false }
+    ),
+    Type.Object(
+      {
+        kind: Type.Literal("device"),
+        device_worker_id: Type.String({ minLength: 1, maxLength: 64 }),
+        agent_kind: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
+      },
+      { additionalProperties: false }
+    ),
+  ],
+  {
+    description:
+      "Executor override for this activation: a managed agent, or a device worker (with optional local executor kind). Omit to use the Behavior's own executor. Manual activations are open to any connected client and ignore this field.",
+  }
+);
+export type BehaviorRespondWith = Static<typeof BehaviorRespondWithSchema>;
+
+/**
  * Connector event activation for a Behavior. Triggers and context sources are
  * deliberately separate: a trigger decides when to run, while a source only
  * decides which durable data is available to that run.
@@ -63,6 +102,7 @@ export const BehaviorEventTriggerSchema = Type.Object(
         default: true,
       })
     ),
+    respond_with: Type.Optional(BehaviorRespondWithSchema),
   },
   { additionalProperties: false }
 );
@@ -82,6 +122,7 @@ export const BehaviorScheduleTriggerSchema = Type.Object(
       })
     ),
     skip_if_unchanged: Type.Optional(Type.Boolean({ default: true })),
+    respond_with: Type.Optional(BehaviorRespondWithSchema),
   },
   { additionalProperties: false }
 );
@@ -510,11 +551,20 @@ export const ManageBehaviorsSchema = Type.Object(
         description: "[list] Sort direction (default: desc).",
       })
     ),
-    scheduler_client_id: Type.Optional(
-      Type.Union([Type.String(), Type.Null()], {
-        description:
-          "[create/update/create_version] Optional MCP client ID that should auto-run this Behavior. Null clears it.",
-      })
+    run_status: Type.Optional(
+      Type.Union(
+        [
+          Type.Literal("pending"),
+          Type.Literal("claimed"),
+          Type.Literal("running"),
+          Type.Literal("completed"),
+          Type.Literal("failed"),
+        ],
+        {
+          description:
+            "[list] Filter by each Behavior's latest run status (active runs take precedence). Discovery for executors: run_status='pending' lists Behaviors with unhandled runs — manual-open pending runs are completable by any client via complete_window.",
+        }
+      )
     ),
     device_worker_id: Type.Optional(
       Type.Union([Type.String(), Type.Null()], {
@@ -741,7 +791,6 @@ export type BehaviorUpdatePatch = Pick<
   | "execution_config"
   | "triggers"
   | "agent_id"
-  | "scheduler_client_id"
   | "tags"
   | "device_worker_id"
   | "agent_kind"
@@ -784,7 +833,7 @@ export function normalizeBehaviorTags(values: unknown): string[] {
  *   - tags → normalizeBehaviorTags (trim/drop-empty/dedupe)
  *   - notification_channel ?? 'canvas', notification_priority ?? 'normal',
  *     min_cooldown_seconds ?? 0
- *   - null-clearable scalars (agent_id/scheduler_client_id/
+ *   - null-clearable scalars (agent_id/
  *     device_worker_id/agent_kind) and execution_config keep null (a real clear
  *     the write applies) — NOT coerced to undefined, which would hide the clear.
  */
@@ -800,8 +849,6 @@ export function normalizeBehaviorUpdatePatch(
     patch.execution_config = args.execution_config ?? null;
   if (args.triggers !== undefined) patch.triggers = args.triggers;
   if (args.agent_id !== undefined) patch.agent_id = args.agent_id ?? null;
-  if (args.scheduler_client_id !== undefined)
-    patch.scheduler_client_id = args.scheduler_client_id ?? null;
   if (args.tags !== undefined) patch.tags = normalizeBehaviorTags(args.tags);
   if (args.device_worker_id !== undefined)
     patch.device_worker_id = args.device_worker_id ?? null;
@@ -1019,6 +1066,7 @@ export const ListBehaviorsSchema = Type.Pick(ManageBehaviorsSchema, [
   "include_details",
   "order_by",
   "order_dir",
+  "run_status",
   "limit",
 ]);
 

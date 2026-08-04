@@ -43,7 +43,6 @@ export interface BehaviorCreateInput {
 	reactions_guidance?: string;
 	reaction_script?: string;
 	agent_id?: string;
-	scheduler_client_id?: string;
 	model_config?: Record<string, unknown>;
 	execution_config?: BehaviorExecutionConfig;
 	tags?: string[];
@@ -53,7 +52,6 @@ export interface BehaviorUpdateInput {
 	behavior_id: BehaviorId;
 	triggers?: BehaviorTrigger[];
 	agent_id?: string;
-	scheduler_client_id?: string;
 	model_config?: Record<string, unknown>;
 	/** `null` clears a previously-saved config back to NULL/defaults. */
 	execution_config?: BehaviorExecutionConfig | null;

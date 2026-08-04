@@ -165,13 +165,24 @@ export async function handleCompleteWindow(
   await requireWatcherAccess(pgSql, [String(watcherId)], ctx, 'write');
 
   if (watcherRunId == null) {
+    // Prefer an active (dispatched) run; otherwise a pending manual-open run
+    // (no agent/device pin) waiting for an external completer.
     const runRows = await sql`
       SELECT id
       FROM runs
       WHERE watcher_id = ${watcherId}
         AND run_type = 'behavior'
-        AND status = 'running'
-      ORDER BY created_at DESC
+        AND (
+          status = 'running'
+          OR (
+            status = 'pending'
+            AND (approved_input->>'agent_id' IS NULL OR approved_input->>'agent_id' = '')
+            AND (approved_input->>'device_worker_id' IS NULL OR approved_input->>'device_worker_id' = '')
+          )
+        )
+      ORDER BY
+        CASE WHEN status = 'running' THEN 0 ELSE 1 END,
+        created_at DESC
       LIMIT 1
     `;
     if (runRows.length > 0 && runRows[0].id != null) {
@@ -180,6 +191,26 @@ export async function handleCompleteWindow(
     }
   } else if (provenanceMetadata.watcher_run_id == null) {
     provenanceMetadata.watcher_run_id = watcherRunId;
+  }
+
+  // Manual-open runs (no agent, no device pin) pend for any connected MCP
+  // client — there is no claim step, so the completing client transitions the
+  // run pending->running here. Best-effort and race-safe: concurrent completers
+  // both see an active run, and the completion transition below is idempotent.
+  // Addressed runs (agent dispatch / device lane) never match this filter, so
+  // an external client cannot hijack a dispatched run.
+  if (watcherRunId != null && Number.isFinite(watcherRunId)) {
+    await sql`
+      UPDATE runs
+      SET status = 'running',
+          claimed_at = COALESCE(claimed_at, current_timestamp)
+      WHERE id = ${watcherRunId}
+        AND watcher_id = ${watcherId}
+        AND run_type = 'behavior'
+        AND status = 'pending'
+        AND (approved_input->>'agent_id' IS NULL OR approved_input->>'agent_id' = '')
+        AND (approved_input->>'device_worker_id' IS NULL OR approved_input->>'device_worker_id' = '')
+    `;
   }
 
   // ============================================

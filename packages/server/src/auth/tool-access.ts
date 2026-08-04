@@ -42,8 +42,10 @@ export const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 	// gateway MCP into the spawned CLI; device tokens carry mcp:write, not
 	// admin). The handler still enforces org/entity write access via
 	// requireWatcherAccess; watcher ADMINISTRATION (create/update/delete/…)
-	// stays admin-tier below.
-	manage_behaviors: new Set(["complete_window"]),
+	// stays admin-tier below. `trigger` is write-tier: manual activation is the
+	// open lane — any member (or their MCP client) may fire a Behavior and
+	// complete the resulting run.
+	manage_behaviors: new Set(["complete_window", "trigger"]),
 	// `approve`/`reject` (and their `*_batch` forms) are write-tier so the
 	// recorded FIELD OWNER of an entity-change proposal (a plain member) can
 	// decide their own run. The handler enforces admin-or-run-owner per run — a
@@ -122,12 +124,12 @@ export const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 	// admin-or-run-owner); only `execute` is unconditionally admin.
 	manage_operations: new Set(["execute"]),
 	manage_behaviors: new Set([
-		// `complete_window` is in MEMBER_WRITE_ACTIONS — it's the agent result
-		// path (server workers + device CLI over MCP), not administration.
+		// `complete_window` and `trigger` are in MEMBER_WRITE_ACTIONS — the
+		// execution path (server workers + device CLI + manual MCP clients),
+		// not administration.
 		"create",
 		"update",
 		"create_version",
-		"trigger",
 		"delete",
 		"set_reaction_script",
 		"submit_feedback",

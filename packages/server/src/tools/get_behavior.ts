@@ -220,7 +220,6 @@ interface WatcherQueryRow {
   next_run_at: string | null;
   agent_id: string | null;
   device_worker_id: string | null;
-  scheduler_client_id: string | null;
   version: number;
   current_version_id: number | null;
   entity_ids: string | number[];
@@ -546,7 +545,6 @@ async function getBehaviorImpl(
         i.next_run_at,
         i.agent_id,
         i.device_worker_id,
-        i.scheduler_client_id,
         i.version,
         i.current_version_id,
         i.entity_ids,
@@ -789,7 +787,6 @@ async function getBehaviorImpl(
       next_run_at: watcherRow.next_run_at,
       agent_id: watcherRow.agent_id,
       device_worker_id: watcherRow.device_worker_id ?? null,
-      scheduler_client_id: watcherRow.scheduler_client_id,
       version: pinnedVersion,
       sources: watcherSources,
       prompt: version?.prompt as string | undefined,

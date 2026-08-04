@@ -859,7 +859,6 @@ export async function executePlan(
           sources: w.sources,
           reactions_guidance: w.reactionsGuidance,
           device_worker_id: w.deviceWorkerId,
-          scheduler_client_id: w.schedulerClientId,
           notification_channel: w.notificationChannel,
           notification_priority: w.notificationPriority,
           min_cooldown_seconds: w.minCooldownSeconds,
@@ -903,9 +902,6 @@ export async function executePlan(
               : {}),
             ...(scalarForUpdate.includes("device_worker_id")
               ? { device_worker_id: w.deviceWorkerId ?? null }
-              : {}),
-            ...(scalarForUpdate.includes("scheduler_client_id")
-              ? { scheduler_client_id: w.schedulerClientId ?? null }
               : {}),
             ...(scalarForUpdate.includes("notification_channel") &&
             w.notificationChannel

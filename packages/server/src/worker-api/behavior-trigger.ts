@@ -125,9 +125,6 @@ export async function triggerBehaviorForDevice(c: Context<{ Bindings: Env }>) {
   if ((watcher.status ?? 'active') !== 'active') {
     return c.json({ error: 'Behavior is not active' }, 409);
   }
-  if (!watcher.agent_id) {
-    return c.json({ error: 'Behavior has no agent assigned' }, 409);
-  }
 
   // Enqueue (or re-use) the run. `enqueueWatcherRunForWatcher` delegates to
   // `createWatcherRun`, which checks for an active run in the same watcher_id

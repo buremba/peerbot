@@ -532,7 +532,6 @@ const WATCHER_PATCHABLE_FIELDS = [
   // patch them only via triggers, not as direct writable fields.
   'triggers',
   'agent_id',
-  'scheduler_client_id',
   'tags',
   'device_worker_id',
   'agent_kind',
@@ -629,7 +628,6 @@ const WATCHER_APPROVAL_FIELD_TITLES: Record<string, string> = {
   reaction_script: 'Reaction script',
   execution_config: 'Execution config',
   device_worker_id: 'Device worker',
-  scheduler_client_id: 'Scheduler client',
   agent_kind: 'Agent kind',
   sources: 'Sources',
   model_config: 'Model config',

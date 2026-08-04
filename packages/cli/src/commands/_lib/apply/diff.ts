@@ -493,12 +493,6 @@ function diffWatcher(
     scalar.push("device_worker_id");
   }
   if (
-    desired.schedulerClientId !== undefined &&
-    desired.schedulerClientId !== (remote.scheduler_client_id ?? undefined)
-  ) {
-    scalar.push("scheduler_client_id");
-  }
-  if (
     desired.notificationChannel !== undefined &&
     desired.notificationChannel !== (remote.notification_channel ?? undefined)
   ) {

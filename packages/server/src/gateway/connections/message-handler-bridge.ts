@@ -29,8 +29,8 @@ import {
 import { resolveSlackBotIdentity } from "../../authz/slack-acl-sync.js";
 import {
   type BehaviorActivationPlan,
+  type ChatReplyActivation,
   dispatchBehaviorRunsBestEffort,
-  type MatchingBehaviorActivation,
   planBehaviorActivationsForRuntimeConnection,
   queueBehaviorActivations,
   type RuntimeConnectionBehaviorLookup,
@@ -1173,7 +1173,7 @@ export class MessageHandlerBridge {
     // `createBehaviorEventRun` makes for background targets above. Claiming the
     // same cursor here is what stops `min_cooldown_seconds` being a debounce on
     // one half of the feature and a silent no-op on the other.
-    const replyTargetsOffCooldown: MatchingBehaviorActivation[] = [];
+    const replyTargetsOffCooldown: ChatReplyActivation[] = [];
     for (const candidate of replyBehaviors) {
       // `minCooldownSeconds` is a feature-enabled hint carried on the match, so
       // an ordinary chat Behavior (the 0 default) costs no extra round-trip and

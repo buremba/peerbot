@@ -55,7 +55,6 @@ export async function handleList(
       i.agent_id,
       i.device_worker_id,
       i.last_fired_at,
-      i.scheduler_client_id,
       i.model_config,
       i.execution_config,
       i.sources,
@@ -141,6 +140,14 @@ export async function handleList(
 	} else {
 		// Default to active watchers only (exclude archived)
 		conditions.push(`i.status = 'active'`);
+	}
+
+	// Discovery filter for executors: match the LATEST run per Behavior (the
+	// lateral join prioritizes active runs), e.g. pending manual-open runs.
+	if (args.run_status) {
+		conditions.push(`wr.status = $${paramCount}`);
+		params.push(args.run_status);
+		paramCount++;
 	}
 
 	query += ` WHERE ${conditions.join(" AND ")}`;

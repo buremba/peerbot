@@ -7,6 +7,7 @@ import {
   type BehaviorEventRunQueued,
   createBehaviorEventRun,
 } from "../runs/queue-service";
+import { resolveTriggerExecutor } from "../tools/admin/manage_behaviors/executors";
 import logger from "../utils/logger";
 import { dispatchPendingWatcherRuns } from "../watchers/automation";
 import { matchingBehaviorTriggers } from "./event-trigger";
@@ -14,7 +15,9 @@ import { matchingBehaviorTriggers } from "./event-trigger";
 export interface MatchingBehaviorActivation {
   behaviorId: number;
   organizationId: string;
-  agentId: string;
+  /** Resolved executor agent — null when this trigger routes to a device. */
+  agentId: string | null;
+
   deviceWorkerId: string | null;
   agentKind: string | null;
   model: string | null;
@@ -29,6 +32,12 @@ export interface MatchingBehaviorActivation {
   trigger: BehaviorEventTrigger;
 }
 
+/** A reply target always carries a managed agent — device-routed matches are
+ * demoted to the background lane in {@link planBehaviorActivations}. */
+export interface ChatReplyActivation extends MatchingBehaviorActivation {
+  agentId: string;
+}
+
 export interface BehaviorActivationResult extends BehaviorEventRunQueued {
   behaviorId: number;
   trigger: BehaviorEventTrigger;
@@ -36,7 +45,7 @@ export interface BehaviorActivationResult extends BehaviorEventRunQueued {
 
 export interface BehaviorActivationPlan {
   signal: ConnectorTriggerSignal;
-  replyTargets: MatchingBehaviorActivation[];
+  replyTargets: ChatReplyActivation[];
   backgroundTargets: MatchingBehaviorActivation[];
 }
 
@@ -57,14 +66,18 @@ export function planBehaviorActivations(
   signal: ConnectorTriggerSignal,
   matches: MatchingBehaviorActivation[],
 ): BehaviorActivationPlan {
-  const replyTargets: MatchingBehaviorActivation[] = [];
+  const replyTargets: ChatReplyActivation[] = [];
   const backgroundTargets: MatchingBehaviorActivation[] = [];
   for (const match of matches) {
+    // Chat-turn replies need a managed agent on the server side — a trigger
+    // routed to a device (agentId null) cannot host a live turn, so it takes
+    // the durable background lane instead.
     if (
+      match.agentId != null &&
       (match.trigger.execution ?? "turn") === "turn" &&
       (match.trigger.output ?? "silent") === "reply_to_source"
     ) {
-      replyTargets.push(match);
+      replyTargets.push({ ...match, agentId: match.agentId });
     } else {
       backgroundTargets.push(match);
     }
@@ -112,7 +125,7 @@ export async function findMatchingBehaviorActivations(
 		FROM watchers w
 		JOIN watcher_versions v ON v.id = w.current_version_id
 		WHERE w.status = 'active'
-		  AND w.agent_id IS NOT NULL
+		  AND (w.agent_id IS NOT NULL OR w.device_worker_id IS NOT NULL)
 		  AND ${triggerFilter}
 		  ${organizationFilter}
 		ORDER BY w.id ASC
@@ -134,13 +147,25 @@ export async function findMatchingBehaviorActivations(
       signal,
     );
     if (!trigger) continue;
-    matches.push({
-      behaviorId: Number(row.id),
-      organizationId: String(row.organization_id),
-      agentId: String(row.agent_id),
+    // Per-trigger executor resolution ("when -> who"): the matched trigger's
+    // respond_with override wins, else the Behavior-level agent/device. The
+    // create/update matrix guarantees automated triggers resolve; skip
+    // defensively if a legacy row slips through.
+    const executor = resolveTriggerExecutor(trigger, {
+      agentId: row.agent_id as string | null,
       deviceWorkerId:
         typeof row.device_worker_id === "string" ? row.device_worker_id : null,
       agentKind: typeof row.agent_kind === "string" ? row.agent_kind : null,
+    });
+    if (!executor) continue;
+    matches.push({
+      behaviorId: Number(row.id),
+      organizationId: String(row.organization_id),
+      agentId: executor.kind === "agent" ? executor.agentId : null,
+      deviceWorkerId:
+        executor.kind === "device" ? executor.deviceWorkerId : null,
+      agentKind:
+        executor.kind === "device" ? executor.agentKind : null,
       model: typeof row.model === "string" ? row.model : null,
       instructions: typeof row.prompt === "string" ? row.prompt : "",
       minCooldownSeconds: Number(row.min_cooldown_seconds ?? 0),

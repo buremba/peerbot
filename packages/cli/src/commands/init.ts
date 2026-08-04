@@ -316,31 +316,6 @@ export async function initCommand(
     }
   }
 
-  // `--from-org`: bootstrap a complete, re-appliable project from an existing
-  // cloud org (the inverse of `lobu apply`) instead of the blank scaffold. The
-  // empty-dir / project-exists guard above already ran, so we never overwrite.
-  if (options.fromOrg !== undefined) {
-    await initFromOrg({
-      targetDir: projectDir,
-      org: options.fromOrg || undefined,
-      url: options.url,
-    });
-    // Same package.json/tsconfig the blank scaffold writes, so the bootstrapped
-    // lobu.config.ts can resolve @lobu/cli/config + re-apply outside this monorepo.
-    await scaffoldProjectPackaging(projectDir, projectName, cliVersion);
-    const depsSpinner = ora("Installing project dependencies...").start();
-    const depsWarning = installScaffoldedProjectDeps(projectDir);
-    if (depsWarning) {
-      depsSpinner.warn(depsWarning);
-    } else {
-      depsSpinner.succeed("Project dependencies installed");
-    }
-    if (!here) {
-      console.log(chalk.cyan(`\n  Next: cd ${projectName}\n`));
-    }
-    return;
-  }
-
   // Pick free ports at scaffold time so two `lobu run`s on the same machine
   // don't collide on the default 8787 / 8118. The flag / env value wins.
   const gatewayPortDefault = String(await pickFreePort(8787));
@@ -378,6 +353,34 @@ export async function initCommand(
       avoid: Number.isFinite(gatewayPortNum) ? [gatewayPortNum] : [],
     })
   );
+
+  // `--from-org`: bootstrap a complete, re-appliable project from an existing
+  // cloud org (the inverse of `lobu apply`) instead of the blank scaffold. The
+  // project-exists guard above already ran, so we never overwrite a Lobu project.
+  if (options.fromOrg !== undefined) {
+    await initFromOrg({
+      targetDir: projectDir,
+      projectName,
+      gatewayPort,
+      workerProxyPort,
+      org: options.fromOrg || undefined,
+      url: options.url,
+    });
+    // Same package.json/tsconfig the blank scaffold writes, so the bootstrapped
+    // lobu.config.ts can resolve @lobu/cli/config + re-apply outside this monorepo.
+    await scaffoldProjectPackaging(projectDir, projectName, cliVersion);
+    const depsSpinner = ora("Installing project dependencies...").start();
+    const depsWarning = installScaffoldedProjectDeps(projectDir);
+    if (depsWarning) {
+      depsSpinner.warn(depsWarning);
+    } else {
+      depsSpinner.succeed("Project dependencies installed");
+    }
+    if (!here) {
+      console.log(chalk.cyan(`\n  Next: cd ${projectName}\n`));
+    }
+    return;
+  }
 
   // Database: local embedded Postgres (zero-config) or an existing one. The
   // chosen value is written verbatim to DATABASE_URL — `file://.` boots an

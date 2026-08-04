@@ -12,7 +12,7 @@
  * UNDER `import.meta.dir` so jiti resolves the externalized `@lobu/cli/config`.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { loadDesiredStateFromConfig } from "../../apply/desired-state.js";
 import { initFromOrg } from "../bootstrap.js";
@@ -284,6 +284,9 @@ describe("lobu init --from-org", () => {
     const dir = mkFixtureDir();
     await initFromOrg({
       targetDir: dir,
+      projectName: "acme-local",
+      gatewayPort: "9876",
+      workerProxyPort: "9001",
       fetchImpl: buildFetch(fullOrgRoutes()),
     });
 
@@ -317,6 +320,20 @@ describe("lobu init --from-org", () => {
     expect(readFileSync(join(dir, ".env.example"), "utf-8")).toContain(
       "ANTHROPIC_API_KEY="
     );
+    const agentGuidance = readFileSync(join(dir, "AGENTS.md"), "utf-8");
+    expect(agentGuidance).toContain("# acme-local — Lobu project guide");
+    expect(agentGuidance).toContain("## Onboarding the user");
+    expect(agentGuidance).toContain("http://localhost:9876");
+    expect(readFileSync(join(dir, "TESTING.md"), "utf-8")).toContain(
+      "memory health --context local"
+    );
+    const localEnv = readFileSync(join(dir, ".env"), "utf-8");
+    expect(localEnv).toContain("GATEWAY_PORT=9876");
+    expect(localEnv).toContain("WORKER_PROXY_PORT=9001");
+    expect(localEnv).toContain("DATABASE_URL=file://.");
+    expect(localEnv).toMatch(/ENCRYPTION_KEY=[a-f0-9]{64}/);
+    expect(statSync(join(dir, ".env")).mode & 0o777).toBe(0o600);
+    expect(readFileSync(join(dir, ".gitignore"), "utf-8")).toContain(".env");
 
     // Round-trip: load the generated config back to DesiredState.
     const env = {

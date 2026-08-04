@@ -8,11 +8,11 @@ installed skill or plugin.
 
 An open-source, event-sourced backend for AI agents:
 
-- **Connectors** pull from external sources (GitHub, Slack, a website, a webhook,
-  a CSV) via scheduled **feeds** that collect incrementally — each run picks up
-  only what's new since the last (checkpointed), so nothing is re-ingested — and
-  emit **events**. When onboarding a user, explain this model in plain terms before
-  writing config so they understand what they're building.
+- **Data connectors** pull from external sources (GitHub, a website, a webhook,
+  a CSV) via **feeds** that may use checkpoints to collect incrementally and emit
+  **events**. Chat integrations such as Slack may instead deliver incoming
+  messages directly and expose no feed. When onboarding a user, explain the
+  selected connector's actual model in plain terms before writing config.
 - **Memory** turns events into a structured, append-only knowledge graph of typed
   **entities** and **relationships**.
 - **Agents** react to messages in real time and answer over chat platforms, HTTP,
@@ -24,10 +24,28 @@ An open-source, event-sourced backend for AI agents:
 `lobu run` boots the whole thing (gateway + worker + memory) as one Node process
 on http://localhost:{{GATEWAY_PORT}}.
 
+## Onboarding the user
+
+Ground the project in the user's real business before designing schemas or
+Behaviors. Ask one question at a time: the company or product and what it does,
+its public domain (optional for a personal project), the agent's goal and users,
+what it may do autonomously, what it should remember, its first data source, and
+where people should interact with it. Offer the Web UI, API/SDK, MCP, and supported
+chat platforms without requiring Slack or another chat platform.
+
+Ask for permission to research the public website and other public sources. If
+the user consents, research the business, cite the public sources, and summarize
+its product, customers, workflows, and useful signals. Propose one to three
+entity types, their relationships, the initial connector, and one or two useful
+Behaviors. Play the plan back and wait for confirmation before scaffolding it.
+An email supplied for Lobu login identifies the user; do not infer their company
+or public domain from a personal email address.
+
 ## Prerequisites
 
 Before `lobu run`, the host needs Node 22-24 or 26+ (only Node 25 is unsupported —
-`isolated-vm` skips that EOL non-LTS line) and one LLM provider key in `.env`.
+`isolated-vm` skips that EOL non-LTS line) and one LLM provider credential in
+`.env`.
 Postgres is built in: `lobu run`
 starts an embedded PostgreSQL (with `pgvector`); set `DATABASE_URL` only to use an
 external Postgres instead. If a prerequisite is missing, stop and help the user
@@ -44,8 +62,10 @@ install it — don't work around it.
 - `*.reaction.ts` — code a Behavior runs after extraction (post to Slack, update
   an entity).
 - `skills/<name>/SKILL.md` — reusable capability bundles for the agent.
-- `.env` — secrets (`DATABASE_URL`, provider keys, OAuth creds). Never commit real
-  values; never invent them.
+- `.env` — secrets (`DATABASE_URL`, encryption keys, provider keys, OAuth creds).
+  Never open or read this file and never request permission to do so. Inspect
+  declared `secret("ENV_NAME")` placeholders and `.env.example` when present.
+  Never commit, print, copy, or invent secret values.
 
 ## Config API
 
@@ -109,6 +129,36 @@ export default defineConfig({
 });
 ```
 
+When the user chooses Slack, ask which onboarding route they want: join the
+hosted Lobu workspace for a quick start, install the Lobu app into an existing
+Slack workspace, or bring their own Slack app. Also ask whether the first bound
+surface should be their DM with Lobu, a named channel, or both, and whether
+people knowledge means conversation participants, bound-channel members, or the
+full workspace directory. Use the exact join, install, and link instructions
+printed by `lobu run`. A printed `/lobu link <code>` is one-time: redeem it in
+the first target DM or channel. In an installed workspace whose installer is
+linked to Lobu, bind each additional surface with `/lobu link <agent-id>`;
+otherwise generate a fresh code for that surface. Mention the bot in a channel
+test. Verify the App Home separately. A working DM does not prove a channel
+binding, and neither proves the App Home rendered.
+
+Lobu CLI email login and Slack workspace installation are separate authorization
+steps. The email link authorizes the Lobu CLI session. Installing the managed
+Lobu Slack app requires the user or a workspace admin to approve Slack's OAuth
+screen; never describe that Slack consent as an email approval. If Slack's
+catalog entry has no `detail.feeds_schema`, do not invent or trigger a Slack
+feed. Prove its inbound message events through the selected DM and channel
+surfaces instead.
+
+Clarify what "knows the people in Slack" means. Installation lets Lobu resolve
+senders and maintain membership ACLs for bound channels; it does not by itself
+prove that every workspace member's human-readable profile is available to the
+agent. Ask whether the user needs only conversation participants, bound-channel
+members, or the full workspace directory. Prove the selected scope by querying
+the resulting people/member entities and asking the agent a roster question. If
+names or non-participants are missing, report that product gap instead of
+inventing a directory.
+
 ### Entity types (what it remembers)
 
 ```ts
@@ -169,10 +219,53 @@ const gh = defineConnection({
 
 Mac/Chrome device connectors are advertised by Owletto at poll time and appear after the relevant device grants permission.
 
-Each connector defines its own `config` keys and feed keys — don't guess them. If
-you're unsure of a connector's config shape, ask the user or read its definition;
-`npx @lobu/cli@latest connector run <key> --check` resolves and validates a config
-without executing it.
+Each connector defines its own `config` keys and feed keys — don't guess them.
+Read the installed catalog schemas before authoring config. `lobu connector run`
+is not a generic validation path: it supports only a device-bound
+`browser_session` profile and requires
+`--auth-profile <browser-session-profile-slug>`. For managed OAuth or env-backed
+profiles, validate the authored project and inspect catalog/connection metadata;
+after the user approves provider-data access, use a server-side feed dry-run.
+
+Discover live capabilities before writing connector config. In an authenticated
+cloud context, use ClientSDK through Lobu MCP or `lobu memory exec`. Call
+`client.organizations.list()` to find organizations that offer managed
+connections. If a matching live offer exists, explain it and, after the user
+consents, call `client.connections.connectManaged({ managed_by_org,
+connector_key })` before asking for OAuth client credentials. Complete the
+returned authorization, then, if this project was not already generated from
+that organization, run its `local_bootstrap_command` from the parent directory
+where the new project should be created; use `--here` only after entering an
+empty directory. Do not create a blank Lobu scaffold first or repeat the
+bootstrap when the connection already has `managedBy` config. Ask for
+bring-your-own OAuth credentials only when no suitable managed offer is live or
+the user explicitly prefers their own app. Public offer metadata may be
+discoverable before login, but connecting always requires the user to log in and
+consent; knowing their email does not grant access. In a headless session,
+confirm the address before running `lobu login --email <address>`: Lobu emails an
+approval link, and the approver must sign in with that same address.
+After a successful login, an empty membership list is a tenancy/discovery result,
+not proof that authentication failed. Discover public organizations with
+`client.organizations.list()` and explain the result. Never revoke or repeat
+login with `--force` unless the user separately approves that re-authentication.
+
+Call `client.catalog.listInstalled({ kinds: ["connectors"] })`; if the connector
+is not installed, call `client.catalog.listCatalog({ kinds: ["connectors"] })`.
+Inspect the selected entry's `detail.auth_schema`, `detail.options_schema`,
+`detail.feeds_schema`, and `detail.behavior_events`. Do not confuse
+`feeds_schema.<feed>.eventKinds`, which describes the semantic kinds emitted by
+a feed, with the connector's supported Behavior event triggers. Only values from
+`behavior_events` may be used in an event trigger. If there is no matching
+Behavior event, use a schedule plus a bounded named source, validate the query
+against the running local schema, and read event text from `payload_text`, for
+example:
+
+```ts
+sources: {
+  recentMessages:
+    "SELECT id, title, payload_text, metadata, occurred_at FROM events WHERE connector_key = 'google.gmail' ORDER BY occurred_at DESC LIMIT 200",
+},
+```
 
 If the source has no bundled connector, write `connectors/<name>.connector.ts`
 (model it on `examples/lobu-crm/npm-downloads.connector.ts` in the repo) and
@@ -258,6 +351,35 @@ npx @lobu/cli@latest validate   # check the config before running
 npx @lobu/cli@latest login      # auth the CLI (device-code flow)
 npx @lobu/cli@latest apply      # push this config to a Lobu org (cloud or self-host)
 ```
+
+## Completion gate
+
+Run `lobu validate`, `lobu run`, and every project-local check from the generated
+project directory. Before each phase, verify that `pwd` contains the intended
+`lobu.config.ts`; never run the project from its parent directory.
+
+Prove the selected local path before offering deployment: validate, boot, verify
+health and the Web UI, send a harmless direct message without tools, check the
+connector without reading provider data, and ask before accessing real provider
+data. After consent, dry-run each selected collected feed before a real sync and
+run each selected Behavior once. Skip feed triggering for chat integrations and
+other connectors that expose no collected feed. Show each completed run and any
+declared result event or entity. Use the authoritative `view_url` returned by
+Lobu for resources that provide one; never invent or reconstruct URLs. Keep
+external actions in approval mode unless the user explicitly approves them.
+
+With the embedded database default, `lobu run` creates and selects the `local`
+context and auto-applies the project. An external `DATABASE_URL` does neither;
+authenticate and apply to that target explicitly. Lobu Cloud is also a separate
+target. Because `lobu apply` has no context flag, run `lobu context list`, then
+`lobu context use <cloud-name>` to select an explicit cloud context for
+deployment. Run `lobu apply --dry-run`, show the target organization and exact
+plan, and wait for confirmation before the real apply. Afterwards, present only
+the working access paths the user selected: Web UI, direct agent chat, API/SDK,
+MCP, and configured chat platforms. Do not call onboarding complete until every
+selected path passes end to end. If authorization, a provider, deployment, or a
+rate limit blocks the proof, report that exact blocker and keep the result marked
+blocked.
 
 ## Conventions
 

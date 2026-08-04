@@ -220,6 +220,7 @@ interface WatcherQueryRow {
   next_run_at: string | null;
   agent_id: string | null;
   device_worker_id: string | null;
+  agent_kind: string | null;
   version: number;
   current_version_id: number | null;
   entity_ids: string | number[];
@@ -545,6 +546,7 @@ async function getBehaviorImpl(
         i.next_run_at,
         i.agent_id,
         i.device_worker_id,
+        i.agent_kind,
         i.version,
         i.current_version_id,
         i.entity_ids,
@@ -787,6 +789,7 @@ async function getBehaviorImpl(
       next_run_at: watcherRow.next_run_at,
       agent_id: watcherRow.agent_id,
       device_worker_id: watcherRow.device_worker_id ?? null,
+      agent_kind: watcherRow.agent_kind ?? null,
       version: pinnedVersion,
       sources: watcherSources,
       prompt: version?.prompt as string | undefined,
@@ -1088,7 +1091,7 @@ async function getBehaviorImpl(
     : null;
   const viewUrl =
     organizationSlug && watcherRow?.agent_id
-      ? buildBehaviorUrl(organizationSlug, watcherRow.agent_id, args.behavior_id, baseUrl)
+      ? buildBehaviorUrl(organizationSlug, args.behavior_id, baseUrl)
       : undefined;
 
   const result: GetBehaviorResult = {

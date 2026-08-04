@@ -394,7 +394,7 @@ export async function handleCreate(
   let viewUrl: string | undefined;
 
   if (organizationSlug && args.agent_id) {
-    viewUrl = buildBehaviorUrl(organizationSlug, args.agent_id, watcherId as number, baseUrl);
+    viewUrl = buildBehaviorUrl(organizationSlug, watcherId as number, baseUrl);
   }
 
   logger.info(`[manage_behaviors] Created watcher ${watcherId} with slug '${args.slug}'`);

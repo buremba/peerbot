@@ -775,7 +775,7 @@ async function queueWatcherWriteForApproval(
   const ownerAgentId = args.agent_id ?? (current?.agent_id as string | null | undefined) ?? null;
   const settingsReviewUrl =
     args.action === 'update' && args.behavior_id != null && ownerAgentId
-      ? await buildBehaviorSettingsUrl(baseUrl, ctx.organizationId, ownerAgentId, args.behavior_id, {
+      ? await buildBehaviorSettingsUrl(baseUrl, ctx.organizationId, args.behavior_id, {
           runId,
         }).catch(() => null)
       : null;

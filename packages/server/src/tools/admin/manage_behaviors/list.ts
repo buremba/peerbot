@@ -199,7 +199,7 @@ export async function handleList(
 
 		const viewUrl =
 			orgSlug && watcher.agent_id
-				? buildBehaviorUrl(orgSlug, watcher.agent_id, watcherId, baseUrl)
+				? buildBehaviorUrl(orgSlug, watcherId, baseUrl)
 				: undefined;
 
 		const { organization_id: _orgId, ...rest } = watcher;

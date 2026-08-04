@@ -85,24 +85,22 @@ export async function buildAgentSettingsUrl(
  * {@link buildAgentSettingsUrl}: `?run_id=<id>` prefills the Behavior edit form
  * with the proposed change for Approve/Reject.
  *
- * A Behavior is owned by an agent (`watchers.agent_id`), so the route is nested
- * under that agent — the caller passes the owning agent id (from the current
- * Behavior row). Returns null when any required piece is missing; the producer
- * falls back to the run permalink.
+ * Behaviors live in the workspace-level Behaviors section (agent-owned and
+ * agentless alike), so no agent id is needed. Returns null when any required
+ * piece is missing; the producer falls back to the run permalink.
  */
 export async function buildBehaviorSettingsUrl(
   publicGatewayUrl: string | undefined,
   organizationId: string | undefined,
-  agentId: string | undefined,
   behaviorId: string | number | undefined,
   opts?: { runId?: number }
 ): Promise<string | null> {
-  if (!publicGatewayUrl || !organizationId || !agentId || behaviorId == null) {
+  if (!publicGatewayUrl || !organizationId || behaviorId == null) {
     return null;
   }
   const slug = await getOrganizationSlug(organizationId).catch(() => null);
   if (!slug) return null;
-  const base = buildBehaviorUrl(slug, agentId, behaviorId, publicGatewayUrl);
+  const base = buildBehaviorUrl(slug, behaviorId, publicGatewayUrl);
   return opts?.runId ? `${base}?run_id=${opts.runId}` : base;
 }
 
@@ -320,15 +318,14 @@ export function buildEntityUrl(info: EntityInfo, baseUrl?: string): string {
   return withBaseUrl(normalizeBaseUrl(baseUrl), `/${info.ownerSlug}/${segments.join('/')}`);
 }
 
-/** Build the canonical agent-owned Behavior detail URL. */
+/** Build the canonical Behavior detail URL (workspace-level Behaviors section). */
 export function buildBehaviorUrl(
   ownerSlug: string,
-  agentId: string,
   behaviorId: string | number,
   baseUrl?: string
 ): string {
   const webOrigin = normalizeBaseUrl(baseUrl)?.replace(/\/lobu$/, '');
-  const path = `/${encodeURIComponent(ownerSlug)}/agents/${encodeURIComponent(agentId)}/behaviors/${encodeURIComponent(String(behaviorId))}`;
+  const path = `/${encodeURIComponent(ownerSlug)}/behaviors/${encodeURIComponent(String(behaviorId))}`;
   return withBaseUrl(webOrigin, path);
 }
 

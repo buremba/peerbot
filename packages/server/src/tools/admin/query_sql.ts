@@ -562,9 +562,15 @@ export async function querySqlImpl(
   // aggregate large event ranges), so run it ONCE and take the total from a
   // window count instead of a second full `SELECT count(*) FROM (subquery)`
   // pass. Windows evaluate before LIMIT, so the count covers the full filtered
-  // set exactly like the old separate COUNT did.
+  // set exactly like the old separate COUNT did. Two fallbacks keep the exact
+  // legacy contract: an empty/out-of-range page carries no row to bear the
+  // window count (run the explicit COUNT then), and if the caller's own query
+  // projects a column named like the internal window alias, re-run the plain
+  // two-query shape rather than clobber their column.
   const TOTAL_COL = '__lobu_total_count__';
+  const countSql = `SELECT count(*)::int AS c FROM (${scopedSql}) AS _t ${searchWhere}`;
   const dataSql = `SELECT *, COUNT(*) OVER () AS "${TOTAL_COL}" FROM (${scopedSql}) AS _t ${searchWhere} ${orderBy} LIMIT ${limit} OFFSET ${offset}`;
+  const plainDataSql = `SELECT * FROM (${scopedSql}) AS _t ${searchWhere} ${orderBy} LIMIT ${limit} OFFSET ${offset}`;
 
   try {
     const sql = getDb();
@@ -576,23 +582,50 @@ export async function querySqlImpl(
       await tx`SET TRANSACTION READ ONLY`;
       await tx`SET LOCAL statement_timeout = '5s'`;
       const data = await tx.unsafe(dataSql, params);
-      return data;
+      const rows = Array.isArray(data) ? (data as Array<Record<string, unknown>>) : [];
+      // Duplicate TOTAL_COL in the result columns means the caller's query
+      // itself projects that name — fall back to the classic two-query shape
+      // so the caller's column survives untouched.
+      const aliasCollision =
+        ((data as any)?.columns ?? []).filter((col: { name: string }) => col.name === TOTAL_COL)
+          .length > 1;
+      if (rows.length === 0 || aliasCollision) {
+        const cnt = await tx.unsafe(countSql, params);
+        const totalCount = Number(cnt[0]?.c ?? 0);
+        if (aliasCollision) {
+          const plain = await tx.unsafe(plainDataSql, params);
+          return {
+            rows: plain,
+            columns: (plain as any)?.columns,
+            totalCount,
+            columnsHaveWindowCol: false,
+          };
+        }
+        // Empty page: columns still come from the window query, so the
+        // internal alias must be stripped from them too.
+        return { rows, columns: (data as any)?.columns, totalCount, columnsHaveWindowCol: true };
+      }
+      return {
+        rows,
+        columns: (data as any)?.columns,
+        totalCount: Number(rows[0][TOTAL_COL]) || 0,
+        stripWindowCol: true,
+        columnsHaveWindowCol: true,
+      };
     });
-    const dataResult = await raceAbort(txPromise, ctx.abortSignal);
+    const result = await raceAbort(txPromise, ctx.abortSignal);
 
-    const rawRows = Array.isArray(dataResult)
-      ? (dataResult as Array<Record<string, unknown>>)
-      : [];
-    // Empty page: total is unknowable from rows alone. offset=0 with no rows is a
-    // true 0; an out-of-range offset reports 0 (has_more is false either way).
-    const totalCount = rawRows.length > 0 ? Number(rawRows[0][TOTAL_COL]) || 0 : 0;
-    const rows = rawRows.map((row) => {
-      const { [TOTAL_COL]: _total, ...rest } = row;
-      return rest;
-    });
+    const rawRows = result.rows as Array<Record<string, unknown>>;
+    const totalCount = result.totalCount;
+    const rows = result.stripWindowCol
+      ? rawRows.map((row) => {
+          const { [TOTAL_COL]: _total, ...rest } = row;
+          return rest;
+        })
+      : rawRows;
 
-    const columns = ((dataResult as any).columns ?? [])
-      .filter((col: { name: string }) => col.name !== TOTAL_COL)
+    const columns = (result.columns ?? [])
+      .filter((col: { name: string }) => !(result.columnsHaveWindowCol && col.name === TOTAL_COL))
       .map(
         (col: { name: string; type: number }) => ({
           name: col.name,

@@ -133,20 +133,15 @@ async function executeListQuery(args: {
   if (args.entityId == null) {
     // Org-wide listing (the activity feed). The COUNT is one of the two
     // expensive scans here — it re-evaluates the full visibility predicate
-    // across every live event — so: skip it entirely on date-feed cursor
-    // pages (pagination reads has_older/has_newer from the candidate probe,
-    // fetchLimit = limit+1, and the UI keeps showing the first page's total
-    // while scrolling), and otherwise run count + list in parallel instead of
-    // serializing two full scans. An org feed is never empty in practice, so
-    // nothing relies on a pre-flight count short-circuit.
-    const skipCount = args.useDateFeed && args.cursor != null;
+    // across every live event — so run count + list in parallel instead of
+    // serializing two full scans. The total stays exact on every page
+    // (cursor pages included): ContentSearchResponse.total is part of the
+    // read_knowledge contract and callers rely on it.
     const [countResult, rows] = await Promise.all([
-      skipCount
-        ? Promise.resolve([{ total: 0 }] as Array<{ total: number | string }>)
-        : sql.unsafe<{ total: number | string }>(countSql, countParams),
+      sql.unsafe<{ total: number | string }>(countSql, countParams),
       args.sql.unsafe(querySQL, queryParams) as Promise<any[]>,
     ]);
-    total = skipCount ? 0 : parseInt(String(countResult[0]?.total ?? '0'), 10);
+    total = parseInt(String(countResult[0]?.total ?? '0'), 10);
     rawRows = rows;
     if (total === 0 && rawRows.length === 0) {
       return emptyListResponse({

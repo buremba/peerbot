@@ -274,6 +274,32 @@ async function handleConnectImpl(
     oauthAccountCreatedBy: requireManaged ? userId : undefined,
   });
 
+	const isOAuthConnect =
+		authSelection.preferredMethodType === "oauth" &&
+		(authSelection.selectedKind === "none" ||
+			authSelection.selectedKind === "oauth_account");
+	// Resolve/provision the app before deriving managed-connector policy. On the
+	// first env-backed connect there is no oauth_app row yet; doing this only
+	// after INSERT meant that first grant missed consent_only even though every
+	// later grant was managed. Persist the app first so the same durable signal
+	// drives both the policy decision and OAuth token creation.
+	if (isOAuthConnect && authSelection.oauthMethod && !authSelection.appAuthProfile) {
+		authSelection.appAuthProfile =
+			(await getPrimaryAuthProfileForKind({
+				organizationId,
+				connectorKey: args.connector_key,
+				profileKind: "oauth_app",
+				provider: authSelection.oauthMethod.provider,
+			})) ??
+			(await ensureEnvBackedOAuthAppProfile({
+				organizationId,
+				connectorKey: args.connector_key,
+				connectorName: connector.name,
+				method: authSelection.oauthMethod,
+				createdBy: userId,
+			}));
+	}
+
   const hasNoAuth =
 		!authSelection.oauthMethod &&
 		!authSelection.envMethod &&
@@ -465,7 +491,7 @@ async function handleConnectImpl(
   // the member's local instance). The consent_only flag lives in the trusted
   // connection `config` (where managedBy lives), and the manage_feeds guard
   // already refuses to create feeds on a consent_only connection.
-  const isManagedConnect = authSelection.oauthMethod
+  const isManagedConnect = isOAuthConnect && authSelection.oauthMethod
     ? await isManagedPublicOrgConnect({
         organizationId,
         connectorKey: args.connector_key,

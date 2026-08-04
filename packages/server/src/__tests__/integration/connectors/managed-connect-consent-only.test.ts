@@ -44,6 +44,7 @@ async function seedManagedConnector(opts: {
   visibility: 'public' | 'private';
   /** Managed oauth_app state: 'active' (default) | 'revoked' | 'absent'. */
   appState?: 'active' | 'revoked' | 'absent';
+  envCredentialKeys?: { clientId: string; clientSecret: string };
 }) {
   const appState = opts.appState ?? 'active';
   const { org, user, ctx } = await seedOwnerContext({
@@ -65,8 +66,8 @@ async function seedManagedConnector(opts: {
           requiredScopes: ['read'],
           authorizationUrl: 'https://demo.example/authorize',
           tokenUrl: 'https://demo.example/token',
-          clientIdKey: 'DEMO_CLIENT_ID',
-          clientSecretKey: 'DEMO_CLIENT_SECRET',
+          clientIdKey: opts.envCredentialKeys?.clientId ?? 'DEMO_CLIENT_ID',
+          clientSecretKey: opts.envCredentialKeys?.clientSecret ?? 'DEMO_CLIENT_SECRET',
         },
       ],
     },
@@ -133,6 +134,47 @@ describe('Stage 3 — managed-connect creates a consent-only connection', () => 
       ctx
     )) as { error?: string };
     expect(feedResult.error).toMatch(/consent-only/i);
+  });
+
+  it('the first env-backed connect is consent_only when it provisions the managed app', async () => {
+    const clientIdKey = 'MANAGED_FIRST_CONNECT_CLIENT_ID';
+    const clientSecretKey = 'MANAGED_FIRST_CONNECT_CLIENT_SECRET';
+    const { ctx, connectorKey } = await seedManagedConnector({
+      visibility: 'public',
+      appState: 'absent',
+      envCredentialKeys: { clientId: clientIdKey, clientSecret: clientSecretKey },
+    });
+    process.env[clientIdKey] = 'managed-first-connect-client';
+    process.env[clientSecretKey] = 'managed-first-connect-secret';
+
+    try {
+      const result = (await manageConnections(
+        { action: 'connect', connector_key: connectorKey },
+        TEST_ENV,
+        ctx
+      )) as { connection_id?: number; status?: string; error?: string };
+
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe('pending_auth');
+      expect(result.connection_id).toBeDefined();
+      const connectionId = Number(result.connection_id);
+
+      const sql = getTestDb();
+      const connRows = (await sql`
+        SELECT config FROM connections WHERE id = ${connectionId} LIMIT 1
+      `) as unknown as Array<{ config: Record<string, unknown> | null }>;
+      expect(connRows[0]?.config?.consent_only).toBe(true);
+
+      const feedResult = (await manageFeeds(
+        { action: 'create_feed', connection_id: connectionId, feed_key: 'items' },
+        TEST_ENV,
+        ctx
+      )) as { error?: string };
+      expect(feedResult.error).toMatch(/consent-only/i);
+    } finally {
+      delete process.env[clientIdKey];
+      delete process.env[clientSecretKey];
+    }
   });
 
   it('a managed connector in a PRIVATE org is an ordinary connection (no consent_only)', async () => {

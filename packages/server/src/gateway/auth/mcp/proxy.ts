@@ -17,7 +17,11 @@ import { recordGuardrailTrip } from "../../guardrails/audit.js";
 import { requiresToolApproval } from "../../permissions/approval-policy.js";
 import type { GrantStore } from "../../permissions/grant-store.js";
 import type { AgentSettingsStore } from "../settings/agent-settings-store.js";
-import { storePendingTool } from "./pending-tool-store.js";
+import {
+	pairAdminGrant,
+	type PendingAdminGrant,
+	storePendingTool,
+} from "./pending-tool-store.js";
 import { handleProxyRequest } from "./proxy-forward.js";
 import {
 	handleCallTool,
@@ -37,7 +41,7 @@ import type { CachedMcpServer, McpTool, McpToolCache } from "./tool-cache.js";
 
 const logger = createLogger("mcp-proxy");
 
-export interface DirectToolExecutionOptions {
+export type DirectToolExecutionOptions = {
 	organizationId: string;
 	conversationId?: string;
 	channelId?: string;
@@ -45,10 +49,8 @@ export interface DirectToolExecutionOptions {
 	connectionId?: string;
 	platform?: string;
 	source?: string;
-	adminTools?: string[];
-	adminActorUserId?: string;
 	deploymentName?: string;
-}
+} & PendingAdminGrant;
 
 export class McpProxy {
 	// Tool-approval cards may sit in-thread for a long time before the user
@@ -180,8 +182,8 @@ export class McpProxy {
 					connectionId: options.connectionId,
 					platform: options.platform,
 					source: options.source,
-					adminTools: options.adminTools,
-					adminActorUserId: options.adminActorUserId,
+					// Unpaired admin grant → mint without the admin tier at all.
+					...pairAdminGrant(options.adminTools, options.adminActorUserId),
 				},
 			);
 		}
@@ -683,8 +685,7 @@ export class McpProxy {
 				connectionId: tokenData.connectionId,
 				platform: tokenData.platform,
 				source: tokenData.source,
-				adminTools: tokenData.adminTools,
-				adminActorUserId: tokenData.adminActorUserId,
+				...pairAdminGrant(tokenData.adminTools, tokenData.adminActorUserId),
 				deploymentName: tokenData.deploymentName,
 			},
 			this.PENDING_TOOL_TTL,

@@ -7,7 +7,10 @@ import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
 import { createPostgresAppInstallationStore } from "../../lobu/stores/app-installation-store.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
-import { takePendingTool } from "../auth/mcp/pending-tool-store.js";
+import {
+  pairAdminGrant,
+  takePendingTool,
+} from "../auth/mcp/pending-tool-store.js";
 import { setEnvResolver } from "../auth/mcp/string-substitution.js";
 import { createAuthProfileLabel } from "../auth/settings/auth-profiles-manager.js";
 import { SystemEnvStore } from "../auth/system-env-store.js";
@@ -350,8 +353,7 @@ export function createGatewayApp(
                 connectionId: pending.connectionId,
                 platform: pending.platform,
                 source: pending.source,
-                adminTools: pending.adminTools,
-                adminActorUserId: pending.adminActorUserId,
+                ...pairAdminGrant(pending.adminTools, pending.adminActorUserId),
                 deploymentName: pending.deploymentName,
               },
             );

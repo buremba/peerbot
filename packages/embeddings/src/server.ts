@@ -216,6 +216,15 @@ app.post("/api/embeddings", async (c) => {
 	}
 });
 
+// When forked by the embedded runtime (startEmbeddings), exit if the parent
+// dies without a graceful teardown — otherwise the child is orphaned and leaks
+// until killed by hand. Standalone `npm start` has no IPC channel, so
+// process.send is undefined and this never fires. Same pattern as
+// connector-worker child-runner.ts installParentDeathHandlers().
+if (process.send) {
+	process.on("disconnect", () => process.exit(143));
+}
+
 const port = Number.parseInt(process.env.PORT || String(DEFAULT_PORT), 10);
 
 serve({

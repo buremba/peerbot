@@ -325,6 +325,7 @@ export async function consumePreviewClaim(args: {
 					AND organization_id = ${claim.organizationId}
 					AND slug = ${runtimeConnectionIdToSlug(connectionId)}
 					AND connector_key = ${platform}
+					AND credential_mode IS NOT NULL
 					AND status = 'active'
 					AND deleted_at IS NULL
 				LIMIT 1
@@ -332,13 +333,29 @@ export async function consumePreviewClaim(args: {
 			if (matched.length === 0)
 				return { status: "connection_mismatch" as const };
 		} else {
+			// A hosted claim may cross organizations only through the deliberately
+			// shared preview connection for the workspace handling the command. A normal
+			// managed/BYO installation must belong to the claimed agent's org; otherwise
+			// the Behavior would be written under the agent org but inbound messages
+			// would stay scoped to the connection org and could never fire.
 			if (!connectionId) return { status: "connection_mismatch" as const };
 			const matched = await tx<{ id: number }>`
 				SELECT id FROM connections
 				WHERE slug = ${runtimeConnectionIdToSlug(connectionId)}
 					AND connector_key = ${platform}
+					AND credential_mode IS NOT NULL
 					AND status = 'active'
 					AND deleted_at IS NULL
+					AND (
+						organization_id = ${claim.organizationId}
+						OR (
+							config->'settings'->'previewMode' = 'true'::jsonb
+							AND (
+								external_tenant_id IS NULL
+								OR external_tenant_id = ${teamId ?? null}
+							)
+						)
+					)
 					${connectionOrganizationId ? tx`AND organization_id = ${connectionOrganizationId}` : tx``}
 				LIMIT 2
 			`;

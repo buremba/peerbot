@@ -40,8 +40,13 @@ const OTHER_AGENT_ID = "other-agent";
 const TEAM_ID = "T_DEVELOPER";
 const CLAIM_SLACK_CONNECTION = "claim-slack";
 const CLAIM_TELEGRAM_CONNECTION = "claim-telegram";
+const FOREIGN_SLACK_CONNECTION = "foreign-slack";
+const FOREIGN_PREVIEW_CONNECTION = "foreign-preview-slack";
+const FOREIGN_STRING_PREVIEW_CONNECTION = "foreign-string-preview-slack";
+const FOREIGN_TELEGRAM_CONNECTION = "foreign-telegram";
 
 let ORG_ID = "";
+let FOREIGN_ORG_ID = "";
 // A real `user` row — the binding attributes the chat Behavior's `created_by`
 // from the claim's `createdBy`, resolved against `"user"`, so it must be an
 // actual user.
@@ -143,6 +148,44 @@ describe("Slack Preview claims + channel Behaviors", () => {
 		credentialMode: "managed",
 		status: "active",
 	});
+	const foreignOrg = await createTestOrganization({
+		name: "Foreign Slack Org",
+		slug: "foreign-slack-org",
+	});
+	FOREIGN_ORG_ID = foreignOrg.id;
+	await insertChatConnectionRow({
+		id: FOREIGN_SLACK_CONNECTION,
+		organizationId: FOREIGN_ORG_ID,
+		platform: "slack",
+		credentialMode: "managed",
+		status: "active",
+		metadata: { teamId: "T_FOREIGN" },
+	});
+	await insertChatConnectionRow({
+		id: FOREIGN_PREVIEW_CONNECTION,
+		organizationId: FOREIGN_ORG_ID,
+		platform: "slack",
+		credentialMode: "managed",
+		settings: { previewMode: true },
+		status: "active",
+		metadata: { teamId: "T_HOSTED" },
+	});
+	await insertChatConnectionRow({
+		id: FOREIGN_STRING_PREVIEW_CONNECTION,
+		organizationId: FOREIGN_ORG_ID,
+		platform: "slack",
+		credentialMode: "managed",
+		settings: { previewMode: "true" },
+		status: "active",
+		metadata: { teamId: "T_STRING_PREVIEW" },
+	});
+	await insertChatConnectionRow({
+		id: FOREIGN_TELEGRAM_CONNECTION,
+		organizationId: FOREIGN_ORG_ID,
+		platform: "telegram",
+		credentialMode: "managed",
+		status: "active",
+	});
   });
 
   beforeEach(async () => {
@@ -241,6 +284,104 @@ describe("Slack Preview claims + channel Behaviors", () => {
     expect(
       await consumeSlack({ code, teamId: TEAM_ID, channelId: "D123" })
     ).toEqual({ status: "not_found" });
+  });
+
+  test("a hosted code crosses orgs only through a boolean-marked preview connection", async () => {
+    const code = await createClaim(AGENT_ID);
+    for (const { connectionId, teamId } of [
+      { connectionId: FOREIGN_SLACK_CONNECTION, teamId: "T_FOREIGN" },
+      {
+        connectionId: FOREIGN_STRING_PREVIEW_CONNECTION,
+        teamId: "T_STRING_PREVIEW",
+      },
+    ]) {
+      const refused = await consumePreviewClaim({
+        code,
+        platform: "slack",
+        teamId,
+        channelId: canonicalSlackChannelId("CFOREIGN"),
+        surfaceType: "channel",
+        connectionId,
+        connectionOrganizationId: FOREIGN_ORG_ID,
+      });
+      expect(refused).toEqual({ status: "connection_mismatch" });
+    }
+    expect(
+      await listTestBehaviorSubscriptions({ platform: "slack" })
+    ).toHaveLength(0);
+
+    // A real preview marker is still scoped to its persisted Slack workspace.
+    const wrongHostedWorkspace = await consumePreviewClaim({
+      code,
+      platform: "slack",
+      teamId: "T_OTHER_HOSTED",
+      channelId: canonicalSlackChannelId("COTHERHOSTED"),
+      surfaceType: "channel",
+      connectionId: FOREIGN_PREVIEW_CONNECTION,
+      connectionOrganizationId: FOREIGN_ORG_ID,
+    });
+    expect(wrongHostedWorkspace).toEqual({ status: "connection_mismatch" });
+
+    // Refusals do not consume the code. The same cross-org claim is valid on
+    // the deliberately shared preview connection in its actual workspace.
+    const hosted = await consumePreviewClaim({
+      code,
+      platform: "slack",
+      teamId: "T_HOSTED",
+      channelId: canonicalSlackChannelId("CHOSTED"),
+      surfaceType: "channel",
+      connectionId: FOREIGN_PREVIEW_CONNECTION,
+      connectionOrganizationId: FOREIGN_ORG_ID,
+    });
+    expect(hosted).toMatchObject({ status: "bound", agentId: AGENT_ID });
+    const subscriptions = await listTestBehaviorSubscriptions({
+      platform: "slack",
+    });
+    expect(subscriptions).toHaveLength(1);
+    expect(subscriptions[0]).toMatchObject({
+      organization_id: ORG_ID,
+      agent_id: AGENT_ID,
+      channel_id: "slack:CHOSTED",
+      team_id: "T_HOSTED",
+    });
+  });
+
+  test("the link command explains the hosted-or-same-org boundary per platform", async () => {
+    const registry = new CommandRegistry();
+    registerBuiltInCommands(registry, { agentSettingsStore: {} as never });
+    for (const scenario of [
+      {
+        platform: "slack",
+        connectionId: FOREIGN_SLACK_CONNECTION,
+        expectedHostedCopy: "Lobu's hosted Slack workspace",
+        expectedCurrentCopy: "this Slack workspace",
+      },
+      {
+        platform: "telegram",
+        connectionId: FOREIGN_TELEGRAM_CONNECTION,
+        expectedHostedCopy: "Lobu's hosted preview bot",
+        expectedCurrentCopy: "this chat connection",
+      },
+    ] as const) {
+      const replies: string[] = [];
+      await registry.tryHandle("link", {
+        userId: "U1",
+        channelId: "CFOREIGN-COMMAND",
+        teamId: scenario.platform === "slack" ? "T_FOREIGN" : undefined,
+        isGroup: true,
+        platform: scenario.platform,
+        connectionId: scenario.connectionId,
+        organizationId: FOREIGN_ORG_ID,
+        args: await createClaim(AGENT_ID, ["dm", "channel"], scenario.platform),
+        reply: async (text: string) => {
+          replies.push(text);
+        },
+      });
+      const reply = replies.join("\n");
+      expect(reply).toContain(scenario.expectedHostedCopy);
+      expect(reply).toContain(scenario.expectedCurrentCopy);
+      expect(reply).toContain("same Lobu organization");
+    }
   });
 
   test("re-linking a channel rebinds it to the new agent (last link wins)", async () => {

@@ -206,11 +206,20 @@ export function registerBuiltInCommands(
 						`This code can't be used in a ${result.surfaceType === "dm" ? "DM" : "channel"}. Check the agent's \`preview.${ctx.platform}.surfaces\` setting.`,
 					);
 					return;
-				case "connection_mismatch":
+				case "connection_mismatch": {
+					const allowedLocation =
+						ctx.platform === "slack"
+							? "Lobu's hosted Slack workspace or a Slack workspace"
+							: "Lobu's hosted preview bot or a chat connection";
+					const currentLocation =
+						ctx.platform === "slack"
+							? "this Slack workspace"
+							: "this chat connection";
 					await ctx.reply(
-						"That link code belongs to a different connection. Generate a new code for this bot.",
-          );
-          return;
+						`That code can only be used with ${allowedLocation} connected to the same Lobu organization as the agent. Open the preview link from \`lobu run\`, or connect ${currentLocation} to the agent's organization.`,
+					);
+					return;
+				}
         case "not_found": {
           // Not a valid code — but if we already know who this chat user is,
           // treat the arg as an agent id and re-bind directly (no fresh code

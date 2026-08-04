@@ -10,7 +10,13 @@ import {
 
 type WatcherTerminalResult =
 	| { ok: true }
-	| { ok: false; error: string; errorCode?: string };
+	| {
+			ok: false;
+			error: string;
+			errorCode?: string;
+			/** Raw provider text used only to parse a quota reset boundary. */
+			quotaResetError?: string;
+		};
 
 /**
  * How many times a watcher run that finished its agent turn WITHOUT calling
@@ -251,7 +257,7 @@ export async function resolveWatcherRunsByMessageIds(
 
 		if (!result.ok) {
 			const notBefore = providerQuotaResetNotBefore(
-				result.error,
+				result.quotaResetError ?? result.error,
 				result.errorCode
 			);
 			if (

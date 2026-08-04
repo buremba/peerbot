@@ -81,11 +81,16 @@ export class ApiResponseRenderer implements ResponseRenderer {
       return;
     }
 
-    // Complete durable Behavior bookkeeping before delivering the terminal SSE
-    // event. A database failure must reject the thread-response job so it can
-    // retry; delivering first could acknowledge a turn whose run is unresolved
-    // and whose schedule is still due.
-    await this.resolveWatcherRunsFromPayload(payload, { ok: true });
+    // Error rows are terminalized in handleError before delivery. Running the
+    // success resolver again after the error was already broadcast creates a
+    // redundant DB dependency and can cause duplicate delivery on retry.
+    if (!payload.error) {
+      // Complete durable Behavior bookkeeping before delivering the terminal SSE
+      // event. A database failure must reject the thread-response job so it can
+      // retry; delivering first could acknowledge a turn whose run is unresolved
+      // and whose schedule is still due.
+      await this.resolveWatcherRunsFromPayload(payload, { ok: true });
+    }
 
     // Resolve the current suggestion set for this conversation and decide
     // whether to attach it to `complete` (this turn produced it), clear it
@@ -192,10 +197,12 @@ export class ApiResponseRenderer implements ResponseRenderer {
 
     await this.resolveWatcherRunsFromPayload(payload, {
       ok: false,
-      error:
-        payload.bookkeepingError ??
-        (typeof errorText === "string" ? errorText : "agent error"),
+      // Persist only the guarded/user-visible text. The raw provider string is
+      // used solely to parse a reset boundary and must never reappear through
+      // Behavior run metadata.
+      error: typeof errorText === "string" ? errorText : "agent error",
       errorCode: code,
+      quotaResetError: payload.bookkeepingError,
     });
 
     const errorEvent = {
@@ -227,7 +234,12 @@ export class ApiResponseRenderer implements ResponseRenderer {
     payload: ThreadResponsePayload,
     result:
       | { ok: true }
-      | { ok: false; error: string; errorCode?: string }
+      | {
+          ok: false;
+          error: string;
+          errorCode?: string;
+          quotaResetError?: string;
+        }
   ): Promise<void> {
     const ids = new Set<string>();
     if (payload.messageId) ids.add(payload.messageId);

@@ -135,6 +135,7 @@ describe("ApiResponseRenderer.handleCompletion suggestion embed", () => {
     // undefined = "no change" to the SPA.
     expect(broadcasts.find((b) => b.event === "complete")?.data.suggestions).toBeUndefined();
     expect(readMock).not.toHaveBeenCalled();
+    expect(resolveRunsMock).not.toHaveBeenCalled();
   });
 });
 
@@ -160,6 +161,27 @@ describe("ApiResponseRenderer.handleError targeting context", () => {
         errorContext: { provider: "z-ai", model: "glm-5.2" },
       });
     }
+  });
+
+  test("uses raw provider text only for quota parsing, not persisted run text", async () => {
+    const { renderer } = makeRenderer();
+    const raw = "429 Limit Exhausted. Your limit will reset at 2026-08-04 12:00:00";
+
+    await renderer.handleError(basePayload({
+      error: "Message blocked by guardrail: require-tool",
+      bookkeepingError: raw,
+      errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+    }), "session-key");
+
+    expect(resolveRunsMock).toHaveBeenCalledWith(
+      new Set(["m1"]),
+      {
+        ok: false,
+        error: "Message blocked by guardrail: require-tool",
+        errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+        quotaResetError: raw,
+      }
+    );
   });
 
   test("retries durable run resolution before broadcasting an error", async () => {

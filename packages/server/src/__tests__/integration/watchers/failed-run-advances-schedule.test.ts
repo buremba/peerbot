@@ -246,8 +246,11 @@ describe("a terminally failed Behavior run advances next_run_at", () => {
     );
 
     const sql = getTestDb();
-    const [run] = await sql`SELECT status FROM runs WHERE id = ${runId}`;
+    const [run] = await sql`SELECT status, error_message FROM runs WHERE id = ${runId}`;
     expect(run.status).toBe("failed");
+    expect(run.error_message).toBe(
+      "Message blocked by guardrail: require-tool"
+    );
 
     const after = await cursorOf(watcherId);
     const expectedNotBefore =

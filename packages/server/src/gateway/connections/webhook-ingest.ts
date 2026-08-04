@@ -612,7 +612,21 @@ export async function handleWebhookIngest(
 				await tx`
 					UPDATE events
 					SET entity_ids = COALESCE(${entityIdsValue}::bigint[], entity_ids),
-					    metadata = metadata || ${tx.json(attribution.metadata ?? {})}
+					    metadata = metadata || ${tx.json(attribution.metadata ?? {})},
+					    linked_org_ids = (
+					      SELECT COALESCE(array_agg(DISTINCT x.o), '{}'::text[])
+					      FROM (
+					        SELECT ent.organization_id AS o
+					        FROM public.entities ent
+					        WHERE ent.id = ANY(COALESCE(${entityIdsValue}::bigint[], events.entity_ids))
+					        UNION ALL
+					        SELECT c.organization_id AS o
+					        FROM public.connections c
+					        WHERE c.id = events.connection_id
+					      ) x
+					      WHERE x.o IS NOT NULL
+					        AND (x.o <> events.organization_id OR events.organization_id IS NULL)
+					    )
 					WHERE id = ${inserted.id}
 				`;
 			}

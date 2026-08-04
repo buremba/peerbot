@@ -18,6 +18,7 @@
 import { Dialect, ast, parse as parseSql } from '@polyglot-sql/sdk';
 import { type DbClient, pgTextArray } from '../db/client';
 import logger from './logger';
+import { useLinkedOrgScope } from './linked-org-ids';
 import {
   compileConnectionFkVisibility,
   compileConnectionRowVisibility,
@@ -453,8 +454,10 @@ export function buildScopedQuery(
   // the check-security-patterns string-concat guard, and this fragment is far
   // enough from the whitelisted for-loop below that no `security-allowed:`
   // annotation covers it. Keep it concat-free rather than allowlisting it.
-  const eventOrgScope = (alias: string): string =>
-    `(${alias}.organization_id = ${orgP}
+  const eventOrgScope = (alias: string): string => useLinkedOrgScope()
+    ? `(${alias}.organization_id = ${orgP}
+      OR ${alias}.linked_org_ids @> ARRAY[${orgP}]::text[])`
+    : `(${alias}.organization_id = ${orgP}
       OR EXISTS (SELECT 1 FROM public.entities ent
         WHERE ent.id = ANY(${alias}.entity_ids) AND ent.organization_id = ${orgP})
       OR EXISTS (SELECT 1 FROM public.connections con

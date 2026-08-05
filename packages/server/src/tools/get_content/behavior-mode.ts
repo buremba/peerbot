@@ -69,6 +69,7 @@ async function queryContentData(
   sourcesContent: Record<string, unknown[]>;
   allContent: unknown[];
   page?: { has_more: boolean; next_cursor?: { occurred_at: string; id: number } };
+  sourcesPage: Record<string, { returned: number; limit: number; has_more: boolean }>;
   totalCount: number;
   totalCountChars: number;
 }> {
@@ -97,14 +98,22 @@ async function queryContentData(
 	throwOnError: params.throwOnSourceError,
     wrapQuery: page
       ? (scopedQuery, queryParams, sourceName) => {
-          if (sourceName !== page.sourceName || !eventSourceNames.has(sourceName)) return scopedQuery;
+          // Bound EVERY event source, not just the cursor-bearing one. All of
+          // them land in `sources` on the response, and the sandbox counts
+          // every SDK result as it crosses the isolate boundary — an unbounded
+          // secondary source blows the output cap no matter what the script
+          // keeps. Only the primary source carries the keyset cursor; the rest
+          // are capped at the same page size and report truncation through
+          // `sources_page`, so a bounded read is never silent.
+          if (!eventSourceNames.has(sourceName)) return scopedQuery;
+          const isCursorSource = sourceName === page.sourceName;
 
           const nextParams = [...queryParams];
           const where: string[] = [
             '_watcher_page.id IS NOT NULL',
             '_watcher_page.occurred_at IS NOT NULL',
           ];
-          if (page.beforeOccurredAt && page.beforeId) {
+          if (isCursorSource && page.beforeOccurredAt && page.beforeId) {
             nextParams.push(page.beforeOccurredAt);
             const occurredAtParam = `$${nextParams.length}`;
             nextParams.push(page.beforeId);
@@ -185,7 +194,23 @@ async function queryContentData(
   }
 
   let pageResult: { has_more: boolean; next_cursor?: { occurred_at: string; id: number } } | undefined;
+  // Per-source truncation. Every event source fetches `limit + 1` rows to
+  // detect overflow, so the sentinel row must be trimmed off the secondary
+  // sources too. Only the primary source gets a cursor; the rest report
+  // `has_more` so a caller can tell a truncated window from the whole one.
+  const sourcesPage: Record<string, { returned: number; limit: number; has_more: boolean }> = {};
   if (page) {
+    for (const sourceName of eventSourceNames) {
+      if (sourceName === page.sourceName) continue;
+      const rows = results[sourceName] ?? [];
+      const hasMore = rows.length > page.limit;
+      if (hasMore) results[sourceName] = rows.slice(0, page.limit);
+      sourcesPage[sourceName] = {
+        returned: (results[sourceName] ?? []).length,
+        limit: page.limit,
+        has_more: hasMore,
+      };
+    }
     const rows = results[page.sourceName] ?? [];
     const trimmed = rows.slice(0, page.limit);
     const hasMore = rows.length > page.limit;
@@ -193,6 +218,11 @@ async function queryContentData(
     const last = trimmed[trimmed.length - 1] as Record<string, unknown> | undefined;
     const lastOccurredAt = last?.occurred_at;
     const lastId = Number(last?.id);
+    sourcesPage[page.sourceName] = {
+      returned: trimmed.length,
+      limit: page.limit,
+      has_more: hasMore,
+    };
     pageResult = {
       has_more: hasMore,
       ...(hasMore && lastOccurredAt && Number.isFinite(lastId)
@@ -248,6 +278,7 @@ async function queryContentData(
 
   return {
     sourcesContent: results as Record<string, unknown[]>,
+    sourcesPage,
     allContent,
     page: pageResult,
     totalCount,
@@ -452,6 +483,7 @@ export async function handleBehaviorMode(
     sourcesContent,
     allContent,
     page: contentPage,
+    sourcesPage,
     totalCount,
     totalCountChars,
   } = contentData;
@@ -572,6 +604,9 @@ export async function handleBehaviorMode(
     window_end: windowEndIso,
     extraction_schema: templateExtractionSchema ?? undefined,
     sources: sourcesContent as Record<string, ContentItem[]>,
+    // Per-source page state. Every event source is capped at `limit`, so this
+    // is how a caller tells a fully-read source from a truncated one.
+    sources_page: sourcesPage,
     entities: boundEntities.length > 0 ? boundEntities : undefined,
     classifiers: classifiers.length > 0 ? classifiers : undefined,
     unprocessed_ranges: unprocessedRanges,

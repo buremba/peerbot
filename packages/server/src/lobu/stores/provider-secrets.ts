@@ -99,7 +99,16 @@ export interface InferenceProviderListItem {
 	capabilities: InferenceCapabilities;
 	hasCustomUpstream: boolean;
 	status: string;
+	/**
+	 * Why the provider last failed terminally, when `status = 'error'`. Written
+	 * by `markInferenceProviderUnhealthy` from the provider's own message, so a
+	 * workspace whose Behaviors went quiet can read the cause here instead of
+	 * seeing a row that still says `active`.
+	 */
+	errorMessage: string | null;
 	createdAt: string;
+	/** When the row (including its health) last changed — dates the error above. */
+	updatedAt: string;
 	/** This row is the org's default inference provider (the model-resolution tail). */
 	isDefault: boolean;
 }
@@ -632,11 +641,16 @@ export async function listInferenceProviders(
 	const sql = getDb();
 	const rows = (await sql`
 		SELECT id, slug, kind, display_name, capabilities, has_custom_upstream,
-		       status, created_at, is_default
+		       status, error_message, created_at, updated_at, is_default
 		FROM inference_providers
 		WHERE organization_id = ${organizationId} AND deleted_at IS NULL
 		ORDER BY slug
-	`) as Array<Omit<RawInferenceProviderRow, "organization_id" | "api_key_ref">>;
+	`) as Array<
+		Omit<RawInferenceProviderRow, "organization_id" | "api_key_ref"> & {
+			error_message: string | null;
+			updated_at: string | Date;
+		}
+	>;
 	return rows.map((r) => ({
 		id: Number(r.id),
 		slug: r.slug,
@@ -645,12 +659,81 @@ export async function listInferenceProviders(
 		capabilities: r.capabilities ?? {},
 		hasCustomUpstream: r.has_custom_upstream,
 		status: r.status,
+		errorMessage: r.error_message,
 		createdAt:
 			r.created_at instanceof Date
 				? r.created_at.toISOString()
 				: String(r.created_at),
+		updatedAt:
+			r.updated_at instanceof Date
+				? r.updated_at.toISOString()
+				: String(r.updated_at),
 		isDefault: r.is_default,
 	}));
+}
+
+/**
+ * Longest provider message kept on the row. Provider errors routinely carry a
+ * stack, a request id and a docs URL; the settings UI needs the sentence, not
+ * the payload, and this column is read on every provider-list request.
+ */
+const PROVIDER_ERROR_MESSAGE_LIMIT = 500;
+
+/**
+ * Record that an org's inference provider failed terminally on a quota or
+ * credential error, so the settings page can say WHY a workspace's Behaviors
+ * stopped instead of showing a row that still reads `active`.
+ *
+ * **Observational only.** Nothing in credential resolution or model routing
+ * reads `status` — every reference in this file is a SELECT for display — so a
+ * missed, stale or duplicated write can never strand a workspace or reroute a
+ * turn. That is exactly why the caller treats a failure here as best-effort:
+ * this is not durable dispatch/delivery state, and failing a delivered turn to
+ * protect a status label would trade a real outcome for a cosmetic one.
+ *
+ * `disabled` is an operator decision and is never overwritten.
+ */
+export async function markInferenceProviderUnhealthy(
+	organizationId: string,
+	slug: string,
+	errorMessage: string,
+): Promise<void> {
+	const sql = getDb();
+	await sql`
+		UPDATE inference_providers
+		SET status = 'error',
+		    error_message = ${errorMessage.slice(0, PROVIDER_ERROR_MESSAGE_LIMIT)},
+		    updated_at = now()
+		WHERE organization_id = ${organizationId}
+		  AND slug = ${slug}
+		  AND deleted_at IS NULL
+		  AND status <> 'disabled'
+	`;
+}
+
+/**
+ * Clear a provider's error health after a turn it served completed.
+ *
+ * The `status = 'error'` predicate is what keeps this off the hot path: the
+ * healthy case matches no row, so a successful turn costs one indexed no-op
+ * UPDATE rather than a write. It also means a `disabled` row cannot be
+ * resurrected by traffic — only an operator re-enables it.
+ */
+export async function clearInferenceProviderError(
+	organizationId: string,
+	slug: string,
+): Promise<void> {
+	const sql = getDb();
+	await sql`
+		UPDATE inference_providers
+		SET status = 'active',
+		    error_message = NULL,
+		    updated_at = now()
+		WHERE organization_id = ${organizationId}
+		  AND slug = ${slug}
+		  AND deleted_at IS NULL
+		  AND status = 'error'
+	`;
 }
 
 interface OrgDefaultModelRow {

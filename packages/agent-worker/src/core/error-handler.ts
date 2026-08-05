@@ -2,6 +2,7 @@ import {
   AgentErrorCode,
   createLogger,
   getSentry,
+  PROVIDER_BALANCE_EXHAUSTED,
   type WorkerTransport,
 } from "@lobu/core";
 import { getProviderAuthHintFromError } from "../shared/provider-auth-hints";
@@ -74,11 +75,7 @@ export function classifyError(error: unknown): AgentErrorCode | undefined {
   // carries none of the quota vocabulary below — so without this clause it fell
   // through to `undefined` and surfaced as a raw `💥 Worker crashed: 400 {…}`
   // JSON blob in the user's chat.
-  if (
-    /credit balance is too low|insufficient (?:credits?|balance|funds|quota)\b|billing_hard_limit_reached|payment required|exceeded your current quota|out of credits?\b/i.test(
-      message
-    )
-  )
+  if (PROVIDER_BALANCE_EXHAUSTED.test(message))
     return AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED;
 
   if (

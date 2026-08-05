@@ -71,6 +71,22 @@ export const GetContentResultSchema = Type.Object({
   extraction_schema: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
   sources: Type.Optional(Type.Record(Type.String(), Type.Array(Type.Unknown()))),
   /**
+   * Per-source page state, keyed by source name. Every event source is capped
+   * at the request's `limit`; this is how a caller distinguishes a fully-read
+   * source from a truncated one. Only the primary source carries a cursor (see
+   * `page.next_cursor`); the rest report `has_more` alone.
+   */
+  sources_page: Type.Optional(
+    Type.Record(
+      Type.String(),
+      Type.Object({
+        returned: Type.Integer(),
+        limit: Type.Integer(),
+        has_more: Type.Boolean(),
+      })
+    )
+  ),
+  /**
    * Behavior-bound entities as structured rows (id, name, type, metadata,
    * field_controls). field_controls marks human-owned field values the agent
    * must not overwrite without new evidence.

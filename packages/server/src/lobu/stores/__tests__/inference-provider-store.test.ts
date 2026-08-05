@@ -11,11 +11,13 @@ import {
   getTestDb,
 } from '../../../__tests__/setup/test-db';
 import {
+  clearInferenceProviderError,
   createInferenceProvider,
   ensureOAuthInferenceProvider,
   getInferenceProviderBySlug,
   getOrgDefaultModel,
   listInferenceProviders,
+  markInferenceProviderUnhealthy,
   readOrgSharedProviderApiKey,
   resolveInferenceProviderConfig,
   rotateInferenceProviderKey,
@@ -285,5 +287,120 @@ describe('inference-provider store', () => {
     // A no-op on a missing slug must leave the current default intact.
     expect(await setInferenceProviderDefault(ORG, 'ghost')).toBe('not_found');
     expect(await getOrgDefaultModel(ORG)).toBe('openai/gpt-x');
+  });
+});
+
+describe('inference-provider health writeback', () => {
+  const createProvider = async (slug: string) => {
+    const created = await createInferenceProvider({
+      organizationId: ORG,
+      slug,
+      kind: 'openai',
+      apiKey: 'k1',
+      capabilities: { text: { model: 'gpt-x' } },
+    });
+    if ('error' in created) throw new Error(`expected ${slug} to be created`);
+    return created;
+  };
+
+  const listed = async (slug: string) =>
+    (await listInferenceProviders(ORG)).find((p) => p.slug === slug);
+
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+  });
+
+  afterEach(async () => {
+    const db = getTestDb();
+    await db`TRUNCATE inference_providers, agent_secrets`;
+  });
+
+  it('marks a failing provider and surfaces the reason on the list', async () => {
+    await createProvider('z-ai');
+    expect((await listed('z-ai'))?.status).toBe('active');
+
+    await markInferenceProviderUnhealthy(
+      ORG,
+      'z-ai',
+      '429 Insufficient balance or no resource package'
+    );
+
+    const row = await listed('z-ai');
+    expect(row?.status).toBe('error');
+    expect(row?.errorMessage).toBe(
+      '429 Insufficient balance or no resource package'
+    );
+    // updated_at dates the failure for the settings UI.
+    expect(Date.parse(row?.updatedAt ?? '')).toBeGreaterThan(0);
+  });
+
+  it('truncates a runaway provider message instead of storing the payload', async () => {
+    await createProvider('z-ai');
+
+    await markInferenceProviderUnhealthy(ORG, 'z-ai', 'x'.repeat(5000));
+
+    expect((await listed('z-ai'))?.errorMessage).toHaveLength(500);
+  });
+
+  it('clears the error after the provider serves a turn', async () => {
+    await createProvider('z-ai');
+    await markInferenceProviderUnhealthy(ORG, 'z-ai', 'no balance');
+
+    await clearInferenceProviderError(ORG, 'z-ai');
+
+    const row = await listed('z-ai');
+    expect(row?.status).toBe('active');
+    expect(row?.errorMessage).toBeNull();
+  });
+
+  it('never overwrites an operator-disabled provider in either direction', async () => {
+    await createProvider('z-ai');
+    const db = getTestDb();
+    await db`
+      UPDATE inference_providers SET status = 'disabled'
+      WHERE organization_id = ${ORG} AND slug = 'z-ai'
+    `;
+
+    await markInferenceProviderUnhealthy(ORG, 'z-ai', 'no balance');
+    expect((await listed('z-ai'))?.status).toBe('disabled');
+
+    // Traffic must not re-enable what an operator switched off.
+    await clearInferenceProviderError(ORG, 'z-ai');
+    expect((await listed('z-ai'))?.status).toBe('disabled');
+  });
+
+  it('scopes both writes to the organization and the slug', async () => {
+    await createProvider('z-ai');
+    await createProvider('openai');
+    const other = await createInferenceProvider({
+      organizationId: 'org-other-tenant',
+      slug: 'z-ai',
+      kind: 'openai',
+      apiKey: 'k2',
+      capabilities: { text: { model: 'gpt-x' } },
+    });
+    if ('error' in other) throw new Error('expected other-tenant create');
+
+    await markInferenceProviderUnhealthy(ORG, 'z-ai', 'no balance');
+
+    expect((await listed('z-ai'))?.status).toBe('error');
+    expect((await listed('openai'))?.status).toBe('active');
+    const crossTenant = (await listInferenceProviders('org-other-tenant')).find(
+      (p) => p.slug === 'z-ai'
+    );
+    expect(crossTenant?.status).toBe('active');
+  });
+
+  it('is a no-op for a soft-deleted provider', async () => {
+    const created = await createProvider('z-ai');
+    await softDeleteInferenceProvider(ORG, 'z-ai');
+
+    await markInferenceProviderUnhealthy(ORG, 'z-ai', 'no balance');
+
+    const db = getTestDb();
+    const [row] = await db`
+      SELECT status FROM inference_providers WHERE id = ${created.id}
+    `;
+    expect(row.status).toBe('active');
   });
 });

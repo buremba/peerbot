@@ -25,15 +25,12 @@ import { compileConnectionRowVisibility } from '../authz/connection-visibility';
 import { getDb, pgTextArray } from '../db/client';
 import type { Env } from '../index';
 import { waitForDeviceActionRun } from '../tools/admin/device-action-wait';
+import { DEVICE_ONLINE_WINDOW_SECONDS } from '../utils/device-liveness';
 import { DEVICE_PIN_TOMBSTONE_MESSAGES } from '../utils/device-pin-tombstones';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
 import { createConnectorOperationRun } from '../runs/queue-service';
-
-// Online window for chrome extension device workers, in minutes. Matches
-// the /api/me/devices "online" flag.
-const DEVICE_ONLINE_WINDOW_MINUTES = 20;
 
 /** Live unique index: one chrome connection per (org, device_worker) pin. */
 const CHROME_DEVICE_PIN_UNIQUE = 'idx_connections_org_connector_device_live';
@@ -139,7 +136,7 @@ export async function resolveOnlineChromeConnection(
      AND pinned.organization_id = con.organization_id
      AND pinned.platform = 'chrome-extension'
      AND pinned.capabilities::jsonb @> '["browser.debugger"]'::jsonb
-     AND pinned.last_seen_at > now() - make_interval(mins => ${DEVICE_ONLINE_WINDOW_MINUTES})
+     AND pinned.last_seen_at > now() - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS})
     WHERE con.organization_id = ${organizationId}
       AND con.connector_key = 'chrome'
       AND con.status = 'active'
@@ -155,7 +152,7 @@ export async function resolveOnlineChromeConnection(
     WHERE dw.organization_id = ${organizationId}
       AND dw.platform = 'chrome-extension'
       AND dw.capabilities::jsonb @> '["browser.debugger"]'::jsonb
-      AND dw.last_seen_at > now() - make_interval(mins => ${DEVICE_ONLINE_WINDOW_MINUTES})
+      AND dw.last_seen_at > now() - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS})
     ORDER BY dw.last_seen_at DESC
   `) as Array<{ id: string }>;
 
@@ -476,7 +473,7 @@ export async function resolveOnlineChromeConnection(
     WHERE dw.organization_id = ${organizationId}
       AND dw.platform = 'chrome-extension'
       AND dw.capabilities::jsonb @> '["browser.debugger"]'::jsonb
-      AND dw.last_seen_at > now() - make_interval(mins => ${DEVICE_ONLINE_WINDOW_MINUTES})
+      AND dw.last_seen_at > now() - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS})
       AND NOT EXISTS (
         SELECT 1
         FROM connections con

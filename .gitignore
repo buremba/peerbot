@@ -100,3 +100,9 @@ examples/lobu-crm/evals/tool-surface/last-run.json
 examples/lobu-crm/evals/discovery-surface/last-run.json
 # Interrupted embedded Postgres traversal-test fixtures.
 .lobu-pgtrav-*
+
+# Agent-harness scratch output written into the checkout by pi and codex:
+# subagent transcripts/prompts (.pi-subagents) and generated HTML
+# visualizations (.codex). Local run artifacts, never project sources.
+.pi-subagents/
+.codex/

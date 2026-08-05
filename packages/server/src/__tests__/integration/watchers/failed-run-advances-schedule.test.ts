@@ -174,6 +174,103 @@ describe("provider quota reset parsing", () => {
     ).toBeNull();
   });
 
+  it("parks a reset-less balance exhaustion for a day", () => {
+    const now = new Date("2026-08-05T10:00:00.000Z");
+
+    expect(
+      providerQuotaResetNotBefore(
+        "z.ai returned an error: 429 Insufficient balance or no resource package",
+        "PROVIDER_QUOTA_EXHAUSTED",
+        now
+      )?.toISOString()
+    ).toBe("2026-08-06T10:00:00.000Z");
+    expect(
+      deviceProviderQuotaResetNotBefore(
+        "429 Insufficient balance or no resource package",
+        now
+      )?.toISOString()
+    ).toBe("2026-08-06T10:00:00.000Z");
+    // No "429"/rate-limit token: balance wording alone must count as device
+    // quota evidence.
+    expect(
+      deviceProviderQuotaResetNotBefore(
+        "Insufficient balance or no resource package",
+        now
+      )?.toISOString()
+    ).toBe("2026-08-06T10:00:00.000Z");
+    // Captured verbatim from prod 2026-08-05. This wording reached the parker
+    // only because the message list moved into core: it lived here but NOT in
+    // the worker's `classifyError`, which assigns the very errorCode this
+    // function gates on — so the park could never fire for it in production.
+    expect(
+      providerQuotaResetNotBefore(
+        "You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
+        "PROVIDER_QUOTA_EXHAUSTED",
+        now
+      )?.toISOString()
+    ).toBe("2026-08-06T10:00:00.000Z");
+    // OpenAI's insufficient_quota billing message names no retry horizon.
+    expect(
+      providerQuotaResetNotBefore(
+        "429 You exceeded your current quota, please check your plan and billing details.",
+        "PROVIDER_QUOTA_EXHAUSTED",
+        now
+      )?.toISOString()
+    ).toBe("2026-08-06T10:00:00.000Z");
+    // Widened by the shared core literal: "insufficient quota" was previously
+    // worker-only (classification without a park). Reset-less, it is billing
+    // wording (OpenAI/Azure insufficient_quota) and now day-parks; the windowed
+    // variant with a named horizon stays unparked (case below).
+    expect(
+      providerQuotaResetNotBefore(
+        "429 You have insufficient quota for this request.",
+        "PROVIDER_QUOTA_EXHAUSTED",
+        now
+      )?.toISOString()
+    ).toBe("2026-08-06T10:00:00.000Z");
+  });
+
+  it("prefers a named reset over the balance park", () => {
+    const now = new Date("2026-08-05T10:00:00.000Z");
+
+    expect(
+      providerQuotaResetNotBefore(
+        "429 Insufficient balance. Your limit will reset at 2026-08-05 12:00:00",
+        "PROVIDER_QUOTA_EXHAUSTED",
+        now
+      )?.toISOString()
+    ).toBe("2026-08-05T12:01:00.000Z");
+  });
+
+  it.each([
+    "Gemini returned an error: 429 status code (no body)",
+    "429 Too Many Requests",
+    "rate limit exceeded, retry shortly",
+    // Gemini's per-minute free-tier 429 reuses OpenAI's billing wording but
+    // names a retry horizon — the horizon is what marks it self-healing.
+    "429 You exceeded your current quota, please check your plan and billing details. Please retry in 26.5s.",
+    // Every spelling of a named horizon, including the quoted header form.
+    "429 insufficient quota; retryDelay: 26s",
+    "429 out of credits (Retry-After: 30)",
+  ])("does not park a self-healing rate limit (%s)", (message) => {
+    const now = new Date("2026-08-05T10:00:00.000Z");
+
+    expect(
+      providerQuotaResetNotBefore(message, "PROVIDER_QUOTA_EXHAUSTED", now)
+    ).toBeNull();
+    expect(deviceProviderQuotaResetNotBefore(message, now)).toBeNull();
+  });
+
+  it("still requires quota classification for balance wording", () => {
+    const now = new Date("2026-08-05T10:00:00.000Z");
+    const message = "Insufficient balance";
+
+    expect(
+      providerQuotaResetNotBefore(message, "NO_MODEL_CONFIGURED", now)
+    ).toBeNull();
+    expect(providerQuotaResetNotBefore(message, undefined, now)).toBeNull();
+  });
+
   it("requires the structured quota code", () => {
     const message = "Your limit will reset at 2026-07-31 12:00:00";
     const now = new Date("2026-07-31T10:00:00.000Z");
@@ -330,6 +427,35 @@ describe("a terminally failed Behavior run advances next_run_at", () => {
     const expectedNotBefore =
       Math.floor(resetAt.getTime() / 1000) * 1000 + 60_000;
     expect(after.getTime()).toBe(expectedNotBefore);
+  });
+
+  it("parks an hourly Behavior for a day when the provider balance is empty", async () => {
+    const { watcherId, runId } = await createDueWatcherWithDispatchedRun({
+      slug: "park-empty-balance-for-a-day",
+      messageId: "msg-empty-balance",
+    });
+    const before = Date.now();
+
+    await resolveWatcherRunsByMessageIds(["msg-empty-balance"], {
+      ok: false,
+      error:
+        "z.ai returned an error: 429 Insufficient balance or no resource package",
+      errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+    });
+
+    const sql = getTestDb();
+    const [run] = await sql`SELECT status FROM runs WHERE id = ${runId}`;
+    expect(run.status).toBe("failed");
+
+    // Without the park this lands on the next hourly tick (< 1h out), which is
+    // exactly the one-failed-run-per-tick burn the park exists to stop.
+    const after = await cursorOf(watcherId);
+    expect(after.getTime()).toBeGreaterThanOrEqual(
+      before + 24 * 60 * 60 * 1000
+    );
+    expect(after.getTime()).toBeLessThanOrEqual(
+      Date.now() + 24 * 60 * 60 * 1000
+    );
   });
 
   it("does not shorten a quota park when another run finishes later", async () => {

@@ -753,6 +753,11 @@ import { createSmokeRoutes } from "./gateway/routes/internal/smoke";
 app.route("/api/internal/smoke", createSmokeRoutes());
 app.route("", createRuntimeRoutes());
 
+import { createSkillRoutes } from "./gateway/routes/public/skill";
+// The onboarding skill (same markdown as the `skill://lobu` MCP resource) as a
+// plain HTTP GET — public, so a browser or a bash-only agent can fetch it.
+app.route("/api", createSkillRoutes());
+
 import {
 	completeActionRun,
 	completeAuthRun,

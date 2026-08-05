@@ -27,6 +27,21 @@ interface BehaviorEventDefinition {
 interface ConnectorBehaviorEventCatalog {
 	name: string;
 	events: BehaviorEventDefinition[];
+	/** Events the CONNECTOR itself declares, before platform events are merged
+	 * in. `events` always has at least `feed.auto_paused`, so it can never be
+	 * empty and cannot answer "can this connector drive a trigger at all". */
+	declaredCount: number;
+	/** Feeds the connector declares. `feed.auto_paused` only ever fires for a
+	 * connector that HAS a feed to pause, so zero declared events plus zero
+	 * feeds means no event can reach this Behavior. */
+	feedCount: number;
+}
+
+/** `feeds_schema` is an object keyed by feed key (`{}` for connectors that
+ * declare none — non-null but empty, so a null check alone under-counts). */
+function countDeclaredFeeds(value: unknown): number {
+	if (!value || typeof value !== "object") return 0;
+	return Object.keys(value).length;
 }
 
 function parseBehaviorEventDefinitions(
@@ -47,7 +62,7 @@ async function getConnectorBehaviorEventCatalog(
 	connectorKey: string
 ): Promise<ConnectorBehaviorEventCatalog> {
 	const rows = await sql`
-		SELECT name, behavior_events
+		SELECT name, behavior_events, feeds_schema
 		FROM connector_definitions
 		WHERE organization_id = ${organizationId}
 		  AND key = ${connectorKey}
@@ -55,13 +70,16 @@ async function getConnectorBehaviorEventCatalog(
 		ORDER BY updated_at DESC
 		LIMIT 1
 	`;
-	const row = rows[0] as { name: string; behavior_events: unknown } | undefined;
+	const row = rows[0] as
+		| { name: string; behavior_events: unknown; feeds_schema: unknown }
+		| undefined;
 	if (Array.isArray(row?.behavior_events)) {
+		const declared = parseBehaviorEventDefinitions(row.behavior_events);
 		return {
 			name: row.name,
-			events: withPlatformBehaviorEvents(
-				parseBehaviorEventDefinitions(row.behavior_events),
-			) as BehaviorEventDefinition[],
+			events: withPlatformBehaviorEvents(declared) as BehaviorEventDefinition[],
+			declaredCount: declared.length,
+			feedCount: countDeclaredFeeds(row.feeds_schema),
 		};
 	}
 
@@ -71,11 +89,18 @@ async function getConnectorBehaviorEventCatalog(
 	const catalog = (await listCatalogEntries(["connectors"])).connectors.find(
 		(entry) => entry.id === connectorKey
 	);
+	const declaredFallback = parseBehaviorEventDefinitions(
+		catalog?.detail.behavior_events,
+	);
 	return {
 		name: row?.name ?? catalog?.name ?? connectorKey,
 		events: withPlatformBehaviorEvents(
-			parseBehaviorEventDefinitions(catalog?.detail.behavior_events),
+			declaredFallback,
 		) as BehaviorEventDefinition[],
+		declaredCount: declaredFallback.length,
+		feedCount: countDeclaredFeeds(
+			row?.feeds_schema ?? catalog?.detail.feeds_schema,
+		),
 	};
 }
 
@@ -307,9 +332,15 @@ export async function assertBehaviorTriggerConnections(
 			);
 			catalogs.set(trigger.connector_key, catalog);
 		}
-		if (catalog.events.length === 0) {
+		// `catalog.events` ALWAYS carries the merged platform events, so the old
+		// `events.length === 0` test could never be true and this guard never
+		// fired. Ask the question that actually matters: can any event reach this
+		// Behavior? A connector with no declared events can still legitimately
+		// trigger on `feed.auto_paused` — but only if it has a feed to pause.
+		// Zero declared events AND zero feeds means nothing can ever fire.
+		if (catalog.declaredCount === 0 && catalog.feedCount === 0) {
 			throw new ToolUserError(
-				`${catalog.name} does not declare any Behavior events.`
+				`${catalog.name} cannot drive an event trigger: it declares no Behavior events and has no feeds, so no event could ever fire.`
 			);
 		}
 		const eventsByKey = new Map(

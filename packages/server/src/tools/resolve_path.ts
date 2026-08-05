@@ -170,15 +170,30 @@ const BootstrapEntityTypeSummarySchema = Type.Object({
   entity_count: Type.Integer(),
 });
 
-const BootstrapScopeSummarySchema = Type.Object({
-  total_content: Type.Integer(),
-  active_connections: Type.Integer(),
-  behaviors_count: Type.Integer(),
-  // Org-level regardless of the focused entity (sidebar nav badges).
-  agents_count: Type.Integer(),
+/**
+ * How much of each thing the workspace has. Every field counts a bounded
+ * config table — tens of rows, not history — so the whole struct costs one
+ * cheap round trip and rides every resolve rather than hiding behind
+ * `include_bootstrap`. That is the point: nav badges and onboarding states
+ * need to know whether a workspace is empty on pages that have no reason to
+ * pull a bootstrap payload, and asking them to fetch whole lists to find out
+ * is what this replaces.
+ *
+ * Content counts are deliberately absent — they aggregate `events`, which
+ * grows without bound, so they stay in `bootstrap` where the one consumer
+ * that needs them already asks.
+ */
+const WorkspaceCountsSchema = Type.Object({
+  connections: Type.Integer(),
+  behaviors: Type.Integer(),
+  agents: Type.Integer(),
   // Devices are owned by the requesting user, not the org — count is per-user.
-  devices_count: Type.Integer(),
+  devices: Type.Integer(),
+  // MCP client registrations ("agents you brought"), counted with the same
+  // predicate the connected-apps inventory lists by.
+  clients: Type.Integer(),
 });
+type WorkspaceCounts = Static<typeof WorkspaceCountsSchema>;
 
 const BootstrapContentItemSchema = Type.Object({
   id: Type.Integer(),
@@ -217,7 +232,12 @@ const BootstrapConnectorDefinitionSchema = Type.Object({
 
 export const ResolvePathBootstrapSchema = Type.Object({
   entity_types: Type.Array(BootstrapEntityTypeSummarySchema),
-  summary: BootstrapScopeSummarySchema,
+  /**
+   * Live event rows in scope. Unlike `counts`, this aggregates an append-only
+   * table, so its cost grows with history — it stays bootstrap-gated and out
+   * of the always-on payload.
+   */
+  total_content: Type.Integer(),
   recent_content: Type.Array(BootstrapContentItemSchema),
   recent_feeds: Type.Array(BootstrapFeedItemSchema),
   connector_definitions: Type.Array(BootstrapConnectorDefinitionSchema),
@@ -225,7 +245,6 @@ export const ResolvePathBootstrapSchema = Type.Object({
 export type ResolvePathBootstrap = Static<typeof ResolvePathBootstrapSchema>;
 // Handlers reference these by name; alias each from its schema.
 type BootstrapEntityTypeSummary = Static<typeof BootstrapEntityTypeSummarySchema>;
-type BootstrapScopeSummary = Static<typeof BootstrapScopeSummarySchema>;
 type BootstrapContentItem = Static<typeof BootstrapContentItemSchema>;
 type BootstrapFeedItem = Static<typeof BootstrapFeedItemSchema>;
 type BootstrapConnectorDefinition = Static<typeof BootstrapConnectorDefinitionSchema>;
@@ -265,6 +284,7 @@ export const ResolvePathResultSchema = Type.Object({
   children: Type.Array(ChildEntitySchema),
   siblings: Type.Array(SiblingEntitySchema),
   bootstrap: Type.Union([ResolvePathBootstrapSchema, Type.Null()]),
+  counts: WorkspaceCountsSchema,
   redirect: Type.Union([Type.Object({ to: Type.String() }), Type.Null()]),
 });
 export type ResolvePathResult = Static<typeof ResolvePathResultSchema>;
@@ -389,10 +409,11 @@ async function _resolvePath(
   let entitySegments: string[];
 
   if (remaining.length === 0) {
-    const bootstrap = args.include_bootstrap
-      ? await fetchBootstrap(sql, ctx, workspace, null)
-      : null;
-    return emptyResult(workspace, bootstrap);
+    const [bootstrap, counts] = await Promise.all([
+      args.include_bootstrap ? fetchBootstrap(sql, ctx, workspace, null) : null,
+      resolveWorkspaceCounts(sql, workspace, ctx.userId),
+    ]);
+    return emptyResult(workspace, bootstrap, counts);
   }
 
   entitySegments = remaining;
@@ -525,6 +546,9 @@ async function _resolvePath(
       }
       const redirect = await resolveMergedEntityRedirect(sql, workspace, segment, parentId);
       if (redirect) {
+        // A redirect response is followed, not rendered — the client re-resolves
+        // at `redirect.to` and gets real counts there. Spending a query to fill
+        // a field nothing reads would be pure latency, so leave it zeroed.
         return { ...emptyResult(workspace, null), redirect };
       }
       throw new ToolUserError(
@@ -745,9 +769,10 @@ async function _resolvePath(
     }));
   }
 
-  const bootstrap = args.include_bootstrap
-    ? await fetchBootstrap(sql, ctx, workspace, resolvedEntity)
-    : null;
+  const [bootstrap, counts] = await Promise.all([
+    args.include_bootstrap ? fetchBootstrap(sql, ctx, workspace, resolvedEntity) : null,
+    resolveWorkspaceCounts(sql, workspace, ctx.userId),
+  ]);
 
   return {
     workspace,
@@ -757,6 +782,7 @@ async function _resolvePath(
     children,
     siblings,
     bootstrap,
+    counts,
     redirect: null,
   };
 }
@@ -914,7 +940,8 @@ async function resolveDerivedLeaf(
 
 function emptyResult(
   workspace: ResolvedWorkspace,
-  bootstrap: ResolvePathBootstrap | null
+  bootstrap: ResolvePathBootstrap | null,
+  counts: WorkspaceCounts = EMPTY_WORKSPACE_COUNTS
 ): ResolvePathResult {
   return {
     workspace,
@@ -924,6 +951,7 @@ function emptyResult(
     children: [],
     siblings: [],
     bootstrap,
+    counts,
     redirect: null,
   };
 }
@@ -937,22 +965,16 @@ async function fetchBootstrap(
   if (workspace.type !== 'organization') {
     return {
       entity_types: [],
-      summary: {
-        total_content: 0,
-        active_connections: 0,
-        behaviors_count: 0,
-        agents_count: 0,
-        devices_count: 0,
-      },
+      total_content: 0,
       recent_content: [],
       recent_feeds: [],
       connector_definitions: [],
     };
   }
 
-  const [entityTypes, summary, recentContent, recentFeeds] = await Promise.all([
+  const [entityTypes, totalContent, recentContent, recentFeeds] = await Promise.all([
     listEntityTypes(sql, ctx),
-    fetchScopeSummary(sql, workspace.id, entity, ctx.userId),
+    fetchContentCount(sql, workspace.id, entity),
     fetchRecentContent(sql, workspace.id, entity?.id ?? null),
     fetchRecentFeeds(sql, workspace.id, entity?.id ?? null),
   ]);
@@ -963,7 +985,7 @@ async function fetchBootstrap(
 
   return {
     entity_types: entityTypes,
-    summary,
+    total_content: totalContent,
     recent_content: recentContent,
     recent_feeds: recentFeeds,
     connector_definitions: connectorDefinitions,
@@ -1018,73 +1040,115 @@ async function listEntityTypes(
   }));
 }
 
-async function fetchScopeSummary(
+const EMPTY_WORKSPACE_COUNTS: WorkspaceCounts = {
+  connections: 0,
+  behaviors: 0,
+  agents: 0,
+  devices: 0,
+  clients: 0,
+};
+
+/**
+ * A user space has no org-scoped config to count, so it skips the query
+ * entirely rather than issuing one guaranteed to return zeros.
+ */
+function resolveWorkspaceCounts(
+  sql: DbClient,
+  workspace: ResolvedWorkspace,
+  userId: string | null
+): Promise<WorkspaceCounts> {
+  return workspace.type === 'organization'
+    ? fetchWorkspaceCounts(sql, workspace.id, userId)
+    : Promise.resolve(EMPTY_WORKSPACE_COUNTS);
+}
+
+/**
+ * Every count the nav and onboarding surfaces need, in one round trip.
+ *
+ * All five aggregate bounded config tables, so the cost is flat in history
+ * size and this can run on every resolve. Keeping them in one statement is
+ * what makes that true — the previous split (agents/devices in one query,
+ * connections/behaviors in another) paid two round trips for five scalars.
+ *
+ * `clients` mirrors the predicate in `OAuthClientsStore.listClientsByOrganization`
+ * — registered to this org, or holding a token in it — so the number agrees
+ * with the connected-apps inventory the user can actually see. Counting
+ * `organization_id` alone would under-report every client that authorized in
+ * without registering here.
+ */
+async function fetchWorkspaceCounts(
   sql: DbClient,
   organizationId: string,
-  entity: ResolvedEntityDetails | null,
   userId: string | null
-): Promise<BootstrapScopeSummary> {
-  // Agents are org-scoped; devices are owned by the requesting user. Both are
-  // sidebar-nav badges that don't narrow with the focused entity, so fetch
-  // them regardless of `entity`.
-  const [navRow] = await sql`
-    SELECT
-      (
-        SELECT COUNT(*)::int
-        FROM agents a
-        WHERE a.organization_id = ${organizationId}
-      ) AS agents_count,
-      (
-        SELECT COUNT(*)::int
-        FROM device_workers dw
-        WHERE dw.user_id = ${userId}
-      ) AS devices_count
-  `;
-  const agentsCount = Number((navRow as { agents_count?: number } | undefined)?.agents_count) || 0;
-  const devicesCount =
-    Number((navRow as { devices_count?: number } | undefined)?.devices_count) || 0;
-
-  if (entity) {
-    return {
-      total_content: entity.total_content,
-      active_connections: entity.active_connections,
-      behaviors_count: entity.behaviors_count,
-      agents_count: agentsCount,
-      devices_count: devicesCount,
-    };
-  }
-
+): Promise<WorkspaceCounts> {
   const [row] = await sql`
     SELECT
       (
         SELECT COUNT(*)::int
-        FROM current_event_records ev
-        WHERE ev.organization_id = ${organizationId}
-          -- Exclude null-shaped internal events (P1 corrections) from the org content count.
-          AND ev.semantic_type <> 'correction'
-      ) AS total_content,
-      (
-        SELECT COUNT(*)::int
-        FROM connector_definitions cd
-        WHERE cd.organization_id = ${organizationId}
-          AND cd.status = 'active'
-      ) AS active_connections,
+        FROM connections cn
+        WHERE cn.organization_id = ${organizationId}
+          AND cn.deleted_at IS NULL
+      ) AS connections,
       (
         SELECT COUNT(*)::int
         FROM watchers w
         WHERE w.organization_id = ${organizationId}
           AND w.status = 'active'
-      ) AS behaviors_count
+      ) AS behaviors,
+      (
+        SELECT COUNT(*)::int
+        FROM agents a
+        WHERE a.organization_id = ${organizationId}
+      ) AS agents,
+      (
+        SELECT COUNT(*)::int
+        FROM device_workers dw
+        WHERE dw.user_id = ${userId}
+      ) AS devices,
+      (
+        SELECT COUNT(*)::int
+        FROM oauth_clients oc
+        WHERE oc.organization_id = ${organizationId}
+           OR EXISTS (
+             SELECT 1 FROM oauth_tokens ot
+             WHERE ot.client_id = oc.id
+               AND ot.organization_id = ${organizationId}
+           )
+      ) AS clients
   `;
-
+  const counts = row as Partial<Record<keyof WorkspaceCounts, number>> | undefined;
   return {
-    total_content: Number((row as { total_content?: number } | undefined)?.total_content) || 0,
-    active_connections:
-      Number((row as { active_connections?: number } | undefined)?.active_connections) || 0,
-    behaviors_count: Number((row as { behaviors_count?: number } | undefined)?.behaviors_count) || 0,
-    agents_count: agentsCount,
-    devices_count: devicesCount,
+    connections: Number(counts?.connections) || 0,
+    behaviors: Number(counts?.behaviors) || 0,
+    agents: Number(counts?.agents) || 0,
+    devices: Number(counts?.devices) || 0,
+    clients: Number(counts?.clients) || 0,
   };
+}
+
+/**
+ * Live event rows in scope. This one aggregates an append-only table, so it
+ * is deliberately NOT part of `fetchWorkspaceCounts` — it is reached only
+ * through `include_bootstrap`, so only callers that render bootstrap content
+ * (the public page renderer, the workspace landing route) pay for it. An
+ * entity scope reuses the count already computed while resolving that entity
+ * rather than running a second pass over the same rows.
+ */
+async function fetchContentCount(
+  sql: DbClient,
+  organizationId: string,
+  entity: ResolvedEntityDetails | null
+): Promise<number> {
+  if (entity) return entity.total_content;
+
+  const [row] = await sql`
+    SELECT COUNT(*)::int AS total_content
+    FROM current_event_records ev
+    WHERE ev.organization_id = ${organizationId}
+      -- Exclude null-shaped internal events (P1 corrections) from the org content count.
+      AND ev.semantic_type <> 'correction'
+  `;
+  return Number((row as { total_content?: number } | undefined)?.total_content) || 0;
 }
 
 async function fetchRecentContent(

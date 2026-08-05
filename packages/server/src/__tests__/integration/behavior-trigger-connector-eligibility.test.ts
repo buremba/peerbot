@@ -1,0 +1,109 @@
+/**
+ * The event-trigger eligibility guard in `assertBehaviorTriggerConnections`.
+ *
+ * `withPlatformBehaviorEvents` merges `feed.auto_paused` into EVERY connector's
+ * catalog, so the original `catalog.events.length === 0` test could never be
+ * true and the guard never fired — a connector that can drive nothing was
+ * accepted. The replacement asks whether any event could actually reach the
+ * Behavior: a connector with no declared events is still legitimate IF it has a
+ * feed to pause, and only becomes ineligible when it has neither.
+ */
+import { beforeAll, describe, expect, it } from "vitest";
+import type { BehaviorTrigger } from "@lobu/core/contracts/tools/manage-behaviors";
+import { assertBehaviorTriggerConnections } from "../../behaviors/triggers";
+import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
+import { createTestOrganization } from "../setup/test-fixtures";
+
+describe("event-trigger connector eligibility", () => {
+	let orgId: string;
+
+	async function defineConnector(
+		key: string,
+		opts: {
+			events: Array<{ key: string }>;
+			feeds: Record<string, unknown>;
+		},
+	): Promise<void> {
+		// sql.json, not a raw string: postgres.js JSON-encodes a bare JS string,
+		// so `${"[]"}::jsonb` lands as the jsonb STRING "[]" and trips
+		// connector_definitions_behavior_events_array_check.
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO connector_definitions
+				(organization_id, key, name, version, auth_schema, feeds_schema,
+				 behavior_events, status)
+			VALUES (${orgId}, ${key}, ${key}, '1.0.0',
+				${sql.json({ methods: [{ type: "app_installation" }] })},
+				${sql.json(opts.feeds)},
+				${sql.json(opts.events)},
+				'active')
+			ON CONFLICT DO NOTHING
+		`;
+	}
+
+	const eventTrigger = (
+		connectorKey: string,
+		eventType: string,
+	): BehaviorTrigger[] => [
+		{
+			kind: "event",
+			connector_key: connectorKey,
+			event_types: [eventType],
+		},
+	];
+
+	beforeAll(async () => {
+		await cleanupTestDatabase();
+		orgId = (await createTestOrganization({ name: "Trigger Eligibility Org" }))
+			.id;
+
+		// No declared events, no feeds → nothing can ever fire.
+		await defineConnector("elig-barren", { events: [], feeds: {} });
+		// No declared events, but HAS a feed → feed.auto_paused is reachable.
+		await defineConnector("elig-feeds-only", {
+			events: [],
+			feeds: { inbox: { type: "object" } },
+		});
+		// Declares a real event.
+		await defineConnector("elig-rich", {
+			events: [{ key: "message.created" }],
+			feeds: {},
+		});
+	});
+
+	it("rejects a connector with no declared events AND no feeds", async () => {
+		const sql = getTestDb();
+		await expect(
+			assertBehaviorTriggerConnections(
+				sql,
+				orgId,
+				eventTrigger("elig-barren", "feed.auto_paused"),
+			),
+		).rejects.toThrow(/cannot drive an event trigger/);
+	});
+
+	it("ACCEPTS a feeds-only connector on the platform feed.auto_paused event", async () => {
+		// The capability this guard must not remove: "tell me when this feed
+		// breaks" is legitimate for any connector that actually has a feed, even
+		// though it declares no events of its own.
+		const sql = getTestDb();
+		await expect(
+			assertBehaviorTriggerConnections(
+				sql,
+				orgId,
+				eventTrigger("elig-feeds-only", "feed.auto_paused"),
+			),
+		).resolves.toBeUndefined();
+	});
+
+	it("accepts a connector that declares a real event", async () => {
+		const sql = getTestDb();
+		await expect(
+			assertBehaviorTriggerConnections(
+				sql,
+				orgId,
+				eventTrigger("elig-rich", "message.created"),
+			),
+		).resolves.toBeUndefined();
+	});
+});

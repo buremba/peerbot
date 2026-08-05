@@ -1987,6 +1987,34 @@ export type ManageConnectionsData = {
       }
     | {
         /**
+         * Connect through a managed OAuth offer advertised by a public Lobu org. Validates the live offer, enrolls the signed-in user in that org, and returns a provider consent URL. The resulting cloud connection is private, consent-only, and has no feeds.
+         */
+        action: "connect_managed";
+        /**
+         * Public organization slug from organizations.list managed_auth metadata
+         */
+        managed_by_org: string;
+        /**
+         * Connector key advertised by that managed_auth offer
+         */
+        connector_key: string;
+        /**
+         * Human-readable name for the consent grant
+         */
+        display_name?: string;
+        /**
+         * Stable identifier for the consent grant
+         */
+        slug?: string;
+        /**
+         * Non-secret connection config, such as requested optional scopes
+         */
+        config?: {
+          [key: string]: unknown;
+        };
+      }
+    | {
+        /**
          * Patch a connection's settings, status, slug, device binding, or (chat connections) fallback agent.
          */
         action: "update";
@@ -2793,14 +2821,9 @@ export type ManageAgentsData = {
     /**
      * Action to perform
      */
-    action:
-      | "list"
-      | "get"
-      | "create"
-      | "update"
-      | "delete";
+    action: "list" | "get" | "create" | "update" | "delete";
     /**
-     * [get/create/update/delete] Agent ID (lowercase slug, e.g. "builder").
+     * [get/create/update/delete] Agent ID (lowercase slug, e.g. "support").
      */
     agent_id?: string;
     /**
@@ -4298,9 +4321,9 @@ export type ManageBehaviorsData = {
      */
     order_dir?: "asc" | "desc";
     /**
-     * [create/update/create_version] Optional MCP client ID that should auto-run this Behavior. Null clears it.
+     * [list] Filter by each Behavior's latest run status (active runs take precedence). Discovery for executors: run_status='pending' lists Behaviors with unhandled runs — manual-open pending runs are completable by any client via complete_window.
      */
-    scheduler_client_id?: string | null;
+    run_status?: "pending" | "claimed" | "running" | "completed" | "failed";
     /**
      * [create/update] Optional device worker UUID to pin this Behavior to (when its inputs live on that device). Null clears the pin.
      */
@@ -4805,6 +4828,7 @@ export type GetBehaviorResponses = {
       next_run_at?: string | null;
       agent_id?: string | null;
       device_worker_id?: string | null;
+      agent_kind?: string | null;
       scheduler_client_id?: string | null;
       version: number;
       sources: Array<{

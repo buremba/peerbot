@@ -128,21 +128,21 @@ async function insertRunningRun(
  * for chrome), so declare the feed: a connector with a pausable feed is
  * exactly what may legitimately trigger on `feed.auto_paused`. */
 async function declareChromeFeeds(organizationId: string): Promise<void> {
-	const sql = getTestDb();
-	// sql.json, not raw strings: postgres.js JSON-encodes a bare JS string, so
-	// `${"[]"}::jsonb` lands as the jsonb STRING "[]" and trips
-	// connector_definitions_behavior_events_array_check.
-	await sql`
-		INSERT INTO connector_definitions
-			(organization_id, key, name, version, auth_schema, feeds_schema,
-			 behavior_events, status)
-		VALUES (${organizationId}, 'chrome', 'Chrome', '1.0.0',
-			${sql.json({ methods: [] })},
-			${sql.json({ 'chrome-feed': { name: 'Chrome feed' } })},
-			${sql.json([])},
-			'active')
-		ON CONFLICT DO NOTHING
-	`;
+  const sql = getTestDb();
+  // sql.json, not raw strings: postgres.js JSON-encodes a bare JS string, so
+  // `${"[]"}::jsonb` lands as the jsonb STRING "[]" and trips
+  // connector_definitions_behavior_events_array_check.
+  await sql`
+    INSERT INTO connector_definitions
+      (organization_id, key, name, version, auth_schema, feeds_schema,
+       behavior_events, status)
+    VALUES (${organizationId}, 'chrome', 'Chrome', '1.0.0',
+      ${sql.json({ methods: [] })},
+      ${sql.json({ 'chrome-feed': { name: 'Chrome feed' } })},
+      ${sql.json([])},
+      'active')
+    ON CONFLICT DO NOTHING
+  `;
 }
 
 describe('feed failure backoff + auto-pause (#2033)', () => {

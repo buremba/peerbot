@@ -9,13 +9,13 @@
  * feed to pause, and only becomes ineligible when it has neither.
  */
 import { beforeAll, describe, expect, it } from "vitest";
-import { assertBehaviorTriggerConnections } from "../../behaviors/triggers";
 import type { BehaviorTrigger } from "@lobu/core/contracts/tools/manage-behaviors";
+import { assertBehaviorTriggerConnections } from "../../behaviors/triggers";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
-import { TestWorkspace } from "../setup/test-mcp-client";
+import { createTestOrganization } from "../setup/test-fixtures";
 
 describe("event-trigger connector eligibility", () => {
-	let workspace: TestWorkspace;
+	let orgId: string;
 
 	async function defineConnector(
 		key: string,
@@ -32,7 +32,7 @@ describe("event-trigger connector eligibility", () => {
 			INSERT INTO connector_definitions
 				(organization_id, key, name, version, auth_schema, feeds_schema,
 				 behavior_events, status)
-			VALUES (${workspace.org.id}, ${key}, ${key}, '1.0.0',
+			VALUES (${orgId}, ${key}, ${key}, '1.0.0',
 				${sql.json({ methods: [{ type: "app_installation" }] })},
 				${sql.json(opts.feeds)},
 				${sql.json(opts.events)},
@@ -41,18 +41,21 @@ describe("event-trigger connector eligibility", () => {
 		`;
 	}
 
-	const eventTrigger = (connectorKey: string, eventType: string) =>
-		[
-			{
-				kind: "event",
-				connector_key: connectorKey,
-				event_types: [eventType],
-			},
-		] as unknown as BehaviorTrigger[];
+	const eventTrigger = (
+		connectorKey: string,
+		eventType: string,
+	): BehaviorTrigger[] => [
+		{
+			kind: "event",
+			connector_key: connectorKey,
+			event_types: [eventType],
+		},
+	];
 
 	beforeAll(async () => {
 		await cleanupTestDatabase();
-		workspace = await TestWorkspace.create({ name: "Trigger Eligibility Org" });
+		orgId = (await createTestOrganization({ name: "Trigger Eligibility Org" }))
+			.id;
 
 		// No declared events, no feeds → nothing can ever fire.
 		await defineConnector("elig-barren", { events: [], feeds: {} });
@@ -73,7 +76,7 @@ describe("event-trigger connector eligibility", () => {
 		await expect(
 			assertBehaviorTriggerConnections(
 				sql,
-				workspace.org.id,
+				orgId,
 				eventTrigger("elig-barren", "feed.auto_paused"),
 			),
 		).rejects.toThrow(/cannot drive an event trigger/);
@@ -87,7 +90,7 @@ describe("event-trigger connector eligibility", () => {
 		await expect(
 			assertBehaviorTriggerConnections(
 				sql,
-				workspace.org.id,
+				orgId,
 				eventTrigger("elig-feeds-only", "feed.auto_paused"),
 			),
 		).resolves.toBeUndefined();
@@ -98,7 +101,7 @@ describe("event-trigger connector eligibility", () => {
 		await expect(
 			assertBehaviorTriggerConnections(
 				sql,
-				workspace.org.id,
+				orgId,
 				eventTrigger("elig-rich", "message.created"),
 			),
 		).resolves.toBeUndefined();

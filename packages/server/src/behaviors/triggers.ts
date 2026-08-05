@@ -41,7 +41,7 @@ interface ConnectorBehaviorEventCatalog {
  * declare none — non-null but empty, so a null check alone under-counts). */
 function countDeclaredFeeds(value: unknown): number {
 	if (!value || typeof value !== "object") return 0;
-	return Array.isArray(value) ? value.length : Object.keys(value).length;
+	return Object.keys(value).length;
 }
 
 function parseBehaviorEventDefinitions(
@@ -77,9 +77,7 @@ async function getConnectorBehaviorEventCatalog(
 		const declared = parseBehaviorEventDefinitions(row.behavior_events);
 		return {
 			name: row.name,
-			events: withPlatformBehaviorEvents(
-				declared,
-			) as BehaviorEventDefinition[],
+			events: withPlatformBehaviorEvents(declared) as BehaviorEventDefinition[],
 			declaredCount: declared.length,
 			feedCount: countDeclaredFeeds(row.feeds_schema),
 		};
@@ -101,8 +99,7 @@ async function getConnectorBehaviorEventCatalog(
 		) as BehaviorEventDefinition[],
 		declaredCount: declaredFallback.length,
 		feedCount: countDeclaredFeeds(
-			row?.feeds_schema ??
-				(catalog?.detail as { feeds_schema?: unknown } | undefined)?.feeds_schema,
+			row?.feeds_schema ?? catalog?.detail.feeds_schema,
 		),
 	};
 }

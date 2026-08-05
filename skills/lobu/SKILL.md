@@ -209,7 +209,7 @@ Connectors are the primary integration path for third-party services. Use this l
 
 1. Call `search_sdk` with the service name. It returns installed and installable connectors, declared feed keys, SDK methods, and readiness details.
 2. Use `query_sdk` to inspect `client.catalog.listInstalled({ kinds: ["connectors"] })`, `client.catalog.listCatalog({ kinds: ["connectors"] })`, and `client.connections.list()` when you need a complete inventory.
-3. In `run_sdk`, call `client.connections.connect({ connector_key })`. An `active` or `pending_auth` result carries a `connection_id`. A `setup_required` result is a continuation: follow its `next_action`, `resume_call`, or `completion_check` exactly and do not create a feed until a `connection_id` is present.
+3. In `run_sdk`, call `client.connections.connect({ connector_key })`. An `active` or `pending_auth` result carries a `connection_id`. A `setup_required` result is a continuation: follow its `next_action`, `resume_call`, or `completion_check` exactly and do not create a feed until a `connection_id` is present. If the result carries `self_install_url` (a Slack app bootstrap deep link), offer it to the user so they can create + install their own app and paste back the bot token / signing secret.
 4. Create the feed with `client.feeds.create({ connection_id, feed_key, config })`. Connecting alone collects nothing.
 5. Trigger and verify it with `client.feeds.trigger({ feed_id, dry_run: true })`, then inspect `client.feeds.get({ feed_id })`. A dry run prevents Lobu writes but cannot undo upstream side effects caused by the connector.
 

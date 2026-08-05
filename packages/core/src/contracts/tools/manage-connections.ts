@@ -639,6 +639,7 @@ export const ManageConnectionsResultSchema = Type.Union([
     ),
     setup_url: Type.Optional(Type.String()),
     install_url: Type.Optional(Type.String()),
+    self_install_url: Type.Optional(Type.String()),
     install_shape: Type.Optional(
       Type.Union([
         Type.Literal("oauth-code-exchange"),
@@ -768,6 +769,7 @@ export const ManageConnectionsResultSchema = Type.Union([
     setup_instructions: Type.Optional(Type.String()),
     setup_url: Type.Optional(Type.String()),
     install_url: Type.Optional(Type.String()),
+    self_install_url: Type.Optional(Type.String()),
     connect_url: Type.Optional(Type.String()),
     connection_id: Type.Optional(Type.Integer()),
     slug: Type.Optional(Type.String()),

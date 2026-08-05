@@ -925,3 +925,112 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 		expect(await connectionCount(org.id)).toBe(0);
 	});
 });
+
+describe("manage_connections — slack self-install deep link", () => {
+	// A slack-shaped connector: app_installation primary with bot scopes/events +
+	// a BYO (`none`) method — the shape the real slack connector declares.
+	async function seedSlackByoConnector(
+		organizationId: string,
+		opts?: { clientIdKey?: string },
+	): Promise<void> {
+		await createTestConnectorDefinition({
+			key: CONNECTOR_KEY,
+			name: "Demo Slack BYO",
+			organization_id: organizationId,
+			auth_schema: {
+				methods: [
+					{
+						type: "app_installation",
+						provider: "slack",
+						providerInstance: "cloud",
+						installShape: "oauth-code-exchange",
+						clientIdKey: opts?.clientIdKey,
+						clientSecretKey: "SLACK_CLIENT_SECRET",
+						webhookSecretKey: "SLACK_SIGNING_SECRET",
+						permissions: ["app_mentions:read", "chat:write", "mcp:connect"],
+						events: ["app_mention", "message.im"],
+					},
+					{ type: "none" },
+				],
+			},
+			feeds_schema: { items: {} },
+		});
+		seededConnectorDefinitions.push({ organizationId, connectorKey: CONNECTOR_KEY });
+	}
+
+	it("no hosted Slack client env → suppresses the dead install_url and leads with self_install_url", async () => {
+		const previous = process.env.SLACK_CLIENT_ID;
+		delete process.env.SLACK_CLIENT_ID;
+		try {
+			const org = await createTestOrganization({ name: "Slack Self Install Org" });
+			const user = await createTestUser();
+			await addUserToOrganization(user.id, org.id, "owner");
+			await seedSlackByoConnector(org.id, { clientIdKey: "SLACK_CLIENT_ID" });
+			const ctx = ctxFor(org.id, user.id);
+
+			const res = await manageConnections(
+				{ action: "connect", connector_key: CONNECTOR_KEY },
+				TEST_ENV,
+				ctx,
+			);
+
+			expect("error" in res).toBe(false);
+			expect(res).toMatchObject({
+				action: "connect",
+				status: "setup_required",
+				setup_family: "app_installation",
+				next_action: "install_app",
+			});
+			// The hosted Add-to-Slack URL is dead without SLACK_CLIENT_ID — dropped.
+			expect(res).not.toHaveProperty("install_url");
+			const selfInstallUrl = (res as { self_install_url?: string })
+				.self_install_url;
+			expect(selfInstallUrl).toBeDefined();
+			const url = new URL(selfInstallUrl!);
+			expect(url.origin + url.pathname).toBe("https://api.slack.com/apps");
+			expect(url.searchParams.get("new_app")).toBe("1");
+			const manifest = JSON.parse(url.searchParams.get("manifest_json")!);
+			expect(manifest.oauth_config.scopes.bot).toContain("mcp:connect");
+			expect(manifest.settings.event_subscriptions.bot_events).toContain(
+				"app_mention",
+			);
+			// Gateway origin is derived from the ctx base URL (not its /lobu path).
+			expect(manifest.mcp_servers.lobu.url).toBe("https://gateway.test/mcp");
+			expect(await connectionCount(org.id)).toBe(0);
+		} finally {
+			if (previous === undefined) delete process.env.SLACK_CLIENT_ID;
+			else process.env.SLACK_CLIENT_ID = previous;
+		}
+	});
+
+	it("hosted Slack client env present → keeps install_url AND also offers self_install_url", async () => {
+		const previous = process.env.SLACK_CLIENT_ID;
+		process.env.SLACK_CLIENT_ID = "test-client-id";
+		try {
+			const org = await createTestOrganization({
+				name: "Slack Hosted+BYO Org",
+			});
+			const user = await createTestUser();
+			await addUserToOrganization(user.id, org.id, "owner");
+			await seedSlackByoConnector(org.id, { clientIdKey: "SLACK_CLIENT_ID" });
+			const ctx = ctxFor(org.id, user.id);
+
+			const res = await manageConnections(
+				{ action: "connect", connector_key: CONNECTOR_KEY },
+				TEST_ENV,
+				ctx,
+			);
+
+			expect("error" in res).toBe(false);
+			expect(res).toHaveProperty(
+				"install_url",
+				"https://gateway.test/lobu/slack/install",
+			);
+			expect(res).toHaveProperty("self_install_url");
+			expect(await connectionCount(org.id)).toBe(0);
+		} finally {
+			if (previous === undefined) delete process.env.SLACK_CLIENT_ID;
+			else process.env.SLACK_CLIENT_ID = previous;
+		}
+	});
+});

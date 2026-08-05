@@ -203,6 +203,18 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Print the Slack "create an app from a manifest" deep link. Opening it in a
+  // browser pre-fills the app-manifest editor with the (patched) manifest, so a
+  // user can create + install the app and read off the bot token / signing
+  // secret it generates.
+  if (cmd === "link") {
+    const url = `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(
+      JSON.stringify(manifest)
+    )}`;
+    process.stdout.write(`${url}\n`);
+    return;
+  }
+
   if (cmd === "validate") {
     const token = await getSlackConfigAccessToken();
     const result = await slackApiCall("apps.manifest.validate", token, {
@@ -236,7 +248,7 @@ async function main(): Promise<void> {
   }
 
   throw new Error(
-    `Unknown command: ${cmd} (expected: print|validate|update|rotate)`
+    `Unknown command: ${cmd} (expected: print|link|validate|update|rotate)`
   );
 }
 
@@ -244,7 +256,7 @@ main().catch((err) => {
   const msg = err instanceof Error ? err.message : String(err);
   process.stderr.write(`${msg}\n`);
   process.stderr.write("Usage: bun run scripts/slack-manifest.ts <cmd>\n");
-  process.stderr.write("Cmd: print | validate | update | rotate\n");
+  process.stderr.write("Cmd: print | link | validate | update | rotate\n");
   process.stderr.write(
     "Env: SLACK_CONFIG_TOKEN or SLACK_CONFIG_REFRESH_TOKEN; SLACK_APP_ID (for update)\n"
   );

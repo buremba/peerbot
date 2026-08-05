@@ -207,7 +207,7 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
         // for a separate MCP/HTTP tool that does not exist.
         'Run any connector operation the same way: `run_sdk` → `client.operations.execute({ connection_id, operation_key, input })`. There is no separate per-connector tool.',
         'Discover capabilities with `query_sdk` → `client.operations.listAvailable({ query: "..." })`. It includes disconnected connectors, readiness, and every visible `execution_targets` entry; use the returned target directly instead of guessing a connection id.',
-        'When readiness is disconnected, call the returned `next_action`. `connections.connect` / `connections.create` may return `status: "setup_required"`: show its resolved setup/install URL, follow `next_action`, then invoke `resume_call` or poll `completion_check` exactly as returned.',
+        'When readiness is disconnected, call the returned `next_action`. `connections.connect` / `connections.create` may return `status: "setup_required"`: show its resolved setup/install URL, follow `next_action`, then invoke `resume_call` or poll `completion_check` exactly as returned. When the result carries `self_install_url` (e.g. a Slack app when no hosted app is configured), offer that deep link to the user to create and install their own app and paste back the bot token / signing secret.',
         'Execution may be policy-gated: a gated op returns `status: "pending_approval"` (a run queued for a human). Surface that to the user rather than treating it as a failure.'
       );
       for (const conn of operationConnections) {

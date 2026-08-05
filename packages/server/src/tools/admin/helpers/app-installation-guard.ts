@@ -155,5 +155,6 @@ export async function rejectUnboundAppInstallationCreate(params: {
     method,
     gatewayBaseUrl: params.gatewayBaseUrl,
     setupUrl: params.setupUrl,
+    hasByoMethod: schema.methods.some((m) => m.type === 'none'),
   });
 }

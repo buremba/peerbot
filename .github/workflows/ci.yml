@@ -797,6 +797,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The generated-client gate below diffs against the PR base commit.
+          # The default fetch-depth=1 only has HEAD, so the diff would fail
+          # and the gate would silently pass on every PR.
+          fetch-depth: 0
 
       - uses: ./.github/actions/setup-submodule
         with:
@@ -835,6 +840,53 @@ jobs:
       # until their baseline is triaged.
       - name: Dead-code gate (knip, unused files)
         run: bun run knip --include files
+
+      # `packages/client/src/generated/**` is produced by `openapi-ts` from the
+      # server's LIVE `/lobu/api/docs/openapi.json`, so keeping it honest needs a
+      # booted server + Postgres. That is too heavy to run per PR, and nothing
+      # else enforces it — the file silently drifted across at least #2470
+      # (`connect_managed` was missing entirely, so SDK consumers could not see
+      # that action) and #2499 (`scheduler_client_id` outlived its removal) before
+      # #2502 swept it.
+      #
+      # This is the cheap proxy: if a PR edits the main sources the document is
+      # built from (tool contracts, gateway routes) but leaves the generated
+      # client untouched, say so. It is a HEURISTIC in both directions — a
+      # contract edit that provably does not change the emitted schema will
+      # still trip it, and schema edits outside the watched paths (e.g. TypeBox
+      # types under packages/server/src/types) can still slip through. The
+      # false-positive case is real, so there is an explicit escape hatch
+      # rather than a silent skip.
+      #
+      # To regenerate: boot the server (`make dev`) and run
+      #   cd packages/client && LOBU_OPENAPI_URL=http://127.0.0.1:<PORT>/lobu/api/docs/openapi.json bun run generate
+      # Re-run it even if you expect a no-op; an empty diff IS the proof.
+      - name: Generated client must track the contract
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if git log "$BASE_SHA"..HEAD --format=%B | grep -qF '[client-regen-not-needed]'; then
+            echo "[client-regen-not-needed] sentinel present; generated-client check skipped for this PR."
+            exit 0
+          fi
+          contract=$(git diff --name-only "$BASE_SHA"...HEAD -- \
+            'packages/core/src/contracts/tools/**' \
+            'packages/server/src/gateway/routes/**')
+          if [ -z "$contract" ]; then
+            echo "No contract or route sources touched; nothing to check."
+            exit 0
+          fi
+          regenerated=$(git diff --name-only "$BASE_SHA"...HEAD -- 'packages/client/src/generated/**')
+          if [ -n "$regenerated" ]; then
+            echo "Contract sources changed and the generated client was updated alongside them."
+            exit 0
+          fi
+          echo "::error::Contract/route sources changed but packages/client/src/generated/** was not regenerated. Boot the server and run 'cd packages/client && LOBU_OPENAPI_URL=http://127.0.0.1:<PORT>/lobu/api/docs/openapi.json bun run generate'. If the emitted schema genuinely does not change, commit with '[client-regen-not-needed]' in the message."
+          echo "Contract/route files changed in this PR:"
+          echo "$contract"
+          exit 1
 
   migrations:
     # Serialize this short compatibility context behind format-lint so it does

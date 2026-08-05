@@ -176,10 +176,11 @@ describe('tool invocation audit coverage', () => {
       userId: 'another-user',
       memberRole: 'member',
     });
-    // A non-author member gets neither the request nor the marker that one exists.
+    // A non-author member gets no request and no size — only the retention
+    // outcome, which names what the ledger did rather than any part of the call.
     expect(memberPayload).not.toHaveProperty('request');
-    expect(memberPayload).not.toHaveProperty('request_status');
     expect(memberPayload).not.toHaveProperty('request_bytes');
+    expect(memberPayload.request_status).toBe('complete');
 
     const adminPayload = await readAuditEvent(eventId, {
       ...authCtxFor('session'),
@@ -212,8 +213,11 @@ describe('tool invocation audit coverage', () => {
     const listed = result.content.find((item) => String(item.id) === String(row!.id));
     expect(listed).toBeDefined();
     expect(listed!.payload_data).not.toHaveProperty('request');
-    expect(listed!.payload_data).not.toHaveProperty('request_status');
     expect(listed!.payload_data).not.toHaveProperty('request_bytes');
+    // `request_status` DOES survive a list read: it is the only signal a card
+    // has that a body exists to open, and without it the UI cannot offer any
+    // route to the exact-id read that serves one (to the author or an admin).
+    expect(listed!.payload_data.request_status).toBe('complete');
   });
 
   it('restores every copy when an exact read contains duplicate event ids', async () => {

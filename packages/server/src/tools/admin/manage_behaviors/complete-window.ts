@@ -503,19 +503,25 @@ export async function handleCompleteWindow(
       // differ — otherwise say plainly that the payload was dropped without
       // guessing who wrote the head. Guessing 'other client' on absent ids
       // would fire on every ordinary replay.
+      // Client identity OUTRANKS run identity, and the order matters. A
+      // manual-open Behavior has ONE pending run that every client races for,
+      // so two different clients completing it both carry the same run id.
+      // Ranking the run first would report the loser as a self-replay in
+      // precisely the scenario this signal exists for. The run is only a
+      // fallback for callers with no registered client id.
       const bothClients =
         existingHead.clientId != null && provenanceClientId != null;
       const bothRuns = existingHead.runId != null && watcherRunId != null;
-      const sameClient =
-        bothClients && existingHead.clientId === provenanceClientId;
-      const sameRun = bothRuns && existingHead.runId === watcherRunId;
-      const differentClient =
-        bothClients && existingHead.clientId !== provenanceClientId;
-      const differentRun = bothRuns && existingHead.runId !== watcherRunId;
-      if (sameClient || sameRun) {
-        skippedReason = 'replayed_own_completion';
-      } else if (differentClient || differentRun) {
-        skippedReason = 'completed_by_other_client';
+      if (bothClients) {
+        skippedReason =
+          existingHead.clientId === provenanceClientId
+            ? 'replayed_own_completion'
+            : 'completed_by_other_client';
+      } else if (bothRuns) {
+        skippedReason =
+          existingHead.runId === watcherRunId
+            ? 'replayed_own_completion'
+            : 'completed_by_other_client';
       } else {
         skippedReason = 'already_completed';
       }

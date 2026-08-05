@@ -1009,6 +1009,76 @@ describe("watcher automation contract", () => {
 			expect(second.skipped_reason).toBe("already_completed");
 		});
 
+		// The open manual lane has ONE pending run that every client races for, so
+		// both racers carry the SAME run id while having DIFFERENT client ids.
+		// Client identity must outrank the run, or the loser is reported as a
+		// self-replay in exactly the case this signal exists for.
+		it("prefers client identity over the shared run id when clients race one run", async () => {
+			const { api, watcherId } = await createAutomatedWatcher();
+			const sql = getTestDb();
+			for (const id of ["race-client-a", "race-client-b"]) {
+				await sql`
+					INSERT INTO oauth_clients (id, client_id_issued_at, redirect_uris, client_name)
+					VALUES (${id}, NOW(), ARRAY['https://example.test/cb'], ${id})
+					ON CONFLICT (id) DO NOTHING
+				`;
+			}
+			// events.run_id is FK'd to runs, so the shared run must really exist.
+			// Inserted directly: `trigger` needs the embedded gateway, which this
+			// harness does not boot.
+			const [orgRow] = await sql<{ organization_id: string }[]>`
+				SELECT organization_id FROM watchers WHERE id = ${watcherId}
+			`;
+			const [runRow] = await sql<{ id: number }[]>`
+				INSERT INTO runs
+					(organization_id, run_type, watcher_id, status, approval_status, created_at)
+				VALUES
+					(${orgRow.organization_id}, 'behavior', ${watcherId}, 'running', 'auto', current_timestamp)
+				RETURNING id
+			`;
+			const sharedRunId = Number(runRow.id);
+			expect(sharedRunId).toBeGreaterThan(0);
+
+			const windowStart = new Date(
+				Date.now() - 4 * 60 * 60 * 1000
+			).toISOString();
+			const windowEnd = new Date().toISOString();
+			const env = { JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env;
+			const mint = () =>
+				generateWindowToken(
+					{
+						watcher_id: watcherId,
+						window_start: windowStart,
+						window_end: windowEnd,
+						granularity: "daily",
+						content_count: 0,
+						content_ids: [],
+					},
+					env
+				);
+
+			const winner = (await api.behaviors.completeWindow({
+				behavior_id: String(watcherId),
+				window_token: await mint(),
+				extracted_data: { summary: "winner" },
+				client_id: "race-client-a",
+				behavior_run_id: sharedRunId,
+			})) as { window_id: number; skipped_reason?: string };
+			expect(winner.skipped_reason).toBeUndefined();
+
+			// Same run, different client. Ranking sameRun first would call this a
+			// self-replay; it is another client losing the race.
+			const loser = (await api.behaviors.completeWindow({
+				behavior_id: String(watcherId),
+				window_token: await mint(),
+				extracted_data: { summary: "loser" },
+				client_id: "race-client-b",
+				behavior_run_id: sharedRunId,
+			})) as { window_id: number; skipped_reason?: string };
+			expect(loser.window_id).toBe(winner.window_id);
+			expect(loser.skipped_reason).toBe("completed_by_other_client");
+		});
+
 		// Fail closed: the agent exiting cleanly WITHOUT calling complete_window
 		// means no real work was recorded — the run must fail (and the schedule
 		// advance), mirroring the server-side dispatch guard. This is exactly

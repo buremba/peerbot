@@ -27,7 +27,6 @@ import {
   type BehaviorUpdatePatch,
 } from '@lobu/core/contracts/tools/manage-behaviors';
 import {
-  assertAgentExists,
   assertOutputEntityTypesExist,
   assertOutputEventTypesExist,
   assertOutputsShape,
@@ -778,6 +777,7 @@ export async function handleCreateFromVersion(
   // reaction with no extraction contract, silently running free-form.
   const versionRows = await sql`
     SELECT wv.*, w.organization_id, w.schedule, w.timezone, w.triggers, w.sources, w.agent_id,
+           w.device_worker_id::text AS device_worker_id, w.agent_kind,
            w.model_config, w.execution_config, w.tags, w.watcher_group_id,
            w.reaction_script, w.reaction_script_compiled, w.reaction_input_schema
     FROM watcher_versions wv
@@ -793,19 +793,26 @@ export async function handleCreateFromVersion(
       `Access denied: Behavior version ${args.version_id} does not belong to your organization`
     );
   }
-  if (!version.agent_id) {
-    // Source watcher has no agent — cloning would silently inherit null and
-    // produce active zombies the scheduler skips. Same invariant as handleCreate.
-    throw new ToolUserError(
-      `Source Behavior version ${args.version_id} has no agent_id; assign an agent on the source before cloning.`
-    );
-  }
-
-  // The source's agent_id is copied verbatim onto every clone, and a version can
-  // outlive the agent it named (agent_id has no FK, so a deleted agent leaves the
-  // reference dangling). Resolve it once here so the fan-out cannot mint a whole
-  // batch of Behaviors the scheduler will never run.
-  await assertAgentExists(sql, organizationId, version.agent_id as string);
+  // The clone strips chat-link steer/reply triggers (a second agent turn for
+  // the same message), so the matrix runs on the STRIPPED shape — an agentless
+  // source whose only automated triggers were chat-link responders must be
+  // allowed to clone as manual-only, and a source that strips down to nothing
+  // must not land executor-less automated rows. Every automated clone needs an
+  // executor; manual-only clones may be executor-less (same invariant as
+  // handleCreate/handleUpdate).
+  const cloneTriggers = stripChatLinkTriggers(version.triggers) as BehaviorTrigger[];
+  const cloneDefaults: BehaviorExecutorDefaults = {
+    agentId: (version.agent_id as string | null) ?? null,
+    deviceWorkerId: (version.device_worker_id as string | null) ?? null,
+    agentKind: (version.agent_kind as string | null) ?? null,
+  };
+  // The executor is copied verbatim onto every clone, and a version can
+  // outlive the executor it names (agent_id/device_worker_id have no FK, so a
+  // deleted agent/device leaves the reference dangling). Resolve + authorize
+  // once here so the fan-out cannot mint a batch of Behaviors the scheduler
+  // will never run — or store a device pin the caller may not target.
+  assertBehaviorExecutorsResolve(cloneTriggers, cloneDefaults);
+  await assertBehaviorExecutorsAuthorized(sql, organizationId, cloneDefaults, ctx);
 
   // Reject cross-org entity_ids before cloning: a watcher attached to another
   // org's entity links its synced/extracted content to a non-existent in-org
@@ -894,7 +901,7 @@ export async function handleCreateFromVersion(
         // Entity clones must not inherit chat-link steer/reply triggers (or the
         // system:chat-link tag): those bind a live channel responder, and
         // cloning them would create a second agent turn for the same message.
-        const cloneTriggers = stripChatLinkTriggers(version.triggers);
+        // cloneTriggers is computed once above (it does not depend on entity).
         // After stripping, the residual trigger shape must still satisfy the
         // instruction rule (chat-link-only sources become manual/empty triggers
         // and require a non-empty prompt).
@@ -920,7 +927,7 @@ export async function handleCreateFromVersion(
         await tx`
           INSERT INTO watchers (
             id, name, slug, organization_id, entity_ids,
-            schedule, timezone, next_run_at, triggers, agent_id, model_config, execution_config, sources, version,
+            schedule, timezone, next_run_at, triggers, agent_id, device_worker_id, agent_kind, model_config, execution_config, sources, version,
             current_version_id, tags, status, created_by, created_at, updated_at,
             watcher_group_id, source_watcher_id,
             reaction_script, reaction_script_compiled, reaction_input_schema
@@ -929,6 +936,8 @@ export async function handleCreateFromVersion(
             ${`{${entityId}}`}::bigint[],
             ${version.schedule ?? null}, ${version.timezone ?? null}, ${version.schedule ? nextRunAt(version.schedule as string, new Date(), version.timezone as string | null) : null}, ${toJsonParam(tx, cloneTriggers)},
             ${version.agent_id ?? null},
+            ${version.device_worker_id ?? null},
+            ${version.agent_kind ?? null},
             ${toJsonParam(tx, version.model_config)}, ${toJsonParam(tx, version.execution_config)}, ${toJsonParam(tx, clonedSources)},
             ${(version.version as number) ?? 1}, ${sharedVersionId}, ${toTextArrayParam(cloneTags)}::text[],
             'active', ${createdBy}, NOW(), NOW(),
@@ -1006,6 +1015,8 @@ export async function handleCreateFromVersion(
         timezone: version.timezone ?? null,
         triggers: version.triggers ?? [],
         agent_id: version.agent_id ?? null,
+        device_worker_id: (version.device_worker_id as string | null) ?? null,
+        agent_kind: (version.agent_kind as string | null) ?? null,
         version: (version.version as number) ?? 1,
         current_version_id: p.sharedVersionId,
         watcher_group_id: p.groupId,

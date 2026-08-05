@@ -7,7 +7,6 @@ const BehaviorTriggerMatchValueSchema = Type.Union([
   Type.Null(),
 ]);
 
-
 /**
  * Connector event activation for a Behavior. Triggers and context sources are
  * deliberately separate: a trigger decides when to run, while a source only

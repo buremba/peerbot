@@ -12,6 +12,12 @@ import { getNextNumericId } from '../helpers/db-helpers';
 import type { ToolContext } from '../../registry';
 import type { ManageBehaviorsArgs, ManageBehaviorsResult } from '../manage_behaviors';
 import {
+  type BehaviorExecutorDefaults,
+  type BehaviorTriggerInput,
+  assertBehaviorExecutorsAuthorized,
+  assertBehaviorExecutorsResolve,
+} from './executors';
+import {
   assertOutputEntityTypesExist,
   assertOutputEventTypesExist,
   assertOutputsShape,
@@ -60,10 +66,11 @@ export async function handleCreateVersion(
   // and version rows live on the group root, so we read from and write to
   // `watcher_id = watcher_group_id`. The arg's watcher_id is only used to
   // identify the group and to apply the per-assignment writes (sources,
-  // schedule, scheduler_client_id) to that specific row.
+  // schedule) to that specific row.
   const watcherRows = await sql`
     SELECT i.id, i.version, i.current_version_id, i.watcher_group_id, i.sources, i.organization_id,
-           i.entity_ids, i.schedule, i.timezone, i.triggers, i.agent_id
+           i.entity_ids, i.schedule, i.timezone, i.triggers, i.agent_id,
+           i.device_worker_id::text AS device_worker_id, i.agent_kind
     FROM watchers i WHERE i.id = ${args.behavior_id}
   `;
   if (watcherRows.length === 0) {
@@ -221,6 +228,31 @@ export async function handleCreateVersion(
     );
   }
 
+  // Executor matrix on the LIVE row (set_as_current writes triggers to it):
+  // same rules as create/update — automated Behaviors need an executor, and
+  // every referenced executor must be authorized. Without this, create_version
+  // (the primary authoring path — `lobu apply`, owletto edit) could land
+  // zombie triggers.
+  const setAsCurrentForMatrix = args.set_as_current !== false;
+  if (setAsCurrentForMatrix && versionOrganizationId && triggersChanged) {
+    const rowDefaults: BehaviorExecutorDefaults = {
+      agentId: (watcherRows[0].agent_id as string | null) ?? null,
+      deviceWorkerId:
+        (watcherRows[0].device_worker_id as string | null) ?? null,
+      agentKind: (watcherRows[0].agent_kind as string | null) ?? null,
+    };
+    assertBehaviorExecutorsResolve(
+      triggerWrite.triggers as BehaviorTriggerInput[],
+      rowDefaults
+    );
+    await assertBehaviorExecutorsAuthorized(
+      sql,
+      versionOrganizationId,
+      rowDefaults,
+      ctx
+    );
+  }
+
   // Final-state instruction rule. The prompt version is group-shared
   // (cascades to every assignment), while triggers are per-assignment — so
   // when set_as_current, validate the new prompt against every sibling's
@@ -296,7 +328,7 @@ export async function handleCreateVersion(
     // Update watcher to new version if set_as_current (default: true).
     // Group-shared fields (current_version_id, version, name) cascade to
     // every watcher in the group; per-assignment fields (sources,
-    // schedule, scheduler_client_id) update only the targeted row.
+    // schedule) update only the targeted row.
     if (setAsCurrent) {
       const shouldUpdateTriggers = args.triggers !== undefined;
       const scheduleValue = triggerWrite.schedule;
@@ -331,7 +363,6 @@ export async function handleCreateVersion(
         UPDATE watchers
         SET
           sources = ${tx.json(sources)},
-          scheduler_client_id = CASE WHEN ${args.scheduler_client_id !== undefined} THEN ${args.scheduler_client_id ?? null} ELSE scheduler_client_id END,
           schedule = CASE WHEN ${touchesCadence} THEN ${scheduleValue} ELSE schedule END,
           timezone = CASE WHEN ${touchesCadence} THEN ${timezoneValue} ELSE timezone END,
           triggers = CASE WHEN ${touchesCadence} THEN ${tx.json(triggerWrite.triggers)} ELSE triggers END,

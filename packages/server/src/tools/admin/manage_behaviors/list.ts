@@ -55,7 +55,6 @@ export async function handleList(
       i.agent_id,
       i.device_worker_id,
       i.last_fired_at,
-      i.scheduler_client_id,
       i.model_config,
       i.execution_config,
       i.sources,
@@ -84,7 +83,8 @@ export async function handleList(
       parent.slug as parent_slug,
       pet.slug as parent_entity_type,
       i.current_version_id,
-      (SELECT COUNT(*) FROM canvas_windows iw WHERE iw.watcher_id = i.id) as windows_count
+      (SELECT COUNT(*) FROM canvas_windows iw WHERE iw.watcher_id = i.id) as windows_count,
+      (SELECT COUNT(DISTINCT iw.client_id) FROM canvas_windows iw WHERE iw.watcher_id = i.id AND iw.client_id IS NOT NULL) as processing_client_count
   `;
 
 	if (args.include_details) {
@@ -143,6 +143,14 @@ export async function handleList(
 		conditions.push(`i.status = 'active'`);
 	}
 
+	// Discovery filter for executors: match the LATEST run per Behavior (the
+	// lateral join prioritizes active runs), e.g. pending manual-open runs.
+	if (args.run_status) {
+		conditions.push(`wr.status = $${paramCount}`);
+		params.push(args.run_status);
+		paramCount++;
+	}
+
 	query += ` WHERE ${conditions.join(" AND ")}`;
 
 	const orderDir = args.order_dir === "asc" ? "ASC" : "DESC";
@@ -190,10 +198,11 @@ export async function handleList(
 		const countData = counts.get(watcherId) || { pending: 0, historical: 0 };
 		const orgSlug = orgSlugMap.get(watcher.organization_id as string) ?? null;
 
-		const viewUrl =
-			orgSlug && watcher.agent_id
-				? buildBehaviorUrl(orgSlug, watcher.agent_id, watcherId, baseUrl)
-				: undefined;
+		// Workspace-level route: agentless (device-pinned / manual-only)
+		// Behaviors carry a view_url just like agent-owned ones.
+		const viewUrl = orgSlug
+			? buildBehaviorUrl(orgSlug, watcherId, baseUrl)
+			: undefined;
 
 		const { organization_id: _orgId, ...rest } = watcher;
 

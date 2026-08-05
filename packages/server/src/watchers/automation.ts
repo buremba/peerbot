@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
+	resolveBehaviorExecutor,
+} from "../tools/admin/manage_behaviors/executors";
+import {
 	inferBehaviorGranularityFromSchedule,
 	type BehaviorTimeGranularity,
 } from "@lobu/connector-sdk";
@@ -139,7 +142,6 @@ export function parseWatcherRunPayload(
 
 	if (
 		!Number.isFinite(watcherId) ||
-		!agentId ||
 		!windowStart ||
 		!windowEnd ||
 		(dispatchSource !== "scheduled" &&
@@ -174,7 +176,10 @@ export function parseWatcherRunPayload(
 
 	return {
 		watcher_id: watcherId,
-		agent_id: agentId,
+		// Optional: device-pinned runs carry only the pin, and manual-open
+		// runs carry neither. The dispatch guard below fails runs that reach
+		// the server lane without an agent.
+		agent_id: agentId || undefined,
 		window_start: windowStart,
 		window_end: windowEnd,
 		dispatch_source: dispatchSource,
@@ -235,8 +240,19 @@ async function enqueueWatcherRunForRecord(
 		throw new Error(`Behavior ${watcher.id} is not active.`);
 	}
 
-	if (!watcher.agent_id) {
-		throw new Error(`Behavior ${watcher.id} is not assigned to a Lobu agent.`);
+	// Executor resolution: a Behavior has exactly one executor (agent or
+	// device pin). Manual activations may legitimately resolve to nothing —
+	// the run stays pending for any connected MCP client to execute and
+	// complete.
+	const executor = resolveBehaviorExecutor({
+		agentId: watcher.agent_id ?? null,
+		deviceWorkerId: watcher.device_worker_id ?? null,
+		agentKind: watcher.agent_kind ?? null,
+	});
+	if (!executor && dispatchSource !== "manual") {
+		throw new Error(
+			`Behavior ${watcher.id} has no executor for ${dispatchSource} activation (need agent_id or device_worker_id).`
+		);
 	}
 
 	const granularity = inferBehaviorGranularityFromSchedule(watcher.schedule);
@@ -250,12 +266,14 @@ async function enqueueWatcherRunForRecord(
 		{
 			organizationId: watcher.organization_id,
 			watcherId: watcher.id,
-			agentId: watcher.agent_id,
+			agentId: executor?.kind === "agent" ? executor.agentId : null,
 			windowStart: windowStart.toISOString(),
 			windowEnd: windowEnd.toISOString(),
 			dispatchSource,
-			deviceWorkerId: watcher.device_worker_id ?? null,
-			agentKind: watcher.agent_kind ?? null,
+			deviceWorkerId:
+				executor?.kind === "device" ? executor.deviceWorkerId : null,
+			agentKind:
+				executor?.kind === "device" ? executor.agentKind : null,
 			sourceFingerprint,
 		},
 		sql
@@ -1098,6 +1116,11 @@ async function claimWatcherRun(
           r.approved_input->>'device_worker_id' IS NULL
           OR r.approved_input->>'device_worker_id' = ''
         )
+        -- Runs with NO agent and NO device pin are manual-open: any connected
+        -- MCP client may execute and complete them (write-tier
+        -- complete_window). The server dispatcher must leave them pending.
+        AND r.approved_input->>'agent_id' IS NOT NULL
+        AND r.approved_input->>'agent_id' <> ''
         ${specificRunClause}
       ORDER BY r.created_at ASC
       FOR UPDATE SKIP LOCKED
@@ -1260,6 +1283,7 @@ async function dispatchWatcherRun(
 	}
 
 	if (
+		!payload.agent_id ||
 		!(await ensureWatcherAgentExists(
 			sql,
 			run.organization_id,
@@ -1269,7 +1293,9 @@ async function dispatchWatcherRun(
 		await failWatcherRun(
 			sql,
 			run.id,
-			`Assigned agent "${payload.agent_id}" does not exist in this organization.`
+			payload.agent_id
+				? `Assigned agent "${payload.agent_id}" does not exist in this organization.`
+				: "Behavior run has no assigned agent (device-pinned and manual-open runs do not dispatch server-side)."
 		);
 		return "failed";
 	}

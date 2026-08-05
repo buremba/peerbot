@@ -1090,4 +1090,127 @@ describe('watcher CRUD', () => {
       await owner.behaviors.delete({ behavior_ids: [created.behavior_id] });
     });
   });
+
+  describe('create_from_version executor cloning', () => {
+    async function seedDevice(worker: string): Promise<string> {
+      const sql = getTestDb();
+      const rows = (await sql`
+        INSERT INTO device_workers (user_id, worker_id, platform, capabilities, label, organization_id)
+        VALUES (${ownerUserId}, ${worker}, 'macos', ${sql.json([])}, 'CFV Device', ${ownerOrgId})
+        RETURNING id
+      `) as unknown as Array<{ id: string }>;
+      return String(rows[0].id);
+    }
+
+    it('clones a device-pinned behavior and copies the device pin (no executor flip, no zombie)', async () => {
+      const sql = getTestDb();
+      const deviceId = await seedDevice('cfv-device-pin');
+      const target = (await owner.entities.create({
+        type: 'company',
+        name: 'CFV Device Clone Target',
+      })) as { entity: { id: number } };
+
+      // Device-pinned (agent present for skills anchoring, device wins at
+      // dispatch). The old clone path copied only agent_id, silently dropping
+      // device_worker_id + agent_kind — a clone that flipped from device
+      // execution to server/agent dispatch. The clone must carry the pin.
+      const base = (await owner.behaviors.manage({
+        action: 'create',
+        entity_id: entityId,
+        slug: 'cfv-device-base',
+        name: 'CFV Device Base',
+        prompt: 'Track on device.',
+        triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
+        agent_id: agentId,
+        device_worker_id: deviceId,
+        agent_kind: 'codex',
+      })) as { behavior_id: string };
+      const [row] = await sql<{ current_version_id: number }[]>`
+        SELECT current_version_id FROM watchers WHERE id = ${base.behavior_id}
+      `;
+      const versionId = Number(row?.current_version_id);
+
+      const res = (await owner.behaviors.createFromVersion({
+        version_id: versionId,
+        entity_ids: [target.entity.id],
+      })) as { created: Array<{ behavior_id: string }> };
+      const cloneId = res.created[0].behavior_id;
+
+      const [clone] = await sql`
+        SELECT agent_id, device_worker_id, agent_kind,
+               triggers::text AS triggers
+        FROM watchers WHERE id = ${cloneId}
+      `;
+      expect(clone.agent_id).toBe(agentId);
+      expect(clone.device_worker_id).toBe(deviceId);
+      expect(clone.agent_kind).toBe('codex');
+      // The schedule trigger is preserved and still resolves via the device pin.
+      expect(clone.triggers).toMatch(/schedule/);
+
+      await owner.behaviors.delete({
+        behavior_ids: [base.behavior_id, cloneId],
+      });
+    });
+
+    it('creates and clones an agentless manual-only behavior (executor optional)', async () => {
+      const sql = getTestDb();
+      const target = (await owner.entities.create({
+        type: 'company',
+        name: 'CFV Manual Clone Target',
+      })) as { entity: { id: number } };
+
+      // No triggers → manual-only → executor optional. Both create and the
+      // clone must accept an executor-less row (agent_id nullable, no device
+      // pin) — the manual activation stays pending for any MCP client.
+      const base = (await owner.behaviors.create({
+        entity_id: entityId,
+        slug: 'cfv-manual-base',
+        name: 'CFV Manual Base',
+        prompt: 'Manual only.',
+        sources: [{ name: 'content', query: 'SELECT id FROM events' }],
+      })) as { behavior_id: string; view_url?: string };
+
+      // The Behavior route is workspace-level, so an agentless Behavior gets a
+      // link like any other. Gating view_url on agent_id left exactly the rows
+      // this feature adds (device-pinned / manual-only) with no way for an MCP
+      // agent to hand the user a link. Asserted on the path, not the origin:
+      // a local packages/owletto/dist flips the builder to a relative URL.
+      expect(base.view_url).toContain(`/behaviors/${base.behavior_id}`);
+
+      const [row] = await sql<{ current_version_id: number }[]>`
+        SELECT current_version_id FROM watchers WHERE id = ${base.behavior_id}
+      `;
+      const versionId = Number(row?.current_version_id);
+
+      const res = (await owner.behaviors.createFromVersion({
+        version_id: versionId,
+        entity_ids: [target.entity.id],
+      })) as { created: Array<{ behavior_id: string }> };
+      const cloneId = res.created[0].behavior_id;
+      const [clone] = await sql`
+        SELECT agent_id, device_worker_id FROM watchers WHERE id = ${cloneId}
+      `;
+      expect(clone.agent_id).toBeNull();
+      expect(clone.device_worker_id).toBeNull();
+
+      // Same for the read paths an agent actually calls.
+      const listed = (await owner.behaviors.manage({
+        action: 'list',
+        entity_id: entityId,
+      })) as { behaviors?: Array<{ behavior_id?: string; id?: string; view_url?: string }> };
+      const listedBase = (listed.behaviors ?? []).find(
+        (b) => String(b.behavior_id ?? b.id) === String(base.behavior_id)
+      );
+      expect(listedBase?.view_url).toContain(`/behaviors/${base.behavior_id}`);
+
+      const fetched = (await owner.behaviors.get({
+        behavior_id: base.behavior_id,
+      })) as { view_url?: string };
+      expect(fetched.view_url).toContain(`/behaviors/${base.behavior_id}`);
+
+      await owner.behaviors.delete({
+        behavior_ids: [base.behavior_id, cloneId],
+      });
+    });
+  });
 });

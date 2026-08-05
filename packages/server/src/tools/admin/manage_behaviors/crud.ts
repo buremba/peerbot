@@ -27,7 +27,6 @@ import {
   type BehaviorUpdatePatch,
 } from '@lobu/core/contracts/tools/manage-behaviors';
 import {
-  assertAgentExists,
   assertOutputEntityTypesExist,
   assertOutputEventTypesExist,
   assertOutputsShape,
@@ -42,6 +41,13 @@ import {
   summarizeResults,
   type WatcherOperationResult,
 } from './shared';
+import {
+  type BehaviorExecutorDefaults,
+  type BehaviorTriggerInput,
+  assertBehaviorExecutorsAuthorized,
+  assertBehaviorExecutorsResolve,
+  resolveBehaviorExecutor,
+} from './executors';
 import { getErrorMessage } from '@lobu/core';
 import { DEFAULT_BEHAVIOR_SOURCE_QUERY, extractSourcesFromPromptTokens, mergePromptSources } from '../../../watchers/source-refs';
 import {
@@ -109,16 +115,7 @@ export async function handleCreate(
   if (!args.slug) {
     throw new ToolUserError('slug is required for create action');
   }
-  if (!args.agent_id) {
-    throw new ToolUserError(
-      'agent_id is required to create a Behavior (the agent that executes it).'
-    );
-  }
   assertValidExecutionConfig(args.execution_config, ctx);
-  // A device pin runs the watcher's agent CLI on the device owner's machine —
-  // validate the caller may target this device (own it, or org owner/admin
-  // over a device attached to the org) before storing it.
-  await assertDeviceWorkerAccess(sql, args.device_worker_id, ctx);
 
   // entity_id is optional: omit it for an org-scoped/global watcher.
   const entityId = args.entity_id;
@@ -157,17 +154,6 @@ export async function handleCreate(
     classifiers,
     sources,
   });
-
-  if (!args.agent_id) {
-    // The scheduler joins on `agent_id IS NOT NULL` (see
-    // packages/server/src/watchers/automation.ts:469), so a watcher without
-    // an agent has no way to execute. Schema-wise `agent_id` is `Type.Optional`
-    // because the field is shared across all manage_behaviors actions, but
-    // create enforces it: a watcher with no owning agent is a zombie row.
-    throw new ToolUserError(
-      'agent_id is required to create a Behavior (the agent that executes it).'
-    );
-  }
 
   interface EntityRow {
     entity_type: string;
@@ -218,8 +204,15 @@ export async function handleCreate(
   // Both of these are free-text columns with NO database foreign key, so an
   // unresolvable id is accepted by the INSERT and only shows up as a Behavior
   // that never runs (agent_id) or one whose output contract is silently voided
+  // (outputs' entity/event targets). The executor matrix catches unresolvable
+  // executors up front — every automated Behavior needs an executor;
+  // manual-only Behaviors (no triggers) may be executor-less.
+  const executorDefaults: BehaviorExecutorDefaults = {
+    agentId: args.agent_id ?? null,
+    deviceWorkerId: args.device_worker_id ?? null,
+    agentKind: args.agent_kind ?? null,
+  };
   // Resolve entity output targets BEFORE the row is written.
-  await assertAgentExists(sql, organizationId, args.agent_id);
   await assertOutputEntityTypesExist(sql, organizationId, outputs);
   await assertOutputEventTypesExist(
     organizationId,
@@ -237,10 +230,34 @@ export async function handleCreate(
   });
   assertBehaviorOutputsUseWindowExecution(triggerWrite.triggers, outputs);
   await assertBehaviorTriggerConnections(sql, organizationId, triggerWrite.triggers);
+  // Executor matrix (after triggers resolve): every automated Behavior needs
+  // an executor; manual-only Behaviors (no triggers) may be executor-less.
+  assertBehaviorExecutorsResolve(
+    triggerWrite.triggers as BehaviorTriggerInput[],
+    executorDefaults
+  );
+  await assertBehaviorExecutorsAuthorized(
+    sql,
+    organizationId,
+    executorDefaults,
+    ctx
+  );
   const skills = args.skills ?? [];
   assertBehaviorInstructions(triggerWrite.triggers, args.prompt, skills);
   assertPromptSkillTokensPinned(args.prompt, skills);
-  await assertBehaviorSkillsResolve(sql, organizationId, args.agent_id, skills);
+  // v1 constraint: skill bodies resolve against ONE agent library at save
+  // time — the Behavior-level default executor when it is an agent.
+  // Per-trigger responders reuse these frozen bodies at dispatch.
+  const defaultExecutor = resolveBehaviorExecutor(executorDefaults);
+  if (skills.length > 0) {
+    if (!defaultExecutor || defaultExecutor.kind !== 'agent') {
+      throw new ToolUserError(
+        'skills require a Behavior-level agent executor: skills compile against the default agent’s library. Set agent_id, or remove skills for device-executed / manual-only Behaviors.',
+        422
+      );
+    }
+    await assertBehaviorSkillsResolve(sql, organizationId, defaultExecutor.agentId, skills);
+  }
 
   // Check slug uniqueness within org
   const existingSlug = await sql`
@@ -286,7 +303,7 @@ export async function handleCreate(
       await tx`
       INSERT INTO watchers (
         id, name, slug, organization_id, entity_ids,
-        schedule, timezone, next_run_at, triggers, agent_id, scheduler_client_id, model_config, sources, version,
+        schedule, timezone, next_run_at, triggers, agent_id, model_config, sources, version,
         current_version_id, tags, status, created_by, created_at, updated_at,
         watcher_group_id,
         device_worker_id, agent_kind,
@@ -297,7 +314,7 @@ export async function handleCreate(
         ${watcherId}, ${args.name ?? args.slug}, ${args.slug}, ${organizationId},
         ${`{${entityIdsArray.join(',')}}`}::bigint[],
         ${triggerWrite.schedule}, ${triggerWrite.timezone}, ${nextRunAtVal}, ${tx.json(triggerWrite.triggers)},
-        ${args.agent_id ?? null}, ${args.scheduler_client_id ?? null},
+        ${args.agent_id ?? null},
         ${sql.json(args.model_config || {})}, ${sql.json(sources)},
         1, NULL, ${toTextArrayParam(args.tags || [])}::text[],
         'active', ${createdBy}, NOW(), NOW(),
@@ -372,8 +389,10 @@ export async function handleCreate(
   const baseUrl = getPublicWebUrl(ctx.requestUrl, ctx.baseUrl);
   let viewUrl: string | undefined;
 
-  if (organizationSlug && args.agent_id) {
-    viewUrl = buildBehaviorUrl(organizationSlug, args.agent_id, watcherId as number, baseUrl);
+  // The route is workspace-level, so it no longer needs an owning agent —
+  // device-pinned and manual-only Behaviors get a link too.
+  if (organizationSlug) {
+    viewUrl = buildBehaviorUrl(organizationSlug, watcherId as number, baseUrl);
   }
 
   logger.info(`[manage_behaviors] Created watcher ${watcherId} with slug '${args.slug}'`);
@@ -415,7 +434,6 @@ export async function handleCreate(
         triggers: triggerWrite.triggers,
         agent_id: args.agent_id ?? null,
         agent_kind: args.agent_kind ?? null,
-        scheduler_client_id: args.scheduler_client_id ?? null,
         device_worker_id: args.device_worker_id ?? null,
         model_config: args.model_config ?? {},
         execution_config: args.execution_config ?? null,
@@ -468,6 +486,7 @@ export async function handleUpdate(
   await requireExists(sql, 'watchers', args.behavior_id, 'Behavior');
   const currentRows = await sql`
     SELECT w.organization_id, w.agent_id, w.schedule, w.timezone, w.triggers,
+           w.device_worker_id::text AS device_worker_id, w.agent_kind,
            cv.prompt AS current_prompt, cv.skills AS current_skills,
            cv.outputs AS current_outputs
     FROM watchers w
@@ -478,6 +497,8 @@ export async function handleUpdate(
   const currentRow = currentRows[0] as {
     organization_id: string;
     agent_id: string | null;
+    device_worker_id: string | null;
+    agent_kind: string | null;
     schedule: string | null;
     timezone: string | null;
     triggers: ManageBehaviorsArgs['triggers'];
@@ -512,35 +533,35 @@ export async function handleUpdate(
     );
   }
 
-  // Match the invariant from handleCreate: a watcher with no agent_id is
-  // a zombie the scheduler will never run (automation joins on
-  // `agent_id IS NOT NULL`). Reject explicit nulling, and reject updates
-  // that would leave a scheduled watcher orphaned.
-  if (args.agent_id === null) {
-    throw new ToolUserError(
-      'agent_id cannot be set to null — every Behavior must have an owning agent.'
-    );
-  }
-  if (args.triggers !== undefined && triggerWrite.schedule && args.agent_id === undefined) {
-    const currentAgentId = currentRow.agent_id;
-    if (currentAgentId === null) {
-      throw new ToolUserError(
-        'Cannot schedule a Behavior with no owning agent. Assign agent_id in the same update.'
-      );
-    }
-  }
-  // Same unresolvable-reference hole as create: `agent_id` has no FK, so
-  // re-pointing a Behavior at a nonexistent/cross-org agent would silently
-  // strand it (the scheduler joins on agents). Fence on ctx.organizationId —
-  // the same org the UPDATE below scopes to.
-  await assertAgentExists(sql, ctx.organizationId, args.agent_id);
+  // Executor matrix on the EFFECTIVE state (patch over the current row): an
+  // automated Behavior needs an executor. Clearing agent_id is fine when a
+  // device pin remains (device precedence), and manual-only Behaviors (no
+  // triggers) may be executor-less.
+  const effectiveDefaults: BehaviorExecutorDefaults = {
+    agentId: args.agent_id !== undefined ? args.agent_id : currentRow.agent_id,
+    deviceWorkerId:
+      args.device_worker_id !== undefined
+        ? args.device_worker_id
+        : currentRow.device_worker_id,
+    agentKind:
+      args.agent_kind !== undefined ? args.agent_kind : currentRow.agent_kind,
+  };
+  assertBehaviorExecutorsResolve(
+    triggerWrite.triggers as BehaviorTriggerInput[],
+    effectiveDefaults
+  );
+  await assertBehaviorExecutorsAuthorized(
+    sql,
+    ctx.organizationId,
+    effectiveDefaults,
+    ctx
+  );
 
   const updatedFields: string[] = [];
   if (args.model_config !== undefined) updatedFields.push('model_config');
   if (args.execution_config !== undefined) updatedFields.push('execution_config');
   if (args.triggers !== undefined) updatedFields.push('triggers');
   if (args.agent_id !== undefined) updatedFields.push('agent_id');
-  if (args.scheduler_client_id !== undefined) updatedFields.push('scheduler_client_id');
   if (args.tags !== undefined) updatedFields.push('tags');
   if (args.device_worker_id !== undefined) updatedFields.push('device_worker_id');
   if (args.agent_kind !== undefined) updatedFields.push('agent_kind');
@@ -587,7 +608,6 @@ export async function handleUpdate(
       triggers = CASE WHEN ${has('triggers')} THEN ${toJsonParam(sql, patch.triggers)} ELSE triggers END,
       next_run_at = CASE WHEN ${touchesCadence} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
       agent_id = CASE WHEN ${has('agent_id')} THEN ${patch.agent_id ?? null} ELSE agent_id END,
-      scheduler_client_id = CASE WHEN ${has('scheduler_client_id')} THEN ${patch.scheduler_client_id ?? null} ELSE scheduler_client_id END,
       tags = CASE WHEN ${has('tags')} THEN ${toTextArrayParam(patch.tags ?? [])}::text[] ELSE tags END,
       device_worker_id = CASE WHEN ${has('device_worker_id')} THEN ${patch.device_worker_id ?? null}::uuid ELSE device_worker_id END,
       agent_kind = CASE WHEN ${has('agent_kind')} THEN ${patch.agent_kind ?? null} ELSE agent_kind END,
@@ -758,7 +778,8 @@ export async function handleCreateFromVersion(
   // new assignment would have no reactions — or (dropping the input schema) a
   // reaction with no extraction contract, silently running free-form.
   const versionRows = await sql`
-    SELECT wv.*, w.organization_id, w.schedule, w.timezone, w.triggers, w.sources, w.agent_id, w.scheduler_client_id,
+    SELECT wv.*, w.organization_id, w.schedule, w.timezone, w.triggers, w.sources, w.agent_id,
+           w.device_worker_id::text AS device_worker_id, w.agent_kind,
            w.model_config, w.execution_config, w.tags, w.watcher_group_id,
            w.reaction_script, w.reaction_script_compiled, w.reaction_input_schema
     FROM watcher_versions wv
@@ -774,19 +795,26 @@ export async function handleCreateFromVersion(
       `Access denied: Behavior version ${args.version_id} does not belong to your organization`
     );
   }
-  if (!version.agent_id) {
-    // Source watcher has no agent — cloning would silently inherit null and
-    // produce active zombies the scheduler skips. Same invariant as handleCreate.
-    throw new ToolUserError(
-      `Source Behavior version ${args.version_id} has no agent_id; assign an agent on the source before cloning.`
-    );
-  }
-
-  // The source's agent_id is copied verbatim onto every clone, and a version can
-  // outlive the agent it named (agent_id has no FK, so a deleted agent leaves the
-  // reference dangling). Resolve it once here so the fan-out cannot mint a whole
-  // batch of Behaviors the scheduler will never run.
-  await assertAgentExists(sql, organizationId, version.agent_id as string);
+  // The clone strips chat-link steer/reply triggers (a second agent turn for
+  // the same message), so the matrix runs on the STRIPPED shape — an agentless
+  // source whose only automated triggers were chat-link responders must be
+  // allowed to clone as manual-only, and a source that strips down to nothing
+  // must not land executor-less automated rows. Every automated clone needs an
+  // executor; manual-only clones may be executor-less (same invariant as
+  // handleCreate/handleUpdate).
+  const cloneTriggers = stripChatLinkTriggers(version.triggers) as BehaviorTrigger[];
+  const cloneDefaults: BehaviorExecutorDefaults = {
+    agentId: (version.agent_id as string | null) ?? null,
+    deviceWorkerId: (version.device_worker_id as string | null) ?? null,
+    agentKind: (version.agent_kind as string | null) ?? null,
+  };
+  // The executor is copied verbatim onto every clone, and a version can
+  // outlive the executor it names (agent_id/device_worker_id have no FK, so a
+  // deleted agent/device leaves the reference dangling). Resolve + authorize
+  // once here so the fan-out cannot mint a batch of Behaviors the scheduler
+  // will never run — or store a device pin the caller may not target.
+  assertBehaviorExecutorsResolve(cloneTriggers, cloneDefaults);
+  await assertBehaviorExecutorsAuthorized(sql, organizationId, cloneDefaults, ctx);
 
   // Reject cross-org entity_ids before cloning: a watcher attached to another
   // org's entity links its synced/extracted content to a non-existent in-org
@@ -875,7 +903,7 @@ export async function handleCreateFromVersion(
         // Entity clones must not inherit chat-link steer/reply triggers (or the
         // system:chat-link tag): those bind a live channel responder, and
         // cloning them would create a second agent turn for the same message.
-        const cloneTriggers = stripChatLinkTriggers(version.triggers);
+        // cloneTriggers is computed once above (it does not depend on entity).
         // After stripping, the residual trigger shape must still satisfy the
         // instruction rule (chat-link-only sources become manual/empty triggers
         // and require a non-empty prompt).
@@ -901,7 +929,7 @@ export async function handleCreateFromVersion(
         await tx`
           INSERT INTO watchers (
             id, name, slug, organization_id, entity_ids,
-            schedule, timezone, next_run_at, triggers, agent_id, scheduler_client_id, model_config, execution_config, sources, version,
+            schedule, timezone, next_run_at, triggers, agent_id, device_worker_id, agent_kind, model_config, execution_config, sources, version,
             current_version_id, tags, status, created_by, created_at, updated_at,
             watcher_group_id, source_watcher_id,
             reaction_script, reaction_script_compiled, reaction_input_schema
@@ -909,7 +937,9 @@ export async function handleCreateFromVersion(
             ${watcherId}, ${watcherName}, ${watcherSlug}, ${organizationId},
             ${`{${entityId}}`}::bigint[],
             ${version.schedule ?? null}, ${version.timezone ?? null}, ${version.schedule ? nextRunAt(version.schedule as string, new Date(), version.timezone as string | null) : null}, ${toJsonParam(tx, cloneTriggers)},
-            ${version.agent_id ?? null}, ${version.scheduler_client_id ?? null},
+            ${version.agent_id ?? null},
+            ${version.device_worker_id ?? null},
+            ${version.agent_kind ?? null},
             ${toJsonParam(tx, version.model_config)}, ${toJsonParam(tx, version.execution_config)}, ${toJsonParam(tx, clonedSources)},
             ${(version.version as number) ?? 1}, ${sharedVersionId}, ${toTextArrayParam(cloneTags)}::text[],
             'active', ${createdBy}, NOW(), NOW(),
@@ -987,7 +1017,8 @@ export async function handleCreateFromVersion(
         timezone: version.timezone ?? null,
         triggers: version.triggers ?? [],
         agent_id: version.agent_id ?? null,
-        scheduler_client_id: version.scheduler_client_id ?? null,
+        device_worker_id: (version.device_worker_id as string | null) ?? null,
+        agent_kind: (version.agent_kind as string | null) ?? null,
         version: (version.version as number) ?? 1,
         current_version_id: p.sharedVersionId,
         watcher_group_id: p.groupId,

@@ -30,7 +30,12 @@ type WatcherDispatchSource = 'scheduled' | 'manual' | 'event';
 
 export interface WatcherRunPayload {
   watcher_id: number;
-  agent_id: string;
+  /**
+   * The managed agent executing this run. Absent for device-executed runs
+   * (the device lane claims via `device_worker_id`) and for manual runs open
+   * to any connected MCP client.
+   */
+  agent_id?: string;
   window_start: string;
   window_end: string;
   dispatch_source: WatcherDispatchSource;
@@ -494,7 +499,7 @@ async function createWatcherRunWithClient(
   params: {
     organizationId: string;
     watcherId: number;
-    agentId: string;
+    agentId?: string | null;
     windowStart: string;
     windowEnd: string;
     dispatchSource: WatcherDispatchSource;
@@ -537,7 +542,7 @@ async function createWatcherRunWithClient(
 
   const payload: WatcherRunPayload = {
     watcher_id: params.watcherId,
-    agent_id: params.agentId,
+    agent_id: params.agentId ?? undefined,
     window_start: params.windowStart,
     window_end: params.windowEnd,
     dispatch_source: params.dispatchSource,
@@ -591,7 +596,7 @@ export async function createWatcherRun(
   params: {
     organizationId: string;
     watcherId: number;
-    agentId: string;
+    agentId?: string | null;
     windowStart: string;
     windowEnd: string;
     dispatchSource: WatcherDispatchSource;
@@ -699,7 +704,7 @@ export async function createBehaviorEventRun(
   params: {
     organizationId: string;
     watcherId: number;
-    agentId: string;
+    agentId?: string | null;
     trigger: BehaviorEventTrigger;
     signal: ConnectorTriggerSignal;
     deviceWorkerId?: string | null;
@@ -822,7 +827,7 @@ export async function createBehaviorEventRun(
       : Number(versionRows[0]?.current_version_id);
     const payload: WatcherRunPayload = {
       watcher_id: params.watcherId,
-      agent_id: params.agentId,
+      agent_id: params.agentId ?? undefined,
       window_start: signalWindowStart,
       window_end: signalWindowEnd,
       dispatch_source: 'event',

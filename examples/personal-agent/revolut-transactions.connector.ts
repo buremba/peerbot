@@ -900,7 +900,7 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     return {
       events: [
         {
-          origin_id: "revolut-balances-" + Date.now(),
+          origin_id: `revolut-balances-${Date.now()}`,
           occurred_at: new Date(),
           semantic_type: "balance_raw",
           payload_text:

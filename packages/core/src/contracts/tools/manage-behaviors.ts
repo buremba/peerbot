@@ -510,11 +510,20 @@ export const ManageBehaviorsSchema = Type.Object(
         description: "[list] Sort direction (default: desc).",
       })
     ),
-    scheduler_client_id: Type.Optional(
-      Type.Union([Type.String(), Type.Null()], {
-        description:
-          "[create/update/create_version] Optional MCP client ID that should auto-run this Behavior. Null clears it.",
-      })
+    run_status: Type.Optional(
+      Type.Union(
+        [
+          Type.Literal("pending"),
+          Type.Literal("claimed"),
+          Type.Literal("running"),
+          Type.Literal("completed"),
+          Type.Literal("failed"),
+        ],
+        {
+          description:
+            "[list] Filter by each Behavior's latest run status (active runs take precedence). Discovery for executors: run_status='pending' lists Behaviors with unhandled runs — manual-open pending runs are completable by any client via complete_window.",
+        }
+      )
     ),
     device_worker_id: Type.Optional(
       Type.Union([Type.String(), Type.Null()], {
@@ -741,7 +750,6 @@ export type BehaviorUpdatePatch = Pick<
   | "execution_config"
   | "triggers"
   | "agent_id"
-  | "scheduler_client_id"
   | "tags"
   | "device_worker_id"
   | "agent_kind"
@@ -784,7 +792,7 @@ export function normalizeBehaviorTags(values: unknown): string[] {
  *   - tags → normalizeBehaviorTags (trim/drop-empty/dedupe)
  *   - notification_channel ?? 'canvas', notification_priority ?? 'normal',
  *     min_cooldown_seconds ?? 0
- *   - null-clearable scalars (agent_id/scheduler_client_id/
+ *   - null-clearable scalars (agent_id/
  *     device_worker_id/agent_kind) and execution_config keep null (a real clear
  *     the write applies) — NOT coerced to undefined, which would hide the clear.
  */
@@ -800,8 +808,6 @@ export function normalizeBehaviorUpdatePatch(
     patch.execution_config = args.execution_config ?? null;
   if (args.triggers !== undefined) patch.triggers = args.triggers;
   if (args.agent_id !== undefined) patch.agent_id = args.agent_id ?? null;
-  if (args.scheduler_client_id !== undefined)
-    patch.scheduler_client_id = args.scheduler_client_id ?? null;
   if (args.tags !== undefined) patch.tags = normalizeBehaviorTags(args.tags);
   if (args.device_worker_id !== undefined)
     patch.device_worker_id = args.device_worker_id ?? null;
@@ -1019,6 +1025,7 @@ export const ListBehaviorsSchema = Type.Pick(ManageBehaviorsSchema, [
   "include_details",
   "order_by",
   "order_dir",
+  "run_status",
   "limit",
 ]);
 

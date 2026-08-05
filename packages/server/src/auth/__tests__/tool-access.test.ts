@@ -141,7 +141,10 @@ describe('requiresOwnerAdmin', () => {
     expect(requiresOwnerAdmin('manage_behaviors', { action: 'set_reaction_script' }, false)).toBe(
       true
     );
-    expect(requiresOwnerAdmin('manage_behaviors', { action: 'trigger' }, false)).toBe(true);
+    // `trigger` is write-tier (manual activation — the open execution lane),
+    // guarded per-behavior by requireWatcherAccess in the handler, like
+    // `complete_window`. It is execution, not administration.
+    expect(requiresOwnerAdmin('manage_behaviors', { action: 'trigger' }, false)).toBe(false);
     expect(requiresOwnerAdmin('manage_behaviors', { action: 'create_from_version' }, false)).toBe(
       true
     );
@@ -731,7 +734,7 @@ manage_auth_profiles: list_auth_profiles=read+public get_auth_profile=read+publi
 manage_operations: list_available=read+public execute=admin list_runs=read+public get_run=read+public list_activity=read+public approve=write reject=write approve_batch=write reject_batch=write ?=read
 notify: send=admin ?=admin
 manage_schedules: create=admin list=admin update=admin pause=admin cancel=admin ?=admin
-manage_behaviors: create=admin list=read+public update=admin create_version=admin complete_window=write trigger=admin delete=admin set_reaction_script=admin get_versions=read+public get_version_details=read+public get_component_reference=read+public submit_feedback=admin get_feedback=read+public list_promoted=read create_from_version=admin ?=read
+manage_behaviors: create=admin list=read+public update=admin create_version=admin complete_window=write trigger=write delete=admin set_reaction_script=admin get_versions=read+public get_version_details=read+public get_component_reference=read+public submit_feedback=admin get_feedback=read+public list_promoted=read create_from_version=admin ?=read
 get_behavior: read+public ?=read+public
 read_knowledge: read+public ?=read+public
 manage_classifiers: create=admin list=read+public generate_embeddings=admin delete=admin classify=admin apply=admin ?=read

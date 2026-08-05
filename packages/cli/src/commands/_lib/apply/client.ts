@@ -117,7 +117,6 @@ export interface RemoteBehavior {
   triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
   device_worker_id?: string | null;
   goal_id?: number | null;
-  scheduler_client_id?: string | null;
   agent_kind?: string | null;
   notification_channel?: string | null;
   notification_priority?: string | null;
@@ -905,7 +904,6 @@ export class ApplyClient {
     sources?: BehaviorSource[];
     reactions_guidance?: string;
     device_worker_id?: string;
-    scheduler_client_id?: string;
     notification_channel?: "canvas" | "notification" | "both";
     notification_priority?: "low" | "normal" | "high";
     min_cooldown_seconds?: number;
@@ -935,9 +933,6 @@ export class ApplyClient {
         ...(payload.device_worker_id !== undefined
           ? { device_worker_id: payload.device_worker_id }
           : {}),
-        ...(payload.scheduler_client_id !== undefined
-          ? { scheduler_client_id: payload.scheduler_client_id }
-          : {}),
         ...(payload.notification_channel !== undefined
           ? { notification_channel: payload.notification_channel }
           : {}),
@@ -966,15 +961,14 @@ export class ApplyClient {
    * outputs / classifiers) require `createBehaviorVersion`
    * instead.
    *
-   * `null` clears nullable fields (device_worker_id, scheduler_client_id,
-   * agent_kind) per the server contract.
+   * `null` clears nullable fields (device_worker_id, agent_kind) per the
+   * server contract.
    */
   async updateBehavior(payload: {
     behavior_id: string;
     triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
     agent_id?: string;
     device_worker_id?: string | null;
-    scheduler_client_id?: string | null;
     notification_channel?: "canvas" | "notification" | "both";
     notification_priority?: "low" | "normal" | "high";
     min_cooldown_seconds?: number;
@@ -988,9 +982,6 @@ export class ApplyClient {
       ...(payload.agent_id !== undefined ? { agent_id: payload.agent_id } : {}),
       ...(payload.device_worker_id !== undefined
         ? { device_worker_id: payload.device_worker_id }
-        : {}),
-      ...(payload.scheduler_client_id !== undefined
-        ? { scheduler_client_id: payload.scheduler_client_id }
         : {}),
       ...(payload.notification_channel !== undefined
         ? { notification_channel: payload.notification_channel }

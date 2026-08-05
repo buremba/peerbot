@@ -132,6 +132,8 @@ export const WatcherMetadataSchema = Type.Object({
    * to a specific device worker. NULL/undefined means any worker can claim.
    */
   device_worker_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  /** Preferred local agent runtime on the pinned device; null = device default. */
+  agent_kind: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   scheduler_client_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   version: Type.Integer(),
   sources: Type.Array(WatcherSourceSchema),

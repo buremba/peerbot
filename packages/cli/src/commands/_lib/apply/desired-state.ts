@@ -128,8 +128,6 @@ export interface DesiredWatcher {
   reactionsGuidance?: string;
   /** UUID of a device worker to pin this watcher's runs to (see `device_workers.id`). */
   deviceWorkerId?: string;
-  /** MCP client id that should auto-run this watcher. */
-  schedulerClientId?: string;
   /** Where firings surface — defaults to canvas server-side. */
   notificationChannel?: "canvas" | "notification" | "both";
   /** Priority class used by the dispatcher interrupt budget. */

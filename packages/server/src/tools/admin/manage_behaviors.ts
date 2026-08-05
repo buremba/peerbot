@@ -532,7 +532,6 @@ const WATCHER_PATCHABLE_FIELDS = [
   // patch them only via triggers, not as direct writable fields.
   'triggers',
   'agent_id',
-  'scheduler_client_id',
   'tags',
   'device_worker_id',
   'agent_kind',
@@ -629,7 +628,6 @@ const WATCHER_APPROVAL_FIELD_TITLES: Record<string, string> = {
   reaction_script: 'Reaction script',
   execution_config: 'Execution config',
   device_worker_id: 'Device worker',
-  scheduler_client_id: 'Scheduler client',
   agent_kind: 'Agent kind',
   sources: 'Sources',
   model_config: 'Model config',
@@ -769,15 +767,14 @@ async function queueWatcherWriteForApproval(
   const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
   // An `update` is config-shaped, so its review surface is the watcher edit form
   // prefilled via `?run_id=` (WI-0.3, watcher parity with manage_agents): the
-  // reviewer sees the proposed change in the real form and Approves/Rejects. The
-  // route is nested under the OWNING agent (an update may reassign the owner via
-  // args.agent_id, so prefer the proposed owner, else the current one). create /
-  // create_from_version / set_reaction_script etc. aren't a single-form review,
-  // so they keep the run permalink (valid across the supersede chain on approve).
-  const ownerAgentId = args.agent_id ?? (current?.agent_id as string | null | undefined) ?? null;
+  // reviewer sees the proposed change in the real form and Approves/Rejects.
+  // The route is the workspace-level Behaviors section (agent-owned and
+  // agentless alike). create / create_from_version / set_reaction_script etc.
+  // aren't a single-form review, so they keep the run permalink (valid across
+  // the supersede chain on approve).
   const settingsReviewUrl =
-    args.action === 'update' && args.behavior_id != null && ownerAgentId
-      ? await buildBehaviorSettingsUrl(baseUrl, ctx.organizationId, ownerAgentId, args.behavior_id, {
+    args.action === 'update' && args.behavior_id != null
+      ? await buildBehaviorSettingsUrl(baseUrl, ctx.organizationId, args.behavior_id, {
           runId,
         }).catch(() => null)
       : null;

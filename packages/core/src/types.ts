@@ -296,6 +296,17 @@ export interface ThreadResponsePayload {
    */
   repliedInBand?: boolean;
   /**
+   * Lobu provider slug that actually served this turn, stamped on the
+   * COMPLETION row only. It is the success-side counterpart of
+   * `errorContext.provider`: together they let the gateway keep an org's
+   * `inference_providers` health current — an error marks the row, and the
+   * next turn that provider serves clears it.
+   *
+   * Absent means "worker too old to report" (or no model was resolved), which
+   * reads as "no health signal", never as "healthy".
+   */
+  providerSlug?: string;
+  /**
    * Raw error message. When provider context is available, the gateway labels
    * the source and unwraps the common JSON message envelope without rewording
    * the provider's sentence; `errorCode` selects the CTA link.

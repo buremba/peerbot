@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { buildAppInstallationSetupError } from "../../../../../tools/admin/helpers/connector-setup-errors";
 import { buildSlackSelfInstallDeepLink } from "../../../../../tools/admin/helpers/slack-self-install";
 
 const method = {
@@ -48,5 +49,37 @@ describe("buildSlackSelfInstallDeepLink", () => {
 			method: { type: "app_installation", provider: "github" },
 		});
 		expect(link).toBeUndefined();
+	});
+});
+
+describe("buildAppInstallationSetupError — self_install_url gating", () => {
+	test("a malformed gateway URL must not turn setup guidance into a tool failure", () => {
+		const previous = process.env.SLACK_CLIENT_ID;
+		delete process.env.SLACK_CLIENT_ID;
+		try {
+			const res = buildAppInstallationSetupError({
+				connectorKey: "slack",
+				method: {
+					type: "app_installation",
+					provider: "slack",
+					clientIdKey: "SLACK_CLIENT_ID",
+					permissions: ["chat:write", "mcp:connect"],
+					events: ["app_mention"],
+				},
+				// getGatewayBaseUrl passes unparsable values through (see its
+				// try/catch fallback), so the MCP-origin derivation must survive this.
+				gatewayBaseUrl: "not-a-valid-url",
+				hasByoMethod: true,
+			});
+			expect(res.install_url).toBeUndefined();
+			expect(res.self_install_url).toBeDefined();
+			const url = new URL(res.self_install_url!);
+			const manifest = JSON.parse(url.searchParams.get("manifest_json")!);
+			// No gateway origin → the MCP server block is omitted, not thrown away.
+			expect(manifest.mcp_servers).toBeUndefined();
+		} finally {
+			if (previous === undefined) delete process.env.SLACK_CLIENT_ID;
+			else process.env.SLACK_CLIENT_ID = previous;
+		}
 	});
 });

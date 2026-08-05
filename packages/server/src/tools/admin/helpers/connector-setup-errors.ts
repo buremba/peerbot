@@ -59,13 +59,23 @@ export function buildAppInstallationSetupError(params: {
 		? joinUrl(params.gatewayBaseUrl, hostedInstallPath(params.method))
 		: undefined;
 
+	// A malformed configured gateway URL must not turn setup guidance into a
+	// tool failure (getGatewayBaseUrl passes raw unparsable values through) —
+	// derive the MCP origin defensively and fall back to a deep link without it.
+	let gatewayOrigin: string | undefined;
+	if (params.gatewayBaseUrl) {
+		try {
+			gatewayOrigin = new URL(params.gatewayBaseUrl).origin;
+		} catch {
+			gatewayOrigin = undefined;
+		}
+	}
+
 	const selfInstallUrl =
 		params.hasByoMethod && params.method.provider === "slack"
 			? buildSlackSelfInstallDeepLink({
 					method: params.method,
-					gatewayOrigin: params.gatewayBaseUrl
-						? new URL(params.gatewayBaseUrl).origin
-						: undefined,
+					gatewayOrigin,
 				})
 			: undefined;
 

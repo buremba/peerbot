@@ -122,6 +122,29 @@ async function insertRunningRun(
   return rows[0].id;
 }
 
+/** These tests insert live `chrome-feed` rows directly, but the trigger
+ * eligibility guard reads declared capability from
+ * `connector_definitions.feeds_schema` (the catalog fallback declares nothing
+ * for chrome), so declare the feed: a connector with a pausable feed is
+ * exactly what may legitimately trigger on `feed.auto_paused`. */
+async function declareChromeFeeds(organizationId: string): Promise<void> {
+	const sql = getTestDb();
+	// sql.json, not raw strings: postgres.js JSON-encodes a bare JS string, so
+	// `${"[]"}::jsonb` lands as the jsonb STRING "[]" and trips
+	// connector_definitions_behavior_events_array_check.
+	await sql`
+		INSERT INTO connector_definitions
+			(organization_id, key, name, version, auth_schema, feeds_schema,
+			 behavior_events, status)
+		VALUES (${organizationId}, 'chrome', 'Chrome', '1.0.0',
+			${sql.json({ methods: [] })},
+			${sql.json({ 'chrome-feed': { name: 'Chrome feed' } })},
+			${sql.json([])},
+			'active')
+		ON CONFLICT DO NOTHING
+	`;
+}
+
 describe('feed failure backoff + auto-pause (#2033)', () => {
   beforeAll(async () => {
     await initWorkspaceProvider();
@@ -218,6 +241,7 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
       ownerUserId: user.id,
     });
     const connId = await insertConnection(org.id);
+    await declareChromeFeeds(org.id);
     // Connector-wide event trigger (platform event injected into every catalog).
     const created = await manageBehaviors(
       {
@@ -320,6 +344,7 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
       ownerUserId: user.id,
     });
     const connId = await insertConnection(org.id, 'chrome-resume-test');
+    await declareChromeFeeds(org.id);
     const created = await manageBehaviors(
       {
         action: 'create',

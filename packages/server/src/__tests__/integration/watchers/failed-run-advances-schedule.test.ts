@@ -227,6 +227,9 @@ describe("provider quota reset parsing", () => {
     // Gemini's per-minute free-tier 429 reuses OpenAI's billing wording but
     // names a retry horizon — the horizon is what marks it self-healing.
     "429 You exceeded your current quota, please check your plan and billing details. Please retry in 26.5s.",
+    // Every spelling of a named horizon, including the quoted header form.
+    "429 insufficient quota; retryDelay: 26s",
+    "429 out of credits (Retry-After: 30)",
   ])("does not park a self-healing rate limit (%s)", (message) => {
     const now = new Date("2026-08-05T10:00:00.000Z");
 

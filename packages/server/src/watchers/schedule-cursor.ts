@@ -116,11 +116,14 @@ const PROVIDER_BALANCE_PARK_MS = 24 * 60 * 60 * 1000;
  * still runs immediately because parking only moves the cron cursor.
  */
 function balanceExhaustedNotBefore(message: string, now: Date): Date | null {
-	// A provider-named retry horizon ("Please retry in 26s", retryDelay) means
-	// the limit is windowed, not a balance — Gemini attaches one to its
-	// per-minute free-tier 429s while reusing OpenAI's billing wording
-	// ("exceeded your current quota"). Never day-park those.
-	if (/retry (?:in|after)\s|retry[_-]?delay/i.test(message)) return null;
+	// A provider-named retry horizon ("Please retry in 26s", `retryDelay`, a
+	// quoted `Retry-After:` header) means the limit is windowed, not a balance —
+	// Gemini attaches one to its per-minute free-tier 429s while reusing
+	// OpenAI's billing wording ("exceeded your current quota"). Never day-park
+	// those. The separator class covers every spelling of the header because a
+	// missed horizon costs a wrong day-park, while a spurious one costs only the
+	// pre-existing one-run-per-tick.
+	if (/\bretry[-_ ]?(?:in|after|delay)\b/i.test(message)) return null;
 	return PROVIDER_BALANCE_EXHAUSTED.test(message)
 		? new Date(now.getTime() + PROVIDER_BALANCE_PARK_MS)
 		: null;

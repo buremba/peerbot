@@ -5,6 +5,10 @@
 import { isRetryable, type ToolErrorCode } from '@lobu/core';
 import { getDb } from '../../../../db/client';
 import {
+  DEVICE_ONLINE_WINDOW_SECONDS,
+  describeDeviceLastSeen,
+} from '../../../../utils/device-liveness';
+import {
   getAuthProfileById,
   getBrowserSessionReadiness,
   normalizeAuthValues,
@@ -173,7 +177,8 @@ export async function handleTest(
            c.status,
            c.device_worker_id,
            dw.label AS device_label,
-           COALESCE(dw.last_seen_at > now() - interval '20 minutes', false) AS device_online,
+           dw.last_seen_at AS device_last_seen_at,
+           COALESCE(dw.last_seen_at > now() - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS}), false) AS device_online,
            cd.auth_schema
     FROM connections c
     LEFT JOIN device_workers dw ON dw.id = c.device_worker_id
@@ -319,8 +324,8 @@ export async function handleTest(
   // Auth-free device connections such as apple.computer_use run on a paired
   // device, not an auth profile — so a null profile is expected. Report whether
   // the paired device is online instead of the misleading "No auth profile
-  // configured" warning. The 20-minute freshness window mirrors the readiness
-  // rule used across operations/feeds listings.
+  // configured" warning. The DEVICE_ONLINE_WINDOW_SECONDS freshness window
+  // mirrors the readiness rule used across operations/feeds listings.
   //
   // This must precede the no-auth check: device connectors like apple.computer_use
   // declare `auth_schema.methods: [{ type: 'none' }]`, so testing no-auth first would
@@ -339,7 +344,9 @@ export async function handleTest(
           status: 'warning',
           // Offline is transient — the device may reconnect — so this is
           // retryable, mirroring the CDP-unreachable branch above.
-          message: `Device '${deviceName}' is offline — bring it online to execute`,
+          message: `Device '${deviceName}' is offline (${describeDeviceLastSeen(
+            conn.device_last_seen_at
+          )}) — bring it online to execute`,
           device_online: false,
           ...testErrorFields('NETWORK'),
         };

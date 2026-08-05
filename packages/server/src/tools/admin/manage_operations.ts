@@ -75,6 +75,10 @@ import type {
 	OperationDescriptor,
 } from "../../operations/types";
 import { createConnectorOperationRun } from "../../runs/queue-service";
+import {
+	DEVICE_ONLINE_WINDOW_SECONDS,
+	describeDeviceLastSeen,
+} from "../../utils/device-liveness";
 import { resolveConnectorCodeForKey } from "../../utils/ensure-connector-installed";
 import { ToolUserError } from "../../utils/errors";
 import { resolveExecutionAuth } from "../../utils/execution-context";
@@ -167,6 +171,7 @@ type OperationTargetRow = {
 	config: Record<string, unknown> | null;
 	device_worker_id: string | null;
 	device_online: boolean;
+	device_last_seen_at: Date | string | null;
 	device_bound: boolean;
 	auth_profile_kind: string | null;
 	auth_profile_slug: string | null;
@@ -459,11 +464,17 @@ function executionTargetFromRow(
 		};
 	}
 	if (row.device_bound && !row.device_online) {
+		// Say HOW stale, not just "offline". The caller's next question is
+		// always "since when" — answering it here is the difference between
+		// "my device died 20 minutes ago" and a dispatch that stalls for the
+		// queue budget before failing with a guess.
 		return {
 			...base,
 			status: "device_offline",
 			executable: false,
-			reason: "The connection's paired device is offline.",
+			reason: `The connection's paired device is offline (${describeDeviceLastSeen(
+				row.device_last_seen_at,
+			)}).`,
 		};
 	}
 	return {
@@ -806,7 +817,8 @@ async function loadVisibleOperationTargets(
 		        ap.profile_kind AS auth_profile_kind,
 		        ap.slug AS auth_profile_slug,
 		        ap.auth_data AS auth_data,
-		        COALESCE(dw.last_seen_at > now() - interval '20 minutes', false) AS device_online,
+		        COALESCE(dw.last_seen_at > now() - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS}), false) AS device_online,
+		        dw.last_seen_at AS device_last_seen_at,
 		        (c.device_worker_id IS NOT NULL OR latest.runtime IS NOT NULL) AS device_bound
 		 FROM connections c
 		 LEFT JOIN device_workers dw ON dw.id = c.device_worker_id

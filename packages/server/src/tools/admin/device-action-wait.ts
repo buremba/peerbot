@@ -9,6 +9,35 @@
  */
 
 import { getDb } from '../../db/client';
+import { describeDeviceLastSeen } from '../../utils/device-liveness';
+
+/**
+ * How long the device pinned to this run's connection has been silent.
+ * Runs only on the pre-claim timeout path, so the extra round-trip costs
+ * nothing on the happy path. Never throws: a diagnostic that can fail the
+ * operation it is diagnosing is worse than no diagnostic.
+ */
+export async function describeRunDeviceLastSeen(
+  runId: number,
+  organizationId: string
+): Promise<string> {
+  try {
+    const rows = (await getDb()`
+      SELECT dw.label, dw.last_seen_at
+      FROM runs r
+      JOIN connections c ON c.id = r.connection_id
+      JOIN device_workers dw ON dw.id = c.device_worker_id
+      WHERE r.id = ${runId} AND r.organization_id = ${organizationId}
+      LIMIT 1
+    `) as Array<{ label: string | null; last_seen_at: Date | string | null }>;
+    const row = rows[0];
+    if (!row) return 'run has no paired device';
+    const age = describeDeviceLastSeen(row.last_seen_at);
+    return row.label ? `device "${row.label}" ${age}` : `device ${age}`;
+  } catch {
+    return 'device liveness unavailable';
+  }
+}
 
 // Deadline strategy: two phases.
 //
@@ -99,6 +128,26 @@ export async function waitForDeviceActionRun(
     await new Promise((r) => setTimeout(r, POLL_MS));
   }
 
+  // Which phase timed out decides what the operator needs to hear. A run that
+  // was never CLAIMED failed because no device asked for it, and the server
+  // knows exactly how long that device has been quiet — say so instead of
+  // "the device may be offline", which sends the reader looking for a fault
+  // that is already measured here. A run that WAS claimed died mid-execution
+  // on the device, where last_seen tells you nothing.
+  // Looked up ONCE and used for both the stored `runs.error_message` and the
+  // string returned to the caller below — those are two different readers of
+  // the same failure and both used to say "may be offline".
+  const deviceDiagnostic =
+    claimedAtMs != null
+      ? null
+      : await describeRunDeviceLastSeen(runId, organizationId);
+  const timeoutMessage =
+    deviceDiagnostic == null
+      ? 'waitForDeviceActionRun: device claimed the run but did not complete in time'
+      : `waitForDeviceActionRun: no device claimed the run within ${Math.round(
+          QUEUE_BUDGET_MS / 1000
+        )}s (${deviceDiagnostic})`;
+
   // Atomic timeout finalization. The WHERE clause matches only non-
   // terminal states; if the worker raced us and posted completion
   // between our last SELECT and this UPDATE, this UPDATE is a no-op
@@ -107,7 +156,7 @@ export async function waitForDeviceActionRun(
     UPDATE runs
     SET status = 'timeout',
         completed_at = current_timestamp,
-        error_message = ${'waitForDeviceActionRun: device worker did not complete in time'}
+        error_message = ${timeoutMessage}
     WHERE id = ${runId}
       AND organization_id = ${organizationId}
       AND status IN ('pending', 'running')
@@ -145,8 +194,8 @@ export async function waitForDeviceActionRun(
   return {
     status: 'timeout',
     error_message:
-      claimedAtMs != null
+      deviceDiagnostic == null
         ? `Run ${runId} claimed but the device worker didn't finish within ${POST_CLAIM_BUDGET_MS}ms.`
-        : `Run ${runId} was never claimed within ${QUEUE_BUDGET_MS}ms — the chrome-extension / device worker may be offline.`,
+        : `Run ${runId} was never claimed within ${QUEUE_BUDGET_MS}ms — ${deviceDiagnostic}.`,
   };
 }

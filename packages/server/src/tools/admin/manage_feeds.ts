@@ -31,6 +31,7 @@ import {
   type ManageFeedsResult,
 } from '@lobu/core/contracts/tools/manage-feeds';
 import { getDb, pgBigintArray } from '../../db/client';
+import { DEVICE_ONLINE_WINDOW_SECONDS } from '../../utils/device-liveness';
 import { authzScopeFromToolContext } from '../../authz/scope';
 import {
   feedLinkedEntityIdsSql,
@@ -224,10 +225,10 @@ async function handleListFeeds(
            dw.label AS device_label,
            dw.platform AS device_platform,
            dw.last_seen_at AS device_last_seen_at,
-           (dw.id IS NOT NULL AND dw.last_seen_at > now() - interval '20 minutes') AS device_online,
+           (dw.id IS NOT NULL AND dw.last_seen_at > now() - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS})) AS device_online,
            CASE
              WHEN c.device_worker_id IS NOT NULL
-              AND NOT (dw.id IS NOT NULL AND dw.last_seen_at > now() - interval '20 minutes')
+              AND NOT (dw.id IS NOT NULL AND dw.last_seen_at > now() - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS}))
              THEN 'offline'
            END AS device_status,
            cd.name AS connector_name,

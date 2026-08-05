@@ -234,10 +234,16 @@ export function buildDateCursorClause(
 }
 
 export function buildDateCandidateOrderBy(cursor: DateCursor | null, tableAlias: string): string {
+  // Order by the effective occurrence time — COALESCE(occurred_at, created_at)
+  // — in both directions. An event whose source timestamp was never recorded
+  // must rank by its record time (which is exactly what the API surfaces for
+  // such rows), not sort as the newest/oldest or drop out of keyset pagination:
+  // Postgres `ORDER BY occurred_at DESC` defaults to NULLS FIRST, pinning a
+  // straggler NULL row to the top of a newest-first feed.
   if (cursor?.direction === 'after') {
-    return `${tableAlias}.occurred_at ASC, ${tableAlias}.id ASC`;
+    return `COALESCE(${tableAlias}.occurred_at, ${tableAlias}.created_at) ASC, ${tableAlias}.id ASC`;
   }
-  return `${tableAlias}.occurred_at DESC, ${tableAlias}.id DESC`;
+  return `COALESCE(${tableAlias}.occurred_at, ${tableAlias}.created_at) DESC, ${tableAlias}.id DESC`;
 }
 
 export function buildPageInfo(params: {

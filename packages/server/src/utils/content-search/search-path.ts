@@ -236,9 +236,12 @@ export async function searchContentBySingleQuery(
   // Tiebreaker for score-sorted branches: (id % 997) spreads near-tied rows pseudo-uniformly
   // across the ID space so that near-duplicate content (e.g. LoCoMo conversation sessions) does
   // not collapse onto the most-recent cluster via the occurred_at/id fallback. The final
-  // occurred_at/id tiebreaker stays for full determinism when hashes also collide.
-  const outerScoreTiebreaker = '(f.id % 997) ASC, f.occurred_at DESC, f.id DESC';
-  const innerScoreTiebreaker = '(fi.id % 997) ASC, fi.occurred_at DESC, fi.id DESC';
+  // occurred_at/id tiebreaker stays for full determinism when hashes also collide — keyed on the
+  // effective time so a NULL-source-timestamp row ranks by its record time.
+  const outerScoreTiebreaker =
+    '(f.id % 997) ASC, COALESCE(f.occurred_at, f.created_at) DESC, f.id DESC';
+  const innerScoreTiebreaker =
+    '(fi.id % 997) ASC, COALESCE(fi.occurred_at, fi.created_at) DESC, fi.id DESC';
 
   if (hasEmbedding) {
     // Clamp to [0, 1] so callers can't accidentally invert the weighting.
@@ -299,7 +302,12 @@ export async function searchContentBySingleQuery(
   // When hasEmbedding, two params (vector + min_similarity) follow baseParamIdx;
   // otherwise neither is bound, so the cursor params resume at baseParamIdx.
   const cursorBaseParamIdx = baseParamIdx + (hasEmbedding ? 2 : 0);
-  const cursorClause = buildDateCursorClause(cursor, 'fi.occurred_at', 'fi.id', cursorBaseParamIdx);
+  const cursorClause = buildDateCursorClause(
+    cursor,
+    'COALESCE(fi.occurred_at, fi.created_at)',
+    'fi.id',
+    cursorBaseParamIdx
+  );
   const limitParamIdx = cursorBaseParamIdx + cursorClause.params.length;
   const offsetParamIdx = limitParamIdx + 1;
   const validatedLimit = validateNumericId(limit, 'limit');
@@ -380,7 +388,7 @@ export async function searchContentBySingleQuery(
   }
 
   const nonDateFilteredIdsCteSql = `filtered_ids AS (
-        SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, ${bestSimSelect} AS best_sim, f.search_tsv
+        SELECT f.id, f.score, f.occurred_at, f.created_at, f.title, f.payload_text, ${bestSimSelect} AS best_sim, f.search_tsv
         FROM current_event_records f
         ${useCandidatePath ? 'JOIN search_candidates sc ON sc.id = f.id' : ''}
         LEFT JOIN connections c ON c.id = f.connection_id
@@ -394,7 +402,7 @@ export async function searchContentBySingleQuery(
   const querySQL = useDateFeed
     ? `
       WITH RECURSIVE filtered_ids AS (
-        SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, ${bestSimSelect} AS best_sim, f.search_tsv
+        SELECT f.id, f.score, f.occurred_at, f.created_at, f.title, f.payload_text, ${bestSimSelect} AS best_sim, f.search_tsv
         FROM current_event_records f
         LEFT JOIN connections c ON c.id = f.connection_id
         LEFT JOIN watcher_window_events iwf
@@ -410,6 +418,7 @@ export async function searchContentBySingleQuery(
         SELECT
           fi.id,
           fi.occurred_at,
+          fi.created_at,
           ${textRankExpr} as text_rank,
           ${similarityExpr} as similarity,
           ${combinedScoreExpr} as combined_score
@@ -424,6 +433,7 @@ export async function searchContentBySingleQuery(
           cs.text_rank,
           cs.similarity,
           cs.combined_score,
+          cs.created_at,
           (SELECT total_count FROM full_count) as total_count,
           (SELECT COUNT(*) FROM candidate_set) as cursor_fetched_count
         FROM candidate_set cs

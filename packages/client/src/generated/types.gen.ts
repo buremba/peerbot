@@ -4335,9 +4335,9 @@ export type ManageBehaviorsData = {
      */
     device_worker_id?: string | null;
     /**
-     * [create/update] Optional agent kind override for this Behavior (e.g. "background", "notifier"). Null clears the override.
+     * [create/update] Which local CLI a device-pinned Behavior runs on. Only meaningful alongside device_worker_id. Null (the default) uses whatever agent the device itself is set to. A kind the device has no executor for fails at dispatch, so this is validated here rather than accepted and discovered later.
      */
-    agent_kind?: string | null;
+    agent_kind?: "claude-code" | "codex" | "opencode" | "pi" | "agy" | null;
     /**
      * [create/update] Where firings surface: "canvas" (default), "notification" (OS notification), or "both".
      */
@@ -5160,6 +5160,15 @@ export type ReadKnowledgeResponses = {
     };
     sources?: {
       [key: string]: unknown | Array<unknown>;
+    };
+    sources_page?: {
+      [key: string]:
+        | unknown
+        | {
+            returned: number;
+            limit: number;
+            has_more: boolean;
+          };
     };
     entities?: Array<unknown>;
     classifiers?: Array<unknown>;

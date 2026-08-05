@@ -23,7 +23,9 @@ any connected MCP client may execute and complete them).
 
 ## 2. Context — the silent failure class this replaces
 
-#2499 made dispatch resolve executors device-first. A Behavior row carrying
+#2499 centralized executor resolution in `resolveBehaviorExecutor` with
+device-pin-first precedence — deliberately preserving the legacy behaviour
+where dual rows always ran on the device lane (#802). A Behavior row carrying
 BOTH `agent_id` and `device_worker_id` silently runs on the device and
 ignores the managed agent entirely. Nothing rejects the combination at
 create/update time (`assertBehaviorExecutorsResolve`,
@@ -32,9 +34,10 @@ create/update time (`assertBehaviorExecutorsResolve`,
 Prod casualties (2026-08-05): buremba `b5` (hourly-task-collaborator, 48
 runs with zero pins) and `b71` (social-interest-radar-v2, 136 runs with one
 pin) both died with
-`no local agent executor configured for agent_kind='opencode'` — they were
-dual rows when they ran, even though a point-in-time row count had earlier
-suggested dual rows "don't exist". Lesson recorded: row counts of a mutable
+`no local agent executor configured for agent_kind='opencode'` — dual rows
+at the moment the failing runs fired (the pins were added later the same
+day), even though a point-in-time row count had earlier suggested dual
+rows "don't exist". Lesson recorded: row counts of a mutable
 config table cannot retire a behavioural risk. `b2` (`hn-engagement`,
 org_lobucrm) is still an active dual row.
 
@@ -64,8 +67,9 @@ set both.
 - **Dispatchability** gates on
   `device_worker_id IS NOT NULL OR agent_id-resolvable`
   (`packages/server/src/watchers/automation.ts:752`,
-  `packages/server/src/behaviors/activation.ts:128`); device-first
-  resolution was introduced by #2499.
+  `packages/server/src/behaviors/activation.ts:128`); device-pin-first
+  resolution was centralized in `resolveBehaviorExecutor` by #2499,
+  preserving #802-era precedence.
 
 ## 4. Proposed semantics
 
@@ -95,9 +99,12 @@ four; the "zombie" rule (automated Behavior with no executor) stays.
 4. **Credentials**: the invariant stands — workers never receive real
    credentials. The sanctioned routes already exist: device-pinned
    connectors, and short-lived provider-derived credential leases
-   (`packages/server/AGENTS.md`). A managed agent ON a device uses the same
-   lease path a server-side run uses, scoped to the run and revoked at
-   completion; nothing durable is shipped in the poll payload.
+   (`packages/server/AGENTS.md`). A managed agent ON a device reuses the
+   lease mechanism. Today's leases are minted per deployment with ~1h
+   natural expiry (revocable at the provider, not auto-revoked); scoping a
+   lease to the run and revoking it at completion is the proposed
+   tightening (§8.4 covers refresh vs hard timeout). Nothing durable is
+   shipped in the poll payload.
 
 ## 6. Migration
 
@@ -116,9 +123,9 @@ known; a full audit query is cheap: `watchers` is bounded config). Options:
 Reject dual rows at create/update (the discarded prototype). It matches
 today's code and kills the failure class with one validation line, but it
 permanently forbids the combination users intend, and it was prototyped
-against an unsettled design. If this design stalls, the guard remains a
-one-commit revert away — the prototype's test names are recorded in the
-2026-08-05 handoff.
+against an unsettled design. If this design stalls, the guard is a single
+validation line in `assertBehaviorExecutorsResolve` and can be
+reintroduced in one small commit.
 
 ## 8. Open questions
 

@@ -328,6 +328,32 @@
       ]
     },
     {
+      "id": "qwen",
+      "name": "Qwen",
+      "description": "Alibaba Cloud DashScope & Qwen models",
+      "providers": [
+        {
+          "displayName": "Qwen",
+          "iconUrl": "https://www.google.com/s2/favicons?domain=alibabacloud.com&sz=128",
+          "envVarName": "DASHSCOPE_API_KEY",
+          "upstreamBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+          "apiKeyInstructions": "Get your API key from the <a href=\"https://dashscope.console.aliyun.com/apiKey\" target=\"_blank\" class=\"text-blue-600 hover:underline\">DashScope Console</a>",
+          "apiKeyPlaceholder": "sk-...",
+          "sdkCompat": "openai",
+          "modalities": ["text"],
+          "defaultModel": "qwen-max",
+          "modelsEndpoint": "/models",
+          "models": [
+            "qwen-max",
+            "qwen-plus",
+            "qwen-turbo",
+            "qwen2.5-coder-32b-instruct",
+            "qwen2.5-72b-instruct"
+          ]
+        }
+      ]
+    },
+    {
       "id": "xai",
       "name": "xAI",
       "description": "Grok models by xAI. Sign in with SuperGrok / X Premium+ (device code) or paste an API key from the xAI Console.",

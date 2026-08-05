@@ -152,51 +152,47 @@ describe('buildBehaviorSettingsUrl', () => {
     const url = await buildBehaviorSettingsUrl(
       'https://app.lobu.com/lobu',
       'org-1',
-      'lobu-builder',
       7
     );
-    expect(url).toBe('https://app.lobu.com/acme/agents/lobu-builder/behaviors/7');
+    expect(url).toBe('https://app.lobu.com/acme/behaviors/7');
   });
 
   it('appends ?run_id when a review run is given', async () => {
     const url = await buildBehaviorSettingsUrl(
       'https://app.lobu.com/lobu',
       'org-1',
-      'lobu-builder',
       7,
       { runId: 42 }
     );
-    expect(url).toBe('https://app.lobu.com/acme/agents/lobu-builder/behaviors/7?run_id=42');
+    expect(url).toBe('https://app.lobu.com/acme/behaviors/7?run_id=42');
   });
 
-  it('accepts a string Behavior id and percent-encodes agent + slug', async () => {
+  it('accepts a string Behavior id and percent-encodes the slug', async () => {
     const url = await buildBehaviorSettingsUrl(
       'https://app.lobu.com',
       'org-special',
-      'my agent/id',
       '7'
     );
-    expect(url).toBe('https://app.lobu.com/acme%2Fteam/agents/my%20agent%2Fid/behaviors/7');
+    expect(url).toBe('https://app.lobu.com/acme%2Fteam/behaviors/7');
   });
 
   it('returns null when the org slug cannot be resolved', async () => {
     expect(
-      await buildBehaviorSettingsUrl('https://app.lobu.com', 'unknown-org', 'a', 7)
+      await buildBehaviorSettingsUrl('https://app.lobu.com', 'unknown-org', 7)
     ).toBeNull();
   });
 
   it('returns null when any required piece is missing', async () => {
-    expect(await buildBehaviorSettingsUrl(undefined, 'org-1', 'a', 7)).toBeNull();
-    expect(await buildBehaviorSettingsUrl('https://x', undefined, 'a', 7)).toBeNull();
-    expect(await buildBehaviorSettingsUrl('https://x', 'org-1', undefined, 7)).toBeNull();
-    expect(await buildBehaviorSettingsUrl('https://x', 'org-1', 'a', undefined)).toBeNull();
+    expect(await buildBehaviorSettingsUrl(undefined, 'org-1', 7)).toBeNull();
+    expect(await buildBehaviorSettingsUrl('https://x', undefined, 7)).toBeNull();
+    expect(await buildBehaviorSettingsUrl('https://x', 'org-1', undefined)).toBeNull();
   });
 });
 
 describe('buildBehaviorUrl', () => {
   it('builds the canonical Behavior detail route and strips embedded /lobu', () => {
-    expect(buildBehaviorUrl('acme/team', 'agent one', 7, 'https://app.lobu.com/lobu')).toBe(
-      'https://app.lobu.com/acme%2Fteam/agents/agent%20one/behaviors/7'
+    expect(buildBehaviorUrl('acme/team', 7, 'https://app.lobu.com/lobu')).toBe(
+      'https://app.lobu.com/acme%2Fteam/behaviors/7'
     );
   });
 });

@@ -476,7 +476,7 @@ export async function getNormalizedScoreContent(
       -- always '{}'. Kept empty for response-shape parity with the date-sort path.
       '{}'::jsonb as classifications
     FROM scored_content sc
-    ORDER BY sc.calculated_score DESC, sc.occurred_at DESC, sc.id DESC
+    ORDER BY sc.calculated_score DESC, COALESCE(sc.occurred_at, sc.created_at) DESC, sc.id DESC
     LIMIT ${limit} OFFSET ${offset}
   `;
 

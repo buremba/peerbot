@@ -76,29 +76,33 @@ describe('buildRunFilter', () => {
 });
 
 describe('buildOrderByClause', () => {
+  // The recency key is the EFFECTIVE occurrence time — COALESCE with
+  // created_at — so a row whose occurred_at was never recorded still ranks by
+  // when it was recorded instead of pinning itself to the top of a
+  // newest-first feed (Postgres ORDER BY ... DESC defaults to NULLS FIRST).
   it('should build date descending by default', () => {
     const result = buildOrderByClause();
-    expect(result).toContain('occurred_at DESC');
+    expect(result).toContain('COALESCE(f.occurred_at, f.created_at) DESC');
   });
 
   it('should build score ordering', () => {
     const result = buildOrderByClause('score', 'desc');
     expect(result).toContain('score DESC');
-    expect(result).toContain('occurred_at DESC');
+    expect(result).toContain('COALESCE(f.occurred_at, f.created_at) DESC');
   });
 
   it('should build date ascending', () => {
     const result = buildOrderByClause('date', 'asc');
-    expect(result).toContain('occurred_at ASC');
+    expect(result).toContain('COALESCE(f.occurred_at, f.created_at) ASC');
   });
 
   it('should use custom table alias', () => {
     const result = buildOrderByClause('date', 'desc', 'e');
-    expect(result).toContain('e.occurred_at');
+    expect(result).toContain('COALESCE(e.occurred_at, e.created_at)');
   });
 
   it('should use f alias for final_select context', () => {
     const result = buildOrderByClause('date', 'desc', 'rs', 'final_select');
-    expect(result).toContain('f.occurred_at');
+    expect(result).toContain('COALESCE(f.occurred_at, f.created_at)');
   });
 });

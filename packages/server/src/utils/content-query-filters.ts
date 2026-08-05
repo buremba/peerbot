@@ -129,8 +129,13 @@ export function buildOrderByClause(
   const validSortOrder = sortOrder === 'asc' ? 'ASC' : 'DESC';
   const alias = context === 'final_select' ? 'f' : tableAlias;
 
+  // Order by the effective occurrence time — COALESCE(occurred_at, created_at).
+  // A row whose source timestamp was never recorded must rank by its record
+  // time (which is exactly what the API surfaces for such rows), not sort as
+  // the newest: Postgres `ORDER BY occurred_at DESC` defaults to NULLS FIRST,
+  // pinning a straggler NULL row to the top of the activity feed.
   if (sortBy === 'score') {
-    return `${alias}.score ${validSortOrder}, ${alias}.occurred_at DESC, ${alias}.id DESC`;
+    return `${alias}.score ${validSortOrder}, COALESCE(${alias}.occurred_at, ${alias}.created_at) DESC, ${alias}.id DESC`;
   }
-  return `${alias}.occurred_at ${validSortOrder}, ${alias}.id ${validSortOrder}`;
+  return `COALESCE(${alias}.occurred_at, ${alias}.created_at) ${validSortOrder}, ${alias}.id ${validSortOrder}`;
 }

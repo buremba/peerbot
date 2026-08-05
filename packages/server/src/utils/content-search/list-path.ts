@@ -71,7 +71,7 @@ async function executeListQuery(args: {
 
   const cursorClause = buildDateCursorClause(
     args.cursor,
-    'f.occurred_at',
+    'COALESCE(f.occurred_at, f.created_at)',
     'f.id',
     countParams.length + 1
   );
@@ -89,7 +89,8 @@ async function executeListQuery(args: {
       WITH RECURSIVE candidate_set AS (
         SELECT
           f.id,
-          f.occurred_at
+          f.occurred_at,
+          f.created_at
         FROM current_event_records f
         LEFT JOIN connections c ON c.id = f.connection_id
         ${joinSql}
@@ -101,6 +102,8 @@ async function executeListQuery(args: {
       result_set AS (
         SELECT
           cs.id,
+          cs.occurred_at,
+          cs.created_at,
           (SELECT COUNT(*) FROM candidate_set) as cursor_fetched_count
         FROM candidate_set cs
         ORDER BY ${buildDateCandidateOrderBy(args.cursor, 'cs')}
@@ -190,6 +193,31 @@ async function executeListQuery(args: {
   };
 }
 
+/**
+ * Chronological-feed guard: exclude events that have not occurred yet.
+ *
+ * A future-dated row is a scheduled item, not "activity", so ranking it as the
+ * newest would let a far-future recurring series (calendar instances expanded
+ * a year ahead) monopolize the first page of the activity feed. The guard is
+ * lifted only when the caller explicitly asks for a future window — an `until`
+ * past now or an `after` cursor past now. NULL occurred_at rows are kept: they
+ * are real activity whose source timestamp was never recorded, and the
+ * COALESCE(occurred_at, created_at) ordering ranks them by record time instead
+ * of pinning the top.
+ */
+function buildFutureOccurredAtClause(
+  untilDate: Date | null,
+  cursor: ReturnType<typeof resolveDateCursor>
+): { sql: string } {
+  const nowMs = Date.now();
+  const asksForFuture =
+    (untilDate != null && untilDate.getTime() > nowMs) ||
+    (cursor?.direction === 'after' &&
+      new Date(cursor.occurredAtIso).getTime() > nowMs);
+  if (asksForFuture) return { sql: '' };
+  return { sql: 'AND (f.occurred_at IS NULL OR f.occurred_at <= now())' };
+}
+
 export async function listContentInternal(
   sql: DbClient,
   options: ContentSearchOptions & { offset?: number },
@@ -205,6 +233,7 @@ export async function listContentInternal(
 
   const sinceDate = options.since ? parseDateAlias(options.since).date : null;
   const untilDate = options.until ? toEndOfDay(parseDateAlias(options.until).date) : null;
+  const futureClause = buildFutureOccurredAtClause(untilDate, cursor);
   const connectionIdsArray =
     options.connection_ids && options.connection_ids.length > 0 ? options.connection_ids : null;
   const feedIdsArray =
@@ -414,7 +443,7 @@ export async function listContentInternal(
     return executeListQuery({
       sql,
       joinSql: '',
-      whereExpr: `${whereSql} ${excludeClause.sql} ${visibilityClause.sql}${entityTypesClause.sql}`,
+      whereExpr: `${whereSql} ${excludeClause.sql} ${visibilityClause.sql}${entityTypesClause.sql} ${futureClause.sql}`,
       countParams: allFilterParams,
       entityId: entityId ?? null,
       threadEntityLinkSqlForP: threadEntityLinkSql,
@@ -503,7 +532,7 @@ export async function listContentInternal(
           AND ${runCondition}
           ${excludeClause.sql}
           ${visibilityClause.sql}
-          ${orgScope.sql}${entityTypesClause.sql}`,
+          ${orgScope.sql}${entityTypesClause.sql} ${futureClause.sql}`,
     countParams,
     threadEntityLinkSqlForP: standardEntityLinkSqlForP,
     needClassifications,

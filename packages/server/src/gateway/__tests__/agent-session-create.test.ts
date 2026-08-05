@@ -8,8 +8,7 @@
  *
  * Mounts the real `createAgentApi` and authenticates with a real worker token
  * (encrypted with a test ENCRYPTION_KEY) scoped to a different agent, so
- * ownership is always denied. Later default-agent tests run against the DB,
- * so this file bootstraps the gateway test DB.
+ * ownership is always denied. This file bootstraps the gateway test DB.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { generateWorkerToken } from "@lobu/core";
@@ -107,31 +106,16 @@ describe("POST /api/v1/agents — enumeration-safe ownership denial", () => {
 });
 
 /**
- * No-`agentId` (default-agent) resolution path.
+ * No-`agentId` rejection + cross-tenant session isolation.
  *
- * POST /api/v1/agents with an empty body must resolve to
- * `DEFAULT_AGENT_ID` for the caller's org, scope the session id with that
- * org so two tenants can't collide, and return 404 when the org has no
- * default agent provisioned yet (rather than silently minting a new UUID
- * or serving another tenant's row).
+ * POST /api/v1/agents requires an explicit agentId — there is no default
+ * routing (agents are not auto-provisioned), so an empty body is a 400.
+ * The remaining tests in this block pin an agentId and assert the tenant
+ * guard keeps one org's session URL unreachable from another.
  */
-describe("POST /api/v1/agents — default-agent resolution", () => {
+describe("POST /api/v1/agents — agent resolution + cross-tenant isolation", () => {
   const ORG_ID = "org-test";
-  const USER_ID = "user-test";
 
-  // A worker token bound to the caller's org. The auth middleware reads
-  // `organizationId` off the decrypted token and stamps `authContext` so
-  // the handler can resolve the org without a body field.
-  function orgBoundToken(): string {
-    return generateWorkerToken("owletto-default", "conv-bootstrap", "deploy-1", {
-      channelId: "api_test",
-      agentId: "owletto-default",
-      organizationId: ORG_ID,
-    });
-  }
-
-  // In-memory session store that records the last setSession call so the
-  // test can assert the tenant-scoped conversationId.
   function makeSessionRecorder() {
     const sessions = new Map<string, unknown>();
     return {
@@ -151,9 +135,7 @@ describe("POST /api/v1/agents — default-agent resolution", () => {
     };
   }
 
-  function makeAppWithDefault(opts: {
-    defaultAgentOrg: string | null;
-  }) {
+  function makeApp() {
     const recorder = makeSessionRecorder();
     const app = createAgentApi({
       queueProducer: {} as never,
@@ -166,13 +148,10 @@ describe("POST /api/v1/agents — default-agent resolution", () => {
       } as never,
       agentMetadataStore: {
         async getMetadata(id: string) {
-          if (id !== "owletto-default" || opts.defaultAgentOrg === null)
-            return null;
-          // Same owner the worker token authenticates as so the per-user
-          // ownership check passes.
+          if (id !== "owletto-default") return null;
           return {
             owner: { platform: "api", userId: "owletto-default" },
-            organizationId: opts.defaultAgentOrg,
+            organizationId: ORG_ID,
           };
         },
       } as never,
@@ -185,43 +164,26 @@ describe("POST /api/v1/agents — default-agent resolution", () => {
     return { app, recorder };
   }
 
-  test("no-agentId body resolves to owletto-default for caller's org", async () => {
-    const { app, recorder } = makeAppWithDefault({ defaultAgentOrg: ORG_ID });
+  test("no-agentId body is rejected with 400 (no default routing)", async () => {
+    // Agents are not auto-provisioned and there is no default agent, so an
+    // empty POST must refuse rather than resolve to a phantom default id.
+    const { app } = makeApp();
     const res = await app.request("/api/v1/agents", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${orgBoundToken()}`,
+        Authorization: `Bearer ${generateWorkerToken(
+          "owletto-default",
+          "conv-bootstrap",
+          "deploy-1",
+          { channelId: "api_test", agentId: "owletto-default", organizationId: ORG_ID }
+        )}`,
         "Content-Type": "application/json",
       },
       body: "{}",
     });
-    expect(res.status).toBe(201);
-    const body = (await res.json()) as { agentId?: string };
-    // conversationId = `${agentId}_${userId}_${orgId}` — the tenant suffix
-    // is what prevents cross-org session collisions when DEFAULT_AGENT_ID
-    // is a global constant.
-    expect(body.agentId).toContain("owletto-default");
-    expect(body.agentId).toContain(ORG_ID);
-    // Session actually persisted under that exact key.
-    expect(recorder.sessions.has(body.agentId!)).toBe(true);
-  });
-
-  test("returns 404 when the org has no default agent provisioned", async () => {
-    // `getMetadata("owletto-default")` returns null for this org → handler
-    // refuses rather than minting a phantom UUID (the old broken behavior)
-    // or serving another tenant's default row.
-    const { app } = makeAppWithDefault({ defaultAgentOrg: null });
-    const res = await app.request("/api/v1/agents", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${orgBoundToken()}`,
-        "Content-Type": "application/json",
-      },
-      body: "{}",
-    });
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(400);
     const body = (await res.json()) as { error?: string };
-    expect(body.error).toContain("Default agent");
+    expect(body.error).toContain("No agent specified");
   });
 
   test("cross-tenant GET on a session URL is denied with 403", async () => {
@@ -414,29 +376,6 @@ describe("POST /api/v1/agents — default-agent resolution", () => {
     );
     expect(pendingDenied.status).toBe(403);
   });
-
-  test("returns 404 when the default agent belongs to a different org", async () => {
-    // Default agent exists, but its org doesn't match the caller's token
-    // org — must NOT leak. The same 404 as 'not provisioned' is fine; the
-    // critical property is that it refuses to mint a session against
-    // another tenant's row.
-    const { app } = makeAppWithDefault({ defaultAgentOrg: "org-other" });
-    const res = await app.request("/api/v1/agents", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${orgBoundToken()}`,
-        "Content-Type": "application/json",
-      },
-      body: "{}",
-    });
-    expect(res.status).toBe(404);
-  });
-
-  // Silence the unused-symbol warning for USER_ID — it's part of the
-  // documented session-id shape (`<agentId>_<userId>_<orgId>`) the test
-  // asserts on but we don't pin the exact userId since it's derived from
-  // authContext under the hood.
-  void USER_ID;
 });
 
 /**

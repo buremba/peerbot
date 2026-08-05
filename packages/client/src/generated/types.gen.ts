@@ -4237,6 +4237,10 @@ export type ManageBehaviorsData = {
                  * Semantic type assigned to every event in this output array.
                  */
                 event: string;
+                /**
+                 * One to four metadata fields whose exact string values compose each draft's stable identity across Behavior runs (e.g. channel + mode for per-channel voice profiles). Every key field must be present in every draft's `metadata`; changing the fields, their order, the output name, or the semantic type changes identity. When set, each run supersedes the current head event with the same key values.
+                 */
+                key?: Array<string>;
               };
         }
       | null;
@@ -4860,6 +4864,10 @@ export type GetBehaviorResponses = {
                * Semantic type assigned to every event in this output array.
                */
               event: string;
+              /**
+               * One to four metadata fields whose exact string values compose each draft's stable identity across Behavior runs (e.g. channel + mode for per-channel voice profiles). Every key field must be present in every draft's `metadata`; changing the fields, their order, the output name, or the semantic type changes identity. When set, each run supersedes the current head event with the same key values.
+               */
+              key?: Array<string>;
             };
       } | null;
       classifiers?: Array<unknown>;

@@ -251,10 +251,11 @@ describe("classifyError", () => {
     // agent routed to openai/gpt-4o-mini): the worker logged a bare
     // `{"name":"Error","message":"You have no credits remaining…"}` because no
     // pre-split worker pattern matched this sentence. `undefined` here is not a
-    // cosmetic miss — it silently disables TWO downstream features that gate on
-    // the code: `providerQuotaResetNotBefore` (24h Behavior park) and
-    // `recordProviderHealth` (marking the provider row unhealthy). Both shipped
-    // believing this message classified.
+    // cosmetic miss — it silently disables the downstream feature that gates on
+    // the code: `providerQuotaResetNotBefore` (24h Behavior park). The provider
+    // health row no longer depends on this classification — the proxy marks it
+    // from the upstream HTTP status (`classifyProviderHealthStatus`). The parker
+    // shipped believing this message classified.
     expect(
       classifyError(
         new Error(

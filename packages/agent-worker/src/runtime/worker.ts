@@ -599,13 +599,6 @@ export class LobuAgentWorker implements WorkerExecutor {
         this.resolvedProvider = provider;
         this.resolvedProviderSlug = providerSlug;
         this.resolvedModelId = modelId;
-        // Same fact, second consumer: the terminal completion carries the slug
-        // so the gateway can clear this provider's recorded error health. Uses
-        // the transport latch (not the field above) because the completion is
-        // built inside the transport — see `recordInBandReply`.
-        if (this.workerTransport instanceof HttpWorkerTransport) {
-          this.workerTransport.recordProviderSlug(providerSlug);
-        }
       },
       loadImageAttachments: () => this.loadImageAttachments(),
       maybeRunPreCompactionMemoryFlush: (p) =>

@@ -7,9 +7,14 @@ import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager
 import type { ProviderCredentialContext } from "../embedded.js";
 import type { ProviderUpstreamConfig } from "../modules/module-system.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
-import { readOrgSharedProviderApiKey } from "../../lobu/stores/provider-secrets.js";
+import {
+  clearInferenceProviderError,
+  markInferenceProviderUnhealthy,
+  readOrgSharedProviderApiKey,
+} from "../../lobu/stores/provider-secrets.js";
 import type { SecretStore } from "../secrets/index.js";
 import { getClientIp } from "../utils/rate-limiter.js";
+import { classifyProviderHealthStatus } from "./provider-health-status.js";
 
 /**
  * Caller-supplied resolver: agentId → orgId of the agent's owning org.
@@ -1038,6 +1043,19 @@ export class SecretProxy {
       );
     }
 
+    // Provider health is decided HERE, on the HTTP status, because this is the
+    // only place that still HAS one. The worker runtime (`pi-ai`) collapses a
+    // provider failure to `new Error(message)` before any of our code sees it —
+    // status, `error.code`, and `error.type` are gone — which is why the
+    // previous message-matching classifier silently missed OpenAI's "no credits
+    // remaining" and Alibaba's "quota has been exhausted" and left the health
+    // row untouched in prod. A status code needs no vocabulary.
+    await this.recordProviderHealth(
+      expectedOrganizationId,
+      resolvedSlug,
+      response
+    );
+
     // Build response headers (skip hop-by-hop)
     const responseHeaders = new Headers();
     response.headers.forEach((value, key) => {
@@ -1075,6 +1093,54 @@ export class SecretProxy {
       status: response.status,
       headers: responseHeaders,
     });
+  }
+
+  /**
+   * Record provider health from the upstream HTTP status.
+   *
+   * The status→verdict mapping lives in `classifyProviderHealthStatus`; see
+   * there for why it is status-only and why it is narrow.
+   *
+   * Deliberately fires for EVERY proxied request of the slug — including
+   * non-chat calls like `/v1/models` probes, not only served completions as
+   * the retired terminal-row mechanism did: the same credential serves them
+   * all, so a 429 on a probe proves the quota wall exactly like one on a
+   * completion, and a probe 200 proves the credential works.
+   *
+   * Best-effort by design: nothing routes on `status` today (it is a display
+   * signal), so a failure to write must not fail the user's inference call.
+   * That is why this swallows its own errors rather than propagating — the
+   * "fail closed on durable dispatch state" rule governs delivery decisions,
+   * and this is an observation, not a decision.
+   */
+  private async recordProviderHealth(
+    organizationId: string | undefined,
+    slug: string | undefined,
+    response: Response
+  ): Promise<void> {
+    if (!organizationId || !slug) return;
+    try {
+      if (response.ok) {
+        await clearInferenceProviderError(organizationId, slug);
+        return;
+      }
+      const code = classifyProviderHealthStatus(response.status);
+      if (!code) return;
+      // `Retry-After` is the provider's own answer to "when does this clear",
+      // in seconds or as an HTTP date — a structured horizon that needs no
+      // date parsing out of a sentence. Absent on a balance wall, which is
+      // exactly the signal that it will not self-heal.
+      const retryAfter = response.headers.get("retry-after");
+      await markInferenceProviderUnhealthy(
+        organizationId,
+        slug,
+        `HTTP ${response.status}${retryAfter ? ` (retry-after: ${retryAfter})` : ""} — ${code}`
+      );
+    } catch (err) {
+      logger.warn(
+        `Failed to record provider health for ${slug}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 }
 

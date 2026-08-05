@@ -49,6 +49,24 @@ describe('assertOutputsShape', () => {
     ).toThrow(/exactly one/);
   });
 
+  it('accepts keyed event outputs and enforces the key field shape', () => {
+    expect(() =>
+      assertOutputsShape({ profiles: { event: 'voice_profile', key: ['channel', 'mode'] } })
+    ).not.toThrow();
+    expect(
+      Value.Check(BehaviorEventOutputSchema, {
+        event: 'voice_profile',
+        key: ['channel', 'mode'],
+      })
+    ).toBe(true);
+    expect(
+      Value.Check(BehaviorEventOutputSchema, { event: 'voice_profile', key: [] })
+    ).toBe(false);
+    expect(
+      Value.Check(BehaviorEventOutputSchema, { event: 'voice_profile', key: ['channel', 'channel'] })
+    ).toBe(false);
+  });
+
   it('rejects misspelled and prototype-named fields', () => {
     expect(() => assertOutputsShape({ items: { ...valid.items, keyFields: ['id'] } })).toThrow(
       /unknown field\(s\) keyFields/

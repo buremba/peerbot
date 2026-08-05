@@ -346,7 +346,7 @@ export async function insertEvent(
     sql: DbClient,
     supersedesEventId: number | null
   ): Promise<InsertedEvent> => {
-    const insertWithClientId = (clientId: string | null) => sql`
+    const insertWithClientId = (activeSql: DbClient, clientId: string | null) => activeSql`
     INSERT INTO events (
       entity_ids, organization_id, origin_id, title,
       payload_type, payload_text, payload_data, payload_template, attachments, metadata,
@@ -406,9 +406,21 @@ export async function insertEvent(
     RETURNING id, entity_ids, origin_id, title, semantic_type, created_at
   `;
 
+  // A synthetic or stale client id (worker/PAT sessions carry `'lobu-worker'`,
+  // which has no oauth_clients row) trips `events_client_id_fkey`. The retry
+  // must survive the enclosing transaction: the supersede path runs inside
+  // `sql.begin`, and a bare failed INSERT aborts the whole transaction — the
+  // NULL retry would then die on `current transaction is aborted`. Wrapping
+  // the first attempt in a savepoint (only available on tx handles) rolls
+  // back cleanly so the NULL retry runs against a live transaction. On the
+  // plain pool handle there is no transaction to abort, so no savepoint is
+  // needed.
   let result: Awaited<ReturnType<typeof insertWithClientId>>;
+  const inTransaction = typeof sql.savepoint === 'function';
   try {
-    result = await insertWithClientId(requestedClientId);
+    result = inTransaction
+      ? await sql.savepoint((sp) => insertWithClientId(sp, requestedClientId))
+      : await insertWithClientId(sql, requestedClientId);
   } catch (error) {
     if (!requestedClientId || !isEventsClientIdForeignKeyViolation(error)) {
       throw error;
@@ -417,7 +429,7 @@ export async function insertEvent(
       { clientId: requestedClientId },
       '[insert-event] retrying insert with client_id NULL — referenced oauth_clients row no longer exists'
     );
-    result = await insertWithClientId(null);
+    result = await insertWithClientId(sql, null);
   }
 
   const inserted = result[0] as InsertedEvent | undefined;

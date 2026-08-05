@@ -98,6 +98,22 @@ export function parseProof(body: string): UiReviewProof | null {
   }
 }
 
+/**
+ * Selects the proof this Lobu PR owns. Several Lobu PRs can pin the same
+ * Owletto squash commit and therefore share one Owletto PR, so the marker
+ * alone does not identify a proof — the encoded `lobu_repo`/`lobu_pr` does.
+ */
+export function findProofComment<Comment extends UiReviewComment>(
+  comments: Comment[],
+  lobuRepo: string,
+  lobuPr: number
+): Comment | undefined {
+  return comments.find((comment) => {
+    const proof = parseProof(comment.body);
+    return proof?.lobu_repo === lobuRepo && proof.lobu_pr === lobuPr;
+  });
+}
+
 export function proofMatches(
   proof: UiReviewProof,
   lobuRepo: string,

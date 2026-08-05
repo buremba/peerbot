@@ -3,6 +3,7 @@ import {
   approvalCommand,
   buildProofBody,
   findApproval,
+  findProofComment,
   isHttpsArtifact,
   parseProof,
   proofMatches,
@@ -54,6 +55,31 @@ describe("UI review proof", () => {
         `discussion <!-- lobu-ui-review-proof ${JSON.stringify(proof)} -->`
       )
     ).toBeNull();
+  });
+
+  it("picks the proof this Lobu PR owns when several share one Owletto PR", () => {
+    const foreign: UiReviewProof = { ...proof, lobu_pr: 2499 };
+    const fork: UiReviewProof = { ...proof, lobu_repo: "fork/lobu" };
+    const comment = (body: string, id: string): UiReviewComment => ({
+      body,
+      created_at: "2026-08-04T10:00:00Z",
+      html_url: `https://github.com/lobu-ai/owletto/pull/712#${id}`,
+      user: { login: "agent" },
+    });
+    const comments = [
+      comment("just discussing the proof", "chatter"),
+      comment(buildProofBody(foreign), "foreign"),
+      comment(buildProofBody(fork), "fork"),
+      comment(buildProofBody(proof), "ours"),
+    ];
+
+    expect(
+      findProofComment(comments, "lobu-ai/lobu", 2500)?.html_url
+    ).toEndWith("#ours");
+    expect(
+      findProofComment(comments, "lobu-ai/lobu", 2499)?.html_url
+    ).toEndWith("#foreign");
+    expect(findProofComment(comments, "lobu-ai/lobu", 2501)).toBeUndefined();
   });
 
   it("binds approval to both ends of the deployed Owletto range", () => {

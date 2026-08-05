@@ -342,21 +342,6 @@ function hasFreshCredential(profiles: AuthProfile[]): boolean {
 	);
 }
 
-// ── Resolve the org's system agent ──────────────────────────────────────────
-// Server-controlled pointer (organization.system_agent_id). Null unless the
-// org has one set (legacy provisioned builder, or an admin-assigned agent).
-// Registered before any `/:agentId` route so the literal path wins.
-routes.get("/system-agent", async (c) => {
-	const orgId = c.get("organizationId")!;
-	const sql = getDb();
-	const rows = await sql`
-    SELECT system_agent_id FROM organization WHERE id = ${orgId} LIMIT 1
-  `;
-	return c.json({
-		systemAgentId: (rows[0]?.system_agent_id as string | null) ?? null,
-	});
-});
-
 // ── List agents ──────────────────────────────────────────────────────────────
 
 routes.get("/", async (c) => {
@@ -1388,9 +1373,9 @@ routes.get("/:agentId/config", async (c) => {
 	return c.json({ ...settings, authProfiles });
 });
 
-// ── Pending builder write-gate proposal (config-approval prefill) ────────────
+// ── Pending write-gate proposal (config-approval prefill) ────────────────────
 //
-// A config change a builder agent proposes (from Slack or elsewhere) is held as
+// A config change an agent proposes (from Slack or elsewhere) is held as
 // a pending internal run; the chat-history replay only surfaces its approval
 // card in the EXACT originating conversation, so a web deep link to the config
 // form never sees it. This conversation-agnostic read returns the held proposal

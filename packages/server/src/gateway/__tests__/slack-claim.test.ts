@@ -293,8 +293,8 @@ describe("slackClaimProvider.bind", () => {
 
 /**
  * Post-claim identity linking. This is a PRIVILEGE-GRANTING write: the rows it
- * writes are what `resolveBuilderAdminGrant` later reads to hand a Slack `U…`
- * the org's Builder admin tools. The invariant under test is that `bind` links
+ * writes are what privilege resolution later reads to scope a Slack `U…`.
+ * The invariant under test is that `bind` links
  * ONLY identities the claimer has already proven (via Slack OIDC / `/lobu link`),
  * and stamps the install's tenant key ONLY when the claimer is provably the
  * installer — never on `pending.installerUserId` alone.
@@ -341,7 +341,7 @@ describe("slackClaimProvider.bind — identity linking", () => {
   test("does NOT link the installer's U… when a different admin claims a plain workspace", async () => {
     // The takeover case: U-ADMIN claims an install performed by U-INSTALLER on
     // a plain workspace. Linking the installer id here would hand U-ADMIN the
-    // installer's identity — and Builder admin tools on that U….
+    // installer's identity — and admin-tools privileges on that U….
     const { deps, stampSlackIdentityForUser } = makeDeps({
       resolveClaimerSlackIdentities: mock(async () => [
         { teamId: TEAM, slackUserId: "U-ADMIN" },
@@ -432,7 +432,7 @@ describe("slackClaimProvider.bind — identity linking", () => {
     // lowercase pair can arrive here. `resolveChatUserIdentity` is an exact
     // SQL match with no folding — a row stored as `t-claim/u-installer` can
     // never serve an inbound Slack event carrying `T-CLAIM/U-INSTALLER`, and
-    // the claimed installer silently loses Builder admin tools. Worse, the
+    // the claimed installer silently loses admin-tools privileges. Worse, the
     // case-insensitive already-linked check would suppress the canonical
     // write, so the uppercase row never gets created either.
     const { deps, stampSlackIdentityForUser } = makeDeps({

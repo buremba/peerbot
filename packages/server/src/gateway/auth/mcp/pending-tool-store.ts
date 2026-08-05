@@ -26,7 +26,7 @@ interface PendingToolInvocationFields {
 }
 
 /**
- * The signed per-turn builder admin limit and the canonical Lobu actor it is
+ * The signed per-turn admin-tool allowlist and the canonical Lobu actor it is
  * bound to, preserved across approval resume. Modeled as a PAIR, not two
  * independent optional fields: the resumed call mints a worker token carrying
  * this allowlist, so an allowlist with no verified actor must never be

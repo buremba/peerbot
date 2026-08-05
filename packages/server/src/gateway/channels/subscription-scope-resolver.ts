@@ -5,8 +5,8 @@
  * ALWAYS names the
  * concrete workspace/tenant a channel lives in, never a broader install
  * identity (for Slack Grid: the workspace `T…`, NEVER the enterprise `E…`).
- * The generic Behavior-subscription write path (`behavior-subscription-service`,
- * `slack-claim-onboarding`) must not know how any connector computes that —
+ * The generic Behavior-subscription write path
+ * must not know how any connector computes that —
  * it just calls {@link resolveSubscriptionTeam}. Each connector owns its own rule.
  *
  * Why a server-side module list and NOT `ConnectorIdentityModule`: identity

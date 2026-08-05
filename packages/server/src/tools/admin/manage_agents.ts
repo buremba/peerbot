@@ -9,12 +9,8 @@
  * - create: Create an agent owned by the authenticated caller (owner_platform=
  *   'external' + an agent_users mapping, so the per-user chat path can reach it)
  * - update: Update name/description/identity_md on an agent
- * - delete: Delete an agent (refuses the org's system agent)
- * - set_system_agent: Point organization.system_agent_id at an agent
+ * - delete: Delete an agent
  *
- * The org's "system" agent is an optional console/management agent.
- * `set_system_agent` is the only writer of organization.system_agent_id
- * (agents are no longer auto-provisioned).
  *
  * Agent/watcher principals: list/get honor agent_config `read` (default auto;
  * per-target deny tightens via target_agent_id — max-restrictive fold, so
@@ -254,10 +250,8 @@ async function handleList(
       a.owner_platform,
       a.owner_user_id,
       a.created_at,
-      a.last_used_at,
-      (a.id = o.system_agent_id) AS is_system_agent
+      a.last_used_at
     FROM agents a
-    JOIN organization o ON o.id = a.organization_id
     WHERE a.organization_id = ${ctx.organizationId}
     ORDER BY a.created_at ASC
   `;
@@ -301,10 +295,8 @@ async function handleGet(
       a.owner_platform,
       a.owner_user_id,
       a.created_at,
-      a.last_used_at,
-      (a.id = o.system_agent_id) AS is_system_agent
+      a.last_used_at
     FROM agents a
-    JOIN organization o ON o.id = a.organization_id
     WHERE a.organization_id = ${ctx.organizationId} AND a.id = ${args.agent_id}
   `;
   if (rows.length === 0) {
@@ -544,14 +536,6 @@ export async function applyDelete(
     throw new ToolUserError('agent_id is required for delete action');
   }
   const sql = createDbClientFromEnv(env);
-  const orgRows = await sql`
-    SELECT system_agent_id FROM organization WHERE id = ${ctx.organizationId}
-  `;
-  if (orgRows[0]?.system_agent_id === args.agent_id) {
-    throw new ToolUserError(
-      `Cannot delete agent "${args.agent_id}": it is the org's system agent. Point system_agent_id elsewhere first.`
-    );
-  }
   const rows = await sql`
     DELETE FROM agents
     WHERE organization_id = ${ctx.organizationId} AND id = ${args.agent_id}
@@ -561,30 +545,6 @@ export async function applyDelete(
   // trigger on `agents` (see 20260710140000) — covers this path AND the dashboard's
   // configStore.deleteMetadata, so no app-level cleanup is duplicated here.
   return { action: 'delete', agent_id: args.agent_id, deleted: rows.length > 0 };
-}
-
-async function handleSetSystemAgent(
-  args: ManageAgentsArgs,
-  ctx: ToolContext,
-  env: Env
-): Promise<ManageAgentsResult> {
-  if (!args.agent_id) {
-    throw new ToolUserError('agent_id is required for set_system_agent action');
-  }
-  const sql = createDbClientFromEnv(env);
-  const agentRows = await sql`
-    SELECT id FROM agents
-    WHERE organization_id = ${ctx.organizationId} AND id = ${args.agent_id}
-  `;
-  if (agentRows.length === 0) {
-    throw new ToolUserError(`Agent "${args.agent_id}" not found`, 404);
-  }
-  await sql`
-    UPDATE organization
-    SET system_agent_id = ${args.agent_id}
-    WHERE id = ${ctx.organizationId}
-  `;
-  return { action: 'set_system_agent', system_agent_id: args.agent_id };
 }
 
 // ============================================
@@ -717,19 +677,6 @@ async function queueWriteForApproval(
       );
     }
     proposal.base = base;
-  }
-
-  // Reject a delete of the org's system agent up-front (same guard as
-  // applyDelete) so we never surface an un-approvable card.
-  if (proposal.action === 'delete') {
-    const orgRows = await sql`
-      SELECT system_agent_id FROM organization WHERE id = ${ctx.organizationId}
-    `;
-    if (orgRows[0]?.system_agent_id === proposal.agent_id) {
-      throw new ToolUserError(
-        `Cannot delete agent "${proposal.agent_id}": it is the org's system agent. Point system_agent_id elsewhere first.`
-      );
-    }
   }
 
   const initiatorColumns = resolveRunInitiator(ctx);
@@ -949,7 +896,7 @@ async function dispatchAgentWrite(
 
 // create/update/delete consult the agent_config write-gate (human immediate;
 // agent/watcher may queue approval). list/get honor agent_config `read` for
-// agent/watcher principals. set_system_agent stays human/admin immediate.
+// agent/watcher principals.
 const runManageAgents = defineFlatActionTool<ManageAgentsArgs, ManageAgentsResult>(
   'manage_agents',
   {
@@ -958,6 +905,5 @@ const runManageAgents = defineFlatActionTool<ManageAgentsArgs, ManageAgentsResul
     create: flatAction((args, ctx, env) => dispatchAgentWrite('create', args, ctx, env)),
     update: flatAction((args, ctx, env) => dispatchAgentWrite('update', args, ctx, env)),
     delete: flatAction((args, ctx, env) => dispatchAgentWrite('delete', args, ctx, env)),
-    set_system_agent: flatAction((args, ctx, env) => handleSetSystemAgent(args, ctx, env)),
   }
 );

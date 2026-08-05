@@ -382,7 +382,8 @@ export function createServerLifecycle(
 			httpServer.on("request", honoListener);
 		}
 
-		// 8. Pre-listen hooks (embedded: install-operator).
+		// 8. Pre-listen hooks (install-operator; embedded always, external with
+		// LOBU_RUN_OWNS_DB=1).
 		for (const hook of preListenHooks) {
 			await hook();
 		}

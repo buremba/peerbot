@@ -60,7 +60,7 @@ export interface AuthContext {
   applyId?: string | null;
   /**
    * Per-turn LIMIT on which tools may execute admin-tier actions. Carried on
-   * the builder/system agent's per-run worker token (see
+   * the worker token (see
    * WorkerTokenData.adminTools); empty/null for everyone else (no limit —
    * role × scope decide). Non-admin-tier actions are unaffected.
    */
@@ -126,8 +126,8 @@ export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
     scopedToOrg,
     allowCrossOrg: tokenType === 'oauth' && !scopedToOrg,
     applyId: parseApplyId(c.req.header('x-lobu-apply-id')),
-    // Builder admin-tool LIMIT: only the verified worker token's per-turn
-    // allowlist (the builder/system agent run) carries this. External
+    // Admin-tool LIMIT: only the verified worker token's per-turn allowlist
+    // (an admin-tools run) carries this. External
     // `mcp:admin` callers need no grant — every tool is reachable uniformly
     // and role × scope decide, so the old two-tool external allowlist is gone.
     adminTools: mcpAuthInfo?.adminTools ?? null,
@@ -169,7 +169,7 @@ export function checkToolAccess(toolName: string, args: unknown, authCtx: AuthCo
   const { memberRole: role } = authCtx;
   const requiredAccess = getRequiredAccessLevel(toolName, args, isReadOnly);
 
-  // System-agent (builder) run: the per-turn allowlist is a LIMIT on which
+  // Admin-tools run: the per-turn allowlist is a LIMIT on which
   // tools may exercise ADMIN-tier actions. Read/write-tier actions follow the
   // uniform role × scope model like every other caller.
   const adminAllowlist = authCtx.adminTools;

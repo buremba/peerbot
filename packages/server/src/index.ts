@@ -56,7 +56,6 @@ import {
 } from "./gateway/connections/connection-claim";
 import { slackClaimProvider } from "./gateway/connections/slack-claim";
 import { resolveClaimingUserSlackIdentities } from "./gateway/connections/slack-claim-identities";
-import { autoLinkBuilderAndWelcome } from "./gateway/connections/slack-claim-onboarding";
 import { createSlackWebApi } from "./gateway/connections/slack-web";
 import {
 	getMaxReservedLocks,
@@ -2522,17 +2521,6 @@ function buildSlackClaimProvider(): ClaimProvider {
 				organizationId,
 				confirmMove,
 			);
-			// Post-claim, best-effort: auto-link the org's Builder agent to the
-			// installer's DM and fire the welcome DM. Never throws — a failure here
-			// must not fail the claim the user is waiting on (the workspace is
-			// already bound). This is the DM half of onboarding; named channels stay
-			// explicit (bot posts a bind link when added to a channel).
-			await autoLinkBuilderAndWelcome({
-				teamId: pending.teamId,
-				organizationId,
-				installerUserId: pending.installerUserId ?? null,
-				secretStore: core.getSecretStore(),
-			});
 			return result;
 		},
 	}) as ClaimProvider;

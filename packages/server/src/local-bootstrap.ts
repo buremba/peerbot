@@ -30,12 +30,10 @@ import logger from "./utils/logger";
 type PreListenHook = () => Promise<void> | void;
 
 /**
- * The local-install provisioning hook. `_databaseUrl` is accepted for
- * call-site compatibility (embedded: the spawned cluster's TCP URL; external:
- * DATABASE_URL itself) but is no longer needed now that agent provisioning
- * is gone.
+ * The local-install provisioning hook. No longer needs the database URL now
+ * that agent provisioning is gone.
  */
-export function buildLocalBootstrapHooks(_databaseUrl: string): PreListenHook[] {
+export function buildLocalBootstrapHooks(): PreListenHook[] {
 	return [
 		// BEFORE listen so headless installs (CI, containers) sign in via
 		// better-auth without a chicken-and-egg /sign-up. Provisions the
@@ -57,9 +55,8 @@ export function buildLocalBootstrapHooks(_databaseUrl: string): PreListenHook[] 
  * what every cloud/prod deployment gets.
  */
 export function externalDbBootstrapHooks(
-	databaseUrl: string,
 	env: NodeJS.ProcessEnv,
 ): PreListenHook[] {
 	if (env.LOBU_RUN_OWNS_DB !== "1") return [];
-	return buildLocalBootstrapHooks(databaseUrl);
+	return buildLocalBootstrapHooks();
 }

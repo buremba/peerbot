@@ -391,7 +391,7 @@ export const manageCatalog = <ThrowOnError extends boolean = false>(
 /**
  * Agent management (incl
  *
- * Agent management (incl. the org system agent pointer). SDK alternative: client.agents.
+ * Agent management. SDK alternative: client.agents.
  */
 export const manageAgents = <ThrowOnError extends boolean = false>(
   options: Options<ManageAgentsData, ThrowOnError>,

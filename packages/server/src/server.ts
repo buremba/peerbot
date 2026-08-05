@@ -126,7 +126,7 @@ async function main(): Promise<void> {
 		// but left `user`/`organization` empty — `/api/local-init` then failed
 		// with `unexpected_empty_user_table` and there was no path to a first
 		// user (issue #1180).
-		preListenHooks = externalDbBootstrapHooks(externalDatabaseUrl, process.env);
+		preListenHooks = externalDbBootstrapHooks(process.env);
 		databaseReadiness = async () => {
 			// `lobu run` owns the local DB lifecycle, so it must apply migrations
 			// itself before the schema-version gate runs — otherwise a fresh/empty

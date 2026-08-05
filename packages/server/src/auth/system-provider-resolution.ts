@@ -1,7 +1,10 @@
 /**
  * Resolve the system-key model providers available to this deployment into an
- * ordered `models` list (explicit `<slug>/<model>` refs) for freshly created
- * agents. Index 0 is the pinned default.
+ * ordered `models` list for freshly created agents. Each entry is an explicit
+ * `<slug>/<model>` ref, OR a `<slug>/__unresolved__` restriction sentinel when
+ * the provider is installed but no concrete model resolves. Index 0 is the
+ * default when one resolves (a pinned default model from the catalog or a live
+ * provider option); when nothing resolves, every entry is a sentinel.
  *
  * Reads `config/providers.json` directly so resolution is deterministic
  * regardless of whether the gateway module registry is initialized.
@@ -21,7 +24,10 @@ import {
 import logger from "../utils/logger";
 
 export interface ResolvedSystemProviders {
-	/** Ordered explicit `<slug>/<model>` refs; index 0 = the pinned default. */
+	/**
+	 * Ordered `<slug>/<model>` refs (or `<slug>/__unresolved__` sentinels);
+	 * index 0 = the default when one resolves.
+	 */
 	models: string[];
 }
 

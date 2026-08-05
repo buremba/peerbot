@@ -172,7 +172,7 @@ export function slackClaimProvider(
         // resolveClaimerSlackIdentities). Never map pending.installerUserId to
         // the claimer unconditionally — a different workspace admin can claim
         // a plain-workspace install, and forging that link would hand them the
-        // installer's identity (and Builder admin tools on that U…).
+        // installer's identity on that U….
         //
         // When the claimer IS the installer (same U… in their signed-in
         // identities), also stamp the install's tenant key (T… or Grid E…) so
@@ -227,7 +227,7 @@ export function slackClaimProvider(
         } catch (err) {
           // Swallow — claim already committed; identity can be healed later.
           // Log so a persistent identity-link failure is visible to on-call
-          // rather than silently degrading Builder admin tools / owner routing.
+          // rather than silently degrading owner routing.
           logger.warn(
             {
               err,

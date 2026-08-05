@@ -1,7 +1,7 @@
 /**
  * manage_agents — end-to-end coverage over the real tool path
  * (`executeTool(name, args, env, authCtx)`), the same entry the REST proxy and
- * the builder agent's worker use.
+ * an agent's worker use.
  *
  * WRITE actions (create/update/delete) route through the `agent_config`
  * write-gate class. The decision is per-principal:
@@ -20,8 +20,7 @@
  *   - reject(run_id): no agent, run cancelled, event superseded 'rejected'.
  *   - agent update gate applies on approve; agent delete is denied outright.
  *   - stale approval: applyUpdate skips a field a newer edit already changed.
- *   - set_system_agent / get / list (including the `is_system_agent` flag) stay
- *     immediate.
+ *   - get / list stay immediate.
  *   - access: a non-admin member cannot call the admin-tier actions.
  */
 
@@ -580,7 +579,7 @@ describe("manage_agents — builder gate e2e", () => {
 		expect(await agentExists(orgId, "protected-bot")).toBe(true);
 	});
 
-	it("get / set_system_agent / list stay immediate", async () => {
+	it("get / list stay immediate", async () => {
 		// Land an agent immediately as the human owner.
 		await executeTool(
 			"manage_agents",
@@ -597,23 +596,14 @@ describe("manage_agents — builder gate e2e", () => {
 		)) as { agent?: { id: string } };
 		expect(got.agent?.id).toBe("system-bot");
 
-		// set_system_agent is immediate (no approval gate).
-		const setRes = (await executeTool(
-			"manage_agents",
-			{ action: "set_system_agent", agent_id: "system-bot" },
-			TEST_ENV,
-			ownerCtx,
-		)) as { system_agent_id?: string };
-		expect(setRes.system_agent_id).toBe("system-bot");
-
 		const list = (await executeTool(
 			"manage_agents",
 			{ action: "list" },
 			TEST_ENV,
 			ownerCtx,
-		)) as { agents: Array<{ id: string; is_system_agent: boolean }> };
+		)) as { agents: Array<{ id: string }> };
 		const row = list.agents.find((a) => a.id === "system-bot");
-		expect(row?.is_system_agent).toBe(true);
+		expect(row?.id).toBe("system-bot");
 	});
 
 	it("agent principal: agent_config read deny filters list and blocks get", async () => {

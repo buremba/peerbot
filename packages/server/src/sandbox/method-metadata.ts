@@ -356,13 +356,6 @@ export default async (_ctx, client) => {
 			"agents.delete(agent_id: string): Promise<unknown> // or agents.delete({ agent_id })",
 		example: "await client.agents.delete('researcher');",
 	},
-	"agents.setSystemAgent": {
-		summary: "Point organization.system_agent_id at an agent. Requires admin.",
-		access: "admin",
-		signature:
-			"agents.setSystemAgent(agent_id: string): Promise<unknown> // or agents.setSystemAgent({ agent_id })",
-		example: "await client.agents.setSystemAgent('builder');",
-	},
 
 	// conversations — an agent's durable threads (history + pinned sandbox realm).
 	// list/get read the materialized `conversations` entity; send drives a turn.

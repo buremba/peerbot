@@ -77,8 +77,8 @@ export function createInteractionRoutes(
           return c.json({ id: posted.id, status: "posted" });
         }
 
-        // Durable approval card (runs/events-backed; today the builder agent's
-        // manage_agents write gate). Routed to the API platform's
+        // Durable approval card (runs/events-backed; an agent's manage_agents
+        // write gate). Routed to the API platform's
         // tool:durable-approval-card subscription, which enqueues it onto the
         // SAME owner-gated thread_response queue the other cards use.
         if (interactionType === "tool_approval") {

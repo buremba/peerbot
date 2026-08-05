@@ -8,8 +8,8 @@
  *
  * Mounts the real `createAgentApi` and authenticates with a real worker token
  * (encrypted with a test ENCRYPTION_KEY) scoped to a different agent, so
- * ownership is always denied. Later default-agent tests exercise DB-backed
- * org-system-agent resolution, so this file bootstraps the gateway test DB.
+ * ownership is always denied. Later default-agent tests run against the DB,
+ * so this file bootstraps the gateway test DB.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { generateWorkerToken } from "@lobu/core";

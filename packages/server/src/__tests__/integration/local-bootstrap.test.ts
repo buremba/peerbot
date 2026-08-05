@@ -19,12 +19,6 @@ import { INSTALL_OPERATOR_KIND } from '../../auth/install-operator';
 import { externalDbBootstrapHooks } from '../../local-bootstrap';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 
-function testDatabaseUrl(): string {
-  const url = process.env.DATABASE_URL;
-  if (!url) throw new Error('DATABASE_URL must be set by the test harness');
-  return url;
-}
-
 async function countRows(table: 'user' | 'organization'): Promise<number> {
   const sql = getTestDb();
   const rows = (await sql`
@@ -49,7 +43,7 @@ describe('externalDbBootstrapHooks', () => {
     expect(await countRows('user')).toBe(0);
     expect(await countRows('organization')).toBe(0);
 
-    const hooks = externalDbBootstrapHooks(testDatabaseUrl(), {
+    const hooks = externalDbBootstrapHooks({
       LOBU_RUN_OWNS_DB: '1',
     });
     expect(hooks.length).toBeGreaterThan(0);
@@ -75,7 +69,7 @@ describe('externalDbBootstrapHooks', () => {
   });
 
   it('with LOBU_RUN_OWNS_DB=1: re-running the hooks is idempotent', async () => {
-    const hooks = externalDbBootstrapHooks(testDatabaseUrl(), {
+    const hooks = externalDbBootstrapHooks({
       LOBU_RUN_OWNS_DB: '1',
     });
     for (const hook of hooks) await hook();
@@ -87,7 +81,7 @@ describe('externalDbBootstrapHooks', () => {
 
   it('WITHOUT the flag: returns no hooks and the DB stays empty (prod safety)', async () => {
     for (const env of [{}, { LOBU_RUN_OWNS_DB: '0' }, { LOBU_RUN_OWNS_DB: 'true' }]) {
-      const hooks = externalDbBootstrapHooks(testDatabaseUrl(), env);
+      const hooks = externalDbBootstrapHooks(env);
       expect(hooks).toHaveLength(0);
     }
 

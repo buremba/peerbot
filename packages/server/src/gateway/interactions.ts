@@ -121,7 +121,7 @@ export interface PostedToolApproval extends BaseMessage {
 
 /**
  * Payload emitted on "tool:durable-approval-card" — a durable, runs/events-backed
- * approval (today: the builder agent's manage_agents create/update/delete gate).
+ * approval (today: an agent's manage_agents create/update/delete gate).
  *
  * Distinct from `tool:approval-needed` (the pre-tool MCP grant): this card does
  * NOT block a worker tool call. The write is already a pending `runs` row;

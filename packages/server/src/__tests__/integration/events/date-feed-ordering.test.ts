@@ -55,6 +55,7 @@ describe('getContent > chronological feed ordering (NULL + future occurred_at)',
 
   let entityFutureId: number;
   let entityRecentId: number;
+  let facetId: number;
 
   function ctx(): ToolContext {
     return {
@@ -175,6 +176,27 @@ describe('getContent > chronological feed ordering (NULL + future occurred_at)',
         occurred_at: new Date(now - HOUR),
       })
     ).id;
+
+    // Classify one future-dated and one recent event with the same facet, to
+    // pin the classification-stats aggregate to the SAME future guard as the
+    // list: the distribution over a wider set than the rows it labels is wrong.
+    const sql = getTestDb();
+    const [facet] = await sql<{ id: number }[]>`
+      INSERT INTO classify_facet (organization_id, slug, name, attribute_key, status,
+                                  created_by, entity_ids, attribute_values, min_similarity)
+      VALUES (${org.id}, 'order-kind', 'Order kind', 'order_kind', 'active', ${user.id},
+              ARRAY[]::bigint[], ${sql.json({ alpha: { description: 'A', examples: [] } })}, 0.7)
+      RETURNING id
+    `;
+    facetId = Number(facet.id);
+    for (const eventId of [futureFarId, recentId]) {
+      await sql`
+        INSERT INTO event_classifications (event_id, classifier_id, watcher_id, window_id,
+                                           "values", confidences, source, is_manual)
+        VALUES (${eventId}, ${facetId}, NULL, NULL, ${'{alpha}'}::text[],
+                ${sql.json({ alpha: 1 })}, 'user', true)
+      `;
+    }
   });
 
   it('default newest-first feed excludes future events and ranks NULL occurred_at by record time', async () => {
@@ -267,5 +289,29 @@ describe('getContent > chronological feed ordering (NULL + future occurred_at)',
     const ids = result.content.map((item) => Number(item.id));
     expect(ids).toContain(entityRecentId);
     expect(ids).not.toContain(entityFutureId);
+  });
+
+  it('classification stats apply the same future guard as the list', async () => {
+    // The list excludes future-dated rows; the filter-chip distribution must
+    // label the SAME set. `order-kind` is classified on the future row and the
+    // recent row — a distribution over a wider set would count 2.
+    const result = await getContent(
+      {
+        sort_by: 'date',
+        sort_order: 'desc',
+        limit: 100,
+        include_classification: 'summary',
+        classification_filters: { 'order-kind': ['alpha'] },
+      } as never,
+      {} as never,
+      ctx()
+    );
+
+    const ids = result.content.map((item) => Number(item.id));
+    expect(ids).toContain(recentId);
+    expect(ids).not.toContain(futureFarId);
+
+    const alpha = result.classification_stats?.['order-kind']?.['alpha'];
+    expect(alpha).toBe(1);
   });
 });

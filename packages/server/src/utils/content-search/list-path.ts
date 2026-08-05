@@ -23,6 +23,7 @@ import { buildFinalSelect, deduplicateWithClassifications } from './sql-fragment
 import {
   buildDateCandidateOrderBy,
   buildDateCursorClause,
+  buildFutureOccurredAtClause,
   buildPageInfo,
   emptyListResponse,
   isDateFeedMode,
@@ -191,31 +192,6 @@ async function executeListQuery(args: {
       fetchedCount: rawRows[0]?.cursor_fetched_count,
     }),
   };
-}
-
-/**
- * Chronological-feed guard: exclude events that have not occurred yet.
- *
- * A future-dated row is a scheduled item, not "activity", so ranking it as the
- * newest would let a far-future recurring series (calendar instances expanded
- * a year ahead) monopolize the first page of the activity feed. The guard is
- * lifted only when the caller explicitly asks for a future window — an `until`
- * past now or an `after` cursor past now. NULL occurred_at rows are kept: they
- * are real activity whose source timestamp was never recorded, and the
- * COALESCE(occurred_at, created_at) ordering ranks them by record time instead
- * of pinning the top.
- */
-function buildFutureOccurredAtClause(
-  untilDate: Date | null,
-  cursor: ReturnType<typeof resolveDateCursor>
-): { sql: string } {
-  const nowMs = Date.now();
-  const asksForFuture =
-    (untilDate != null && untilDate.getTime() > nowMs) ||
-    (cursor?.direction === 'after' &&
-      new Date(cursor.occurredAtIso).getTime() > nowMs);
-  if (asksForFuture) return { sql: '' };
-  return { sql: 'AND (f.occurred_at IS NULL OR f.occurred_at <= now())' };
 }
 
 export async function listContentInternal(

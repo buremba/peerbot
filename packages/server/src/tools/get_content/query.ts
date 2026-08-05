@@ -8,6 +8,7 @@ import { type DbClient, pgBigintArray, pgTextArray } from '../../db/client';
 import {
   buildConnectionVisibilityClause,
   buildEntityLinkUnion,
+  buildFutureOccurredAtClause,
   fetchEntityIdentityScopes,
 } from '../../utils/content-search';
 import logger from '../../utils/logger';
@@ -589,6 +590,17 @@ export async function fetchClassificationStats(opts: {
   if (untilDate) {
     conditions.push(`f.occurred_at <= $${paramIndex++}`);
     params.push(untilDate.toISOString());
+  }
+  // The chronological LIST excludes not-yet-occurred events (see
+  // buildFutureOccurredAtClause); a distribution over a wider set than the rows
+  // it labels is wrong, so apply the same guard to the stats scope. Only on the
+  // list path (no query): search still returns future-dated rows and its stats
+  // must match that result set.
+  if (!args.query) {
+    const futureGuard = buildFutureOccurredAtClause(untilDate, null).sql;
+    if (futureGuard) {
+      conditions.push(futureGuard.replace(/^AND\s+/, ''));
+    }
   }
   let windowJoinSql = '';
   if (args.window_id) {

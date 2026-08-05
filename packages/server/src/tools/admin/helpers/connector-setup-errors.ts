@@ -2,6 +2,7 @@ import type {
 	ConnectorAuthAppInstallation,
 	ConnectorAuthOAuth,
 } from "@lobu/connector-sdk";
+import { buildSlackSelfInstallDeepLink } from "./slack-self-install";
 
 export type ConnectorSetupError = {
 	error: string;
@@ -13,6 +14,7 @@ export type ConnectorSetupError = {
 	next_action: "install_app" | "configure_oauth_app" | "open_setup";
 	setup_url?: string;
 	install_url?: string;
+	self_install_url?: string;
 	install_shape?: "oauth-code-exchange" | "github-app";
 	setup_instructions?: string;
 };
@@ -40,25 +42,52 @@ export function buildAppInstallationSetupError(params: {
 	method: ConnectorAuthAppInstallation;
 	gatewayBaseUrl?: string;
 	setupUrl?: string;
+	/**
+	 * Whether the connector also declares a BYO (`none`) auth method, i.e. it can
+	 * be connected with a self-created app whose credentials are pasted in. Only
+	 * then is the self-install deep link relevant.
+	 */
+	hasByoMethod?: boolean;
 }): ConnectorSetupError {
-	const installUrl = joinUrl(
-		params.gatewayBaseUrl,
-		hostedInstallPath(params.method),
-	);
+	// The hosted "Add to <provider>" install needs the provider's OAuth client
+	// env configured on the gateway. When it's absent (self-hosted gateways,
+	// no hosted Lobu app), the hosted install URL is dead — suppress it and
+	// lead with the self-install deep link instead.
+	const hostedConfigured =
+		!params.method.clientIdKey || !!process.env[params.method.clientIdKey];
+	const installUrl = hostedConfigured
+		? joinUrl(params.gatewayBaseUrl, hostedInstallPath(params.method))
+		: undefined;
+
+	const selfInstallUrl =
+		params.hasByoMethod && params.method.provider === "slack"
+			? buildSlackSelfInstallDeepLink({
+					method: params.method,
+					gatewayOrigin: params.gatewayBaseUrl
+						? new URL(params.gatewayBaseUrl).origin
+						: undefined,
+				})
+			: undefined;
+
+	const error = installUrl
+		? `Connector '${params.connectorKey}' is connected by installing its ${params.method.provider} app. Open install_url to install it, then retry after the installation links the connection.`
+		: selfInstallUrl
+			? `Connector '${params.connectorKey}' has no hosted ${params.method.provider} app configured on this gateway. Create your own app from self_install_url, install it into your workspace, then retry connect with the app's bot token and signing secret.`
+			: `Connector '${params.connectorKey}' requires a ${params.method.provider} app installation. Open setup_url to configure the installation, then retry.`;
+
 	return {
-		error: installUrl
-			? `Connector '${params.connectorKey}' is connected by installing its ${params.method.provider} app. Open install_url to install it, then retry after the installation links the connection.`
-			: `Connector '${params.connectorKey}' requires a ${params.method.provider} app installation. Open setup_url to configure the installation, then retry.`,
+		error,
 		error_code: "connector_setup_required",
 		connector_key: params.connectorKey,
 		provider: params.method.provider,
 		install_type: "app_installation",
-		next_action: installUrl ? "install_app" : "open_setup",
+		next_action: installUrl || selfInstallUrl ? "install_app" : "open_setup",
 		...(params.method.providerInstance
 			? { provider_instance: params.method.providerInstance }
 			: {}),
 		...(params.setupUrl ? { setup_url: params.setupUrl } : {}),
 		...(installUrl ? { install_url: installUrl } : {}),
+		...(selfInstallUrl ? { self_install_url: selfInstallUrl } : {}),
 		...(params.method.installShape
 			? { install_shape: params.method.installShape }
 			: {}),

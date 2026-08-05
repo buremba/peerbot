@@ -59,6 +59,7 @@ interface ConnectionSetupContinuationInput {
 	completionCheck?: SetupCompletionCheck;
 	setupUrl?: string;
 	installUrl?: string;
+	selfInstallUrl?: string;
 	connectUrl?: string;
 	provider?: string;
 	connectionId?: number;
@@ -96,6 +97,7 @@ export function buildConnectionSetupContinuation(
 		completion_check: input.completionCheck,
 		setup_url: input.setupUrl,
 		install_url: input.installUrl,
+		self_install_url: input.selfInstallUrl,
 		connect_url: input.connectUrl,
 		provider: input.provider,
 		connection_id: input.connectionId,
@@ -188,6 +190,7 @@ export function appInstallationSetupContinuation(params: {
 		setupInstructions: setup.setup_instructions,
 		setupUrl,
 		installUrl,
+		selfInstallUrl: setup.self_install_url,
 		provider: setup.provider,
 		completionCheck: setupAttemptId
 			? installedConnectorPoll(connectorKey, setupAttemptId)

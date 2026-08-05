@@ -2324,6 +2324,7 @@ export type ManageConnectionsResponses = {
         next_action?: "install_app" | "configure_oauth_app" | "open_setup";
         setup_url?: string;
         install_url?: string;
+        self_install_url?: string;
         install_shape?: "oauth-code-exchange" | "github-app";
         setup_instructions?: string;
       }
@@ -2531,6 +2532,7 @@ export type ManageConnectionsResponses = {
         setup_instructions?: string;
         setup_url?: string;
         install_url?: string;
+        self_install_url?: string;
         connect_url?: string;
         connection_id?: number;
         slug?: string;

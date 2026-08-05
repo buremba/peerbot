@@ -1,9 +1,9 @@
 /**
  * Resolve the system-key model providers available to this deployment into an
- * ordered `models` list (explicit `<slug>/<model>` refs) for auto-provisioned
- * agents (builder, owletto-default). Index 0 is the pinned default.
+ * ordered `models` list (explicit `<slug>/<model>` refs) for freshly created
+ * agents. Index 0 is the pinned default.
  *
- * Reads `config/providers.json` directly so provisioning is deterministic
+ * Reads `config/providers.json` directly so resolution is deterministic
  * regardless of whether the gateway module registry is initialized.
  */
 
@@ -208,9 +208,9 @@ export const DEFAULT_PRE_APPROVED_TOOLS = ["/mcp/lobu-memory/tools/*"];
 
 /**
  * The provisioning defaults a brand-new agent row must carry to be runnable on
- * THIS deployment. Every create path — `ensureDefaultAgent`,
- * `ensureBuilderAgent`, the web `POST /agents` route, the `manage_agents` create
- * tool, and the shared `saveMetadata` UPSERT — resolves its defaults here.
+ * THIS deployment. Every create path — the web `POST /agents` route, the
+ * `manage_agents` create tool, and the shared `saveMetadata` UPSERT — resolves
+ * its defaults here.
  *
  * The run path resolves a model as `agent.models[0] → the org's
  * `inference_providers` is_default ROW → nothing`, so `models` is seeded

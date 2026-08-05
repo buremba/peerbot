@@ -739,24 +739,6 @@ export async function createAuth(
 								console.log(
 									`[Auth] Provisioned personal org ${result.slug} for user ${user.id}`,
 								);
-								// Default agent used to be seeded at `lobu run` boot when the
-								// bootstrap org existed up front. Without that seed, the first
-								// real signup is the first moment we have an org to provision
-								// against; do it here so the user lands with an agent ready
-								// instead of having to restart `lobu run`. Best-effort —
-								// failure does not block signup, and start-local.ts also runs
-								// ensureDefaultAgent on next boot as a backstop.
-								try {
-									const { ensureDefaultAgent } = await import(
-										"./default-provisioning"
-									);
-									await ensureDefaultAgent(result.organizationId);
-								} catch (agentError) {
-									console.error(
-										"[Auth] Default-agent provisioning at signup failed:",
-										agentError,
-									);
-								}
 							}
 						} catch (error) {
 							console.error("[Auth] Failed to provision personal org:", error);

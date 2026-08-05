@@ -23,7 +23,7 @@
  * `preview/slack` imports the coordinator — importing it there would be circular.
  */
 import { createLogger } from "@lobu/core";
-import { BUILDER_AGENT_ID, ensureBuilderAgent } from "../../auth/builder-provisioning.js";
+import { BUILDER_AGENT_ID } from "../../auth/system-agent-ids.js";
 import { getDb } from "../../db/client.js";
 import { canonicalSlackChannelId } from "../../preview/slack.js";
 import { BehaviorSubscriptionService } from "../channels/behavior-subscription-service.js";
@@ -144,10 +144,8 @@ async function linkBuilderToInstallerDm(args: {
     return;
   }
 
-  // Guarantee the org has a Builder agent to bind to (idempotent; heals a team
-  // org that predates the builder feature). Skips recreation if the admin
-  // deleted it (deletion sentinel) — then the pointer stays null and we bail.
-  await ensureBuilderAgent(organizationId);
+  // Bind to the org's system/builder agent when it has one (legacy orgs).
+  // Agents are no longer auto-provisioned, so new orgs simply skip the link.
   const builderId = await resolveBuilderAgentId(organizationId);
   if (!builderId) {
     logger.info(

@@ -2,10 +2,11 @@
  * A freshly created agent must be RUNNABLE on a deployment configured purely by
  * environment API keys.
  *
- * The bug: three paths insert an `agents` row, and only two of them baked in a
- * `models` list resolved from the deployment's system keys:
- *   - `ensureDefaultAgent` / `ensureBuilderAgent` call
- *     `resolveSystemKeyProvidersAndModel()` and persist the result.
+ * The bug: the insert sites diverged on whether they baked in a `models`
+ * list resolved from the deployment's system keys:
+ *   - The provisioning helpers called `resolveSystemKeyProvidersAndModel()`
+ *     and persisted the result (they are gone now; the shared helper
+ *     remains).
  *   - `manage_agents` create persisted `models` ONLY when the caller passed an
  *     explicit `default_model`.
  *
@@ -14,8 +15,8 @@
  * environment API keys never create. So on an env-key-only deployment an agent
  * made through `manage_agents create` resolved NO model, never completed a turn,
  * and its Behavior failed with "Agent reply finished without calling
- * completeWindow" — while the SAME Behavior succeeded on an older agent that had
- * been provisioned through `ensureDefaultAgent`.
+ * completeWindow" — while the SAME Behavior succeeded on an older agent whose
+ * create path had baked the models list in.
  *
  * `pre_approved_tools` had the same shape of divergence: the web create route
  * seeds `/mcp/lobu-memory/tools/*` so the agent may call `query_sdk` / `run_sdk`
@@ -26,7 +27,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ensureDefaultAgent } from "../../../auth/default-provisioning";
+import { resolveNewAgentProvisioningDefaults } from "../../../auth/system-provider-resolution";
 import type { Env } from "../../../index";
 import { orgContext } from "../../../lobu/stores/org-context";
 import { createPostgresAgentConfigStore } from "../../../lobu/stores/postgres-stores";
@@ -146,7 +147,7 @@ describe("manage_agents create — env-key deployment provisions a runnable agen
 		expect(res.model.effective_model).toBe("claude/claude-sonnet-5");
 
 		// The list is persisted on the row — the same single source of truth
-		// `ensureDefaultAgent` writes, not a read-time inference.
+		// the shared provisioning helper writes, not a read-time inference.
 		const sql = getTestDb();
 		const rows = await sql`
 			SELECT models FROM agents
@@ -203,12 +204,25 @@ describe("manage_agents create — env-key deployment provisions a runnable agen
 		expect(rows[0]?.models).toEqual(["myco/myco-large"]);
 	});
 
-	it("CONTRAST: an ensureDefaultAgent-provisioned agent in the SAME env is runnable", async () => {
+	it("CONTRAST: an agent seeded via the shared provisioning defaults in the SAME env is runnable", async () => {
 		// This is the asymmetry the user hit — the older agent worked because its
-		// provisioning path baked the models list in.
+		// create path baked the models list in. The auto-provisioning helpers are
+		// gone; the shared helper they used is the reference path now.
 		const org = await createTestOrganization({ name: "env-key default agent" });
-		await ensureDefaultAgent(org.id);
+		const defaults = await resolveNewAgentProvisioningDefaults(org.id);
 		const sql = getTestDb();
+		await orgContext.run({ organizationId: org.id }, async () => {
+			await sql`
+				INSERT INTO agents (
+					id, organization_id, name, owner_platform, models, pre_approved_tools,
+					created_at, updated_at
+				) VALUES (
+					'contrast-bot', ${org.id}, 'Contrast', 'external',
+					${sql.json(defaults.models)}, ${sql.json(defaults.preApprovedTools)},
+					now(), now()
+				)
+			`;
+		});
 		const rows = await sql`
 			SELECT models FROM agents WHERE organization_id = ${org.id}
 		`;

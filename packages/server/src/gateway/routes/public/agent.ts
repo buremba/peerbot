@@ -19,7 +19,7 @@ import {
   getValidated,
   type RouteSpec,
 } from "../shared/define-route.js";
-import { DEFAULT_AGENT_ID } from "../../../auth/default-provisioning.js";
+import { DEFAULT_AGENT_ID } from "../../../auth/system-agent-ids.js";
 import { getDb } from "../../../db/client.js";
 import { getCachedOrgBySlug } from "../../../workspace/multi-tenant.js";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store.js";
@@ -778,14 +778,10 @@ export function createAgentApi(config: AgentApiConfig): Hono {
 
     // Resolve the target agent. Two flows, no third:
     //   - caller pinned agentId → use it (with ownership check)
-    //   - no agentId → route to the org's default agent (`owletto-default`)
-    // The third flow that used to live here ("ephemeral": generate a UUID
-    // and auto-install providers on it) is gone — it created a phantom
-    // agent per chat, never used the user's actual default agent, and the
-    // saveSettings UPDATE silently no-op'd on a row that didn't exist yet.
-    // Default-agent provisioning runs at signup (`ensureDefaultAgent`) and
-    // already populates `models` from system-key providers, so the row
-    // exists with credentials by the time chat reaches here.
+    //   - no agentId → route to the org's legacy default agent
+    //     (`owletto-default`) when it exists; otherwise 404 with guidance.
+    // Agents are no longer auto-provisioned, so new orgs must create an
+    // agent (`lobu apply` / web console) before bare chat works.
     //
     // Org resolution: `createLobuAuthBridge` (outer middleware on `/lobu/*`)
     // sets `c.get("organizationId")` from the PAT — that's the common path
@@ -807,11 +803,9 @@ export function createAgentApi(config: AgentApiConfig): Hono {
           400
         );
       }
-      // No-agent chat resolves to the org's DEFAULT personal agent — NOT the
-      // builder/system agent. The builder is an admin console reached only by
-      // passing its id explicitly (the /agents console does this via
-      // useSystemAgentId), so routing the bare "just chat" path to it would
-      // wrongly hand every default conversation to the management agent.
+      // No-agent chat resolves to the legacy default personal agent when the
+      // org has one — never to the system agent (that is reached only by
+      // passing its id explicitly).
       const defaultMeta = await ownershipMetadataStore?.getMetadata(
         DEFAULT_AGENT_ID
       );
@@ -819,7 +813,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         return c.json(
           {
             success: false,
-            error: `Default agent "${DEFAULT_AGENT_ID}" not provisioned for this organization. Run lobu apply or create an agent first.`,
+            error: `No default agent for this organization. Run lobu apply or create an agent first.`,
           },
           404
         );

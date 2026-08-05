@@ -35,7 +35,7 @@ const member: DeviceWorkerAccessCaller = {
   organizationId: ORG,
   isAuthenticated: true,
 };
-// apply / automation / default-provisioning: authenticated, no user/role.
+// apply / automation: authenticated, no user/role.
 const system: DeviceWorkerAccessCaller = {
   memberRole: null,
   userId: null,

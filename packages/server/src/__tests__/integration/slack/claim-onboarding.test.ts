@@ -8,10 +8,7 @@
  * welcome), and the no-installer skip (no DM to auto-link).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  BUILDER_AGENT_ID,
-} from "../../../auth/builder-provisioning";
-import { getDb } from "../../../db/client";
+import { BUILDER_AGENT_ID } from "../../../auth/system-agent-ids";
 import { autoLinkBuilderAndWelcome } from "../../../gateway/connections/slack-claim-onboarding";
 import type { SlackWebApi } from "../../../gateway/connections/slack-web";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
@@ -65,8 +62,8 @@ async function seedClaimedWorkspace(orgId: string): Promise<void> {
   const sql = getTestDb();
 	const owner = await createTestUser({ email: "claim-owner@example.com" });
 	await addUserToOrganization(owner.id, orgId, "owner");
-  // The org's Builder agent + the system-agent pointer, mirroring
-  // ensureBuilderAgent's end state so autoLink binds to it.
+  // The org's Builder agent + the system-agent pointer (legacy-org shape)
+  // so autoLink binds to it.
   await createTestAgent({
     organizationId: orgId,
     agentId: BUILDER_AGENT_ID,

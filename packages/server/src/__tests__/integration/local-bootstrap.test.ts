@@ -6,16 +6,15 @@
  *
  *   1. With LOBU_RUN_OWNS_DB=1 (the CLI-set local-install marker), running
  *      the external-DB bootstrap hooks on a fresh, migrated database
- *      provisions the install operator, its personal org, and the default
- *      agent — i.e. `/api/local-init` has a first user to mint a session
- *      for.
+ *      provisions the install operator and its personal org — i.e.
+ *      `/api/local-init` has a first user to mint a session for — but NO
+ *      agents (agents are created explicitly by the user).
  *   2. WITHOUT the flag (every cloud/prod deployment), the external-DB
  *      branch gets ZERO hooks and the database stays empty — prod must
  *      never auto-provision users/orgs.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { DEFAULT_AGENT_ID } from '../../auth/default-provisioning';
 import { INSTALL_OPERATOR_KIND } from '../../auth/install-operator';
 import { externalDbBootstrapHooks } from '../../local-bootstrap';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
@@ -46,7 +45,7 @@ describe('externalDbBootstrapHooks', () => {
     process.env.ENCRYPTION_KEY = VALID_KEY;
   });
 
-  it('with LOBU_RUN_OWNS_DB=1: provisions operator + personal org + default agent on an empty DB', async () => {
+  it('with LOBU_RUN_OWNS_DB=1: provisions operator + personal org but NO agents on an empty DB', async () => {
     expect(await countRows('user')).toBe(0);
     expect(await countRows('organization')).toBe(0);
 
@@ -68,11 +67,11 @@ describe('externalDbBootstrapHooks', () => {
     `) as unknown as Array<{ id: string }>;
     expect(orgs).toHaveLength(1);
 
+    // Auto-provisioning is gone: bootstrap must not create any agents.
     const agents = (await sql`
-      SELECT id FROM agents
-      WHERE organization_id = ${orgs[0]!.id} AND id = ${DEFAULT_AGENT_ID}
+      SELECT id FROM agents WHERE organization_id = ${orgs[0]!.id}
     `) as unknown as Array<unknown>;
-    expect(agents).toHaveLength(1);
+    expect(agents).toHaveLength(0);
   });
 
   it('with LOBU_RUN_OWNS_DB=1: re-running the hooks is idempotent', async () => {

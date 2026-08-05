@@ -32,7 +32,7 @@ export interface DeviceWorkerOwnershipRow {
  * matching device_workers row exists.
  *
  * Rules:
- *  - System/internal callers (apply, automation, default-provisioning) carry no
+ *  - System/internal callers (apply, automation) carry no
  *    memberRole/userId yet are authenticated; they bypass action-access
  *    enforcement elsewhere, so don't block them here either.
  *  - The caller owns the device (`device.user_id === caller.userId`), OR

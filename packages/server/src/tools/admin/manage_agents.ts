@@ -12,9 +12,9 @@
  * - delete: Delete an agent (refuses the org's system agent)
  * - set_system_agent: Point organization.system_agent_id at an agent
  *
- * The org's "system" agent is the builder/console agent backing the
- * org-management surface. `set_system_agent` is the only writer of
- * organization.system_agent_id here (default-org provisioning is the other).
+ * The org's "system" agent is an optional console/management agent.
+ * `set_system_agent` is the only writer of organization.system_agent_id
+ * (agents are no longer auto-provisioned).
  *
  * Agent/watcher principals: list/get honor agent_config `read` (default auto;
  * per-target deny tightens via target_agent_id — max-restrictive fold, so
@@ -360,7 +360,6 @@ export async function applyCreate(
     explicitModel !== undefined && explicitModel.trim()
       ? null
       : provisioning.models;
-  // Mirror the provisioning pattern (ensureDefaultAgent / ensureBuilderAgent):
   // owner_platform='external' on the row AND an agent_users mapping, so the
   // per-user ownership check (SPA cookie / PAT session) can reach the new agent.
   // Without the agent_users row the agent is unreachable through chat,

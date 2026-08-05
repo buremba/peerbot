@@ -12,7 +12,6 @@ import {
 } from "@lobu/core/contracts/tools/manage-behaviors";
 import { Value } from "@sinclair/typebox/value";
 import { Hono } from "hono";
-import { ensureBuilderAgent } from "../auth/builder-provisioning";
 import { mcpAuth } from "../auth/middleware";
 import { resolveNewAgentProvisioningDefaults } from "../auth/system-provider-resolution";
 import { resolveBehaviorTriggerWrite } from "../behaviors/triggers";
@@ -343,19 +342,13 @@ function hasFreshCredential(profiles: AuthProfile[]): boolean {
 	);
 }
 
-// ── Resolve the org's builder/system agent ───────────────────────────────────
-// Server-controlled pointer (organization.system_agent_id). The web console
-// mounts the builder chat against this id; null when none is provisioned.
+// ── Resolve the org's system agent ──────────────────────────────────────────
+// Server-controlled pointer (organization.system_agent_id). Null unless the
+// org has one set (legacy provisioned builder, or an admin-assigned agent).
 // Registered before any `/:agentId` route so the literal path wins.
 routes.get("/system-agent", async (c) => {
 	const orgId = c.get("organizationId")!;
 	const sql = getDb();
-	// Backfill / heal the org's builder on demand. Orgs created before the
-	// builder feature have no system agent yet, and an org whose builder was
-	// provisioned before its providers resolved needs its providers/model filled
-	// in. ensureBuilderAgent is idempotent + one SELECT on the healthy path, and
-	// best-effort (never throws), so it can't break console load.
-	await ensureBuilderAgent(orgId, sql);
 	const rows = await sql`
     SELECT system_agent_id FROM organization WHERE id = ${orgId} LIMIT 1
   `;

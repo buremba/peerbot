@@ -50,12 +50,52 @@ async function findByIdempotencyKey(
   return rows[0] ?? null;
 }
 
+/**
+ * The current head event for a keyed event output: the latest row of the
+ * output's semantic type whose metadata carries the given key field values and
+ * that nothing has superseded yet. `superseded_by IS NULL` identifies heads —
+ * the insert-time dual-write stamps the replaced row's `superseded_by`, so a
+ * key keeps exactly one current event while history stays append-only. The
+ * match is scoped by (org, semantic type, key values) — deliberately NOT by
+ * `behavior_id`, so a migrated/legacy event that predates the Behavior becomes
+ * the supersede target of its first run rather than a duplicate.
+ */
+async function findCurrentHeadByKey(
+  tx: DbClient,
+  organizationId: string,
+  semanticType: string,
+  keyFields: readonly string[],
+  metadata: Record<string, unknown>
+): Promise<number | null> {
+  const keyJson: Record<string, string> = {};
+  for (const field of keyFields) {
+    const value = metadata[field];
+    const str =
+      value === undefined || value === null ? null : String(value).trim();
+    if (!str) return null;
+    keyJson[field] = str;
+  }
+  const rows = await tx<{ id: number }>`
+    SELECT id
+    FROM events
+    WHERE organization_id = ${organizationId}
+      AND semantic_type = ${semanticType}
+      AND superseded_by IS NULL
+      AND metadata @> ${tx.json(keyJson)}
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `;
+  return rows[0]?.id ?? null;
+}
+
 /** Persist one declared event array atomically with its Canvas window. */
 export async function persistBehaviorEventOutput(
   params: PersistBehaviorEventOutputParams
 ): Promise<InsertedEvent[]> {
   if (!Array.isArray(params.rows) || params.rows.length === 0) return [];
   const seenIdempotencyKeys = new Set<string>();
+  const keyFields = params.output.key ?? null;
+  const seenKeyValues = new Set<string>();
   for (let index = 0; index < params.rows.length; index++) {
     const draft = params.rows[index] as EventDraft;
     if (typeof draft?.idempotency_key !== 'string') continue;
@@ -74,6 +114,40 @@ export async function persistBehaviorEventOutput(
     const draft = params.rows[index] as EventDraft;
     const metadata = { ...(draft.metadata ?? {}) };
     delete metadata._lobu_idempotency_key;
+
+    // Keyed event output: resolve the current head for this key and supersede
+    // it, so the type keeps exactly one current event per key. A missing key
+    // field is a malformed draft (the model must emit every declared key
+    // field); a duplicate key within one array would otherwise double-supersede
+    // the same head, so it is rejected up front.
+    let supersedesEventId: number | null = null;
+    if (keyFields) {
+      const missing = keyFields.filter((f) => {
+        const v = metadata[f];
+        return v === undefined || v === null || String(v).trim() === '';
+      });
+      if (missing.length > 0) {
+        throw new ToolUserError(
+          `outputs.${params.outputName}[${index}] is missing required key field(s) in metadata: ${missing.join(', ')}.`,
+          422
+        );
+      }
+      const keyValue = keyFields.map((f) => `${f}=${String(metadata[f]).trim()}`).join('&');
+      if (seenKeyValues.has(keyValue)) {
+        throw new ToolUserError(
+          `outputs.${params.outputName} contains a duplicate key (${keyFields.join(', ')}) at item ${index}.`,
+          422
+        );
+      }
+      seenKeyValues.add(keyValue);
+      supersedesEventId = await findCurrentHeadByKey(
+        params.tx,
+        params.organizationId,
+        params.output.event,
+        keyFields,
+        metadata
+      );
+    }
 
     const kindValidation = await validateSaveContentSemanticType(
       params.output.event,
@@ -159,6 +233,7 @@ export async function persistBehaviorEventOutput(
               originType: params.output.event,
               metadata: eventMetadata,
               parentOriginId,
+              supersedesEventId,
               runId: params.runId,
               createdBy: params.createdBy ?? null,
             },

@@ -193,6 +193,138 @@ describe('Behavior event outputs', () => {
     ).rejects.toThrow(/duplicate.*idempotency/i);
   });
 
+  it('supersedes the prior event per key, keeping history append-only', async () => {
+    const sql = getTestDb();
+    const workspace = await TestWorkspace.create({ name: 'Keyed Event Output Org' });
+    const ownerUserId = workspace.users.owner.id;
+    const parent = await createTestEntity({
+      name: 'Subject',
+      organization_id: workspace.org.id,
+      created_by: ownerUserId,
+    });
+    const agent = await createTestAgent({
+      organizationId: workspace.org.id,
+      ownerUserId,
+      agentId: 'keyed-output-agent',
+    });
+    const api = await TestApiClient.for({
+      organizationId: workspace.org.id,
+      userId: ownerUserId,
+      memberRole: 'owner',
+    });
+    const created = (await api.behaviors.create({
+      entity_id: parent.id,
+      slug: 'keyed-output-behavior',
+      prompt: 'Emit refined voice profiles.',
+      triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
+      outputs: { profiles: { event: 'observation', key: ['channel', 'mode'] } },
+      agent_id: agent.agentId,
+    })) as { behavior_id: string };
+    const watcherId = Number(created.behavior_id);
+
+    const baseParams = {
+      outputName: 'profiles',
+      output: { event: 'observation', key: ['channel', 'mode'] },
+      watcherId,
+      organizationId: workspace.org.id,
+      boundEntityIds: [parent.id],
+      validContentIds: new Set<number>(),
+      occurredAt: new Date().toISOString(),
+      createdBy: ownerUserId,
+    };
+    const persist = (rows: unknown[], windowId: number) =>
+      sql.begin((tx) =>
+        persistBehaviorEventOutput({
+          tx: tx as unknown as DbClient,
+          rows,
+          windowId,
+          canvasRevisionId: windowId,
+          runId: null,
+          ...baseParams,
+        })
+      );
+
+    // Run 1: two profiles under distinct keys.
+    await persist(
+      [
+        { content: 'X voice v1', metadata: { channel: 'x', mode: 'voice' } },
+        { content: 'X taste v1', metadata: { channel: 'x', mode: 'taste' } },
+      ],
+      9001
+    );
+    let rows = await sql<{
+      id: number;
+      payload_text: string;
+      supersedes_event_id: number | null;
+      superseded_by: number | null;
+    }>`
+      SELECT id, payload_text, supersedes_event_id, superseded_by
+      FROM events
+      WHERE organization_id = ${workspace.org.id}
+        AND metadata->>'behavior_output' = 'profiles'
+      ORDER BY id
+    `;
+    expect(rows).toHaveLength(2);
+    expect(rows.filter((row) => row.supersedes_event_id === null)).toHaveLength(2);
+
+    // Run 2: refine only the x:voice profile. The new event supersedes the old
+    // head; x:taste is untouched and still a head.
+    await persist([{ content: 'X voice v2', metadata: { channel: 'x', mode: 'voice' } }], 9002);
+    rows = await sql<{
+      id: number;
+      payload_text: string;
+      supersedes_event_id: number | null;
+      superseded_by: number | null;
+    }>`
+      SELECT id, payload_text, supersedes_event_id, superseded_by
+      FROM events
+      WHERE organization_id = ${workspace.org.id}
+        AND metadata->>'behavior_output' = 'profiles'
+      ORDER BY id
+    `;
+    expect(rows).toHaveLength(3);
+    const v1 = rows.find((row) => row.payload_text === 'X voice v1');
+    const v2 = rows.find((row) => row.payload_text === 'X voice v2');
+    const taste = rows.find((row) => row.payload_text === 'X taste v1');
+    expect(v1).toMatchObject({ supersedes_event_id: null, superseded_by: v2?.id ?? null });
+    expect(v2).toMatchObject({ supersedes_event_id: v1?.id ?? null, superseded_by: null });
+    expect(taste).toMatchObject({ supersedes_event_id: null, superseded_by: null });
+
+    // A keyed supersede must match a legacy (pre-Behavior) head by metadata,
+    // not just the producing Behavior — a migrated seed event becomes the
+    // supersede target of the first run.
+    const legacy = await sql<{ id: number }>`
+      INSERT INTO events (
+        organization_id, origin_id, title, payload_text, semantic_type, client_id, metadata
+      ) VALUES (
+        ${workspace.org.id}, ${'legacy-seed'}, ${'Legacy'}, ${'X voice legacy'},
+        ${'observation'}, NULL, ${sql.json({ channel: 'x', mode: 'voice' })}
+      )
+      RETURNING id
+    `;
+    await persist([{ content: 'X voice v3', metadata: { channel: 'x', mode: 'voice' } }], 9003);
+    const v3 = await sql<{ id: number; supersedes_event_id: number | null }>`
+      SELECT id, supersedes_event_id
+      FROM events
+      WHERE organization_id = ${workspace.org.id} AND payload_text = 'X voice v3'
+    `;
+    expect(v3[0].supersedes_event_id).toBe(legacy[0].id);
+
+    // Missing key field and duplicate key within one array are rejected.
+    await expect(
+      persist([{ content: 'no key', metadata: { channel: 'x' } }], 9004)
+    ).rejects.toThrow(/missing required key field/);
+    await expect(
+      persist(
+        [
+          { content: 'dup 1', metadata: { channel: 'y', mode: 'voice' } },
+          { content: 'dup 2', metadata: { channel: 'y', mode: 'voice' } },
+        ],
+        9005
+      )
+    ).rejects.toThrow(/duplicate key/);
+  });
+
   it('rejects the loser when concurrent output versions reuse a key for different event types', async () => {
     const sql = getTestDb();
     const workspace = await TestWorkspace.create({ name: 'Behavior Event Output Race Org' });

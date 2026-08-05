@@ -146,6 +146,13 @@ export type BehaviorEntityOutput = Static<typeof BehaviorEntityOutputSchema>;
 /**
  * Persist each row as an append-only event. The semantic type is fixed by the
  * Behavior version; the row supplies the standard event draft fields.
+ *
+ * With `key`, the draft's key fields (read from its `metadata`) compose a
+ * stable identity: each run supersedes the current head event carrying the
+ * same key values instead of appending a sibling, so the type keeps exactly
+ * one current event per key while history stays append-only. This is the event
+ * analogue of the entity output's keyed upsert — use it for refined-over-time
+ * state (voice profiles, digests, statuses) rather than per-source-item logs.
  */
 export const BehaviorEventOutputSchema = Type.Object(
   {
@@ -155,6 +162,15 @@ export const BehaviorEventOutputSchema = Type.Object(
       description:
         "Semantic type assigned to every event in this output array.",
     }),
+    key: Type.Optional(
+      Type.Array(Type.String({ minLength: 1, maxLength: 128 }), {
+        minItems: 1,
+        maxItems: 4,
+        uniqueItems: true,
+        description:
+          "One to four metadata fields whose exact string values compose each draft's stable identity across Behavior runs (e.g. channel + mode for per-channel voice profiles). Every key field must be present in every draft's `metadata`; changing the fields, their order, the output name, or the semantic type changes identity. When set, each run supersedes the current head event with the same key values.",
+      })
+    ),
   },
   { additionalProperties: false }
 );

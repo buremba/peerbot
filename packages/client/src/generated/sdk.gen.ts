@@ -389,7 +389,7 @@ export const manageCatalog = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Agent management (incl
+ * Agent management
  *
  * Agent management. SDK alternative: client.agents.
  */
@@ -667,7 +667,7 @@ export const manageViewTemplates = <ThrowOnError extends boolean = false>(
 /**
  * List organizations the authenticated user belongs to, plus any public workspaces the session can read
  *
- * List organizations the authenticated user belongs to, plus any public workspaces the session can read. SDK alternative: client.organizations.list via `query_sdk` / `run_sdk`.
+ * List organizations the authenticated user belongs to, plus any public workspaces the session can read. Managed connector providers include structured managed_auth onboarding metadata. SDK alternative: client.organizations.list via `query_sdk` / `run_sdk`.
  */
 export const listOrganizations = <ThrowOnError extends boolean = false>(
   options: Options<ListOrganizationsData, ThrowOnError>,

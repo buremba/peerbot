@@ -1168,7 +1168,15 @@ describe('watcher CRUD', () => {
         name: 'CFV Manual Base',
         prompt: 'Manual only.',
         sources: [{ name: 'content', query: 'SELECT id FROM events' }],
-      })) as { behavior_id: string };
+      })) as { behavior_id: string; view_url?: string };
+
+      // The Behavior route is workspace-level, so an agentless Behavior gets a
+      // link like any other. Gating view_url on agent_id left exactly the rows
+      // this feature adds (device-pinned / manual-only) with no way for an MCP
+      // agent to hand the user a link. Asserted on the path, not the origin:
+      // a local packages/owletto/dist flips the builder to a relative URL.
+      expect(base.view_url).toContain(`/behaviors/${base.behavior_id}`);
+
       const [row] = await sql<{ current_version_id: number }[]>`
         SELECT current_version_id FROM watchers WHERE id = ${base.behavior_id}
       `;
@@ -1184,6 +1192,21 @@ describe('watcher CRUD', () => {
       `;
       expect(clone.agent_id).toBeNull();
       expect(clone.device_worker_id).toBeNull();
+
+      // Same for the read paths an agent actually calls.
+      const listed = (await owner.behaviors.manage({
+        action: 'list',
+        entity_id: entityId,
+      })) as { behaviors?: Array<{ behavior_id?: string; id?: string; view_url?: string }> };
+      const listedBase = (listed.behaviors ?? []).find(
+        (b) => String(b.behavior_id ?? b.id) === String(base.behavior_id)
+      );
+      expect(listedBase?.view_url).toContain(`/behaviors/${base.behavior_id}`);
+
+      const fetched = (await owner.behaviors.get({
+        behavior_id: base.behavior_id,
+      })) as { view_url?: string };
+      expect(fetched.view_url).toContain(`/behaviors/${base.behavior_id}`);
 
       await owner.behaviors.delete({
         behavior_ids: [base.behavior_id, cloneId],

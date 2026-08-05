@@ -389,7 +389,9 @@ export async function handleCreate(
   const baseUrl = getPublicWebUrl(ctx.requestUrl, ctx.baseUrl);
   let viewUrl: string | undefined;
 
-  if (organizationSlug && args.agent_id) {
+  // The route is workspace-level, so it no longer needs an owning agent —
+  // device-pinned and manual-only Behaviors get a link too.
+  if (organizationSlug) {
     viewUrl = buildBehaviorUrl(organizationSlug, watcherId as number, baseUrl);
   }
 

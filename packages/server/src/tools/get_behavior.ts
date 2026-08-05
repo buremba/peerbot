@@ -1089,10 +1089,11 @@ async function getBehaviorImpl(
   const organizationSlug = watcherRow?.organization_id
     ? await getOrganizationSlug(watcherRow.organization_id)
     : null;
-  const viewUrl =
-    organizationSlug && watcherRow?.agent_id
-      ? buildBehaviorUrl(organizationSlug, args.behavior_id, baseUrl)
-      : undefined;
+  // Workspace-level route: agentless (device-pinned / manual-only) Behaviors
+  // get the same link as agent-owned ones.
+  const viewUrl = organizationSlug
+    ? buildBehaviorUrl(organizationSlug, args.behavior_id, baseUrl)
+    : undefined;
 
   const result: GetBehaviorResult = {
     windows: formattedWindows,

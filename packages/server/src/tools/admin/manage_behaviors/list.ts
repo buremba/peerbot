@@ -198,10 +198,11 @@ export async function handleList(
 		const countData = counts.get(watcherId) || { pending: 0, historical: 0 };
 		const orgSlug = orgSlugMap.get(watcher.organization_id as string) ?? null;
 
-		const viewUrl =
-			orgSlug && watcher.agent_id
-				? buildBehaviorUrl(orgSlug, watcherId, baseUrl)
-				: undefined;
+		// Workspace-level route: agentless (device-pinned / manual-only)
+		// Behaviors carry a view_url just like agent-owned ones.
+		const viewUrl = orgSlug
+			? buildBehaviorUrl(orgSlug, watcherId, baseUrl)
+			: undefined;
 
 		const { organization_id: _orgId, ...rest } = watcher;
 

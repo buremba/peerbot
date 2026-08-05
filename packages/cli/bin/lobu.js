@@ -22,21 +22,7 @@
   const major = Number.parseInt(current.split(".")[0], 10);
   if (!Number.isFinite(major) || major < MIN_NODE_MAJOR) {
     process.stderr.write(
-      [
-        "",
-        `  Lobu needs Node.js ${MIN_NODE_MAJOR} or newer — you're on Node ${current}.`,
-        "",
-        "  (Lobu runs agent code in an isolated-vm sandbox whose native builds",
-        `   only cover Node ${MIN_NODE_MAJOR}–24 and 26+, so ${MIN_NODE_MAJOR} is the minimum.)`,
-        "",
-        "  Install a supported Node, then re-run:",
-        "    • nvm:   nvm install 22 && nvm use 22",
-        "    • fnm:   fnm install 22 && fnm use 22",
-        "    • brew:  brew install node@22",
-        "",
-        "  Check your version with:  node --version",
-        "",
-      ].join("\n") + "\n"
+      `\n  Lobu needs Node.js ${MIN_NODE_MAJOR} or newer — you're on Node ${current}.\n\n  (Lobu runs agent code in an isolated-vm sandbox whose native builds\n   only cover Node ${MIN_NODE_MAJOR}–24 and 26+, so ${MIN_NODE_MAJOR} is the minimum.)\n\n  Install a supported Node, then re-run:\n    • nvm:   nvm install 22 && nvm use 22\n    • fnm:   fnm install 22 && fnm use 22\n    • brew:  brew install node@22\n\n  Check your version with:  node --version\n\n`
     );
     process.exit(1);
   }

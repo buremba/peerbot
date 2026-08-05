@@ -12,6 +12,7 @@ import { getDb } from "../db/client";
 import { RESERVED_PATHS_SET } from "../utils/reserved";
 import { generateSecureToken } from "./oauth/utils";
 import { provisionMemberAndCoreIdentities } from "./subject-identities";
+import { recordConfigChangeEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
 
 interface UserLike {
@@ -158,6 +159,25 @@ export async function ensurePersonalOrganization(
 		throw new Error(
 			"Personal organization transaction did not produce a result",
 		);
+	}
+
+	// A workspace with no audit trail of its own creation is a gap: `events` is
+	// the workspace's history, and the first thing that ever happened to it was
+	// being created. Only on `created` — this function is also the login path
+	// for every existing personal org, and re-recording there would append a
+	// duplicate row on every sign-in. Fire-and-forget, like every other config
+	// audit write; a dropped row is logged, never fatal to provisioning.
+	if (finalResult.created) {
+		recordConfigChangeEvent({
+			organizationId: finalResult.organizationId,
+			resourceKind: "organization",
+			resourceId: finalResult.organizationId,
+			op: "created",
+			summary: `Workspace '${finalResult.slug}' created`,
+			state: { slug: finalResult.slug, visibility: "private" },
+			actorSource: "ui",
+			createdBy: user.id,
+		});
 	}
 
 	// Mirror the personal org slug onto the user's username when unset. The

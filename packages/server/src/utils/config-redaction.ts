@@ -20,6 +20,7 @@ export { REDACTED_SENTINEL };
  * deployments UI without a mapping table.
  */
 export type ConfigResourceKind =
+  | 'organization'
   | 'agent'
   | 'agent-settings'
   | 'platform'

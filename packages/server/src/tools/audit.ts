@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { REDACTED_SENTINEL } from '@lobu/core';
 import { currentMcpActivityEventMetadata } from '../lobu/stores/mcp-client-conversations';
 import { insertEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
+import { sanitizeAuditArgs } from './audit-args';
 import { AUDIT_SEMANTIC_TYPE } from './constants';
 import { getTool, type ToolContext } from './registry';
 
@@ -76,50 +76,6 @@ function redactPreview(value: string): string {
   // Redact BEFORE truncating: slicing first can split a quoted credential and
   // the unbalanced quote defeats the pattern, leaking the visible fragment.
   return redactSensitiveText(value).slice(0, MAX_PREVIEW_CHARS);
-}
-
-/**
- * Generic audit summaries persist the SHAPE of a call, never its content.
- * Nothing caller-controlled survives: values are sentineled except
- * booleans/nulls (provably structural — one bit), and property NAMES are kept
- * only when the tool's own input schema declares them at the top level —
- * audit also fires on FAILED validation, so arbitrary pasted text can arrive
- * as a value of an enum-typed key or even AS a key, and identifier-shaped
- * secrets (`sk-live-…`) are indistinguishable from slugs. Repeated sentinel
- * keys merge; that collapse is part of recording shape, not content.
- */
-function schemaPropertyNames(toolName: string): Set<string> {
-  const schema = getTool(toolName)?.inputSchema as
-    | {
-        properties?: Record<string, unknown>;
-        anyOf?: Array<{ properties?: Record<string, unknown> } | undefined>;
-      }
-    | undefined;
-  const names = new Set<string>();
-  for (const props of [schema?.properties, ...(schema?.anyOf ?? []).map((v) => v?.properties)]) {
-    if (props) for (const key of Object.keys(props)) names.add(key);
-  }
-  return names;
-}
-
-function sanitizeArgLeaves(
-  value: unknown,
-  trustedKeys: ReadonlySet<string>,
-  topLevel: boolean
-): unknown {
-  if (Array.isArray(value)) {
-    return value.map((item) => sanitizeArgLeaves(item, trustedKeys, false));
-  }
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, nested]) => [
-        topLevel && trustedKeys.has(key) ? key : REDACTED_SENTINEL,
-        sanitizeArgLeaves(nested, trustedKeys, false),
-      ])
-    );
-  }
-  if (typeof value === 'boolean' || value === null || value === undefined) return value;
-  return REDACTED_SENTINEL;
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -225,14 +181,16 @@ function buildPayload(params: ToolInvocationAuditParams): Record<string, unknown
   ) {
     return null;
   }
-  // The preview and hash are built from the SANITIZED args: every string leaf
-  // becomes the sentinel unless its key is a known structural discriminator.
-  // A raw or pattern-redacted serialization would persist free-text values
-  // (and an unsalted credential-derived digest) whenever a secret hides in a
-  // shape no pattern enumerates. These two fields record only the call shape;
-  // request-bearing tools additionally retain their exact args below.
+  // The preview and hash are built from the SANITIZED args: a leaf survives
+  // only when it is structural (boolean/null) or is a member of the closed
+  // literal set the tool's own schema declares for that top-level key — see
+  // `sanitizeAuditArgs`. A raw or pattern-redacted serialization would persist
+  // free-text values (and an unsalted credential-derived digest) whenever a
+  // secret hides in a shape no pattern enumerates. These two fields record the
+  // call shape and its declared discriminators; request-bearing tools
+  // additionally retain their exact args below.
   const sanitizedArgsJson = JSON.stringify(
-    sanitizeArgLeaves(params.args ?? {}, schemaPropertyNames(params.toolName), true)
+    sanitizeAuditArgs(params.args, getTool(params.toolName)?.inputSchema)
   );
   const reportedFailure =
     result.error != null ||

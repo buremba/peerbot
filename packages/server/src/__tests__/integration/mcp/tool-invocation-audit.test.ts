@@ -381,6 +381,20 @@ describe('tool invocation audit coverage', () => {
       'must-not-reach-the-audit-log'
     );
     expect(row!.payload_data.args_preview_redacted).toContain(REDACTED_SENTINEL);
+    // Audit fires on FAILED validation, so `action` here carries a value the
+    // schema never declared. Only DECLARED literals survive, so it must not.
+    expect(row!.payload_data.args_preview_redacted).not.toContain('nope');
+  });
+
+  it('retains the declared action discriminator against the real tool schema', async () => {
+    await executeTool('manage_connections', { action: 'list' }, {} as Env, authCtxFor('pat'));
+
+    const row = await latestAuditRow(orgId, 'manage_connections');
+    expect(row).not.toBeNull();
+    expect(row!.payload_data.success).toBe(true);
+    // `action: 'list'` is one of the tool's own compile-time literals, so it
+    // carries no caller content and is readable in the ledger.
+    expect(row!.payload_data.args_preview_redacted).toContain('"action":"list"');
   });
 
   it('args_sha256 is computed over SANITIZED args — a secret value cannot be verified against the hash', async () => {

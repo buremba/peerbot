@@ -5,12 +5,14 @@
  *   - external postgres:// DATABASE_URL (`server.ts`), only when the CLI set
  *     LOBU_RUN_OWNS_DB=1.
  *
- * The hooks provision the synthetic `install_operator` user (+ its personal
- * org) and the default agent, so a fresh install is sign-in-able via
- * `/api/local-init` without a chicken-and-egg /sign-up. Both steps are
- * idempotent and never crash boot. They must run as pre-listen hooks: the
- * gateway init that precedes them establishes ENCRYPTION_KEY, which
- * `ensureInstallOperator` requires.
+ * The hook provisions the synthetic `install_operator` user (+ its personal
+ * org), so a fresh install is sign-in-able via `/api/local-init` without a
+ * chicken-and-egg /sign-up. Idempotent and never crashes boot. Must run as a
+ * pre-listen hook: the gateway init that precedes it establishes
+ * ENCRYPTION_KEY, which `ensureInstallOperator` requires.
+ *
+ * Agents are NOT auto-provisioned: users create their own agents explicitly
+ * (`lobu init` / `lobu apply`, the web console, or the manage_agents tool).
  *
  * 🚨 SAFETY INVARIANT — cloud/multi-replica prod must NEVER auto-provision
  * users or orgs. `LOBU_RUN_OWNS_DB=1` is set in exactly one place: the CLI's
@@ -22,20 +24,16 @@
  * opt-in flag, and never set the flag from inside the server.
  */
 
-import postgres from "postgres";
-import { ensureBuilderAgent } from "./auth/builder-provisioning";
-import { ensureDefaultAgent } from "./auth/default-provisioning";
 import { ensureInstallOperator } from "./auth/install-operator";
 import logger from "./utils/logger";
 
 type PreListenHook = () => Promise<void> | void;
 
 /**
- * The two local-install provisioning hooks, in order. `databaseUrl` must be
- * the final resolved postgres:// URL (embedded: the spawned cluster's TCP
- * URL; external: DATABASE_URL itself).
+ * The local-install provisioning hook. No longer needs the database URL now
+ * that agent provisioning is gone.
  */
-export function buildLocalBootstrapHooks(databaseUrl: string): PreListenHook[] {
+export function buildLocalBootstrapHooks(): PreListenHook[] {
 	return [
 		// BEFORE listen so headless installs (CI, containers) sign in via
 		// better-auth without a chicken-and-egg /sign-up. Provisions the
@@ -45,29 +43,6 @@ export function buildLocalBootstrapHooks(databaseUrl: string): PreListenHook[] {
 				await ensureInstallOperator();
 			} catch (err) {
 				logger.error({ err }, "Install-operator provisioning failed");
-			}
-		},
-		// Default-agent provisioning: resolve the personal org id each boot so
-		// a returning user picks up the default agent.
-		async () => {
-			try {
-				const rows = postgres(databaseUrl, { max: 1 });
-				try {
-					const orgs = (await rows`
-            SELECT id FROM "organization"
-            WHERE (metadata::jsonb)->>'personal_org_for_user_id' IS NOT NULL
-            ORDER BY "createdAt" ASC LIMIT 1
-          `) as unknown as Array<{ id: string }>;
-					const orgId = orgs[0]?.id ?? null;
-					if (orgId) {
-						await ensureDefaultAgent(orgId);
-						await ensureBuilderAgent(orgId);
-					}
-				} finally {
-					await rows.end({ timeout: 1 });
-				}
-			} catch (err) {
-				logger.warn({ err }, "Default-agent provisioning failed");
 			}
 		},
 	];
@@ -80,9 +55,8 @@ export function buildLocalBootstrapHooks(databaseUrl: string): PreListenHook[] {
  * what every cloud/prod deployment gets.
  */
 export function externalDbBootstrapHooks(
-	databaseUrl: string,
 	env: NodeJS.ProcessEnv,
 ): PreListenHook[] {
 	if (env.LOBU_RUN_OWNS_DB !== "1") return [];
-	return buildLocalBootstrapHooks(databaseUrl);
+	return buildLocalBootstrapHooks();
 }

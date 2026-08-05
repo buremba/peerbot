@@ -49,7 +49,7 @@ export interface ExecutionConfigCaller {
 export function assertValidExecutionConfig(value: unknown, caller: ExecutionConfigCaller): void {
   if (value === undefined || value === null) return;
   const mode = (value as { permission_mode?: string }).permission_mode;
-  // System/internal callers (apply, automation, default-provisioning) carry no
+  // System/internal callers (apply, automation) carry no
   // memberRole and already bypass action-access enforcement; don't block them.
   const isSystem = caller.isAuthenticated && caller.userId === null && caller.memberRole === null;
   const isOwnerOrAdmin = isAdminOrOwnerRole(caller.memberRole);

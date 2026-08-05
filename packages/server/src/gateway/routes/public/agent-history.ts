@@ -401,24 +401,6 @@ export function createAgentHistoryRoutes(deps: {
 		agentMetadataStore: deps.agentConfigStore,
 	});
 
-	async function canUseSystemAgent(
-		agentId: string,
-		organizationId: string,
-		userId: string,
-	): Promise<boolean> {
-		const rows = await getDb()`
-			SELECT 1
-			FROM "organization" o
-			JOIN "member" m ON m."organizationId" = o.id
-			WHERE o.id = ${organizationId}
-				AND o.system_agent_id = ${agentId}
-				AND m."userId" = ${userId}
-				AND m.role IN ('owner', 'admin')
-			LIMIT 1
-		`;
-		return rows.length > 0;
-	}
-
 	async function getAuthorizedAgentScope(c: Context): Promise<{
 		agentId: string;
 		organizationId: string | undefined;
@@ -447,7 +429,7 @@ export function createAgentHistoryRoutes(deps: {
 
 		// The SPA sends x-lobu-org for the workspace being viewed. Its
 		// membership-verified ambient org must win over ownership-first resolution
-		// because the same system-agent id exists in every organization.
+		// because the same agent id string can exist in every organization.
 		if (ambientOrgId) {
 			const ownsHere =
 				(await deps.userAgentsStore?.ownsAgent(
@@ -456,9 +438,7 @@ export function createAgentHistoryRoutes(deps: {
 					agentId,
 					ambientOrgId,
 				)) ?? false;
-			const authorized =
-				ownsHere || (await canUseSystemAgent(agentId, ambientOrgId, userId));
-			if (authorized) {
+			if (ownsHere) {
 				return {
 					agentId,
 					organizationId: ambientOrgId,
@@ -518,7 +498,7 @@ export function createAgentHistoryRoutes(deps: {
 		if (!agentId || !isSafeAgentId(agentId)) return null;
 		const userId = resolveSettingsLookupUserId(session);
 
-		// A shared system-agent id can resolve to an ownership row in another org.
+		// A shared agent-id string can resolve to an ownership row in another org.
 		// Keep both the transcript lookup and owner check in the ambient org.
 		const ambientOrgId = resolveOrgId();
 		if (!ambientOrgId) return null;
@@ -558,11 +538,10 @@ export function createAgentHistoryRoutes(deps: {
 		// in agent metadata (`agents.owner_*`) that was never reconciled into the
 		// mapping. Mirror the ownership resolver's metadata fallback so those
 		// owners keep the legacy bound-channel path. `getMetadata` is ALS-scoped to
-		// the ambient org, so a match proves ambient-org ownership: a per-org
-		// SYSTEM agent (the Builder) has no per-user owner in a shared org (owner
-		// column is NULL), so system-agent admins still fall through to the
-		// enforced ACL below, unchanged. Reconcile into `agent_users` so the next
-		// read hits the fast path.
+		// the ambient org, so a match proves ambient-org ownership: a shared-agent
+		// id with no per-user owner in this org (owner column is NULL) falls
+		// through to the enforced ACL below, unchanged. Reconcile into
+		// `agent_users` so the next read hits the fast path.
 		const metadata = await deps.agentConfigStore?.getMetadata(agentId);
 		if (
 			metadata?.owner &&
@@ -707,7 +686,7 @@ export function createAgentHistoryRoutes(deps: {
 		}
 
 		// Replay durable interaction cards the transcript doesn't carry (today the
-		// builder's manage_agents write-gate approval). Reconstruct the session
+		// manage_agents write-gate approval). Reconstruct the session
 		// conversationId the worker stamped (same parts), then read the still-
 		// pending approval events. Self-cleaning: a resolved approval is
 		// superseded out of current_event_records. Without this the interactive

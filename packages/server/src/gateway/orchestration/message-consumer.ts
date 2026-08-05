@@ -42,9 +42,6 @@ import {
 } from "./deployment-manager.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
 import { resolvePinnedSelection } from "../../lobu/stores/sandbox-store.js";
-import { resolveChatUserIdentity } from "../../lobu/stores/chat-identity.js";
-import { resolveActiveChatConnectionTenant } from "../../lobu/stores/connections-projection.js";
-import { getDb } from "../../db/client.js";
 import { threadIdFromApiConversationId } from "../services/api-conversation-id.js";
 import {
   classifyConversation,
@@ -68,170 +65,6 @@ const logger = createLogger("orchestrator");
  * runId, …) MUST be set here; the test asserts that so the next omitted
  * claim fails red instead of in prod.
  */
-/**
- * Internal admin tools the org's builder agent may call from its worker. The
- * grant rides the per-run worker token (set in `resolveBuilderAdminGrant` only
- * for the system agent on an owner/admin-initiated turn) and is enforced
- * tool-by-tool at the execute gate. Keep this in lockstep with the gate's
- * exact-name check in `tools/execute.ts`.
- */
-export const BUILDER_ADMIN_TOOLS = [
-  "manage_agents",
-  "manage_connections",
-  "manage_feeds",
-  "manage_behaviors",
-  "manage_schedules",
-  "manage_entity",
-] as const;
-
-/** Builder admin allowlist paired with the Lobu auth user it was resolved for. */
-export interface BuilderAdminGrant {
-  tools: string[];
-  /** Lobu auth user resolved from the turn's platform principal. */
-  actorUserId: string;
-}
-
-/**
- * Decide whether THIS turn's worker token should carry the builder admin-tool
- * grant. Returns the allowlist and resolved Lobu auth actor only when the target
- * agent is the org's system agent (`organization.system_agent_id`) AND the
- * human sending the message is an org owner/admin. Fails closed (returns
- * undefined) on any lookup error — a missing grant just means the model can't
- * see/call the admin tools, never an over-grant. One indexed query (org PK +
- * member join); runs per turn.
- */
-export async function resolveBuilderAdminGrant(args: {
-  agentId?: string;
-  organizationId?: string;
-  userId?: string;
-  /**
-   * Platform this turn originated from. On a chat platform (slack/telegram/…)
-   * `userId` is the PLATFORM user id (e.g. Slack `U…`), NOT a Lobu user id, so
-   * the member lookup below would never match and an org owner driving the
-   * builder from Slack would silently lose the admin grant. We resolve the
-   * platform id → linked Lobu user first. Absent / "api" → `userId` is already
-   * the session's Lobu user id and is used directly.
-   */
-  platform?: string;
-  /**
-   * Workspace team id for identity lookup (Slack `T…` from the event). Prefer
-   * this over routing keys; see call site for platformMetadata.teamId.
-   */
-  teamId?: string;
-  /**
-   * Optional second team key to try when the first miss (e.g. Slack connection
-   * `external_tenant_id` = Grid enterprise `E…` while the event carries a
-   * workspace `T…`). Only an exact row under that key counts — never a
-   * cross-team unique-user collapse.
-   */
-  alternateTeamId?: string;
-}): Promise<BuilderAdminGrant | undefined> {
-  if (!args.agentId || !args.organizationId || !args.userId) return undefined;
-  try {
-    // Map a platform user id to its linked Lobu user before the member join.
-    // resolveChatUserIdentity is workspace-scoped (the identity key is the
-    // composite TEAM:USER) and returns null when the id isn't linked, so a
-    // grant is only ever made for a linked, known user.
-    const platform = args.platform;
-    const isChatPlatform =
-      platform != null && platform !== "api" && platform !== "";
-    let lobuUserId: string | null | undefined = isChatPlatform
-      ? await resolveChatUserIdentity(platform, args.teamId, args.userId)
-      : args.userId;
-    if (
-      !lobuUserId &&
-      isChatPlatform &&
-      args.alternateTeamId &&
-      args.alternateTeamId !== args.teamId
-    ) {
-      lobuUserId = await resolveChatUserIdentity(
-        platform,
-        args.alternateTeamId,
-        args.userId,
-      );
-    }
-    if (!lobuUserId) return undefined;
-    const sql = getDb();
-    const rows = (await sql`
-      SELECT o.system_agent_id, m.role
-      FROM organization o
-      LEFT JOIN "member" m
-        ON m."organizationId" = o.id AND m."userId" = ${lobuUserId}
-      WHERE o.id = ${args.organizationId}
-      LIMIT 1
-    `) as unknown as Array<{ system_agent_id: string | null; role: string | null }>;
-    const row = rows[0];
-    if (!row || row.system_agent_id !== args.agentId) return undefined;
-    if (row.role !== "owner" && row.role !== "admin") return undefined;
-    return { tools: [...BUILDER_ADMIN_TOOLS], actorUserId: lobuUserId };
-  } catch (err) {
-    logger.warn(
-      { err, organizationId: args.organizationId, agentId: args.agentId },
-      "resolveBuilderAdminGrant failed; minting without admin grant"
-    );
-    return undefined;
-  }
-}
-
-/**
- * The two team keys the Builder admin grant is looked up under, derived from a
- * message payload. Extracted from the dispatch path so the
- * metadata→tenant→grant composition is testable on its own — the pieces
- * (identity link, tenant store, grant) each had coverage, but the wiring
- * between them did not, and that is precisely where a runtime-id-vs-slug
- * mismatch silently disables the grant for BYO connections.
- *
- * - `teamId`: the real workspace/enterprise id from `platformMetadata` (T… /
- *   E…). `routingTeamId` is a ROUTING key (platform name for DMs, channel id
- *   for groups — see message-handler-bridge `payloadTeamId`), NOT a workspace
- *   id, so it is only the fallback that keeps non-Slack callers working.
- * - `alternateTeamId`: Grid enterprise installs key connections + some identity
- *   rows on E… while events carry the workspace T…. The connection's tenant is
- *   offered as an exact second key only — never a global U… collapse — and is
- *   omitted when it would duplicate `teamId`.
- *
- * Fails OPEN on the alternate only (undefined ⇒ the grant just falls back to
- * the primary key); it never invents a team, so it cannot over-grant.
- */
-export async function resolveGrantTeamKeys(args: {
-  platform?: string;
-  organizationId?: string;
-  routingTeamId?: string;
-  platformMetadata?: Record<string, unknown>;
-}): Promise<{ teamId?: string; alternateTeamId?: string }> {
-  const teamId =
-    platformMetadataString(args.platformMetadata, "teamId") ?? args.routingTeamId;
-  const connectionId = platformMetadataString(
-    args.platformMetadata,
-    "connectionId",
-  );
-  if (args.platform !== "slack" || !args.organizationId || !connectionId) {
-    return { teamId };
-  }
-  try {
-    // Scoped + fail-closed in the store (see `resolveActiveChatConnectionTenant`):
-    // org + runtime connection id + connector, and active chat rows only, so a
-    // reused slug or a paused install can never supply the alternate team for
-    // this privilege grant.
-    const tenant = await resolveActiveChatConnectionTenant(
-      getDb(),
-      args.organizationId,
-      connectionId,
-      "slack",
-    );
-    return {
-      teamId,
-      alternateTeamId: tenant && tenant !== teamId ? tenant : undefined,
-    };
-  } catch (err) {
-    logger.warn(
-      { err, organizationId: args.organizationId, connectionId },
-      "Failed to resolve alternate Slack tenant for Builder admin grant",
-    );
-    return { teamId };
-  }
-}
-
 export function buildRunJobToken(args: {
   userId: string;
   conversationId: string;
@@ -249,12 +82,6 @@ export function buildRunJobToken(args: {
    * turn (deploymentName:messageId), not merely any live turn on the deployment.
    */
   messageId: string;
-  /**
-   * Builder admin-tool allowlist + resolved auth actor for this turn (system
-   * agent + owner/admin initiator only). Carried in the encrypted token and
-   * enforced at the execute gate; undefined for every normal agent/turn.
-   */
-  adminGrant?: BuilderAdminGrant;
   /**
    * Resolved runtime provider + sandbox for this conversation (from its
    * pinned sandbox). Stamped into the token so the generic runtime route
@@ -274,8 +101,6 @@ export function buildRunJobToken(args: {
     args.conversationId,
     args.deploymentName,
     {
-      adminTools: args.adminGrant?.tools,
-      adminActorUserId: args.adminGrant?.actorUserId,
       // PRIMARY auth → shared routing claims (channelId, teamId, platform,
       // agentId, organizationId, connectionId, source) are minted via
       // `buildWorkerTokenClaims`, kept in lockstep with the deployment-token
@@ -560,24 +385,6 @@ export class MessageConsumer {
       // bearing a same-(org, agent, conv) deployment-lifetime token
       // cannot POST under a different run's slot. Codex round 2 finding
       // A on PR #865. Every dispatch is bound to its claimed runs.id.
-      // Builder admin-tool grant: only the org's system agent, only when the
-      // human driving this turn is an owner/admin. Fails closed.
-      //
-      const { teamId: workspaceTeamId, alternateTeamId } =
-        await resolveGrantTeamKeys({
-          platform: data.platform,
-          organizationId: data.organizationId,
-          routingTeamId: data.teamId,
-          platformMetadata: data.platformMetadata,
-        });
-      const adminGrant = await resolveBuilderAdminGrant({
-        agentId: data.agentId,
-        organizationId: data.organizationId,
-        userId: data.userId,
-        platform: data.platform,
-        teamId: workspaceTeamId,
-        alternateTeamId,
-      });
 
       // Resolve THIS CONVERSATION's pinned runtime provider from its sandbox.
       // The pin is frozen on the first turn and read thereafter, so an agent
@@ -636,7 +443,6 @@ export class MessageConsumer {
         // marker for THIS turn (deploymentName:messageId) rather than any live
         // turn on the deployment.
         messageId: data.messageId,
-        adminGrant,
         runtimeProviderId: runtimeSelection.runtimeProviderId,
         sandboxId: runtimeSelection.sandboxId,
         // Egress allow/deny lists as signed claims (kept in lockstep with the

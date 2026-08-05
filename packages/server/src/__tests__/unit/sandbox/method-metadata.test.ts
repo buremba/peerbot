@@ -120,7 +120,6 @@ describe("method-metadata", () => {
 		expect(METHOD_METADATA["agents.create"].access).toBe("admin");
 		expect(METHOD_METADATA["agents.update"].access).toBe("admin");
 		expect(METHOD_METADATA["agents.delete"].access).toBe("admin");
-		expect(METHOD_METADATA["agents.setSystemAgent"].access).toBe("admin");
 		expect(METHOD_METADATA["schedules.create"].access).toBe("admin");
 		expect(METHOD_METADATA["schedules.update"].access).toBe("admin");
 		expect(METHOD_METADATA["schedules.pause"].access).toBe("admin");
@@ -317,7 +316,6 @@ describe("method-metadata", () => {
 			["connections.reauthenticate", "connection_id"],
 			["agents.get", "agent_id"],
 			["agents.delete", "agent_id"],
-			["agents.setSystemAgent", "agent_id"],
 			["entitySchema.getType", "slug"],
 			["entitySchema.getRelType", "slug"],
 			["entitySchema.auditType", "slug"],

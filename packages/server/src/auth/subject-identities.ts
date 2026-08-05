@@ -430,7 +430,7 @@ export async function persistLoginSlackIdentity(
  * on Slack Grid the install row is keyed by the ENTERPRISE id (`E…`) while a
  * sign-in only ever proves the WORKSPACE id (`T…`), and inbound events may
  * carry either. Without the enterprise stamp the `E…` lookup resolves nothing
- * and the installer silently loses Builder admin tools.
+ * and the installer silently loses the identity-linked privileges.
  *
  * Refuses to write an unscoped id: `normalizeSlackUserId` returns null without
  * a team, and two workspaces can share a bare `U…`.

@@ -8,7 +8,7 @@ export const ManageAgentsSchema = Type.Object({
   action: Type.Union(
     [
       Type.Literal("list", {
-        description: "List org agents (marks the system agent).",
+        description: "List org agents.",
       }),
       Type.Literal("get", { description: "Fetch one agent." }),
       Type.Literal("create", {
@@ -21,9 +21,6 @@ export const ManageAgentsSchema = Type.Object({
       Type.Literal("delete", {
         description: "Delete an agent (queued for approval).",
       }),
-      Type.Literal("set_system_agent", {
-        description: "Point the org system_agent_id at an agent.",
-      }),
     ],
     { description: "Action to perform" }
   ),
@@ -31,7 +28,7 @@ export const ManageAgentsSchema = Type.Object({
   agent_id: Type.Optional(
     Type.String({
       description:
-        '[get/create/update/delete/set_system_agent] Agent ID (lowercase slug, e.g. "builder").',
+        '[get/create/update/delete] Agent ID (lowercase slug, e.g. "support").',
     })
   ),
   // Editable fields carry an `x-lobu-field` annotation — the single source of
@@ -80,7 +77,6 @@ export interface AgentRecord {
   owner_user_id: string | null;
   created_at: string;
   last_used_at: string | null;
-  is_system_agent: boolean;
 }
 
 /**
@@ -127,7 +123,6 @@ export type ManageAgentsResult =
       model?: AgentModelInfo;
     }
   | { action: "delete"; agent_id: string; deleted: boolean }
-  | { action: "set_system_agent"; system_agent_id: string }
   | {
       action: "create" | "update" | "delete";
       run_id: number;

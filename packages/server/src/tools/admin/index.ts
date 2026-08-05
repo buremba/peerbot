@@ -164,7 +164,7 @@ const ENTRIES: AdminToolEntry[] = [
 	{
 		name: "manage_agents",
 		description:
-			"Agent management (incl. the org system agent pointer). SDK alternative: client.agents.",
+			"Agent management. SDK alternative: client.agents.",
 		schema: ManageAgentsSchema,
 		handler: manageAgents,
 		annotations: DESTRUCTIVE_WITH_TITLE("Manage agents"),

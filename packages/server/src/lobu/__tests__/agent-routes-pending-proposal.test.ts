@@ -2,7 +2,7 @@
  * Coverage for the config-approval prefill read:
  * `GET /:agentId/config/pending/:runId` on the org-scoped agent router.
  *
- * A builder agent's config write is held as a pending internal run; the
+ * An agent's config write is held as a pending internal run; the
  * chat-history replay only surfaces its approval card in the exact originating
  * conversation, so a web config deep link can't see it. This endpoint returns
  * the held proposal by run_id (org-scoped) so a prefilled link can render the

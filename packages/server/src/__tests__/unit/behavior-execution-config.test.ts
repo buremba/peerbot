@@ -32,7 +32,7 @@ function validateUpdateWith(executionConfig: unknown): unknown {
 const owner: ExecutionConfigCaller = { memberRole: 'owner', userId: 'u1', isAuthenticated: true };
 const admin: ExecutionConfigCaller = { memberRole: 'admin', userId: 'u2', isAuthenticated: true };
 const member: ExecutionConfigCaller = { memberRole: 'member', userId: 'u3', isAuthenticated: true };
-// apply / automation / default-provisioning: authenticated, no user/role.
+// apply / automation: authenticated, no user/role.
 const system: ExecutionConfigCaller = { memberRole: null, userId: null, isAuthenticated: true };
 
 describe('assertValidExecutionConfig — passthrough', () => {

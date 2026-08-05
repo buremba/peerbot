@@ -2798,10 +2798,9 @@ export type ManageAgentsData = {
       | "get"
       | "create"
       | "update"
-      | "delete"
-      | "set_system_agent";
+      | "delete";
     /**
-     * [get/create/update/delete/set_system_agent] Agent ID (lowercase slug, e.g. "builder").
+     * [get/create/update/delete] Agent ID (lowercase slug, e.g. "builder").
      */
     agent_id?: string;
     /**

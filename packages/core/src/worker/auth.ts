@@ -75,11 +75,10 @@ export interface WorkerTokenData {
   messageId?: string;
   /**
    * Per-turn allowlist of internal admin tool NAMES this token may call.
-   * Set ONLY for the org's builder/system agent (id === organization.
-   * system_agent_id) when the human driving the turn is an org owner/admin
-   * (see `resolveBuilderAdminGrant`). Enforced exact-name at the execute gate
-   * (`tools/execute.ts`); absent for every normal agent/turn, so a forged or
-   * normal token grants no admin access.
+   * Enforced exact-name at the execute gate (`tools/execute.ts`); absent for
+   * every normal agent/turn, so a forged or normal token grants no admin
+   * access. Nothing mints it today (the builder admin grant is gone); the
+   * claim stays in the token contract for compatibility.
    */
   adminTools?: string[];
   /**
@@ -160,10 +159,10 @@ export interface WorkerTokenOptions {
    */
   messageId?: string;
   /**
-   * Builder admin-tool allowlist for this turn. See WorkerTokenData.adminTools.
+   * Admin-tool allowlist for this turn. See WorkerTokenData.adminTools.
    */
   adminTools?: string[];
-  /** Lobu auth user bound to the builder admin grant. */
+  /** Lobu auth user bound to the admin-tools allowlist. */
   adminActorUserId?: string;
   /** Selected runtime provider id. See WorkerTokenData.runtimeProviderId. */
   runtimeProviderId?: string;
@@ -350,10 +349,10 @@ function verifyToken(
         return null;
       }
     }
-    // The builder grant is an inseparable pair: the allowlist limits WHAT may
+    // The admin-tools pair is inseparable: the allowlist limits WHAT may
     // run and the resolved auth subject says WHO authorized it. Accepting one
-    // without the other either makes the grant unusable or tempts callers to
-    // reinterpret the platform-scoped `userId` as an auth user again.
+    // without the other either makes the allowlist unusable or tempts callers
+    // to reinterpret the platform-scoped `userId` as an auth user again.
     if (
       (data.adminTools === undefined) !==
       (data.adminActorUserId === undefined)

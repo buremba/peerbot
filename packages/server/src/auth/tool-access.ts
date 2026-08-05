@@ -136,11 +136,10 @@ export const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 	manage_agents: new Set([
 		// `list`/`get` are org-read (the handler gates them with
 		// requireOrgReadAccess) and live in PUBLIC_READ_ACTIONS — agent
-		// ADMINISTRATION (create/update/delete/set_system_agent) stays owner-admin.
+		// ADMINISTRATION (create/update/delete) stays owner-admin.
 		"create",
 		"update",
 		"delete",
-		"set_system_agent",
 	]),
 	manage_classifiers: new Set([
 		"create",

@@ -274,9 +274,9 @@ describe("access-model cross-check", () => {
 		// agent_config policy, each mapped to the agent_config verb it needs.
 		// `read`-verb paths (list/get) are org-read: METHOD_METADATA tier `read`,
 		// runtime declared in PUBLIC_READ_ACTIONS.manage_agents (the handler gates
-		// them with requireOrgReadAccess). Write-verb paths (create/update/delete/
-		// setSystemAgent) are administration: METHOD_METADATA tier `admin`, runtime
-		// owner-admin. The raw `.manage` passthrough carries the namespace's
+		// them with requireOrgReadAccess). Write-verb paths (create/update/delete)
+		// are administration: METHOD_METADATA tier `admin`, runtime owner-admin.
+		// The raw `.manage` passthrough carries the namespace's
 		// most-privileged tier (admin) and maps to no single action.
 		const adminAgentActions = OWNER_ADMIN_ACTIONS.manage_agents;
 		const readAgentActions = PUBLIC_READ_ACTIONS.manage_agents;

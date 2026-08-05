@@ -198,10 +198,32 @@ describe("provider quota reset parsing", () => {
         now
       )?.toISOString()
     ).toBe("2026-08-06T10:00:00.000Z");
+    // Captured verbatim from prod 2026-08-05. This wording reached the parker
+    // only because the message list moved into core: it lived here but NOT in
+    // the worker's `classifyError`, which assigns the very errorCode this
+    // function gates on — so the park could never fire for it in production.
+    expect(
+      providerQuotaResetNotBefore(
+        "You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
+        "PROVIDER_QUOTA_EXHAUSTED",
+        now
+      )?.toISOString()
+    ).toBe("2026-08-06T10:00:00.000Z");
     // OpenAI's insufficient_quota billing message names no retry horizon.
     expect(
       providerQuotaResetNotBefore(
         "429 You exceeded your current quota, please check your plan and billing details.",
+        "PROVIDER_QUOTA_EXHAUSTED",
+        now
+      )?.toISOString()
+    ).toBe("2026-08-06T10:00:00.000Z");
+    // Widened by the shared core literal: "insufficient quota" was previously
+    // worker-only (classification without a park). Reset-less, it is billing
+    // wording (OpenAI/Azure insufficient_quota) and now day-parks; the windowed
+    // variant with a named horizon stays unparked (case below).
+    expect(
+      providerQuotaResetNotBefore(
+        "429 You have insufficient quota for this request.",
         "PROVIDER_QUOTA_EXHAUSTED",
         now
       )?.toISOString()

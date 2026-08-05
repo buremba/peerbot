@@ -309,6 +309,31 @@ export const AGENT_ERRORS: Record<AgentErrorCode, AgentErrorSpec> = {
   },
 };
 
+/**
+ * Provider says: the key is VALID, the account just cannot spend — a balance,
+ * credit, or billing-limit wall rather than a windowed rate limit.
+ *
+ * Lives in core because two packages must agree on it and previously did not:
+ * `classifyError` (agent-worker) turns the message into
+ * `PROVIDER_QUOTA_EXHAUSTED`, and `providerQuotaResetNotBefore` (server) parks
+ * a Behavior for a day on the same wording. They were maintained as separate
+ * literals and drifted in both directions: the server list learned OpenAI's
+ * "no credits remaining" and z.ai's "no resource package" while the worker's
+ * did not, and the worker matched "insufficient quota" while the server's park
+ * list did not. Because the server gates on the code the worker assigns, the
+ * first drift silently disabled BOTH the day-park and the provider-health
+ * writeback for OpenAI balance exhaustion (observed in prod 2026-08-05). This
+ * union closes both — which deliberately promotes reset-less "insufficient
+ * quota" wording (OpenAI/Azure billing) into the day-park; the retry-horizon
+ * guard in `balanceExhaustedNotBefore` keeps windowed 429s out of it.
+ *
+ * Keep this to balance/billing wording only. Windowed limits ("too many
+ * requests", a bare 429) classify as quota too, but must NOT day-park — they
+ * self-heal, often within the minute.
+ */
+export const PROVIDER_BALANCE_EXHAUSTED =
+  /credit balance is too low|insufficient (?:credits?|balance|funds|quota)\b|no resource package|billing_hard_limit_reached|payment required|exceeded your current quota|out of credits?\b|no credits remaining/i;
+
 /** Parse an `AgentErrorCode` from an unknown value (payload/DB boundary). */
 export function toAgentErrorCode(value: unknown): AgentErrorCode | undefined {
   if (typeof value !== "string") return undefined;

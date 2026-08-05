@@ -246,6 +246,31 @@ describe("classifyError", () => {
     );
   });
 
+  test("recognizes the balance phrasings that previously lived only in the schedule parker's list", () => {
+    // Captured verbatim from prod 2026-08-05 (org `buremba`, provider `openai`,
+    // agent routed to openai/gpt-4o-mini): the worker logged a bare
+    // `{"name":"Error","message":"You have no credits remaining…"}` because no
+    // pre-split worker pattern matched this sentence. `undefined` here is not a
+    // cosmetic miss — it silently disables TWO downstream features that gate on
+    // the code: `providerQuotaResetNotBefore` (24h Behavior park) and
+    // `recordProviderHealth` (marking the provider row unhealthy). Both shipped
+    // believing this message classified.
+    expect(
+      classifyError(
+        new Error(
+          "You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/."
+        )
+      )
+    ).toBe("PROVIDER_QUOTA_EXHAUSTED");
+
+    // z.ai's balance wording, likewise only in the server-side list until now.
+    expect(
+      classifyError(
+        new Error("No resource package or the balance is insufficient")
+      )
+    ).toBe("PROVIDER_QUOTA_EXHAUSTED");
+  });
+
   test("recognizes Gemini MALFORMED_FUNCTION_CALL as a provider tool-call failure", () => {
     expect(
       classifyError(

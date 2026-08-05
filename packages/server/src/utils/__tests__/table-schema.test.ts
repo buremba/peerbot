@@ -196,6 +196,14 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
       'last_repair_at',
       'last_repair_post_hash',
     ]),
+    // scheduler_client_id: retired with the Behavior scheduler rework in #2499,
+    // which stopped writing it and replaced it with agent_kind on the read path.
+    // Prod has it NULL on every row. Schema exposure is removed ahead of the
+    // two-phase column drop, so the physical column outlives its
+    // QUERYABLE_SCHEMA entry until the phase-2 migration.
+    // Keyed by the QUERYABLE_SCHEMA entry name (`behaviors`), not the physical
+    // table (`watchers`) — this map is indexed by `t.name` from that schema.
+    behaviors: new Set(['scheduler_client_id']),
     user: new Set(['email', 'phoneNumber', 'phoneNumberVerified']),
   };
 

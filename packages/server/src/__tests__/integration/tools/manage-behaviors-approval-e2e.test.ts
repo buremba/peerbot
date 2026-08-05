@@ -130,7 +130,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 			WHERE id = ${agentId} AND organization_id = ${orgId}
 		`;
 
-		// Same owner identity, but acting as the builder agent — principal the
+		// Same owner identity, but acting as an agent — principal the
 		// agent_config write-gate holds for approval.
 		agentCtx = baseCtx(
 			org.id,

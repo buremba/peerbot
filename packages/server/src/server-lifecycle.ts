@@ -52,9 +52,9 @@ interface ServerLifecycleConfig {
 	databaseReadiness: () => Promise<void>;
 	/**
 	 * Runs after gateway + scheduler boot, before `httpServer.listen()`.
-	 * Both `lobu run` backends use this for `ensureInstallOperator` +
-	 * `ensureDefaultAgent` (embedded always; external only with
-	 * LOBU_RUN_OWNS_DB=1 — see local-bootstrap.ts).
+	 * Both `lobu run` backends use this for `ensureInstallOperator`
+	 * (embedded always; external only with LOBU_RUN_OWNS_DB=1 — see
+	 * local-bootstrap.ts).
 	 */
 	preListenHooks?: Array<() => Promise<void> | void>;
 	/**
@@ -382,7 +382,8 @@ export function createServerLifecycle(
 			httpServer.on("request", honoListener);
 		}
 
-		// 8. Pre-listen hooks (embedded: install-operator + default-agent).
+		// 8. Pre-listen hooks (install-operator; embedded always, external with
+		// LOBU_RUN_OWNS_DB=1).
 		for (const hook of preListenHooks) {
 			await hook();
 		}

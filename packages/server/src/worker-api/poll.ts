@@ -16,12 +16,6 @@ import type { Env } from '../index';
 import { claimPendingWatcherRun } from '../runs/queue-service';
 import { parseBehaviorSkillSnapshots } from '../behaviors/skill-snapshots';
 import { materializeDueFeeds } from '../scheduled/check-due-feeds';
-import {
-  DEFAULT_AGENT_ID,
-  ensureDefaultWatcher,
-  hasOrgSentinel,
-  DEFAULT_AGENT_SENTINEL,
-} from '../auth/default-provisioning';
 import { reconcileDeviceCapabilities } from './device-reconcile';
 import { findBundledConnectorFile } from '../utils/connector-catalog';
 import {
@@ -319,37 +313,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           summary: `Device "${label ?? worker_id}" registered`,
           extra: { platform, worker_id, app_version },
         });
-
-        // Mac-app onboarding: when a device registers for the first time in an
-        // org that's a candidate for default provisioning (agent sentinel set
-        // → `ensureDefaultAgent` ran for this org at boot), provision a daily
-        // check-in watcher pinned to THIS device. The sentinel on
-        // `organization.metadata` makes this exactly-once even across multiple
-        // first-poll attempts. Deletion stickiness: if the user later removes
-        // the watcher via the web UI, the sentinel stays and we do NOT
-        // recreate.
-        const provisioningOrgId = upserted[0].organization_id;
-        const provisioningDeviceId = upserted[0].id;
-        try {
-          const isCandidateOrg = await hasOrgSentinel(
-            provisioningOrgId,
-            DEFAULT_AGENT_SENTINEL,
-            sql
-          );
-          if (isCandidateOrg) {
-            await ensureDefaultWatcher({
-              organizationId: provisioningOrgId,
-              agentId: DEFAULT_AGENT_ID,
-              deviceWorkerId: provisioningDeviceId,
-              sql,
-            });
-          }
-        } catch (err) {
-          logger.warn(
-            { err: errorMessage(err), organizationId: provisioningOrgId },
-            '[pollWorkerJob] default-watcher provisioning failed (non-fatal)'
-          );
-        }
       }
 
       // Reconcile this user's device connectors against the capabilities their

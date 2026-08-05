@@ -2,8 +2,7 @@
  * Cross-tenant regression test for the org-less `AgentConfigStore` read path.
  *
  * `agents` is keyed `(organization_id, id)` with no global unique index on
- * `id`, so a per-org system agent (`lobu-builder`, `owletto-default`) has one
- * row per tenant. `getSettings`/`getMetadata` used to fall back to a bare
+ * `id`, so a per-org agent has one row per tenant. `getSettings`/`getMetadata` used to fall back to a bare
  * `WHERE id = $agentId` — no `LIMIT`, no `ORDER BY` — and return `rows[0]`,
  * leaking an arbitrary tenant's config and letting its `owner_*` columns decide
  * authorization. The org-less HTTP path is real: the settings-cookie routes

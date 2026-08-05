@@ -12,7 +12,6 @@ import {
 } from "@lobu/core/contracts/tools/manage-behaviors";
 import { Value } from "@sinclair/typebox/value";
 import { Hono } from "hono";
-import { ensureBuilderAgent } from "../auth/builder-provisioning";
 import { mcpAuth } from "../auth/middleware";
 import { resolveNewAgentProvisioningDefaults } from "../auth/system-provider-resolution";
 import { resolveBehaviorTriggerWrite } from "../behaviors/triggers";
@@ -342,27 +341,6 @@ function hasFreshCredential(profiles: AuthProfile[]): boolean {
 			profile.credential.trim().length > 0
 	);
 }
-
-// ── Resolve the org's builder/system agent ───────────────────────────────────
-// Server-controlled pointer (organization.system_agent_id). The web console
-// mounts the builder chat against this id; null when none is provisioned.
-// Registered before any `/:agentId` route so the literal path wins.
-routes.get("/system-agent", async (c) => {
-	const orgId = c.get("organizationId")!;
-	const sql = getDb();
-	// Backfill / heal the org's builder on demand. Orgs created before the
-	// builder feature have no system agent yet, and an org whose builder was
-	// provisioned before its providers resolved needs its providers/model filled
-	// in. ensureBuilderAgent is idempotent + one SELECT on the healthy path, and
-	// best-effort (never throws), so it can't break console load.
-	await ensureBuilderAgent(orgId, sql);
-	const rows = await sql`
-    SELECT system_agent_id FROM organization WHERE id = ${orgId} LIMIT 1
-  `;
-	return c.json({
-		systemAgentId: (rows[0]?.system_agent_id as string | null) ?? null,
-	});
-});
 
 // ── List agents ──────────────────────────────────────────────────────────────
 
@@ -1395,9 +1373,9 @@ routes.get("/:agentId/config", async (c) => {
 	return c.json({ ...settings, authProfiles });
 });
 
-// ── Pending builder write-gate proposal (config-approval prefill) ────────────
+// ── Pending write-gate proposal (config-approval prefill) ────────────────────
 //
-// A config change a builder agent proposes (from Slack or elsewhere) is held as
+// A config change an agent proposes (from Slack or elsewhere) is held as
 // a pending internal run; the chat-history replay only surfaces its approval
 // card in the EXACT originating conversation, so a web deep link to the config
 // form never sees it. This conversation-agnostic read returns the held proposal

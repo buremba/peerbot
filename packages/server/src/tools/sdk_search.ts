@@ -30,8 +30,8 @@ import { searchLiveConnectors } from "./connector-discovery";
 /**
  * agents.* paths → agent_config action that must not be blanket-denied for the
  * method to appear in discovery. list/get use read; mutate uses create/update/
- * delete. setSystemAgent is treated as update. manage is raw — hide when every
- * agent_config action is denied at the blanket.
+ * delete. manage is raw — hide when every agent_config action is denied at the
+ * blanket.
  */
 export const AGENTS_SDK_ACTION: Record<string, WriteAction | "any"> = {
 	"agents.list": "read",
@@ -39,7 +39,6 @@ export const AGENTS_SDK_ACTION: Record<string, WriteAction | "any"> = {
 	"agents.create": "create",
 	"agents.update": "update",
 	"agents.delete": "delete",
-	"agents.setSystemAgent": "update",
 	"agents.manage": "any",
 };
 

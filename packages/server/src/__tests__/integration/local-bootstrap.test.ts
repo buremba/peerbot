@@ -6,25 +6,18 @@
  *
  *   1. With LOBU_RUN_OWNS_DB=1 (the CLI-set local-install marker), running
  *      the external-DB bootstrap hooks on a fresh, migrated database
- *      provisions the install operator, its personal org, and the default
- *      agent — i.e. `/api/local-init` has a first user to mint a session
- *      for.
+ *      provisions the install operator and its personal org — i.e.
+ *      `/api/local-init` has a first user to mint a session for — but NO
+ *      agents (agents are created explicitly by the user).
  *   2. WITHOUT the flag (every cloud/prod deployment), the external-DB
  *      branch gets ZERO hooks and the database stays empty — prod must
  *      never auto-provision users/orgs.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { DEFAULT_AGENT_ID } from '../../auth/default-provisioning';
 import { INSTALL_OPERATOR_KIND } from '../../auth/install-operator';
 import { externalDbBootstrapHooks } from '../../local-bootstrap';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
-
-function testDatabaseUrl(): string {
-  const url = process.env.DATABASE_URL;
-  if (!url) throw new Error('DATABASE_URL must be set by the test harness');
-  return url;
-}
 
 async function countRows(table: 'user' | 'organization'): Promise<number> {
   const sql = getTestDb();
@@ -46,11 +39,11 @@ describe('externalDbBootstrapHooks', () => {
     process.env.ENCRYPTION_KEY = VALID_KEY;
   });
 
-  it('with LOBU_RUN_OWNS_DB=1: provisions operator + personal org + default agent on an empty DB', async () => {
+  it('with LOBU_RUN_OWNS_DB=1: provisions operator + personal org but NO agents on an empty DB', async () => {
     expect(await countRows('user')).toBe(0);
     expect(await countRows('organization')).toBe(0);
 
-    const hooks = externalDbBootstrapHooks(testDatabaseUrl(), {
+    const hooks = externalDbBootstrapHooks({
       LOBU_RUN_OWNS_DB: '1',
     });
     expect(hooks.length).toBeGreaterThan(0);
@@ -68,15 +61,15 @@ describe('externalDbBootstrapHooks', () => {
     `) as unknown as Array<{ id: string }>;
     expect(orgs).toHaveLength(1);
 
+    // Auto-provisioning is gone: bootstrap must not create any agents.
     const agents = (await sql`
-      SELECT id FROM agents
-      WHERE organization_id = ${orgs[0]!.id} AND id = ${DEFAULT_AGENT_ID}
+      SELECT id FROM agents WHERE organization_id = ${orgs[0]!.id}
     `) as unknown as Array<unknown>;
-    expect(agents).toHaveLength(1);
+    expect(agents).toHaveLength(0);
   });
 
   it('with LOBU_RUN_OWNS_DB=1: re-running the hooks is idempotent', async () => {
-    const hooks = externalDbBootstrapHooks(testDatabaseUrl(), {
+    const hooks = externalDbBootstrapHooks({
       LOBU_RUN_OWNS_DB: '1',
     });
     for (const hook of hooks) await hook();
@@ -88,7 +81,7 @@ describe('externalDbBootstrapHooks', () => {
 
   it('WITHOUT the flag: returns no hooks and the DB stays empty (prod safety)', async () => {
     for (const env of [{}, { LOBU_RUN_OWNS_DB: '0' }, { LOBU_RUN_OWNS_DB: 'true' }]) {
-      const hooks = externalDbBootstrapHooks(testDatabaseUrl(), env);
+      const hooks = externalDbBootstrapHooks(env);
       expect(hooks).toHaveLength(0);
     }
 

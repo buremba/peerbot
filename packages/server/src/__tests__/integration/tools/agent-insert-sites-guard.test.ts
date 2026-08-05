@@ -41,10 +41,6 @@ const SANCTIONED_INSERT_SITES = [
 	"lobu/agent-routes.ts",
 	// The manage_agents create tool (MCP + REST proxy).
 	"tools/admin/manage_agents.ts",
-	// Boot provisioning for the org's default personal agent.
-	"auth/default-provisioning.ts",
-	// Boot provisioning for the org's builder/system agent.
-	"auth/builder-provisioning.ts",
 ].sort();
 
 const PROVISIONING_HELPER = "resolveNewAgentProvisioningDefaults";

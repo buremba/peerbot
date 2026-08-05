@@ -304,15 +304,15 @@ export class MultiTenantProvider implements WorkspaceProvider {
           403
         );
       }
-      // For a builder admin turn (per-run token carries `adminTools`), attribute
+      // For an admin-tools turn (per-run token carries `adminTools`), attribute
       // the call to the verified Lobu auth subject (`adminActorUserId`, carried
       // separately from the platform-scoped `userId`) rather than the agent's
       // provisioning owner — so the role check and audit reflect the actual
-      // actor. Non-builder worker direct-auth keeps the agent-owner attribution.
-      const isBuilderAdminTurn = !!tokenData.adminTools?.length;
-      if (isBuilderAdminTurn && !tokenData.adminActorUserId) {
+      // actor. Non-admin-tools worker direct-auth keeps the agent-owner attribution.
+      const isAdminToolsTurn = !!tokenData.adminTools?.length;
+      if (isAdminToolsTurn && !tokenData.adminActorUserId) {
         return c.json(
-          { error: 'invalid_token', error_description: 'Worker token missing builder admin actor' },
+          { error: 'invalid_token', error_description: 'Worker token missing admin-tools actor' },
           401,
           {
             'WWW-Authenticate': `Bearer realm="${baseUrl}/.well-known/oauth-protected-resource", error="invalid_token"`,
@@ -355,9 +355,9 @@ export class MultiTenantProvider implements WorkspaceProvider {
             userId: tokenData.userId || undefined,
             source: tokenData.source || undefined,
           },
-          // Builder admin-tool grant rides the per-run worker token (set only
-          // for the system agent on an owner/admin turn). Carried through so the
-          // execute gate lets the builder call its allowlisted internal tools.
+          // Admin-tools allowlist rides the per-run worker token. Carried
+          // through so the execute gate lets an admin-tools turn call its
+          // allowlisted internal tools.
           adminTools: tokenData.adminTools ?? null,
         },
         mcpIsAuthenticated: true,

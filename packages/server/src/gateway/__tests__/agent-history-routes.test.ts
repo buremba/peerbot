@@ -584,65 +584,6 @@ describe("agent history routes", () => {
 		expect(response.status).toBe(401);
 	});
 
-	test("scopes threads to the ambient org for a per-org system agent, not the ownership-first org", async () => {
-		const sql = getDb();
-		const SHARED_ORG = "test-org-shared-system-agent";
-		await orgContext.run({ organizationId: SHARED_ORG }, async () => {
-			await seedAgentRow("agent-1", {
-				organizationId: SHARED_ORG,
-				name: "Builder",
-				ownerPlatform: "external",
-				ownerUserId: USER_ID,
-			});
-		});
-		// The caller owns agent-1 only in ORG_ID; shared-org access comes from
-		// owner role plus the system-agent pointer.
-		await sql`
-			INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
-			VALUES (${USER_ID}, 'History User', ${`${USER_ID}@test.example.com`}, true, now(), now())
-			ON CONFLICT (id) DO NOTHING
-		`;
-		await addUserToOrganization(USER_ID, SHARED_ORG, "owner");
-		await sql`UPDATE "organization" SET system_agent_id = 'agent-1' WHERE id = ${SHARED_ORG}`;
-
-		const sharedThreadId = "sharedthread";
-		const sharedConvId = buildApiConversationId({
-			agentId: "agent-1",
-			userId: USER_ID,
-			organizationId: SHARED_ORG,
-			threadId: sharedThreadId,
-		});
-		await sql`
-			INSERT INTO public.conversations
-				(organization_id, agent_id, platform, conversation_id, kind, user_id, title, last_activity_at)
-			VALUES
-				(${SHARED_ORG}, 'agent-1', 'web', ${sharedConvId}, 'owned', ${USER_ID}, 'Shared org thread', now())
-		`;
-
-		setAuthProvider(() => ({
-			userId: USER_ID,
-			platform: "external",
-			exp: Date.now() + 60_000,
-		}));
-
-		const response = await orgContext.run({ organizationId: SHARED_ORG }, () =>
-			createApp().request("/api/v1/agents/agent-1/history/threads", {
-				method: "GET",
-				headers: { host: "localhost" },
-			}),
-		);
-		expect(response.status).toBe(200);
-		const body = (await response.json()) as {
-			threads: Array<{ id: string; title: string }>;
-		};
-		expect(body.threads).toEqual([
-			expect.objectContaining({
-				id: sharedThreadId,
-				title: "Shared org thread",
-			}),
-		]);
-	});
-
 	test("allows a non-owner org member to read a bound platform transcript through federated ACL", async () => {
 		const { channelMember, conversationId } =
 			await seedPlatformConversationAcl();
@@ -767,7 +708,7 @@ describe("agent history routes", () => {
 		).toContain(conversationId);
 	});
 
-	test("reads a per-org system agent's platform conversation in the ambient org, not the ownership-first org", async () => {
+	test("reads a bound agent's platform conversation in the ambient org, not the ownership-first org", async () => {
 		const sql = getDb();
 		const SHARED_ORG = "test-org-shared-system-read";
 		await seedAgentRow("agent-1", {
@@ -782,9 +723,6 @@ describe("agent history routes", () => {
 			ON CONFLICT (id) DO NOTHING
 		`;
 		await addUserToOrganization(USER_ID, SHARED_ORG, "owner");
-		await sql`UPDATE "organization" SET system_agent_id = 'agent-1' WHERE id = ${SHARED_ORG}`;
-		// USER_ID must NOT own agent-1 via agent_users in SHARED_ORG — access is via
-		// org-owner + system_agent_id, so they take the non-owner (enforced-ACL) path.
 
 		const CHANNEL = "C0SHARED";
 		const TEAM = "T0SHARED";
@@ -963,8 +901,8 @@ describe("agent history routes", () => {
 	test("a platform admin reads bound transcripts without an ownership row or ACL", async () => {
 		// Restores the admin bypass the ownership resolver granted before this
 		// route stopped calling it. The admin has no agent_users row and only a
-		// plain 'member' role (which fails canUseSystemAgent's owner/admin check),
-		// and no ACL is built — so every ownership/member path declines and only
+		// plain 'member' role, and no ACL is built — so every ownership/member
+		// path declines and only
 		// session.isAdmin authorizes. Without the bypass this falls to the
 		// enforced-ACL path and 404s (proven red->green).
 		const { conversationId } = await seedPlatformConversationAcl({

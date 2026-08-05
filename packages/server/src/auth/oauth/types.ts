@@ -230,10 +230,10 @@ export interface AuthInfo {
    */
   workerId?: string | null;
   /**
-   * Per-turn builder admin-tool allowlist, carried from a verified worker
+   * Per-turn admin-tool allowlist, carried from a verified worker
    * token (WorkerTokenData.adminTools) into the request's auth info so the
-   * execute gate can permit the org's builder agent to call its allowlisted
-   * internal tools. Absent for every non-builder caller.
+   * execute gate can permit an admin-tools turn to call its allowlisted
+   * internal tools. Absent for every non-admin-tools caller.
    */
   adminTools?: string[] | null;
 }

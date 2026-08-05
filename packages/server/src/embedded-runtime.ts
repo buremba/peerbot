@@ -583,9 +583,9 @@ export async function startEmbeddedRuntime(): Promise<EmbeddedRuntime> {
 			databaseUrl,
 			dataDir: pgDataDir,
 			databaseReadiness: () => runMigrations(databaseUrl),
-			// Install-operator + default-agent provisioning, shared with the
-			// external-DB `lobu run` path (see local-bootstrap.ts).
-			preListenHooks: buildLocalBootstrapHooks(databaseUrl),
+			// Install-operator provisioning, shared with the external-DB
+			// `lobu run` path (see local-bootstrap.ts).
+			preListenHooks: buildLocalBootstrapHooks(),
 			// Runs after stopLobuGateway + closeDbSingleton so gateway connections
 			// release before the embeddings child + PG child are stopped. Restore
 			// ancestor ownership/modes only after postgres no longer needs them.

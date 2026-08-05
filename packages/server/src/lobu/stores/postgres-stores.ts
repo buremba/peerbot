@@ -129,8 +129,9 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 		async getSettings(agentId) {
 			const sql = getDb();
 			// CROSS-TENANT GUARD: `agents` is keyed (organization_id, id) with no
-			// global unique index on `id`, so a per-org system agent (`lobu-builder`)
-			// has one row per tenant and an id-only read returns an arbitrary one.
+			// global unique index on `id`, so a shared agent id (the same string
+			// in multiple orgs) has one row per tenant and an id-only read returns
+			// an arbitrary one.
 			// The settings-cookie routes authenticate without a Better Auth user, so
 			// `createLobuOrgContextMiddleware` opens no context on a real, externally
 			// reachable path. Callers must prove the tenant and open their own

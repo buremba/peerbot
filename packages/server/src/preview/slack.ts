@@ -386,9 +386,9 @@ export async function consumePreviewClaim(args: {
 		// chat-platform → Lobu-user identity. A claim code is paste-able and does
 		// not prove the redeemer is the minter, while a chat-user identity
 		// row authorizes Slack approval clicks (`interaction-bridge`
-		// resolveSlackActionReviewer) and the in-chat builder-admin grant.
-		// Identity is established only by the Slack install claim
-		// (slack-claim.ts), which links identities proven via Slack sign-in.
+		// resolveSlackActionReviewer). Identity is established only by the Slack
+		// install claim (slack-claim.ts), which links identities proven via Slack
+		// sign-in.
 		return {
 			status: "bound" as const,
 			agentId: claim.agentId,

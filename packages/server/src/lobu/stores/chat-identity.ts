@@ -16,7 +16,7 @@ import { getDb } from "../../db/client.js";
  * Workspace scoping is not optional here. Two Slack workspaces can legitimately
  * contain the same bare `U…`, so a lookup keyed on the user id alone would map
  * one workspace's person onto another workspace's Lobu account. Callers use this
- * to grant privilege (approval clicks, builder-admin tools, owner re-bind), so
+ * to grant privilege (approval clicks, owner re-bind), so
  * that would be a mis-grant, not merely a wrong answer. The composite
  * `TEAM:USER` identifier carries the scope in the key itself.
  *

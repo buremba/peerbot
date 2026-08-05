@@ -109,8 +109,8 @@ export class ApiPlatform implements PlatformAdapter {
       });
     });
 
-    // Durable approval card (runs/events-backed — today the builder agent's
-    // manage_agents write gate). Same SSE event name ("tool-approval") + same
+    // Durable approval card (runs/events-backed — an agent's manage_agents
+    // write gate). Same SSE event name ("tool-approval") + same
     // owner-gated thread_response delivery as the MCP grant above, but the
     // payload carries run_id + action + the proposed-vs-current diff so the SPA
     // ToolApprovalPart renders the interactive Approve/Reject card. The chat

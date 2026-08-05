@@ -19,7 +19,6 @@ import {
   getValidated,
   type RouteSpec,
 } from "../shared/define-route.js";
-import { DEFAULT_AGENT_ID } from "../../../auth/default-provisioning.js";
 import { getDb } from "../../../db/client.js";
 import { getCachedOrgBySlug } from "../../../workspace/multi-tenant.js";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store.js";
@@ -349,41 +348,6 @@ const sendMessageRoute: RouteSpec = {
 };
 
 // =============================================================================
-// System-agent resolution + gating
-// =============================================================================
-
-/**
- * Read `organization.system_agent_id` for the given org. Returns null when the
- * org has no row or no system agent set.
- */
-async function getOrgSystemAgentId(
-  organizationId: string
-): Promise<string | null> {
-  const rows = (await getDb()`
-    SELECT system_agent_id FROM "organization" WHERE id = ${organizationId} LIMIT 1
-  `) as unknown as Array<{ system_agent_id: string | null }>;
-  return rows[0]?.system_agent_id ?? null;
-}
-
-/**
- * True when `userId` is an owner or admin of `organizationId`. Reuses the
- * `member` role check pattern shared by `organization-access.ts`.
- */
-async function isOrgOwnerOrAdmin(
-  organizationId: string,
-  userId: string
-): Promise<boolean> {
-  const rows = (await getDb()`
-    SELECT 1 FROM "member"
-    WHERE "organizationId" = ${organizationId}
-      AND "userId" = ${userId}
-      AND role IN ('owner', 'admin')
-    LIMIT 1
-  `) as unknown as Array<unknown>;
-  return rows.length > 0;
-}
-
-// =============================================================================
 // Create OpenAPI Hono App
 // =============================================================================
 
@@ -474,32 +438,23 @@ export function createAgentApi(config: AgentApiConfig): Hono {
   }
 
   /**
-   * Authorize access to an agent. The org's system (builder) agent is gated by
-   * ORG owner/admin role — any owner/admin may use the management console, not
-   * just whoever provisioned it (which is what per-user `requireAgentOwnership`
-   * would require). Every other agent uses per-user ownership. Workers (a worker
-   * IS its own agent) always take the ownership path. Returns a denial Response,
-   * or the resolved access (organizationId + whether this is the system agent +
-   * the authenticated caller for system-agent sessions, used to bind the session
-   * to the trusted actor rather than a client-supplied id).
+   * Authorize access to an agent via per-user ownership. Workers (a worker
+   * IS its own agent) always take the ownership path. Returns a denial
+   * Response, or the resolved access ({ organizationId }).
    */
   async function authorizeAgentAccess(
     c: Context,
     agentId: string,
     sessionForTenantCheck?: { organizationId?: string } | null
-  ): Promise<
-    | Response
-    | { organizationId?: string; isSystemAgent: boolean; callerUserId?: string }
-  > {
+  ): Promise<Response | { organizationId?: string }> {
     const bearer = tokenFromHeader(c);
-    const isWorker = bearer ? Boolean(verifyWorkerToken(bearer)) : false;
     // Authoritative auth-method-bound org (mirrors requireAgentOwnership): set
     // only by token auth (worker/external-OAuth `authContext`, or a PAT's pinned
     // org via the bearer-gated ambient read). Undefined for the cookie session
     // (SPA), which has no org binding and is gated by the membership/role check
     // below. A bearer/token caller MUST NOT escape its bound org via a
     // client-supplied workspace scope (x-lobu-org) or session org — deny on
-    // conflict before resolving the system agent.
+    // conflict before resolving ownership.
     const authoritativeCallerOrgId =
       c.get("authContext")?.organizationId ??
       (bearer ? (c.get("organizationId") as string | undefined) : undefined);
@@ -510,41 +465,14 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     ) {
       return c.json({ success: false, error: "Forbidden" }, 403);
     }
-    const orgId =
-      sessionForTenantCheck?.organizationId ??
-      (bearer ? (c.get("organizationId") as string | undefined) : undefined) ??
-      c.get("authContext")?.organizationId ??
-      (c.get("organizationId") as string | undefined);
-    const systemAgentId =
-      !isWorker && orgId ? await getOrgSystemAgentId(orgId) : null;
-    if (systemAgentId && systemAgentId === agentId) {
-      const callerUserId =
-        (c.get("authContext")?.userId as string | undefined) ??
-        (await verifySettingsSessionOrToken(c, "token"))?.userId;
-      if (
-        !callerUserId ||
-        !(await isOrgOwnerOrAdmin(orgId as string, callerUserId))
-      ) {
-        return c.json(
-          {
-            success: false,
-            error:
-              "Only organization owners/admins can use the org's system agent.",
-          },
-          403
-        );
-      }
-      return { organizationId: orgId, isSystemAgent: true, callerUserId };
-    }
     const owned = await requireAgentOwnership(c, agentId, sessionForTenantCheck);
     if (owned instanceof Response) return owned;
-    return { organizationId: owned.organizationId, isSystemAgent: false };
+    return { organizationId: owned.organizationId };
   }
 
   /**
    * Verify that the caller is authorized to act on `resolvedAgentId` via
-   * per-user ownership (the non-system-agent path; system agents go through
-   * `authorizeAgentAccess`).
+   * per-user ownership.
    *
    * The agent API middleware accepts three auth methods (worker token,
    * external OAuth, settings session). Each needs its own ownership rule:
@@ -588,9 +516,8 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       (bearer ? (c.get("organizationId") as string | undefined) : undefined);
 
     // Tenant guard: agent-id-string ownership is per (platform, userId,
-    // agentId) — but the agentId string can repeat across tenants (the
-    // global `DEFAULT_AGENT_ID` constant, or two orgs that happen to share
-    // an id). If a session belongs to org A and the caller's auth context
+    // agentId) — but the agentId string can repeat across tenants (two orgs
+    // that happen to share an id). If a session belongs to org A and the caller's auth context
     // says org B, deny BEFORE any ownership check — otherwise org B would
     // pass ownership against its own agent-X and reach org A's session
     // routed by the same agent-X. Returning the same `Forbidden` shape as
@@ -633,8 +560,8 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     // userId but carries NO org, so the guard above is a no-op for it — yet
     // `verifyOwnedAgentAccess` authorizes on (platform, userId, agentId) and
     // returns the CALLER's org, never the session's. Without this, a cookie
-    // session for org B could read org A's session via a shared agentId (the
-    // global DEFAULT_AGENT_ID). So compare the org ownership actually resolved
+    // session for org B could read org A's session via a shared agentId.
+    // So compare the org ownership actually resolved
     // to against the session's, and deny on a definite mismatch. An undefined
     // on either side falls through unchanged — this never denies a legitimate
     // same-org caller, it only closes the cross-org case the guard above misses.
@@ -664,9 +591,8 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       // agent's resolved org must match the session's org. This is the
       // authoritative isolation check for the settings-session COOKIE path
       // (which has no `authoritativeCallerOrgId`): e.g. a cookie user reaching
-      // another org's session via a shared agentId (the global
-      // DEFAULT_AGENT_ID) resolves to their own org, which differs from the
-      // session's → deny.
+      // another org's session via a shared agentId resolves to their own org,
+      // which differs from the session's → deny.
       const tenantOrg = sessionForTenantCheck?.organizationId;
       if (
         tenantOrg &&
@@ -776,72 +702,33 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       }
     }
 
-    // Resolve the target agent. Two flows, no third:
-    //   - caller pinned agentId → use it (with ownership check)
-    //   - no agentId → route to the org's default agent (`owletto-default`)
-    // The third flow that used to live here ("ephemeral": generate a UUID
-    // and auto-install providers on it) is gone — it created a phantom
-    // agent per chat, never used the user's actual default agent, and the
-    // saveSettings UPDATE silently no-op'd on a row that didn't exist yet.
-    // Default-agent provisioning runs at signup (`ensureDefaultAgent`) and
-    // already populates `models` from system-key providers, so the row
-    // exists with credentials by the time chat reaches here.
-    //
-    // Org resolution: `createLobuAuthBridge` (outer middleware on `/lobu/*`)
-    // sets `c.get("organizationId")` from the PAT — that's the common path
-    // for `lobu chat -c local`. `createApiAuthMiddleware` (this app's inner
-    // middleware) sets `authContext` for the worker-token and external-OAuth
-    // paths. Check both.
-    const callerOrgId =
-      (c.get("organizationId") as string | undefined) ??
-      c.get("authContext")?.organizationId;
-    let agentId = requestedAgentId?.trim();
+    // Resolve the target agent: the caller must pin an agentId. Agents are
+    // not auto-provisioned and there is no default routing — create an agent
+    // (`lobu apply` / web console) and pass its id.
+    const agentId = requestedAgentId?.trim();
     if (!agentId) {
-      if (!callerOrgId) {
-        return c.json(
-          {
-            success: false,
-            error:
-              "Cannot resolve default agent: caller has no organization context",
-          },
-          400
-        );
-      }
-      // No-agent chat resolves to the org's DEFAULT personal agent — NOT the
-      // builder/system agent. The builder is an admin console reached only by
-      // passing its id explicitly (the /agents console does this via
-      // useSystemAgentId), so routing the bare "just chat" path to it would
-      // wrongly hand every default conversation to the management agent.
-      const defaultMeta = await ownershipMetadataStore?.getMetadata(
-        DEFAULT_AGENT_ID
+      return c.json(
+        {
+          success: false,
+          error:
+            "No agent specified. Run lobu apply or create an agent first, then pass its id.",
+        },
+        400
       );
-      if (!defaultMeta || defaultMeta.organizationId !== callerOrgId) {
-        return c.json(
-          {
-            success: false,
-            error: `Default agent "${DEFAULT_AGENT_ID}" not provisioned for this organization. Run lobu apply or create an agent first.`,
-          },
-          404
-        );
-      }
-      agentId = DEFAULT_AGENT_ID;
     }
 
     // When the SPA drives a chat from a specific workspace (especially a
-    // non-default org), it sends `x-lobu-org: <slug>`. Resolve it so the
-    // system-agent resolution + authorization scope to THAT org rather than the
-    // caller's ambient default org — the builder agent id is a per-org constant
-    // (`lobu-builder`), so an unscoped resolve would otherwise pick the default
-    // org's builder. Membership is verified by `authorizeAgentAccess`'s
-    // owner/admin check against this org (a non-member is denied).
+    // non-default org), it sends `x-lobu-org: <slug>`. Resolve it so
+    // authorization scopes to THAT org rather than the caller's ambient
+    // default org. Membership is verified by `authorizeAgentAccess`'
+    // ownership checks against this org (a non-member is denied).
     const workspaceOrgSlug = c.req.header("x-lobu-org");
     const workspaceScopedOrgId = workspaceOrgSlug
       ? (await getCachedOrgBySlug(workspaceOrgSlug))?.id
       : undefined;
 
-    // Authorize via the shared helper (system agent → org owner/admin; otherwise
-    // per-user ownership). For a system-agent session it also returns the
-    // authenticated caller so the session binds to the trusted actor below.
+    // Authorize via the shared helper (per-user ownership + auth-method
+    // enforcement).
     const access = await authorizeAgentAccess(
       c,
       agentId,
@@ -851,8 +738,6 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     const ownership: { organizationId?: string } = {
       organizationId: access.organizationId,
     };
-    const isSystemAgentSession = access.isSystemAgent;
-    const systemCallerUserId = access.callerUserId;
 
     // Stamp the worker token with the agent's owning org so the egress
     // proxy's per-tenant gates (grant/deny, judge cache, judge policy) can
@@ -866,7 +751,10 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       ? (await ownershipMetadataStore.getMetadata(agentId))?.organizationId
       : undefined;
     const tokenOrganizationId =
-      ownership.organizationId ?? metadataOrgId ?? callerOrgId;
+      ownership.organizationId ??
+      metadataOrgId ??
+      (c.get("organizationId") as string | undefined) ??
+      c.get("authContext")?.organizationId;
 
     // A `behavior_run` intent decides this session's userId/thread, and hence
     // the `_watcher_<id>_run_<id>` conversation suffix that downstream gates
@@ -896,27 +784,19 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       );
     }
     // userId backs `conversationId = ${agentId}_${userId}[_${thread}]`, which
-    // is the session-store key. For pinned agents the agentId is per-org so
-    // collisions are bounded to a single tenant. For the default-agent path
-    // agentId is a GLOBAL constant (DEFAULT_AGENT_ID) — so the userId must
-    // be unique-per-caller to keep conversationIds globally unique and
-    // prevent cross-tenant session resume. Prefer the request body, then the
+    // is the session-store key. agentId is a per-org row id, so the userId must
+    // be unique-per-caller to keep conversationIds unique and prevent
+    // cross-caller session resume. Prefer the request body, then the
     // authenticated caller's userId (per-org-unique via the auth bridge),
-    // then fall back to agentId (only for pinned agents where that's safe).
+    // then fall back to agentId.
     const authUserId = c.get("authContext")?.userId;
-    // System-agent sessions bind to the AUTHENTICATED owner/admin, never the
-    // client-supplied panel userId — the builder admin-tool grant
-    // (resolveBuilderAdminGrant) keys on this run's userId, so trusting a
-    // client value would let any caller name an admin to mint the grant.
     const userId = behaviorIntent
       ? // Internal correlation key: the `..._watcher_<id>_run_<id>` conversationId
         // shape is prod-proven and drives worker dispatch + SSE owner-routing
         // (see the conversationId comment below). Keep the internal `watcher_`
         // wire prefix even though the public intent field is `behaviorId`.
         `watcher_${behaviorIntent.behaviorId}`
-      : isSystemAgentSession
-        ? (systemCallerUserId as string)
-        : requestedUserId || authUserId || agentId;
+      : requestedUserId || authUserId || agentId;
     const effectiveThread = behaviorIntent
       ? `run_${behaviorIntent.runId}`
       : thread;
@@ -928,10 +808,9 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     // automation gets one deterministic one-shot session per run and never
     // resumes human/API sessions such as marketing_marketing.
     //
-    // Tenant-scope: include tokenOrganizationId so default-agent sessions
-    // (DEFAULT_AGENT_ID is a global constant) AND pinned-agent sessions
-    // (agentId is a per-org-unique row id, but two orgs can share the same
-    // id string) never collide across tenants in the in-memory session
+    // Tenant-scope: include tokenOrganizationId so sessions for shared agent
+    // ids (two orgs can share the same id string) never collide across
+    // tenants in the in-memory session
     // store. The resume guard below catches in-flight collisions; the org
     // suffix prevents `forceNew` from silently overwriting another tenant's
     // session at setSession time.
@@ -1583,7 +1462,6 @@ export function createAgentApi(config: AgentApiConfig): Hono {
           // notifications). Fall back to null (org runs only, no notifications)
           // when no trusted human principal is present (e.g. worker token).
           const attentionUserId =
-            msgAccess.callerUserId ??
             (c.get("authContext")?.userId as string | undefined) ??
             (await verifySettingsSessionOrToken(c))?.userId ??
             null;

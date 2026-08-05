@@ -99,7 +99,7 @@ describe("worker auth token", () => {
     expect(d.traceId).toBe("trace-zzz");
   });
 
-  test("round-trips a builder admin grant with its distinct auth actor", () => {
+  test("round-trips an admin-tools allowlist with its distinct auth actor", () => {
     const token = generateWorkerToken("U_SLACK", "conv", "deploy", {
       channelId: "C1",
       platform: "slack",
@@ -112,7 +112,7 @@ describe("worker auth token", () => {
     expect(d.adminActorUserId).toBe("auth-user-1");
   });
 
-  test("rejects a partial builder admin grant", () => {
+  test("rejects a partial admin-tools allowlist", () => {
     for (const partial of [
       { adminTools: ["manage_agents"] },
       { adminActorUserId: "auth-user-1" },

@@ -157,11 +157,11 @@ describe("sdkSearch", () => {
 	});
 
 	it("hides admin methods from write-tier callers", async () => {
-		// agents.setSystemAgent stays admin (a mutation); a write-tier caller must
+		// agents.delete stays admin (a mutation); a write-tier caller must
 		// not see it. (agents.list/get are now `read` and intentionally visible —
 		// see the read-mode test below.)
 		const result = await sdkSearch(
-			{ query: "agents.setSystemAgent" },
+			{ query: "agents.delete" },
 			stubEnv,
 			writeCtx
 		);
@@ -183,7 +183,7 @@ describe("sdkSearch", () => {
 		expect(joined).toContain("agents.get");
 		// The mutating siblings stay hidden in read mode.
 		expect(joined).not.toContain("agents.create");
-		expect(joined).not.toContain("agents.setSystemAgent");
+		expect(joined).not.toContain("agents.delete");
 	});
 
 	it("lists a camelCase namespace from a lowercased query without a false hidden note", async () => {

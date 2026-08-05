@@ -28,7 +28,6 @@ export interface AgentsNamespace {
 	create(input: AgentsCreateInput): Promise<unknown>;
 	update(input: AgentsUpdateInput): Promise<unknown>;
 	delete(agent_id: string): Promise<unknown>;
-	setSystemAgent(agent_id: string): Promise<unknown>;
 }
 
 export function buildAgentsNamespace(
@@ -49,15 +48,6 @@ export function buildAgentsNamespace(
 		delete: (agent_id) =>
 			action("delete", {
 				agent_id: idArg("agents.delete", "agent_id", agent_id, "string"),
-			}),
-		setSystemAgent: (agent_id) =>
-			action("set_system_agent", {
-				agent_id: idArg(
-					"agents.setSystemAgent",
-					"agent_id",
-					agent_id,
-					"string",
-				),
 			}),
 	};
 }

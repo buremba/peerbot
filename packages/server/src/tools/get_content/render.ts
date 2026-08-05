@@ -16,8 +16,15 @@ import { AUDIT_SEMANTIC_TYPE } from '../constants';
 import type { ContentRow } from './types';
 import { parseRecordArray, toNumberOrUndefined } from './types';
 
-/** Payload keys a tool-invocation audit row carries about its request. */
-const AUDIT_REQUEST_KEYS = ['request', 'request_status', 'request_bytes'] as const;
+/**
+ * Gated payload keys: the request itself and its size. `request_status` is
+ * deliberately NOT here — it names a retention outcome
+ * (`complete`/`too_large`/`unavailable`) rather than any part of the call, and
+ * a list row must keep it so the UI can tell that a body exists to open. With
+ * it stripped, the only affordance for reading a request was a hand-written
+ * URL: nothing in the app could know which rows had one.
+ */
+const AUDIT_REQUEST_KEYS = ['request', 'request_bytes'] as const;
 
 /**
  * A tool-invocation audit row retains the caller's VERBATIM request (see

@@ -261,6 +261,28 @@ export type BehaviorExecutionConfig = Static<
   typeof BehaviorExecutionConfigSchema
 >;
 
+/**
+ * Local CLI runtimes a device-pinned Behavior can name in `agent_kind`.
+ *
+ * This is the write-side half of a contract whose other half lives in the Mac
+ * app: the device registers one executor per `AgentSpec` and resolves the
+ * Behavior's kind against that registry at dispatch. A kind with no executor
+ * there produces a run that fails on the device with "no local agent executor
+ * configured", so accepting an arbitrary string here only defers the failure
+ * to a place nobody is watching (#2504).
+ *
+ * Adding a CLI means adding an `AgentSpec` on the device AND a literal here —
+ * the device cannot yet advertise its runnable kinds, so the server has no way
+ * to derive this list.
+ */
+const DEVICE_AGENT_KIND_LITERALS = [
+  Type.Literal("claude-code"),
+  Type.Literal("codex"),
+  Type.Literal("opencode"),
+  Type.Literal("pi"),
+  Type.Literal("agy"),
+];
+
 // ============================================
 // Typebox Schema (Flattened for MCP)
 // ============================================
@@ -548,9 +570,9 @@ export const ManageBehaviorsSchema = Type.Object(
       })
     ),
     agent_kind: Type.Optional(
-      Type.Union([Type.String(), Type.Null()], {
+      Type.Union([...DEVICE_AGENT_KIND_LITERALS, Type.Null()], {
         description:
-          '[create/update] Optional agent kind override for this Behavior (e.g. "background", "notifier"). Null clears the override.',
+          "[create/update] Which local CLI a device-pinned Behavior runs on. Only meaningful alongside device_worker_id. Null (the default) uses whatever agent the device itself is set to. A kind the device has no executor for fails at dispatch, so this is validated here rather than accepted and discovered later.",
       })
     ),
     notification_channel: Type.Optional(

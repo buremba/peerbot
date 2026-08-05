@@ -1,4 +1,4 @@
-import { AgentErrorCode } from "@lobu/core";
+import { AgentErrorCode, PROVIDER_BALANCE_EXHAUSTED } from "@lobu/core";
 import type { DbClient } from "../db/client";
 import { nextRunAt } from "../utils/cron";
 import logger from "../utils/logger";
@@ -90,20 +90,21 @@ export function parseProviderQuotaResetAt(
 }
 
 /**
+ * How long a depleted balance parks a schedule.
+ *
  * A depleted balance is not a rate limit: it does not tick back on a timer, so
  * the provider has no reset to name and never will until a human tops the
  * account up. Retrying one of these on every cron tick burns a failed run per
  * tick forever — z.ai's "429 Insufficient balance or no resource package" cost
  * ~85 of them across two Behaviors before anyone looked.
  *
- * Matched strictly on balance/billing wording, NOT on the broader quota
- * evidence set: a windowed rate limit ("too many requests", Gemini's bodyless
- * 429) DOES self-heal, often within the minute, and parking it for a day would
- * be far worse than one wasted run per tick.
+ * The wording that qualifies lives in `PROVIDER_BALANCE_EXHAUSTED` (core),
+ * shared with the worker's `classifyError` — see the note there for why it is
+ * not defined locally. It matches balance/billing wording only, NOT the broader
+ * quota evidence set: a windowed rate limit ("too many requests", Gemini's
+ * bodyless 429) DOES self-heal, often within the minute, and parking it for a
+ * day would be far worse than one wasted run per tick.
  */
-const PROVIDER_BALANCE_EXHAUSTED =
-	/credit balance is too low|insufficient (?:credits?|balance|funds)\b|no resource package|billing_hard_limit_reached|payment required|exceeded your current quota|out of credits?\b|no credits remaining/i;
-
 const PROVIDER_BALANCE_PARK_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -169,7 +170,7 @@ export function deviceProviderQuotaResetNotBefore(
 	// park on this path.
 	const hasQuotaEvidence =
 		PROVIDER_BALANCE_EXHAUSTED.test(message) ||
-		/insufficient quota\b|limit exhausted|rate[-\s]?limit|quota (?:exceeded|exhausted)|too many requests|\b429\b|resource_exhausted/i.test(
+		/limit exhausted|rate[-\s]?limit|quota (?:exceeded|exhausted)|too many requests|\b429\b|resource_exhausted/i.test(
 			message
 		);
 	if (!hasQuotaEvidence) return null;

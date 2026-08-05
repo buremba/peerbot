@@ -21,6 +21,7 @@ import { captureServerError } from '../sentry';
 import { errorMessage } from '../utils/errors';
 import { recordLifecycleEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
+import { DEVICE_ONLINE_WINDOW_SECONDS } from '../utils/device-liveness';
 import {
   DEVICE_MOVED_TOMBSTONE,
   DEVICE_REMOVED_TOMBSTONE,
@@ -53,7 +54,7 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
         dw.capabilities,
         dw.label,
         dw.last_seen_at,
-        (dw.last_seen_at > now() - interval '20 minutes') AS online,
+        (dw.last_seen_at > now() - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS})) AS online,
         dw.organization_id,
         o.name AS organization_name,
         o.slug AS organization_slug,

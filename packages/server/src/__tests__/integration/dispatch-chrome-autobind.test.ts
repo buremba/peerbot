@@ -139,7 +139,7 @@ describe('resolveOnlineChromeConnection — self-healing chrome pin', () => {
     // under the old ORDER BY last_seen_at DESC rule.
     await sql`
       UPDATE device_workers
-      SET last_seen_at = now() - interval '2 minutes'
+      SET last_seen_at = now() - interval '30 seconds'
       WHERE id = ${pinned}::uuid
     `;
     const fresher = await seedExtWorker(userId, orgId, { online: true });
@@ -157,7 +157,7 @@ describe('resolveOnlineChromeConnection — self-healing chrome pin', () => {
     const preferred = await seedExtWorker(userId, orgId, { online: true });
     await sql`
       UPDATE device_workers
-      SET last_seen_at = now() - interval '3 minutes'
+      SET last_seen_at = now() - interval '45 seconds'
       WHERE id = ${preferred}::uuid
     `;
     const fresher = await seedExtWorker(userId, orgId, { online: true });
@@ -213,7 +213,7 @@ describe('resolveOnlineChromeConnection — self-healing chrome pin', () => {
     const mini = await seedExtWorker(userId, orgId, { online: true });
     await sql`
       UPDATE device_workers
-      SET last_seen_at = now() - interval '1 minute'
+      SET last_seen_at = now() - interval '15 seconds'
       WHERE id = ${mini}::uuid
     `;
     const macbook = await seedExtWorker(userId, orgId, { online: true });
@@ -250,7 +250,7 @@ describe('resolveOnlineChromeConnection — self-healing chrome pin', () => {
     const sticky = await seedExtWorker(userId, orgId, { online: true });
     await sql`
       UPDATE device_workers
-      SET last_seen_at = now() - interval '2 minutes'
+      SET last_seen_at = now() - interval '30 seconds'
       WHERE id = ${preferred}::uuid
     `;
     const stickyConn = await seedChromeConn(orgId, userId, sticky);
@@ -287,7 +287,7 @@ describe('resolveOnlineChromeConnection — self-healing chrome pin', () => {
     const older = await seedExtWorker(userId, orgId, { online: true });
     await sql`
       UPDATE device_workers
-      SET last_seen_at = now() - interval '3 minutes'
+      SET last_seen_at = now() - interval '45 seconds'
       WHERE id = ${older}::uuid
     `;
     const fresher = await seedExtWorker(userId, orgId, { online: true });
@@ -309,7 +309,7 @@ describe('resolveOnlineChromeConnection — self-healing chrome pin', () => {
     const fresh = await seedExtWorker(userId, orgId, { online: true });
     await sql`
       UPDATE device_workers
-      SET last_seen_at = now() - interval '1 minute'
+      SET last_seen_at = now() - interval '15 seconds'
       WHERE id = ${sticky}::uuid
     `;
     // Prefer sticky for no-preference path; this test exercises preferred=fresh.
@@ -352,7 +352,7 @@ describe('resolveOnlineChromeConnection — self-healing chrome pin', () => {
     const workerA = await seedExtWorker(userId, orgId, { online: true });
     await sql`
       UPDATE device_workers
-      SET last_seen_at = now() - interval '2 minutes'
+      SET last_seen_at = now() - interval '30 seconds'
       WHERE id = ${workerA}::uuid
     `;
     const workerB = await seedExtWorker(userId, orgId, { online: true });

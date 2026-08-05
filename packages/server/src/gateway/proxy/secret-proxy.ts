@@ -1101,6 +1101,12 @@ export class SecretProxy {
    * The status→verdict mapping lives in `classifyProviderHealthStatus`; see
    * there for why it is status-only and why it is narrow.
    *
+   * Deliberately fires for EVERY proxied request of the slug — including
+   * non-chat calls like `/v1/models` probes, not only served completions as
+   * the retired terminal-row mechanism did: the same credential serves them
+   * all, so a 429 on a probe proves the quota wall exactly like one on a
+   * completion, and a probe 200 proves the credential works.
+   *
    * Best-effort by design: nothing routes on `status` today (it is a display
    * signal), so a failure to write must not fail the user's inference call.
    * That is why this swallows its own errors rather than propagating — the

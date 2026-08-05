@@ -90,11 +90,54 @@ export function parseProviderQuotaResetAt(
 }
 
 /**
+ * A depleted balance is not a rate limit: it does not tick back on a timer, so
+ * the provider has no reset to name and never will until a human tops the
+ * account up. Retrying one of these on every cron tick burns a failed run per
+ * tick forever — z.ai's "429 Insufficient balance or no resource package" cost
+ * ~85 of them across two Behaviors before anyone looked.
+ *
+ * Matched strictly on balance/billing wording, NOT on the broader quota
+ * evidence set: a windowed rate limit ("too many requests", Gemini's bodyless
+ * 429) DOES self-heal, often within the minute, and parking it for a day would
+ * be far worse than one wasted run per tick.
+ */
+const PROVIDER_BALANCE_EXHAUSTED =
+	/credit balance is too low|insufficient (?:credits?|balance|funds)\b|no resource package|billing_hard_limit_reached|payment required|exceeded your current quota|out of credits?\b|no credits remaining/i;
+
+const PROVIDER_BALANCE_PARK_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Fallback boundary for a terminal quota error the provider did not date.
+ *
+ * Deliberately a fixed park rather than an escalating backoff: the recovery
+ * signal is a human adding funds, which no amount of waiting predicts, and a
+ * growing park would need durable per-provider attempt state to compute. A flat
+ * day bounds the waste at one run instead of one per tick, and a manual trigger
+ * still runs immediately because parking only moves the cron cursor.
+ */
+function balanceExhaustedNotBefore(message: string, now: Date): Date | null {
+	// A provider-named retry horizon ("Please retry in 26s", `retryDelay`, a
+	// quoted `Retry-After:` header) means the limit is windowed, not a balance —
+	// Gemini attaches one to its per-minute free-tier 429s while reusing
+	// OpenAI's billing wording ("exceeded your current quota"). Never day-park
+	// those. The separator class covers every spelling of the header because a
+	// missed horizon costs a wrong day-park, while a spurious one costs only the
+	// pre-existing one-run-per-tick.
+	if (/\bretry[-_ ]?(?:in|after|delay)\b/i.test(message)) return null;
+	return PROVIDER_BALANCE_EXHAUSTED.test(message)
+		? new Date(now.getTime() + PROVIDER_BALANCE_PARK_MS)
+		: null;
+}
+
+/**
  * Resolve a provider reset boundary for a terminal error.
  *
  * Structured worker/API paths must explicitly classify the error as quota
  * exhaustion; this prevents an unrelated provider sentence containing
  * "reset at" from moving a schedule.
+ *
+ * A named reset always wins — it is the provider's own answer. Only when there
+ * is none do we fall back to the balance-exhaustion park.
  */
 export function providerQuotaResetNotBefore(
 	message: string,
@@ -104,24 +147,36 @@ export function providerQuotaResetNotBefore(
 	if (errorCode !== AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED) {
 		return null;
 	}
-	return parseProviderQuotaResetAt(message, now);
+	return (
+		parseProviderQuotaResetAt(message, now) ??
+		balanceExhaustedNotBefore(message, now)
+	);
 }
 
 /**
- * Device CLI reports do not carry a structured error code, so require both an
- * explicit reset timestamp and provider-quota wording before moving a durable
- * schedule. This prevents unrelated stderr such as "session resets at ..."
+ * Device CLI reports do not carry a structured error code, so require
+ * provider-quota wording before moving a durable schedule, plus either the
+ * provider's own reset timestamp or balance-exhaustion wording for the
+ * boundary. This prevents unrelated stderr such as "session resets at ..."
  * from parking a Behavior.
  */
 export function deviceProviderQuotaResetNotBefore(
 	message: string,
 	now: Date = new Date()
 ): Date | null {
+	// Balance wording is quota evidence by definition; composing the matchers
+	// keeps them in lockstep so a new balance alternate cannot silently fail to
+	// park on this path.
 	const hasQuotaEvidence =
-		/credit balance is too low|insufficient (?:credits?|balance|funds|quota)\b|billing_hard_limit_reached|payment required|exceeded your current quota|out of credits?\b|weekly\/monthly limit exhausted|limit exhausted|rate[-\s]?limit|quota (?:exceeded|exhausted)|too many requests|\b429\b|resource_exhausted/i.test(
+		PROVIDER_BALANCE_EXHAUSTED.test(message) ||
+		/insufficient quota\b|limit exhausted|rate[-\s]?limit|quota (?:exceeded|exhausted)|too many requests|\b429\b|resource_exhausted/i.test(
 			message
 		);
-	return hasQuotaEvidence ? parseProviderQuotaResetAt(message, now) : null;
+	if (!hasQuotaEvidence) return null;
+	return (
+		parseProviderQuotaResetAt(message, now) ??
+		balanceExhaustedNotBefore(message, now)
+	);
 }
 
 /**

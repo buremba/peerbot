@@ -204,9 +204,9 @@ export async function handleCreate(
   // Both of these are free-text columns with NO database foreign key, so an
   // unresolvable id is accepted by the INSERT and only shows up as a Behavior
   // that never runs (agent_id) or one whose output contract is silently voided
-  // (agent_id). The executor matrix catches unresolvable executors up front —
-  // every automated Behavior needs an executor; manual-only Behaviors (no
-  // triggers) may be executor-less.
+  // (outputs' entity/event targets). The executor matrix catches unresolvable
+  // executors up front — every automated Behavior needs an executor;
+  // manual-only Behaviors (no triggers) may be executor-less.
   const executorDefaults: BehaviorExecutorDefaults = {
     agentId: args.agent_id ?? null,
     deviceWorkerId: args.device_worker_id ?? null,

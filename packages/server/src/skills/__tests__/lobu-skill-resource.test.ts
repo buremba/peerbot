@@ -44,6 +44,21 @@ describe("lobu skill resource", () => {
     expect(LOBU_SKILL_MARKDOWN).not.toContain("manage_feeds");
   });
 
+  it("grounds new-project onboarding in the user's existing surface", () => {
+    expect(LOBU_SKILL_MARKDOWN).toContain(
+      "Ground yourself in what the user already has"
+    );
+    expect(LOBU_SKILL_MARKDOWN).toContain("lobu context list");
+    expect(LOBU_SKILL_MARKDOWN).toContain("client.agents.list()");
+    expect(LOBU_SKILL_MARKDOWN).toContain(
+      "two or three concrete alternatives"
+    );
+    expect(LOBU_SKILL_MARKDOWN).toContain(
+      "Do NOT ask for a login email during the interview"
+    );
+    expect(LOBU_SKILL_MARKDOWN).toContain("step 6");
+  });
+
   it("distinguishes semantic knowledge from structured entities", () => {
     expect(LOBU_SKILL_MARKDOWN).toContain("knowledge.save");
     expect(LOBU_SKILL_MARKDOWN).toContain("entities.create");

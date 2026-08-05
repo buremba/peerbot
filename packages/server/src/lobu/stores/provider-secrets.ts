@@ -101,9 +101,10 @@ export interface InferenceProviderListItem {
 	status: string;
 	/**
 	 * Why the provider last failed terminally, when `status = 'error'`. Written
-	 * by `markInferenceProviderUnhealthy` from the provider's own message, so a
-	 * workspace whose Behaviors went quiet can read the cause here instead of
-	 * seeing a row that still says `active`.
+	 * by `markInferenceProviderUnhealthy` with the failure the caller observed
+	 * (currently the proxy's upstream HTTP status), so a workspace whose
+	 * Behaviors went quiet can read the cause here instead of seeing a row that
+	 * still says `active`.
 	 */
 	errorMessage: string | null;
 	createdAt: string;

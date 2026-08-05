@@ -58,6 +58,12 @@ export class HttpWorkerTransport implements WorkerTransport {
    */
   private repliedInBand = false;
   /**
+   * Lobu provider slug model resolution picked for this turn, stamped on the
+   * terminal completion. Undefined until resolution runs, so a turn that fails
+   * before it reports no provider rather than a wrong one.
+   */
+  private providerSlug: string | undefined;
+  /**
    * Once-per-turn latch for user-facing errors. Three uncoordinated emitters
    * can report the SAME failed turn — `worker.ts`'s result-false branch,
    * `worker.ts`'s catch branch, and `sse-client.ts`'s outer catch — and every
@@ -120,6 +126,15 @@ export class HttpWorkerTransport implements WorkerTransport {
    */
   recordInBandReply(): void {
     this.repliedInBand = true;
+  }
+
+  /**
+   * Latch the Lobu provider slug that resolution picked for this turn, so the
+   * terminal completion can tell the gateway which provider just proved
+   * healthy. Mirrors how `errorContext.provider` attributes a failure.
+   */
+  recordProviderSlug(slug: string): void {
+    this.providerSlug = slug;
   }
 
   async signalDone(finalDelta?: string): Promise<void> {
@@ -238,6 +253,10 @@ export class HttpWorkerTransport implements WorkerTransport {
         // in-band" AND "worker too old to report" alike, and both must render
         // the reply. Fails toward delivering, never toward silence.
         ...(this.repliedInBand ? { repliedInBand: true } : {}),
+        // Success-side health signal: this provider just served a turn end to
+        // end, so the gateway can clear any error it recorded for it. Omitted
+        // when resolution never ran — silence, not a claim of health.
+        ...(this.providerSlug ? { providerSlug: this.providerSlug } : {}),
       })
     );
   }

@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import type {
+  AgentErrorContext,
   ConfigProviderMeta,
   InstructionContext,
   WorkerTokenData,
@@ -32,7 +33,11 @@ import type { McpTool } from "../auth/mcp/tool-cache.js";
 import { isUnresolvedModelRef } from "../auth/model-sentinel.js";
 import type { ProviderCatalogService } from "../auth/provider-catalog.js";
 import { composeEffectiveModelRef } from "../auth/settings/model-selection.js";
-import { getOrgDefaultModel } from "../../lobu/stores/provider-secrets.js";
+import {
+  clearInferenceProviderError,
+  getOrgDefaultModel,
+  markInferenceProviderUnhealthy,
+} from "../../lobu/stores/provider-secrets.js";
 import type { IMessageQueue } from "../infrastructure/queue/index.js";
 import {
   commitTerminalReply,
@@ -435,6 +440,68 @@ export class WorkerGateway {
   }
 
   /**
+   * Keep the org's `inference_providers` health current from terminal worker
+   * rows: a quota/credential failure marks the provider that produced it, and
+   * the next turn that provider serves clears the mark.
+   *
+   * This is the one place both signals arrive — every worker terminal row
+   * lands on `/response` — so the two halves cannot drift apart the way two
+   * separate hooks would.
+   *
+   * **Errors are swallowed, deliberately, and it is safe to swallow them.**
+   * `status` is display-only: nothing in credential resolution or model routing
+   * reads it (see `markInferenceProviderUnhealthy`). A dropped write costs a
+   * stale label, so
+   * failing a delivered turn over one would trade a real outcome for a cosmetic
+   * one. That is why this swallows its own errors instead of propagating them
+   * — it is not durable dispatch/delivery state.
+   *
+   * The slug comes from the worker body while the org comes from the signed
+   * token, so the worst a compromised worker can do is mislabel a provider its
+   * own organization already owns.
+   */
+  private async recordProviderHealth(
+    organizationId: string | undefined,
+    responseData: {
+      error?: string;
+      errorCode?: string;
+      errorContext?: AgentErrorContext;
+      providerSlug?: string;
+    }
+  ): Promise<void> {
+    if (!organizationId) return;
+    try {
+      const failingSlug = responseData.errorContext?.provider;
+      if (
+        failingSlug &&
+        (responseData.errorCode === AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED ||
+          responseData.errorCode === AgentErrorCode.PROVIDER_AUTH)
+      ) {
+        await markInferenceProviderUnhealthy(
+          organizationId,
+          failingSlug,
+          responseData.error || responseData.errorCode
+        );
+        return;
+      }
+      // Only the completion row carries `providerSlug`; the `error` guard keeps
+      // that true even if a future error path starts stamping it.
+      if (responseData.providerSlug && !responseData.error) {
+        await clearInferenceProviderError(
+          organizationId,
+          responseData.providerSlug
+        );
+      }
+    } catch (err) {
+      logger.warn(
+        `[WORKER-GATEWAY] Failed to record provider health for ${organizationId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
+
+  /**
    * Handle HTTP response from worker
    */
   private async handleWorkerResponse(c: Context): Promise<Response> {
@@ -520,6 +587,12 @@ export class WorkerGateway {
           ...tokenMetadata,
         },
       };
+
+      // Awaited, not fire-and-forget: it returns without touching the database
+      // unless the row is terminal, so the per-delta hot path pays nothing,
+      // while terminal rows get a deterministic write instead of one racing the
+      // response. It still swallows its own errors — see the method.
+      await this.recordProviderHealth(tokenRouting.organizationId, responseData);
 
       // Deployment idle clock (`EmbeddedWorkerEntry.lastActivity`) feeds the
       // idle reaper (WORKER_IDLE_CLEANUP_MINUTES). Mid-turn liveness still

@@ -77,7 +77,12 @@ export async function handleList(
       et.slug AS entity_type,
       e.name as entity_name,
       e.slug as entity_slug,
-      e.organization_id,
+      -- The Behavior's OWN org, not the entity's. The entities join is a LEFT
+      -- JOIN, so an org-scoped Behavior (empty entity_ids — the common shape)
+      -- yielded NULL here, which stranded the slug lookup below and dropped
+      -- both organization_slug and view_url from every such row.
+      -- watchers.organization_id is NOT NULL, so this always resolves.
+      i.organization_id,
       parent.id as parent_id,
       parent.name as parent_name,
       parent.slug as parent_slug,

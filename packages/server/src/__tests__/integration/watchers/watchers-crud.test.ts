@@ -1212,5 +1212,40 @@ describe('watcher CRUD', () => {
         behavior_ids: [base.behavior_id, cloneId],
       });
     });
+
+    it('list resolves organization_slug and view_url for an ORG-SCOPED behavior (no entity)', async () => {
+      // The regression this guards: list projected `e.organization_id` from a
+      // LEFT JOIN on entities, so a Behavior with empty entity_ids — the common
+      // prod shape — carried a NULL org, which stranded the slug lookup and
+      // dropped BOTH organization_slug and view_url. Every earlier view_url
+      // assertion here passed only because it attached an entity_id.
+      const base = (await owner.behaviors.manage({
+        action: 'create',
+        slug: 'org-scoped-url-check',
+        name: 'Org Scoped URL Check',
+        prompt: 'Org-scoped, no entity.',
+        agent_id: agentId,
+      })) as { behavior_id: string };
+
+      const listed = (await owner.behaviors.manage({
+        action: 'list',
+      })) as {
+        behaviors?: Array<{
+          behavior_id?: string;
+          organization_slug?: string | null;
+          view_url?: string;
+          entity_id?: number | null;
+        }>;
+      };
+      const row = (listed.behaviors ?? []).find(
+        (b) => String(b.behavior_id) === String(base.behavior_id)
+      );
+      expect(row).toBeDefined();
+      expect(row?.entity_id ?? null).toBeNull();
+      expect(row?.organization_slug).toBeTruthy();
+      expect(row?.view_url).toContain(`/behaviors/${base.behavior_id}`);
+
+      await owner.behaviors.delete({ behavior_ids: [base.behavior_id] });
+    });
   });
 });

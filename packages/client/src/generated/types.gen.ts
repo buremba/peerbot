@@ -4829,7 +4829,6 @@ export type GetBehaviorResponses = {
       agent_id?: string | null;
       device_worker_id?: string | null;
       agent_kind?: string | null;
-      scheduler_client_id?: string | null;
       version: number;
       sources: Array<{
         name: string;

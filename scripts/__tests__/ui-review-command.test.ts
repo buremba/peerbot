@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { approvalCommand } from "../lib/ui-review-proof";
+import { approvalCommand, buildProofBody } from "../lib/ui-review-proof";
 
 const UI_REVIEW_SCRIPT = resolve(import.meta.dir, "..", "ui-review.ts");
 const BASE_POINTER = "1".repeat(40);
@@ -265,6 +265,105 @@ describe("ui-review command", () => {
       context: "ui-review",
       state: "pending",
     });
+  });
+
+  it("keeps its own proof when another Lobu PR pins the same Owletto commit", () => {
+    const fixture = createFixture();
+    const state = readState(fixture.stateFile);
+    const proofEndpoint = "repos/lobu-ai/owletto/issues/712/comments";
+    state.comments[proofEndpoint] = [
+      {
+        id: 800,
+        body: buildProofBody({
+          version: 1,
+          lobu_repo: "lobu-ai/lobu",
+          lobu_pr: 2499,
+          lobu_base_owletto_sha: BASE_POINTER,
+          owletto_sha: HEAD_POINTER,
+          owletto_pr: 712,
+          artifact_url: "https://claude.ai/code/artifact/other-pr",
+        }),
+        created_at: "2026-08-04T11:00:00Z",
+        updated_at: "2026-08-04T11:00:00Z",
+        html_url: "https://github.com/comment/800",
+        user: { login: "agent" },
+      },
+      {
+        id: 801,
+        body: buildProofBody({
+          version: 1,
+          lobu_repo: "lobu-ai/lobu",
+          lobu_pr: 2500,
+          lobu_base_owletto_sha: BASE_POINTER,
+          owletto_sha: HEAD_POINTER,
+          owletto_pr: 712,
+          artifact_url: "https://claude.ai/code/artifact/ours",
+        }),
+        created_at: "2026-08-04T12:00:00Z",
+        updated_at: "2026-08-04T12:00:00Z",
+        html_url: "https://github.com/comment/801",
+        user: { login: "agent" },
+      },
+      {
+        id: 802,
+        body: approvalCommand(HEAD_POINTER),
+        created_at: "2026-08-04T12:01:00Z",
+        updated_at: "2026-08-04T12:01:00Z",
+        html_url: "https://github.com/comment/802",
+        user: { login: "buremba" },
+      },
+    ];
+    writeFileSync(fixture.stateFile, JSON.stringify(state));
+
+    const result = runUiReview(fixture);
+
+    expectExit(result, 0);
+    const finalState = readState(fixture.stateFile);
+    expect(
+      finalState.calls
+        .filter((call) => call.endpoint.includes("/statuses/"))
+        .at(-1)?.payload
+    ).toMatchObject({ context: "ui-review", state: "success" });
+    expect(finalState.comments[proofEndpoint]?.[0]?.body).toContain(
+      "https://claude.ai/code/artifact/other-pr"
+    );
+  });
+
+  it("adds its proof beside another PR's instead of overwriting it", () => {
+    const fixture = createFixture();
+    const state = readState(fixture.stateFile);
+    const proofEndpoint = "repos/lobu-ai/owletto/issues/712/comments";
+    state.comments[proofEndpoint] = [
+      {
+        id: 800,
+        body: buildProofBody({
+          version: 1,
+          lobu_repo: "lobu-ai/lobu",
+          lobu_pr: 2499,
+          lobu_base_owletto_sha: BASE_POINTER,
+          owletto_sha: HEAD_POINTER,
+          owletto_pr: 712,
+          artifact_url: "https://claude.ai/code/artifact/other-pr",
+        }),
+        created_at: "2026-08-04T11:00:00Z",
+        updated_at: "2026-08-04T11:00:00Z",
+        html_url: "https://github.com/comment/800",
+        user: { login: "agent" },
+      },
+    ];
+    writeFileSync(fixture.stateFile, JSON.stringify(state));
+
+    const result = runUiReview(fixture, {
+      ARTIFACT: "https://claude.ai/code/artifact/ours",
+    });
+
+    expectExit(result, 3);
+    const comments = readState(fixture.stateFile).comments[proofEndpoint] ?? [];
+    expect(comments[0]?.body).toContain(
+      "https://claude.ai/code/artifact/other-pr"
+    );
+    expect(comments).toHaveLength(2);
+    expect(comments[1]?.body).toContain("https://claude.ai/code/artifact/ours");
   });
 
   it("stays pending until a later exact approval comment, then passes", () => {

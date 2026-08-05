@@ -5,6 +5,7 @@ import {
   approvalCommand,
   buildProofBody,
   findApproval,
+  findProofComment,
   isHttpsArtifact,
   type OwlettoPullRequest,
   parseProof,
@@ -15,7 +16,6 @@ import {
 } from "./lib/ui-review-proof";
 
 const STATUS_CONTEXT = "ui-review";
-const PROOF_MARKER = "<!-- lobu-ui-review-proof ";
 const PARENT_MARKER = "<!-- lobu-ui-review-marker -->";
 
 interface PullRequestView {
@@ -145,13 +145,12 @@ function findComment(
   );
 }
 
-function upsertComment(
+function writeComment(
   repo: string,
   issue: number,
-  marker: string,
+  existing: ApiComment | undefined,
   body: string
 ): ApiComment {
-  const existing = findComment(repo, issue, marker);
   if (existing) {
     return ghApi<ApiComment>(
       `repos/${repo}/issues/comments/${existing.id}`,
@@ -162,6 +161,15 @@ function upsertComment(
   return ghApi<ApiComment>(`repos/${repo}/issues/${issue}/comments`, "POST", {
     body,
   });
+}
+
+function upsertComment(
+  repo: string,
+  issue: number,
+  marker: string,
+  body: string
+): ApiComment {
+  return writeComment(repo, issue, findComment(repo, issue, marker), body);
 }
 
 function getPointer(repo: string, commit: string): string {
@@ -317,9 +325,7 @@ function main(): number {
   let comments = ghApiPages<ApiComment>(
     `repos/${owlettoRepo}/issues/${owlettoPr.number}/comments`
   );
-  let proofComment = comments.find((comment) =>
-    comment.body.startsWith(PROOF_MARKER)
-  );
+  let proofComment = findProofComment(comments, lobuRepo, parentPr.number);
   let currentProof = proofComment ? parseProof(proofComment.body) : null;
   const exactProof =
     currentProof &&
@@ -359,10 +365,10 @@ function main(): number {
       owletto_pr: owlettoPr.number,
       artifact_url: options.artifactUrl,
     };
-    proofComment = upsertComment(
+    proofComment = writeComment(
       owlettoRepo,
       owlettoPr.number,
-      PROOF_MARKER,
+      proofComment,
       buildProofBody(currentProof)
     );
     comments = ghApiPages<ApiComment>(

@@ -11,11 +11,26 @@ The `AGENTS.md` generated into a new project is the source of truth for the conf
 
 ## Onboarding a New Project
 
-Use this playbook when a new user asks you to build them a Lobu agent from scratch. Set it up end to end: interview, discover, scaffold, prove the complete local path, then offer the deployment choice. Do not call the setup complete until every path the user selected has actually passed end to end. If an external provider, authorization, deployment, or rate limit blocks the proof, name the exact blocker and leave the setup as blocked rather than claiming success.
+Use this playbook when a new user asks you to build them a Lobu agent from scratch. Set it up end to end: ground yourself in what the user already has, interview, discover, scaffold, prove the complete local path, then offer the deployment choice. Do not call the setup complete until every path the user selected has actually passed end to end. If an external provider, authorization, deployment, or rate limit blocks the proof, name the exact blocker and leave the setup as blocked rather than claiming success.
 
-### 1. Interview before designing
+### 1. Ground yourself in what the user already has
 
-Interview the user one question at a time; wait for each answer, do not guess, and do not batch the questions:
+Before interviewing, look at what already exists so your questions and suggestions are personal rather than a blank slate. This is discovery, not a design decision — do not let it skip the interview.
+
+- Local: run `lobu context list` to see existing contexts; check the current directory and home for existing Lobu projects (`lobu.config.ts`), configured MCP servers, and CLI auth state. Note what the user already set up.
+- Cloud: if the user has an active session (do not create one just to look), call `client.organizations.list()`, `client.agents.list()` for each org, `client.catalog.listInstalled({ kinds: ["connectors"] })`, and `search_memory` for prior knowledge. This reveals existing agents, connectors, and memory you can build on.
+- Tell the user what you are looking at so they can correct you, and let what you find shape the options you offer. Never treat this discovery as an identity signal: orgs, emails, or domains never prove a company or product, and never mention a competitor or third party unless it actually appears in what you found.
+
+Do NOT ask for a login email during the interview. Email is only needed when a managed connector actually requires a session (step 3) or when the user chooses cloud deployment (step 6); ask for it at that point. Treat identity only as identity; never infer a company from an email address or domain.
+
+### 2. Interview with concrete, personalized options
+
+Interview the user one question at a time; wait for each answer, do not guess, and do not batch the questions. Anchor each question in what you found in step 1. Instead of asking "what agent do you want?" as a blank slate, summarize what you see and offer two or three concrete alternatives to choose from:
+
+- "You already have org X with connectors A and B installed and N existing agents. Do you want to (a) add a new agent on top of those, (b) extend one of the existing agents, or (c) start something standalone?"
+- "For what it should do, the common shapes are (a) a triage agent that reads incoming chat and files a ticket, (b) a scheduled report that summarizes new activity each morning, (c) a research agent that answers questions from your connected tools. Which fits, or what would you change?"
+
+Offer a default so the user can answer "the first one" — decisive users and undecided users both move faster with a concrete menu.
 
 - What company or product is this for?
 - What does it do, and who does it serve?
@@ -31,17 +46,15 @@ Interview the user one question at a time; wait for each answer, do not guess, a
 - Should anything run on a schedule?
 - Which supported LLM provider credential does the user have?
 
-Do NOT ask for a login email during the interview. Email is only needed when a managed connector actually requires a session (step 2) or when the user chooses cloud deployment (step 5); ask for it at that point. Treat identity only as identity; never infer a company from an email address or domain.
-
 If the user gave permission to research and has a public domain, research the company before proposing the design. Summarize its product, customers, workflows, and useful signals, and cite the public sources you used. Then propose one to three entity types, their relationships, the first data source, one or two useful Behaviors, and suitable interaction channels. Play back a short numbered plan and wait for confirmation before scaffolding anything.
 
-### 2. Discover the surface before choosing how to scaffold
+### 3. Discover the surface before choosing how to scaffold
 
 Check Node is 22-24 or 26+ (only Node 25 is unsupported), then run `lobu context list` and identify the named Lobu Cloud context; do not assume the active context still points to cloud after a local run. If a managed or cloud connector was chosen and there is no session, ask for the login email at that point, explain that Lobu will email an approval link, and run `lobu login --email <confirmed-address> --context <cloud-name>`. The person approving must sign in with that same email; knowing an address never grants access. After a successful login, an empty organization membership list is a tenancy/discovery result, not an authentication failure: call `client.organizations.list()` and explain the result. Never revoke or repeat login with `--force` unless the user separately approves that re-authentication.
 
 Use ClientSDK through Lobu MCP or `lobu memory exec` with the explicit cloud context. Call `client.organizations.list()` to find public organizations offering managed connections. Call `client.catalog.listInstalled({ kinds: ["connectors"] })`; if the connector is not installed, call `client.catalog.listCatalog({ kinds: ["connectors"] })`. Inspect the selected entry's `detail.auth_schema`, `detail.options_schema`, `detail.feeds_schema`, and `detail.behavior_events` instead of guessing field names. If a matching live managed offer exists, explain it and call `client.connections.connectManaged` only after consent. Complete the returned user authorization, then run `lobu context use <cloud-name>` immediately before executing its `local_bootstrap_command` from the parent directory where the new project should be created; use `--here` only after entering an empty directory, and do not create a blank Lobu scaffold first. Ask for bring-your-own OAuth credentials only if no managed offer exists or the user prefers their own app.
 
-### 3. Scaffold and build from the confirmed plan
+### 4. Scaffold and build from the confirmed plan
 
 If managed auth supplied a `local_bootstrap_command`, use the project it generated. Otherwise run `npx @lobu/cli@latest init` with the confirmed name and provider. Postgres is built in, so `lobu run` starts an embedded database; ask for `DATABASE_URL` only if the user chooses external Postgres. Read the generated `AGENTS.md` completely before editing `lobu.config.ts`. Use the canonical reference at `https://github.com/lobu-ai/lobu/blob/main/examples/lobu-crm/lobu.config.ts` when needed; do not assume that example exists in the new project's filesystem. Briefly explain how the chosen feed may use checkpoints to collect incrementally, emits events, builds shared entity memory, and gives both chat and Behaviors the same governed context.
 
@@ -49,13 +62,13 @@ If managed auth supplied a `local_bootstrap_command`, use the project it generat
 
 If the user wants the agent to know people in Slack, ask whether that means conversation participants, members of bound channels, or the full workspace directory. Installing the app proves none of those by itself. Verify the selected scope by inspecting the people or member entities Lobu actually materialized and by asking the agent a roster question. If human-readable names or non-participants are unavailable, identify that exact product gap; never claim the complete workspace directory was synced.
 
-### 4. Prove the complete local path
+### 5. Prove the complete local path
 
 Change into the generated project directory and verify `pwd` contains the intended `lobu.config.ts`; never run project commands from its parent. Run `npx @lobu/cli@latest validate`, boot with `npx @lobu/cli@latest run`, and verify health and the local Web UI. With the embedded database default, `lobu run` creates and selects the local context and auto-applies the project; with an external `DATABASE_URL`, it does neither, so authenticate and apply to that runtime explicitly. Send a harmless direct chat message without tools.
 
 Before consent to access provider data, inspect only catalog, connection, auth-profile, and feed metadata. For a `browser_session` profile only, `npx @lobu/cli@latest connector run <key> --auth-profile <browser-session-profile-slug> --check` resolves the device-bound path without execution. Never use `connector run` as a generic managed OAuth or env-profile check; those durable credentials stay at the gateway. Do not run a feed or connector dry-run before consent, because a dry-run may still read provider data. Ask explicitly before accessing real provider data. Only after approval, dry-run the connector or feed server-side and trigger the selected feed manually if that connector actually declares one. A feed dry-run records its run but persists no collected events, entities, attachments, checkpoint changes, or feed sync state. Run each Behavior once, poll `client.operations.getRun` with its returned `run_id`, and show each completed run plus any declared result event or entity. For a Canvas-only or reaction-only Behavior, do not invent a persisted output; use the Behavior `view_url` returned by Lobu. For Slack, treat DM, channel mention, App Home, and requested member discovery as four separate checks. Keep actions in approval mode unless the user explicitly approves execution. If any step fails, fix it and rerun that step; do not silently substitute a different path.
 
-### 5. Offer the deployment choice
+### 6. Offer the deployment choice
 
 After the local proof, ask the user whether to keep running locally or deploy to Lobu Cloud. Explain that the embedded local runtime and Lobu Cloud are separate targets, and that keeping it local needs no further setup. Only if the user chooses cloud deployment, ask for the login email to identify the deployer, explain that Lobu will email an approval link, and run `lobu login --email <confirmed-address> --context <cloud-name>`; the person approving must sign in with that same email. Because `lobu apply` has no context flag, use `lobu context list` and then `lobu context use <cloud-name>` to select an explicit cloud context before deployment. Run `lobu apply --dry-run` first, show the target organization and exact plan, and wait for confirmation before applying. After apply, use only authoritative `view_url` values and link commands returned by Lobu; never construct URLs. Present the working access choices: Web UI, direct agent chat, API or SDK, MCP, and any channels the user selected.
 

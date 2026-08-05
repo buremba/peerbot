@@ -31,29 +31,32 @@
 -- squawk-ignore prefer-robust-stmts -- single-org data cleanup; row sets are re-derived from the same predicates on both statements so the counts cannot drift
 
 WITH zombie AS (
-  SELECT id
-  FROM public.entities
-  WHERE organization_id = '8dc12bdd-5d8c-4768-a2e9-a18005cc5ebd'
-    AND entity_type IN (
+  SELECT e.id
+  FROM public.entities e
+  JOIN public.entity_types et ON et.id = e.entity_type_id
+  WHERE e.organization_id = '8dc12bdd-5d8c-4768-a2e9-a18005cc5ebd'
+    AND et.slug IN (
       'company', 'social-signal', 'city', 'product',
       'mcp-e2e-mrtowdgd', 'mcp-graph-mrt80dq0', 'mcp-graph-mrt7zszi',
       'mcp-readiness-mrt7sast', 'lobu-e2e-temp'
     )
-    AND deleted_at IS NOT NULL
+    AND e.deleted_at IS NOT NULL
 )
 DELETE FROM public.entity_relationships
 WHERE organization_id = '8dc12bdd-5d8c-4768-a2e9-a18005cc5ebd'
   AND deleted_at IS NULL
   AND (from_entity_id IN (SELECT id FROM zombie) OR to_entity_id IN (SELECT id FROM zombie));
 
-DELETE FROM public.entities
-WHERE organization_id = '8dc12bdd-5d8c-4768-a2e9-a18005cc5ebd'
-  AND entity_type IN (
+DELETE FROM public.entities e
+USING public.entity_types et
+WHERE e.organization_id = '8dc12bdd-5d8c-4768-a2e9-a18005cc5ebd'
+  AND et.id = e.entity_type_id
+  AND et.slug IN (
     'company', 'social-signal', 'city', 'product',
     'mcp-e2e-mrtowdgd', 'mcp-graph-mrt80dq0', 'mcp-graph-mrt7zszi',
     'mcp-readiness-mrt7sast', 'lobu-e2e-temp'
   )
-  AND deleted_at IS NOT NULL;
+  AND e.deleted_at IS NOT NULL;
 
 -- migrate:down
 

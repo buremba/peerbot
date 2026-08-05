@@ -246,6 +246,34 @@ export function buildDateCandidateOrderBy(cursor: DateCursor | null, tableAlias:
   return `COALESCE(${tableAlias}.occurred_at, ${tableAlias}.created_at) DESC, ${tableAlias}.id DESC`;
 }
 
+/**
+ * Chronological-feed guard: exclude events that have not occurred yet.
+ *
+ * A future-dated row is a scheduled item, not "activity", so ranking it as the
+ * newest would let a far-future recurring series (calendar instances expanded
+ * a year ahead) monopolize the first page of the activity feed. The guard is
+ * lifted only when the caller explicitly asks for a future window — an `until`
+ * past now or an `after` cursor past now. NULL occurred_at rows are kept: they
+ * are real activity whose source timestamp was never recorded, and the
+ * COALESCE(occurred_at, created_at) ordering ranks them by record time instead
+ * of pinning the top.
+ *
+ * The returned fragment carries a leading `AND` for appending to a WHERE body;
+ * callers building a `conditions` array strip it (see fetchClassificationStats).
+ */
+export function buildFutureOccurredAtClause(
+  untilDate: Date | null,
+  cursor: DateCursor | null
+): { sql: string } {
+  const nowMs = Date.now();
+  const asksForFuture =
+    (untilDate != null && untilDate.getTime() > nowMs) ||
+    (cursor?.direction === 'after' &&
+      new Date(cursor.occurredAtIso).getTime() > nowMs);
+  if (asksForFuture) return { sql: '' };
+  return { sql: 'AND (f.occurred_at IS NULL OR f.occurred_at <= now())' };
+}
+
 export function buildPageInfo(params: {
   limit: number;
   offset: number;

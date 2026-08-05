@@ -19,6 +19,8 @@ export {
 
 export { buildConnectionVisibilityClause, buildOrgScopeWhere } from './content-search/visibility';
 
+export { buildFutureOccurredAtClause } from './content-search/types';
+
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { listContentInternal } from './content-search/list-path';

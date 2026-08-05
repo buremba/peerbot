@@ -894,6 +894,191 @@ describe("watcher automation contract", () => {
 			expect(replaced.reaction_status).not.toBe("skipped");
 		});
 
+		// A completion that lands on an existing head WITHOUT replace_existing
+		// silently discards the caller's payload. Replaying your own completion
+		// and losing the window to another MCP client produce identical responses,
+		// so a client that did real work cannot tell its output was dropped.
+		// skipped_reason names which case it was.
+		it("reports skipped_reason when a completion is discarded onto an existing head", async () => {
+			const { api, watcherId } = await createAutomatedWatcher();
+			const windowStart = new Date(
+				Date.now() - 2 * 60 * 60 * 1000
+			).toISOString();
+			const windowEnd = new Date().toISOString();
+			const env = { JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env;
+			const mint = () =>
+				generateWindowToken(
+					{
+						watcher_id: watcherId,
+						window_start: windowStart,
+						window_end: windowEnd,
+						granularity: "daily",
+						content_count: 0,
+						content_ids: [],
+					},
+					env
+				);
+
+			// events.client_id is FK'd to oauth_clients, so an unregistered id is
+			// stored as NULL and attribution silently degrades. Register both
+			// clients so the attributed branches are actually exercised — without
+			// these rows the assertions below pass only as 'already_completed'.
+			const sql = getTestDb();
+			for (const id of ["mcp-client-a", "mcp-client-b"]) {
+				await sql`
+					INSERT INTO oauth_clients (id, client_id_issued_at, redirect_uris, client_name)
+					VALUES (${id}, NOW(), ARRAY['https://example.test/cb'], ${id})
+					ON CONFLICT (id) DO NOTHING
+				`;
+			}
+
+			const first = (await api.behaviors.completeWindow({
+				behavior_id: String(watcherId),
+				window_token: await mint(),
+				extracted_data: { summary: "v1" },
+				client_id: "mcp-client-a",
+			})) as { window_id: number; skipped_reason?: string };
+			// The write that actually stored a payload carries no skip reason.
+			expect(first.skipped_reason).toBeUndefined();
+
+			// Same client → a harmless replay of its own completion.
+			const replay = (await api.behaviors.completeWindow({
+				behavior_id: String(watcherId),
+				window_token: await mint(),
+				extracted_data: { summary: "v2 discarded" },
+				client_id: "mcp-client-a",
+			})) as {
+				window_id: number;
+				window_created: boolean;
+				skipped_reason?: string;
+			};
+			expect(replay.window_id).toBe(first.window_id);
+			expect(replay.window_created).toBe(false);
+			expect(replay.skipped_reason).toBe("replayed_own_completion");
+
+			// A different MCP client hitting the same window is the case worth
+			// distinguishing: its payload is dropped even though it did the work.
+			const other = (await api.behaviors.completeWindow({
+				behavior_id: String(watcherId),
+				window_token: await mint(),
+				extracted_data: { summary: "v3 from another client" },
+				client_id: "mcp-client-b",
+			})) as { window_id: number; skipped_reason?: string };
+			expect(other.window_id).toBe(first.window_id);
+			expect(other.skipped_reason).toBe("completed_by_other_client");
+		});
+
+		// Attribution degrades honestly. A caller with no registered client id
+		// (PAT / device — events.client_id ends up NULL) still learns its payload
+		// was dropped, but the response must NOT claim another client wrote the
+		// head. Guessing 'completed_by_other_client' here would fire on every
+		// ordinary unattributed replay and make the field useless.
+		it("reports already_completed when the head writer cannot be attributed", async () => {
+			const { api, watcherId } = await createAutomatedWatcher();
+			const windowStart = new Date(
+				Date.now() - 3 * 60 * 60 * 1000
+			).toISOString();
+			const windowEnd = new Date().toISOString();
+			const env = { JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env;
+			const mint = () =>
+				generateWindowToken(
+					{
+						watcher_id: watcherId,
+						window_start: windowStart,
+						window_end: windowEnd,
+						granularity: "daily",
+						content_count: 0,
+						content_ids: [],
+					},
+					env
+				);
+
+			const first = (await api.behaviors.completeWindow({
+				behavior_id: String(watcherId),
+				window_token: await mint(),
+				extracted_data: { summary: "v1" },
+			})) as { window_id: number; skipped_reason?: string };
+			expect(first.skipped_reason).toBeUndefined();
+
+			const second = (await api.behaviors.completeWindow({
+				behavior_id: String(watcherId),
+				window_token: await mint(),
+				extracted_data: { summary: "v2 discarded" },
+			})) as { window_id: number; skipped_reason?: string };
+			expect(second.window_id).toBe(first.window_id);
+			expect(second.skipped_reason).toBe("already_completed");
+		});
+
+		// The open manual lane has ONE pending run that every client races for, so
+		// both racers carry the SAME run id while having DIFFERENT client ids.
+		// Client identity must outrank the run, or the loser is reported as a
+		// self-replay in exactly the case this signal exists for.
+		it("prefers client identity over the shared run id when clients race one run", async () => {
+			const { api, watcherId } = await createAutomatedWatcher();
+			const sql = getTestDb();
+			for (const id of ["race-client-a", "race-client-b"]) {
+				await sql`
+					INSERT INTO oauth_clients (id, client_id_issued_at, redirect_uris, client_name)
+					VALUES (${id}, NOW(), ARRAY['https://example.test/cb'], ${id})
+					ON CONFLICT (id) DO NOTHING
+				`;
+			}
+			// events.run_id is FK'd to runs, so the shared run must really exist.
+			// Inserted directly: `trigger` needs the embedded gateway, which this
+			// harness does not boot.
+			const [orgRow] = await sql<{ organization_id: string }[]>`
+				SELECT organization_id FROM watchers WHERE id = ${watcherId}
+			`;
+			const [runRow] = await sql<{ id: number }[]>`
+				INSERT INTO runs
+					(organization_id, run_type, watcher_id, status, approval_status, created_at)
+				VALUES
+					(${orgRow.organization_id}, 'behavior', ${watcherId}, 'running', 'auto', current_timestamp)
+				RETURNING id
+			`;
+			const sharedRunId = Number(runRow.id);
+			expect(sharedRunId).toBeGreaterThan(0);
+
+			const windowStart = new Date(
+				Date.now() - 4 * 60 * 60 * 1000
+			).toISOString();
+			const windowEnd = new Date().toISOString();
+			const env = { JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env;
+			const mint = () =>
+				generateWindowToken(
+					{
+						watcher_id: watcherId,
+						window_start: windowStart,
+						window_end: windowEnd,
+						granularity: "daily",
+						content_count: 0,
+						content_ids: [],
+					},
+					env
+				);
+
+			const winner = (await api.behaviors.completeWindow({
+				behavior_id: String(watcherId),
+				window_token: await mint(),
+				extracted_data: { summary: "winner" },
+				client_id: "race-client-a",
+				behavior_run_id: sharedRunId,
+			})) as { window_id: number; skipped_reason?: string };
+			expect(winner.skipped_reason).toBeUndefined();
+
+			// Same run, different client. Ranking sameRun first would call this a
+			// self-replay; it is another client losing the race.
+			const loser = (await api.behaviors.completeWindow({
+				behavior_id: String(watcherId),
+				window_token: await mint(),
+				extracted_data: { summary: "loser" },
+				client_id: "race-client-b",
+				behavior_run_id: sharedRunId,
+			})) as { window_id: number; skipped_reason?: string };
+			expect(loser.window_id).toBe(winner.window_id);
+			expect(loser.skipped_reason).toBe("completed_by_other_client");
+		});
+
 		// Fail closed: the agent exiting cleanly WITHOUT calling complete_window
 		// means no real work was recorded — the run must fail (and the schedule
 		// advance), mirroring the server-side dispatch guard. This is exactly

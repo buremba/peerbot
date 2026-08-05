@@ -83,6 +83,19 @@ export async function handleCompleteWindow(
   /** True when replace_existing superseded the head — the canvas changed, so
    *  reactions fire and the schedule advances like a fresh completion. */
   head_superseded: boolean;
+  /** Set only when the submitted payload was NOT stored because a head already
+   *  existed and `replace_existing` was not requested — otherwise this response
+   *  is indistinguishable from a successful write. Retry with
+   *  `replace_existing: true` to overwrite deliberately.
+   *
+   *  Attribution is best-effort: `already_completed` means the payload was
+   *  dropped but the writer could not be identified (events.client_id is FK'd
+   *  to oauth_clients, so PAT/device callers store NULL, and a manual-open
+   *  window may carry no run id). It is NOT a weaker form of the other two. */
+  skipped_reason?:
+    | 'replayed_own_completion'
+    | 'completed_by_other_client'
+    | 'already_completed';
   reaction_status: 'success' | 'failed' | 'skipped';
   reaction_error?: string;
 }> {
@@ -429,6 +442,11 @@ export async function handleCompleteWindow(
     let canvasRevisionId!: number;
     let windowCreated = false;
     let headSuperseded = false;
+    let skippedReason:
+      | 'replayed_own_completion'
+      | 'completed_by_other_client'
+      | 'already_completed'
+      | undefined;
     const canvasEntityId = await ensureCanvasEntity({
       tx,
       watcherId: Number(watcherId),
@@ -470,6 +488,43 @@ export async function handleCompleteWindow(
       // window identity is the existing chain root.
       windowId = existingHead.rootEventId;
       canvasRevisionId = existingHead.id;
+      // The caller's payload is DISCARDED here. Replaying your own completion
+      // and losing a race to another MCP client are indistinguishable from the
+      // outside — both just return the existing window — so a client that did
+      // real work has no way to know its output was dropped. Name which case
+      // this was so it can be logged or retried with replace_existing.
+      // Manual-open Behaviors (no agent, no device pin) are the shape where a
+      // second client can legitimately show up: the run pends for whoever
+      // claims it first.
+      // Attribution is best-effort and often UNAVAILABLE: events.client_id has
+      // an FK to oauth_clients, so `canvasClientId` above nulls out for PAT and
+      // device callers, and a manual-open window may carry no run id. Only
+      // claim a verdict backed by two present ids that actually match or
+      // differ — otherwise say plainly that the payload was dropped without
+      // guessing who wrote the head. Guessing 'other client' on absent ids
+      // would fire on every ordinary replay.
+      // Client identity OUTRANKS run identity, and the order matters. A
+      // manual-open Behavior has ONE pending run that every client races for,
+      // so two different clients completing it both carry the same run id.
+      // Ranking the run first would report the loser as a self-replay in
+      // precisely the scenario this signal exists for. The run is only a
+      // fallback for callers with no registered client id.
+      const bothClients =
+        existingHead.clientId != null && provenanceClientId != null;
+      const bothRuns = existingHead.runId != null && watcherRunId != null;
+      if (bothClients) {
+        skippedReason =
+          existingHead.clientId === provenanceClientId
+            ? 'replayed_own_completion'
+            : 'completed_by_other_client';
+      } else if (bothRuns) {
+        skippedReason =
+          existingHead.runId === watcherRunId
+            ? 'replayed_own_completion'
+            : 'completed_by_other_client';
+      } else {
+        skippedReason = 'already_completed';
+      }
     } else if (existingHead && args.replace_existing) {
       // Supersede the current head, copying the root's period metadata. Loser of
       // a concurrent supersede hits idx_events_superseded_by → 23505 → 409. The
@@ -769,6 +824,7 @@ export async function handleCompleteWindow(
       content_linked: batchContentIds.length,
       window_created: windowCreated,
       head_superseded: headSuperseded,
+      ...(skippedReason ? { skipped_reason: skippedReason } : {}),
     };
   });
 

@@ -196,9 +196,25 @@ export async function ensureCanvasEntity(params: {
 export async function findCanvasHead(
   tx: DbClient,
   period: { watcherId: number; granularity: string; windowStart: string }
-): Promise<{ id: number; rootEventId: number; payloadData: Record<string, unknown> } | null> {
-  const rows = await tx<{ id: number | string; root_event_id: number | string | null; payload_data: unknown }>`
-    SELECT e.id, (e.metadata->>'root_event_id')::bigint AS root_event_id, e.payload_data
+): Promise<{
+  id: number;
+  rootEventId: number;
+  payloadData: Record<string, unknown>;
+  /** Who wrote the current head. Lets a caller tell "I am replaying my own
+   * completion" from "another client already answered this window", which are
+   * otherwise indistinguishable — both just skip the write. */
+  clientId: string | null;
+  runId: number | null;
+} | null> {
+  const rows = await tx<{
+    id: number | string;
+    root_event_id: number | string | null;
+    payload_data: unknown;
+    client_id: string | null;
+    run_id: number | string | null;
+  }>`
+    SELECT e.id, (e.metadata->>'root_event_id')::bigint AS root_event_id, e.payload_data,
+           e.client_id, e.run_id
     FROM events e
     WHERE e.semantic_type = 'canvas_state'
       AND (e.metadata->>'watcher_id')::bigint = ${period.watcherId}
@@ -214,5 +230,11 @@ export async function findCanvasHead(
     rows[0].payload_data && typeof rows[0].payload_data === 'object'
       ? (rows[0].payload_data as Record<string, unknown>)
       : {};
-  return { id, rootEventId, payloadData };
+  return {
+    id,
+    rootEventId,
+    payloadData,
+    clientId: rows[0].client_id ?? null,
+    runId: rows[0].run_id != null ? Number(rows[0].run_id) : null,
+  };
 }

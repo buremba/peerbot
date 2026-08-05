@@ -5868,13 +5868,7 @@ export type ResolvePathResponses = {
         color: string | null;
         entity_count: number;
       }>;
-      summary: {
-        total_content: number;
-        active_connections: number;
-        behaviors_count: number;
-        agents_count: number;
-        devices_count: number;
-      };
+      total_content: number;
       recent_content: Array<{
         id: number;
         entity_ids: Array<number>;
@@ -5908,6 +5902,13 @@ export type ResolvePathResponses = {
         favicon_domain: string | null;
       }>;
     } | null;
+    counts: {
+      connections: number;
+      behaviors: number;
+      agents: number;
+      devices: number;
+      clients: number;
+    };
     redirect: {
       to: string;
     } | null;

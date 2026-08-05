@@ -520,14 +520,15 @@ function buildWorkspaceModel(
   const canonicalPath = `/${organization.slug}`;
   const canonicalUrl = absoluteUrl(canonicalPath, origin);
   const bootstrap = resolvedPath.bootstrap;
-  const summary = bootstrap?.summary;
+  const totalContent = bootstrap?.total_content ?? 0;
+  const counts = resolvedPath.counts;
   const description = truncateText(
     organization.description?.trim() ||
       `Public workspace for ${organization.name} with ${formatCountLabel(
-        summary?.total_content ?? 0,
+        totalContent,
         'knowledge item'
-      )}, ${formatCountLabel(summary?.active_connections ?? 0, 'connector')}, and ${formatCountLabel(
-        summary?.behaviors_count ?? 0,
+      )}, ${formatCountLabel(counts.connections, 'connector')}, and ${formatCountLabel(
+        counts.behaviors,
         'behavior'
       )}.`,
     180
@@ -537,14 +538,14 @@ function buildWorkspaceModel(
     {
       title: 'Workspace Summary',
       html: renderStatList([
-        { label: 'Knowledge', value: formatCountLabel(summary?.total_content ?? 0, 'item') },
+        { label: 'Knowledge', value: formatCountLabel(totalContent, 'item') },
         {
           label: 'Connectors',
-          value: formatCountLabel(summary?.active_connections ?? 0, 'active connector'),
+          value: formatCountLabel(counts.connections, 'connector'),
         },
         {
           label: 'Behaviors',
-          value: formatCountLabel(summary?.behaviors_count ?? 0, 'active behavior'),
+          value: formatCountLabel(counts.behaviors, 'active behavior'),
         },
       ]),
     },

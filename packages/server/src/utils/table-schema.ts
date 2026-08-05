@@ -458,7 +458,6 @@ export const QUERYABLE_SCHEMA = {
         'triggers',
         'next_run_at',
         'agent_id',
-        'scheduler_client_id',
         'model_config',
         'execution_config',
         'status',

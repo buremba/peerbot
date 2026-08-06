@@ -284,3 +284,102 @@ describe("resolveAgentId", () => {
     expect(createCount).toBe(0);
   });
 });
+
+/**
+ * Routing must honour an explicit `<provider>/<model>` ref whatever LAYER supplied it.
+ *
+ * The worker only reroutes away from the gateway's `defaultProvider` when
+ * `allowInstalledProviderOverride` is set, and that flag is
+ * `rawOptions.behaviorModelOverride === true` (agent-worker
+ * `runtime/session-runner.ts`). Dispatch sites set `behaviorModelOverride` only
+ * alongside an explicit per-run override (e.g. the request body in
+ * `gateway/routes/public/agent.ts`) — but the layered fallback runs AFTER that,
+ * and resolves an equally explicit ref out of `agent.models[0]` or the org
+ * default. Nothing re-derived the flag, so an agent-level provider choice was
+ * silently dropped for routing.
+ *
+ * Measured on prod 2026-08-06: org `buremba` had agent `personal-agent` pinned to
+ * `gemini/gemini-2.5-pro`, no Behavior override, and NO z-ai provider, secret, or
+ * system key of its own — yet 79 runs over three days failed with
+ * `z.ai returned an error: 429 Insufficient balance`. Setting a per-Behavior
+ * `execution_config.model` (which flips the flag) fixed it immediately: 4/4 runs
+ * completed against prior success rates of 19% and 41%. That is the natural
+ * experiment this test pins.
+ */
+describe("explicit model refs mark the routing override", () => {
+  const storeWith = (models: string[]) =>
+    ({ getSettings: async () => ({ models }) as any }) as any;
+
+  test("an agent-level <provider>/<model> ref marks the override", async () => {
+    const resolved = await resolveAgentOptions(
+      "agent-1",
+      {},
+      storeWith(["gemini/gemini-2.5-pro"]),
+      "org-1",
+    );
+
+    expect(resolved.model).toBe("gemini/gemini-2.5-pro");
+    // Without this the worker ignores the `gemini/` prefix and routes to
+    // whatever module the gateway published as `defaultProvider`.
+    expect(resolved.behaviorModelOverride).toBe(true);
+  });
+
+  test("a per-behavior override still marks the override", async () => {
+    const resolved = await resolveAgentOptions(
+      "agent-1",
+      { model: "qwen/qwen3.8-max-preview", behaviorModelOverride: true },
+      storeWith(["gemini/gemini-2.5-pro"]),
+      "org-1",
+    );
+
+    expect(resolved.model).toBe("qwen/qwen3.8-max-preview");
+    expect(resolved.behaviorModelOverride).toBe(true);
+  });
+
+  // The flag authorizes rerouting to an explicitly NAMED provider. A ref with no
+  // provider segment names none, so it must not authorize anything — the worker
+  // would have nothing to route to and would fall through to defaultProvider
+  // anyway, but claiming an override we cannot honour is a lie in the payload.
+  test("an unqualified agent model does NOT mark the override", async () => {
+    const resolved = await resolveAgentOptions(
+      "agent-1",
+      {},
+      storeWith(["gpt-4o"]),
+      "org-1",
+    );
+
+    expect(resolved.model).toBe("gpt-4o");
+    expect(resolved.behaviorModelOverride).toBeUndefined();
+  });
+
+  // A malformed per-request override is dropped in favour of the agent default
+  // (existing behaviour). The flag must follow the ref that actually WON, not the
+  // one that was rejected.
+  test("a rejected 'auto' override falls back and marks the agent ref", async () => {
+    const resolved = await resolveAgentOptions(
+      "agent-1",
+      { model: "auto", behaviorModelOverride: true },
+      storeWith(["gemini/gemini-2.5-pro"]),
+      "org-1",
+    );
+
+    expect(resolved.model).toBe("gemini/gemini-2.5-pro");
+    expect(resolved.behaviorModelOverride).toBe(true);
+  });
+
+  // The clearing branch: a rejected override arrives with the flag already true,
+  // and the winning fallback ref names no provider. Merely spreading baseOptions
+  // would leave the stale `true` authorizing a ref that cannot be routed — the
+  // flag must be cleared along with the rejected override.
+  test("a rejected override does NOT leave a stale flag on an unqualified fallback", async () => {
+    const resolved = await resolveAgentOptions(
+      "agent-1",
+      { model: "auto", behaviorModelOverride: true },
+      storeWith(["gpt-4o"]),
+      "org-1",
+    );
+
+    expect(resolved.model).toBe("gpt-4o");
+    expect(resolved.behaviorModelOverride).toBeUndefined();
+  });
+});

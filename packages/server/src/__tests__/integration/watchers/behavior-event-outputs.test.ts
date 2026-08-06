@@ -488,4 +488,91 @@ describe('Behavior event outputs', () => {
     ]);
     expect(new Set(outputs.map((row) => row.revision_id)).size).toBe(2);
   });
+
+  it('gives each source item its own origin_id across runs sharing one Canvas revision', async () => {
+    const sql = getTestDb();
+    const workspace = await TestWorkspace.create({ name: 'Origin Id Org' });
+    const ownerUserId = workspace.users.owner.id;
+    const parent = await createTestEntity({
+      name: 'Radar subject',
+      organization_id: workspace.org.id,
+      created_by: ownerUserId,
+    });
+    const agent = await createTestAgent({
+      organizationId: workspace.org.id,
+      ownerUserId,
+      agentId: 'origin-id-agent',
+    });
+    const api = await TestApiClient.for({
+      organizationId: workspace.org.id,
+      userId: ownerUserId,
+      memberRole: 'owner',
+    });
+    const created = (await api.behaviors.create({
+      entity_id: parent.id,
+      slug: 'origin-id-behavior',
+      prompt: 'Rank new posts as observation drafts.',
+      triggers: [{ kind: 'schedule', cron: '25 * * * *' }],
+      outputs: { signals: { event: 'observation' } },
+      agent_id: agent.agentId,
+    })) as { behavior_id: string };
+    const watcherId = Number(created.behavior_id);
+
+    // Prod shape (Behavior 71, "Social interest radar"): an hourly Behavior whose
+    // runs all append to the SAME Canvas revision for the day. Each run ranks a
+    // different post and carries that post's own origin_id as idempotency_key,
+    // so every row is a genuinely distinct source item — not a retry.
+    const canvasRevisionId = 4828152;
+    const persistOne = (idempotencyKey: string, content: string) =>
+      sql.begin((tx) =>
+        persistBehaviorEventOutput({
+          tx: tx as unknown as DbClient,
+          rows: [{ content, idempotency_key: idempotencyKey }],
+          outputName: 'signals',
+          output: { event: 'observation' },
+          watcherId,
+          organizationId: workspace.org.id,
+          windowId: canvasRevisionId,
+          canvasRevisionId,
+          runId: null,
+          boundEntityIds: [parent.id],
+          validContentIds: new Set<number>(),
+          occurredAt: new Date().toISOString(),
+          createdBy: ownerUserId,
+        })
+      );
+
+    const first = await persistOne('2085196582245355991', 'johnzabroski / x');
+    const second = await persistOne(
+      'li_home_fInCfPOAe17mHCT5JA8II',
+      'Wes McKinney / linkedin'
+    );
+
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    // Two different posts, so two different events...
+    expect(second[0].id).not.toBe(first[0].id);
+    // ...and therefore two different stable identities. Deriving origin_id from
+    // the array index instead made every run's item N collide, so one origin_id
+    // resolved to a set of unrelated posts (prod: 8 live rows under
+    // behavior_71_signals_canvas_4819569_4, each a different author).
+    expect(second[0].origin_id).not.toBe(first[0].origin_id);
+
+    const live = await sql<{ origin_id: string; payload_text: string }>`
+      SELECT origin_id, payload_text
+      FROM events
+      WHERE organization_id = ${workspace.org.id}
+        AND metadata->>'behavior_output' = 'signals'
+      ORDER BY id
+    `;
+    expect(live).toHaveLength(2);
+    expect(new Set(live.map((row) => row.origin_id)).size).toBe(2);
+
+    // The source-derived idempotency key still wins over the positional retry
+    // key: rediscovering the same post reuses its event rather than minting a
+    // second origin_id for it.
+    const rediscovered = await persistOne('2085196582245355991', 'johnzabroski / x');
+    expect(rediscovered[0].id).toBe(first[0].id);
+    expect(rediscovered[0].origin_id).toBe(first[0].origin_id);
+  });
 });

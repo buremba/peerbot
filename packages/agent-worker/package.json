@@ -1,6 +1,6 @@
 {
   "name": "@lobu/worker",
-  "version": "14.15.1",
+  "version": "14.16.0",
   "description": "Lobu worker runtime for embedded subprocess execution",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

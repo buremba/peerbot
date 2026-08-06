@@ -17,6 +17,7 @@ import { resolveBaseUrl } from './base-url';
 import { createAuth } from './index';
 import { mcpAuth, requireAuth } from './middleware';
 import { findExistingPersonalOrg } from './personal-org-provisioning';
+import { hostOnlyExpiry, sessionCookieName } from './session-cookie-scope';
 import { OAuthClientsStore } from './oauth/clients';
 import { OAuthProvider } from './oauth/provider';
 import { AVAILABLE_PAT_SCOPES, DEFAULT_SCOPES_STRING } from './oauth/scopes';
@@ -310,7 +311,15 @@ async function createSessionToken(
 async function mintSessionCookieValue(
   c: Context<{ Bindings: Env }>,
   userId: string
-): Promise<{ cookieName: string; cookieHeader: string; sessionToken: string } | { error: string }> {
+): Promise<
+  | {
+      cookieName: string;
+      cookieHeader: string;
+      hostOnlyExpiryHeader: string | null;
+      sessionToken: string;
+    }
+  | { error: string }
+> {
   const secret = c.env.BETTER_AUTH_SECRET;
   if (!secret) return { error: 'BETTER_AUTH_SECRET not set' };
 
@@ -325,7 +334,7 @@ async function mintSessionCookieValue(
   // by a reverse proxy and the bind itself speaks plain HTTP.
   const baseUrl = resolveBaseUrl({ request: c.req.raw });
   const isHttps = baseUrl.startsWith('https://');
-  const cookieName = isHttps ? '__Secure-better-auth.session_token' : 'better-auth.session_token';
+  const cookieName = sessionCookieName(isHttps);
 
   const parts = [
     `${cookieName}=${cookieValue}`,
@@ -334,8 +343,22 @@ async function mintSessionCookieValue(
     'SameSite=Lax',
     `Max-Age=${60 * 60 * 24 * 7}`,
   ];
+  // Must carry the SAME Domain Better Auth uses. Setting it host-only creates a
+  // second cookie of the same name at a narrower scope; the browser then sends
+  // both, we resolve the first, and RFC 6265 §5.4 sends the older one first —
+  // so this deep-link cookie would outrank every subsequent real sign-in and
+  // lock the user out for good once it went stale.
+  const cookieDomain = process.env.AUTH_COOKIE_DOMAIN;
+  if (cookieDomain) parts.push(`Domain=${cookieDomain}`);
   if (isHttps) parts.push('Secure');
-  return { cookieName, cookieHeader: parts.join('; '), sessionToken };
+  return {
+    cookieName,
+    cookieHeader: parts.join('; '),
+    // Kill any host-only twin left by an older build of this route (or by a
+    // document.cookie plant) in the same response that sets the real cookie.
+    hostOnlyExpiryHeader: cookieDomain ? hostOnlyExpiry(cookieName, isHttps) : null,
+    sessionToken,
+  };
 }
 
 /**
@@ -412,6 +435,9 @@ async function handleExchangeToken(
     );
   }
   c.header('Set-Cookie', minted.cookieHeader);
+  if (minted.hostOnlyExpiryHeader) {
+    c.header('Set-Cookie', minted.hostOnlyExpiryHeader, { append: true });
+  }
 
   const next = rawNext ?? '/';
   const safeNext = next.startsWith('/') && !next.startsWith('//') ? next : '/';
@@ -732,6 +758,9 @@ credentialRoutes.post('/local-init', async (c) => {
     );
   }
   c.header('Set-Cookie', minted.cookieHeader);
+  if (minted.hostOnlyExpiryHeader) {
+    c.header('Set-Cookie', minted.hostOnlyExpiryHeader, { append: true });
+  }
 
   // The session token alone is not enough for native worker callers — the
   // /api/workers/* middleware checks for `device_worker:run` / `mcp:admin`

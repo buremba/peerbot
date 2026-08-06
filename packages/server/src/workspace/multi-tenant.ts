@@ -18,6 +18,10 @@ import type {
   ResolvedOwner,
   WorkspaceProvider,
 } from './types';
+import {
+  countNamedCookies,
+  sessionCookieName,
+} from '../auth/session-cookie-scope';
 import { listManagedAuthConnectorOffers } from './managed-auth-discovery';
 import {
   memberRoleCache,
@@ -528,6 +532,25 @@ export class MultiTenantProvider implements WorkspaceProvider {
         /(?:__Secure-)?better-auth\.session_token=([^;]+)/
       );
       const sessionCacheKey = sessionTokenMatch?.[1] || null;
+
+      // A jar holding the same session cookie at two scopes (host-only +
+      // Domain-scoped) resolves to whichever the browser sends FIRST, which
+      // RFC 6265 §5.4 makes the OLDEST. A stale twin therefore outranks every
+      // later sign-in and bricks login permanently, and it is invisible
+      // otherwise: `get-session` just answers 200 null forever. Warn so the
+      // next occurrence is one log line instead of an afternoon.
+      for (const name of [
+        sessionCookieName(true),
+        sessionCookieName(false),
+      ]) {
+        const seen = countNamedCookies(cookieHeader, name);
+        if (seen > 1) {
+          logger.warn(
+            `[MultiTenantProvider] ${seen} "${name}" cookies in one request — a duplicate ` +
+              'at a narrower scope shadows the real session and blocks sign-in until expired'
+          );
+        }
+      }
 
       let session: { user: any; session: any } | null = null;
       let cacheHit = false;

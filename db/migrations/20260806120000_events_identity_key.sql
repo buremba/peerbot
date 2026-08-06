@@ -105,7 +105,12 @@ CREATE OR REPLACE VIEW public.current_event_records AS
 
 -- migrate:down
 
-CREATE OR REPLACE VIEW public.current_event_records AS
+-- CREATE OR REPLACE VIEW cannot DROP a column (42P16), so the rollback must
+-- DROP the view, recreate it without the identity columns, then drop the
+-- columns the view no longer references. (The same latent flaw exists in
+-- 20260804170000's down — this one does not copy it.)
+DROP VIEW public.current_event_records;
+CREATE VIEW public.current_event_records AS
  SELECT e.id,
     e.organization_id,
     e.entity_ids,

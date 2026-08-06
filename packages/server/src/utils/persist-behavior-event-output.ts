@@ -56,6 +56,33 @@ async function findByIdempotencyKey(
 }
 
 /**
+ * Recover from a concurrent duplicate completion: `idx_events_org_idempotency_key`
+ * rejected our insert because another run committed the same idempotency key
+ * between our probe and our write. Adopt that committed row instead of
+ * surfacing a raw 23505. Shared by the first-attempt catch and the identity
+ * retry — a duplicate completion can race BOTH indices at once (two concurrent
+ * runs of the same output carry the same per-item key, and may also probe the
+ * same identity head), and either order must dedupe, not crash.
+ */
+async function recoverIdempotencyWinner(
+  tx: DbClient,
+  organizationId: string,
+  event: string,
+  idempotencyKey: string,
+  cause: unknown
+): Promise<InsertedEvent> {
+  const winner = await findByIdempotencyKey(tx, organizationId, idempotencyKey);
+  if (!winner) throw cause;
+  if (winner.semantic_type !== event) {
+    throw new ToolUserError(
+      `Behavior output idempotency key already belongs to '${winner.semantic_type}'.`,
+      409
+    );
+  }
+  return winner;
+}
+
+/**
  * The current head event for a keyed event output, by stable identity.
  *
  * `superseded_by IS NULL` identifies heads — the insert-time dual-write stamps
@@ -329,13 +356,15 @@ export async function persistBehaviorEventOutput(
         try {
           inserted.push(await writeEvent(winnerHead));
         } catch (retryError) {
-          // Two ways the retry can still lose, and both mean the same thing —
-          // a third writer moved the chain under us. The retry inserts a
-          // SUCCESSOR (supersedes_event_id is non-NULL), so it is not in the
+          // The retry can lose three ways, and the first two mean the same
+          // thing — a third writer moved the chain under us. The retry inserts
+          // a SUCCESSOR (supersedes_event_id is non-NULL), so it is not in the
           // root index; it collides on idx_events_superseded_by instead, which
           // is unique on supersedes_event_id and rejects a second successor for
           // the head we just read. Accept either as the same lost race rather
-          // than surfacing a raw 23505.
+          // than surfacing a raw 23505. The third is a concurrent duplicate
+          // completion (shared explicit idempotency key) that won the write —
+          // dedupe onto its row rather than crashing, same as the first attempt.
           if (
             isUniqueViolation(retryError, 'idx_events_identity_root_behavior') ||
             isUniqueViolation(retryError, 'idx_events_superseded_by')
@@ -345,23 +374,30 @@ export async function persistBehaviorEventOutput(
               409
             );
           }
+          if (isUniqueViolation(retryError, 'idx_events_org_idempotency_key')) {
+            inserted.push(
+              await recoverIdempotencyWinner(
+                params.tx,
+                params.organizationId,
+                params.output.event,
+                idempotencyKey,
+                retryError
+              )
+            );
+            continue;
+          }
           throw retryError;
         }
         continue;
       }
       if (!isUniqueViolation(error, 'idx_events_org_idempotency_key')) throw error;
-      const winner = await findByIdempotencyKey(
+      const winner = await recoverIdempotencyWinner(
         params.tx,
         params.organizationId,
-        idempotencyKey
+        params.output.event,
+        idempotencyKey,
+        error
       );
-      if (!winner) throw error;
-      if (winner.semantic_type !== params.output.event) {
-        throw new ToolUserError(
-          `Behavior output idempotency key already belongs to '${winner.semantic_type}'.`,
-          409
-        );
-      }
       inserted.push(winner);
     }
   }

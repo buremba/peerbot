@@ -1,5 +1,14 @@
 # Changelog
 
+## [14.15.1](https://github.com/lobu-ai/lobu/compare/lobu-v14.15.0...lobu-v14.15.1) (2026-08-06)
+
+
+### Bug Fixes
+
+* **charts:** scope the app topology spread to one ReplicaSet revision ([#2548](https://github.com/lobu-ai/lobu/issues/2548)) ([50b15d7](https://github.com/lobu-ai/lobu/commit/50b15d7d83eb151005de02c926ba6e913e0d6aa7))
+* **owletto:** bump pointer for the bounded native AX walk on Mac ([#2552](https://github.com/lobu-ai/lobu/issues/2552)) ([dc78673](https://github.com/lobu-ai/lobu/commit/dc78673bf4cefe81cb879ba49c198b57ddebccbe))
+* **server:** honour an explicit provider/model ref from any config layer ([#2547](https://github.com/lobu-ai/lobu/issues/2547)) ([1f0c004](https://github.com/lobu-ai/lobu/commit/1f0c004b9188e05ff9303d1a2530a48a2033b007))
+
 ## [14.15.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.14.0...lobu-v14.15.0) (2026-08-06)
 
 

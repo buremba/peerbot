@@ -54,6 +54,7 @@ jobs:
           grep -q 'name: install-kubectl' /tmp/lobu-quiesced-upgrade.yaml
           grep -q 'trap restore_on_failure EXIT' /tmp/lobu-quiesced-upgrade.yaml
           grep -q 'migration failed with status' /tmp/lobu-quiesced-upgrade.yaml
+          grep -q 'name: MIGRATION_PENDING_CHECK' /tmp/lobu-quiesced-upgrade.yaml
           grep -q '"helm.sh/hook-weight": "0"' /tmp/lobu-quiesced-upgrade.yaml
 
           helm template lobu charts/lobu --namespace lobu --is-upgrade \

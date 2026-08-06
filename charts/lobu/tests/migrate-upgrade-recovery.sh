@@ -39,6 +39,14 @@ exit "${MIGRATION_EXIT_CODE:-0}"
 MIGRATE
 chmod +x "$test_dir/migrate"
 
+pending_log="$test_dir/pending.log"
+cat >"$test_dir/pending-check" <<'PENDING'
+#!/bin/sh
+printf 'pending-check\n' >>"$PENDING_LOG"
+exit "${PENDING_EXIT_CODE:-0}"
+PENDING
+chmod +x "$test_dir/pending-check"
+
 set +e
 COMMAND_LOG="$command_log" \
 MIGRATION_LOG="$migration_log" \
@@ -119,5 +127,74 @@ if grep -q '^scale deployment' "$command_log"; then
   echo 'deployment lookup failure unexpectedly scaled a deployment' >&2
   exit 1
 fi
+
+# A deploy that ships no schema change must not touch the running deployments:
+# scaling the app to zero here is the 503 window with nothing to show for it.
+: >"$command_log"
+: >"$migration_log"
+: >"$pending_log"
+COMMAND_LOG="$command_log" \
+MIGRATION_LOG="$migration_log" \
+PENDING_LOG="$pending_log" \
+KUBECTL_BIN="$test_dir/kubectl" \
+NAMESPACE=lobu \
+APP_DEPLOYMENT=lobu-app \
+APP_SELECTOR='app.kubernetes.io/instance=lobu,app.kubernetes.io/component=api' \
+WORKER_DEPLOYMENT=lobu-worker \
+WORKER_SELECTOR='app.kubernetes.io/instance=lobu,app.kubernetes.io/component=worker' \
+MIGRATION_PENDING_CHECK="$test_dir/pending-check" \
+PENDING_EXIT_CODE=3 \
+  sh "$orchestrator" "$test_dir/migrate"
+
+if ! grep -Fxq 'pending-check' "$pending_log"; then
+  echo 'orchestrator never consulted the pending-migration check' >&2
+  exit 1
+fi
+grep -Fxq 'migrate' "$migration_log"
+if [ -s "$command_log" ]; then
+  echo 'no-pending-migration deploy unexpectedly ran kubectl:' >&2
+  cat "$command_log" >&2
+  exit 1
+fi
+
+# Fail closed: a check that cannot answer must still quiesce.
+: >"$command_log"
+: >"$migration_log"
+COMMAND_LOG="$command_log" \
+MIGRATION_LOG="$migration_log" \
+PENDING_LOG="$pending_log" \
+KUBECTL_BIN="$test_dir/kubectl" \
+NAMESPACE=lobu \
+APP_DEPLOYMENT=lobu-app \
+APP_SELECTOR='app.kubernetes.io/instance=lobu,app.kubernetes.io/component=api' \
+WORKER_DEPLOYMENT=lobu-worker \
+WORKER_SELECTOR='app.kubernetes.io/instance=lobu,app.kubernetes.io/component=worker' \
+MIGRATION_PENDING_CHECK="$test_dir/pending-check" \
+PENDING_EXIT_CODE=7 \
+  sh "$orchestrator" "$test_dir/migrate"
+
+grep -Fxq 'scale deployment lobu-app --replicas=0' "$command_log"
+grep -Fxq 'scale deployment lobu-worker --replicas=0' "$command_log"
+grep -Fxq 'migrate' "$migration_log"
+
+# A real pending migration still gets the full quiesce.
+: >"$command_log"
+: >"$migration_log"
+COMMAND_LOG="$command_log" \
+MIGRATION_LOG="$migration_log" \
+PENDING_LOG="$pending_log" \
+KUBECTL_BIN="$test_dir/kubectl" \
+NAMESPACE=lobu \
+APP_DEPLOYMENT=lobu-app \
+APP_SELECTOR='app.kubernetes.io/instance=lobu,app.kubernetes.io/component=api' \
+WORKER_DEPLOYMENT=lobu-worker \
+WORKER_SELECTOR='app.kubernetes.io/instance=lobu,app.kubernetes.io/component=worker' \
+MIGRATION_PENDING_CHECK="$test_dir/pending-check" \
+PENDING_EXIT_CODE=0 \
+  sh "$orchestrator" "$test_dir/migrate"
+
+grep -Fxq 'scale deployment lobu-app --replicas=0' "$command_log"
+grep -Fxq 'scale deployment lobu-worker --replicas=0' "$command_log"
+grep -Fxq 'migrate' "$migration_log"
 
 echo 'migration upgrade failure recovery passed'

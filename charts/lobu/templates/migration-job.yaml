@@ -97,6 +97,10 @@ spec:
             {{- if .Release.IsUpgrade }}
             - name: KUBECTL_BIN
               value: /migration-tools/kubectl
+            - name: MIGRATIONS_DIR
+              value: /app/db/migrations
+            - name: MIGRATION_PENDING_CHECK
+              value: "node /app/scripts/migrate-up.mjs --check-pending"
             - name: NAMESPACE
               value: {{ .Release.Namespace | quote }}
             - name: APP_DEPLOYMENT

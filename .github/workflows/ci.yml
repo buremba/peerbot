@@ -767,6 +767,17 @@ jobs:
         # schema to the reference-free shape both CLIs load.
         run: bun test scripts/__tests__/review-output-schema.test.ts
 
+      - name: Migration runner guards
+        # migrate-up.mjs --check-pending exit status 3 is the ONLY status that
+        # lets the chart's pre-upgrade hook skip its scale-to-zero quiesce
+        # (charts/lobu/files/migrate-upgrade.sh). These pin the fail-closed
+        # paths: an unreachable ledger, a missing DATABASE_URL, or a duplicate
+        # migration version must never read as "nothing pending", or an
+        # incompatible migration applies while the old pods are still serving.
+        run: |
+          bun test scripts/__tests__/migrate-up-check-pending.test.ts
+          bun test scripts/__tests__/migrate-up-duplicate-version.test.ts
+
       - name: Raw-array SQL-param gate
         # packages/server's postgres.js client runs fetch_types:false, where a raw
         # JS array bound as a query param serializes to a malformed array literal
@@ -1087,6 +1098,21 @@ jobs:
             echo "::error::$pending migrations still pending after dbmate up"
             exit 1
           fi
+
+      - name: Pending-check contract (pre-upgrade quiesce fast path)
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/lobu_ci?sslmode=disable
+        # charts/lobu/files/migrate-upgrade.sh skips its scale-to-zero quiesce
+        # only on --check-pending exit status 3. Pin both real-database
+        # answers here, where every migration was just applied: a complete
+        # ledger reports 3, and one unapplied file reports 0 (quiesce).
+        run: |
+          pending_rc=0; node scripts/migrate-up.mjs --check-pending || pending_rc=$?
+          test "$pending_rc" -eq 3
+          printf -- '-- migrate:up\nSELECT 1;\n' > db/migrations/99999999999999_pending_probe.sql
+          pending_rc=0; node scripts/migrate-up.mjs --check-pending || pending_rc=$?
+          rm db/migrations/99999999999999_pending_probe.sql
+          test "$pending_rc" -eq 0
 
       # The committed pgvector libraries bypass normal TypeScript builds. Keep
       # their ABI floor in this already-required, Docker-capable policy job

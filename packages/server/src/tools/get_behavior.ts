@@ -1015,7 +1015,14 @@ async function getBehaviorImpl(
           params: {
             behavior_id: args.behavior_id,
             since: nextWindow.start.split('T')[0],
-            until: nextWindow.end.split('T')[0],
+            // `until` is INCLUSIVE — the last day inside the window — while
+            // `next_window.end` is the exclusive boundary. Passing the exclusive
+            // end straight through suggested a call one whole period too wide
+            // (a daily window advertised as `since=06-18&until=06-19`, which
+            // `alignRequestedWindow` reads as two days), so a client following
+            // the server's own suggestion wrote a window shaped like no period
+            // the dispatcher can emit.
+            until: new Date(new Date(nextWindow.end).getTime() - 1).toISOString().split('T')[0],
           },
           description:
             'Fetch content for analysis. Response includes window_token for complete_window action.',

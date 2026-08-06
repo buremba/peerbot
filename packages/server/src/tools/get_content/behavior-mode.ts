@@ -12,14 +12,21 @@ import { inferBehaviorGranularityFromSchedule } from '@lobu/connector-sdk';
 import { type DbClient, parsePgNumberArray } from '../../db/client';
 import type { Env } from '../../index';
 import type { Outputs, UnprocessedRange, WatcherSource } from '../../types/watchers';
-import { parseDateAlias, toEndOfDay } from '../../utils/date-aliases';
 import { type DataSourceContext, executeDataSources } from '../../utils/execute-data-sources';
 import logger from '../../utils/logger';
 import { runMetric } from '../../metrics/run-metric';
 import { getRecentFeedbackSummary } from '../../utils/watcher-feedback';
 import { getAvailableOperations, getPastReactionsSummary } from '../../utils/watcher-reactions';
 import { deriveWatcherExtractionSchema } from '../../utils/watcher-extraction-schema';
-import { computePendingWindow, foldUnprocessedRanges } from '../../utils/window-utils';
+import {
+  alignRequestedWindow,
+  computePendingWindow,
+  computeWindowLag,
+  describeWindowLag,
+  foldUnprocessedRanges,
+  parseBehaviorWindowDate,
+  readWindowCursor,
+} from '../../utils/window-utils';
 import {
   DEFAULT_BEHAVIOR_SOURCE_QUERY,
   type NormalizedWatcherSource,
@@ -440,14 +447,36 @@ export async function handleBehaviorMode(
   }));
 
   // Compute window dates - use since/until if provided, else compute pending window
-  let windowStart: Date, windowEnd: Date;
+  let windowStart: Date, windowEnd: Date, windowCursor: Date | null;
   if (args.since && args.until) {
-    // Use provided date range for the window
-    windowStart = parseDateAlias(args.since).date;
-    windowEnd = toEndOfDay(parseDateAlias(args.until).date);
+    // An agent-chosen range, aligned to the granularity so an agent-written
+    // window is indistinguishable in shape from a server-computed one.
+    ({ windowStart, windowEnd } = alignRequestedWindow(
+      parseBehaviorWindowDate(args.since),
+      parseBehaviorWindowDate(args.until),
+      timeGranularity
+    ));
+    windowCursor = await readWindowCursor(sql, watcherId);
   } else {
-    ({ windowStart, windowEnd } = await computePendingWindow(sql, watcherId, timeGranularity));
+    ({ windowStart, windowEnd, cursor: windowCursor } = await computePendingWindow(
+      sql,
+      watcherId,
+      timeGranularity
+    ));
   }
+
+  // How the window being handed out sits against the clock, and which periods
+  // (if any) were skipped to produce it. Measured against the WINDOW, not the
+  // cursor: at the moment a run reads, the cursor is the period the PREVIOUS run
+  // completed, so a healthy daily Behavior is two periods behind by that measure
+  // and one by this one.
+  const windowLag = computeWindowLag(windowCursor, windowStart, new Date(), timeGranularity);
+  const windowLagNote = describeWindowLag({
+    skippedFrom: windowLag.skippedFrom,
+    skippedTo: windowLag.skippedTo,
+    periodsSkipped: windowLag.periodsSkipped,
+    granularity: timeGranularity,
+  });
 
   // NOTE: Window creation is deferred to complete_window action
   // This allows batched processing where each batch creates its own window
@@ -602,6 +631,19 @@ export async function handleBehaviorMode(
     window_token: windowToken,
     window_start: windowStartIso,
     window_end: windowEndIso,
+    window_lag: {
+      last_window_start: windowCursor ? windowCursor.toISOString() : null,
+      current_period_start: windowLag.currentPeriodStart.toISOString(),
+      periods_behind: windowLag.periodsBehind,
+      granularity: timeGranularity,
+      periods_skipped: windowLag.periodsSkipped,
+      skipped_from: windowLag.skippedFrom ? windowLag.skippedFrom.toISOString() : null,
+      skipped_to: windowLag.skippedTo ? windowLag.skippedTo.toISOString() : null,
+      // The numbers alone did not change what a run did (see describeWindowLag).
+      // Behavior runs read this through run_sdk as JSON, so the guidance has to
+      // be IN the payload, not only in the markdown a tool-call client renders.
+      ...(windowLagNote ? { guidance: windowLagNote } : {}),
+    },
     extraction_schema: templateExtractionSchema ?? undefined,
     sources: sourcesContent as Record<string, ContentItem[]>,
     // Per-source page state. Every event source is capped at `limit`, so this

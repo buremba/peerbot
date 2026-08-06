@@ -68,6 +68,48 @@ export const GetContentResultSchema = Type.Object({
   window_token: Type.Optional(Type.String()),
   window_start: Type.Optional(Type.String()),
   window_end: Type.Optional(Type.String()),
+  /**
+   * How the window above sits against the clock, and what was skipped to get it.
+   *
+   * `window_start` alone cannot tell a run whether it is current: a stale window
+   * and a fresh one look identical from inside the run. Prod Behavior 2 drafted
+   * replies to month-dead Hacker News threads for weeks because nothing said so.
+   *
+   * Raw facts, deliberately — no staleness flag. A run that decides a skipped
+   * span is worth draining can read it by passing `since`/`until`, and the window
+   * it completes is whatever span it read.
+   */
+  window_lag: Type.Optional(
+    Type.Object({
+      /** Start of the newest window this Behavior has actually completed. */
+      last_window_start: Type.Union([Type.String(), Type.Null()]),
+      current_period_start: Type.String(),
+      /**
+       * Age of the window above, in whole periods. One is the healthy resting
+       * value for a Behavior that runs once per period (it analyses the period
+       * that just closed); zero for a cron that fires several times per period.
+       */
+      periods_behind: Type.Integer(),
+      granularity: Type.String(),
+      /**
+       * Periods between `last_window_start` and the window above that no run will
+       * ever be dispatched for, because the server moved the window forward to
+       * bring a lagging Behavior current. Zero on every healthy run.
+       */
+      periods_skipped: Type.Integer(),
+      skipped_from: Type.Union([Type.String(), Type.Null()]),
+      /** Inclusive — the last period actually skipped. */
+      skipped_to: Type.Union([Type.String(), Type.Null()]),
+      /**
+       * The skip in words, present only when `periods_skipped` is non-zero. A
+       * Behavior run reads this response as JSON through `run_sdk`, so the
+       * affordance — that it may re-read a skipped span with `since`/`until`, and
+       * that doing so cannot drag the cursor back — has to travel in the payload.
+       * Reporting only numbers was measured NOT to change what a run did.
+       */
+      guidance: Type.Optional(Type.String()),
+    })
+  ),
   extraction_schema: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
   sources: Type.Optional(Type.Record(Type.String(), Type.Array(Type.Unknown()))),
   /**

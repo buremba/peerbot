@@ -156,6 +156,13 @@ app:
   # unschedulable when the only other node is cordoned or full, trading a
   # colocation risk for a guaranteed capacity loss. Soft spreads whenever the
   # cluster can and degrades to colocation rather than to nothing.
+  # The template pairs this with matchLabelKeys: [pod-template-hash]. That is
+  # load-bearing, not a refinement: without it the skew domain includes the
+  # OUTGOING ReplicaSet during a rolling update, so whether the new revision
+  # ends up spread depends on how old-pod termination interleaves with new-pod
+  # scheduling. It is intermittent, not a guaranteed failure -- which is the
+  # trap. A rollout that happens to spread is not evidence the scoping is
+  # unnecessary, and ScheduleAnyway means the bad outcome never reports.
   topologySpread:
     enabled: true
     topologyKey: kubernetes.io/hostname

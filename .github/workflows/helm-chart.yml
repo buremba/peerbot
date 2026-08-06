@@ -76,6 +76,12 @@ jobs:
             >/tmp/lobu-availability.yaml
           grep -q 'topologySpreadConstraints:' /tmp/lobu-availability.yaml
           grep -q 'topologyKey: kubernetes.io/hostname' /tmp/lobu-availability.yaml
+          # Without matchLabelKeys the constraint renders, passes every other
+          # assertion, and intermittently colocates every replica anyway -- it
+          # computes skew against the outgoing revision's pods. That is how it
+          # shipped in 14.15.0, where it held both replicas on one node for 76
+          # minutes and then spread correctly on the next two rollouts.
+          grep -q 'pod-template-hash' /tmp/lobu-availability.yaml
           grep -q 'alert: LobuAppNoAvailableReplicas' /tmp/lobu-availability.yaml
           # A `for:` longer than the outage is exactly the bug this replaces.
           if grep -A6 'alert: LobuAppNoAvailableReplicas' /tmp/lobu-availability.yaml \

@@ -2081,6 +2081,24 @@ export async function handleDelete(
       AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
   `;
 
+  // Expire any undecided approval runs for this connection. Deleting a
+  // connection makes its pending approvals unreviewable — the card disappears
+  // from every content read (connection-visibility predicate), so approve/reject
+  // would be blind. Same terminal state as the pending-approval TTL sweep
+  // (scheduled/expire-pending-approvals): approval_status='expired',
+  // status='cancelled'.
+  await sql`
+    UPDATE runs
+    SET approval_status = 'expired',
+        status = 'cancelled',
+        error_message = 'Connection deleted before approval; approval expired.',
+        completed_at = NOW()
+    WHERE organization_id = ${organizationId}
+      AND connection_id = ${args.connection_id}
+      AND approval_status = 'pending'
+      AND run_type = ANY(${pgTextArray(["action", "internal"])}::text[])
+  `;
+
   // Record change event in knowledge for audit trail
   const conn = deleted[0];
   const affectedFeeds = await sql`

@@ -88,6 +88,23 @@ async function findCurrentHeadByKey(
   return rows[0]?.id ?? null;
 }
 
+/**
+ * `origin_id` for an event-output row whose draft carried an `idempotency_key`
+ * — the source item's own stable id, so this names the row identically on every
+ * run that rediscovers it.
+ *
+ * Exported because `events/backfill-behavior-output-origin-id.ts` re-stamps the
+ * rows written before this derivation existed, and a backfill that reimplements
+ * the encoding in SQL drifts from the writer the moment either changes.
+ */
+export function behaviorOutputOriginId(
+  watcherId: number,
+  outputName: string,
+  idempotencyKey: string
+): string {
+  return `behavior_${watcherId}_${outputName}_key_${idempotencyKey}`;
+}
+
 /** Persist one declared event array atomically with its Canvas window. */
 export async function persistBehaviorEventOutput(
   params: PersistBehaviorEventOutputParams
@@ -188,9 +205,27 @@ export async function persistBehaviorEventOutput(
       parentSourceUrl = parentRows[0].source_url;
     }
 
+    // The row's identity, and the origin_id that must name it. A model-supplied
+    // `idempotency_key` is the source item's own stable id, so it identifies the
+    // row across runs; without one the row is only identifiable as its slot in
+    // this Canvas revision. origin_id is DERIVED from the same identity rather
+    // than stamped positionally: an hourly Behavior's runs all append to one
+    // Canvas revision, so `..._${index}` named item N of every run the same
+    // thing. Prod Behavior 71 put 8 unrelated posts under
+    // `behavior_71_signals_canvas_4819569_4` — distinct rows, each correctly
+    // deduped by its idempotency key, all sharing one origin_id. That breaks the
+    // rule that origin_id is stable source identity: resolving one returned a
+    // set of unrelated events.
     const idempotencyKey = draft.idempotency_key
       ? `behavior:${params.watcherId}:output:${params.outputName}:key:${draft.idempotency_key}`
       : `behavior:${params.watcherId}:${producer}:output:${params.outputName}:item:${index}`;
+    const originId = draft.idempotency_key
+      ? behaviorOutputOriginId(
+          params.watcherId,
+          params.outputName,
+          draft.idempotency_key
+        )
+      : `behavior_${params.watcherId}_${params.outputName}_${producer.replace(':', '_')}_${index}`;
     const prior = await findByIdempotencyKey(
       params.tx,
       params.organizationId,
@@ -222,7 +257,7 @@ export async function persistBehaviorEventOutput(
             {
               entityIds: params.boundEntityIds,
               organizationId: params.organizationId,
-              originId: `behavior_${params.watcherId}_${params.outputName}_${producer.replace(':', '_')}_${index}`,
+              originId,
               title: draft.title ?? null,
               payloadType: draft.payload_type ?? 'text',
               content: draft.content,

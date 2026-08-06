@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+
+# shellcheck source=scripts/lib/review-cache.sh
+. "$repo_root/scripts/lib/review-cache.sh"
+
+fail() {
+  echo "FAIL: $*" >&2
+  exit 1
+}
+
+cache_root="$(mktemp -d /tmp/lobu-review-cache.XXXXXX)"
+trap 'rm -rf "$cache_root"' EXIT
+export REVIEW_CACHE_ROOT_FOR_TESTS="$cache_root"
+export REVIEWER_CLI_SELECTED=codex
+export CLAUDE_REVIEW_MODEL=fable CLAUDE_REVIEW_EFFORT=high
+export CODEX_REVIEW_MODEL=""
+export PI_REVIEW_MODEL=gpt-5.6-terra PI_REVIEW_PROVIDER=openai-codex
+
+sig="$(review_reviewer_signature)"
+[ -n "$sig" ] || fail "empty reviewer signature"
+
+verdict='{"bug_free_confidence":88,"bugs":0,"slop":0,"simplicity":92,"blockers":[],"change_type":"fix","behavior_change_risk":"low","tests_adequate":true,"suggested_fixes":[],"notes":"ok","categories":{"src":5}}'
+
+review_cache_store "hash-a" "$sig" "origin/main" "deadbeef" "$verdict"
+
+hit="$(review_cache_lookup "hash-a" "$sig")"
+[ -n "$hit" ] && [ -f "$hit" ] || fail "exact hash+sig did not hit"
+[ "$(jq -c .verdict "$hit")" = "$verdict" ] || fail "cached verdict did not round-trip"
+[ "$(jq -r .diff_hash "$hit")" = "hash-a" ] || fail "cached diff_hash not stored"
+
+# different reviewer signature → miss (stale verdict under a new reviewer)
+if review_cache_lookup "hash-a" "claude|fable|low||gpt-5.6-terra|openai-codex" >/dev/null 2>&1; then
+  fail "different reviewer signature unexpectedly hit"
+fi
+
+# different diff hash → miss
+if review_cache_lookup "hash-b" "$sig" >/dev/null 2>&1; then
+  fail "different diff hash unexpectedly hit"
+fi
+
+# a changed signature must invalidate: same verdict under pi vs codex
+review_cache_store "hash-c" "$sig" "origin/main" "cafe" "$verdict"
+if review_cache_lookup "hash-c" "pi|fable|high||gpt-5.6-terra|openai-codex" >/dev/null 2>&1; then
+  fail "cross-reviewer verdict reused"
+fi
+
+# review_diff_hash is stable for identical content and differs on change
+repo="$(mktemp -d /tmp/lobu-review-cache-repo.XXXXXX)"
+trap 'rm -rf "$cache_root" "$repo"' EXIT
+git -C "$repo" init -q
+git -C "$repo" config user.email t@t
+git -C "$repo" config user.name t
+git -C "$repo" commit --allow-empty -q -m root
+git -C "$repo" branch main 2>/dev/null || true
+git -C "$repo" checkout -q -b work
+printf 'a\n' > "$repo/f.txt"
+git -C "$repo" add -A
+git -C "$repo" commit -q -m one
+h1="$(cd "$repo" && review_diff_hash main)"
+h2="$(cd "$repo" && review_diff_hash main)"
+[ "$h1" = "$h2" ] && [ -n "$h1" ] || fail "diff hash not stable"
+printf 'a\nb\n' > "$repo/f.txt"
+git -C "$repo" add -A
+git -C "$repo" commit -q -m two
+h3="$(cd "$repo" && review_diff_hash main)"
+[ "$h3" != "$h1" ] || fail "diff hash did not change after a diff change"
+
+echo "review cache tests passed"

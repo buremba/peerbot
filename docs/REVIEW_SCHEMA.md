@@ -275,3 +275,26 @@ the script posts/updates the `pi-review` commit status and PR comment. Branch
 protection can require `pi-review`, so a new commit remains unmergeable until the local
 review runs and passes for that exact SHA. Human/admin merge remains the
 explicit escape hatch for intentional exceptions.
+
+## Safe-class skip, verdict cache, and shadow sampling
+
+`make review` skips the cross-harness reviewer for diffs that are small
+(<100 lines) **and** confined to classes where an independent LLM review adds
+near-zero signal: docs, CI-verified generated output, exact renames between
+safe-class paths, or additive-only test changes. Everything else — non-test `src/`, migrations,
+lockfiles, config, submodule pointer bumps, and the gate/CI machinery itself —
+always runs the full reviewer regardless of size. The skip is deterministic
+and path-gated: the driving agent may only escalate, never skip on
+self-assessed confidence. A skipped review posts the same `pi-review` status as
+green under a distinct `<!-- pi-review-skipped -->` PR marker so the skip is
+auditable; CI suites remain required checks either way. `REVIEWER_MODE=full
+make review` (or `./scripts/review.sh --full`) forces the full review.
+
+The verdict is cached keyed on the exact diff content + reviewer identity, so
+an unchanged diff is never re-reviewed: the reviewer is non-deterministic, and
+a passed diff can flip to fail on a re-run, spawning a phantom fix cycle.
+`REVIEWER_SHADOW=1` runs the full reviewer on a would-be-skipped diff and
+appends the skip decision + real verdict to `<git-common-dir>/lobu-review-cache/shadow-audit.jsonl`,
+so the false-skip rate can be measured rather than assumed. The reviewer's full
+transcript is written to files under `/tmp/lobu-review.*/` and only a pointer
+is printed, keeping long reviewer output out of the calling agent's context.

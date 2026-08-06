@@ -35,9 +35,9 @@ import {
   DEFAULT_PROVIDER_BASE_URL_ENV,
   getModelDynamic,
   openOrCreateSessionManager,
-  PIAI_API_BY_REGISTRY_ALIAS,
   PROVIDER_REGISTRY_ALIASES,
   registerDynamicProvider,
+  resolveDynamicModelApi,
   resolveModelRef,
 } from "./model-resolver";
 import { createLobuResourceLoader } from "./pi-resources";
@@ -922,7 +922,7 @@ export async function runAISession(
       // OpenAI-compatible (openai, nvidia, together-ai, z.ai, …) or any org BYO
       // provider whose slug differs from its registry alias. Resolve the pi-ai
       // adapter from the provider's protocol; default to openai-completions.
-      const api = PIAI_API_BY_REGISTRY_ALIAS[registryProvider];
+      const api = resolveDynamicModelApi(rawProvider, registryProvider);
       logger.info(
         `Creating dynamic model entry for ${rawProvider}/${modelId} (${api ?? "openai-completions"})`
       );

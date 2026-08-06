@@ -5,6 +5,7 @@ import {
   DEFAULT_PROVIDER_MODELS,
   PROVIDER_REGISTRY_ALIASES,
   registerDynamicProvider,
+  resolveDynamicModelApi,
   resolveModelRef,
 } from "../runtime/model-resolver";
 
@@ -447,6 +448,38 @@ describe("buildDynamicOpenAIModel — never silently route to OpenAI", () => {
       providerBaseUrl: undefined,
     });
     expect(model.baseUrl).toBe("https://api.openai.com/v1");
+  });
+});
+
+describe("resolveDynamicModelApi — real OpenAI uses the Responses API", () => {
+  test("real OpenAI (rawProvider 'openai') routes to openai-responses", () => {
+    // gpt-5.6-sol (a reasoning model) 400s over /chat/completions when the
+    // turn uses function tools; the Responses API is the only tool-capable
+    // transport. pi-ai's static registry routes every real OpenAI model
+    // through openai-responses — the dynamic path must match.
+    expect(resolveDynamicModelApi("openai", "openai")).toBe("openai-responses");
+  });
+
+  test("third-party openai-compatible providers keep openai-completions", () => {
+    // groq / z-ai / gemini / nvidia share the "openai" registry alias but only
+    // speak the completions protocol — they must NOT be routed to responses.
+    for (const rawProvider of [
+      "groq",
+      "z-ai",
+      "gemini",
+      "nvidia",
+      "together-ai",
+    ]) {
+      expect(resolveDynamicModelApi(rawProvider, "openai")).toBe(
+        "openai-completions"
+      );
+    }
+  });
+
+  test("non-openai registry aliases resolve through the alias map", () => {
+    expect(resolveDynamicModelApi("my-claude", "anthropic")).toBe(
+      "anthropic-messages"
+    );
   });
 });
 

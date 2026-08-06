@@ -43,9 +43,7 @@ import { intervals } from "../config/intervals";
 import { getDb, pgTextArray } from "../db/client";
 import { supersedeActionEvent } from "../tools/admin/manage_operations";
 import logger from "../utils/logger";
-
-/** Lanes that can hold `approval_status='pending'`. */
-const APPROVAL_RUN_TYPES = ["action", "internal"] as const;
+import { APPROVAL_RUN_TYPES } from "../utils/run-statuses";
 
 /**
  * Rows claimed per batch. Bounds each SELECT and the write burst that follows

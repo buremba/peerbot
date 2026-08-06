@@ -70,6 +70,7 @@ import { authzScopeFromToolContext } from "../../../../authz/scope";
 import { resolveUsernames } from "../../../../utils/resolve-usernames";
 import {
 	ACTIVE_RUN_STATUSES,
+	APPROVAL_RUN_TYPES,
 	runStatusLiteral,
 } from "../../../../utils/run-statuses";
 import type { ToolContext } from "../../../registry";
@@ -2096,7 +2097,7 @@ export async function handleDelete(
     WHERE organization_id = ${organizationId}
       AND connection_id = ${args.connection_id}
       AND approval_status = 'pending'
-      AND run_type = ANY(${pgTextArray(["action", "internal"])}::text[])
+      AND run_type = ANY(${pgTextArray([...APPROVAL_RUN_TYPES])}::text[])
   `;
 
   // Record change event in knowledge for audit trail

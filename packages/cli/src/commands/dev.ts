@@ -313,7 +313,6 @@ export async function devCommand(
   }
 
   if (!options.quiet) {
-    await printPreviewInstructions(cwd);
     console.log(chalk.cyan(`\n  Starting Lobu...\n`));
     console.log(chalk.dim(`  bundle:        ${bundlePath}`));
     if (mode === "external") {
@@ -404,7 +403,7 @@ export async function devCommand(
   // persists the session as the `local` CLI context so `lobu chat -c local`
   // works without a separate `lobu login`.
   void announceLocalSignIn(gatewayUrl, mode === "embedded").then(
-    ({ ready: localContextReady, localOrgSlug }) => {
+    async ({ ready: localContextReady, localOrgSlug }) => {
       // Once the `local` context is confirmed registered + active, push the
       // project's lobu.config.ts into the embedded DB so the scaffolded agent is
       // usable via `lobu chat -c local …` with no separate `lobu apply`.
@@ -418,7 +417,14 @@ export async function devCommand(
           hasLobuConfig: existsSync(join(cwd, "lobu.config.ts")),
         })
       ) {
-        return autoApplyLocalProject(cwd, gatewayUrl, localOrgSlug);
+        await autoApplyLocalProject(cwd, gatewayUrl, localOrgSlug);
+      }
+      // Mint hosted-chat link codes only AFTER the gateway is reachable and the
+      // project is applied. printPreviewInstructions POSTs /preview/claims; if
+      // run from the pre-spawn banner it races the server boot and every hosted
+      // connection prints a bogus "Could not create a slack preview code".
+      if (!options.quiet) {
+        await printPreviewInstructions(cwd);
       }
     }
   );
@@ -842,15 +848,17 @@ async function printPreviewInstructions(cwd: string): Promise<void> {
           `  Could not create a ${platform} preview code for ${agentId}.`
         )
       );
-      console.log(
-        chalk.dim(
-          "  Make sure the agent has been synced with `lobu apply` and try again."
-        )
-      );
-      if (process.env.DEBUG) {
+      const reason = error instanceof Error ? error.message : String(error);
+      // Surface the real cause instead of only blaming `lobu apply`. Common
+      // cases: the claim needs a Lobu Cloud org session (run `lobu login` +
+      // `lobu org set <slug>` + `lobu apply` there), or the agent is missing
+      // from that org.
+      if (reason) {
+        console.log(chalk.dim(`  Reason: ${reason}`));
+      } else {
         console.log(
           chalk.dim(
-            `  ${error instanceof Error ? error.message : String(error)}`
+            "  Make sure the agent has been synced with `lobu apply` and try again."
           )
         );
       }

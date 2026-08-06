@@ -36,6 +36,20 @@ spec:
         - maxSkew: {{ .Values.app.topologySpread.maxSkew }}
           topologyKey: {{ .Values.app.topologySpread.topologyKey }}
           whenUnsatisfiable: {{ .Values.app.topologySpread.whenUnsatisfiable }}
+          # Scope the skew calculation to one ReplicaSet revision. The selector
+          # below matches on component/instance/name, which the OUTGOING
+          # revision's pods also carry, so during a rolling update the
+          # scheduler counts pods that are about to terminate. Whether the new
+          # revision lands spread then depends on how termination interleaves
+          # with scheduling -- it is intermittent, not a guaranteed failure.
+          # Measured in prod on 2026-08-06 with the unscoped constraint live
+          # (kube_pod_info, 3 consecutive rollouts): the 02:34 rollout put both
+          # replicas on node 13b25e5d and left them there for 76 minutes, while
+          # the 03:50 and 04:31 rollouts happened to spread correctly. Because
+          # whenUnsatisfiable is ScheduleAnyway the bad outcome is never
+          # reported, so the constraint looks applied either way.
+          matchLabelKeys:
+            - pod-template-hash
           labelSelector:
             matchLabels:
               {{- include "lobu.appSelectorLabels" . | nindent 14 }}

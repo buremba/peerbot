@@ -2,9 +2,7 @@
 
 import { spawnSync } from "node:child_process";
 import {
-  approvalCommand,
   buildProofBody,
-  findApproval,
   findProofComment,
   isHttpsArtifact,
   type OwlettoPullRequest,
@@ -27,7 +25,6 @@ interface PullRequestView {
 
 interface ApiComment extends UiReviewComment {
   id: number;
-  updated_at: string;
 }
 
 interface Options {
@@ -182,37 +179,6 @@ function getPointer(repo: string, commit: string): string {
   return content.sha;
 }
 
-function findAdminLogins(
-  repo: string,
-  comments: ApiComment[],
-  command: string,
-  proofUpdatedAt: string
-): Set<string> {
-  const proofTime = Date.parse(proofUpdatedAt);
-  const candidates = new Set(
-    comments
-      .filter(
-        (comment) =>
-          comment.body.trim() === command &&
-          Date.parse(comment.created_at) > proofTime &&
-          comment.user?.login
-      )
-      .map((comment) => comment.user?.login as string)
-  );
-  const admins = new Set<string>();
-  for (const login of candidates) {
-    try {
-      const permission = ghApi<{ permission?: string }>(
-        `repos/${repo}/collaborators/${login}/permission`
-      );
-      if (permission.permission === "admin") admins.add(login);
-    } catch {
-      // A missing collaborator or unreadable permission is not approval.
-    }
-  }
-  return admins;
-}
-
 function openPullRequest(url: string): void {
   const command = process.platform === "darwin" ? "open" : "xdg-open";
   const result = spawnSync(command, [url], { stdio: "ignore" });
@@ -222,23 +188,15 @@ function openPullRequest(url: string): void {
 }
 
 function parentCommentBody(
-  state: "pending" | "success",
   proof: UiReviewProof,
   proofUrl: string,
-  approvalUrl: string | null,
   lobuHead: string
 ): string {
-  const headline =
-    state === "success" ? "UI review approved" : "UI review awaiting approval";
-  const approvalLine = approvalUrl
-    ? `- Approval: ${approvalUrl}`
-    : `- Approval command: \`${approvalCommand(proof.owletto_sha)}\``;
   return `${PARENT_MARKER}
-**${headline}** for Lobu head \`${lobuHead}\`.
+**UI review recorded** for Lobu head \`${lobuHead}\`.
 
 - Owletto range: \`${proof.lobu_base_owletto_sha}\` → \`${proof.owletto_sha}\`
-- Proof and approval thread: ${proofUrl}
-${approvalLine}`;
+- Proof: ${proofUrl}`;
 }
 
 function main(): number {
@@ -322,7 +280,7 @@ function main(): number {
     );
   }
 
-  let comments = ghApiPages<ApiComment>(
+  const comments = ghApiPages<ApiComment>(
     `repos/${owlettoRepo}/issues/${owlettoPr.number}/comments`
   );
   let proofComment = findProofComment(comments, lobuRepo, parentPr.number);
@@ -371,58 +329,34 @@ function main(): number {
       proofComment,
       buildProofBody(currentProof)
     );
-    comments = ghApiPages<ApiComment>(
-      `repos/${owlettoRepo}/issues/${owlettoPr.number}/comments`
-    );
   }
 
   if (!currentProof || !proofComment) {
     throw new Error("UI proof publication did not return a usable comment");
   }
 
-  const command = approvalCommand(headPointer);
-  const adminLogins = findAdminLogins(
-    owlettoRepo,
-    comments,
-    command,
-    proofComment.updated_at
-  );
-  const approval = findApproval(
-    comments,
-    headPointer,
-    proofComment.updated_at,
-    adminLogins
-  );
-  const state = approval ? "success" : "pending";
-  const description = approval
-    ? `UI approved for Owletto ${headPointer.slice(0, 9)}`
-    : `Awaiting UI approval for Owletto ${headPointer.slice(0, 9)}`;
-
+  // The proof is the deliverable: the before/after page is published on the
+  // exact merged Owletto PR and linked from the parent, binding the evidence to
+  // this pointer pair. Publishing it is what the gate now asserts — a human
+  // reviews it on the PR like any other change, rather than blocking the check
+  // behind a separate approval comment.
   upsertComment(
     lobuRepo,
     parentPr.number,
     PARENT_MARKER,
-    parentCommentBody(
-      state,
-      currentProof,
-      proofComment.html_url,
-      approval?.html_url ?? null,
-      localHead
-    )
+    parentCommentBody(currentProof, proofComment.html_url, localHead)
   );
-  postStatus(lobuRepo, localHead, state, description, proofComment.html_url);
+  postStatus(
+    lobuRepo,
+    localHead,
+    "success",
+    `UI proof recorded for Owletto ${headPointer.slice(0, 9)}`,
+    proofComment.html_url
+  );
 
-  if (approval) {
-    console.log(
-      `ui-review: approved by ${approval.user?.login} at ${approval.html_url}`
-    );
-    return 0;
-  }
-
-  console.log(`ui-review: awaiting an admin comment on ${owlettoPr.html_url}`);
-  console.log(command);
+  console.log(`ui-review: proof recorded at ${proofComment.html_url}`);
   if (options.open) openPullRequest(owlettoPr.html_url);
-  return 3;
+  return 0;
 }
 
 if (import.meta.main) {

@@ -363,3 +363,39 @@ describe("autoApplyLocalProject — org is pinned to the local-init slug (#1366)
     ).resolves.toBeUndefined();
   });
 });
+
+describe("lobu run hosted-chat link-code ordering", () => {
+  const devSource = readFileSync(
+    join(here, "..", "commands", "dev.ts"),
+    "utf8"
+  );
+
+  test("mints preview codes only after the gateway is spawned", () => {
+    // Regression guard for the startup race: printPreviewInstructions POSTs
+    // /preview/claims, which fails with "fetch failed" if the embedded gateway
+    // isn't listening yet. It must be called from the announceLocalSignIn
+    // then-chain (after reachability + auto-apply), never the pre-spawn banner.
+    const spawnIndex = devSource.indexOf('const child = spawn("node"');
+    const chainCallIndex = devSource.indexOf(
+      "printPreviewInstructions(cwd)",
+      devSource.indexOf("announceLocalSignIn")
+    );
+
+    expect(spawnIndex).toBeGreaterThan(-1);
+    expect(chainCallIndex).toBeGreaterThan(spawnIndex);
+    // No call may appear anywhere before the spawn (the pre-spawn banner was
+    // the race: the gateway isn't listening yet, so the claim POST 404s).
+    const beforeSpawn = devSource.slice(0, spawnIndex);
+    expect(beforeSpawn.includes("printPreviewInstructions(cwd)")).toBe(false);
+  });
+
+  test("surfaces the failure reason plus concrete recovery steps", () => {
+    expect(devSource).toContain("Reason:");
+    expect(devSource).toContain(
+      "To get a link code, complete these steps against Lobu Cloud, then restart"
+    );
+    expect(devSource).toContain("lobu login");
+    expect(devSource).toContain("lobu org set <slug>");
+    expect(devSource).toContain("lobu apply");
+  });
+});

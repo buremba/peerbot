@@ -149,6 +149,19 @@ app:
     size: 20Gi
     storageClass: ""
 
+  # Keep replicas off a single node. Without this the scheduler is free to put
+  # every replica on one node, where one node loss removes all capacity and the
+  # PodDisruptionBudget cannot help (it does not apply to node failure).
+  # ScheduleAnyway is deliberate: a hard DoNotSchedule would leave a replica
+  # unschedulable when the only other node is cordoned or full, trading a
+  # colocation risk for a guaranteed capacity loss. Soft spreads whenever the
+  # cluster can and degrades to colocation rather than to nothing.
+  topologySpread:
+    enabled: true
+    topologyKey: kubernetes.io/hostname
+    maxSkew: 1
+    whenUnsatisfiable: ScheduleAnyway
+
 # Worker deployment settings
 worker:
   enabled: true

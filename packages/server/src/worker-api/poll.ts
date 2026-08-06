@@ -33,6 +33,12 @@ import { recordLifecycleEvent } from '../utils/insert-event';
 import { isCloudMode } from '../utils/cloud-mode';
 import { normalizeAdvertisedCapabilities } from './shared';
 import { storedManifestMap, validateDeviceConnectorManifests } from './device-manifests';
+import type { RunOutcome } from '../runs/run-outcome';
+
+// A failure at the DISPATCH stage means the agent never ran: the run is not
+// evidence about the agent regardless of the message, so no message
+// classification applies.
+const DISPATCH_FAILURE_OUTCOME: RunOutcome = 'infra_error';
 
 const DUE_FEEDS_LOCK_KEY = 71001;
 const DUE_FEED_MATERIALIZE_COOLDOWN_MS = 5000;
@@ -732,6 +738,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       await sql`
         UPDATE runs
         SET status = 'failed',
+            outcome = ${DISPATCH_FAILURE_OUTCOME},
             completed_at = current_timestamp,
             error_message = ${message}
         WHERE id = ${row.run_id}
@@ -831,6 +838,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       await sql`
         UPDATE runs
         SET status = 'failed',
+            outcome = ${DISPATCH_FAILURE_OUTCOME},
             completed_at = current_timestamp,
             error_message = ${message}
         WHERE id = ${row.run_id}
@@ -875,6 +883,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       await sql`
         UPDATE runs
         SET status = 'failed',
+            outcome = ${DISPATCH_FAILURE_OUTCOME},
             completed_at = current_timestamp,
             error_message = ${message}
         WHERE id = ${row.run_id}

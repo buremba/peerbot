@@ -1,6 +1,7 @@
 import type { DbClient } from "../db/client";
 import { getDb, pgTextArray } from "../db/client";
 import { listPendingToolsForRun } from "../gateway/auth/mcp/pending-tool-store";
+import { classifyRunOutcome } from "../runs/run-outcome";
 import logger from "../utils/logger";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
 import {
@@ -154,6 +155,7 @@ export async function markWatcherRunCompleted(
 	await sql`
     UPDATE runs
     SET status = 'completed',
+        outcome = ${classifyRunOutcome({ status: "completed" })},
         window_id = ${windowId},
         completed_at = current_timestamp,
         error_message = NULL,
@@ -171,7 +173,8 @@ async function markWatcherRunFailed(
 	sql: DbClient,
 	runId: number,
 	message: string,
-	notBefore?: Date | null
+	notBefore?: Date | null,
+	errorCode?: string | null
 ): Promise<boolean> {
 	return sql.begin(async (tx) => {
 		const [failed] = await tx<{
@@ -180,6 +183,7 @@ async function markWatcherRunFailed(
 		}>`
       UPDATE runs
       SET status = 'failed',
+          outcome = ${classifyRunOutcome({ status: "failed", errorCode, errorMessage: message })},
           completed_at = current_timestamp,
           error_message = ${message}
       WHERE id = ${runId}
@@ -265,7 +269,8 @@ export async function resolveWatcherRunsByMessageIds(
 					sql,
 					runId,
 					result.error,
-					notBefore
+					notBefore,
+					result.errorCode
 				)
 			) {
 				resolved++;

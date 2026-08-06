@@ -24,6 +24,7 @@
 
 import { PG_INTERVAL_PATTERN } from "../config/intervals";
 import type { DbClient } from "../db/client";
+import { classifyRunOutcome } from "../runs/run-outcome";
 
 interface StaleRunSweepSpec {
 	/** `runs.run_type` values covered by this sweep. */
@@ -162,13 +163,18 @@ export async function markStaleRunsAsTimeout(
 	const result = await sql.unsafe(
 		`UPDATE runs
      SET status = 'timeout',
+         outcome = $3,
          completed_at = current_timestamp,
          error_message = CASE
            WHEN ${hasHeartbeatSql(spec.heartbeatSemantics)} THEN $1
            ELSE $2
          END
      WHERE ${buildStaleRunWhereSql(spec)}`,
-		[spec.heartbeatErrorMessage, spec.coarseErrorMessage],
+		[
+			spec.heartbeatErrorMessage,
+			spec.coarseErrorMessage,
+			classifyRunOutcome({ status: "timeout" }),
+		],
 	);
 	return Number(result.count ?? 0);
 }

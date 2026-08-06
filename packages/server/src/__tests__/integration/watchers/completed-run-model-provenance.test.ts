@@ -78,6 +78,12 @@ async function modelUsedOf(runId: number): Promise<string | null> {
 	return (row?.model_used as string | null) ?? null;
 }
 
+async function outcomeOf(runId: number): Promise<string | null> {
+	const sql = getTestDb();
+	const [row] = await sql`SELECT outcome FROM runs WHERE id = ${runId}`;
+	return (row?.outcome as string | null) ?? null;
+}
+
 describe("a completed Behavior run records who executed it", () => {
 	it("replaces the 'external-client' placeholder with the real executor", async () => {
 		const { runId } = await createDispatchedRun({
@@ -91,6 +97,23 @@ describe("a completed Behavior run records who executed it", () => {
 		});
 
 		expect(await modelUsedOf(runId)).toBe("lobu-agent");
+		expect(await outcomeOf(runId)).toBe("scoreable");
+	});
+
+	it("stamps a failed run's outcome from the terminal error (quota → infra_error)", async () => {
+		const { runId } = await createDispatchedRun({
+			slug: "outcome-quota-fail",
+			messageId: "msg-outcome-quota-fail",
+			modelUsed: null,
+		});
+
+		await resolveWatcherRunsByMessageIds(["msg-outcome-quota-fail"], {
+			ok: false,
+			error:
+				"z.ai returned an error:\n429 Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-08-01",
+		});
+
+		expect(await outcomeOf(runId)).toBe("infra_error");
 	});
 
 	it("stamps a run that never had any model recorded", async () => {

@@ -2,26 +2,20 @@ import { describe, expect, it } from "bun:test";
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 import runReaction from "../social-interest-radar.reaction";
 
+// The author is a first-class event field, so it is deliberately absent here:
+// the reaction must read it from the `author_name` column, never from metadata.
 const signalMetadata = {
-  kind: "social_signal",
   platform: "linkedin",
-  author: "Ada",
-  snippet: "Reliable agents need durable state.",
   why: "Directly relevant to Lobu's delivery model.",
   priority: "high",
-  source_origin_id: "linkedin:activity:123",
   source_event_id: 101,
-  suggested_action: "Reply with the event-sourcing design.",
   source_connection_id: 410,
 };
 
 const draftMetadata = {
-  kind: "social_draft_reply",
   platform: "linkedin",
-  author: "Ada",
   why: "Directly relevant to Lobu's delivery model.",
   priority: "high",
-  source_origin_id: "linkedin:activity:123",
   source_event_id: 101,
   source_connection_id: 410,
 };
@@ -32,6 +26,7 @@ function context(): ReactionContext {
       signals: [
         {
           title: "Ada on linkedin",
+          author: "Ada",
           content:
             "Directly relevant to Lobu's delivery model.\n\nSuggested action: Reply with the event-sourcing design.",
           source_url:
@@ -44,6 +39,7 @@ function context(): ReactionContext {
       drafts: [
         {
           title: "Draft reply to Ada",
+          author: "Ada",
           content:
             "Durable state is the difference between a demo and a dependable agent.",
           source_url:
@@ -76,7 +72,11 @@ function context(): ReactionContext {
 }
 
 function clientWithRows(options: {
-  signals?: Array<{ id: number; metadata: typeof signalMetadata }>;
+  signals?: Array<{
+    id: number;
+    author_name: string | null;
+    metadata: typeof signalMetadata;
+  }>;
   drafts?: Array<{
     id: number;
     payload_text: string;
@@ -129,7 +129,7 @@ function clientWithRows(options: {
 describe("social interest radar reaction", () => {
   it("links the notification to declaratively persisted source and reply events", async () => {
     const fixture = clientWithRows({
-      signals: [{ id: 501, metadata: signalMetadata }],
+      signals: [{ id: 501, author_name: "Ada", metadata: signalMetadata }],
       drafts: [
         {
           id: 601,
@@ -168,6 +168,19 @@ describe("social interest radar reaction", () => {
     ]);
   });
 
+  it("names the author from the event column, not from a restated metadata copy", async () => {
+    const fixture = clientWithRows({
+      signals: [{ id: 501, author_name: "Ada", metadata: signalMetadata }],
+    });
+
+    await runReaction(context(), fixture.client);
+
+    expect(fixture.queries[0]).toContain("author_name");
+    expect(fixture.notifications[0]?.body).toBe(
+      "[high] Ada (linkedin) — Directly relevant to Lobu's delivery model."
+    );
+  });
+
   it("does not notify when this run only re-ranked an event owned by an earlier run", async () => {
     const fixture = clientWithRows({});
 
@@ -178,7 +191,7 @@ describe("social interest radar reaction", () => {
 
   it("lets the original run retry its idempotent notification", async () => {
     const fixture = clientWithRows({
-      signals: [{ id: 501, metadata: signalMetadata }],
+      signals: [{ id: 501, author_name: "Ada", metadata: signalMetadata }],
     });
 
     await runReaction(context(), fixture.client);
@@ -191,7 +204,11 @@ describe("social interest radar reaction", () => {
   it("keeps the digest within the notification service limit", async () => {
     const fixture = clientWithRows({
       signals: [
-        { id: 501, metadata: { ...signalMetadata, why: "x".repeat(1_200) } },
+        {
+          id: 501,
+          author_name: "Ada",
+          metadata: { ...signalMetadata, why: "x".repeat(1_200) },
+        },
       ],
     });
 

@@ -60,6 +60,7 @@ import {
 	deviceProviderQuotaResetNotBefore,
 } from "../watchers/schedule-cursor";
 import { authorizeRunForWorker } from "./shared";
+import { classifyRunOutcome } from "../runs/run-outcome";
 
 type DbClient = ReturnType<typeof getDb>;
 type SqlFragment = ReturnType<DbClient>;
@@ -1165,6 +1166,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 			const failedRows = (await tx`
         UPDATE runs
         SET status = 'failed',
+            outcome = ${classifyRunOutcome({ status: "failed", errorMessage: reason })},
             completed_at = current_timestamp,
             error_message = ${reason},
             output_tail = ${output ? output.slice(-2000) : null},
@@ -1328,6 +1330,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 			workerId: body.worker_id,
 			status: "completed",
 			extraSet: sql`,
+        outcome = ${classifyRunOutcome({ status: "completed" })},
         window_id = NULL,
         error_message = NULL,
         model_used = COALESCE(

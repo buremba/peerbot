@@ -86,6 +86,14 @@ export const RESERVED_PATHS = [
   "cdn",
   "docs",
   "mail",
+  // Top-level SPA routes that are NOT org namespaces (`packages/owletto/src/app`):
+  // path parsing and the server's owner resolution must never read these as an
+  // org slug. `connectors` is already reserved above as an owner route.
+  "connector",
+  "oauth",
+  "orgs",
+  "slack",
+  "dashboard",
 ] as const;
 
 export const RESERVED_PATHS_SET: ReadonlySet<string> = new Set(RESERVED_PATHS);

@@ -28,6 +28,7 @@ import { ensureCanvasEntity, findCanvasHead } from "../utils/canvas-events";
 import { insertEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
 import { isUniqueViolation } from "../utils/pg-errors";
+import { classifyRunOutcome } from "../runs/run-outcome";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
 import { computePendingWindow } from "../utils/window-utils";
 import {
@@ -113,7 +114,7 @@ export function buildLatestWatcherRunJoinSql(
 ): string {
 	return `
     LEFT JOIN LATERAL (
-      SELECT r.id, r.status, r.error_message, r.created_at, r.completed_at
+      SELECT r.id, r.status, r.outcome, r.error_message, r.created_at, r.completed_at
       FROM runs r
       WHERE r.watcher_id = ${watcherAlias}.id
         AND r.run_type = 'behavior'
@@ -365,6 +366,7 @@ async function markWatcherRunFailedIdempotent(
 		}>`
       UPDATE runs
       SET status = 'failed',
+          outcome = ${classifyRunOutcome({ status: "failed", errorMessage: message })},
           completed_at = current_timestamp,
           error_message = ${message}
       WHERE id = ${runId}
@@ -631,6 +633,7 @@ async function finalizeStalePendingWatcherRuns(
 			const result = await tx`
         UPDATE runs
         SET status = 'timeout',
+            outcome = ${classifyRunOutcome({ status: "timeout" })},
             completed_at = current_timestamp,
             error_message = ${`Behavior run remained pending for over ${staleInterval} without being claimed`}
         WHERE id = ${candidate.id}

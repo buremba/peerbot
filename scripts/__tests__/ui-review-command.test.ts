@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { approvalCommand, buildProofBody } from "../lib/ui-review-proof";
+import { buildProofBody } from "../lib/ui-review-proof";
 
 const UI_REVIEW_SCRIPT = resolve(import.meta.dir, "..", "ui-review.ts");
 const BASE_POINTER = "1".repeat(40);
@@ -304,14 +304,6 @@ describe("ui-review command", () => {
         html_url: "https://github.com/comment/801",
         user: { login: "agent" },
       },
-      {
-        id: 802,
-        body: approvalCommand(HEAD_POINTER),
-        created_at: "2026-08-04T12:01:00Z",
-        updated_at: "2026-08-04T12:01:00Z",
-        html_url: "https://github.com/comment/802",
-        user: { login: "buremba" },
-      },
     ];
     writeFileSync(fixture.stateFile, JSON.stringify(state));
 
@@ -357,7 +349,7 @@ describe("ui-review command", () => {
       ARTIFACT: "https://claude.ai/code/artifact/ours",
     });
 
-    expectExit(result, 3);
+    expectExit(result, 0);
     const comments = readState(fixture.stateFile).comments[proofEndpoint] ?? [];
     expect(comments[0]?.body).toContain(
       "https://claude.ai/code/artifact/other-pr"
@@ -366,45 +358,31 @@ describe("ui-review command", () => {
     expect(comments[1]?.body).toContain("https://claude.ai/code/artifact/ours");
   });
 
-  it("stays pending until a later exact approval comment, then passes", () => {
+  it("publishes the proof before it passes, in one run", () => {
     const fixture = createFixture();
-    const pending = runUiReview(fixture, {
+    const result = runUiReview(fixture, {
       ARTIFACT: "https://claude.ai/code/artifact/test-proof",
     });
 
-    expectExit(pending, 3);
-    let state = readState(fixture.stateFile);
-    const pendingStatus = state.calls
-      .filter((call) => call.endpoint.includes("/statuses/"))
-      .at(-1);
-    expect(pendingStatus?.payload).toMatchObject({
-      context: "ui-review",
-      state: "pending",
-    });
+    expectExit(result, 0);
+    const state = readState(fixture.stateFile);
+
+    // The proof IS the gate now, so it has to reach the Owletto PR — a green
+    // status with no evidence attached would assert nothing.
     const proofEndpoint = "repos/lobu-ai/owletto/issues/712/comments";
     const proof = state.comments[proofEndpoint]?.[0];
     expect(proof?.body).toContain("<!-- lobu-ui-review-proof ");
+    expect(proof?.body).toContain("https://claude.ai/code/artifact/test-proof");
 
-    state.comments[proofEndpoint].push({
-      id: 2000,
-      body: approvalCommand(HEAD_POINTER),
-      created_at: "2026-08-04T12:01:00Z",
-      updated_at: "2026-08-04T12:01:00Z",
-      html_url: "https://github.com/comment/2000",
-      user: { login: "buremba" },
-    });
-    writeFileSync(fixture.stateFile, JSON.stringify(state));
-
-    const approved = runUiReview(fixture);
-    expectExit(approved, 0);
-    state = readState(fixture.stateFile);
-    const approvedStatus = state.calls
+    const status = state.calls
       .filter((call) => call.endpoint.includes("/statuses/"))
       .at(-1);
-    expect(approvedStatus?.payload).toMatchObject({
+    expect(status?.payload).toMatchObject({
       context: "ui-review",
       state: "success",
     });
-    expect(state.calls.at(-1)?.endpoint).toContain("/statuses/");
+    expect(status?.payload).toMatchObject({
+      target_url: proof?.html_url,
+    });
   });
 });

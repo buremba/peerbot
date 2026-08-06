@@ -1,8 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
-  approvalCommand,
   buildProofBody,
-  findApproval,
   findProofComment,
   isHttpsArtifact,
   parseProof,
@@ -40,11 +38,13 @@ describe("UI review proof", () => {
     ).toThrow("unsupported GitHub remote");
   });
 
-  it("round-trips machine state without hiding the human review instructions", () => {
+  it("round-trips machine state without hiding the human-readable proof", () => {
     const body = buildProofBody(proof);
 
     expect(parseProof(body)).toEqual(proof);
-    expect(body).toContain(`/ui-approve ${HEAD_SHA}`);
+    // The machine state rides in an HTML comment. A reader of the PR must still
+    // get the range and the comparison link in prose, or the proof is inert.
+    expect(body).toContain(HEAD_SHA);
     expect(body).toContain(proof.artifact_url);
     expect(body).toContain(`${proof.lobu_repo}#${proof.lobu_pr}`);
   });
@@ -82,96 +82,6 @@ describe("UI review proof", () => {
     expect(findProofComment(comments, "lobu-ai/lobu", 2501)).toBeUndefined();
   });
 
-  it("binds approval to both ends of the deployed Owletto range", () => {
-    expect(
-      proofMatches(proof, "lobu-ai/lobu", BASE_SHA, HEAD_SHA, 2500, 712)
-    ).toBe(true);
-    expect(
-      proofMatches(proof, "fork/lobu", BASE_SHA, HEAD_SHA, 2500, 712)
-    ).toBe(false);
-    expect(
-      proofMatches(proof, "lobu-ai/lobu", OTHER_SHA, HEAD_SHA, 2500, 712)
-    ).toBe(false);
-    expect(
-      proofMatches(proof, "lobu-ai/lobu", BASE_SHA, OTHER_SHA, 2500, 712)
-    ).toBe(false);
-    expect(
-      proofMatches(proof, "lobu-ai/lobu", BASE_SHA, HEAD_SHA, 2501, 712)
-    ).toBe(false);
-    expect(
-      proofMatches(proof, "lobu-ai/lobu", BASE_SHA, HEAD_SHA, 2500, 711)
-    ).toBe(false);
-  });
-
-  it("accepts only an exact, later approval from an admin collaborator", () => {
-    const comments: UiReviewComment[] = [
-      {
-        body: approvalCommand(HEAD_SHA),
-        created_at: "2026-08-04T10:00:00Z",
-        html_url:
-          "https://github.com/lobu-ai/owletto/pull/712#issuecomment-old",
-        user: { login: "buremba" },
-      },
-      {
-        body: `${approvalCommand(HEAD_SHA)} please`,
-        created_at: "2026-08-04T12:00:00Z",
-        html_url:
-          "https://github.com/lobu-ai/owletto/pull/712#issuecomment-extra",
-        user: { login: "buremba" },
-      },
-      {
-        body: approvalCommand(HEAD_SHA),
-        created_at: "2026-08-04T12:01:00Z",
-        html_url:
-          "https://github.com/lobu-ai/owletto/pull/712#issuecomment-nonadmin",
-        user: { login: "contributor" },
-      },
-      {
-        body: approvalCommand(HEAD_SHA),
-        created_at: "2026-08-04T12:02:00Z",
-        html_url:
-          "https://github.com/lobu-ai/owletto/pull/712#issuecomment-approved",
-        user: { login: "buremba" },
-      },
-    ];
-
-    expect(
-      findApproval(
-        comments,
-        HEAD_SHA,
-        "2026-08-04T11:00:00Z",
-        new Set(["buremba"])
-      )?.html_url
-    ).toEndWith("issuecomment-approved");
-    expect(
-      findApproval(
-        comments,
-        OTHER_SHA,
-        "2026-08-04T11:00:00Z",
-        new Set(["buremba"])
-      )
-    ).toBeNull();
-  });
-
-  it("fails closed when proof and approval timestamps have equal precision", () => {
-    const approval: UiReviewComment = {
-      body: approvalCommand(HEAD_SHA),
-      created_at: "2026-08-04T12:00:00Z",
-      html_url:
-        "https://github.com/lobu-ai/owletto/pull/712#issuecomment-same-second",
-      user: { login: "buremba" },
-    };
-
-    expect(
-      findApproval(
-        [approval],
-        HEAD_SHA,
-        "2026-08-04T12:00:00Z",
-        new Set(["buremba"])
-      )
-    ).toBeNull();
-  });
-
   it("selects only the merged PR whose squash commit is the pointer", () => {
     const pulls = [
       {
@@ -204,5 +114,17 @@ describe("UI review proof", () => {
     );
     expect(isHttpsArtifact("http://localhost:9284/proof.html")).toBe(false);
     expect(isHttpsArtifact("/tmp/proof.html")).toBe(false);
+  });
+
+  it("matches only the exact repo/base/head/PR tuple a proof carries", () => {
+    const matches = (candidate: UiReviewProof): boolean =>
+      proofMatches(candidate, "lobu-ai/lobu", BASE_SHA, HEAD_SHA, 2500, 712);
+
+    expect(matches(proof)).toBe(true);
+    expect(matches({ ...proof, lobu_repo: "fork/lobu" })).toBe(false);
+    expect(matches({ ...proof, lobu_base_owletto_sha: OTHER_SHA })).toBe(false);
+    expect(matches({ ...proof, owletto_sha: OTHER_SHA })).toBe(false);
+    expect(matches({ ...proof, lobu_pr: 2501 })).toBe(false);
+    expect(matches({ ...proof, owletto_pr: 713 })).toBe(false);
   });
 });

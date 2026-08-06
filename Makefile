@@ -24,7 +24,7 @@ help:
 	@echo "  make bump SUBMODULE=<path> [TARGET=<ref>]  - Lightweight worktree + commit + PR for a trivial submodule pointer bump (skips bun install, .env, ports)"
 	@echo "  make review [BASE=<branch>]                - Run the cross-harness LLM reviewer against the local diff (deterministic suites run in CI); posts pi-review status and PR comment"
 	@echo "  make review-fix [BASE=<branch>]            - Pre-review fixer: reviewer CLI with write access fixes review-grade findings in the tree; posts nothing"
-	@echo "  make ui-review [ARTIFACT=<https-url>]       - Gate an Owletto pointer on exact-SHA visual proof and human approval; OPEN=1 opens its PR"
+	@echo "  make ui-review [ARTIFACT=<https-url>]       - Publish exact-SHA visual proof for an Owletto pointer on its merged PR; OPEN=1 opens that PR"
 	@echo "  make owletto-mac [INSTALL=1] [OPEN=1]      - Build Owletto.app with the Developer ID identity (TCC grants match the notarized release); INSTALL=1 replaces /Applications/Owletto.app, OPEN=1 launches it"
 	@echo "  make owletto-mac-e2e [SKIP_BUILD=1]        - Build/install the signed Owletto.app then probe prod computer_use (permissions + list_windows) via the paired device connection"
 
@@ -274,10 +274,11 @@ review-fix:
 	@./scripts/review-fix.sh $(if $(BASE),--base $(BASE),)
 
 # Visual counterpart to `make review`: non-Owletto PRs pass as not applicable.
-# Pointer PRs post/update proof on the exact merged Owletto PR, attach a
-# `ui-review` status to this Lobu head, and stay pending until an admin posts
-# the SHA-bound approval command shown in that proof. ARTIFACT and OPEN are
-# read directly by scripts/ui-review.ts, avoiding shell interpolation of URLs.
+# Pointer PRs post/update proof on the exact merged Owletto PR, link it from
+# this Lobu PR, and attach a passing `ui-review` status. Publishing the proof is
+# what the gate asserts, so no ARTIFACT means no proof and no pass. ARTIFACT and
+# OPEN are read directly by scripts/ui-review.ts, avoiding shell interpolation
+# of URLs.
 ui-review:
 	@bun scripts/ui-review.ts
 

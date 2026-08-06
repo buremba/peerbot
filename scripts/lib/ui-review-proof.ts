@@ -47,10 +47,6 @@ function isProof(value: unknown): value is UiReviewProof {
   );
 }
 
-export function approvalCommand(owlettoSha: string): string {
-  return `/ui-approve ${owlettoSha}`;
-}
-
 export function isHttpsArtifact(value: string): boolean {
   try {
     return new URL(value).protocol === "https:";
@@ -65,21 +61,16 @@ export function buildProofBody(proof: UiReviewProof): string {
   );
   const marker = `${PROOF_MARKER}${encoded} -->`;
   return `${marker}
-## UI review required
+## UI proof
 
-This proof covers the Owletto version proposed by ${proof.lobu_repo}#${proof.lobu_pr}.
+Visual evidence for the Owletto version proposed by ${proof.lobu_repo}#${proof.lobu_pr}.
 
 - Before: \`${proof.lobu_base_owletto_sha}\`
 - After: \`${proof.owletto_sha}\`
 - Visual comparison: ${proof.artifact_url}
 
-After inspecting the comparison, approve this exact version with:
-
-\`\`\`text
-${approvalCommand(proof.owletto_sha)}
-\`\`\`
-
-A changed Owletto pointer or refreshed proof requires another approval.`;
+The comparison is captured from one booted instance against the same data on
+both sides. A changed Owletto pointer republishes it.`;
 }
 
 export function parseProof(body: string): UiReviewProof | null {
@@ -128,29 +119,6 @@ export function proofMatches(
     proof.owletto_sha === owlettoSha &&
     proof.lobu_pr === lobuPr &&
     proof.owletto_pr === owlettoPr
-  );
-}
-
-export function findApproval(
-  comments: UiReviewComment[],
-  owlettoSha: string,
-  proofUpdatedAt: string,
-  adminLogins: ReadonlySet<string>
-): UiReviewComment | null {
-  const command = approvalCommand(owlettoSha);
-  const proofTime = Date.parse(proofUpdatedAt);
-  if (Number.isNaN(proofTime)) return null;
-
-  return (
-    comments.find((comment) => {
-      const login = comment.user?.login;
-      return (
-        comment.body.trim() === command &&
-        typeof login === "string" &&
-        adminLogins.has(login) &&
-        Date.parse(comment.created_at) > proofTime
-      );
-    }) ?? null
   );
 }
 

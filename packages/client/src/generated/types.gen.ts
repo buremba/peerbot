@@ -4238,7 +4238,7 @@ export type ManageBehaviorsData = {
                  */
                 event: string;
                 /**
-                 * One to four metadata fields whose exact string values compose each draft's stable identity across Behavior runs (e.g. channel + mode for per-channel voice profiles). Every key field must be present in every draft's `metadata`; changing the fields, their order, the output name, or the semantic type changes identity. When set, each run supersedes the current head event with the same key values.
+                 * One to four metadata fields whose exact values compose each draft's stable identity across Behavior runs (e.g. channel + mode for per-channel voice profiles). Every key field must be present in every draft's `metadata` and be a non-blank string, safe integer, or boolean — the type is part of the identity, so 3 and "3" are different keys. Changing the fields, their order, or the semantic type changes identity and starts a new chain. When set, each run supersedes the current event carrying the same key values.
                  */
                 key?: Array<string>;
               };
@@ -4865,7 +4865,7 @@ export type GetBehaviorResponses = {
                */
               event: string;
               /**
-               * One to four metadata fields whose exact string values compose each draft's stable identity across Behavior runs (e.g. channel + mode for per-channel voice profiles). Every key field must be present in every draft's `metadata`; changing the fields, their order, the output name, or the semantic type changes identity. When set, each run supersedes the current head event with the same key values.
+               * One to four metadata fields whose exact values compose each draft's stable identity across Behavior runs (e.g. channel + mode for per-channel voice profiles). Every key field must be present in every draft's `metadata` and be a non-blank string, safe integer, or boolean — the type is part of the identity, so 3 and "3" are different keys. Changing the fields, their order, or the semantic type changes identity and starts a new chain. When set, each run supersedes the current event carrying the same key values.
                */
               key?: Array<string>;
             };

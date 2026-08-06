@@ -1,5 +1,12 @@
 # Changelog
 
+## [14.16.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.15.1...lobu-v14.16.0) (2026-08-06)
+
+
+### Features
+
+* **server:** let an agent ask a human a question via notify.send ([#2544](https://github.com/lobu-ai/lobu/issues/2544)) ([3192199](https://github.com/lobu-ai/lobu/commit/31921998350d0eebcba77f97570af1eb30e4512c))
+
 ## [14.15.1](https://github.com/lobu-ai/lobu/compare/lobu-v14.15.0...lobu-v14.15.1) (2026-08-06)
 
 

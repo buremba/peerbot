@@ -16,6 +16,26 @@ import type { BehaviorSubscriptionService } from "../channels/behavior-subscript
 const logger = createLogger("platform-helpers");
 
 /**
+ * Does this string name a provider AND a model, i.e. `<provider>/<model>`?
+ *
+ * The single shape test for both things that depend on it: whether a per-request
+ * override is well-formed enough to win, and whether the resolved ref authorizes
+ * the worker to route away from the gateway's `defaultProvider`. They were one
+ * inlined expression and one missing check; a ref either names its provider or
+ * it does not, and both callers need the same answer.
+ *
+ * `auto` is rejected as the model half: it is gone repo-wide, and a legacy
+ * `<provider>/auto` binding names no concrete model to route.
+ */
+function isQualifiedModelRef(ref: string | undefined): boolean {
+  if (!ref) return false;
+  const slash = ref.indexOf("/");
+  return (
+    slash > 0 && slash < ref.length - 1 && ref.slice(slash + 1) !== "auto"
+  );
+}
+
+/**
  * Resolve agent options by merging base options with per-agent settings.
  * Priority: agent settings > config defaults.
  */
@@ -56,13 +76,7 @@ export async function resolveAgentOptions(
   // gate (deployment-manager backstop) still validates the resulting ref.
   const rawOverride =
     typeof baseOptions.model === "string" ? baseOptions.model.trim() : "";
-  const overrideSlash = rawOverride.indexOf("/");
-  const behaviorOverride =
-    overrideSlash > 0 &&
-    overrideSlash < rawOverride.length - 1 &&
-    rawOverride.slice(overrideSlash + 1) !== "auto"
-      ? rawOverride
-      : "";
+  const behaviorOverride = isQualifiedModelRef(rawOverride) ? rawOverride : "";
   if (rawOverride && !behaviorOverride) {
     logger.warn(
       { agentId, rejectedOverride: rawOverride },
@@ -85,6 +99,34 @@ export async function resolveAgentOptions(
     mergedOptions.model = effectiveModelRef;
   } else {
     delete mergedOptions.model;
+  }
+
+  // Routing honours an explicit `<provider>/<model>` ref only when the payload
+  // authorizes it: the worker's model-resolver reroutes away from the gateway's
+  // `defaultProvider` solely under `allowInstalledProviderOverride`, which is
+  // `rawOptions.behaviorModelOverride === true` (agent-worker
+  // `runtime/session-runner.ts`). Dispatch sites set that flag only alongside an
+  // explicit per-run override (request-body `model`, tool `args.model`, Behavior
+  // `execution_config.model`) — i.e. BEFORE the layered fallback above has run —
+  // and the platform paths (message-handler-bridge, chat-instance-manager) never
+  // set it at all. So a ref that is just as explicit, but arrived from
+  // `agent.models[0]` or the org default, never authorized anything, and the run
+  // was routed to whatever module the gateway published as `defaultProvider` via
+  // its credentialed fallback scan.
+  //
+  // Prod 2026-08-06: org `buremba` pinned its agent to `gemini/gemini-2.5-pro`,
+  // set no per-Behavior override, and had no z-ai provider, secret or system key
+  // of its own — yet 79 runs in three days died on `z.ai 429 Insufficient
+  // balance`. Adding a per-Behavior override (which flips this flag) fixed it
+  // outright. The layer a ref came from was never supposed to change where it
+  // routes, so re-derive the flag from the ref that actually WON.
+  //
+  // Cleared, not just set: a rejected malformed override must not leave a stale
+  // `true` authorizing a fallback ref that names no provider at all.
+  if (isQualifiedModelRef(effectiveModelRef)) {
+    mergedOptions.behaviorModelOverride = true;
+  } else {
+    delete mergedOptions.behaviorModelOverride;
   }
 
   if (settings.networkConfig) {

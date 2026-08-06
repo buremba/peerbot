@@ -1,5 +1,63 @@
 # Changelog
 
+## [14.15.1](https://github.com/lobu-ai/lobu/compare/lobu-v14.15.0...lobu-v14.15.1) (2026-08-06)
+
+
+### Bug Fixes
+
+* **charts:** scope the app topology spread to one ReplicaSet revision ([#2548](https://github.com/lobu-ai/lobu/issues/2548)) ([50b15d7](https://github.com/lobu-ai/lobu/commit/50b15d7d83eb151005de02c926ba6e913e0d6aa7))
+* **owletto:** bump pointer for the bounded native AX walk on Mac ([#2552](https://github.com/lobu-ai/lobu/issues/2552)) ([dc78673](https://github.com/lobu-ai/lobu/commit/dc78673bf4cefe81cb879ba49c198b57ddebccbe))
+* **server:** honour an explicit provider/model ref from any config layer ([#2547](https://github.com/lobu-ai/lobu/issues/2547)) ([1f0c004](https://github.com/lobu-ai/lobu/commit/1f0c004b9188e05ff9303d1a2530a48a2033b007))
+
+## [14.15.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.14.0...lobu-v14.15.0) (2026-08-06)
+
+
+### Features
+
+* **behaviors:** subscribe one trigger to several connector events ([#2515](https://github.com/lobu-ai/lobu/issues/2515)) ([24af73a](https://github.com/lobu-ai/lobu/commit/24af73afb91510645a576242ff2e2b74284a5cfb))
+* **behaviors:** tell a completer when its payload was discarded ([#2510](https://github.com/lobu-ai/lobu/issues/2510)) ([e9e5b82](https://github.com/lobu-ai/lobu/commit/e9e5b82e46c6d45378c05d1b6b98275e1fc20c7a))
+* **behaviors:** workspace-level Behaviors with one executor (agent/device/manual) ([#2499](https://github.com/lobu-ai/lobu/issues/2499)) ([317323f](https://github.com/lobu-ai/lobu/commit/317323f704f2b3e4ded6989e5748b2a1d35440c2))
+* **chart:** alert on zero available replicas and spread them across nodes ([#2545](https://github.com/lobu-ai/lobu/issues/2545)) ([e74bffd](https://github.com/lobu-ai/lobu/commit/e74bffdf3aad47b692f34e23f445ac4468c58984))
+* **config:** add Qwen / DashScope as a connectable provider ([#2522](https://github.com/lobu-ai/lobu/issues/2522)) ([848dfcb](https://github.com/lobu-ai/lobu/commit/848dfcb0ebb0d709df57895768edd9d38c9a3b20))
+* **config:** add qwen3.8-max tiers and document the Token Plan upstream host ([#2532](https://github.com/lobu-ai/lobu/issues/2532)) ([6e8d1e0](https://github.com/lobu-ai/lobu/commit/6e8d1e03b7eb3a174b4c5b2d22b71978d5a0872c))
+* **review:** support pi CLI as an explicit third reviewer ([#2486](https://github.com/lobu-ai/lobu/issues/2486)) ([9014a7b](https://github.com/lobu-ai/lobu/commit/9014a7b67c750e80ae04ef96c9e1a2f9ec186739))
+* **server:** add onboarding playbook to the lobu skill ([#2531](https://github.com/lobu-ai/lobu/issues/2531)) ([85a0246](https://github.com/lobu-ai/lobu/commit/85a02464eddd621530a5297878201d48eb45e21d))
+* **server:** decide provider health on the upstream HTTP status in the secret proxy ([#2529](https://github.com/lobu-ai/lobu/issues/2529)) ([7f434dc](https://github.com/lobu-ai/lobu/commit/7f434dc3ed0937e72c0f6f37eae3144fd1f30406))
+* **server:** expose onboarding skill over HTTP + concise agent copy-prompt ([#2524](https://github.com/lobu-ai/lobu/issues/2524)) ([06417d9](https://github.com/lobu-ai/lobu/commit/06417d932b86151ba4df7dba37cdfc7fe246092f))
+* **server:** keyed supersede for Behavior event outputs ([#2530](https://github.com/lobu-ai/lobu/issues/2530)) ([4a7bc93](https://github.com/lobu-ai/lobu/commit/4a7bc93f0d695b143ecd446dcaabc93d2aea9ee2))
+* **server:** record inference-provider health from terminal worker turns ([#2525](https://github.com/lobu-ai/lobu/issues/2525)) ([65b2b3a](https://github.com/lobu-ai/lobu/commit/65b2b3a871584b6269fddc6c9f79ae6afbb09042))
+* **server:** retain declared literal args on generic audit rows ([#2505](https://github.com/lobu-ai/lobu/issues/2505)) ([0a40109](https://github.com/lobu-ai/lobu/commit/0a401094692940641223200324545ad45e3e537c))
+* **server:** surface a retained tool request from the activity UI ([#2509](https://github.com/lobu-ai/lobu/issues/2509)) ([1d6a1b1](https://github.com/lobu-ai/lobu/commit/1d6a1b1cb3da0ee52a4ced8c3fe786b7b6ba376c))
+* **server:** surface Slack self-install app deep link in connection setup ([#2533](https://github.com/lobu-ai/lobu/issues/2533)) ([4ac586c](https://github.com/lobu-ai/lobu/commit/4ac586c80a1aef3ee1b28ce0dbfc0e5d88138dcf))
+
+
+### Bug Fixes
+
+* **behaviors:** drop scheduler_client_id from the get_behavior response ([#2507](https://github.com/lobu-ai/lobu/issues/2507)) ([2ddb03f](https://github.com/lobu-ai/lobu/commit/2ddb03ff5273628a051b2d8d36781de8685cffbc))
+* **behaviors:** list resolves org slug for org-scoped Behaviors ([#2506](https://github.com/lobu-ai/lobu/issues/2506)) ([f58e793](https://github.com/lobu-ai/lobu/commit/f58e79324aefbea02eaa24e25de0eea9b54b2839))
+* **behaviors:** reject event triggers on connectors that can never fire ([#2516](https://github.com/lobu-ai/lobu/issues/2516)) ([9224fce](https://github.com/lobu-ai/lobu/commit/9224fce7779650c8f63c71ea75a95f85900e103b))
+* **behaviors:** templates-first create form, prompt-derived sources ([#2511](https://github.com/lobu-ai/lobu/issues/2511)) ([f706149](https://github.com/lobu-ai/lobu/commit/f70614955afea9fafe5c365be5746c1750680dfd))
+* **chart:** skip the pre-upgrade quiesce when no migration is pending ([#2543](https://github.com/lobu-ai/lobu/issues/2543)) ([8c5d46f](https://github.com/lobu-ai/lobu/commit/8c5d46f783649f5fc223f28d6af61f2ff3eaafe1))
+* **ci:** download registry asset under its checksummed filename ([#2497](https://github.com/lobu-ai/lobu/issues/2497)) ([49c9cb8](https://github.com/lobu-ai/lobu/commit/49c9cb816e96ab68dd60271a40725c39d111f702))
+* **ci:** key each UI review proof to the Lobu PR that owns it ([#2520](https://github.com/lobu-ai/lobu/issues/2520)) ([53fbd02](https://github.com/lobu-ai/lobu/commit/53fbd02ae9c10f20ff363952c36deef578fbc662))
+* **cli:** mint hosted-chat link codes after the gateway is reachable ([#2540](https://github.com/lobu-ai/lobu/issues/2540)) ([442fc26](https://github.com/lobu-ai/lobu/commit/442fc26b5fafb5fa1e14d08a7859162897b3e192))
+* **core:** share the provider balance-exhaustion vocabulary with the worker classifier ([#2527](https://github.com/lobu-ai/lobu/issues/2527)) ([2b6e493](https://github.com/lobu-ai/lobu/commit/2b6e493e02e031ec18b1db67a4f77dfd3a3b92fa))
+* **core:** validate agent_kind against the device executor registry ([#2539](https://github.com/lobu-ai/lobu/issues/2539)) ([e82584f](https://github.com/lobu-ai/lobu/commit/e82584fb7ed2aa8c5245d76f854f1805eaf7950c))
+* **server:** apply the future-event guard to classification stats too ([#2537](https://github.com/lobu-ai/lobu/issues/2537)) ([e64ced6](https://github.com/lobu-ai/lobu/commit/e64ced6af7a355a485892da883d3535f244c671a))
+* **server:** bound every event source by limit, not just the primary ([#2512](https://github.com/lobu-ai/lobu/issues/2512)) ([458f9be](https://github.com/lobu-ai/lobu/commit/458f9be6b66ec2e6e96c27f9eb076376e806697c))
+* **server:** floor the Behavior window at one period so lag cannot freeze ([#2542](https://github.com/lobu-ai/lobu/issues/2542)) ([eddf0c9](https://github.com/lobu-ai/lobu/commit/eddf0c9391957b19f5713cafb4bf8e22eda68b66))
+* **server:** keep NULL and future-dated events off the top of the activity feed ([#2535](https://github.com/lobu-ai/lobu/issues/2535)) ([b302a64](https://github.com/lobu-ai/lobu/commit/b302a645e30b8e2b024ce880edeb16d45212f252))
+* **server:** make the events_client_id FK retry survive the supersede transaction ([#2534](https://github.com/lobu-ai/lobu/issues/2534)) ([695c8f3](https://github.com/lobu-ai/lobu/commit/695c8f302f18e87d636a127f249655f2b6c0122e))
+* **server:** park a Behavior for a day when the provider balance is empty ([#2521](https://github.com/lobu-ai/lobu/issues/2521)) ([f0443c2](https://github.com/lobu-ai/lobu/commit/f0443c285440ffb05994f32f9bd3b0f2df0a9e3b))
+* **server:** report device liveness truthfully instead of a 20-minute guess ([#2513](https://github.com/lobu-ai/lobu/issues/2513)) ([dc76334](https://github.com/lobu-ai/lobu/commit/dc76334b9d875e90f1130562bf9699f665d35f8f))
+
+
+### Performance Improvements
+
+* **server:** cut derived counts + double scans from hot list paths ([#2488](https://github.com/lobu-ai/lobu/issues/2488)) ([1724dd5](https://github.com/lobu-ai/lobu/commit/1724dd58d575aa62fa1fb69b979266fd5e58ab3c))
+* **server:** denormalize org-scope bridge into events.linked_org_ids ([#2490](https://github.com/lobu-ai/lobu/issues/2490)) ([574ad6e](https://github.com/lobu-ai/lobu/commit/574ad6e1d7df99d327377021345a6081ced6a1e6))
+* **server:** query cost-attribution ledger + runs retention index ([#2496](https://github.com/lobu-ai/lobu/issues/2496)) ([9085c6a](https://github.com/lobu-ai/lobu/commit/9085c6a361cd308603bd8da9ad3dbb73134613eb))
+
 ## [14.14.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.13.0...lobu-v14.14.0) (2026-08-04)
 
 

@@ -9,6 +9,7 @@
  */
 
 import { getDb } from '../../db/client';
+import { classifyRunOutcome } from '../../runs/run-outcome';
 import { describeDeviceLastSeen } from '../../utils/device-liveness';
 
 /**
@@ -155,6 +156,7 @@ export async function waitForDeviceActionRun(
   const updated = (await sql`
     UPDATE runs
     SET status = 'timeout',
+        outcome = ${classifyRunOutcome({ status: 'timeout' })},
         completed_at = current_timestamp,
         error_message = ${timeoutMessage}
     WHERE id = ${runId}

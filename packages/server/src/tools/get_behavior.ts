@@ -229,6 +229,7 @@ interface WatcherQueryRow {
   organization_id: string | null;
   watcher_run_id: number | null;
   watcher_run_status: string | null;
+  watcher_run_outcome: string | null;
   watcher_run_error: string | null;
   watcher_run_created_at: string | null;
   watcher_run_completed_at: string | null;
@@ -582,6 +583,7 @@ async function getBehaviorImpl(
         -- Latest run via lateral
         wr.id as watcher_run_id,
         wr.status as watcher_run_status,
+        wr.outcome as watcher_run_outcome,
         wr.error_message as watcher_run_error,
         wr.created_at as watcher_run_created_at,
         wr.completed_at as watcher_run_completed_at
@@ -778,6 +780,7 @@ async function getBehaviorImpl(
       latestRunStatus: watcherRow.watcher_run_status,
       latestRunCreatedAt: watcherRow.watcher_run_created_at,
       latestRunError: watcherRow.watcher_run_error,
+      latestRunOutcome: watcherRow.watcher_run_outcome,
     });
 
     watcherMetadata = {
@@ -812,6 +815,11 @@ async function getBehaviorImpl(
                 | 'failed'
                 | 'cancelled'
                 | 'timeout',
+              outcome: (watcherRow.watcher_run_outcome ?? undefined) as
+                | 'infra_error'
+                | 'agent_error'
+                | 'scoreable'
+                | undefined,
               error_message: watcherRow.watcher_run_error ?? undefined,
               created_at: watcherRow.watcher_run_created_at,
               completed_at: watcherRow.watcher_run_completed_at,
@@ -822,6 +830,7 @@ async function getBehaviorImpl(
         health_reasons: behaviorHealth.reasons,
       }),
       last_scheduling_error: behaviorHealth.last_scheduling_error,
+      last_run_outcome: behaviorHealth.last_run_outcome,
     };
   }
 

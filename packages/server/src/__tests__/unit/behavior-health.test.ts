@@ -17,6 +17,37 @@ describe("computeBehaviorHealth", () => {
 		expect(result.health).toBe("degraded");
 		expect(result.last_scheduling_error).toBe("No model is configured");
 		expect(result.reasons.join(" ")).toContain("No model is configured");
+		expect(result.last_run_outcome).toBeNull();
+	});
+
+	it("labels the degraded reason with the stamped run outcome", () => {
+		const result = computeBehaviorHealth(
+			{
+				status: "active",
+				nextRunAt: new Date(NOW + 60_000).toISOString(),
+				latestRunStatus: "failed",
+				latestRunError: "z.ai returned an error:\n429 Weekly/Monthly Limit Exhausted",
+				latestRunOutcome: "infra_error",
+			},
+			NOW,
+		);
+		expect(result.health).toBe("degraded");
+		expect(result.last_run_outcome).toBe("infra_error");
+		expect(result.reasons.join(" ")).toContain("latest run failed (infra_error)");
+	});
+
+	it("echoes a scoreable outcome on a healthy behavior", () => {
+		const result = computeBehaviorHealth(
+			{
+				status: "active",
+				nextRunAt: new Date(NOW + 60_000).toISOString(),
+				latestRunStatus: "completed",
+				latestRunOutcome: "scoreable",
+			},
+			NOW,
+		);
+		expect(result.health).toBe("healthy");
+		expect(result.last_run_outcome).toBe("scoreable");
 	});
 
 	it("degrades on a timeout latest run too", () => {

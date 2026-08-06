@@ -113,6 +113,11 @@ import {
 	refreshMergeProposalFingerprint,
 	resolveMergeApproval,
 } from "./entity-field-approval";
+import {
+	AGENT_ASK_ACTION_KEY,
+	findUnansweredRequired,
+	isAgentAskProposal,
+} from "../../notifications/ask";
 import { callerIsAdmin } from "./helpers/db-helpers";
 import {
 	applyManageAgentsProposal,
@@ -1818,15 +1823,33 @@ interface BuilderApprovalHandler {
 	nounLabel: string;
 	/** The proposal shape stored in `action_input` is valid for this family. */
 	isValidProposal(proposal: unknown): boolean;
-	/** Apply the held proposal on approval (the family's write handler). */
+	/**
+	 * Apply the held proposal on approval (the family's write handler).
+	 *
+	 * `input` is what the HUMAN supplied with their decision (`approve({ input })`),
+	 * distinct from the agent-authored `proposal`. It was previously accepted by
+	 * the tool contract and then dropped on the floor here, so a form-shaped
+	 * approval reported success while discarding everything the reviewer typed.
+	 */
 	apply(
 		proposal: unknown,
 		ctx: ToolContext,
 		env: Env,
 		ownerUserId: string | null,
+		input: Record<string, unknown> | null,
 	): Promise<unknown>;
 	/** One-line action id for event summaries, e.g. `create agent-7`. */
 	describe(proposal: unknown): string;
+	/**
+	 * Optional pre-claim check on the human's `input`. A non-null string refuses
+	 * the decision and leaves the run PENDING — the reviewer can answer again.
+	 * Runs before the claim precisely so a rejected decision is retryable; a
+	 * failure after the claim would burn the run.
+	 */
+	validateInput?(
+		proposal: unknown,
+		input: Record<string, unknown> | null,
+	): string | null;
 	/**
 	 * Optional soft-failure detector for handlers that return `{ error }` /
 	 * partial-failure summaries instead of throwing (manage_behaviors). A non-null
@@ -1901,6 +1924,29 @@ function getBuilderApprovalHandlers(): BuilderApprovalHandler[] {
 				),
 			describe: (p) => (p as ManageBehaviorsProposal).args.action,
 			detectSoftFailure: detectManageBehaviorsApplyFailure,
+		},
+		{
+			// An agent-authored ask. Unlike the builder families there is no held
+			// mutation to apply — the human's ANSWER is the entire outcome, so
+			// "apply" just returns it and the generic path persists it to
+			// `runs.action_output` + the completed interaction event. That is what
+			// the asking agent reads back via get_run.
+			actionKey: AGENT_ASK_ACTION_KEY,
+			nounLabel: "Question",
+			isValidProposal: isAgentAskProposal,
+			apply: async (_proposal, _ctx, _env, _owner, input) => ({
+				answer: input ?? {},
+			}),
+			describe: (p) =>
+				isAgentAskProposal(p) ? p.question : AGENT_ASK_ACTION_KEY,
+			// An ask has no held mutation to fall back on: if the required fields
+			// are missing there is nothing to record but an empty answer, and the
+			// run would complete reporting success while the agent learns nothing.
+			// Approving a blank form did exactly that (`{answer:{}}`).
+			validateInput: (proposal, input) =>
+				isAgentAskProposal(proposal)
+					? findUnansweredRequired(proposal.input_schema, input)
+					: null,
 		},
 	];
 	return builderApprovalHandlers;
@@ -1982,7 +2028,7 @@ async function failBuilderRun(
 		runId,
 		organizationId,
 		"failed",
-		`${handler.actionKey}.${desc} — failed`,
+		`${handler.nounLabel}: ${desc} — failed`,
 		`Builder action failed: ${desc} — ${errorMessage}`,
 		{ error_message: errorMessage },
 		reviewer,
@@ -2003,11 +2049,51 @@ async function failBuilderRun(
  * (supersedesEventId is passed explicitly — origin-based auto-supersede needs a
  * non-null connection_id, which internal approval events don't have).
  */
+/**
+ * Run the family's optional `validateInput` against a still-pending builder run.
+ * Returns the refusal message, or null when there is nothing to check (unknown
+ * run, other family, no validator) — the caller then proceeds to the claim,
+ * which is what decides whether this run was ours at all.
+ */
+async function validateBuilderRunInput(
+	args: Static<typeof ApproveAction>,
+	organizationId: string,
+): Promise<string | null> {
+	const rows = await getDb()`
+    SELECT action_key, action_input
+    FROM runs
+    WHERE id = ${args.run_id}
+      AND organization_id = ${organizationId}
+      AND run_type = 'internal'
+      AND approval_status = 'pending'
+    LIMIT 1
+  `;
+	if (rows.length === 0) return null;
+	const row = rows[0] as { action_key: string; action_input: unknown };
+	const handler = getBuilderApprovalHandlers().find(
+		(candidate) => candidate.actionKey === row.action_key,
+	);
+	return (
+		handler?.validateInput?.(
+			row.action_input,
+			(args.input as Record<string, unknown> | undefined) ?? null,
+		) ?? null
+	);
+}
+
 async function tryApproveBuilderRun(
 	args: Static<typeof ApproveAction>,
 	ctx: ToolContext,
 	env: Env,
 ): Promise<ManageOperationsResult | null> {
+	// Validate the human's input BEFORE the claim. The claim flips
+	// approval_status to 'approved', so refusing afterwards would leave a run
+	// that can never be answered — the decision has to be rejectable while it is
+	// still pending. The read is non-locking and the claim below stays atomic;
+	// this only checks caller-supplied input, never shared state.
+	const refusal = await validateBuilderRunInput(args, ctx.organizationId);
+	if (refusal) return { error: refusal };
+
 	const claimed = await claimBuilderRun(
 		args.run_id,
 		ctx.organizationId,
@@ -2022,14 +2108,20 @@ async function tryApproveBuilderRun(
 		args.run_id,
 		ctx.organizationId,
 		"confirmed",
-		`${handler.actionKey}.${desc} — executing`,
+		`${handler.nounLabel}: ${desc} — executing`,
 		`Builder action confirmed: ${desc}`,
 		{},
 		reviewer,
 	);
 
 	try {
-		const output = await handler.apply(proposal, ctx, env, requesterUserId);
+		const output = await handler.apply(
+			proposal,
+			ctx,
+			env,
+			requesterUserId,
+			(args.input as Record<string, unknown> | undefined) ?? null,
+		);
 		// Some handlers return `{ error }` / partial-failure summaries instead of
 		// throwing — treat those as failures so the run isn't marked completed
 		// when nothing applied.
@@ -2053,7 +2145,7 @@ async function tryApproveBuilderRun(
 			args.run_id,
 			ctx.organizationId,
 			"completed",
-			`${handler.actionKey}.${desc} — completed`,
+			`${handler.nounLabel}: ${desc} — completed`,
 			`Builder action completed: ${desc}`,
 			{ output: output as unknown as Record<string, unknown> },
 			reviewer,
@@ -2103,7 +2195,7 @@ async function tryRejectBuilderRun(
 		args.run_id,
 		ctx.organizationId,
 		"rejected",
-		`${handler.actionKey}.${desc} — rejected`,
+		`${handler.nounLabel}: ${desc} — rejected`,
 		`Builder action rejected: ${desc}${args.reason ? ` — ${args.reason}` : ""}`,
 		{ reason },
 		reviewer,

@@ -899,13 +899,13 @@ export class ChatInstanceManager {
     connectionId: string,
     channelKey: string,
 		content: AdapterPostableMessage,
-  ): Promise<void> {
+  ): Promise<{ messageId: string; threadId: string }> {
     // Channel-level post is a thread-less postToConversation; the colon splits
     // `${platform}:${channelId}`. One post path, no duplicated resolution.
     const sep = channelKey.indexOf(":");
     const platform = sep > 0 ? channelKey.slice(0, sep) : channelKey;
     const channelId = sep > 0 ? channelKey.slice(sep + 1) : channelKey;
-    await this.postToConversation(connectionId, {
+    return await this.postToConversation(connectionId, {
       platform,
       channelKey,
       channelId,
@@ -924,7 +924,7 @@ export class ChatInstanceManager {
     connectionId: string,
     platformUserId: string,
     content: AdapterPostableMessage,
-  ): Promise<void> {
+  ): Promise<{ messageId: string; threadId: string }> {
     const running = await this.ensureConnectionRunning(connectionId);
     const instance = running ? this.instances.get(connectionId) : undefined;
     if (!instance) {
@@ -933,7 +933,14 @@ export class ChatInstanceManager {
       );
     }
     const thread = await instance.chat.openDM(platformUserId);
-    await thread.post(content);
+    const sent = (await thread.post(content)) as {
+      id?: unknown;
+      threadId?: unknown;
+    };
+    return {
+      messageId: typeof sent?.id === "string" ? sent.id : "",
+      threadId: typeof sent?.threadId === "string" ? sent.threadId : "",
+    };
   }
 
   /**

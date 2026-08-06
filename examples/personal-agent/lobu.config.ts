@@ -1038,7 +1038,7 @@ const voiceProfileSynthesis = defineBehavior({
   },
   sources: {
     authored_recent:
-      "SELECT id, occurred_at, connector_key, origin_type, left(payload_text, 400) AS payload_text, metadata FROM events WHERE payload_text IS NOT NULL AND length(payload_text) >= 40 AND occurred_at > now() - interval '21 days' AND ((connector_key = 'twitter.takeout' AND origin_type IN ('reply','tweet')) OR (connector_key = 'x' AND origin_type IN ('tweet','reply') AND lower(coalesce(metadata->>'author_handle','')) = 'buremba') OR (connector_key IN ('linkedin','linkedin.takeout') AND origin_type = 'message')) ORDER BY occurred_at DESC LIMIT 200",
+      "SELECT id, occurred_at, connector_key, origin_type, left(payload_text, 400) AS payload_text, metadata FROM events WHERE payload_text IS NOT NULL AND length(payload_text) >= 40 AND occurred_at > now() - interval '21 days' AND ((connector_key = 'twitter.takeout' AND origin_type IN ('reply','tweet')) OR (connector_key = 'x' AND origin_type IN ('tweet','reply') AND lower(coalesce(metadata->>'author_handle','')) = 'bu7emba') OR (connector_key IN ('linkedin','linkedin.takeout') AND origin_type = 'message')) ORDER BY occurred_at DESC LIMIT 200",
     engaged_recent:
       "SELECT id, occurred_at, connector_key, origin_type, left(payload_text, 300) AS payload_text, metadata FROM events WHERE payload_text IS NOT NULL AND length(payload_text) >= 20 AND occurred_at > now() - interval '21 days' AND ((connector_key IN ('x','twitter.takeout') AND origin_type IN ('liked_tweet','bookmark')) OR (connector_key = 'instagram.takeout' AND origin_type IN ('like','saved','comment'))) ORDER BY occurred_at DESC LIMIT 200",
     existing_profiles: {

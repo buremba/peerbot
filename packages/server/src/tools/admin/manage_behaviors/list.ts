@@ -70,6 +70,7 @@ export async function handleList(
       i.source_watcher_id::text AS source_behavior_id,
       wr.id as behavior_run_id,
       wr.status as behavior_run_status,
+      wr.outcome as behavior_run_outcome,
       wr.error_message as behavior_run_error,
       wr.created_at as behavior_run_created_at,
       wr.completed_at as behavior_run_completed_at,
@@ -256,6 +257,7 @@ export async function handleList(
 				| string
 				| null
 				| undefined,
+			latestRunOutcome: watcher.behavior_run_outcome,
 		});
 
 		return {
@@ -269,6 +271,7 @@ export async function handleList(
 				health_reasons: behaviorHealth.reasons,
 			}),
 			last_scheduling_error: behaviorHealth.last_scheduling_error,
+			last_run_outcome: behaviorHealth.last_run_outcome,
 		};
 	});
 

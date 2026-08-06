@@ -34,6 +34,7 @@ import type { ToolContext } from '../../registry';
 import type { ManageBehaviorsArgs } from '../manage_behaviors';
 import { normalizeExtractedData, parseJson, requireWatcherAccess } from './shared';
 import { getErrorMessage } from '@lobu/core';
+import { classifyRunOutcome } from "../../../runs/run-outcome";
 
 // Initialize AJV for JSON Schema validation
 // removeAdditional: true strips fields like 'embedding' that workers add but aren't in the schema
@@ -755,6 +756,7 @@ export async function handleCompleteWindow(
       const completedRows = await tx`
         UPDATE runs
         SET status = 'completed',
+            outcome = ${classifyRunOutcome({ status: "completed" })},
             window_id = ${windowId},
             model_used = COALESCE(
               ${explicitProvenanceModel},

@@ -63,6 +63,13 @@ export interface BehaviorHealthInput {
   latestRunCreatedAt?: string | Date | null;
   /** Latest run `error_message`, surfaced as `last_scheduling_error`. */
   latestRunError?: string | null;
+  /**
+   * Latest run `runs.outcome` (infra_error/agent_error/scoreable), stamped at
+   * write time by the terminal-status writers. Separates "the platform broke"
+   * from "the agent misbehaved" in the degraded reason — the distinction the
+   * July-2026 z.ai quota storm lacked. NULL on pre-backfill rows.
+   */
+  latestRunOutcome?: string | null;
 }
 
 export interface BehaviorHealth {
@@ -71,6 +78,8 @@ export interface BehaviorHealth {
   reasons: string[];
   /** Latest run error, echoed for convenience (null when none). */
   last_scheduling_error: string | null;
+  /** Latest run outcome classification, echoed for convenience (null when unstamped). */
+  last_run_outcome: string | null;
 }
 
 function toMs(value: string | Date | null | undefined): number | null {
@@ -100,20 +109,25 @@ export function computeBehaviorHealth(
 ): BehaviorHealth {
   const reasons: string[] = [];
   const lastError = input.latestRunError ?? null;
+  const lastOutcome = input.latestRunOutcome ?? null;
 
   // Archived behaviors are intentionally idle and therefore healthy.
   if (input.status !== 'active') {
-    return { health: 'healthy', reasons, last_scheduling_error: lastError };
+    return {
+      health: 'healthy',
+      reasons,
+      last_scheduling_error: lastError,
+      last_run_outcome: lastOutcome,
+    };
   }
 
   const runInFlight = IN_FLIGHT_RUN_STATUSES.has(input.latestRunStatus ?? '');
 
   if (FAILED_RUN_STATUSES.has(input.latestRunStatus ?? '')) {
-    reasons.push(
-      lastError
-        ? `latest run ${input.latestRunStatus}: ${lastError}`
-        : `latest run ${input.latestRunStatus}`,
-    );
+    const label = lastOutcome
+      ? `latest run ${input.latestRunStatus} (${lastOutcome})`
+      : `latest run ${input.latestRunStatus}`;
+    reasons.push(lastError ? `${label}: ${lastError}` : label);
   }
 
   // Missed firing: next_run_at is well in the past and nothing is dispatching.
@@ -138,5 +152,6 @@ export function computeBehaviorHealth(
     health: reasons.length > 0 ? 'degraded' : 'healthy',
     reasons,
     last_scheduling_error: lastError,
+    last_run_outcome: lastOutcome,
   };
 }

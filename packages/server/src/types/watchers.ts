@@ -114,6 +114,14 @@ const WatcherRunSchema = Type.Object({
     Type.Literal('cancelled'),
     Type.Literal('timeout'),
   ]),
+  /** Write-time outcome classification (runs.outcome); omitted when unstamped. */
+  outcome: Type.Optional(
+    Type.Union([
+      Type.Literal('infra_error'),
+      Type.Literal('agent_error'),
+      Type.Literal('scoreable'),
+    ])
+  ),
   error_message: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   created_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   completed_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
@@ -157,6 +165,8 @@ export const WatcherMetadataSchema = Type.Object({
   health_reasons: Type.Optional(Type.Array(Type.String())),
   /** Latest run error surfaced alongside the health verdict. */
   last_scheduling_error: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  /** Latest run's write-time outcome classification (null until stamped). */
+  last_run_outcome: Type.Optional(Type.Union([Type.String(), Type.Null()])),
 });
 export type WatcherMetadata = Static<typeof WatcherMetadataSchema>;
 

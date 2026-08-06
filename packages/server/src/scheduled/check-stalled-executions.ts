@@ -44,6 +44,7 @@ import { intervals } from '../config/intervals';
 import { feedBackoff } from '../connectors/feed-backoff';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
+import { classifyRunOutcome } from '../runs/run-outcome';
 import { expireStaleConnectTokens } from '../utils/connect-tokens';
 import logger from '../utils/logger';
 import { reconcileWatcherRuns, sweepStaleWatcherRuns } from '../watchers/automation';
@@ -145,6 +146,7 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
         timed_out AS (
           UPDATE public.runs r
           SET status = 'timeout',
+              outcome = ${classifyRunOutcome({ status: "timeout" })},
               completed_at = current_timestamp,
               error_message = CASE
                 WHEN c.stale_status = 'pending' THEN ${claimErrorMessage}

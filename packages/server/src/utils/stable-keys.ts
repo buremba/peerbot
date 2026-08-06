@@ -12,6 +12,10 @@ export const MAX_STABLE_KEY_COMPONENT_BYTES = 256;
 
 const STABLE_KEY_VERSION = 'v1';
 const BEHAVIOR_ENTITY_IDENTITY_VERSION = 'v2';
+const BEHAVIOR_EVENT_IDENTITY_VERSION = 'v1';
+
+/** `events.identity_ns` for a keyed Behavior event output. */
+export const BEHAVIOR_EVENT_IDENTITY_NS = 'behavior_event';
 
 /**
  * Scope a stable tuple to the Behavior output and its declared entity type.
@@ -27,6 +31,29 @@ export function formatBehaviorEntityIdentity(
   const scopedTuple = `${watcherId}::${outputName}::${entityTypeSlug}::${stableKey}`;
   const digest = createHash('sha256').update(scopedTuple, 'utf8').digest('hex');
   return `${BEHAVIOR_ENTITY_IDENTITY_VERSION}::${digest}`;
+}
+
+/**
+ * Scope a stable tuple to a keyed EVENT output's semantic type.
+ *
+ * Deliberately NOT scoped by Behavior, unlike the entity sibling above. An
+ * event carrying a keyed identity may predate the Behavior that now maintains
+ * it — prod's first four `voice_profile` rows were written by a migration with
+ * no `behavior_id` and were adopted (superseded) by the Behavior's first run.
+ * Watcher-scoping would have made those rows unadoptable and left them live
+ * forever beside the Behavior's own. Entities can afford watcher-scoping
+ * because an entity is only ever created by its Behavior; events cannot.
+ *
+ * The digest keeps every contract-valid tuple inside PostgreSQL's B-tree key
+ * limit; the exact key fields remain in `metadata` for inspection.
+ */
+export function formatBehaviorEventIdentity(
+  semanticType: string,
+  stableKey: string
+): string {
+  const scopedTuple = `${semanticType}::${stableKey}`;
+  const digest = createHash('sha256').update(scopedTuple, 'utf8').digest('hex');
+  return `${BEHAVIOR_EVENT_IDENTITY_VERSION}::${digest}`;
 }
 
 function encode(value: string): string {

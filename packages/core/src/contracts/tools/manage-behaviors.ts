@@ -153,6 +153,14 @@ export type BehaviorEntityOutput = Static<typeof BehaviorEntityOutputSchema>;
  * one current event per key while history stays append-only. This is the event
  * analogue of the entity output's keyed upsert — use it for refined-over-time
  * state (voice profiles, digests, statuses) rather than per-source-item logs.
+ *
+ * The identity is derived server-side and stored on the row (`events.identity_*`),
+ * so it is scoped to the semantic type rather than to the Behavior: an event that
+ * predates the Behavior now maintaining it can be adopted into the chain, and
+ * "exactly one current per key" is a unique-index guarantee rather than a
+ * convention two concurrent runs can silently break. Rows carrying no identity
+ * are inert — never a supersede target — so a keyed output cannot capture an
+ * unrelated event that happens to share metadata.
  */
 export const BehaviorEventOutputSchema = Type.Object(
   {
@@ -168,7 +176,7 @@ export const BehaviorEventOutputSchema = Type.Object(
         maxItems: 4,
         uniqueItems: true,
         description:
-          "One to four metadata fields whose exact string values compose each draft's stable identity across Behavior runs (e.g. channel + mode for per-channel voice profiles). Every key field must be present in every draft's `metadata`; changing the fields, their order, the output name, or the semantic type changes identity. When set, each run supersedes the current head event with the same key values.",
+          "One to four metadata fields whose exact values compose each draft's stable identity across Behavior runs (e.g. channel + mode for per-channel voice profiles). Every key field must be present in every draft's `metadata` and be a non-blank string, safe integer, or boolean — the type is part of the identity, so 3 and \"3\" are different keys. Changing the fields, their order, or the semantic type changes identity and starts a new chain. When set, each run supersedes the current event carrying the same key values.",
       })
     ),
   },

@@ -99,6 +99,26 @@ interface InsertEventParams {
   interactionError?: string | null;
   supersedesEventId?: number | null;
 
+  /**
+   * Stable identity of the THING this row is a version of, for writers that
+   * have one. `events.id` is a stored-version id — a supersede mints a new one
+   * — so it can never serve as cross-version identity.
+   *
+   * Namespaces that claim uniqueness get their own partial unique index over
+   * chain ROOTS (see `idx_events_identity_root_behavior`), which is what makes
+   * "exactly one current version per thing" a database guarantee rather than a
+   * convention two concurrent writers can silently violate. Roots, not live
+   * heads: this function inserts the successor before stamping the
+   * predecessor's `superseded_by`, so both are briefly live and a live-head
+   * index would reject every ordinary supersede. Uniqueness is declared per
+   * namespace on purpose: `entity_identities` enforces one blanket index across
+   * every namespace and has carried a dead `uniquePerOrg` knob ever since.
+   *
+   * Rows with no stable identity (messages, notes, tombstones, change audits)
+   * leave this unset — there is no "current version of" a one-shot event.
+   */
+  identity?: { ns: string; key: string } | null;
+
   /** Audit */
   createdBy?: string | null;
   clientId?: string | null;
@@ -355,6 +375,7 @@ export async function insertEvent(
       semantic_type, client_id, created_by,
       interaction_type, interaction_status, interaction_input_schema, interaction_input,
       interaction_output, interaction_error, supersedes_event_id,
+      identity_ns, identity_key,
       linked_org_ids
     ) VALUES (
       ${entityIdsValue}::bigint[],
@@ -388,6 +409,8 @@ export async function insertEvent(
       ${params.interactionOutput ? sql.json(params.interactionOutput) : null},
       ${params.interactionError ?? null},
       ${supersedesEventId},
+      ${params.identity?.ns ?? null},
+      ${params.identity?.key ?? null},
       (
         SELECT COALESCE(array_agg(DISTINCT x.o), '{}'::text[])
         FROM (

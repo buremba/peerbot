@@ -1,9 +1,14 @@
 import type { DbClient } from '../db/client';
 import type { EventOutput } from '../types/watchers';
-import { ToolUserError } from './errors';
+import { errorMessage, ToolUserError } from './errors';
 import { insertEvent, type InsertedEvent } from './insert-event';
 import { isUniqueViolation } from './pg-errors';
 import { validateSaveContentSemanticType } from './event-kind-validation';
+import {
+  BEHAVIOR_EVENT_IDENTITY_NS,
+  computeStableKey,
+  formatBehaviorEventIdentity,
+} from './stable-keys';
 
 interface EventDraft {
   content: string;
@@ -51,38 +56,46 @@ async function findByIdempotencyKey(
 }
 
 /**
- * The current head event for a keyed event output: the latest row of the
- * output's semantic type whose metadata carries the given key field values and
- * that nothing has superseded yet. `superseded_by IS NULL` identifies heads —
- * the insert-time dual-write stamps the replaced row's `superseded_by`, so a
- * key keeps exactly one current event while history stays append-only. The
- * match is scoped by (org, semantic type, key values) — deliberately NOT by
- * `behavior_id`, so a migrated/legacy event that predates the Behavior becomes
- * the supersede target of its first run rather than a duplicate.
+ * The current head event for a keyed event output, by stable identity.
+ *
+ * `superseded_by IS NULL` identifies heads — the insert-time dual-write stamps
+ * the replaced row's `superseded_by`, so a key keeps exactly one current event
+ * while history stays append-only.
+ *
+ * The lookup is scoped by (org, identity) and deliberately NOT by `behavior_id`:
+ * an event carrying a keyed identity may predate the Behavior that now maintains
+ * it — prod's first four `voice_profile` rows were written by a migration with
+ * no `behavior_id`. Behavior-scoping would leave those permanently unadoptable.
+ *
+ * Adoption of such rows is a DELIBERATE one-time act
+ * (scripts/backfill-event-identity.ts stamping the identity this same function
+ * computes), never an ambient effect of a run matching some metadata. A row that
+ * nothing claimed an identity for is inert: it is not a supersede candidate, and
+ * a run extends only its own chain.
+ *
+ * This replaces a `metadata @>` containment probe that was wrong in three
+ * ways. It stringified key values before matching type-sensitive jsonb, so a
+ * numeric or whitespace-padded value never matched its own head and every run
+ * appended another live one. Containment is SUBSET matching, so shrinking a
+ * declared key silently superseded a DIFFERENT key's head. And with no GIN
+ * index on `events.metadata` it degraded to a bitmap heap scan over the org's
+ * whole history — measured at 970 ms per probe against 1.2 ms via
+ * idx_events_identity_head_behavior, whose predicate matches this WHERE
+ * exactly (the root index serves the CONSTRAINT, not this probe: heads are
+ * usually not roots).
  */
-async function findCurrentHeadByKey(
+async function findCurrentHeadByIdentity(
   tx: DbClient,
   organizationId: string,
-  semanticType: string,
-  keyFields: readonly string[],
-  metadata: Record<string, unknown>
+  identityKey: string
 ): Promise<number | null> {
-  const keyJson: Record<string, string> = {};
-  for (const field of keyFields) {
-    const value = metadata[field];
-    const str =
-      value === undefined || value === null ? null : String(value).trim();
-    if (!str) return null;
-    keyJson[field] = str;
-  }
   const rows = await tx<{ id: number }>`
     SELECT id
     FROM events
     WHERE organization_id = ${organizationId}
-      AND semantic_type = ${semanticType}
+      AND identity_ns = ${BEHAVIOR_EVENT_IDENTITY_NS}
+      AND identity_key = ${identityKey}
       AND superseded_by IS NULL
-      AND metadata @> ${tx.json(keyJson)}
-    ORDER BY created_at DESC, id DESC
     LIMIT 1
   `;
   return rows[0]?.id ?? null;
@@ -132,37 +145,41 @@ export async function persistBehaviorEventOutput(
     const metadata = { ...(draft.metadata ?? {}) };
     delete metadata._lobu_idempotency_key;
 
-    // Keyed event output: resolve the current head for this key and supersede
-    // it, so the type keeps exactly one current event per key. A missing key
-    // field is a malformed draft (the model must emit every declared key
-    // field); a duplicate key within one array would otherwise double-supersede
+    // Keyed event output: derive the draft's stable identity, resolve the
+    // current head for it, and supersede that head — so the type keeps exactly
+    // one current event per key. The identity is derived SERVER-SIDE from the
+    // declared key fields, never taken from the model: prod's `profile_key`
+    // shows why, having drifted from `x:taste` to `x_taste` between two runs of
+    // the same Behavior. A duplicate key within one array would double-supersede
     // the same head, so it is rejected up front.
     let supersedesEventId: number | null = null;
+    let identityKey: string | null = null;
     if (keyFields) {
-      const missing = keyFields.filter((f) => {
-        const v = metadata[f];
-        return v === undefined || v === null || String(v).trim() === '';
-      });
-      if (missing.length > 0) {
+      // computeStableKey enforces the whole field contract — present, non-blank,
+      // scalar, safe integer, within the field-count and byte bounds — and
+      // type-tags each value so numeric 3 and string '3' stay distinct
+      // identities instead of being collapsed by String().
+      let stableKey: string;
+      try {
+        stableKey = computeStableKey(metadata, keyFields);
+      } catch (error) {
         throw new ToolUserError(
-          `outputs.${params.outputName}[${index}] is missing required key field(s) in metadata: ${missing.join(', ')}.`,
+          `outputs.${params.outputName}[${index}] has an invalid key (${keyFields.join(', ')}): ${errorMessage(error)}`,
           422
         );
       }
-      const keyValue = keyFields.map((f) => `${f}=${String(metadata[f]).trim()}`).join('&');
-      if (seenKeyValues.has(keyValue)) {
+      identityKey = formatBehaviorEventIdentity(params.output.event, stableKey);
+      if (seenKeyValues.has(identityKey)) {
         throw new ToolUserError(
           `outputs.${params.outputName} contains a duplicate key (${keyFields.join(', ')}) at item ${index}.`,
           422
         );
       }
-      seenKeyValues.add(keyValue);
-      supersedesEventId = await findCurrentHeadByKey(
+      seenKeyValues.add(identityKey);
+      supersedesEventId = await findCurrentHeadByIdentity(
         params.tx,
         params.organizationId,
-        params.output.event,
-        keyFields,
-        metadata
+        identityKey
       );
     }
 
@@ -250,33 +267,76 @@ export async function persistBehaviorEventOutput(
       window_id: params.windowId,
       window_revision_id: params.canvasRevisionId,
     };
-    try {
-      inserted.push(
-        await params.tx.savepoint((sp) =>
-          insertEvent(
-            {
-              entityIds: params.boundEntityIds,
-              organizationId: params.organizationId,
-              originId,
-              title: draft.title ?? null,
-              payloadType: draft.payload_type ?? 'text',
-              content: draft.content,
-              authorName: draft.author ?? null,
-              sourceUrl: draft.source_url ?? parentSourceUrl,
-              occurredAt: draft.occurred_at ?? params.occurredAt,
-              semanticType: params.output.event,
-              originType: params.output.event,
-              metadata: eventMetadata,
-              parentOriginId,
-              supersedesEventId,
-              runId: params.runId,
-              createdBy: params.createdBy ?? null,
-            },
-            { sql: sp }
-          )
+    const writeEvent = (headId: number | null) =>
+      params.tx.savepoint((sp) =>
+        insertEvent(
+          {
+            entityIds: params.boundEntityIds,
+            organizationId: params.organizationId,
+            originId,
+            title: draft.title ?? null,
+            payloadType: draft.payload_type ?? 'text',
+            content: draft.content,
+            authorName: draft.author ?? null,
+            sourceUrl: draft.source_url ?? parentSourceUrl,
+            occurredAt: draft.occurred_at ?? params.occurredAt,
+            semanticType: params.output.event,
+            originType: params.output.event,
+            metadata: eventMetadata,
+            parentOriginId,
+            supersedesEventId: headId,
+            identity: identityKey
+              ? { ns: BEHAVIOR_EVENT_IDENTITY_NS, key: identityKey }
+              : null,
+            runId: params.runId,
+            createdBy: params.createdBy ?? null,
+          },
+          { sql: sp }
         )
       );
+
+    try {
+      inserted.push(await writeEvent(supersedesEventId));
     } catch (error) {
+      // A concurrent run committed a head for this identity between our probe
+      // and our insert. The unique index rejected us rather than letting both
+      // rows stay live, which is the whole point — re-resolve the winner and
+      // supersede it. One retry only: a second rejection means yet another run
+      // beat us, and returning a 409 to a Behavior window is the correct
+      // fail-closed outcome rather than looping.
+      if (
+        identityKey &&
+        isUniqueViolation(error, 'idx_events_identity_root_behavior')
+      ) {
+        const winnerHead = await findCurrentHeadByIdentity(
+          params.tx,
+          params.organizationId,
+          identityKey
+        );
+        if (winnerHead === null) throw error;
+        try {
+          inserted.push(await writeEvent(winnerHead));
+        } catch (retryError) {
+          // Two ways the retry can still lose, and both mean the same thing —
+          // a third writer moved the chain under us. The retry inserts a
+          // SUCCESSOR (supersedes_event_id is non-NULL), so it is not in the
+          // root index; it collides on idx_events_superseded_by instead, which
+          // is unique on supersedes_event_id and rejects a second successor for
+          // the head we just read. Accept either as the same lost race rather
+          // than surfacing a raw 23505.
+          if (
+            isUniqueViolation(retryError, 'idx_events_identity_root_behavior') ||
+            isUniqueViolation(retryError, 'idx_events_superseded_by')
+          ) {
+            throw new ToolUserError(
+              `outputs.${params.outputName}[${index}] lost a concurrent write for its key (${(keyFields ?? []).join(', ')}); retry the completion.`,
+              409
+            );
+          }
+          throw retryError;
+        }
+        continue;
+      }
       if (!isUniqueViolation(error, 'idx_events_org_idempotency_key')) throw error;
       const winner = await findByIdempotencyKey(
         params.tx,

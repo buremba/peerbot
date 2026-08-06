@@ -18,6 +18,7 @@ export const input = {
         type: "object",
         properties: {
           title: { type: "string" },
+          author: { type: "string", minLength: 1 },
           content: { type: "string", minLength: 1 },
           source_url: { type: "string", minLength: 1 },
           parent_event_id: { type: "integer", minimum: 1 },
@@ -26,28 +27,25 @@ export const input = {
             type: "object",
             properties: {
               platform: { type: "string" },
-              author: { type: "string" },
               why: { type: "string" },
               priority: {
                 type: "string",
                 enum: ["low", "normal", "high"],
               },
               source_event_id: { type: "integer", minimum: 1 },
-              source_origin_id: { type: "string", minLength: 1 },
               source_connection_id: { type: "integer", minimum: 1 },
             },
             required: [
               "platform",
-              "author",
               "why",
               "priority",
-              "source_origin_id",
               "source_event_id",
               "source_connection_id",
             ],
           },
         },
         required: [
+          "author",
           "content",
           "source_url",
           "parent_event_id",
@@ -63,6 +61,7 @@ export const input = {
         type: "object",
         properties: {
           title: { type: "string" },
+          author: { type: "string", minLength: 1 },
           content: { type: "string", minLength: 1 },
           source_url: { type: "string", minLength: 1 },
           parent_event_id: { type: "integer", minimum: 1 },
@@ -71,28 +70,25 @@ export const input = {
             type: "object",
             properties: {
               platform: { type: "string", enum: ["x", "linkedin"] },
-              author: { type: "string" },
               why: { type: "string" },
               priority: {
                 type: "string",
                 enum: ["low", "normal", "high"],
               },
-              source_origin_id: { type: "string", minLength: 1 },
               source_event_id: { type: "integer", minimum: 1 },
               source_connection_id: { type: "integer", minimum: 1 },
             },
             required: [
               "platform",
-              "author",
               "why",
               "priority",
-              "source_origin_id",
               "source_event_id",
               "source_connection_id",
             ],
           },
         },
         required: [
+          "author",
           "content",
           "source_url",
           "parent_event_id",
@@ -107,9 +103,9 @@ export const input = {
 
 interface PersistedSignal {
   id: number;
+  author_name: string | null;
   metadata: {
     platform?: string;
-    author?: string;
     why?: string;
     priority?: string;
     source_event_id?: number;
@@ -122,10 +118,8 @@ interface PersistedDraft {
   source_url: string;
   metadata: {
     platform?: string;
-    author?: string;
     why?: string;
     priority?: string;
-    source_origin_id?: string;
     source_event_id?: number;
     source_connection_id?: number;
   };
@@ -162,7 +156,7 @@ export default async (
       ? `run_id = ${Number(ctx.window.run_id)}`
       : `metadata->>'window_id' = '${Number(ctx.window.id)}'`;
   const deliveredSignals = (await client.query(
-    `SELECT id, metadata FROM events
+    `SELECT id, author_name, metadata FROM events
      WHERE ${runPredicate}
        AND semantic_type = 'observation'
        AND metadata->>'behavior_output' = 'signals'
@@ -187,8 +181,8 @@ export default async (
   for (const draft of deliveredDrafts) contentIds.push(draft.id);
   const body = notificationBody(
     deliveredSignals.map(
-      ({ metadata }) =>
-        `[${metadata.priority ?? "normal"}] ${metadata.author ?? "Someone"} (${metadata.platform ?? "social"}) — ${metadata.why ?? "New signal"}`
+      ({ author_name, metadata }) =>
+        `[${metadata.priority ?? "normal"}] ${author_name ?? "Someone"} (${metadata.platform ?? "social"}) — ${metadata.why ?? "New signal"}`
     )
   );
   const producerKey = producerRunKey(ctx);

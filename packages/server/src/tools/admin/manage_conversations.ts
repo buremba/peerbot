@@ -244,7 +244,6 @@ async function handleSend(
     {
       provider: "claude",
       model: behaviorModel,
-      ...(behaviorModel ? { behaviorModelOverride: true } : {}),
     },
     agentSettingsStore,
     ctx.organizationId,

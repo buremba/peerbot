@@ -1,10 +1,13 @@
+import { randomUUID } from "node:crypto";
 import type { CardElement } from "chat";
 import { getDb, pgTextArray } from "../db/client";
 import { resolveBoundChannelRows } from "../gateway/channels/bound-channels";
 import { getChatInstanceManager, isLobuGatewayRunning } from "../lobu/gateway";
 import type { McpActivityAttribution } from "../lobu/stores/mcp-client-conversations";
 import { resolveSlackUserIdForUser } from "../lobu/stores/chat-identity.js";
+import { insertEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
+import { isUniqueViolation } from "../utils/pg-errors";
 
 interface CreateNotificationParams {
 	organizationId: string;
@@ -193,8 +196,110 @@ export async function resolveOwnerDmTarget(
 	return null;
 }
 
+/**
+ * The org's URL slug, for building a permalink to a notification.
+ *
+ * Shared by the trigger fan-out and the `notify` tool so both link into the
+ * same place; `buildResourcePermalink` returns undefined without it.
+ */
+export async function getOrgSlug(
+	organizationId: string,
+): Promise<string | null> {
+	const sql = getDb();
+	const rows = await sql<{ slug: string }>`
+    SELECT slug FROM "organization" WHERE id = ${organizationId} LIMIT 1
+  `;
+	return rows[0]?.slug ?? null;
+}
+
+/**
+ * Resolve the notification event a producer key already claimed, if any.
+ *
+ * Reads the partial unique index `idx_events_org_idempotency_key` directly, so
+ * it is the same key the insert races on — no second notion of "already sent".
+ * Exported for the `notify` tool, which must resolve a repeat BEFORE queueing
+ * an ask's pending run — after the fact, the orphan run is already durable.
+ */
+export async function findNotificationByIdempotencyKey(
+	organizationId: string,
+	idempotencyKey: string,
+): Promise<number | null> {
+	const sql = getDb();
+	const rows = (await sql`
+    SELECT id
+    FROM events
+    WHERE organization_id = ${organizationId}
+      AND metadata ? '_lobu_idempotency_key'
+      AND metadata->>'_lobu_idempotency_key' = ${idempotencyKey}
+    LIMIT 1
+  `) as unknown as Array<{ id: number }>;
+	const id = rows[0]?.id;
+	return id === undefined ? null : Number(id);
+}
+
+/**
+ * Where one copy of a notification physically landed on a chat platform.
+ *
+ * Recorded so a later state change can EDIT that message in place
+ * (`ChatInstanceManager.editMessage` addresses a message by
+ * `(threadId, messageId)`) and so an agent's follow-up can reply into the same
+ * thread. Both need the ids the post returned, and nothing else persists them —
+ * `channel_messages` is keyed on the platform message id with no link back to
+ * the notification, so it cannot answer "where did notification N go?".
+ *
+ * Durable rather than in-memory on purpose: the pod that edits or replies is
+ * frequently not the pod that posted.
+ */
+interface NotificationDeliveryRecord {
+	connectionId: string;
+	/** Platform-prefixed channel id, or `dm` for the owner-routed tier. */
+	channelKey: string;
+	messageId: string;
+	threadId: string;
+}
+
+/**
+ * Stamp where the notification was delivered onto the event that represents it.
+ *
+ * Post-hoc metadata UPDATE, matching the routing stamp in
+ * `gateway/routes/internal/interactions.ts`: `events` is append-only for
+ * DELETE, and this touches delivery metadata only — never payload. It has to
+ * run after the fan-out because the platform ids do not exist until the post
+ * returns, and the durable notification write must not block on a best-effort
+ * chat post.
+ *
+ * Best-effort: losing the record costs a later in-place edit, not the
+ * notification itself.
+ */
+async function recordDelivery(
+	eventId: number,
+	deliveries: NotificationDeliveryRecord[],
+): Promise<void> {
+	// A record exists to be addressed later, and `editMessage(threadId, messageId)`
+	// cannot address an empty id — an adapter that returned no message id has
+	// given us nothing to point at. Dropping it here rather than at each caller
+	// keeps the one rule in the one place that writes the record.
+	const addressable = deliveries.filter((entry) => entry.messageId !== "");
+	if (addressable.length === 0) return;
+	try {
+		const sql = getDb();
+		await sql`
+      UPDATE events
+      SET metadata = coalesce(metadata, '{}'::jsonb)
+        || jsonb_build_object('delivery', ${sql.json(addressable)}::jsonb)
+      WHERE id = ${eventId}
+    `;
+	} catch (err) {
+		logger.warn(
+			{ err, eventId },
+			"[Notifications] Failed to record delivery targets",
+		);
+	}
+}
+
 async function deliverToBotConnections(
 	params: Omit<CreateNotificationParams, "userId">,
+	eventId: number,
 ): Promise<void> {
 	if (!isLobuGatewayRunning()) return;
 	const manager = getChatInstanceManager();
@@ -217,7 +322,19 @@ async function deliverToBotConnections(
 				params.connectionId,
 			);
 			if (dm) {
-				await manager.postDirectMessage(dm.connectionId, dm.slackUserId, content);
+				const sent = await manager.postDirectMessage(
+					dm.connectionId,
+					dm.slackUserId,
+					content,
+				);
+				await recordDelivery(eventId, [
+					{
+						connectionId: dm.connectionId,
+						channelKey: "dm",
+						messageId: sent.messageId,
+						threadId: sent.threadId,
+					},
+				]);
 				return;
 			}
 			logger.warn(
@@ -263,18 +380,42 @@ async function deliverToBotConnections(
 		}
 		if (targets.length === 0) return;
 
-		await Promise.allSettled(
-			targets.map(async ({ connectionId, channelKey }) => {
-				try {
-					await manager.postMessageToChannel(connectionId, channelKey, content);
-				} catch (err) {
-					logger.warn(
-						{ err, connectionId, channelKey },
-						"[Notifications] Failed to post to bot connection channel",
+		const posted = await Promise.allSettled(
+			targets.map(
+				async ({
+					connectionId,
+					channelKey,
+				}): Promise<NotificationDeliveryRecord> => {
+					const sent = await manager.postMessageToChannel(
+						connectionId,
+						channelKey,
+						content,
 					);
-				}
-			}),
+					return {
+						connectionId,
+						channelKey,
+						messageId: sent.messageId,
+						threadId: sent.threadId,
+					};
+				},
+			),
 		);
+		const delivered: NotificationDeliveryRecord[] = [];
+		posted.forEach((result, index) => {
+			if (result.status === "fulfilled") {
+				delivered.push(result.value);
+				return;
+			}
+			logger.warn(
+				{
+					err: result.reason,
+					connectionId: targets[index]?.connectionId,
+					channelKey: targets[index]?.channelKey,
+				},
+				"[Notifications] Failed to post to bot connection channel",
+			);
+		});
+		await recordDelivery(eventId, delivered);
 	} catch (err) {
 		logger.warn(
 			{ err },
@@ -298,75 +439,99 @@ async function deliverToBotConnections(
 export async function createNotificationForUsers(
 	userIds: string[],
 	params: Omit<CreateNotificationParams, "userId">,
-): Promise<{ created: boolean }> {
-	if (userIds.length === 0) return { created: false };
+): Promise<{ created: boolean; eventId: number | null }> {
+	if (userIds.length === 0) return { created: false, eventId: null };
 	const sql = getDb();
 
-	// fetch_types:false safe: entity_ids is a `{n,...}` literal (or NULL) cast to
-	// bigint[] — never a raw JS array bind. Same pattern as insert-event.ts.
-	const entityIdsValue =
-		params.entityIds && params.entityIds.length > 0
-			? `{${params.entityIds.join(",")}}`
-			: null;
+	const metadata: Record<string, unknown> = {
+		notification_type: params.type,
+		resource_type: params.resourceType ?? null,
+		resource_id: params.resourceId ?? null,
+		resource_url: params.resourceUrl ?? null,
+		// Persisted, not just handed to the fan-out: the card IS the notification's
+		// rendered form, and a connection that was offline at send time (or a
+		// surface that renders it later) has no other way to recover it.
+		...(params.card ? { card: params.card } : {}),
+		...(params.idempotencyKey
+			? { _lobu_idempotency_key: params.idempotencyKey }
+			: {}),
+		...(params.mcpActivity?.transportSessionId
+			? { mcp_session_id: params.mcpActivity.transportSessionId }
+			: {}),
+		...(params.mcpActivity?.hostConversationId
+			? { mcp_conversation_id: params.mcpActivity.hostConversationId }
+			: {}),
+	};
 
-	const created = await sql.begin(async (tx) => {
-		const inserted = (await tx`
-      INSERT INTO events
-        (organization_id, entity_ids, title, payload_text, payload_type, semantic_type,
-         occurred_at, client_id, metadata)
-      VALUES (
-        ${params.organizationId},
-        ${entityIdsValue}::bigint[],
-        ${params.title},
-        ${params.body ?? null},
-        'text',
-        'notification',
-        now(),
-        ${params.mcpActivity?.clientId ?? null},
-        ${sql.json({
-					notification_type: params.type,
-					resource_type: params.resourceType ?? null,
-					resource_id: params.resourceId ?? null,
-					resource_url: params.resourceUrl ?? null,
-					...(params.idempotencyKey
-						? { _lobu_idempotency_key: params.idempotencyKey }
-						: {}),
-					...(params.mcpActivity?.transportSessionId
-						? { mcp_session_id: params.mcpActivity.transportSessionId }
-						: {}),
-					...(params.mcpActivity?.hostConversationId
-						? { mcp_conversation_id: params.mcpActivity.hostConversationId }
-						: {}),
-				})}
-      )
-      ON CONFLICT (organization_id, (metadata->>'_lobu_idempotency_key'))
-        WHERE metadata ? '_lobu_idempotency_key'
-      DO NOTHING
-      RETURNING id
-    `) as unknown as Array<{ id: number }>;
-		const eventId = inserted[0]?.id;
-		if (!eventId) return false;
+	// Idempotent repeat: hand back the durable event the first send landed, so a
+	// retry still resolves to a usable id/url instead of an empty success.
+	// Preflight read + unique-index catch below, exactly as save_content does —
+	// `insertEvent` has no ON CONFLICT of its own.
+	if (params.idempotencyKey) {
+		const prior = await findNotificationByIdempotencyKey(
+			params.organizationId,
+			params.idempotencyKey,
+		);
+		if (prior !== null) return { created: false, eventId: prior };
+	}
 
-		await tx`
+	let eventId: number;
+	try {
+		eventId = (await sql.begin(async (tx) => {
+			const event = await insertEvent(
+				{
+					entityIds: params.entityIds ?? [],
+					organizationId: params.organizationId,
+					// Notifications are minted here, not synced from a source, so there
+					// is no upstream identity to carry. A fresh uuid gives every
+					// notification the stable identity the events contract expects
+					// without pretending the producer key is a source id.
+					originId: randomUUID(),
+					title: params.title,
+					content: params.body ?? null,
+					payloadType: "text",
+					semanticType: "notification",
+					metadata,
+					clientId: params.mcpActivity?.clientId ?? null,
+				},
+				{ sql: tx },
+			);
+
+			await tx`
       INSERT INTO notification_targets (event_id, user_id)
-      SELECT ${eventId}, uid
+      SELECT ${event.id}, uid
       FROM unnest(${pgTextArray(userIds)}::text[]) AS u(uid)
       ON CONFLICT DO NOTHING
     `;
-		return true;
-	});
-	if (!created) return { created: false };
+			return event.id;
+		})) as number;
+	} catch (error) {
+		// Two replicas may race past the preflight read. The unique index is the
+		// lock; the loser resolves and returns the winner's durable event.
+		if (
+			params.idempotencyKey &&
+			isUniqueViolation(error, "idx_events_org_idempotency_key")
+		) {
+			const winner = await findNotificationByIdempotencyKey(
+				params.organizationId,
+				params.idempotencyKey,
+			);
+			if (winner === null) throw error;
+			return { created: false, eventId: winner };
+		}
+		throw error;
+	}
 
 	// Deliver to bot connections (fire-and-forget). The bot delivery targets
 	// the org's connection default channels and is identical for every user in
 	// this call, so fan it out once — not once per user.
-	deliverToBotConnections(params).catch((err) =>
+	deliverToBotConnections(params, eventId).catch((err) =>
 		logger.warn(
 			{ err },
 			"[Notifications] Failed to deliver to bot connections",
 		),
 	);
-	return { created: true };
+	return { created: true, eventId };
 }
 
 export async function listNotifications(opts: {
@@ -400,6 +565,9 @@ export async function listNotifications(opts: {
       e.metadata->>'resource_id' AS resource_id,
       e.metadata->>'resource_url' AS resource_url,
       pe.interaction_type AS interaction_type,
+      -- Whether the decision needs FIELDS or is a bare yes/no. Consumers pick
+      -- the affordance from this, not from a list of known action keys.
+      pe.interaction_input_schema AS interaction_input_schema,
       ar.id AS approval_run_id,
       ar.approval_status AS approval_status,
       ar.action_key AS approval_action_key,

@@ -128,7 +128,7 @@ describe('MCP activity notification attribution', () => {
         idempotencyKey: 'mcp-activity-shared',
         mcpActivity,
       })
-    ).toEqual({ created: true });
+    ).toMatchObject({ created: true });
     expect(
       await createNotificationForUsers([ownerId, otherOwnerId], {
         organizationId,
@@ -137,7 +137,7 @@ describe('MCP activity notification attribution', () => {
         idempotencyKey: 'mcp-activity-shared',
         mcpActivity,
       })
-    ).toEqual({ created: false });
+    ).toMatchObject({ created: false });
     await notify(
       {
         action: 'send',

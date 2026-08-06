@@ -9,7 +9,39 @@
 import { getDb, pgTextArray } from "../../../db/client";
 import { listNotifications } from "../../../notifications/service";
 import { buildResourcePermalink } from "../../../utils/url-builder";
+import {
+	AGENT_ASK_ACTION_KEY,
+	resolveAskAffordance,
+} from "../../../notifications/ask";
 import { ENTITY_CHANGE_ACTION_KEYS } from "../entity-field-approval";
+
+/**
+ * Approval families a human may settle straight from a feed row, without
+ * opening the review page first.
+ *
+ * A SAFETY policy, deliberately narrow — not a rendering hint. Entity changes
+ * qualify because the card carries the whole diff. An agent ask qualifies
+ * because the answer IS the outcome; nothing is applied unseen. A Behavior or
+ * agent definition write does NOT: approving it from a row would commit a
+ * config change the reviewer never looked at.
+ *
+ * Lazy, NOT a top-level const: reading `ENTITY_CHANGE_ACTION_KEYS` during module
+ * init hits the temporal dead zone under the circular graph
+ * activity-feed → entity-field-approval → … → manage_operations → activity-feed,
+ * and the server dies at boot with "Cannot access … before initialization".
+ * Same trap and same fix as `getBuilderApprovalHandlers`. Typecheck and the
+ * integration suite both stayed green through it — only booting caught it.
+ */
+let inlineDecidableActionKeys: readonly string[] | null = null;
+function getInlineDecidableActionKeys(): readonly string[] {
+	if (!inlineDecidableActionKeys) {
+		inlineDecidableActionKeys = [
+			...ENTITY_CHANGE_ACTION_KEYS,
+			AGENT_ASK_ACTION_KEY,
+		];
+	}
+	return inlineDecidableActionKeys;
+}
 
 const USER_FACING_RUN_TYPES = ["behavior", "sync", "action", "internal"] as const;
 
@@ -41,11 +73,18 @@ export type ActivityCard = {
 	 */
 	interaction_status?: string;
 	/**
-	 * Server-side policy: this interaction can be completed inline from the
-	 * feed. For 'approval': the action_key has a known-safe one-click web
-	 * executor (entity change kinds); other kinds keep their review-page CTA.
+	 * This interaction can be settled in one click from the feed — its schema
+	 * needs no typed input. False/absent means it needs a form, so the row
+	 * offers a review CTA instead of controls that would discard the answer.
 	 */
 	interaction_inline?: boolean;
+	/**
+	 * For a one-click decision with more than two outcomes: the options to
+	 * render as buttons, and the schema field their value answers. Absent for a
+	 * plain approve/reject. Answer with `{ [interaction_choice_field]: value }`.
+	 */
+	interaction_choice_field?: string;
+	interaction_choices?: Array<{ value: string; label: string }>;
 	member_run_ids?: number[];
 	connection_id?: number;
 	behavior_id?: number;
@@ -336,12 +375,32 @@ export async function listOrgActivity(opts: {
 					n.approval_status !== ""
 						? n.approval_status
 						: undefined;
+				// Settling from a row needs TWO independent things to be true, and
+				// conflating them is a security bug in one direction and a dead
+				// control in the other:
+				//
+				//   1. POLICY — is this family safe to decide without opening the
+				//      review page? Entity changes are (the diff is in the card);
+				//      a Behavior definition write deliberately is NOT. An ask is,
+				//      because the answer IS the outcome — there is no held
+				//      mutation being applied sight-unseen.
+				//   2. SHAPE — can the answer be given without typing? That is a
+				//      question about the schema, not the family.
+				//
+				// A form-shaped ask in a one-click family still must not render
+				// buttons (they would discard the input), and a schemaless write in
+				// an unsafe family still must not (it would apply blind).
+				const familyAllowsInline = getInlineDecidableActionKeys().includes(
+					String(n.approval_action_key ?? ""),
+				);
+				const affordance =
+					interactionType === "approval" && interactionStatus != null
+						? resolveAskAffordance(
+								n.interaction_input_schema as Record<string, unknown> | null,
+							)
+						: null;
 				const interactionInline =
-					interactionType === "approval" &&
-					interactionStatus != null &&
-					(ENTITY_CHANGE_ACTION_KEYS as readonly string[]).includes(
-						String(n.approval_action_key ?? ""),
-					);
+					familyAllowsInline && affordance != null && affordance.kind !== "form";
 				raw.push({
 					id: `n:${n.id}`,
 					kind: "notification",
@@ -358,6 +417,13 @@ export async function listOrgActivity(opts: {
 					interaction_type: interactionStatus != null ? interactionType : undefined,
 					interaction_status: interactionStatus,
 					interaction_inline: interactionInline || undefined,
+					// Present only for a one-click multi-option decision. The field
+					// name travels with the options so the caller can send back
+					// `{ [field]: value }` without re-reading the schema.
+					interaction_choice_field:
+						affordance?.kind === "choice" ? affordance.field : undefined,
+					interaction_choices:
+						affordance?.kind === "choice" ? affordance.choices : undefined,
 					collapseKey: null,
 					itemsCollected: null,
 				});

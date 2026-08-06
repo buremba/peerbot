@@ -7,6 +7,7 @@
  * after #846 removed the HTTP endpoints the old implementation called.
  */
 
+import { Actions, Button, Card } from "chat";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
 	createNotificationForUsers,
@@ -191,8 +192,74 @@ describe("resolveBotDeliveryTargets", () => {
 			idempotency_key: "behavior:71:run:9002:notification",
 		};
 
-		expect(await notify(args, {} as never, ctx)).toEqual({ notified_count: 1 });
-		expect(await notify(args, {} as never, ctx)).toEqual({ notified_count: 0 });
+		const first = (await notify(args, {} as never, ctx)) as {
+			notified_count: number;
+			event_id: number | null;
+			url: string | null;
+		};
+		expect(first.notified_count).toBe(1);
+		expect(first.event_id).toBeGreaterThan(0);
+		expect(first.url).toBe(
+			`/${org.slug}/memory?content_ids=${first.event_id}`,
+		);
+
+		// A deduplicated retry still resolves to the durable notification the
+		// first send landed — the caller gets a usable id/url, not an empty
+		// success it cannot act on.
+		const retry = (await notify(args, {} as never, ctx)) as {
+			notified_count: number;
+			event_id: number | null;
+			url: string | null;
+		};
+		expect(retry.notified_count).toBe(0);
+		expect(retry.event_id).toBe(first.event_id);
+		expect(retry.url).toBe(first.url);
+	});
+
+	it("persists the card and a stable origin_id on the notification event", async () => {
+		const org = await createTestOrganization();
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const ctx = {
+			organizationId: org.id,
+			userId: user.id,
+			memberRole: "owner",
+			isAuthenticated: true,
+			tokenType: "oauth",
+			scopedToOrg: false,
+			allowCrossOrg: true,
+			scopes: ["mcp:admin"],
+			sourceContext: null,
+		} as ToolContext;
+		const card = Card({
+			title: "Ship the pricing change?",
+			children: [Actions([Button({ id: "ship", label: "Ship it" })])],
+		});
+
+		const sent = (await notify(
+			{
+				action: "send" as const,
+				title: "Ship the pricing change?",
+				card: card as unknown as Record<string, unknown>,
+			},
+			{} as never,
+			ctx,
+		)) as { event_id: number | null };
+		expect(sent.event_id).toBeGreaterThan(0);
+
+		const sql = getTestDb();
+		const [row] = await sql`
+			SELECT origin_id, metadata
+			FROM events
+			WHERE id = ${Number(sent.event_id)}
+		`;
+		// The card is the notification's rendered form. Dropping it before storage
+		// left every surface but the live fan-out with no way to render it.
+		expect((row.metadata as Record<string, unknown>).card).toEqual(card);
+		// Minted, not NULL: notifications had no stable identity at all before.
+		expect(String(row.origin_id ?? "")).toMatch(
+			/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+		);
 	});
 
 	it("returns nothing for a connection with no binding", async () => {

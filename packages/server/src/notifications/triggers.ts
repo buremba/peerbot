@@ -3,7 +3,8 @@ import { getDb } from "../db/client";
 import { emit } from "../events/emitter";
 import type { McpActivityAttribution } from "../lobu/stores/mcp-client-conversations";
 import { buildResourcePermalink } from "../utils/url-builder";
-import { createNotificationForUsers } from "./service";
+import { resolveAskAffordance } from "./ask";
+import { createNotificationForUsers, getOrgSlug } from "./service";
 
 /** Notification content minus the org id (the dispatch helpers stamp it). */
 type OrgNotification = Omit<
@@ -361,22 +362,58 @@ export function formatActionApprovalBody(params: {
 	return `A queued action${connLabel} is waiting for your review.${urlLine}`;
 }
 
+/**
+ * The chat card for an approval, on the SAME affordance rule the web row uses.
+ *
+ * Sharing `resolveAskAffordance` is the point: the decision "can this be
+ * settled in one click, or does it need real input?" is derived once from the
+ * schema and answered identically on every surface. It previously returned
+ * undefined for anything that was not an entity change, so Behavior and agent
+ * write approvals reached Slack with NO card and no way to act.
+ *
+ * Decision-only approvals get Approve/Reject. Anything needing input gets the
+ * review link ONLY — never buttons. A button that cannot carry the human's
+ * input would report success while discarding it, which is exactly the defect
+ * this whole change set exists to remove.
+ */
 export function buildActionApprovalCard(params: {
 	runId?: number;
 	approvalUrl?: string;
 	details?: ActionApprovalDetails;
+	/** Fallback body when there is no entity diff to render (e.g. an ask). */
+	summary?: string | null;
+	/**
+	 * The interaction's answer schema. `null` asserts "this decision takes no
+	 * input"; OMITTING it means the caller does not know, which is NOT the same
+	 * thing and must not render decision buttons — a family that quietly takes
+	 * input would get an Approve button that discards it.
+	 */
+	inputSchema?: Record<string, unknown> | null;
 }) {
-	if (
-		!params.details ||
-		!["entity_field_change", "entity_change"].includes(params.details.kind)
-	)
-		return undefined;
-	const cardText = renderApprovalCardText(
-		buildApprovalRenderModel(params.details),
-	);
+	const isEntityDetail =
+		params.details != null &&
+		["entity_field_change", "entity_change"].includes(params.details.kind);
+	const cardText = isEntityDetail
+		? renderApprovalCardText(
+				buildApprovalRenderModel(params.details as ActionApprovalDetails),
+			)
+		: (params.summary?.trim() ?? "");
+
+	// Entity approvals provably carry no input schema (they hold their proposal
+	// in `runs.action_input`, not an answer schema), so they stay decidable from
+	// chat. Everything else must SAY it takes no input to get buttons.
+	const decisionOnly = isEntityDetail
+		? true
+		: params.inputSchema !== undefined &&
+			resolveAskAffordance(params.inputSchema).kind === "binary";
+
+	// With neither an entity diff nor decision buttons, the card would carry a
+	// review link and nothing else — which the markdown body already says. Fall
+	// back to the body rather than emitting a card that only repeats it.
+	if (!isEntityDetail && !decisionOnly) return undefined;
 
 	const actions = [];
-	if (params.runId) {
+	if (params.runId && decisionOnly) {
 		actions.push(
 			Button({
 				id: `run-approval:${params.runId}:approve`,
@@ -396,13 +433,16 @@ export function buildActionApprovalCard(params: {
 	}
 	if (params.approvalUrl) {
 		actions.push(
-			LinkButton({ url: params.approvalUrl, label: "Review in Lobu" }),
+			LinkButton({
+				url: params.approvalUrl,
+				label: decisionOnly ? "Review in Lobu" : "Answer in Lobu",
+			}),
 		);
 	}
 
 	return Card({
 		children: [
-			CardText(cardText),
+			...(cardText ? [CardText(cardText)] : []),
 			...(actions.length > 0 ? [Actions(actions)] : []),
 		],
 	});
@@ -417,14 +457,6 @@ async function getOrgAdminUserIds(organizationId: string): Promise<string[]> {
       AND role IN ('admin', 'owner')
   `;
 	return rows.map((r) => r.userId);
-}
-
-async function getOrgSlug(organizationId: string): Promise<string | null> {
-	const sql = getDb();
-	const rows = await sql<{ slug: string }>`
-    SELECT slug FROM "organization" WHERE id = ${organizationId} LIMIT 1
-  `;
-	return rows[0]?.slug ?? null;
 }
 
 /**
@@ -493,6 +525,13 @@ export async function notifyActionApprovalNeeded(params: {
 				runId: params.runId,
 				approvalUrl: params.approvalUrl,
 				details: params.details,
+				// approvalUrl deliberately omitted from the summary: the card already
+				// carries it as the link button, and the body's "Review: …" line next
+				// to an identical button reads as a rendering bug.
+				summary: formatActionApprovalBody({
+					connectionName: params.connectionName,
+					details: params.details,
+				}),
 			}),
 			resourceType: "event",
 			resourceId: String(params.eventId),

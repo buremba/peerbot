@@ -12,7 +12,14 @@ import type { CardElement } from 'chat';
 import { getDb, pgTextArray } from '../../db/client';
 import { WATCHER_CANVAS_NAMESPACE } from '../../utils/canvas-events';
 import { emit } from '../../events/emitter';
-import { createNotificationForUsers } from '../../notifications/service';
+import { queueAgentAsk } from '../../notifications/ask';
+import { buildActionApprovalCard } from '../../notifications/triggers';
+import {
+  createNotificationForUsers,
+  findNotificationByIdempotencyKey,
+  getOrgSlug,
+} from '../../notifications/service';
+import { buildResourcePermalink } from '../../utils/url-builder';
 import { currentMcpActivityAttribution } from '../../lobu/stores/mcp-client-conversations';
 import logger from '../../utils/logger';
 import { trackWatcherReaction } from '../../utils/watcher-reactions';
@@ -69,6 +76,12 @@ const SendAction = Type.Object({
         'A `chat` CardElement (built with the card primitives) for rich bot-connection delivery. When set, the bound channel gets this card instead of the markdown body.',
     })
   ),
+  input_schema: Type.Optional(
+    Type.Record(Type.String(), Type.Any(), {
+      description:
+        'Turn this notification into a QUESTION the recipient answers, instead of an FYI. JSON Schema for the answer. Pass {} for a plain yes/no decision (renders as Approve/Reject inline, in-app and in chat). Pass a single required enum property to offer one-click named options. Pass several properties to collect fields (the recipient gets a form; give each property a `title` — without one the form labels the field with its full `description`). Properties must be flat: nested objects do not render. Answering records the result and emits it — read it back with manage_operations get_run.',
+    })
+  ),
   behavior_source: Type.Optional(
     Type.Object(
       {
@@ -94,7 +107,12 @@ export const notify = notifyTool.run;
 async function handleSend(
   args: Static<typeof SendAction>,
   ctx: ToolContext
-): Promise<{ notified_count: number }> {
+): Promise<{
+  notified_count: number;
+  event_id: number | null;
+  url: string | null;
+  run_id?: number;
+}> {
   const sql = getDb();
   const recipients = args.recipients ?? 'admins';
 
@@ -127,7 +145,7 @@ async function handleSend(
   }
 
   if (userIds.length === 0) {
-    return { notified_count: 0 };
+    return { notified_count: 0, event_id: null, url: null };
   }
 
   // Build body: prefer explicit body, append data as JSON if provided
@@ -169,15 +187,78 @@ async function handleSend(
     if (rows.length > 0) canvasEntityIds = [Number(rows[0].entity_id)];
   }
 
+  const orgSlug = await getOrgSlug(ctx.organizationId);
+
+  // An idempotent repeat of an ASK must resolve before anything is queued: the
+  // pending run + interaction event are durable, so queueing first and letting
+  // the notification insert dedupe would strand an orphan pending run — and
+  // hand the agent a run_id no inbox points at, which it would poll forever
+  // while the human answers the original.
+  if (args.input_schema && args.idempotency_key) {
+    const prior = await findNotificationByIdempotencyKey(
+      ctx.organizationId,
+      args.idempotency_key
+    );
+    if (prior !== null) {
+      const priorRunId = await findAskRunForNotification(ctx.organizationId, prior);
+      return {
+        notified_count: 0,
+        event_id: prior,
+        url:
+          buildResourcePermalink(orgSlug, { kind: 'event', eventId: prior }) ?? null,
+        ...(priorRunId !== null ? { run_id: priorRunId } : {}),
+      };
+    }
+  }
+
+  // An `input_schema` turns this from an FYI into a QUESTION: queue the pending
+  // run + interaction event first, then point the notification at it. That
+  // pointer (`action_approval_needed` + resource_type='event') is what the
+  // inbox, activity feed, and chat bridge already resolve to a live decision —
+  // so an ask needs no new rendering path on any surface.
+  const ask = args.input_schema
+    ? await queueAgentAsk({
+        ctx,
+        question: args.title,
+        body,
+        inputSchema: args.input_schema as Record<string, unknown>,
+      })
+    : null;
+
+  // An ask needs a REVIEW destination, not just an inbox row: it is where a
+  // field-shaped answer gets typed, and where the peek pane resolves to. Point
+  // it at the run permalink — run-scoped so it survives the supersede chain
+  // when the decision lands — matching every other approval trigger. Without
+  // one, the notification href degrades to the workspace memory index and the
+  // pane can only show title + body.
+  const askReviewUrl = ask
+    ? buildResourcePermalink(orgSlug, { kind: 'run', runId: ask.runId })
+    : undefined;
+
   const notification = await createNotificationForUsers(userIds, {
     organizationId: ctx.organizationId,
-    type: 'agent_message',
+    type: ask ? 'action_approval_needed' : 'agent_message',
     title: args.title,
     body,
-    resourceUrl: args.resource_url ?? null,
+    resourceType: ask ? 'event' : null,
+    resourceId: ask ? String(ask.interactionEventId) : null,
+    resourceUrl: args.resource_url ?? askReviewUrl ?? null,
     idempotencyKey: args.idempotency_key ?? null,
     connectionId: args.connection_id ?? null,
-    card: (args.card as CardElement | undefined) ?? null,
+    // An ask builds its chat card from the SAME schema the web row reads, via
+    // the shared approval-card builder — so a yes/no question gets working
+    // Slack buttons and a question needing input gets a link instead of
+    // buttons that could not carry the answer. An explicit `card` still wins.
+    card:
+      (args.card as CardElement | undefined) ??
+      (ask
+        ? (buildActionApprovalCard({
+            runId: ask.runId,
+            approvalUrl: askReviewUrl,
+            summary: body ?? args.title,
+            inputSchema: args.input_schema as Record<string, unknown>,
+          }) ?? null)
+        : null),
     entityIds: canvasEntityIds,
     mcpActivity: currentMcpActivityAttribution(ctx),
   });
@@ -200,5 +281,81 @@ async function handleSend(
     });
   }
 
-  return { notified_count: notification.created ? userIds.length : 0 };
+  // Two replicas can race past the idempotency preflight above; the loser's
+  // notification insert resolves to the winner's event, so the run WE queued is
+  // an orphan nothing points at. Hand back the winner's run so the agent polls
+  // the question the human actually sees; the orphan stays pending and is
+  // closed by the pending-approval expiry sweep — its terminal path already —
+  // rather than a hand-rolled cleanup here.
+  let askRunId = ask?.runId ?? null;
+  if (ask && !notification.created && notification.eventId !== null) {
+    askRunId = await findAskRunForNotification(
+      ctx.organizationId,
+      notification.eventId
+    );
+    logger.warn(
+      { orphanRunId: ask.runId, eventId: notification.eventId, askRunId },
+      '[notify] Concurrent duplicate ask; returning the delivered run, orphan left to the approval expiry sweep'
+    );
+  }
+
+  // The event id IS the notification id — there is no second identifier — so an
+  // agent that just sent a notification can cite it, link a human to it, or read
+  // it back without guessing. Populated on an idempotent repeat too: the send
+  // did not create anything, but the durable notification it collapsed into is
+  // still the right thing to hand back.
+  const url =
+    notification.eventId === null
+      ? null
+      : (buildResourcePermalink(orgSlug, {
+          kind: 'event',
+          eventId: notification.eventId,
+        }) ?? null);
+
+  return {
+    notified_count: notification.created ? userIds.length : 0,
+    event_id: notification.eventId,
+    url,
+    // Present only for an ask. This is the handle the agent polls to read the
+    // human's answer back (`manage_operations get_run`), so it must come back
+    // from the send that created it — there is no other way to find it.
+    ...(askRunId !== null ? { run_id: askRunId } : {}),
+  };
+}
+
+/**
+ * The run behind an ask notification: notification event → its interaction
+ * event (`resource_id`) → that event's run. Used to answer an idempotent
+ * repeat with the run the human actually sees, instead of a fresh orphan.
+ * Null when the key belongs to a plain FYI notification — the repeat then
+ * correctly reports "already sent" with no run to poll.
+ */
+async function findAskRunForNotification(
+  organizationId: string,
+  notificationEventId: number
+): Promise<number | null> {
+  const sql = getDb();
+  // MATERIALIZED is load-bearing, not style: `resource_id` is only an event id
+  // when `resource_type` says 'event' — an invitation notification stores a
+  // UUID there. Casting inside a JOIN lets the planner reach the cast before
+  // that filter and raise `invalid input syntax for type bigint`. The fence
+  // guarantees the row is narrowed first, and it costs nothing on a PK lookup.
+  const rows = await sql<{ run_id: string | number | null }>`
+    WITH target AS MATERIALIZED (
+      SELECT metadata->>'resource_id' AS interaction_event_id
+      FROM events
+      WHERE id = ${notificationEventId}
+        AND organization_id = ${organizationId}
+        AND metadata->>'resource_type' = 'event'
+    )
+    SELECT i.run_id
+    FROM target
+    JOIN events i
+      ON i.id = target.interaction_event_id::bigint
+     AND i.organization_id = ${organizationId}
+    WHERE i.interaction_type = 'approval'
+    LIMIT 1
+  `;
+  const runId = rows[0]?.run_id;
+  return runId == null ? null : Number(runId);
 }

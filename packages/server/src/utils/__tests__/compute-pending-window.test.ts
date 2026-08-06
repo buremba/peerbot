@@ -33,6 +33,14 @@
  * so an hourly cron necessarily gets a DAILY window and must re-dispatch the
  * SAME period all day. "Always advance one period" would mint tomorrow's window
  * at 00:01 and march into the future.
+ *
+ * Fixtures here are RELATIVE to the clock, not absolute dates. `computePendingWindow`
+ * now floors the window at `now - 1 period` so a lagging Behavior catches up in one
+ * run, which means a fixture pinned to a fixed past date is always floored — and a
+ * test about boundary conventions would silently become a test about the floor,
+ * passing for the wrong reason. Seed a chain that is genuinely current and the
+ * assertions stay about what they were written for. The floor itself is pinned
+ * separately, below and in `__tests__/unit/behavior-window-lag.test.ts`.
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -84,6 +92,22 @@ async function seedOrg() {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** Start of the UTC day `offsetDays` back from now. */
+const dayStart = (offsetDays: number): Date => {
+  const d = new Date(Date.now() - offsetDays * DAY_MS);
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
+};
+
+/** Start of the Monday `offsetWeeks` back from the current week. */
+const weekStart = (offsetWeeks: number): Date => {
+  const d = new Date(Date.now() - offsetWeeks * 7 * DAY_MS);
+  const dayOfWeek = d.getUTCDay();
+  d.setUTCDate(d.getUTCDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
+};
+
 describe('computePendingWindow', () => {
   afterEach(async () => {
     await cleanupTestDatabase();
@@ -94,13 +118,14 @@ describe('computePendingWindow', () => {
   it('rolls forward to the next aligned period after an inclusive-end window', async () => {
     const { orgId, userId } = await seedOrg();
     const watcherId = 9001;
+    const previous = dayStart(2);
     await seedWindow({
       orgId,
       userId,
       watcherId,
       granularity: 'daily',
-      start: '2026-07-30T00:00:00.000Z',
-      end: '2026-07-30T23:59:59.999Z', // inclusive convention
+      start: previous.toISOString(),
+      end: new Date(previous.getTime() + DAY_MS - 1).toISOString(), // inclusive convention
     });
 
     const { windowStart, windowEnd } = await computePendingWindow(
@@ -109,21 +134,22 @@ describe('computePendingWindow', () => {
       'daily'
     );
 
-    // Must be the NEXT day at midnight — not 23:59:59.999, and not 7/30 again.
-    expect(windowStart.toISOString()).toBe('2026-07-31T00:00:00.000Z');
-    expect(windowEnd.toISOString()).toBe('2026-08-01T00:00:00.000Z');
+    // The NEXT day at midnight — not 23:59:59.999, and not the seeded day again.
+    expect(windowStart.toISOString()).toBe(dayStart(1).toISOString());
+    expect(windowEnd.toISOString()).toBe(dayStart(0).toISOString());
   });
 
   it('rolls forward identically when the previous end was exclusive', async () => {
     const { orgId, userId } = await seedOrg();
     const watcherId = 9002;
+    const previous = dayStart(2);
     await seedWindow({
       orgId,
       userId,
       watcherId,
       granularity: 'daily',
-      start: '2026-07-30T00:00:00.000Z',
-      end: '2026-07-31T00:00:00.000Z', // exclusive convention
+      start: previous.toISOString(),
+      end: dayStart(1).toISOString(), // exclusive convention
     });
 
     const { windowStart, windowEnd } = await computePendingWindow(
@@ -132,22 +158,25 @@ describe('computePendingWindow', () => {
       'daily'
     );
 
-    expect(windowStart.toISOString()).toBe('2026-07-31T00:00:00.000Z');
-    expect(windowEnd.toISOString()).toBe('2026-08-01T00:00:00.000Z');
+    expect(windowStart.toISOString()).toBe(dayStart(1).toISOString());
+    expect(windowEnd.toISOString()).toBe(dayStart(0).toISOString());
   });
 
   // Self-heal: the 14 already-misaligned prod rows must recover on their own,
-  // without a data migration rewriting window identities.
+  // without a data migration rewriting window identities. The corrupt start is a
+  // period boundary minus a millisecond, exactly as prod stores it — chaining off
+  // it unaligned would carry the `23:59:59.999` into the next window forever.
   it('recovers from an already-misaligned stored window', async () => {
     const { orgId, userId } = await seedOrg();
     const watcherId = 9003;
+    const corruptStart = new Date(dayStart(2).getTime() + DAY_MS - 1);
     await seedWindow({
       orgId,
       userId,
       watcherId,
       granularity: 'daily',
-      start: '2026-07-29T23:59:59.999Z', // corrupt start, as found on prod
-      end: '2026-07-30T23:59:59.999Z',
+      start: corruptStart.toISOString(),
+      end: new Date(dayStart(1).getTime() + DAY_MS - 1).toISOString(),
     });
 
     const { windowStart, windowEnd } = await computePendingWindow(
@@ -156,8 +185,8 @@ describe('computePendingWindow', () => {
       'daily'
     );
 
-    expect(windowStart.toISOString()).toBe('2026-07-30T00:00:00.000Z');
-    expect(windowEnd.toISOString()).toBe('2026-07-31T00:00:00.000Z');
+    expect(windowStart.toISOString()).toBe(dayStart(1).toISOString());
+    expect(windowEnd.toISOString()).toBe(dayStart(0).toISOString());
     expect(windowStart.getUTCHours()).toBe(0);
   });
 
@@ -226,8 +255,11 @@ describe('computePendingWindow', () => {
     expect(windowEnd.toISOString()).toBe(tomorrowIso);
   });
 
-  // Backfill must still walk forward one period at a time when genuinely behind.
-  it('catches up one period per run when behind', async () => {
+  // The contract this branch changed. Walking forward one period per run never
+  // closed a gap — the clock advances a period per period too — so prod Behavior 2
+  // sat 50 days behind for weeks. A Behavior months behind is now dispatched the
+  // period that just closed, and catches up in a single run.
+  it('jumps to the current period when far behind, not one period per run', async () => {
     const { orgId, userId } = await seedOrg();
     const watcherId = 9005;
     await seedWindow({
@@ -245,20 +277,22 @@ describe('computePendingWindow', () => {
       'daily'
     );
 
-    expect(windowStart.toISOString()).toBe('2026-01-11T00:00:00.000Z');
-    expect(windowEnd.toISOString()).toBe('2026-01-12T00:00:00.000Z');
+    expect(windowStart.toISOString()).toBe(dayStart(1).toISOString());
+    expect(windowEnd.toISOString()).toBe(dayStart(0).toISOString());
+    expect(windowStart.toISOString()).not.toBe('2026-01-11T00:00:00.000Z');
   });
 
   it('aligns weekly windows to the week boundary', async () => {
     const { orgId, userId } = await seedOrg();
     const watcherId = 9006;
+    const previousWeek = weekStart(2);
     await seedWindow({
       orgId,
       userId,
       watcherId,
       granularity: 'weekly',
-      start: '2026-06-22T00:00:00.000Z', // a Monday
-      end: '2026-06-28T23:59:59.999Z', // inclusive, as stored on prod
+      start: previousWeek.toISOString(), // a Monday
+      end: new Date(previousWeek.getTime() + 7 * DAY_MS - 1).toISOString(), // inclusive, as stored on prod
     });
 
     const { windowStart, windowEnd } = await computePendingWindow(
@@ -267,8 +301,8 @@ describe('computePendingWindow', () => {
       'weekly'
     );
 
-    expect(windowStart.toISOString()).toBe('2026-06-29T00:00:00.000Z');
-    expect(windowEnd.toISOString()).toBe('2026-07-06T00:00:00.000Z');
+    expect(windowStart.toISOString()).toBe(weekStart(1).toISOString());
+    expect(windowEnd.toISOString()).toBe(weekStart(0).toISOString());
     expect(windowStart.getUTCDay()).toBe(1); // Monday
   });
 
@@ -323,10 +357,13 @@ describe('nextBehaviorWindowStart', () => {
     ).toBe('2026-07-31T00:00:00.000Z');
   });
 
-  it('still catches up one period at a time when far behind', () => {
+  // The floor. Chaining alone returns 2026-01-11 here and needs one successful run
+  // per missed day to reach the present, so a gap freezes instead of closing —
+  // prod Behavior 2 sat 50 days behind on exactly this. Never older than one period.
+  it('jumps to the previous period when far behind, not one period at a time', () => {
     expect(
       nextBehaviorWindowStart(new Date('2026-01-10T00:00:00.000Z'), NOW, 'daily').toISOString()
-    ).toBe('2026-01-11T00:00:00.000Z');
+    ).toBe('2026-07-30T00:00:00.000Z');
   });
 
   it('starts one aligned period back when there is no previous window', () => {
@@ -335,9 +372,18 @@ describe('nextBehaviorWindowStart', () => {
     );
   });
 
+  // Chaining a weekly Behavior lands on a Monday...
   it('aligns weekly to Monday', () => {
+    const out = nextBehaviorWindowStart(new Date('2026-07-19T23:59:59.999Z'), NOW, 'weekly');
+    expect(out.getUTCDay()).toBe(1);
+    expect(out.toISOString()).toBe('2026-07-20T00:00:00.000Z');
+  });
+
+  // ...and so does the floor, which is a separate code path and could have landed
+  // mid-week by subtracting seven days from an unaligned instant.
+  it('floors weekly to a Monday too', () => {
     const out = nextBehaviorWindowStart(new Date('2026-06-28T23:59:59.999Z'), NOW, 'weekly');
     expect(out.getUTCDay()).toBe(1);
-    expect(out.toISOString()).toBe('2026-06-29T00:00:00.000Z');
+    expect(out.toISOString()).toBe('2026-07-20T00:00:00.000Z');
   });
 });

@@ -5155,6 +5155,16 @@ export type ReadKnowledgeResponses = {
     window_token?: string;
     window_start?: string;
     window_end?: string;
+    window_lag?: {
+      last_window_start: string | null;
+      current_period_start: string;
+      periods_behind: number;
+      granularity: string;
+      periods_skipped: number;
+      skipped_from: string | null;
+      skipped_to: string | null;
+      guidance?: string;
+    };
     extraction_schema?: {
       [key: string]: unknown;
     };

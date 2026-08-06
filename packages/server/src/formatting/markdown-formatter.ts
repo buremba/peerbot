@@ -757,6 +757,28 @@ function formatGetBehaviorResult(result: any, _options: FormatterOptions): strin
 }
 
 /**
+ * Tell the run which periods were skipped to bring this Behavior current.
+ *
+ * Silent unless something actually was skipped, which never happens on a healthy
+ * run — `window_lag.guidance` is absent whenever `periods_skipped` is zero, so
+ * the threshold lives in `describeWindowLag` and there is none to tune here.
+ *
+ * The catching-up itself is not this notice's job: `nextBehaviorWindowStart`
+ * floors the dispatched window at one period, so the gap closes whether or not
+ * the run reads a word of this. What is left is the one decision that is the
+ * run's — whether the skipped span is worth reading back.
+ */
+function formatWindowLag(lag: any): string {
+  // The prose is `describeWindowLag`'s string, the SAME one the JSON payload
+  // carries as `guidance` — Behavior runs read this response as JSON through
+  // run_sdk and never render markdown, so the payload is the surface that
+  // matters; this render is for clients that do read markdown.
+  const guidance = typeof lag?.guidance === 'string' ? lag.guidance : '';
+  if (!guidance) return '';
+  return `## \u23F3 Skipped Periods\n\n${guidance}\n\n`;
+}
+
+/**
  * Format unprocessed ranges as markdown with read_knowledge call examples
  */
 function formatUnprocessedRanges(ranges: any[], watcherId?: string): string {
@@ -1149,6 +1171,7 @@ function formatGetContentResult(result: any, _options: FormatterOptions): string
     window_token,
     window_start,
     window_end,
+    window_lag,
     extraction_schema,
     sources,
     entities,
@@ -1171,6 +1194,8 @@ function formatGetContentResult(result: any, _options: FormatterOptions): string
       md += `- **Sources**: ${Object.keys(sources).join(', ')}\n`;
     }
     md += '\n';
+
+    md += formatWindowLag(window_lag);
 
     if (extraction_schema) {
       md += `### Extraction Schema\n\n\`\`\`json\n${JSON.stringify(extraction_schema, null, 2)}\n\`\`\`\n\n`;

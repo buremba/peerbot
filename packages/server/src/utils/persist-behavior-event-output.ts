@@ -304,9 +304,21 @@ export async function persistBehaviorEventOutput(
       // supersede it. One retry only: a second rejection means yet another run
       // beat us, and returning a 409 to a Behavior window is the correct
       // fail-closed outcome rather than looping.
+      //
+      // Two indices can reject the FIRST attempt, depending on which head both
+      // runs probed:
+      //   * root collision — neither saw a head, both inserted roots
+      //     (supersedes_event_id IS NULL, so idx_events_superseded_by cannot
+      //     see them);
+      //   * superseded_by collision — both saw the SAME committed head and both
+      //     inserted successors of it (a successor is not in the root index, so
+      //     only the superseded_by index can catch it).
+      // Either way the recovery is identical: re-resolve the winner and retry
+      // as its successor.
       if (
         identityKey &&
-        isUniqueViolation(error, 'idx_events_identity_root_behavior')
+        (isUniqueViolation(error, 'idx_events_identity_root_behavior') ||
+          isUniqueViolation(error, 'idx_events_superseded_by'))
       ) {
         const winnerHead = await findCurrentHeadByIdentity(
           params.tx,

@@ -159,4 +159,101 @@ describe('Behavior keyed event outputs > concurrent runs', () => {
     expect(successor.supersedes_event_id).toBe(root.id);
     expect(live[0].id).toBe(successor.id);
   });
+
+  it('recovers when two runs supersede the SAME committed head (superseded_by collision)', async () => {
+    const sql = getTestDb();
+    const workspace = await TestWorkspace.create({ name: 'Keyed Race Org' });
+    const organizationId = workspace.org.id;
+    const watcherId = 4242;
+
+    /** One Behaviour run persisting a single keyed draft. */
+    const persistRun = (tx: DbClient, canvasRevisionId: number) =>
+      persistBehaviorEventOutput({
+        tx,
+        rows: [
+          {
+            title: 'Voice profile',
+            content: `Refinement from canvas ${canvasRevisionId}.`,
+            metadata: { channel: 'x', mode: 'taste' },
+          },
+        ],
+        outputName: 'profiles',
+        output: KEYED_OUTPUT,
+        watcherId,
+        organizationId,
+        windowId: 1,
+        canvasRevisionId,
+        runId: null,
+        boundEntityIds: [],
+        validContentIds: new Set<number>(),
+        occurredAt: new Date().toISOString(),
+      });
+
+    // Seed a committed head for the key first — the state two runs then both
+    // probe and both try to supersede. (The first test starts from NO head,
+    // which collides on the ROOT index; this one needs a head so both inserts
+    // are successors of the SAME row and collide on idx_events_superseded_by.)
+    await sql.begin(async (tx) => {
+      await persistRun(tx as unknown as DbClient, 2000);
+    });
+    const seedHead = await sql<{ id: number }[]>`
+      SELECT id FROM events
+      WHERE organization_id = ${organizationId} AND identity_key IS NOT NULL
+    `;
+    expect(seedHead).toHaveLength(1);
+
+    // ── Force the interleaving ────────────────────────────────────────────
+    // A inserts a successor of the committed head and parks. B probes against
+    // that state (A's row is not yet visible), sees the SAME committed head,
+    // and inserts its own successor of it — which blocks on A's uncommitted
+    // tuple in idx_events_superseded_by. That is the first-attempt collision
+    // the recovery path must also handle.
+    let signalAInserted!: () => void;
+    const aInserted = new Promise<void>((resolve) => {
+      signalAInserted = resolve;
+    });
+    let releaseA!: () => void;
+    const aMayCommit = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+
+    const runA = sql.begin(async (tx) => {
+      await persistRun(tx as unknown as DbClient, 2001);
+      signalAInserted();
+      await aMayCommit;
+    });
+
+    await aInserted;
+    const runB = sql.begin(async (tx) => {
+      await persistRun(tx as unknown as DbClient, 2002);
+    });
+
+    try {
+      await waitForBlockedInsert(sql);
+    } finally {
+      releaseA();
+    }
+    await Promise.all([runA, runB]);
+
+    const all = await sql<{ id: number; supersedes_event_id: number | null }[]>`
+      SELECT id, supersedes_event_id FROM events
+      WHERE organization_id = ${organizationId} AND semantic_type = 'voice_profile'
+      ORDER BY id
+    `;
+    const live = await sql<{ id: number }[]>`
+      SELECT id FROM events
+      WHERE organization_id = ${organizationId}
+        AND semantic_type = 'voice_profile'
+        AND superseded_by IS NULL
+    `;
+
+    // Seed + A + B all survive (append-only), but they form ONE chain: exactly
+    // one live row, B re-probed after its first-attempt superseded_by collision
+    // and retried as a successor of A's row rather than surfacing a raw 23505.
+    expect(all).toHaveLength(3);
+    expect(live).toHaveLength(1);
+    expect(all[0].supersedes_event_id).toBeNull();
+    expect(all[1].supersedes_event_id).toBe(all[0].id);
+    expect(all[2].supersedes_event_id).toBe(all[1].id);
+  });
 });

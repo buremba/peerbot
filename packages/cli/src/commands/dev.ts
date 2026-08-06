@@ -849,19 +849,30 @@ async function printPreviewInstructions(cwd: string): Promise<void> {
         )
       );
       const reason = error instanceof Error ? error.message : String(error);
-      // Surface the real cause instead of only blaming `lobu apply`. Common
-      // cases: the claim needs a Lobu Cloud org session (run `lobu login` +
-      // `lobu org set <slug>` + `lobu apply` there), or the agent is missing
-      // from that org.
-      if (reason) {
-        console.log(chalk.dim(`  Reason: ${reason}`));
-      } else {
-        console.log(
-          chalk.dim(
-            "  Make sure the agent has been synced with `lobu apply` and try again."
-          )
-        );
-      }
+      // Surface the real cause instead of only blaming `lobu apply`, and give
+      // the concrete actions the user must take. The hosted Slack/Telegram bot
+      // binds to the agent in Lobu Cloud, so a claim needs a cloud org session
+      // with the agent applied there.
+      console.log(chalk.dim(`  Reason: ${reason}`));
+      console.log();
+      console.log(
+        chalk.dim(
+          "  To get a link code, complete these steps against Lobu Cloud, then restart `lobu run`:"
+        )
+      );
+      console.log(chalk.dim("    lobu login"));
+      console.log(chalk.dim("    lobu org set <slug>"));
+      console.log(chalk.dim("    lobu apply"));
+      console.log(
+        chalk.dim(
+          `    restart \`lobu run\` (it will print the \`/lobu link <code>\` command under "Hosted chat")`
+        )
+      );
+      console.log(
+        chalk.dim(
+          "  Then join the hosted Lobu workspace and DM @Lobu with that command.\n"
+        )
+      );
     }
   }
   console.log();

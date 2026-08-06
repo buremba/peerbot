@@ -138,10 +138,7 @@ describe("runWakeAgentTask chat delivery dispatch", () => {
     );
 
     expect(enqueued).toHaveLength(1);
-    expect(enqueued[0].agentOptions).toEqual({
-      model: "openai/gpt-5",
-      behaviorModelOverride: true,
-    });
+    expect(enqueued[0].agentOptions).toEqual({ model: "openai/gpt-5" });
   });
 
   test("leaves agentOptions empty when no per-schedule model is set", async () => {
@@ -229,7 +226,7 @@ describe("runWakeAgentTask chat delivery dispatch", () => {
   });
 });
 
-test("internal API-thread dispatch marks a supplied model as a behavior override", async () => {
+test("internal API-thread dispatch forwards a supplied model in agentOptions", async () => {
   const enqueued: MessagePayload[] = [];
   const deps = {
     sessionManager: {
@@ -260,10 +257,7 @@ test("internal API-thread dispatch marks a supplied model as a behavior override
     }
   );
 
-  expect(enqueued[0].agentOptions).toMatchObject({
-    model: "z-ai/glm-5.2",
-    behaviorModelOverride: true,
-  });
+  expect(enqueued[0].agentOptions).toMatchObject({ model: "z-ai/glm-5.2" });
 });
 
 test("#2: createThreadForAgent STORES organizationId on the session", async () => {

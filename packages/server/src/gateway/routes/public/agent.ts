@@ -1429,7 +1429,6 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         provider: session.provider || "claude",
         model: behaviorModel ?? session.model,
         nixConfig: session.nixConfig,
-        ...(behaviorModel ? { behaviorModelOverride: true } : {}),
       };
       const agentOptions = await resolveAgentOptions(
         realAgentId,

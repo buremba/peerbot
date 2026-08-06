@@ -286,31 +286,28 @@ describe("resolveAgentId", () => {
 });
 
 /**
- * Routing must honour an explicit `<provider>/<model>` ref whatever LAYER supplied it.
+ * The payload carries the resolved REF and nothing else — routing is the ref's
+ * own business, decided by `resolveModelRef` in the worker.
  *
- * The worker only reroutes away from the gateway's `defaultProvider` when
- * `allowInstalledProviderOverride` is set, and that flag is
- * `rawOptions.behaviorModelOverride === true` (agent-worker
- * `runtime/session-runner.ts`). Dispatch sites set `behaviorModelOverride` only
- * alongside an explicit per-run override (e.g. the request body in
- * `gateway/routes/public/agent.ts`) — but the layered fallback runs AFTER that,
- * and resolves an equally explicit ref out of `agent.models[0]` or the org
- * default. Nothing re-derived the flag, so an agent-level provider choice was
- * silently dropped for routing.
+ * There used to be a permission flag (`behaviorModelOverride` here,
+ * `allowInstalledProviderOverride` at the worker) that a `<provider>/<model>`
+ * ref needed before it was allowed to beat the gateway's `defaultProvider`.
+ * Only the per-run dispatch sites set it, so a ref that was just as explicit but
+ * arrived from `agent.models[0]` or the org default authorized nothing.
  *
  * Measured on prod 2026-08-06: org `buremba` had agent `personal-agent` pinned to
  * `gemini/gemini-2.5-pro`, no Behavior override, and NO z-ai provider, secret, or
  * system key of its own — yet 79 runs over three days failed with
- * `z.ai returned an error: 429 Insufficient balance`. Setting a per-Behavior
- * `execution_config.model` (which flips the flag) fixed it immediately: 4/4 runs
- * completed against prior success rates of 19% and 41%. That is the natural
- * experiment this test pins.
+ * `z.ai returned an error: 429 Insufficient balance`. `defaultProvider` is a
+ * deployment-level fact and the ref is a run-level one, so the precedence was
+ * backwards; the flag is gone and the ref always wins. These tests pin that the
+ * resolver still picks the right ref and never re-grows a routing flag.
  */
-describe("explicit model refs mark the routing override", () => {
+describe("the layered fallback resolves the ref and adds no routing flag", () => {
   const storeWith = (models: string[]) =>
     ({ getSettings: async () => ({ models }) as any }) as any;
 
-  test("an agent-level <provider>/<model> ref marks the override", async () => {
+  test("an agent-level <provider>/<model> ref wins with no flag attached", async () => {
     const resolved = await resolveAgentOptions(
       "agent-1",
       {},
@@ -319,28 +316,22 @@ describe("explicit model refs mark the routing override", () => {
     );
 
     expect(resolved.model).toBe("gemini/gemini-2.5-pro");
-    // Without this the worker ignores the `gemini/` prefix and routes to
-    // whatever module the gateway published as `defaultProvider`.
-    expect(resolved.behaviorModelOverride).toBe(true);
+    expect(resolved.behaviorModelOverride).toBeUndefined();
   });
 
-  test("a per-behavior override still marks the override", async () => {
+  test("a per-behavior override still wins over the agent default", async () => {
     const resolved = await resolveAgentOptions(
       "agent-1",
-      { model: "qwen/qwen3.8-max-preview", behaviorModelOverride: true },
+      { model: "qwen/qwen3.8-max-preview" },
       storeWith(["gemini/gemini-2.5-pro"]),
       "org-1",
     );
 
     expect(resolved.model).toBe("qwen/qwen3.8-max-preview");
-    expect(resolved.behaviorModelOverride).toBe(true);
+    expect(resolved.behaviorModelOverride).toBeUndefined();
   });
 
-  // The flag authorizes rerouting to an explicitly NAMED provider. A ref with no
-  // provider segment names none, so it must not authorize anything — the worker
-  // would have nothing to route to and would fall through to defaultProvider
-  // anyway, but claiming an override we cannot honour is a lie in the payload.
-  test("an unqualified agent model does NOT mark the override", async () => {
+  test("an unqualified agent model is passed through as-is", async () => {
     const resolved = await resolveAgentOptions(
       "agent-1",
       {},
@@ -352,29 +343,25 @@ describe("explicit model refs mark the routing override", () => {
     expect(resolved.behaviorModelOverride).toBeUndefined();
   });
 
-  // A malformed per-request override is dropped in favour of the agent default
-  // (existing behaviour). The flag must follow the ref that actually WON, not the
-  // one that was rejected.
-  test("a rejected 'auto' override falls back and marks the agent ref", async () => {
+  // A malformed per-request override is dropped in favour of the agent default.
+  test("a rejected 'auto' override falls back to the agent ref", async () => {
     const resolved = await resolveAgentOptions(
       "agent-1",
-      { model: "auto", behaviorModelOverride: true },
+      { model: "auto" },
       storeWith(["gemini/gemini-2.5-pro"]),
       "org-1",
     );
 
     expect(resolved.model).toBe("gemini/gemini-2.5-pro");
-    expect(resolved.behaviorModelOverride).toBe(true);
+    expect(resolved.behaviorModelOverride).toBeUndefined();
   });
 
-  // The clearing branch: a rejected override arrives with the flag already true,
-  // and the winning fallback ref names no provider. Merely spreading baseOptions
-  // would leave the stale `true` authorizing a ref that cannot be routed — the
-  // flag must be cleared along with the rejected override.
-  test("a rejected override does NOT leave a stale flag on an unqualified fallback", async () => {
+  // The clearing branch that used to exist alongside the flag: a rejected
+  // override must still fall through to a ref that names no provider at all.
+  test("a rejected override falls through to an unqualified agent ref", async () => {
     const resolved = await resolveAgentOptions(
       "agent-1",
-      { model: "auto", behaviorModelOverride: true },
+      { model: "auto" },
       storeWith(["gpt-4o"]),
       "org-1",
     );

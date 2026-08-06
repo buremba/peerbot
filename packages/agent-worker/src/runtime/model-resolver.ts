@@ -208,7 +208,6 @@ export function resolveModelRef(
     defaultProvider?: string;
     defaultProviderSlug?: string;
     installedProviderRoutes?: Record<string, string>;
-    allowInstalledProviderOverride?: boolean;
     /**
      * Gateway-supplied: did `defaultProvider` actually MATCH the requested
      * model, or was it fallback-picked? Drives failure-CTA attribution only —
@@ -244,23 +243,24 @@ export function resolveModelRef(
     );
   }
 
-  // A per-behavior model override can deliberately select another installed
-  // provider (for example, a watcher using z-ai while its base agent uses
-  // Claude). Prefer that explicit provider only when the prefix names a real
-  // installed provider, and route its Lobu ID to the upstream runtime slug
-  // (for example, claude → anthropic). This preserves model namespaces such as
-  // OpenRouter's "anthropic/claude-sonnet-4", where "anthropic" is not a
-  // separately installed provider and the configured OpenRouter route must win.
-  // Switching also requires an explicit behavior-override signal from the
-  // gateway. A slash prefix alone is ambiguous: OpenRouter model namespaces
-  // such as "openai/gpt-4o" must stay on OpenRouter even when standalone OpenAI
-  // is installed alongside it.
+  // An explicit "<provider>/<model>" ref selects its own provider — a Behavior
+  // running on z-ai while its base agent uses Claude, or simply an agent pinned
+  // to a provider the deployment does not publish as its default. `defaultProvider`
+  // is a deployment-level fact and the ref is a run-level one, so the ref wins;
+  // its Lobu ID is routed to the upstream runtime slug (claude → anthropic).
+  //
+  // The installed-route guard is what keeps this fail-safe. It preserves model
+  // namespaces such as OpenRouter's "anthropic/claude-sonnet-4", where
+  // "anthropic" is not a separately installed provider and the configured
+  // OpenRouter route must win, and it stops an uninstalled prefix from
+  // conjuring a provider the org never configured. Lobu stores refs as
+  // "<lobu-slug>/<model>", so OpenRouter's own entry keeps its prefix
+  // ("openrouter/openai/gpt-4o") and never collides with an installed OpenAI.
   const explicitParts = normalizedRaw?.split("/").filter(Boolean) ?? [];
   const explicitProvider = explicitParts[0];
   if (
     explicitParts.length >= 2 &&
     explicitProvider &&
-    overrides?.allowInstalledProviderOverride === true &&
     overrides?.installedProviderRoutes?.[explicitProvider] &&
     explicitProvider !== defaultProvider &&
     explicitProvider !== defaultProviderSlug
@@ -338,8 +338,8 @@ export function resolveModelRef(
     // pre-existing attribution rather than acquiring a new misattribution.
     // Derived from the RESOLVED `modelRef`, not `normalizedRaw`: when the run
     // carries no explicit model the ref comes from `defaultModel`, and
-    // `explicitParts` (which exists to gate behavior-override ROUTING on an
-    // explicit request) is empty — so attribution would silently fall back to
+    // `explicitParts` (which gates explicit-ref ROUTING on a ref the run
+    // itself supplied) is empty — so attribution would silently fall back to
     // the serving provider and reproduce the very bug this fixes.
     const attributionParts = modelRef.split("/").filter(Boolean);
     const attributionProvider = attributionParts[0];

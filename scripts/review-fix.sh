@@ -64,7 +64,9 @@ fi
 command -v "$FIXER_CLI" >/dev/null 2>&1 || { echo ">> $FIXER_CLI not found on PATH" >&2; exit 1; }
 
 LAST_MSG_FILE="$(mktemp /tmp/lobu-review-fix.XXXXXX)"
-trap 'rm -f "$LAST_MSG_FILE"' EXIT
+# Deliberately NOT removed on exit: the driving agent inspects the full summary
+# from the file on demand instead of the script dumping it into the session
+# context. /tmp clears on reboot.
 
 echo ">> pre-review fixer ($FIXER_CLI, base $BASE_BRANCH) — edits the working tree, posts nothing"
 
@@ -75,7 +77,7 @@ case "$FIXER_CLI" in
     if [ -n "${CODEX_REVIEW_MODEL:-}" ]; then
       CODEX_ARGS+=(--model "$CODEX_REVIEW_MODEL")
     fi
-    env BASE_BRANCH="$BASE_BRANCH" "${CODEX_ARGS[@]}" "$(cat "$PROMPT_FILE")" < /dev/null > /dev/null
+    env BASE_BRANCH="$BASE_BRANCH" "${CODEX_ARGS[@]}" "$(cat "$PROMPT_FILE")" < /dev/null > /dev/null 2> "$LAST_MSG_FILE.stderr"
     FIXER_EXIT=$?
     ;;
   claude)
@@ -113,12 +115,22 @@ set -e
 echo
 echo "========== fixer summary =========="
 if [ -s "$LAST_MSG_FILE" ]; then
-  cat "$LAST_MSG_FILE"
+  if [ "$(wc -l < "$LAST_MSG_FILE" 2>/dev/null || echo 0)" -gt 150 ]; then
+    head -n 150 "$LAST_MSG_FILE"
+    echo ""
+    echo "(summary truncated — full fixer output: $LAST_MSG_FILE)"
+  else
+    cat "$LAST_MSG_FILE"
+  fi
 else
   echo "(no summary emitted)"
 fi
 echo "==================================="
 echo
+echo ">> full fixer output persisted at $LAST_MSG_FILE"
+if [ -s "$LAST_MSG_FILE.stderr" ]; then
+  echo ">> codex diagnostics persisted at $LAST_MSG_FILE.stderr"
+fi
 echo ">> working-tree changes made by the fixer (staged + unstaged; verify before committing):"
 git status --short
 git diff --stat HEAD

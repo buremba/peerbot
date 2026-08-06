@@ -17,6 +17,8 @@
 #   ./scripts/review.sh                 # base = origin/main when available
 #   ./scripts/review.sh --base develop  # override base
 #   BASE=develop ./scripts/review.sh    # env-var override
+#   ./scripts/review.sh --full          # force the cross-harness review
+#                                       # (same as REVIEWER_MODE=full)
 #
 # Runs in $PWD — assumes deps installed. Push the branch first: the CI
 # snapshot is empty for unpushed commits (the review still runs, diff-only).
@@ -45,6 +47,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/review-reviewer.sh"
 # shellcheck source=scripts/lib/review-upstream-guard.sh
 . "$SCRIPT_DIR/lib/review-upstream-guard.sh"
+# shellcheck source=scripts/lib/review-skip.sh
+. "$SCRIPT_DIR/lib/review-skip.sh"
+# shellcheck source=scripts/lib/review-cache.sh
+. "$SCRIPT_DIR/lib/review-cache.sh"
 
 # --- preflight --------------------------------------------------------------
 
@@ -85,24 +91,43 @@ CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-}"
 PI_REVIEW_MODEL="${PI_REVIEW_MODEL:-gpt-5.6-terra}"
 PI_REVIEW_PROVIDER="${PI_REVIEW_PROVIDER:-openai-codex}"
 REVIEWER_CLI="${REVIEWER_CLI:-auto}"
+# light (default): skip the cross-harness reviewer for small safe-class diffs
+# (docs/renames/generated/additive-tests only, <100 lines). full: always run it.
+# REVIEWER_SHADOW=1 runs the full reviewer on a would-be-skipped diff and logs
+# the skip decision alongside the real verdict for measuring the false-skip rate.
+REVIEWER_MODE="${REVIEWER_MODE:-light}"
+REVIEWER_SHADOW="${REVIEWER_SHADOW:-0}"
 PI_REVIEW_STATUS_CONTEXT="${PI_REVIEW_STATUS_CONTEXT:-pi-review}"
+
+# Verdict shape both the fresh-review validation and the cache-hit check rely
+# on. Shared so a cached verdict is validated with the exact same predicate
+# that validated it at store time.
+SCHEMA_JQ='(.bug_free_confidence | type == "number" and floor == . and . >= 0 and . <= 100) and (.bugs | type == "number" and floor == . and . >= 0) and (.slop | type == "number" and floor == . and . >= 0 and . <= 100) and (.simplicity | type == "number" and floor == . and . >= 0 and . <= 100) and (.blockers | type == "array") and (.change_type | IN("feat", "fix", "refactor", "docs", "chore", "test", "deps")) and (.behavior_change_risk | IN("none", "low", "medium", "high")) and (.tests_adequate | type == "boolean") and (.suggested_fixes | type == "array") and (.notes | type == "string") and (.categories | type == "object")'
 PI_REVIEW_MIN_BUG_FREE="${PI_REVIEW_MIN_BUG_FREE:-80}"
 PI_REVIEW_MAX_SLOP="${PI_REVIEW_MAX_SLOP:-15}"
 PI_REVIEW_MIN_SIMPLICITY="${PI_REVIEW_MIN_SIMPLICITY:-70}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --base) BASE_BRANCH="$2"; shift 2 ;;
+    --full) REVIEWER_MODE="full"; shift 1 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 
 REVIEWER_CLI_SELECTED="$(review_select_reviewer "$REVIEWER_CLI")"
-if [ "$REVIEWER_CLI_SELECTED" = "claude" ]; then
-  review_validate_claude_model "$CLAUDE_REVIEW_MODEL" || exit $?
-fi
-command -v "$REVIEWER_CLI_SELECTED" >/dev/null 2>&1 || {
-  review_fail_closed_message "$REVIEWER_CLI_SELECTED" "command not found on PATH" >&2
-  exit 2
+
+# Only the actual review run needs the reviewer CLI. A skip-eligible diff
+# (REVIEWER_MODE=light) or a cached verdict reuses the gate without one, so the
+# availability check is deferred into the run path below instead of failing the
+# preflight.
+review_require_reviewer() {
+  if [ "$REVIEWER_CLI_SELECTED" = "claude" ]; then
+    review_validate_claude_model "$CLAUDE_REVIEW_MODEL" || exit $?
+  fi
+  command -v "$REVIEWER_CLI_SELECTED" >/dev/null 2>&1 || {
+    review_fail_closed_message "$REVIEWER_CLI_SELECTED" "command not found on PATH" >&2
+    exit 2
+  }
 }
 
 HEAD_SHA="$(git rev-parse HEAD)"
@@ -154,6 +179,52 @@ finalize_review_status() {
   fi
   post_review_status "$1" "$2" "${3:-}"
   REVIEW_STATUS_FINALIZED=1
+}
+
+# --- safe-class skip output --------------------------------------------------
+
+SKIP_MARKER="<!-- pi-review-skipped -->"
+
+# Distinct marker + wording so a skipped merge is greppable/auditable, unlike a
+# plain "success" status whose description nothing downstream parses.
+post_skip_comment() {
+  local description="$1" pr_json pr_number existing body
+  [ "$GH_AVAILABLE" = "1" ] || return 0
+  pr_json="$(gh pr view --json number 2>/dev/null || true)"
+  pr_number="$(echo "$pr_json" | jq -r '.number // empty' 2>/dev/null || true)"
+  [ -n "$pr_number" ] || return 0
+  existing="$(gh api "repos/lobu-ai/lobu/issues/$pr_number/comments" --paginate --jq ".[] | select(.body | startswith(\"$SKIP_MARKER\")) | .id" | head -n1)"
+  body="$SKIP_MARKER
+**Cross-harness review skipped** — $description.
+
+The deterministic CI suites remain required checks and still gate the merge. Run \`REVIEWER_MODE=full make review\` to force the independent review."
+  if [ -n "$existing" ]; then
+    jq -n --arg body "$body" '{body:$body}' | gh api -X PATCH "repos/lobu-ai/lobu/issues/comments/$existing" --input - >/dev/null
+  else
+    jq -n --arg body "$body" '{body:$body}' | gh api -X POST "repos/lobu-ai/lobu/issues/$pr_number/comments" --input - >/dev/null
+  fi
+  echo ">> posted skip comment on PR #$pr_number"
+}
+
+# Schema-shaped verdict so `make review` capture stays machine-readable; the
+# honest "skipped" marker and status wording carry the audit trail.
+skip_verdict_json() {
+  jq -n --arg reason "$1" \
+    '{bug_free_confidence:100,bugs:0,slop:0,simplicity:100,blockers:[],change_type:"chore",behavior_change_risk:"none",tests_adequate:true,suggested_fixes:[],notes:("Cross-harness review skipped: " + $reason + ". Pass REVIEWER_MODE=full to force an independent review."),categories:{},skipped_cross_harness:true}'
+}
+
+# --- reviewer output persistence ---------------------------------------------
+# The reviewer's full transcript is written to files in REVIEW_RUN_DIR and only
+# a pointer is printed, so a long raw output cannot land in the calling agent's
+# context; the file stays on disk for on-demand inspection.
+review_persist_inline_output() {
+  local raw_file="$1" diagnostic_file="$2"
+  if [ -n "$raw_file" ] && [ -s "$raw_file" ]; then
+    cp "$raw_file" "$REVIEW_RUN_DIR/reviewer-output.log"
+  fi
+  if [ -n "$diagnostic_file" ] && [ -s "$diagnostic_file" ]; then
+    cp "$diagnostic_file" "$REVIEW_RUN_DIR/reviewer-output.stderr"
+  fi
 }
 
 run_reviewer_inline() {
@@ -232,6 +303,7 @@ run_reviewer_inline() {
   if [ "$REVIEWER_EXIT" -ne 0 ] && [ -s "$diagnostic_file" ]; then
     RAW="${RAW}${RAW:+$'\n'}$(cat "$diagnostic_file")"
   fi
+  review_persist_inline_output "$raw_file" "$diagnostic_file"
   rm -f "$raw_file" "$diagnostic_file"
   REVIEW_INLINE_RAW_FILE=""
   REVIEW_INLINE_DIAGNOSTIC_FILE=""
@@ -343,10 +415,73 @@ trap 'exit 129' HUP
 # a non-owner must never touch the owner's pi-review status lifecycle.
 acquire_commit_review_lock "$HEAD_SHA"
 
-REVIEW_STATUS_STARTED=1
-post_review_status pending "$REVIEWER_CLI_SELECTED review running"
-
 REVIEW_RUN_DIR="$(mktemp -d /tmp/lobu-review.XXXXXX)"
+
+# --- safe-class skip ---------------------------------------------------------
+# REVIEWER_MODE=light (default) skips the cross-harness reviewer for small
+# diffs confined to docs / pure renames / CI-verified generated output /
+# additive-only tests. The deterministic CI suites still run as their own
+# required checks; only the independent LLM verdict is skipped, and it is
+# posted under its own marker so a skipped merge is auditable. The driving
+# agent can force the full review with REVIEWER_MODE=full; REVIEWER_SHADOW=1
+# runs the full review on a would-be-skipped diff and logs both for measuring
+# the false-skip rate.
+# REVIEW_SKIP_REASON alone cannot signal eligibility: a failed classification
+# leaves the ESCALATION reason in it, so eligibility gets its own flag.
+REVIEW_SKIP_REASON=""
+REVIEW_SKIP_ELIGIBLE=0
+if [ "$REVIEWER_MODE" != "full" ] && review_classify_diff "$BASE_BRANCH"; then
+  REVIEW_SKIP_ELIGIBLE=1
+  if [ "$REVIEWER_SHADOW" != "1" ]; then
+    SKIP_DESCRIPTION="Skipped cross-harness review: $REVIEW_SKIP_REASON"
+    echo ""
+    echo "=========================================="
+    echo "verdict: $SKIP_DESCRIPTION"
+    echo "  (pass REVIEWER_MODE=full to force the cross-harness review)"
+    echo "=========================================="
+    finalize_review_status success "$SKIP_DESCRIPTION (REVIEWER_MODE=full to force)"
+    post_skip_comment "$SKIP_DESCRIPTION"
+    skip_verdict_json "$REVIEW_SKIP_REASON" | jq -c .
+    exit 0
+  fi
+  echo ">> REVIEWER_SHADOW=1: running full review despite skip eligibility ($REVIEW_SKIP_REASON)"
+fi
+
+# --- diff-hash verdict cache -------------------------------------------------
+# The reviewer is non-deterministic, so an unchanged diff must not be
+# re-reviewed: a passed diff can flip to fail and spawn a phantom fix cycle.
+# Cache the verdict on the exact diff content + reviewer identity, and reuse it
+# whenever the diff hash matches a previously issued verdict.
+DIFF_HASH="$(review_diff_hash "$BASE_BRANCH")"
+REVIEWER_SIG="$(review_reviewer_signature)"
+CACHE_FILE="$(review_cache_lookup "$DIFF_HASH" "$REVIEWER_SIG" || true)"
+CACHE_HIT=0
+if [ -n "$CACHE_FILE" ]; then
+  # SCHEMA_JQ validates a verdict object; the cache file wraps it in .verdict,
+  # so pipe the wrapper field into the same predicate used at store time.
+  if jq -e ".verdict | $SCHEMA_JQ" "$CACHE_FILE" >/dev/null 2>&1; then
+    echo ">> reusing cached $REVIEWER_CLI_SELECTED verdict for diff $DIFF_HASH"
+    VERDICT="$(jq -c .verdict "$CACHE_FILE")"
+    CACHE_HIT=1
+    CI_CHECKS_FILE="(reused cached verdict)"
+  else
+    echo ">> cached verdict for diff $DIFF_HASH is invalid; removing and re-reviewing" >&2
+    rm -f "$CACHE_FILE"
+    CACHE_FILE=""
+  fi
+fi
+
+REVIEW_STATUS_STARTED=0
+if [ "$CACHE_HIT" != "1" ]; then
+  review_require_reviewer
+  REVIEW_STATUS_STARTED=1
+  post_review_status pending "$REVIEWER_CLI_SELECTED review running"
+fi
+
+# --- run path: snapshot, build, reviewer ------------------------------------
+# Only reached when there is no usable cached verdict. Snapshotting CI, the
+# build, and the reviewer session are all only useful for a fresh review.
+if [ "$CACHE_HIT" != "1" ]; then
 
 # --- CI check snapshot -------------------------------------------------------
 # The deterministic suites run in GitHub CI as their own required status
@@ -405,31 +540,44 @@ rm -f "$REVIEW_PROMPT_FILE"
 
 VERDICT="$RAW"
 VERDICT="$(extract_json_verdict "$VERDICT")"
+fi
 
-if ! echo "$VERDICT" | jq -e '
-  (.bug_free_confidence | type == "number" and floor == . and . >= 0 and . <= 100) and
-  (.bugs | type == "number" and floor == . and . >= 0) and
-  (.slop | type == "number" and floor == . and . >= 0 and . <= 100) and
-  (.simplicity | type == "number" and floor == . and . >= 0 and . <= 100) and
-  (.blockers | type == "array") and
-  (.change_type | IN("feat", "fix", "refactor", "docs", "chore", "test", "deps")) and
-  (.behavior_change_risk | IN("none", "low", "medium", "high")) and
-  (.tests_adequate | type == "boolean") and
-  (.suggested_fixes | type == "array") and
-  (.notes | type == "string") and
-  (.categories | type == "object")
-' >/dev/null 2>&1; then
-  if [ "$REVIEWER_EXIT" -ne 0 ]; then
+# On the cache-hit path REVIEWER_EXIT/BUILD_LOG were never set (the verdict
+# already passed this exact predicate at lookup, so this branch is unreachable
+# there); default them so `set -u` cannot turn a future edit into a crash.
+if ! echo "$VERDICT" | jq -e "$SCHEMA_JQ" >/dev/null 2>&1; then
+  if [ "${REVIEWER_EXIT:-0}" -ne 0 ]; then
     REVIEW_FAILURE_DETAIL="reviewer process exited with status $REVIEWER_EXIT"
   else
     REVIEW_FAILURE_DETAIL="reviewer returned no schema-valid JSON verdict"
   fi
   finalize_review_status error "Independent $REVIEWER_CLI_SELECTED review could not be completed"
   review_fail_closed_message "$REVIEWER_CLI_SELECTED" "$REVIEW_FAILURE_DETAIL" >&2
-  echo "logs: $BUILD_LOG $CI_CHECKS_FILE" >&2
-  echo "raw output:" >&2
-  printf '%s\n' "$RAW" >&2
+  echo "logs: ${BUILD_LOG:-} $CI_CHECKS_FILE" >&2
+  echo "full reviewer output: $REVIEW_RUN_DIR/reviewer-output.log" >&2
+  echo "reviewer diagnostics: $REVIEW_RUN_DIR/reviewer-output.stderr" >&2
   exit 1
+fi
+
+# Only schema-valid fresh verdicts are cached; a cached verdict is re-validated
+# on read with the same predicate, so a tampered or stale entry self-heals.
+if [ "$CACHE_HIT" != "1" ]; then
+  review_cache_store "$DIFF_HASH" "$REVIEWER_SIG" "$BASE_BRANCH" "$HEAD_SHA" "$VERDICT"
+fi
+
+# REVIEWER_SHADOW measurement: the skip classifier said "safe" but the full
+# review ran anyway. Record both so the false-skip rate can be measured instead
+# of asserted. Only logged for skip-eligible diffs (the population the rule is
+# trusted on); non-eligible diffs are the baseline, not a skip bet. Only fresh
+# verdicts are recorded — a cache-hit rerun of the same diff would just
+# duplicate a row and inflate the sample.
+if [ "$REVIEWER_SHADOW" = "1" ] && [ "$REVIEW_SKIP_ELIGIBLE" = "1" ] && [ "$CACHE_HIT" != "1" ]; then
+  mkdir -p "$(review_cache_root)"
+  jq -n --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg base "$BASE_BRANCH" --arg head "$HEAD_SHA" \
+    --arg hash "$DIFF_HASH" --arg reason "$REVIEW_SKIP_REASON" --argjson verdict "$VERDICT" \
+    '{ts:$ts,base:$base,head:$head,diff_hash:$hash,skip_reason:$reason,verdict:$verdict}' \
+    >> "$(review_cache_root)/shadow-audit.jsonl"
+  echo ">> shadow audit: skip-eligible diff reviewed; recorded at $(review_cache_root)/shadow-audit.jsonl"
 fi
 
 BUG_FREE="$(echo "$VERDICT" | jq -r .bug_free_confidence)"

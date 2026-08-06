@@ -262,6 +262,8 @@ clean-test-pg:
 # verdict on the last line. If
 # GitHub auth is available, posts a pi-review commit status; if the current
 # branch has an open PR, also posts/updates a PR comment. See docs/REVIEW_SCHEMA.md.
+# Small safe-class diffs (docs/renames/generated/additive-tests, <100 lines)
+# skip the cross-harness reviewer by default; REVIEWER_MODE=full forces it.
 
 review:
 	@./scripts/review.sh $(if $(BASE),--base $(BASE),)

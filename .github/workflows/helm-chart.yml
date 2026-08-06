@@ -65,6 +65,25 @@ jobs:
           grep -q 'name: WORKER_SELECTOR' /tmp/lobu-worker-disabled-upgrade.yaml
           test "$(grep -c -- '- lobu-worker' /tmp/lobu-worker-disabled-upgrade.yaml)" -eq 2
 
+      - name: Availability hardening stays wired
+        # Both of these are silent when dropped: replicas would simply schedule
+        # onto one node again, and a short full outage would go back to firing
+        # nothing (every other availability alert carries `for: 15m`, which a
+        # ~40s outage can never satisfy — see lobu#2543).
+        run: |
+          helm template lobu charts/lobu --namespace lobu \
+            --set metrics.prometheusRule.enabled=true \
+            >/tmp/lobu-availability.yaml
+          grep -q 'topologySpreadConstraints:' /tmp/lobu-availability.yaml
+          grep -q 'topologyKey: kubernetes.io/hostname' /tmp/lobu-availability.yaml
+          grep -q 'alert: LobuAppNoAvailableReplicas' /tmp/lobu-availability.yaml
+          # A `for:` longer than the outage is exactly the bug this replaces.
+          if grep -A6 'alert: LobuAppNoAvailableReplicas' /tmp/lobu-availability.yaml \
+            | grep -qE '^\s+for: [1-9]'; then
+            echo "LobuAppNoAvailableReplicas must not carry a nonzero for: window" >&2
+            exit 1
+          fi
+
       - name: Exercise migration failure recovery
         run: sh charts/lobu/tests/migrate-upgrade-recovery.sh
 

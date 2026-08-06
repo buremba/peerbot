@@ -14,6 +14,28 @@ metadata:
     {{- end }}
 spec:
   groups:
+    # Deploy-time availability. Every state-based availability alert in the
+    # stack (KubeDeploymentReplicasMismatch, KubePodNotReady,
+    # KubeDeploymentRolloutStuck, LobuAppRolloutStalled) carries `for: 15m`,
+    # so none of them can fire for a short full outage. lobu#2543: the
+    # pre-upgrade quiesce scaled the app to zero replicas on EVERY deploy for
+    # ~40s, 63 times over 14 days, and nothing alerted — it was found only
+    # because a human noticed intermittent 503s. Requires kube-state-metrics.
+    - name: lobu-availability
+      rules:
+        # min_over_time turns a brief EVENT into a condition that persists long
+        # enough to alert on, which a `for:` window fundamentally cannot do:
+        # `for` requires the outage to still be happening N minutes later.
+        - alert: LobuAppNoAvailableReplicas
+          expr: |
+            min_over_time(kube_deployment_status_replicas_available{namespace="{{ .Release.Namespace }}",deployment="{{ include "lobu.fullname" . }}-app"}[10m]) == 0
+          for: 0m
+          labels:
+            severity: critical
+            service: lobu
+          annotations:
+            summary: "Lobu app had zero available replicas in the last 10m"
+            description: "{{ include "lobu.fullname" . }}-app dropped to 0 available replicas, so the ingress served 503 for that window. Deploy-related unless a node was lost: check whether the pre-upgrade migration hook quiesced (kubectl logs job/{{ include "lobu.fullname" . }}-migrate) and whether it should have — it only quiesces when a migration is actually pending."
     - name: lobu-watchers
       rules:
         # Heartbeat / dead-man's-switch. The 12-day outage (lobu#1046) was a

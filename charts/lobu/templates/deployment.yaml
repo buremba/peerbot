@@ -31,6 +31,15 @@ spec:
       {{- with .Values.app.terminationGracePeriodSeconds }}
       terminationGracePeriodSeconds: {{ . }}
       {{- end }}
+      {{- if .Values.app.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.app.topologySpread.maxSkew }}
+          topologyKey: {{ .Values.app.topologySpread.topologyKey }}
+          whenUnsatisfiable: {{ .Values.app.topologySpread.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "lobu.appSelectorLabels" . | nindent 14 }}
+      {{- end }}
       containers:
         - name: app
           image: {{ include "lobu.appImage" . }}

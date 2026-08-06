@@ -96,6 +96,29 @@ export const PIAI_API_BY_REGISTRY_ALIAS: Record<string, PiAiApi> =
   );
 
 /**
+ * Resolve the pi-ai wire adapter for a DYNAMIC model entry (one not present in
+ * pi-ai's static registry).
+ *
+ * Real OpenAI is the one exception to the alias-map default: pi-ai's static
+ * registry routes every real OpenAI model (gpt-4o, gpt-4.1, gpt-5, …) through
+ * the `openai-responses` adapter, and reasoning models like gpt-5.6-sol reject
+ * function tools over /chat/completions ("Function tools with reasoning_effort
+ * are not supported for gpt-5.6-sol in /v1/chat/completions"). The registry
+ * alias cannot make this call — both protocols share the "openai" alias and
+ * the alias map collapses to completions — so the adapter is keyed on the raw
+ * gateway slug: real OpenAI (`rawProvider === "openai"`) gets responses, while
+ * every third-party openai-compatible endpoint (groq, z-ai, gemini, nvidia,
+ * together-ai, org BYO providers, …) keeps completions.
+ */
+export function resolveDynamicModelApi(
+  rawProvider: string,
+  registryProvider: string
+): PiAiApi | undefined {
+  if (rawProvider === "openai") return "openai-responses";
+  return PIAI_API_BY_REGISTRY_ALIAS[registryProvider];
+}
+
+/**
  * Register a config-driven provider at runtime.
  * Extends the base URL env, default model, and registry alias maps
  * so resolveModelRef() and the worker can handle the provider.

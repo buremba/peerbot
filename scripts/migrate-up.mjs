@@ -10,11 +10,25 @@
  * Usage:
  *   DATABASE_URL=... node scripts/migrate-up.mjs
  *   MIGRATIONS_DIR=/app/db/migrations node scripts/migrate-up.mjs
+ *   DATABASE_URL=... node scripts/migrate-up.mjs --check-pending
+ *
+ * --check-pending applies nothing. It reports whether any migration file is
+ * missing from the ledger and encodes the answer in the exit status, so the
+ * chart's pre-upgrade hook can skip its scale-to-zero quiesce on the common
+ * deploy that ships no schema change:
+ *   0 - at least one migration is pending (the caller must quiesce)
+ *   3 - the ledger is complete, nothing is pending (safe to skip the quiesce)
+ *   1 - the answer could not be determined (the caller must quiesce)
+ * Only the definitive 3 unlocks the fast path; every other status, including a
+ * crash, leaves the caller quiescing.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import postgres from "postgres";
 
+const CHECK_PENDING_NONE_EXIT = 3;
+
+const checkPendingOnly = process.argv.slice(2).includes("--check-pending");
 const migrationsDir =
   process.env.MIGRATIONS_DIR || join(process.cwd(), "db/migrations");
 const databaseUrl = process.env.DATABASE_URL;
@@ -177,6 +191,37 @@ async function applyMigration(sqlClient, section, version) {
 const migrationFiles = listMigrationFiles(migrationsDir);
 const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
 let migrationLockHeld = false;
+
+if (checkPendingOnly) {
+  // Read-only: no ledger table creation and no advisory lock, so this can run
+  // while the old replicas are still serving. A version present in the ledger
+  // but absent from disk is not pending — only the other direction blocks.
+  let pending;
+  try {
+    const appliedRows = await sql.unsafe(
+      `SELECT version FROM public.schema_migrations`
+    );
+    const applied = new Set(appliedRows.map((r) => r.version));
+    pending = migrationFiles.filter(
+      (file) => !applied.has(file.split("_")[0] ?? "")
+    );
+  } catch (error) {
+    console.error(
+      `ERROR: could not determine pending migrations: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    await sql.end({ timeout: 1 }).catch(() => undefined);
+    process.exit(1);
+  }
+  await sql.end({ timeout: 1 }).catch(() => undefined);
+  if (pending.length === 0) {
+    console.log("No pending migrations");
+    process.exit(CHECK_PENDING_NONE_EXIT);
+  }
+  console.log(`Pending migrations (${pending.length}): ${pending.join(", ")}`);
+  process.exit(0);
+}
 
 try {
   await sql.unsafe(`

@@ -8,6 +8,7 @@ app_selector=${APP_SELECTOR:?APP_SELECTOR is required}
 worker_deployment=${WORKER_DEPLOYMENT:-}
 worker_selector=${WORKER_SELECTOR:-}
 timeout=${QUIESCE_TIMEOUT:-300s}
+pending_check=${MIGRATION_PENDING_CHECK:-}
 quiescence_started=0
 app_replicas=absent
 worker_replicas=absent
@@ -51,6 +52,32 @@ restore_on_failure() {
   exit "$status"
 }
 
+# Quiescing scales the app to zero for the length of a pod restart, which the
+# ingress answers with 503. Only a schema change needs that window, and most
+# deploys ship none, so ask the ledger first. Fail closed: only the check's
+# definitive "nothing pending" status (3) skips the quiesce -- an unset check
+# or any other status, including a crash, still quiesces.
+migrations_pending() {
+  if [ -z "$pending_check" ]; then
+    echo 'no pending-migration check configured; quiescing'
+    return 0
+  fi
+  set +e
+  # Word splitting is intended: the check is configured as a full command line.
+  $pending_check
+  pending_status=$?
+  set -e
+  # 3 is CHECK_PENDING_NONE_EXIT in scripts/migrate-up.mjs -- the one status
+  # that means "the ledger was read and it is complete".
+  if [ "$pending_status" -eq 3 ]; then
+    return 1
+  fi
+  if [ "$pending_status" -ne 0 ]; then
+    echo "pending-migration check failed with status $pending_status; quiescing" >&2
+  fi
+  return 0
+}
+
 quiesce_deployment() {
   deployment=$1
   selector=$2
@@ -77,17 +104,21 @@ trap restore_on_failure EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-app_replicas=$(deployment_replicas "$app_deployment")
-if [ -n "$worker_deployment" ]; then
-  worker_replicas=$(deployment_replicas "$worker_deployment")
-fi
+if migrations_pending; then
+  app_replicas=$(deployment_replicas "$app_deployment")
+  if [ -n "$worker_deployment" ]; then
+    worker_replicas=$(deployment_replicas "$worker_deployment")
+  fi
 
-quiescence_started=1
-quiesce_deployment "$app_deployment" "$app_selector" "$app_replicas"
-if [ -n "$worker_deployment" ]; then
-  quiesce_deployment "$worker_deployment" "$worker_selector" "$worker_replicas"
+  quiescence_started=1
+  quiesce_deployment "$app_deployment" "$app_selector" "$app_replicas"
+  if [ -n "$worker_deployment" ]; then
+    quiesce_deployment "$worker_deployment" "$worker_selector" "$worker_replicas"
+  fi
+  echo 'all old database clients are quiesced; running migration'
+else
+  echo 'no pending migrations; skipping quiesce so Helm can roll without downtime'
 fi
-echo 'all old database clients are quiesced; running migration'
 
 "$@"
 echo 'migration completed; Helm may apply the new deployments'

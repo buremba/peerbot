@@ -101,15 +101,22 @@ export default async (ctx, client) => {
 ### Always expire the planted cookie (step 5 is not optional)
 
 `document.cookie` writes a **host-only** cookie (`app.lobu.ai`), while a real sign-in writes
-the same name at `Domain=.lobu.ai`. Both then live in the jar, the browser sends both, and the
-server resolves whichever comes **first** — which RFC 6265 §5.4 makes the **oldest**. So a
-leftover planted cookie outranks every subsequent real login, and once its session expires the
-human is locked out of `app.lobu.ai` with no in-app way to recover: each new sign-in mints a
-strictly newer cookie that can never win. This cost a full debugging session on 2026-08-06.
+the same name at `Domain=.lobu.ai`. Both then live in the jar and the browser sends both.
 
-The server now expires the host-only twin whenever it sets a domain-scoped auth cookie
-(`auth/session-cookie-scope.ts`), so a fresh sign-in self-heals a poisoned jar — but do not
-lean on that. Expire what you planted.
+This used to lock the human out of `app.lobu.ai` permanently. Resolution went to whichever
+cookie came **first**, which RFC 6265 §5.4 makes the **oldest**, so a leftover planted cookie
+outranked every later sign-in — and each new sign-in minted a strictly newer cookie that could
+never win. It cost a full debugging session on 2026-08-06.
+
+Two server-side changes closed that:
+
+- `auth/resolve-session.ts` resolves a duplicated jar **on merit** rather than by position, so
+  order no longer decides who authenticates.
+- `auth/session-cookie-scope.ts` expires the host-only twin whenever a response sets a
+  domain-scoped auth cookie, so a sign-in collapses the jar back to one.
+
+**Still expire what you planted.** A planted cookie is a live session that outlives your test,
+and neither change makes an extra session in someone's browser a good idea.
 
 To clear one by hand:
 

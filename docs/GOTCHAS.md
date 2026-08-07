@@ -20,6 +20,7 @@ Root `AGENTS.md` holds the invariants and the workflow. This file holds the mech
 | `could not create shared memory segment: No space left on device` | Testing |
 | A mock that works alone but not in the suite | Testing |
 | A server that is "healthy" suspiciously fast | Testing |
+| An auth-cookie fix that is green in tests but wrong in prod | Testing |
 | `gh run view --log-failed` printing nothing | CI triage |
 | `grep` finding nothing in a CI log you can read | CI triage |
 | `codex exec` / `pi -p` hanging at 0% CPU | Shell & CLI |
@@ -86,6 +87,10 @@ Both helpers are exported from `packages/server/src/db/client.ts`. `sql.array(a)
 **Integration suite prerequisites.** Node 22 is the repo default (`.node-version`); Lobu accepts Node 22–24 and 26+, while Node 25 boots without the SDK sandbox. Global setup uses `DATABASE_URL` if set, otherwise spawns an ephemeral embedded Postgres + pgvector.
 
 **Vitest 3.2.6 `list --shard=N/M` prints every file, even though `run --shard=N/M` partitions correctly.** Do not use `vitest list` to prove shard coverage. Run each shard with the JSON reporter and compare `testResults`: the three-way CI split owns 126 of 378 files per shard, with no overlap at execution time.
+
+**The test env speaks plain HTTP, so it validates the WRONG auth-cookie name.** Better Auth derives the session cookie name from `useSecureCookies`: tests get `better-auth.session_token`, prod gets `__Secure-better-auth.session_token`, and `getSession` reads exactly one of them and is blind to the other. Any code that *constructs* or *matches* that name can therefore pass a full red→green integration test and still fail in prod — #2578 nearly shipped a probe that rewrote every candidate to the bare basename, which would have locked out every duplicated jar in production (caught by `make review-fix`, not by the suite). Use `sessionCookieName(isHttps)` from `packages/server/src/auth/session-cookie-scope.ts`, never a literal, and cover **both** spellings explicitly. A unit test with a faked `getSession` is the stronger test here; the full-stack one inherits the harness's http-ness.
+
+**A cookie can be rejected two different ways, and the cheap fake only exercises one.** `better-call`'s `getSignedCookie` rejects a bad HMAC *before the database is consulted* (`context.mjs`: it also bails early on any signature that is not 44 base64 chars ending in `=`); a real stale twin is correctly signed and dies on the session lookup instead. A hand-written garbage token only ever tests the first path. To test the second, mint a real session and delete its `session` row.
 
 **`make dev` is not the test harness.** It migrates its owned local per-branch database and boots the app, but that does not exercise the branches a relevant unit or integration suite covers.
 

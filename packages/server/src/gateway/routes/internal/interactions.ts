@@ -16,6 +16,7 @@ import { persistSuggestion } from "../../suggestions/persist-suggestion.js";
 import { errorResponse, getVerifiedWorker } from "../shared/helpers.js";
 import { authenticateWorker } from "./middleware.js";
 import type { WorkerContext } from "./types.js";
+import { captureSideEffect } from "./capture-mode.js";
 
 const logger = createLogger("internal-interaction-routes");
 
@@ -59,6 +60,13 @@ export function createInteractionRoutes(
         logger.info(
           `Posting ${interactionType} for conversation ${conversationId}`
         );
+
+        const captured = captureSideEffect(c, "interactions.create", {
+          interactionType,
+          conversationId,
+          platform,
+        });
+        if (captured) return captured;
 
         if (interactionType === "link_button") {
           const posted = await interactionService.postLinkButton(
@@ -191,6 +199,14 @@ export function createInteractionRoutes(
           400
         );
       }
+
+      // After validation: a capture run takes the same empty-prompts and
+      // missing-org paths a live run would, and only the delivery is suppressed.
+      const captured = captureSideEffect(c, "suggestions.create", {
+        conversationId,
+        prompts,
+      });
+      if (captured) return captured;
 
       logger.info(
         `Sending suggestions to conversation ${conversationId} (${prompts.length} prompts)`

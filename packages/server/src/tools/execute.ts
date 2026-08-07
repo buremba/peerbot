@@ -65,6 +65,11 @@ export interface AuthContext {
    * role × scope decide). Non-admin-tier actions are unaffected.
    */
   adminTools?: string[] | null;
+  /**
+   * Signed side-effect mode for this run; 'capture' is an eval replay. Read
+   * by sdk_run to force the SDK's per-method capture path.
+   */
+  executionMode?: 'live' | 'capture' | null;
 }
 
 /**
@@ -131,6 +136,7 @@ export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
     // `mcp:admin` callers need no grant — every tool is reachable uniformly
     // and role × scope decide, so the old two-tool external allowlist is gone.
     adminTools: mcpAuthInfo?.adminTools ?? null,
+    executionMode: mcpAuthInfo?.executionMode ?? null,
   };
 }
 
@@ -380,5 +386,6 @@ export function toToolContext(authCtx: AuthContext): ToolContext {
     applyId: authCtx.applyId ?? null,
     mcpSessionId: authCtx.mcpSessionId ?? null,
     mcpConversationId: authCtx.mcpConversationId ?? null,
+    executionMode: authCtx.executionMode ?? null,
   };
 }

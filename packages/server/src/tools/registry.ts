@@ -110,6 +110,17 @@ export interface ToolContext {
   applyId?: string | null;
   /** Persistent MCP session id driving this call; null off the MCP transport. */
   mcpSessionId?: string | null;
+  /**
+   * Server-derived side-effect mode for the run driving these tool calls,
+   * carried as a signed worker-token claim. `capture` marks an eval replay:
+   * `run_sdk` then routes every non-read SDK method through the sandbox's
+   * existing capture path, recording the attempted call and its arguments
+   * instead of dispatching it, and `complete_window` records the extraction on
+   * the run's `dry_run_preview` rather than writing the canvas — that lane does
+   * NOT go through the sandbox, so it honours this flag itself.
+   * Null/absent means live.
+   */
+  executionMode?: 'live' | 'capture' | null;
   /** Whether request was authenticated */
   isAuthenticated: boolean;
   /** OAuth client ID that created this request (null for session/anonymous) */

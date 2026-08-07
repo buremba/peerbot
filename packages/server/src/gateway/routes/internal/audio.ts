@@ -11,6 +11,7 @@ import type { TranscriptionService } from "../../services/transcription-service.
 import { errorResponse, getVerifiedWorker } from "../shared/helpers.js";
 import { authenticateWorker } from "./middleware.js";
 import type { WorkerContext } from "./types.js";
+import { captureSideEffect } from "./capture-mode.js";
 
 const logger = createLogger("internal-audio-routes");
 
@@ -51,6 +52,9 @@ export function createAudioRoutes(
       if (!agentId) {
         return errorResponse(c, "Missing agentId in worker context", 400);
       }
+
+      const captured = captureSideEffect(c, "audio.synthesize", { voice, speed });
+      if (captured) return captured;
 
       logger.info("Synthesizing audio", {
         agentId,

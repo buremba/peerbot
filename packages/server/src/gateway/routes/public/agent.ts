@@ -762,14 +762,18 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     // its short-lived internal token HERE — the one place the intent enters
     // the system — so downstream code can trust the packed correlation.
     const behaviorIntent = intent?.kind === "behavior_run" ? intent : null;
-    if (
-      behaviorIntent &&
-      !(await verifyBehaviorRunIntent({
-        intent: behaviorIntent,
-        organizationId: tokenOrganizationId,
-        accessToken: tokenFromHeader(c),
-      }))
-    ) {
+    // Non-null only for a verified Behavior session. 'capture' means the run is
+    // an eval replay: it is derived from the run row here, travels as a signed
+    // worker-token claim, and is what stops the agent touching the outside
+    // world. See packages/server/src/runs/run-types.ts.
+    const behaviorExecutionMode = behaviorIntent
+      ? await verifyBehaviorRunIntent({
+          intent: behaviorIntent,
+          organizationId: tokenOrganizationId,
+          accessToken: tokenFromHeader(c),
+        })
+      : null;
+    if (behaviorIntent && !behaviorExecutionMode) {
       logger.warn(
         {
           runId: behaviorIntent.runId,
@@ -930,6 +934,9 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       ...(tokenOrganizationId ? { organizationId: tokenOrganizationId } : {}),
       dryRun: effectiveDryRun,
       intent: behaviorIntent ?? undefined,
+      ...(behaviorExecutionMode
+        ? { executionMode: behaviorExecutionMode }
+        : {}),
     };
     await sessMgr.setSession(session);
 
@@ -1550,6 +1557,9 @@ export function createAgentApi(config: AgentApiConfig): Hono {
           traceparent: traceparent || undefined,
           dryRun: session.dryRun || false,
           intent: session.intent,
+          ...(session.executionMode
+            ? { executionMode: session.executionMode }
+            : {}),
           ...(ingestedFiles.length > 0 ? { files: ingestedFiles } : {}),
           ...(bangBash ? { bangBash } : {}),
         },

@@ -19,6 +19,7 @@ import {
 import { errorResponse, getVerifiedWorker } from "../shared/helpers.js";
 import { authenticateWorker } from "./middleware.js";
 import type { WorkerContext } from "./types.js";
+import { captureSideEffect } from "./capture-mode.js";
 
 const logger = createLogger("conversations-routes");
 
@@ -183,6 +184,14 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
         }
         target = resolved;
       }
+
+      const captured = captureSideEffect(c, "conversations.send", {
+        platform: target.platform,
+        channelId: target.channelId,
+        threadId: threadId ?? null,
+        text,
+      });
+      if (captured) return captured;
 
       const manager = getChatInstanceManager();
       if (!manager?.postToConversation) {

@@ -359,6 +359,9 @@ export class MultiTenantProvider implements WorkspaceProvider {
           // through so the execute gate lets an admin-tools turn call its
           // allowlisted internal tools.
           adminTools: tokenData.adminTools ?? null,
+          // Signed side-effect mode: 'capture' turns every non-read SDK call
+          // into a recorded no-op (see tools/sdk_run.ts).
+          executionMode: tokenData.executionMode ?? null,
         },
         mcpIsAuthenticated: true,
         organizationId: requestedOrgId,

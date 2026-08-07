@@ -40,6 +40,7 @@ import {
 	markWatcherRunCompleted,
 	resolveWatcherRunsByMessageIds,
 } from "./run-completion";
+import { BEHAVIOR_RUN_TYPES_PG } from "../runs/run-types.js";
 
 type WatcherRunStatus =
 	| "pending"
@@ -1106,13 +1107,14 @@ async function claimWatcherRun(
 		const candidates = await tx`
       SELECT r.id, r.organization_id, r.watcher_id, r.approved_input
       FROM runs r
-      WHERE r.run_type = 'behavior'
+      WHERE r.run_type = ANY(${BEHAVIOR_RUN_TYPES_PG}::text[])
         AND r.status = 'pending'
+        -- Same-type guard: see claimPendingWatcherRun.
         AND NOT EXISTS (
           SELECT 1
           FROM runs active
           WHERE active.watcher_id = r.watcher_id
-            AND active.run_type = 'behavior'
+            AND active.run_type = r.run_type
             AND active.status IN ('claimed', 'running')
         )
         AND (

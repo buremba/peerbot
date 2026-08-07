@@ -509,14 +509,20 @@ async function connectionCanDisableTriggers(db: postgres.Sql): Promise<boolean> 
 async function fixSchemaConstraints(db: postgres.Sql): Promise<void> {
   try {
     // runs.run_type needs the connector lanes plus the lobu-queue lanes. Keep
-    // this in sync with db/migrations/20260429060000_extend_runs_for_lobu_queue.sql
-    // and db/migrations/20260720140000_rename_run_type_watcher_to_behavior.sql
-    // (the 'watcher' lane was renamed to 'behavior').
+    // this in sync with db/migrations/20260429060000_extend_runs_for_lobu_queue.sql,
+    // db/migrations/20260720140000_rename_run_type_watcher_to_behavior.sql
+    // (the 'watcher' lane was renamed to 'behavior'), and
+    // db/migrations/20260807120000_behavior_eval_run_type.sql.
+    //
+    // This runs on every cleanupTestDatabase(), so a lane missing here is
+    // re-narrowed away between tests: the migration applies at setup, the first
+    // cleanup silently reverts it, and the INSERT fails with
+    // `runs_run_type_check` long after the migration looked fine.
     await db.unsafe(`
       ALTER TABLE IF EXISTS runs DROP CONSTRAINT IF EXISTS runs_run_type_check;
       ALTER TABLE IF EXISTS runs ADD CONSTRAINT runs_run_type_check
         CHECK (run_type IN (
-          'sync','action','behavior','embed_backfill','auth',
+          'sync','action','behavior','behavior_eval','embed_backfill','auth',
           'chat_message','schedule','agent_run','internal','task'
         ));
     `);

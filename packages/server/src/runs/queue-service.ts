@@ -25,6 +25,7 @@ import { stableJson } from '../utils/insert-event';
 import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
+import { BEHAVIOR_RUN_TYPES_PG } from "./run-types.js";
 
 type WatcherDispatchSource = 'scheduled' | 'manual' | 'event';
 
@@ -125,13 +126,17 @@ export async function claimPendingWatcherRun(
             claimed_by = ${params.claimedBy}
         WHERE r.id = ${params.runId}
           AND r.watcher_id = ${params.watcherId}
-          AND r.run_type = 'behavior'
+          AND r.run_type = ANY(${BEHAVIOR_RUN_TYPES_PG}::text[])
           AND r.status = 'pending'
+          -- Same-type guard, deliberately not widened to both run types: one
+          -- Behavior at a time per Behavior, and one eval at a time per
+          -- Behavior, but an eval replay must never be blocked by (or block)
+          -- the real run it is replaying.
           AND NOT EXISTS (
             SELECT 1
             FROM runs active
             WHERE active.watcher_id = r.watcher_id
-              AND active.run_type = 'behavior'
+              AND active.run_type = r.run_type
               AND active.status IN ('claimed', 'running')
           )
         RETURNING r.id

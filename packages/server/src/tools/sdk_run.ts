@@ -121,6 +121,28 @@ export const SdkScriptResultSchema = Type.Object({
   dry_run: Type.Boolean(),
 });
 
+/**
+ * Whether the sandbox runs in its skip-and-record path for this call.
+ *
+ * An eval replay captures whether the agent asks to or not: the sandbox
+ * already skips every non-read method under `dryRun` and records it with its
+ * arguments (sandbox/run-script.ts), and capture mode is that same path forced
+ * by the server from the signed `executionMode` token claim.
+ *
+ * Capture is OR'd with the agent's own opt-in and never overridden by it — a
+ * capture run cannot be talked back into executing by passing
+ * `dry_run: false`. Exported so that property is pinned by a test against the
+ * real expression rather than a copy of it.
+ */
+export function resolveSandboxDryRun(args: {
+  executionMode?: "live" | "capture" | null;
+  sdkMode: SDKMode;
+  agentDryRun: boolean;
+}): boolean {
+  const captureSideEffects = args.executionMode === "capture";
+  return captureSideEffects || (args.sdkMode === "full" && args.agentDryRun);
+}
+
 async function runSandbox(
   mode: SDKMode,
   args: RunArgs | QueryArgs,
@@ -134,7 +156,11 @@ async function runSandbox(
     sdkMode: mode,
     allowCrossOrg,
     maxAccessLevel: resolveMaxAccessLevel(ctx.memberRole, ctx.scopes),
-    dryRun: mode === "full" && "dry_run" in args && args.dry_run === true,
+    dryRun: resolveSandboxDryRun({
+      executionMode: ctx.executionMode,
+      sdkMode: mode,
+      agentDryRun: "dry_run" in args ? args.dry_run === true : false,
+    }),
     context: {
       organization_id: ctx.organizationId,
       user_id: ctx.userId,

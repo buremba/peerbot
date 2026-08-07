@@ -1,4 +1,5 @@
 import type { NetworkConfig, NixConfig } from "@lobu/core";
+import type { ExecutionMode } from "../runs/run-types.js";
 
 /**
  * Platform-agnostic session types and utilities
@@ -48,6 +49,14 @@ export interface ThreadSession {
   dryRun?: boolean;
   /** Internal automation intent for one-shot system sessions. */
   intent?: { kind: "behavior_run"; runId: number; behaviorId: number };
+  /**
+   * Server-derived side-effect mode for a verified Behavior session. Set once
+   * from the run row at session creation (behavior-run-intent.ts) and never
+   * from the caller; `capture` marks an eval replay whose writes must be
+   * recorded instead of performed. Carried onto the queue payload and then
+   * into the signed worker token, so enforcement never re-derives it.
+   */
+  executionMode?: ExecutionMode;
 }
 
 /**

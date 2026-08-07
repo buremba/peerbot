@@ -912,18 +912,21 @@ routes.post("/inference-providers", async (c) => {
 			);
 		}
 		catalogDefaultModel = configs[kind]?.defaultModel ?? undefined;
-		// From `configs` for the same reason as the default model above: the
-		// catalog only contains modules registered in THIS process, so `entry`
-		// is absent outside a booted server while `configs` always resolves.
+		// Deliberately `buildProviderCatalog()` with NO configs — the EXACT
+		// expression `getModelPolicy` evaluates. These two must agree or the row
+		// is seeded as routable and then dropped at routing, which is worse than
+		// either outcome alone: a text model is what `promoteOldestRunnableProvider`
+		// keys on, so an unroutable row becomes the org DEFAULT and breaks every
+		// allow-all agent in the org.
 		//
-		// Gated on the kind's own `sdkCompat`, mirroring `getModelPolicy`. An
-		// OAuth kind (chatgpt, claude) carries a real `upstreamBaseUrl` that only
-		// answers to a signed-in session — the 400 above is the same refusal, but
-		// it depends on `entry`, which is absent when no module is registered.
-		// Reading the gate off `configs` makes the two agree in every process.
-		catalogBaseUrl = configs[kind]?.sdkCompat
-			? (configs[kind]?.upstreamBaseUrl ?? undefined)
-			: undefined;
+		// Reading `configs[kind].upstreamBaseUrl` here instead looks equivalent
+		// and is not. providers.json gives `claude` both an `upstreamBaseUrl` and
+		// `sdkCompat: "anthropic"`, but claude registers as an OAuth module, not
+		// an ApiKeyProviderModule — so `buildProviderCatalog()` reports baseUrl
+		// "" for it and synthesis refuses it. Trusting providers.json would seed
+		// exactly that unroutable row and promote it to default.
+		catalogBaseUrl =
+			buildProviderCatalog().find((e) => e.slug === kind)?.baseUrl || undefined;
 	} catch (err) {
 		// Fail open on catalog-load errors: don't block creation on a metadata
 		// read. The synthesize path still gates routing downstream.

@@ -250,14 +250,11 @@ describe("ProviderCatalogService.getInstalledModules — org inference providers
   });
 
   test("an OAuth kind contributes NO fallback upstream", async () => {
-    // `chatgpt` and `claude` are in the catalog with a real upstreamBaseUrl but
-    // no usable sdkCompat: that URL answers to a signed-in session, not to a
-    // Bearer API key. The create route already refuses such a row ("it signs in
-    // instead"), so routing must refuse it too — otherwise routing accepts
-    // exactly what creation rejects.
-    //
-    // registerFakeModule (not registerCatalogModule) is the OAuth shape: it is
-    // not an ApiKeyProviderModule, and "device-code" is not an SdkCompat.
+    // An OAuth provider (chatgpt, claude) registers as a plain module, not an
+    // ApiKeyProviderModule, so buildProviderCatalog() reports baseUrl "" for it
+    // — there is nothing for an API key to reach. Routing must refuse such a
+    // row, because the create route already does ("it signs in instead"), and
+    // the two disagreeing is what promotes an unroutable row to org default.
     registerFakeModule("chatgpt", "device-code");
     const catalog = makeCatalog({
       models: ["my-chatgpt/gpt-5"],
@@ -265,6 +262,38 @@ describe("ProviderCatalogService.getInstalledModules — org inference providers
         customUpstreamRow("my-chatgpt", {
           kind: "chatgpt",
           capabilities: { text: { model: "gpt-5" } },
+          hasCustomUpstream: false,
+        }),
+      ],
+      registerUpstream: () => {},
+    });
+
+    expect(await catalog.getInstalledModules("agent-1", "org-1")).toHaveLength(
+      0
+    );
+  });
+
+  test("a kind with a REACHABLE upstream but no known protocol contributes none either", async () => {
+    // Isolates the `sdkCompat` gate specifically. The test above passes on the
+    // empty baseUrl alone, so it would survive deleting that gate — this one
+    // cannot: the module IS an ApiKeyProviderModule with a real upstream, and
+    // only the unknown protocol stops the fallback.
+    //
+    // Why the gate has to exist: `synthesizeOrgProviderModule` DEFAULTS an
+    // unknown protocol to "openai". Falling back for a kind whose wire protocol
+    // we do not actually know would speak OpenAI at an upstream that may not be,
+    // and send the org's key while doing it.
+    registerCatalogModule(
+      "mystery",
+      "not-a-protocol" as never,
+      "https://mystery.example.com/v1"
+    );
+    const catalog = makeCatalog({
+      models: ["my-mystery/some-model"],
+      orgRows: [
+        customUpstreamRow("my-mystery", {
+          kind: "mystery",
+          capabilities: { text: { model: "some-model" } },
           hasCustomUpstream: false,
         }),
       ],

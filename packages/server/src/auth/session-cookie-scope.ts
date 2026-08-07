@@ -36,28 +36,6 @@ export function sessionCookieName(isHttps: boolean): string {
 }
 
 /**
- * Count how many times `name` appears in a `Cookie` request header.
- *
- * More than one is the brick signature: the request carries the same cookie at
- * two scopes and the loser is invisible to every log we keep. Matching is on
- * the exact name before `=`, so neither a `<name>_other` cookie nor a
- * `__Secure-<name>` cookie is mistaken for `<name>`.
- */
-export function countNamedCookies(
-	cookieHeader: string | null | undefined,
-	name: string,
-): number {
-	if (!cookieHeader) return 0;
-	let count = 0;
-	for (const part of cookieHeader.split(";")) {
-		const eq = part.indexOf("=");
-		if (eq === -1) continue;
-		if (part.slice(0, eq).trim() === name) count += 1;
-	}
-	return count;
-}
-
-/**
  * A `Set-Cookie` value that deletes the HOST-ONLY cookie called `name`.
  *
  * Deliberately carries no `Domain` attribute: cookie deletion matches on

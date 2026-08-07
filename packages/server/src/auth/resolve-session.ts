@@ -22,12 +22,13 @@
  * what authenticates — never its position in the jar.
  */
 
-/** Better Auth's session cookie, bare and with the `__Secure-` prefix. */
-const SESSION_COOKIE_BASENAME = 'better-auth.session_token';
-const SESSION_COOKIE_NAMES = [
-  SESSION_COOKIE_BASENAME,
-  `__Secure-${SESSION_COOKIE_BASENAME}`,
-];
+import { SESSION_COOKIE_BASENAME, sessionCookieName } from './session-cookie-scope';
+
+/**
+ * Both spellings can be present at once: Better Auth adds the `__Secure-`
+ * prefix only when issuing secure cookies, and a jar can outlive that switch.
+ */
+const SESSION_COOKIE_NAMES = [sessionCookieName(false), sessionCookieName(true)];
 
 /**
  * The minimum of Better Auth's surface this module needs. Deliberately generic:

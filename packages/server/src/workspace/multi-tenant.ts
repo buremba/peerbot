@@ -18,10 +18,6 @@ import type {
   ResolvedOwner,
   WorkspaceProvider,
 } from './types';
-import {
-  countNamedCookies,
-  sessionCookieName,
-} from '../auth/session-cookie-scope';
 import { listManagedAuthConnectorOffers } from './managed-auth-discovery';
 import {
   memberRoleCache,
@@ -533,25 +529,17 @@ export class MultiTenantProvider implements WorkspaceProvider {
       // up — resolveSession decides which one is live.
       const sessionCacheKey = candidates.length === 1 ? candidates[0] : null;
 
-      // A duplicate at a narrower scope shadows the real session and is
-      // otherwise invisible — `get-session` just answers 200 null forever.
-      // Warn so the next occurrence is one log line instead of an afternoon.
-      // Why: auth/session-cookie-scope.ts.
-      for (const name of [
-        sessionCookieName(true),
-        sessionCookieName(false),
-      ]) {
-        const seen = countNamedCookies(cookieHeader, name);
-        if (seen > 1) {
-          // Include the host: a bricked browser emits this on EVERY request,
-          // and without knowing which host issued the twin the line says what
-          // happened but not where to go fix it.
-          logger.warn(
-            `[MultiTenantProvider] ${seen} "${name}" cookies in one request ` +
-              `(host=${c.req.header('host') || 'unknown'}) — a duplicate ` +
-              'at a narrower scope shadows the real session and blocks sign-in until expired'
-          );
-        }
+      // A duplicated session cookie no longer decides anything — resolveSession
+      // picks the live one regardless of order — but it still means the browser
+      // is carrying a twin that should not exist, and it is otherwise invisible.
+      // Log it so the source can be found. Why: auth/session-cookie-scope.ts.
+      if (candidates.length > 1) {
+        // The host matters: it is what identifies which origin planted the twin.
+        logger.warn(
+          `[MultiTenantProvider] ${candidates.length} session cookies in one request ` +
+            `(host=${c.req.header('host') || 'unknown'}) — a duplicate at a narrower ` +
+            'scope; resolving on merit, but the jar should be collapsed on next sign-in'
+        );
       }
 
       let session: { user: any; session: any } | null = null;

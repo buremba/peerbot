@@ -49,7 +49,7 @@ export function createImageRoutes(
 
       // After validation, before the billable call: a capture run must see the
       // same 400s a live run would, and only the side effect is suppressed.
-      const captured = captureSideEffect(c, "images.generate", { prompt, size });
+      const captured = await captureSideEffect(c, "images.generate", { prompt, size });
       if (captured) return captured;
 
       logger.info("Generating image", {

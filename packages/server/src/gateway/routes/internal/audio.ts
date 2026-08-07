@@ -53,7 +53,7 @@ export function createAudioRoutes(
         return errorResponse(c, "Missing agentId in worker context", 400);
       }
 
-      const captured = captureSideEffect(c, "audio.synthesize", { voice, speed });
+      const captured = await captureSideEffect(c, "audio.synthesize", { voice, speed });
       if (captured) return captured;
 
       logger.info("Synthesizing audio", {

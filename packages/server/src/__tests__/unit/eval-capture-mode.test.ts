@@ -62,6 +62,52 @@ describe("buildWorkerTokenClaims — executionMode", () => {
 	});
 });
 
+describe("buildWorkerTokenClaims — behaviorRunId", () => {
+	// The claim addresses the row the internal-route guard writes its capture
+	// record onto. It rides the token so the guard never has to re-derive a run
+	// id from the conversationId string.
+	test("a capture run carries the run id off its verified intent", () => {
+		const claims = buildWorkerTokenClaims({
+			...base,
+			platformMetadata: {
+				executionMode: "capture",
+				intent: { kind: "behavior_run", runId: 874626, behaviorId: 5 },
+			},
+		});
+		expect(claims.behaviorRunId).toBe(874626);
+	});
+
+	// Live tokens stay byte-identical to what they were before this claim
+	// existed — nothing reads it on a live run, and an unchanged live token
+	// keeps this off the rollout risk surface.
+	test("a live run carries no run id, even with the same intent", () => {
+		const claims = buildWorkerTokenClaims({
+			...base,
+			platformMetadata: {
+				intent: { kind: "behavior_run", runId: 874626, behaviorId: 5 },
+			},
+		});
+		expect(claims.behaviorRunId).toBeUndefined();
+	});
+
+	test.each([
+		["absent intent", undefined],
+		["no runId", { kind: "behavior_run", behaviorId: 5 }],
+		["string runId", { runId: "874626" }],
+		["zero", { runId: 0 }],
+		["negative", { runId: -1 }],
+		["fractional", { runId: 1.5 }],
+		["not an object", "behavior_run"],
+		["null", null],
+	])("%s yields no run id", (_label, intent) => {
+		const claims = buildWorkerTokenClaims({
+			...base,
+			platformMetadata: { executionMode: "capture", intent },
+		});
+		expect(claims.behaviorRunId).toBeUndefined();
+	});
+});
+
 describe("resolveSandboxDryRun — capture forcing", () => {
 	test("a capture run captures even when the agent asks for a live run", () => {
 		expect(

@@ -460,10 +460,13 @@ export async function handleCompleteWindow(
   // a capture claim can never stamp a real Behavior run.
   if (ctx.executionMode === 'capture') {
     if (watcherRunId != null) {
+      // MERGE, never assign. The capture guard appends `side_effects` to this
+      // same column during the turn, and finalize runs last — assigning here
+      // deletes every side effect the agent attempted first.
       await sql`
         UPDATE runs
         SET dry_run = true,
-            dry_run_preview = ${sql.json({
+            dry_run_preview = coalesce(dry_run_preview, '{}'::jsonb) || ${sql.json({
               captured: 'complete_window',
               behavior_id: String(watcherId),
               window_start,
@@ -474,7 +477,7 @@ export async function handleCompleteWindow(
               content_linked: batchContentIds.length,
               content_ids_truncated: batchContentIds.length > CAPTURE_PREVIEW_CONTENT_CAP,
               replace_existing: args.replace_existing === true,
-            })}
+            })}::jsonb
         WHERE id = ${watcherRunId}
           AND run_type = ${BEHAVIOR_EVAL_RUN_TYPE}
       `;

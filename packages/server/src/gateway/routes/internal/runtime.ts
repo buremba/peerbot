@@ -64,7 +64,7 @@ export function createRuntimeRoutes(): Hono<WorkerContext> {
       // command failing with exit 1 — so the captured body must speak that
       // contract, or every captured command reads as a silent failure and the
       // replay measures the agent's retry loop instead of its intent.
-      const captured = captureSideEffect(
+      const captured = await captureSideEffect(
         c,
         "runtime.exec",
         { command: body.command },

@@ -53,6 +53,14 @@ export interface WorkerTokenClaimsArgs {
 	nixPackages?: string[];
 }
 
+function behaviorRunIdFromIntent(intent: unknown): number | undefined {
+	if (!intent || typeof intent !== "object") return undefined;
+	const runId = (intent as { runId?: unknown }).runId;
+	return typeof runId === "number" && Number.isInteger(runId) && runId > 0
+		? runId
+		: undefined;
+}
+
 /**
  * The routing claims common to both worker-token mints, in the exact shape the
  * `generateWorkerToken` options object expects. `connectionId`,
@@ -81,6 +89,7 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
 	responseThreadId?: string;
 	source?: string;
 	executionMode?: ExecutionMode;
+	behaviorRunId?: number;
 	runtimeProviderId?: string;
 	sandboxId?: string;
 	allowedDomains?: string[];
@@ -120,6 +129,14 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
 		executionMode:
 			args.platformMetadata?.executionMode === "capture"
 				? "capture"
+				: undefined,
+		// Capture only: nothing reads it on a live run, and leaving live tokens
+		// byte-identical keeps this off the rollout risk surface. The id comes
+		// from `intent`, already checked against the runs row by
+		// `verifyBehaviorRunIntent` — not caller-authored.
+		behaviorRunId:
+			args.platformMetadata?.executionMode === "capture"
+				? behaviorRunIdFromIntent(args.platformMetadata?.intent)
 				: undefined,
 		runtimeProviderId,
 		sandboxId: runtimeProviderId ? args.sandboxId : undefined,

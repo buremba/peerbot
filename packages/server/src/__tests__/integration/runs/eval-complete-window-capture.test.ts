@@ -23,6 +23,7 @@ import type { DbClient } from '../../../db/client';
 import type { Env } from '../../../index';
 import type { ToolContext } from '../../../tools/registry';
 import { handleCompleteWindow } from '../../../tools/admin/manage_behaviors/complete-window';
+import { captureSideEffect } from '../../../gateway/routes/internal/capture-mode';
 import { createEvalRun } from '../../../runs/eval-runs';
 import { BEHAVIOR_EVAL_RUN_TYPE } from '../../../runs/run-types';
 import { createWatcherRun } from '../../../runs/queue-service';
@@ -348,5 +349,59 @@ describe('an eval replay cannot overwrite the Behavior it is scoring', () => {
     `;
     expect(row.dry_run ?? false).toBe(false);
     expect(row.dry_run_preview).toBeNull();
+  });
+
+  it('finalizing does not erase the side effects captured before it', async () => {
+    // Two writers share `dry_run_preview`: the internal-route guard appends
+    // `side_effects` as the turn runs, and finalize writes the extraction at
+    // the very end. Finalize used to ASSIGN the column, so an eval that tried
+    // to post to Slack and then finished lost the attempt — the exact record a
+    // score is computed from.
+    const ctx = await setup();
+    const { sql, orgId, ownerUserId, watcherId, sourceRunId, windowToken } = ctx;
+
+    const evalRun = await createEvalRun(
+      { sourceRunId, caseKey: 'merge' },
+      sql as unknown as DbClient
+    );
+    const evalRunId = evalRun?.runId ?? 0;
+
+    await captureSideEffect(
+      {
+        get: (key: string) =>
+          key === 'worker'
+            ? { executionMode: 'capture', behaviorRunId: evalRunId, organizationId: orgId }
+            : undefined,
+        json: (body: unknown) => new Response(JSON.stringify(body)),
+      } as never,
+      'conversations.send',
+      { text: 'would have posted this' }
+    );
+
+    await handleCompleteWindow(
+      {
+        action: 'complete_window',
+        behavior_id: String(watcherId),
+        window_token: windowToken,
+        extracted_data: EVAL_EXTRACTION,
+        behavior_run_id: evalRunId,
+      } as never,
+      TEST_ENV,
+      toolCtx(orgId, ownerUserId, 'capture')
+    );
+
+    const [row] = await sql<
+      {
+        captured: string | null;
+        side_effects: Array<{ action: string }> | null;
+      }[]
+    >`
+      SELECT dry_run_preview->>'captured' AS captured,
+             dry_run_preview->'side_effects' AS side_effects
+      FROM runs WHERE id = ${evalRunId}
+    `;
+    // Both writers' records coexist.
+    expect(row.captured).toBe('complete_window');
+    expect(row.side_effects?.map((s) => s.action)).toEqual(['conversations.send']);
   });
 });

@@ -185,7 +185,7 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
         target = resolved;
       }
 
-      const captured = captureSideEffect(c, "conversations.send", {
+      const captured = await captureSideEffect(c, "conversations.send", {
         platform: target.platform,
         channelId: target.channelId,
         threadId: threadId ?? null,

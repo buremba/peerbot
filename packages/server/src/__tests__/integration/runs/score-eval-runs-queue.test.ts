@@ -107,6 +107,23 @@ describe("runScoreEvalRuns", () => {
 		expect(await scoreCount(runId)).toBe(2);
 	});
 
+	test("scores a TIMED OUT eval run — that is the failure worth measuring", async () => {
+		// `markStaleRunsAsTimeout` runs over BEHAVIOR_RUN_TYPES, so a crashed or
+		// abandoned eval reaches `timeout` and never any other terminal status.
+		// Leaving it out of the terminal set would silently exclude the runs that
+		// most need a score, and they would never leave the queue either.
+		const runId = await insertRun({
+			runType: BEHAVIOR_EVAL_RUN_TYPE,
+			agedSeconds: 600,
+			status: "timeout",
+		});
+
+		const summary = await runScoreEvalRuns();
+		expect(summary.claimed).toBe(1);
+		expect(summary.scored).toBe(1);
+		expect(await scoreCount(runId)).toBe(2);
+	});
+
 	test("leaves a run inside the settle window alone", async () => {
 		const runId = await insertRun({
 			runType: BEHAVIOR_EVAL_RUN_TYPE,

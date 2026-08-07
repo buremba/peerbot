@@ -100,8 +100,17 @@ export type ScoreEvalRunResult =
 				| "no_attributable_member";
 	  };
 
-/** Terminal statuses a run must reach before it means anything to score. */
-const TERMINAL_RUN_STATUSES = ["completed", "failed", "cancelled"];
+/**
+ * Terminal statuses a run must reach before it means anything to score.
+ *
+ * The full terminal set `runs_status_check` allows, matching
+ * `check-stalled-executions.ts`. `timeout` in particular is NOT optional:
+ * `markStaleRunsAsTimeout` runs over `BEHAVIOR_RUN_TYPES`, so a crashed or
+ * abandoned eval reaches `timeout` and never any other terminal status.
+ * Omitting it would silently drop exactly the runs worth measuring — an eval
+ * that hung is a `completed_window` FAILURE, not an unscoreable run.
+ */
+const TERMINAL_RUN_STATUSES = ["completed", "failed", "timeout", "cancelled"];
 
 /**
  * The same list as a Postgres `text[]` literal, for the scorer queue's `= ANY`.
@@ -530,8 +539,14 @@ export async function scoreEvalRun(
  * explicitly allow reading at request time — but only while a row stays a row.
  * An unbounded array would turn every case into growing history and reintroduce
  * exactly the read-time cost the rule exists to prevent.
+ *
+ * Must stay at least 2 × `MAX_TRIALS` (eval-suite.ts): `readEvalResults` reads
+ * the latest `trials` entries as the current group and the next `trials` as the
+ * baseline, so a window shorter than both groups makes `previous` — and
+ * therefore every regression verdict — permanently null at the top of the
+ * allowed trial range.
  */
-export const CASE_SCORE_WINDOW = 10;
+export const CASE_SCORE_WINDOW = 20;
 
 export interface CaseScoreEntry {
 	run_id: number;

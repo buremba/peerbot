@@ -350,6 +350,38 @@ describe("promoteEvalCase", () => {
 		if (result.ok) return;
 		expect(result.reason).toBe("not_found");
 	});
+
+	test("writes NOTHING when the run belongs to another org", async () => {
+		// Promote resolves the org from the RUN, so a caller who knows a run id
+		// would otherwise create an $eval_case entity — and the $eval_case entity
+		// TYPE — inside a tenant they have no access to. Checking after the write
+		// does not help, so the assertion is that no row exists at all.
+		const result = await promoteEvalCase({
+			sourceRunId,
+			caseKey: "cross-org",
+			organizationId: "some-other-org",
+		});
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		// Indistinguishable from a missing run: a cross-tenant caller must not
+		// learn that the id exists.
+		expect(result.reason).toBe("not_found");
+
+		const [claims] = (await sql`
+      SELECT count(*)::int AS n
+      FROM entity_identities
+      WHERE namespace = ${EVAL_CASE_NAMESPACE}
+        AND identifier = ${`${sourceRunId}:cross-org`}
+    `) as unknown as Array<{ n: number }>;
+		expect(claims.n).toBe(0);
+
+		const [entities] = (await sql`
+      SELECT count(*)::int AS n
+      FROM entities
+      WHERE organization_id = 'some-other-org'
+    `) as unknown as Array<{ n: number }>;
+		expect(entities.n).toBe(0);
+	});
 });
 
 describe("replayEvalCase", () => {

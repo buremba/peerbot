@@ -98,6 +98,18 @@ export async function runScoreEvalRuns(opts?: {
       AND r.status = ANY(${TERMINAL_RUN_STATUSES_PG}::text[])
       AND coalesce(r.completed_at, r.created_at)
             < now() - ${`${SCORE_SETTLE_SECONDS} seconds`}::interval
+      -- The same rejection scoreEvalRun returns as no_attributable_member:
+      -- events.created_by is NOT NULL behind ON DELETE RESTRICT, so an org with
+      -- no live member can never receive score events. Excluded HERE rather
+      -- than claimed and then skipped, because a permanently unscoreable run is
+      -- exactly the shape that never leaves the queue, and under
+      -- ORDER BY r.id LIMIT n a handful of them would occupy the whole batch on
+      -- every tick and starve every later run in every org. member is a bounded
+      -- config table indexed on organizationId; probing it is cheap.
+      AND EXISTS (
+        SELECT 1 FROM "member" m
+        WHERE m."organizationId" = r.organization_id
+      )
       AND NOT EXISTS (
         SELECT 1 FROM events e
         WHERE e.organization_id = r.organization_id
@@ -122,10 +134,12 @@ export async function runScoreEvalRuns(opts?: {
 			if (result.ok) {
 				summary.scored += 1;
 			} else {
-				// A rejection is information, not an error: `not_terminal` means the
-				// settle window raced a status change, `no_attributable_member` means
-				// the org has no one to attribute to. Both are re-tried next tick, so
-				// the run stays in the queue rather than being silently dropped.
+				// A rejection here is a race, not an error: the query above already
+				// excludes every run `scoreEvalRun` would reject on its own terms, so
+				// reaching this branch means the row changed underneath us — the run
+				// was pruned (`not_found`) or the org's last member was removed
+				// (`no_attributable_member`) between the probe and the score. Both
+				// resolve themselves; the run keeps its place in the queue.
 				summary.skipped += 1;
 				logger.info(
 					{ runId, reason: result.reason },

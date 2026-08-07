@@ -23,11 +23,6 @@ import {
 	type OAuthProviderConfig,
 } from "../gateway/auth/oauth/providers";
 import { buildProviderCatalog } from "../gateway/auth/provider-catalog";
-import {
-	promoteEvalCase,
-	setEvalCaseJudgeModel,
-} from "../runs/eval-cases";
-import { readEvalResults, runEvalSuite } from "../runs/eval-suite";
 import { createAuthProfileLabel } from "../gateway/auth/settings/auth-profiles-manager";
 import { orgBucketAgentId } from "../gateway/auth/settings/user-auth-profile-store";
 import { validateModelRefsAgainstOrg } from "./model-config";
@@ -36,6 +31,8 @@ import {
 	resolveProviderRegistryPath,
 } from "../gateway/services/provider-registry-service";
 import type { Env } from "../index";
+import { promoteEvalCase, setEvalCaseJudgeModel } from "../runs/eval-cases";
+import { readEvalResults, runEvalSuite } from "../runs/eval-suite";
 import { getApplyContext } from "../utils/apply-context";
 import { recordConfigChangeEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
@@ -1291,8 +1288,9 @@ routes.delete("/inference-providers/:slug", async (c) => {
 });
 
 // ── Evals ────────────────────────────────────────────────────────────────────
-// Registered BEFORE `/:agentId` so these literal paths win the match (Hono
-// would otherwise read 'evals' as an :agentId and 404).
+// Registered with the other literal-prefix routes, ahead of the `/:agentId`
+// block below, so a future `/:agentId/...` route of the same shape can never
+// shadow them.
 //
 // This is the surface the eval program was missing. `promoteEvalCase` and
 // `replayEvalCase` shipped in #2584 with NO caller anywhere outside their own
@@ -1309,6 +1307,8 @@ routes.delete("/inference-providers/:slug", async (c) => {
  * the one under eval to avoid a model grading its own work.
  */
 routes.post("/evals/cases", async (c) => {
+	const denied = requireSessionOrAdminPat(c);
+	if (denied) return denied;
 	const orgId = requireOrgId(c);
 	if (typeof orgId !== "string") return orgId;
 
@@ -1329,28 +1329,26 @@ routes.post("/evals/cases", async (c) => {
 		expectation:
 			typeof body.expectation === "string" ? body.expectation : undefined,
 		createdBy: (c.get("user") as { id?: string } | undefined)?.id ?? null,
+		// Promote resolves the org from the RUN, so this is what stops a caller
+		// creating a case inside another tenant's workspace by run id. It has to
+		// be checked BEFORE the write, not after — see `promoteEvalCase`.
+		organizationId: orgId,
 	});
 
 	if (!result.ok) {
-		// `not_found` is the only 404 here: the other rejections mean the run
-		// exists but cannot be replayed, which is a 422 — the caller asked for
-		// something coherent that this run cannot support.
+		// `not_found` is the only 404 here — it also covers a run belonging to
+		// another org. The other rejections mean the run exists but cannot be
+		// replayed, which is a 422: the caller asked for something coherent that
+		// this run cannot support.
 		const status = result.reason === "not_found" ? 404 : 422;
 		return c.json({ error: result.reason }, status);
-	}
-
-	// Cross-org read guard: promote resolves the org from the RUN, so a caller
-	// could otherwise promote another tenant's run by id. Refuse after the fact
-	// rather than trusting the id.
-	if (result.evalCase.organizationId !== orgId) {
-		return c.json({ error: "not_found" }, 404);
 	}
 
 	if (typeof body.judgeModel === "string" && body.judgeModel.trim()) {
 		await setEvalCaseJudgeModel(
 			result.evalCase.entityId,
 			orgId,
-			body.judgeModel.trim()
+			body.judgeModel.trim(),
 		);
 	}
 
@@ -1364,6 +1362,10 @@ routes.post("/evals/cases", async (c) => {
  * measurement — our own research evals swung ±1 task on identical batteries.
  */
 routes.post("/behaviors/:behaviorId/evals/run", async (c) => {
+	// Admin-tier: each call queues up to cases × trials replays, and every one
+	// of them spends inference budget.
+	const denied = requireSessionOrAdminPat(c);
+	if (denied) return denied;
 	const orgId = requireOrgId(c);
 	if (typeof orgId !== "string") return orgId;
 

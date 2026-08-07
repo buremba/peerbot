@@ -33,7 +33,13 @@ import type { CaseScoreEntry } from "./eval-scores.js";
  */
 export const DEFAULT_TRIALS = 3;
 
-/** Ceiling per request, so one call cannot queue an unbounded replay burst. */
+/**
+ * Ceiling per request, so one call cannot queue an unbounded replay burst.
+ *
+ * Bounded by `CASE_SCORE_WINDOW` (eval-scores.ts) as much as by spend: results
+ * compare the latest `trials` scores against the previous `trials`, so raising
+ * this past half the window would leave the baseline group unreadable.
+ */
 export const MAX_TRIALS = 10;
 
 export interface EvalSuiteCase {
@@ -67,6 +73,10 @@ export async function listActiveCases(
 	db?: DbClient,
 ): Promise<EvalSuiteCase[]> {
 	const sql = db ?? getDb();
+	const filterIds = caseIds?.filter((n) => Number.isSafeInteger(n) && n > 0);
+	// Asked for a subset and named nothing usable → nothing. Falling through to
+	// the unfiltered query would silently replay every case instead.
+	if (caseIds?.length && !filterIds?.length) return [];
 	const rows = (await sql`
     SELECT e.id, e.name, e.metadata
     FROM entities e
@@ -79,11 +89,12 @@ export async function listActiveCases(
       ${
 				// The client runs with `fetch_types: false`, so a raw JS array binds as
 				// "malformed array literal". Format the `{n,n}` literal and cast it,
-				// exactly like insert-event.ts does for entity_ids. Safe to
-				// interpolate: every id was validated as a positive safe integer by
-				// the caller and re-coerced here.
-				caseIds?.length
-					? sql`AND e.id = ANY(${`{${caseIds.map((n) => Math.trunc(Number(n))).join(",")}}`}::bigint[])`
+				// exactly like insert-event.ts does for entity_ids. It is still a bound
+				// parameter rather than interpolated SQL — but it binds as TEXT, so a
+				// non-integer would arrive as `NaN` and fail the cast at runtime.
+				// Hence the filter above, rather than a promise about callers.
+				filterIds?.length
+					? sql`AND e.id = ANY(${`{${filterIds.join(",")}}`}::bigint[])`
 					: sql``
 			}
     ORDER BY e.id

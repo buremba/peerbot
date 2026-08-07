@@ -1,5 +1,29 @@
 # Changelog
 
+## [14.17.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.16.0...lobu-v14.17.0) (2026-08-07)
+
+
+### Features
+
+* **server:** give keyed Behavior event outputs a stable identity ([#2563](https://github.com/lobu-ai/lobu/issues/2563)) ([d34cc8a](https://github.com/lobu-ai/lobu/commit/d34cc8acdef3a0f22c415da56f1016e48ca21920))
+* **server:** replay a Behavior run as a captured eval ([#2569](https://github.com/lobu-ai/lobu/issues/2569)) ([e3f95be](https://github.com/lobu-ai/lobu/commit/e3f95be3ad489519f4162680c8447462e9d4054d))
+* **server:** stamp runs.outcome taxonomy at every Behavior terminal writer ([#2566](https://github.com/lobu-ai/lobu/issues/2566)) ([b019839](https://github.com/lobu-ai/lobu/commit/b0198396435532692892588069f1067bfcd89cb5))
+
+
+### Bug Fixes
+
+* **agent-worker:** route real OpenAI dynamic models through the Responses API ([#2556](https://github.com/lobu-ai/lobu/issues/2556)) ([c8b9056](https://github.com/lobu-ai/lobu/commit/c8b90563cd45c334a3e2f39ef11a93b6ad0dbf27))
+* **cli:** stop lobu apply from erasing out-of-band metadata_schema keys ([#2570](https://github.com/lobu-ai/lobu/issues/2570)) ([8c2bb27](https://github.com/lobu-ai/lobu/commit/8c2bb27f525e2c6bcdabfd0823bf79ef4b904b67))
+* **connectors:** emit calendar_event from google.calendar ([#2573](https://github.com/lobu-ai/lobu/issues/2573)) ([5f6b587](https://github.com/lobu-ai/lobu/commit/5f6b5872cd54ae04b83f878fb54d22a863794f21))
+* **core:** reserve top-level SPA routes so path parsing never reads them as org slugs ([#2567](https://github.com/lobu-ai/lobu/issues/2567)) ([e7c5b11](https://github.com/lobu-ai/lobu/commit/e7c5b11d92aa1f521ac5116630a418b91fb074f3))
+* **examples:** stop restating first-class event fields in the radar's metadata ([#2560](https://github.com/lobu-ai/lobu/issues/2560)) ([ce325ea](https://github.com/lobu-ai/lobu/commit/ce325ea4b94e98161cefea0a308895a61c50ce6f))
+* **personal-agent:** correct X author handle in voice-profile source ([#2568](https://github.com/lobu-ai/lobu/issues/2568)) ([ad6d45f](https://github.com/lobu-ai/lobu/commit/ad6d45f4048d93f593ca37b8ff4be7a4cba736ee))
+* **server:** derive Behavior event-output origin_id from source identity ([#2559](https://github.com/lobu-ai/lobu/issues/2559)) ([bb2dcba](https://github.com/lobu-ai/lobu/commit/bb2dcba04d5951b9ba7c9c77947e4e74f13075d6))
+* **server:** let an explicit model ref outrank the deployment default provider ([#2554](https://github.com/lobu-ai/lobu/issues/2554)) ([1c31e06](https://github.com/lobu-ai/lobu/commit/1c31e06e83ed482c3b59bd5eba7c43e485c06675))
+* **server:** resolve unreviewable pending approvals as expired ([#2565](https://github.com/lobu-ai/lobu/issues/2565)) ([ac5570c](https://github.com/lobu-ai/lobu/commit/ac5570c4785b101f2db7af1f23bd12724940b255))
+* **server:** surface the Behavior completion stamp on the behaviors listing ([#2571](https://github.com/lobu-ai/lobu/issues/2571)) ([e21a2fb](https://github.com/lobu-ai/lobu/commit/e21a2fbfeba2a933f0bbeeff907f5553c992f8b8))
+* **ui:** stop the activity feed freezing when the second page loads ([#2574](https://github.com/lobu-ai/lobu/issues/2574)) ([15bdfef](https://github.com/lobu-ai/lobu/commit/15bdfefdbf17c627fad05b621c99ac250671be46))
+
 ## [14.16.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.15.1...lobu-v14.16.0) (2026-08-06)
 
 

@@ -147,13 +147,13 @@ describe("POST /inference-providers seeds a routable text model", () => {
 		expect(capabilities?.text?.model).toBe("gemini-2.5-pro");
 	});
 
-	test("an ALIAS slug with no base_url is NOT seeded and does NOT become the org default", async () => {
-		// `getModelPolicy` keys its module map by SLUG: "my-gemini" matches no
-		// static module, and with no `text.base_url` there is nothing to
-		// synthesize either — so the row cannot route. Seeding it would be worse
-		// than useless: a text model is the predicate the org-default promotion
-		// uses, so an unroutable row would become the default for every
-		// allow-all agent in the org.
+	test("an ALIAS slug with no base_url IS seeded — its kind's catalog upstream routes it", async () => {
+		// `getModelPolicy` keys its module map by SLUG, so "my-gemini" matches no
+		// static module and synthesis is the row's only route. Synthesis falls
+		// back to the upstream the row's KIND resolves to, so the row does route
+		// and must be seeded like any other: a text model is the predicate the
+		// org-default promotion uses, and an unseeded row would be passed over
+		// even though it works.
 		const res = await createProvider({
 			slug: "my-gemini",
 			kind: "gemini",
@@ -162,6 +162,27 @@ describe("POST /inference-providers seeds a routable text model", () => {
 		expect(res.status).toBe(201);
 
 		const capabilities = (await readCapabilities("my-gemini")) as {
+			text?: { model?: string; base_url?: string };
+		};
+		expect(capabilities?.text?.model).toBe("gemini-2.5-pro");
+		// Seeding must NOT write the catalog URL onto the row — the row stays
+		// "no custom upstream" so resolveUrlInvariant keeps answering
+		// `org-credential` rather than the tenant-URL `org-only` path.
+		expect(capabilities?.text?.base_url).toBeUndefined();
+	});
+
+	test("a kind absent from the catalog is still NOT seeded — nothing to route to", async () => {
+		// The remaining unroutable shape: no static module answers to the slug,
+		// the row names no upstream, and the kind has none to fall back to.
+		// Seeding it would promote an unroutable row to org default.
+		const res = await createProvider({
+			slug: "my-mystery",
+			kind: "some-unlisted-endpoint",
+			apiKey: "sk-mystery",
+		});
+		expect(res.status).toBe(201);
+
+		const capabilities = (await readCapabilities("my-mystery")) as {
 			text?: { model?: string };
 		};
 		expect(capabilities?.text?.model).toBeUndefined();
@@ -170,7 +191,7 @@ describe("POST /inference-providers seeds a routable text model", () => {
 		const sql = getDb();
 		const rows = (await sql`
       SELECT is_default FROM inference_providers
-      WHERE organization_id = ${ORG} AND slug = 'my-gemini' AND deleted_at IS NULL
+      WHERE organization_id = ${ORG} AND slug = 'my-mystery' AND deleted_at IS NULL
     `) as Array<{ is_default: boolean }>;
 		expect(rows[0]?.is_default).toBe(false);
 	});

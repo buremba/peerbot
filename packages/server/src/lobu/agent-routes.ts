@@ -894,6 +894,10 @@ routes.post("/inference-providers", async (c) => {
 	// Read the default from configs because the catalog contains only provider
 	// modules registered in this process.
 	let catalogDefaultModel: string | undefined;
+	// The upstream this `kind` already resolves to. An alias row (slug !== kind)
+	// with no base_url of its own is synthesized against it, so its presence is
+	// what decides whether such a row will route.
+	let catalogBaseUrl: string | undefined;
 	try {
 		const registry = new ProviderRegistryService(resolveProviderRegistryPath());
 		const configs = await registry.getProviderConfigs();
@@ -908,6 +912,18 @@ routes.post("/inference-providers", async (c) => {
 			);
 		}
 		catalogDefaultModel = configs[kind]?.defaultModel ?? undefined;
+		// From `configs` for the same reason as the default model above: the
+		// catalog only contains modules registered in THIS process, so `entry`
+		// is absent outside a booted server while `configs` always resolves.
+		//
+		// Gated on the kind's own `sdkCompat`, mirroring `getModelPolicy`. An
+		// OAuth kind (chatgpt, claude) carries a real `upstreamBaseUrl` that only
+		// answers to a signed-in session — the 400 above is the same refusal, but
+		// it depends on `entry`, which is absent when no module is registered.
+		// Reading the gate off `configs` makes the two agree in every process.
+		catalogBaseUrl = configs[kind]?.sdkCompat
+			? (configs[kind]?.upstreamBaseUrl ?? undefined)
+			: undefined;
 	} catch (err) {
 		// Fail open on catalog-load errors: don't block creation on a metadata
 		// read. The synthesize path still gates routing downstream.
@@ -936,16 +952,20 @@ routes.post("/inference-providers", async (c) => {
 	// predicate `promoteOldestRunnableProvider` uses to choose the org default,
 	// so seeding an unroutable row would promote it to default and break every
 	// allow-all agent in the org. `getModelPolicy` keys its module map by the
-	// row's SLUG, so the row resolves to a module only when either:
-	//   - slug === kind   → the catalog's own static module answers to it, or
-	//   - a text base_url → `synthesizeOrgProviderModule` can build one.
-	// An alias slug with no base_url (slug=my-gemini, kind=gemini) matches
-	// neither and is dropped by the policy — it must not look configured.
+	// row's SLUG, so the row resolves to a module only when one of:
+	//   - slug === kind    → the catalog's own static module answers to it,
+	//   - a text base_url  → `synthesizeOrgProviderModule` routes there, or
+	//   - the kind has a catalog upstream → synthesis falls back to it, which is
+	//     what makes an alias slug (slug=my-gemini, kind=gemini) routable.
+	// Only a kind the catalog does not know at all matches none of these; such a
+	// row is dropped by the policy and must not look configured.
 	const requestedCapabilities =
 		(body.capabilities as InferenceCapabilities) ?? {};
 	const hasTextModel = !!requestedCapabilities.text?.model?.trim();
 	const wouldRoute =
-		slug === kind || !!requestedCapabilities.text?.base_url?.trim();
+		slug === kind ||
+		!!requestedCapabilities.text?.base_url?.trim() ||
+		!!catalogBaseUrl;
 	const capabilities =
 		hasTextModel || !catalogDefaultModel || !wouldRoute
 			? requestedCapabilities
@@ -957,12 +977,12 @@ routes.post("/inference-providers", async (c) => {
 					},
 				};
 	if (!capabilities.text?.model) {
-		// Nothing seeded: unknown kind, no catalog default, or an alias slug with
-		// no upstream to route to. Say so at creation — otherwise the row's only
+		// Nothing seeded: unknown kind, no catalog default, or a kind with no
+		// upstream to fall back to. Say so at creation — otherwise the row's only
 		// symptom is a far-away 400 naming a different provider.
 		logger.warn(
 			{ slug, kind, wouldRoute },
-			"[inference-providers POST] created with no text model — this provider will not route until `capabilities.text.model` is set (an alias slug, where slug !== kind, also needs `capabilities.text.base_url`)"
+			"[inference-providers POST] created with no text model — this provider will not route until `capabilities.text.model` is set (a row whose `kind` is not in the catalog also needs `capabilities.text.base_url`)"
 		);
 	}
 

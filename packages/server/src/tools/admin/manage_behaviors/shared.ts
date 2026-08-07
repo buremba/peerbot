@@ -15,7 +15,7 @@ import { queryProjectsIdColumn } from '../../../utils/execute-data-sources';
 import {
   validateWatcherSourceRef,
   resolveWatcherSourcesForSave,
-  extractSkillNamesFromPromptTokens,
+  skillNamesFromPrompt,
 } from '../../../watchers/source-refs';
 import { validateSaveContentSemanticType } from '../../../utils/event-kind-validation';
 import type { ToolContext } from '../../registry';
@@ -352,7 +352,7 @@ export async function assertBehaviorSkillsResolve(
  * Every `@[skill:…]` chip in the prompt must have a pinned entry in `skills[]`.
  *
  * Ref tokens survive into the instructions verbatim — nothing strips them (see
- * `extractSourcesFromPromptTokens`) — so an unpinned chip does not fail, it
+ * `behaviorSourcesFromPrompt`) — so an unpinned chip does not fail, it
  * degrades: the agent reads the literal `@[skill:deploy-runbook:…](…)` as if it
  * were guidance, with no `.skills/` file behind it. The web composer always
  * sends both halves; a CLI or MCP caller writing the token by hand can send the
@@ -365,7 +365,7 @@ export function assertPromptSkillTokensPinned(
   prompt: string | null | undefined,
   skills: ReadonlyArray<{ name: string }> | null | undefined
 ): void {
-  const referenced = extractSkillNamesFromPromptTokens(prompt ?? '');
+  const referenced = skillNamesFromPrompt(prompt ?? '');
   if (referenced.length === 0) return;
   const pinned = new Set((skills ?? []).map((skill) => skill.name));
   const missing = referenced.filter((name) => !pinned.has(name));

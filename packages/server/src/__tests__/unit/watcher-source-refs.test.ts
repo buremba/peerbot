@@ -1,6 +1,7 @@
+import { sqlRefPath } from "@lobu/core/refs";
 import { describe, expect, it } from "bun:test";
 import {
-	extractSourcesFromPromptTokens,
+	behaviorSourcesFromPrompt,
 	mergePromptSources,
 	normalizeWatcherSources,
 	parseWatcherSourceRef,
@@ -8,14 +9,9 @@ import {
 	watcherSourceKindForRef,
 } from "../../watchers/source-refs";
 
-/** Mirror of owletto's sqlRefPath: encode the query, additionally escaping the
- *  sub-delims encodeURIComponent leaves raw ( ) ' ! * ~ so the token parses. */
-function sqlRefPath(query: string): string {
-	return `#sql=${encodeURIComponent(query).replace(
-		/[()'!*~]/g,
-		(c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
-	)}`;
-}
+// `sqlRefPath` is imported, not re-implemented. This file used to carry its own
+// copy of the encoder "mirroring owletto" — a fourth transcription of the same
+// codec, and one that could drift from the thing under test without failing.
 
 describe("watcher source refs", () => {
 	it("parses event-backed refs", () => {
@@ -68,12 +64,12 @@ describe("watcher source refs", () => {
 	});
 });
 
-describe("extractSourcesFromPromptTokens", () => {
+describe("behaviorSourcesFromPrompt", () => {
 	it("derives @mode:id sources from feed/connection/connector/metric tokens", () => {
 		const prompt =
 			"summarize @[feed:issues:GitHub Issues](/o/x) and " +
 			"@[connection:7:Slack](/o/y) and @[metric:company.churn:Churn](/o/z)";
-		expect(extractSourcesFromPromptTokens(prompt)).toEqual([
+		expect(behaviorSourcesFromPrompt(prompt)).toEqual([
 			{ name: "github_issues", query: "@feed:issues" },
 			{ name: "slack", query: "@connection:7" },
 			{ name: "churn", query: "@metric:company.churn" },
@@ -85,7 +81,7 @@ describe("extractSourcesFromPromptTokens", () => {
 		// kind group must allow it, or this token does not match at all and the
 		// source silently vanishes instead of erroring.
 		const prompt = "review @[entity_type:company:Companies](/o/company)";
-		expect(extractSourcesFromPromptTokens(prompt)).toEqual([
+		expect(behaviorSourcesFromPrompt(prompt)).toEqual([
 			{ name: "companies", query: "@entity:company" },
 		]);
 	});
@@ -96,7 +92,7 @@ describe("extractSourcesFromPromptTokens", () => {
 		const prompt =
 			"for @[entity:42:Spotify](/o/company/spotify) review " +
 			"@[entity_type:company:Companies](/o/company)";
-		expect(extractSourcesFromPromptTokens(prompt)).toEqual([
+		expect(behaviorSourcesFromPrompt(prompt)).toEqual([
 			{ name: "companies", query: "@entity:company" },
 		]);
 	});
@@ -104,7 +100,7 @@ describe("extractSourcesFromPromptTokens", () => {
 	it("excludes entity tokens (scope, not source)", () => {
 		const prompt =
 			"for @[entity:42:Spotify](/o/company/spotify) watch @[feed:k:Feed](/o/x)";
-		expect(extractSourcesFromPromptTokens(prompt)).toEqual([
+		expect(behaviorSourcesFromPrompt(prompt)).toEqual([
 			{ name: "feed", query: "@feed:k" },
 		]);
 	});
@@ -112,7 +108,7 @@ describe("extractSourcesFromPromptTokens", () => {
 	it("recovers a sql token's raw query from its inline #sql= path", () => {
 		const query = "SELECT id FROM events WHERE ts > now() - interval '7 days'";
 		const prompt = `run @[sql:recent:Recent events](${sqlRefPath(query)})`;
-		expect(extractSourcesFromPromptTokens(prompt)).toEqual([
+		expect(behaviorSourcesFromPrompt(prompt)).toEqual([
 			{ name: "recent_events", query },
 		]);
 	});
@@ -121,7 +117,7 @@ describe("extractSourcesFromPromptTokens", () => {
 		const prompt =
 			"@[feed:k1:Issues](/o/a) @[feed:k1:Issues again](/o/a) " +
 			"@[feed:k2:Issues](/o/b)";
-		const out = extractSourcesFromPromptTokens(prompt);
+		const out = behaviorSourcesFromPrompt(prompt);
 		expect(out).toEqual([
 			{ name: "issues", query: "@feed:k1" },
 			{ name: "issues_2", query: "@feed:k2" },
@@ -129,7 +125,7 @@ describe("extractSourcesFromPromptTokens", () => {
 	});
 
 	it("returns [] for a prompt with no source tokens", () => {
-		expect(extractSourcesFromPromptTokens("just plain instructions")).toEqual(
+		expect(behaviorSourcesFromPrompt("just plain instructions")).toEqual(
 			[],
 		);
 	});

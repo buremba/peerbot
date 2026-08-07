@@ -157,153 +157,21 @@ export function parseWatcherSourceRef(query: string): WatcherSourceRef | null {
 
 // ── Prompt-token extraction ────────────────────────────────────────────────
 // The owletto composer serializes a picked reference into the watcher prompt as
-// an inline token `@[kind:id:label](path)` (see owletto's src/lib/references.ts,
-// mirrored in agent-worker's lobu-refs.ts). The backend — not the frontend —
+// an inline token `@[kind:id:label](path)`. The backend — not the frontend —
 // derives the watcher's `sources[]` from these tokens, so the UI just sends the
-// raw prompt and there is no client/server gap. This is a small local mirror of
-// the codec because the server cannot import the owletto submodule.
-// The kind group allows `_` so multi-word kinds (`entity_type`) lex. Narrowing
-// it back to [a-z]+ does not error — it just stops matching, so every
-// entity-type chip silently vanishes from the derived sources.
-const PROMPT_REF_TOKEN = /@\[([a-z_]+):([^:\]]*):([^\]]*)\]\(([^)\s]*)\)/g;
-const SQL_PATH_PREFIX = '#sql=';
+// raw prompt and there is no client/server gap.
+//
+// The grammar lives in `@lobu/core/refs` and is imported by BOTH sides. It used
+// to be a hand-maintained mirror here "because the server cannot import the
+// owletto submodule" — true, and beside the point: both already depend on core.
+// Re-exported below so this module stays the server's single entry point for
+// watcher source concerns.
 
-/** Which prompt-token kinds become a watcher source, and the `@mode` each uses.
- *  `entity` scopes the watcher (not a source); `sql` is handled separately (its
- *  query rides inline in the path). watcher/member/event never become sources.
- *
- *  `entity_type` and `entity` are deliberately distinct kinds mapping to the
- *  same `@entity:` mode. The source grammar's `@entity:<value>` has always
- *  meant an entity TYPE slug (every row of that type — see the compile at
- *  `case 'entity'`), while an `@[entity:…]` prompt chip is an entity INSTANCE
- *  the author picked to scope the watcher. Collapsing them would send an
- *  instance id where a type slug belongs. */
-const PROMPT_KIND_TO_MODE: Record<string, string> = {
-  feed: 'feed',
-  connection: 'connection',
-  connector: 'connector',
-  channel: 'channel',
-  metric: 'metric',
-  entity_type: 'entity',
-};
-
-/** Slugify a token label into a safe output-field name. */
-function promptSourceSlug(value: string): string {
-  return (
-    value
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9_]+/g, '_')
-      .replace(/^_+|_+$/g, '') || 'source'
-  );
-}
-
-/**
- * Derive watcher `sources[]` from the `@`-mention tokens in a prompt. Each
- * feed/connection/connector/metric token becomes `{ name, query: '@mode:id' }`;
- * a `sql` token carries its raw query URL-encoded in the path (`#sql=…`), which
- * is decoded to the SELECT itself. Entities are excluded (they scope the
- * watcher). De-dupes by query; names are made unique with a numeric suffix.
- *
- * Returns [] for a prompt with no source tokens. Malformed tokens are skipped
- * rather than thrown — the downstream `assertWatcherSourcesResolve` is what
- * enforces that every derived source actually resolves against the org.
- */
-export function extractSourcesFromPromptTokens(prompt: string): WatcherSource[] {
-  const sources: WatcherSource[] = [];
-  const seenQuery = new Set<string>();
-  const usedNames = new Set<string>();
-
-  const push = (label: string, fallback: string, query: string) => {
-    if (seenQuery.has(query)) return;
-    seenQuery.add(query);
-    let name = promptSourceSlug(label || fallback);
-    if (usedNames.has(name)) {
-      let i = 2;
-      while (usedNames.has(`${name}_${i}`)) i += 1;
-      name = `${name}_${i}`;
-    }
-    usedNames.add(name);
-    sources.push({ name, query });
-  };
-
-  for (const m of prompt.matchAll(PROMPT_REF_TOKEN)) {
-    const [, kind, id, label, path] = m;
-    if (!kind) continue;
-    if (kind === 'sql') {
-      if (!path?.startsWith(SQL_PATH_PREFIX)) continue;
-      let query: string;
-      try {
-        query = decodeURIComponent(path.slice(SQL_PATH_PREFIX.length)).trim();
-      } catch {
-        continue;
-      }
-      if (!query) continue;
-      push(label ?? '', 'sql_source', query);
-      continue;
-    }
-    const mode = PROMPT_KIND_TO_MODE[kind];
-    if (!mode) continue;
-    const value = (id ?? '').trim();
-    if (!value) continue;
-    push(label ?? '', value, `@${mode}:${value}`);
-  }
-
-  return sources;
-}
-
-/**
- * Skill names referenced by `@[skill:<name>:<label>](…)` tokens in a prompt.
- *
- * Deliberately NOT part of `PROMPT_KIND_TO_MODE` — a skill is not a source, and
- * this does not derive anything the caller did not send. The caller supplies
- * `skills[{name, content}]` and the pinned body comes from THAT; resolving the
- * body here would re-read the live library at save time and silently upgrade a
- * pin, which is the one thing the snapshot model exists to prevent.
- *
- * De-duped, order preserved. Malformed tokens are skipped, matching
- * `extractSourcesFromPromptTokens`.
- */
-export function extractSkillNamesFromPromptTokens(prompt: string): string[] {
-  const names: string[] = [];
-  const seen = new Set<string>();
-  for (const m of prompt.matchAll(PROMPT_REF_TOKEN)) {
-    const [, kind, id] = m;
-    if (kind !== 'skill') continue;
-    const name = (id ?? '').trim();
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    names.push(name);
-  }
-  return names;
-}
-
-/**
- * Merge prompt-derived sources into an explicit sources list, de-duping by
- * query and keeping output-field names unique. Explicit sources win (they keep
- * their names/order); prompt sources fill in the rest.
- */
-export function mergePromptSources(
-  explicit: WatcherSource[],
-  fromPrompt: WatcherSource[]
-): WatcherSource[] {
-  const merged = [...explicit];
-  const seenQuery = new Set(explicit.map((s) => s.query.trim()));
-  const usedNames = new Set(explicit.map((s) => s.name));
-  for (const src of fromPrompt) {
-    if (seenQuery.has(src.query.trim())) continue;
-    seenQuery.add(src.query.trim());
-    let name = src.name;
-    if (usedNames.has(name)) {
-      let i = 2;
-      while (usedNames.has(`${name}_${i}`)) i += 1;
-      name = `${name}_${i}`;
-    }
-    usedNames.add(name);
-    merged.push({ name, query: src.query });
-  }
-  return merged;
-}
+export {
+  behaviorSourcesFromPrompt,
+  mergePromptSources,
+  skillNamesFromPrompt,
+} from '@lobu/core/refs';
 
 export function watcherSourceKindForRef(ref: WatcherSourceRef | null): WatcherSourceKind {
   if (!ref) return 'event';

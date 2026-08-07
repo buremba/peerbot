@@ -49,7 +49,7 @@ import {
   resolveBehaviorExecutor,
 } from './executors';
 import { getErrorMessage } from '@lobu/core';
-import { DEFAULT_BEHAVIOR_SOURCE_QUERY, extractSourcesFromPromptTokens, mergePromptSources } from '../../../watchers/source-refs';
+import { DEFAULT_BEHAVIOR_SOURCE_QUERY, behaviorSourcesFromPrompt, mergePromptSources } from '../../../watchers/source-refs';
 import {
   compileReactionScript,
   extractReactionInputSchema,
@@ -135,7 +135,7 @@ export async function handleCreate(
   // `create_version` deliberately does NOT derive (see version-actions.ts):
   // an existing prompt's prose must not silently re-author the Behavior's
   // source set during an otherwise unrelated version bump.
-  const promptSources = extractSourcesFromPromptTokens(args.prompt ?? '');
+  const promptSources = behaviorSourcesFromPrompt(args.prompt ?? '');
   const explicitSources = args.sources ?? [];
   const merged = mergePromptSources(explicitSources, promptSources);
   const sources: Array<{ name: string; query: string }> =

@@ -26,6 +26,7 @@
 
 import type { DbClient } from '../db/client';
 import { CANVAS_ENTITY_TYPE_SLUG } from '../tools/constants';
+import { resolveEntityCreator } from './resolve-entity-creator';
 
 /** Namespace for the per-watcher canvas identity claim in `entity_identities`. */
 export const WATCHER_CANVAS_NAMESPACE = 'watcher_canvas';
@@ -36,29 +37,6 @@ export interface CanvasPeriodMeta {
   granularity: string;
   window_start: string;
   window_end: string;
-}
-
-/**
- * Resolve a live `user(id)` to attribute the canvas entity to. Prefers the
- * caller-supplied id (the watcher's creator — already a live user); otherwise
- * falls back to an org owner/admin. Returns null when the org has no member.
- * Mirrors promote-keyed-entities' resolveCreator.
- */
-async function resolveCanvasCreator(
-  tx: DbClient,
-  organizationId: string,
-  createdBy: string | null | undefined
-): Promise<string | null> {
-  if (createdBy && createdBy.trim().length > 0) return createdBy;
-  const rows = await tx<{ userId: string }>`
-    SELECT "userId"
-    FROM "member"
-    WHERE "organizationId" = ${organizationId}
-    ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
-             "createdAt" ASC
-    LIMIT 1
-  `;
-  return rows.length > 0 ? rows[0].userId : null;
 }
 
 /**
@@ -97,7 +75,7 @@ export async function ensureCanvasEntity(params: {
   `;
   if (existing.length > 0) return Number(existing[0].entity_id);
 
-  const createdBy = await resolveCanvasCreator(tx, organizationId, params.createdBy);
+  const createdBy = await resolveEntityCreator(tx, organizationId, params.createdBy);
   if (!createdBy) {
     // entities.created_by is NOT NULL; without an attributable member we cannot
     // create the canvas entity. The canvas event still gets written (unanchored).

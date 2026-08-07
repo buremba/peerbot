@@ -53,6 +53,7 @@ import {
 } from './entity-field-merge';
 import logger from './logger';
 import { isUniqueViolation } from './pg-errors';
+import { resolveEntityCreator } from './resolve-entity-creator';
 import { computeStableKey, formatBehaviorEntityIdentity } from './stable-keys';
 
 /** Namespace for the stable-key identity claim in `entity_identities`. */
@@ -123,30 +124,6 @@ export interface PromoteKeyedEntitiesResult {
    */
   changes: PromotedEntityChange[];
 }
-
-/**
- * Resolve a live `user(id)` to attribute created entities to. Prefers the
- * caller-supplied `created_by` (the watcher's creator — already a live user);
- * otherwise falls back to an org owner/admin, mirroring entity-link-upsert's
- * `resolveOrgCreator`. Returns null when the org has no member to attribute to.
- */
-async function resolveCreator(
-  tx: DbClient,
-  organizationId: string,
-  createdBy: string | null | undefined
-): Promise<string | null> {
-  if (createdBy && createdBy.trim().length > 0) return createdBy;
-  const rows = await tx<{ userId: string }>`
-    SELECT "userId"
-    FROM "member"
-    WHERE "organizationId" = ${organizationId}
-    ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
-             "createdAt" ASC
-    LIMIT 1
-  `;
-  return rows.length > 0 ? rows[0].userId : null;
-}
-
 
 /**
  * Build a human-readable entity name from RAW field values (not the slugified
@@ -496,7 +473,7 @@ export async function promoteBehaviorEntityOutput(
     return result;
   }
 
-  const createdBy = await resolveCreator(tx, organizationId, params.createdBy);
+  const createdBy = await resolveEntityCreator(tx, organizationId, params.createdBy);
   if (createdBy == null) {
     logger.warn(
       { watcherId, organizationId },

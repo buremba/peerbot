@@ -26,29 +26,40 @@ export interface CreateEvalRunResult {
 	created: boolean;
 }
 
-/**
- * Clone a terminal Behavior run into a pending eval replay.
- *
- * `caseKey` scopes idempotency: re-running with the same (sourceRunId,
- * caseKey) reuses the in-flight eval rather than queueing a second one. Pass a
- * distinct key (an attempt number, a case id) to run the same source run
- * several times — which is the point, since a single trial is not a
- * measurement.
- *
- * Returns null when the source run does not exist, is not a Behavior run, or
- * carries no frozen payload to replay.
- */
-export async function createEvalRun(
-	params: { sourceRunId: number; caseKey: string },
-	db?: DbClient,
-): Promise<CreateEvalRunResult | null> {
-	const sql = db ?? getDb();
-	const idempotencyKey = `behavior_eval:${params.sourceRunId}:${params.caseKey}`;
+/** Why a Behavior run cannot be replayed. Stable strings — callers surface them. */
+export type ReplaySourceRejection =
+	| "not_found"
+	| "no_frozen_payload"
+	| "not_dispatchable";
 
+export interface ReplayableSource {
+	sourceRunId: number;
+	organizationId: string;
+	behaviorId: number;
+	approvedInput: unknown;
+}
+
+export type LoadReplayableSourceResult =
+	| { ok: true; source: ReplayableSource }
+	| { ok: false; reason: ReplaySourceRejection };
+
+/**
+ * Resolve a Behavior run into something an eval can actually replay.
+ *
+ * Extracted so promoting a case and minting a run apply the SAME rule. A case
+ * that passes promote but fails at replay would be a case set that silently
+ * cannot run, which is worse than refusing the promote — so this is the one
+ * definition of "replayable" and both callers ask it.
+ */
+export async function loadReplayableSource(
+	sourceRunId: number,
+	db?: DbClient,
+): Promise<LoadReplayableSourceResult> {
+	const sql = db ?? getDb();
 	const source = (await sql`
     SELECT id, organization_id, watcher_id, approved_input
     FROM runs
-    WHERE id = ${params.sourceRunId}
+    WHERE id = ${sourceRunId}
       AND run_type = ${BEHAVIOR_RUN_TYPE}
     LIMIT 1
   `) as unknown as Array<{
@@ -59,19 +70,16 @@ export async function createEvalRun(
 	}>;
 
 	if (source.length === 0) {
-		logger.warn(
-			{ sourceRunId: params.sourceRunId },
-			"[evals] No such Behavior run to replay",
-		);
-		return null;
+		logger.warn({ sourceRunId }, "[evals] No such Behavior run to replay");
+		return { ok: false, reason: "not_found" };
 	}
 	const row = source[0];
 	if (!row.organization_id || !row.watcher_id || !row.approved_input) {
 		logger.warn(
-			{ sourceRunId: params.sourceRunId },
+			{ sourceRunId },
 			"[evals] Behavior run has no frozen dispatch payload — nothing to replay",
 		);
-		return null;
+		return { ok: false, reason: "no_frozen_payload" };
 	}
 
 	// Refuse a source whose clone no eval lane could ever claim. The cloud
@@ -91,14 +99,48 @@ export async function createEvalRun(
 	if (devicePin || !agentId) {
 		logger.warn(
 			{
-				sourceRunId: params.sourceRunId,
+				sourceRunId,
 				devicePinned: Boolean(devicePin),
 				hasAgent: Boolean(agentId),
 			},
 			"[evals] Behavior run is not server-dispatchable — its replay could never be claimed",
 		);
-		return null;
+		return { ok: false, reason: "not_dispatchable" };
 	}
+
+	return {
+		ok: true,
+		source: {
+			sourceRunId: Number(row.id),
+			organizationId: row.organization_id,
+			behaviorId: row.watcher_id,
+			approvedInput: row.approved_input,
+		},
+	};
+}
+
+/**
+ * Clone a terminal Behavior run into a pending eval replay.
+ *
+ * `caseKey` scopes idempotency: re-running with the same (sourceRunId,
+ * caseKey) reuses the in-flight eval rather than queueing a second one. Pass a
+ * distinct key (an attempt number, a case id) to run the same source run
+ * several times — which is the point, since a single trial is not a
+ * measurement.
+ *
+ * Returns null when the source run does not exist, is not a Behavior run, or
+ * carries no frozen payload to replay.
+ */
+export async function createEvalRun(
+	params: { sourceRunId: number; caseKey: string },
+	db?: DbClient,
+): Promise<CreateEvalRunResult | null> {
+	const sql = db ?? getDb();
+	const idempotencyKey = `behavior_eval:${params.sourceRunId}:${params.caseKey}`;
+
+	const loaded = await loadReplayableSource(params.sourceRunId, sql);
+	if (!loaded.ok) return null;
+	const row = loaded.source;
 
 	const inserted = (await sql`
     INSERT INTO runs (
@@ -111,12 +153,12 @@ export async function createEvalRun(
       idempotency_key,
       created_at
     ) VALUES (
-      ${row.organization_id},
+      ${row.organizationId},
       ${BEHAVIOR_EVAL_RUN_TYPE},
-      ${row.watcher_id},
+      ${row.behaviorId},
       'auto',
       'pending',
-      ${sql.json(row.approved_input as never)},
+      ${sql.json(row.approvedInput as never)},
       ${idempotencyKey},
       current_timestamp
     )
@@ -136,8 +178,8 @@ export async function createEvalRun(
 		if (existing.length === 0) return null;
 		return {
 			runId: Number(existing[0].id),
-			sourceRunId: Number(row.id),
-			behaviorId: row.watcher_id,
+			sourceRunId: row.sourceRunId,
+			behaviorId: row.behaviorId,
 			created: false,
 		};
 	}
@@ -147,15 +189,15 @@ export async function createEvalRun(
 		{
 			runId,
 			sourceRunId: params.sourceRunId,
-			behaviorId: row.watcher_id,
+			behaviorId: row.behaviorId,
 			caseKey: params.caseKey,
 		},
 		"[evals] Queued an eval replay",
 	);
 	return {
 		runId,
-		sourceRunId: Number(row.id),
-		behaviorId: row.watcher_id,
+		sourceRunId: row.sourceRunId,
+		behaviorId: row.behaviorId,
 		created: true,
 	};
 }

@@ -74,6 +74,32 @@ export async function createEvalRun(
 		return null;
 	}
 
+	// Refuse a source whose clone no eval lane could ever claim. The cloud
+	// dispatcher skips device-pinned and manual-open runs, and the device poll
+	// lane claims `behavior` only — so such an eval sits `pending` forever, and
+	// because the claim guards are same-lane it wedges every later eval of this
+	// Behavior. Nothing reaps a stranded pending eval either
+	// (`finalizeStalePendingWatcherRuns` is behavior-only by design: it advances
+	// `next_run_at`). Failing loudly at mint beats creating undispatchable work.
+	const payload = row.approved_input as Record<string, unknown>;
+	const agentId =
+		typeof payload.agent_id === "string" ? payload.agent_id.trim() : "";
+	const devicePin =
+		typeof payload.device_worker_id === "string"
+			? payload.device_worker_id.trim()
+			: "";
+	if (devicePin || !agentId) {
+		logger.warn(
+			{
+				sourceRunId: params.sourceRunId,
+				devicePinned: Boolean(devicePin),
+				hasAgent: Boolean(agentId),
+			},
+			"[evals] Behavior run is not server-dispatchable — its replay could never be claimed",
+		);
+		return null;
+	}
+
 	const inserted = (await sql`
     INSERT INTO runs (
       organization_id,

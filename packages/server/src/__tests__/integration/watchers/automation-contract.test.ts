@@ -2121,6 +2121,43 @@ describe("watcher automation contract", () => {
 			expect(recoveredEval.run_type).toBe(BEHAVIOR_EVAL_RUN_TYPE);
 		});
 
+		it("a failing eval never moves the live Behavior's schedule", async () => {
+			const { sql, watcherId } = await createAutomatedWatcher();
+			await materializeDueWatcherRuns({} as Env);
+
+			const [source] = await sql<{ id: number }>`
+				UPDATE runs SET status = 'completed', completed_at = NOW()
+				WHERE watcher_id = ${watcherId} AND run_type = ${BEHAVIOR_RUN_TYPE}
+				RETURNING id
+			`;
+			const evalRun = await createEvalRun(
+				{ sourceRunId: source.id, caseKey: "schedule" },
+				sql as unknown as DbClient
+			);
+
+			const [before] = await sql<{ next_run_at: string | null }>`
+				SELECT next_run_at FROM watchers WHERE id = ${watcherId}
+			`;
+
+			// Drive the eval through the dispatch lane. Under vitest the embedded
+			// gateway is down, so it takes a `failWatcherRun` path — the same one
+			// a session-create or message-POST failure takes in prod.
+			await dispatchPendingWatcherRuns({} as Env);
+
+			const [evalRow] = await sql<{ status: string }>`
+				SELECT status FROM runs WHERE id = ${evalRun?.runId ?? 0}
+			`;
+			expect(evalRow.status).toBe("failed");
+
+			// The cron cursor of the Behavior it was only replaying is untouched,
+			// and specifically not parked at NULL.
+			const [after] = await sql<{ next_run_at: string | null }>`
+				SELECT next_run_at FROM watchers WHERE id = ${watcherId}
+			`;
+			expect(after.next_run_at).toEqual(before.next_run_at);
+			expect(after.next_run_at).not.toBeNull();
+		});
+
 		it("times out an eval that crashed mid-turn, leaving the live run alone", async () => {
 			const { sql, watcherId } = await createAutomatedWatcher();
 			await materializeDueWatcherRuns({} as Env);

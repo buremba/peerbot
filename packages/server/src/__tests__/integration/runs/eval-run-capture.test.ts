@@ -24,6 +24,9 @@ let sourceRunId: number;
 
 const payload = {
 	watcher_id: 0,
+	// A server-dispatchable source: `createEvalRun` refuses device-pinned and
+	// manual-open runs, because neither eval lane could ever claim the clone.
+	agent_id: "11111111-2222-3333-4444-555555555555",
 	window_start: "2026-08-01T00:00:00.000Z",
 	window_end: "2026-08-01T01:00:00.000Z",
 	dispatch_source: "scheduled",
@@ -127,6 +130,32 @@ describe("createEvalRun", () => {
 		expect(await createEvalRun({ sourceRunId: sync.id, caseKey: "x" }, sql)).toBe(
 			null,
 		);
+	});
+
+	// A clone no lane can claim would sit `pending` forever, and since the claim
+	// guards are same-lane it would wedge every later eval of that Behavior.
+	// Nothing reaps a stranded pending eval, so refuse at mint instead.
+	test.each([
+		[
+			"device-pinned",
+			{ ...payload, device_worker_id: "99999999-8888-7777-6666-555555555555" },
+		],
+		["manual-open", { ...payload, agent_id: undefined }],
+	])("refuses to replay a %s run it could never dispatch", async (_l, input) => {
+		const [run] = await sql<{ id: number }[]>`
+      INSERT INTO runs (
+        organization_id, run_type, watcher_id, approval_status, status,
+        approved_input, completed_at, created_at
+      ) VALUES (
+        ${organizationId}, 'behavior', ${behaviorId}, 'auto', 'completed',
+        ${sql.json({ ...input, watcher_id: behaviorId } as never)},
+        current_timestamp, current_timestamp
+      )
+      RETURNING id
+    `;
+		expect(
+			await createEvalRun({ sourceRunId: run.id, caseKey: "undispatchable" }, sql),
+		).toBe(null);
 	});
 });
 

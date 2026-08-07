@@ -41,6 +41,7 @@ import {
 	resolveWatcherRunsByMessageIds,
 } from "./run-completion";
 import {
+	BEHAVIOR_RUN_TYPE,
 	BEHAVIOR_RUN_TYPES,
 	BEHAVIOR_RUN_TYPES_PG,
 } from "../runs/run-types.js";
@@ -366,6 +367,7 @@ async function markWatcherRunFailedIdempotent(
 	await sql.begin(async (tx) => {
 		const [failed] = await tx<{
 			watcher_id: string | number | null;
+			run_type: string;
 			dispatch_source: string | null;
 		}>`
       UPDATE runs
@@ -375,14 +377,22 @@ async function markWatcherRunFailedIdempotent(
           error_message = ${message}
       WHERE id = ${runId}
         AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-      RETURNING watcher_id, approved_input->>'dispatch_source' AS dispatch_source
+      RETURNING watcher_id, run_type, approved_input->>'dispatch_source' AS dispatch_source
     `;
 		if (!failed) return;
-		await advanceScheduleAfterTerminalFailure(
-			tx,
-			failed.watcher_id == null ? null : Number(failed.watcher_id),
-			failed.dispatch_source
-		);
+		// Same gate as the twin in run-completion.ts. The dispatch lane claims
+		// both run types, so every failure here — session-create, embedded Lobu
+		// unavailable, preflight, message POST — can be an eval. An eval clones
+		// `dispatch_source` verbatim, so ungated it would advance the live cron
+		// cursor of the Behavior it is only replaying, or park it entirely when
+		// the schedule does not parse.
+		if (failed.run_type === BEHAVIOR_RUN_TYPE) {
+			await advanceScheduleAfterTerminalFailure(
+				tx,
+				failed.watcher_id == null ? null : Number(failed.watcher_id),
+				failed.dispatch_source
+			);
+		}
 	});
 }
 

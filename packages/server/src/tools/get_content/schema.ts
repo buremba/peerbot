@@ -87,7 +87,7 @@ export const GetContentSchema = Type.Object({
   produced_by_behavior_id: Type.Optional(
     Type.Number({
       description:
-        'Limit results to events this Behavior WROTE — its outputs, entity change sets, canvas revisions and notifications. The counterpart to analyzed_by_behavior_id, which returns what it READ; for one prod Behavior those are 354 events and 2,289 events respectively, so the two are not interchangeable.',
+        'Limit results to events this Behavior WROTE — its outputs, entity change sets, canvas revisions and notifications. The counterpart to analyzed_by_behavior_id, which returns what it READ; the two are not interchangeable.',
     })
   ),
   since: Type.Optional(

@@ -424,7 +424,9 @@ export async function fetchIncludeSuperseded(opts: {
   }
   if (args.produced_by_behavior_id !== undefined) {
     conditions.push(`e.behavior_id = $${paramIndex}`);
-    queryParams.push(args.produced_by_behavior_id);
+    queryParams.push(
+      validateNumericId(args.produced_by_behavior_id, 'produced_by_behavior_id')
+    );
     paramIndex += 1;
   }
   if (args.engagement_min !== undefined) {

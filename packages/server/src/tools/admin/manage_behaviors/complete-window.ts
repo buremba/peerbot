@@ -334,25 +334,15 @@ export async function handleCompleteWindow(
     watcherRows[0].version_id != null ? Number(watcherRows[0].version_id) : null;
   const outputs = parseJson(watcherRows[0].outputs) as Outputs | null;
 
-  // When everything this completion writes happened.
+  // When everything this completion writes happened. It used to be `window_end`
+  // flat — a future instant for the whole day a sub-daily Behavior runs, since
+  // `window-utils` has no 'hourly' granularity and every read path bounds on
+  // `occurred_at <= now()`. Clamping keeps the period-end reading for a window
+  // completed after it closed and tells the truth for one still open.
   //
-  // It used to be `window_end` flat, which is a claim about the future for the
-  // entire time it matters. `window-utils` has no 'hourly' granularity, so a
-  // sub-daily Behavior is handed the CURRENT day's window and `window_end` is
-  // midnight TOMORROW every hour it runs. Every read path bounds on
-  // `occurred_at <= now()`, so the output it had just written was missing from
-  // Memory, Activity and its own Behavior page until the day rolled over — 153
-  // of 163 behavior-output events in 30 days were stamped ahead of their own
-  // `created_at`, and 45 were still invisible when measured (2026-08-07).
-  //
-  // Clamping keeps the digest-at-period-end reading for a window completed
-  // after it closed (the common case, where `window_end` is already past) and
-  // tells the truth for one still open. What it does NOT do is keep the output
-  // out of its own window — the future stamp was silently buying that, because
-  // window membership is `occurred_at >= start AND occurred_at < end`. That job
-  // moves to an explicit self-exclusion in the window's content predicate
-  // (`execute-data-sources.ts`), which is where a provenance decision belongs;
-  // the two changes are a pair and neither is safe alone.
+  // It does NOT keep the output out of its own window; the future stamp was
+  // silently buying that. That job moves to the self-exclusion in
+  // `execute-data-sources.ts`. The two changes are a pair, neither safe alone.
   const windowEndMs = new Date(window_end).getTime();
   const producedAt = new Date(
     Number.isFinite(windowEndMs) ? Math.min(windowEndMs, Date.now()) : Date.now()

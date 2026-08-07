@@ -79,16 +79,11 @@ interface InsertEventParams {
   runId?: number | null;
   /**
    * The Behavior that PRODUCED this row, and the version of it that ran.
+   * Produced, never analyzed — a Behavior reading an event does not stamp it.
    *
-   * Produced, never analyzed: a Behavior reading an event does not stamp it.
-   * That distinction is the whole point of the column — the Behavior page used
-   * to offer `analyzed_by_behavior_id` in place of this and showed the 2,289
-   * events Behavior 71 read instead of the 354 it wrote.
-   *
-   * Set it on every path that writes on a Behavior's behalf (outputs, promoted
-   * entities, change sets, canvas state, notifications). Leaving it unset makes
-   * the row invisible to `produced_by_behavior_id` and, worse, readable by the
-   * Behavior's own next window — self-exclusion keys on this column.
+   * Set it on every path that writes on a Behavior's behalf. Leaving it unset
+   * makes the row invisible to `produced_by_behavior_id` and, worse, readable
+   * by the Behavior's own next window: self-exclusion keys on this column.
    */
   behaviorId?: number | null;
   behaviorVersionId?: number | null;

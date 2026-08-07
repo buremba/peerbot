@@ -40,13 +40,11 @@ export function buildExcludeWatcherClause(
 /**
  * Restrict to events a Behavior PRODUCED (`events.behavior_id`).
  *
- * Deliberately shaped like {@link buildExcludeWatcherClause} — same signature,
- * same "empty when the filter is absent" contract — because every read path
- * threads its param slots positionally and hand-rolling a fifth variant is how
- * the indices drift apart. Four paths back `read_knowledge` (list, search,
- * score-ranked, include-superseded) and a filter added to only some of them is
- * worse than one added to none: the same scope silently returns different rows
- * depending on whether the user typed a search term.
+ * Shaped like {@link buildExcludeWatcherClause} on purpose: read paths thread
+ * their param slots positionally, so a fifth variant is how indices drift. All
+ * four `read_knowledge` builders must call it — a filter added to only some is
+ * worse than one added to none, since the same scope would then return
+ * different rows depending on whether a search term was typed.
  *
  * A column equality, NOT an EXISTS over `watcher_window_events` — that table
  * records what a Behavior READ. Backed by idx_events_behavior_produced.

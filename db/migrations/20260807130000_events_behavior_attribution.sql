@@ -1,41 +1,21 @@
 -- Which Behavior produced this event, and which version of it (lobu#2588).
 --
--- `events` had no Behavior column at all. The only links were `run_id`
--- (→ `runs.watcher_id`, two hops) and an unindexed `metadata->>'behavior_id'`
--- that only some writers stamped. Three things fell out of that:
+-- `events` had no Behavior column: the only links were `run_id` (two hops via
+-- `runs.watcher_id`) and an unindexed `metadata->>'behavior_id'` that only some
+-- writers stamped. So "what did this Behavior produce" was unanswerable without
+-- joining run history — the Behavior page offered `analyzed_by_behavior_id`,
+-- events the Behavior READ, in place of the ones it WROTE — and a Behavior
+-- could not be excluded from its own window by provenance, leaving a future
+-- `window_end` stamp as the only thing stopping it from eating its own output.
 --
---   * "what did this Behavior produce" was unanswerable without joining
---     run history, so the Behavior page instead offered
---     `analyzed_by_behavior_id` — events the Behavior READ (2,289 for
---     Behavior 71) in place of the ones it WROTE (354).
---   * a Behavior could not be excluded from its own window input by
---     provenance, so the only thing stopping it from eating its own output
---     was stamping that output at `window_end` — a timestamp in the future
---     for the whole day an hourly Behavior runs, which removed it from every
---     read path (`occurred_at <= now()`).
---   * output quality could not be attributed to a prompt version.
+-- Both columns are stamped at WRITE time and read back by index. `ON DELETE SET
+-- NULL` matches the existing `run_id` / `connection_id` FKs; it cannot break
+-- output identity the way a nulled `connection_id` once broke dedup, because a
+-- behavior output's identity lives in its `origin_id`.
 --
--- Both columns are stamped at WRITE time by the producing path and read back
--- by index; nothing here is derived per request. `ON DELETE SET NULL` matches
--- the existing `run_id` / `connection_id` / `feed_id` FKs on this table. It
--- cannot break output identity the way a nulled `connection_id` once broke
--- dedup, because a behavior output's identity lives in its `origin_id`
--- (`behavior:<id>:output:<name>:key:<hash>`), not in this column.
---
--- The backfill reads the two places the provenance already existed: the run row
--- (authoritative, and the only source of the version) and the `metadata` blob
--- stamped by `persist-behavior-event-output` and the change-set and canvas
--- writers. (`promote-keyed-entities` is NOT one of them — it upserts entities
--- and writes no event. `submit_feedback` stamps the same key on `correction`
--- rows and is skipped on purpose; see 20260807130010.)
---
--- Schema only. The backfill lives in 20260807130010 and the index in
--- 20260807130020, for the reason 20260806120000/20260806120030 split: the
--- ADD COLUMN below takes an ACCESS EXCLUSIVE lock on `events` that is held
--- until THIS transaction commits, so folding in a backfill that sequentially
--- scans 2.84M rows would hold AEL on the hottest table for the whole scan.
--- Split, this migration commits in milliseconds and the backfill runs under
--- ROW EXCLUSIVE, which blocks nothing.
+-- Schema only. Backfill is 20260807130010, index 20260807130020: the ADD COLUMN
+-- below holds ACCESS EXCLUSIVE on `events` until this transaction commits, so
+-- folding in a 2.84M-row scan would hold AEL on the hottest table throughout.
 
 -- migrate:up
 

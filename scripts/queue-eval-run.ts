@@ -11,9 +11,10 @@
  * the server derives `executionMode = 'capture'` for the session, so the agent
  * runs for real but its side effects are recorded rather than performed.
  *
- * A script rather than an agent-facing tool on purpose: PR 3 adds the promote
- * flow and its surface, which needs its own design sign-off. This exists so the
- * capture path is exercisable end to end today.
+ * A script rather than an agent-facing tool on purpose: the trigger surface
+ * (SDK verb vs internal route) needs its own design sign-off and has not had
+ * it. PR 3 added the promote flow (`promote-eval-case.ts`) under the same
+ * constraint. This exists so the capture path is exercisable end to end today.
  *
  * DATABASE_URL must point at the target database.
  */

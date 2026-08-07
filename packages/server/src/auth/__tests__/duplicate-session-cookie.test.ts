@@ -23,17 +23,15 @@ describe('duplicate session cookies', () => {
 
   /**
    * Mint a real, correctly-signed session cookie the way a browser would get
-   * one, and return both the cookie name and its signed value.
+   * one, and return both the cookie name and its signed value. Called twice
+   * with the same PAT it mints two independent sessions.
+   *
+   * The name comes back off the wire rather than from a literal: this harness
+   * speaks plain HTTP, so Better Auth drops the `__Secure-` prefix that prod
+   * carries, and a hardcoded spelling would pin the wrong one. See
+   * docs/GOTCHAS.md, Testing.
    */
-  async function realSessionCookie(
-    slug: string,
-    email: string
-  ): Promise<{ name: string; value: string }> {
-    const org = await createTestOrganization({ slug });
-    const user = await createTestUser({ email });
-    await addUserToOrganization(user.id, org.id, 'owner');
-    const { token: pat } = await createTestPAT(user.id, org.id, { scope: 'profile:read' });
-
+  async function exchangeForSessionCookie(pat: string): Promise<{ name: string; value: string }> {
     const res = await get(`/api/exchange-token?token=${encodeURIComponent(pat)}&next=/`);
     expect(res.status).toBe(302);
 
@@ -47,22 +45,24 @@ describe('duplicate session cookies', () => {
     return { name: pair.slice(0, eq).trim(), value: pair.slice(eq + 1).trim() };
   }
 
+  /** Provision an org, an owner and a PAT, then exchange it for a cookie. */
+  async function realSessionCookie(
+    slug: string,
+    email: string
+  ): Promise<{ name: string; value: string }> {
+    const org = await createTestOrganization({ slug });
+    const user = await createTestUser({ email });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const { token: pat } = await createTestPAT(user.id, org.id, { scope: 'profile:read' });
+
+    return await exchangeForSessionCookie(pat);
+  }
+
   async function orgSlugsFor(cookie: string): Promise<string[]> {
     const res = await get('/api/organizations', { cookie });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { organizations: Array<{ slug: string }> };
     return body.organizations.map((o) => o.slug);
-  }
-
-  /** Mint an ADDITIONAL session cookie for a PAT that already exists. */
-  async function extraSessionCookie(pat: string): Promise<string> {
-    const res = await get(`/api/exchange-token?token=${encodeURIComponent(pat)}&next=/`);
-    expect(res.status).toBe(302);
-    const setCookie = res.headers
-      .getSetCookie()
-      .find((c) => /^(?:__Secure-)?better-auth\.session_token=[^;]/.test(c));
-    const [pair] = (setCookie as string).split(';');
-    return pair.slice(pair.indexOf('=') + 1).trim();
   }
 
   // Garbage values that are syntactically plausible signed cookies — a 44-char
@@ -113,20 +113,24 @@ describe('duplicate session cookies', () => {
     await addUserToOrganization(user.id, org.id, 'owner');
     const { token: pat } = await createTestPAT(user.id, org.id, { scope: 'profile:read' });
 
-    const doomed = await extraSessionCookie(pat);
-    const live = await extraSessionCookie(pat);
-    expect(doomed).not.toBe(live);
+    const doomed = await exchangeForSessionCookie(pat);
+    const live = await exchangeForSessionCookie(pat);
+    expect(doomed.value).not.toBe(live.value);
 
     // Revoke the first session at the source, leaving its signature intact.
-    const token = decodeURIComponent(doomed).split('.')[0];
+    // Split on the LAST dot, the way better-call itself does: the signed value
+    // is `<token>.<signature>`, so splitting on the first would truncate any
+    // token that happens to contain one.
+    const signed = decodeURIComponent(doomed.value);
+    const token = signed.slice(0, signed.lastIndexOf('.'));
     const deleted = await getTestDb()`DELETE FROM "session" WHERE token = ${token} RETURNING id`;
     expect(deleted.length, 'the doomed session must actually be revoked').toBe(1);
 
-    const name = '__Secure-better-auth.session_token'.replace('__Secure-', '');
+    const name = live.name;
     // Signed, revoked, and FIRST — the exact shape of the production brick.
-    expect(await orgSlugsFor(`${name}=${doomed}; ${name}=${live}`)).toContain(slug);
+    expect(await orgSlugsFor(`${name}=${doomed.value}; ${name}=${live.value}`)).toContain(slug);
     // And it is genuinely dead on its own, or the assertion above proves nothing.
-    expect(await orgSlugsFor(`${name}=${doomed}`)).not.toContain(slug);
+    expect(await orgSlugsFor(`${name}=${doomed.value}`)).not.toContain(slug);
   });
 
   it('is unchanged for the ordinary single-cookie jar', async () => {

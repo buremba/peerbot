@@ -403,7 +403,9 @@ export const QUERYABLE_SCHEMA = {
           'interaction_input',
           'interaction_output',
           'interaction_error',
-          'supersedes_event_id'
+          'supersedes_event_id',
+          'identity_ns',
+          'identity_key'
         ),
       ],
     },

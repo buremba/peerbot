@@ -809,7 +809,6 @@ export async function runAISession(
     defaultProvider: pc.defaultProvider,
     defaultProviderSlug: pc.defaultProviderSlug,
     installedProviderRoutes: pc.installedProviderRoutes,
-    defaultProviderServesModel: pc.defaultProviderServesModel,
   });
   // Map gateway slug to model-registry provider name (e.g. "z-ai" → "zai")
   const provider = PROVIDER_REGISTRY_ALIASES[rawProvider] || rawProvider;

@@ -231,12 +231,6 @@ export function resolveModelRef(
     defaultProvider?: string;
     defaultProviderSlug?: string;
     installedProviderRoutes?: Record<string, string>;
-    /**
-     * Gateway-supplied: did `defaultProvider` actually MATCH the requested
-     * model, or was it fallback-picked? Drives failure-CTA attribution only —
-     * never routing. Absent (older gateway) is treated as "serves".
-     */
-    defaultProviderServesModel?: boolean;
   }
 ): {
   provider: string;
@@ -279,7 +273,16 @@ export function resolveModelRef(
   // conjuring a provider the org never configured. Lobu stores refs as
   // "<lobu-slug>/<model>", so OpenRouter's own entry keeps its prefix
   // ("openrouter/openai/gpt-4o") and never collides with an installed OpenAI.
-  const explicitParts = normalizedRaw?.split("/").filter(Boolean) ?? [];
+  //
+  // Derived from the RESOLVED `modelRef`, not `normalizedRaw`. A pin is a pin
+  // whichever field carries it: most runs have no per-turn model, so the agent's
+  // configured `models[0]` arrives as `defaultModel` and `normalizedRaw` is
+  // empty. Reading the raw argument here skipped the guard for exactly those
+  // runs, and they silently executed on the gateway's fallback-scanned
+  // `defaultProvider` with the foreign ref passed through as the model id
+  // (observed live: "openai/gpt-5.6-luna" sent to qwen). `defaultProvider` is a
+  // fallback-scan result; a configured pin to an INSTALLED provider outranks it.
+  const explicitParts = modelRef.split("/").filter(Boolean);
   const explicitProvider = explicitParts[0];
   if (
     explicitParts.length >= 2 &&
@@ -341,46 +344,16 @@ export function resolveModelRef(
     ) {
       modelId = modelId.slice(defaultProviderSlug.length + 1);
     }
-    // `providerSlug` targets the failure CTA ("Reconnect provider"), so it must
-    // name the provider the run ASKED FOR — not whichever module the gateway
-    // published as `defaultProvider` via its credentialed-fallback scan
-    // (`gateway/index.ts`, `if (!primaryProvider)`). Routing (`provider`) and
-    // `modelId` are untouched.
-    //
-    // Reattribute only when all three hold, because each alone misfires:
-    //   1. `modelId === modelRef` — the self-prefix strip above did not consume
-    //      the prefix, so the name is genuinely foreign.
-    //   2. `defaultProviderServesModel === false` — the gateway did not match
-    //      the model to `defaultProvider`. Without it, OpenRouter's own vendor
-    //      namespace ("openai/gpt-4o") would blame `openai`.
-    //   3. the prefix names an INSTALLED provider — otherwise it is an
-    //      aggregator namespace ("anthropic/…" with no Anthropic installed) and
-    //      the CTA would point at a provider absent from this deployment.
-    //
-    // Absent `defaultProviderServesModel` (older gateway) keeps the
-    // pre-existing attribution rather than acquiring a new misattribution.
-    // Derived from the RESOLVED `modelRef`, not `normalizedRaw`: when the run
-    // carries no explicit model the ref comes from `defaultModel`, and
-    // `explicitParts` (which gates explicit-ref ROUTING on a ref the run
-    // itself supplied) is empty — so attribution would silently fall back to
-    // the serving provider and reproduce the very bug this fixes.
-    const attributionParts = modelRef.split("/").filter(Boolean);
-    const attributionProvider = attributionParts[0];
-    const requestedForeignSlug =
-      attributionParts.length >= 2 &&
-      attributionProvider &&
-      attributionProvider !== defaultProvider &&
-      attributionProvider !== defaultProviderSlug &&
-      modelId === modelRef &&
-      overrides?.defaultProviderServesModel === false &&
-      overrides?.installedProviderRoutes?.[attributionProvider]
-        ? attributionProvider
-        : undefined;
-
+    // Reaching here means the ref did NOT name an installed provider other than
+    // the configured one — it is the configured provider's own model, a bare
+    // model id, or a prefix no installed provider answers to (an aggregator's
+    // internal namespace like "anthropic/claude-sonnet-4" with no Anthropic
+    // installed, or simply a provider this deployment lacks). None of those
+    // names a better route or a reachable CTA target than the configured
+    // provider, so routing and attribution both stay on it.
     return {
       provider: defaultProvider,
-      providerSlug:
-        requestedForeignSlug ?? (defaultProviderSlug || defaultProvider),
+      providerSlug: defaultProviderSlug || defaultProvider,
       modelId,
     };
   }

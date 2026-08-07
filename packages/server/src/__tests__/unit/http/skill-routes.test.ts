@@ -8,10 +8,10 @@ import { LOBU_SKILL_MARKDOWN } from "../../../skills/lobu-skill.generated";
 describe("public skill route", () => {
   const app = createSkillRoutes();
 
-  it("serves the embedded Lobu skill markdown over HTTP", async () => {
+  it("serves the embedded Lobu skill markdown over HTTP as raw markdown", async () => {
     const res = await app.request("/skill/lobu");
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { markdown: string };
-    expect(body.markdown).toBe(LOBU_SKILL_MARKDOWN);
+    expect(res.headers.get("content-type")).toContain("text/markdown");
+    expect(await res.text()).toBe(LOBU_SKILL_MARKDOWN);
   });
 });

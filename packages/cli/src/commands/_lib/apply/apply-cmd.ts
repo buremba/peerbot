@@ -800,7 +800,14 @@ export async function executePlan(
   for (const row of rowsByKind("entity-type")) {
     if (row.kind !== "entity-type") continue;
     if (!row.desired) continue;
-    await ctx.client.upsertEntityType(row.desired);
+    // The upsert rebuilds `metadata_schema` from the config's flat properties/
+    // required, so hand it the live type's out-of-band top-level keys (e.g.
+    // `x-lobu-resolution`) to carry forward — otherwise every apply erases them
+    // silently, with no diff row and no warning. `row.remote` is the match
+    // computeDiff already made against the ORG-OWNED types only; re-deriving it
+    // from the raw snapshot would let a foreign public type of the same slug
+    // shadow the owned one (see the ownership filter in computeDiff).
+    await ctx.client.upsertEntityType(row.desired, row.remote?.schemaExtras);
     // View template is a separate, version-appending tool. Reconcile it only on
     // create (when declared) or a flagged change — never every run, so the
     // version history doesn't churn. Declared ⇒ set; omitted-under-prune ⇒ clear.

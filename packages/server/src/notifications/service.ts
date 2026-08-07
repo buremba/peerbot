@@ -569,7 +569,18 @@ export async function listNotifications(opts: {
       -- the affordance from this, not from a list of known action keys.
       pe.interaction_input_schema AS interaction_input_schema,
       ar.id AS approval_run_id,
-      ar.approval_status AS approval_status,
+      -- A pending approval whose review card is unreachable — the proposal
+      -- event's connection is soft-deleted (or gone), so the card is invisible
+      -- to every content read (connection-visibility predicate) and
+      -- approve/reject would be blind — resolves terminal ('expired'), never
+      -- as an actionable pending approval.
+      CASE
+        WHEN ar.approval_status = 'pending'
+         AND pe.connection_id IS NOT NULL
+         AND pc.id IS NULL
+        THEN 'expired'
+        ELSE ar.approval_status
+      END AS approval_status,
       ar.action_key AS approval_action_key,
       (t.read_at IS NOT NULL) AS is_read,
       t.delivered_at AS created_at
@@ -587,6 +598,19 @@ export async function listNotifications(opts: {
     LEFT JOIN runs ar
       ON ar.organization_id = e.organization_id
      AND ar.id = pe.run_id
+    -- Mirrors the connection-visibility predicate every content read applies
+    -- (compileConnectionFkVisibility): the card counts as reviewable only when
+    -- its connection is live, org-visible, and (for private) owned by the
+    -- reader. A deleted or invisible connection means the card can never be
+    -- opened, so the approval is undecidable.
+    LEFT JOIN connections pc
+      ON pc.id = pe.connection_id
+     AND pc.organization_id = e.organization_id
+     AND pc.deleted_at IS NULL
+     AND (
+       pc.visibility = 'org'
+       OR (${opts.userId}::text IS NOT NULL AND pc.created_by = ${opts.userId}::text)
+     )
     WHERE e.organization_id = ${opts.organizationId}
       AND t.user_id = ${opts.userId}
       AND (${cursor}::bigint IS NULL OR e.id < ${cursor})

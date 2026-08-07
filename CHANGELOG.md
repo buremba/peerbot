@@ -1,5 +1,14 @@
 # Changelog
 
+## [14.17.1](https://github.com/lobu-ai/lobu/compare/lobu-v14.17.0...lobu-v14.17.1) (2026-08-07)
+
+
+### Bug Fixes
+
+* **server:** converge session-cookie scope so a stale twin can't brick login ([#2558](https://github.com/lobu-ai/lobu/issues/2558)) ([934ae95](https://github.com/lobu-ai/lobu/commit/934ae95bb479e0d1fe5a1011cb73e7f75e9d8f7f))
+* **server:** record the side effects a capture run suppresses ([#2576](https://github.com/lobu-ai/lobu/issues/2576)) ([a73e8a1](https://github.com/lobu-ai/lobu/commit/a73e8a1abba7b5f12df7c794f39696dcd87b481c))
+* **server:** stop cookie order deciding which session authenticates ([#2578](https://github.com/lobu-ai/lobu/issues/2578)) ([cc51e66](https://github.com/lobu-ai/lobu/commit/cc51e660778781d06e15bbe1446260602232d7d5))
+
 ## [14.17.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.16.0...lobu-v14.17.0) (2026-08-07)
 
 

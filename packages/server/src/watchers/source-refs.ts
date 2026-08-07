@@ -162,18 +162,29 @@ export function parseWatcherSourceRef(query: string): WatcherSourceRef | null {
 // derives the watcher's `sources[]` from these tokens, so the UI just sends the
 // raw prompt and there is no client/server gap. This is a small local mirror of
 // the codec because the server cannot import the owletto submodule.
-const PROMPT_REF_TOKEN = /@\[([a-z]+):([^:\]]*):([^\]]*)\]\(([^)\s]*)\)/g;
+// The kind group allows `_` so multi-word kinds (`entity_type`) lex. Narrowing
+// it back to [a-z]+ does not error — it just stops matching, so every
+// entity-type chip silently vanishes from the derived sources.
+const PROMPT_REF_TOKEN = /@\[([a-z_]+):([^:\]]*):([^\]]*)\]\(([^)\s]*)\)/g;
 const SQL_PATH_PREFIX = '#sql=';
 
 /** Which prompt-token kinds become a watcher source, and the `@mode` each uses.
  *  `entity` scopes the watcher (not a source); `sql` is handled separately (its
- *  query rides inline in the path). watcher/member/event never become sources. */
+ *  query rides inline in the path). watcher/member/event never become sources.
+ *
+ *  `entity_type` and `entity` are deliberately distinct kinds mapping to the
+ *  same `@entity:` mode. The source grammar's `@entity:<value>` has always
+ *  meant an entity TYPE slug (every row of that type — see the compile at
+ *  `case 'entity'`), while an `@[entity:…]` prompt chip is an entity INSTANCE
+ *  the author picked to scope the watcher. Collapsing them would send an
+ *  instance id where a type slug belongs. */
 const PROMPT_KIND_TO_MODE: Record<string, string> = {
   feed: 'feed',
   connection: 'connection',
   connector: 'connector',
   channel: 'channel',
   metric: 'metric',
+  entity_type: 'entity',
 };
 
 /** Slugify a token label into a safe output-field name. */

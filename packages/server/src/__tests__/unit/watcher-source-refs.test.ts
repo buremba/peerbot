@@ -80,6 +80,27 @@ describe("extractSourcesFromPromptTokens", () => {
 		]);
 	});
 
+	it("derives an @entity: source from an entity_type token", () => {
+		// The underscore in the kind is the load-bearing part: PROMPT_REF_TOKEN's
+		// kind group must allow it, or this token does not match at all and the
+		// source silently vanishes instead of erroring.
+		const prompt = "review @[entity_type:company:Companies](/o/company)";
+		expect(extractSourcesFromPromptTokens(prompt)).toEqual([
+			{ name: "companies", query: "@entity:company" },
+		]);
+	});
+
+	it("keeps entity_type (a type) and entity (an instance) apart", () => {
+		// Both would compile through mode `entity`, but only the type slug is a
+		// legal `@entity:` value — an instance id there would resolve to nothing.
+		const prompt =
+			"for @[entity:42:Spotify](/o/company/spotify) review " +
+			"@[entity_type:company:Companies](/o/company)";
+		expect(extractSourcesFromPromptTokens(prompt)).toEqual([
+			{ name: "companies", query: "@entity:company" },
+		]);
+	});
+
 	it("excludes entity tokens (scope, not source)", () => {
 		const prompt =
 			"for @[entity:42:Spotify](/o/company/spotify) watch @[feed:k:Feed](/o/x)";

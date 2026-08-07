@@ -76,6 +76,33 @@ describe('deep-link token exchange', () => {
     expect(cookie).not.toMatch(/SameSite=None/i);
   });
 
+  // The deep-link cookie must land at the SAME scope Better Auth uses; a
+  // host-only twin here locks the user out for good once it goes stale.
+  // Why: auth/session-cookie-scope.ts.
+  it('GET /exchange-token scopes the cookie to the zone and expires the host-only twin', async () => {
+    const previous = process.env.AUTH_COOKIE_DOMAIN;
+    process.env.AUTH_COOKIE_DOMAIN = '.lobu.ai';
+    try {
+      const token = await patForNewUser('xt-zone-org', 'xt-zone@test.example.com');
+      const res = await get(`/api/exchange-token?token=${encodeURIComponent(token)}&next=/`);
+      expect(res.status).toBe(302);
+
+      const cookies = res.headers.getSetCookie();
+      const name = 'better-auth.session_token';
+      const setter = cookies.find((c) => c.includes(`${name}=`) && !c.includes('Max-Age=0'));
+      const expiry = cookies.find((c) => c.includes(`${name}=;`) && c.includes('Max-Age=0'));
+
+      expect(setter).toBeDefined();
+      expect(setter).toContain('Domain=.lobu.ai');
+      // The twin-killer must carry NO Domain, or it would delete the real cookie.
+      expect(expiry).toBeDefined();
+      expect(expiry).not.toMatch(/Domain=/i);
+    } finally {
+      if (previous === undefined) delete process.env.AUTH_COOKIE_DOMAIN;
+      else process.env.AUTH_COOKIE_DOMAIN = previous;
+    }
+  });
+
   it('rejects a missing or invalid token', async () => {
     expect((await postForm('/api/extension-session', {})).status).toBe(400);
     expect((await postForm('/api/extension-session', { token: 'owl_pat_nope' })).status).toBe(401);

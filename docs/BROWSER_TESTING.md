@@ -86,11 +86,36 @@ export default async (ctx, client) => {
     connection_id: CHROME, operation_key: "evaluate",
     input: { tab_id: tab, expression: `(async () => { await new Promise(r => setTimeout(r, 3000)); return { title: document.title, snippet: document.body.innerText.slice(0, 300) }; })()`, await_promise: true },
   });
-  // 5. Clean up the tab when done.
+  // 5. MANDATORY: expire the planted cookie before closing the tab. See below.
+  await client.operations.execute({
+    connection_id: CHROME, operation_key: "evaluate",
+    input: { tab_id: tab, expression: `document.cookie='"'"'__Secure-better-auth.session_token=; path=/; max-age=0; secure; samesite=lax'"'"'`, await_promise: false },
+  });
+  // 6. Clean up the tab when done.
   await client.operations.execute({ connection_id: CHROME, operation_key: "close_tab", input: { tab_id: tab } });
   return probe.output;
 };
 ' --raw
+```
+
+### Always expire the planted cookie (step 5 is not optional)
+
+`document.cookie` writes a **host-only** cookie (`app.lobu.ai`), while a real sign-in writes
+the same name at `Domain=.lobu.ai`. Both then live in the jar, the browser sends both, and the
+server resolves whichever comes **first** — which RFC 6265 §5.4 makes the **oldest**. So a
+leftover planted cookie outranks every subsequent real login, and once its session expires the
+human is locked out of `app.lobu.ai` with no in-app way to recover: each new sign-in mints a
+strictly newer cookie that can never win. This cost a full debugging session on 2026-08-06.
+
+The server now expires the host-only twin whenever it sets a domain-scoped auth cookie
+(`auth/session-cookie-scope.ts`), so a fresh sign-in self-heals a poisoned jar — but do not
+lean on that. Expire what you planted.
+
+To clear one by hand:
+
+```js
+for (const d of ['', '; domain=app.lobu.ai', '; domain=.lobu.ai'])
+  document.cookie = '__Secure-better-auth.session_token=; max-age=0; path=/' + d + '; secure; samesite=lax';
 ```
 
 For one-off actions, `lobu call manage_operations` is quicker:

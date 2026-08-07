@@ -18,6 +18,10 @@ import type {
   ResolvedOwner,
   WorkspaceProvider,
 } from './types';
+import {
+  countNamedCookies,
+  sessionCookieName,
+} from '../auth/session-cookie-scope';
 import { listManagedAuthConnectorOffers } from './managed-auth-discovery';
 import {
   memberRoleCache,
@@ -528,6 +532,27 @@ export class MultiTenantProvider implements WorkspaceProvider {
         /(?:__Secure-)?better-auth\.session_token=([^;]+)/
       );
       const sessionCacheKey = sessionTokenMatch?.[1] || null;
+
+      // A duplicate at a narrower scope shadows the real session and is
+      // otherwise invisible — `get-session` just answers 200 null forever.
+      // Warn so the next occurrence is one log line instead of an afternoon.
+      // Why: auth/session-cookie-scope.ts.
+      for (const name of [
+        sessionCookieName(true),
+        sessionCookieName(false),
+      ]) {
+        const seen = countNamedCookies(cookieHeader, name);
+        if (seen > 1) {
+          // Include the host: a bricked browser emits this on EVERY request,
+          // and without knowing which host issued the twin the line says what
+          // happened but not where to go fix it.
+          logger.warn(
+            `[MultiTenantProvider] ${seen} "${name}" cookies in one request ` +
+              `(host=${c.req.header('host') || 'unknown'}) — a duplicate ` +
+              'at a narrower scope shadows the real session and blocks sign-in until expired'
+          );
+        }
+      }
 
       let session: { user: any; session: any } | null = null;
       let cacheHit = false;

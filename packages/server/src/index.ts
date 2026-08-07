@@ -15,11 +15,13 @@ import { compress } from "hono/compress";
 import { cors } from "hono/cors";
 import { LOBU_LOGO_PNG_BASE64 } from "./assets/logo";
 import { createAuth } from "./auth";
+import { resolveBaseUrl } from "./auth/base-url";
 import { getAuthConfig as getAuthConfigFromEnv } from "./auth/config";
 import { mcpAuth } from "./auth/middleware";
 import { oauthRoutes } from "./auth/oauth/routes";
 import { findExistingPersonalOrg } from "./auth/personal-org-provisioning";
 import { credentialRoutes } from "./auth/routes";
+import { convergeResponseCookieScope } from "./auth/session-cookie-scope";
 import { compareWorkerToken } from "./auth/worker-token";
 import {
 	deleteEntityApprovalPolicy,
@@ -650,7 +652,13 @@ app.on(["GET", "POST"], "/api/auth/*", async (c) => {
 			});
 		}
 	}
-	return auth.handler(request);
+	const response = await auth.handler(request);
+	// Collapse the cookie jar back to a single scope, so sign-in is authoritative
+	// for every auth method at once. Why: auth/session-cookie-scope.ts.
+	return convergeResponseCookieScope(response, {
+		cookieDomain: process.env.AUTH_COOKIE_DOMAIN,
+		isHttps: resolveBaseUrl({ request: c.req.raw }).startsWith("https://"),
+	});
 });
 
 /**

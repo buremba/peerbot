@@ -3,22 +3,24 @@
  *
  * The same cookie name can exist at two scopes at once — host-only
  * (`app.lobu.ai`) and domain-scoped (`Domain=.lobu.ai`). A browser sends BOTH
- * in one `Cookie` header, the server resolves the FIRST, and RFC 6265 §5.4
- * orders equal-path cookies oldest-first. A stale host-only session cookie is
+ * in one `Cookie` header, Better Auth reads only the FIRST, and RFC 6265 §5.4
+ * orders equal-path cookies oldest-first. A stale host-only session cookie was
  * therefore permanently unbeatable: every later sign-in writes a strictly
- * NEWER cookie that can never take precedence, so the user is locked out of
+ * NEWER cookie that can never take precedence, so the user was locked out of
  * the app with no in-app way to recover. Measured on prod 2026-08-06 —
- * `dead; good` resolves to `null` while `good; dead` resolves to the session.
+ * `dead; good` resolved to `null` while `good; dead` resolved to the session.
  *
  * Host-only twins are produced by any path that sets the session cookie
  * without the configured zone: the `/exchange-token` and `/local-init` deep
  * links used to, and `document.cookie` planting (see docs/BROWSER_TESTING.md)
  * still can.
  *
- * The cure is to make sign-in authoritative. Whenever a response sets a
- * domain-scoped auth cookie, it also expires the host-only twin of that same
- * name, so a single sign-in collapses the jar back to one cookie — which also
- * self-heals an already-bricked browser on its next sign-in.
+ * Two things answer that, and this module is the second one. `resolveSession`
+ * (auth/resolve-session.ts) takes the ordering away from the browser at read
+ * time, so a duplicated jar can no longer lock anyone out. This module then
+ * collapses the jar: whenever a response sets a domain-scoped auth cookie, it
+ * also expires the host-only twin of that same name, so a single sign-in leaves
+ * one cookie behind — self-healing a browser that already carries a twin.
  */
 
 /** Better Auth's session cookie name, before the `__Secure-` prefix. */
@@ -33,28 +35,6 @@ export const SESSION_COOKIE_BASENAME = "better-auth.session_token";
  */
 export function sessionCookieName(isHttps: boolean): string {
 	return isHttps ? `__Secure-${SESSION_COOKIE_BASENAME}` : SESSION_COOKIE_BASENAME;
-}
-
-/**
- * Count how many times `name` appears in a `Cookie` request header.
- *
- * More than one is the brick signature: the request carries the same cookie at
- * two scopes and the loser is invisible to every log we keep. Matching is on
- * the exact name before `=`, so neither a `<name>_other` cookie nor a
- * `__Secure-<name>` cookie is mistaken for `<name>`.
- */
-export function countNamedCookies(
-	cookieHeader: string | null | undefined,
-	name: string,
-): number {
-	if (!cookieHeader) return 0;
-	let count = 0;
-	for (const part of cookieHeader.split(";")) {
-		const eq = part.indexOf("=");
-		if (eq === -1) continue;
-		if (part.slice(0, eq).trim() === name) count += 1;
-	}
-	return count;
 }
 
 /**

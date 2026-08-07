@@ -3,7 +3,6 @@ import {
 	SESSION_COOKIE_BASENAME,
 	convergeResponseCookieScope,
 	convergeSetCookieScope,
-	countNamedCookies,
 	hostOnlyExpiry,
 	sessionCookieName,
 } from "../../auth/session-cookie-scope";
@@ -23,17 +22,6 @@ describe("session cookie scope convergence", () => {
 	test("names the cookie the way Better Auth does", () => {
 		expect(sessionCookieName(true)).toBe(`__Secure-${SESSION_COOKIE_BASENAME}`);
 		expect(sessionCookieName(false)).toBe(SESSION_COOKIE_BASENAME);
-	});
-
-	test("counts duplicate session cookies in a Cookie header (the brick signal)", () => {
-		const name = sessionCookieName(true);
-		expect(countNamedCookies("", name)).toBe(0);
-		expect(countNamedCookies(`${name}=good`, name)).toBe(1);
-		expect(countNamedCookies(`${name}=dead; ${name}=good`, name)).toBe(2);
-		// A different cookie that merely shares a prefix must not be counted.
-		expect(countNamedCookies(`${name}_other=x; ${name}=good`, name)).toBe(1);
-		// The unprefixed name must not match the __Secure- variant.
-		expect(countNamedCookies(`__Secure-${name}=x`, name)).toBe(0);
 	});
 
 	test("builds a host-only expiry that targets the twin, never the domain cookie", () => {

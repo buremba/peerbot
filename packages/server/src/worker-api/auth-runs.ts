@@ -14,6 +14,7 @@ import { createAuth } from '../auth';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { errorMessage } from '../utils/errors';
+import { resolveSession } from '../auth/resolve-session';
 
 /**
  * GET /api/auth-runs/active?connection_id=X
@@ -32,7 +33,7 @@ export async function getActiveAuthRun(c: Context<{ Bindings: Env }>) {
     }
 
     const auth = await createAuth(c.env, c.req.raw);
-    const session = await auth.api.getSession({ headers: c.req.raw.headers });
+    const session = await resolveSession(auth, c.req.raw.headers);
     const userId = session?.user?.id;
     if (!userId) {
       return c.json({ error: 'Unauthorized' }, 401);
@@ -73,7 +74,7 @@ export async function getAuthRun(c: Context<{ Bindings: Env }>) {
     }
 
     const auth = await createAuth(c.env, c.req.raw);
-    const session = await auth.api.getSession({ headers: c.req.raw.headers });
+    const session = await resolveSession(auth, c.req.raw.headers);
     const userId = session?.user?.id;
     if (!userId) {
       return c.json({ error: 'Unauthorized' }, 401);
@@ -171,7 +172,7 @@ export async function postAuthSignal(c: Context<{ Bindings: Env }>) {
     }
 
     const auth = await createAuth(c.env, c.req.raw);
-    const session = await auth.api.getSession({ headers: c.req.raw.headers });
+    const session = await resolveSession(auth, c.req.raw.headers);
     const userId = session?.user?.id;
     if (!userId) {
       return c.json({ error: 'Unauthorized' }, 401);

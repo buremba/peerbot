@@ -55,6 +55,7 @@ import {
   exchangeCodeForTokens,
   fetchUserInfoWithRaw,
 } from './oauth-providers';
+import { resolveSession } from '../auth/resolve-session';
 
 interface OAuthAuthConfig {
   provider: string;
@@ -681,7 +682,7 @@ async function resolveConnectActorUserId(
 
   try {
     const auth = await createAuth(c.env, c.req.raw);
-    const session = await auth.api.getSession({ headers: c.req.raw.headers });
+    const session = await resolveSession(auth, c.req.raw.headers);
     return session?.user?.id ?? null;
   } catch {
     return null;

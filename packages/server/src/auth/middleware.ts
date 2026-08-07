@@ -10,6 +10,7 @@ import { getWorkspaceProvider } from '../workspace';
 import type { ResolveAuthNext } from '../workspace/types';
 import { createAuth } from './index';
 import type { AuthInfo } from './oauth/types';
+import { resolveSession } from './resolve-session';
 
 // Extend Hono context with auth properties
 declare module 'hono' {
@@ -77,7 +78,7 @@ declare module 'hono' {
 export async function requireAuth(c: Context<{ Bindings: Env }>, next: Next) {
   const auth = await createAuth(c.env);
   try {
-    const session = await auth.api.getSession({ headers: c.req.raw.headers });
+    const session = await resolveSession(auth, c.req.raw.headers);
     if (!session || !session.user) {
       return c.json({ error: 'Unauthorized', message: 'Valid session required' }, 401);
     }

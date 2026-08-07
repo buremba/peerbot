@@ -18,10 +18,6 @@ import type {
   ResolvedOwner,
   WorkspaceProvider,
 } from './types';
-import {
-  countNamedCookies,
-  sessionCookieName,
-} from '../auth/session-cookie-scope';
 import { listManagedAuthConnectorOffers } from './managed-auth-discovery';
 import {
   memberRoleCache,
@@ -29,6 +25,7 @@ import {
   ownerCache,
   sessionCache,
 } from './multi-tenant-caches';
+import { resolveSession, sessionCookieCandidates } from '../auth/resolve-session';
 
 /**
  * Path namespaces that don't carry an org context. Authenticated requests to
@@ -526,32 +523,28 @@ export class MultiTenantProvider implements WorkspaceProvider {
     //    plugin, which translates the header into a session lookup before
     //    `auth.api.getSession` runs below.
     try {
-      // Extract session token for cache key
-      const cookieHeader = c.req.header('Cookie') || '';
-      const sessionTokenMatch = cookieHeader.match(
-        /(?:__Secure-)?better-auth\.session_token=([^;]+)/
-      );
-      const sessionCacheKey = sessionTokenMatch?.[1] || null;
+      const candidates = sessionCookieCandidates(c.req.header('Cookie'));
+      // The ordinary jar holds one session cookie and its value is the cache key.
+      // With a duplicate the key is ambiguous, so there is nothing safe to look
+      // up — resolveSession decides which one is live.
+      const sessionCacheKey =
+        candidates.length === 1 ? candidates[0].value : null;
 
-      // A duplicate at a narrower scope shadows the real session and is
-      // otherwise invisible — `get-session` just answers 200 null forever.
-      // Warn so the next occurrence is one log line instead of an afternoon.
-      // Why: auth/session-cookie-scope.ts.
-      for (const name of [
-        sessionCookieName(true),
-        sessionCookieName(false),
-      ]) {
-        const seen = countNamedCookies(cookieHeader, name);
-        if (seen > 1) {
-          // Include the host: a bricked browser emits this on EVERY request,
-          // and without knowing which host issued the twin the line says what
-          // happened but not where to go fix it.
-          logger.warn(
-            `[MultiTenantProvider] ${seen} "${name}" cookies in one request ` +
-              `(host=${c.req.header('host') || 'unknown'}) — a duplicate ` +
-              'at a narrower scope shadows the real session and blocks sign-in until expired'
-          );
-        }
+      // A duplicated session cookie no longer decides anything — resolveSession
+      // picks the live one regardless of order — but it still means the browser
+      // is carrying a twin that should not exist, and it is otherwise invisible.
+      // Log it so the source can be found. Why: auth/session-cookie-scope.ts.
+      if (candidates.length > 1) {
+        // Host and names both matter: the host says which origin planted the
+        // twin, and the names say whether it is a second scope of one name or a
+        // leftover of the other spelling — different causes, different fixes.
+        logger.warn(
+          `[MultiTenantProvider] ${candidates.length} session cookies in one request ` +
+            `(host=${c.req.header('host') || 'unknown'}, names=${candidates
+              .map((candidate) => candidate.name)
+              .join(',')}) — resolving on merit, but the jar should be ` +
+            'collapsed on next sign-in'
+        );
       }
 
       let session: { user: any; session: any } | null = null;
@@ -565,7 +558,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
       }
       if (!cacheHit) {
         const auth = await createAuth(c.env);
-        session = await auth.api.getSession({ headers: c.req.raw.headers });
+        session = await resolveSession(auth, c.req.raw.headers);
         // Only cache valid sessions. Caching `null` would let an explicitly
         // revoked or expired session continue to resolve to "no auth" for
         // the cache TTL (30s) instead of returning the upstream's fresh

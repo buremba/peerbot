@@ -652,6 +652,20 @@ app.on(["GET", "POST"], "/api/auth/*", async (c) => {
 			});
 		}
 	}
+	// Better Auth reads the raw jar and takes the FIRST session cookie, so a
+	// browser carrying a stale twin gets `null` from /api/auth/get-session — the
+	// call the web app uses to ask whether it is signed in. Hand it a jar already
+	// reduced to the live cookie. Why: auth/resolve-session.ts.
+	const collapsed = await collapseSessionCookies(auth, request.headers);
+	if (collapsed !== request.headers) {
+		request = new Request(request.url, {
+			method: request.method,
+			headers: collapsed,
+			body: request.method === "GET" || request.method === "HEAD"
+				? undefined
+				: await request.blob(),
+		});
+	}
 	const response = await auth.handler(request);
 	// Collapse the cookie jar back to a single scope, so sign-in is authoritative
 	// for every auth method at once. Why: auth/session-cookie-scope.ts.
@@ -960,6 +974,7 @@ app.post("/api/workers/complete-action", completeActionRun);
 // against a paired Owletto extension. See dispatch-chrome-action.ts.
 import { dispatchChromeAction } from "./worker-api/dispatch-chrome-action";
 import { stampSlackIdentityForUser } from "./auth/subject-identities";
+import { collapseSessionCookies, resolveSession } from './auth/resolve-session';
 
 app.post("/api/workers/dispatch-chrome-action", dispatchChromeAction);
 app.post("/api/workers/complete-embeddings", completeEmbeddings);
@@ -1073,7 +1088,7 @@ app.get("/api/organizations", async (c) => {
 	let userId: string | null = null;
 	try {
 		const auth = await createAuth(c.env);
-		const session = await auth.api.getSession({ headers: c.req.raw.headers });
+		const session = await resolveSession(auth, c.req.raw.headers);
 		userId = session?.session?.userId || null;
 	} catch {
 		// No session
@@ -2387,7 +2402,7 @@ app.post("/api/:orgSlug/join", async (c) => {
 	}
 
 	const auth = await createAuth(c.env);
-	const session = await auth.api.getSession({ headers: c.req.raw.headers });
+	const session = await resolveSession(auth, c.req.raw.headers);
 	const userId = session?.session?.userId;
 	if (!userId) {
 		return c.json(
@@ -2445,7 +2460,7 @@ async function resolveClaimSessionUser(
 ): Promise<string | null> {
 	try {
 		const auth = await createAuth(env);
-		const session = await auth.api.getSession({ headers: req.headers });
+		const session = await resolveSession(auth, req.headers);
 		return session?.user?.id ?? null;
 	} catch {
 		return null;

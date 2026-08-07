@@ -20,6 +20,7 @@ import { DEFAULT_SCOPES_STRING, filterScopeByRole } from './scopes';
 import type { AuthorizationParams, OAuthClientMetadata, TokenRequestParams } from './types';
 import { createOAuthError, validateRedirectUri } from './utils';
 import { getConfiguredPublicOrigin } from '../../utils/public-origin';
+import { resolveSession } from '../resolve-session';
 
 const oauthRoutes = new Hono<{ Bindings: Env }>();
 
@@ -511,7 +512,7 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
     // Check if user has an active session
     const auth = await createAuth(c.env);
     try {
-      const session = await auth.api.getSession({ headers: c.req.raw.headers });
+      const session = await resolveSession(auth, c.req.raw.headers);
       if (session?.user) {
         // User is logged in — auto-approve and redirect with code
         const code = await provider.createAuthorizationCode(params, session.user.id, null);

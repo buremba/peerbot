@@ -22,13 +22,27 @@
  * what authenticates — never its position in the jar.
  */
 
-import { SESSION_COOKIE_BASENAME, sessionCookieName } from './session-cookie-scope';
+import { sessionCookieName } from './session-cookie-scope';
 
 /**
  * Both spellings can be present at once: Better Auth adds the `__Secure-`
  * prefix only when issuing secure cookies, and a jar can outlive that switch.
  */
 const SESSION_COOKIE_NAMES = [sessionCookieName(false), sessionCookieName(true)];
+
+/**
+ * How many candidates one request may cost us.
+ *
+ * `Cookie` is attacker-controlled and each probe is a session lookup, so an
+ * unbounded loop turns one unauthenticated request into ~100 of them. A real
+ * jar holds a twin or two (host-only, domain, occasionally a parent domain, and
+ * at most one leftover of the other spelling), so this is far above anything a
+ * browser produces and still bounds the cost.
+ */
+const MAX_CANDIDATES = 8;
+
+/** One session cookie as the jar carries it: its exact name and raw value. */
+type SessionCookieCandidate = { name: string; value: string };
 
 /**
  * The minimum of Better Auth's surface this module needs. Deliberately generic:
@@ -41,23 +55,30 @@ type SessionReader = {
 type SessionOf<A extends SessionReader> = Awaited<ReturnType<A['api']['getSession']>>;
 
 /**
- * Every session-cookie value in a `Cookie` header, in the order sent.
+ * Every session cookie in a `Cookie` header, in the order sent.
+ *
+ * Each candidate keeps the name it arrived under, because that name is what
+ * decides whether Better Auth can see it at all: `getSession` reads exactly one
+ * name, the one `useSecureCookies` derives, and is blind to the other spelling.
  *
  * Values come back raw — only `getSession` can say which of them verify.
  * Matching is on the exact name before `=`, so a `<name>_other` cookie is never
  * mistaken for `<name>`.
  */
-export function sessionCookieCandidates(cookieHeader: string | null | undefined): string[] {
+export function sessionCookieCandidates(
+  cookieHeader: string | null | undefined
+): SessionCookieCandidate[] {
   if (!cookieHeader) return [];
-  const values: string[] = [];
+  const candidates: SessionCookieCandidate[] = [];
   for (const part of cookieHeader.split(';')) {
     const eq = part.indexOf('=');
     if (eq === -1) continue;
-    if (!SESSION_COOKIE_NAMES.includes(part.slice(0, eq).trim())) continue;
+    const name = part.slice(0, eq).trim();
+    if (!SESSION_COOKIE_NAMES.includes(name)) continue;
     const value = part.slice(eq + 1).trim();
-    if (value) values.push(value);
+    if (value) candidates.push({ name, value });
   }
-  return values;
+  return candidates;
 }
 
 /** A session object Better Auth considers authenticated. */
@@ -72,8 +93,12 @@ function isLive(session: any): boolean {
  * ordinary request — is byte-for-byte the old behaviour and costs nothing extra;
  * the extra lookups happen only for a jar that is already broken.
  *
- * Note the candidate header keeps every other header intact and rewrites only
- * `Cookie`, so `Authorization: Bearer` and origin checks behave as before.
+ * A probe keeps every other header intact and rewrites only `Cookie`, so
+ * `Authorization: Bearer` and origin checks behave as before. It also keeps the
+ * candidate's own name: renaming it would hide it from `getSession` entirely.
+ * Dropping the rest of the jar drops Better Auth's `session_data` cookie cache
+ * with it, so a probe always asks the database — correct, and only on the
+ * already-broken path.
  */
 export async function resolveSession<A extends SessionReader>(
   auth: A,
@@ -82,9 +107,9 @@ export async function resolveSession<A extends SessionReader>(
   const candidates = sessionCookieCandidates(headers.get('cookie'));
   if (candidates.length <= 1) return await auth.api.getSession({ headers });
 
-  for (const candidate of candidates) {
+  for (const candidate of candidates.slice(0, MAX_CANDIDATES)) {
     const single = new Headers(headers);
-    single.set('cookie', `${SESSION_COOKIE_BASENAME}=${candidate}`);
+    single.set('cookie', `${candidate.name}=${candidate.value}`);
     const session = await auth.api.getSession({ headers: single });
     if (isLive(session)) return session;
   }

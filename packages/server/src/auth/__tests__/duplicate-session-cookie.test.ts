@@ -64,9 +64,13 @@ describe('duplicate session cookies', () => {
     return body.organizations.map((o) => o.slug);
   }
 
-  // A garbage value that is a syntactically plausible signed cookie but cannot
-  // verify — exactly what a stale twin looks like once its session is revoked.
+  // Garbage values that are syntactically plausible signed cookies — a 44-char
+  // base64 signature, which is the shape better-call checks before it verifies
+  // anything — but cannot pass the HMAC. Exactly what a stale twin looks like
+  // once its session is revoked. Both must fail on the signature, not on shape,
+  // or "every candidate is dead" would prove nothing about verification.
   const DEAD = 'deadbeefdeadbeef.c2lnbmF0dXJlc2lnbmF0dXJlc2lnbmF0dXJlc2lnbmE=';
+  const ALSO_DEAD = 'f00df00df00df00d.c2lnbmF0dXJlc2lnbmF0dXJlc2lnbmF0dXJlc2lnbmE=';
 
   it('authenticates when the live cookie is FIRST in the jar', async () => {
     const slug = 'dup-good-first';
@@ -93,7 +97,7 @@ describe('duplicate session cookies', () => {
 
     // Resolving candidates must not become "authenticate on anything". With no
     // live token in the jar the answer is still no session.
-    expect(await orgSlugsFor(`${name}=${DEAD}; ${name}=${DEAD}2`)).not.toContain(slug);
+    expect(await orgSlugsFor(`${name}=${DEAD}; ${name}=${ALSO_DEAD}`)).not.toContain(slug);
   });
 
   it('is unchanged for the ordinary single-cookie jar', async () => {

@@ -527,18 +527,23 @@ export class MultiTenantProvider implements WorkspaceProvider {
       // The ordinary jar holds one session cookie and its value is the cache key.
       // With a duplicate the key is ambiguous, so there is nothing safe to look
       // up — resolveSession decides which one is live.
-      const sessionCacheKey = candidates.length === 1 ? candidates[0] : null;
+      const sessionCacheKey =
+        candidates.length === 1 ? candidates[0].value : null;
 
       // A duplicated session cookie no longer decides anything — resolveSession
       // picks the live one regardless of order — but it still means the browser
       // is carrying a twin that should not exist, and it is otherwise invisible.
       // Log it so the source can be found. Why: auth/session-cookie-scope.ts.
       if (candidates.length > 1) {
-        // The host matters: it is what identifies which origin planted the twin.
+        // Host and names both matter: the host says which origin planted the
+        // twin, and the names say whether it is a second scope of one name or a
+        // leftover of the other spelling — different causes, different fixes.
         logger.warn(
           `[MultiTenantProvider] ${candidates.length} session cookies in one request ` +
-            `(host=${c.req.header('host') || 'unknown'}) — a duplicate at a narrower ` +
-            'scope; resolving on merit, but the jar should be collapsed on next sign-in'
+            `(host=${c.req.header('host') || 'unknown'}, names=${candidates
+              .map((candidate) => candidate.name)
+              .join(',')}) — resolving on merit, but the jar should be ` +
+            'collapsed on next sign-in'
         );
       }
 

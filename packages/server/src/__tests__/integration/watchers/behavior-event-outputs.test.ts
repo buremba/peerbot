@@ -3,6 +3,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../../db/client';
 import { createWatcherRun } from '../../../runs/queue-service';
 import { persistBehaviorEventOutput } from '../../../utils/persist-behavior-event-output';
+import {
+  BEHAVIOR_EVENT_IDENTITY_NS,
+  computeStableKey,
+  formatBehaviorEventIdentity,
+} from '../../../utils/stable-keys';
 import { computePendingWindow } from '../../../utils/window-utils';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity, createTestEvent } from '../../setup/test-fixtures';
@@ -290,10 +295,12 @@ describe('Behavior event outputs', () => {
     expect(v2).toMatchObject({ supersedes_event_id: v1?.id ?? null, superseded_by: null });
     expect(taste).toMatchObject({ supersedes_event_id: null, superseded_by: null });
 
-    // A keyed supersede must match a legacy (pre-Behavior) head by metadata,
-    // not just the producing Behavior — a migrated seed event becomes the
-    // supersede target of the first run.
-    const legacy = await sql<{ id: number }>`
+    // An unkeyed row carrying the same metadata is INERT: identity is stamped by
+    // the writer, never inferred from metadata at read time. A row nothing
+    // claimed identity for cannot be hijacked as a supersede target — which is
+    // what the old `metadata @>` probe did, and why a shrunk key declaration
+    // could silently supersede a DIFFERENT key's head.
+    const unkeyed = await sql<{ id: number }>`
       INSERT INTO events (
         organization_id, origin_id, title, payload_text, semantic_type, client_id, metadata
       ) VALUES (
@@ -308,12 +315,47 @@ describe('Behavior event outputs', () => {
       FROM events
       WHERE organization_id = ${workspace.org.id} AND payload_text = 'X voice v3'
     `;
-    expect(v3[0].supersedes_event_id).toBe(legacy[0].id);
+    // The run extends its OWN chain (v2 was the head), and leaves the unkeyed
+    // row exactly as it found it.
+    expect(v3[0].supersedes_event_id).toBe(v2?.id);
+    const untouched = await sql<{ superseded_by: number | null; identity_key: string | null }>`
+      SELECT superseded_by, identity_key FROM events WHERE id = ${unkeyed[0].id}
+    `;
+    expect(untouched[0]).toMatchObject({ superseded_by: null, identity_key: null });
 
-    // Missing key field and duplicate key within one array are rejected.
+    // Pre-existing rows are adopted DELIBERATELY, by scripts/backfill-event-identity.ts
+    // stamping the identity the writer computes — not by a lucky metadata match at
+    // runtime. Once stamped, the chain is the Behavior's to extend. This is the
+    // same call the backfill makes.
+    const adopted = await sql<{ id: number }>`
+      INSERT INTO events (
+        organization_id, origin_id, title, payload_text, semantic_type, client_id,
+        metadata, identity_ns, identity_key
+      ) VALUES (
+        ${workspace.org.id}, ${'migrated-seed'}, ${'Migrated'}, ${'Y voice legacy'},
+        ${'observation'}, NULL, ${sql.json({ channel: 'y', mode: 'voice' })},
+        ${BEHAVIOR_EVENT_IDENTITY_NS},
+        ${formatBehaviorEventIdentity(
+          'observation',
+          computeStableKey({ channel: 'y', mode: 'voice' }, ['channel', 'mode'])
+        )}
+      )
+      RETURNING id
+    `;
+    await persist([{ content: 'Y voice v1', metadata: { channel: 'y', mode: 'voice' } }], 9006);
+    const adoptedNext = await sql<{ supersedes_event_id: number | null }>`
+      SELECT supersedes_event_id
+      FROM events
+      WHERE organization_id = ${workspace.org.id} AND payload_text = 'Y voice v1'
+    `;
+    expect(adoptedNext[0].supersedes_event_id).toBe(adopted[0].id);
+
+    // Missing key field and duplicate key within one array are rejected. The
+    // message comes from computeStableKey — the one validator — so it names the
+    // offending field rather than the declaration as a whole.
     await expect(
       persist([{ content: 'no key', metadata: { channel: 'x' } }], 9004)
-    ).rejects.toThrow(/missing required key field/);
+    ).rejects.toThrow(/invalid key \(channel, mode\).*'mode' must be present/);
     await expect(
       persist(
         [

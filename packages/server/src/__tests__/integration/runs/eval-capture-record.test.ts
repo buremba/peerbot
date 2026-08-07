@@ -10,6 +10,7 @@
 import type { Context } from "hono";
 import { beforeAll, describe, expect, test } from "vitest";
 import {
+	MAX_CAPTURED_DETAIL_CHARS,
 	MAX_CAPTURED_SIDE_EFFECTS,
 	captureSideEffect,
 } from "../../../gateway/routes/internal/capture-mode";
@@ -230,5 +231,34 @@ describe("captureSideEffect — the record", () => {
 			{ name: "x.txt" },
 		);
 		expect((await sideEffectsOf(run)).truncated).toBe(false);
+	});
+
+	test("an oversized payload is bounded, not stored whole", async () => {
+		// The entry cap bounds how many effects are recorded, not how big each is.
+		// A single agent-authored message body is what actually bloats the column.
+		const run = await seedRun("behavior_eval");
+		const huge = "x".repeat(MAX_CAPTURED_DETAIL_CHARS * 3);
+		await captureSideEffect(
+			ctx({ executionMode: "capture", behaviorRunId: run }),
+			"conversations.send",
+			{ text: huge },
+		);
+		const [entry] = (await sideEffectsOf(run)).entries;
+		expect(entry.details.details_truncated).toBe(true);
+		expect(entry.details.text).toBeUndefined();
+		expect(
+			(entry.details.details_preview as string).length,
+		).toBeLessThanOrEqual(MAX_CAPTURED_DETAIL_CHARS);
+	});
+
+	test("a payload under the size cap is stored verbatim", async () => {
+		const run = await seedRun("behavior_eval");
+		await captureSideEffect(
+			ctx({ executionMode: "capture", behaviorRunId: run }),
+			"runtime.exec",
+			{ command: "ls -la" },
+		);
+		const [entry] = (await sideEffectsOf(run)).entries;
+		expect(entry.details).toEqual({ command: "ls -la" });
 	});
 });

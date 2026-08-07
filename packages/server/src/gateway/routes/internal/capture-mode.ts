@@ -33,6 +33,30 @@ import type { WorkerContext } from "./types.js";
 export const MAX_CAPTURED_SIDE_EFFECTS = 50;
 
 /**
+ * Cap on one entry's `details`. The entry cap above bounds how MANY effects are
+ * recorded, not how big each one is, and these payloads carry agent-authored
+ * free text — a chat message body, a shell command. Bounded here rather than at
+ * the call sites so every capture point, including ones added later, is
+ * covered.
+ */
+export const MAX_CAPTURED_DETAIL_CHARS = 4000;
+
+/**
+ * Serialised size, not key count: a single long string is the shape that
+ * actually bloats the column. Over budget, the entry keeps a readable prefix
+ * and says it was cut, because a score reads what the agent tried to do and a
+ * truncated attempt is still that.
+ */
+function boundDetails(details: Record<string, unknown>): Record<string, unknown> {
+	const json = JSON.stringify(details) ?? "";
+	if (json.length <= MAX_CAPTURED_DETAIL_CHARS) return details;
+	return {
+		details_truncated: true,
+		details_preview: json.slice(0, MAX_CAPTURED_DETAIL_CHARS),
+	};
+}
+
+/**
  * True when this worker's run must not perform side effects. Sourced from the
  * signed token claim set at session creation from `runs.run_type`.
  */
@@ -133,7 +157,7 @@ async function recordCapturedSideEffect(
                      || jsonb_build_array(
                           jsonb_build_object(
                             'action', ${action}::text,
-                            'details', ${sql.json(details as never)}::jsonb,
+                            'details', ${sql.json(boundDetails(details) as never)}::jsonb,
                             'at', to_jsonb(current_timestamp)
                           )
                         )

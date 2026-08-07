@@ -53,6 +53,14 @@ export interface WorkerTokenClaimsArgs {
 	nixPackages?: string[];
 }
 
+function behaviorRunIdFromIntent(intent: unknown): number | undefined {
+	if (!intent || typeof intent !== "object") return undefined;
+	const runId = (intent as { runId?: unknown }).runId;
+	return typeof runId === "number" && Number.isInteger(runId) && runId > 0
+		? runId
+		: undefined;
+}
+
 /**
  * The routing claims common to both worker-token mints, in the exact shape the
  * `generateWorkerToken` options object expects. `connectionId`,
@@ -71,14 +79,6 @@ export interface WorkerTokenClaimsArgs {
  * headless and skip the SSE-owner gate (no browser SSE exists on any pod for a
  * headless run, so an owner-gated card would dead-letter).
  */
-function behaviorRunIdFromIntent(intent: unknown): number | undefined {
-	if (!intent || typeof intent !== "object") return undefined;
-	const runId = (intent as { runId?: unknown }).runId;
-	return typeof runId === "number" && Number.isInteger(runId) && runId > 0
-		? runId
-		: undefined;
-}
-
 export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
 	channelId: string;
 	teamId?: string;

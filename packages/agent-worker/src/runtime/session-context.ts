@@ -34,12 +34,6 @@ interface ProviderConfig {
   configProviders?: Record<string, ConfigProviderMeta>;
   /** Installed Lobu provider ID → upstream runtime provider slug. */
   installedProviderRoutes?: Record<string, string>;
-  /**
-   * True when the gateway MATCHED `defaultProvider` to the agent's model;
-   * false when it was picked by the credentialed-fallback scan and therefore
-   * does not serve the requested model. Absent on older gateways.
-   */
-  defaultProviderServesModel?: boolean;
   /** Credential env var placeholders for proxy mode (e.g. Z_AI_API_KEY → "lobu-proxy") */
   credentialPlaceholders?: Record<string, string>;
 }

@@ -483,7 +483,7 @@ describe("resolveDynamicModelApi — real OpenAI uses the Responses API", () => 
   });
 });
 
-describe("resolveModelRef — providerSlug must describe the REQUESTED model", () => {
+describe("resolveModelRef — routing and providerSlug must follow the REQUESTED model", () => {
   test("an explicitly-prefixed model routes AND attributes to its own provider", () => {
     // Observed live: agent models = ["gemini/gemini-2.5-flash"], but the
     // session context published defaultProvider="openai" (the gateway's
@@ -494,9 +494,6 @@ describe("resolveModelRef — providerSlug must describe the REQUESTED model", (
     const result = resolveModelRef("gemini/gemini-2.5-flash", {
       defaultProvider: "openai",
       defaultProviderSlug: "openai",
-      // The gateway could NOT match this model to a provider, so its
-      // credentialed-fallback scan published openai.
-      defaultProviderServesModel: false,
       installedProviderRoutes: { openai: "openai", gemini: "gemini" },
     });
 
@@ -505,16 +502,14 @@ describe("resolveModelRef — providerSlug must describe the REQUESTED model", (
     expect(result.modelId).toBe("gemini-2.5-flash");
   });
 
-  test("a SERVING provider keeps the CTA even when its model names another installed provider", () => {
-    // Why an installed-provider match cannot decide attribution on its own.
-    // OpenRouter is configured AND serves this model; the "openai" inside the
-    // ref is OpenRouter's vendor namespace, not a request for the OpenAI
-    // provider — even though standalone OpenAI is also installed.
+  test("a configured provider's OWN vendor namespace is not a foreign pin", () => {
+    // OpenRouter is the configured provider; the "openai" inside the ref is
+    // OpenRouter's vendor namespace, not a request for the OpenAI provider —
+    // even though standalone OpenAI is also installed. The ref's FIRST segment
+    // is what names a provider, and here that is openrouter itself.
     const result = resolveModelRef("openrouter/openai/gpt-4o", {
       defaultProvider: "openrouter",
       defaultProviderSlug: "openrouter",
-      // The gateway MATCHED the model to OpenRouter.
-      defaultProviderServesModel: true,
       installedProviderRoutes: { openai: "openai", openrouter: "openrouter" },
     });
 
@@ -523,56 +518,45 @@ describe("resolveModelRef — providerSlug must describe the REQUESTED model", (
     expect(result.modelId).toBe("openai/gpt-4o");
   });
 
-  test("attribution follows the RESOLVED model when the run carries no explicit ref", () => {
-    // The common shape: the run has no per-turn model, so the ref comes from
-    // `defaultModel`. Attribution must read the RESOLVED ref — deriving it from
-    // the raw (empty) argument silently skipped reattribution and reproduced the
-    // exact wrong-provider CTA this fix exists to prevent.
-    const result = resolveModelRef("", {
-      defaultModel: "gemini/gemini-2.5-flash",
+  test("the same pin routes identically via rawModelRef and via defaultModel", () => {
+    // How the pin reaches the resolver is not a routing fact. These two calls
+    // describe the same agent — one turn carried a per-turn model, the other
+    // fell back to the agent's configured default — and they must agree.
+    const overrides = {
       defaultProvider: "openai",
       defaultProviderSlug: "openai",
-      defaultProviderServesModel: false,
       installedProviderRoutes: { openai: "openai", gemini: "gemini" },
+    };
+    const viaRaw = resolveModelRef("gemini/gemini-2.5-flash", overrides);
+    const viaDefault = resolveModelRef("", {
+      ...overrides,
+      defaultModel: "gemini/gemini-2.5-flash",
     });
 
-    expect(result.providerSlug).toBe("gemini");
-    // Routing still belongs to the gateway's published provider.
+    expect(viaDefault).toEqual(viaRaw);
+    expect(viaDefault.provider).toBe("gemini");
+    expect(viaDefault.modelId).toBe("gemini-2.5-flash");
+  });
+
+  test("an agent's configured pin ROUTES even when it arrives via defaultModel", () => {
+    // Observed live (buremba, Behavior 20): the agent is pinned to
+    // "openai/gpt-5.6-luna" and OpenAI is installed, but the run carries no
+    // per-turn model — so the pin reaches the resolver as `defaultModel`, not as
+    // `rawModelRef`. The gateway's credentialed-fallback scan published qwen.
+    //
+    // The run executed on QWEN with the literal string "openai/gpt-5.6-luna" as
+    // the model id. Routing must follow the pin exactly as it does for an
+    // explicit ref — how the ref reached the resolver is not a routing fact.
+    const result = resolveModelRef("", {
+      defaultModel: "openai/gpt-5.6-luna",
+      defaultProvider: "qwen",
+      defaultProviderSlug: "qwen",
+      installedProviderRoutes: { qwen: "qwen", openai: "openai" },
+    });
+
     expect(result.provider).toBe("openai");
-  });
-
-  test("an UNINSTALLED aggregator namespace never owns the CTA", () => {
-    // Both gateway facts are required. Here the model was NOT matched
-    // (`serves: false`, so the fallback scan picked OpenRouter), but the
-    // "anthropic" prefix is an OpenRouter vendor namespace — there is no
-    // Anthropic provider installed. Attributing the CTA to it would send the
-    // user to reconnect a provider that does not exist in this deployment.
-    const result = resolveModelRef("anthropic/claude-sonnet-4", {
-      defaultProvider: "openrouter",
-      defaultProviderSlug: "openrouter",
-      defaultProviderServesModel: false,
-      installedProviderRoutes: { openrouter: "openrouter" },
-    });
-
-    expect(result.providerSlug).toBe("openrouter");
-    expect(result.provider).toBe("openrouter");
-    expect(result.modelId).toBe("anthropic/claude-sonnet-4");
-  });
-
-  test("an older gateway (field absent) keeps the pre-existing attribution", () => {
-    // Back-compat: a gateway that predates `defaultProviderServesModel` sends
-    // nothing. Absent must mean "serves" so a stale gateway keeps today's
-    // behavior instead of acquiring a NEW misattribution. Exact mirror of the
-    // `defaultModel` case above, which reattributes to gemini on `serves:
-    // false` — drop the field and the default provider keeps the CTA.
-    const result = resolveModelRef("", {
-      defaultModel: "gemini/gemini-2.5-flash",
-      defaultProvider: "openai",
-      defaultProviderSlug: "openai",
-      installedProviderRoutes: { openai: "openai", gemini: "gemini" },
-    });
-
     expect(result.providerSlug).toBe("openai");
+    expect(result.modelId).toBe("gpt-5.6-luna");
   });
 
   test("a bare model id still inherits the configured default provider", () => {
@@ -588,9 +572,11 @@ describe("resolveModelRef — providerSlug must describe the REQUESTED model", (
   test("a provider-INTERNAL namespace keeps the configured provider's slug", () => {
     // OpenRouter's "anthropic/claude-sonnet-4" means "OpenRouter's anthropic
     // model", NOT "switch to the anthropic provider". `anthropic` is not an
-    // installed provider here, so the CTA must stay on openrouter — pointing
-    // it at `anthropic` would send the user to a provider this deployment
-    // does not even have.
+    // installed provider here, so it must neither route nor own the CTA —
+    // pointing either at `anthropic` would send the run, and the user, to a
+    // provider this deployment does not even have. This is the case that makes
+    // a blanket "first segment wins" rule wrong, and it is why the guard is
+    // membership in `installedProviderRoutes`.
     const result = resolveModelRef("anthropic/claude-sonnet-4", {
       defaultProvider: "openrouter",
       defaultProviderSlug: "openrouter",
@@ -601,9 +587,10 @@ describe("resolveModelRef — providerSlug must describe the REQUESTED model", (
     expect(result.modelId).toBe("anthropic/claude-sonnet-4");
   });
 
-  test("no installedProviderRoutes → keep the default attribution (cannot tell them apart)", () => {
+  test("no installedProviderRoutes → stay on the default (cannot tell them apart)", () => {
     // Without the gateway's installed-provider list we cannot distinguish a
-    // real provider request from a provider-internal namespace, so fail safe.
+    // real provider request from a provider-internal namespace, so fail safe:
+    // neither the route nor the CTA leaves the configured provider.
     const result = resolveModelRef("anthropic/claude-sonnet-4", {
       defaultProvider: "openrouter",
       defaultProviderSlug: "openrouter",

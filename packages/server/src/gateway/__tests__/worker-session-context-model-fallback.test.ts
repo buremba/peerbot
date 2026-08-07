@@ -105,7 +105,7 @@ async function sessionContextModel(
  */
 async function sessionContextProviderConfig(gateway: WorkerGateway): Promise<{
   defaultProvider?: string;
-  defaultProviderServesModel?: boolean;
+  installedProviderRoutes?: Record<string, string>;
 }> {
   const token = generateWorkerToken("user-1", "conv-1", "worker-a", {
     channelId: "channel-1",
@@ -119,7 +119,7 @@ async function sessionContextProviderConfig(gateway: WorkerGateway): Promise<{
   const body = (await res.json()) as {
     providerConfig?: {
       defaultProvider?: string;
-      defaultProviderServesModel?: boolean;
+      installedProviderRoutes?: Record<string, string>;
     };
   };
   return body.providerConfig ?? {};
@@ -304,20 +304,12 @@ describe("worker model fallback (real DB, both channels)", () => {
     expect(await sessionContextModel(gateway)).toBe("byo2/byo2-model");
   });
 
-  test("CTA attribution: a model-MATCHED provider publishes defaultProviderServesModel=true", async () => {
-    // `defaultProviderServesModel` tells the worker whether the published
-    // `defaultProvider` was MATCHED to the model (findProviderForModel) or
-    // merely picked by the credentialed-fallback scan. The worker gates failure
-    // CTA attribution on it: true means this provider genuinely serves the ref,
-    // so the CTA stays here even when the model's prefix names some OTHER
-    // installed provider (OpenRouter's "openai/gpt-4o" vendor namespace).
-    //
-    // With models PINNED (as here) the allow-list path applies and
-    // `resolveDispatchModel` fails closed, so an unroutable ref is replaced or
-    // yields no provider at all — this branch always sees a matched provider.
-    // The false branch is reached via the ALLOW-ALL path instead (no pinned
-    // models ⇒ `allowedRefs === null` ⇒ no routability check); see the
-    // fallback-picked test below.
+  test("a MATCHED provider is published both as the default and as an installed route", async () => {
+    // `installedProviderRoutes` is the worker's sole routing discriminator: a
+    // model ref may only route away from `defaultProvider` when its prefix names
+    // a provider in this map. So the gateway owes the map an entry for every
+    // provider it actually resolved — here the pinned byo2, which is also the
+    // published default.
     const sql = getDb();
     await sql`DELETE FROM inference_providers WHERE organization_id = ${ORG}`;
     await createInferenceProvider({
@@ -360,10 +352,10 @@ describe("worker model fallback (real DB, both channels)", () => {
 
     const pc = await sessionContextProviderConfig(gateway);
     expect(pc.defaultProvider).toBe("byo2");
-    expect(pc.defaultProviderServesModel).toBe(true);
+    expect(pc.installedProviderRoutes?.byo2).toBeTruthy();
   });
 
-  test("CTA attribution: a FALLBACK-picked provider publishes defaultProviderServesModel=false", async () => {
+  test("a FALLBACK-picked default does not make the requested provider routable", async () => {
     // The live wrong-provider shape. The agent pins NO models, so the policy is
     // ALLOW-ALL (`allowedRefs === null`) and `enforceModelAllowList` returns the
     // requested ref VERBATIM with no routability check — the one path where an
@@ -373,8 +365,12 @@ describe("worker model fallback (real DB, both channels)", () => {
     // The org default names "gemini", which has no installed module here, so
     // findProviderForModel matches nothing and the credentialed-fallback scan
     // publishes byo2 — a provider that does NOT serve the requested model.
-    // Without the false, the worker would pin the failure CTA on byo2 and tell
-    // the user to reconnect a provider they never asked for.
+    //
+    // "gemini" must therefore be ABSENT from `installedProviderRoutes`. That
+    // absence is what stops the worker from rerouting the run to a provider the
+    // gateway could not resolve: the pin is honoured only when the gateway has
+    // published a real route for it, so an unresolvable prefix stays on the
+    // fallback rather than conjuring a provider that cannot serve the call.
     const sql = getDb();
     await sql`DELETE FROM inference_providers WHERE organization_id = ${ORG}`;
     await createInferenceProvider({
@@ -426,7 +422,11 @@ describe("worker model fallback (real DB, both channels)", () => {
 
     const pc = await sessionContextProviderConfig(gateway);
     expect(pc.defaultProvider).toBe("byo2");
-    expect(pc.defaultProviderServesModel).toBe(false);
+    // Assert the map was published and populated FIRST — otherwise the absence
+    // of "gemini" below is satisfied by the map simply being missing, and the
+    // test would keep passing if the gateway stopped publishing routes at all.
+    expect(pc.installedProviderRoutes?.byo2).toBeTruthy();
+    expect(pc.installedProviderRoutes?.gemini).toBeUndefined();
   });
 
   test("R5 #4: an ORGLESS worker token publishes NO model for a db-backed shared id (no cross-org read)", async () => {

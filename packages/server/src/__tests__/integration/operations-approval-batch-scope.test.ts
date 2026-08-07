@@ -459,4 +459,30 @@ describe("manage_operations batch scope (connector-approval lane)", () => {
 
 		await sql`DELETE FROM runs WHERE organization_id = ${otherOrg.id}`;
 	});
+
+	it("single approve fails closed when the run's connection was deleted", async () => {
+		const sql = getTestDb();
+		const conn = await createTestConnection({
+			organization_id: orgId,
+			connector_key: APPROVAL_CONNECTOR,
+			created_by: ownerCtx.userId ?? undefined,
+		});
+		const target = await seedPendingAction({
+			connectionId: conn.id,
+			connectorKey: APPROVAL_CONNECTOR,
+			actionKey: "needs_approval",
+		});
+		// Soft-delete the connection: the approval card is unreachable, so
+		// approving blind must be refused. getOperationForConnection filters
+		// deleted connections, so the run stays pending rather than executing.
+		await sql`UPDATE connections SET deleted_at = NOW() WHERE id = ${conn.id}`;
+
+		const result = await manageOperations(
+			{ action: "approve", run_id: target },
+			{} as Env,
+			ownerCtx,
+		);
+		expect("error" in result).toBe(true);
+		expect(await approvalStatusOf(target)).toBe("pending");
+	});
 });

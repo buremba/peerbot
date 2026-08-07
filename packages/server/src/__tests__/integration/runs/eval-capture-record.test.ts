@@ -156,8 +156,9 @@ describe("captureSideEffect — the record", () => {
 	});
 
 	test("every capture point routes through the same record", async () => {
-		// The eight internal-route call sites differ only by these labels; if the
-		// record only worked for one shape, this would catch it.
+		// The internal-route call sites differ only by these labels. Together with
+		// conversations.send and images.generate above, this covers all eight; if
+		// the record only worked for one shape, this would catch it.
 		const actions = [
 			"interactions.create",
 			"suggestions.create",

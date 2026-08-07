@@ -55,6 +55,12 @@ export async function handleList(
       i.agent_id,
       i.device_worker_id,
       i.last_fired_at,
+      -- Materialized completion stamp of the most recent completed run,
+      -- written by a trigger on runs. last_fired_at is NOT a substitute: only
+      -- the worker-api terminal-report path stamps it, so runs that finish
+      -- through any other terminal writer leave it NULL or stale and the
+      -- listing renders "Never run" for a Behavior that ran minutes ago.
+      i.last_run_completed_at,
       i.model_config,
       i.execution_config,
       i.sources,

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { sessionCookieName } from "../../auth/session-cookie-scope";
 import {
+	collapseSessionCookies,
 	resolveSession,
 	sessionCookieCandidates,
 } from "../../auth/resolve-session";
@@ -178,5 +179,59 @@ describe("resolveSession", () => {
 		).join("; ");
 		expect(await resolveSession(auth, new Headers({ cookie: jar }))).toBeNull();
 		expect(auth.seen.length).toBeLessThanOrEqual(8);
+	});
+});
+
+/**
+ * Better Auth's own `/api/auth/*` handler resolves the jar itself, so wrapping
+ * `getSession` at our call sites does not reach it. `get-session` is how the web
+ * app asks "am I signed in", so leaving that one order-dependent would keep the
+ * brick visible in the UI with every internal call site already fixed.
+ */
+describe("collapseSessionCookies", () => {
+	test("returns the very same Headers for an ordinary jar", async () => {
+		const auth = fakeAuth(SECURE, "good");
+		const headers = new Headers({ cookie: `${SECURE}=good` });
+		// Identity, not equality: the common path must not even copy.
+		expect(await collapseSessionCookies(auth, headers)).toBe(headers);
+	});
+
+	test("reduces a duplicated jar to the live cookie", async () => {
+		const auth = fakeAuth(SECURE, "good");
+		const headers = new Headers({
+			cookie: `${SECURE}=dead; other=keep; ${SECURE}=good`,
+		});
+		const out = await collapseSessionCookies(auth, headers);
+		expect(out.get("cookie")).toBe(`other=keep; ${SECURE}=good`);
+	});
+
+	test("strips the session cookie entirely when none verifies", async () => {
+		// Handing Better Auth an arbitrary dead twin would let sign-out act on
+		// it. "Not signed in" is the honest jar.
+		const auth = fakeAuth(SECURE, "good");
+		const headers = new Headers({
+			cookie: `${SECURE}=dead; other=keep; ${SECURE}=alsodead`,
+		});
+		const out = await collapseSessionCookies(auth, headers);
+		expect(out.get("cookie")).toBe("other=keep");
+	});
+
+	test("drops the Cookie header when nothing survives stripping", async () => {
+		const auth = fakeAuth(SECURE, "good");
+		const headers = new Headers({
+			cookie: `${SECURE}=dead; ${SECURE}=alsodead`,
+		});
+		const out = await collapseSessionCookies(auth, headers);
+		expect(out.get("cookie")).toBeNull();
+	});
+
+	test("keeps every other header", async () => {
+		const auth = fakeAuth(SECURE, "good");
+		const headers = new Headers({
+			cookie: `${SECURE}=dead; ${SECURE}=good`,
+			origin: "https://app.lobu.ai",
+		});
+		const out = await collapseSessionCookies(auth, headers);
+		expect(out.get("origin")).toBe("https://app.lobu.ai");
 	});
 });

@@ -140,15 +140,62 @@ export async function resolveSession<A extends SessionReader>(
 
   const companions = nonSessionCookies(cookieHeader);
   for (const candidate of candidates.slice(0, MAX_CANDIDATES)) {
-    const single = new Headers(headers);
-    single.set(
-      'cookie',
-      [...companions, `${candidate.name}=${candidate.value}`].join('; ')
-    );
-    const session = await auth.api.getSession({ headers: single });
+    const session = await auth.api.getSession({
+      headers: probeHeaders(headers, companions, candidate),
+    });
     if (isLive(session)) return session;
   }
   // Every candidate was dead. Resolving on merit must not become "authenticate
   // on anything" — an ambiguous jar with no live token is still no session.
   return null as SessionOf<A>;
+}
+
+/** A copy of `headers` whose jar carries the companions and exactly one twin. */
+function probeHeaders(
+  headers: Headers,
+  companions: string[],
+  candidate: SessionCookieCandidate
+): Headers {
+  const probe = new Headers(headers);
+  probe.set(
+    'cookie',
+    [...companions, `${candidate.name}=${candidate.value}`].join('; ')
+  );
+  return probe;
+}
+
+/**
+ * Headers with the ambiguity already removed — the jar reduced to its live
+ * session cookie, or to none if no candidate verifies.
+ *
+ * `resolveSession` is for code that wants the session. This is for code that
+ * must hand the request to someone else who will resolve it themselves — namely
+ * Better Auth's own `/api/auth/*` handler, which reads the raw jar and would
+ * otherwise take the first cookie and answer `null` for a bricked browser. That
+ * endpoint is how the web app asks "am I signed in", so leaving it order-
+ * dependent would keep the brick visible in the UI even with every internal
+ * call site fixed.
+ *
+ * Returns `headers` unchanged for an ordinary jar, so the common path is free.
+ */
+export async function collapseSessionCookies<A extends SessionReader>(
+  auth: A,
+  headers: Headers
+): Promise<Headers> {
+  const cookieHeader = headers.get('cookie');
+  const candidates = sessionCookieCandidates(cookieHeader);
+  if (candidates.length <= 1) return headers;
+
+  const companions = nonSessionCookies(cookieHeader);
+  for (const candidate of candidates.slice(0, MAX_CANDIDATES)) {
+    const probe = probeHeaders(headers, companions, candidate);
+    if (isLive(await auth.api.getSession({ headers: probe }))) return probe;
+  }
+  // No candidate verifies. Send the jar with no session cookie at all rather
+  // than an arbitrary dead one: "not signed in" is the honest answer, and it
+  // keeps sign-in and sign-out on this request from acting on a dead twin.
+  const stripped = new Headers(headers);
+  if (companions.length > 0) stripped.set('cookie', companions.join('; '));
+  else stripped.delete('cookie');
+  return stripped;
 }

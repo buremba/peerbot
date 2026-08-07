@@ -35,11 +35,7 @@ import type { ManageBehaviorsArgs } from '../manage_behaviors';
 import { normalizeExtractedData, parseJson, requireWatcherAccess } from './shared';
 import { getErrorMessage } from '@lobu/core';
 import { classifyRunOutcome } from "../../../runs/run-outcome";
-import {
-  BEHAVIOR_EVAL_RUN_TYPE,
-  BEHAVIOR_RUN_TYPE,
-  BEHAVIOR_RUN_TYPES_PG,
-} from "../../../runs/run-types.js";
+import { BEHAVIOR_EVAL_RUN_TYPE, BEHAVIOR_RUN_TYPE } from "../../../runs/run-types.js";
 
 /** Cap on the content ids echoed into `dry_run_preview` — the preview exists to
  *  be read, and an unbounded id list on a wide window is neither useful nor
@@ -192,17 +188,22 @@ export async function handleCompleteWindow(
   const pgSql = createDbClientFromEnv(env);
   await requireWatcherAccess(pgSql, [String(watcherId)], ctx, 'write');
 
+  // The lane this caller belongs to. A live session and an eval replay must
+  // never resolve to, or claim, each other's run: the mode is derived from the
+  // run row at session creation, so a live token carries no capture claim and
+  // would execute the real write path for a window the eval only replays.
+  const callerRunType =
+    ctx.executionMode === 'capture' ? BEHAVIOR_EVAL_RUN_TYPE : BEHAVIOR_RUN_TYPE;
+
   if (watcherRunId == null) {
     // Prefer an active (dispatched) run; otherwise a pending manual-open run
     // (no agent/device pin) waiting for an external completer.
     //
-    // Scoped to the CALLER's own lane. This ordering prefers `running` and then
-    // the newest row — which, while an eval replay of this same Behavior is in
-    // flight, is the eval. A live completer that omitted `behavior_run_id`
-    // would otherwise adopt the eval's run and stamp a window onto it, breaking
-    // the "an eval never has a window" invariant PR 3 scores against.
-    const callerRunType =
-      ctx.executionMode === 'capture' ? BEHAVIOR_EVAL_RUN_TYPE : BEHAVIOR_RUN_TYPE;
+    // Lane-scoped: this ordering prefers `running` and then the newest row —
+    // which, while an eval replay of this same Behavior is in flight, is the
+    // eval. A live completer that omitted `behavior_run_id` would otherwise
+    // adopt the eval's run and stamp a window onto it, breaking the "an eval
+    // never has a window" invariant PR 3 scores against.
     const runRows = await sql`
       SELECT id
       FROM runs
@@ -242,7 +243,12 @@ export async function handleCompleteWindow(
           claimed_at = COALESCE(claimed_at, current_timestamp)
       WHERE id = ${watcherRunId}
         AND watcher_id = ${watcherId}
-        AND run_type = ANY(${BEHAVIOR_RUN_TYPES_PG}::text[])
+        -- Same lane scoping as the lookup above: a LIVE completer must not be
+        -- able to claim a pending eval by passing its run id. Its token carries
+        -- no capture claim, so it would run the live path and write a real
+        -- canvas for the window the eval was only supposed to replay. Nothing
+        -- mints manual-open evals today; the guard should not permit it anyway.
+        AND run_type = ${callerRunType}
         AND status = 'pending'
         AND (approved_input->>'agent_id' IS NULL OR approved_input->>'agent_id' = '')
         AND (approved_input->>'device_worker_id' IS NULL OR approved_input->>'device_worker_id' = '')

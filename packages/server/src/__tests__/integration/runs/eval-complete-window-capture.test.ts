@@ -285,6 +285,46 @@ describe('an eval replay cannot overwrite the Behavior it is scoring', () => {
     expect(evalRow.status).toBe('running');
   });
 
+  it('a live completer cannot claim or complete a pending eval by passing its id', async () => {
+    const ctx = await setup();
+    const { sql, orgId, ownerUserId, watcherId, sourceRunId, windowToken } = ctx;
+
+    const evalRun = await createEvalRun(
+      { sourceRunId, caseKey: 'claim' },
+      sql as unknown as DbClient
+    );
+    // Make it look like a manual-open run (no agent/device pin) — the only
+    // shape the claim UPDATE will touch.
+    await sql`
+      UPDATE runs
+      SET approved_input = approved_input - 'agent_id' - 'device_worker_id'
+      WHERE id = ${evalRun?.runId ?? 0}
+    `;
+
+    // A LIVE completion naming the eval's run id explicitly.
+    await handleCompleteWindow(
+      {
+        action: 'complete_window',
+        behavior_id: String(watcherId),
+        window_token: windowToken,
+        extracted_data: LIVE_EXTRACTION,
+        behavior_run_id: evalRun?.runId,
+      } as never,
+      TEST_ENV,
+      toolCtx(orgId, ownerUserId, 'live')
+    );
+
+    // The eval was neither claimed into 'running' nor completed with a window.
+    const [evalRow] = await sql<
+      { status: string; window_id: number | null; claimed_at: string | null }[]
+    >`
+      SELECT status, window_id, claimed_at FROM runs WHERE id = ${evalRun?.runId ?? 0}
+    `;
+    expect(evalRow.status).toBe('pending');
+    expect(evalRow.window_id).toBe(null);
+    expect(evalRow.claimed_at).toBe(null);
+  });
+
   it('does not stamp dry_run onto a real Behavior run', async () => {
     const ctx = await setup();
     const { sql, orgId, ownerUserId, watcherId, sourceRunId, windowToken } = ctx;

@@ -148,6 +148,26 @@ describe("resolveSession", () => {
 		expect(sawOrigin).toBe(true);
 	});
 
+	test("keeps Better Auth's companion cookies in every probe", async () => {
+		// `dont_remember` gates session-expiry refresh and `session_data` is the
+		// cookie cache. Replacing the whole jar with one pair would drop them, so
+		// a duplicated jar would get different refresh semantics from a clean one
+		// — a difference unrelated to which twin is live.
+		const auth = fakeAuth(SECURE, "good");
+		const headers = new Headers({
+			cookie: `better-auth.dont_remember=1; ${SECURE}=dead; other=keep; ${SECURE}=good`,
+		});
+
+		expect(await resolveSession(auth, headers)).toMatchObject({
+			user: { id: "u1" },
+		});
+		// Both probes carried the companions; neither carried the other twin.
+		expect(auth.seen).toEqual([
+			`better-auth.dont_remember=1; other=keep; ${SECURE}=dead`,
+			`better-auth.dont_remember=1; other=keep; ${SECURE}=good`,
+		]);
+	});
+
 	test("bounds how many candidates one request can make it probe", async () => {
 		// The Cookie header is attacker-controlled, and every probe is a session
 		// lookup. A real jar holds a handful of twins at most.

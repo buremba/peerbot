@@ -87,29 +87,64 @@ function isLive(session: any): boolean {
 }
 
 /**
+ * The jar minus its session cookies — everything a probe must carry unchanged.
+ *
+ * Better Auth reads companions alongside the session token, and they change how
+ * `getSession` behaves: `better-auth.dont_remember` gates session-expiry
+ * refresh, and `better-auth.session_data` is its cookie cache. Dropping the
+ * whole header would give a duplicated jar different refresh semantics from a
+ * clean one — a difference that has nothing to do with which twin is live.
+ */
+function nonSessionCookies(cookieHeader: string | null): string[] {
+  if (!cookieHeader) return [];
+  const kept: string[] = [];
+  for (const part of cookieHeader.split(';')) {
+    const pair = part.trim();
+    if (!pair) continue;
+    const eq = pair.indexOf('=');
+    if (eq === -1) continue;
+    if (SESSION_COOKIE_NAMES.includes(pair.slice(0, eq).trim())) continue;
+    kept.push(pair);
+  }
+  return kept;
+}
+
+/**
  * Resolve the request's session without letting cookie order decide it.
  *
  * Drop-in for `auth.api.getSession({ headers })`. The single-cookie path — every
  * ordinary request — is byte-for-byte the old behaviour and costs nothing extra;
  * the extra lookups happen only for a jar that is already broken.
  *
- * A probe keeps every other header intact and rewrites only `Cookie`, so
- * `Authorization: Bearer` and origin checks behave as before. It also keeps the
- * candidate's own name: renaming it would hide it from `getSession` entirely.
- * Dropping the rest of the jar drops Better Auth's `session_data` cookie cache
- * with it, so a probe always asks the database — correct, and only on the
- * already-broken path.
+ * A probe changes exactly one thing: which session cookie is in the jar. Every
+ * other header survives, so `Authorization: Bearer` and origin checks behave as
+ * before; every non-session cookie survives, so Better Auth's companions still
+ * apply; and the candidate keeps the name it arrived under, because renaming it
+ * would hide it from `getSession` entirely.
+ *
+ * Note an asymmetry worth knowing: the single-cookie path returns whatever
+ * `getSession` returns, ungated, because it must stay byte-for-byte the old
+ * behaviour. The multi-candidate path gates on `isLive`. A session shaped with
+ * a `user` but no `session` would therefore satisfy a caller checking only
+ * `session?.user?.id` on a one-cookie jar and not on a two-cookie one. Better
+ * Auth does not produce that shape today; gating both paths would be the fix if
+ * it ever did.
  */
 export async function resolveSession<A extends SessionReader>(
   auth: A,
   headers: Headers
 ): Promise<SessionOf<A>> {
-  const candidates = sessionCookieCandidates(headers.get('cookie'));
+  const cookieHeader = headers.get('cookie');
+  const candidates = sessionCookieCandidates(cookieHeader);
   if (candidates.length <= 1) return await auth.api.getSession({ headers });
 
+  const companions = nonSessionCookies(cookieHeader);
   for (const candidate of candidates.slice(0, MAX_CANDIDATES)) {
     const single = new Headers(headers);
-    single.set('cookie', `${candidate.name}=${candidate.value}`);
+    single.set(
+      'cookie',
+      [...companions, `${candidate.name}=${candidate.value}`].join('; ')
+    );
     const session = await auth.api.getSession({ headers: single });
     if (isLive(session)) return session;
   }

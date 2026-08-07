@@ -22,7 +22,7 @@ import type SocialInterestRadarReaction from "./social-interest-radar.reaction.t
 const hourlyTaskCollaboratorSkill = defineSkill({
   name: "hourly-task-collaborator",
   content:
-    "Review the current hourly window's content and the collaborative task list in the payload's task_list source. The task_list source includes recently closed tasks (metadata status done or dismissed) for reference so you know what is already finished. Return a JSON object with a tasks array matching the provided task schema. Extract only concrete actions Burak or his personal agent should take; ignore advertisements, newsletters, automated notices, passive information, and vague ideas. For every task, copy source_scope, source_origin_id, and source_event_id exactly from its recent_signals row. Set task_key to a short stable machine key for that distinct action within the source (for example send-deck or book-flight); keep the same task_key when only the wording or status changes. Preserve existing tasks instead of restating them. Never re-emit, reopen, or recreate any task whose status is done or dismissed in the task list, even if the originating message still appears in recent signals. Set status to backlog unless there is clear evidence work has started. Assign owner \"Burak\" unless the action can be safely completed by the personal agent. Use ISO-8601 due_date only when a real deadline is present. Include source and a short rationale. Produce at most 12 tasks, ordered by priority.",
+    "Review the current hourly window's content and the collaborative task list in the payload's task_list source. The task_list source includes recently closed tasks (metadata status done or dismissed) for reference so you know what is already finished. Return a JSON object with a tasks array matching the provided task schema. Extract only concrete actions Burak or his personal agent should take; ignore advertisements, newsletters, automated notices, passive information, and vague ideas. For every task, copy source_scope, source_origin_id, and source_event_id exactly from the recent_signals or upcoming_calendar row it came from. The upcoming_calendar source lists confirmed meetings, flights, and events in the next 30 days, ordered soonest first; draw preparation tasks from it only when a concrete action is genuinely needed, and never emit a task that merely restates that an event is scheduled. Set task_key to a short stable machine key for that distinct action within the source (for example send-deck or book-flight); keep the same task_key when only the wording or status changes. Preserve existing tasks instead of restating them. Never re-emit, reopen, or recreate any task whose status is done or dismissed in the task list, even if the originating message still appears in recent signals. Set status to backlog unless there is clear evidence work has started. Assign owner \"Burak\" unless the action can be safely completed by the personal agent. Use ISO-8601 due_date only when a real deadline is present. Include source and a short rationale. Produce at most 12 tasks, ordered by priority.",
 });
 
 const duplicateEntityResolutionRealV3FinalSkill = defineSkill({
@@ -1110,8 +1110,32 @@ const hourlyTaskCollaborator = defineBehavior({
     },
   },
   sources: {
+    // Past-facing conversational signal. `calendar_event` is deliberately NOT in
+    // this filter and `occurred_at <= now()` is deliberately present: calendar
+    // rows are dated when the meeting HAPPENS, so future-dated ones sort ahead of
+    // every message under `occurred_at DESC` and evict the entire window. On prod
+    // 213 of 254 Google Calendar rows are future-dated (mostly two recurring
+    // series expanded out to 2056) — more than the LIMIT 200 window holds.
     recent_signals:
-      "SELECT id, id AS source_event_id, COALESCE('connection:' || connection_id::text, 'connector:' || connector_key, 'event') AS source_scope, COALESCE(origin_id, 'event:' || id::text) AS source_origin_id, occurred_at, title, payload_text, semantic_type, connector_key, metadata FROM events WHERE semantic_type IN ('message','thread','reminder','calendar_event','note') ORDER BY occurred_at DESC LIMIT 200",
+      "SELECT id, id AS source_event_id, COALESCE('connection:' || connection_id::text, 'connector:' || connector_key, 'event') AS source_scope, COALESCE(origin_id, 'event:' || id::text) AS source_origin_id, occurred_at, title, payload_text, semantic_type, connector_key, metadata FROM events WHERE semantic_type IN ('message','thread','reminder','note') AND occurred_at <= now() ORDER BY occurred_at DESC LIMIT 200",
+    // Forward-facing calendar, on its own budget so it can neither starve
+    // recent_signals nor be starved by a busy messaging day. Ascending + a small
+    // LIMIT keeps it to the NEAREST events; the upper bound is what stops the
+    // 2056 recurring expansions from filling it on a sparse calendar.
+    //
+    // 30 days, not 7: measured against prod 2026-08-07, a 7-day window returns
+    // 0 rows (the next real event is 18 days out). Row counts from now-1d:
+    // 7d=0, 30d=4, 60d=5, 90d=7. 30d is the smallest round window that is
+    // non-empty on real data and still covers the next flight; retune here if
+    // the calendar fills in.
+    //
+    // Those counts span BOTH calendar connectors, because this source keys off
+    // `semantic_type` and not `connector_key` — that is the entire point of the
+    // shared vocabulary. Counting google.calendar alone gives 3/4/6 and is the
+    // wrong measurement: the 30-day window's second row is an apple.calendar
+    // holiday.
+    upcoming_calendar:
+      "SELECT id, id AS source_event_id, COALESCE('connection:' || connection_id::text, 'connector:' || connector_key, 'event') AS source_scope, COALESCE(origin_id, 'event:' || id::text) AS source_origin_id, occurred_at, title, payload_text, semantic_type, connector_key, metadata FROM events WHERE semantic_type = 'calendar_event' AND occurred_at BETWEEN now() - interval '1 day' AND now() + interval '30 days' ORDER BY occurred_at ASC LIMIT 20",
     // context-only: existing tasks are dedup reference data, not window signal
     task_list: {
       context: true,

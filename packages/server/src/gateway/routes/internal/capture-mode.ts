@@ -111,7 +111,10 @@ export async function captureSideEffect(
 	// suppress-without-record rather than throwing, for the same reason
 	// `recordCapturedSideEffect` swallows its errors: a route error sends a
 	// capture run into retry loops instead of letting it finish its turn.
-	if (worker.behaviorRunId === undefined) {
+	// Falsy rather than `=== undefined`: the verifier already rejects <= 0 and
+	// non-integers, but a future non-token caller reaching this helper with 0 or
+	// NaN should take the log, not address `WHERE id = 0`.
+	if (!worker.behaviorRunId) {
 		logger.error(
 			{ action },
 			"[eval-capture] no behaviorRunId on the token — side effect suppressed but NOT recorded",

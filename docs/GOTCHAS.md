@@ -55,6 +55,8 @@ Root `AGENTS.md` holds the invariants and the workflow. This file holds the mech
 
 ## DB & SQL
 
+**Adding an `events` column is two edits, and skipping the second fails SILENTLY.** Behavior source queries do not read `public.events` — `execute-data-sources.ts` builds its events CTE over the `public.current_event_records` view, whose column list is hand-maintained by every migration that adds a column. Reference a column you added to the table but not the view and the CTE dies with `column ev.<name> does not exist`; `executeDataSources` then LOGS that at warn level and returns the source as an EMPTY array rather than raising, so every Behavior silently reads nothing and each one just looks like it had a quiet window. Grep for the previous column's name (`identity_key`, `linked_org_ids`) to find all three places a column has to be listed: the view's `migrate:up`, the view's `migrate:down`, and `SAFE_COLUMN_DEFS` in `utils/table-schema.ts` if scripts should be able to select it.
+
 **Never bind a raw JS array as a query parameter in `packages/server`.** The client sets `fetch_types: false` (`PROD_PG_VALUE_OPTIONS` in `packages/server/src/db/client.ts`), so postgres.js ships arrays as scalars and you get `PostgresError: malformed array literal`. This holds for `number[]` and `string[]`, tagged-template and `sql.unsafe`, with or without an `::type[]` cast. Safe forms only:
 
 ```ts

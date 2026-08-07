@@ -53,6 +53,23 @@ interface CreateNotificationParams {
 	entityIds?: number[];
 	/** Exact MCP conversation or transport session that caused this notification. */
 	mcpActivity?: McpActivityAttribution | null;
+	/**
+	 * The Behavior run that emitted this notification, when one did.
+	 *
+	 * These MUST come from server-set context (`ctx.actingWatcherId` /
+	 * `actingRunId`, stamped by the reaction executor), never from a caller-
+	 * supplied `behavior_source`. `behavior_id` drives window self-exclusion, so
+	 * an id a caller could choose would let one Behavior hide rows from another
+	 * Behavior's input.
+	 *
+	 * Before this existed, a notification was written with no run and no
+	 * Behavior at all — prod notification 4858497 had `run_id` NULL while every
+	 * sibling output of the same run carried 880183 — so the thing a user
+	 * actually clicks could not be traced back to the run that sent it.
+	 */
+	behaviorId?: number | null;
+	behaviorVersionId?: number | null;
+	runId?: number | null;
 }
 
 /**
@@ -493,6 +510,9 @@ export async function createNotificationForUsers(
 					semanticType: "notification",
 					metadata,
 					clientId: params.mcpActivity?.clientId ?? null,
+					runId: params.runId ?? null,
+					behaviorId: params.behaviorId ?? null,
+					behaviorVersionId: params.behaviorVersionId ?? null,
 				},
 				{ sql: tx },
 			);

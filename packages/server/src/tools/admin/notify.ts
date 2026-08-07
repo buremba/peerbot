@@ -187,6 +187,27 @@ async function handleSend(
     if (rows.length > 0) canvasEntityIds = [Number(rows[0].entity_id)];
   }
 
+  // Provenance for the notification row itself. Read from the SERVER-set acting
+  // context (the reaction executor stamps it), never from `args.behavior_source`
+  // — that is caller input, and `behavior_id` decides what a Behavior's own
+  // window excludes, so a chosen id would let one Behavior blind another.
+  // `behavior_source` stays what it always was: an attribution hint for canvas
+  // anchoring and reaction tracking.
+  const actingBehaviorId = ctx.actingWatcherId ?? null;
+  const actingVersionRows = actingBehaviorId
+    ? await getDb()<{ current_version_id: number | string | null }>`
+        SELECT current_version_id
+        FROM watchers
+        WHERE id = ${actingBehaviorId}
+          AND organization_id = ${ctx.organizationId}
+        LIMIT 1
+      `
+    : [];
+  const actingVersionId =
+    actingVersionRows[0]?.current_version_id != null
+      ? Number(actingVersionRows[0].current_version_id)
+      : null;
+
   const orgSlug = await getOrgSlug(ctx.organizationId);
 
   // An idempotent repeat of an ASK must resolve before anything is queued: the
@@ -261,6 +282,9 @@ async function handleSend(
         : null),
     entityIds: canvasEntityIds,
     mcpActivity: currentMcpActivityAttribution(ctx),
+    behaviorId: actingBehaviorId,
+    behaviorVersionId: actingVersionId,
+    runId: ctx.actingRunId ?? null,
   });
 
   if (notification.created) {

@@ -33,7 +33,12 @@ import {
   type ContentSearchResult,
 } from './types';
 import { buildEntityTypesFilterClause } from './entity-types-filter';
-import { buildConnectionVisibilityClause, buildExcludeWatcherClause, buildOrgScopeWhere } from './visibility';
+import {
+  buildConnectionVisibilityClause,
+  buildExcludeWatcherClause,
+  buildOrgScopeWhere,
+  buildProducedByBehaviorClause,
+} from './visibility';
 import { buildStandardParams, buildStandardWhereSql, WINDOW_JOIN_SQL } from './params';
 
 /**
@@ -399,7 +404,12 @@ export async function listContentInternal(
       options.exclude_watcher_id,
       filterParamsBeforeExclude.length + 1
     );
-    const filterParamsBeforeVisibility = [...filterParamsBeforeExclude, ...excludeClause.params];
+    const paramsBeforeProduced = [...filterParamsBeforeExclude, ...excludeClause.params];
+    const producedClause = buildProducedByBehaviorClause(
+      options.produced_by_behavior_id,
+      paramsBeforeProduced.length + 1
+    );
+    const filterParamsBeforeVisibility = [...paramsBeforeProduced, ...producedClause.params];
     const visibilityClause = buildConnectionVisibilityClause({
       organizationId: options.visibility_scope?.organizationId,
       userId: options.visibility_scope?.userId ?? null,
@@ -419,7 +429,7 @@ export async function listContentInternal(
     return executeListQuery({
       sql,
       joinSql: '',
-      whereExpr: `${whereSql} ${excludeClause.sql} ${visibilityClause.sql}${entityTypesClause.sql} ${futureClause.sql}`,
+      whereExpr: `${whereSql} ${excludeClause.sql}${producedClause.sql} ${visibilityClause.sql}${entityTypesClause.sql} ${futureClause.sql}`,
       countParams: allFilterParams,
       entityId: entityId ?? null,
       threadEntityLinkSqlForP: threadEntityLinkSql,
@@ -484,7 +494,12 @@ export async function listContentInternal(
     options.exclude_watcher_id,
     paramsBeforeExclude.length + 1
   );
-  const paramsBeforeVisibility = [...paramsBeforeExclude, ...excludeClause.params];
+  const paramsBeforeProducedFilter = [...paramsBeforeExclude, ...excludeClause.params];
+  const producedFilterClause = buildProducedByBehaviorClause(
+    options.produced_by_behavior_id,
+    paramsBeforeProducedFilter.length + 1
+  );
+  const paramsBeforeVisibility = [...paramsBeforeProducedFilter, ...producedFilterClause.params];
   const visibilityClause = buildConnectionVisibilityClause({
     organizationId: options.visibility_scope?.organizationId,
     userId: options.visibility_scope?.userId ?? null,
@@ -507,6 +522,7 @@ export async function listContentInternal(
           AND ${feedCondition}
           AND ${runCondition}
           ${excludeClause.sql}
+          ${producedFilterClause.sql}
           ${visibilityClause.sql}
           ${orgScope.sql}${entityTypesClause.sql} ${futureClause.sql}`,
     countParams,

@@ -58,6 +58,13 @@ export interface DataSourceContext {
   /** When set, events CTE is filtered to this time window (incremental mode) */
   windowStart?: string;
   windowEnd?: string;
+  /**
+   * When set, the events CTE drops rows this Behavior produced, so a Behavior
+   * is never handed its own output as input. Set it for a Behavior's own source
+   * execution and nowhere else — a generic reader (`query_sql`, entity
+   * templates, `resolve_path`) must still see Behavior-produced events.
+   */
+  excludeProducedByBehaviorId?: number | null;
 }
 
 /** Operations that bypass READ ONLY transactions or have side-effects. */
@@ -592,6 +599,28 @@ export function buildScopedQuery(
         params.push(context.windowEnd);
         const windowEndP = `$${idx}`;
         eventsCte += ` AND ev.occurred_at >= ${windowStartP}::timestamptz AND ev.occurred_at < ${windowEndP}::timestamptz`;
+      }
+
+      // A Behavior never reads what it wrote itself.
+      //
+      // This used to be bought by a side effect: outputs were stamped
+      // `occurred_at = window_end`, which is the window's EXCLUSIVE end, so they
+      // fell outside their own window. It worked, and it cost the product every
+      // one of those rows — `window_end` is a future instant for the whole day a
+      // sub-daily Behavior runs, and every read path drops future rows. Now that
+      // outputs are stamped when they were produced, they land squarely inside
+      // the window that produced them, and only this predicate stops an hourly
+      // Behavior from re-reading its own output every hour, compounding.
+      //
+      // Self-scoped on purpose. One Behavior refining another's output is
+      // ordinary composition, so this excludes rows produced by THIS Behavior,
+      // not all Behavior-produced rows. `correction` events are never stamped
+      // with a `behavior_id` (see the attribution migration), so the human
+      // feedback written to correct a Behavior still reaches it.
+      if (context.excludeProducedByBehaviorId != null) {
+        idx++;
+        params.push(context.excludeProducedByBehaviorId);
+        eventsCte += ` AND (ev.behavior_id IS NULL OR ev.behavior_id <> $${idx})`;
       }
 
       eventsCte += eventConnVisibility('ev');

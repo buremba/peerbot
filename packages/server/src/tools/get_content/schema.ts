@@ -84,6 +84,12 @@ export const GetContentSchema = Type.Object({
         'Limit results to events this Behavior has analyzed (any window). Distinct from behavior_id, which enters Behavior read mode.',
     })
   ),
+  produced_by_behavior_id: Type.Optional(
+    Type.Number({
+      description:
+        'Limit results to events this Behavior WROTE — its outputs, entity change sets, canvas revisions and notifications. The counterpart to analyzed_by_behavior_id, which returns what it READ; for one prod Behavior those are 354 events and 2,289 events respectively, so the two are not interchangeable.',
+    })
+  ),
   since: Type.Optional(
     Type.String({
       description:

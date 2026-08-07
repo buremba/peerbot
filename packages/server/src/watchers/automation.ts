@@ -331,7 +331,19 @@ async function persistSkippedWatcherWindow(
 								? null
 								: Number(watcher.current_version_id),
 					},
-					occurredAt: windowEnd,
+					// Clamped for the same reason as every other Behavior-written row
+					// (see `producedAt` in complete-window.ts): `computePendingWindow`
+					// resolves to the CURRENT period whenever the cursor has caught up,
+					// so `windowEnd` is a future instant for the whole period, and a
+					// future `occurred_at` is filtered out of every read path.
+					occurredAt: new Date(
+						Math.min(windowEnd.getTime(), Date.now()),
+					).toISOString(),
+					behaviorId: watcher.id,
+					behaviorVersionId:
+						watcher.current_version_id == null
+							? null
+							: Number(watcher.current_version_id),
 					createdBy: watcher.created_by,
 				},
 				{ sql: tx },

@@ -334,6 +334,30 @@ export async function handleCompleteWindow(
     watcherRows[0].version_id != null ? Number(watcherRows[0].version_id) : null;
   const outputs = parseJson(watcherRows[0].outputs) as Outputs | null;
 
+  // When everything this completion writes happened.
+  //
+  // It used to be `window_end` flat, which is a claim about the future for the
+  // entire time it matters. `window-utils` has no 'hourly' granularity, so a
+  // sub-daily Behavior is handed the CURRENT day's window and `window_end` is
+  // midnight TOMORROW every hour it runs. Every read path bounds on
+  // `occurred_at <= now()`, so the output it had just written was missing from
+  // Memory, Activity and its own Behavior page until the day rolled over — 153
+  // of 163 behavior-output events in 30 days were stamped ahead of their own
+  // `created_at`, and 45 were still invisible when measured (2026-08-07).
+  //
+  // Clamping keeps the digest-at-period-end reading for a window completed
+  // after it closed (the common case, where `window_end` is already past) and
+  // tells the truth for one still open. What it does NOT do is keep the output
+  // out of its own window — the future stamp was silently buying that, because
+  // window membership is `occurred_at >= start AND occurred_at < end`. That job
+  // moves to an explicit self-exclusion in the window's content predicate
+  // (`execute-data-sources.ts`), which is where a provenance decision belongs;
+  // the two changes are a pair and neither is safe alone.
+  const windowEndMs = new Date(window_end).getTime();
+  const producedAt = new Date(
+    Number.isFinite(windowEndMs) ? Math.min(windowEndMs, Date.now()) : Date.now()
+  ).toISOString();
+
   // The org + bound parent entity the promoted child entities hang under. The
   // watcher's first bound entity is the parent; unbound watchers promote at the
   // root (parent_id NULL). `entities.created_by` is NOT NULL with an
@@ -643,7 +667,9 @@ export async function handleCompleteWindow(
               root_event_id: existingHead.rootEventId,
             },
             runId: watcherRunId,
-            occurredAt: window_end,
+            behaviorId: Number(watcherId),
+            behaviorVersionId: resolvedVersionId,
+            occurredAt: producedAt,
             createdBy: watcherCreatedBy,
             clientId: canvasClientId,
             supersedesEventId: existingHead.id,
@@ -683,7 +709,9 @@ export async function handleCompleteWindow(
             semanticType: 'canvas_state',
             metadata: canvasPeriodMeta,
             runId: watcherRunId,
-            occurredAt: window_end,
+            behaviorId: Number(watcherId),
+            behaviorVersionId: resolvedVersionId,
+            occurredAt: producedAt,
             createdBy: watcherCreatedBy,
             clientId: canvasClientId,
           },
@@ -768,13 +796,14 @@ export async function handleCompleteWindow(
           outputName,
           output,
           watcherId: Number(watcherId),
+          versionId: resolvedVersionId,
           organizationId: watcherOrgId,
           windowId,
           canvasRevisionId,
           runId: watcherRunId,
           boundEntityIds,
           validContentIds,
-          occurredAt: window_end,
+          occurredAt: producedAt,
           createdBy: watcherCreatedBy,
         });
       }
@@ -803,6 +832,8 @@ export async function handleCompleteWindow(
                 content: `This run created ${createdCount} and updated ${updatedCount} entities.`,
                 semanticType: 'change_set',
                 runId: watcherRunId,
+                behaviorId: Number(watcherId),
+                behaviorVersionId: resolvedVersionId,
                 metadata: {
                   _lobu_idempotency_key: changeSetIdempotencyKey,
                   kind: 'watcher_change_set',

@@ -49,6 +49,22 @@ async function waitForBlockedInsert(sql: Sql, timeoutMs = 10_000) {
   );
 }
 
+/**
+ * A real `watchers` row. `events.behavior_id` is FK'd to it, so the fabricated
+ * id this suite used to pass now fails the constraint INSIDE the parked
+ * transaction — which deadlocks the sibling run rather than failing cleanly,
+ * and the suite times out instead of reporting the race it exists to prove.
+ */
+async function createRaceBehavior(sql: Sql, organizationId: string): Promise<number> {
+  const [row] = await sql<{ id: number }[]>`
+    INSERT INTO watchers (organization_id, created_by, watcher_group_id, name, slug, status, version)
+    SELECT ${organizationId}, u.id, 0, 'Keyed race Behavior', 'keyed-race-behavior', 'active', 1
+    FROM "user" u LIMIT 1
+    RETURNING id
+  `;
+  return Number(row.id);
+}
+
 describe('Behavior keyed event outputs > concurrent runs', () => {
   beforeEach(async () => {
     await cleanupTestDatabase();
@@ -58,7 +74,7 @@ describe('Behavior keyed event outputs > concurrent runs', () => {
     const sql = getTestDb();
     const workspace = await TestWorkspace.create({ name: 'Keyed Race Org' });
     const organizationId = workspace.org.id;
-    const watcherId = 4242;
+    const watcherId = await createRaceBehavior(sql, organizationId);
 
     /** One Behaviour run persisting a single keyed draft. */
     const persistRun = (tx: DbClient, canvasRevisionId: number) =>
@@ -164,7 +180,7 @@ describe('Behavior keyed event outputs > concurrent runs', () => {
     const sql = getTestDb();
     const workspace = await TestWorkspace.create({ name: 'Keyed Race Org' });
     const organizationId = workspace.org.id;
-    const watcherId = 4242;
+    const watcherId = await createRaceBehavior(sql, organizationId);
 
     /** One Behaviour run persisting a single keyed draft. */
     const persistRun = (tx: DbClient, canvasRevisionId: number) =>

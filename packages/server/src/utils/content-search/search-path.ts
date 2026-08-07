@@ -31,7 +31,12 @@ import {
   type ContentSearchResult,
 } from './types';
 import { buildEntityTypesFilterClause } from './entity-types-filter';
-import { buildConnectionVisibilityClause, buildExcludeWatcherClause, buildOrgScopeWhere } from './visibility';
+import {
+  buildConnectionVisibilityClause,
+  buildExcludeWatcherClause,
+  buildOrgScopeWhere,
+  buildProducedByBehaviorClause,
+} from './visibility';
 import { getErrorMessage } from "@lobu/core";
 
 export async function searchContentBySingleQuery(
@@ -116,11 +121,18 @@ export async function searchContentBySingleQuery(
     options.exclude_watcher_id,
     excludeParamIdx
   );
+  // Same positional discipline as the exclude slot above: this clause claims
+  // the next index, and everything after it shifts by its param count.
+  const producedParamIdx = excludeParamIdx + excludeClause.params.length;
+  const producedClause = buildProducedByBehaviorClause(
+    options.produced_by_behavior_id,
+    producedParamIdx
+  );
   // Connection-visibility predicate. Same helper used by every other
   // get_content branch, so authed/unauthed/private/system-event semantics
   // are guaranteed identical across the search/text-query path and the
   // chronological list path.
-  const visibilityParamIdx = excludeParamIdx + excludeClause.params.length;
+  const visibilityParamIdx = producedParamIdx + producedClause.params.length;
   const visibilityClause = buildConnectionVisibilityClause({
     organizationId: options.visibility_scope?.organizationId,
     userId: options.visibility_scope?.userId ?? null,
@@ -181,6 +193,7 @@ export async function searchContentBySingleQuery(
           AND ($12::text[] IS NULL OR f.client_id = ANY($12::text[]))
           AND ($13::text[] IS NULL OR f.metadata->>'mcp_session_id' = ANY($13::text[]))
           ${excludeClause.sql}
+          ${producedClause.sql}
           ${visibilityClause.sql}
           ${orgScope.sql}${entityTypesClause.sql}`;
 
@@ -493,6 +506,7 @@ export async function searchContentBySingleQuery(
     options.mcp_session_ids !== undefined ? pgTextArray(options.mcp_session_ids) : null,
     ...orgScope.params,
     ...excludeClause.params,
+    ...producedClause.params,
     ...visibilityClause.params,
     ...entityTypesClause.params,
     ...searchEntityLinkParams,

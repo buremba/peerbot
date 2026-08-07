@@ -42,6 +42,8 @@ interface NormalizedScoreFilters {
    *  this; the builder used to ignore it — the same dropped-filter class. */
   analyzed_by_watcher_id?: number;
   exclude_watcher_id?: number; // Exclude content already in any window for this watcher
+  /** Restrict to events this Behavior WROTE (events.behavior_id). */
+  produced_by_behavior_id?: number;
   classification_filters?: Array<{ classifier_slug: string; value: string }>;
   classification_source?: 'user' | 'embedding' | 'llm';
   semantic_type?: string | string[];
@@ -213,6 +215,15 @@ async function buildFilterConditionsAndJoins(
       SELECT 1 FROM watcher_window_events iwc
       WHERE iwc.event_id = f.id AND iwc.watcher_id = $${paramIndex++}
     )`);
+  }
+
+  if (filters?.produced_by_behavior_id !== undefined) {
+    const validatedBehaviorId = validateNumericId(
+      filters.produced_by_behavior_id,
+      'produced_by_behavior_id'
+    );
+    params.push(validatedBehaviorId);
+    filterConditions.push(`f.behavior_id = $${paramIndex++}`);
   }
 
   if (filters?.exclude_watcher_id !== undefined) {

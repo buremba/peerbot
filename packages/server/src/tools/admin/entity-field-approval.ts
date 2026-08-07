@@ -808,6 +808,14 @@ export async function proposeEntityChange(
 								: `${actorNoun} proposed creating this entity.`),
 				semanticType: "operation",
 				runId,
+				// A proposal is something the Behavior produced, so it belongs in the
+				// Behavior's produced feed and out of its own next window. Same source
+				// the approval run itself is keyed on below (`runs.watcher_id`), so the
+				// event and its run can never disagree about who proposed this.
+				// No version: the proposal carries none, and inventing the Behavior's
+				// CURRENT version here would misattribute a proposal made by an older
+				// one.
+				behaviorId: proposal.watcher_id ?? null,
 				interactionType: "approval",
 				interactionStatus: "pending",
 				interactionInput: proposal as unknown as Record<string, unknown>,

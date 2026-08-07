@@ -1,6 +1,7 @@
 /**
  * Visibility and org-scope WHERE clause helpers:
- * buildOrgScopeWhere, buildConnectionVisibilityClause, buildExcludeWatcherClause.
+ * buildOrgScopeWhere, buildConnectionVisibilityClause, buildExcludeWatcherClause,
+ * buildProducedByBehaviorClause.
  */
 
 import { compileConnectionFkVisibility } from '../../authz/connection-visibility';
@@ -32,6 +33,33 @@ export function buildExcludeWatcherClause(
     SELECT 1 FROM watcher_window_events exc_iwe
     WHERE exc_iwe.event_id = ${tableAlias}.id AND exc_iwe.watcher_id = $${baseParamIndex}::bigint
   )`,
+    params: [validated],
+  };
+}
+
+/**
+ * Restrict to events a Behavior PRODUCED (`events.behavior_id`).
+ *
+ * Deliberately shaped like {@link buildExcludeWatcherClause} — same signature,
+ * same "empty when the filter is absent" contract — because every read path
+ * threads its param slots positionally and hand-rolling a fifth variant is how
+ * the indices drift apart. Four paths back `read_knowledge` (list, search,
+ * score-ranked, include-superseded) and a filter added to only some of them is
+ * worse than one added to none: the same scope silently returns different rows
+ * depending on whether the user typed a search term.
+ *
+ * A column equality, NOT an EXISTS over `watcher_window_events` — that table
+ * records what a Behavior READ. Backed by idx_events_behavior_produced.
+ */
+export function buildProducedByBehaviorClause(
+  producedByBehaviorId: number | undefined,
+  baseParamIndex: number,
+  tableAlias = 'f'
+): { sql: string; params: unknown[] } {
+  if (producedByBehaviorId === undefined) return { sql: '', params: [] };
+  const validated = validateNumericId(producedByBehaviorId, 'produced_by_behavior_id');
+  return {
+    sql: ` AND ${tableAlias}.behavior_id = $${baseParamIndex}::bigint`,
     params: [validated],
   };
 }

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   __resetEncryptionKeyCacheForTests,
@@ -9,6 +11,7 @@ import {
   verifyEgressProxyToken,
   verifyWorkerToken,
   type WorkerTokenData,
+  type WorkerTokenOptions,
 } from "../worker/auth";
 
 // 32-byte key, hex encoded — matches existing encryption.test.ts pattern.
@@ -16,6 +19,46 @@ const TEST_KEY =
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 const ENV_KEYS = ["ENCRYPTION_KEY", "WORKER_TOKEN_TTL_MS"] as const;
+
+/**
+ * Every claim the token can carry, each with a distinct value.
+ *
+ * The previous round-trip test listed eight claims by hand under the name
+ * "all optional fields" and stayed at those eight as the interface grew to 21,
+ * so `executionMode`, `behaviorRunId`, `organizationId`, `runId`, `messageId`,
+ * `source`, `allowedDomains` and `deniedDomains` all shipped with no proof they
+ * survived the token. Deleting `executionMode` from the generated payload left
+ * all 33 tests in this file green, and that claim is what both capture lanes
+ * read — the internal-route guard (`gateway/routes/internal/capture-mode.ts`)
+ * and the SDK lane via `mcpAuthInfo` — so an eval replay would have performed
+ * real side effects against the org it was scoring.
+ *
+ * Kept as one fixture so the round-trip test and the coverage guard below
+ * cannot disagree about what "every claim" means.
+ */
+const ALL_CLAIMS: Required<WorkerTokenOptions> = {
+  channelId: "C-all",
+  teamId: "T-all",
+  agentId: "agent-all",
+  organizationId: "org-all",
+  connectionId: "conn-all",
+  responseThreadId: "slack:C-all:thread-1",
+  platform: "slack",
+  source: "watcher-run",
+  executionMode: "capture",
+  behaviorRunId: 874626,
+  sessionKey: "sess-all",
+  traceId: "trace-all",
+  runId: 4321,
+  messageId: "msg-all",
+  adminTools: ["manage_behaviors"],
+  adminActorUserId: "user-admin",
+  runtimeProviderId: "provider-all",
+  sandboxId: "sandbox-all",
+  allowedDomains: ["allowed.example"],
+  deniedDomains: ["blocked.example"],
+  nixPackages: ["ripgrep"],
+};
 
 describe("worker auth token", () => {
   let saved: Record<string, string | undefined> = {};
@@ -77,26 +120,74 @@ describe("worker auth token", () => {
     expect(d.timestamp).toBeGreaterThan(0);
   });
 
-  test("verifyWorkerToken round-trips all optional fields", () => {
-    const token = generateWorkerToken("user-2", "conv-2", "deploy-B", {
-      channelId: "C2",
-      teamId: "T2",
-      agentId: "agent-x",
-      connectionId: "conn-9",
-      responseThreadId: "slack:C2:thread-9",
-      platform: "slack",
-      sessionKey: "sess-abc",
-      traceId: "trace-zzz",
-    });
-    const d = verifyWorkerToken(token) as WorkerTokenData;
+  test("verifyWorkerToken round-trips EVERY claim", () => {
+    const d = verifyWorkerToken(
+      generateWorkerToken("user-2", "conv-2", "deploy-B", ALL_CLAIMS)
+    ) as WorkerTokenData;
     expect(d).not.toBeNull();
-    expect(d.teamId).toBe("T2");
-    expect(d.agentId).toBe("agent-x");
-    expect(d.connectionId).toBe("conn-9");
-    expect(d.responseThreadId).toBe("slack:C2:thread-9");
-    expect(d.platform).toBe("slack");
-    expect(d.sessionKey).toBe("sess-abc");
-    expect(d.traceId).toBe("trace-zzz");
+    // Projected off the fixture's own keys rather than a written-out list, so
+    // a claim cannot be added to the fixture and then left unasserted. Compared
+    // in one shot so a failure names every dropped claim, not just the first.
+    const roundTripped = Object.fromEntries(
+      Object.keys(ALL_CLAIMS).map((key) => [
+        key,
+        d[key as keyof typeof ALL_CLAIMS],
+      ])
+    );
+    expect(roundTripped).toEqual(ALL_CLAIMS);
+  });
+
+  test("the fixture covers every declared claim", () => {
+    // ALL_CLAIMS is hand-written, and hand-written lists drift — that is
+    // precisely how the eight claims above reached prod uncovered. The
+    // `Required<WorkerTokenOptions>` annotation looks like it prevents that,
+    // but it does NOT: both packages/core/tsconfig.json and the root
+    // tsconfig.json exclude `__tests__`, so this file is never typechecked and
+    // the annotation is documentation. Enforce it at runtime instead.
+    //
+    // Parsed from source, which fails CLOSED: a reformat the pattern can't read
+    // yields no names and fails the comparison below rather than passing empty.
+    const src = readFileSync(
+      fileURLToPath(new URL("../worker/auth.ts", import.meta.url)),
+      "utf8"
+    );
+    const start = src.indexOf("export interface WorkerTokenOptions {");
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf("\n}", start));
+    const declared = [...body.matchAll(/^\s{2}([a-zA-Z][a-zA-Z0-9]*)\??:/gm)]
+      .map((m) => m[1])
+      .sort();
+    expect(declared).toEqual(Object.keys(ALL_CLAIMS).sort());
+  });
+
+  test("a minimal token carries no claim it was not given", () => {
+    // The eval claims must be ABSENT on an ordinary token, not merely falsy:
+    // `capture-mode.ts` treats absent `executionMode` as live, and the snapshot
+    // route compares a present `runId` for equality. An option the caller never
+    // passed must not arrive as a defaulted value.
+    const d = verifyWorkerToken(
+      generateWorkerToken("user-1", "conv-1", "deploy-A", { channelId: "C1" })
+    ) as WorkerTokenData;
+    expect(d.executionMode).toBeUndefined();
+    expect(d.behaviorRunId).toBeUndefined();
+    expect(d.runId).toBeUndefined();
+  });
+
+  test.each([
+    0, -1, 1.5,
+  ])("a token claiming behaviorRunId=%p is rejected outright", (bad) => {
+    // The claim addresses the row an eval writes its capture record onto, so
+    // a malformed one must kill the whole token rather than quietly arrive
+    // as undefined and route the record nowhere.
+    expect(
+      verifyWorkerToken(
+        generateWorkerToken("user-1", "conv-1", "deploy-A", {
+          channelId: "C1",
+          executionMode: "capture",
+          behaviorRunId: bad,
+        })
+      )
+    ).toBe(null);
   });
 
   test("round-trips an admin-tools allowlist with its distinct auth actor", () => {

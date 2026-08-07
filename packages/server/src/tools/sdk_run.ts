@@ -121,6 +121,45 @@ export const SdkScriptResultSchema = Type.Object({
   dry_run: Type.Boolean(),
 });
 
+/**
+ * Whether the sandbox runs in its skip-and-record path for this call.
+ *
+ * An eval replay captures whether the agent asks to or not: the sandbox
+ * already skips every non-read method under `dryRun` and records it with its
+ * arguments (sandbox/run-script.ts), and capture mode is that same path forced
+ * by the server from the signed `executionMode` token claim.
+ *
+ * Capture is OR'd with the agent's own opt-in and never overridden by it — a
+ * capture run cannot be talked back into executing by passing
+ * `dry_run: false`. Exported so that property is pinned by a test against the
+ * real expression rather than a copy of it.
+ */
+export function resolveSandboxDryRun(args: {
+  executionMode?: "live" | "capture" | null;
+  sdkMode: SDKMode;
+  agentDryRun: boolean;
+}): boolean {
+  const captureSideEffects = args.executionMode === "capture";
+  return captureSideEffects || (args.sdkMode === "full" && args.agentDryRun);
+}
+
+/**
+ * SDK paths a CAPTURE run still dispatches, because the handler behind them
+ * enforces capture itself (see `RunScriptOptions.dryRunDispatchPaths`).
+ *
+ * `behaviors.completeWindow` is the finalize step the dispatch prompt asks for
+ * (watchers/automation.ts). Skipping it would leave every eval replay with no
+ * window — which the finalize-nudge reads as "the agent never called run_sdk",
+ * costing a second full replay before failing the run with a misleading error.
+ * `handleCompleteWindow` reads the same `executionMode` and records the
+ * extraction on `runs.dry_run_preview` instead of writing the canvas.
+ *
+ * Empty for an agent-requested `dry_run` — there, skipping IS the answer.
+ */
+export const CAPTURE_DISPATCH_PATHS: readonly string[] = [
+  "behaviors.completeWindow",
+];
+
 async function runSandbox(
   mode: SDKMode,
   args: RunArgs | QueryArgs,
@@ -134,7 +173,13 @@ async function runSandbox(
     sdkMode: mode,
     allowCrossOrg,
     maxAccessLevel: resolveMaxAccessLevel(ctx.memberRole, ctx.scopes),
-    dryRun: mode === "full" && "dry_run" in args && args.dry_run === true,
+    dryRun: resolveSandboxDryRun({
+      executionMode: ctx.executionMode,
+      sdkMode: mode,
+      agentDryRun: "dry_run" in args ? args.dry_run === true : false,
+    }),
+    dryRunDispatchPaths:
+      ctx.executionMode === "capture" ? CAPTURE_DISPATCH_PATHS : undefined,
     context: {
       organization_id: ctx.organizationId,
       user_id: ctx.userId,

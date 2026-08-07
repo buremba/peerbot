@@ -48,6 +48,14 @@ export interface WorkerTokenData {
    * interactive (browser-driven) runs.
    */
   source?: string;
+  /**
+   * Side-effect mode for this run, derived server-side from `runs.run_type`
+   * when the session was authorized. `capture` marks an eval replay: mutating
+   * work is recorded and NOT performed. Absent means live — see the rollout
+   * note in gateway/orchestration/worker-token-claims.ts. Signed, so a worker
+   * cannot promote itself to live.
+   */
+  executionMode?: "live" | "capture";
   sessionKey?: string;
   traceId?: string;
   /** Unique token ID — enables targeted revocation. */
@@ -142,6 +150,8 @@ export interface WorkerTokenOptions {
   platform?: string;
   /** Headless run origin — see WorkerTokenData.source. */
   source?: string;
+  /** Side-effect mode — see WorkerTokenData.executionMode. */
+  executionMode?: "live" | "capture";
   sessionKey?: string;
   traceId?: string;
   /**
@@ -202,6 +212,7 @@ function generateToken(
     timestamp: Date.now(),
     platform: options.platform,
     source: options.source,
+    executionMode: options.executionMode,
     sessionKey: options.sessionKey,
     traceId: options.traceId,
     jti,

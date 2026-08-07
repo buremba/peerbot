@@ -35,6 +35,12 @@ import type { ManageBehaviorsArgs } from '../manage_behaviors';
 import { normalizeExtractedData, parseJson, requireWatcherAccess } from './shared';
 import { getErrorMessage } from '@lobu/core';
 import { classifyRunOutcome } from "../../../runs/run-outcome";
+import { BEHAVIOR_EVAL_RUN_TYPE, BEHAVIOR_RUN_TYPE } from "../../../runs/run-types.js";
+
+/** Cap on the content ids echoed into `dry_run_preview` — the preview exists to
+ *  be read, and an unbounded id list on a wide window is neither useful nor
+ *  cheap to store. Mirrors the capping rationale in worker-api/run-lifecycle. */
+const CAPTURE_PREVIEW_CONTENT_CAP = 200;
 
 // Initialize AJV for JSON Schema validation
 // removeAdditional: true strips fields like 'embedding' that workers add but aren't in the schema
@@ -99,6 +105,10 @@ export async function handleCompleteWindow(
     | 'already_completed';
   reaction_status: 'success' | 'failed' | 'skipped';
   reaction_error?: string;
+  /** Set only on an eval replay (`executionMode = 'capture'`): the extraction
+   *  was recorded on the run's `dry_run_preview` and nothing was written. No
+   *  window exists, so `window_id` is 0. */
+  captured?: true;
 }> {
   const sql = getDb();
   const provenanceClientId = args.client_id ?? ctx.clientId ?? null;
@@ -178,14 +188,27 @@ export async function handleCompleteWindow(
   const pgSql = createDbClientFromEnv(env);
   await requireWatcherAccess(pgSql, [String(watcherId)], ctx, 'write');
 
+  // The lane this caller belongs to. A live session and an eval replay must
+  // never resolve to, or claim, each other's run: the mode is derived from the
+  // run row at session creation, so a live token carries no capture claim and
+  // would execute the real write path for a window the eval only replays.
+  const callerRunType =
+    ctx.executionMode === 'capture' ? BEHAVIOR_EVAL_RUN_TYPE : BEHAVIOR_RUN_TYPE;
+
   if (watcherRunId == null) {
     // Prefer an active (dispatched) run; otherwise a pending manual-open run
     // (no agent/device pin) waiting for an external completer.
+    //
+    // Lane-scoped: this ordering prefers `running` and then the newest row —
+    // which, while an eval replay of this same Behavior is in flight, is the
+    // eval. A live completer that omitted `behavior_run_id` would otherwise
+    // adopt the eval's run and stamp a window onto it, breaking the "an eval
+    // never has a window" invariant PR 3 scores against.
     const runRows = await sql`
       SELECT id
       FROM runs
       WHERE watcher_id = ${watcherId}
-        AND run_type = 'behavior'
+        AND run_type = ${callerRunType}
         AND (
           status = 'running'
           OR (
@@ -220,7 +243,12 @@ export async function handleCompleteWindow(
           claimed_at = COALESCE(claimed_at, current_timestamp)
       WHERE id = ${watcherRunId}
         AND watcher_id = ${watcherId}
-        AND run_type = 'behavior'
+        -- Same lane scoping as the lookup above: a LIVE completer must not be
+        -- able to claim a pending eval by passing its run id. Its token carries
+        -- no capture claim, so it would run the live path and write a real
+        -- canvas for the window the eval was only supposed to replay. Nothing
+        -- mints manual-open evals today; the guard should not permit it anyway.
+        AND run_type = ${callerRunType}
         AND status = 'pending'
         AND (approved_input->>'agent_id' IS NULL OR approved_input->>'agent_id' = '')
         AND (approved_input->>'device_worker_id' IS NULL OR approved_input->>'device_worker_id' = '')
@@ -409,6 +437,73 @@ export async function handleCompleteWindow(
   // ============================================
   const fieldsToStrip = getFieldsToStrip(classifiers);
   const cleanedExtractedData = stripFields(extractedData, Array.from(fieldsToStrip));
+
+  // ============================================
+  // STEP 5: Capture mode — an eval replay records its output, never commits it
+  // ============================================
+  // Everything above is validation and reads, so a capture run takes exactly
+  // the same 400s a live run would and only the side effect diverges.
+  // Everything below is writes: the canvas supersede chain, entity promotion,
+  // output events, classifications, the schedule cursor, and the reaction
+  // script.
+  //
+  // This return is load-bearing, not defensive. An eval replays the SAME window
+  // as the run it scores, so the canvas chain root (watcher + granularity +
+  // window_start) is identical — a `replace_existing` completion from an eval
+  // would supersede the REAL Behavior's head and unlink its content. Returning
+  // here is also what keeps the reaction script from firing, since that block
+  // triggers on `content_linked > 0`.
+  //
+  // The extraction is what PR 3 scores, so it is persisted where a captured
+  // payload already belongs: `runs.dry_run_preview` (see
+  // 20260731020000_runs_dry_run.sql). The `run_type` guard on the UPDATE means
+  // a capture claim can never stamp a real Behavior run.
+  if (ctx.executionMode === 'capture') {
+    if (watcherRunId != null) {
+      await sql`
+        UPDATE runs
+        SET dry_run = true,
+            dry_run_preview = ${sql.json({
+              captured: 'complete_window',
+              behavior_id: String(watcherId),
+              window_start,
+              window_end,
+              granularity,
+              extracted_data: cleanedExtractedData as never,
+              content_ids: batchContentIds.slice(0, CAPTURE_PREVIEW_CONTENT_CAP),
+              content_linked: batchContentIds.length,
+              content_ids_truncated: batchContentIds.length > CAPTURE_PREVIEW_CONTENT_CAP,
+              replace_existing: args.replace_existing === true,
+            })}
+        WHERE id = ${watcherRunId}
+          AND run_type = ${BEHAVIOR_EVAL_RUN_TYPE}
+      `;
+    }
+    logger.info(
+      {
+        evalCapture: true,
+        runId: watcherRunId,
+        watcherId,
+        window_start,
+        window_end,
+        contentLinked: batchContentIds.length,
+      },
+      '[evals] Recorded a complete_window extraction without writing it'
+    );
+    return {
+      action: 'complete_window' as const,
+      behavior_id: String(watcherId),
+      // No window was created, so there is no id to report.
+      window_id: 0,
+      window_start,
+      window_end,
+      content_linked: 0,
+      window_created: false,
+      head_superseded: false,
+      reaction_status: 'skipped' as const,
+      captured: true as const,
+    };
+  }
 
   // ============================================
   // STEP 6: Wrap all DB operations in a transaction
@@ -771,7 +866,7 @@ export async function handleCompleteWindow(
             error_message = NULL
         WHERE id = ${watcherRunId}
           AND watcher_id = ${watcherId}
-          AND run_type = 'behavior'
+          AND run_type = ${BEHAVIOR_RUN_TYPE}
           AND status IN ('running', 'claimed')
         RETURNING id, approved_input->>'dispatch_source' AS dispatch_source
       `;
@@ -797,7 +892,7 @@ export async function handleCompleteWindow(
               run_metadata = COALESCE(run_metadata, '{}'::jsonb) || ${sql.json(provenanceMetadata)}
           WHERE id = ${watcherRunId}
             AND watcher_id = ${watcherId}
-            AND run_type = 'behavior'
+            AND run_type = ${BEHAVIOR_RUN_TYPE}
         `;
       }
     }

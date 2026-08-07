@@ -13,6 +13,9 @@
  * claims (runId+messageId for the per-run token, traceId for the deployment
  * token) stay with each caller.
  */
+
+import type { ExecutionMode } from "../../runs/run-types.js";
+
 export interface WorkerTokenClaimsArgs {
 	channelId: string;
 	teamId?: string;
@@ -77,6 +80,7 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
 	connectionId?: string;
 	responseThreadId?: string;
 	source?: string;
+	executionMode?: ExecutionMode;
 	runtimeProviderId?: string;
 	sandboxId?: string;
 	allowedDomains?: string[];
@@ -103,6 +107,19 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
 		source:
 			typeof args.platformMetadata?.source === "string"
 				? args.platformMetadata.source
+				: undefined,
+		// Only the literal 'capture' is honoured, and it originates server-side
+		// from the run row (behavior-run-intent.ts) — never from a caller.
+		//
+		// An absent claim means live. That direction is deliberate: making
+		// "absent" mean capture would, for the length of a rollout, silence
+		// every real Behavior still running on a token minted before this
+		// deploy. The claim is instead kept honest at its source — an eval run
+		// cannot obtain a session without `verifyBehaviorRunIntent` deriving
+		// its mode from `runs.run_type` — and that chain is covered by tests.
+		executionMode:
+			args.platformMetadata?.executionMode === "capture"
+				? "capture"
 				: undefined,
 		runtimeProviderId,
 		sandboxId: runtimeProviderId ? args.sandboxId : undefined,

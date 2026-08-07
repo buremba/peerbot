@@ -40,6 +40,11 @@ import {
 	markWatcherRunCompleted,
 	resolveWatcherRunsByMessageIds,
 } from "./run-completion";
+import {
+	BEHAVIOR_RUN_TYPE,
+	BEHAVIOR_RUN_TYPES,
+	BEHAVIOR_RUN_TYPES_PG,
+} from "../runs/run-types.js";
 
 type WatcherRunStatus =
 	| "pending"
@@ -362,6 +367,7 @@ async function markWatcherRunFailedIdempotent(
 	await sql.begin(async (tx) => {
 		const [failed] = await tx<{
 			watcher_id: string | number | null;
+			run_type: string;
 			dispatch_source: string | null;
 		}>`
       UPDATE runs
@@ -371,14 +377,22 @@ async function markWatcherRunFailedIdempotent(
           error_message = ${message}
       WHERE id = ${runId}
         AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-      RETURNING watcher_id, approved_input->>'dispatch_source' AS dispatch_source
+      RETURNING watcher_id, run_type, approved_input->>'dispatch_source' AS dispatch_source
     `;
 		if (!failed) return;
-		await advanceScheduleAfterTerminalFailure(
-			tx,
-			failed.watcher_id == null ? null : Number(failed.watcher_id),
-			failed.dispatch_source
-		);
+		// Same gate as the twin in run-completion.ts. The dispatch lane claims
+		// both run types, so every failure here — session-create, embedded Lobu
+		// unavailable, preflight, message POST — can be an eval. An eval clones
+		// `dispatch_source` verbatim, so ungated it would advance the live cron
+		// cursor of the Behavior it is only replaying, or park it entirely when
+		// the schedule does not parse.
+		if (failed.run_type === BEHAVIOR_RUN_TYPE) {
+			await advanceScheduleAfterTerminalFailure(
+				tx,
+				failed.watcher_id == null ? null : Number(failed.watcher_id),
+				failed.dispatch_source
+			);
+		}
 	});
 }
 
@@ -566,7 +580,13 @@ export async function sweepStaleWatcherRuns(
 		coarseStaleInterval
 	);
 	const executingTimedOut = await markStaleRunsAsTimeout(sql, {
-		runTypes: ["behavior"],
+		// Both lanes: this is a pure status UPDATE with no schedule-cursor or
+		// canvas side effect, so terminating a crashed eval cannot touch the
+		// Behavior it replays. Without it a `running` eval never reaches a
+		// terminal state and its same-lane claim guard wedges the eval lane.
+		// `finalizeStalePendingWatcherRuns` above stays behavior-only on
+		// purpose — it advances `next_run_at`, which an eval must never do.
+		runTypes: BEHAVIOR_RUN_TYPES,
 		heartbeatSemantics: "beat-after-claim",
 		heartbeatStaleInterval,
 		coarseStaleInterval,
@@ -693,6 +713,11 @@ async function finalizeStalePendingWatcherRuns(
  * - Claimed scheduled and event deliveries retry after a dispatcher crash
  *   before `running`. Manual triggers are not auto-retried; the caller owns
  *   retry policy.
+ * - Covers BOTH behavior lanes. The claim guards are same-lane
+ *   (`active.run_type = r.run_type`), so a crashed eval claim does not block a
+ *   live run — but it does block every later eval of that Behavior, and
+ *   nothing else would ever clear it. Resetting an orphaned eval claim cannot
+ *   touch a live run for the same reason.
  *
  * Module-private: `runWatcherAutomationTick` is the only driver. The
  * stale-claim threshold lives in config/intervals.ts
@@ -709,7 +734,7 @@ async function resetOrphanedWatcherRuns(
         claimed_at = NULL,
         dispatched_message_id = NULL,
         error_message = NULL
-    WHERE run_type = 'behavior'
+    WHERE run_type = ANY(${BEHAVIOR_RUN_TYPES_PG}::text[])
       AND status = 'claimed'
       AND claimed_by = 'lobu-dispatcher'
       AND claimed_at < now() - ${intervals.watcherOrphanedClaimThreshold}::interval
@@ -1106,13 +1131,14 @@ async function claimWatcherRun(
 		const candidates = await tx`
       SELECT r.id, r.organization_id, r.watcher_id, r.approved_input
       FROM runs r
-      WHERE r.run_type = 'behavior'
+      WHERE r.run_type = ANY(${BEHAVIOR_RUN_TYPES_PG}::text[])
         AND r.status = 'pending'
+        -- Same-type guard: see claimPendingWatcherRun.
         AND NOT EXISTS (
           SELECT 1
           FROM runs active
           WHERE active.watcher_id = r.watcher_id
-            AND active.run_type = 'behavior'
+            AND active.run_type = r.run_type
             AND active.status IN ('claimed', 'running')
         )
         AND (

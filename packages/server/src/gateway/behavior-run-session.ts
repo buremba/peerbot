@@ -36,6 +36,7 @@ import {
 	parseBehaviorSkillSnapshots,
 } from "../behaviors/skill-snapshots.js";
 import { parseBehaviorRunConversationId } from "./permissions/behavior-run-intent.js";
+import { BEHAVIOR_RUN_TYPES_PG } from "../runs/run-types.js";
 
 export const BEHAVIOR_RUN_SOURCE = "watcher-run";
 
@@ -76,7 +77,7 @@ export async function resolveBehaviorRunSkills(
 		     )
 		 AND version.watcher_id = behavior.watcher_group_id
 		WHERE behavior_run.id = ${intent.runId}
-		  AND behavior_run.run_type = 'behavior'
+		  AND behavior_run.run_type = ANY(${BEHAVIOR_RUN_TYPES_PG}::text[])
 		  AND behavior_run.watcher_id = ${intent.behaviorId}
 		  AND behavior_run.organization_id = ${args.organizationId}
 		LIMIT 1

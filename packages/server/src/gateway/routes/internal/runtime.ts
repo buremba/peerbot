@@ -8,6 +8,7 @@ import { type PackageProvisionResult, RuntimeInfrastructureError } from "../../r
 import { errorResponse, getVerifiedWorker } from "../shared/helpers.js";
 import { authenticateWorker } from "./middleware.js";
 import type { WorkerContext } from "./types.js";
+import { captureSideEffect } from "./capture-mode.js";
 
 const logger = createLogger("internal-runtime");
 
@@ -57,6 +58,24 @@ export function createRuntimeRoutes(): Hono<WorkerContext> {
       if (!body || typeof body.command !== "string" || !body.command.trim()) {
         return errorResponse(c, "Missing command", 400);
       }
+
+      // The worker's exec client (generic-runtime-bash.ts) reads
+      // `{ stdout, exitCode }` off a 2xx and treats a missing exitCode as the
+      // command failing with exit 1 — so the captured body must speak that
+      // contract, or every captured command reads as a silent failure and the
+      // replay measures the agent's retry loop instead of its intent.
+      const captured = captureSideEffect(
+        c,
+        "runtime.exec",
+        { command: body.command },
+        {
+          captured: true,
+          stdout:
+            "lobu: capture run — this command was recorded but not executed (evaluation replay).\n",
+          exitCode: 0,
+        },
+      );
+      if (captured) return captured;
 
       let credentials = await resolveRuntimeCredentials(
         provider,

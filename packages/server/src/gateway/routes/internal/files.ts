@@ -11,6 +11,7 @@ import type { PlatformRegistry } from "../../platform.js";
 import type { IFileHandler } from "../../platform/file-handler.js";
 import { errorResponse, getVerifiedWorker } from "../shared/helpers.js";
 import { authenticateWorker } from "./middleware.js";
+import { captureSideEffect } from "./capture-mode.js";
 import type { WorkerContext } from "./types.js";
 
 const logger = createLogger("file-routes");
@@ -111,6 +112,18 @@ export function createFileRoutes(
 
       const filename = (formData.get("filename") as string) || file.name;
       const initialComment = formData.get("comment") as string | null;
+
+      // Delivery into the conversation is a side effect: the media plugins
+      // generate content and then land it here, so this is where a capture
+      // run's attachment attempt is recorded instead of delivered. Callers
+      // only require a 2xx (`upload.response.ok`), so the generic body works.
+      const captured = captureSideEffect(c, "files.upload", {
+        filename,
+        mimeType: file.type || null,
+        size: file.size,
+        voiceMessage,
+      });
+      if (captured) return captured;
 
       logger.info(
         `Worker uploading file ${filename} via ${worker.platform || "unknown"} for conversation ${worker.conversationId} to conversation ${conversationId}${voiceMessage ? " as voice message" : ""}`
@@ -213,6 +226,14 @@ export function createFileRoutes(
       if (!fileEntries || fileEntries.length === 0) {
         return errorResponse(c, "No files provided", 400);
       }
+
+      const captured = captureSideEffect(c, "files.upload_batch", {
+        count: fileEntries.length,
+        filenames: fileEntries
+          .filter((entry): entry is File => entry instanceof File)
+          .map((entry) => entry.name),
+      });
+      if (captured) return captured;
 
       logger.info(
         `Worker uploading ${fileEntries.length} files for conversation ${worker.conversationId}`

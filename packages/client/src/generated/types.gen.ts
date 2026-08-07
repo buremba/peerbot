@@ -3945,6 +3945,12 @@ export type NotifyData = {
       [key: string]: unknown;
     };
     /**
+     * Turn this notification into a QUESTION the recipient answers, instead of an FYI. JSON Schema for the answer. Pass {} for a plain yes/no decision (renders as Approve/Reject inline, in-app and in chat). Pass a single required enum property to offer one-click named options. Pass several properties to collect fields (the recipient gets a form; give each property a `title` — without one the form labels the field with its full `description`). Properties must be flat: nested objects do not render. Answering records the result and emits it — read it back with manage_operations get_run.
+     */
+    input_schema?: {
+      [key: string]: unknown;
+    };
+    /**
      * Attribution source when notification is triggered by a Behavior reaction
      */
     behavior_source?: {
@@ -4889,6 +4895,7 @@ export type GetBehaviorResponses = {
           | "failed"
           | "cancelled"
           | "timeout";
+        outcome?: "infra_error" | "agent_error" | "scoreable";
         error_message?: string | null;
         created_at?: string | null;
         completed_at?: string | null;
@@ -4896,6 +4903,7 @@ export type GetBehaviorResponses = {
       health?: "healthy" | "degraded";
       health_reasons?: Array<string>;
       last_scheduling_error?: string | null;
+      last_run_outcome?: string | null;
     };
     pending_analysis?: {
       unprocessed_count: number;

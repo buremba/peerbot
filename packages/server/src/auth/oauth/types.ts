@@ -236,6 +236,12 @@ export interface AuthInfo {
    * internal tools. Absent for every non-admin-tools caller.
    */
   adminTools?: string[] | null;
+  /**
+   * Signed side-effect mode from the worker token
+   * (WorkerTokenData.executionMode). 'capture' marks an eval replay whose
+   * mutating work must be recorded rather than performed.
+   */
+  executionMode?: 'live' | 'capture' | null;
 }
 
 // ============================================

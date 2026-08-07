@@ -10,6 +10,7 @@ import type { ImageGenerationService } from "../../services/image-generation-ser
 import { errorResponse, getVerifiedWorker } from "../shared/helpers.js";
 import { authenticateWorker } from "./middleware.js";
 import type { WorkerContext } from "./types.js";
+import { captureSideEffect } from "./capture-mode.js";
 
 const logger = createLogger("internal-image-routes");
 
@@ -36,6 +37,7 @@ export function createImageRoutes(
       if (!prompt || typeof prompt !== "string") {
         return errorResponse(c, "prompt is required and must be a string", 400);
       }
+
       if (prompt.length > 4000) {
         return errorResponse(c, "prompt must be 4000 characters or less", 400);
       }
@@ -44,6 +46,11 @@ export function createImageRoutes(
       if (!agentId) {
         return errorResponse(c, "Missing agentId in worker context", 400);
       }
+
+      // After validation, before the billable call: a capture run must see the
+      // same 400s a live run would, and only the side effect is suppressed.
+      const captured = captureSideEffect(c, "images.generate", { prompt, size });
+      if (captured) return captured;
 
       logger.info("Generating image", {
         agentId,

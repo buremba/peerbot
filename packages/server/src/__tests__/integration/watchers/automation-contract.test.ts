@@ -16,7 +16,12 @@ import { getDb } from "../../../db/client";
 import { ApiResponseRenderer } from "../../../gateway/api/response-renderer";
 import { UnifiedThreadResponseConsumer } from "../../../gateway/platform/unified-thread-consumer";
 import type { Env } from "../../../index";
+import { createEvalRun } from "../../../runs/eval-runs";
 import { createWatcherRun } from "../../../runs/queue-service";
+import {
+	BEHAVIOR_EVAL_RUN_TYPE,
+	BEHAVIOR_RUN_TYPE,
+} from "../../../runs/run-types";
 import { nextRunAt } from "../../../utils/cron";
 import { generateWindowToken } from "../../../utils/jwt";
 import { computePendingWindow } from "../../../utils/window-utils";
@@ -2071,6 +2076,143 @@ describe("watcher automation contract", () => {
 			expect(recovered.status).toBe("pending");
 			expect(recovered.claimed_by).toBeNull();
 			expect(recovered.claimed_at).toBeNull();
+		});
+
+		it("recovers an orphaned eval claim, which nothing else would clear", async () => {
+			const { sql, watcherId } = await createAutomatedWatcher();
+			await materializeDueWatcherRuns({} as Env);
+
+			// Complete the materialized run so it is a valid eval source, then
+			// replay it. The eval inherits `dispatch_source` verbatim.
+			const [source] = await sql<{ id: number }>`
+				UPDATE runs SET status = 'completed', completed_at = NOW()
+				WHERE watcher_id = ${watcherId} AND run_type = ${BEHAVIOR_RUN_TYPE}
+				RETURNING id
+			`;
+			const evalRun = await createEvalRun(
+				{ sourceRunId: source.id, caseKey: "orphan" },
+				sql as unknown as DbClient
+			);
+			expect(evalRun?.created).toBe(true);
+
+			// Strand it exactly as a dispatcher crash between claim and POST would.
+			await sql`
+				UPDATE runs
+				SET status = 'claimed',
+					claimed_by = 'lobu-dispatcher',
+					claimed_at = NOW() - INTERVAL '10 minutes'
+				WHERE id = ${evalRun?.runId ?? 0}
+			`;
+
+			const result = await runWatcherAutomationTick({} as Env);
+			// The reaper's whole contract: the stranded eval is released. Scoped
+			// to `behavior` alone this is 0 and the eval lane stays wedged.
+			expect(result.reset).toBe(1);
+
+			// Deliberately NOT asserting a final status. The same tick's dispatch
+			// phase adopts the freshly-pending eval and fails it here on
+			// `isLobuGatewayRunning()`, which is false under vitest — an
+			// environment limit, not a lane one. That it gets that far is the
+			// point: the dispatcher does claim `behavior_eval` rows.
+			const [recoveredEval] = await sql<{ run_type: string }>`
+				SELECT run_type FROM runs WHERE id = ${evalRun?.runId ?? 0}
+			`;
+			// Recovery must never relabel an eval into the live lane.
+			expect(recoveredEval.run_type).toBe(BEHAVIOR_EVAL_RUN_TYPE);
+		});
+
+		it("a failing eval never moves the live Behavior's schedule", async () => {
+			const { sql, watcherId } = await createAutomatedWatcher();
+			await materializeDueWatcherRuns({} as Env);
+
+			const [source] = await sql<{ id: number }>`
+				UPDATE runs SET status = 'completed', completed_at = NOW()
+				WHERE watcher_id = ${watcherId} AND run_type = ${BEHAVIOR_RUN_TYPE}
+				RETURNING id
+			`;
+			const evalRun = await createEvalRun(
+				{ sourceRunId: source.id, caseKey: "schedule" },
+				sql as unknown as DbClient
+			);
+
+			const [before] = await sql<{ next_run_at: string | null }>`
+				SELECT next_run_at FROM watchers WHERE id = ${watcherId}
+			`;
+
+			// Drive the eval through the dispatch lane. Under vitest the embedded
+			// gateway is down, so it takes a `failWatcherRun` path — the same one
+			// a session-create or message-POST failure takes in prod.
+			await dispatchPendingWatcherRuns({} as Env);
+
+			const [evalRow] = await sql<{ status: string }>`
+				SELECT status FROM runs WHERE id = ${evalRun?.runId ?? 0}
+			`;
+			expect(evalRow.status).toBe("failed");
+
+			// The cron cursor of the Behavior it was only replaying is untouched,
+			// and specifically not parked at NULL.
+			const [after] = await sql<{ next_run_at: string | null }>`
+				SELECT next_run_at FROM watchers WHERE id = ${watcherId}
+			`;
+			expect(after.next_run_at).toEqual(before.next_run_at);
+			expect(after.next_run_at).not.toBeNull();
+		});
+
+		it("times out an eval that crashed mid-turn, leaving the live run alone", async () => {
+			const { sql, watcherId } = await createAutomatedWatcher();
+			await materializeDueWatcherRuns({} as Env);
+
+			const [source] = await sql<{ id: number }>`
+				UPDATE runs SET status = 'completed', completed_at = NOW()
+				WHERE watcher_id = ${watcherId} AND run_type = ${BEHAVIOR_RUN_TYPE}
+				RETURNING id
+			`;
+			const evalRun = await createEvalRun(
+				{ sourceRunId: source.id, caseKey: "stale" },
+				sql as unknown as DbClient
+			);
+
+			// Running, claimed long ago, and never heartbeated past the claim —
+			// the coarse backstop shape for a crashed executor.
+			await sql`
+				UPDATE runs
+				SET status = 'running',
+					claimed_at = NOW() - INTERVAL '5 hours',
+					last_heartbeat_at = NOW() - INTERVAL '5 hours'
+				WHERE id = ${evalRun?.runId ?? 0}
+			`;
+
+			// A live run for the SAME Behavior, freshly claimed — must survive.
+			const live = await createWatcherRun({
+				organizationId: (
+					await sql<{ organization_id: string }>`
+						SELECT organization_id FROM runs WHERE id = ${source.id}
+					`
+				)[0].organization_id,
+				watcherId,
+				agentId: undefined,
+				windowStart: new Date(Date.now() - 3600_000).toISOString(),
+				windowEnd: new Date().toISOString(),
+				dispatchSource: "manual",
+			});
+			await sql`
+				UPDATE runs SET status = 'running', claimed_at = NOW(),
+					last_heartbeat_at = NOW()
+				WHERE id = ${live.runId}
+			`;
+
+			const swept = await sweepStaleWatcherRuns(getDb());
+			expect(swept.timedOut).toBeGreaterThanOrEqual(1);
+
+			const [stale] = await sql<{ status: string }>`
+				SELECT status FROM runs WHERE id = ${evalRun?.runId ?? 0}
+			`;
+			expect(stale.status).toBe("timeout");
+
+			const [survivor] = await sql<{ status: string }>`
+				SELECT status FROM runs WHERE id = ${live.runId}
+			`;
+			expect(survivor.status).toBe("running");
 		});
 
 		// End-to-end regression for the 12-day outage: a stuck active run carrying a

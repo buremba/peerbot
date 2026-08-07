@@ -8,6 +8,11 @@ import {
 	advanceScheduleAfterTerminalFailure,
 	providerQuotaResetNotBefore,
 } from "./schedule-cursor";
+import {
+	BEHAVIOR_EVAL_RUN_TYPE,
+	BEHAVIOR_RUN_TYPE,
+	BEHAVIOR_RUN_TYPES_PG,
+} from "../runs/run-types.js";
 
 type WatcherTerminalResult =
 	| { ok: true }
@@ -179,6 +184,7 @@ async function markWatcherRunFailed(
 	return sql.begin(async (tx) => {
 		const [failed] = await tx<{
 			watcher_id: string | number | null;
+			run_type: string;
 			dispatch_source: string | null;
 		}>`
       UPDATE runs
@@ -188,15 +194,21 @@ async function markWatcherRunFailed(
           error_message = ${message}
       WHERE id = ${runId}
         AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-      RETURNING watcher_id, approved_input->>'dispatch_source' AS dispatch_source
+      RETURNING watcher_id, run_type, approved_input->>'dispatch_source' AS dispatch_source
     `;
 		if (!failed) return false;
-		await advanceScheduleAfterTerminalFailure(
-			tx,
-			failed.watcher_id == null ? null : Number(failed.watcher_id),
-			failed.dispatch_source,
-			notBefore
-		);
+		// Only a REAL Behavior failure moves the schedule. An eval replay copies
+		// the source run's dispatch_source verbatim, so without this gate a
+		// failing eval (a quota 429, a scoring rerun) would advance — or park for
+		// a day — the live Behavior's cron cursor it is merely replaying.
+		if (failed.run_type === BEHAVIOR_RUN_TYPE) {
+			await advanceScheduleAfterTerminalFailure(
+				tx,
+				failed.watcher_id == null ? null : Number(failed.watcher_id),
+				failed.dispatch_source,
+				notBefore
+			);
+		}
 		return true;
 	});
 }
@@ -241,10 +253,10 @@ export async function resolveWatcherRunsByMessageIds(
 
 	const sql = db ?? getDb();
 	const rows = await sql`
-    SELECT r.id, r.approved_input, w.execution_config
+    SELECT r.id, r.run_type, r.approved_input, w.execution_config
     FROM runs r
     LEFT JOIN watchers w ON w.id = r.watcher_id
-    WHERE r.run_type = 'behavior'
+    WHERE r.run_type = ANY(${BEHAVIOR_RUN_TYPES_PG}::text[])
       AND r.dispatched_message_id = ANY(${pgTextArray(ids)}::text[])
       AND r.status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
   `;
@@ -253,6 +265,7 @@ export async function resolveWatcherRunsByMessageIds(
 	for (const row of rows) {
 		const typedRow = row as {
 			id: unknown;
+			run_type: string;
 			approved_input: Record<string, unknown> | null;
 			execution_config: Record<string, unknown> | null;
 		};
@@ -286,6 +299,15 @@ export async function resolveWatcherRunsByMessageIds(
 
 		const windowId = await findWindowIdForRun(sql, runId);
 		if (windowId === null) {
+			// An eval replay can NEVER produce a window — capture mode is what
+			// stops it writing one. "No window" is its success shape, not a
+			// finalize miss, so nudging it would buy a second full replay and
+			// then fail the run with a message about a call the agent did make.
+			if (typedRow.run_type === BEHAVIOR_EVAL_RUN_TYPE) {
+				await markWatcherRunCompleted(sql, runId, null, "lobu-agent");
+				resolved++;
+				continue;
+			}
 			// The agent replied but never called complete_window — a soft, usually
 			// non-deterministic miss. Re-dispatch for one more turn (bounded by
 			// finalize_nudge_count) before giving up. The budget is per-watcher

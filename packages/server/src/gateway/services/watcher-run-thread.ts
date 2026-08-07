@@ -1,5 +1,6 @@
 import { getDb, pgBigintArray } from "../../db/client.js";
 import { paginateSessionMessages } from "./session-message-page.js";
+import { BEHAVIOR_RUN_TYPES_PG } from "../../runs/run-types.js";
 
 /**
  * Read the latest N durable watcher runs for one watcher, newest first, ready
@@ -81,7 +82,7 @@ export async function readWatcherRunThreads(args: {
 			WHERE r.organization_id = ${organizationId}
 			  AND r.watcher_id = ${watcherId}
 			  AND w.agent_id = ${agentId}
-			  AND r.run_type = 'behavior'
+			  AND r.run_type = ANY(${BEHAVIOR_RUN_TYPES_PG}::text[])
 			ORDER BY COALESCE(r.completed_at, r.created_at) DESC, r.id DESC
 			LIMIT ${limit}
 		)

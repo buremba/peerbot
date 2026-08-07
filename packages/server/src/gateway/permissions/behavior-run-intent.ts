@@ -17,6 +17,11 @@
 
 import { hashToken } from "../../auth/oauth/utils.js";
 import { type DbClient, getDb } from "../../db/client.js";
+import {
+	BEHAVIOR_RUN_TYPES_PG,
+	type ExecutionMode,
+	executionModeForRunType,
+} from "../../runs/run-types.js";
 import logger from "../../utils/logger.js";
 
 /**
@@ -61,6 +66,13 @@ export function parseBehaviorRunConversationId(
  * claimed by the dispatcher, and the request bears the short-lived internal
  * OAuth token minted by that dispatcher. Run state alone is not a capability:
  * an ordinary same-org agent owner can observe or guess an in-flight run id.
+ *
+ * Returns the session's {@link ExecutionMode} on success and null on refusal.
+ * This is also where an eval run's `capture` mode ORIGINATES: the run row is
+ * already being read here to decide whether the session may exist at all, so
+ * the mode is derived from the same row under the same authorization — never
+ * taken from the caller, and never re-derived downstream from the
+ * conversationId string.
  */
 export async function verifyBehaviorRunIntent(
 	args: {
@@ -69,8 +81,8 @@ export async function verifyBehaviorRunIntent(
 		accessToken: string | null;
 	},
 	db?: DbClient,
-): Promise<boolean> {
-	if (!args.organizationId || !args.accessToken) return false;
+): Promise<ExecutionMode | null> {
+	if (!args.organizationId || !args.accessToken) return null;
 	const { runId, behaviorId } = args.intent;
 	if (
 		!Number.isSafeInteger(runId) ||
@@ -78,18 +90,18 @@ export async function verifyBehaviorRunIntent(
 		!Number.isSafeInteger(behaviorId) ||
 		behaviorId < 1
 	) {
-		return false;
+		return null;
 	}
 	try {
 		const sql = db ?? getDb();
 		const tokenHash = hashToken(args.accessToken);
-		const rows = await sql`
-	      SELECT 1
+		const rows = (await sql`
+	      SELECT behavior_run.run_type
 	      FROM runs behavior_run
 	      JOIN oauth_tokens service_token
 	        ON service_token.token_hash = ${tokenHash}
 	      WHERE behavior_run.id = ${runId}
-	        AND behavior_run.run_type = 'behavior'
+	        AND behavior_run.run_type = ANY(${BEHAVIOR_RUN_TYPES_PG}::text[])
 	        AND behavior_run.watcher_id = ${behaviorId}
 	        AND behavior_run.organization_id = ${args.organizationId}
 	        AND behavior_run.claimed_by = ${SERVER_DISPATCHER}
@@ -100,13 +112,14 @@ export async function verifyBehaviorRunIntent(
 	        AND service_token.revoked_at IS NULL
 	        AND service_token.expires_at > NOW()
 	      LIMIT 1
-	    `;
-		return rows.length > 0;
+	    `) as unknown as Array<{ run_type: string }>;
+		if (rows.length === 0) return null;
+		return executionModeForRunType(rows[0].run_type);
 	} catch (error) {
 		logger.warn(
 			{ error, runId, behaviorId, organizationId: args.organizationId },
 			"[agent] Could not verify a Behavior run intent — refusing the session",
 		);
-		return false;
+		return null;
 	}
 }

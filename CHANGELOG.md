@@ -1,5 +1,13 @@
 # Changelog
 
+## [14.17.2](https://github.com/lobu-ai/lobu/compare/lobu-v14.17.1...lobu-v14.17.2) (2026-08-07)
+
+
+### Bug Fixes
+
+* **core:** stop a capture token from silently becoming a live one ([#2581](https://github.com/lobu-ai/lobu/issues/2581)) ([1b964a5](https://github.com/lobu-ai/lobu/commit/1b964a58f04b2006bbb2e1c9ac456e8d44d97f00))
+* **server:** serve the onboarding skill as raw markdown ([#2583](https://github.com/lobu-ai/lobu/issues/2583)) ([cdf3bb5](https://github.com/lobu-ai/lobu/commit/cdf3bb5f7ca560d8c20c649c03ce3911393bdff7))
+
 ## [14.17.1](https://github.com/lobu-ai/lobu/compare/lobu-v14.17.0...lobu-v14.17.1) (2026-08-07)
 
 

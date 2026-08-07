@@ -797,10 +797,20 @@ export async function executePlan(
   }
 
   // 4) Entity types
+  // The upsert rebuilds `metadata_schema` from the config's flat properties/
+  // required, so hand it the live type's out-of-band top-level keys (e.g.
+  // `x-lobu-resolution`) to carry forward — otherwise every apply erases them
+  // silently, with no diff row and no warning.
+  const remoteEntityTypeBySlug = new Map(
+    ctx.remote.entityTypes.map((t) => [t.slug, t])
+  );
   for (const row of rowsByKind("entity-type")) {
     if (row.kind !== "entity-type") continue;
     if (!row.desired) continue;
-    await ctx.client.upsertEntityType(row.desired);
+    await ctx.client.upsertEntityType(
+      row.desired,
+      remoteEntityTypeBySlug.get(row.desired.slug)?.schemaExtras
+    );
     // View template is a separate, version-appending tool. Reconcile it only on
     // create (when declared) or a flagged change — never every run, so the
     // version history doesn't churn. Declared ⇒ set; omitted-under-prune ⇒ clear.

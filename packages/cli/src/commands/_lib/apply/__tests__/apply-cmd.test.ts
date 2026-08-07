@@ -262,6 +262,72 @@ describe("executePlan — BYO chat connection dependencies", () => {
   });
 });
 
+describe("executePlan — entity-type schema fidelity", () => {
+  test("carries the live type's out-of-band metadata_schema keys into the upsert", async () => {
+    const desired = {
+      slug: "person",
+      name: "Person",
+      properties: {
+        email: { type: "string" },
+        handle: { type: "string" },
+      },
+      required: ["email"],
+    };
+    const state = stateWith({
+      definitions: [],
+      authProfiles: [],
+      connections: [],
+    });
+    state.memorySchema.entityTypes = [desired];
+    const plan: DiffPlan = {
+      rows: [
+        {
+          kind: "entity-type",
+          verb: "update",
+          id: desired.slug,
+          desired,
+          changedFields: ["properties"],
+        },
+      ],
+      counts: { create: 0, update: 1, noop: 0, drift: 0, delete: 0 },
+      notes: [],
+    };
+    const schemaExtras = {
+      "x-lobu-resolution": {
+        rules: [
+          { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+        ],
+      },
+    };
+    const remote: RemoteSnapshot = {
+      agents: [],
+      agentSettings: new Map(),
+      entityTypes: [
+        {
+          slug: "person",
+          properties: { email: { type: "string" } },
+          required: ["email"],
+          schemaExtras,
+        },
+      ],
+      relationshipTypes: [],
+      watchers: [],
+      connectorDefinitions: [],
+      authProfiles: [],
+      connections: [],
+      feedsByConnectionId: new Map(),
+      inferenceProviders: [],
+    };
+    const upsertEntityType = mock(async () => ({ updated: true }));
+    const client = { upsertEntityType } as unknown as ApplyClient;
+
+    await executePlan({ client, state, plan, remote }, []);
+
+    expect(upsertEntityType).toHaveBeenCalledTimes(1);
+    expect(upsertEntityType.mock.calls[0]?.[1]).toEqual(schemaExtras);
+  });
+});
+
 describe("executePlan — atomic Behavior triggers+prompt update", () => {
   test("sends simultaneous prompt+trigger drift through createBehaviorVersion only", async () => {
     const desired = {

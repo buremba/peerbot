@@ -75,6 +75,19 @@ export interface RemoteEntityType {
   /** Declared metrics (mirrors {@link DesiredEntityType.metrics}); hoisted from the row's `metrics_config`. */
   metrics?: EntityMetrics;
   /**
+   * Top-level `metadata_schema` keys the config has NO way to express — today
+   * `x-lobu-resolution` (the entity-resolution rules the server reads to decide
+   * whether duplicate entities auto-merge), authored via `manage_entity_schema`
+   * / the UI / an agent rather than `lobu.config.ts`.
+   *
+   * `upsertEntityType` REBUILDS `metadata_schema` from the config's flat
+   * `properties`/`required` and the server stores what it is sent verbatim, so
+   * without carrying these forward every apply would silently erase them. Set
+   * only when the stored schema has at least one such key, so a plain type
+   * stays `undefined`.
+   */
+  schemaExtras?: Record<string, unknown>;
+  /**
    * Owning org id. The list endpoint also returns *public* types from OTHER
    * orgs (`o.visibility = 'public'`), so prune must compare this against the
    * target org and never delete a type this org doesn't own.
@@ -238,11 +251,27 @@ function pickArray<T>(body: Record<string, unknown>, ...keys: string[]): T[] {
 }
 
 /**
+ * The top-level `metadata_schema` keys `lobu.config.ts` owns. Anything else on
+ * the stored schema is authored out-of-band and must survive an apply — see
+ * {@link RemoteEntityType.schemaExtras}.
+ */
+const CONFIG_OWNED_SCHEMA_KEYS: ReadonlySet<string> = new Set([
+  "type",
+  "properties",
+  "required",
+]);
+
+/**
  * The server stores entity-type per-field config as a single `metadata_schema`
  * JSON Schema. The diff compares the desired config's flat `properties`/
  * `required` against the remote snapshot, so hoist them out of the returned
  * `metadata_schema` to the row's top level. Mirrors `upsertEntityType`, which
  * folds the flat fields back into `metadata_schema` when writing.
+ *
+ * Every OTHER top-level key is collected into `schemaExtras` and handed back to
+ * `upsertEntityType` so the rebuild preserves it. Narrowing the read without
+ * that carry-forward is what made `lobu apply` silently drop out-of-band schema
+ * keys such as `x-lobu-resolution`.
  */
 function hoistEntityTypeSchema(
   row: RemoteEntityType & {
@@ -270,6 +299,12 @@ function hoistEntityTypeSchema(
         (v): v is string => typeof v === "string"
       );
     }
+    const extras: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(schema)) {
+      if (CONFIG_OWNED_SCHEMA_KEYS.has(key)) continue;
+      extras[key] = value;
+    }
+    if (Object.keys(extras).length > 0) out.schemaExtras = extras;
   }
   // A type is derived iff it has view SQL; stored types carry no backing, so it
   // compares equal to the desired side without churn. `backing_source` (a
@@ -637,7 +672,16 @@ export class ApplyClient {
   async upsertEntityType(
     // `metadata` is authoring-only — never sent to the server (see
     // DesiredEntityType); extra properties on the passed value are ignored.
-    entity: Omit<DesiredEntityType, "metadata">
+    entity: Omit<DesiredEntityType, "metadata">,
+    /**
+     * The live type's out-of-band `metadata_schema` keys
+     * ({@link RemoteEntityType.schemaExtras}), from the remote snapshot this
+     * apply already fetched. Config-owned keys (`type`/`properties`/`required`)
+     * are stripped from this bag before merging, so config always wins on them
+     * while keys it cannot express (e.g. `x-lobu-resolution`) survive the
+     * rebuild.
+     */
+    schemaExtras?: Record<string, unknown>
   ): Promise<UpsertEntityTypeResult> {
     // The server stores per-type fields as a single `metadata_schema` JSON
     // Schema (`{ type, properties, required }`) — it does NOT read top-level
@@ -658,7 +702,18 @@ export class ApplyClient {
     if (name !== undefined) payload.name = name;
     if (description !== undefined) payload.description = description;
     if (properties !== undefined || required !== undefined) {
+      // Strip config-owned keys from the extras bag so config always wins —
+      // spread order alone would let a stale `required` survive, because the
+      // config's `required` is only spread when non-empty. (When the config
+      // declares neither properties nor required we send no metadata_schema at
+      // all — the server then leaves the stored one alone, extras included.)
+      const extras: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(schemaExtras ?? {})) {
+        if (CONFIG_OWNED_SCHEMA_KEYS.has(key)) continue;
+        extras[key] = value;
+      }
       payload.metadata_schema = {
+        ...extras,
         type: "object",
         properties: properties ?? {},
         ...(required && required.length > 0 ? { required } : {}),

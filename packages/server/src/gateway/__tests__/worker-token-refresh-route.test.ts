@@ -135,6 +135,11 @@ function mintToken(opts: {
     allowedDomains: ["api.example.com"],
     deniedDomains: ["evil.example.com"],
     nixPackages: ["gh"],
+    // Minted as a capture (eval replay) token so refresh is exercised on the
+    // mode that has something to lose. Both halves are required: the verifier
+    // rejects `capture` without a run id.
+    executionMode: "capture",
+    behaviorRunId: 874626,
   });
 }
 
@@ -188,6 +193,12 @@ describe("POST /worker/token/refresh", () => {
     // otherwise stop provisioning the connector's CLI mid-run, leaving an
     // authenticated binary that is no longer installed.
     expect(data!.nixPackages).toEqual(["gh"]);
+    // And the capture pair. This is the one whose loss is silent AND harmful:
+    // a refreshed token without `executionMode` reads as live, so the rest of
+    // the eval replay performs real side effects against the org it is
+    // scoring instead of recording them.
+    expect(data!.executionMode).toBe("capture");
+    expect(data!.behaviorRunId).toBe(874626);
   });
 
   test("REVOCATION: denied (403) once this turn has no live marker", async () => {

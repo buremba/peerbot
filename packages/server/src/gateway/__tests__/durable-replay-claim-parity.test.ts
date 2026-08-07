@@ -23,15 +23,21 @@ afterAll(() => {
 });
 
 /**
- * A per-run token is minted once, but it is RE-minted on two other paths:
- * durable replay (`attachFreshRunJobToken`) and mid-turn refresh (the
- * `/worker/token/refresh` route). Both rebuild the claim set by hand, so any
- * claim added to the mint without being added to those mappers is silently
- * dropped the moment a run replays or a long turn rotates its token.
+ * A per-run token is minted once, but its claim set is rebuilt BY HAND on three
+ * further paths: `durableClaims` (persisting to `agent_run_input.token_claims`),
+ * `attachFreshRunJobToken` (the durable-replay remint), and the
+ * `/worker/token/refresh` route. Every claim on `WorkerTokenData` is optional,
+ * so a mapper that forgets one still typechecks — the claim is simply gone the
+ * moment a run replays or a long turn rotates its token.
  *
- * `nixPackages` is the claim that makes a contributed CLI exist on a remote
- * runtime. Losing it on replay reproduces exactly the failure the package
- * claim was added to fix: an authenticated `gh` that was never installed.
+ * This has now happened twice. `nixPackages` was the first: losing it on replay
+ * left an authenticated `gh` that was never installed. The capture pair was the
+ * second, and worse — a dropped `executionMode` reads as live, so an eval
+ * replay stops recording and starts performing real side effects against the
+ * org it is scoring.
+ *
+ * Hence the whole-fixture projection below rather than another hand-picked list
+ * of expectations.
  */
 describe("durable replay preserves every signed claim", () => {
   const claims = {
@@ -54,9 +60,29 @@ describe("durable replay preserves every signed claim", () => {
     allowedDomains: ["api.github.com"],
     deniedDomains: ["evil.example.com"],
     nixPackages: ["gh"],
+    // The capture pair. Dropping it on either hop turns an eval replay back
+    // into a LIVE run: absent `executionMode` reads as live, so the replay
+    // performs for real everything it was supposed to only record. Both are
+    // present because `verifyWorkerToken` rejects one without the other.
+    executionMode: "capture" as const,
+    behaviorRunId: 874626,
   };
 
-  test("the PERSISTED claim set carries nixPackages, not just the remint", async () => {
+  /**
+   * Assert against the WHOLE fixture rather than a hand-picked few. Both this
+   * suite and the mint's own round-trip test previously listed claims by hand
+   * and silently fell behind the interface — `nixPackages` was added for that
+   * reason, and the capture pair was missed the same way afterwards. Comparing
+   * a projection off the fixture's own keys means a claim can never be added
+   * to the fixture and left unasserted; keeping the fixture exhaustive is then
+   * the only discipline required.
+   */
+  const project = (actual: Record<string, unknown> | undefined) =>
+    Object.fromEntries(
+      Object.keys(claims).map((k) => [k, actual?.[k]]),
+    );
+
+  test("the PERSISTED claim set carries every claim, not just the remint", async () => {
     // `durableClaims` is a hand-written mapper feeding
     // agent_run_input.token_claims. A claim the mint signs but that mapper
     // omits is lost at the DATABASE boundary, before attachFreshRunJobToken
@@ -93,13 +119,10 @@ describe("durable replay preserves every signed claim", () => {
 
     // recordAgentRunInput binds the stored payload first, then the claim set.
     const persisted = bound[1];
-    expect(persisted?.allowedDomains).toEqual(["api.github.com"]);
-    expect(persisted?.nixPackages).toEqual(["gh"]);
-    expect(persisted?.adminTools).toEqual(["manage_agents"]);
-    expect(persisted?.adminActorUserId).toBe("auth-user-1");
+    expect(project(persisted)).toEqual(claims);
   });
 
-  test("attachFreshRunJobToken carries nixPackages across a replay remint", () => {
+  test("attachFreshRunJobToken carries every claim across a replay remint", () => {
     const replayed = attachFreshRunJobToken({
       payload: { runId: 7, messageId: "m1" } as never,
       tokenClaims: claims as never,
@@ -107,12 +130,10 @@ describe("durable replay preserves every signed claim", () => {
 
     const decoded = verifyWorkerToken(replayed.runJobToken as string);
 
-    // The egress claims already survive replay; the package claim must too.
-    // Without it the sandbox gets the domain grants for a binary it never
-    // installed — the asymmetry this branch exists to close.
-    expect(decoded?.allowedDomains).toEqual(["api.github.com"]);
-    expect(decoded?.nixPackages).toEqual(["gh"]);
-    expect(decoded?.adminTools).toEqual(["manage_agents"]);
-    expect(decoded?.adminActorUserId).toBe("auth-user-1");
+    // Every claim the fixture carries must survive the remint — the egress
+    // grants, the package list, the admin pair, and the capture pair alike.
+    expect(project(decoded as unknown as Record<string, unknown>)).toEqual(
+      claims,
+    );
   });
 });

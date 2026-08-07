@@ -370,6 +370,40 @@ function verifyToken(
         return null;
       }
     }
+    // `executionMode` decides whether the run may touch the outside world, and
+    // every consumer tests it for equality with "capture". An unrecognised
+    // value would therefore read as live and let an eval replay perform real
+    // side effects, so an unknown mode is rejected rather than defaulted.
+    if (
+      data.executionMode !== undefined &&
+      data.executionMode !== "live" &&
+      data.executionMode !== "capture"
+    ) {
+      logger.error(
+        "Worker token rejected: executionMode must be 'live' or 'capture'"
+      );
+      return null;
+    }
+    // The capture pair is inseparable, for the same reason the admin pair
+    // below is: the mode says the run must not perform side effects and
+    // `behaviorRunId` says which row records what it tried to do. A capture
+    // run that cannot record is the state evals must never reach — its side
+    // effects are suppressed but nothing says what was suppressed, so the
+    // replay scores as clean. A diverged pair is either a forged token or a
+    // mint-side bug: `buildWorkerTokenClaims` gates both on one verified
+    // intent, but reads the run id back off `platformMetadata.intent`
+    // separately, where a malformed intent yields undefined on its own.
+    // Reject either way — a rejected token fails the run closed, where
+    // honouring the pair would run an eval nothing can score.
+    if (
+      (data.executionMode === "capture") !==
+      (data.behaviorRunId !== undefined)
+    ) {
+      logger.error(
+        "Worker token rejected: executionMode 'capture' and behaviorRunId must be set together"
+      );
+      return null;
+    }
     // `adminTools` is optional but must be a string[] when present — a forged
     // token with a non-array (or non-string elements) must be rejected, not
     // coerced, before the execute gate trusts it to allow internal tools.

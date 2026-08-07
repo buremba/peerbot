@@ -101,7 +101,24 @@ export async function captureSideEffect(
 		},
 		`[eval-capture] suppressed ${action} for a capture run`,
 	);
-	await recordCapturedSideEffect(worker.behaviorRunId, action, details);
+	// Suppression above is keyed on `executionMode` alone and must stay that
+	// way — gating it on the run id too would let a token missing the id fall
+	// through and perform the side effect. Recording is what needs the id.
+	// `verifyWorkerToken` rejects a capture token that arrives without one, so
+	// in practice this logs nothing; the branch is how that invariant narrows
+	// to `number`, which the token type cannot express (`behaviorRunId` is
+	// required only when the mode is capture). It degrades to
+	// suppress-without-record rather than throwing, for the same reason
+	// `recordCapturedSideEffect` swallows its errors: a route error sends a
+	// capture run into retry loops instead of letting it finish its turn.
+	if (worker.behaviorRunId === undefined) {
+		logger.error(
+			{ action },
+			"[eval-capture] no behaviorRunId on the token — side effect suppressed but NOT recorded",
+		);
+	} else {
+		await recordCapturedSideEffect(worker.behaviorRunId, action, details);
+	}
 	return c.json(
 		responseBody ?? {
 			success: true,
@@ -125,17 +142,10 @@ export async function captureSideEffect(
  * the side effect would break the guarantee.
  */
 async function recordCapturedSideEffect(
-	behaviorRunId: number | undefined,
+	behaviorRunId: number,
 	action: string,
 	details: Record<string, unknown>,
 ): Promise<void> {
-	if (!behaviorRunId) {
-		logger.error(
-			{ action },
-			"[eval-capture] no behaviorRunId on the token — side effect suppressed but NOT recorded",
-		);
-		return;
-	}
 	try {
 		const sql = getDb();
 		// One assignment to `dry_run_preview` — Postgres rejects a SET clause that

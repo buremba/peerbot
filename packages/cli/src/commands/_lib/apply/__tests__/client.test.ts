@@ -393,6 +393,112 @@ describe("ApplyClient — prune", () => {
     expect(byKey.empty?.eventKinds).toBeUndefined();
   });
 
+  test("metadata_schema keys the config cannot express survive an apply round-trip", async () => {
+    // `x-lobu-resolution` is authored out-of-band (manage_entity_schema / UI /
+    // an agent) and read by the server's entity-resolution policy to decide
+    // whether duplicate entities auto-merge. `lobu.config.ts` has no way to
+    // declare it, and upsertEntityType rebuilds metadata_schema from the flat
+    // properties/required — so it must be carried forward or the next apply
+    // erases the dedupe rules with no diff row and no warning.
+    const resolution = {
+      rules: [
+        {
+          fields: ["email"],
+          normalizer: "email",
+          onMatch: "auto_merge",
+        },
+      ],
+    };
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        const body = JSON.parse(String(init?.body)) as { action?: string };
+        if (body.action === "list") {
+          return new Response(
+            JSON.stringify({
+              entity_types: [
+                {
+                  slug: "person",
+                  metadata_schema: {
+                    type: "object",
+                    properties: { email: { type: "string" } },
+                    required: ["email"],
+                    "x-lobu-resolution": resolution,
+                  },
+                },
+                { slug: "company", metadata_schema: { type: "object" } },
+              ],
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    const [person, company] = await client.listEntityTypes();
+    expect(person?.schemaExtras).toEqual({ "x-lobu-resolution": resolution });
+    // A type with nothing but config-owned keys stays undefined (no churn).
+    expect(company?.schemaExtras).toBeUndefined();
+
+    // Re-apply a config that adds a field: properties come from config, the
+    // out-of-band key rides along.
+    await client.upsertEntityType(
+      {
+        slug: "person",
+        properties: {
+          email: { type: "string" },
+          handle: { type: "string" },
+        },
+        required: ["email"],
+      },
+      person?.schemaExtras
+    );
+
+    const posted = JSON.parse(String(calls[1]?.init?.body));
+    expect(posted.metadata_schema).toEqual({
+      type: "object",
+      properties: {
+        email: { type: "string" },
+        handle: { type: "string" },
+      },
+      required: ["email"],
+      "x-lobu-resolution": resolution,
+    });
+  });
+
+  test("config-owned metadata_schema keys win over stale carried-forward ones", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    await client.upsertEntityType(
+      { slug: "person", properties: { email: { type: "string" } } },
+      // A malformed extras bag must never shadow the config's own fields —
+      // including `required`, which the config omits here (an empty required
+      // is expressed by NOT sending the key, so a stale one must not ride in).
+      {
+        properties: { stale: { type: "string" } },
+        required: ["stale"],
+        "x-lobu-note": "keep",
+      }
+    );
+
+    const posted = JSON.parse(String(calls[0]?.init?.body));
+    expect(posted.metadata_schema).toEqual({
+      type: "object",
+      properties: { email: { type: "string" } },
+      "x-lobu-note": "keep",
+    });
+  });
+
   test("view template get/set/clear POST manage_view_templates with the right action", async () => {
     const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
     const client = new ApplyClient(

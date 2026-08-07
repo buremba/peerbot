@@ -35,9 +35,52 @@ import {
 	loadReplayableSource,
 	type ReplaySourceRejection,
 } from "./eval-runs.js";
+import { BEHAVIOR_EVAL_RUN_TYPE } from "./run-types.js";
 
 /** Namespace for the (source run, case key) identity claim in `entity_identities`. */
 export const EVAL_CASE_NAMESPACE = "eval_case";
+
+/**
+ * The ONE definition of how a trial number rides on a case key, minted and
+ * parsed by the two functions below.
+ *
+ * `createEvalRun` dedups on `(sourceRunId, caseKey)`, which is exactly right for
+ * a single replay and exactly wrong for N trials: running the same case five
+ * times would collapse into one run and report a single measurement as if it
+ * were five. Trials therefore carry a distinct key.
+ *
+ * Trial 0 keeps the bare key so a plain `replayEvalCase` and trial 0 of a suite
+ * run are the same work item rather than two — and so every case promoted
+ * before trials existed keeps resolving.
+ *
+ * Never re-implement this split anywhere else. `findCaseForRun` recovers the
+ * case by calling `evalCaseIdentifierFromRunKey`, and a second copy of the rule
+ * that drifted would silently strand every score unanchored.
+ */
+export function trialCaseKey(caseKey: string, trial: number): string {
+	return trial === 0 ? caseKey : `${caseKey}${TRIAL_SEPARATOR}t${trial}`;
+}
+
+const TRIAL_SEPARATOR = "#";
+
+/**
+ * Recover the `entity_identities` identifier for the case a run belongs to.
+ *
+ * `createEvalRun` stamps `idempotency_key = 'behavior_eval:<sourceRunId>:<caseKey>'`
+ * and `promoteEvalCase` claims identifier `'<sourceRunId>:<caseKey>'`. The
+ * suffix of the one IS the other, which is why neither needed a join column.
+ * Trials append `#t<n>`, stripped here so every trial resolves to its case.
+ */
+export function evalCaseIdentifierFromRunKey(
+	idempotencyKey: string | null,
+): string | null {
+	const prefix = `${BEHAVIOR_EVAL_RUN_TYPE}:`;
+	if (!idempotencyKey?.startsWith(prefix)) return null;
+	const identifier = idempotencyKey.slice(prefix.length);
+	if (!identifier) return null;
+	const trialAt = identifier.lastIndexOf(TRIAL_SEPARATOR);
+	return trialAt > 0 ? identifier.slice(0, trialAt) : identifier;
+}
 
 /**
  * Declared shape of `$eval_case` metadata.
@@ -234,6 +277,41 @@ export async function promoteEvalCase(
 		},
 		created: placed.created,
 	};
+}
+
+/**
+ * Set (or clear) a case's judge-model override.
+ *
+ * Deliberately a `<slug>/<model>` ref resolved by `resolveCompletionTarget`,
+ * the same shape a guardrail entry's `model` already uses — the platform
+ * already has this knob, so evals reuse it rather than inventing an env var or
+ * a settings table. Naming a model DIFFERENT from the one under eval is how a
+ * caller avoids a model grading its own output generously.
+ *
+ * Org-scoped: `entities.id` alone would let one tenant repoint another's case.
+ */
+export async function setEvalCaseJudgeModel(
+	entityId: number,
+	organizationId: string,
+	judgeModel: string | null,
+	db?: DbClient,
+): Promise<void> {
+	const sql = db ?? getDb();
+	await sql`
+    UPDATE entities e
+    SET metadata = jsonb_set(
+          coalesce(e.metadata, '{}'::jsonb),
+          '{judge_model}',
+          ${judgeModel ? sql.json(judgeModel as never) : "null"}::jsonb
+        ),
+        updated_at = current_timestamp
+    FROM entity_types et
+    WHERE e.id = ${entityId}
+      AND e.organization_id = ${organizationId}
+      AND et.id = e.entity_type_id
+      AND et.slug = ${EVAL_CASE_ENTITY_TYPE_SLUG}
+      AND e.deleted_at IS NULL
+  `;
 }
 
 /**

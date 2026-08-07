@@ -30,6 +30,7 @@ import { runMemberClaimDriftCheck } from './member-claim-drift';
 import { runReapStaleDeviceWorkers } from './reap-stale-device-workers';
 import { runReapExpiredPendingSlackInstalls } from './reap-expired-pending-installs';
 import { runExpirePendingApprovals } from './expire-pending-approvals';
+import { runScoreEvalRuns } from './score-eval-runs';
 import { getDb, pgTextArray } from '../db/client';
 import { createNotificationForUsers } from '../notifications/service';
 import {
@@ -345,6 +346,32 @@ function registerMaintenanceTasks(
       await runExpirePendingApprovals();
     },
     { cron: '31 3 * * *' },
+  );
+
+  // Eval scorer queue: score terminal `behavior_eval` replays that have no
+  // score events yet. The anti-join predicate IS the claim (rationale in
+  // scheduled/score-eval-runs.ts) — no cursor, no in-memory sampler, safe under
+  // N>1 replicas.
+  //
+  // Every 5 minutes, not daily: an eval batch is something a human kicked off
+  // and is waiting on, so a day-long lag would make the feature feel broken.
+  // The batch cap bounds each tick's judge spend, and a backlog drains across
+  // ticks.
+  //
+  // No judge model is passed, so the judge runs on the ORG DEFAULT — which may
+  // be the model that produced the output, leaving self-preference bias
+  // unmitigated. Where the judge model is configured is still open in the spec
+  // (lobu#2564); `runScoreEvalRuns` takes `judgeModelRef`, so wiring the answer
+  // is one argument.
+  scheduler.register(
+    'score-eval-runs',
+    async () => {
+      const summary = await runScoreEvalRuns();
+      if (summary.claimed > 0) {
+        logger.info(summary, '[task] score-eval-runs completed');
+      }
+    },
+    { cron: '*/5 * * * *' },
   );
 
   // Watcher automation: reconcile in-flight runs, materialize newly-due runs,

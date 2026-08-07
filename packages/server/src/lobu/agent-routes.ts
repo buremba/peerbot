@@ -23,6 +23,11 @@ import {
 	type OAuthProviderConfig,
 } from "../gateway/auth/oauth/providers";
 import { buildProviderCatalog } from "../gateway/auth/provider-catalog";
+import {
+	promoteEvalCase,
+	setEvalCaseJudgeModel,
+} from "../runs/eval-cases";
+import { readEvalResults, runEvalSuite } from "../runs/eval-suite";
 import { createAuthProfileLabel } from "../gateway/auth/settings/auth-profiles-manager";
 import { orgBucketAgentId } from "../gateway/auth/settings/user-auth-profile-store";
 import { validateModelRefsAgainstOrg } from "./model-config";
@@ -1283,6 +1288,131 @@ routes.delete("/inference-providers/:slug", async (c) => {
 		state: null,
 	});
 	return c.json({ success: true });
+});
+
+// ── Evals ────────────────────────────────────────────────────────────────────
+// Registered BEFORE `/:agentId` so these literal paths win the match (Hono
+// would otherwise read 'evals' as an :agentId and 404).
+//
+// This is the surface the eval program was missing. `promoteEvalCase` and
+// `replayEvalCase` shipped in #2584 with NO caller anywhere outside their own
+// module — the whole flow was unreachable, so nothing could promote a case and
+// nothing could read a result. Scores with no way to ask for them are not a
+// feature.
+
+/**
+ * Promote a real Behavior run into a reusable eval case.
+ *
+ * `expectation` is what the judge grades against; without one a case is still
+ * useful (the code metrics run) but nothing measures whether the OUTPUT was
+ * right. `judgeModel` is the per-case override — name a model different from
+ * the one under eval to avoid a model grading its own work.
+ */
+routes.post("/evals/cases", async (c) => {
+	const orgId = requireOrgId(c);
+	if (typeof orgId !== "string") return orgId;
+
+	const body = (await c.req.json().catch(() => ({}))) as {
+		runId?: unknown;
+		caseKey?: unknown;
+		expectation?: unknown;
+		judgeModel?: unknown;
+	};
+	const runId = Number(body.runId);
+	if (!Number.isSafeInteger(runId) || runId < 1) {
+		return c.json({ error: "runId is required" }, 400);
+	}
+
+	const result = await promoteEvalCase({
+		sourceRunId: runId,
+		caseKey: typeof body.caseKey === "string" ? body.caseKey : "default",
+		expectation:
+			typeof body.expectation === "string" ? body.expectation : undefined,
+		createdBy: (c.get("user") as { id?: string } | undefined)?.id ?? null,
+	});
+
+	if (!result.ok) {
+		// `not_found` is the only 404 here: the other rejections mean the run
+		// exists but cannot be replayed, which is a 422 — the caller asked for
+		// something coherent that this run cannot support.
+		const status = result.reason === "not_found" ? 404 : 422;
+		return c.json({ error: result.reason }, status);
+	}
+
+	// Cross-org read guard: promote resolves the org from the RUN, so a caller
+	// could otherwise promote another tenant's run by id. Refuse after the fact
+	// rather than trusting the id.
+	if (result.evalCase.organizationId !== orgId) {
+		return c.json({ error: "not_found" }, 404);
+	}
+
+	if (typeof body.judgeModel === "string" && body.judgeModel.trim()) {
+		await setEvalCaseJudgeModel(
+			result.evalCase.entityId,
+			orgId,
+			body.judgeModel.trim()
+		);
+	}
+
+	return c.json({ case: result.evalCase, created: result.created }, 201);
+});
+
+/**
+ * Replay a Behavior's active case suite under capture mode.
+ *
+ * Defaults to several trials per case because a single run is not a
+ * measurement — our own research evals swung ±1 task on identical batteries.
+ */
+routes.post("/behaviors/:behaviorId/evals/run", async (c) => {
+	const orgId = requireOrgId(c);
+	if (typeof orgId !== "string") return orgId;
+
+	const behaviorId = Number(c.req.param("behaviorId"));
+	if (!Number.isSafeInteger(behaviorId) || behaviorId < 1) {
+		return c.json({ error: "behaviorId must be a number" }, 400);
+	}
+
+	const body = (await c.req.json().catch(() => ({}))) as {
+		caseIds?: unknown;
+		trials?: unknown;
+	};
+	const caseIds = Array.isArray(body.caseIds)
+		? body.caseIds.map(Number).filter((n) => Number.isSafeInteger(n) && n > 0)
+		: undefined;
+
+	const result = await runEvalSuite({
+		organizationId: orgId,
+		behaviorId,
+		caseIds: caseIds?.length ? caseIds : undefined,
+		trials: typeof body.trials === "number" ? body.trials : undefined,
+	});
+	return c.json(result, 202);
+});
+
+/**
+ * Read the suite's answer: per case latest vs previous, and which cases moved
+ * by more than their own noise.
+ *
+ * Reads case ENTITIES only. Never aggregates `eval_score` events — the scorer
+ * materializes each case's rolling window at write time precisely so this stays
+ * a bounded config-table read.
+ */
+routes.get("/behaviors/:behaviorId/evals/results", async (c) => {
+	const orgId = requireOrgId(c);
+	if (typeof orgId !== "string") return orgId;
+
+	const behaviorId = Number(c.req.param("behaviorId"));
+	if (!Number.isSafeInteger(behaviorId) || behaviorId < 1) {
+		return c.json({ error: "behaviorId must be a number" }, 400);
+	}
+
+	const trialsParam = Number(c.req.query("trials"));
+	const results = await readEvalResults({
+		organizationId: orgId,
+		behaviorId,
+		trials: Number.isFinite(trialsParam) ? trialsParam : undefined,
+	});
+	return c.json(results);
 });
 
 // ── Get agent detail ─────────────────────────────────────────────────────────

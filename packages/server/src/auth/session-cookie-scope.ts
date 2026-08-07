@@ -66,11 +66,29 @@ export function countNamedCookies(
  * keep — untouched. `Secure` is mandatory rather than cosmetic: a browser
  * rejects any `Set-Cookie` for a `__Secure-`-prefixed name that lacks it, so
  * without it the deletion would silently no-op.
+ *
+ * `path` must mirror the source cookie's own `Path` for the same reason Domain
+ * is omitted: deletion matches on (name, domain, path), so an expiry at `/`
+ * cannot delete a twin scoped to `/api`. Defaults to `/` — the scope Better
+ * Auth issues today — but is passed through rather than assumed.
  */
-export function hostOnlyExpiry(name: string, secure: boolean): string {
-	const parts = [`${name}=`, "Path=/", "Max-Age=0", "HttpOnly", "SameSite=Lax"];
+export function hostOnlyExpiry(name: string, secure: boolean, path = "/"): string {
+	const parts = [`${name}=`, `Path=${path}`, "Max-Age=0", "HttpOnly", "SameSite=Lax"];
 	if (secure) parts.push("Secure");
 	return parts.join("; ");
+}
+
+/**
+ * Read the `Path` attribute off a `Set-Cookie`, defaulting to `/`.
+ *
+ * A cookie sent with no `Path` defaults to the request's directory, which we
+ * cannot see from here; `/` is the only safe assumption and is what every
+ * cookie this module converges actually carries.
+ */
+function setCookiePath(setCookie: string): string {
+	const match = /;\s*Path=([^;]*)/i.exec(setCookie);
+	const path = match?.[1]?.trim();
+	return path ? path : "/";
 }
 
 /** True when this `Set-Cookie` is itself a deletion — nothing to converge. */
@@ -108,7 +126,7 @@ export function convergeSetCookieScope(
 		// cookie, an expiry without Secure is silently rejected — the exact
 		// no-op this module exists to prevent.
 		const secure = opts.isHttps || /;\s*Secure\s*(;|$)/i.test(setCookie);
-		out.push(hostOnlyExpiry(name, secure));
+		out.push(hostOnlyExpiry(name, secure, setCookiePath(setCookie)));
 	}
 	return out;
 }

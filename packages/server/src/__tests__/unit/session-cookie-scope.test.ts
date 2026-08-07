@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	SESSION_COOKIE_BASENAME,
+	convergeResponseCookieScope,
 	convergeSetCookieScope,
 	countNamedCookies,
 	hostOnlyExpiry,
@@ -117,5 +118,88 @@ describe("session cookie scope convergence", () => {
 		expect(
 			convergeSetCookieScope(set, { cookieDomain: ".lobu.ai", isHttps: true }),
 		).toEqual(set);
+	});
+
+	test("expires the twin at the source cookie's Path, not a hardcoded /", () => {
+		// Deletion matches on (name, domain, path). An expiry at `/` cannot
+		// delete a twin scoped to `/api`, so the convergence would silently
+		// no-op — the exact failure this module exists to prevent.
+		const name = sessionCookieName(true);
+		const out = convergeSetCookieScope(
+			[`${name}=abc.sig; Domain=.lobu.ai; Path=/api; HttpOnly; Secure`],
+			{ cookieDomain: ".lobu.ai", isHttps: true },
+		);
+		expect(out).toHaveLength(2);
+		expect(out[1]).toContain("Path=/api");
+		expect(out[1]).not.toContain("Path=/;");
+	});
+});
+
+/**
+ * `convergeResponseCookieScope` is the `/api/auth/*` chokepoint wrapper, so it
+ * is the highest-blast-radius path in this module: every sign-in method routes
+ * through it. It mutates a real `Response`'s headers by delete-then-re-append,
+ * which is only safe because better-call always builds responses with
+ * `new Response(...)` (a `Response.redirect` has immutable headers and would
+ * throw). These tests pin that the mutation preserves everything else.
+ */
+describe("convergeResponseCookieScope", () => {
+	const name = sessionCookieName(true);
+	const domainCookie = `${name}=abc.sig; Domain=.lobu.ai; Path=/; HttpOnly; Secure; SameSite=Lax`;
+	const hostOnlyCookie = "lobu_other=keep; Path=/; HttpOnly; SameSite=Lax";
+
+	function redirectWithCookies(...cookies: string[]): Response {
+		const res = new Response(null, {
+			status: 302,
+			headers: { Location: "/" },
+		});
+		for (const c of cookies) res.headers.append("set-cookie", c);
+		return res;
+	}
+
+	test("appends the twin expiry and leaves status, Location and other cookies intact", () => {
+		const res = convergeResponseCookieScope(
+			redirectWithCookies(domainCookie, hostOnlyCookie),
+			{ cookieDomain: ".lobu.ai", isHttps: true },
+		);
+
+		const set = res.headers.getSetCookie();
+		expect(set).toHaveLength(3);
+		expect(set[0]).toBe(domainCookie);
+		// The host-only cookie is not domain-scoped, so it must survive verbatim.
+		expect(set[1]).toBe(hostOnlyCookie);
+		expect(set[2]).toBe(hostOnlyExpiry(name, true));
+
+		// The delete/re-append must not disturb the rest of the response.
+		expect(res.status).toBe(302);
+		expect(res.headers.get("Location")).toBe("/");
+	});
+
+	test("is a no-op with no cookie zone configured", () => {
+		const res = redirectWithCookies(domainCookie);
+		const out = convergeResponseCookieScope(res, {
+			cookieDomain: undefined,
+			isHttps: true,
+		});
+		expect(out.headers.getSetCookie()).toEqual([domainCookie]);
+	});
+
+	test("is a no-op when the response sets no cookies at all", () => {
+		const res = new Response(null, { status: 302, headers: { Location: "/" } });
+		const out = convergeResponseCookieScope(res, {
+			cookieDomain: ".lobu.ai",
+			isHttps: true,
+		});
+		expect(out.headers.getSetCookie()).toHaveLength(0);
+		expect(out.headers.get("Location")).toBe("/");
+	});
+
+	test("leaves the headers untouched when nothing needs converging", () => {
+		const res = redirectWithCookies(hostOnlyCookie);
+		const out = convergeResponseCookieScope(res, {
+			cookieDomain: ".lobu.ai",
+			isHttps: true,
+		});
+		expect(out.headers.getSetCookie()).toEqual([hostOnlyCookie]);
 	});
 });

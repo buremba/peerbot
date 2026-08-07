@@ -117,7 +117,7 @@ export function createFileRoutes(
       // generate content and then land it here, so this is where a capture
       // run's attachment attempt is recorded instead of delivered. Callers
       // only require a 2xx (`upload.response.ok`), so the generic body works.
-      const captured = captureSideEffect(c, "files.upload", {
+      const captured = await captureSideEffect(c, "files.upload", {
         filename,
         mimeType: file.type || null,
         size: file.size,
@@ -227,7 +227,7 @@ export function createFileRoutes(
         return errorResponse(c, "No files provided", 400);
       }
 
-      const captured = captureSideEffect(c, "files.upload_batch", {
+      const captured = await captureSideEffect(c, "files.upload_batch", {
         count: fileEntries.length,
         filenames: fileEntries
           .filter((entry): entry is File => entry instanceof File)

@@ -56,6 +56,13 @@ export interface WorkerTokenData {
    * cannot promote itself to live.
    */
   executionMode?: "live" | "capture";
+  /**
+   * The Behavior `runs.id` a capture session records its suppressed side
+   * effects onto. NOT {@link runId} — a Behavior execution writes two rows and
+   * that one is the per-turn chat_message run. Set only alongside
+   * `executionMode: 'capture'`.
+   */
+  behaviorRunId?: number;
   sessionKey?: string;
   traceId?: string;
   /** Unique token ID — enables targeted revocation. */
@@ -152,6 +159,8 @@ export interface WorkerTokenOptions {
   source?: string;
   /** Side-effect mode — see WorkerTokenData.executionMode. */
   executionMode?: "live" | "capture";
+  /** Behavior run this capture session replays — see WorkerTokenData.behaviorRunId. */
+  behaviorRunId?: number;
   sessionKey?: string;
   traceId?: string;
   /**
@@ -213,6 +222,7 @@ function generateToken(
     platform: options.platform,
     source: options.source,
     executionMode: options.executionMode,
+    behaviorRunId: options.behaviorRunId,
     sessionKey: options.sessionKey,
     traceId: options.traceId,
     jti,
@@ -342,6 +352,21 @@ function verifyToken(
         data.runId <= 0
       ) {
         logger.error("Worker token rejected: runId must be a positive integer");
+        return null;
+      }
+    }
+    // Same shape rule for `behaviorRunId` — it addresses the row the capture
+    // guard writes its record onto, so a non-integer must be rejected here
+    // rather than reaching a query as a coerced value.
+    if (data.behaviorRunId !== undefined) {
+      if (
+        typeof data.behaviorRunId !== "number" ||
+        !Number.isInteger(data.behaviorRunId) ||
+        data.behaviorRunId <= 0
+      ) {
+        logger.error(
+          "Worker token rejected: behaviorRunId must be a positive integer"
+        );
         return null;
       }
     }

@@ -61,7 +61,7 @@ export function createInteractionRoutes(
           `Posting ${interactionType} for conversation ${conversationId}`
         );
 
-        const captured = captureSideEffect(c, "interactions.create", {
+        const captured = await captureSideEffect(c, "interactions.create", {
           interactionType,
           conversationId,
           platform,
@@ -202,7 +202,7 @@ export function createInteractionRoutes(
 
       // After validation: a capture run takes the same empty-prompts and
       // missing-org paths a live run would, and only the delivery is suppressed.
-      const captured = captureSideEffect(c, "suggestions.create", {
+      const captured = await captureSideEffect(c, "suggestions.create", {
         conversationId,
         prompts,
       });

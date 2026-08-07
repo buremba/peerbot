@@ -190,6 +190,59 @@ describe("worker auth token", () => {
     ).toBe(null);
   });
 
+  test.each([
+    "banana",
+    "",
+    "CAPTURE",
+    "dry_run",
+  ])("a token claiming executionMode=%p is rejected, not read as live", (bad) => {
+    // Every consumer tests this claim for equality with "capture", so an
+    // unrecognised value reads as LIVE and lets an eval replay perform real
+    // side effects. Fail the token instead of defaulting it.
+    //
+    // Deliberately minted WITHOUT `behaviorRunId`: with one present the pair
+    // check rejects the token first and this stays green no matter what the
+    // shape check does. Mutation-verified — dropping the shape check turns
+    // these red only in this shape, which is also the reachable hole: a
+    // garbage mode and no run id is exactly what the pair check waves through.
+    expect(
+      verifyWorkerToken(
+        generateWorkerToken("user-1", "conv-1", "deploy-A", {
+          channelId: "C1",
+          executionMode: bad as unknown as "live" | "capture",
+        })
+      )
+    ).toBe(null);
+  });
+
+  test("capture without behaviorRunId is rejected", () => {
+    // A capture run that cannot record is the one state evals must never
+    // reach: side effects are suppressed but nothing says what was suppressed,
+    // so the replay scores as clean while its intent is lost.
+    expect(
+      verifyWorkerToken(
+        generateWorkerToken("user-1", "conv-1", "deploy-A", {
+          channelId: "C1",
+          executionMode: "capture",
+        })
+      )
+    ).toBe(null);
+  });
+
+  test("behaviorRunId without capture is rejected", () => {
+    // The other direction matters too: a live run addressing an eval row would
+    // let real work stamp a capture record onto a run it never replayed.
+    expect(
+      verifyWorkerToken(
+        generateWorkerToken("user-1", "conv-1", "deploy-A", {
+          channelId: "C1",
+          executionMode: "live",
+          behaviorRunId: 874626,
+        })
+      )
+    ).toBe(null);
+  });
+
   test("round-trips an admin-tools allowlist with its distinct auth actor", () => {
     const token = generateWorkerToken("U_SLACK", "conv", "deploy", {
       channelId: "C1",

@@ -43,6 +43,12 @@ function durableClaims(token: WorkerTokenData): DurableRunTokenClaims {
     // that keeps the domain grants but loses the packages provisions nothing,
     // leaving an authenticated CLI that was never installed.
     nixPackages: token.nixPackages,
+    // Persist the capture pair too, or it is lost at the DATABASE boundary —
+    // before `attachFreshRunJobToken` can preserve it — and a replayed eval
+    // comes back live. `executionMode` is the whole safety property; without
+    // it the replay performs for real everything it should only record.
+    executionMode: token.executionMode,
+    behaviorRunId: token.behaviorRunId,
   };
 }
 
@@ -104,6 +110,12 @@ export function attachFreshRunJobToken(
         allowedDomains: token.allowedDomains,
         deniedDomains: token.deniedDomains,
         nixPackages: token.nixPackages,
+        // Same reason as the refresh mint in gateway/index.ts: dropping the
+        // capture pair here would hand a re-dispatched eval replay a live
+        // token, and the replay would perform for real everything it was
+        // supposed to only record.
+        executionMode: token.executionMode,
+        behaviorRunId: token.behaviorRunId,
       },
     ),
   };

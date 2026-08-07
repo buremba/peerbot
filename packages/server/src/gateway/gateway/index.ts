@@ -980,6 +980,13 @@ export class WorkerGateway {
         // And the package claim with them — a long turn that rotates its token
         // would otherwise stop provisioning the connector's CLI mid-run.
         nixPackages: tokenData.nixPackages,
+        // Preserve the capture pair, or a long eval replay silently becomes a
+        // LIVE run the moment its token rotates: absent `executionMode` reads
+        // as live, so every guarded route would start performing real side
+        // effects against the org being scored. Both travel together because
+        // `verifyWorkerToken` rejects one without the other.
+        executionMode: tokenData.executionMode,
+        behaviorRunId: tokenData.behaviorRunId,
       }
     );
 

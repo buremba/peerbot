@@ -91,7 +91,9 @@ export async function captureSideEffect(
 		{
 			evalCapture: true,
 			action,
-			details,
+			// Bounded here too — the log is as durable a sink as the column, and
+			// these payloads are agent-authored free text.
+			details: boundDetails(details),
 			agentId: worker.agentId,
 			organizationId: worker.organizationId,
 			conversationId: worker.conversationId,

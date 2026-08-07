@@ -299,17 +299,29 @@ describe("executePlan — entity-type schema fidelity", () => {
         ],
       },
     };
+    const ownedRemote = {
+      slug: "person",
+      organization_id: "org_acme",
+      properties: { email: { type: "string" } },
+      required: ["email"],
+      schemaExtras,
+    };
+    // computeDiff matches against the ORG-OWNED types only, and stores that
+    // match on the row. The raw snapshot also carries public types from OTHER
+    // orgs, returned AFTER the org's own rows — so a slug→row map rebuilt here
+    // would pick this decoy up and push another org's resolution rules (or, if
+    // it had none, erase the owned ones). Assert the row's match wins.
+    const foreignPublic = {
+      slug: "person",
+      organization_id: "org_public_catalog",
+      schemaExtras: { "x-lobu-resolution": { rules: [] } },
+    };
+    const rowZero = plan.rows[0];
+    if (rowZero?.kind === "entity-type") rowZero.remote = ownedRemote;
     const remote: RemoteSnapshot = {
       agents: [],
       agentSettings: new Map(),
-      entityTypes: [
-        {
-          slug: "person",
-          properties: { email: { type: "string" } },
-          required: ["email"],
-          schemaExtras,
-        },
-      ],
+      entityTypes: [ownedRemote, foreignPublic],
       relationshipTypes: [],
       watchers: [],
       connectorDefinitions: [],

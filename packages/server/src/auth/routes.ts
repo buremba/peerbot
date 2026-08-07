@@ -343,11 +343,8 @@ async function mintSessionCookieValue(
     'SameSite=Lax',
     `Max-Age=${60 * 60 * 24 * 7}`,
   ];
-  // Must carry the SAME Domain Better Auth uses. Setting it host-only creates a
-  // second cookie of the same name at a narrower scope; the browser then sends
-  // both, we resolve the first, and RFC 6265 §5.4 sends the older one first —
-  // so this deep-link cookie would outrank every subsequent real sign-in and
-  // lock the user out for good once it went stale.
+  // Must carry the SAME Domain Better Auth uses — a host-only twin here bricks
+  // login permanently. Why: auth/session-cookie-scope.ts.
   const cookieDomain = process.env.AUTH_COOKIE_DOMAIN;
   if (cookieDomain) parts.push(`Domain=${cookieDomain}`);
   if (isHttps) parts.push('Secure');

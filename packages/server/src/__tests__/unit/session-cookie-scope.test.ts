@@ -10,22 +10,14 @@ import {
 
 /**
  * Regression cover for the permanent-login-brick class.
+ * Mechanism and cure: ../../auth/session-cookie-scope.ts.
  *
- * Two cookies can carry the same name at different scopes — host-only
- * (`app.lobu.ai`) and domain-scoped (`Domain=.lobu.ai`). The browser sends
- * BOTH, the server takes the FIRST, and RFC 6265 §5.4 orders equal-path
- * cookies oldest-first. So once a stale host-only session cookie exists, every
- * later sign-in writes a strictly NEWER cookie that can never win, and the
- * user is locked out with no in-app escape — re-logging-in cannot fix it.
- *
- * Measured against prod 2026-08-06 (`/api/auth/get-session`, correctly signed):
+ * The measurement that pinned it, prod 2026-08-06 (`/api/auth/get-session`,
+ * correctly signed cookies) — order is the ONLY difference between rows 3 and 4:
  *   good        -> session
  *   dead        -> null
  *   dead; good  -> null      <- the brick
  *   good; dead  -> session
- *
- * The fix makes sign-in authoritative: whenever a response sets a
- * domain-scoped cookie, it must also expire the host-only twin of that name.
  */
 describe("session cookie scope convergence", () => {
 	test("names the cookie the way Better Auth does", () => {

@@ -76,11 +76,9 @@ describe('deep-link token exchange', () => {
     expect(cookie).not.toMatch(/SameSite=None/i);
   });
 
-  // The deep-link cookie must land at the SAME scope Better Auth uses. Setting
-  // it host-only creates a second cookie of the same name at a narrower scope;
-  // the browser sends both, we resolve the first, and RFC 6265 §5.4 sends the
-  // OLDER one first — so this cookie would outrank every later sign-in and lock
-  // the user out for good once it went stale.
+  // The deep-link cookie must land at the SAME scope Better Auth uses; a
+  // host-only twin here locks the user out for good once it goes stale.
+  // Why: auth/session-cookie-scope.ts.
   it('GET /exchange-token scopes the cookie to the zone and expires the host-only twin', async () => {
     const previous = process.env.AUTH_COOKIE_DOMAIN;
     process.env.AUTH_COOKIE_DOMAIN = '.lobu.ai';

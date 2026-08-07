@@ -653,12 +653,8 @@ app.on(["GET", "POST"], "/api/auth/*", async (c) => {
 		}
 	}
 	const response = await auth.handler(request);
-	// Collapse the cookie jar back to a single scope. A host-only twin of any
-	// auth cookie outranks the domain-scoped one Better Auth just set (RFC 6265
-	// §5.4 sends the older cookie first, and we resolve the first), which bricks
-	// login permanently — a fresh sign-in is always the NEWER cookie and can
-	// never win. Expiring the twin here makes sign-in authoritative for every
-	// method at once and self-heals an already-bricked browser.
+	// Collapse the cookie jar back to a single scope, so sign-in is authoritative
+	// for every auth method at once. Why: auth/session-cookie-scope.ts.
 	return convergeResponseCookieScope(response, {
 		cookieDomain: process.env.AUTH_COOKIE_DOMAIN,
 		isHttps: resolveBaseUrl({ request: c.req.raw }).startsWith("https://"),

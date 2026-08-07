@@ -44,21 +44,39 @@ WHERE r.id = e.run_id
 -- `watchers` is the existence check — a dangling or cross-org id matches no row
 -- and is skipped rather than failing the migration.
 --
--- `correction` is excluded deliberately. `submit_feedback` stamps
--- `metadata.watcher_id` on it, but a correction is authored by a HUMAN about
--- the Behavior — not something the Behavior produced. Stamping it would enrol
--- it in the self-exclusion this column drives, and the Behavior would stop
--- being shown the feedback written to correct it, which is the one thing about
--- its own history it must keep reading.
+-- `metadata.watcher_id` means "this row is ABOUT Behavior N", which is not the
+-- same as "Behavior N produced it". Three of the writers that stamp the key are
+-- human actions, and all three are excluded below. Enumerated by grepping every
+-- event writer that stamps the key, not by fixing the two that were noticed:
 --
--- Nothing is skipped by this today: prod holds ZERO correction events
--- (measured 2026-08-07). The clause is here so the first one written lands on
--- the right side of the line, not to filter existing rows.
+--   HUMAN, excluded:
+--     * manage_operations.ts       semantic_type = 'correction'   (run rejected)
+--     * manage_behaviors/feedback  canvas_state + metadata.correction = true
+--     * manage_behaviors/crud      metadata.action = 'watcher_archived'
+--   BEHAVIOR-PRODUCED, claimed:
+--     * watchers/automation.ts     canvas_state (canvas-skip revision)
+--     * persist-behavior-event-output / complete-window (outputs, change sets)
+--
+-- Getting this wrong is not cosmetic. `behavior_id` drives the window
+-- self-exclusion, so mis-stamping a human correction would make the Behavior
+-- stop being shown the feedback written to correct it — the one thing about its
+-- own history it must keep reading.
+--
+-- None of the three exclusions removes a row today: on prod every candidate is
+-- social_signal/observation/canvas_state/note/decision/summary with no
+-- `correction` or `action` marker (measured 2026-08-07). They are here so the
+-- first such row lands on the right side of the line. The WRITE paths are
+-- already correct — none of the three passes `behaviorId` to insertEvent.
 UPDATE public.events e
 SET behavior_id = w.id
 FROM public.watchers w
 WHERE e.behavior_id IS NULL
   AND e.semantic_type <> 'correction'
+  -- Text comparison, not `::boolean` — the cast aborts the whole backfill on
+  -- any non-boolean string a writer might put there, and this guard must never
+  -- be the thing that fails the migration.
+  AND COALESCE(e.metadata->>'correction', '') NOT IN ('true', 't', '1')
+  AND COALESCE(e.metadata->>'action', '') <> 'watcher_archived'
   AND e.organization_id = w.organization_id
   AND COALESCE(e.metadata->>'behavior_id', e.metadata->>'watcher_id') ~ '^[0-9]{1,9}$'
   AND COALESCE(e.metadata->>'behavior_id', e.metadata->>'watcher_id')::integer = w.id;

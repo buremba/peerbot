@@ -193,19 +193,33 @@ async function handleSend(
   // window excludes, so a chosen id would let one Behavior blind another.
   // `behavior_source` stays what it always was: an attribution hint for canvas
   // anchoring and reaction tracking.
+  //
+  // The version comes from the RUN, not from `watchers.current_version_id`.
+  // current_version_id is the version that is current *now*, at send time — a
+  // version bump between dispatch and this notification would attribute the
+  // output to a prompt that never produced it. Since the whole point of this
+  // column is attributing output quality to a prompt version, a plausible wrong
+  // answer is worse than none: when there is no acting run to read (agent tool
+  // calls carry `actingRunId = null`), this stays NULL rather than guessing.
+  // Same source the backfill trusts, and the same choice entity-field-approval
+  // already makes.
   const actingBehaviorId = ctx.actingWatcherId ?? null;
-  const actingVersionRows = actingBehaviorId
-    ? await getDb()<{ current_version_id: number | string | null }>`
-        SELECT current_version_id
-        FROM watchers
-        WHERE id = ${actingBehaviorId}
-          AND organization_id = ${ctx.organizationId}
-        LIMIT 1
-      `
-    : [];
+  const actingRunId = ctx.actingRunId ?? null;
+  const actingVersionRows =
+    actingBehaviorId && actingRunId
+      ? await getDb()<{ version_id: string | null }>`
+          SELECT approved_input->>'version_id' AS version_id
+          FROM runs
+          WHERE id = ${actingRunId}
+            AND organization_id = ${ctx.organizationId}
+            AND watcher_id = ${actingBehaviorId}
+          LIMIT 1
+        `
+      : [];
+  const rawVersionId = actingVersionRows[0]?.version_id;
   const actingVersionId =
-    actingVersionRows[0]?.current_version_id != null
-      ? Number(actingVersionRows[0].current_version_id)
+    rawVersionId != null && /^[0-9]{1,9}$/.test(rawVersionId)
+      ? Number(rawVersionId)
       : null;
 
   const orgSlug = await getOrgSlug(ctx.organizationId);
@@ -284,7 +298,7 @@ async function handleSend(
     mcpActivity: currentMcpActivityAttribution(ctx),
     behaviorId: actingBehaviorId,
     behaviorVersionId: actingVersionId,
-    runId: ctx.actingRunId ?? null,
+    runId: actingRunId,
   });
 
   if (notification.created) {

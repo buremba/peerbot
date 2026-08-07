@@ -25,7 +25,11 @@
  *
  *   1. an output is stamped when it was produced, never in the future
  *   2. it is therefore visible to an ordinary read the moment it lands
- *   3. the producing Behavior still does not see it in its own next window
+ *   3. the producing Behavior still does not see it in its own next window,
+ *      nor in any LATER one — the exclusion keys on provenance, not on window
+ *      position, which is a real semantic change: the old `window_end` stamp
+ *      landed exactly on the next window's start, so a Behavior DID re-read its
+ *      own prior-period output
  *   4. a DIFFERENT Behavior does see it — the exclusion is self-scoped, not a
  *      blanket ban on reading behavior output
  */
@@ -37,6 +41,7 @@ import { manageBehaviors } from "../../../tools/admin/manage_behaviors";
 import { getContent } from "../../../tools/get_content";
 import { handleBehaviorMode } from "../../../tools/get_content/behavior-mode";
 import type { ToolContext } from "../../../tools/registry";
+import { insertEvent } from "../../../utils/insert-event";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
@@ -267,6 +272,54 @@ describe("A Behavior's output is visible when written and still not its own inpu
 		expect(seenIds).not.toContain(outputId);
 		// It still reads the ordinary source row, so the exclusion is a filter and
 		// not an empty window.
+		expect(seenIds.length).toBeGreaterThan(0);
+	});
+
+	// (3b) THE EXCLUSION IS BY PROVENANCE, NOT BY POSITION — and this is a real
+	// semantic change, not just a refactor. Under the old stamp an output landed
+	// at `window_end`, which is exactly the NEXT window's `window_start`, so the
+	// Behavior did read its own prior-window output on the following period.
+	// Keying on `behavior_id` excludes it from EVERY window, not only the one
+	// that wrote it. Pinned explicitly because test (3) alone would still pass if
+	// the exclusion were somehow scoped to the producing window.
+	it("keeps excluding its own output in a later window, not just the one that wrote it", async () => {
+		const dispatched = await advanceToOpenWindow(producerId);
+
+		// Written through the real writer with an `occurred_at` well inside the
+		// open window but before this run — i.e. what a PREVIOUS period's output
+		// looks like once it is no longer the current window's own work.
+		const priorOccurredAt = new Date(
+			new Date(dispatched.window_start).getTime() + 60_000,
+		);
+		const priorPeriodOutput = await insertEvent({
+			entityIds: [boundEntityId],
+			organizationId: orgId,
+			originId: `behavior:${producerId}:output:prior-period:${priorOccurredAt.getTime()}`,
+			title: "Output from an earlier period",
+			content: "Output from an earlier period",
+			semanticType: "observation",
+			occurredAt: priorOccurredAt,
+			behaviorId: producerId,
+		});
+
+		// Precondition, read back from the row rather than assumed: it really is
+		// inside the window about to be dispatched and really is attributed to this
+		// Behavior. Otherwise a pass would mean the window missed it, not that the
+		// predicate excluded it.
+		const [stored] = await sql<{ occurred_at: string; behavior_id: number }[]>`
+			SELECT occurred_at, behavior_id FROM events WHERE id = ${Number(priorPeriodOutput.id)}
+		`;
+		expect(Number(stored.behavior_id)).toBe(producerId);
+		expect(new Date(stored.occurred_at).getTime()).toBeGreaterThanOrEqual(
+			new Date(dispatched.window_start).getTime(),
+		);
+		expect(new Date(stored.occurred_at).getTime()).toBeLessThan(
+			new Date(dispatched.window_end).getTime(),
+		);
+
+		const next = await dispatch(producerId);
+		const seenIds = next.sources.stories.map((row) => row.id);
+		expect(seenIds).not.toContain(Number(priorPeriodOutput.id));
 		expect(seenIds.length).toBeGreaterThan(0);
 	});
 

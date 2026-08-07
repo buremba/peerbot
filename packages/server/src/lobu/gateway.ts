@@ -50,6 +50,7 @@ import {
 	createPostgresAgentConnectionStore,
 } from "./stores/postgres-stores";
 import { getErrorMessage } from "@lobu/core";
+import { resolveSession } from '../auth/resolve-session';
 
 // Cache of (userId → orgId) lookups. Keyed by userId; users only see their
 // own row swap when they leave/join orgs, which doesn't happen often. The
@@ -223,7 +224,7 @@ export function createLobuAuthBridge() {
 		//    Only runs when the request did NOT present an owl_pat_* bearer.
 		try {
 			const auth = await createAuth(c.env, c.req.raw);
-			const session = await auth.api.getSession({ headers: c.req.raw.headers });
+			const session = await resolveSession(auth, c.req.raw.headers);
 			if (session?.user && session.session) {
 				c.set("user", session.user);
 				c.set("session", session.session);

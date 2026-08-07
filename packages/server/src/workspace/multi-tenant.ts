@@ -29,6 +29,7 @@ import {
   ownerCache,
   sessionCache,
 } from './multi-tenant-caches';
+import { resolveSession, sessionCookieCandidates } from '../auth/resolve-session';
 
 /**
  * Path namespaces that don't carry an org context. Authenticated requests to
@@ -526,12 +527,11 @@ export class MultiTenantProvider implements WorkspaceProvider {
     //    plugin, which translates the header into a session lookup before
     //    `auth.api.getSession` runs below.
     try {
-      // Extract session token for cache key
-      const cookieHeader = c.req.header('Cookie') || '';
-      const sessionTokenMatch = cookieHeader.match(
-        /(?:__Secure-)?better-auth\.session_token=([^;]+)/
-      );
-      const sessionCacheKey = sessionTokenMatch?.[1] || null;
+      const candidates = sessionCookieCandidates(c.req.header('Cookie'));
+      // The ordinary jar holds one session cookie and its value is the cache key.
+      // With a duplicate the key is ambiguous, so there is nothing safe to look
+      // up — resolveSession decides which one is live.
+      const sessionCacheKey = candidates.length === 1 ? candidates[0] : null;
 
       // A duplicate at a narrower scope shadows the real session and is
       // otherwise invisible — `get-session` just answers 200 null forever.
@@ -565,7 +565,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
       }
       if (!cacheHit) {
         const auth = await createAuth(c.env);
-        session = await auth.api.getSession({ headers: c.req.raw.headers });
+        session = await resolveSession(auth, c.req.raw.headers);
         // Only cache valid sessions. Caching `null` would let an explicitly
         // revoked or expired session continue to resolve to "no auth" for
         // the cache TTL (30s) instead of returning the upstream's fresh

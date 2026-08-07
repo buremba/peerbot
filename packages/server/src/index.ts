@@ -960,6 +960,7 @@ app.post("/api/workers/complete-action", completeActionRun);
 // against a paired Owletto extension. See dispatch-chrome-action.ts.
 import { dispatchChromeAction } from "./worker-api/dispatch-chrome-action";
 import { stampSlackIdentityForUser } from "./auth/subject-identities";
+import { resolveSession } from './auth/resolve-session';
 
 app.post("/api/workers/dispatch-chrome-action", dispatchChromeAction);
 app.post("/api/workers/complete-embeddings", completeEmbeddings);
@@ -1073,7 +1074,7 @@ app.get("/api/organizations", async (c) => {
 	let userId: string | null = null;
 	try {
 		const auth = await createAuth(c.env);
-		const session = await auth.api.getSession({ headers: c.req.raw.headers });
+		const session = await resolveSession(auth, c.req.raw.headers);
 		userId = session?.session?.userId || null;
 	} catch {
 		// No session
@@ -2387,7 +2388,7 @@ app.post("/api/:orgSlug/join", async (c) => {
 	}
 
 	const auth = await createAuth(c.env);
-	const session = await auth.api.getSession({ headers: c.req.raw.headers });
+	const session = await resolveSession(auth, c.req.raw.headers);
 	const userId = session?.session?.userId;
 	if (!userId) {
 		return c.json(
@@ -2445,7 +2446,7 @@ async function resolveClaimSessionUser(
 ): Promise<string | null> {
 	try {
 		const auth = await createAuth(env);
-		const session = await auth.api.getSession({ headers: req.headers });
+		const session = await resolveSession(auth, req.headers);
 		return session?.user?.id ?? null;
 	} catch {
 		return null;

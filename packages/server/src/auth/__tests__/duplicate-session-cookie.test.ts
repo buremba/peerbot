@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { cleanupTestDatabase } from '../../__tests__/setup/test-db';
+import { cleanupTestDatabase, getTestDb } from '../../__tests__/setup/test-db';
 import {
   addUserToOrganization,
   createTestOrganization,
@@ -54,6 +54,17 @@ describe('duplicate session cookies', () => {
     return body.organizations.map((o) => o.slug);
   }
 
+  /** Mint an ADDITIONAL session cookie for a PAT that already exists. */
+  async function extraSessionCookie(pat: string): Promise<string> {
+    const res = await get(`/api/exchange-token?token=${encodeURIComponent(pat)}&next=/`);
+    expect(res.status).toBe(302);
+    const setCookie = res.headers
+      .getSetCookie()
+      .find((c) => /^(?:__Secure-)?better-auth\.session_token=[^;]/.test(c));
+    const [pair] = (setCookie as string).split(';');
+    return pair.slice(pair.indexOf('=') + 1).trim();
+  }
+
   // Garbage values that are syntactically plausible signed cookies — a 44-char
   // base64 signature, which is the shape better-call checks before it verifies
   // anything — but cannot pass the HMAC. Exactly what a stale twin looks like
@@ -88,6 +99,34 @@ describe('duplicate session cookies', () => {
     // Resolving candidates must not become "authenticate on anything". With no
     // live token in the jar the answer is still no session.
     expect(await orgSlugsFor(`${name}=${DEAD}; ${name}=${ALSO_DEAD}`)).not.toContain(slug);
+  });
+
+  it('resolves past a VALIDLY SIGNED twin whose session row is gone', async () => {
+    // The tests above kill their twin by breaking the HMAC, which better-call
+    // rejects in getSignedCookie before the database is ever consulted. A real
+    // stale twin is nothing like that: it is correctly signed, and dies on the
+    // session lookup instead. Two different rejection paths inside getSession,
+    // and only this one matches what a poisoned browser actually carries.
+    const slug = 'dup-revoked-first';
+    const org = await createTestOrganization({ slug });
+    const user = await createTestUser({ email: 'dup-revoked@test.example.com' });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const { token: pat } = await createTestPAT(user.id, org.id, { scope: 'profile:read' });
+
+    const doomed = await extraSessionCookie(pat);
+    const live = await extraSessionCookie(pat);
+    expect(doomed).not.toBe(live);
+
+    // Revoke the first session at the source, leaving its signature intact.
+    const token = decodeURIComponent(doomed).split('.')[0];
+    const deleted = await getTestDb()`DELETE FROM "session" WHERE token = ${token} RETURNING id`;
+    expect(deleted.length, 'the doomed session must actually be revoked').toBe(1);
+
+    const name = '__Secure-better-auth.session_token'.replace('__Secure-', '');
+    // Signed, revoked, and FIRST — the exact shape of the production brick.
+    expect(await orgSlugsFor(`${name}=${doomed}; ${name}=${live}`)).toContain(slug);
+    // And it is genuinely dead on its own, or the assertion above proves nothing.
+    expect(await orgSlugsFor(`${name}=${doomed}`)).not.toContain(slug);
   });
 
   it('is unchanged for the ordinary single-cookie jar', async () => {

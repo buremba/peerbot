@@ -395,6 +395,21 @@ async function findEvalCaseByIdentifier(
 	};
 }
 
+/**
+ * Claim the (source run, case key) identity for this entity.
+ *
+ * Repoints the claim when — and only when — it currently points at a
+ * soft-deleted entity. `deleteEntity` does `UPDATE entities SET deleted_at` and
+ * never touches `entity_identities`, so after a case is retired the live claim
+ * outlives the row it names. A plain `DO NOTHING` would leave it that way
+ * forever: `findEvalCaseByIdentifier` joins on live entities, so it would never
+ * resolve again and the documented identity lock would be silently dead for
+ * that (run, key) — promotes would keep limping along on slug adoption instead.
+ *
+ * The `WHERE EXISTS (… deleted_at IS NOT NULL)` is what keeps this from
+ * clobbering a live claim: a concurrent replica that legitimately won the
+ * identifier still wins, because its row is live and the update is skipped.
+ */
 async function claimEvalCaseIdentity(
 	sql: DbClient,
 	organizationId: string,
@@ -408,7 +423,13 @@ async function claimEvalCaseIdentity(
       ${organizationId}, ${entityId}, ${EVAL_CASE_NAMESPACE}, ${identifier},
       current_timestamp
     )
-    ON CONFLICT DO NOTHING
+    ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
+    DO UPDATE SET entity_id = EXCLUDED.entity_id, updated_at = current_timestamp
+    WHERE EXISTS (
+      SELECT 1 FROM entities de
+      WHERE de.id = entity_identities.entity_id
+        AND de.deleted_at IS NOT NULL
+    )
   `;
 }
 

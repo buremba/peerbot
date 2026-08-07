@@ -249,6 +249,48 @@ describe("promoteEvalCase", () => {
 		expect(deleted.deleted_at).not.toBeNull();
 	});
 
+	test("repoints a live claim left pointing at a deleted case", async () => {
+		// The REAL delete path: `deleteEntity` does `UPDATE entities SET deleted_at`
+		// and never touches `entity_identities`, so the live claim outlives the row
+		// it names. The sibling test above deletes the claim by hand and therefore
+		// never exercises this. Without the reconciling upsert the claim stays
+		// pointed at the dead row forever, `findEvalCaseByIdentifier` (which joins
+		// live entities) never resolves again, and the identity lock is silently
+		// dead for this (run, key).
+		const first = await promoteEvalCase({ sourceRunId, caseKey: "soft-gone" });
+		expect(first.ok).toBe(true);
+		if (!first.ok) return;
+
+		await sql`
+      UPDATE entities SET deleted_at = current_timestamp
+      WHERE id = ${first.evalCase.entityId}
+    `;
+
+		const second = await promoteEvalCase({ sourceRunId, caseKey: "soft-gone" });
+		expect(second.ok).toBe(true);
+		if (!second.ok) return;
+		expect(second.evalCase.entityId).not.toBe(first.evalCase.entityId);
+
+		// The claim must now name the LIVE case, not the tombstone.
+		const claims = (await sql`
+      SELECT entity_id
+      FROM entity_identities
+      WHERE organization_id = ${organizationId}
+        AND namespace = ${EVAL_CASE_NAMESPACE}
+        AND identifier = ${`${sourceRunId}:soft-gone`}
+        AND deleted_at IS NULL
+    `) as unknown as Array<{ entity_id: number | string }>;
+		expect(claims).toHaveLength(1);
+		expect(Number(claims[0].entity_id)).toBe(second.evalCase.entityId);
+
+		// And the fast path works again: a third promote resolves via the claim.
+		const third = await promoteEvalCase({ sourceRunId, caseKey: "soft-gone" });
+		expect(third.ok).toBe(true);
+		if (!third.ok) return;
+		expect(third.created).toBe(false);
+		expect(third.evalCase.entityId).toBe(second.evalCase.entityId);
+	});
+
 	test("different case keys on one run are different cases", async () => {
 		const a = await promoteEvalCase({ sourceRunId, caseKey: "angle-a" });
 		const b = await promoteEvalCase({ sourceRunId, caseKey: "angle-b" });

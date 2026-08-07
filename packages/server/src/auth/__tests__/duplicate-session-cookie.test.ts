@@ -9,22 +9,12 @@ import {
 import { get } from '../../__tests__/setup/test-helpers';
 
 /**
- * A browser can hold the same auth cookie name twice — host-only
- * (`app.lobu.ai`) and domain-scoped (`Domain=.lobu.ai`) — and sends BOTH in one
- * `Cookie` header. Resolution is then decided by position, and the position is
- * not ours to choose:
+ * End-to-end cover for the permanent-login-brick class: a jar holding the same
+ * session cookie twice must authenticate on merit, never on cookie order.
+ * Mechanism and cure: ../resolve-session.ts.
  *
- *   RFC 6265 §5.4  browser sends equal-path cookies oldest-first
- *   better-call    parseCookies keeps the FIRST occurrence (`if (!cookies.has(key))`)
- *   better-auth    getSignedCookie reads that one and stops
- *
- * So a stale twin that happens to be older outranks every later sign-in, and
- * the user is locked out with no in-app escape — signing in again writes a
- * strictly NEWER cookie that can never win. Measured on prod 2026-08-06:
- * `dead; good` resolved to null while `good; dead` resolved to the session.
- *
- * These tests pin the cure: when the jar is ambiguous, resolve it deterministically
- * instead of trusting order.
+ * Runs through the real app stack, so it also pins that the middleware, the
+ * route and Better Auth agree — which a unit test cannot show.
  */
 describe('duplicate session cookies', () => {
   beforeEach(async () => {

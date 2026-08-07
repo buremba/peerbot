@@ -81,9 +81,18 @@ export function sessionCookieCandidates(
   return candidates;
 }
 
-/** A session object Better Auth considers authenticated. */
+/**
+ * A session object that authenticates someone.
+ *
+ * The predicate is `user`, not `user && session`, because `user` is the weakest
+ * thing any caller requires — `auth/middleware.ts`, `auth/oauth/routes.ts`,
+ * `connect/routes.ts` and `worker-api/auth-runs.ts` all check `session?.user`
+ * alone. Demanding more here would reject, on a duplicated jar, a session those
+ * callers accept on a clean one. A dead cookie yields `null` either way, so this
+ * costs nothing in candidate selection.
+ */
 function isLive(session: any): boolean {
-  return Boolean(session?.user && session.session);
+  return Boolean(session?.user);
 }
 
 /**
@@ -121,47 +130,48 @@ function nonSessionCookies(cookieHeader: string | null): string[] {
  * before; every non-session cookie survives, so Better Auth's companions still
  * apply; and the candidate keeps the name it arrived under, because renaming it
  * would hide it from `getSession` entirely.
- *
- * Note an asymmetry worth knowing: the single-cookie path returns whatever
- * `getSession` returns, ungated, because it must stay byte-for-byte the old
- * behaviour. The multi-candidate path gates on `isLive`. A session shaped with
- * a `user` but no `session` would therefore satisfy a caller checking only
- * `session?.user?.id` on a one-cookie jar and not on a two-cookie one. Better
- * Auth does not produce that shape today; gating both paths would be the fix if
- * it ever did.
  */
 export async function resolveSession<A extends SessionReader>(
   auth: A,
   headers: Headers
 ): Promise<SessionOf<A>> {
-  const cookieHeader = headers.get('cookie');
-  const candidates = sessionCookieCandidates(cookieHeader);
-  if (candidates.length <= 1) return await auth.api.getSession({ headers });
-
-  const companions = nonSessionCookies(cookieHeader);
-  for (const candidate of candidates.slice(0, MAX_CANDIDATES)) {
-    const session = await auth.api.getSession({
-      headers: probeHeaders(headers, companions, candidate),
-    });
-    if (isLive(session)) return session;
-  }
+  const live = await findLiveProbe(auth, headers);
+  if (!live) return await auth.api.getSession({ headers });
   // Every candidate was dead. Resolving on merit must not become "authenticate
   // on anything" — an ambiguous jar with no live token is still no session.
-  return null as SessionOf<A>;
+  return (live.session ?? null) as SessionOf<A>;
 }
 
-/** A copy of `headers` whose jar carries the companions and exactly one twin. */
-function probeHeaders(
-  headers: Headers,
-  companions: string[],
-  candidate: SessionCookieCandidate
-): Headers {
-  const probe = new Headers(headers);
-  probe.set(
-    'cookie',
-    [...companions, `${candidate.name}=${candidate.value}`].join('; ')
-  );
-  return probe;
+/**
+ * Probe an ambiguous jar one candidate at a time, and report what verified.
+ *
+ * `null` means the jar was not ambiguous — one session cookie or none — so the
+ * caller should just use the headers it already has. Otherwise the result
+ * carries the probe headers and the session they produced, and `session` is
+ * `null` when no candidate verified. Returning both means the winning lookup is
+ * never repeated.
+ */
+async function findLiveProbe<A extends SessionReader>(
+  auth: A,
+  headers: Headers
+): Promise<{ headers: Headers; session: SessionOf<A> | null } | null> {
+  const cookieHeader = headers.get('cookie');
+  const candidates = sessionCookieCandidates(cookieHeader);
+  if (candidates.length <= 1) return null;
+
+  const companions = nonSessionCookies(cookieHeader);
+  let last = headers;
+  for (const candidate of candidates.slice(0, MAX_CANDIDATES)) {
+    const probe = new Headers(headers);
+    probe.set(
+      'cookie',
+      [...companions, `${candidate.name}=${candidate.value}`].join('; ')
+    );
+    last = probe;
+    const session = await auth.api.getSession({ headers: probe });
+    if (isLive(session)) return { headers: probe, session };
+  }
+  return { headers: last, session: null };
 }
 
 /**
@@ -182,18 +192,14 @@ export async function collapseSessionCookies<A extends SessionReader>(
   auth: A,
   headers: Headers
 ): Promise<Headers> {
-  const cookieHeader = headers.get('cookie');
-  const candidates = sessionCookieCandidates(cookieHeader);
-  if (candidates.length <= 1) return headers;
+  const live = await findLiveProbe(auth, headers);
+  if (!live) return headers;
+  if (live.session) return live.headers;
 
-  const companions = nonSessionCookies(cookieHeader);
-  for (const candidate of candidates.slice(0, MAX_CANDIDATES)) {
-    const probe = probeHeaders(headers, companions, candidate);
-    if (isLive(await auth.api.getSession({ headers: probe }))) return probe;
-  }
   // No candidate verifies. Send the jar with no session cookie at all rather
   // than an arbitrary dead one: "not signed in" is the honest answer, and it
   // keeps sign-in and sign-out on this request from acting on a dead twin.
+  const companions = nonSessionCookies(headers.get('cookie'));
   const stripped = new Headers(headers);
   if (companions.length > 0) stripped.set('cookie', companions.join('; '));
   else stripped.delete('cookie');

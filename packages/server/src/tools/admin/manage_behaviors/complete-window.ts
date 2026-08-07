@@ -35,7 +35,11 @@ import type { ManageBehaviorsArgs } from '../manage_behaviors';
 import { normalizeExtractedData, parseJson, requireWatcherAccess } from './shared';
 import { getErrorMessage } from '@lobu/core';
 import { classifyRunOutcome } from "../../../runs/run-outcome";
-import { BEHAVIOR_EVAL_RUN_TYPE, BEHAVIOR_RUN_TYPES_PG } from "../../../runs/run-types.js";
+import {
+  BEHAVIOR_EVAL_RUN_TYPE,
+  BEHAVIOR_RUN_TYPE,
+  BEHAVIOR_RUN_TYPES_PG,
+} from "../../../runs/run-types.js";
 
 /** Cap on the content ids echoed into `dry_run_preview` — the preview exists to
  *  be read, and an unbounded id list on a wide window is neither useful nor
@@ -191,11 +195,19 @@ export async function handleCompleteWindow(
   if (watcherRunId == null) {
     // Prefer an active (dispatched) run; otherwise a pending manual-open run
     // (no agent/device pin) waiting for an external completer.
+    //
+    // Scoped to the CALLER's own lane. This ordering prefers `running` and then
+    // the newest row — which, while an eval replay of this same Behavior is in
+    // flight, is the eval. A live completer that omitted `behavior_run_id`
+    // would otherwise adopt the eval's run and stamp a window onto it, breaking
+    // the "an eval never has a window" invariant PR 3 scores against.
+    const callerRunType =
+      ctx.executionMode === 'capture' ? BEHAVIOR_EVAL_RUN_TYPE : BEHAVIOR_RUN_TYPE;
     const runRows = await sql`
       SELECT id
       FROM runs
       WHERE watcher_id = ${watcherId}
-        AND run_type = ANY(${BEHAVIOR_RUN_TYPES_PG}::text[])
+        AND run_type = ${callerRunType}
         AND (
           status = 'running'
           OR (
@@ -848,7 +860,7 @@ export async function handleCompleteWindow(
             error_message = NULL
         WHERE id = ${watcherRunId}
           AND watcher_id = ${watcherId}
-          AND run_type = ANY(${BEHAVIOR_RUN_TYPES_PG}::text[])
+          AND run_type = ${BEHAVIOR_RUN_TYPE}
           AND status IN ('running', 'claimed')
         RETURNING id, approved_input->>'dispatch_source' AS dispatch_source
       `;
@@ -874,7 +886,7 @@ export async function handleCompleteWindow(
               run_metadata = COALESCE(run_metadata, '{}'::jsonb) || ${sql.json(provenanceMetadata)}
           WHERE id = ${watcherRunId}
             AND watcher_id = ${watcherId}
-            AND run_type = ANY(${BEHAVIOR_RUN_TYPES_PG}::text[])
+            AND run_type = ${BEHAVIOR_RUN_TYPE}
         `;
       }
     }

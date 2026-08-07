@@ -24,6 +24,7 @@ import type { Env } from '../../../index';
 import type { ToolContext } from '../../../tools/registry';
 import { handleCompleteWindow } from '../../../tools/admin/manage_behaviors/complete-window';
 import { createEvalRun } from '../../../runs/eval-runs';
+import { BEHAVIOR_EVAL_RUN_TYPE } from '../../../runs/run-types';
 import { createWatcherRun } from '../../../runs/queue-service';
 import { findCanvasHead } from '../../../utils/canvas-events';
 import { computePendingWindow } from '../../../utils/window-utils';
@@ -236,6 +237,52 @@ describe('an eval replay cannot overwrite the Behavior it is scoring', () => {
     expect(preview.dry_run_preview.extracted_data).toMatchObject(EVAL_EXTRACTION);
     // The intent is recorded even though it was refused.
     expect(preview.dry_run_preview.replace_existing).toBe(true);
+  });
+
+  it('a live completer with no run id never adopts an in-flight eval run', async () => {
+    const ctx = await setup();
+    const { sql, orgId, ownerUserId, watcherId, sourceRunId, windowToken } = ctx;
+
+    // The live run stays RUNNING — it is the one a completion should land on.
+    // An eval replay of the same Behavior is also running and is NEWER, so the
+    // fallback lookup's "prefer running, then newest" ordering would pick the
+    // EVAL if it were not scoped to the caller's own lane.
+    const evalRun = await createEvalRun(
+      { sourceRunId, caseKey: 'race' },
+      sql as unknown as DbClient
+    );
+    await sql`UPDATE runs SET status = 'running' WHERE id = ${evalRun?.runId ?? 0}`;
+
+    // A LIVE completion that omits behavior_run_id entirely.
+    const live = await handleCompleteWindow(
+      {
+        action: 'complete_window',
+        behavior_id: String(watcherId),
+        window_token: windowToken,
+        extracted_data: LIVE_EXTRACTION,
+      } as never,
+      TEST_ENV,
+      toolCtx(orgId, ownerUserId, 'live')
+    );
+    expect(live.captured).toBeUndefined();
+
+    // The completion landed on the LIVE run. If the lookup had adopted the
+    // eval, this run would still be sitting there with no window.
+    const [liveRow] = await sql<{ status: string; window_id: number | null }[]>`
+      SELECT status, window_id FROM runs WHERE id = ${sourceRunId}
+    `;
+    expect(liveRow.window_id).not.toBe(null);
+    expect(liveRow.status).toBe('completed');
+
+    // And the eval is untouched: still running, still windowless.
+    const [evalRow] = await sql<
+      { status: string; window_id: number | null; run_type: string }[]
+    >`
+      SELECT status, window_id, run_type FROM runs WHERE id = ${evalRun?.runId ?? 0}
+    `;
+    expect(evalRow.run_type).toBe(BEHAVIOR_EVAL_RUN_TYPE);
+    expect(evalRow.window_id).toBe(null);
+    expect(evalRow.status).toBe('running');
   });
 
   it('does not stamp dry_run onto a real Behavior run', async () => {

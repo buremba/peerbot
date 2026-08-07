@@ -40,7 +40,10 @@ import {
 	markWatcherRunCompleted,
 	resolveWatcherRunsByMessageIds,
 } from "./run-completion";
-import { BEHAVIOR_RUN_TYPES_PG } from "../runs/run-types.js";
+import {
+	BEHAVIOR_RUN_TYPES,
+	BEHAVIOR_RUN_TYPES_PG,
+} from "../runs/run-types.js";
 
 type WatcherRunStatus =
 	| "pending"
@@ -567,7 +570,13 @@ export async function sweepStaleWatcherRuns(
 		coarseStaleInterval
 	);
 	const executingTimedOut = await markStaleRunsAsTimeout(sql, {
-		runTypes: ["behavior"],
+		// Both lanes: this is a pure status UPDATE with no schedule-cursor or
+		// canvas side effect, so terminating a crashed eval cannot touch the
+		// Behavior it replays. Without it a `running` eval never reaches a
+		// terminal state and its same-lane claim guard wedges the eval lane.
+		// `finalizeStalePendingWatcherRuns` above stays behavior-only on
+		// purpose — it advances `next_run_at`, which an eval must never do.
+		runTypes: BEHAVIOR_RUN_TYPES,
 		heartbeatSemantics: "beat-after-claim",
 		heartbeatStaleInterval,
 		coarseStaleInterval,
@@ -694,6 +703,11 @@ async function finalizeStalePendingWatcherRuns(
  * - Claimed scheduled and event deliveries retry after a dispatcher crash
  *   before `running`. Manual triggers are not auto-retried; the caller owns
  *   retry policy.
+ * - Covers BOTH behavior lanes. The claim guards are same-lane
+ *   (`active.run_type = r.run_type`), so a crashed eval claim does not block a
+ *   live run — but it does block every later eval of that Behavior, and
+ *   nothing else would ever clear it. Resetting an orphaned eval claim cannot
+ *   touch a live run for the same reason.
  *
  * Module-private: `runWatcherAutomationTick` is the only driver. The
  * stale-claim threshold lives in config/intervals.ts
@@ -710,7 +724,7 @@ async function resetOrphanedWatcherRuns(
         claimed_at = NULL,
         dispatched_message_id = NULL,
         error_message = NULL
-    WHERE run_type = 'behavior'
+    WHERE run_type = ANY(${BEHAVIOR_RUN_TYPES_PG}::text[])
       AND status = 'claimed'
       AND claimed_by = 'lobu-dispatcher'
       AND claimed_at < now() - ${intervals.watcherOrphanedClaimThreshold}::interval

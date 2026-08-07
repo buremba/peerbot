@@ -24,10 +24,20 @@ export const BEHAVIOR_EVAL_RUN_TYPE = "behavior_eval";
 /**
  * Run types the Behavior execution path accepts: claim, session creation,
  * window completion, run completion — plus the run-thread read, so an eval's
- * transcript can be read back for scoring. Deliberately NOT used by
- * scheduling, coalescing, reaping or health predicates — those stay
- * `= 'behavior'` so evals never compete with, suppress, or degrade a real
- * Behavior.
+ * transcript can be read back for scoring.
+ *
+ * Deliberately NOT used by scheduling, coalescing or health predicates —
+ * those stay `= 'behavior'` so evals never compete with, suppress, or degrade
+ * a real Behavior.
+ *
+ * Reaping splits, and the test is whether the reaper touches anything beyond
+ * the stranded row itself:
+ * - Included — `resetOrphanedWatcherRuns` and `markStaleRunsAsTimeout`. Both
+ *   only release or terminate the run they reap. Excluding evals there does
+ *   not protect the Behavior, it just strands the eval forever, and because
+ *   the claim guards are same-lane that wedges every later eval of it.
+ * - Excluded — `finalizeStalePendingWatcherRuns`, which advances
+ *   `next_run_at`. An eval must never move the live schedule.
  */
 export const BEHAVIOR_RUN_TYPES: readonly string[] = [
 	BEHAVIOR_RUN_TYPE,

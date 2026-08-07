@@ -158,6 +158,51 @@ const SCOPE_REJECTION_BODY = JSON.stringify({
   },
 });
 
+describe('GoogleCalendarConnector event kind', () => {
+  test('emits the calendar_event kind shared with the other calendar connectors', async () => {
+    const connector = new GoogleCalendarConnector();
+    const { client } = fakeHttp([
+      { items: [calEvent('a', '2026-01-01T10:00:00Z')], nextSyncToken: 'S' },
+    ]);
+    connector.client = () => client;
+
+    const result = await connector.sync({
+      config: { calendar_id: 'primary', max_results: 100 },
+      credentials: { accessToken: 'tok' },
+      checkpoint: {},
+    });
+
+    // `calendar_event` is the vocabulary microsoft_outlook and apple.calendar
+    // already emit. A connector-specific synonym here is invisible to any
+    // consumer that filters on the shared kind.
+    expect(result.events[0].origin_type).toBe('calendar_event');
+  });
+
+  test('every emitted origin_type is declared in the feed eventKinds registry', async () => {
+    const connector = new GoogleCalendarConnector();
+    const { client } = fakeHttp([
+      { items: [calEvent('a', '2026-01-01T10:00:00Z')], nextSyncToken: 'S' },
+    ]);
+    connector.client = () => client;
+
+    const result = await connector.sync({
+      config: { calendar_id: 'primary', max_results: 100 },
+      credentials: { accessToken: 'tok' },
+      checkpoint: {},
+    });
+
+    // `event_kinds` is a CLOSED allowlist once non-empty: the server rejects a
+    // write whose semantic_type is absent from feeds_schema[feed].eventKinds.
+    // Renaming one side without the other silently stops ingestion, so pin
+    // both to each other here.
+    const declared = Object.keys(connector.definition.feeds.events.eventKinds);
+    expect(declared).toContain('calendar_event');
+    for (const event of result.events) {
+      expect(declared).toContain(event.origin_type);
+    }
+  });
+});
+
 describe('GoogleCalendarConnector poisoned sync token recovery', () => {
   test('a 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT on the incremental request drops the token and full-syncs', async () => {
     const connector = new GoogleCalendarConnector();

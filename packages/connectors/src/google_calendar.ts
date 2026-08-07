@@ -149,7 +149,12 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
           },
         },
         eventKinds: {
-          event: {
+          // `calendar_event`, not `event`: microsoft_outlook and the apple.calendar
+          // device connector both emit this kind, and consumers filter on the shared
+          // vocabulary. This key and the `origin_type` in toEventEnvelope must stay
+          // identical — `event_kinds` is a closed allowlist once non-empty, so a
+          // one-sided rename makes the server reject every write from this feed.
+          calendar_event: {
             description: 'A Google Calendar event',
             metadataSchema: {
               type: 'object',
@@ -649,7 +654,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
       author_name: calEvent.organizer?.displayName || calEvent.organizer?.email,
       source_url: calEvent.htmlLink,
       occurred_at: occurredAt,
-      origin_type: 'event',
+      origin_type: 'calendar_event',
       metadata: {
         status: calEvent.status,
         ...(calEvent.location ? { location: calEvent.location } : {}),

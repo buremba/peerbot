@@ -388,14 +388,11 @@ export class ProviderCatalogService {
       orgDefaultSlug = orgRows.find((r) => r.isDefault)?.slug;
       catalogByKind = new Map();
       for (const entry of buildProviderCatalog()) {
-        // A kind with no usable `sdkCompat` is an OAuth provider (chatgpt,
-        // claude) — it has a real `baseUrl`, but that URL only answers to a
-        // signed-in session, not to a Bearer API key. The create route already
-        // refuses such a row ("can't be added with an API key — it signs in
-        // instead"), so contributing its URL here would let routing accept
-        // exactly what creation rejects. Carry the protocol either way for the
-        // synthesizer's own default, but only offer a FALLBACK upstream for a
-        // kind an API key can actually reach.
+        // Only offer a fallback upstream for a kind an API key can actually
+        // reach. A kind with no usable `sdkCompat` (chatgpt) has a real
+        // `baseUrl` that answers to a signed-in session, not a Bearer key.
+        // Carry the protocol either way — the synthesizer needs it — but never
+        // the URL.
         const sdkCompat = isSdkCompat(entry.sdkCompat)
           ? entry.sdkCompat
           : undefined;

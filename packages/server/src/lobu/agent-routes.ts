@@ -912,21 +912,20 @@ routes.post("/inference-providers", async (c) => {
 			);
 		}
 		catalogDefaultModel = configs[kind]?.defaultModel ?? undefined;
-		// Deliberately `buildProviderCatalog()` with NO configs — the EXACT
-		// expression `getModelPolicy` evaluates. These two must agree or the row
-		// is seeded as routable and then dropped at routing, which is worse than
-		// either outcome alone: a text model is what `promoteOldestRunnableProvider`
-		// keys on, so an unroutable row becomes the org DEFAULT and breaks every
-		// allow-all agent in the org.
+		// The EXACT expression `getModelPolicy` evaluates — argless
+		// `buildProviderCatalog()`, then the same `sdkCompat` gate. These two must
+		// agree: a text model is what `promoteOldestRunnableProvider` keys on, so
+		// a row seeded as routable and then dropped at routing becomes the org
+		// DEFAULT and breaks every allow-all agent in the org.
 		//
-		// Reading `configs[kind].upstreamBaseUrl` here instead looks equivalent
-		// and is not. providers.json gives `claude` both an `upstreamBaseUrl` and
-		// `sdkCompat: "anthropic"`, but claude registers as an OAuth module, not
-		// an ApiKeyProviderModule — so `buildProviderCatalog()` reports baseUrl
-		// "" for it and synthesis refuses it. Trusting providers.json would seed
-		// exactly that unroutable row and promote it to default.
-		catalogBaseUrl =
-			buildProviderCatalog().find((e) => e.slug === kind)?.baseUrl || undefined;
+		// `configs[kind].upstreamBaseUrl` looks equivalent and is not. It gives
+		// `claude` a URL, but claude registers as an OAuth module rather than an
+		// ApiKeyProviderModule, so the catalog reports "" and synthesis refuses
+		// it — trusting providers.json would seed exactly that unroutable row.
+		const catalogEntry = buildProviderCatalog().find((e) => e.slug === kind);
+		catalogBaseUrl = isSdkCompat(catalogEntry?.sdkCompat ?? null)
+			? catalogEntry?.baseUrl || undefined
+			: undefined;
 	} catch (err) {
 		// Fail open on catalog-load errors: don't block creation on a metadata
 		// read. The synthesize path still gates routing downstream.

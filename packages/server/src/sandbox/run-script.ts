@@ -20,6 +20,24 @@ export interface RunLimits {
 	outputBytes?: number;
 }
 
+/**
+ * Whether one SDK call is skipped-and-recorded rather than dispatched.
+ *
+ * Exported so the capture contract is pinned by a test against THIS expression
+ * rather than a copy of it — a mirrored predicate in a test can never catch a
+ * regression here.
+ */
+export function isSkippedUnderDryRun(args: {
+	dryRun?: boolean;
+	dryRunDispatchPaths?: readonly string[];
+	access: string;
+	path: string;
+}): boolean {
+	if (args.dryRun !== true) return false;
+	if (args.access === "read") return false;
+	return !args.dryRunDispatchPaths?.includes(args.path);
+}
+
 export interface RunScriptOptions {
 	source: string;
 	context?: Record<string, unknown>;
@@ -29,6 +47,22 @@ export interface RunScriptOptions {
 	 * `sideEffectPreview` instead of mutating state or reaching external systems.
 	 */
 	dryRun?: boolean;
+	/**
+	 * SDK paths that still DISPATCH under {@link dryRun}, because the handler
+	 * behind them is itself capture-aware and refuses its own writes.
+	 *
+	 * This exists for exactly one case: an eval replay is told to finalize via
+	 * `client.behaviors.completeWindow`, and the blanket skip would swallow that
+	 * call — leaving the run with no window, so it gets nudged into a second
+	 * full replay and then failed with "finished without calling run_sdk". The
+	 * handler needs to RUN so it can record the extraction and answer
+	 * `captured: true`; it reads the same `executionMode` off its ToolContext
+	 * and writes nothing.
+	 *
+	 * Deliberately NOT populated for an agent-requested `dry_run: true` — there
+	 * the agent asked for a preview and skipping is the correct answer.
+	 */
+	dryRunDispatchPaths?: readonly string[];
 	/**
 	 * Either a pre-built SDK or a builder that receives the wall-clock
 	 * AbortSignal so handlers can race their work against the timeout and
@@ -754,7 +788,12 @@ export async function runScript(
 						orgPath,
 						access,
 						args: traceArgs(args),
-						skipped: options.dryRun === true && access !== "read",
+						skipped: isSkippedUnderDryRun({
+							dryRun: options.dryRun,
+							dryRunDispatchPaths: options.dryRunDispatchPaths,
+							access,
+							path,
+						}),
 					};
 					sdkCallTrace.push(trace);
 					if (trace.skipped) {

@@ -143,6 +143,23 @@ export function resolveSandboxDryRun(args: {
   return captureSideEffects || (args.sdkMode === "full" && args.agentDryRun);
 }
 
+/**
+ * SDK paths a CAPTURE run still dispatches, because the handler behind them
+ * enforces capture itself (see `RunScriptOptions.dryRunDispatchPaths`).
+ *
+ * `behaviors.completeWindow` is the finalize step the dispatch prompt asks for
+ * (watchers/automation.ts). Skipping it would leave every eval replay with no
+ * window — which the finalize-nudge reads as "the agent never called run_sdk",
+ * costing a second full replay before failing the run with a misleading error.
+ * `handleCompleteWindow` reads the same `executionMode` and records the
+ * extraction on `runs.dry_run_preview` instead of writing the canvas.
+ *
+ * Empty for an agent-requested `dry_run` — there, skipping IS the answer.
+ */
+export const CAPTURE_DISPATCH_PATHS: readonly string[] = [
+  "behaviors.completeWindow",
+];
+
 async function runSandbox(
   mode: SDKMode,
   args: RunArgs | QueryArgs,
@@ -161,6 +178,8 @@ async function runSandbox(
       sdkMode: mode,
       agentDryRun: "dry_run" in args ? args.dry_run === true : false,
     }),
+    dryRunDispatchPaths:
+      ctx.executionMode === "capture" ? CAPTURE_DISPATCH_PATHS : undefined,
     context: {
       organization_id: ctx.organizationId,
       user_id: ctx.userId,

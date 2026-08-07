@@ -8,7 +8,11 @@ import {
 	advanceScheduleAfterTerminalFailure,
 	providerQuotaResetNotBefore,
 } from "./schedule-cursor";
-import { BEHAVIOR_RUN_TYPE, BEHAVIOR_RUN_TYPES_PG } from "../runs/run-types.js";
+import {
+	BEHAVIOR_EVAL_RUN_TYPE,
+	BEHAVIOR_RUN_TYPE,
+	BEHAVIOR_RUN_TYPES_PG,
+} from "../runs/run-types.js";
 
 type WatcherTerminalResult =
 	| { ok: true }
@@ -249,7 +253,7 @@ export async function resolveWatcherRunsByMessageIds(
 
 	const sql = db ?? getDb();
 	const rows = await sql`
-    SELECT r.id, r.approved_input, w.execution_config
+    SELECT r.id, r.run_type, r.approved_input, w.execution_config
     FROM runs r
     LEFT JOIN watchers w ON w.id = r.watcher_id
     WHERE r.run_type = ANY(${BEHAVIOR_RUN_TYPES_PG}::text[])
@@ -261,6 +265,7 @@ export async function resolveWatcherRunsByMessageIds(
 	for (const row of rows) {
 		const typedRow = row as {
 			id: unknown;
+			run_type: string;
 			approved_input: Record<string, unknown> | null;
 			execution_config: Record<string, unknown> | null;
 		};
@@ -294,6 +299,15 @@ export async function resolveWatcherRunsByMessageIds(
 
 		const windowId = await findWindowIdForRun(sql, runId);
 		if (windowId === null) {
+			// An eval replay can NEVER produce a window — capture mode is what
+			// stops it writing one. "No window" is its success shape, not a
+			// finalize miss, so nudging it would buy a second full replay and
+			// then fail the run with a message about a call the agent did make.
+			if (typedRow.run_type === BEHAVIOR_EVAL_RUN_TYPE) {
+				await markWatcherRunCompleted(sql, runId, null, "lobu-agent");
+				resolved++;
+				continue;
+			}
 			// The agent replied but never called complete_window — a soft, usually
 			// non-deterministic miss. Re-dispatch for one more turn (bounded by
 			// finalize_nudge_count) before giving up. The budget is per-watcher

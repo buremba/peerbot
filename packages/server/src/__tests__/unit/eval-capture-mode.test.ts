@@ -6,7 +6,11 @@
 
 import { describe, expect, test } from "bun:test";
 import { buildWorkerTokenClaims } from "../../gateway/orchestration/worker-token-claims";
-import { resolveSandboxDryRun } from "../../tools/sdk_run";
+import {
+	CAPTURE_DISPATCH_PATHS,
+	resolveSandboxDryRun,
+} from "../../tools/sdk_run";
+import { isSkippedUnderDryRun } from "../../sandbox/run-script";
 
 const base = {
 	channelId: "api_watcher_7",
@@ -104,5 +108,60 @@ describe("resolveSandboxDryRun — capture forcing", () => {
 				agentDryRun: true,
 			}),
 		).toBe(true);
+	});
+});
+
+describe("the finalize call survives the capture skip", () => {
+	// The blocker this pins: the dispatch prompt tells an eval to finalize via
+	// `client.behaviors.completeWindow`, which is access 'write'. The sandbox's
+	// blanket dry-run skip would swallow exactly that call, so the run ends with
+	// no window, gets nudged into a SECOND full replay, and is then failed with
+	// "finished without calling run_sdk" — about a call it did make.
+	const capture = (path: string, access = "write") =>
+		isSkippedUnderDryRun({
+			dryRun: true,
+			dryRunDispatchPaths: CAPTURE_DISPATCH_PATHS,
+			access,
+			path,
+		});
+
+	test("completeWindow is dispatched, not skipped, under capture", () => {
+		expect(capture("behaviors.completeWindow")).toBe(false);
+	});
+
+	test("every other write still captures", () => {
+		expect(capture("conversations.send")).toBe(true);
+		expect(capture("entities.create")).toBe(true);
+		expect(capture("feeds.sync", "external")).toBe(true);
+	});
+
+	test("an agent-requested dry_run skips completeWindow too", () => {
+		// sdk_run passes the carve-out ONLY for executionMode 'capture'. With no
+		// dispatch paths the agent's own preview keeps skipping everything, which
+		// is what `dry_run: true` means.
+		expect(
+			isSkippedUnderDryRun({
+				dryRun: true,
+				dryRunDispatchPaths: undefined,
+				access: "write",
+				path: "behaviors.completeWindow",
+			}),
+		).toBe(true);
+	});
+
+	test("a live run dispatches everything", () => {
+		expect(
+			isSkippedUnderDryRun({
+				dryRun: false,
+				access: "write",
+				path: "conversations.send",
+			}),
+		).toBe(false);
+	});
+
+	test("the carve-out stays minimal", () => {
+		// A growing allowlist means capture is leaking. Each addition needs its
+		// handler to enforce capture itself.
+		expect(CAPTURE_DISPATCH_PATHS.length).toBe(1);
 	});
 });

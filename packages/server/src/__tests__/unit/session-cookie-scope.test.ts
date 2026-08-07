@@ -105,12 +105,22 @@ describe("session cookie scope convergence", () => {
 		).toEqual(set);
 	});
 
-	test("never re-expires a cookie the response is already deleting", () => {
+	test("expires the twin on sign-out too, or sign-out leaves a live session", () => {
+		// Better Auth's sign-out deletes ONLY the Domain-scoped cookie. Deletion
+		// matches on (name, domain, path), so the host-only twin survives. Which
+		// of the two the server resolved is decided by the browser's send order,
+		// which we do not control — so skipping deletions can leave the user
+		// signed in after sign-out. Converging costs nothing: an expiry for a
+		// cookie the browser does not hold is a no-op.
 		const name = sessionCookieName(true);
-		const set = [`${name}=; Domain=.lobu.ai; Path=/; Max-Age=0`];
-		expect(
-			convergeSetCookieScope(set, { cookieDomain: ".lobu.ai", isHttps: true }),
-		).toEqual(set);
+		const set = [`${name}=; Domain=.lobu.ai; Path=/; Max-Age=0; Secure`];
+		const out = convergeSetCookieScope(set, {
+			cookieDomain: ".lobu.ai",
+			isHttps: true,
+		});
+		expect(out).toHaveLength(2);
+		expect(out[0]).toBe(set[0]);
+		expect(out[1]).toBe(hostOnlyExpiry(name, true));
 	});
 
 	test("leaves host-only Set-Cookies alone (nothing to converge)", () => {

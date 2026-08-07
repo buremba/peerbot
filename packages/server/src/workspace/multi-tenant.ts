@@ -545,8 +545,12 @@ export class MultiTenantProvider implements WorkspaceProvider {
       ]) {
         const seen = countNamedCookies(cookieHeader, name);
         if (seen > 1) {
+          // Include the host: a bricked browser emits this on EVERY request,
+          // and without knowing which host issued the twin the line says what
+          // happened but not where to go fix it.
           logger.warn(
-            `[MultiTenantProvider] ${seen} "${name}" cookies in one request — a duplicate ` +
+            `[MultiTenantProvider] ${seen} "${name}" cookies in one request ` +
+              `(host=${c.req.header('host') || 'unknown'}) — a duplicate ` +
               'at a narrower scope shadows the real session and blocks sign-in until expired'
           );
         }

@@ -91,14 +91,17 @@ function setCookiePath(setCookie: string): string {
 	return path ? path : "/";
 }
 
-/** True when this `Set-Cookie` is itself a deletion — nothing to converge. */
-function isExpiry(setCookie: string): boolean {
-	return /;\s*Max-Age=0\b/i.test(setCookie) || /;\s*Expires=Thu, 01 Jan 1970/i.test(setCookie);
-}
-
 /**
  * Given the `Set-Cookie` headers a response is about to send, append a
  * host-only expiry for every cookie it sets with a `Domain` attribute.
+ *
+ * Deletions are converged too, not skipped. Better Auth's sign-out deletes only
+ * the Domain-scoped cookie, and deletion matches on (name, domain, path), so a
+ * host-only twin outlives sign-out. Whether that leaves a LIVE session depends
+ * on which twin the browser happened to send first — the ordering we do not
+ * control — so sign-out could silently leave the user authenticated. Expiring
+ * the twin alongside the deletion closes that without cost: an expiry for a
+ * cookie the browser does not hold is a no-op.
  *
  * No-ops when no zone is configured: in local dev the host-only cookie IS the
  * real session cookie, and expiring it would log the developer out on sign-in.
@@ -118,7 +121,6 @@ export function convergeSetCookieScope(
 		if (!name || expired.has(name)) continue;
 		// Only a domain-scoped Set-Cookie can be shadowed by a host-only twin.
 		if (!/;\s*Domain=/i.test(setCookie)) continue;
-		if (isExpiry(setCookie)) continue;
 		expired.add(name);
 		// Mirror the source cookie's Secure, not just our own https detection:
 		// Better Auth decides `useSecureCookies` from NODE_ENV/configured origin,

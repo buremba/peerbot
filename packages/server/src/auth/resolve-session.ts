@@ -137,8 +137,9 @@ export async function resolveSession<A extends SessionReader>(
 ): Promise<SessionOf<A>> {
   const live = await findLiveProbe(auth, headers);
   if (!live) return await auth.api.getSession({ headers });
-  // Every candidate was dead. Resolving on merit must not become "authenticate
-  // on anything" — an ambiguous jar with no live token is still no session.
+  // `session` is null when no candidate verified. Resolving on merit must not
+  // become "authenticate on anything": an ambiguous jar with no live token is
+  // still no session.
   return (live.session ?? null) as SessionOf<A>;
 }
 
@@ -160,18 +161,18 @@ async function findLiveProbe<A extends SessionReader>(
   if (candidates.length <= 1) return null;
 
   const companions = nonSessionCookies(cookieHeader);
-  let last = headers;
   for (const candidate of candidates.slice(0, MAX_CANDIDATES)) {
     const probe = new Headers(headers);
     probe.set(
       'cookie',
       [...companions, `${candidate.name}=${candidate.value}`].join('; ')
     );
-    last = probe;
     const session = await auth.api.getSession({ headers: probe });
     if (isLive(session)) return { headers: probe, session };
   }
-  return { headers: last, session: null };
+  // Nothing verified. `headers` here is only a placeholder — every caller
+  // branches on `session` before it reads `headers`.
+  return { headers, session: null };
 }
 
 /**

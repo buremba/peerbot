@@ -28,6 +28,9 @@ export interface PersistBehaviorEventOutputParams {
   outputName: string;
   output: EventOutput;
   watcherId: number;
+  /** Behavior version that produced these rows, for per-version output quality.
+   *  Null only for a completion resolved outside a run and outside a version. */
+  versionId: number | null;
   organizationId: string;
   windowId: number;
   canvasRevisionId: number;
@@ -316,6 +319,8 @@ export async function persistBehaviorEventOutput(
               ? { ns: BEHAVIOR_EVENT_IDENTITY_NS, key: identityKey }
               : null,
             runId: params.runId,
+            behaviorId: params.watcherId,
+            behaviorVersionId: params.versionId,
             createdBy: params.createdBy ?? null,
           },
           { sql: sp }

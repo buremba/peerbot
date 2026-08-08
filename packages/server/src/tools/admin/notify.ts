@@ -187,6 +187,41 @@ async function handleSend(
     if (rows.length > 0) canvasEntityIds = [Number(rows[0].entity_id)];
   }
 
+  // Provenance for the notification row itself. Read from the SERVER-set acting
+  // context (the reaction executor stamps it), never from `args.behavior_source`
+  // — that is caller input, and `behavior_id` decides what a Behavior's own
+  // window excludes, so a chosen id would let one Behavior blind another.
+  // `behavior_source` stays what it always was: an attribution hint for canvas
+  // anchoring and reaction tracking.
+  //
+  // The version comes from the RUN, not from `watchers.current_version_id`.
+  // current_version_id is the version that is current *now*, at send time — a
+  // version bump between dispatch and this notification would attribute the
+  // output to a prompt that never produced it. Since the whole point of this
+  // column is attributing output quality to a prompt version, a plausible wrong
+  // answer is worse than none: when there is no acting run to read (agent tool
+  // calls carry `actingRunId = null`), this stays NULL rather than guessing.
+  // Same source the backfill trusts, and the same choice entity-field-approval
+  // already makes.
+  const actingBehaviorId = ctx.actingWatcherId ?? null;
+  const actingRunId = ctx.actingRunId ?? null;
+  const actingVersionRows =
+    actingBehaviorId && actingRunId
+      ? await getDb()<{ version_id: string | null }>`
+          SELECT approved_input->>'version_id' AS version_id
+          FROM runs
+          WHERE id = ${actingRunId}
+            AND organization_id = ${ctx.organizationId}
+            AND watcher_id = ${actingBehaviorId}
+          LIMIT 1
+        `
+      : [];
+  const rawVersionId = actingVersionRows[0]?.version_id;
+  const actingVersionId =
+    rawVersionId != null && /^[0-9]{1,9}$/.test(rawVersionId)
+      ? Number(rawVersionId)
+      : null;
+
   const orgSlug = await getOrgSlug(ctx.organizationId);
 
   // An idempotent repeat of an ASK must resolve before anything is queued: the
@@ -261,6 +296,9 @@ async function handleSend(
         : null),
     entityIds: canvasEntityIds,
     mcpActivity: currentMcpActivityAttribution(ctx),
+    behaviorId: actingBehaviorId,
+    behaviorVersionId: actingVersionId,
+    runId: actingRunId,
   });
 
   if (notification.created) {

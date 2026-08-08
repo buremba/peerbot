@@ -30,7 +30,10 @@ import logger from "../utils/logger";
 import { isUniqueViolation } from "../utils/pg-errors";
 import { classifyRunOutcome } from "../runs/run-outcome";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
-import { computePendingWindow } from "../utils/window-utils";
+import {
+	behaviorOutputOccurredAt,
+	computePendingWindow,
+} from "../utils/window-utils";
 import {
 	advanceScheduleAfterTerminalFailure,
 	advanceWatcherSchedule,
@@ -331,7 +334,16 @@ async function persistSkippedWatcherWindow(
 								? null
 								: Number(watcher.current_version_id),
 					},
-					occurredAt: windowEnd,
+					// `computePendingWindow` resolves to the CURRENT period whenever the
+					// cursor has caught up, so `windowEnd` is a future instant for the
+					// whole period. Third writer of this stamp — see
+					// `behaviorOutputOccurredAt`.
+					occurredAt: behaviorOutputOccurredAt(windowEnd),
+					behaviorId: watcher.id,
+					behaviorVersionId:
+						watcher.current_version_id == null
+							? null
+							: Number(watcher.current_version_id),
 					createdBy: watcher.created_by,
 				},
 				{ sql: tx },

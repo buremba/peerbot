@@ -422,6 +422,13 @@ export async function fetchIncludeSuperseded(opts: {
     queryParams.push(args.exclude_behavior_id);
     paramIndex += 1;
   }
+  if (args.produced_by_behavior_id !== undefined) {
+    conditions.push(`e.behavior_id = $${paramIndex}`);
+    queryParams.push(
+      validateNumericId(args.produced_by_behavior_id, 'produced_by_behavior_id')
+    );
+    paramIndex += 1;
+  }
   if (args.engagement_min !== undefined) {
     conditions.push(`e.score >= $${paramIndex}`);
     queryParams.push(args.engagement_min);
@@ -619,6 +626,16 @@ export async function fetchClassificationStats(opts: {
       `NOT EXISTS (SELECT 1 FROM watcher_window_events exc_iwe WHERE exc_iwe.event_id = f.id AND exc_iwe.watcher_id = $${paramIndex++})`
     );
     params.push(args.exclude_behavior_id);
+  }
+  // Produced, not analyzed. A column read rather than an EXISTS over
+  // `watcher_window_events`, because that table records what a Behavior READ.
+  // Index: idx_events_behavior_produced (organization_id, behavior_id,
+  // occurred_at DESC) — the org predicate and the ORDER BY are already there.
+  if (args.produced_by_behavior_id !== undefined) {
+    conditions.push(`f.behavior_id = $${paramIndex++}`);
+    params.push(
+      validateNumericId(args.produced_by_behavior_id, 'produced_by_behavior_id')
+    );
   }
   if (args.agent_id) {
     conditions.push(`f.metadata->>'agent_id' = $${paramIndex++}`);

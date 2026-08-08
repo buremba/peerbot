@@ -58,6 +58,12 @@ export interface DataSourceContext {
   /** When set, events CTE is filtered to this time window (incremental mode) */
   windowStart?: string;
   windowEnd?: string;
+  /**
+   * When set, the events CTE drops rows this Behavior produced. Set it for a
+   * Behavior's own source execution and nowhere else — a generic reader
+   * (`query_sql`, entity templates) must still see Behavior-produced events.
+   */
+  excludeProducedByBehaviorId?: number | null;
 }
 
 /** Operations that bypass READ ONLY transactions or have side-effects. */
@@ -592,6 +598,22 @@ export function buildScopedQuery(
         params.push(context.windowEnd);
         const windowEndP = `$${idx}`;
         eventsCte += ` AND ev.occurred_at >= ${windowStartP}::timestamptz AND ev.occurred_at < ${windowEndP}::timestamptz`;
+      }
+
+      // A Behavior never reads what it wrote itself. This used to be bought by
+      // stamping outputs at `window_end` so they fell outside their own window
+      // — which also made them future-dated and invisible everywhere else. Now
+      // that outputs are stamped truthfully they land inside their own window,
+      // and only this predicate stops an hourly Behavior compounding on itself.
+      //
+      // Self-scoped: one Behavior refining another's output is ordinary
+      // composition, so this drops rows from THIS Behavior only. Corrections
+      // are never stamped with a `behavior_id`, so human feedback still reaches
+      // the Behavior it was written about.
+      if (context.excludeProducedByBehaviorId != null) {
+        idx++;
+        params.push(context.excludeProducedByBehaviorId);
+        eventsCte += ` AND (ev.behavior_id IS NULL OR ev.behavior_id <> $${idx})`;
       }
 
       eventsCte += eventConnVisibility('ev');

@@ -31,7 +31,14 @@ function ownerCtx(workspace: TestWorkspace): ToolContext {
   };
 }
 
-async function seedWatcher(workspace: TestWorkspace, suffix: string) {
+async function seedWatcher(
+  workspace: TestWorkspace,
+  suffix: string,
+  // Defaults to a window that has already closed. Pass a future instant to get
+  // the shape prod is in for most of the day: a window still OPEN, whose
+  // `window_end` has not happened yet.
+  windowEnd: Date = new Date()
+) {
   const entity = await createTestEntity({
     name: `Feedback Entity ${suffix}`,
     organization_id: workspace.org.id,
@@ -56,7 +63,7 @@ async function seedWatcher(workspace: TestWorkspace, suffix: string) {
     organizationId: workspace.org.id,
     granularity: 'weekly',
     windowStart: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
-    windowEnd: new Date(),
+    windowEnd,
     extractedData: { problems: [{ name: 'A', severity: 'low' }] },
     createdBy: workspace.users.owner.id,
     entityIds: [entity.id],
@@ -329,6 +336,51 @@ describe('watcher feedback contract', () => {
     expect(head[0].created_by).toBe(workspace.users.owner.id);
     const problems = (head[0].payload_data as { problems: Array<{ severity: string }> }).problems;
     expect(problems[0].severity).toBe('high');
+  });
+
+  /**
+   * The correction is the SECOND writer of this chain. `complete_window` clamps
+   * its head to `min(window_end, now())`; if the correction keeps stamping a
+   * flat `window_end`, then on a window that is still open the uncorrected head
+   * is visible and the corrected one is not — correcting today's canvas makes
+   * it disappear until the window closes. Both writers go through
+   * `behaviorOutputOccurredAt` for exactly this reason.
+   */
+  it('stamps a correction when it was made, not at a still-future window_end', async () => {
+    const windowEnd = new Date(Date.now() + 6 * 60 * 60 * 1000);
+    const seeded = await seedWatcher(workspace, `open-window-${Date.now()}`, windowEnd);
+
+    // Precondition, not decoration: a window that has already closed makes the
+    // clamp a no-op and this test's green would mean nothing.
+    expect(windowEnd.getTime()).toBeGreaterThan(Date.now());
+
+    await manageBehaviors(
+      {
+        action: 'submit_feedback',
+        behavior_id: seeded.watcherId,
+        window_id: seeded.windowId,
+        corrections: [{ field_path: 'problems[0].severity', value: 'high' }],
+      } as never,
+      {} as never,
+      ownerCtx(workspace)
+    );
+
+    const head = await getTestDb()`
+      SELECT e.occurred_at, e.created_at
+      FROM events e
+      WHERE e.semantic_type = 'canvas_state'
+        AND (e.metadata->>'watcher_id')::bigint = ${Number(seeded.watcherId)}
+        AND e.supersedes_event_id IS NOT NULL
+    `;
+    expect(head).toHaveLength(1);
+    expect(new Date(head[0].occurred_at as string).getTime()).toBeLessThanOrEqual(
+      Date.now()
+    );
+    // The stamp is the moment of correction, strictly before the window end it
+    // used to be pinned to.
+    expect(new Date(head[0].occurred_at as string).getTime()).toBeLessThan(
+      windowEnd.getTime()
+    );
   });
 
   it('concurrent supersede of the same head loses with 409', async () => {

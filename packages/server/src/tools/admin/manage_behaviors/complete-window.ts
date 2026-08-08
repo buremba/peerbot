@@ -36,6 +36,7 @@ import { normalizeExtractedData, parseJson, requireWatcherAccess } from './share
 import { getErrorMessage } from '@lobu/core';
 import { classifyRunOutcome } from "../../../runs/run-outcome";
 import { BEHAVIOR_EVAL_RUN_TYPE, BEHAVIOR_RUN_TYPE } from "../../../runs/run-types.js";
+import { behaviorOutputOccurredAt } from '../../../utils/window-utils';
 
 /** Cap on the content ids echoed into `dry_run_preview` — the preview exists to
  *  be read, and an unbounded id list on a wide window is neither useful nor
@@ -333,6 +334,14 @@ export async function handleCompleteWindow(
   const resolvedVersionId =
     watcherRows[0].version_id != null ? Number(watcherRows[0].version_id) : null;
   const outputs = parseJson(watcherRows[0].outputs) as Outputs | null;
+
+  // When everything this completion writes happened — see
+  // `behaviorOutputOccurredAt` for why `window_end` alone hid the row.
+  //
+  // Clamping does NOT keep the output out of its own window; the future stamp
+  // was silently buying that. That job moves to the self-exclusion in
+  // `execute-data-sources.ts`. The two changes are a pair, neither safe alone.
+  const producedAt = behaviorOutputOccurredAt(window_end);
 
   // The org + bound parent entity the promoted child entities hang under. The
   // watcher's first bound entity is the parent; unbound watchers promote at the
@@ -643,7 +652,9 @@ export async function handleCompleteWindow(
               root_event_id: existingHead.rootEventId,
             },
             runId: watcherRunId,
-            occurredAt: window_end,
+            behaviorId: Number(watcherId),
+            behaviorVersionId: resolvedVersionId,
+            occurredAt: producedAt,
             createdBy: watcherCreatedBy,
             clientId: canvasClientId,
             supersedesEventId: existingHead.id,
@@ -683,7 +694,9 @@ export async function handleCompleteWindow(
             semanticType: 'canvas_state',
             metadata: canvasPeriodMeta,
             runId: watcherRunId,
-            occurredAt: window_end,
+            behaviorId: Number(watcherId),
+            behaviorVersionId: resolvedVersionId,
+            occurredAt: producedAt,
             createdBy: watcherCreatedBy,
             clientId: canvasClientId,
           },
@@ -768,13 +781,14 @@ export async function handleCompleteWindow(
           outputName,
           output,
           watcherId: Number(watcherId),
+          versionId: resolvedVersionId,
           organizationId: watcherOrgId,
           windowId,
           canvasRevisionId,
           runId: watcherRunId,
           boundEntityIds,
           validContentIds,
-          occurredAt: window_end,
+          occurredAt: producedAt,
           createdBy: watcherCreatedBy,
         });
       }
@@ -803,6 +817,8 @@ export async function handleCompleteWindow(
                 content: `This run created ${createdCount} and updated ${updatedCount} entities.`,
                 semanticType: 'change_set',
                 runId: watcherRunId,
+                behaviorId: Number(watcherId),
+                behaviorVersionId: resolvedVersionId,
                 metadata: {
                   _lobu_idempotency_key: changeSetIdempotencyKey,
                   kind: 'watcher_change_set',

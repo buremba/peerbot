@@ -77,6 +77,16 @@ interface InsertEventParams {
   feedKey?: string | null;
   feedId?: number | null;
   runId?: number | null;
+  /**
+   * The Behavior that PRODUCED this row, and the version of it that ran.
+   * Produced, never analyzed — a Behavior reading an event does not stamp it.
+   *
+   * Set it on every path that writes on a Behavior's behalf. Leaving it unset
+   * makes the row invisible to `produced_by_behavior_id` and, worse, readable
+   * by the Behavior's own next window: self-exclusion keys on this column.
+   */
+  behaviorId?: number | null;
+  behaviorVersionId?: number | null;
   parentOriginId?: string | null;
   score?: number | null;
   embedding?: number[] | null;
@@ -372,6 +382,7 @@ export async function insertEvent(
       payload_type, payload_text, payload_data, payload_template, attachments, metadata,
       score, author_name, source_url, occurred_at, origin_parent_id, origin_type,
       connector_key, connection_id, feed_key, feed_id, run_id,
+      behavior_id, behavior_version_id,
       semantic_type, client_id, created_by,
       interaction_type, interaction_status, interaction_input_schema, interaction_input,
       interaction_output, interaction_error, supersedes_event_id,
@@ -399,6 +410,8 @@ export async function insertEvent(
       ${params.feedKey ?? null},
       ${params.feedId ?? null},
       ${params.runId ?? null},
+      ${params.behaviorId ?? null},
+      ${params.behaviorVersionId ?? null},
       ${params.semanticType},
       ${clientId},
       ${params.createdBy ?? null},

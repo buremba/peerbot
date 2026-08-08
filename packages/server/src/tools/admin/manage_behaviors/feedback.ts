@@ -9,6 +9,7 @@ import { ensureCanvasEntity, findCanvasHead } from '../../../utils/canvas-events
 import { ToolUserError } from '../../../utils/errors';
 import { insertEvent } from '../../../utils/insert-event';
 import { isUniqueViolation } from '../../../utils/pg-errors';
+import { behaviorOutputOccurredAt } from '../../../utils/window-utils';
 import logger from '../../../utils/logger';
 import type { ToolContext } from '../../registry';
 import type { ManageBehaviorsArgs, ManageBehaviorsResult } from '../manage_behaviors';
@@ -315,7 +316,7 @@ export async function handleSubmitFeedback(
                 root_event_id: head.rootEventId,
                 correction: true,
               },
-              occurredAt: windowEnd,
+              occurredAt: behaviorOutputOccurredAt(windowEnd),
               createdBy: ctx.userId,
               supersedesEventId: head.id,
             },

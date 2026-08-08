@@ -405,7 +405,14 @@ export const QUERYABLE_SCHEMA = {
           'interaction_error',
           'supersedes_event_id',
           'identity_ns',
-          'identity_key'
+          'identity_key',
+          // Readable for the same reason `run_id` is: provenance a source query
+          // or reaction script can legitimately branch on ("skip rows some
+          // Behavior produced", "show me what v6 wrote"). Neither is sensitive,
+          // and a Behavior's own self-exclusion is enforced server-side by the
+          // window predicate rather than by hiding the column.
+          'behavior_id',
+          'behavior_version_id'
         ),
       ],
     },

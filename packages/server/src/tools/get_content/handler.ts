@@ -484,6 +484,9 @@ async function getContentImpl(
         ...(args.exclude_behavior_id !== undefined && {
           exclude_watcher_id: args.exclude_behavior_id,
         }),
+        ...(args.produced_by_behavior_id !== undefined && {
+          produced_by_behavior_id: args.produced_by_behavior_id,
+        }),
         ...(classificationFilters?.length && { classification_filters: classificationFilters }),
         ...(args.classification_source && { classification_source: args.classification_source }),
         ...(args.semantic_type && { semantic_type: args.semantic_type }),
@@ -519,6 +522,7 @@ async function getContentImpl(
         window_id: args.window_id,
         analyzed_by_watcher_id: args.analyzed_by_behavior_id,
         exclude_watcher_id: args.exclude_behavior_id,
+        produced_by_behavior_id: args.produced_by_behavior_id,
         platform: effectivePlatform,
         since: args.since,
         until: args.until,

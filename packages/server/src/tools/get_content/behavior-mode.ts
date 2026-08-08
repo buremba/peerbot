@@ -52,6 +52,11 @@ interface ContentQueryParams {
    */
   userId: string | null;
   entityIds?: number[];
+  /**
+   * The Behavior these sources belong to. Its own output is excluded from the
+   * result — see `excludeProducedByBehaviorId` in execute-data-sources.
+   */
+  behaviorId: number;
 	throwOnSourceError?: boolean;
   page?: {
     sourceName: string;
@@ -87,6 +92,7 @@ async function queryContentData(
     entityIds: params.entityIds,
     windowStart: params.window_start,
     windowEnd: params.window_end,
+    excludeProducedByBehaviorId: params.behaviorId,
   };
   const normalizedSources = await normalizeWatcherSources(
     sql,
@@ -327,6 +333,10 @@ export async function fingerprintWatcherSources(args: {
     // Without that durable principal, private sources look permanently empty.
     userId: row.created_by as string,
     entityIds: parsePgNumberArray(row.entity_ids),
+    // Excluded here too, and not only for symmetry: `skip_if_unchanged`
+    // fingerprints these rows, so a Behavior that saw its own output would
+    // register its own write as a change and re-fire on every tick forever.
+    behaviorId: args.watcherId,
 	throwOnSourceError: true,
   });
   const sourceState = Object.fromEntries(
@@ -501,6 +511,7 @@ export async function handleBehaviorMode(
     organizationId: watcher.organization_id as string,
     userId: visibilityUserId,
     entityIds: watcherEntityIds,
+    behaviorId: Number(watcher.id),
     page: {
       sourceName: 'content',
       limit: contentLimit,

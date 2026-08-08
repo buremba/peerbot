@@ -139,6 +139,7 @@ export interface NotificationsSendInput {
  *
  * `client.knowledge`     — read/write/search knowledge events
  * `client.entities`      — CRUD entities and relationships
+ * `client.connections`   — list/get configured connections (server-computed device liveness)
  * `client.notifications` — push a notification to the org's inbox + bot connections (Slack/Telegram)
  * `client.query`         — raw SQL (results as JSON rows)
  * `client.log`           — structured logging (appears in Behavior run logs)
@@ -176,6 +177,21 @@ export interface ReactionClient {
       offset?: number;
     }): Promise<unknown>;
     search(query: string, options?: { limit?: number }): Promise<unknown>;
+  };
+
+  connections: {
+    /** List configured connections; `device_online` is computed server-side. */
+    list(input?: {
+      connector_key?: string;
+      status?: string;
+      entity_id?: number;
+      created_by?: string;
+      connection_ids?: number[];
+      setup_attempt_id?: string;
+      limit?: number;
+      offset?: number;
+    }): Promise<unknown>;
+    get(connection_id: number): Promise<unknown>;
   };
 
   notifications: {

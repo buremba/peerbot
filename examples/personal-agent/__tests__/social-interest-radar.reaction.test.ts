@@ -83,7 +83,7 @@ function clientWithRows(options: {
     source_url: string;
     metadata: typeof draftMetadata;
   }>;
-  chrome?: Array<{ id: number }>;
+  chrome?: Array<{ id: number; slug?: string; device_online?: boolean }>;
 }) {
   const queries: string[] = [];
   const notifications: Record<string, unknown>[] = [];
@@ -97,8 +97,19 @@ function clientWithRows(options: {
         return options.signals ?? [];
       if (sql.includes("behavior_output' = 'drafts"))
         return options.drafts ?? [];
-      if (sql.includes("connector_key = 'chrome'")) return options.chrome ?? [];
       throw new Error(`Unexpected query: ${sql}`);
+    },
+    connections: {
+      list: async (input?: { offset?: number; limit?: number }) => {
+        const rows = (options.chrome ?? []).map((c) => ({
+          slug: "chrome-macbook",
+          device_online: true,
+          ...c,
+        }));
+        const offset = input?.offset ?? 0;
+        const limit = input?.limit ?? 50;
+        return { connections: rows.slice(offset, offset + limit) };
+      },
     },
     notifications: {
       send: async (input: Record<string, unknown>) => {
@@ -247,6 +258,38 @@ describe("social interest radar reaction", () => {
         }),
       }),
     ]);
+  });
+
+  it("pages past earlier Chrome connections to find the pinned browser", async () => {
+    const ctx = context();
+    const many = Array.from({ length: 510 }, (_, i) => ({
+      id: 1000 + i,
+      slug: `chrome-other-${i}`,
+      device_online: true,
+    }));
+    many[503] = { id: 432, slug: "chrome-macbook", device_online: true };
+    const fixture = clientWithRows({
+      drafts: [
+        {
+          id: 603,
+          payload_text: "Draft",
+          source_url: "https://x.com/ada/status/123",
+          metadata: {
+            ...draftMetadata,
+            platform: "x",
+            source_connection_id: 411,
+          },
+        },
+      ],
+      chrome: many,
+    });
+
+    await runReaction(ctx, fixture.client);
+
+    expect(fixture.operations).toHaveLength(1);
+    expect(fixture.operations[0]?.input).toMatchObject({
+      browser_connection_id: 432,
+    });
   });
 
   it("stages a persisted draft only once when the same reaction retries", async () => {

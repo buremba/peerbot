@@ -633,7 +633,9 @@ export async function fetchClassificationStats(opts: {
   // occurred_at DESC) — the org predicate and the ORDER BY are already there.
   if (args.produced_by_behavior_id !== undefined) {
     conditions.push(`f.behavior_id = $${paramIndex++}`);
-    params.push(args.produced_by_behavior_id);
+    params.push(
+      validateNumericId(args.produced_by_behavior_id, 'produced_by_behavior_id')
+    );
   }
   if (args.agent_id) {
     conditions.push(`f.metadata->>'agent_id' = $${paramIndex++}`);

@@ -210,21 +210,31 @@ export default async (
   // physical browser or signed-in account.
   // The connections SDK computes device online/offline server-side; raw SQL
   // cannot reach the worker liveness table (not in the queryable allowlist).
-  const listed = (await client.connections.list({
-    connector_key: "chrome",
-    status: "active",
-    limit: 20,
-  })) as {
-    connections?: Array<{
-      id?: unknown;
-      slug?: string;
-      device_online?: boolean;
-    }>;
-  };
-  const browser = (listed?.connections ?? []).find(
-    (c) => c.slug === "chrome-macbook" && c.device_online === true
-  );
-  const browserConnectionId = Number(browser?.id);
+  // Page through the list so a large org with many Chrome connections cannot
+  // push the pinned browser past the newest-20 default page.
+  let browserConnectionId = 0;
+  for (let offset = 0; offset < 500; offset += 50) {
+    const page = (await client.connections.list({
+      connector_key: "chrome",
+      status: "active",
+      limit: 50,
+      offset,
+    })) as {
+      connections?: Array<{
+        id?: unknown;
+        slug?: string;
+        device_online?: boolean;
+      }>;
+    };
+    const browser = (page?.connections ?? []).find(
+      (c) => c.slug === "chrome-macbook" && c.device_online === true
+    );
+    if (browser) {
+      browserConnectionId = Number(browser.id);
+      break;
+    }
+    if ((page?.connections?.length ?? 0) < 50) break;
+  }
   if (!Number.isSafeInteger(browserConnectionId) || browserConnectionId <= 0) {
     client.log(
       "Interactive browser 'chrome-macbook' is not online; draft event was saved but no browser was guessed."

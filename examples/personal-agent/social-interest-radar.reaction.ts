@@ -208,21 +208,23 @@ export default async (
   // This is intentionally a stable, human-selected pairing slug. Never pick an
   // arbitrary online Chrome connection: that can stage a draft in the wrong
   // physical browser or signed-in account.
-  const browsers = (await client.query(
-    `SELECT c.id
-     FROM connections c
-     JOIN device_workers d
-       ON d.id = c.device_worker_id
-      AND d.organization_id = c.organization_id
-      AND d.platform = 'chrome-extension'
-      AND d.last_seen_at > now() - interval '20 minutes'
-     WHERE c.connector_key = 'chrome'
-       AND c.slug = 'chrome-macbook'
-       AND c.status = 'active'
-       AND c.deleted_at IS NULL
-     LIMIT 1`
-  )) as Array<{ id: number }>;
-  const browserConnectionId = Number(browsers[0]?.id);
+  // The connections SDK computes device online/offline server-side; raw SQL
+  // cannot reach the worker liveness table (not in the queryable allowlist).
+  const listed = (await client.connections.list({
+    connector_key: "chrome",
+    status: "active",
+    limit: 20,
+  })) as {
+    connections?: Array<{
+      id?: unknown;
+      slug?: string;
+      device_online?: boolean;
+    }>;
+  };
+  const browser = (listed?.connections ?? []).find(
+    (c) => c.slug === "chrome-macbook" && c.device_online === true
+  );
+  const browserConnectionId = Number(browser?.id);
   if (!Number.isSafeInteger(browserConnectionId) || browserConnectionId <= 0) {
     client.log(
       "Interactive browser 'chrome-macbook' is not online; draft event was saved but no browser was guessed."

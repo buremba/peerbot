@@ -83,7 +83,7 @@ function clientWithRows(options: {
     source_url: string;
     metadata: typeof draftMetadata;
   }>;
-  chrome?: Array<{ id: number }>;
+  chrome?: Array<{ id: number; slug?: string; device_online?: boolean }>;
 }) {
   const queries: string[] = [];
   const notifications: Record<string, unknown>[] = [];
@@ -97,8 +97,16 @@ function clientWithRows(options: {
         return options.signals ?? [];
       if (sql.includes("behavior_output' = 'drafts"))
         return options.drafts ?? [];
-      if (sql.includes("connector_key = 'chrome'")) return options.chrome ?? [];
       throw new Error(`Unexpected query: ${sql}`);
+    },
+    connections: {
+      list: async () => ({
+        connections: (options.chrome ?? []).map((c) => ({
+          slug: "chrome-macbook",
+          device_online: true,
+          ...c,
+        })),
+      }),
     },
     notifications: {
       send: async (input: Record<string, unknown>) => {

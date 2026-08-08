@@ -420,6 +420,11 @@ export async function getNormalizedScoreContent(
         f.id,
         f.entity_ids,
         f.connection_id,
+        f.feed_id,
+        f.feed_key,
+        f.behavior_id,
+        fd.display_name as feed_name,
+        COALESCE(wv.name, 'watcher-' || f.behavior_id) as behavior_name,
         f.origin_id,
         f.title,
         f.payload_text,
@@ -447,6 +452,9 @@ export async function getNormalizedScoreContent(
         CASE WHEN f.origin_parent_id IS NULL THEN 0 ELSE 1 END as depth
       FROM current_event_records f
       LEFT JOIN connections s ON f.connection_id = s.id
+      LEFT JOIN feeds fd ON fd.id = f.feed_id
+      LEFT JOIN watchers w ON w.id = f.behavior_id
+      LEFT JOIN watcher_versions wv ON w.current_version_id = wv.id
       ${joinClause}
       WHERE ${whereClause}
     )
@@ -454,6 +462,11 @@ export async function getNormalizedScoreContent(
       sc.id,
       sc.entity_ids,
       sc.connection_id,
+      sc.feed_id,
+      sc.feed_key,
+      sc.behavior_id,
+      sc.feed_name,
+      sc.behavior_name,
       sc.origin_id,
       sc.title,
       sc.payload_text,

@@ -9,10 +9,6 @@ import {
 	watcherSourceKindForRef,
 } from "../../watchers/source-refs";
 
-// `sqlRefPath` is imported, not re-implemented. This file used to carry its own
-// copy of the encoder "mirroring owletto" — a fourth transcription of the same
-// codec, and one that could drift from the thing under test without failing.
-
 describe("watcher source refs", () => {
 	it("parses event-backed refs", () => {
 		expect(parseWatcherSourceRef("@feed:support")).toEqual({
@@ -77,8 +73,8 @@ describe("behaviorSourcesFromPrompt", () => {
 	});
 
 	it("derives an @entity: source from an entity_type token", () => {
-		// The underscore in the kind is the load-bearing part: PROMPT_REF_TOKEN's
-		// kind group must allow it, or this token does not match at all and the
+		// The underscore in the kind is the load-bearing part: REF_TOKEN's kind
+		// group must allow it, or this token does not match at all and the
 		// source silently vanishes instead of erroring.
 		const prompt = "review @[entity_type:company:Companies](/o/company)";
 		expect(behaviorSourcesFromPrompt(prompt)).toEqual([
@@ -125,9 +121,7 @@ describe("behaviorSourcesFromPrompt", () => {
 	});
 
 	it("returns [] for a prompt with no source tokens", () => {
-		expect(behaviorSourcesFromPrompt("just plain instructions")).toEqual(
-			[],
-		);
+		expect(behaviorSourcesFromPrompt("just plain instructions")).toEqual([]);
 	});
 });
 

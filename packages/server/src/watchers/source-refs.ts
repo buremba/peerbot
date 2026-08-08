@@ -161,11 +161,9 @@ export function parseWatcherSourceRef(query: string): WatcherSourceRef | null {
 // derives the watcher's `sources[]` from these tokens, so the UI just sends the
 // raw prompt and there is no client/server gap.
 //
-// The grammar lives in `@lobu/core/refs` and is imported by BOTH sides. It used
-// to be a hand-maintained mirror here "because the server cannot import the
-// owletto submodule" — true, and beside the point: both already depend on core.
-// Re-exported below so this module stays the server's single entry point for
-// watcher source concerns.
+// The grammar itself lives in `@lobu/core/refs`, which both sides import — do
+// not re-derive the token regex here. Re-exported so this module stays the
+// server's single entry point for watcher source concerns.
 
 export {
   behaviorSourcesFromPrompt,

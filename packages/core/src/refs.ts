@@ -20,15 +20,11 @@
  *           ref be re-resolved. For `sql` it is the query payload, not a route.
  * `label` — display name captured at pick time (what the chip shows).
  *
- * THIS FILE IS THE ONLY COPY. It used to exist three times — owletto's
- * `lib/references.ts`, the server's `watchers/source-refs.ts`, and an inline
- * strip-regex in owletto's `lib/behavior-skills.ts` — kept in sync by hand
- * because "the server cannot import the owletto submodule". That reasoning
- * skipped the obvious third option: both already depend on `@lobu/core`, so
- * the grammar belongs here. The duplication was not theoretical — adding the
- * `entity_type` kind meant widening the kind group to allow `_`, and a token
- * that fails to match is dropped SILENTLY (you get `[]`, never an error), so
- * the copy that got missed lost every entity-type chip without complaining.
+ * THIS FILE IS THE ONLY COPY of the grammar. Both consumers — the server
+ * (`watchers/source-refs.ts`) and the SPA (`owletto/src/lib/references.ts`) —
+ * import it; neither may re-derive a token regex locally. A mismatched copy
+ * fails SILENTLY: a token the regex does not match is skipped, so the caller
+ * gets `[]` and never an error.
  */
 
 export type LobuRefKind =
@@ -191,7 +187,7 @@ export const SOURCE_KIND_TO_MODE: Readonly<Record<string, string>> = {
 };
 
 /** Slugify a label into a safe output-field name. */
-export function sourceFieldName(value: string): string {
+function sourceFieldName(value: string): string {
   return (
     value
       .trim()
@@ -342,19 +338,17 @@ export function mergePromptSources(
   fromPrompt: BehaviorSource[]
 ): BehaviorSource[] {
   const merged = [...explicit];
-  const seenQuery = new Set(explicit.map((s) => s.query.trim()));
+  const seenQueries = new Set(explicit.map((s) => s.query.trim()));
   const usedNames = new Set(explicit.map((s) => s.name));
-  for (const src of fromPrompt) {
-    if (seenQuery.has(src.query.trim())) continue;
-    seenQuery.add(src.query.trim());
-    let name = src.name;
-    if (usedNames.has(name)) {
-      let i = 2;
-      while (usedNames.has(`${name}_${i}`)) i += 1;
-      name = `${name}_${i}`;
-    }
-    usedNames.add(name);
-    merged.push({ name, query: src.query });
+  for (const source of fromPrompt) {
+    appendBehaviorSource(
+      merged,
+      seenQueries,
+      usedNames,
+      source.name,
+      source.name,
+      source.query
+    );
   }
   return merged;
 }

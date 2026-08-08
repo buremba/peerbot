@@ -453,13 +453,10 @@ describe("replayEvalCase", () => {
 });
 
 describe("setEvalCaseJudgeModel", () => {
-	test("sets the override, and clearing writes JSON null — not the string \"null\"", async () => {
-		// The clear path must unset the override. A JSON STRING "null" is a real
-		// value here: findCaseForRun reads `metadata->>'judge_model'` and would
-		// hand "null" to resolveCompletionTarget as a model ref.
+	test("sets the override, org-scoped", async () => {
 		const promoted = await promoteEvalCase({
 			sourceRunId,
-			caseKey: "judge-set-clear",
+			caseKey: "judge-set",
 			expectation: "x",
 		});
 		expect(promoted.ok).toBe(true);
@@ -476,17 +473,17 @@ describe("setEvalCaseJudgeModel", () => {
     `) as unknown as Array<{ judge_model: string | null }>;
 		expect(set.judge_model).toBe("anthropic/claude-3-7-sonnet");
 
-		await setEvalCaseJudgeModel(promoted.evalCase.entityId, organizationId, null);
-		const [cleared] = (await sql`
-      SELECT metadata->>'judge_model' AS judge_model,
-             jsonb_typeof(metadata->'judge_model') AS judge_typeof
+		// Refusing another org must not erase the override already set above.
+		await setEvalCaseJudgeModel(
+			promoted.evalCase.entityId,
+			"some-other-org",
+			"anthropic/claude-3-7-sonnet",
+		);
+		const [stillSet] = (await sql`
+      SELECT metadata->>'judge_model' AS judge_model
       FROM entities WHERE id = ${promoted.evalCase.entityId}
-    `) as unknown as Array<{ judge_model: string | null; judge_typeof: string | null }>;
-		expect(cleared.judge_model).toBeNull();
-		// The bug: clearing stored the JSON STRING "null", which findCaseForRun
-		// would hand to resolveCompletionTarget as a model ref. Clearing must
-		// leave either JSON null or no key — never a string.
-		expect(cleared.judge_typeof).not.toBe("string");
+    `) as unknown as Array<{ judge_model: string | null }>;
+		expect(stillSet.judge_model).toBe("anthropic/claude-3-7-sonnet");
 	});
 
 	test("refuses to touch another organization's case", async () => {

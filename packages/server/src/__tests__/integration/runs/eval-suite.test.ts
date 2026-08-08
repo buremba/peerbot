@@ -304,6 +304,55 @@ describe("readEvalResults", () => {
 		);
 	});
 
+	test("groups with an unknown metric set never compare — even to each other", async () => {
+		// Pre-metrics rows (written before the `metrics` field existed) carry no
+		// way to know what their score was a fraction of. Two such groups must
+		// NOT be compared: `null === null` would silently treat unknown as equal
+		// to unknown and read a real-looking delta out of nothing.
+		const promoted = await promoteEvalCase({
+			sourceRunId,
+			caseKey: "unknown-set",
+			expectation: "x",
+		});
+		expect(promoted.ok).toBe(true);
+		if (!promoted.ok) return;
+
+		const [entity] = (await sql`
+      SELECT metadata FROM entities WHERE id = ${promoted.evalCase.entityId}
+    `) as unknown as Array<{ metadata: Record<string, unknown> }>;
+		await sql`
+      UPDATE entities
+      SET metadata = ${sql.json({
+				...entity.metadata,
+				recent_scores: [
+					{ run_id: 9011, score: 0.5, at: "2026-08-01T00:00:00.000Z" },
+					{ run_id: 9012, score: 0.5, at: "2026-08-01T00:00:00.000Z" },
+					{ run_id: 9013, score: 1, at: "2026-07-31T00:00:00.000Z" },
+					{ run_id: 9014, score: 1, at: "2026-07-31T00:00:00.000Z" },
+				],
+			} as never)}
+      WHERE id = ${promoted.evalCase.entityId}
+    `;
+
+		const results = await readEvalResults({
+			organizationId,
+			behaviorId,
+			trials: 2,
+		});
+		const row = results.cases.find(
+			(c) => c.caseId === promoted.evalCase.entityId,
+		);
+		expect(row).toBeDefined();
+		if (!row) return;
+
+		expect(row.latest).toBe(0.5);
+		expect(row.previous).toBe(1);
+		expect(row.delta).toBeNull();
+		expect(results.summary.regressions).not.toContain(
+			promoted.evalCase.entityId,
+		);
+	});
+
 	test("a never-scored case reports null rather than zero", async () => {
 		// A case with no runs yet must not read as "scored 0" — that would drag
 		// the Behavior's summary down for work nobody has measured.

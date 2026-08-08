@@ -318,7 +318,7 @@ export async function promoteEvalCase(
 }
 
 /**
- * Set (or clear) a case's judge-model override.
+ * Set a case's judge-model override.
  *
  * Deliberately a `<slug>/<model>` ref resolved by `resolveCompletionTarget`,
  * the same shape a guardrail entry's `model` already uses — the platform
@@ -331,7 +331,7 @@ export async function promoteEvalCase(
 export async function setEvalCaseJudgeModel(
 	entityId: number,
 	organizationId: string,
-	judgeModel: string | null,
+	judgeModel: string,
 	db?: DbClient,
 ): Promise<void> {
 	const sql = db ?? getDb();
@@ -340,7 +340,7 @@ export async function setEvalCaseJudgeModel(
     SET metadata = jsonb_set(
           coalesce(e.metadata, '{}'::jsonb),
           '{judge_model}',
-          ${sql.json((judgeModel ?? null) as never)}::jsonb
+          ${sql.json(judgeModel as never)}::jsonb
         ),
         updated_at = current_timestamp
     FROM entity_types et

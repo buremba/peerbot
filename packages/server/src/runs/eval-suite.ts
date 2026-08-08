@@ -42,7 +42,7 @@ const DEFAULT_TRIALS = 3;
  */
 const MAX_TRIALS = 10;
 
-export interface EvalSuiteCase {
+interface EvalSuiteCase {
 	caseId: number;
 	name: string;
 	caseKey: string;
@@ -332,13 +332,18 @@ export async function readEvalResults(
 		const previous = groups.previous.length > 0 ? mean(groups.previous) : null;
 		// Only like-for-like groups are compared: a changed metric set (say a lost
 		// judge) makes the two denominators different, and a move between them is
-		// not a signal about the Behavior. delta stays null then, which also keeps
-		// the case out of regressions/improvements and the summary.
+		// not a signal about the Behavior. An UNKNOWN set never compares equal —
+		// to a measured set OR to another unknown — so both must resolve to a
+		// known signature for the comparison to run at all. delta stays null
+		// otherwise, which keeps the case out of regressions/improvements and the
+		// summary.
+		const latestSignature = groupSignature(scores.slice(0, trials));
+		const previousSignature = groupSignature(scores.slice(trials, trials * 2));
 		const comparable =
 			latest != null &&
 			previous != null &&
-			groupSignature(scores.slice(0, trials)) ===
-				groupSignature(scores.slice(trials, trials * 2));
+			latestSignature != null &&
+			latestSignature === previousSignature;
 		const delta = comparable ? latest - previous : null;
 		const spread =
 			groups.latest.length > 1

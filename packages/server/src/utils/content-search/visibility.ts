@@ -11,27 +11,21 @@ import { useLinkedOrgScope } from '../linked-org-ids';
 import { validateNumericId } from '../sql-validation';
 
 /**
- * Build NOT EXISTS clause to exclude content already in any window for a given
- * watcher. The watcher id is both validated (integer check) and bound as a query
- * parameter — validation guards against obvious injection attempts and the
- * parameter binding is the real defense.
+ * Exclude content already in any window for a given watcher. The id is bound as
+ * a query parameter; `validateNumericId` is the belt to that suspenders.
  *
- * @param excludeWatcherId - Watcher ID to exclude content for
- * @param baseParamIndex - Next 1-based `$N` index to allocate for bound params
- * @param tableAlias - Alias for the content table (default: 'f')
- * @returns `{ sql, params }` — empty strings/arrays when no filter is applied
+ * Returns empty strings/arrays when no filter is applied.
  */
 export function buildExcludeWatcherClause(
   excludeWatcherId: number | undefined,
-  baseParamIndex: number,
-  tableAlias = 'f'
+  baseParamIndex: number
 ): { sql: string; params: unknown[] } {
   if (excludeWatcherId === undefined) return { sql: '', params: [] };
   const validated = validateNumericId(excludeWatcherId, 'exclude_watcher_id');
   return {
     sql: ` AND NOT EXISTS (
     SELECT 1 FROM watcher_window_events exc_iwe
-    WHERE exc_iwe.event_id = ${tableAlias}.id AND exc_iwe.watcher_id = $${baseParamIndex}::bigint
+    WHERE exc_iwe.event_id = f.id AND exc_iwe.watcher_id = $${baseParamIndex}::bigint
   )`,
     params: [validated],
   };
@@ -40,10 +34,8 @@ export function buildExcludeWatcherClause(
 /**
  * Restrict to events a Behavior PRODUCED (`events.behavior_id`).
  *
- * Shaped like {@link buildExcludeWatcherClause} on purpose: read paths thread
- * their param slots positionally, so a fifth variant is how indices drift. All
- * four `read_knowledge` builders must call it — a filter added to only some is
- * worse than one added to none, since the same scope would then return
+ * All four `read_knowledge` builders must call it: a filter added to only some
+ * is worse than one added to none, since the same scope would then return
  * different rows depending on whether a search term was typed.
  *
  * A column equality, NOT an EXISTS over `watcher_window_events` — that table

@@ -42,29 +42,20 @@ WHERE r.id = e.run_id
 -- self-exclusion, so claiming a human correction would make the Behavior stop
 -- being shown the feedback written to correct it.
 --
--- The approval guard keys on `metadata.resourceKind`, which is the only field
--- that says what an approval is ABOUT. Being an approval is not itself
--- disqualifying: an entity-field proposal is an approval card AND genuinely
--- the Behavior's output (see entity-field-approval.ts, which stamps
--- `behaviorId` for exactly that reason). The builder card is the opposite —
--- it is a request to change the Behavior's own definition.
+-- The approval guard keys on `metadata.resourceKind`, the only field that says
+-- what an approval is ABOUT. Being an approval is not disqualifying: an
+-- entity-field proposal is an approval card AND genuinely the Behavior's
+-- output, and entity-field-approval.ts stamps `behaviorId` for that reason.
+-- A builder card is the opposite — a request to change the Behavior itself.
 --
--- Measured on prod 2026-08-08 across all 212 approval rows:
+-- Measured on prod 2026-08-08: of 212 approval rows, exactly 3 name the
+-- Behavior (tool `manage_watchers`, resourceKind `watcher`); the other 209,
+-- including 12 `entity_field_change` proposals, do not.
 --
---   tool                 resourceKind  rows   about the Behavior?
---   manage_watchers      watcher          3   YES — exclude
---   (none)               (none)          95   no
---   entity_change        (none)          86   no
---   notify               (none)          16   no
---   entity_field_change  (none)          12   no — genuine Behavior output
---
--- Two traps here, both of which pass review while matching nothing:
---   * `tool <> 'manage_behaviors'` — prod stamps the LEGACY name
---     `manage_watchers`, so the guard would never fire.
---   * `resourceKind <> 'behavior'` — `InteractionResourceKind.Behavior` is
---     "behavior" TODAY, but every existing row predates the rename and carries
---     "watcher". Both values are matched below; a backfill runs once, against
---     the history that is actually there.
+-- Two guards that read correct and match nothing: `tool <> 'manage_behaviors'`
+-- (prod stamps the legacy `manage_watchers`) and `resourceKind <> 'behavior'`
+-- (every existing row predates the rename and carries `watcher`). Both
+-- spellings below — a backfill runs once, against the history that is there.
 UPDATE public.events e
 SET behavior_id = w.id
 FROM public.watchers w

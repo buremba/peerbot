@@ -152,6 +152,12 @@
       "bun": "./src/reserved.ts",
       "import": "./dist/reserved.js",
       "require": "./dist/reserved.js"
+    },
+    "./refs": {
+      "types": "./dist/refs.d.ts",
+      "bun": "./src/refs.ts",
+      "import": "./dist/refs.js",
+      "require": "./dist/refs.js"
     }
   },
   "scripts": {

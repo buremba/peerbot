@@ -380,4 +380,67 @@ describe("A Behavior's output is visible when written and still not its own inpu
 			).not.toContain("Someone Else / LinkedIn");
 		}
 	});
+
+	// (6) THE OPPOSITE DIRECTION, ON THE SAME FOUR PATHS.
+	//
+	// `analyzed_by_behavior_id` means "linked into one of this Behavior's
+	// windows" — what it READ, not what it wrote. Two of the four builders
+	// dropped it: the chronological list path applied it only inside its
+	// classification-filter branch, and the search path never applied it. So an
+	// unqualified `?behavior=<id>` drill — which routes to the standard list
+	// branch — returned the whole org stream with a 200. The score and
+	// include-superseded builders already bound it; they are covered here so
+	// the four paths cannot drift apart again.
+	//
+	// The load-bearing assertion is the NEGATIVE one. A dropped filter returns a
+	// superset, and against real data a superset still contains the rows you
+	// expected — which is exactly why this went unnoticed. An id that matches
+	// nothing must return nothing; if it returns rows, the filter is not being
+	// applied at all.
+	it("scopes to what a Behavior analyzed on every read path", async () => {
+		await produceSignal(producerId, "Seth Rosen / X");
+
+		const countFrom = async (
+			behaviorId: number,
+			extra: Record<string, unknown>,
+		) => {
+			const result = await getContent(
+				{ analyzed_by_behavior_id: behaviorId, limit: 20, ...extra },
+				ENV,
+				ctx,
+			);
+			return result.content.length;
+		};
+
+		// Two negatives, because they fail differently. 99999 exists nowhere, so
+		// it catches a filter that was dropped outright. `bystanderId` is a REAL
+		// Behavior in the same org that simply never ran — it catches a filter
+		// that resolves to something permissive (a join that widens, an id that
+		// falls back to "any Behavior") while still looking applied.
+		const NO_SUCH_BEHAVIOR = 99999;
+
+		for (const [pathName, extra] of [
+			["list", {}],
+			// "story", not "Rosen": this filter selects what the Behavior READ, and
+			// the only row in its window is the seeded source event. "Rosen" matches
+			// the row it WROTE, so that intersection is empty for the right reason
+			// and would make this path assert nothing.
+			["search", { query: "story" }],
+			["include_superseded", { include_superseded: true, entity_id: boundEntityId }],
+			["score", { sort_by: "score", entity_id: boundEntityId }],
+		] as const) {
+			expect(
+				await countFrom(NO_SUCH_BEHAVIOR, extra),
+				`${pathName} path ignored analyzed_by_behavior_id and returned unfiltered rows`,
+			).toBe(0);
+			expect(
+				await countFrom(bystanderId, extra),
+				`${pathName} path returned rows for a Behavior that analyzed nothing`,
+			).toBe(0);
+			expect(
+				await countFrom(producerId, extra),
+				`${pathName} path lost the rows the Behavior actually analyzed`,
+			).toBeGreaterThan(0);
+		}
+	});
 });

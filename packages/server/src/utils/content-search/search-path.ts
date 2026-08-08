@@ -32,6 +32,7 @@ import {
 } from './types';
 import { buildEntityTypesFilterClause } from './entity-types-filter';
 import {
+  buildAnalyzedByBehaviorClause,
   buildConnectionVisibilityClause,
   buildExcludeWatcherClause,
   buildOrgScopeWhere,
@@ -128,11 +129,16 @@ export async function searchContentBySingleQuery(
     options.produced_by_behavior_id,
     producedParamIdx
   );
+  const analyzedParamIdx = producedParamIdx + producedClause.params.length;
+  const analyzedClause = buildAnalyzedByBehaviorClause(
+    options.analyzed_by_watcher_id,
+    analyzedParamIdx
+  );
   // Connection-visibility predicate. Same helper used by every other
   // get_content branch, so authed/unauthed/private/system-event semantics
   // are guaranteed identical across the search/text-query path and the
   // chronological list path.
-  const visibilityParamIdx = producedParamIdx + producedClause.params.length;
+  const visibilityParamIdx = analyzedParamIdx + analyzedClause.params.length;
   const visibilityClause = buildConnectionVisibilityClause({
     organizationId: options.visibility_scope?.organizationId,
     userId: options.visibility_scope?.userId ?? null,
@@ -194,6 +200,7 @@ export async function searchContentBySingleQuery(
           AND ($13::text[] IS NULL OR f.metadata->>'mcp_session_id' = ANY($13::text[]))
           ${excludeClause.sql}
           ${producedClause.sql}
+          ${analyzedClause.sql}
           ${visibilityClause.sql}
           ${orgScope.sql}${entityTypesClause.sql}`;
 
@@ -507,6 +514,7 @@ export async function searchContentBySingleQuery(
     ...orgScope.params,
     ...excludeClause.params,
     ...producedClause.params,
+    ...analyzedClause.params,
     ...visibilityClause.params,
     ...entityTypesClause.params,
     ...searchEntityLinkParams,

@@ -491,7 +491,10 @@ export async function scoreEvalRun(
 		}
 
 		// Materialize at WRITE time so a reader gets it from the `watchers` row it
-		// already selects and never aggregates the events above.
+		// already selects and never aggregates the events above. The guard keeps an
+		// OLD run scored late (another replica, a later queue tick) from overwriting
+		// a newer run's stamp: the queue only orders within a batch, so nothing else
+		// stops out-of-order scoring from regressing the Behavior's latest picture.
 		await tx`
       UPDATE watchers
       SET latest_eval_score = ${qualityScore},
@@ -499,6 +502,7 @@ export async function scoreEvalRun(
           latest_eval_run_id = ${Number(row.id)}
       WHERE id = ${behaviorId}
         AND organization_id = ${organizationId}
+        AND (latest_eval_run_id IS NULL OR latest_eval_run_id <= ${Number(row.id)})
     `;
 
 		if (evalCase) {
@@ -506,6 +510,7 @@ export async function scoreEvalRun(
 				run_id: Number(row.id),
 				score: qualityScore,
 				at: new Date().toISOString(),
+				metrics: verdicts.map((v) => v.metric),
 			});
 		}
 	});
@@ -546,12 +551,20 @@ export async function scoreEvalRun(
  * therefore every regression verdict — permanently null at the top of the
  * allowed trial range.
  */
-export const CASE_SCORE_WINDOW = 20;
+const CASE_SCORE_WINDOW = 20;
 
 export interface CaseScoreEntry {
 	run_id: number;
 	score: number;
 	at: string;
+	/**
+	 * Metrics that made up `score`. `readEvalResults` compares only entries whose
+	 * groups carry the SAME metric set — losing the judge (provider outage)
+	 * changes the denominator, and a [pass,fail,judge-pass]=0.667 dropping to
+	 * [pass,fail]=0.5 must not read as a regression. Absent on pre-metrics rows;
+	 * an unknown set never compares equal to a measured one.
+	 */
+	metrics?: string[];
 }
 
 /**

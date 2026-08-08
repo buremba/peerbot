@@ -231,6 +231,79 @@ describe("readEvalResults", () => {
 		);
 	});
 
+	test("a changed metric set between suites is not read as a regression", async () => {
+		// A quality score is a pass fraction over the verdicts that happened to
+		// run. If the judge is lost between suites, the same behavior scores
+		// [pass,fail,judge-pass]=0.667 then [pass,fail]=0.5 — a denominator
+		// change that must NOT read as a regression.
+		const promoted = await promoteEvalCase({
+			sourceRunId,
+			caseKey: "metadrift",
+			expectation: "x",
+		});
+		expect(promoted.ok).toBe(true);
+		if (!promoted.ok) return;
+
+		const [entity] = (await sql`
+      SELECT metadata FROM entities WHERE id = ${promoted.evalCase.entityId}
+    `) as unknown as Array<{ metadata: Record<string, unknown> }>;
+		// Newest-first, matching production: two recent trials scored WITH the
+		// judge metric, two older ones scored without it.
+		await sql`
+      UPDATE entities
+      SET metadata = ${sql.json({
+				...entity.metadata,
+				recent_scores: [
+					{
+						run_id: 9003,
+						score: 0.5,
+						at: "2026-08-01T00:00:00.000Z",
+						metrics: ["completed_window", "output_present", "judge_rubric"],
+					},
+					{
+						run_id: 9004,
+						score: 0.5,
+						at: "2026-08-01T00:00:00.000Z",
+						metrics: ["completed_window", "output_present", "judge_rubric"],
+					},
+					{
+						run_id: 9001,
+						score: 1,
+						at: "2026-07-31T00:00:00.000Z",
+						metrics: ["completed_window", "output_present"],
+					},
+					{
+						run_id: 9002,
+						score: 1,
+						at: "2026-07-31T00:00:00.000Z",
+						metrics: ["completed_window", "output_present"],
+					},
+				],
+			} as never)}
+      WHERE id = ${promoted.evalCase.entityId}
+    `;
+
+		const results = await readEvalResults({
+			organizationId,
+			behaviorId,
+			trials: 2,
+		});
+		const row = results.cases.find(
+			(c) => c.caseId === promoted.evalCase.entityId,
+		);
+		expect(row).toBeDefined();
+		if (!row) return;
+
+		// The numbers are real: 0.5 against 1.0. But the denominators differ, so
+		// this is not a signal about the Behavior.
+		expect(row.latest).toBe(0.5);
+		expect(row.previous).toBe(1);
+		expect(row.delta).toBeNull();
+		expect(results.summary.regressions).not.toContain(
+			promoted.evalCase.entityId,
+		);
+	});
+
 	test("a never-scored case reports null rather than zero", async () => {
 		// A case with no runs yet must not read as "scored 0" — that would drag
 		// the Behavior's summary down for work nobody has measured.

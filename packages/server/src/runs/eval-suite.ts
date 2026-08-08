@@ -31,7 +31,7 @@ import type { CaseScoreEntry } from "./eval-scores.js";
  * provider spend, so the default is the smallest number that can show a spread
  * at all; a caller who wants tighter bounds asks for more.
  */
-export const DEFAULT_TRIALS = 3;
+const DEFAULT_TRIALS = 3;
 
 /**
  * Ceiling per request, so one call cannot queue an unbounded replay burst.
@@ -40,7 +40,7 @@ export const DEFAULT_TRIALS = 3;
  * compare the latest `trials` scores against the previous `trials`, so raising
  * this past half the window would leave the baseline group unreadable.
  */
-export const MAX_TRIALS = 10;
+const MAX_TRIALS = 10;
 
 export interface EvalSuiteCase {
 	caseId: number;
@@ -66,7 +66,7 @@ export interface RunEvalSuiteResult {
  * is one a human decided no longer describes desired behaviour, and silently
  * continuing to run it would make the suite report failures nobody wants fixed.
  */
-export async function listActiveCases(
+async function listActiveCases(
 	organizationId: string,
 	behaviorId: number,
 	caseIds?: number[],
@@ -267,6 +267,27 @@ function splitTrialGroups(
 }
 
 /**
+ * The metric set a group was scored against, canonicalized.
+ *
+ * A quality score is a pass fraction over the verdicts that HAPPENED to run, so
+ * two scores are only comparable when their denominators match. If the judge is
+ * lost between suites, a [pass,fail,judge-pass]=0.667 becomes [pass,fail]=0.5
+ * and reads as a regression that never happened. Returns null when the group is
+ * empty or any entry predates the `metrics` field — an unknown set never
+ * compares equal to a measured one, and never to another unknown.
+ */
+function groupSignature(scores: CaseScoreEntry[]): string | null {
+	const names = new Set<string>();
+	for (const entry of scores) {
+		if (!Array.isArray(entry.metrics) || entry.metrics.length === 0) {
+			return null;
+		}
+		for (const metric of entry.metrics) names.add(metric);
+	}
+	return names.size > 0 ? [...names].sort().join(",") : null;
+}
+
+/**
  * Read a Behavior's suite results: per case, latest vs previous, plus a summary.
  *
  * Pure entity reads — no `events`, no aggregation over run history.
@@ -309,7 +330,16 @@ export async function readEvalResults(
 		const groups = splitTrialGroups(scores, trials);
 		const latest = groups.latest.length > 0 ? mean(groups.latest) : null;
 		const previous = groups.previous.length > 0 ? mean(groups.previous) : null;
-		const delta = latest != null && previous != null ? latest - previous : null;
+		// Only like-for-like groups are compared: a changed metric set (say a lost
+		// judge) makes the two denominators different, and a move between them is
+		// not a signal about the Behavior. delta stays null then, which also keeps
+		// the case out of regressions/improvements and the summary.
+		const comparable =
+			latest != null &&
+			previous != null &&
+			groupSignature(scores.slice(0, trials)) ===
+				groupSignature(scores.slice(trials, trials * 2));
+		const delta = comparable ? latest - previous : null;
 		const spread =
 			groups.latest.length > 1
 				? Math.max(...groups.latest) - Math.min(...groups.latest)
@@ -338,22 +368,26 @@ export async function readEvalResults(
 		});
 	}
 
-	const scoredLatest = cases
-		.map((c) => c.latest)
-		.filter((v): v is number => v != null);
-	const scoredPrevious = cases
-		.map((c) => c.previous)
-		.filter((v): v is number => v != null);
-	const summaryLatest = scoredLatest.length > 0 ? mean(scoredLatest) : null;
+	// The summary aggregates only cases whose latest-vs-previous is like-for-like
+	// (delta != null). A case with a single suite run so far — or one whose groups
+	// disagree on metrics — is real data but no comparison, and must not be mixed
+	// into a mean it would skew.
+	const compared = cases.filter((c) => c.delta != null);
+	const summaryLatest =
+		compared.length > 0
+			? mean(compared.map((c) => c.latest as number))
+			: null;
 	const summaryPrevious =
-		scoredPrevious.length > 0 ? mean(scoredPrevious) : null;
+		compared.length > 0
+			? mean(compared.map((c) => c.previous as number))
+			: null;
 
 	return {
 		behaviorId: params.behaviorId,
 		cases,
 		summary: {
 			cases: cases.length,
-			scored: scoredLatest.length,
+			scored: compared.length,
 			latest: summaryLatest,
 			previous: summaryPrevious,
 			delta:

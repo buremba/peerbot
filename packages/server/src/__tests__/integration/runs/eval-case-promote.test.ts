@@ -18,6 +18,7 @@ import {
 	EVAL_CASE_NAMESPACE,
 	promoteEvalCase,
 	replayEvalCase,
+	setEvalCaseJudgeModel,
 } from "../../../runs/eval-cases";
 import { EVAL_CASE_ENTITY_TYPE_SLUG } from "../../../tools/constants";
 import { BEHAVIOR_EVAL_RUN_TYPE } from "../../../runs/run-types";
@@ -350,6 +351,38 @@ describe("promoteEvalCase", () => {
 		if (result.ok) return;
 		expect(result.reason).toBe("not_found");
 	});
+
+	test("writes NOTHING when the run belongs to another org", async () => {
+		// Promote resolves the org from the RUN, so a caller who knows a run id
+		// would otherwise create an $eval_case entity — and the $eval_case entity
+		// TYPE — inside a tenant they have no access to. Checking after the write
+		// does not help, so the assertion is that no row exists at all.
+		const result = await promoteEvalCase({
+			sourceRunId,
+			caseKey: "cross-org",
+			organizationId: "some-other-org",
+		});
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		// Indistinguishable from a missing run: a cross-tenant caller must not
+		// learn that the id exists.
+		expect(result.reason).toBe("not_found");
+
+		const [claims] = (await sql`
+      SELECT count(*)::int AS n
+      FROM entity_identities
+      WHERE namespace = ${EVAL_CASE_NAMESPACE}
+        AND identifier = ${`${sourceRunId}:cross-org`}
+    `) as unknown as Array<{ n: number }>;
+		expect(claims.n).toBe(0);
+
+		const [entities] = (await sql`
+      SELECT count(*)::int AS n
+      FROM entities
+      WHERE organization_id = 'some-other-org'
+    `) as unknown as Array<{ n: number }>;
+		expect(entities.n).toBe(0);
+	});
 });
 
 describe("replayEvalCase", () => {
@@ -416,5 +449,61 @@ describe("replayEvalCase", () => {
 
 		const run = await replayEvalCase(Number(impostor.id));
 		expect(run).toBeNull();
+	});
+});
+
+describe("setEvalCaseJudgeModel", () => {
+	test("sets the override, org-scoped", async () => {
+		const promoted = await promoteEvalCase({
+			sourceRunId,
+			caseKey: "judge-set",
+			expectation: "x",
+		});
+		expect(promoted.ok).toBe(true);
+		if (!promoted.ok) return;
+
+		await setEvalCaseJudgeModel(
+			promoted.evalCase.entityId,
+			organizationId,
+			"anthropic/claude-3-7-sonnet",
+		);
+		const [set] = (await sql`
+      SELECT metadata->>'judge_model' AS judge_model
+      FROM entities WHERE id = ${promoted.evalCase.entityId}
+    `) as unknown as Array<{ judge_model: string | null }>;
+		expect(set.judge_model).toBe("anthropic/claude-3-7-sonnet");
+
+		// Refusing another org must not erase the override already set above.
+		await setEvalCaseJudgeModel(
+			promoted.evalCase.entityId,
+			"some-other-org",
+			"anthropic/claude-3-7-sonnet",
+		);
+		const [stillSet] = (await sql`
+      SELECT metadata->>'judge_model' AS judge_model
+      FROM entities WHERE id = ${promoted.evalCase.entityId}
+    `) as unknown as Array<{ judge_model: string | null }>;
+		expect(stillSet.judge_model).toBe("anthropic/claude-3-7-sonnet");
+	});
+
+	test("refuses to touch another organization's case", async () => {
+		const promoted = await promoteEvalCase({
+			sourceRunId,
+			caseKey: "judge-other-org",
+			expectation: "x",
+		});
+		expect(promoted.ok).toBe(true);
+		if (!promoted.ok) return;
+
+		await setEvalCaseJudgeModel(
+			promoted.evalCase.entityId,
+			"some-other-org",
+			"anthropic/claude-3-7-sonnet",
+		);
+		const [row] = (await sql`
+      SELECT metadata->>'judge_model' AS judge_model
+      FROM entities WHERE id = ${promoted.evalCase.entityId}
+    `) as unknown as Array<{ judge_model: string | null }>;
+		expect(row.judge_model).toBeNull();
 	});
 });

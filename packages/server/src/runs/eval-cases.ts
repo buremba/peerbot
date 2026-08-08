@@ -35,9 +35,60 @@ import {
 	loadReplayableSource,
 	type ReplaySourceRejection,
 } from "./eval-runs.js";
+import { BEHAVIOR_EVAL_RUN_TYPE } from "./run-types.js";
 
 /** Namespace for the (source run, case key) identity claim in `entity_identities`. */
 export const EVAL_CASE_NAMESPACE = "eval_case";
+
+/**
+ * The ONE definition of how a trial number rides on a case key, minted and
+ * parsed by the two functions below.
+ *
+ * `createEvalRun` dedups on `(sourceRunId, caseKey)`, which is exactly right for
+ * a single replay and exactly wrong for N trials: running the same case five
+ * times would collapse into one run and report a single measurement as if it
+ * were five. Trials therefore carry a distinct key.
+ *
+ * Trial 0 keeps the bare key so a plain `replayEvalCase` and trial 0 of a suite
+ * run are the same work item rather than two — and so every case promoted
+ * before trials existed keeps resolving.
+ *
+ * Never re-implement this split anywhere else. `findCaseForRun` recovers the
+ * case by calling `evalCaseIdentifierFromRunKey`, and a second copy of the rule
+ * that drifted would silently strand every score unanchored.
+ */
+export function trialCaseKey(caseKey: string, trial: number): string {
+	return trial === 0 ? caseKey : `${caseKey}#t${trial}`;
+}
+
+/**
+ * The exact suffix `trialCaseKey` mints, anchored to the end.
+ *
+ * Anchored and shape-checked rather than "everything after the last `#`":
+ * `caseKey` is caller-supplied free text, so a case promoted as `weekly#draft`
+ * would otherwise have its own key truncated to `weekly` and every one of its
+ * scores would resolve to a case that does not exist — silently, with an empty
+ * suite and no error anywhere.
+ */
+const TRIAL_SUFFIX_RE = /#t\d+$/;
+
+/**
+ * Recover the `entity_identities` identifier for the case a run belongs to.
+ *
+ * `createEvalRun` stamps `idempotency_key = 'behavior_eval:<sourceRunId>:<caseKey>'`
+ * and `promoteEvalCase` claims identifier `'<sourceRunId>:<caseKey>'`. The
+ * suffix of the one IS the other, which is why neither needed a join column.
+ * Trials append `#t<n>`, stripped here so every trial resolves to its case.
+ */
+export function evalCaseIdentifierFromRunKey(
+	idempotencyKey: string | null,
+): string | null {
+	const prefix = `${BEHAVIOR_EVAL_RUN_TYPE}:`;
+	if (!idempotencyKey?.startsWith(prefix)) return null;
+	const identifier = idempotencyKey.slice(prefix.length);
+	if (!identifier) return null;
+	return identifier.replace(TRIAL_SUFFIX_RE, "");
+}
 
 /**
  * Declared shape of `$eval_case` metadata.
@@ -45,7 +96,13 @@ export const EVAL_CASE_NAMESPACE = "eval_case";
  * `readOnly` on the pointer fields is a HINT to whatever renders the entity —
  * nothing server-side enforces it, and no write path here consults it. It says
  * what editing them would mean: repointing a case at a different question while
- * keeping its comments and history. Promote a new case instead.
+ * keeping its comments and history. Promote a new case instead. `recent_scores`
+ * carries the same hint for a different reason: the scorer owns it, and a hand
+ * edit would be overwritten by the next run.
+ *
+ * Every key any write path sets is declared here, `judge_model` and
+ * `recent_scores` included — an undeclared key is one a generic entity editor
+ * would have no reason to preserve.
  */
 const EVAL_CASE_METADATA_SCHEMA = {
 	type: "object",
@@ -76,6 +133,17 @@ const EVAL_CASE_METADATA_SCHEMA = {
 			type: "string",
 			description: "Status",
 			"x-table-column": true,
+		},
+		judge_model: {
+			type: "string",
+			description:
+				"Model that grades this case, as '<provider-slug>/<model>'. Name one DIFFERENT from the model under eval. Empty = the org default.",
+		},
+		recent_scores: {
+			type: "array",
+			description:
+				"Rolling window of this case's recent run scores, newest first. Written by the scorer.",
+			readOnly: true,
 		},
 	},
 } as const;
@@ -116,6 +184,14 @@ export async function promoteEvalCase(
 		expectation?: string | null;
 		/** Who is promoting. Falls back to an org owner/admin when absent. */
 		createdBy?: string | null;
+		/**
+		 * Org the caller is authenticated for. Required by every request-path
+		 * caller: the org is resolved from the RUN, so without this a caller who
+		 * knows (or guesses) a run id creates an `$eval_case` entity — and an
+		 * `$eval_case` entity TYPE — inside another tenant's workspace. Checking
+		 * after the fact does not help; by then the row exists.
+		 */
+		organizationId?: string;
 	},
 	db?: DbClient,
 ): Promise<PromoteEvalCaseResult> {
@@ -125,6 +201,11 @@ export async function promoteEvalCase(
 	const loaded = await loadReplayableSource(params.sourceRunId, sql);
 	if (!loaded.ok) return { ok: false, reason: loaded.reason };
 	const source = loaded.source;
+	// Indistinguishable from "no such run" on purpose — a cross-tenant caller
+	// must not learn that the id exists.
+	if (params.organizationId && params.organizationId !== source.organizationId) {
+		return { ok: false, reason: "not_found" };
+	}
 	const identifier = `${source.sourceRunId}:${caseKey}`;
 
 	// Existing claim → reuse (idempotent fast path, and the common case when a
@@ -234,6 +315,41 @@ export async function promoteEvalCase(
 		},
 		created: placed.created,
 	};
+}
+
+/**
+ * Set a case's judge-model override.
+ *
+ * Deliberately a `<slug>/<model>` ref resolved by `resolveCompletionTarget`,
+ * the same shape a guardrail entry's `model` already uses — the platform
+ * already has this knob, so evals reuse it rather than inventing an env var or
+ * a settings table. Naming a model DIFFERENT from the one under eval is how a
+ * caller avoids a model grading its own output generously.
+ *
+ * Org-scoped: `entities.id` alone would let one tenant repoint another's case.
+ */
+export async function setEvalCaseJudgeModel(
+	entityId: number,
+	organizationId: string,
+	judgeModel: string,
+	db?: DbClient,
+): Promise<void> {
+	const sql = db ?? getDb();
+	await sql`
+    UPDATE entities e
+    SET metadata = jsonb_set(
+          coalesce(e.metadata, '{}'::jsonb),
+          '{judge_model}',
+          ${sql.json(judgeModel as never)}::jsonb
+        ),
+        updated_at = current_timestamp
+    FROM entity_types et
+    WHERE e.id = ${entityId}
+      AND e.organization_id = ${organizationId}
+      AND et.id = e.entity_type_id
+      AND et.slug = ${EVAL_CASE_ENTITY_TYPE_SLUG}
+      AND e.deleted_at IS NULL
+  `;
 }
 
 /**

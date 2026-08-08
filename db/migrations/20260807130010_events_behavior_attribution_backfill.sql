@@ -35,14 +35,27 @@ WHERE r.id = e.run_id
 -- existence check — a dangling or cross-org id matches nothing and is skipped.
 --
 -- `metadata.watcher_id` means "ABOUT Behavior N", not "produced by Behavior N".
--- Three writers stamp it on HUMAN actions and all three are excluded below
--- (`correction` events, canvas corrections, and the archive audit); the
--- behavior-produced writers are automation.ts and complete-window. Getting this
--- wrong is not cosmetic: `behavior_id` drives the window self-exclusion, so
--- claiming a human correction would make the Behavior stop being shown the
--- feedback written to correct it. No row on prod carries either marker today
--- (measured 2026-08-07) — these are here so the first one lands on the right
--- side of the line. The write paths already agree: none passes `behaviorId`.
+-- Several writers stamp it on HUMAN actions and every one is excluded below
+-- (`correction` events, canvas corrections, the archive audit, and approval
+-- cards); the behavior-produced writers are automation.ts and complete-window.
+-- Getting this wrong is not cosmetic: `behavior_id` drives the window
+-- self-exclusion, so claiming a human correction would make the Behavior stop
+-- being shown the feedback written to correct it.
+--
+-- The approval guard keys on `interaction_type`, NOT on `metadata.tool`, and
+-- that distinction is load-bearing. Measured on prod 2026-08-08, the rows this
+-- pass would otherwise wrongly claim are:
+--
+--   tool               semantic_type  interaction_type  rows
+--   manage_watchers    operation      approval             3
+--   entity_field_change operation     approval            12
+--
+-- against 384 genuine output rows (social_signal 196, observation 90,
+-- canvas_state 63, note 29, decision 5, summary 1) that all carry NO
+-- `metadata.tool` at all. Two separate writers, and the first stamps the
+-- LEGACY tool name — so a `tool <> 'manage_behaviors'` guard would have matched
+-- nothing on prod while looking correct in review. `interaction_type` splits
+-- the two sets exactly and survives the next rename.
 UPDATE public.events e
 SET behavior_id = w.id
 FROM public.watchers w
@@ -52,6 +65,9 @@ WHERE e.behavior_id IS NULL
   -- any non-boolean string a writer might leave there.
   AND COALESCE(e.metadata->>'correction', '') NOT IN ('true', 't', '1')
   AND COALESCE(e.metadata->>'action', '') <> 'watcher_archived'
+  -- An approval card is a request made OF a human about the Behavior, never
+  -- something the Behavior produced.
+  AND COALESCE(e.interaction_type, '') <> 'approval'
   AND e.organization_id = w.organization_id
   AND COALESCE(e.metadata->>'behavior_id', e.metadata->>'watcher_id') ~ '^[0-9]{1,9}$'
   AND COALESCE(e.metadata->>'behavior_id', e.metadata->>'watcher_id')::integer = w.id;

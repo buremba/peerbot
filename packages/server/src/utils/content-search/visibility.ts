@@ -51,13 +51,12 @@ export function buildExcludeWatcherClause(
  */
 export function buildProducedByBehaviorClause(
   producedByBehaviorId: number | undefined,
-  baseParamIndex: number,
-  tableAlias = 'f'
+  baseParamIndex: number
 ): { sql: string; params: unknown[] } {
   if (producedByBehaviorId === undefined) return { sql: '', params: [] };
   const validated = validateNumericId(producedByBehaviorId, 'produced_by_behavior_id');
   return {
-    sql: ` AND ${tableAlias}.behavior_id = $${baseParamIndex}::bigint`,
+    sql: ` AND f.behavior_id = $${baseParamIndex}::bigint`,
     params: [validated],
   };
 }

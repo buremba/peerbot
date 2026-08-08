@@ -2,8 +2,8 @@
  * A prompt `@[skill:…]` chip must have a matching entry in `skills[]`.
  *
  * Ref tokens are never stripped — nothing in the instruction path rewrites them
- * (grep `PROMPT_REF_TOKEN`: every consumer only reads the prompt) — so an
- * unpinned chip does not fail loudly, it degrades: the agent reads the literal
+ * (grep `REF_TOKEN`: every consumer only reads the prompt) — so an unpinned
+ * chip does not fail loudly, it degrades: the agent reads the literal
  * `@[skill:deploy-runbook:Deploy runbook](/…)` as if it were guidance, with no
  * `.skills/` file behind it. Silent wrong instructions are worse than a 422.
  *
@@ -15,15 +15,15 @@
 
 import { describe, expect, it } from "bun:test";
 import { assertPromptSkillTokensPinned } from "../../tools/admin/manage_behaviors/shared";
-import { extractSkillNamesFromPromptTokens } from "../../watchers/source-refs";
+import { skillNamesFromPrompt } from "../../watchers/source-refs";
 
 const chip = (name: string, label = name) =>
 	`@[skill:${name}:${label}](/acme/agents/a/skills/${name})`;
 
-describe("extractSkillNamesFromPromptTokens", () => {
+describe("skillNamesFromPrompt", () => {
 	it("reads the id out of a skill chip, not the label", () => {
 		expect(
-			extractSkillNamesFromPromptTokens(
+			skillNamesFromPrompt(
 				`Run ${chip("deploy-runbook", "Deploy runbook")} nightly.`,
 			),
 		).toEqual(["deploy-runbook"]);
@@ -39,22 +39,18 @@ describe("extractSkillNamesFromPromptTokens", () => {
 			"@[entity:7:Spotify](/acme/company/spotify)",
 			"@[metric:asset.spend:Spend](/acme/metrics/asset.spend)",
 		].join(" ");
-		expect(extractSkillNamesFromPromptTokens(prompt)).toEqual([]);
+		expect(skillNamesFromPrompt(prompt)).toEqual([]);
 	});
 
 	it("de-dupes repeats but keeps first-seen order", () => {
 		expect(
-			extractSkillNamesFromPromptTokens(
-				`${chip("b")} then ${chip("a")} then ${chip("b")}`,
-			),
+			skillNamesFromPrompt(`${chip("b")} then ${chip("a")} then ${chip("b")}`),
 		).toEqual(["b", "a"]);
 	});
 
 	it("returns nothing for a prompt with no tokens", () => {
-		expect(extractSkillNamesFromPromptTokens("Summarize yesterday.")).toEqual(
-			[],
-		);
-		expect(extractSkillNamesFromPromptTokens("")).toEqual([]);
+		expect(skillNamesFromPrompt("Summarize yesterday.")).toEqual([]);
+		expect(skillNamesFromPrompt("")).toEqual([]);
 	});
 });
 

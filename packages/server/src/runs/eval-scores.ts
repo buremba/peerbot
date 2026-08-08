@@ -212,7 +212,7 @@ const JUDGE_SYSTEM_PROMPT = [
 ].join("\n");
 
 /** Parse the judge's reply. Returns null on anything that is not a usable verdict. */
-function parseJudgeVerdict(
+export function parseJudgeVerdict(
 	raw: string,
 ): { score: number; passed: boolean; reasoning: string } | null {
 	// Models fence JSON often enough that stripping the fence is worth one line;
@@ -593,10 +593,16 @@ async function pushCaseScore(
 	const existing = Array.isArray(metadata.recent_scores)
 		? (metadata.recent_scores as CaseScoreEntry[])
 		: [];
+	// Newest run first, always: `readEvalResults` groups positionally, so a run
+	// scored late (a retry after newer runs) must not land at position 0 and
+	// corrupt the latest-vs-previous split. Same out-of-order hazard the
+	// watchers stamp guards, deduplicated here against the window cap.
 	const next = [
 		entry,
 		...existing.filter((e) => Number(e?.run_id) !== entry.run_id),
-	].slice(0, CASE_SCORE_WINDOW);
+	]
+		.sort((a, b) => Number(b.run_id) - Number(a.run_id))
+		.slice(0, CASE_SCORE_WINDOW);
 
 	await tx`
     UPDATE entities

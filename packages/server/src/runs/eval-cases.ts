@@ -340,7 +340,7 @@ export async function setEvalCaseJudgeModel(
     SET metadata = jsonb_set(
           coalesce(e.metadata, '{}'::jsonb),
           '{judge_model}',
-          ${judgeModel ? sql.json(judgeModel as never) : "null"}::jsonb
+          ${sql.json((judgeModel ?? null) as never)}::jsonb
         ),
         updated_at = current_timestamp
     FROM entity_types et

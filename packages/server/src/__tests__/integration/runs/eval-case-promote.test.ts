@@ -18,6 +18,7 @@ import {
 	EVAL_CASE_NAMESPACE,
 	promoteEvalCase,
 	replayEvalCase,
+	setEvalCaseJudgeModel,
 } from "../../../runs/eval-cases";
 import { EVAL_CASE_ENTITY_TYPE_SLUG } from "../../../tools/constants";
 import { BEHAVIOR_EVAL_RUN_TYPE } from "../../../runs/run-types";
@@ -448,5 +449,64 @@ describe("replayEvalCase", () => {
 
 		const run = await replayEvalCase(Number(impostor.id));
 		expect(run).toBeNull();
+	});
+});
+
+describe("setEvalCaseJudgeModel", () => {
+	test("sets the override, and clearing writes JSON null — not the string \"null\"", async () => {
+		// The clear path must unset the override. A JSON STRING "null" is a real
+		// value here: findCaseForRun reads `metadata->>'judge_model'` and would
+		// hand "null" to resolveCompletionTarget as a model ref.
+		const promoted = await promoteEvalCase({
+			sourceRunId,
+			caseKey: "judge-set-clear",
+			expectation: "x",
+		});
+		expect(promoted.ok).toBe(true);
+		if (!promoted.ok) return;
+
+		await setEvalCaseJudgeModel(
+			promoted.evalCase.entityId,
+			organizationId,
+			"anthropic/claude-3-7-sonnet",
+		);
+		const [set] = (await sql`
+      SELECT metadata->>'judge_model' AS judge_model
+      FROM entities WHERE id = ${promoted.evalCase.entityId}
+    `) as unknown as Array<{ judge_model: string | null }>;
+		expect(set.judge_model).toBe("anthropic/claude-3-7-sonnet");
+
+		await setEvalCaseJudgeModel(promoted.evalCase.entityId, organizationId, null);
+		const [cleared] = (await sql`
+      SELECT metadata->>'judge_model' AS judge_model,
+             jsonb_typeof(metadata->'judge_model') AS judge_typeof
+      FROM entities WHERE id = ${promoted.evalCase.entityId}
+    `) as unknown as Array<{ judge_model: string | null; judge_typeof: string | null }>;
+		expect(cleared.judge_model).toBeNull();
+		// The bug: clearing stored the JSON STRING "null", which findCaseForRun
+		// would hand to resolveCompletionTarget as a model ref. Clearing must
+		// leave either JSON null or no key — never a string.
+		expect(cleared.judge_typeof).not.toBe("string");
+	});
+
+	test("refuses to touch another organization's case", async () => {
+		const promoted = await promoteEvalCase({
+			sourceRunId,
+			caseKey: "judge-other-org",
+			expectation: "x",
+		});
+		expect(promoted.ok).toBe(true);
+		if (!promoted.ok) return;
+
+		await setEvalCaseJudgeModel(
+			promoted.evalCase.entityId,
+			"some-other-org",
+			"anthropic/claude-3-7-sonnet",
+		);
+		const [row] = (await sql`
+      SELECT metadata->>'judge_model' AS judge_model
+      FROM entities WHERE id = ${promoted.evalCase.entityId}
+    `) as unknown as Array<{ judge_model: string | null }>;
+		expect(row.judge_model).toBeNull();
 	});
 });

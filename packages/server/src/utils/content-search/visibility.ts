@@ -1,7 +1,7 @@
 /**
  * Visibility and org-scope WHERE clause helpers:
  * buildOrgScopeWhere, buildConnectionVisibilityClause, buildExcludeWatcherClause,
- * buildProducedByBehaviorClause.
+ * buildAnalyzedByBehaviorClause, buildProducedByBehaviorClause.
  */
 
 import { compileConnectionFkVisibility } from '../../authz/connection-visibility';
@@ -26,6 +26,34 @@ export function buildExcludeWatcherClause(
     sql: ` AND NOT EXISTS (
     SELECT 1 FROM watcher_window_events exc_iwe
     WHERE exc_iwe.event_id = f.id AND exc_iwe.watcher_id = $${baseParamIndex}::bigint
+  )`,
+    params: [validated],
+  };
+}
+
+/**
+ * Restrict to events a Behavior ANALYZED — the rows that were linked into one
+ * of its windows (`watcher_window_events`). The opposite direction to
+ * {@link buildProducedByBehaviorClause}.
+ *
+ * Shared by the two builders that had each dropped it: the chronological list
+ * path applied it only inside its classification-filter branch, and the search
+ * path never applied it at all. (The score and include-superseded builders
+ * bind their own equivalent EXISTS.) A dropped filter is worse than a rejected
+ * one: the request returns 200 with the org's ENTIRE activity stream, which
+ * looks plausible — an unqualified `?behavior=<id>` drill lands on the
+ * standard list branch, so that drill was unscoped for exactly this reason.
+ */
+export function buildAnalyzedByBehaviorClause(
+  analyzedByWatcherId: number | undefined,
+  baseParamIndex: number
+): { sql: string; params: unknown[] } {
+  if (analyzedByWatcherId === undefined) return { sql: '', params: [] };
+  const validated = validateNumericId(analyzedByWatcherId, 'analyzed_by_watcher_id');
+  return {
+    sql: ` AND EXISTS (
+    SELECT 1 FROM watcher_window_events ana_iwe
+    WHERE ana_iwe.event_id = f.id AND ana_iwe.watcher_id = $${baseParamIndex}::bigint
   )`,
     params: [validated],
   };

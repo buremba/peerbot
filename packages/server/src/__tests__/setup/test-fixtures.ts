@@ -732,6 +732,9 @@ export async function createTestEvent(options: {
   entity_id?: number;
   connection_id?: number;
   feed_id?: number;
+  feed_key?: string;
+  behavior_id?: number;
+  behavior_version_id?: number;
   title?: string;
   content: string;
   occurred_at?: Date;
@@ -763,7 +766,7 @@ export async function createTestEvent(options: {
   let inserted: any;
   [inserted] = await sql`
     INSERT INTO events (
-      entity_ids, connection_id, feed_id, origin_id,
+      entity_ids, connection_id, feed_id, feed_key, behavior_id, behavior_version_id, origin_id,
       title, payload_type, payload_text, occurred_at, semantic_type,
       connector_key, metadata,
       organization_id, created_at
@@ -771,6 +774,9 @@ export async function createTestEvent(options: {
       ${entityIdsLiteral}::bigint[],
       ${options.connection_id ?? null},
       ${options.feed_id ?? null},
+      ${options.feed_key ?? null},
+      ${options.behavior_id ?? null},
+      ${options.behavior_version_id ?? null},
       ${originId},
       ${options.title ?? null},
       'text',

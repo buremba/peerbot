@@ -1078,3 +1078,126 @@ describe('getContent > empty-entity short-circuit (perf regression guard)', () =
     expect(heavyQueries.length).toBeGreaterThan(0);
   });
 });
+
+describe('getContent > source attribution fields across query branches', () => {
+  let org: Awaited<ReturnType<typeof createTestOrganization>>;
+  let user: Awaited<ReturnType<typeof createTestUser>>;
+  let entity: Awaited<ReturnType<typeof createTestEntity>>;
+  let eventId: number;
+  let feedId: number;
+  let connId: number;
+
+  function ctx(userId: string): ToolContext {
+    return {
+      organizationId: org.id,
+      userId,
+      memberRole: 'owner',
+      isAuthenticated: true,
+      tokenType: 'oauth',
+      scopedToOrg: false,
+      allowCrossOrg: true,
+      scopes: ['mcp:read'],
+    };
+  }
+
+  beforeAll(async () => {
+    await initWorkspaceProvider();
+    await cleanupTestDatabase();
+    await seedSystemEntityTypes();
+
+    org = await createTestOrganization({ name: 'Attribution Org' });
+    user = await createTestUser({ email: 'attr@example.com' });
+    await addUserToOrganization(user.id, org.id, 'owner');
+
+    entity = await createTestEntity({
+      name: 'Attribution Entity',
+      organization_id: org.id,
+    });
+
+    await createTestConnectorDefinition({
+      key: 'attr-test-connector',
+      name: 'Attr Test',
+      organization_id: org.id,
+    });
+
+    const conn = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'attr-test-connector',
+      visibility: 'org',
+      created_by: user.id,
+    });
+    connId = conn.id;
+
+    const sql = getTestDb();
+    // Feed row the event is attributed to; display_name feeds the join.
+    const [feed] = await sql`
+      INSERT INTO feeds (organization_id, connection_id, feed_key, status, kind, display_name, created_at)
+      VALUES (${org.id}, ${connId}, 'home_feed', 'active', 'collected', 'Attr Home Feed', NOW())
+      RETURNING id
+    `;
+    feedId = feed.id as number;
+
+    // Behavior (watchers) + the version whose name we attribute to.
+    const watcherId = 900001;
+    await sql`
+      INSERT INTO watchers (
+        id, name, slug, organization_id, entity_ids, schedule, timezone,
+        next_run_at, agent_id, model_config, sources, version, tags, status,
+        created_by, created_at, updated_at, watcher_group_id, triggers
+      ) VALUES (
+        ${watcherId}, 'Attribution Behavior', 'attribution-behavior',
+        ${org.id}, '{}'::bigint[], '0 9 * * *', 'Europe/London', NOW(),
+        'attr-agent', '{}'::jsonb, '[]'::jsonb, 1, '{}'::text[],
+        'active', ${user.id}, NOW(), NOW(), ${watcherId}, '[]'::jsonb
+      )
+    `;
+    const [version] = await sql`
+      INSERT INTO watcher_versions (
+        watcher_id, version, name, created_by, prompt, created_at
+      ) VALUES (
+        ${watcherId}, 1, 'Attribution Behavior', ${user.id}, 'prompt', NOW()
+      )
+      RETURNING id
+    `;
+    const versionId = version.id as number;
+    await sql`
+      UPDATE watchers SET current_version_id = ${versionId} WHERE id = ${watcherId}
+    `;
+
+    const ev = await createTestEvent({
+      entity_id: entity.id,
+      connection_id: connId,
+      feed_id: feedId,
+      feed_key: 'home_feed',
+      behavior_id: watcherId,
+      behavior_version_id: versionId,
+      connector_key: 'attr-test-connector',
+      title: 'Attribution event',
+      content: 'attribution unique marker payload for source row',
+      embedding: Array.from({ length: 768 }, () => Math.random()),
+    });
+    eventId = ev.id;
+  });
+
+  it('carries connection/feed/behavior attribution through every branch', async () => {
+    const branches = [
+      { name: 'list/date', args: { entity_id: entity.id, limit: 100, sort_by: 'date', sort_order: 'desc' } },
+      { name: 'content_ids', args: { content_ids: [eventId], limit: 100 } },
+      { name: 'include_superseded', args: { entity_id: entity.id, include_superseded: true, limit: 100 } },
+      { name: 'score', args: { entity_id: entity.id, sort_by: 'score', limit: 100 } },
+      { name: 'search', args: { entity_id: entity.id, query: 'attribution', limit: 100 } },
+    ];
+
+    for (const branch of branches) {
+      const result = await getContent(branch.args as never, {} as never, ctx(user.id));
+      const item = result.content.find((c) => c.id === eventId);
+      expect(item, `${branch.name} should surface the attributed event`).toBeTruthy();
+      expect(item!.connection_id, `${branch.name}: connection_id`).toBe(connId);
+      expect(item!.feed_id, `${branch.name}: feed_id`).toBe(feedId);
+      expect(item!.feed_key, `${branch.name}: feed_key`).toBe('home_feed');
+      expect(item!.feed_name, `${branch.name}: feed_name`).toBe('Attr Home Feed');
+      expect(item!.behavior_id, `${branch.name}: behavior_id`).toBe(900001);
+      expect(item!.behavior_name, `${branch.name}: behavior_name`).toBe('Attribution Behavior');
+    }
+  });
+});

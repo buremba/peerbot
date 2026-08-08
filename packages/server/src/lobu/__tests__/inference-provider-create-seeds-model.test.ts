@@ -2,13 +2,19 @@
 
 import {
 	afterAll,
+	afterEach,
 	beforeAll,
 	beforeEach,
 	describe,
 	expect,
 	test,
 } from "bun:test";
-import { __resetEncryptionKeyCacheForTests } from "@lobu/core";
+import {
+	__resetEncryptionKeyCacheForTests,
+	type ModuleInterface,
+	moduleRegistry,
+} from "@lobu/core";
+import { ApiKeyProviderModule } from "../../gateway/auth/api-key-provider-module.js";
 import {
 	ensureDbForGatewayTests,
 	resetTestDatabase,
@@ -23,6 +29,15 @@ const ORG = "org-create-seed";
 const USER = "u-create-seed";
 let savedEncryptionKey: string | undefined;
 let savedRegistryPath: string | undefined;
+let savedModules: Map<string, ModuleInterface> | undefined;
+
+function restoreModules(): void {
+	if (!savedModules) return;
+	(
+		moduleRegistry as unknown as { modules: Map<string, ModuleInterface> }
+	).modules = savedModules;
+	savedModules = undefined;
+}
 
 beforeAll(async () => {
 	savedEncryptionKey = process.env.ENCRYPTION_KEY;
@@ -63,6 +78,59 @@ async function seedOrg(): Promise<void> {
   `;
 }
 
+/**
+ * Register the provider modules the route's seeding predicate consults.
+ *
+ * `wouldRoute` asks `buildProviderCatalog()` — with NO configs — because that
+ * is the exact expression `getModelPolicy` evaluates when it decides whether a
+ * row routes. That reads the MODULE REGISTRY, which a booted server populates
+ * and a bare test process does not. Without these registrations the predicate
+ * answers "nothing routes" and every alias assertion below would pass for the
+ * wrong reason.
+ *
+ * `gemini` registers as a real ApiKeyProviderModule (an API key reaches it);
+ * `claude` as a plain OAuth-shaped module, which is what it actually is — it
+ * has an upstream in providers.json that only a signed-in session can use.
+ */
+function registerCatalogModules(): void {
+	// The registry is a process-wide singleton and `bun test` shares one process
+	// across files. Snapshot before registering so afterEach can put it back —
+	// without that, a leaked `gemini` module changes the answer in
+	// worker-session-context-model-fallback.test.ts, which depends on gemini
+	// being ABSENT. (Observed: that suite failed with "Expected byo2, Received
+	// gemini" the moment these registrations leaked.)
+	savedModules = new Map(
+		(moduleRegistry as unknown as { modules: Map<string, ModuleInterface> })
+			.modules,
+	);
+	moduleRegistry.register(
+		new ApiKeyProviderModule({
+			providerId: "gemini",
+			slug: "gemini",
+			sdkCompat: "openai",
+			upstreamBaseUrl:
+				"https://generativelanguage.googleapis.com/v1beta/openai",
+			envVarName: "GEMINI_API_KEY",
+			providerDisplayName: "Gemini",
+			providerIconUrl: "",
+			apiKeyInstructions: "",
+			apiKeyPlaceholder: "",
+			authProfilesManager: { getBestProfile: async () => null } as never,
+		}) as unknown as ModuleInterface,
+	);
+	moduleRegistry.register({
+		name: "claude-provider",
+		isEnabled: () => true,
+		providerId: "claude",
+		providerDisplayName: "Claude",
+		providerIconUrl: "",
+		authType: "oauth",
+		sdkCompat: "anthropic",
+		hasSystemKey: () => false,
+		getSecretEnvVarNames: () => [],
+	} as unknown as ModuleInterface);
+}
+
 async function createProvider(body: Record<string, unknown>): Promise<Response> {
 	const mod = await import("../agent-routes.js");
 	return await mod.agentRoutes.request("/inference-providers", {
@@ -87,6 +155,7 @@ describe("POST /inference-providers seeds a routable text model", () => {
 	beforeEach(async () => {
 		await resetTestDatabase();
 		await seedOrg();
+		registerCatalogModules();
 		authStash.user = {
 			id: USER,
 			name: "Test",
@@ -97,6 +166,8 @@ describe("POST /inference-providers seeds a routable text model", () => {
 		authStash.authSource = "session";
 		authStash.mcpAuthInfo = null;
 	});
+
+	afterEach(() => restoreModules());
 
 	test("a catalog provider created with NO capabilities gets the catalog default model", async () => {
 		const res = await createProvider({
@@ -147,13 +218,13 @@ describe("POST /inference-providers seeds a routable text model", () => {
 		expect(capabilities?.text?.model).toBe("gemini-2.5-pro");
 	});
 
-	test("an ALIAS slug with no base_url is NOT seeded and does NOT become the org default", async () => {
-		// `getModelPolicy` keys its module map by SLUG: "my-gemini" matches no
-		// static module, and with no `text.base_url` there is nothing to
-		// synthesize either — so the row cannot route. Seeding it would be worse
-		// than useless: a text model is the predicate the org-default promotion
-		// uses, so an unroutable row would become the default for every
-		// allow-all agent in the org.
+	test("an ALIAS slug with no base_url IS seeded — its kind's catalog upstream routes it", async () => {
+		// `getModelPolicy` keys its module map by SLUG, so "my-gemini" matches no
+		// static module and synthesis is the row's only route. Synthesis falls
+		// back to the upstream the row's KIND resolves to, so the row does route
+		// and must be seeded like any other: a text model is the predicate the
+		// org-default promotion uses, and an unseeded row would be passed over
+		// even though it works.
 		const res = await createProvider({
 			slug: "my-gemini",
 			kind: "gemini",
@@ -162,6 +233,34 @@ describe("POST /inference-providers seeds a routable text model", () => {
 		expect(res.status).toBe(201);
 
 		const capabilities = (await readCapabilities("my-gemini")) as {
+			text?: { model?: string; base_url?: string };
+		};
+		expect(capabilities?.text?.model).toBe("gemini-2.5-pro");
+		// Seeding must NOT write the catalog URL onto the row — the row stays
+		// "no custom upstream" so resolveUrlInvariant keeps answering
+		// `org-credential` rather than the tenant-URL `org-only` path.
+		expect(capabilities?.text?.base_url).toBeUndefined();
+	});
+
+	test("an OAuth kind is NOT seeded and does NOT become the org default", async () => {
+		// The trap this pins: providers.json gives `claude` BOTH an
+		// `upstreamBaseUrl` and `sdkCompat: "anthropic"`, so a seeding predicate
+		// that trusts providers.json says "this routes". It does not — claude
+		// registers as an OAuth module, not an ApiKeyProviderModule, so
+		// `buildProviderCatalog()` reports baseUrl "" and synthesis refuses it.
+		//
+		// Seeding it anyway would be the worst outcome available: a text model is
+		// what `promoteOldestRunnableProvider` keys on, so the unroutable row
+		// becomes the ORG DEFAULT and breaks every allow-all agent in the org.
+		// The predicate therefore asks the same question routing asks.
+		const res = await createProvider({
+			slug: "my-claude",
+			kind: "claude",
+			apiKey: "sk-ant-test",
+		});
+		expect(res.status).toBe(201);
+
+		const capabilities = (await readCapabilities("my-claude")) as {
 			text?: { model?: string };
 		};
 		expect(capabilities?.text?.model).toBeUndefined();
@@ -170,7 +269,32 @@ describe("POST /inference-providers seeds a routable text model", () => {
 		const sql = getDb();
 		const rows = (await sql`
       SELECT is_default FROM inference_providers
-      WHERE organization_id = ${ORG} AND slug = 'my-gemini' AND deleted_at IS NULL
+      WHERE organization_id = ${ORG} AND slug = 'my-claude' AND deleted_at IS NULL
+    `) as Array<{ is_default: boolean }>;
+		expect(rows[0]?.is_default).toBe(false);
+	});
+
+	test("a kind absent from the catalog is still NOT seeded — nothing to route to", async () => {
+		// The remaining unroutable shape: no static module answers to the slug,
+		// the row names no upstream, and the kind has none to fall back to.
+		// Seeding it would promote an unroutable row to org default.
+		const res = await createProvider({
+			slug: "my-mystery",
+			kind: "some-unlisted-endpoint",
+			apiKey: "sk-mystery",
+		});
+		expect(res.status).toBe(201);
+
+		const capabilities = (await readCapabilities("my-mystery")) as {
+			text?: { model?: string };
+		};
+		expect(capabilities?.text?.model).toBeUndefined();
+
+		const { getDb } = await import("../../db/client.js");
+		const sql = getDb();
+		const rows = (await sql`
+      SELECT is_default FROM inference_providers
+      WHERE organization_id = ${ORG} AND slug = 'my-mystery' AND deleted_at IS NULL
     `) as Array<{ is_default: boolean }>;
 		expect(rows[0]?.is_default).toBe(false);
 	});

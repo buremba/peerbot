@@ -382,9 +382,13 @@ describe("worker model fallback (real DB, both channels)", () => {
         text: { base_url: "https://api.byo2.example.com", model: "byo2-model" },
       },
     });
-    // A SECOND org row whose slug is "gemini" with NO custom text upstream:
-    // synthesizeOrgProviderModule returns null for it, so it contributes no
-    // module — yet it IS the org default, so it supplies the requested ref.
+    // A SECOND org row whose slug is "gemini" with NO custom text upstream.
+    // No gemini module is registered in this process, so its `kind` resolves to
+    // no catalog upstream either and synthesizeOrgProviderModule returns null —
+    // it contributes no module, yet it IS the org default, so it supplies the
+    // requested ref. (With a registered gemini module the row WOULD synthesize
+    // against the catalog URL; that fallback is covered in
+    // provider-catalog-org-inference.test.ts.)
     await createInferenceProvider({
       organizationId: ORG,
       slug: "gemini",

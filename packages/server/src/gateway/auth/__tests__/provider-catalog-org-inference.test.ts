@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { type ModuleInterface, moduleRegistry } from "@lobu/core";
+import {
+  type ModuleInterface,
+  moduleRegistry,
+  type SdkCompat,
+} from "@lobu/core";
 import type { InferenceProviderListItem } from "../../../lobu/stores/provider-secrets.js";
-import type { ApiKeyProviderModule } from "../api-key-provider-module.js";
+import {
+  ApiKeyProviderModule as ApiKeyProviderModuleImpl,
+  type ApiKeyProviderModule,
+} from "../api-key-provider-module.js";
 import { ProviderCatalogService } from "../provider-catalog.js";
 
 /**
@@ -27,6 +34,33 @@ function registerFakeModule(
   } as unknown as ModuleInterface);
 }
 
+/**
+ * Register a REAL ApiKeyProviderModule so buildProviderCatalog() resolves both
+ * the protocol AND the catalog upstream URL for that slug. The plain fake above
+ * is not an ApiKeyProviderModule, so it contributes no baseUrl — which is
+ * exactly what a kind with no catalog upstream looks like.
+ */
+function registerCatalogModule(
+  providerId: string,
+  sdkCompat: SdkCompat,
+  upstreamBaseUrl: string
+): void {
+  moduleRegistry.register(
+    new ApiKeyProviderModuleImpl({
+      providerId,
+      slug: providerId,
+      sdkCompat,
+      upstreamBaseUrl,
+      envVarName: `${providerId.toUpperCase()}_API_KEY`,
+      providerDisplayName: providerId,
+      providerIconUrl: "",
+      apiKeyInstructions: "",
+      apiKeyPlaceholder: "",
+      authProfilesManager: { getBestProfile: async () => null } as never,
+    }) as unknown as ModuleInterface
+  );
+}
+
 function clearRegistry(): void {
   (
     moduleRegistry as unknown as { modules: Map<string, ModuleInterface> }
@@ -40,8 +74,9 @@ function clearRegistry(): void {
  *
  * getInstalledModules resolves the agent's `models` list (ordered explicit
  * `<slug>/<model>` refs) into modules: a slug that isn't a providers.json module
- * but matches a custom-upstream org row is synthesized into an
- * ApiKeyProviderModule. The org KEY is never read here — it is injected at
+ * but matches an org row is synthesized into an ApiKeyProviderModule, routed to
+ * the row's own custom upstream when it has one and otherwise to the upstream
+ * its `kind` resolves to. The org KEY is never read here — it is injected at
  * egress by resolveUrlInvariant; the synthetic module only makes the slug appear
  * in the worker provider config and the proxy slug maps. Registration happens
  * per-pod, hydrated from the row (multi-replica safe: no shared in-memory map
@@ -165,7 +200,131 @@ describe("ProviderCatalogService.getInstalledModules — org inference providers
     expect(mod.getUpstreamConfig()?.apiKeyHeader).toBe("x-api-key");
   });
 
-  test("does NOT synthesize when the org row has no custom text base_url", async () => {
+  test("an ALIAS slug with no custom upstream routes to its kind's catalog URL", async () => {
+    // The reachable gap: an org creates a provider whose slug differs from its
+    // kind (slug "my-gemini", kind "gemini") and stores a key, but sets no
+    // custom `capabilities.text.base_url` — the common case, since the catalog
+    // already knows where gemini lives. `moduleMap.get("my-gemini")` misses (no
+    // providers.json module answers to the alias), so the row's ONLY route was
+    // synthesis — which used to bail without a row base_url. The row persisted,
+    // listed as configured, and silently never routed.
+    //
+    // The kind's own catalog upstream is a safe fallback: it is a trusted
+    // providers.json URL, not a tenant-defined one, so resolveUrlInvariant
+    // answers `org-credential` and sends the row's own key — never the
+    // exfiltration path a tenant URL would open.
+    registerCatalogModule(
+      "gemini",
+      "openai",
+      "https://generativelanguage.googleapis.com/v1beta/openai"
+    );
+    const registered: Array<{ slug: string; url: string }> = [];
+    const catalog = makeCatalog({
+      models: ["my-gemini/gemini-3-pro"],
+      orgRows: [
+        customUpstreamRow("my-gemini", {
+          kind: "gemini",
+          capabilities: { text: { model: "gemini-3-pro" } },
+          hasCustomUpstream: false,
+        }),
+      ],
+      registerUpstream: (u) =>
+        registered.push({ slug: u.slug, url: u.upstreamBaseUrl }),
+    });
+
+    const modules = await catalog.getInstalledModules("agent-1", "org-1");
+    expect(modules).toHaveLength(1);
+    const mod = modules[0] as ApiKeyProviderModule;
+    expect(mod.providerId).toBe("my-gemini");
+    expect(mod.getUpstreamConfig()?.upstreamBaseUrl).toBe(
+      "https://generativelanguage.googleapis.com/v1beta/openai"
+    );
+    // Registered under the ALIAS slug — that is the name the worker's model ref
+    // carries, so that is what the proxy must answer to.
+    expect(registered).toEqual([
+      {
+        slug: "my-gemini",
+        url: "https://generativelanguage.googleapis.com/v1beta/openai",
+      },
+    ]);
+  });
+
+  test("an OAuth kind contributes NO fallback upstream", async () => {
+    // An OAuth provider (chatgpt, claude) registers as a plain module, not an
+    // ApiKeyProviderModule, so buildProviderCatalog() reports baseUrl "" for it
+    // — there is nothing for an API key to reach. Routing must refuse such a
+    // row, because the create route already does ("it signs in instead"), and
+    // the two disagreeing is what promotes an unroutable row to org default.
+    registerFakeModule("chatgpt", "device-code");
+    const catalog = makeCatalog({
+      models: ["my-chatgpt/gpt-5"],
+      orgRows: [
+        customUpstreamRow("my-chatgpt", {
+          kind: "chatgpt",
+          capabilities: { text: { model: "gpt-5" } },
+          hasCustomUpstream: false,
+        }),
+      ],
+      registerUpstream: () => {},
+    });
+
+    expect(await catalog.getInstalledModules("agent-1", "org-1")).toHaveLength(
+      0
+    );
+  });
+
+  test("a kind with a REACHABLE upstream but no known protocol contributes none either", async () => {
+    // Isolates the `sdkCompat` gate specifically. The test above passes on the
+    // empty baseUrl alone, so it would survive deleting that gate — this one
+    // cannot: the module IS an ApiKeyProviderModule with a real upstream, and
+    // only the unknown protocol stops the fallback.
+    //
+    // Why the gate has to exist: `synthesizeOrgProviderModule` DEFAULTS an
+    // unknown protocol to "openai". Falling back for a kind whose wire protocol
+    // we do not actually know would speak OpenAI at an upstream that may not be,
+    // and send the org's key while doing it.
+    registerCatalogModule(
+      "mystery",
+      "not-a-protocol" as never,
+      "https://mystery.example.com/v1"
+    );
+    const catalog = makeCatalog({
+      models: ["my-mystery/some-model"],
+      orgRows: [
+        customUpstreamRow("my-mystery", {
+          kind: "mystery",
+          capabilities: { text: { model: "some-model" } },
+          hasCustomUpstream: false,
+        }),
+      ],
+      registerUpstream: () => {},
+    });
+
+    expect(await catalog.getInstalledModules("agent-1", "org-1")).toHaveLength(
+      0
+    );
+  });
+
+  test("a row's OWN base_url still wins over the kind's catalog URL", async () => {
+    // Guards the fallback direction: adding the catalog default must never
+    // re-point an org that deliberately configured its own upstream.
+    registerCatalogModule("gemini", "openai", "https://catalog.example.com/v1");
+    const catalog = makeCatalog({
+      models: ["my-gemini/gemini-3-pro"],
+      orgRows: [customUpstreamRow("my-gemini", { kind: "gemini" })],
+      registerUpstream: () => {},
+    });
+
+    const modules = await catalog.getInstalledModules("agent-1", "org-1");
+    const mod = modules[0] as ApiKeyProviderModule;
+    expect(mod.getUpstreamConfig()?.upstreamBaseUrl).toBe(
+      "https://my-gemini.example.com/v1"
+    );
+  });
+
+  test("does NOT synthesize when neither the row NOR its kind has an upstream", async () => {
+    // No module registered for kind "openai", so the catalog contributes no
+    // fallback URL either — there is genuinely nowhere to route.
     const registered: string[] = [];
     const catalog = makeCatalog({
       models: ["myzai/glm-4.6"],

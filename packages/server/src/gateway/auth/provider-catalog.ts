@@ -138,7 +138,7 @@ export function buildProviderCatalog(
 }
 
 /**
- * Reads an org's inference-provider rows (slug + custom-upstream capabilities).
+ * Reads an org's inference-provider rows (slug, `kind`, and capabilities).
  * Injected so ProviderCatalogService can synthesize routable modules for
  * org-defined provider slugs without depending on the store directly.
  */
@@ -237,8 +237,9 @@ export class ProviderCatalogService {
     private authProfilesManager: AuthProfilesManager,
     /**
      * Reads the org's inference_providers rows. When present, an installed
-     * provider slug that isn't a providers.json module is synthesized from a
-     * matching custom-upstream row (see getInstalledModules).
+     * provider slug that isn't a providers.json module is synthesized from the
+     * matching row — routed to the row's own upstream when it has one, else to
+     * the one its `kind` resolves to (see getInstalledModules).
      */
     private listOrgInferenceProviders?: OrgInferenceProviderReader,
     /**
@@ -252,17 +253,31 @@ export class ProviderCatalogService {
 
   /**
    * Synthesize a routable provider module for an org-defined inference-provider
-   * slug that has a custom text upstream. Reuses ApiKeyProviderModule — the org
-   * key itself is NOT read here; it is injected at egress by resolveUrlInvariant
-   * (org-only). This module only makes the slug appear in the worker's provider
-   * config + the proxy's slug maps. Returns null when the row has no custom
-   * `capabilities.text.base_url` (nothing to route to).
+   * slug. Reuses ApiKeyProviderModule — the org key itself is NOT read here; it
+   * is injected at egress by resolveUrlInvariant. This module only makes the
+   * slug appear in the worker's provider config + the proxy's slug maps.
+   *
+   * The upstream is the row's own `capabilities.text.base_url` when it has one,
+   * else `catalogBaseUrl` — the URL the row's `kind` already resolves to in the
+   * providers.json catalog. That fallback is what makes an ALIAS row (slug !==
+   * kind, e.g. slug "my-gemini" kind "gemini") routable: no providers.json
+   * module answers to the alias, so synthesis is its only route, and most such
+   * rows carry no base_url because the catalog already knows where the kind
+   * lives. Without it the row persisted and listed as configured but silently
+   * never routed.
+   *
+   * The fallback does not widen the credential surface: a catalog URL is a
+   * trusted providers.json destination, not a tenant-defined one, so
+   * resolveUrlInvariant answers `org-credential` (send the row's own key) and
+   * never the `org-only` tenant-URL path. Returns null only when neither the
+   * row nor its kind names an upstream — genuinely nowhere to route.
    */
   private synthesizeOrgProviderModule(
     row: InferenceProviderListItem,
-    sdkCompat: SdkCompat
+    sdkCompat: SdkCompat,
+    catalogBaseUrl?: string
   ): ApiKeyProviderModule | null {
-    const textUpstream = row.capabilities.text?.base_url;
+    const textUpstream = row.capabilities.text?.base_url || catalogBaseUrl;
     if (!textUpstream) return null;
 
     const module = new ApiKeyProviderModule({
@@ -321,10 +336,11 @@ export class ProviderCatalogService {
    *
    * Providers.json modules resolve directly. Any slug that isn't a
    * providers.json module is resolved (when `organizationId` is provided) from
-   * the org's inference_providers rows: a matching row with a custom text
-   * upstream is synthesized into a routable ApiKeyProviderModule. Slugs with no
-   * matching custom-upstream row (or when no org is given) are dropped, as
-   * before.
+   * the org's inference_providers rows: a matching row is synthesized into a
+   * routable ApiKeyProviderModule, pointed at the row's own custom text
+   * upstream when it has one and otherwise at the upstream its `kind` resolves
+   * to in the catalog. A slug is dropped only when no row matches, when no org
+   * is given, or when neither the row nor its `kind` names an upstream.
    */
   async getModelPolicy(
     agentId: string,
@@ -359,18 +375,31 @@ export class ProviderCatalogService {
     let orgRows: InferenceProviderListItem[] = [];
     let orgRowsBySlug: Map<string, InferenceProviderListItem> | undefined;
     let orgDefaultSlug: string | undefined;
-    // Protocol per catalog slug, so a synthesized org row routes with the wire
-    // protocol its `kind` declares (openai/anthropic/…), not a hardcoded one.
-    let sdkCompatByKind: Map<string, SdkCompat> | undefined;
+    // Protocol AND upstream per catalog slug, so a synthesized org row routes
+    // with the wire protocol its `kind` declares (openai/anthropic/…) and, when
+    // the row names no upstream of its own, to the URL that kind already
+    // resolves to. Both are looked up by the row's `kind`, never its slug.
+    let catalogByKind:
+      | Map<string, { sdkCompat?: SdkCompat; baseUrl?: string }>
+      | undefined;
     if (organizationId && this.listOrgInferenceProviders) {
       orgRows = await this.listOrgInferenceProviders(organizationId);
       orgRowsBySlug = new Map(orgRows.map((r) => [r.slug, r]));
       orgDefaultSlug = orgRows.find((r) => r.isDefault)?.slug;
-      sdkCompatByKind = new Map();
+      catalogByKind = new Map();
       for (const entry of buildProviderCatalog()) {
-        if (isSdkCompat(entry.sdkCompat)) {
-          sdkCompatByKind.set(entry.slug, entry.sdkCompat);
-        }
+        // Only offer a fallback upstream for a kind an API key can actually
+        // reach. A kind with no usable `sdkCompat` (chatgpt) has a real
+        // `baseUrl` that answers to a signed-in session, not a Bearer key.
+        // Carry the protocol either way — the synthesizer needs it — but never
+        // the URL.
+        const sdkCompat = isSdkCompat(entry.sdkCompat)
+          ? entry.sdkCompat
+          : undefined;
+        catalogByKind.set(entry.slug, {
+          sdkCompat,
+          baseUrl: sdkCompat ? entry.baseUrl || undefined : undefined,
+        });
       }
     }
 
@@ -432,11 +461,17 @@ export class ProviderCatalogService {
       }
       const row = orgRowsBySlug?.get(providerId);
       if (row) {
-        // Resolve the row's protocol from its catalog `kind`. Unknown/absent ⇒
-        // default to openai (legacy rows created before kind carried a
-        // protocol, and custom endpoints, are OpenAI-compatible).
-        const sdkCompat = sdkCompatByKind?.get(row.kind) ?? "openai";
-        const synthesized = this.synthesizeOrgProviderModule(row, sdkCompat);
+        // Resolve the row's protocol and fallback upstream from its catalog
+        // `kind`. Unknown/absent protocol ⇒ default to openai (legacy rows
+        // created before kind carried a protocol, and custom endpoints, are
+        // OpenAI-compatible). An unknown kind contributes no baseUrl, so such a
+        // row still routes only if it names its own upstream.
+        const catalogEntry = catalogByKind?.get(row.kind);
+        const synthesized = this.synthesizeOrgProviderModule(
+          row,
+          catalogEntry?.sdkCompat ?? "openai",
+          catalogEntry?.baseUrl
+        );
         if (synthesized) modules.push(synthesized);
       }
     }

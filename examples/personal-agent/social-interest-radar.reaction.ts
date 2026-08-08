@@ -211,9 +211,10 @@ export default async (
   // The connections SDK computes device online/offline server-side; raw SQL
   // cannot reach the worker liveness table (not in the queryable allowlist).
   // Page through the list so a large org with many Chrome connections cannot
-  // push the pinned browser past the newest-20 default page.
+  // push the pinned browser past the newest-50 default page; a short page is
+  // the only terminator, so no arbitrary bound can skip an older browser.
   let browserConnectionId = 0;
-  for (let offset = 0; offset < 500; offset += 50) {
+  for (let offset = 0; ; offset += 50) {
     const page = (await client.connections.list({
       connector_key: "chrome",
       status: "active",

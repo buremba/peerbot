@@ -262,12 +262,12 @@ describe("social interest radar reaction", () => {
 
   it("pages past earlier Chrome connections to find the pinned browser", async () => {
     const ctx = context();
-    const many = Array.from({ length: 55 }, (_, i) => ({
+    const many = Array.from({ length: 510 }, (_, i) => ({
       id: 1000 + i,
       slug: `chrome-other-${i}`,
       device_online: true,
     }));
-    many[53] = { id: 432, slug: "chrome-macbook", device_online: true };
+    many[503] = { id: 432, slug: "chrome-macbook", device_online: true };
     const fixture = clientWithRows({
       drafts: [
         {

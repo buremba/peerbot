@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { buildAppInstallationSetupError } from "../../../../../tools/admin/helpers/connector-setup-errors";
 import { buildSlackSelfInstallDeepLink } from "../../../../../tools/admin/helpers/slack-self-install";
 
@@ -81,5 +81,69 @@ describe("buildAppInstallationSetupError — self_install_url gating", () => {
 			if (previous === undefined) delete process.env.SLACK_CLIENT_ID;
 			else process.env.SLACK_CLIENT_ID = previous;
 		}
+	});
+});
+
+describe("buildAppInstallationSetupError — hosted install guidance", () => {
+	const previousSlackClientId = process.env.SLACK_CLIENT_ID;
+	const hostedMethod = {
+		type: "app_installation" as const,
+		provider: "slack",
+		clientIdKey: "SLACK_CLIENT_ID",
+		installShape: "oauth-code-exchange" as const,
+		permissions: ["chat:write", "mcp:connect"],
+		events: ["app_mention"],
+	};
+	beforeEach(() => {
+		process.env.SLACK_CLIENT_ID = "client-id";
+	});
+	afterEach(() => {
+		if (previousSlackClientId === undefined) delete process.env.SLACK_CLIENT_ID;
+		else process.env.SLACK_CLIENT_ID = previousSlackClientId;
+	});
+
+	test("explains the org picker and Slack admin requirement after setup_url", () => {
+		const res = buildAppInstallationSetupError({
+			connectorKey: "slack",
+			method: hostedMethod,
+			gatewayBaseUrl: "https://gateway.test/lobu",
+			setupUrl: "https://app.lobu.ai/acme/connectors?install=slack",
+		});
+		expect(res.install_url).toBe("https://gateway.test/lobu/slack/install");
+		expect(res.setup_url).toBe(
+			"https://app.lobu.ai/acme/connectors?install=slack",
+		);
+		expect(res.error).toBe(
+			"Connector 'slack' connects by installing its Slack app into your workspace. Open setup_url to start from this Lobu organization's connectors page. After the app is installed, a Slack workspace admin/owner must choose the destination Lobu organization on the confirmation page to finish connecting it.",
+		);
+	});
+
+	test("explains the org picker after a direct install_url", () => {
+		const res = buildAppInstallationSetupError({
+			connectorKey: "slack",
+			method: hostedMethod,
+			gatewayBaseUrl: "https://gateway.test/lobu",
+		});
+		expect(res.install_url).toBe("https://gateway.test/lobu/slack/install");
+		expect(res.setup_url).toBeUndefined();
+		expect(res.error).toBe(
+			"Connector 'slack' connects by installing its Slack app into your workspace. Open install_url to install it. A Slack workspace admin/owner must then choose the destination Lobu organization on the confirmation page to finish connecting it.",
+		);
+	});
+
+	test("keeps other providers on their callback-driven install_url flow", () => {
+		const res = buildAppInstallationSetupError({
+			connectorKey: "github",
+			method: {
+				type: "app_installation",
+				provider: "github",
+				installShape: "github-app",
+			},
+			gatewayBaseUrl: "https://gateway.test/lobu",
+			setupUrl: "https://app.lobu.ai/acme/connectors?install=github",
+		});
+		expect(res.error).toBe(
+			"Connector 'github' connects by installing its github app. Open install_url to complete the installation. The provider callback creates the connection automatically when it succeeds.",
+		);
 	});
 });

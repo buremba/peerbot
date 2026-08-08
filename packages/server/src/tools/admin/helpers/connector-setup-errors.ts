@@ -79,11 +79,18 @@ export function buildAppInstallationSetupError(params: {
 				})
 			: undefined;
 
-	const error = installUrl
-		? `Connector '${params.connectorKey}' is connected by installing its ${params.method.provider} app. Open install_url to install it, then retry after the installation links the connection.`
-		: selfInstallUrl
-			? `Connector '${params.connectorKey}' has no hosted ${params.method.provider} app configured on this gateway. Create your own app from self_install_url, install it into your workspace, then retry connect with the app's bot token and signing secret.`
-			: `Connector '${params.connectorKey}' requires a ${params.method.provider} app installation. Open setup_url to configure the installation, then retry.`;
+	let error: string;
+	if (installUrl && params.method.provider === "slack") {
+		error = params.setupUrl
+			? `Connector '${params.connectorKey}' connects by installing its Slack app into your workspace. Open setup_url to start from this Lobu organization's connectors page. After the app is installed, a Slack workspace admin/owner must choose the destination Lobu organization on the confirmation page to finish connecting it.`
+			: `Connector '${params.connectorKey}' connects by installing its Slack app into your workspace. Open install_url to install it. A Slack workspace admin/owner must then choose the destination Lobu organization on the confirmation page to finish connecting it.`;
+	} else if (installUrl) {
+		error = `Connector '${params.connectorKey}' connects by installing its ${params.method.provider} app. Open install_url to complete the installation. The provider callback creates the connection automatically when it succeeds.`;
+	} else if (selfInstallUrl) {
+		error = `Connector '${params.connectorKey}' has no hosted ${params.method.provider} app configured on this gateway. Create your own app from self_install_url, install it into your workspace, then retry connect with the app's bot token and signing secret.`;
+	} else {
+		error = `Connector '${params.connectorKey}' requires a ${params.method.provider} app installation. Open setup_url to configure the installation, then retry.`;
+	}
 
 	return {
 		error,

@@ -353,6 +353,83 @@ describe("readEvalResults", () => {
 		);
 	});
 
+	test("groups by the suite's own trial count, not the reader's guess", async () => {
+		// A trials=5 suite writes 5 entries to the window. Read at the default 3,
+		// positional grouping would take the newest 3 as "latest" and the next 2
+		// as "previous" — one batch split across BOTH groups, comparing the batch
+		// to itself and reading a false regression out of it. The stamp on the
+		// case tells the reader the real batch size; `previous` must then be null
+		// (there is no second batch yet), not a self-comparison.
+		const promoted = await promoteEvalCase({
+			sourceRunId,
+			caseKey: "stamped-batch",
+			expectation: "x",
+		});
+		expect(promoted.ok).toBe(true);
+		if (!promoted.ok) return;
+
+		const [entity] = (await sql`
+      SELECT metadata FROM entities WHERE id = ${promoted.evalCase.entityId}
+    `) as unknown as Array<{ metadata: Record<string, unknown> }>;
+		await sql`
+      UPDATE entities
+      SET metadata = ${sql.json({
+				...entity.metadata,
+				suite_trials: 5,
+				recent_scores: [
+					{
+						run_id: 9021,
+						score: 0.5,
+						at: "2026-08-01T00:00:00.000Z",
+						metrics: ["completed_window", "output_present"],
+					},
+					{
+						run_id: 9022,
+						score: 0.5,
+						at: "2026-08-01T00:00:00.000Z",
+						metrics: ["completed_window", "output_present"],
+					},
+					{
+						run_id: 9023,
+						score: 0.5,
+						at: "2026-08-01T00:00:00.000Z",
+						metrics: ["completed_window", "output_present"],
+					},
+					{
+						run_id: 9024,
+						score: 1,
+						at: "2026-08-01T00:00:00.000Z",
+						metrics: ["completed_window", "output_present"],
+					},
+					{
+						run_id: 9025,
+						score: 1,
+						at: "2026-08-01T00:00:00.000Z",
+						metrics: ["completed_window", "output_present"],
+					},
+				],
+			} as never)}
+      WHERE id = ${promoted.evalCase.entityId}
+    `;
+
+		// Deliberately the DEFAULT trials (3), the configuration that used to
+		// split the 5-batch and report a regression.
+		const results = await readEvalResults({ organizationId, behaviorId });
+		const row = results.cases.find(
+			(c) => c.caseId === promoted.evalCase.entityId,
+		);
+		expect(row).toBeDefined();
+		if (!row) return;
+
+		expect(row.latestTrials).toBe(5);
+		expect(row.latest).toBe(0.7);
+		expect(row.previous).toBeNull();
+		expect(row.delta).toBeNull();
+		expect(results.summary.regressions).not.toContain(
+			promoted.evalCase.entityId,
+		);
+	});
+
 	test("a never-scored case reports null rather than zero", async () => {
 		// A case with no runs yet must not read as "scored 0" — that would drag
 		// the Behavior's summary down for work nobody has measured.

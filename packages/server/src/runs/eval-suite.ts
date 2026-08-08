@@ -187,6 +187,21 @@ export async function runEvalSuite(
 		}
 		if (runIds.length > 0) {
 			result.cases.push({ caseId: evalCase.caseId, runIds });
+			// Remember the batch size this suite queued, so the reader groups the
+			// case's rolling window EXACTLY instead of guessing from its own
+			// `trials` param. Positional grouping is only exact when the batch
+			// size is known: reading a trials=5 batch with the default 3 mixes one
+			// suite across both groups and reads a false regression out of it.
+			await sql`
+        UPDATE entities
+        SET metadata = jsonb_set(
+              coalesce(metadata, '{}'::jsonb),
+              '{suite_trials}',
+              ${sql.json(trials as never)}::jsonb
+            ),
+            updated_at = current_timestamp
+        WHERE id = ${evalCase.caseId}
+      `;
 		}
 	}
 
@@ -241,29 +256,6 @@ export interface EvalResults {
 
 function mean(values: number[]): number {
 	return values.reduce((sum, v) => sum + v, 0) / values.length;
-}
-
-/**
- * Split a case's rolling window into the latest trial group and the one before.
- *
- * `recent_scores` is newest-first and carries no batch id, so the grouping rule
- * is positional: with `trials` per suite run, the first `trials` entries are the
- * latest group and the next `trials` are the baseline. That is exact when the
- * caller passes the same `trials` it ran with, and degrades to "latest vs
- * previous single run" at trials=1 — never to a wrong answer, because the
- * spread reported alongside always describes the group actually used.
- */
-function splitTrialGroups(
-	scores: CaseScoreEntry[],
-	trials: number,
-): { latest: number[]; previous: number[] } {
-	const values = scores
-		.map((s) => Number(s.score))
-		.filter((n) => Number.isFinite(n));
-	return {
-		latest: values.slice(0, trials),
-		previous: values.slice(trials, trials * 2),
-	};
 }
 
 /**
@@ -327,9 +319,29 @@ export async function readEvalResults(
 		const scores = Array.isArray(metadata.recent_scores)
 			? (metadata.recent_scores as CaseScoreEntry[])
 			: [];
-		const groups = splitTrialGroups(scores, trials);
-		const latest = groups.latest.length > 0 ? mean(groups.latest) : null;
-		const previous = groups.previous.length > 0 ? mean(groups.previous) : null;
+		// The suite that queued this case's newest batch knows its own size; the
+		// reader's `trials` is only a fallback for cases never run by a suite
+		// (i.e. pre-stamp rows). Grouping with a size that differs from the batch
+		// would mix one suite across both groups — a false regression.
+		const stampedTrials =
+			typeof metadata.suite_trials === "number"
+				? Math.min(MAX_TRIALS, Math.max(1, Math.trunc(metadata.suite_trials)))
+				: null;
+		const groupSize = stampedTrials ?? trials;
+		// One usable array, and both the values and the signatures come from the
+		// SAME slices — a score filtered out for being non-finite must not leave
+		// the signature describing an entry the values don't count.
+		const usable = scores.filter((s) => Number.isFinite(Number(s.score)));
+		const latestEntries = usable.slice(0, groupSize);
+		const previousEntries = usable.slice(groupSize, groupSize * 2);
+		const latest =
+			latestEntries.length > 0
+				? mean(latestEntries.map((s) => Number(s.score)))
+				: null;
+		const previous =
+			previousEntries.length > 0
+				? mean(previousEntries.map((s) => Number(s.score)))
+				: null;
 		// Only like-for-like groups are compared: a changed metric set (say a lost
 		// judge) makes the two denominators different, and a move between them is
 		// not a signal about the Behavior. An UNKNOWN set never compares equal —
@@ -337,8 +349,8 @@ export async function readEvalResults(
 		// known signature for the comparison to run at all. delta stays null
 		// otherwise, which keeps the case out of regressions/improvements and the
 		// summary.
-		const latestSignature = groupSignature(scores.slice(0, trials));
-		const previousSignature = groupSignature(scores.slice(trials, trials * 2));
+		const latestSignature = groupSignature(latestEntries);
+		const previousSignature = groupSignature(previousEntries);
 		const comparable =
 			latest != null &&
 			previous != null &&
@@ -346,8 +358,9 @@ export async function readEvalResults(
 			latestSignature === previousSignature;
 		const delta = comparable ? latest - previous : null;
 		const spread =
-			groups.latest.length > 1
-				? Math.max(...groups.latest) - Math.min(...groups.latest)
+			latestEntries.length > 1
+				? Math.max(...latestEntries.map((s) => Number(s.score))) -
+					Math.min(...latestEntries.map((s) => Number(s.score)))
 				: 0;
 
 		const caseId = Number(row.id);
@@ -368,7 +381,7 @@ export async function readEvalResults(
 			previous,
 			delta,
 			spread,
-			latestTrials: groups.latest.length,
+			latestTrials: latestEntries.length,
 			scores,
 		});
 	}

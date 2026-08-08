@@ -1352,7 +1352,17 @@ routes.post("/evals/cases", async (c) => {
 		);
 	}
 
-	return c.json({ case: result.evalCase, created: result.created }, 201);
+	return c.json(
+		{
+			case: {
+				...result.evalCase,
+				judgeModel:
+					typeof body.judgeModel === "string" ? body.judgeModel.trim() : null,
+			},
+			created: result.created,
+		},
+		201,
+	);
 });
 
 /**

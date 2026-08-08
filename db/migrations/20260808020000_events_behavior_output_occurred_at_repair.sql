@@ -7,17 +7,31 @@
 --
 -- Measured on prod 2026-08-08, before this ran:
 --
---   behavior-produced rows                     514
---   ...stamped ahead of their own created_at   431   (335 via runs, 96 via metadata)
---   ...still in the future, i.e. invisible      16
---   distinct orgs affected                       1
---   furthest ahead                          2 days
+--   rows stamped ahead of their own created_at   465
+--   ...still in the future, i.e. invisible now     21
+--   distinct orgs affected                          3
+--   distinct Behaviors affected                    13
+--   furthest ahead                       6.5 days (a weekly window)
+--
+-- The count keeps climbing until the writer clamp from 20260807130000..130020
+-- finishes rolling out — it was 431 when this migration was first written. That
+-- is the predicate's job, not the comment's: it matches whatever is there when
+-- it runs.
 --
 -- The signature is unmistakable in the data: a run that started 03:25 wrote rows
--- stamped 23:59 the same day — 20.6h ahead, exactly the daily window end. Every
--- affected row is a Behavior artifact (observation 156, canvas_state 98,
--- change_set 49, draft_reply 28, voice_profile 4). None of those semantic types
--- is ever legitimately future-dated.
+-- stamped 23:59 the same day — 20.6h ahead, exactly the daily window end.
+--
+-- Every affected row is a Behavior artifact, and the breakdown covers all 465 —
+-- both how the row got its `behavior_id` and what it is:
+--
+--   via runs      observation 160, canvas_state 98, change_set 49,
+--                 eval_score 29, draft_reply 29, voice_profile 4   = 369
+--   via metadata  social_signal 53, canvas_state 35, observation 7,
+--                 note 1                                            = 96
+--
+-- None of those nine semantic types is ever legitimately future-dated. The types
+-- that ARE — `calendar_event` and `event` — appear nowhere in this set, which is
+-- the structural form of the argument the row counts only gesture at.
 --
 -- WHY `behavior_id IS NOT NULL` AND NOT a bare `occurred_at > created_at`:
 -- 35,740 rows repo-wide have `occurred_at > created_at` and the overwhelming

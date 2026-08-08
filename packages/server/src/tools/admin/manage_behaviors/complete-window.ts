@@ -36,6 +36,7 @@ import { normalizeExtractedData, parseJson, requireWatcherAccess } from './share
 import { getErrorMessage } from '@lobu/core';
 import { classifyRunOutcome } from "../../../runs/run-outcome";
 import { BEHAVIOR_EVAL_RUN_TYPE, BEHAVIOR_RUN_TYPE } from "../../../runs/run-types.js";
+import { behaviorOutputOccurredAt } from '../../../utils/window-utils';
 
 /** Cap on the content ids echoed into `dry_run_preview` — the preview exists to
  *  be read, and an unbounded id list on a wide window is neither useful nor
@@ -334,19 +335,13 @@ export async function handleCompleteWindow(
     watcherRows[0].version_id != null ? Number(watcherRows[0].version_id) : null;
   const outputs = parseJson(watcherRows[0].outputs) as Outputs | null;
 
-  // When everything this completion writes happened. It used to be `window_end`
-  // flat — a future instant for the whole day a sub-daily Behavior runs, since
-  // `window-utils` has no 'hourly' granularity and every read path bounds on
-  // `occurred_at <= now()`. Clamping keeps the period-end reading for a window
-  // completed after it closed and tells the truth for one still open.
+  // When everything this completion writes happened — see
+  // `behaviorOutputOccurredAt` for why `window_end` alone hid the row.
   //
-  // It does NOT keep the output out of its own window; the future stamp was
-  // silently buying that. That job moves to the self-exclusion in
+  // Clamping does NOT keep the output out of its own window; the future stamp
+  // was silently buying that. That job moves to the self-exclusion in
   // `execute-data-sources.ts`. The two changes are a pair, neither safe alone.
-  const windowEndMs = new Date(window_end).getTime();
-  const producedAt = new Date(
-    Number.isFinite(windowEndMs) ? Math.min(windowEndMs, Date.now()) : Date.now()
-  ).toISOString();
+  const producedAt = behaviorOutputOccurredAt(window_end);
 
   // The org + bound parent entity the promoted child entities hang under. The
   // watcher's first bound entity is the parent; unbound watchers promote at the

@@ -206,6 +206,28 @@ export function parseBehaviorWindowDate(value: string): Date {
 }
 
 /**
+ * When something a Behavior window produced actually happened.
+ *
+ * `window_end` alone is a future instant for the whole day a sub-daily Behavior
+ * runs — `window-utils` has no 'hourly' granularity — and every read path bounds
+ * on `occurred_at <= now()`, so a flat `window_end` stamp hides the row until
+ * the window closes. Clamping keeps the period-end reading for a window
+ * completed after it closed and tells the truth for one still open.
+ *
+ * Shared rather than inlined because the stamp has more than one writer:
+ * `complete-window.ts` writes the canvas/change-set/observation head and
+ * `feedback.ts` writes the correction that supersedes it. When only the first
+ * clamped, correcting an open window's canvas made it vanish — the uncorrected
+ * head was visible and its correction was not.
+ */
+export function behaviorOutputOccurredAt(windowEnd: string | Date): string {
+  const endMs = new Date(windowEnd).getTime();
+  return new Date(
+    Number.isFinite(endMs) ? Math.min(endMs, Date.now()) : Date.now()
+  ).toISOString();
+}
+
+/**
  * Align an agent-requested `since`/`until` span onto granularity boundaries.
  *
  * Deliberately does NOT clamp to a single period. The backfill affordance

@@ -30,7 +30,10 @@ import logger from "../utils/logger";
 import { isUniqueViolation } from "../utils/pg-errors";
 import { classifyRunOutcome } from "../runs/run-outcome";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
-import { computePendingWindow } from "../utils/window-utils";
+import {
+	behaviorOutputOccurredAt,
+	computePendingWindow,
+} from "../utils/window-utils";
 import {
 	advanceScheduleAfterTerminalFailure,
 	advanceWatcherSchedule,
@@ -331,14 +334,11 @@ async function persistSkippedWatcherWindow(
 								? null
 								: Number(watcher.current_version_id),
 					},
-					// Clamped for the same reason as every other Behavior-written row
-					// (see `producedAt` in complete-window.ts): `computePendingWindow`
-					// resolves to the CURRENT period whenever the cursor has caught up,
-					// so `windowEnd` is a future instant for the whole period, and a
-					// future `occurred_at` is filtered out of every read path.
-					occurredAt: new Date(
-						Math.min(windowEnd.getTime(), Date.now()),
-					).toISOString(),
+					// `computePendingWindow` resolves to the CURRENT period whenever the
+					// cursor has caught up, so `windowEnd` is a future instant for the
+					// whole period. Third writer of this stamp — see
+					// `behaviorOutputOccurredAt`.
+					occurredAt: behaviorOutputOccurredAt(windowEnd),
 					behaviorId: watcher.id,
 					behaviorVersionId:
 						watcher.current_version_id == null

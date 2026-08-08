@@ -42,20 +42,29 @@ WHERE r.id = e.run_id
 -- self-exclusion, so claiming a human correction would make the Behavior stop
 -- being shown the feedback written to correct it.
 --
--- The approval guard keys on `interaction_type`, NOT on `metadata.tool`, and
--- that distinction is load-bearing. Measured on prod 2026-08-08, the rows this
--- pass would otherwise wrongly claim are:
+-- The approval guard keys on `metadata.resourceKind`, which is the only field
+-- that says what an approval is ABOUT. Being an approval is not itself
+-- disqualifying: an entity-field proposal is an approval card AND genuinely
+-- the Behavior's output (see entity-field-approval.ts, which stamps
+-- `behaviorId` for exactly that reason). The builder card is the opposite —
+-- it is a request to change the Behavior's own definition.
 --
---   tool               semantic_type  interaction_type  rows
---   manage_watchers    operation      approval             3
---   entity_field_change operation     approval            12
+-- Measured on prod 2026-08-08 across all 212 approval rows:
 --
--- against 384 genuine output rows (social_signal 196, observation 90,
--- canvas_state 63, note 29, decision 5, summary 1) that all carry NO
--- `metadata.tool` at all. Two separate writers, and the first stamps the
--- LEGACY tool name — so a `tool <> 'manage_behaviors'` guard would have matched
--- nothing on prod while looking correct in review. `interaction_type` splits
--- the two sets exactly and survives the next rename.
+--   tool                 resourceKind  rows   about the Behavior?
+--   manage_watchers      watcher          3   YES — exclude
+--   (none)               (none)          95   no
+--   entity_change        (none)          86   no
+--   notify               (none)          16   no
+--   entity_field_change  (none)          12   no — genuine Behavior output
+--
+-- Two traps here, both of which pass review while matching nothing:
+--   * `tool <> 'manage_behaviors'` — prod stamps the LEGACY name
+--     `manage_watchers`, so the guard would never fire.
+--   * `resourceKind <> 'behavior'` — `InteractionResourceKind.Behavior` is
+--     "behavior" TODAY, but every existing row predates the rename and carries
+--     "watcher". Both values are matched below; a backfill runs once, against
+--     the history that is actually there.
 UPDATE public.events e
 SET behavior_id = w.id
 FROM public.watchers w
@@ -65,9 +74,10 @@ WHERE e.behavior_id IS NULL
   -- any non-boolean string a writer might leave there.
   AND COALESCE(e.metadata->>'correction', '') NOT IN ('true', 't', '1')
   AND COALESCE(e.metadata->>'action', '') <> 'watcher_archived'
-  -- An approval card is a request made OF a human about the Behavior, never
-  -- something the Behavior produced.
-  AND COALESCE(e.interaction_type, '') <> 'approval'
+  -- A card whose RESOURCE is the Behavior is a request to change that
+  -- Behavior, never something it produced. Both spellings: rows written before
+  -- the watcher→behavior rename carry the old one.
+  AND COALESCE(e.metadata->>'resourceKind', '') NOT IN ('watcher', 'behavior')
   AND e.organization_id = w.organization_id
   AND COALESCE(e.metadata->>'behavior_id', e.metadata->>'watcher_id') ~ '^[0-9]{1,9}$'
   AND COALESCE(e.metadata->>'behavior_id', e.metadata->>'watcher_id')::integer = w.id;

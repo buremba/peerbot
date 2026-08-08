@@ -90,6 +90,7 @@ describe('Behavior keyed event outputs > concurrent runs', () => {
         outputName: 'profiles',
         output: KEYED_OUTPUT,
         watcherId,
+        versionId: null,
         organizationId,
         windowId: 1,
         // A distinct canvas revision per run — that is what a real second run
@@ -196,6 +197,7 @@ describe('Behavior keyed event outputs > concurrent runs', () => {
         outputName: 'profiles',
         output: KEYED_OUTPUT,
         watcherId,
+        versionId: null,
         organizationId,
         windowId: 1,
         canvasRevisionId,

@@ -225,13 +225,20 @@ export interface ContentRow {
   run_id?: number | string | null;
   parent_context?: Record<string, unknown> | null;
   root_context?: Record<string, unknown> | null;
+  client_id?: string | null;
   client_name?: string | null;
   connection_id?: number | null;
+  connection_name?: string | null;
   feed_id?: number | null;
   feed_key?: string | null;
   feed_name?: string | null;
   behavior_id?: number | null;
   behavior_name?: string | null;
+  agent_id?: string | null;
+  agent_name?: string | null;
+  device_worker_id?: string | null;
+  device_label?: string | null;
+  device_platform?: string | null;
 }
 
 export function parseJson(value: unknown): any {

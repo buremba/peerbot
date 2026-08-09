@@ -586,11 +586,25 @@ export async function listNotifications(opts: {
       e.metadata->>'resource_url' AS resource_url,
       e.connector_key AS platform,
       e.connection_id,
+      source_connection.display_name AS connection_name,
       e.feed_id,
       e.feed_key,
       fd.display_name AS feed_name,
       e.behavior_id,
       COALESCE(wv.name, 'Behavior #' || e.behavior_id) AS behavior_name,
+      COALESCE(
+        NULLIF(e.metadata->>'agent_id', ''),
+        NULLIF(source_run.approved_input->>'agent_id', '')
+      ) AS agent_id,
+      agent.name AS agent_name,
+      e.client_id,
+      oauth_client.client_name,
+      COALESCE(
+        NULLIF(e.metadata->>'device_worker_id', ''),
+        NULLIF(source_run.approved_input->>'device_worker_id', '')
+      ) AS device_worker_id,
+      device_worker.label AS device_label,
+      device_worker.platform AS device_platform,
       pe.interaction_type AS interaction_type,
       -- Whether the decision needs FIELDS or is a bare yes/no. Consumers pick
       -- the affordance from this, not from a list of known action keys.
@@ -615,6 +629,25 @@ export async function listNotifications(opts: {
     JOIN events e ON e.id = t.event_id
     LEFT JOIN feeds fd ON fd.id = e.feed_id
     LEFT JOIN watcher_versions wv ON wv.id = e.behavior_version_id
+    LEFT JOIN connections source_connection
+      ON source_connection.id = e.connection_id
+     AND source_connection.organization_id = e.organization_id
+    LEFT JOIN runs source_run
+      ON source_run.id = e.run_id
+     AND source_run.organization_id = e.organization_id
+    LEFT JOIN agents agent
+      ON agent.id = COALESCE(
+        NULLIF(e.metadata->>'agent_id', ''),
+        NULLIF(source_run.approved_input->>'agent_id', '')
+      )
+     AND agent.organization_id = e.organization_id
+    LEFT JOIN oauth_clients oauth_client ON oauth_client.id = e.client_id
+    LEFT JOIN device_workers device_worker
+      ON device_worker.id::text = COALESCE(
+        NULLIF(e.metadata->>'device_worker_id', ''),
+        NULLIF(source_run.approved_input->>'device_worker_id', '')
+      )
+     AND device_worker.organization_id = e.organization_id
     -- Approval notifications point at proposal events; resolve the run here so
     -- consumers see its current approval state rather than an emitted snapshot.
     LEFT JOIN events pe

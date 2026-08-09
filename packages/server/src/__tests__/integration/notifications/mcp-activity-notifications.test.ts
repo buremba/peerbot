@@ -18,6 +18,7 @@ import type { ToolContext } from '../../../tools/registry';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
   addUserToOrganization,
+  createTestAgent,
   createTestAccessToken,
   createTestConnection,
   createTestConnectorDefinition,
@@ -321,7 +322,7 @@ describe('MCP activity notification attribution', () => {
 });
 
 describe('notification list > source attribution', () => {
-  it('carries feed/behavior attribution from the producing version', async () => {
+  it('carries the complete linked source and originator attribution', async () => {
     await cleanupTestDatabase();
     await seedSystemEntityTypes();
 
@@ -329,6 +330,19 @@ describe('notification list > source attribution', () => {
     const org = await createTestOrganization({ name: 'Attr Notification Org' });
     const user = await createTestUser({ email: 'attr-notif@example.com' });
     await addUserToOrganization(user.id, org.id, 'owner');
+    await createTestAgent({
+      organizationId: org.id,
+      agentId: 'attr-notif-agent',
+      name: 'Attribution Agent',
+      ownerUserId: user.id,
+    });
+    await createTestAgent({
+      organizationId: org.id,
+      agentId: 'replacement-agent',
+      name: 'Replacement Agent',
+      ownerUserId: user.id,
+    });
+    const attributedClient = await createTestOAuthClient({ client_name: 'ChatGPT' });
 
     await createTestConnectorDefinition({
       key: 'attr-notif-connector',
@@ -338,9 +352,31 @@ describe('notification list > source attribution', () => {
     const conn = await createTestConnection({
       organization_id: org.id,
       connector_key: 'attr-notif-connector',
+      display_name: 'Attribution account',
       visibility: 'org',
       created_by: user.id,
     });
+    const [device] = await sql`
+      INSERT INTO device_workers (
+        user_id, worker_id, platform, capabilities, label, organization_id
+      ) VALUES (
+        ${user.id}, 'attr-notif-device', 'macos', '[]'::jsonb,
+        'Burak Mac mini', ${org.id}
+      )
+      RETURNING id
+    `;
+    const [replacementDevice] = await sql`
+      INSERT INTO device_workers (
+        user_id, worker_id, platform, capabilities, label, organization_id
+      ) VALUES (
+        ${user.id}, 'replacement-device', 'linux', '[]'::jsonb,
+        'Replacement device', ${org.id}
+      )
+      RETURNING id
+    `;
+    await sql`
+      UPDATE connections SET device_worker_id = ${device.id} WHERE id = ${conn.id}
+    `;
 
     const [feed] = await sql`
       INSERT INTO feeds (organization_id, connection_id, feed_key, status, kind, display_name, created_at)
@@ -370,15 +406,28 @@ describe('notification list > source attribution', () => {
       UPDATE watchers SET current_version_id = ${v1.id} WHERE id = ${watcherId}
     `;
 
+    const [sourceRun] = await sql`
+      INSERT INTO runs (
+        organization_id, run_type, watcher_id, status, approved_input
+      ) VALUES (
+        ${org.id}, 'behavior', ${watcherId}, 'completed',
+        ${sql.json({
+          agent_id: 'attr-notif-agent',
+          device_worker_id: String(device.id),
+        })}
+      )
+      RETURNING id
+    `;
+
     const [ev] = await sql`
       INSERT INTO events (
         organization_id, title, payload_type, payload_text, occurred_at,
         semantic_type, connector_key, connection_id, feed_id, feed_key,
-        behavior_id, behavior_version_id, metadata, created_at
+        behavior_id, behavior_version_id, run_id, client_id, metadata, created_at
       ) VALUES (
         ${org.id}, 'Attr notification', 'text', 'notification body', NOW(),
         'notification', 'attr-notif-connector', ${conn.id}, ${feed.id}, 'home_feed',
-        ${watcherId}, ${v1.id}, '{}'::jsonb, NOW()
+        ${watcherId}, ${v1.id}, ${sourceRun.id}, ${attributedClient.client_id}, '{}'::jsonb, NOW()
       )
       RETURNING id
     `;
@@ -387,14 +436,24 @@ describe('notification list > source attribution', () => {
       VALUES (${ev.id}, ${user.id}, NOW())
     `;
 
-    // Bump the behavior's current version after the notification was produced.
+    // Change every mutable current assignment after the notification was
+    // produced. Attribution must stay on the immutable event-time run values.
     const [v2] = await sql`
       INSERT INTO watcher_versions (watcher_id, version, name, created_by, prompt, created_at)
       VALUES (${watcherId}, 2, 'Renamed Notif Behavior', ${user.id}, 'prompt', NOW())
       RETURNING id
     `;
     await sql`
-      UPDATE watchers SET current_version_id = ${v2.id} WHERE id = ${watcherId}
+      UPDATE watchers
+      SET current_version_id = ${v2.id},
+          agent_id = 'replacement-agent',
+          device_worker_id = ${replacementDevice.id}
+      WHERE id = ${watcherId}
+    `;
+    await sql`
+      UPDATE connections
+      SET device_worker_id = ${replacementDevice.id}
+      WHERE id = ${conn.id}
     `;
 
     const { notifications } = await listNotifications({
@@ -411,6 +470,16 @@ describe('notification list > source attribution', () => {
     expect(item!.feed_key).toBe('home_feed');
     expect(item!.platform).toBe('attr-notif-connector');
     expect(item!.connection_id).toBe(conn.id);
+    expect(item).toMatchObject({
+      connection_name: 'Attribution account',
+      agent_id: 'attr-notif-agent',
+      agent_name: 'Attribution Agent',
+      client_id: attributedClient.client_id,
+      client_name: 'ChatGPT',
+      device_worker_id: device.id,
+      device_label: 'Burak Mac mini',
+      device_platform: 'macos',
+    });
 
     const activity = await listOrgActivity({
       organizationId: org.id,
@@ -427,6 +496,117 @@ describe('notification list > source attribution', () => {
       feed_name: 'Attr Notif Feed',
       behavior_id: watcherId,
       behavior_name: 'Attr Notif Behavior',
+      connection_name: 'Attribution account',
+      agent_id: 'attr-notif-agent',
+      agent_name: 'Attribution Agent',
+      client_id: attributedClient.client_id,
+      client_name: 'ChatGPT',
+      device_worker_id: device.id,
+      device_label: 'Burak Mac mini',
+      device_platform: 'macos',
     });
+
+    const content = await getContent(
+      { content_ids: [Number(ev.id)], limit: 10 } as never,
+      {} as never,
+      {
+        organizationId: org.id,
+        userId: user.id,
+        memberRole: 'owner',
+        isAuthenticated: true,
+        tokenType: 'oauth',
+        scopes: ['mcp:read'],
+      } as ToolContext
+    );
+    expect(content.content[0]).toMatchObject({
+      connection_name: 'Attribution account',
+      agent_id: 'attr-notif-agent',
+      agent_name: 'Attribution Agent',
+      client_id: attributedClient.client_id,
+      client_name: 'ChatGPT',
+      device_worker_id: device.id,
+      device_label: 'Burak Mac mini',
+      device_platform: 'macos',
+    });
+
+    const publicContent = await getContent(
+      { content_ids: [Number(ev.id)], limit: 10 } as never,
+      {} as never,
+      {
+        organizationId: org.id,
+        userId: null,
+        memberRole: null,
+        isAuthenticated: false,
+        tokenType: 'anonymous',
+        scopedToOrg: true,
+        allowCrossOrg: false,
+      } as ToolContext
+    );
+    expect(publicContent.content[0]).toMatchObject({
+      connection_name: null,
+      agent_id: null,
+      agent_name: null,
+      client_id: null,
+      device_worker_id: null,
+      device_label: null,
+      device_platform: null,
+    });
+
+    const authenticatedNonMemberContent = await getContent(
+      { content_ids: [Number(ev.id)], limit: 10 } as never,
+      {} as never,
+      {
+        organizationId: org.id,
+        userId: 'authenticated-outsider',
+        memberRole: null,
+        isAuthenticated: true,
+        tokenType: 'oauth',
+        scopes: ['mcp:read'],
+      } as ToolContext
+    );
+    expect(authenticatedNonMemberContent.content[0]).toMatchObject({
+      connection_name: null,
+      agent_id: null,
+      agent_name: null,
+      client_id: null,
+      device_worker_id: null,
+      device_label: null,
+      device_platform: null,
+    });
+
+    const malformedConnectionEvents = await sql`
+      INSERT INTO events (
+        organization_id, origin_id, title, payload_type, payload_text,
+        semantic_type, connector_key, metadata, occurred_at, created_at
+      ) VALUES
+        (
+          ${org.id}, 'fractional-source-connection', 'Fractional source connection',
+          'text', 'fractional', 'content', 'attr-notif-connector',
+          '{"source_connection_id": 1.5}'::jsonb, NOW(), NOW()
+        ),
+        (
+          ${org.id}, 'oversized-source-connection', 'Oversized source connection',
+          'text', 'oversized', 'content', 'attr-notif-connector',
+          '{"source_connection_id": 999999999999999999999999999999}'::jsonb, NOW(), NOW()
+        )
+      RETURNING id
+    `;
+    const malformedContent = await getContent(
+      {
+        content_ids: malformedConnectionEvents.map((row) => Number(row.id)),
+        limit: 10,
+      } as never,
+      {} as never,
+      {
+        organizationId: org.id,
+        userId: user.id,
+        memberRole: 'owner',
+        isAuthenticated: true,
+        tokenType: 'oauth',
+        scopes: ['mcp:read'],
+      } as ToolContext
+    );
+    expect(malformedContent.content).toHaveLength(2);
+    expect(malformedContent.content.every((item) => item.connection_name === null)).toBe(true);
   });
 });

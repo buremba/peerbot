@@ -14,6 +14,9 @@ import {
   type EventEnvelope,
   type HttpClient,
   paginateByCursor,
+  type QueryContext,
+  type QueryResult,
+  type SearchContext,
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
@@ -59,6 +62,30 @@ interface CalendarCheckpoint {
   last_sync_at?: string;
 }
 
+interface CalendarConfig extends Record<string, unknown> {
+  calendar_id?: string;
+  query?: string;
+  lookback_days?: number;
+  lookahead_days?: number;
+  max_results?: number;
+}
+
+const CALENDAR_EVENT_COLUMNS = [
+  { name: 'id', type: 'text' },
+  { name: 'summary', type: 'text' },
+  { name: 'description', type: 'text' },
+  { name: 'location', type: 'text' },
+  { name: 'status', type: 'text' },
+  { name: 'start_time', type: 'text' },
+  { name: 'end_time', type: 'text' },
+  { name: 'all_day', type: 'boolean' },
+  { name: 'organizer', type: 'text' },
+  { name: 'attendee_count', type: 'number' },
+  { name: 'created_at', type: 'text' },
+  { name: 'updated_at', type: 'text' },
+  { name: 'url', type: 'text' },
+] as const;
+
 /**
  * Does this events.list failure mean "the syncToken itself is no longer
  * usable" (as opposed to "your credentials are wrong")?
@@ -98,7 +125,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     key: 'google.calendar',
     name: 'Google Calendar',
     description: 'Syncs calendar events from Google Calendar and supports creating new events.',
-    version: '1.0.0',
+    version: '1.1.0',
     faviconDomain: 'calendar.google.com',
     authSchema: {
       methods: [
@@ -123,39 +150,80 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
         key: 'events',
         name: 'Events',
         requiredScopes: ['https://www.googleapis.com/auth/calendar.readonly'],
-        description: 'Syncs calendar events from Google Calendar.',
+        description:
+          'Live Google Calendar events (virtual by default); reads current state directly from Google without copying events into Lobu.',
+        virtual: true,
         configSchema: {
           type: 'object',
           properties: {
             calendar_id: {
               type: 'string',
               default: 'primary',
-              description: 'Calendar ID to sync (default: "primary").',
+              description: 'Calendar ID to read (default: "primary").',
+            },
+            query: {
+              type: 'string',
+              description: 'Optional Google Calendar free-text query applied to live reads.',
             },
             lookback_days: {
-              type: 'integer',
-              minimum: 1,
-              maximum: 365,
-              default: 30,
-              description: 'Number of days to look back on initial sync.',
+              type: 'integer', minimum: 1, maximum: 365, default: 30,
+              description: 'Number of past days included in live reads.',
+            },
+            lookahead_days: {
+              type: 'integer', minimum: 1, maximum: 730, default: 365,
+              description: 'Number of future days included in live reads.',
             },
             max_results: {
-              type: 'integer',
-              minimum: 1,
-              maximum: 2500,
-              default: 100,
-              description: 'Maximum events to fetch per sync.',
+              type: 'integer', minimum: 1, maximum: 2500, default: 100,
+              description: 'Maximum events returned per live read.',
             },
           },
         },
         eventKinds: {
-          // `calendar_event`, not `event`: microsoft_outlook and the apple.calendar
-          // device connector both emit this kind, and consumers filter on the shared
-          // vocabulary. This key and the `origin_type` in toEventEnvelope must stay
-          // identical — `event_kinds` is a closed allowlist once non-empty, so a
-          // one-sided rename makes the server reject every write from this feed.
           calendar_event: {
             description: 'A Google Calendar event',
+            metadataSchema: {
+              type: 'object',
+              properties: {
+                status: { type: 'string' },
+                location: { type: 'string' },
+                organizer: { type: 'string' },
+                attendee_count: { type: 'number' },
+                start_time: { type: 'string' },
+                end_time: { type: 'string' },
+                all_day: { type: 'boolean' },
+              },
+            },
+          },
+        },
+      },
+      changes: {
+        key: 'changes',
+        name: 'Calendar changes',
+        requiredScopes: ['https://www.googleapis.com/auth/calendar.readonly'],
+        description:
+          'Durable incremental Google Calendar changes for Behaviors and event-driven workflows. Collected only when explicitly created.',
+        configSchema: {
+          type: 'object',
+          properties: {
+            calendar_id: {
+              type: 'string',
+              default: 'primary',
+              description: 'Calendar ID to watch (default: "primary").',
+            },
+            lookback_days: {
+              type: 'integer', minimum: 1, maximum: 365, default: 30,
+              description: 'Number of days to look back on initial collection.',
+            },
+            max_results: {
+              type: 'integer', minimum: 1, maximum: 2500, default: 100,
+              description: 'Maximum change events to persist per collection run.',
+            },
+          },
+        },
+        eventKinds: {
+          calendar_event: {
+            description: 'A Google Calendar event change',
             metadataSchema: {
               type: 'object',
               properties: {
@@ -242,7 +310,8 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
       },
       get_event: {
         key: 'get_event',
-		kind: 'read',
+        kind: 'read',
+        requiresApproval: false,
         name: 'Get Event',
         description: 'Get full event details.',
         inputSchema: {
@@ -263,6 +332,121 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
   private readonly BASE_URL = 'https://www.googleapis.com/calendar/v3';
 
   // -------------------------------------------------------------------------
+  // Live pushdown (virtual events feed) — current state, never persisted.
+  // -------------------------------------------------------------------------
+
+  async query(ctx: QueryContext<CalendarConfig>): Promise<QueryResult> {
+    return this.liveRead(ctx, []);
+  }
+
+  async search(ctx: SearchContext<CalendarConfig>): Promise<QueryResult> {
+    return this.liveRead(ctx, ctx.terms ?? []);
+  }
+
+  private async liveRead(
+    ctx: QueryContext<CalendarConfig>,
+    terms: string[]
+  ): Promise<QueryResult> {
+    const token = ctx.credentials?.accessToken;
+    if (!token) {
+      throw new Error('Google Calendar virtual-feed reads require Google OAuth credentials.');
+    }
+    if (ctx.feedKey && ctx.feedKey !== 'events') {
+      throw new Error(
+        "Google Calendar live queries are only supported for the virtual events feed; got '" +
+          ctx.feedKey +
+          "'."
+      );
+    }
+    if (ctx.sort && !(ctx.sort.column === 'start_time' && ctx.sort.order === 'asc')) {
+      throw new Error(
+        "Google Calendar virtual feed only supports sort {column:'start_time', order:'asc'}."
+      );
+    }
+
+    const calendarId = ctx.config.calendar_id || 'primary';
+    const lookbackDays = ctx.config.lookback_days ?? 30;
+    const lookaheadDays = ctx.config.lookahead_days ?? 365;
+    const requestedLimit = Math.min(Math.max(Math.trunc(ctx.limit ?? 50), 1), 2500);
+    const configuredLimit = Math.min(
+      Math.max(Math.trunc(ctx.config.max_results ?? 100), 1),
+      2500
+    );
+    const limit = Math.min(requestedLimit, configuredLimit);
+    const offset = Math.max(Math.trunc(ctx.offset ?? 0), 0);
+    const want = offset + limit;
+    const maxReachable = 250 * 200;
+    if (want > maxReachable) {
+      throw new Error(
+        'Google Calendar virtual feed offset+limit (' +
+          want +
+          ') exceeds max reachable depth ' +
+          maxReachable +
+          '. Narrow the query or lower offset.'
+      );
+    }
+
+    const timeMin = new Date();
+    timeMin.setDate(timeMin.getDate() - lookbackDays);
+    const timeMax = new Date();
+    timeMax.setDate(timeMax.getDate() + lookaheadDays);
+
+    const baseQuery = (ctx.query || ctx.config.query || '').trim();
+    const queryParts = [baseQuery, ...terms.map((term) => term.trim())].filter(Boolean);
+    const q = queryParts.join(' ');
+    const http = this.client(token);
+    const rows: Record<string, unknown>[] = [];
+    let pageToken: string | undefined;
+    let pages = 0;
+
+    while (rows.length < want && pages < 200) {
+      pages += 1;
+      const params = new URLSearchParams({
+        maxResults: String(Math.min(250, Math.max(1, want - rows.length))),
+        orderBy: 'startTime',
+        singleEvents: 'true',
+        timeMin: timeMin.toISOString(),
+        timeMax: timeMax.toISOString(),
+      });
+      if (q) params.set('q', q);
+      if (pageToken) params.set('pageToken', pageToken);
+
+      const url =
+        this.BASE_URL +
+        '/calendars/' +
+        encodeURIComponent(calendarId) +
+        '/events?' +
+        params.toString();
+      const response = await http.raw(url);
+      if (!response.ok) {
+        throw new Error(
+          'Calendar events.list error (' + response.status + '): ' + (await response.text())
+        );
+      }
+      const data = (await response.json()) as CalendarEventListResponse;
+      for (const event of data.items ?? []) {
+        const row = this.calendarEventToRow(event);
+        if (row) rows.push(row);
+      }
+      if (!data.nextPageToken || (data.items ?? []).length === 0) break;
+      pageToken = data.nextPageToken;
+    }
+
+    if (rows.length < want && pageToken && pages >= 200) {
+      throw new Error(
+        'Google Calendar virtual feed pagination depth cap hit before offset+limit (' +
+          want +
+          '). Narrow the query or lower offset.'
+      );
+    }
+
+    return {
+      rows: rows.slice(offset, offset + limit),
+      columns: [...CALENDAR_EVENT_COLUMNS],
+    };
+  }
+
+  // -------------------------------------------------------------------------
   // sync
   // -------------------------------------------------------------------------
 
@@ -279,10 +463,17 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
 
     const checkpoint = (ctx.checkpoint ?? {}) as CalendarCheckpoint;
     const events: EventEnvelope[] = [];
+    const durableChanges = ctx.feedKey === 'changes';
 
     // Try incremental sync with syncToken first
     if (checkpoint.sync_token) {
-      const result = await this.syncWithToken(http, calendarId, checkpoint.sync_token, maxResults);
+      const result = await this.syncWithToken(
+        http,
+        calendarId,
+        checkpoint.sync_token,
+        maxResults,
+        durableChanges
+      );
       if (result) {
         return this.buildResult(result.events, result.nextSyncToken, result.events.length);
       }
@@ -348,7 +539,9 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     for await (const items of pages) {
       for (const calEvent of items) {
         if (events.length >= maxResults) break;
-        const envelope = this.calendarEventToEnvelope(calEvent);
+        const envelope = durableChanges
+          ? this.calendarEventToChangeEnvelope(calEvent)
+          : this.calendarEventToEnvelope(calEvent);
         if (envelope) events.push(envelope);
       }
     }
@@ -400,7 +593,8 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     http: HttpClient,
     calendarId: string,
     syncToken: string,
-    maxResults: number
+    maxResults: number,
+    durableChanges: boolean
   ): Promise<{ events: EventEnvelope[]; nextSyncToken?: string } | null> {
     const events: EventEnvelope[] = [];
     let nextSyncToken: string | undefined;
@@ -446,7 +640,9 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
 
     for await (const items of pages) {
       for (const calEvent of items) {
-        const envelope = this.calendarEventToEnvelope(calEvent);
+        const envelope = durableChanges
+          ? this.calendarEventToChangeEnvelope(calEvent)
+          : this.calendarEventToEnvelope(calEvent);
         if (envelope) events.push(envelope);
       }
     }
@@ -624,6 +820,65 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
   // -------------------------------------------------------------------------
   // Helpers
   // -------------------------------------------------------------------------
+
+  private calendarEventToRow(calEvent: CalendarEvent): Record<string, unknown> | null {
+    if (calEvent.status === 'cancelled') return null;
+    const startTime = calEvent.start.dateTime || calEvent.start.date;
+    if (!startTime) return null;
+    const endTime = calEvent.end.dateTime || calEvent.end.date || '';
+    return {
+      id: calEvent.id,
+      summary: calEvent.summary || '(no title)',
+      description: calEvent.description || '',
+      location: calEvent.location || '',
+      status: calEvent.status,
+      start_time: startTime,
+      end_time: endTime,
+      all_day: !calEvent.start.dateTime,
+      organizer: calEvent.organizer?.displayName || calEvent.organizer?.email || '',
+      attendee_count: calEvent.attendees?.length ?? 0,
+      created_at: calEvent.created,
+      updated_at: calEvent.updated,
+      url: calEvent.htmlLink,
+    };
+  }
+
+  private calendarEventToChangeEnvelope(calEvent: CalendarEvent): EventEnvelope {
+    const startTime = calEvent.start?.dateTime || calEvent.start?.date;
+    const endTime = calEvent.end?.dateTime || calEvent.end?.date;
+    const changedAt = new Date(calEvent.updated || startTime || Date.now());
+    const occurredAt = Number.isNaN(changedAt.getTime()) ? new Date() : changedAt;
+    const isCancelled = calEvent.status === 'cancelled';
+
+    const parts: string[] = [];
+    if (calEvent.description) {
+      parts.push(calEvent.description);
+    }
+    if (calEvent.attendees && calEvent.attendees.length > 0) {
+      const attendeeList = calEvent.attendees.map((a) => a.displayName || a.email).join(', ');
+      parts.push(`Attendees: ${attendeeList}`);
+    }
+
+    return {
+      origin_id: calEvent.id,
+      title: calEvent.summary || (isCancelled ? '(cancelled calendar event)' : '(no title)'),
+      payload_text: parts.join('\n\n'),
+      author_name: calEvent.organizer?.displayName || calEvent.organizer?.email,
+      source_url: calEvent.htmlLink,
+      occurred_at: occurredAt,
+      origin_type: 'calendar_event',
+      metadata: {
+        status: calEvent.status,
+        change_type: isCancelled ? 'cancelled' : 'upserted',
+        ...(calEvent.location ? { location: calEvent.location } : {}),
+        ...(calEvent.organizer?.email ? { organizer: calEvent.organizer.email } : {}),
+        attendee_count: calEvent.attendees?.length ?? 0,
+        ...(startTime ? { start_time: startTime } : {}),
+        ...(endTime ? { end_time: endTime } : {}),
+        all_day: Boolean(startTime && !calEvent.start?.dateTime),
+      },
+    };
+  }
 
   private calendarEventToEnvelope(calEvent: CalendarEvent): EventEnvelope | null {
     if (calEvent.status === 'cancelled') return null;

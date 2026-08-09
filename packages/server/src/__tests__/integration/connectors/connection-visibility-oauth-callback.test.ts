@@ -40,14 +40,19 @@ describe('OAuth callback downgrades a fresh personal connection to private (e2e)
     // Local fake OAuth provider: real HTTP endpoints the callback exchanges
     // against (no module mocking — safe under isolate:false).
     const provider = new Hono();
-    provider.post('/token', (c) =>
-      c.json({
-        access_token: 'fake-access-token',
-        refresh_token: 'fake-refresh-token',
+    provider.post('/token', async (c) => {
+      const body = await c.req.parseBody();
+      const code = String(body.code ?? '');
+      const calendar = code === 'calendar-code';
+      return c.json({
+        access_token: 'fake-access-token-' + code,
+        refresh_token: 'fake-refresh-token-' + code,
         expires_in: 3600,
-        scope: 'https://www.googleapis.com/auth/gmail.readonly',
-      })
-    );
+        scope: calendar
+          ? 'https://www.googleapis.com/auth/calendar.readonly'
+          : 'https://www.googleapis.com/auth/gmail.readonly',
+      });
+    });
     provider.get('/userinfo', (c) =>
       c.json({ email: 'owner@example.com', name: 'Owner D', id: 'acct-123' })
     );
@@ -152,4 +157,264 @@ describe('OAuth callback downgrades a fresh personal connection to private (e2e)
     delete process.env.CBOAUTH_CLIENT_ID;
     delete process.env.CBOAUTH_CLIENT_SECRET;
   });
+
+  it('keeps same-provider connector OAuth grants isolated for the same upstream account', async () => {
+    process.env.CBOAUTH_CLIENT_ID = 'env-id';
+    process.env.CBOAUTH_CLIENT_SECRET = 'env-secret';
+    const org = await createTestOrganization({ name: 'Grant Isolation Org' });
+    const user = await createTestUser({ name: 'Grant Isolation User' });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const sql = getTestDb();
+
+    const grants = [
+      {
+        connectorKey: 'cb.calendar',
+        slug: 'calendar-account',
+        scope: 'https://www.googleapis.com/auth/calendar.readonly',
+        code: 'calendar-code',
+      },
+      {
+        connectorKey: 'cb.gmail',
+        slug: 'gmail-account',
+        scope: 'https://www.googleapis.com/auth/gmail.readonly',
+        code: 'gmail-code',
+      },
+    ];
+
+    for (const grant of grants) {
+      await createTestConnectorDefinition({
+        key: grant.connectorKey,
+        name: grant.connectorKey,
+        organization_id: org.id,
+        auth_schema: {
+          methods: [
+            {
+              type: 'oauth',
+              provider: 'cboauth',
+              requiredScopes: [grant.scope],
+              clientIdKey: 'CBOAUTH_CLIENT_ID',
+              clientSecretKey: 'CBOAUTH_CLIENT_SECRET',
+              tokenUrl: providerTokenUrl,
+              userinfoUrl: providerUserinfoUrl,
+            },
+          ],
+        },
+        feeds_schema: { items: {} },
+      });
+
+      const [connection] = (await sql`
+        INSERT INTO connections (
+          organization_id, connector_key, slug, display_name, status, visibility, created_by
+        )
+        VALUES (
+          ${org.id}, ${grant.connectorKey}, ${grant.connectorKey}, ${grant.connectorKey},
+          'pending_auth', 'org', ${user.id}
+        )
+        RETURNING id
+      `) as Array<{ id: number }>;
+
+      const tokenRow = await createConnectToken({
+        connectionId: connection.id,
+        organizationId: org.id,
+        connectorKey: grant.connectorKey,
+        authType: 'oauth',
+        createdBy: user.id,
+        authConfig: {
+          provider: 'cboauth',
+          clientIdKey: 'CBOAUTH_CLIENT_ID',
+          clientSecretKey: 'CBOAUTH_CLIENT_SECRET',
+          tokenUrl: providerTokenUrl,
+          userinfoUrl: providerUserinfoUrl,
+          requestedScopes: [grant.scope],
+          pendingProfileMeta: {
+            displayName: grant.connectorKey,
+            slug: grant.slug,
+            connectorKey: grant.connectorKey,
+            provider: 'cboauth',
+          },
+        },
+      });
+
+      const res = await connectRoutes.request(
+        '/oauth/callback?state=' + encodeURIComponent(tokenRow.token) + '&code=' + grant.code
+      );
+      expect(res.status).toBeGreaterThanOrEqual(200);
+      expect(res.status).toBeLessThan(400);
+    }
+
+    const accounts = (await sql`
+      SELECT
+        ap.connector_key,
+        ap.account_id,
+        a."accountId" AS provider_account_id,
+        a.scope,
+        a."accessToken" AS access_token
+      FROM auth_profiles ap
+      JOIN account a ON a.id = ap.account_id
+      WHERE ap.organization_id = ${org.id}
+        AND ap.connector_key IN ('cb.calendar', 'cb.gmail')
+      ORDER BY ap.connector_key
+    `) as Array<{
+      connector_key: string;
+      account_id: string;
+      provider_account_id: string;
+      scope: string | null;
+      access_token: string | null;
+    }>;
+
+    expect(accounts).toHaveLength(2);
+    expect(accounts[0]?.account_id).not.toBe(accounts[1]?.account_id);
+    for (const account of accounts) {
+      expect(account.provider_account_id.startsWith('lobu-connector:')).toBe(true);
+    }
+    expect(accounts.find((row) => row.connector_key === 'cb.calendar')?.scope).toBe(
+      'https://www.googleapis.com/auth/calendar.readonly'
+    );
+    expect(accounts.find((row) => row.connector_key === 'cb.gmail')?.scope).toBe(
+      'https://www.googleapis.com/auth/gmail.readonly'
+    );
+    expect(accounts.find((row) => row.connector_key === 'cb.calendar')?.access_token).toBe(
+      'fake-access-token-calendar-code'
+    );
+    expect(accounts.find((row) => row.connector_key === 'cb.gmail')?.access_token).toBe(
+      'fake-access-token-gmail-code'
+    );
+
+    delete process.env.CBOAUTH_CLIENT_ID;
+    delete process.env.CBOAUTH_CLIENT_SECRET;
+  });
+  it('migrates a legacy shared provider account to an isolated connector grant on reauth', async () => {
+    process.env.CBOAUTH_CLIENT_ID = 'env-id';
+    process.env.CBOAUTH_CLIENT_SECRET = 'env-secret';
+    const org = await createTestOrganization({ name: 'Legacy Grant Repair Org' });
+    const user = await createTestUser({ name: 'Legacy Grant Repair User' });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const sql = getTestDb();
+    const calendarScope = 'https://www.googleapis.com/auth/calendar.readonly';
+
+    await createTestConnectorDefinition({
+      key: 'cb.calendar',
+      name: 'CB Calendar',
+      organization_id: org.id,
+      auth_schema: {
+        methods: [
+          {
+            type: 'oauth',
+            provider: 'cboauth',
+            requiredScopes: [calendarScope],
+            clientIdKey: 'CBOAUTH_CLIENT_ID',
+            clientSecretKey: 'CBOAUTH_CLIENT_SECRET',
+            tokenUrl: providerTokenUrl,
+            userinfoUrl: providerUserinfoUrl,
+          },
+        ],
+      },
+      feeds_schema: { items: {} },
+    });
+
+    const legacyAccountId = `legacy-google-${org.id}`;
+    await sql`
+      INSERT INTO account (
+        id, "accountId", "providerId", "userId",
+        "accessToken", "refreshToken", "accessTokenExpiresAt",
+        scope, "createdAt", "updatedAt"
+      ) VALUES (
+        ${legacyAccountId}, 'acct-123', 'cboauth', ${user.id},
+        'gmail-overwrite-token', 'gmail-overwrite-refresh',
+        ${new Date(Date.now() + 3600_000).toISOString()},
+        'https://www.googleapis.com/auth/gmail.readonly',
+        NOW(), NOW()
+      )
+    `;
+
+    const [profile] = (await sql`
+      INSERT INTO auth_profiles (
+        organization_id, slug, display_name, connector_key, profile_kind,
+        status, auth_data, account_id, provider, created_by
+      ) VALUES (
+        ${org.id}, 'legacy-calendar-account', 'Legacy Calendar', 'cb.calendar',
+        'oauth_account', 'active',
+        ${sql.json({
+          requested_scopes: [calendarScope],
+          granted_scopes: [calendarScope],
+          identity: { id: 'acct-123', email: 'owner@example.com' },
+        })},
+        ${legacyAccountId}, 'cboauth', ${user.id}
+      )
+      RETURNING id
+    `) as Array<{ id: number }>;
+
+    const [connection] = (await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status, visibility,
+        account_id, auth_profile_id, created_by
+      ) VALUES (
+        ${org.id}, 'cb.calendar', 'legacy-calendar', 'Legacy Calendar',
+        'active', 'private', ${legacyAccountId}, ${profile.id}, ${user.id}
+      )
+      RETURNING id
+    `) as Array<{ id: number }>;
+
+    const tokenRow = await createConnectToken({
+      authProfileId: profile.id,
+      organizationId: org.id,
+      connectorKey: 'cb.calendar',
+      authType: 'oauth',
+      createdBy: user.id,
+      authConfig: {
+        provider: 'cboauth',
+        clientIdKey: 'CBOAUTH_CLIENT_ID',
+        clientSecretKey: 'CBOAUTH_CLIENT_SECRET',
+        tokenUrl: providerTokenUrl,
+        userinfoUrl: providerUserinfoUrl,
+        requestedScopes: [calendarScope],
+      },
+    });
+
+    const res = await connectRoutes.request(
+      '/oauth/callback?state=' +
+        encodeURIComponent(tokenRow.token) +
+        '&code=calendar-code'
+    );
+    expect(res.status).toBeGreaterThanOrEqual(200);
+    expect(res.status).toBeLessThan(400);
+
+    const [after] = (await sql`
+      SELECT
+        ap.account_id,
+        a."accountId" AS provider_account_id,
+        a.scope,
+        a."accessToken" AS access_token,
+        c.account_id AS connection_account_id
+      FROM auth_profiles ap
+      JOIN account a ON a.id = ap.account_id
+      JOIN connections c ON c.auth_profile_id = ap.id
+      WHERE ap.id = ${profile.id}
+        AND c.id = ${connection.id}
+    `) as Array<{
+      account_id: string;
+      provider_account_id: string;
+      scope: string | null;
+      access_token: string | null;
+      connection_account_id: string | null;
+    }>;
+
+    expect(after.account_id).not.toBe(legacyAccountId);
+    expect(after.provider_account_id.startsWith('lobu-connector:')).toBe(true);
+    expect(after.scope).toBe(calendarScope);
+    expect(after.access_token).toBe('fake-access-token-calendar-code');
+    expect(after.connection_account_id).toBe(after.account_id);
+
+    const [legacy] = (await sql`
+      SELECT scope, "accessToken" AS access_token
+      FROM account
+      WHERE id = ${legacyAccountId}
+    `) as Array<{ scope: string | null; access_token: string | null }>;
+    expect(legacy.scope).toBe('https://www.googleapis.com/auth/gmail.readonly');
+    expect(legacy.access_token).toBe('gmail-overwrite-token');
+
+    delete process.env.CBOAUTH_CLIENT_ID;
+    delete process.env.CBOAUTH_CLIENT_SECRET;
+  });
+
 });

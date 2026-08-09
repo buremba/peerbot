@@ -18,7 +18,7 @@ export async function syncOAuthConnectionsForAuthProfile(
   if (!authProfile.account_id) {
     await sql`
       UPDATE connections
-      SET status = 'pending_auth', updated_at = NOW()
+      SET status = 'pending_auth', account_id = NULL, updated_at = NOW()
       WHERE organization_id = ${organizationId}
         AND auth_profile_id = ${authProfileId}
         AND deleted_at IS NULL
@@ -141,7 +141,9 @@ export async function syncOAuthConnectionsForAuthProfile(
         : 'pending_auth';
     await sql`
       UPDATE connections
-      SET status = ${nextConnectionStatus}, updated_at = NOW()
+      SET status = ${nextConnectionStatus},
+          account_id = ${authProfile.account_id},
+          updated_at = NOW()
       WHERE id = ${row.id}
     `;
   }

@@ -24,11 +24,14 @@ interface CalPage {
 /** Fake http client whose `raw()` serves a queue of events.list pages. */
 function fakeHttp(pages: CalPage[]) {
   const calls: Array<string | null> = [];
+  const urls: string[] = [];
   let i = 0;
   return {
     calls,
+    urls,
     client: {
       raw: async (url: string) => {
+        urls.push(url);
         const u = new URL(url);
         calls.push(u.searchParams.get('pageToken'));
         const page = pages[i++] ?? { items: [] };
@@ -314,5 +317,102 @@ describe('GoogleCalendarConnector incremental sync', () => {
     expect(calls[0]?.syncToken).toBe('STALE');
     expect(result.events).toHaveLength(1);
     expect(result.checkpoint.sync_token).toBe('FRESH');
+  });
+});
+
+describe('GoogleCalendarConnector virtual events feed', () => {
+  test('events is virtual by default while changes remains collected', () => {
+    const connector = new GoogleCalendarConnector();
+    expect(connector.definition.version).toBe('1.1.0');
+    expect(connector.definition.feeds.events.virtual).toBe(true);
+    expect(connector.definition.feeds.changes.virtual ?? false).toBe(false);
+    expect(Object.keys(connector.definition.feeds.changes.eventKinds)).toContain('calendar_event');
+  });
+
+  test('query reads live state with Calendar-native time window, q, pagination and offset', async () => {
+    const connector = new GoogleCalendarConnector();
+    const { client, calls, urls } = fakeHttp([
+      {
+        items: [
+          calEvent('a', '2026-01-01T10:00:00Z'),
+          calEvent('b', '2026-01-02T10:00:00Z'),
+        ],
+        nextPageToken: 'p2',
+      },
+      { items: [calEvent('c', '2026-01-03T10:00:00Z')] },
+    ]);
+    connector.client = () => client;
+
+    const result = await connector.query({
+      feedKey: 'events',
+      query: 'project alpha',
+      config: {
+        calendar_id: 'team@example.com',
+        lookback_days: 7,
+        lookahead_days: 14,
+        max_results: 10,
+      },
+      credentials: { accessToken: 'tok' },
+      limit: 2,
+      offset: 1,
+      sort: { column: 'start_time', order: 'asc' },
+    });
+
+    expect(result.rows.map((row: Record<string, unknown>) => row.id)).toEqual(['b', 'c']);
+    expect(calls).toEqual([null, 'p2']);
+    const first = new URL(urls[0]);
+    expect(first.pathname).toContain('/calendars/team%40example.com/events');
+    expect(first.searchParams.get('q')).toBe('project alpha');
+    expect(first.searchParams.get('singleEvents')).toBe('true');
+    expect(first.searchParams.get('orderBy')).toBe('startTime');
+    expect(first.searchParams.get('timeMin')).toBeTruthy();
+    expect(first.searchParams.get('timeMax')).toBeTruthy();
+  });
+
+  test('search composes the stored feed query with recall terms', async () => {
+    const connector = new GoogleCalendarConnector();
+    const { client, urls } = fakeHttp([{ items: [calEvent('a', '2026-01-01T10:00:00Z')] }]);
+    connector.client = () => client;
+
+    await connector.search({
+      feedKey: 'events',
+      terms: ['alice', 'design'],
+      config: { query: 'team', max_results: 10 },
+      credentials: { accessToken: 'tok' },
+      limit: 5,
+      offset: 0,
+    });
+
+    expect(new URL(urls[0]).searchParams.get('q')).toBe('team alice design');
+  });
+});
+
+
+describe('GoogleCalendarConnector durable changes feed', () => {
+  test('preserves cancellations and timestamps them at the provider change time', async () => {
+    const connector = new GoogleCalendarConnector();
+    const changedAt = '2026-08-10T00:12:34.000Z';
+    const cancelled = {
+      ...calEvent('cancelled-1', '2026-08-12T10:00:00Z'),
+      status: 'cancelled',
+      summary: undefined,
+      updated: changedAt,
+    };
+    const { client } = fakeHttp([{ items: [cancelled], nextSyncToken: 'NEXT' }]);
+    connector.client = () => client;
+
+    const result = await connector.sync({
+      feedKey: 'changes',
+      config: { calendar_id: 'primary', max_results: 100 },
+      credentials: { accessToken: 'tok' },
+      checkpoint: null,
+    });
+
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0]?.origin_id).toBe('cancelled-1');
+    expect(result.events[0]?.occurred_at.toISOString()).toBe(changedAt);
+    expect(result.events[0]?.metadata?.status).toBe('cancelled');
+    expect(result.events[0]?.metadata?.change_type).toBe('cancelled');
+    expect(result.checkpoint.sync_token).toBe('NEXT');
   });
 });

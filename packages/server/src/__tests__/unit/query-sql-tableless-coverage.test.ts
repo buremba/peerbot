@@ -30,7 +30,7 @@ describe("buildScopedQuery tableless parameter coverage", () => {
     });
   });
 
-  it("allocates referenced context values in query order", () => {
+  it("allocates referenced context values in stable compiler order", () => {
     const scoped = buildScopedQuery(
       "SELECT {{query.name}} AS name, {{organizationId}} AS organization_id, {{query.missing}} AS missing",
       [],
@@ -41,8 +41,8 @@ describe("buildScopedQuery tableless parameter coverage", () => {
     );
 
     expect(scoped).toEqual({
-      sql: "SELECT $1::text AS name, $2 AS organization_id, $3::text AS missing",
-      params: ["Alpha", "org_test", null],
+      sql: "SELECT $2::text AS name, $1 AS organization_id, $3::text AS missing",
+      params: ["org_test", "Alpha", null],
     });
   });
 

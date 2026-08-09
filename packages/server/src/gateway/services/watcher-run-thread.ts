@@ -100,7 +100,21 @@ export async function readWatcherRunThreads(args: {
 			FROM public.agent_transcript_snapshot transcript
 			WHERE transcript.organization_id = ${organizationId}
 			  AND transcript.agent_id = ${agentId}
-			  AND transcript.run_id = r.id
+			  -- NOT transcript.run_id = r.id. A Behavior execution writes two run
+			  -- rows: the scheduler's behavior row (r, the one this thread is
+			  -- built from) and the chat_message row the worker actually claims.
+			  -- The worker knows only the run it claimed, so it posts the snapshot
+			  -- against the dispatch run and run_id = r.id matched no snapshot in
+			  -- production. The behavior run id reaches the worker solely inside
+			  -- the conversationId, so that is the join key: POST /api/v1/agents
+			  -- builds it as agentId + _watcher_<behaviorId> + _run_<runId> from a
+			  -- server-VERIFIED behavior_run intent, and rejects any other caller
+			  -- that tries to construct the shape (behavior-run-intent.ts). Equality
+			  -- on (organization_id, agent_id, conversation_id) is the leading
+			  -- prefix of agent_transcript_snapshot_latest, so this stays a seek.
+			  AND transcript.conversation_id =
+			      ${agentId} || '_watcher_' || ${watcherId}::text
+			      || '_run_' || r.id::text
 			  AND transcript.terminal_status = 'completed'
 			ORDER BY transcript.created_at DESC
 			LIMIT 1

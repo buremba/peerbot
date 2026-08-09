@@ -627,6 +627,65 @@ describe("listAgentThreads scope=all", () => {
 		);
 	});
 
+	// Production shape, which every other fixture in this file gets wrong: a
+	// Behavior execution writes TWO run rows. The scheduler's `behavior` row is
+	// what the thread is built from, but the worker is dispatched under a
+	// separate `chat_message` row and posts its snapshot against THAT run id —
+	// it never learns the behavior run id except inside the conversationId. A
+	// snapshot joined on `run_id` therefore matched nothing in prod, and the
+	// behavior page rendered the prompt with no transcript under it at all.
+	it("reads the transcript posted under the sibling dispatch run", async () => {
+		const sql = getTestDb();
+		const [behaviorRun] = await sql<{ id: number }[]>`
+			INSERT INTO runs
+			  (run_type, status, organization_id, watcher_id, window_id,
+			   approval_status, run_metadata, created_at, completed_at)
+			VALUES
+			  ('behavior', 'completed', ${org}, ${WATCHER_ID}, 700004,
+			   'auto', ${sql.json({ prompt_rendered: "Dispatched behavior task" })},
+			   '2026-06-28T04:30:00Z', '2026-06-28T04:31:00Z')
+			RETURNING id
+		`;
+		// The row the worker actually claims: no watcher_id, run_type
+		// 'chat_message'. Its only tie to the Behavior is the conversationId.
+		const [dispatchRun] = await sql<{ id: number }[]>`
+			INSERT INTO runs
+			  (run_type, status, organization_id, approval_status,
+			   created_at, completed_at)
+			VALUES
+			  ('chat_message', 'completed', ${org}, 'auto',
+			   '2026-06-28T04:30:01Z', '2026-06-28T04:30:02Z')
+			RETURNING id
+		`;
+		const jsonl = sessionJsonl("dispatched behavior transcript");
+		await sql`
+			INSERT INTO agent_transcript_snapshot
+			  (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl,
+			   byte_size, terminal_status, created_at)
+			VALUES
+			  (${org}, ${AGENT}, ${`${AGENT}_watcher_${WATCHER_ID}_run_${behaviorRun.id}`},
+			   ${dispatchRun.id}, ${jsonl}, ${Buffer.byteLength(jsonl)}, 'completed',
+			   '2026-06-28T04:31:00Z')
+		`;
+
+		const data = await readWatcherRunThreads({
+			agentId: AGENT,
+			organizationId: org,
+			watcherId: WATCHER_ID,
+			limit: 20,
+		});
+		const run = data.runs.find(
+			(candidate) => candidate.runId === behaviorRun.id,
+		);
+		expect(run).toBeDefined();
+		// The prompt alone is what the broken join left on the page.
+		expect(run?.task).toBe("Dispatched behavior task");
+		expect(run?.messages.length).toBeGreaterThan(0);
+		expect(JSON.stringify(run?.messages)).toContain(
+			"dispatched behavior transcript",
+		);
+	});
+
 	it("keeps terminal approval decisions attached to their watcher run", async () => {
 		const sql = getTestDb();
 		const [watcherRun] = await sql<{ id: number }[]>`

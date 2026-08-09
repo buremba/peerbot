@@ -405,10 +405,57 @@ export function buildScopedQuery(
   const params: unknown[] = [];
   let idx = 0;
 
-  // $1 = organizationId
-  idx++;
-  params.push(context.organizationId);
-  const orgP = `$${idx}`;
+  // Organization scoping is mandatory for table-backed queries, but tableless
+  // SELECTs bind it only when the query explicitly references the context value.
+  // This keeps the normal placeholder contract without sending unused params to
+  // postgres, which cannot infer their types.
+  let organizationP: string | undefined;
+  const bindOrganization = (): string => {
+    if (!organizationP) {
+      idx++;
+      params.push(context.organizationId);
+      organizationP = `$${idx}`;
+    }
+    return organizationP;
+  };
+  if (tableRefs.length > 0) bindOrganization();
+
+  // Run every query through the same context-placeholder compiler. Parameter
+  // allocation stays lazy so tableless SELECTs bind only values they reference.
+  let processedQuery = userQuery;
+  if (context.entityIds && context.entityIds.length > 0) {
+    let entityP: string | undefined;
+    processedQuery = processedQuery.replace(/\{\{entityId\}\}/g, () => {
+      if (!entityP) {
+        idx++;
+        params.push(context.entityIds![0]);
+        entityP = `$${idx}::bigint`;
+      }
+      return entityP;
+    });
+  }
+
+  processedQuery = processedQuery.replace(/\{\{organizationId\}\}/g, () =>
+    bindOrganization()
+  );
+
+  processedQuery = processedQuery.replace(/\{\{query\.(\w+)\}\}/g, (_match, paramName: string) => {
+    idx++;
+    params.push(context.query?.[paramName] ?? null);
+    return `$${idx}::text`;
+  });
+
+  const remaining = processedQuery.match(/\{\{(\w+(?:\.\w+)?)\}\}/g);
+  if (remaining) {
+    throw new Error(`Unknown context variables: ${remaining.join(', ')}`);
+  }
+
+  if (/\$\d+/.test(userQuery)) {
+    throw new Error('Positional parameters ($1, $2, ...) are not allowed in data source queries');
+  }
+
+  if (tableRefs.length === 0) return { sql: processedQuery, params };
+  const orgP = bindOrganization();
 
   // Per-user connection visibility (S0). Applied to EVERY CTE on this seam that
   // exposes connection-sourced event content — `events`, `event_classifications`
@@ -485,42 +532,6 @@ export function buildScopedQuery(
   // owned by the requesting user (mirrors manage_connections CRUD).
   const connectionRowVisibility = (alias: string): string =>
     ` ${compileConnectionRowVisibility(scope, alias)}`;
-
-  // {{entityId}} substitution — only allocates a param when the query uses it
-  let processedQuery = userQuery;
-  if (context.entityIds && context.entityIds.length > 0) {
-    let entityP: string | undefined;
-    processedQuery = processedQuery.replace(/\{\{entityId\}\}/g, () => {
-      if (!entityP) {
-        idx++;
-        params.push(context.entityIds![0]);
-        entityP = `$${idx}::bigint`;
-      }
-      return entityP;
-    });
-  }
-
-  // Remove {{organizationId}} — scoping is now automatic via CTEs
-  processedQuery = processedQuery.replace(/\{\{organizationId\}\}/g, orgP);
-
-  // Substitute {{query.paramName}} with parameterized values (NULL if missing).
-  // Cast to ::text so PostgreSQL can determine the type even when the value is NULL.
-  processedQuery = processedQuery.replace(/\{\{query\.(\w+)\}\}/g, (_match, paramName: string) => {
-    idx++;
-    params.push(context.query?.[paramName] ?? null);
-    return `$${idx}::text`;
-  });
-
-  // Reject any remaining unknown placeholders
-  const remaining = processedQuery.match(/\{\{(\w+(?:\.\w+)?)\}\}/g);
-  if (remaining) {
-    throw new Error(`Unknown context variables: ${remaining.join(', ')}`);
-  }
-
-  // Reject user-provided positional parameters (would conflict with ours)
-  if (/\$\d+/.test(userQuery)) {
-    throw new Error('Positional parameters ($1, $2, ...) are not allowed in data source queries');
-  }
 
   // Build CTEs
   const ctes: string[] = [];

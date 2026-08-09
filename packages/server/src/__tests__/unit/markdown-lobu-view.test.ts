@@ -39,4 +39,25 @@ describe('render_lobu_view text fallback', () => {
 
     expect(markdown).toBe('````\nbefore\n```\nafter\n````');
   });
+
+  it('distinguishes an empty diff value from a missing value', () => {
+    const markdown = formatToolResult('render_lobu_view', {
+      version: 1,
+      blocks: [
+        {
+          type: 'diff',
+          fields: [
+            { label: 'cleared', before: 'present', after: '' },
+            { label: 'created', after: '' },
+            { label: 'missing', before: 'present' },
+          ],
+        },
+      ],
+      actions: [],
+    });
+
+    expect(markdown).toContain('**cleared**: present → ""');
+    expect(markdown).toContain('**created**: ""');
+    expect(markdown).toContain('**missing**: present → —');
+  });
 });

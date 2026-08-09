@@ -318,6 +318,13 @@ function escapeLobuViewMarkdown(value: unknown, singleLine = false): string {
   return normalized.replace(/([\\`*_[\]{}<>()#+\-.!|>])/g, '\\$1');
 }
 
+function formatLobuViewDiffValue(value: unknown): string {
+  if (value === undefined) return '—';
+  if (value === null) return 'null';
+  const escaped = escapeLobuViewMarkdown(value, true);
+  return escaped === '' ? '""' : escaped;
+}
+
 function formatLobuViewCode(value: unknown): string {
   const code = String(value ?? '');
   const longestRun = Math.max(0, ...Array.from(code.matchAll(/`+/g), (match) => match[0].length));
@@ -351,11 +358,8 @@ function formatLobuViewResult(result: any): string {
       for (const field of block.fields ?? []) {
         markdown += `- **${escapeLobuViewMarkdown(field.label, true)}**: ${
           field.before === undefined
-            ? escapeLobuViewMarkdown(field.after, true)
-            : `${escapeLobuViewMarkdown(field.before || '—', true)} → ${escapeLobuViewMarkdown(
-                field.after || '—',
-                true
-              )}`
+            ? formatLobuViewDiffValue(field.after)
+            : `${formatLobuViewDiffValue(field.before)} → ${formatLobuViewDiffValue(field.after)}`
         }\n`;
       }
       markdown += '\n';

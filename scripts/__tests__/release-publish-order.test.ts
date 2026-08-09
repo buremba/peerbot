@@ -114,6 +114,25 @@ describe("release package publication ordering", () => {
     expect(publish).toContain('run_id="$IMAGE_RUN_ID"');
   });
 
+  it("gates a successful publish on the exact npm artifact smoke", () => {
+    const publish = workflow("publish-packages.yml");
+    const artifactSmoke = workflow("published-artifact-smoke.yml");
+    const verify = jobBlock(publish, "verify-published-artifact");
+
+    expect(artifactSmoke).toContain("workflow_call:");
+    expect(verify).toContain("needs: publish-packages");
+    expect(verify).toContain(
+      "uses: ./.github/workflows/published-artifact-smoke.yml"
+    );
+    expect(verify).toContain(
+      "version: ${{ needs.publish-packages.outputs.published-version }}"
+    );
+    expect(publish).toContain(
+      "published-version: ${{ steps.published-version.outputs.version }}"
+    );
+    expect(publish).toContain("require('./packages/cli/package.json').version");
+  });
+
   it("fails closed when the published Helm chart is not public", () => {
     const publish = jobBlock(workflow("helm-chart.yml"), "publish");
 

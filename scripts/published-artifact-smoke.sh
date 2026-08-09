@@ -85,13 +85,21 @@ echo "================================================================"
 # ---------------------------------------------------------------------------
 note "install @lobu/cli@$LOBU_VERSION from npm"
 INSTALL_DIR="$WORK/install"; mkdir -p "$INSTALL_DIR"
-(
-  cd "$INSTALL_DIR" || exit 1
-  npm init -y >/dev/null 2>&1
-  npm install --no-audit --no-fund "@lobu/cli@$LOBU_VERSION" 2>&1 | tail -5
-)
+INSTALL_LOG="$WORK/npm-install.log"
+( cd "$INSTALL_DIR" && npm init -y >/dev/null 2>&1 )
+INSTALL_OK=0
+for attempt in 1 2 3 4 5; do
+  if ( cd "$INSTALL_DIR" && npm install --no-audit --no-fund "@lobu/cli@$LOBU_VERSION" > "$INSTALL_LOG" 2>&1 ); then
+    INSTALL_OK=1
+    break
+  fi
+  echo "npm install attempt $attempt/5 failed" >&2
+  tail -5 "$INSTALL_LOG" >&2
+  [ "$attempt" -lt 5 ] && sleep 10
+done
+tail -5 "$INSTALL_LOG"
 LOBU_BIN="$INSTALL_DIR/node_modules/.bin/lobu"
-if [ ! -x "$LOBU_BIN" ]; then
+if [ "$INSTALL_OK" -ne 1 ] || [ ! -x "$LOBU_BIN" ]; then
   fail "npm install did not produce an executable lobu bin at $LOBU_BIN"
   echo "RESULT: published-artifact smoke FAILED (install)"; exit 1
 fi

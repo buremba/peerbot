@@ -3866,8 +3866,13 @@ export type ManageOperationsResponses = {
           interaction_status?: string;
           interaction_inline?: boolean;
           member_run_ids?: Array<number>;
+          platform?: string;
           connection_id?: number;
+          feed_id?: number;
+          feed_key?: string;
+          feed_name?: string;
           behavior_id?: number;
+          behavior_name?: string;
         }>;
         total: number;
         limit: number;

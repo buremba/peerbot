@@ -191,6 +191,25 @@ type SaveContentArgs = Static<typeof SaveContentSchema>;
 // Result Type
 // ============================================
 
+export const SaveContentResultSchema = Type.Object({
+  id: Type.Integer(),
+  entity_ids: Type.Array(Type.Integer()),
+  title: Type.Union([Type.String(), Type.Null()]),
+  semantic_type: Type.String(),
+  created_at: Type.String(),
+  supersedes_event_id: Type.Optional(Type.Integer()),
+  view_url: Type.Optional(Type.String()),
+  durable_at: Type.String(),
+  indexing_status: Type.Union([Type.Literal('pending'), Type.Literal('completed')]),
+  searchable: Type.Boolean(),
+  created: Type.Boolean(),
+  metadata: Type.Record(Type.String(), Type.Unknown()),
+  exact_read: Type.Object({
+    method: Type.Literal('client.knowledge.read'),
+    content_ids: Type.Tuple([Type.Integer()]),
+  }),
+});
+
 interface SaveContentResult {
   id: number;
   entity_ids: number[];

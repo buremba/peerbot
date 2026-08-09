@@ -23,16 +23,18 @@ import { ADMIN_TOOLS } from './admin';
 import { ListMetricsSchema, listMetrics } from './admin/list_metrics';
 import { MetricSeriesSchema, metricSeries } from './admin/metric_series';
 import { QueryMetricSchema, queryMetric } from './admin/query_metric';
-import { QuerySqlSchema, querySql } from './admin/query_sql';
+import { QuerySqlResultSchema, QuerySqlSchema, querySql } from './admin/query_sql';
 import {
   LOBU_INTERACTION_RESOURCE_URI,
   LobuViewSchema,
   RenderLobuViewSchema,
+  ResolveLobuApprovalSchema,
   renderLobuView,
+  resolveLobuApproval,
 } from './mcp_app';
 import { ListOrganizationsSchema } from './organizations';
 import { ResolvePathResultSchema, ResolvePathSchema, resolvePath } from './resolve_path';
-import { SaveContentSchema, saveContent } from './save_content';
+import { SaveContentResultSchema, SaveContentSchema, saveContent } from './save_content';
 import {
   QuerySchema,
   querySdkScript,
@@ -116,6 +118,10 @@ export interface ToolContext {
   applyId?: string | null;
   /** Persistent MCP session id driving this call; null off the MCP transport. */
   mcpSessionId?: string | null;
+  /** True only for an MCP session that negotiated the standard Apps UI extension. */
+  mcpAppsSupported?: boolean | null;
+  /** Host-only encrypted token supplied by the Lobu MCP App for one approval click. */
+  mcpAppApprovalCapability?: string | null;
   /**
    * Server-derived side-effect mode for the run driving these tool calls,
    * carried as a signed worker-token claim. `capture` marks an eval replay:
@@ -200,6 +206,14 @@ const WRITE_WITHOUT_CONFIRM: ToolAnnotations = {
   idempotentHint: false,
 };
 
+const RICH_RESULT_MCP_META = {
+  ui: {
+    resourceUri: LOBU_INTERACTION_RESOURCE_URI,
+    visibility: ['model', 'app'],
+  },
+  'openai/outputTemplate': LOBU_INTERACTION_RESOURCE_URI,
+} as const;
+
 /** Tools advertised on MCP `tools/list` and external OpenAPI. */
 const AGENT_TOOLS: ToolDefinition[] = [
   // ─── Memory hot path — read ───────────────────────────────────────────────
@@ -217,6 +231,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
     // Lobu's persisted workspace even though it never mutates anything.
     annotations: { ...READ_ONLY_OPEN_WORLD, title: 'Search memory' },
     securityScopes: ['mcp:read'],
+    mcpMeta: RICH_RESULT_MCP_META,
     handler: search,
   },
   {
@@ -224,8 +239,10 @@ const AGENT_TOOLS: ToolDefinition[] = [
     description:
       'Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The write is immediately readable by returned event id via `client.knowledge.read({ content_ids: [id] })`; semantic search indexing is asynchronous and reported as `indexing_status`. Storage is append-only — pass `supersedes_event_id` to replace an existing fact (the old event is hidden from future searches without losing history). Optionally attach to entities via `entity_ids`. Always search first to avoid duplicates.',
     inputSchema: SaveContentSchema,
+    outputSchema: SaveContentResultSchema,
     annotations: { ...WRITE_WITHOUT_CONFIRM, title: 'Save memory' },
     securityScopes: ['mcp:write'],
+    mcpMeta: RICH_RESULT_MCP_META,
     handler: saveContent,
   },
   {
@@ -236,6 +253,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
     outputSchema: SdkSearchResultSchema,
     annotations: { ...READ_ONLY, title: 'Search SDK docs' },
     securityScopes: ['mcp:read'],
+    mcpMeta: RICH_RESULT_MCP_META,
     handler: sdkSearch,
   },
   // ─── Power tools — TS scripting + raw SQL ─────────────────────────────────
@@ -248,6 +266,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
     // Read-only SDK methods include connector-backed live feed reads.
     annotations: { ...READ_ONLY_OPEN_WORLD, title: 'Query SDK (read-only)' },
     securityScopes: ['mcp:read'],
+    mcpMeta: RICH_RESULT_MCP_META,
     handler: querySdkScript,
   },
   {
@@ -255,8 +274,10 @@ const AGENT_TOOLS: ToolDefinition[] = [
     description:
       'Run a paginated, sortable, searchable read-only SQL query (member-safe). Table references auto-scope to the bound org. SELECT FROM events reads persisted/synced content only; virtual feeds are live-only and must be read explicitly with feed or via query_sdk client.feeds.readMany. Results may include coverage.suggested_virtual_feeds. Prefer client.metrics.query for declared measures; use client.query in query_sdk for simple one-shot SQL. Do NOT use positional parameters ($1, $2, …). Optional `org_slug` (OAuth on /mcp only) redirects to another member org.',
     inputSchema: QuerySqlSchema,
+    outputSchema: QuerySqlResultSchema,
     annotations: { ...READ_ONLY, title: 'Query SQL' },
     securityScopes: ['mcp:read'],
+    mcpMeta: RICH_RESULT_MCP_META,
     handler: querySql,
   },
   {
@@ -273,6 +294,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
       title: 'Run SDK',
     },
     securityScopes: ['mcp:write'],
+    mcpMeta: RICH_RESULT_MCP_META,
     handler: runSdkScript,
   },
 ];
@@ -292,14 +314,31 @@ const MCP_APP_TOOLS: ToolDefinition[] = [
     outputSchema: LobuViewSchema,
     annotations: { ...READ_ONLY, title: 'Render Lobu view' },
     securityScopes: ['mcp:read'],
+    mcpMeta: RICH_RESULT_MCP_META,
+    handler: renderLobuView,
+  },
+  {
+    name: 'resolve_lobu_approval',
+    description:
+      'Resolve the exact pending approval represented by this Lobu MCP App. This tool is app-only and requires the hidden, session-bound capability delivered with the review card.',
+    inputSchema: ResolveLobuApprovalSchema,
+    outputSchema: LobuViewSchema,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      openWorldHint: true,
+      idempotentHint: false,
+      title: 'Resolve Lobu approval',
+    },
+    securityScopes: ['mcp:write'],
     mcpMeta: {
       ui: {
         resourceUri: LOBU_INTERACTION_RESOURCE_URI,
-        visibility: ['model', 'app'],
+        visibility: ['app'],
       },
       'openai/outputTemplate': LOBU_INTERACTION_RESOURCE_URI,
     },
-    handler: renderLobuView,
+    handler: resolveLobuApproval,
   },
 ];
 

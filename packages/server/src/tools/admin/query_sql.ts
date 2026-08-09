@@ -112,6 +112,23 @@ function oidToTypeName(oid: number): string {
   return PG_OID_TYPE_MAP[oid] ?? 'unknown';
 }
 
+export const QuerySqlResultSchema = Type.Object({
+  rows: Type.Array(Type.Record(Type.String(), Type.Unknown())),
+  columns: Type.Array(
+    Type.Object({
+      name: Type.String(),
+      type: Type.String(),
+    })
+  ),
+  total_count: Type.Integer(),
+  has_more: Type.Boolean(),
+  execution_time_ms: Type.Number(),
+  coverage: Type.Optional(Type.Unknown()),
+  error: Type.Optional(Type.String()),
+  error_code: Type.Optional(Type.String()),
+  retryable: Type.Optional(Type.Boolean()),
+});
+
 interface QuerySqlResult {
   rows: Record<string, unknown>[];
   columns: { name: string; type: string }[];

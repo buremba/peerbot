@@ -226,6 +226,12 @@ export interface ContentRow {
   parent_context?: Record<string, unknown> | null;
   root_context?: Record<string, unknown> | null;
   client_name?: string | null;
+  connection_id?: number | null;
+  feed_id?: number | null;
+  feed_key?: string | null;
+  feed_name?: string | null;
+  behavior_id?: number | null;
+  behavior_name?: string | null;
 }
 
 export function parseJson(value: unknown): any {

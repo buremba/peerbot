@@ -1205,6 +1205,18 @@ export interface ContentItem {
   };
   /** OAuth client name that created this event */
   client_name?: string | null;
+  /** Source connection that collected the event (when connector-sourced). */
+  connection_id?: number | null;
+  /** Feed the event was collected through (when connector-sourced). */
+  feed_id?: number | null;
+  /** Feed key (e.g. "tweets", "home_feed") the event was collected through. */
+  feed_key?: string | null;
+  /** Human-facing feed display name (e.g. "X Home Timeline"). */
+  feed_name?: string | null;
+  /** Behavior that produced the event (when behavior-output-sourced). */
+  behavior_id?: number | null;
+  /** Human-facing behavior name (when behavior-output-sourced). */
+  behavior_name?: string | null;
   /** Immediate parent origin_id */
   origin_parent_id: string | null;
   /** Thread root origin_id */

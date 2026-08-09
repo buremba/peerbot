@@ -104,6 +104,11 @@ export interface ContentSearchResult {
   id: number;
   entity_ids: number[];
   connection_id: number | null;
+  feed_id?: number | null;
+  feed_key?: string | null;
+  feed_name?: string | null;
+  behavior_id?: number | null;
+  behavior_name?: string | null;
   payload_text: string;
   title: string | null;
   author_name: string | null;

@@ -644,6 +644,7 @@ async function getContentImpl(
       ownerSlug,
       baseUrl,
       excerptsMap,
+      includePrivateAttribution: ctx.memberRole != null,
     });
     // Verbatim requests are served ONLY on an explicit `content_ids` read. A
     // list or search page is an ambient read — inlining every retained request

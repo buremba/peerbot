@@ -126,6 +126,7 @@ describe('getContent > score path honours forwarded filters', () => {
     const connection = await createTestConnection({
       organization_id: org.id,
       connector_key: 'test.connector',
+      display_name: 'Score source account',
       entity_ids: [entityId],
       created_by: user.id,
     });
@@ -230,6 +231,12 @@ describe('getContent > score path honours forwarded filters', () => {
       'quoted semantic type',
       'unattributed row',
     ]);
+    expect(result.content.find((c) => c.title === 'chatgpt high score row')).toMatchObject({
+      connection_name: 'Score source account',
+      agent_id: AGENT_A,
+      client_id: CHATGPT,
+      client_name: 'ChatGPT',
+    });
   });
 
   it('semantic_type preserves quotes and backslashes in PostgreSQL arrays', async () => {

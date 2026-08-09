@@ -153,13 +153,33 @@ export async function buildContentItems(opts: {
   ownerSlug: string | null;
   baseUrl: string | undefined;
   excerptsMap: Map<number, string>;
+  includePrivateAttribution: boolean;
 }): Promise<ContentItem[]> {
-  const { sql, rawContent, organizationId, ownerSlug, baseUrl, excerptsMap } = opts;
+  const {
+    sql,
+    rawContent,
+    organizationId,
+    ownerSlug,
+    baseUrl,
+    excerptsMap,
+    includePrivateAttribution,
+  } = opts;
 
-  // Batch-resolve client_name and parent_context in parallel — the two
-  // queries are independent (one keys by event id, the other by origin_id)
-  // and on a high-RTT DB the serial form pays the round-trip twice.
-  const idsNeedingClientName = rawContent.filter((f) => !f.client_name).map((f) => f.id);
+  // Score and text-search paths intentionally return slimmer rows than exact
+  // reads. Hydrate the attribution contract in one bounded query so all three
+  // paths render identically. The mapper below strips private identity fields
+  // for anonymous reads.
+  const idsNeedingAttribution = rawContent
+    .filter(
+      (f) =>
+        !f.client_name ||
+        (includePrivateAttribution &&
+          (!f.connection_name ||
+            !f.agent_id ||
+            !f.device_worker_id ||
+            !f.client_id))
+    )
+    .map((f) => f.id);
   const parentExternalIds = rawContent
     .filter(
       (f) => f.origin_parent_id && !rawContent.some((r) => r.origin_id === f.origin_parent_id)
@@ -167,16 +187,56 @@ export async function buildContentItems(opts: {
     .map((f) => f.origin_parent_id as string);
   const uniqueParentIds = [...new Set(parentExternalIds)];
 
-  const [clientRows, parentRows] = await Promise.all([
-    idsNeedingClientName.length > 0
+  const [attributionRows, parentRows] = await Promise.all([
+    idsNeedingAttribution.length > 0
       ? sql`
-        SELECT e.id, oc.client_name
-        FROM current_event_records e
-        JOIN oauth_clients oc ON oc.id = e.client_id
-        WHERE e.id = ANY(${`{${idsNeedingClientName.join(',')}}`}::bigint[])
-          AND e.client_id IS NOT NULL
+        SELECT
+          e.id,
+          e.client_id,
+          oc.client_name,
+          COALESCE(direct_connection.display_name, metadata_connection.display_name)
+            AS connection_name,
+          COALESCE(
+            NULLIF(e.metadata->>'agent_id', ''),
+            NULLIF(source_run.approved_input->>'agent_id', '')
+          ) AS agent_id,
+          ag.name AS agent_name,
+          COALESCE(
+            NULLIF(e.metadata->>'device_worker_id', ''),
+            NULLIF(source_run.approved_input->>'device_worker_id', '')
+          ) AS device_worker_id,
+          dw.label AS device_label,
+          dw.platform AS device_platform
+        FROM events e
+        LEFT JOIN oauth_clients oc ON oc.id = e.client_id
+        LEFT JOIN connections direct_connection
+          ON direct_connection.id = e.connection_id
+         AND direct_connection.organization_id = e.organization_id
+        LEFT JOIN connections metadata_connection
+          ON metadata_connection.id = CASE
+            WHEN (e.metadata->>'source_connection_id') ~ '^[0-9]{1,18}$'
+            THEN (e.metadata->>'source_connection_id')::bigint
+          END
+         AND metadata_connection.organization_id = e.organization_id
+        LEFT JOIN runs source_run
+          ON source_run.id = e.run_id
+         AND source_run.organization_id = e.organization_id
+        LEFT JOIN agents ag
+          ON ag.id = COALESCE(
+            NULLIF(e.metadata->>'agent_id', ''),
+            NULLIF(source_run.approved_input->>'agent_id', '')
+          )
+         AND ag.organization_id = e.organization_id
+        LEFT JOIN device_workers dw
+          ON dw.id::text = COALESCE(
+            NULLIF(e.metadata->>'device_worker_id', ''),
+            NULLIF(source_run.approved_input->>'device_worker_id', '')
+          )
+         AND dw.organization_id = e.organization_id
+        WHERE e.organization_id = ${organizationId}
+          AND e.id = ANY(${pgBigintArray(idsNeedingAttribution)}::bigint[])
       `
-      : Promise.resolve([] as Array<{ id: number; client_name: string }>),
+      : Promise.resolve([] as Array<Record<string, unknown>>),
     uniqueParentIds.length > 0
       ? sql`
         SELECT origin_id, author_name, title, payload_text, occurred_at, source_url, score
@@ -188,9 +248,9 @@ export async function buildContentItems(opts: {
       : Promise.resolve([] as Array<Record<string, unknown>>),
   ]);
 
-  const clientNameMap = new Map<number, string>();
-  for (const row of clientRows) {
-    clientNameMap.set(Number(row.id), String(row.client_name));
+  const attributionMap = new Map<number, ContentRow>();
+  for (const row of attributionRows) {
+    attributionMap.set(Number(row.id), row as unknown as ContentRow);
   }
 
   const parentContextMap = new Map<string, ContentItem['parent_context']>();
@@ -210,6 +270,7 @@ export async function buildContentItems(opts: {
   const contentItems: ContentItem[] = rawContent.map((f) => {
     const metadata = parseJsonObject(f.metadata);
     const classifications = parseJsonObject(f.classifications);
+    const attribution = attributionMap.get(Number(f.id));
 
     return {
       id: f.id,
@@ -224,13 +285,34 @@ export async function buildContentItems(opts: {
       payload_template: f.payload_template ? parseJsonObject(f.payload_template) : null,
       attachments: parseRecordArray(f.attachments),
       author_name: f.author_name ?? null,
-      client_name: f.client_name ?? clientNameMap.get(f.id) ?? null,
+      client_id: includePrivateAttribution
+        ? (f.client_id ?? attribution?.client_id ?? null)
+        : null,
+      client_name: f.client_name ?? attribution?.client_name ?? null,
       connection_id: f.connection_id == null ? null : Number(f.connection_id),
+      connection_name: includePrivateAttribution
+        ? (f.connection_name ?? attribution?.connection_name ?? null)
+        : null,
       feed_id: f.feed_id == null ? null : Number(f.feed_id),
       feed_key: f.feed_key ?? null,
       feed_name: f.feed_name ?? null,
       behavior_id: f.behavior_id == null ? null : Number(f.behavior_id),
       behavior_name: f.behavior_name ?? null,
+      agent_id: includePrivateAttribution
+        ? (f.agent_id ?? attribution?.agent_id ?? null)
+        : null,
+      agent_name: includePrivateAttribution
+        ? (f.agent_name ?? attribution?.agent_name ?? null)
+        : null,
+      device_worker_id: includePrivateAttribution
+        ? (f.device_worker_id ?? attribution?.device_worker_id ?? null)
+        : null,
+      device_label: includePrivateAttribution
+        ? (f.device_label ?? attribution?.device_label ?? null)
+        : null,
+      device_platform: includePrivateAttribution
+        ? (f.device_platform ?? attribution?.device_platform ?? null)
+        : null,
       title: f.title,
       text_content: f.payload_text ?? '',
       rating: (metadata.rating as string) || null,

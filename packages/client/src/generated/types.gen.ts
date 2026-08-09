@@ -3868,11 +3868,19 @@ export type ManageOperationsResponses = {
           member_run_ids?: Array<number>;
           platform?: string;
           connection_id?: number;
+          connection_name?: string;
           feed_id?: number;
           feed_key?: string;
           feed_name?: string;
           behavior_id?: number;
           behavior_name?: string;
+          agent_id?: string;
+          agent_name?: string;
+          client_id?: string;
+          client_name?: string;
+          device_worker_id?: string;
+          device_label?: string;
+          device_platform?: string;
         }>;
         total: number;
         limit: number;
@@ -5011,6 +5019,10 @@ export type ReadKnowledgeData = {
      * Limit results to events this Behavior has analyzed (any window). Distinct from behavior_id, which enters Behavior read mode.
      */
     analyzed_by_behavior_id?: number;
+    /**
+     * Limit results to events this Behavior WROTE — its outputs, entity change sets, canvas revisions and notifications. The counterpart to analyzed_by_behavior_id, which returns what it READ; the two are not interchangeable.
+     */
+    produced_by_behavior_id?: number;
     /**
      * Filter events published since this date. Supports: ISO 8601 ("2025-01-01"), named aliases ("yesterday", "last_week"), or relative ("7d", "30d", "1m", "1y"). When used with behavior_id, also sets window_start in the generated token.
      */

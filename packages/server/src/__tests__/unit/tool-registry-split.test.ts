@@ -10,6 +10,7 @@ import {
 	getMcpTools,
 	getTool,
 	isInternalDispatchTool,
+	isRestDispatchTool,
 } from "../../tools/registry";
 
 /** Agent MCP flat tools (excluding meta scripting/discovery) → SDK dotted path. */
@@ -80,6 +81,8 @@ describe("tool registry split", () => {
 		// The render helper is MCP-only and deliberately does not expand the
 		// ClientSDK/REST agent surface.
 		expect(AGENT_TOOL_NAMES.size).toBe(6);
+		expect(isRestDispatchTool("render_lobu_view")).toBe(false);
+		expect(isRestDispatchTool("search_memory")).toBe(true);
 	});
 
 	it("maps internal flat tools to ClientSDK methods for run_sdk/query_sdk parity", () => {

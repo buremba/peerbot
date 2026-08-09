@@ -5,9 +5,8 @@
  * `POST /api/{org}/manage_operations {"action":"list_runs"}` served the same
  * rows anonymously — same data, two doors, opposite answers.
  *
- * These tests pin the boundary itself: which requests `mcpAuth` lets reach a
- * handler at all. They deliberately do NOT exercise the tools; whether the
- * handler then returns rows is `executeTool`'s second gate, covered elsewhere.
+ * These tests pin both transport gates: which requests `mcpAuth` admits and
+ * which registered tools the generic REST dispatcher may execute.
  */
 
 import { Hono } from "hono";
@@ -15,6 +14,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { mcpAuth } from "../../auth/middleware";
 import { REST_TOOL_GET_ROUTES } from "../../http/rest-tool-routes";
 import type { Env } from "../../index";
+import { restToolProxy } from "../../rest-api";
 import { initWorkspaceProvider } from "../../workspace";
 import { clearMultiTenantCachesForTests } from "../../workspace/multi-tenant-caches";
 import { cleanupTestDatabase } from "../setup/test-db";
@@ -176,5 +176,27 @@ describe("public-org REST transport parity", () => {
 				action: "list",
 			})
 		).toBe(401);
+	});
+
+	it("rejects the MCP-only render tool at the generic REST execution route", async () => {
+		const proxyApp = new Hono<{ Bindings: Env }>();
+		proxyApp.post("/api/:orgSlug/:toolName", (c) => restToolProxy(c));
+		const res = await proxyApp.request(
+			"/api/test-org/render_lobu_view",
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					action: "render",
+					blocks: [{ type: "text", value: "must stay MCP-only" }],
+				}),
+			},
+			testEnv
+		);
+
+		expect({ status: res.status, body: await res.json() }).toEqual({
+			status: 404,
+			body: { error: "Tool not found: render_lobu_view" },
+		});
 	});
 });

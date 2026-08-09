@@ -181,7 +181,7 @@ function sanitizeBlock(
   }
   return {
     ...block,
-    fields: block.fields.slice(0, 100).map((field) => ({
+    fields: block.fields.map((field) => ({
       label: truncateForDisplay(field.label, MAX_LABEL_LENGTH) || 'Field',
       ...(field.before !== undefined
         ? { before: truncateForDisplay(field.before, MAX_TEXT_LENGTH) }

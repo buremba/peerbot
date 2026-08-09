@@ -359,6 +359,10 @@ const INTERNAL_TOOL_NAMES: ReadonlySet<string> = new Set(
   INTERNAL_DISPATCH_TOOLS.map((tool) => tool.name)
 );
 
+const REST_DISPATCH_TOOL_NAMES: ReadonlySet<string> = new Set(
+  ALL_DISPATCH_TOOLS.map((tool) => tool.name)
+);
+
 // ============================================
 // Helper Functions
 // ============================================
@@ -376,6 +380,11 @@ export function getTool(name: string): ToolDefinition | undefined {
 
 export function isInternalDispatchTool(name: string): boolean {
   return INTERNAL_TOOL_NAMES.has(name);
+}
+
+/** Whether a registered tool may be invoked through the generic REST proxy. */
+export function isRestDispatchTool(name: string): boolean {
+  return REST_DISPATCH_TOOL_NAMES.has(name);
 }
 
 /**

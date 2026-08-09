@@ -30,10 +30,6 @@ on:
   # and uid-0 breakages instead of waiting for someone to file an issue.
   push:
     branches: [main]
-  # After a release publishes, verify what actually landed on the registry.
-  workflow_run:
-    workflows: ["Publish Packages"]
-    types: [completed]
   # Daily canary. The registry can break without us pushing anything (a
   # dependency yanks a version, a transitive install changes), and a bad
   # release otherwise sits undetected until a user files an issue.

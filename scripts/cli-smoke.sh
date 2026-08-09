@@ -219,14 +219,12 @@ BADPROJ="$RUN_DIR/badproj"; mkdir -p "$BADPROJ"
 printf 'import { defineConfig } from "@lobu/cli/config";\nexport default defineConfig({ agents: [ }\n' > "$BADPROJ/lobu.config.ts"
 expect_exit "lobu validate (broken config -> non-zero)" 1 "$BADPROJ" validate
 
-# doctor's DB line is backend-specific: embedded mode prints "embedded
-# Postgres"; an external DATABASE_URL connects for real and prints no such
-# marker. Gate the embedded assertion on the mode (mirrors sdk-e2e.sh); always
-# assert there's no spurious connect failure.
+# The smoke always owns embedded Postgres, so doctor must recognize that
+# backend and must not report a spurious connection failure.
 runlobu "$PROJ" doctor
 if grep -qiE "connect failed|ENOTFOUND" "$OUT"; then
   softfail "lobu doctor false-failed the DB check (lobu doctor)"
-elif [ -z "${DATABASE_URL:-}" ] && ! grep -qF "embedded Postgres" "$OUT"; then
+elif ! grep -qF "embedded Postgres" "$OUT"; then
   softfail "lobu doctor did not recognize the embedded Postgres backend"
 else
   pass "lobu doctor (DB check healthy)"

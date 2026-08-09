@@ -120,6 +120,7 @@ describe("release package publication ordering", () => {
     const verify = jobBlock(publish, "verify-published-artifact");
 
     expect(artifactSmoke).toContain("workflow_call:");
+    expect(artifactSmoke).not.toContain("workflow_run:");
     expect(verify).toContain("needs: publish-packages");
     expect(verify).toContain(
       "uses: ./.github/workflows/published-artifact-smoke.yml"

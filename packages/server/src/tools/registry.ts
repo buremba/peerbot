@@ -191,6 +191,11 @@ const READ_ONLY = {
   idempotentHint: true,
 } as const;
 
+const READ_ONLY_OPEN_WORLD = {
+  ...READ_ONLY,
+  openWorldHint: true,
+} as const;
+
 const WRITE_WITHOUT_CONFIRM: ToolAnnotations = {
   readOnlyHint: false,
   openWorldHint: false,
@@ -211,7 +216,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
     // affordances. See search.ts → PublicSearchSchema.
     publicInputSchema: PublicSearchSchema,
     outputSchema: UnifiedSearchResultSchema,
-    annotations: { ...READ_ONLY, title: 'Search memory' },
+    annotations: { ...READ_ONLY_OPEN_WORLD, title: 'Search memory' },
     securityScopes: ['mcp:read'],
     handler: search,
   },
@@ -241,7 +246,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
       'Read workspace data through typed SDK methods. Query entities, relationships, feeds, operations, metrics, and more. Use this for lookups and searches that do not change data. (For writes: use run_sdk. To discover available methods: use search_sdk. For polling: use await ctx.sleep(ms) in your script.)',
     inputSchema: QuerySchema,
     outputSchema: SdkScriptResultSchema,
-    annotations: { ...READ_ONLY, title: 'Query SDK (read-only)' },
+    annotations: { ...READ_ONLY_OPEN_WORLD, title: 'Query SDK (read-only)' },
     securityScopes: ['mcp:read'],
     handler: querySdkScript,
   },
@@ -535,7 +540,8 @@ type ListedToolOptions = {
 };
 
 /**
- * Agent-facing tools for MCP `tools/list` and external OpenAPI.
+ * Agent-facing tools for MCP `tools/list`. External OpenAPI excludes Apps-only
+ * presentation tools with `includeAppTools: false`.
  */
 export function getMcpTools(options?: ListedToolOptions) {
   return getListedTools(options?.includeAppTools === false ? AGENT_TOOLS : ALL_MCP_TOOLS, options);

@@ -115,7 +115,7 @@ describe('MCP Authentication', () => {
       expect(response.status).toBe(401);
       const challenge = response.headers.get('WWW-Authenticate');
       expect(challenge).toContain(
-        `resource_metadata="http://localhost/.well-known/oauth-protected-resource/mcp/${publicOrg.slug}"`
+        'resource_metadata="http://localhost/.well-known/oauth-protected-resource"'
       );
       expect(challenge).not.toContain('realm=');
     });

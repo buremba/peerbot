@@ -17,8 +17,9 @@ function quote(value: string): string {
  * origin used for unrelated generated links.
  */
 export function protectedResourceMetadataUrl(request: Request): string {
-  const servingOrigin = resolveBaseUrl({ request, skipEnvOverride: true });
-  const pathname = new URL(request.url).pathname.replace(/\/+$/, '') || '/';
+  const resourceUrl = new URL(canonicalMcpResourceUrl(request));
+  const servingOrigin = resourceUrl.origin;
+  const pathname = resourceUrl.pathname;
   if (pathname === '/mcp') {
     return `${servingOrigin}/.well-known/oauth-protected-resource`;
   }
@@ -26,6 +27,13 @@ export function protectedResourceMetadataUrl(request: Request): string {
     return `${servingOrigin}/.well-known/oauth-protected-resource${pathname}`;
   }
   return `${servingOrigin}/.well-known/oauth-protected-resource`;
+}
+
+/** Resolve the externally served MCP resource URL without its query string. */
+export function canonicalMcpResourceUrl(request: Request): string {
+  const servingOrigin = resolveBaseUrl({ request, skipEnvOverride: true });
+  const pathname = new URL(request.url).pathname.replace(/\/+$/, '') || '/';
+  return `${servingOrigin}${pathname}`;
 }
 
 /** Build an RFC 6750 challenge, using RFC 9728 resource_metadata for MCP. */

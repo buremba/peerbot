@@ -24,7 +24,10 @@ import {
 import type { Context } from 'hono';
 import { bindRequestAbortToStream, type AbortableStream } from './events/sse-abort-bridge';
 import { OAuthClientsStore } from './auth/oauth/clients';
-import { buildBearerChallenge } from './auth/oauth/resource-challenge';
+import {
+  buildBearerChallenge,
+  canonicalMcpResourceUrl,
+} from './auth/oauth/resource-challenge';
 import {
   getRequiredAccessLevel,
   hasRequiredMcpScope,
@@ -157,7 +160,7 @@ const formatRef = { rawJson: false };
  * owletto's `dist-mcp-apps/`. Served over `resources/read` + the asset route;
  * the decoupled `render_lobu_view` tool links to the resource and supplies a
  * server-authored LobuViewV1 in `structuredContent`. Adding an app = one entry
- * plus its owletto `src/mcp-apps/<dir>` build — no gateway change.
+ * plus its owletto `src/mcp-apps/<dir>` build — no other gateway plumbing.
  */
 const MCP_APP_RESOURCES: Record<
   string,
@@ -180,7 +183,7 @@ const MCP_APP_RESOURCES: Record<
   [LOBU_INTERACTION_RESOURCE_URI]: {
     name: 'Interaction',
     description:
-      'Interactive Lobu cards rendered in a sandboxed iframe; actions use standard MCP tool calls or host-mediated external links.',
+      'Interactive Lobu cards rendered in a sandboxed iframe with host-mediated external links.',
     appDir: 'interaction',
     csp: {},
     prefersBorder: true,
@@ -224,7 +227,7 @@ const MCP_SKILL_RESOURCES: Record<
 function createServerForContext(
   env: Env,
   authCtx: SessionAuthContext,
-  resolvedOrigin: string
+  challengeResourceUrl: string
 ): Server {
   const server = new Server(
     { name: 'lobu-mcp', version: '0.2.0' },
@@ -261,7 +264,7 @@ function createServerForContext(
               _meta: {
                 ...(t._meta ?? {}),
                 // ChatGPT's legacy Apps clients read the same declarations
-                // from `_meta`; current MCP clients use the top-level field.
+                // from `_meta`; hosts that support the top-level field use it.
                 ...(securitySchemes && { securitySchemes }),
               },
             }
@@ -285,9 +288,6 @@ function createServerForContext(
           ui: {
             csp: meta.csp,
             prefersBorder: meta.prefersBorder,
-            // Origin the host should associate with this UI (the gateway that
-            // serves the bundle + brokers the `tools/call` actions).
-            domain: resolvedOrigin,
           },
         },
       })),
@@ -325,7 +325,6 @@ function createServerForContext(
             ui: {
               csp: app.csp,
               prefersBorder: app.prefersBorder,
-              domain: resolvedOrigin,
             },
           },
         },
@@ -405,7 +404,7 @@ function createServerForContext(
         (authCtx.tokenType === 'oauth' || authCtx.tokenType === 'pat') &&
         !hasRequiredMcpScope(requiredAccess, authCtx.scopes)
           ? buildBearerChallenge(
-              new Request(authCtx.requestUrl ?? `${resolvedOrigin}/mcp`),
+              new Request(challengeResourceUrl),
               {
                 error: 'insufficient_scope',
                 errorDescription: error?.message ?? 'The token lacks the required MCP scope.',
@@ -937,7 +936,7 @@ function createSessionTransport(
   env: Env,
   authCtx: SessionAuthContext,
   sessionIdGenerator: () => string,
-  resolvedOrigin: string
+  challengeResourceUrl: string
 ): { transport: WebStandardStreamableHTTPServerTransport; server: Server } {
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator,
@@ -960,7 +959,7 @@ function createSessionTransport(
       void deletePersistedSession(transport.sessionId);
     }
   };
-  const server = createServerForContext(env, authCtx, resolvedOrigin);
+  const server = createServerForContext(env, authCtx, challengeResourceUrl);
   return { transport, server };
 }
 
@@ -1186,7 +1185,7 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
             c.env,
             recoveredAuthCtx,
             () => sessionId,
-            resolvePublicOrigin(req.url)
+            canonicalMcpResourceUrl(req)
           );
           await server.connect(transport);
           await initializeRecoveredSession(transport, sessionId, req.url);
@@ -1267,7 +1266,7 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
       c.env,
       authCtx,
       () => randomUUID(),
-      resolvePublicOrigin(req.url)
+      canonicalMcpResourceUrl(req)
     );
     await server.connect(transport);
     const response = await handleAndMaybeConvert(transport, req, wantsSSE);

@@ -94,7 +94,19 @@ type RenderLobuViewArgs = Static<typeof RenderLobuViewSchema>;
 type LobuView = Static<typeof LobuViewSchema>;
 
 const SENSITIVE_KEY =
-  /(?:^|[_-])(authorization|cookie|credential|password|secret|token|api[_-]?key)(?:$|[_-])/i;
+  /(?:^|[_-])(authorization|cookie|credential|password|private[_-]?key|secret|token|api[_-]?key)(?:$|[_-])/i;
+const KNOWN_SECRET_SHAPE_RE =
+  /\b(?:sk[-_][a-z0-9_-]{8,}|xox[baprs]-[a-z0-9-]{8,}|gh[pousr]_[a-z0-9_]{12,}|AKIA[A-Z0-9]{16}|eyJ[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,})\b/gi;
+const HEADER_CREDENTIAL_RE =
+  /\b(authorization|proxy-authorization|www-authenticate|set-cookie|cookie)\s*["']?\s*[:=]\s*[^\n]+/gi;
+const AUTH_SCHEME_RE =
+  /\b(bearer|basic|digest)\s+(?:[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s,]+)(?:\s*,\s*[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s,]+))*|[a-z0-9._~+/=:-]+)/gi;
+const SENSITIVE_ASSIGNMENT_RE =
+  /(api[_-]?key|credential|password|private[_-]?key|secret|token)\s*["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s'"}]+)/gi;
+const MAX_TEXT_LENGTH = 20_000;
+const MAX_CODE_LENGTH = 40_000;
+const MAX_LABEL_LENGTH = 120;
+const MAX_TITLE_LENGTH = 200;
 const DIFF_ROUTING_KEYS = new Set([
   'action',
   'agent_id',
@@ -107,21 +119,76 @@ const DIFF_ROUTING_KEYS = new Set([
   'watcher_id',
 ]);
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isSensitiveKey(key: string): boolean {
+  const snakeCase = key.replace(/([a-z0-9])([A-Z])/g, '$1_$2');
+  return SENSITIVE_KEY.test(snakeCase);
+}
+
+function redactSensitiveText(value: string): string {
+  return value
+    .replace(HEADER_CREDENTIAL_RE, (_match, key: string) => `${key}=[redacted]`)
+    .replace(AUTH_SCHEME_RE, (_match, scheme: string) => `${scheme} [redacted]`)
+    .replace(SENSITIVE_ASSIGNMENT_RE, (_match, key: string) => `${key}=[redacted]`)
+    .replace(KNOWN_SECRET_SHAPE_RE, '[redacted]');
+}
+
+function truncateRedactedText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 1)}…`;
+}
+
+function truncateForDisplay(value: string, maxLength: number): string {
+  return truncateRedactedText(redactSensitiveText(value), maxLength);
+}
+
 function redactForDisplay(value: unknown): unknown {
+  if (typeof value === 'string') return redactSensitiveText(value);
   if (Array.isArray(value)) return value.map(redactForDisplay);
-  if (!value || typeof value !== 'object') return value;
+  if (!isRecord(value)) return value;
   return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).map(([key, inner]) => [
+    Object.entries(value).map(([key, inner]) => [
       key,
-      SENSITIVE_KEY.test(key) ? '[redacted]' : redactForDisplay(inner),
+      isSensitiveKey(key) ? '[redacted]' : redactForDisplay(inner),
     ])
   );
 }
 
-function displayValue(value: unknown): string {
+function displayValue(value: unknown, maxLength = MAX_TEXT_LENGTH): string {
   if (value === undefined || value === null) return '';
-  if (typeof value === 'string') return value;
-  return JSON.stringify(redactForDisplay(value), null, 2);
+  if (typeof value === 'string') return truncateForDisplay(value, maxLength);
+  const serialized = JSON.stringify(redactForDisplay(value), null, 2);
+  return truncateRedactedText(serialized ?? String(value), maxLength);
+}
+
+function sanitizeBlock(
+  block: Static<typeof LobuViewBlockSchema>
+): Static<typeof LobuViewBlockSchema> {
+  if (block.type === 'text') {
+    return {
+      ...block,
+      ...(block.label !== undefined
+        ? { label: truncateForDisplay(block.label, MAX_LABEL_LENGTH) }
+        : {}),
+      value: truncateForDisplay(block.value, MAX_TEXT_LENGTH),
+    };
+  }
+  if (block.type === 'code') {
+    return { ...block, value: truncateForDisplay(block.value, MAX_CODE_LENGTH) };
+  }
+  return {
+    ...block,
+    fields: block.fields.slice(0, 100).map((field) => ({
+      label: truncateForDisplay(field.label, MAX_LABEL_LENGTH) || 'Field',
+      ...(field.before !== undefined
+        ? { before: truncateForDisplay(field.before, MAX_TEXT_LENGTH) }
+        : {}),
+      after: truncateForDisplay(field.after, MAX_TEXT_LENGTH),
+    })),
+  };
 }
 
 function approvalBlocks(row: {
@@ -130,29 +197,25 @@ function approvalBlocks(row: {
   metadata: Record<string, unknown> | null;
 }): Static<typeof LobuViewBlockSchema>[] {
   const metadata = row.metadata ?? {};
-  const proposal =
-    metadata.proposal && typeof metadata.proposal === 'object'
-      ? (metadata.proposal as Record<string, unknown>)
-      : null;
-  const current =
-    metadata.current && typeof metadata.current === 'object'
-      ? (metadata.current as Record<string, unknown>)
-      : null;
-  const fields =
-    metadata.fields && typeof metadata.fields === 'object'
-      ? (metadata.fields as Record<string, unknown>)
-      : null;
+  const proposal = isRecord(metadata.proposal) ? metadata.proposal : null;
+  const current = isRecord(metadata.current) ? metadata.current : null;
+  const fields = isRecord(metadata.fields) ? metadata.fields : null;
   const proposed = fields ?? proposal;
 
   if (proposed) {
     const diffFields = Object.entries(proposed)
       .filter(([key, value]) => !DIFF_ROUTING_KEYS.has(key) && value !== undefined)
+      .slice(0, 100)
       .map(([key, value]) => ({
-        label: key,
+        label: truncateForDisplay(key, MAX_LABEL_LENGTH) || 'Field',
         ...(current && current[key] !== undefined
-          ? { before: displayValue(current[key]) }
+          ? {
+              before: isSensitiveKey(key)
+                ? '[redacted]'
+                : displayValue(current[key]),
+            }
           : {}),
-        after: displayValue(value),
+        after: isSensitiveKey(key) ? '[redacted]' : displayValue(value),
       }));
     if (diffFields.length > 0) return [{ type: 'diff', fields: diffFields }];
   }
@@ -161,7 +224,7 @@ function approvalBlocks(row: {
     return [
       {
         type: 'code',
-        value: JSON.stringify(redactForDisplay(row.interaction_input), null, 2),
+        value: displayValue(row.interaction_input, MAX_CODE_LENGTH),
       },
     ];
   }
@@ -169,7 +232,10 @@ function approvalBlocks(row: {
   return [
     {
       type: 'text',
-      value: row.content || 'Review this pending Lobu action.',
+      value: truncateForDisplay(
+        row.content || 'Review this pending Lobu action.',
+        MAX_TEXT_LENGTH
+      ),
       muted: true,
     },
   ];
@@ -209,7 +275,10 @@ async function buildApprovalView(
   if (!row) throw new ToolUserError(`Approval run ${runId} was not found`, 404);
 
   const status = row.interaction_status ?? 'pending';
-  const title = (row.title ?? `Approval run ${runId}`).replace(/\s+—\s+pending approval$/i, '');
+  const baseTitle = (row.title ?? `Approval run ${runId}`).replace(
+    /\s+—\s+pending approval$/i,
+    ''
+  );
   const actions: LobuView['actions'] = [];
   if (status === 'pending') {
     const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
@@ -229,7 +298,10 @@ async function buildApprovalView(
 
   return {
     version: 1,
-    title: status === 'pending' ? title : `${title} · ${status}`,
+    title: truncateForDisplay(
+      status === 'pending' ? baseTitle : `${baseTitle} · ${status}`,
+      MAX_TITLE_LENGTH
+    ),
     tone: status === 'pending' ? 'warning' : 'default',
     blocks: approvalBlocks({
       content: row.payload_text,
@@ -248,9 +320,11 @@ const renderLobuViewImpl = async (
   if (args.action === 'review_approval') return buildApprovalView(args.run_id, env, ctx);
   return {
     version: 1,
-    ...(args.title ? { title: args.title } : {}),
+    ...(args.title !== undefined
+      ? { title: truncateForDisplay(args.title, MAX_TITLE_LENGTH) }
+      : {}),
     ...(args.tone ? { tone: args.tone } : {}),
-    blocks: args.blocks,
+    blocks: args.blocks.map(sanitizeBlock),
     actions: [],
   };
 };

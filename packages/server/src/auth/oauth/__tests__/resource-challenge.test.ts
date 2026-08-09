@@ -1,12 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'bun:test';
 import {
   buildBearerChallenge,
+  canonicalMcpResourceUrl,
   protectedResourceMetadataUrl,
 } from '../resource-challenge';
 
 describe('MCP OAuth resource challenges', () => {
-  it('uses the actual serving origin instead of PUBLIC_GATEWAY_URL', () => {
-    process.env.PUBLIC_GATEWAY_URL = 'https://app.lobu.ai/lobu';
+  it('uses the forwarded serving origin', () => {
     const request = new Request('https://internal.invalid/mcp', {
       headers: {
         host: 'lobu.ai',
@@ -18,6 +18,7 @@ describe('MCP OAuth resource challenges', () => {
     expect(protectedResourceMetadataUrl(request)).toBe(
       'https://lobu.ai/.well-known/oauth-protected-resource'
     );
+    expect(canonicalMcpResourceUrl(request)).toBe('https://lobu.ai/mcp');
     expect(buildBearerChallenge(request)).toBe(
       'Bearer resource_metadata="https://lobu.ai/.well-known/oauth-protected-resource"'
     );

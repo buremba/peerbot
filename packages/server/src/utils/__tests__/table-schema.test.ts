@@ -1,5 +1,5 @@
 import { describe, expect, inject, it } from 'vitest';
-import { validateAndScopeQuery } from '../execute-data-sources';
+import { buildScopedQuery, validateAndScopeQuery } from '../execute-data-sources';
 import {
   buildColumnList,
   physicalTableFor,
@@ -132,6 +132,76 @@ describe('validateAndScopeQuery', () => {
     expect(scoped.sql).toMatch(
       /public\.entity_relationship_types rt LEFT JOIN public\.organization o.*rt\.deleted_at IS NULL.*rt\.organization_id = \$1 OR o\.visibility = 'public'/
     );
+  });
+
+  it('does not bind an unused organization parameter for tableless SELECTs', () => {
+    const sql = 'SELECT generate_series(1, 25) AS row_number';
+    const scoped = validateAndScopeQuery(sql, 'org_test', {
+      safeColumns: SAFE_COLUMN_DEFS,
+    });
+
+    expect(scoped.tableRefs).toEqual([]);
+    expect(scoped.sql).toBe(sql);
+    expect(scoped.params).toEqual([]);
+  });
+
+  it('keeps tableless params empty when an unused entity context is present', () => {
+    const scoped = buildScopedQuery('SELECT 1 AS value', [], {
+      organizationId: 'org_test',
+      entityIds: [42],
+    });
+
+    expect(scoped.sql).toBe('SELECT 1 AS value');
+    expect(scoped.params).toEqual([]);
+  });
+
+  it('binds repeated tableless entity placeholders once with compiler casts', () => {
+    const scoped = buildScopedQuery(
+      'SELECT {{entityId}} AS first_id, {{entityId}} AS second_id',
+      [],
+      {
+        organizationId: 'org_test',
+        entityIds: [42],
+      }
+    );
+
+    expect(scoped.sql).toBe('SELECT $1::bigint AS first_id, $1::bigint AS second_id');
+    expect(scoped.params).toEqual([42]);
+  });
+
+  it('binds organization context only when a tableless query references it', () => {
+    const scoped = buildScopedQuery('SELECT {{organizationId}} AS organization_id', [], {
+      organizationId: 'org_test',
+    });
+
+    expect(scoped.sql).toBe('SELECT $1 AS organization_id');
+    expect(scoped.params).toEqual(['org_test']);
+  });
+
+  it('binds tableless query context values with text casts', () => {
+    const scoped = buildScopedQuery('SELECT {{query.name}} AS name', [], {
+      organizationId: 'org_test',
+      query: { name: 'Alpha' },
+    });
+
+    expect(scoped.sql).toBe('SELECT $1::text AS name');
+    expect(scoped.params).toEqual(['Alpha']);
+  });
+
+  it('rejects unresolved placeholders in tableless queries', () => {
+    expect(() =>
+      buildScopedQuery('SELECT {{unknown}} AS value', [], {
+        organizationId: 'org_test',
+      })
+    ).toThrow('Unknown context variables: {{unknown}}');
+  });
+
+  it('rejects raw positional parameters in tableless queries', () => {
+    expect(() =>
+      buildScopedQuery('SELECT $1 AS value', [], {
+        organizationId: 'org_test',
+      })
+    ).toThrow('Positional parameters ($1, $2, ...) are not allowed');
   });
 });
 

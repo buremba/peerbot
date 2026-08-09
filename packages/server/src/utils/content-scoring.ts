@@ -453,8 +453,7 @@ export async function getNormalizedScoreContent(
       FROM current_event_records f
       LEFT JOIN connections s ON f.connection_id = s.id
       LEFT JOIN feeds fd ON fd.id = f.feed_id
-      LEFT JOIN watchers w ON w.id = f.behavior_id
-      LEFT JOIN watcher_versions wv ON w.current_version_id = wv.id
+      LEFT JOIN watcher_versions wv ON wv.id = f.behavior_version_id
       ${joinClause}
       WHERE ${whereClause}
     )

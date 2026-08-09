@@ -131,8 +131,7 @@ function buildContentQuery(opts: {
     LEFT JOIN connections c ON c.id = ${a}.connection_id
     LEFT JOIN oauth_clients oc ON oc.id = ${a}.client_id
     LEFT JOIN feeds fd ON fd.id = ${a}.feed_id
-    LEFT JOIN watchers w ON w.id = ${a}.behavior_id
-    LEFT JOIN watcher_versions wv ON w.current_version_id = wv.id
+    LEFT JOIN watcher_versions wv ON wv.id = ${a}.behavior_version_id
     WHERE ${where}
     ORDER BY ${orderBy}
     LIMIT ${limit}

@@ -614,8 +614,7 @@ export async function listNotifications(opts: {
     FROM notification_targets t
     JOIN events e ON e.id = t.event_id
     LEFT JOIN feeds fd ON fd.id = e.feed_id
-    LEFT JOIN watchers w ON w.id = e.behavior_id
-    LEFT JOIN watcher_versions wv ON w.current_version_id = wv.id
+    LEFT JOIN watcher_versions wv ON wv.id = e.behavior_version_id
     -- Approval notifications point at proposal events; resolve the run here so
     -- consumers see its current approval state rather than an emitted snapshot.
     LEFT JOIN events pe

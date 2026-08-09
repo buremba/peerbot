@@ -1177,6 +1177,21 @@ describe('getContent > source attribution fields across query branches', () => {
       embedding: Array.from({ length: 768 }, () => Math.random()),
     });
     eventId = ev.id;
+
+    // Divergence probe: bump the behavior's CURRENT version after the event was
+    // produced. Attribution must keep the producing version's name (version 1,
+    // 'Attribution Behavior'), not the current version's ('Renamed Behavior').
+    const [v2] = await sql`
+      INSERT INTO watcher_versions (
+        watcher_id, version, name, created_by, prompt, created_at
+      ) VALUES (
+        ${watcherId}, 2, 'Renamed Behavior', ${user.id}, 'prompt', NOW()
+      )
+      RETURNING id
+    `;
+    await sql`
+      UPDATE watchers SET current_version_id = ${v2.id} WHERE id = ${watcherId}
+    `;
   });
 
   it('carries connection/feed/behavior attribution through every branch', async () => {

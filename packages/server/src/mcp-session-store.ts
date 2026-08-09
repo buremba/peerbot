@@ -9,6 +9,7 @@ export interface PersistedMcpSession {
   requestedAgentId: string | null;
   isAuthenticated: boolean;
   scopedToOrg: boolean;
+  supportsMcpApps: boolean;
   lastAccessedAt: number;
   expiresAt: number;
 }
@@ -45,6 +46,7 @@ export class McpSessionStore {
         requested_agent_id,
         is_authenticated,
         scoped_to_org,
+        supports_mcp_apps,
         last_accessed_at,
         expires_at
       ) VALUES (
@@ -56,6 +58,7 @@ export class McpSessionStore {
         ${session.requestedAgentId},
         ${session.isAuthenticated},
         ${session.scopedToOrg},
+        ${session.supportsMcpApps},
         ${new Date(session.lastAccessedAt)},
         ${new Date(session.expiresAt)}
       )
@@ -67,6 +70,7 @@ export class McpSessionStore {
         requested_agent_id = EXCLUDED.requested_agent_id,
         is_authenticated = EXCLUDED.is_authenticated,
         scoped_to_org = EXCLUDED.scoped_to_org,
+        supports_mcp_apps = EXCLUDED.supports_mcp_apps,
         last_accessed_at = EXCLUDED.last_accessed_at,
         expires_at = EXCLUDED.expires_at
     `;
@@ -94,6 +98,7 @@ export class McpSessionStore {
         requested_agent_id = ${session.requestedAgentId},
         is_authenticated = ${session.isAuthenticated},
         scoped_to_org = ${session.scopedToOrg},
+        supports_mcp_apps = ${session.supportsMcpApps},
         last_accessed_at = ${new Date(session.lastAccessedAt)},
         expires_at = ${new Date(session.expiresAt)}
       WHERE session_id = ${session.sessionId}
@@ -123,6 +128,7 @@ export class McpSessionStore {
       requestedAgentId: typeof row.requested_agent_id === 'string' ? row.requested_agent_id : null,
       isAuthenticated: fromBool(row.is_authenticated),
       scopedToOrg: fromBool(row.scoped_to_org),
+      supportsMcpApps: fromBool(row.supports_mcp_apps),
       lastAccessedAt: fromDate(row.last_accessed_at) ?? Date.now(),
       expiresAt: fromDate(row.expires_at) ?? Date.now(),
     };

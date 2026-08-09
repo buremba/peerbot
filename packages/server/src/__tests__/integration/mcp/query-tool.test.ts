@@ -48,9 +48,11 @@ describe('MCP query_sdk / run_sdk tool surface', () => {
     expect(byName.has('execute')).toBe(false);
 
     const expectedSafetyHints = {
-      search_memory: [true, false, false],
+      // Both can reach installed virtual-feed connectors live, beyond Lobu's
+      // persisted workspace, so they must remain explicitly open-world.
+      search_memory: [true, true, false],
       search_sdk: [true, false, false],
-      query_sdk: [true, false, false],
+      query_sdk: [true, true, false],
       query_sql: [true, false, false],
       save_memory: [false, false, false],
       run_sdk: [false, true, true],

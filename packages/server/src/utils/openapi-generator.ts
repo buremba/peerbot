@@ -4,7 +4,7 @@
  * Dynamically generates OpenAPI specification from tool registry TypeBox schemas
  */
 
-import { getMcpTools, getRawDispatchTools } from '../tools/registry';
+import { AGENT_TOOL_NAMES, getMcpTools, getRawDispatchTools } from '../tools/registry';
 import { deepCopyStrict } from './schema-copy';
 
 /**
@@ -167,7 +167,10 @@ function truncateDescription(text: string, maxLength: number = 300): string {
  * Generates OpenAPI 3.1.0 spec from tool registry
  */
 export function generateOpenAPISpec(serverUrl: string) {
-  const tools = getMcpTools();
+  // `getMcpTools()` also lists the MCP-only presentation tools. Those exist to
+  // give an MCP host a `ui://` bundle to render; a REST/OpenAPI consumer has
+  // nothing to render them with, so the spec stays the agent data surface.
+  const tools = getMcpTools().filter((tool) => AGENT_TOOL_NAMES.has(tool.name));
   const paths: Record<string, any> = {};
 
   for (const tool of tools) {

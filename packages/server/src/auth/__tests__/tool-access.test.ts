@@ -598,9 +598,9 @@ describe('checkToolAccess', () => {
 });
 
 describe('first-party tool-name coverage', () => {
-  // Both surfaces share the same dispatch (`POST /api/:orgSlug/:toolName` →
-  // `restToolProxy` → `executeTool` → `getTool(name)`); tools are listed
-  // uniformly on MCP `tools/list` as well. These tests pin registration.
+  // REST callers dispatch through `restToolProxy` → `executeTool` →
+  // `getTool(name)`, while MCP adds presentation-only Apps tools. These tests
+  // pin registration for the first-party REST callers below.
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const webSrcRoot = join(__dirname, '..', '..', '..', '..', 'web', 'src');
   // The standalone lobu-cli package was merged into @lobu/cli's `memory`

@@ -108,6 +108,7 @@ async function mcpFetch(
   mcpUrl: string,
   body: Record<string, unknown>,
   sessionId?: string,
+  protocolVersion?: string,
   contextName?: string
 ): Promise<{ data: JsonRpcResponse; usedUrl: string; response: Response }> {
   const headers: Record<string, string> = {
@@ -120,6 +121,7 @@ async function mcpFetch(
   headers.Accept = JSON_MCP_ACCEPT;
   if (sessionId) {
     headers["mcp-session-id"] = sessionId;
+    headers["MCP-Protocol-Version"] = protocolVersion ?? MCP_PROTOCOL_VERSION;
   }
 
   const { response: res, usedUrl } = await fetchMcpWithFallback(mcpUrl, {
@@ -150,7 +152,7 @@ async function mcpFetch(
 async function initializeMcpSession(
   mcpUrl: string,
   contextName?: string
-): Promise<{ sessionId: string; usedUrl: string }> {
+): Promise<{ sessionId: string; protocolVersion: string; usedUrl: string }> {
   const { data, usedUrl, response } = await mcpFetch(
     mcpUrl,
     {
@@ -163,6 +165,7 @@ async function initializeMcpSession(
         clientInfo: { name: "lobu-memory", version: "1.0.0" },
       },
     },
+    undefined,
     undefined,
     contextName
   );
@@ -180,6 +183,15 @@ async function initializeMcpSession(
     );
   }
 
+  const protocolVersion = (
+    data.result as { protocolVersion?: unknown } | undefined
+  )?.protocolVersion;
+  if (typeof protocolVersion !== "string" || protocolVersion.length === 0) {
+    throw new ApiError(
+      `MCP initialize via ${usedUrl} did not return a protocolVersion`
+    );
+  }
+
   await mcpFetch(
     mcpUrl,
     {
@@ -187,10 +199,11 @@ async function initializeMcpSession(
       method: "notifications/initialized",
     },
     sessionId,
+    protocolVersion,
     contextName
   );
 
-  return { sessionId, usedUrl };
+  return { sessionId, protocolVersion, usedUrl };
 }
 
 export async function mcpRpc(
@@ -199,7 +212,10 @@ export async function mcpRpc(
   params?: Record<string, unknown>,
   contextName?: string
 ) {
-  const { sessionId } = await initializeMcpSession(mcpUrl, contextName);
+  const { sessionId, protocolVersion } = await initializeMcpSession(
+    mcpUrl,
+    contextName
+  );
   const { data } = await mcpFetch(
     mcpUrl,
     {
@@ -209,6 +225,7 @@ export async function mcpRpc(
       params: params || {},
     },
     sessionId,
+    protocolVersion,
     contextName
   );
 

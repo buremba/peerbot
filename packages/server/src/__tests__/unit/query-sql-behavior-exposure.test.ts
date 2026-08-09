@@ -120,6 +120,25 @@ describe('Defect 3 — the agent-facing surface speaks Behavior', () => {
     );
     expect(sql).toContain('watcher_id');
   });
+
+  it('exposes Behavior lineage aliases and hides the physical watcher names', () => {
+    const names = SAFE_COLUMN_DEFS.get('behaviors')?.map((column) => column.name) ?? [];
+    expect(names).toContain('source_behavior_id');
+    expect(names).toContain('behavior_group_id');
+    expect(names).not.toContain('source_watcher_id');
+    expect(names).not.toContain('watcher_group_id');
+
+    const { sql } = scope('SELECT source_behavior_id, behavior_group_id FROM behaviors');
+    expect(sql).toContain('"source_watcher_id" as "source_behavior_id"');
+    expect(sql).toContain('"watcher_group_id" as "behavior_group_id"');
+  });
+
+  it('rejects the physical Behavior lineage column names', () => {
+    for (const column of ['source_watcher_id', 'watcher_group_id']) {
+      const result = validateTableQuery(`SELECT ${column} FROM behaviors`);
+      expect(result.valid).toBe(false);
+    }
+  });
 });
 
 describe('Defect 4 — a source saved before the rename fails loudly, not silently', () => {

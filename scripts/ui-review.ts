@@ -5,6 +5,7 @@ import {
   buildProofBody,
   findProofComment,
   isHttpsArtifact,
+  permittedFluxTailParent,
   type OwlettoPullRequest,
   parseProof,
   proofMatches,
@@ -187,6 +188,30 @@ function openPullRequest(url: string): void {
   }
 }
 
+function resolveOwlettoPullRequest(
+  repo: string,
+  headPointer: string
+): OwlettoPullRequest | null {
+  let candidate = headPointer;
+  // A short bounded walk handles consecutive Flux image bumps without ever
+  // treating arbitrary commits as visual-review proof for a product PR.
+  for (let depth = 0; depth < 20; depth += 1) {
+    const pulls = ghApi<OwlettoPullRequest[]>(
+      `repos/${repo}/commits/${candidate}/pulls`
+    );
+    const pull = selectOwlettoPullRequest(pulls, candidate);
+    if (pull) return pull;
+
+    const commit = ghApi<Parameters<typeof permittedFluxTailParent>[0]>(
+      `repos/${repo}/commits/${candidate}`
+    );
+    const parent = permittedFluxTailParent(commit);
+    if (!parent) return null;
+    candidate = parent;
+  }
+  return null;
+}
+
 function parentCommentBody(
   proof: UiReviewProof,
   proofUrl: string,
@@ -263,20 +288,17 @@ function main(): number {
     return 0;
   }
 
-  const pulls = ghApi<OwlettoPullRequest[]>(
-    `repos/${owlettoRepo}/commits/${headPointer}/pulls`
-  );
-  const owlettoPr = selectOwlettoPullRequest(pulls, headPointer);
+  const owlettoPr = resolveOwlettoPullRequest(owlettoRepo, headPointer);
   if (!owlettoPr) {
     postStatus(
       lobuRepo,
       localHead,
       "error",
-      "Owletto pointer is not an exact merged PR squash commit",
+      "Owletto pointer has no reviewable merged product PR",
       parentPr.url
     );
     throw new Error(
-      `Owletto ${headPointer} is not the squash commit of a merged ${owlettoRepo} PR`
+      `Owletto ${headPointer} is neither a merged ${owlettoRepo} PR squash commit nor a permitted Flux deploy-only tail`
     );
   }
 

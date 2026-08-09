@@ -158,6 +158,7 @@ export const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 export const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
 	resolve_path: null,
 	search_memory: null,
+	render_lobu_view: null,
 	// SDK method discovery — safe to expose; surfaces no data.
 	search_sdk: null,
 	// Internal read-paths — kept for tests that exercise public-readability

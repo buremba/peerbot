@@ -19,8 +19,9 @@
  * NAMING: `name` here is the AGENT-FACING relation name, which is not always the
  * physical table. The agent-facing product name is Behavior, so the engine's
  * `watchers` / `watcher_versions` tables are exposed as `behaviors` /
- * `behavior_versions` (see {@link PHYSICAL_TABLE_BY_RELATION}); column
- * identifiers stay internal vocabulary (`watcher_id` remains the join key).
+ * `behavior_versions` (see {@link PHYSICAL_TABLE_BY_RELATION}). Stable
+ * foreign-key identifiers on other relations may remain physical join keys,
+ * while Behavior-owned lineage fields are exposed under public aliases below.
  * A column listed here MUST exist on the physical table: `buildColumnList`
  * emits an explicit projection into the generated CTE, so a stale name breaks
  * EVERY query against the relation — including ones that reference no column at
@@ -38,8 +39,10 @@ export interface ColumnDef {
   expr?: string;
 }
 
-function cols(...names: string[]): ColumnDef[] {
-  return names.map((name) => ({ name, type: 'text' }));
+function cols(...columns: Array<string | ColumnDef>): ColumnDef[] {
+  return columns.map((column) =>
+    typeof column === 'string' ? { name: column, type: 'text' } : column
+  );
 }
 
 /**
@@ -481,8 +484,16 @@ export const QUERYABLE_SCHEMA = {
         'reaction_script_compiled',
         'reaction_input_schema',
         'connection_id',
-        'source_watcher_id',
-        'watcher_group_id',
+        {
+          name: 'source_behavior_id',
+          type: 'text',
+          expr: `${ROW_REF}"source_watcher_id"`,
+        },
+        {
+          name: 'behavior_group_id',
+          type: 'text',
+          expr: `${ROW_REF}"watcher_group_id"`,
+        },
         // Scalar columns added in earlier features (device pinning, notification
         // routing, run rate-limiting) that were missing from this list — drift
         // test caught it.
@@ -778,10 +789,12 @@ export const QUERYABLE_TABLE_NAMES = new Set(QUERYABLE_SCHEMA.tables.map((t) => 
  * caller, so exposing the physical names both leaked the vocabulary and told the
  * agent that `behaviors` — the name every other tool uses — does not exist.
  *
- * Only the RELATION is renamed. Column identifiers stay internal
+ * Foreign-key columns that point AT a behavior keep the physical name
  * (`behavior_versions.watcher_id`, `event_classifications.watcher_id`) because
- * they are the real join keys and renaming them would desync the projection
- * from the physical row.
+ * they are the real join keys. Behavior-owned lineage columns on the
+ * `behaviors` relation itself are exposed under public aliases
+ * (`source_behavior_id`, `behavior_group_id`) via an explicit `expr`, so the
+ * projection still reads the physical column.
  *
  * Every entry must be consumed by the CTE builder in `execute-data-sources`;
  * a relation with no physical mapping falls through to the entity-type-slug
@@ -817,7 +830,8 @@ export const ADMIN_ONLY_QUERYABLE_TABLES: ReadonlySet<string> = new Set([
 ]);
 
 /** table name → column definitions for use in CTE SELECT.
- *  Columns with `expr` are derived from JSONB and need special handling. */
+ *  Columns with `expr` project a SQL expression instead of the bare column
+ *  (JSONB redaction, or a public alias over a physical column). */
 export const SAFE_COLUMN_DEFS = new Map<string, ColumnDef[]>(
   QUERYABLE_SCHEMA.tables.map((t) => [t.name, t.columns])
 );

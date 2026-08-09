@@ -37,6 +37,7 @@ async function pendingUserCode(): Promise<string> {
     body: {
       client_id: client.client_id,
       scope: 'mcp:read mcp:write',
+      resource: 'http://localhost/mcp',
     },
   });
   expect(device.status).toBe(200);

@@ -10,6 +10,7 @@ import {
 	getMcpTools,
 	getTool,
 	isInternalDispatchTool,
+	isRestDispatchTool,
 } from "../../tools/registry";
 
 /** Agent MCP flat tools (excluding meta scripting/discovery) → SDK dotted path. */
@@ -70,13 +71,19 @@ describe("tool registry split", () => {
 			[
 				"query_sdk",
 				"query_sql",
+				"render_lobu_view",
 				"run_sdk",
 				"save_memory",
 				"search_memory",
 				"search_sdk",
 			].sort()
 		);
+		// The render helper is listed on MCP only: it stays out of
+		// AGENT_TOOL_NAMES, so it never reaches the generated OpenAPI/ClientSDK
+		// agent surface.
 		expect(AGENT_TOOL_NAMES.size).toBe(6);
+		expect(isRestDispatchTool("render_lobu_view")).toBe(false);
+		expect(isRestDispatchTool("manage_connections")).toBe(true);
 	});
 
 	it("maps internal flat tools to ClientSDK methods for run_sdk/query_sdk parity", () => {

@@ -142,6 +142,7 @@ describe('Stage 1 — login token carries connections:token', () => {
         grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
         device_code: da.device_code,
         client_id: client.client_id,
+        resource: `${ORIGIN}/mcp/${org.slug}`,
       },
     });
     expect(tokenRes.status).toBe(200);
@@ -222,6 +223,7 @@ describe('Stage 1 — login token carries connections:token', () => {
         client_id: client.client_id,
         redirect_uri: redirectUri,
         code_verifier: verifier,
+        resource: `${ORIGIN}/mcp/${org.slug}`,
       },
     });
     expect(tokenRes.status).toBe(200);

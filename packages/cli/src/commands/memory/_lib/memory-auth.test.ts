@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { MCP_PROTOCOL_VERSION } from "@lobu/core";
 import * as internal from "../../../internal/index.js";
+import { memoryRunCommand } from "../run.js";
 import { mcpRpc } from "./mcp.js";
 import { getSessionForOrg, getUsableToken } from "./memory-auth.js";
-import { memoryRunCommand } from "../run.js";
 
 const CLOUD_MCP_URL = "https://lobu.ai/mcp";
 
@@ -59,11 +60,23 @@ describe("memory auth URL resolution", () => {
       });
       const body = JSON.parse(String(init?.body)) as { method?: string };
       if (body.method === "initialize") {
-        return new Response(JSON.stringify({ result: {} }), {
-          status: 200,
-          headers: { "mcp-session-id": "test-session" },
-        });
+        return new Response(
+          JSON.stringify({
+            result: {
+              protocolVersion: MCP_PROTOCOL_VERSION,
+              capabilities: { tools: {} },
+            },
+          }),
+          {
+            status: 200,
+            headers: { "mcp-session-id": "test-session" },
+          }
+        );
       }
+      expect(init?.headers).toMatchObject({
+        "mcp-session-id": "test-session",
+        "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
+      });
       if (body.method === "tools/list") {
         return new Response(
           JSON.stringify({

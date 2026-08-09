@@ -40,6 +40,7 @@ import { formatDateISO, parseDateAlias } from '../utils/date-aliases';
 import { parseJsonObject } from '@lobu/core';
 import logger from '../utils/logger';
 import { ToolUserError } from '../utils/errors';
+import { canonicalizeBehaviorText } from '../utils/behavior-vocabulary';
 import {
   requireOrgReadAccess,
   requireReadAccess,
@@ -774,12 +775,13 @@ async function getBehaviorImpl(
 
     // Computed health (item 3, #2033) — pure derivation over the
     // already-selected schedule/run columns; no extra query.
+    const behaviorRunError = canonicalizeBehaviorText(watcherRow.watcher_run_error) ?? null;
     const behaviorHealth = computeBehaviorHealth({
       status: watcherRow.status,
       nextRunAt: watcherRow.next_run_at,
       latestRunStatus: watcherRow.watcher_run_status,
       latestRunCreatedAt: watcherRow.watcher_run_created_at,
-      latestRunError: watcherRow.watcher_run_error,
+      latestRunError: behaviorRunError,
       latestRunOutcome: watcherRow.watcher_run_outcome,
     });
 
@@ -820,7 +822,7 @@ async function getBehaviorImpl(
                 | 'agent_error'
                 | 'scoreable'
                 | undefined,
-              error_message: watcherRow.watcher_run_error ?? undefined,
+              error_message: behaviorRunError ?? undefined,
               created_at: watcherRow.watcher_run_created_at,
               completed_at: watcherRow.watcher_run_completed_at,
             }

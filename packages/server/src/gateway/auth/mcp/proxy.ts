@@ -358,96 +358,96 @@ export class McpProxy {
 		const userId = tokenData?.userId;
 		const scopeKey = computeScopeKey(userId);
 
-		try {
-			// Clear any stale session before fresh tool discovery
+		const discoverOnce = async (): Promise<CachedMcpServer> => {
 			this.upstream.deleteSession(buildSessionKey(agentId, mcpId, scopeKey));
 
-			// Step 1: Send initialize to capture server instructions
-			let instructions: string | undefined;
-			try {
-				const initResponse = await this.upstream.sendInitialize(
-					httpServer,
-					agentId,
-					mcpId,
-					scopeKey,
-					workerToken,
-				);
+			const initResponse = await this.upstream.sendInitialize(
+				httpServer,
+				agentId,
+				mcpId,
+				scopeKey,
+				workerToken,
+			);
+			if (initResponse.status === 401) {
+				await initResponse.body?.cancel().catch(() => {
+					/* noop */
+				});
+				return { tools: [] };
+			}
 
-				// The only configured MCP server is the internal lobu-memory server,
-				// which accepts the worker JWT directly — a 401 here means discovery
-				// can't proceed, so degrade to an empty tool list.
-				if (initResponse.status === 401) {
-					await initResponse.body?.cancel().catch(() => {
-						/* noop */
-					});
-					return { tools: [] };
-				}
-
-				const initData = (await parseJsonRpcResponse(initResponse)) as {
-					result?: { instructions?: string };
-					error?: { code: number; message: string };
+			// `sendInitialize` already rejected a JSON-RPC error or a handshake
+			// without a negotiated protocolVersion, so this body is a result.
+			const initData = (await parseJsonRpcResponse(initResponse)) as {
+				result?: {
+					capabilities?: Record<string, unknown>;
+					instructions?: string;
 				};
-
-				if (initData?.result?.instructions) {
-					instructions = initData.result.instructions;
-					logger.info("Captured MCP server instructions", {
-						mcpId,
-						length: instructions.length,
-					});
-				}
-
-				// Step 2: Send initialized notification (required by MCP spec)
-				await this.upstream.sendInitializedNotification(
-					httpServer,
-					agentId,
+			};
+			const instructions = initData.result?.instructions;
+			if (instructions) {
+				logger.info("Captured MCP server instructions", {
 					mcpId,
-					scopeKey,
-					workerToken,
-				);
-			} catch (initError) {
-				logger.warn("MCP initialize failed (continuing with tools/list)", {
-					mcpId,
-					error:
-						getErrorMessage(initError),
+					length: instructions.length,
 				});
 			}
 
-			// Step 3: Fetch tools list
-			const jsonRpcBody = JSON.stringify({
-				jsonrpc: "2.0",
-				method: "tools/list",
-				params: {},
-				id: 1,
-			});
+			await this.upstream.sendInitializedNotification(
+				httpServer,
+				agentId,
+				mcpId,
+				scopeKey,
+				workerToken,
+			);
+
+			// A server that did not advertise the tools capability is valid and
+			// must not receive tools/list. Once tools are advertised, discovery
+			// errors are transport failures rather than an empty catalog.
+			if (!("tools" in (initData.result?.capabilities ?? {}))) {
+				return { tools: [], instructions };
+			}
 
 			const response = await this.upstream.sendUpstreamRequest(
 				httpServer,
 				agentId,
 				mcpId,
 				"POST",
-				jsonRpcBody,
+				JSON.stringify({
+					jsonrpc: "2.0",
+					method: "tools/list",
+					params: {},
+					id: 1,
+				}),
 				scopeKey,
 				workerToken,
 			);
-
 			if (response.status === 401) {
 				await response.body?.cancel().catch(() => {
 					/* noop */
 				});
-				return { tools: [] };
+				return { tools: [], instructions };
 			}
 
 			const data = (await parseJsonRpcResponse(response)) as JsonRpcResponse;
-			const tools: McpTool[] = data?.result?.tools || [];
-
-			const serverInfo: CachedMcpServer = { tools, instructions };
-			if (this.toolCache && tools.length > 0) {
+			if (data.error) {
+				throw new Error(`MCP tools/list failed: ${data.error.message}`);
+			}
+			if (!Array.isArray(data.result?.tools)) {
+				throw new Error("MCP tools/list response omitted tools");
+			}
+			return { tools: data.result.tools, instructions };
+		};
+		const cacheServerInfo = (serverInfo: CachedMcpServer) => {
+			if (this.toolCache && serverInfo.tools.length > 0) {
 				this.toolCache.setServerInfo(mcpId, serverInfo, agentId);
 			}
+		};
 
+		try {
+			const serverInfo = await discoverOnce();
+			cacheServerInfo(serverInfo);
 			return serverInfo;
 		} catch (error) {
-			logger.warn("Failed to fetch tools for MCP, retrying once", {
+			logger.warn("MCP discovery failed, retrying once", {
 				mcpId,
 				error: getErrorMessage(error),
 			});
@@ -455,38 +455,15 @@ export class McpProxy {
 			// Retry once after a short delay (upstream may still be starting)
 			await new Promise((r) => setTimeout(r, 2000));
 			try {
-				const retryBody = JSON.stringify({
-					jsonrpc: "2.0",
-					method: "tools/list",
-					params: {},
-					id: 1,
-				});
-				const retryResponse = await this.upstream.sendUpstreamRequest(
-					httpServer,
-					agentId,
+				const serverInfo = await discoverOnce();
+				cacheServerInfo(serverInfo);
+				logger.info("Retry succeeded for MCP discovery", {
 					mcpId,
-					"POST",
-					retryBody,
-					scopeKey,
-					workerToken,
-				);
-				const retryData = (await parseJsonRpcResponse(
-					retryResponse,
-				)) as JsonRpcResponse;
-				const retryTools: McpTool[] = retryData?.result?.tools || [];
-				if (retryTools.length > 0) {
-					const serverInfo: CachedMcpServer = { tools: retryTools };
-					if (this.toolCache) {
-						this.toolCache.setServerInfo(mcpId, serverInfo, agentId);
-					}
-					logger.info("Retry succeeded for MCP tool fetch", {
-						mcpId,
-						toolCount: retryTools.length,
-					});
-					return serverInfo;
-				}
+					toolCount: serverInfo.tools.length,
+				});
+				return serverInfo;
 			} catch (retryError) {
-				logger.error("Retry also failed for MCP tool fetch", {
+				logger.error("Retry also failed for MCP discovery", {
 					mcpId,
 					error:
 						retryError instanceof Error

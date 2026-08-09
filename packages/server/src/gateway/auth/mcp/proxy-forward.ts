@@ -250,6 +250,7 @@ async function forwardRequest(
 		sessionId,
 		credentialToken,
 		httpServer.internal === true,
+		proxy.upstream.getProtocolVersion(sessionKey),
 	);
 
 	let response = await fetch(httpServer.upstreamUrl, {
@@ -286,6 +287,7 @@ async function forwardRequest(
 				sessionId,
 				credentialToken,
 				httpServer.internal === true,
+				proxy.upstream.getProtocolVersion(sessionKey),
 			);
 			response = await fetch(httpServer.upstreamUrl, {
 				method: c.req.method,

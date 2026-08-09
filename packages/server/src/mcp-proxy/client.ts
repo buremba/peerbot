@@ -21,6 +21,7 @@ import type { DiscoveredTool, JsonRpcResponse, McpProxyConfig } from './types';
 const FETCH_TIMEOUT_INIT_MS = 10_000;
 const FETCH_TIMEOUT_TOOL_MS = 30_000;
 const TOOL_CACHE_TTL_MS = 5 * 60 * 1000;
+const SESSION_TTL_MS = 30 * 60 * 1000;
 
 function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
   const controller = new AbortController();
@@ -33,7 +34,16 @@ function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Pr
  * accounts on the same connector never reuse each other's authenticated MCP
  * session. Discovery sessions use the connector-wide key.
  */
-const sessions = new Map<string, string>();
+type McpSessionState = { sessionId: string; protocolVersion: string };
+const sessions = new TtlCache<McpSessionState>(SESSION_TTL_MS);
+
+/**
+ * The upstream rejected the request because it does not recognize our session
+ * id (MCP Streamable HTTP: an unknown/expired session MUST get a 404). The
+ * upstream never reached the tool, so replaying after a fresh handshake cannot
+ * double-execute an action — unlike a timeout or a 5xx, which stay fatal.
+ */
+class McpSessionExpiredError extends Error {}
 
 function sessionKey(orgId: string, connectorKey: string, connectionId?: number): string {
   return connectionId === undefined
@@ -53,15 +63,16 @@ const toolCache = new TtlCache<DiscoveredTool[]>(TOOL_CACHE_TTL_MS);
  */
 function buildHeaders(
   credentials: ResolvedCredentials | null,
-  mcpSessionId: string | null
+  session: McpSessionState | null
 ): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: 'application/json',
   };
 
-  if (mcpSessionId) {
-    headers['Mcp-Session-Id'] = mcpSessionId;
+  if (session) {
+    headers['Mcp-Session-Id'] = session.sessionId;
+    headers['MCP-Protocol-Version'] = session.protocolVersion;
   }
 
   if (credentials?.accessToken) {
@@ -88,8 +99,8 @@ async function sendRequest(
   // after the creation-time probe, so "validated at write time" is not enough.
   assertSafeUrl(upstreamUrl);
   const key = sessionKey(orgId, connectorKey, connectionId);
-  const mcpSessionId = sessions.get(key) ?? null;
-  const headers = buildHeaders(credentials, mcpSessionId);
+  const session = sessions.get(key) ?? null;
+  const headers = buildHeaders(credentials, session);
 
   const response = await fetchWithTimeout(
     upstreamUrl,
@@ -100,11 +111,18 @@ async function sendRequest(
   // Track session ID from response
   const newSessionId = response.headers.get('Mcp-Session-Id');
   if (newSessionId) {
-    sessions.set(key, newSessionId);
+    sessions.set(key, {
+      sessionId: newSessionId,
+      protocolVersion: session?.protocolVersion ?? MCP_PROTOCOL_VERSION,
+    });
   }
 
   if (!response.ok) {
     const text = await response.text();
+    if (response.status === 404 && session) {
+      sessions.delete(key);
+      throw new McpSessionExpiredError(`Upstream MCP returned 404: ${text}`);
+    }
     throw new Error(`Upstream MCP returned ${response.status}: ${text}`);
   }
 
@@ -121,7 +139,7 @@ async function initializeSession(
   orgId: string,
   connectorKey: string,
   connectionId?: number
-): Promise<void> {
+): Promise<Record<string, unknown>> {
   // Clear existing session
   const key = sessionKey(orgId, connectorKey, connectionId);
   sessions.delete(key);
@@ -150,6 +168,15 @@ async function initializeSession(
     throw new Error(`MCP initialize failed: ${initResponse.error.message}`);
   }
 
+  const protocolVersion = initResponse.result?.protocolVersion;
+  if (typeof protocolVersion !== 'string' || protocolVersion.length === 0) {
+    throw new Error('MCP initialize response omitted protocolVersion');
+  }
+  const initializedSession = sessions.get(key);
+  if (initializedSession) {
+    sessions.set(key, { ...initializedSession, protocolVersion });
+  }
+
   // Send initialized notification
   try {
     await sendRequest(
@@ -167,6 +194,8 @@ async function initializeSession(
   } catch {
     // Notification delivery is best-effort
   }
+
+  return initResponse.result?.capabilities ?? {};
 }
 
 /**
@@ -197,7 +226,21 @@ export async function discoverTools(
 
   try {
     // Initialize session first
-    await initializeSession(config.upstream_url, credentials, orgId, connectorKey);
+    const capabilities = await initializeSession(
+      config.upstream_url,
+      credentials,
+      orgId,
+      connectorKey
+    );
+
+    // A server that does not advertise tools is legitimately toolless. Once it
+    // advertises the capability, however, tools/list is part of the negotiated
+    // contract and discovery failures must fail the install instead of silently
+    // persisting a connector with zero operations.
+    if (!Object.hasOwn(capabilities, 'tools')) {
+      toolCache.set(cacheKey, []);
+      return [];
+    }
 
     // Fetch tools/list
     const response = await sendRequest(
@@ -215,11 +258,13 @@ export async function discoverTools(
     );
 
     if (response.error) {
-      logger.error({ connectorKey, error: response.error }, '[McpProxy] tools/list returned error');
-      return cached ?? [];
+      throw new Error(`MCP tools/list failed: ${response.error.message}`);
     }
 
-    const rawTools = response.result?.tools ?? [];
+    const rawTools = response.result?.tools;
+    if (!Array.isArray(rawTools)) {
+      throw new Error('MCP tools/list response omitted tools');
+    }
     const prefix = config.tool_prefix;
 
     const tools: DiscoveredTool[] = rawTools.map((t) => ({
@@ -245,7 +290,8 @@ export async function discoverTools(
       { connectorKey, url: config.upstream_url, error: errorMessage(error) },
       '[McpProxy] Tool discovery failed'
     );
-    return cached ?? [];
+    if (cached) return cached;
+    throw error;
   }
 }
 
@@ -263,26 +309,13 @@ export async function callTool(
 ): Promise<{ content: unknown[]; isError: boolean }> {
   const credentials = await resolveCredentialsByConnectionId(connectionId, orgId);
 
-  const jsonRpcBody = JSON.stringify({
-    jsonrpc: '2.0',
-    method: 'tools/call',
-    params: { name: originalToolName, arguments: args },
-    id: 1,
-  });
+  const key = sessionKey(orgId, connectorKey, connectionId);
 
-  let response: JsonRpcResponse;
-  try {
-    response = await sendRequest(
-      config.upstream_url,
-      credentials,
-      orgId,
-      connectorKey,
-      jsonRpcBody,
-      FETCH_TIMEOUT_TOOL_MS,
-      connectionId
-    );
-  } catch (_error) {
-    // If there's no session yet, initialize and retry
+  // Establish a session before the action call. A transport failure after a
+  // tools/call is ambiguous — the upstream may have executed the action before
+  // the response was lost — so it must never be interpreted as permission to
+  // initialize and replay a potentially destructive call.
+  if (!sessions.get(key)) {
     await initializeSession(
       config.upstream_url,
       credentials,
@@ -290,7 +323,17 @@ export async function callTool(
       connectorKey,
       connectionId
     );
-    response = await sendRequest(
+  }
+
+  const jsonRpcBody = JSON.stringify({
+    jsonrpc: '2.0',
+    method: 'tools/call',
+    params: { name: originalToolName, arguments: args },
+    id: 1,
+  });
+
+  const send = (): Promise<JsonRpcResponse> =>
+    sendRequest(
       config.upstream_url,
       credentials,
       orgId,
@@ -299,6 +342,23 @@ export async function callTool(
       FETCH_TIMEOUT_TOOL_MS,
       connectionId
     );
+
+  let response: JsonRpcResponse;
+  try {
+    response = await send();
+  } catch (error) {
+    // A rejected session id means the call never ran upstream; every other
+    // transport failure is ambiguous and must surface rather than replay.
+    if (!(error instanceof McpSessionExpiredError)) throw error;
+    logger.info({ connectorKey, originalToolName }, '[McpProxy] Session rejected, reinitializing');
+    await initializeSession(
+      config.upstream_url,
+      credentials,
+      orgId,
+      connectorKey,
+      connectionId
+    );
+    response = await send();
   }
 
   // Stale session recovery: "not initialized" → reinitialize + retry once
@@ -311,15 +371,7 @@ export async function callTool(
       connectorKey,
       connectionId
     );
-    response = await sendRequest(
-      config.upstream_url,
-      credentials,
-      orgId,
-      connectorKey,
-      jsonRpcBody,
-      FETCH_TIMEOUT_TOOL_MS,
-      connectionId
-    );
+    response = await send();
   }
 
   if (response.error) {
@@ -392,13 +444,17 @@ export async function probeMcpServer(upstreamUrl: string): Promise<{
 }> {
   assertSafeUrl(upstreamUrl);
   let mcpSessionId: string | null = null;
+  let protocolVersion: string | null = null;
 
   const send = async (body: unknown): Promise<JsonRpcResponse> => {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       Accept: 'application/json',
     };
-    if (mcpSessionId) headers['Mcp-Session-Id'] = mcpSessionId;
+    if (mcpSessionId) {
+      headers['Mcp-Session-Id'] = mcpSessionId;
+      headers['MCP-Protocol-Version'] = protocolVersion ?? MCP_PROTOCOL_VERSION;
+    }
 
     const response = await fetchWithTimeout(
       upstreamUrl,
@@ -433,6 +489,14 @@ export async function probeMcpServer(upstreamUrl: string): Promise<{
     throw new Error(`MCP initialize failed: ${initResponse.error.message}`);
   }
 
+  if (
+    typeof initResponse.result?.protocolVersion !== 'string' ||
+    initResponse.result.protocolVersion.length === 0
+  ) {
+    throw new Error('MCP initialize response omitted protocolVersion');
+  }
+  protocolVersion = initResponse.result.protocolVersion;
+
   const serverInfo = initResponse.result?.serverInfo ?? { name: 'unknown', version: '0.0.0' };
   const instructions = initResponse.result?.instructions;
 
@@ -443,23 +507,30 @@ export async function probeMcpServer(upstreamUrl: string): Promise<{
     // best-effort
   }
 
-  // Discover tools
-  let tools: Array<{
+  const capabilities = initResponse.result?.capabilities ?? {};
+  if (!Object.hasOwn(capabilities, 'tools')) {
+    return { serverInfo, instructions, tools: [] };
+  }
+
+  // An advertised tools capability makes tools/list mandatory.
+  const toolsResponse = await send({
+    jsonrpc: '2.0',
+    method: 'tools/list',
+    params: {},
+    id: 1,
+  });
+  if (toolsResponse.error) {
+    throw new Error(`MCP tools/list failed: ${toolsResponse.error.message}`);
+  }
+  const tools = toolsResponse.result?.tools;
+  if (!Array.isArray(tools)) {
+    throw new Error('MCP tools/list response omitted tools');
+  }
+  const typedTools = tools as Array<{
     name: string;
     description?: string;
     inputSchema?: Record<string, unknown>;
-  }> = [];
-  try {
-    const toolsResponse = await send({
-      jsonrpc: '2.0',
-      method: 'tools/list',
-      params: {},
-      id: 1,
-    });
-    tools = toolsResponse.result?.tools ?? [];
-  } catch {
-    // Server may not support tools — that's fine
-  }
+  }>;
 
-  return { serverInfo, instructions, tools };
+  return { serverInfo, instructions, tools: typedTools };
 }

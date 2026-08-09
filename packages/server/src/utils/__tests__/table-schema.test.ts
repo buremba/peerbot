@@ -203,7 +203,12 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
     // QUERYABLE_SCHEMA entry until the phase-2 migration.
     // Keyed by the QUERYABLE_SCHEMA entry name (`behaviors`), not the physical
     // table (`watchers`) — this map is indexed by `t.name` from that schema.
-    behaviors: new Set(['scheduler_client_id']),
+    behaviors: new Set([
+      'scheduler_client_id',
+      // Physical storage names replaced by public derived aliases below.
+      'source_watcher_id',
+      'watcher_group_id',
+    ]),
     user: new Set(['email', 'phoneNumber', 'phoneNumberVerified']),
   };
 
@@ -215,6 +220,7 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
   const DERIVED_COLUMNS: Record<string, Set<string>> = {
     // entities CTE JOINs entity_types and aliases et.slug AS entity_type.
     entities: new Set(['entity_type']),
+    behaviors: new Set(['source_behavior_id', 'behavior_group_id']),
   };
 
   /** relation name → physical column set, read once per drift test. */

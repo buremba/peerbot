@@ -130,6 +130,7 @@ export class OAuthProvider {
       WHERE code = ${params.code}
         AND expires_at > NOW()
         AND used_at IS NULL
+        AND (resource IS NULL OR resource = ${params.resource || null})
       RETURNING *
     `;
 
@@ -217,6 +218,12 @@ export class OAuthProvider {
       return createOAuthError('invalid_grant', 'Client ID mismatch');
     }
 
+    if (oldRefreshToken.resource && params.resource !== oldRefreshToken.resource) {
+      return createOAuthError('invalid_grant', 'Refresh request resource must match the original resource');
+    }
+
+    const resource = oldRefreshToken.resource || params.resource || null;
+
     // Use requested scope only if it is a subset of the original grant.
     let scope = oldRefreshToken.scope;
     if (params.scope !== undefined) {
@@ -263,10 +270,10 @@ export class OAuthProvider {
         ) VALUES
           (${accessTokenId}, 'access', ${hashToken(accessToken)},
            ${oldRefreshToken.client_id}, ${oldRefreshToken.user_id}, ${oldRefreshToken.organization_id},
-           ${scope}, ${params.resource || oldRefreshToken.resource}, ${refreshTokenId}, ${accessExpiresAt}),
+           ${scope}, ${resource}, ${refreshTokenId}, ${accessExpiresAt}),
           (${refreshTokenId}, 'refresh', ${hashToken(newRefreshToken)},
            ${oldRefreshToken.client_id}, ${oldRefreshToken.user_id}, ${oldRefreshToken.organization_id},
-           ${scope}, ${params.resource || oldRefreshToken.resource}, ${oldRefreshToken.id}, ${refreshExpiresAt})
+           ${scope}, ${resource}, ${oldRefreshToken.id}, ${refreshExpiresAt})
       `;
     });
 
@@ -276,11 +283,7 @@ export class OAuthProvider {
       expires_in: ACCESS_TOKEN_LIFETIME_SECONDS,
       refresh_token: newRefreshToken,
       scope: scope || undefined,
-      ...(oldRefreshToken.resource
-        ? { resource: oldRefreshToken.resource }
-        : params.resource
-          ? { resource: params.resource }
-          : {}),
+      ...(resource ? { resource } : {}),
     };
   }
 
@@ -728,6 +731,7 @@ export class OAuthProvider {
       WHERE device_code = ${params.device_code}
         AND client_id = ${params.client_id}
         AND status = 'approved'
+        AND (resource IS NULL OR resource = ${params.resource || null})
         AND expires_at > NOW()
       RETURNING *
     `;
@@ -748,7 +752,7 @@ export class OAuthProvider {
 
     // Atomic claim returned nothing — check why (pending, denied, expired, or unknown)
     const result = await this.sql`
-      SELECT status, client_id, expires_at FROM oauth_device_codes
+      SELECT status, client_id, expires_at, resource FROM oauth_device_codes
       WHERE device_code = ${params.device_code}
     `;
 
@@ -756,10 +760,14 @@ export class OAuthProvider {
       return createOAuthError('invalid_grant', 'Unknown device_code');
     }
 
-    const deviceCode = result[0] as Pick<StoredDeviceCode, 'status' | 'client_id' | 'expires_at'>;
+    const deviceCode = result[0] as Pick<StoredDeviceCode, 'status' | 'client_id' | 'expires_at' | 'resource'>;
 
     if (deviceCode.client_id !== params.client_id) {
       return createOAuthError('invalid_grant', 'Client ID mismatch');
+    }
+
+    if (deviceCode.resource && params.resource !== deviceCode.resource) {
+      return createOAuthError('invalid_grant', 'Token request resource must match the device authorization resource');
     }
 
     if (new Date(deviceCode.expires_at) <= new Date()) {

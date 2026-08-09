@@ -16,6 +16,7 @@ import { requireAuth } from '../middleware';
 import { findExistingPersonalOrg } from '../personal-org-provisioning';
 import { buildAuthMd } from './auth-md';
 import { OAuthProvider } from './provider';
+import { canonicalizeMcpResource, publicMcpRequestUrl } from './resource-indicator';
 import { DEFAULT_SCOPES_STRING, filterScopeByRole } from './scopes';
 import type { AuthorizationParams, OAuthClientMetadata, TokenRequestParams } from './types';
 import { createOAuthError, validateRedirectUri } from './utils';
@@ -282,6 +283,12 @@ function setOAuthDiscoveryNoCache(c: { header: (name: string, value: string) => 
   c.header('Pragma', 'no-cache');
 }
 
+function getMetadataMcpResource(request: Request, resourcePath = 'mcp'): string | null {
+  const publicRequestUrl = publicMcpRequestUrl(request);
+  const publicOrigin = new URL(publicRequestUrl).origin;
+  return canonicalizeMcpResource(`${publicOrigin}/${resourcePath}`, publicRequestUrl);
+}
+
 /**
  * GET /.well-known/oauth-protected-resource
  * RFC 9728 - OAuth Protected Resource Metadata
@@ -292,16 +299,21 @@ oauthRoutes.get('/.well-known/oauth-protected-resource/:path{.+}', (c) => {
   const provider = getProvider(c);
   const metadata = provider.getProtectedResourceMetadata();
   const resourcePath = c.req.param('path');
-  const origin = getBaseUrl(c);
-  metadata.resource = `${origin}/${resourcePath}`;
+  const resource = getMetadataMcpResource(c.req.raw, resourcePath);
   setOAuthDiscoveryNoCache(c);
+  if (!resource) return c.json({ error: 'Not Found' }, 404);
+  metadata.resource = resource;
   return c.json(metadata);
 });
 
 oauthRoutes.get('/.well-known/oauth-protected-resource', (c) => {
   const provider = getProvider(c);
+  const metadata = provider.getProtectedResourceMetadata();
+  const resource = getMetadataMcpResource(c.req.raw);
   setOAuthDiscoveryNoCache(c);
-  return c.json(provider.getProtectedResourceMetadata());
+  if (!resource) return c.json({ error: 'Not Found' }, 404);
+  metadata.resource = resource;
+  return c.json(metadata);
 });
 
 /**
@@ -479,6 +491,16 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
 
   const requestedScopes = getRequestedScopes(params.scope);
   const requestedHasMcpScopes = requestedScopes.some((s) => s.startsWith('mcp:'));
+  if (requestedHasMcpScopes) {
+    const resource = canonicalizeMcpResource(params.resource, publicMcpRequestUrl(c.req.raw));
+    if (!resource) {
+      return c.json(
+        createOAuthError('invalid_request', 'A valid same-origin MCP resource is required'),
+        400
+      );
+    }
+    params.resource = resource;
+  }
 
   // Validate client
   const clientResult = await provider.getClientForAuthorization(
@@ -613,6 +635,16 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
   // (personal-org force-bind, mint-child-token) stays gated on the device
   // flow / resource binding, not solely on the scope string.
   const consentHasMcpScopes = hasMcpScopes(body.scope);
+  if (consentHasMcpScopes) {
+    const resource = canonicalizeMcpResource(body.resource, publicMcpRequestUrl(c.req.raw));
+    if (!resource) {
+      return c.json(
+        createOAuthError('invalid_request', 'A valid same-origin MCP resource is required'),
+        400
+      );
+    }
+    body.resource = resource;
+  }
 
   // User denied consent
   if (!body.approved) {
@@ -729,6 +761,32 @@ oauthRoutes.post('/oauth/device_authorization', async (c) => {
 
   if (!body.client_id) {
     return c.json(createOAuthError('invalid_request', 'client_id is required'), 400);
+  }
+
+  const deviceScopes = getRequestedScopes(body.scope);
+  const isDeviceWorkerGrant = deviceScopes.includes('device_worker:run');
+  const deviceHasMcpScopes = deviceScopes.some((scope) => scope.startsWith('mcp:'));
+  if (isDeviceWorkerGrant) {
+    // First-party device pairing selects and force-binds the personal org at
+    // human approval time. Keeping an earlier caller-supplied team resource
+    // would create a token whose OAuth audience disagrees with its org claim.
+    // Leave this compatibility grant unbound; normal MCP device grants may
+    // still opt into an exact RFC 8707 resource below.
+    body.resource = undefined;
+  } else if (deviceHasMcpScopes && !body.resource) {
+    return c.json(
+      createOAuthError('invalid_request', 'resource is required for MCP device authorization'),
+      400
+    );
+  } else if (body.resource) {
+    const resource = canonicalizeMcpResource(body.resource, publicMcpRequestUrl(c.req.raw));
+    if (!resource) {
+      return c.json(
+        createOAuthError('invalid_request', 'The MCP resource must be a valid same-origin URI'),
+        400
+      );
+    }
+    body.resource = resource;
   }
 
   const result = await provider.createDeviceAuthorization(
@@ -1080,8 +1138,19 @@ oauthRoutes.post('/oauth/token', async (c) => {
     return c.json(createOAuthError('invalid_request', 'client_id is required'), 400);
   }
 
+  if (params.resource) {
+    const resource = canonicalizeMcpResource(params.resource, publicMcpRequestUrl(c.req.raw));
+    if (!resource) {
+      return c.json(
+        createOAuthError('invalid_request', 'The MCP resource must be a valid same-origin URI'),
+        400
+      );
+    }
+    params.resource = resource;
+  }
+
   // Handle different grant types
-  let result;
+  let result: Awaited<ReturnType<OAuthProvider['exchangeAuthorizationCode']>>;
 
   switch (params.grant_type) {
     case 'authorization_code':

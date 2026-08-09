@@ -11,6 +11,7 @@ import {
   markAllAsRead,
   markAsRead,
 } from '../../../notifications/service';
+import { listOrgActivity } from '../../../tools/admin/manage_operations/activity-feed';
 import { notify } from '../../../tools/admin/notify';
 import { getContent } from '../../../tools/get_content';
 import type { ToolContext } from '../../../tools/registry';
@@ -410,5 +411,22 @@ describe('notification list > source attribution', () => {
     expect(item!.feed_key).toBe('home_feed');
     expect(item!.platform).toBe('attr-notif-connector');
     expect(item!.connection_id).toBe(conn.id);
+
+    const activity = await listOrgActivity({
+      organizationId: org.id,
+      userId: user.id,
+      ownerSlug: org.slug,
+      includeRuns: false,
+    });
+    const card = activity.items.find((entry) => entry.notification_id === ev.id);
+    expect(card).toMatchObject({
+      platform: 'attr-notif-connector',
+      connection_id: conn.id,
+      feed_id: feed.id,
+      feed_key: 'home_feed',
+      feed_name: 'Attr Notif Feed',
+      behavior_id: watcherId,
+      behavior_name: 'Attr Notif Behavior',
+    });
   });
 });

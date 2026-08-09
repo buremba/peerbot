@@ -416,8 +416,13 @@ export const ManageOperationsResultSchema = Type.Union([
         /** This interaction can be completed inline from the feed. */
         interaction_inline: Type.Optional(Type.Boolean()),
         member_run_ids: Type.Optional(Type.Array(Type.Integer())),
+        platform: Type.Optional(Type.String()),
         connection_id: Type.Optional(Type.Integer()),
+        feed_id: Type.Optional(Type.Integer()),
+        feed_key: Type.Optional(Type.String()),
+        feed_name: Type.Optional(Type.String()),
         behavior_id: Type.Optional(Type.Integer()),
+        behavior_name: Type.Optional(Type.String()),
       })
     ),
     total: Type.Integer(),

@@ -87,7 +87,7 @@ function buildContentQuery(opts: {
       ${a}.feed_key,
       ${a}.behavior_id,
       fd.display_name AS feed_name,
-      COALESCE(wv.name, 'watcher-' || ${a}.behavior_id) AS behavior_name,
+      COALESCE(wv.name, 'Behavior #' || ${a}.behavior_id) AS behavior_name,
       oc.client_name,
       -- Per-event classifications keyed by classifier attribute, matching the
       -- list/search path shape so exact reads (content_ids / include_superseded)

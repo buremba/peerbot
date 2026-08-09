@@ -590,7 +590,7 @@ export async function listNotifications(opts: {
       e.feed_key,
       fd.display_name AS feed_name,
       e.behavior_id,
-      COALESCE(wv.name, 'watcher-' || e.behavior_id) AS behavior_name,
+      COALESCE(wv.name, 'Behavior #' || e.behavior_id) AS behavior_name,
       pe.interaction_type AS interaction_type,
       -- Whether the decision needs FIELDS or is a bare yes/no. Consumers pick
       -- the affordance from this, not from a list of known action keys.

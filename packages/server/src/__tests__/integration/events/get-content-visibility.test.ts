@@ -1215,4 +1215,29 @@ describe('getContent > source attribution fields across query branches', () => {
       expect(item!.behavior_name, `${branch.name}: behavior_name`).toBe('Attribution Behavior');
     }
   });
+
+  it('names version-less behavior events without internal vocabulary', async () => {
+    const sql = getTestDb();
+    // behavior_id set, behavior_version_id NULL — historical rows pre-versioning.
+    const ev = await createTestEvent({
+      entity_id: entity.id,
+      connection_id: connId,
+      behavior_id: 900001,
+      connector_key: 'attr-test-connector',
+      title: 'Versionless behavior event',
+      content: 'versionless marker payload',
+      embedding: Array.from({ length: 768 }, () => Math.random()),
+    });
+    const result = await getContent(
+      { entity_id: entity.id, limit: 100, sort_by: 'date', sort_order: 'desc' } as never,
+      {} as never,
+      ctx(user.id)
+    );
+    const item = result.content.find((c) => c.id === ev.id);
+    expect(item, 'versionless event should surface').toBeTruthy();
+    expect(item!.behavior_id).toBe(900001);
+    // User-facing fallback label, never the internal `watcher` term.
+    expect(item!.behavior_name).toBe('Behavior #900001');
+    expect(item!.behavior_name).not.toContain('watcher');
+  });
 });

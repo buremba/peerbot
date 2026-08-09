@@ -424,7 +424,7 @@ export async function getNormalizedScoreContent(
         f.feed_key,
         f.behavior_id,
         fd.display_name as feed_name,
-        COALESCE(wv.name, 'watcher-' || f.behavior_id) as behavior_name,
+        COALESCE(wv.name, 'Behavior #' || f.behavior_id) as behavior_name,
         f.origin_id,
         f.title,
         f.payload_text,

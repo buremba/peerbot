@@ -130,17 +130,27 @@ describe("A Behavior's output is visible when written and still not its own inpu
 		producerId = await createBehavior("signal-producer");
 		bystanderId = await createBehavior("signal-bystander");
 
+		const now = new Date();
+		const currentWindowStart = new Date(now);
+		currentWindowStart.setUTCHours(0, 0, 0, 0);
+		const insideCurrentWindow = new Date(
+			(currentWindowStart.getTime() + now.getTime()) / 2,
+		);
+
 		// One ordinary source row inside today's window, so a dispatch that reads
 		// nothing is distinguishable from a dispatch that reads only the source.
 		// Linked to the bound entity because an entity-scoped Behavior's window
 		// filters on `entity_ids` — an unlinked row is invisible to it, which
 		// would make the self-exclusion assertions pass against an empty window.
+		// Derive the timestamp from the UTC daily boundary: `now - 1 hour` belongs
+		// to yesterday when CI runs between 00:00 and 01:00 UTC, which made this
+		// fixture disappear from the exact current window it was meant to exercise.
 		await createTestEvent({
 			organization_id: orgId,
 			entity_ids: [boundEntityId],
 			semantic_type: "message",
 			content: "a story from earlier today",
-			occurred_at: new Date(Date.now() - 3600_000),
+			occurred_at: insideCurrentWindow,
 		});
 	});
 

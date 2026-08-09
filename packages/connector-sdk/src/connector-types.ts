@@ -1203,10 +1203,14 @@ export interface ContentItem {
       platform: number;
     };
   };
+  /** OAuth client id that created this event (authenticated workspace reads only). */
+  client_id?: string | null;
   /** OAuth client name that created this event */
   client_name?: string | null;
   /** Source connection that collected the event (when connector-sourced). */
   connection_id?: number | null;
+  /** Human-facing connection name (authenticated workspace reads only). */
+  connection_name?: string | null;
   /** Feed the event was collected through (when connector-sourced). */
   feed_id?: number | null;
   /** Feed key (e.g. "tweets", "home_feed") the event was collected through. */
@@ -1217,6 +1221,16 @@ export interface ContentItem {
   behavior_id?: number | null;
   /** Human-facing behavior name (when behavior-output-sourced). */
   behavior_name?: string | null;
+  /** Managed agent that produced the event (authenticated workspace reads only). */
+  agent_id?: string | null;
+  /** Human-facing managed agent name. */
+  agent_name?: string | null;
+  /** Device runtime involved in producing the event (authenticated workspace reads only). */
+  device_worker_id?: string | null;
+  /** Human-facing device label. */
+  device_label?: string | null;
+  /** Device platform used to select the device icon. */
+  device_platform?: string | null;
   /** Immediate parent origin_id */
   origin_parent_id: string | null;
   /** Thread root origin_id */

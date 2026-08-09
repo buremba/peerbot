@@ -1070,11 +1070,11 @@ function resolveWorkspaceCounts(
  * what makes that true — the previous split (agents/devices in one query,
  * connections/behaviors in another) paid two round trips for five scalars.
  *
- * `clients` mirrors the predicate in `OAuthClientsStore.listClientsByOrganization`
- * — registered to this org, or holding a token in it — so the number agrees
- * with the connected-apps inventory the user can actually see. Counting
- * `organization_id` alone would under-report every client that authorized in
- * without registering here.
+ * `clients` mirrors the grouped live inventory rendered by AgentsPage: a
+ * registration only counts while it has an active grant, and repeat
+ * registrations from the same named app and user collapse to one row. This
+ * keeps the sidebar count and empty-workspace onboarding aligned with what the
+ * user can actually open on the Agents page without another frontend request.
  */
 async function fetchWorkspaceCounts(
   sql: DbClient,
@@ -1106,14 +1106,26 @@ async function fetchWorkspaceCounts(
         WHERE dw.user_id = ${userId}
       ) AS devices,
       (
-        SELECT COUNT(*)::int
+        SELECT COUNT(DISTINCT CASE
+          WHEN oc.client_name IS NOT NULL AND live_owner.user_id IS NOT NULL
+            THEN 'group:' || jsonb_build_array(
+              oc.client_name,
+              live_owner.user_id,
+              ${organizationId}::text
+            )::text
+          ELSE 'client:' || oc.id
+        END)::int
         FROM oauth_clients oc
-        WHERE oc.organization_id = ${organizationId}
-           OR EXISTS (
-             SELECT 1 FROM oauth_tokens ot
-             WHERE ot.client_id = oc.id
-               AND ot.organization_id = ${organizationId}
-           )
+        JOIN LATERAL (
+          SELECT ot.user_id
+          FROM oauth_tokens ot
+          WHERE ot.client_id = oc.id
+            AND ot.organization_id = ${organizationId}
+            AND ot.revoked_at IS NULL
+            AND ot.expires_at > NOW()
+          ORDER BY ot.created_at DESC, ot.id DESC
+          LIMIT 1
+        ) live_owner ON true
       ) AS clients
   `;
   const counts = row as Partial<Record<keyof WorkspaceCounts, number>> | undefined;

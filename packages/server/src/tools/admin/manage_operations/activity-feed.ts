@@ -88,11 +88,19 @@ export type ActivityCard = {
 	member_run_ids?: number[];
 	platform?: string;
 	connection_id?: number;
+	connection_name?: string;
 	feed_id?: number;
 	feed_key?: string;
 	feed_name?: string;
 	behavior_id?: number;
 	behavior_name?: string;
+	agent_id?: string;
+	agent_name?: string;
+	client_id?: string;
+	client_name?: string;
+	device_worker_id?: string;
+	device_label?: string;
+	device_platform?: string;
 };
 
 type RawCard = ActivityCard & {
@@ -421,6 +429,10 @@ export async function listOrgActivity(opts: {
 					platform: typeof n.platform === "string" ? n.platform : undefined,
 					connection_id:
 						typeof n.connection_id === "number" ? n.connection_id : undefined,
+					connection_name:
+						typeof n.connection_name === "string"
+							? n.connection_name
+							: undefined,
 					feed_id: typeof n.feed_id === "number" ? n.feed_id : undefined,
 					feed_key: typeof n.feed_key === "string" ? n.feed_key : undefined,
 					feed_name: typeof n.feed_name === "string" ? n.feed_name : undefined,
@@ -428,6 +440,22 @@ export async function listOrgActivity(opts: {
 						typeof n.behavior_id === "number" ? n.behavior_id : undefined,
 					behavior_name:
 						typeof n.behavior_name === "string" ? n.behavior_name : undefined,
+					agent_id: typeof n.agent_id === "string" ? n.agent_id : undefined,
+					agent_name:
+						typeof n.agent_name === "string" ? n.agent_name : undefined,
+					client_id: typeof n.client_id === "string" ? n.client_id : undefined,
+					client_name:
+						typeof n.client_name === "string" ? n.client_name : undefined,
+					device_worker_id:
+						typeof n.device_worker_id === "string"
+							? n.device_worker_id
+							: undefined,
+					device_label:
+						typeof n.device_label === "string" ? n.device_label : undefined,
+					device_platform:
+						typeof n.device_platform === "string"
+							? n.device_platform
+							: undefined,
 					run_id: Number.isFinite(approvalRunId) ? approvalRunId : undefined,
 					interaction_type: interactionStatus != null ? interactionType : undefined,
 					interaction_status: interactionStatus,

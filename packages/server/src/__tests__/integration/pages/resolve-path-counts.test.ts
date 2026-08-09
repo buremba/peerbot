@@ -101,11 +101,10 @@ describe('resolve_path workspace counts', () => {
     expect((await resolveCounts(fixture)).connections).toBe(0);
   });
 
-  it('counts MCP clients that authorized into the org, not just those registered to it', async () => {
-    // The connected-apps inventory lists a client if it is registered to the
-    // org OR holds a token in it. A count that checked only `organization_id`
-    // would under-report every client that authorized in — which is most of
-    // them, since dynamic registration leaves `organization_id` null.
+  it('counts distinct MCP apps with a live grant', async () => {
+    // The Agents page groups repeat registrations for the same app and only
+    // shows a group while at least one grant is live. The compact workspace
+    // count must use those same semantics or onboarding and the sidebar drift.
     const before = (await resolveCounts(fixture)).clients;
 
     const registered = await createTestOAuthClient({ client_name: 'Registered' });
@@ -114,15 +113,33 @@ describe('resolve_path workspace counts', () => {
       UPDATE oauth_clients SET organization_id = ${fixture.orgId}
       WHERE id = ${registered.client_id}
     `;
+    expect((await resolveCounts(fixture)).clients).toBe(before);
+
+    const first = await createTestOAuthClient({ client_name: 'Repeat app' });
+    const second = await createTestOAuthClient({ client_name: 'Repeat app' });
+    await createTestAccessToken(fixture.userId, fixture.orgId, first.client_id);
+    await createTestAccessToken(fixture.userId, fixture.orgId, second.client_id);
     expect((await resolveCounts(fixture)).clients).toBe(before + 1);
 
-    const authorized = await createTestOAuthClient({ client_name: 'Authorized' });
-    await createTestAccessToken(fixture.userId, fixture.orgId, authorized.client_id);
-    expect((await resolveCounts(fixture)).clients).toBe(before + 2);
+    // One revoked registration does not disconnect the grouped app while its
+    // sibling registration still has a live grant.
+    await sql`
+      UPDATE oauth_tokens SET revoked_at = NOW()
+      WHERE client_id = ${first.client_id}
+        AND organization_id = ${fixture.orgId}
+    `;
+    expect((await resolveCounts(fixture)).clients).toBe(before + 1);
+
+    await sql`
+      UPDATE oauth_tokens SET revoked_at = NOW()
+      WHERE client_id = ${second.client_id}
+        AND organization_id = ${fixture.orgId}
+    `;
+    expect((await resolveCounts(fixture)).clients).toBe(before);
 
     // Registered nowhere and holding no token here: not this workspace's.
     await createTestOAuthClient({ client_name: 'Stranger' });
-    expect((await resolveCounts(fixture)).clients).toBe(before + 2);
+    expect((await resolveCounts(fixture)).clients).toBe(before);
   });
 
   it('counts active behaviors', async () => {

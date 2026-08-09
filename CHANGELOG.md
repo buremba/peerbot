@@ -1,5 +1,22 @@
 # Changelog
 
+## [14.19.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.18.0...lobu-v14.19.0) (2026-08-09)
+
+
+### Features
+
+* **activity:** expose unified source attribution ([#2605](https://github.com/lobu-ai/lobu/issues/2605)) ([11ed6ed](https://github.com/lobu-ai/lobu/commit/11ed6edea91031f50391f9ac278d1123030c9911))
+* **get_content:** expose event source attribution on ContentItem ([#2598](https://github.com/lobu-ai/lobu/issues/2598)) ([411ba6b](https://github.com/lobu-ai/lobu/commit/411ba6ba2d42b83fb90a3620583976b6e1402216))
+
+
+### Bug Fixes
+
+* **activity:** render notification source attribution ([#2601](https://github.com/lobu-ai/lobu/issues/2601)) ([6168afa](https://github.com/lobu-ai/lobu/commit/6168afa2515869e2f26f46818ea3e34e836a51aa))
+* **mcp:** harden production app readiness ([#2607](https://github.com/lobu-ai/lobu/issues/2607)) ([5481500](https://github.com/lobu-ai/lobu/commit/5481500a9a4658fb8d906ed821289b0041ecf0f8))
+* **mcp:** preserve Apps negotiation across replicas ([#2610](https://github.com/lobu-ai/lobu/issues/2610)) ([230111f](https://github.com/lobu-ai/lobu/commit/230111f912ab2c75ce0d61e7479d6ce86e1c602d))
+* **server:** attach a Behavior run's transcript by conversation id ([#2587](https://github.com/lobu-ai/lobu/issues/2587)) ([d7a01ae](https://github.com/lobu-ai/lobu/commit/d7a01ae0e041e930ff645d14411adfe06b69eb12))
+* **server:** publish complete MCP safety metadata ([#2608](https://github.com/lobu-ai/lobu/issues/2608)) ([cceda8f](https://github.com/lobu-ai/lobu/commit/cceda8f21cf872e75eaf25c265a44cd7fa17ffe9))
+
 ## [14.18.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.17.2...lobu-v14.18.0) (2026-08-08)
 
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## [14.18.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.17.2...lobu-v14.18.0) (2026-08-08)
+
+
+### Features
+
+* **server:** promote a Behavior run into a reusable eval case ([#2584](https://github.com/lobu-ai/lobu/issues/2584)) ([b2b86eb](https://github.com/lobu-ai/lobu/commit/b2b86eb818717b0b31738154547a7f5ba8b9d122))
+* **server:** score eval replays and answer whether a Behavior regressed ([#2591](https://github.com/lobu-ai/lobu/issues/2591)) ([6bd280a](https://github.com/lobu-ai/lobu/commit/6bd280ab90da9934639dfa2fb347a27506661ace))
+
+
+### Bug Fixes
+
+* **agent-worker:** route an agent's model pin that arrives via defaultModel ([#2586](https://github.com/lobu-ai/lobu/issues/2586)) ([d743d27](https://github.com/lobu-ai/lobu/commit/d743d275ec8fa367ed5e667377e9f8a20f844a91))
+* **db:** repair Behavior output stamped at its window end ([#2594](https://github.com/lobu-ai/lobu/issues/2594)) ([107be7f](https://github.com/lobu-ai/lobu/commit/107be7f50eb80457180141f678d15b0b8d786820))
+* **examples:** resolve radar staging browser via the connections SDK ([#2596](https://github.com/lobu-ai/lobu/issues/2596)) ([989f390](https://github.com/lobu-ai/lobu/commit/989f390dc63ea3d0929abbe3812b0889e4f108e4))
+* **server:** apply analyzed_by_behavior_id on the read paths that dropped it ([#2595](https://github.com/lobu-ai/lobu/issues/2595)) ([9c2a9bc](https://github.com/lobu-ai/lobu/commit/9c2a9bc98494555716e8498a2e566f0dca582425))
+* **server:** clarify Slack app-install setup guidance for external CLI users ([#2597](https://github.com/lobu-ai/lobu/issues/2597)) ([ed02be5](https://github.com/lobu-ai/lobu/commit/ed02be5eacaebe9317dce88e4cfca5c0432ae15b))
+* **server:** make a Behavior's own output visible without feeding it back ([#2590](https://github.com/lobu-ai/lobu/issues/2590)) ([6c290b5](https://github.com/lobu-ai/lobu/commit/6c290b596762f558b08351aadfb965f904ab39bd))
+* **server:** route an org provider whose slug differs from its kind ([#2588](https://github.com/lobu-ai/lobu/issues/2588)) ([77cbb6c](https://github.com/lobu-ai/lobu/commit/77cbb6cc25b85f175e688f3d870c8c754b8cdb41))
+
 ## [14.17.2](https://github.com/lobu-ai/lobu/compare/lobu-v14.17.1...lobu-v14.17.2) (2026-08-07)
 
 

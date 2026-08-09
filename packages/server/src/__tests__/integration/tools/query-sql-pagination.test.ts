@@ -17,7 +17,6 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { Env } from '../../../index';
 import { querySql } from '../../../tools/admin/query_sql';
 import type { ToolContext } from '../../../tools/registry';
 import { cleanupTestDatabase } from '../../setup/test-db';
@@ -63,6 +62,20 @@ describe('query_sql internal-path pagination contract', () => {
     // The internal window column must never leak into rows or columns.
     expect(res.columns.map((c) => c.name)).not.toContain('__lobu_total_count__');
     expect(Object.keys(res.rows[0])).not.toContain('__lobu_total_count__');
+  });
+
+  it('does not bind an unused organization parameter for table-free reads', async () => {
+    const res = await querySql(
+      { sql: 'SELECT generate_series(1, 25) AS row_number', limit: 50 },
+      {},
+      ownerCtx
+    );
+
+    expect(res.error).toBeUndefined();
+    expect(res.rows).toHaveLength(25);
+    expect(res.total_count).toBe(25);
+    expect(res.rows[0]).toEqual({ row_number: 1 });
+    expect(res.rows[24]).toEqual({ row_number: 25 });
   });
 
   it('keeps total_count exact on an out-of-range offset (empty page fallback)', async () => {

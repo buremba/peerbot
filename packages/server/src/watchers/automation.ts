@@ -1075,9 +1075,9 @@ export function buildDispatchMessage(params: {
 			"Analyze the window's content and extract findings per the extraction schema.",
 		"",
 		"Required steps:",
-		`1. Call query_sdk with a script that runs client.knowledge.read({ behavior_id: ${params.watcherId}, since: "${readKnowledgeSince}", until: "${readKnowledgeUntil}"${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }).`,
-		"2. Follow the Behavior instructions above against the returned payload — content, sources, entities, extraction_schema, reactions_guidance, past_reactions, and past_feedback. If page.has_more is true and you need more evidence, call knowledge.read again with page.next_cursor as before_occurred_at/before_id.",
-		`3. Call run_sdk with a script that runs client.behaviors.completeWindow({ window_token, extracted_data, behavior_run_id: ${params.runId}${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }) using the window_token from step 1.`,
+		`1. Call query_sdk with a script that runs client.knowledge.read({ behavior_id: ${params.watcherId}, since: "${readKnowledgeSince}", until: "${readKnowledgeUntil}", limit: 25${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }). Keep the returned window_token from every page you actually analyze.`,
+		`2. Follow the Behavior instructions above against the returned payload — content, sources, entities, extraction_schema, reactions_guidance, past_reactions, and past_feedback. If page.has_more is true and you need more evidence, call knowledge.read again with page.next_cursor as before_occurred_at/before_id. Collect that page's window_token too; do this for every additional page you actually analyze.`,
+		`3. Call run_sdk with a script that runs client.behaviors.completeWindow({ window_tokens: [all window_token values from pages you actually analyzed], extracted_data, behavior_run_id: ${params.runId}${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }). Pass exactly one token per page you actually analyzed, including the first page.`,
 		"4. Include this run_metadata object in complete_window exactly, and add any extra provider/job fields you know:",
 		JSON.stringify(
 			{

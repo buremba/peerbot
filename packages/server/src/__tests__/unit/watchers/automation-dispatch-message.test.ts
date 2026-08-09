@@ -23,6 +23,21 @@ describe("watcher dispatch message", () => {
 		expect(message).toContain(
 			"Treat the Behavior as having no data only when `content` and every array in `sources` are empty.",
 		);
+		expect(message).toContain(
+			'client.knowledge.read({ behavior_id: 13, since: "2026-07-15", until: "2026-07-15", limit: 25 })',
+		);
+		expect(message).toContain(
+			"If page.has_more is true and you need more evidence, call knowledge.read again with page.next_cursor as before_occurred_at/before_id.",
+		);
+		expect(message).toContain(
+			"Keep the returned window_token from every page you actually analyze.",
+		);
+		expect(message).toContain(
+			"window_tokens: [all window_token values from pages you actually analyzed]",
+		);
+		expect(message).not.toContain(
+			"completeWindow({ window_token, extracted_data",
+		);
 		expect(message).not.toContain(
 			"If there is no content, do not fabricate results.",
 		);

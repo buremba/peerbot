@@ -82,6 +82,12 @@ function buildContentQuery(opts: {
       ${a}.supersedes_event_id,
       ${a}.superseded_by,
       ${a}.run_id,
+      ${a}.connection_id,
+      ${a}.feed_id,
+      ${a}.feed_key,
+      ${a}.behavior_id,
+      fd.display_name AS feed_name,
+      COALESCE(wv.name, 'Behavior #' || ${a}.behavior_id) AS behavior_name,
       oc.client_name,
       -- Per-event classifications keyed by classifier attribute, matching the
       -- list/search path shape so exact reads (content_ids / include_superseded)
@@ -124,6 +130,8 @@ function buildContentQuery(opts: {
     ${join}
     LEFT JOIN connections c ON c.id = ${a}.connection_id
     LEFT JOIN oauth_clients oc ON oc.id = ${a}.client_id
+    LEFT JOIN feeds fd ON fd.id = ${a}.feed_id
+    LEFT JOIN watcher_versions wv ON wv.id = ${a}.behavior_version_id
     WHERE ${where}
     ORDER BY ${orderBy}
     LIMIT ${limit}

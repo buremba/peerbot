@@ -7,6 +7,7 @@ import {
 import {
   createNotificationForUsers,
   deleteNotification,
+  listNotifications,
   markAllAsRead,
   markAsRead,
 } from '../../../notifications/service';
@@ -17,6 +18,8 @@ import { cleanupTestDatabase } from '../../setup/test-db';
 import {
   addUserToOrganization,
   createTestAccessToken,
+  createTestConnection,
+  createTestConnectorDefinition,
   createTestOAuthClient,
   createTestOrganization,
   createTestUser,
@@ -313,5 +316,99 @@ describe('MCP activity notification attribution', () => {
     expect(globalBody.notifications.map((item) => item.title)).toContain(
       'Legacy approval notification'
     );
+  });
+});
+
+describe('notification list > source attribution', () => {
+  it('carries feed/behavior attribution from the producing version', async () => {
+    await cleanupTestDatabase();
+    await seedSystemEntityTypes();
+
+    const sql = getDb();
+    const org = await createTestOrganization({ name: 'Attr Notification Org' });
+    const user = await createTestUser({ email: 'attr-notif@example.com' });
+    await addUserToOrganization(user.id, org.id, 'owner');
+
+    await createTestConnectorDefinition({
+      key: 'attr-notif-connector',
+      name: 'Attr Notif',
+      organization_id: org.id,
+    });
+    const conn = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'attr-notif-connector',
+      visibility: 'org',
+      created_by: user.id,
+    });
+
+    const [feed] = await sql`
+      INSERT INTO feeds (organization_id, connection_id, feed_key, status, kind, display_name, created_at)
+      VALUES (${org.id}, ${conn.id}, 'home_feed', 'active', 'collected', 'Attr Notif Feed', NOW())
+      RETURNING id
+    `;
+
+    const watcherId = 910001;
+    await sql`
+      INSERT INTO watchers (
+        id, name, slug, organization_id, entity_ids, schedule, timezone,
+        next_run_at, agent_id, model_config, sources, version, tags, status,
+        created_by, created_at, updated_at, watcher_group_id, triggers
+      ) VALUES (
+        ${watcherId}, 'Attr Notif Behavior', 'attr-notif-behavior',
+        ${org.id}, '{}'::bigint[], '0 9 * * *', 'Europe/London', NOW(),
+        'attr-notif-agent', '{}'::jsonb, '[]'::jsonb, 1, '{}'::text[],
+        'active', ${user.id}, NOW(), NOW(), ${watcherId}, '[]'::jsonb
+      )
+    `;
+    const [v1] = await sql`
+      INSERT INTO watcher_versions (watcher_id, version, name, created_by, prompt, created_at)
+      VALUES (${watcherId}, 1, 'Attr Notif Behavior', ${user.id}, 'prompt', NOW())
+      RETURNING id
+    `;
+    await sql`
+      UPDATE watchers SET current_version_id = ${v1.id} WHERE id = ${watcherId}
+    `;
+
+    const [ev] = await sql`
+      INSERT INTO events (
+        organization_id, title, payload_type, payload_text, occurred_at,
+        semantic_type, connector_key, connection_id, feed_id, feed_key,
+        behavior_id, behavior_version_id, metadata, created_at
+      ) VALUES (
+        ${org.id}, 'Attr notification', 'text', 'notification body', NOW(),
+        'notification', 'attr-notif-connector', ${conn.id}, ${feed.id}, 'home_feed',
+        ${watcherId}, ${v1.id}, '{}'::jsonb, NOW()
+      )
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO notification_targets (event_id, user_id, delivered_at)
+      VALUES (${ev.id}, ${user.id}, NOW())
+    `;
+
+    // Bump the behavior's current version after the notification was produced.
+    const [v2] = await sql`
+      INSERT INTO watcher_versions (watcher_id, version, name, created_by, prompt, created_at)
+      VALUES (${watcherId}, 2, 'Renamed Notif Behavior', ${user.id}, 'prompt', NOW())
+      RETURNING id
+    `;
+    await sql`
+      UPDATE watchers SET current_version_id = ${v2.id} WHERE id = ${watcherId}
+    `;
+
+    const { notifications } = await listNotifications({
+      organizationId: org.id,
+      userId: user.id,
+    });
+    const item = notifications.find((n) => n.id === ev.id);
+    expect(item).toBeTruthy();
+    // The producing version (v1) name, not the renamed current version.
+    expect(item!.behavior_name).toBe('Attr Notif Behavior');
+    expect(item!.behavior_id).toBe(watcherId);
+    expect(item!.feed_name).toBe('Attr Notif Feed');
+    expect(item!.feed_id).toBe(feed.id);
+    expect(item!.feed_key).toBe('home_feed');
+    expect(item!.platform).toBe('attr-notif-connector');
+    expect(item!.connection_id).toBe(conn.id);
   });
 });

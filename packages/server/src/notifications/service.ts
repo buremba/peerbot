@@ -584,6 +584,13 @@ export async function listNotifications(opts: {
       e.metadata->>'resource_type' AS resource_type,
       e.metadata->>'resource_id' AS resource_id,
       e.metadata->>'resource_url' AS resource_url,
+      e.connector_key AS platform,
+      e.connection_id,
+      e.feed_id,
+      e.feed_key,
+      fd.display_name AS feed_name,
+      e.behavior_id,
+      COALESCE(wv.name, 'Behavior #' || e.behavior_id) AS behavior_name,
       pe.interaction_type AS interaction_type,
       -- Whether the decision needs FIELDS or is a bare yes/no. Consumers pick
       -- the affordance from this, not from a list of known action keys.
@@ -606,6 +613,8 @@ export async function listNotifications(opts: {
       t.delivered_at AS created_at
     FROM notification_targets t
     JOIN events e ON e.id = t.event_id
+    LEFT JOIN feeds fd ON fd.id = e.feed_id
+    LEFT JOIN watcher_versions wv ON wv.id = e.behavior_version_id
     -- Approval notifications point at proposal events; resolve the run here so
     -- consumers see its current approval state rather than an emitted snapshot.
     LEFT JOIN events pe

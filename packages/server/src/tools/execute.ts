@@ -53,6 +53,10 @@ export interface AuthContext {
    * Audit rows carry it so a client's activity can be grouped per session.
    */
   mcpSessionId?: string | null;
+  /** Whether this MCP session negotiated the standard Apps UI extension. */
+  mcpAppsSupported?: boolean | null;
+  /** Host-only capability from an MCP App `tools/call` request. Never persisted. */
+  mcpAppApprovalCapability?: string | null;
   /** Host conversation correlation, separate from the transport session. */
   mcpConversationId?: string | null;
   instructions?: string;
@@ -385,6 +389,8 @@ export function toToolContext(authCtx: AuthContext): ToolContext {
     baseUrl: authCtx.baseUrl,
     applyId: authCtx.applyId ?? null,
     mcpSessionId: authCtx.mcpSessionId ?? null,
+    mcpAppsSupported: authCtx.mcpAppsSupported ?? false,
+    mcpAppApprovalCapability: authCtx.mcpAppApprovalCapability ?? null,
     mcpConversationId: authCtx.mcpConversationId ?? null,
     executionMode: authCtx.executionMode ?? null,
   };

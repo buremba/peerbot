@@ -72,17 +72,20 @@ describe("tool registry split", () => {
 				"query_sdk",
 				"query_sql",
 				"render_lobu_view",
+				"resolve_lobu_approval",
 				"run_sdk",
 				"save_memory",
 				"search_memory",
 				"search_sdk",
 			].sort()
 		);
-		// The render helper is listed on MCP only: it stays out of
-		// AGENT_TOOL_NAMES, so it never reaches the generated OpenAPI/ClientSDK
-		// agent surface.
+		// Presentation helpers are listed on the MCP registry only: they stay out
+		// of AGENT_TOOL_NAMES, so they never reach generated OpenAPI/ClientSDK.
+		// The MCP handler additionally hides app-only entries from hosts that did
+		// not negotiate MCP Apps support.
 		expect(AGENT_TOOL_NAMES.size).toBe(6);
 		expect(isRestDispatchTool("render_lobu_view")).toBe(false);
+		expect(isRestDispatchTool("resolve_lobu_approval")).toBe(false);
 		expect(isRestDispatchTool("manage_connections")).toBe(true);
 	});
 

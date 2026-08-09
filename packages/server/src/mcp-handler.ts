@@ -53,6 +53,7 @@ import {
   isSoftErrorResult,
 } from './tools/execute';
 import { LOBU_INTERACTION_RESOURCE_URI } from './tools/mcp_app';
+import { getMcpResultMeta } from './tools/mcp-result-meta';
 import { getMcpTools, getTool } from './tools/registry';
 import { validateToolResult } from './tools/validate-args';
 import { readMcpAppBundle } from './utils/mcp-app-bundle';
@@ -93,6 +94,14 @@ export function hostConversationIdFromMeta(value: unknown): string | null {
   if (typeof id !== 'string') return null;
   const trimmed = id.trim();
   return trimmed && trimmed.length <= 512 ? trimmed : null;
+}
+
+function approvalCapabilityFromMeta(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const token = (value as Record<string, unknown>)['lobu/approval-capability'];
+  if (typeof token !== 'string') return null;
+  const trimmed = token.trim();
+  return trimmed && trimmed.length <= 4_096 ? trimmed : null;
 }
 
 // Periodic cleanup of stale IN-MEMORY sessions. This must stay as a per-pod
@@ -262,32 +271,39 @@ function createServerForContext(
     const allTools = getMcpTools({
       publicOnly,
       maxAccessLevel,
-    }).map((t) => {
-      const securitySchemes = t.securitySchemes
-        ? publicOnly
-          ? [{ type: 'noauth' as const }, ...t.securitySchemes]
-          : t.securitySchemes
-        : undefined;
-      const appMeta = mcpAppsSupported ? t._meta : undefined;
-      return {
-        name: t.name,
-        description: t.description,
-        inputSchema: t.inputSchema,
-        ...(t.annotations && { annotations: t.annotations }),
-        ...(t.outputSchema && { outputSchema: t.outputSchema }),
-        ...(securitySchemes && { securitySchemes }),
-        ...(appMeta || securitySchemes
-          ? {
-              _meta: {
-                ...(appMeta ?? {}),
-                // MCP Apps 2025-11-25 retains `_meta.securitySchemes` as the
-                // compatibility mirror for hosts that predate the top-level field.
-                ...(securitySchemes && { securitySchemes }),
-              },
-            }
-          : {}),
-      };
-    });
+    })
+      .filter((t) => {
+        const visibility = (t._meta?.ui as { visibility?: unknown } | undefined)?.visibility;
+        return mcpAppsSupported || !(
+          Array.isArray(visibility) && visibility.length === 1 && visibility[0] === 'app'
+        );
+      })
+      .map((t) => {
+        const securitySchemes = t.securitySchemes
+          ? publicOnly
+            ? [{ type: 'noauth' as const }, ...t.securitySchemes]
+            : t.securitySchemes
+          : undefined;
+        const appMeta = mcpAppsSupported ? t._meta : undefined;
+        return {
+          name: t.name,
+          description: t.description,
+          inputSchema: t.inputSchema,
+          ...(t.annotations && { annotations: t.annotations }),
+          ...(t.outputSchema && { outputSchema: t.outputSchema }),
+          ...(securitySchemes && { securitySchemes }),
+          ...(appMeta || securitySchemes
+            ? {
+                _meta: {
+                  ...(appMeta ?? {}),
+                  // MCP Apps 2025-11-25 retains `_meta.securitySchemes` as the
+                  // compatibility mirror for hosts that predate the top-level field.
+                  ...(securitySchemes && { securitySchemes }),
+                },
+              }
+            : {}),
+        };
+      });
 
     return { tools: allTools };
   });
@@ -349,7 +365,9 @@ function createServerForContext(
     const { name, arguments: args } = request.params;
     const callAuthCtx = {
       ...authCtx,
+      mcpAppsSupported,
       mcpConversationId: hostConversationIdFromMeta(request.params._meta),
+      mcpAppApprovalCapability: approvalCapabilityFromMeta(request.params._meta),
     };
 
     // Regular tool execution
@@ -366,8 +384,8 @@ function createServerForContext(
       // When the tool declares an `outputSchema`, also return the result as
       // `structuredContent` (MCP spec: declaring outputSchema implies the result
       // is structured — and a spec-compliant client validates it against the
-      // declared schema). Tools without one (manage_agents, save_memory, ...)
-      // stay text-only — the schema is coupled to emission, never declared alone.
+      // declared schema). Tools without one stay text-only — the schema is
+      // coupled to emission, never declared alone.
       //
       // Validate + coerce the result against the schema before emitting: result
       // types are hand-authored TypeBox schemas but the values are assembled from
@@ -383,18 +401,21 @@ function createServerForContext(
       // turn `{ rows: [], error }` into a clean empty CSV result.
       const softError = isSoftErrorResult(result);
       const tool = getTool(name);
+      const resultMeta = getMcpResultMeta(result);
       if (tool?.outputSchema && result && typeof result === 'object') {
         const structured = validateToolResult(tool.outputSchema, result);
         if (structured !== null) {
           return {
             content: [{ type: 'text' as const, text }],
             structuredContent: structured as Record<string, unknown>,
+            ...(resultMeta ? { _meta: resultMeta } : {}),
             ...(softError ? { isError: true } : {}),
           };
         }
       }
       return {
         content: [{ type: 'text' as const, text }],
+        ...(resultMeta ? { _meta: resultMeta } : {}),
         ...(softError ? { isError: true } : {}),
       };
     } catch (error: any) {

@@ -185,7 +185,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(resource._meta?.ui?.domain).toBeUndefined();
   });
 
-  it('advertises a dedicated render tool with Apps, OAuth, and safety metadata', async () => {
+  it('advertises rich result UIs for every public data tool and an app-only approval tool', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const response = await post(`/mcp/${org.slug}`, {
       body: { jsonrpc: '2.0', id: 1, method: 'tools/list' },
@@ -218,8 +218,41 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       })
     );
 
-    const runSdk = body.result?.tools?.find((entry: { name?: string }) => entry.name === 'run_sdk');
-    expect(runSdk?._meta?.ui).toBeUndefined();
+    for (const name of [
+      'search_memory',
+      'save_memory',
+      'search_sdk',
+      'query_sdk',
+      'query_sql',
+      'run_sdk',
+      'render_lobu_view',
+    ]) {
+      const richTool = body.result?.tools?.find(
+        (entry: { name?: string }) => entry.name === name
+      );
+      expect(richTool?._meta?.ui).toEqual(
+        expect.objectContaining({
+          resourceUri: 'ui://lobu/interaction/v1',
+          visibility: ['model', 'app'],
+        })
+      );
+      expect(richTool?._meta?.['openai/outputTemplate']).toBe(
+        'ui://lobu/interaction/v1'
+      );
+      expect(richTool?.outputSchema).toEqual(expect.objectContaining({ type: 'object' }));
+    }
+
+    const resolveApproval = body.result?.tools?.find(
+      (entry: { name?: string }) => entry.name === 'resolve_lobu_approval'
+    );
+    expect(resolveApproval).toEqual(
+      expect.objectContaining({
+        securitySchemes: [{ type: 'oauth2', scopes: ['mcp:write'] }],
+        _meta: expect.objectContaining({
+          ui: expect.objectContaining({ visibility: ['app'] }),
+        }),
+      })
+    );
     for (const listed of body.result?.tools ?? []) {
       expect(listed.securitySchemes?.[0]?.type).toBe('oauth2');
       expect(listed.annotations?.readOnlyHint).toEqual(expect.any(Boolean));
@@ -319,9 +352,54 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     );
     expect(tool?._meta?.ui).toBeUndefined();
     expect(typeof tool?.description).toBe('string');
+    expect(
+      body.result?.tools?.some(
+        (entry: { name?: string }) => entry.name === 'resolve_lobu_approval'
+      )
+    ).toBe(false);
+
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (organization_id, run_type, status, approval_status)
+      VALUES (${org.id}, 'action', 'pending', 'pending')
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_non_app_approval_${runId}`,
+      title: 'Non-App review — pending approval',
+      content: 'This client must use the Lobu review page.',
+      semanticType: 'operation',
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+    });
+    const renderResponse = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'render_lobu_view',
+          arguments: { action: 'review_approval', run_id: runId },
+        },
+      },
+      headers: {
+        'mcp-session-id': sessionId,
+        'mcp-protocol-version': MCP_PROTOCOL_VERSION,
+      },
+      token,
+    });
+    const renderBody = await renderResponse.json();
+    expect(renderBody.result?.isError).not.toBe(true);
+    expect(renderBody.result?._meta?.['lobu/approval-capability']).toBeUndefined();
+    expect(renderBody.result?.structuredContent?.actions).toEqual([
+      expect.objectContaining({ id: 'review', href: expect.stringMatching(/^https?:\/\//) }),
+    ]);
   });
 
-  it('keeps an approval mutation text-only and renders a safe review link separately', async () => {
+  it('keeps an approval mutation text-only and resolves it only with the hidden app capability', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`, {
       agentId: actingAgent.agentId,
     });
@@ -381,15 +459,144 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     const view = renderBody.result?.structuredContent;
     expect(view?.version).toBe(1);
     expect(view?.tone).toBe('warning');
-    expect(view?.actions).toEqual([
+    expect(view?.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'approve',
+          label: 'Approve',
+          tool: 'resolve_lobu_approval',
+          args: { run_id: runId, decision: 'approve' },
+        }),
+        expect.objectContaining({
+          id: 'reject',
+          label: 'Reject',
+          tool: 'resolve_lobu_approval',
+          args: { run_id: runId, decision: 'reject' },
+        }),
+        expect.objectContaining({
+          id: 'review',
+          label: 'Open in Lobu',
+          href: expect.stringMatching(/^https?:\/\//),
+        }),
+      ])
+    );
+    const capability = renderBody.result?._meta?.['lobu/approval-capability'];
+    expect(typeof capability).toBe('string');
+    expect(capability.length).toBeGreaterThan(40);
+    expect(JSON.stringify(view)).not.toContain(capability);
+    expect(renderBody.result?.content?.[0]?.text).not.toContain(capability);
+
+    const missingCapabilityResponse = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 22,
+        method: 'tools/call',
+        params: {
+          name: 'resolve_lobu_approval',
+          arguments: { run_id: runId, decision: 'reject' },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const missingCapabilityBody = await missingCapabilityResponse.json();
+    expect(missingCapabilityBody.result?.isError).toBe(true);
+    expect(missingCapabilityBody.result?.content?.[0]?.text).toMatch(/approval capability/i);
+
+    const rejectResponse = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 23,
+        method: 'tools/call',
+        params: {
+          name: 'resolve_lobu_approval',
+          arguments: { run_id: runId, decision: 'reject', reason: 'Not this time' },
+          _meta: { 'lobu/approval-capability': capability },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const rejectBody = await rejectResponse.json();
+    expect(rejectBody.result?.isError).not.toBe(true);
+    expect(rejectBody.result?.structuredContent).toEqual(
       expect.objectContaining({
-        id: 'review',
-        label: 'Review in Lobu',
-        href: expect.stringMatching(/^https?:\/\//),
-      }),
-    ]);
-    expect(view?.actions?.some((action: { id?: string }) => action.id === 'approve')).toBe(false);
-    expect(view?.actions?.some((action: { id?: string }) => action.id === 'reject')).toBe(false);
+        title: expect.stringMatching(/rejected/i),
+        actions: [],
+      })
+    );
+
+    const [settled] = await getDb()<{
+      approval_status: string;
+      status: string;
+      error_message: string | null;
+    }>`
+      SELECT approval_status, status, error_message
+      FROM runs
+      WHERE id = ${runId} AND organization_id = ${org.id}
+    `;
+    expect(settled).toMatchObject({
+      approval_status: 'rejected',
+      status: 'cancelled',
+      error_message: 'Not this time',
+    });
+
+    const replayResponse = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 24,
+        method: 'tools/call',
+        params: {
+          name: 'resolve_lobu_approval',
+          arguments: { run_id: runId, decision: 'reject' },
+          _meta: { 'lobu/approval-capability': capability },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const replayBody = await replayResponse.json();
+    expect(replayBody.result?.isError).toBe(true);
+    expect(replayBody.result?.content?.[0]?.text).toMatch(/stale|pending/i);
+  });
+
+  it('returns structured SQL rows for the shared rich renderer', async () => {
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 25,
+        method: 'tools/call',
+        params: {
+          name: 'query_sql',
+          arguments: {
+            sql: 'SELECT id, semantic_type AS name FROM events',
+            sort_by: 'id',
+            sort_order: 'desc',
+            limit: 1,
+          },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    expect(body.result?.structuredContent).toEqual(
+      expect.objectContaining({
+        rows: [
+          {
+            id: expect.any(Number),
+            name: expect.any(String),
+          },
+        ],
+        columns: [
+          { name: 'id', type: expect.any(String) },
+          { name: 'name', type: expect.any(String) },
+        ],
+        total_count: expect.any(Number),
+      })
+    );
   });
 
   it('redacts approval secrets before key context is lost and enforces view limits', async () => {
@@ -410,6 +617,22 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       token: 'plaintext-old-token',
       apiKey: 'plaintext-old-api-key',
     };
+    const interactionInputSchema = {
+      type: 'object',
+      properties: {
+        api_key: {
+          type: 'string',
+          default: 'plaintext-schema-api-key',
+          description: 'Credential used for the request',
+        },
+        comment: { type: 'string' },
+      },
+      required: ['api_key'],
+    };
+    const interactionInput = {
+      api_key: 'plaintext-form-api-key',
+      comment: 'Safe existing note',
+    };
     for (let index = 0; index < 130; index += 1) {
       proposal[`field_${index}_${'x'.repeat(150)}`] = `value_${index}_${'y'.repeat(21_000)}`;
     }
@@ -423,6 +646,8 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       runId: Number(run.id),
       interactionType: 'approval',
       interactionStatus: 'pending',
+      interactionInputSchema,
+      interactionInput,
       metadata: { proposal, current },
     });
 
@@ -450,10 +675,29 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(serialized).not.toContain('plaintext-old-api-key');
     expect(serialized).not.toContain('plaintext-nested-authorization');
     expect(serialized).not.toContain('plaintext-uri-password');
+    expect(serialized).not.toContain('plaintext-schema-api-key');
+    expect(serialized).not.toContain('plaintext-form-api-key');
     expect(serialized).toContain('[redacted]');
     expect(view.title.length).toBeLessThanOrEqual(200);
     expect(view.blocks.length).toBeLessThanOrEqual(100);
     expect(view.actions.length).toBeLessThanOrEqual(10);
+    const form = view.blocks.find((block: any) => block.type === 'form');
+    expect(form).toEqual(
+      expect.objectContaining({
+        schema: expect.objectContaining({
+          properties: expect.objectContaining({
+            api_key: expect.objectContaining({
+              type: 'string',
+              format: 'password',
+              description: 'Credential used for the request',
+            }),
+          }),
+          required: ['api_key'],
+        }),
+        initialValues: { comment: 'Safe existing note' },
+      })
+    );
+    expect(form.schema.properties.api_key.default).toBeUndefined();
     const diffFields = view.blocks.flatMap((block: any) => block.fields ?? []);
     expect(diffFields.length).toBeLessThanOrEqual(100);
     for (const field of diffFields) {

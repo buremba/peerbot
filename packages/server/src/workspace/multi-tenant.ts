@@ -2,6 +2,7 @@ import { verifyWorkerToken } from '@lobu/core';
 import { getAuthConfig as getAuthConfigFromEnv } from '../auth/config';
 import { createAuth } from '../auth/index';
 import { OAuthProvider } from '../auth/oauth/provider';
+import { buildBearerChallenge } from '../auth/oauth/resource-challenge';
 import type { AuthInfo } from '../auth/oauth/types';
 import { PersonalAccessTokenService } from '../auth/tokens';
 import { isPublicReadable } from '../auth/tool-access';
@@ -273,7 +274,10 @@ export class MultiTenantProvider implements WorkspaceProvider {
           { error: 'invalid_token', error_description: 'Invalid or expired worker token' },
           401,
           {
-            'WWW-Authenticate': `Bearer realm="${baseUrl}/.well-known/oauth-protected-resource", error="invalid_token"`,
+            'WWW-Authenticate': buildBearerChallenge(c.req.raw, {
+              error: 'invalid_token',
+              errorDescription: 'Invalid or expired worker token',
+            }),
           }
         );
       }
@@ -288,7 +292,10 @@ export class MultiTenantProvider implements WorkspaceProvider {
           { error: 'invalid_token', error_description: 'Worker token missing agent context' },
           401,
           {
-            'WWW-Authenticate': `Bearer realm="${baseUrl}/.well-known/oauth-protected-resource", error="invalid_token"`,
+            'WWW-Authenticate': buildBearerChallenge(c.req.raw, {
+              error: 'invalid_token',
+              errorDescription: 'Worker token missing agent context',
+            }),
           }
         );
       }
@@ -316,7 +323,10 @@ export class MultiTenantProvider implements WorkspaceProvider {
           { error: 'invalid_token', error_description: 'Worker token missing admin-tools actor' },
           401,
           {
-            'WWW-Authenticate': `Bearer realm="${baseUrl}/.well-known/oauth-protected-resource", error="invalid_token"`,
+            'WWW-Authenticate': buildBearerChallenge(c.req.raw, {
+              error: 'invalid_token',
+              errorDescription: 'Worker token missing admin-tools actor',
+            }),
           }
         );
       }
@@ -392,7 +402,10 @@ export class MultiTenantProvider implements WorkspaceProvider {
             { error: 'invalid_token', error_description: 'Invalid or expired access token' },
             401,
             {
-              'WWW-Authenticate': `Bearer realm="${baseUrl}/.well-known/oauth-protected-resource", error="invalid_token"`,
+              'WWW-Authenticate': buildBearerChallenge(c.req.raw, {
+                error: 'invalid_token',
+                errorDescription: 'Invalid or expired access token',
+              }),
             }
           );
         }
@@ -634,7 +647,10 @@ export class MultiTenantProvider implements WorkspaceProvider {
         { error: 'invalid_token', error_description: 'Invalid or expired access token' },
         401,
         {
-          'WWW-Authenticate': `Bearer realm="${baseUrl}/.well-known/oauth-protected-resource", error="invalid_token"`,
+          'WWW-Authenticate': buildBearerChallenge(c.req.raw, {
+            error: 'invalid_token',
+            errorDescription: 'Invalid or expired access token',
+          }),
         }
       );
     }
@@ -652,7 +668,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
           error_description: 'Authentication required. Use OAuth or API key.',
         },
         401,
-        { 'WWW-Authenticate': `Bearer realm="${baseUrl}/.well-known/oauth-protected-resource"` }
+        { 'WWW-Authenticate': buildBearerChallenge(c.req.raw) }
       );
     }
 

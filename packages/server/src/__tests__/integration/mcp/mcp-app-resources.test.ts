@@ -2,10 +2,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { getDb } from '../../../db/client';
+import { insertEvent } from '../../../utils/insert-event';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
   addUserToOrganization,
   createTestAccessToken,
+  createTestAgent,
+  createTestConnection,
   createTestOAuthClient,
   createTestOrganization,
   createTestUser,
@@ -21,6 +25,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
   let org: Awaited<ReturnType<typeof createTestOrganization>>;
   let owner: Awaited<ReturnType<typeof createTestUser>>;
   let client: Awaited<ReturnType<typeof createTestOAuthClient>>;
+  let actingAgent: Awaited<ReturnType<typeof createTestAgent>>;
   let token: string;
   let tmpRoot: string;
   const prevWebDist = process.env.WEB_DIST_DIR;
@@ -46,6 +51,11 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     org = await createTestOrganization({ name: 'MCP App Org', slug: 'mcp-app-org' });
     owner = await createTestUser({ email: 'mcp-app-owner@test.example.com' });
     await addUserToOrganization(owner.id, org.id, 'owner');
+    actingAgent = await createTestAgent({
+      organizationId: org.id,
+      ownerId: owner.id,
+      agentId: 'mcp-app-render-agent',
+    });
     client = await createTestOAuthClient();
     token = (
       await createTestAccessToken(owner.id, org.id, client.client_id, {
@@ -60,7 +70,11 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     if (tmpRoot) rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  async function initSession(path: string): Promise<string> {
+  async function initSession(
+    path: string,
+    sessionToken = token,
+    agentId?: string
+  ): Promise<string> {
     const initResponse = await post(path, {
       body: {
         jsonrpc: '2.0',
@@ -69,17 +83,17 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         params: {
           protocolVersion: '2025-03-26',
           capabilities: {},
-          clientInfo: { name: 'lobu-test', version: '1.0' },
+          clientInfo: { name: 'lobu-test', version: '1.0', ...(agentId ? { agentId } : {}) },
         },
       },
-      token,
+      token: sessionToken,
     });
     const sessionId = initResponse.headers.get('mcp-session-id');
     expect(sessionId).toBeTruthy();
     await post(path, {
       body: { jsonrpc: '2.0', method: 'notifications/initialized' },
       headers: { 'mcp-session-id': sessionId! },
-      token,
+      token: sessionToken,
     });
     return sessionId!;
   }
@@ -91,7 +105,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         jsonrpc: '2.0',
         id: 1,
         method: 'resources/read',
-        params: { uri: 'ui://lobu/interaction' },
+        params: { uri: 'ui://lobu/interaction/v1' },
       },
       headers: { 'mcp-session-id': sessionId },
       token,
@@ -100,9 +114,15 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const content = body.result?.contents?.[0];
-    expect(content?.uri).toBe('ui://lobu/interaction');
-    expect(content?.mimeType).toBe('text/html');
+    expect(content?.uri).toBe('ui://lobu/interaction/v1');
+    expect(content?.mimeType).toBe('text/html;profile=mcp-app');
     expect(content?.text).toContain('mcp-app-interaction-stub');
+    expect(content?._meta?.ui).toEqual(
+      expect.objectContaining({
+        csp: {},
+        prefersBorder: true,
+      })
+    );
   });
 
   it('advertises description, csp, and domain metadata on resources/list', async () => {
@@ -120,19 +140,104 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const resource = body.result?.resources?.find(
-      (r: { uri: string }) => r.uri === 'ui://lobu/interaction'
+      (r: { uri: string }) => r.uri === 'ui://lobu/interaction/v1'
     );
     expect(resource).toBeDefined();
     // description is a typed resource field surfaced in client browsers.
     expect(typeof resource.description).toBe('string');
     expect(resource.description.length).toBeGreaterThan(0);
-    // CSP + domain ride the _meta.ui passthrough (host conventions, SDK $loose).
-    expect(resource._meta?.ui?.csp).toMatch(/script-src/);
+    expect(resource.mimeType).toBe('text/html;profile=mcp-app');
+    // This bundle is self-contained and performs no network requests. An empty
+    // structured CSP asks the MCP Apps host to apply its restrictive default.
+    expect(resource._meta?.ui?.csp).toEqual({});
+    expect(resource._meta?.ui?.prefersBorder).toBe(true);
     expect(resource._meta?.ui?.domain).toMatch(/^https?:\/\//);
   });
 
-  it('returns a pending manage_agents approval as plain text, without tool-result _meta', async () => {
+  it('advertises a decoupled render tool with UI, OAuth, and safety metadata', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: { jsonrpc: '2.0', id: 11, method: 'tools/list' },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    const renderTool = body.result?.tools?.find(
+      (tool: { name: string }) => tool.name === 'render_lobu_view'
+    );
+    expect(renderTool).toEqual(
+      expect.objectContaining({
+        annotations: expect.objectContaining({
+          readOnlyHint: true,
+          destructiveHint: false,
+          openWorldHint: false,
+          idempotentHint: true,
+        }),
+        securitySchemes: [{ type: 'oauth2', scopes: ['mcp:read'] }],
+        _meta: expect.objectContaining({
+          securitySchemes: [{ type: 'oauth2', scopes: ['mcp:read'] }],
+          ui: expect.objectContaining({
+            resourceUri: 'ui://lobu/interaction/v1',
+            visibility: ['model', 'app'],
+          }),
+          'openai/outputTemplate': 'ui://lobu/interaction/v1',
+        }),
+      })
+    );
+
+    for (const tool of body.result?.tools ?? []) {
+      expect(tool.securitySchemes?.[0]?.type).toBe('oauth2');
+      expect(tool.annotations?.readOnlyHint).toEqual(expect.any(Boolean));
+      expect(tool.annotations?.destructiveHint).toEqual(expect.any(Boolean));
+      expect(tool.annotations?.openWorldHint).toEqual(expect.any(Boolean));
+    }
+  });
+
+  it('returns a validated LobuViewV1 with a text fallback from render_lobu_view', async () => {
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 12,
+        method: 'tools/call',
+        params: {
+          name: 'render_lobu_view',
+          arguments: {
+            action: 'render',
+            title: 'Release readiness',
+            tone: 'default',
+            blocks: [
+              { type: 'text', label: 'Status', value: 'Ready for review.' },
+              { type: 'code', value: 'sha: 1234abcd' },
+            ],
+          },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    expect(body.result?.structuredContent).toEqual({
+      version: 1,
+      title: 'Release readiness',
+      tone: 'default',
+      blocks: [
+        { type: 'text', label: 'Status', value: 'Ready for review.' },
+        { type: 'code', value: 'sha: 1234abcd' },
+      ],
+      actions: [],
+    });
+    expect(body.result?.content?.[0]?.text).toContain('Release readiness');
+    expect(body.result?.content?.[0]?.text).toContain('Ready for review\\.');
+  });
+
+  it('keeps an approval tool result text-only and renders a safe Lobu review link separately', async () => {
+    const sessionId = await initSession(`/mcp/${org.slug}`, token, actingAgent.agentId);
     const response = await post(`/mcp/${org.slug}`, {
       body: {
         jsonrpc: '2.0',
@@ -154,15 +259,147 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.result?.isError).not.toBe(true);
-    // The pending approval still returns its text result, but the tool result no
-    // longer carries an MCP App UI pointer: our own SPA builds the interaction
-    // view CLIENT-side from the SSE card payload, and external-host rendering
-    // (which needs the SERVER to author that view) is a deliberate follow-up.
-    // Assert the pointer is absent so we don't silently re-introduce a `_meta`
-    // that points a host at a bundle it can't feed from raw data.
+    // The mutating tool is not coupled to UI. A separate read-only render call
+    // authors the review view, so model data selection and presentation remain
+    // decoupled and text-only clients still see the pending result.
     expect(body.result?._meta?.ui).toBeUndefined();
     expect(body.result?.structuredContent).toBeUndefined();
-    expect(typeof body.result?.content?.[0]?.text).toBe('string');
+    const text = body.result?.content?.[0]?.text;
+    expect(typeof text).toBe('string');
+    const [approval] = await getDb()<{ run_id: number }>`
+      SELECT run_id
+      FROM current_event_records
+      WHERE organization_id = ${org.id}
+        AND interaction_type = 'approval'
+        AND run_id IS NOT NULL
+      ORDER BY id DESC
+      LIMIT 1
+    `;
+    const runId = Number(approval?.run_id);
+    expect(runId).toBeGreaterThan(0);
+
+    const renderResponse = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 21,
+        method: 'tools/call',
+        params: {
+          name: 'render_lobu_view',
+          arguments: { action: 'review_approval', run_id: runId },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const renderBody = await renderResponse.json();
+    const view = renderBody.result?.structuredContent;
+    expect(view?.version).toBe(1);
+    expect(view?.tone).toBe('warning');
+    expect(view?.actions).toEqual([
+      expect.objectContaining({
+        id: 'review',
+        label: 'Review in Lobu',
+        href: expect.stringMatching(/^https?:\/\//),
+      }),
+    ]);
+    expect(view?.actions?.some((action: { id?: string }) => action.id === 'approve')).toBe(false);
+    expect(view?.actions?.some((action: { id?: string }) => action.id === 'reject')).toBe(false);
+  });
+
+  it('does not render an approval from another member private connection', async () => {
+    const member = await createTestUser({ email: 'mcp-app-member@test.example.com' });
+    await addUserToOrganization(member.id, org.id, 'member');
+    const memberToken = (
+      await createTestAccessToken(member.id, org.id, client.client_id, {
+        scope: 'mcp:read profile:read',
+      })
+    ).token;
+    const privateConnection = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'github',
+      created_by: owner.id,
+      visibility: 'private',
+      createDefaultFeed: false,
+    });
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (
+        organization_id, run_type, status, approval_status, connection_id,
+        connector_key, action_key
+      ) VALUES (
+        ${org.id}, 'action', 'pending', 'pending', ${privateConnection.id},
+        'github', 'create_issue'
+      )
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_private_approval_${runId}`,
+      title: 'Private action — pending approval',
+      content: 'This approval must remain private to the connection owner.',
+      semanticType: 'operation',
+      connectorKey: 'github',
+      connectionId: privateConnection.id,
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+    });
+
+    const sessionId = await initSession(`/mcp/${org.slug}`, memberToken);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 211,
+        method: 'tools/call',
+        params: {
+          name: 'render_lobu_view',
+          arguments: { action: 'review_approval', run_id: runId },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token: memberToken,
+    });
+    const body = await response.json();
+    expect(body.result?.isError).toBe(true);
+    expect(body.result?.structuredContent).toBeUndefined();
+    expect(body.result?.content?.[0]?.text).toBe(`Approval run ${runId} was not found`);
+  });
+
+  it('returns an MCP reauthorization challenge for a tool-level scope failure', async () => {
+    const readlessToken = (
+      await createTestAccessToken(owner.id, org.id, client.client_id, {
+        scope: 'profile:read',
+      })
+    ).token;
+    const sessionId = await initSession(`/mcp/${org.slug}`, readlessToken);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 22,
+        method: 'tools/call',
+        params: {
+          name: 'render_lobu_view',
+          arguments: {
+            action: 'render',
+            blocks: [{ type: 'text', value: 'scope probe' }],
+          },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token: readlessToken,
+    });
+    const body = await response.json();
+    expect(body.result?.isError).toBe(true);
+    expect(body.result?._meta?.['mcp/www_authenticate']?.[0]).toContain(
+      `resource_metadata="http://localhost/.well-known/oauth-protected-resource/mcp/${org.slug}"`
+    );
+    expect(body.result?._meta?.['mcp/www_authenticate']?.[0]).toContain(
+      'error="insufficient_scope"'
+    );
+    expect(body.result?._meta?.['mcp/www_authenticate']?.[0]).toContain(
+      'scope="mcp:read"'
+    );
   });
 
   it('emits structuredContent for a tool that declares an outputSchema', async () => {

@@ -70,12 +70,15 @@ describe("tool registry split", () => {
 			[
 				"query_sdk",
 				"query_sql",
+				"render_lobu_view",
 				"run_sdk",
 				"save_memory",
 				"search_memory",
 				"search_sdk",
 			].sort()
 		);
+		// The render helper is MCP-only and deliberately does not expand the
+		// ClientSDK/REST agent surface.
 		expect(AGENT_TOOL_NAMES.size).toBe(6);
 	});
 

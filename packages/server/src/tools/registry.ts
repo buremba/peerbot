@@ -25,6 +25,12 @@ import { MetricSeriesSchema, metricSeries } from './admin/metric_series';
 import { QueryMetricSchema, queryMetric } from './admin/query_metric';
 import { QuerySqlSchema, querySql } from './admin/query_sql';
 import { ListOrganizationsSchema } from './organizations';
+import {
+  LOBU_INTERACTION_RESOURCE_URI,
+  LobuViewSchema,
+  RenderLobuViewSchema,
+  renderLobuView,
+} from './mcp_app';
 import { ResolvePathSchema, ResolvePathResultSchema, resolvePath } from './resolve_path';
 import { SaveContentSchema, saveContent } from './save_content';
 import { PublicSearchSchema, SearchSchema, UnifiedSearchResultSchema, search } from './search';
@@ -171,6 +177,10 @@ export interface ToolDefinition<T = any> {
    * same schema object here — one source of truth, no drift.
    */
   outputSchema?: any; // JSON Schema
+  /** OAuth scopes advertised to MCP hosts for this tool. */
+  securityScopes?: string[];
+  /** MCP extension metadata (UI resource linkage/visibility, host aliases). */
+  mcpMeta?: Record<string, unknown>;
   handler: (args: T, env: Env, ctx: ToolContext) => Promise<any>;
 }
 
@@ -202,6 +212,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
     publicInputSchema: PublicSearchSchema,
     outputSchema: UnifiedSearchResultSchema,
     annotations: { ...READ_ONLY, title: 'Search memory' },
+    securityScopes: ['mcp:read'],
     handler: search,
   },
   {
@@ -210,6 +221,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
       'Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The write is immediately readable by returned event id via `client.knowledge.read({ content_ids: [id] })`; semantic search indexing is asynchronous and reported as `indexing_status`. Storage is append-only — pass `supersedes_event_id` to replace an existing fact (the old event is hidden from future searches without losing history). Optionally attach to entities via `entity_ids`. Always search first to avoid duplicates.',
     inputSchema: SaveContentSchema,
     annotations: { ...WRITE_WITHOUT_CONFIRM, title: 'Save memory' },
+    securityScopes: ['mcp:write'],
     handler: saveContent,
   },
   {
@@ -219,6 +231,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
     inputSchema: SdkSearchSchema,
     outputSchema: SdkSearchResultSchema,
     annotations: { ...READ_ONLY, title: 'Search SDK docs' },
+    securityScopes: ['mcp:read'],
     handler: sdkSearch,
   },
   // ─── Power tools — TS scripting + raw SQL ─────────────────────────────────
@@ -229,6 +242,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
     inputSchema: QuerySchema,
     outputSchema: SdkScriptResultSchema,
     annotations: { ...READ_ONLY, title: 'Query SDK (read-only)' },
+    securityScopes: ['mcp:read'],
     handler: querySdkScript,
   },
   {
@@ -237,6 +251,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
       'Run a paginated, sortable, searchable read-only SQL query (member-safe). Table references auto-scope to the bound org. SELECT FROM events reads persisted/synced content only; virtual feeds are live-only and must be read explicitly with feed or via query_sdk client.feeds.readMany. Results may include coverage.suggested_virtual_feeds. Prefer client.metrics.query for declared measures; use client.query in query_sdk for simple one-shot SQL. Do NOT use positional parameters ($1, $2, …). Optional `org_slug` (OAuth on /mcp only) redirects to another member org.',
     inputSchema: QuerySqlSchema,
     annotations: { ...READ_ONLY, title: 'Query SQL' },
+    securityScopes: ['mcp:read'],
     handler: querySql,
   },
   {
@@ -252,7 +267,29 @@ const AGENT_TOOLS: ToolDefinition[] = [
       idempotentHint: false,
       title: 'Run SDK',
     },
+    securityScopes: ['mcp:write'],
     handler: runSdkScript,
+  },
+];
+
+/** MCP-only presentation tools. They do not expand the REST/OpenAPI/ClientSDK surface. */
+const MCP_APP_TOOLS: ToolDefinition[] = [
+  {
+    name: 'render_lobu_view',
+    description:
+      'Render a compact Lobu card after data has been selected, or render the review card for one pending approval run. Use action="render" only when a visual card materially helps; first call Lobu data tools and pass only the final content. Use action="review_approval" with a run_id returned by a pending action. Text-only clients receive the same information as readable text.',
+    inputSchema: RenderLobuViewSchema,
+    outputSchema: LobuViewSchema,
+    annotations: { ...READ_ONLY, title: 'Render Lobu view' },
+    securityScopes: ['mcp:read'],
+    mcpMeta: {
+      ui: {
+        resourceUri: LOBU_INTERACTION_RESOURCE_URI,
+        visibility: ['model', 'app'],
+      },
+      'openai/outputTemplate': LOBU_INTERACTION_RESOURCE_URI,
+    },
+    handler: renderLobuView,
   },
 ];
 
@@ -307,7 +344,9 @@ const INTERNAL_DISPATCH_TOOLS: ToolDefinition[] = [
   },
 ];
 
+const ALL_MCP_TOOLS: ToolDefinition[] = [...AGENT_TOOLS, ...MCP_APP_TOOLS];
 const ALL_DISPATCH_TOOLS: ToolDefinition[] = [...AGENT_TOOLS, ...INTERNAL_DISPATCH_TOOLS];
+const ALL_EXECUTABLE_TOOLS: ToolDefinition[] = [...ALL_DISPATCH_TOOLS, ...MCP_APP_TOOLS];
 
 export const AGENT_TOOL_NAMES: ReadonlySet<string> = new Set(AGENT_TOOLS.map((tool) => tool.name));
 
@@ -320,7 +359,7 @@ const INTERNAL_TOOL_NAMES: ReadonlySet<string> = new Set(
 // ============================================
 
 const DISPATCH_BY_NAME: Map<string, ToolDefinition> = new Map(
-  ALL_DISPATCH_TOOLS.map((tool) => [tool.name, tool])
+  ALL_EXECUTABLE_TOOLS.map((tool) => [tool.name, tool])
 );
 
 /**
@@ -492,13 +531,14 @@ const listedToolsCache = new Map<string, ReturnType<typeof computeListedTools>>(
 type ListedToolOptions = {
   publicOnly?: boolean;
   maxAccessLevel?: 'read' | 'write' | 'admin';
+  includeAppTools?: boolean;
 };
 
 /**
  * Agent-facing tools for MCP `tools/list` and external OpenAPI.
  */
 export function getMcpTools(options?: ListedToolOptions) {
-  return getListedTools(AGENT_TOOLS, options);
+  return getListedTools(options?.includeAppTools === false ? AGENT_TOOLS : ALL_MCP_TOOLS, options);
 }
 
 /**
@@ -553,7 +593,9 @@ export function getRawDispatchTools(): RawDispatchTool[] {
 function getListedTools(source: ToolDefinition[], options?: ListedToolOptions) {
   const publicOnly = options?.publicOnly ?? false;
   const maxAccessLevel = options?.maxAccessLevel ?? 'admin';
-  const cacheKey = `${source === AGENT_TOOLS ? 'mcp' : 'all'}:${publicOnly ? 1 : 0}:${maxAccessLevel}`;
+  const sourceKey =
+    source === ALL_MCP_TOOLS ? 'mcp' : source === AGENT_TOOLS ? 'agent' : 'all';
+  const cacheKey = `${sourceKey}:${publicOnly ? 1 : 0}:${maxAccessLevel}`;
   let cached = listedToolsCache.get(cacheKey);
   if (!cached) {
     cached = computeListedTools(source, publicOnly, maxAccessLevel);
@@ -581,7 +623,6 @@ function computeListedTools(
         inputSchema = filterSchemaForPublicActions(tool.name, inputSchema);
       }
       if (!inputSchema) return null;
-
       inputSchema = filterSchemaForAccessLevel(
         tool.name,
         inputSchema,
@@ -603,6 +644,10 @@ function computeListedTools(
         description: tool.description,
         inputSchema,
         ...(tool.annotations && { annotations: tool.annotations }),
+        ...(tool.securityScopes && {
+          securitySchemes: [{ type: 'oauth2' as const, scopes: tool.securityScopes }],
+        }),
+        ...(tool.mcpMeta && { _meta: tool.mcpMeta }),
         // outputSchema keeps its discriminated variants (no flattening, no
         // access-level filtering — those are input concerns) but the MCP spec
         // requires a tool's outputSchema to be an OBJECT schema. TypeBox

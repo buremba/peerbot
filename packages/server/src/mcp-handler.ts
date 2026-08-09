@@ -24,7 +24,13 @@ import {
 import type { Context } from 'hono';
 import { bindRequestAbortToStream, type AbortableStream } from './events/sse-abort-bridge';
 import { OAuthClientsStore } from './auth/oauth/clients';
-import { isPublicReadable, resolveMaxAccessLevel } from './auth/tool-access';
+import { buildBearerChallenge } from './auth/oauth/resource-challenge';
+import {
+  getRequiredAccessLevel,
+  hasRequiredMcpScope,
+  isPublicReadable,
+  resolveMaxAccessLevel,
+} from './auth/tool-access';
 import { createDbClientFromEnv } from './db/client';
 import type { Env } from './index';
 import {
@@ -48,6 +54,7 @@ import {
 import { getMcpTools, getTool } from './tools/registry';
 import { validateToolResult } from './tools/validate-args';
 import { formatToolResult } from './formatting/markdown-formatter';
+import { LOBU_INTERACTION_RESOURCE_URI } from './tools/mcp_app';
 import { resolvePublicOrigin } from './utils/public-origin';
 import { buildWorkspaceInstructions } from './utils/workspace-instructions';
 
@@ -148,11 +155,9 @@ const formatRef = { rawJson: false };
  * MCP Apps UI resources (interactive iframe payloads a host renders in a
  * sandboxed iframe). Keyed by `ui://` uri → the built bundle's app dir under
  * owletto's `dist-mcp-apps/`. Served over `resources/read` + the asset route;
- * our own SPA fetches the one bundle and streams it a `{title, blocks, actions}`
- * view it builds CLIENT-side. (Pointing an external MCP host at a bundle via a
- * tool result's `_meta.ui.resourceUri` needs the SERVER to author that view —
- * a deliberate follow-up, so we don't stamp it today.) Adding an app = one
- * entry + its owletto `src/mcp-apps/<dir>` build — no gateway change.
+ * the decoupled `render_lobu_view` tool links to the resource and supplies a
+ * server-authored LobuViewV1 in `structuredContent`. Adding an app = one entry
+ * plus its owletto `src/mcp-apps/<dir>` build — no gateway change.
  */
 const MCP_APP_RESOURCES: Record<
   string,
@@ -161,22 +166,24 @@ const MCP_APP_RESOURCES: Record<
     /** Surfaced on `resources/list` — clients show it in resource browsers. */
     description: string;
     appDir: string;
-    /**
-     * CSP the host should apply to the rendered iframe. The interaction bundle is
-     * postMessage-only (no fetch/XHR/import/remote assets; verified in
-     * `_shared/host.tsx` + `interaction-card.tsx`), so the policy is strict: no
-     * network, scripts/styles same-origin only. Tailwind's runtime style
-     * injection needs `'unsafe-inline'` on `style-src`.
-     */
-    csp: string;
+    /** MCP Apps CSP declarations. Empty means the bundle requests no external
+     * connect, resource, frame, or base-URI domains; its JS/CSS is inlined. */
+    csp: {
+      connectDomains?: string[];
+      resourceDomains?: string[];
+      frameDomains?: string[];
+      baseUriDomains?: string[];
+    };
+    prefersBorder: boolean;
   }
 > = {
-  'ui://lobu/interaction': {
+  [LOBU_INTERACTION_RESOURCE_URI]: {
     name: 'Interaction',
     description:
-      'Interactive approval/question/tool-grant cards rendered in a sandboxed iframe; actions ride a `tools/call` back to the host.',
+      'Interactive Lobu cards rendered in a sandboxed iframe; actions use standard MCP tool calls or host-mediated external links.',
     appDir: 'interaction',
-    csp: "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+    csp: {},
+    prefersBorder: true,
   },
 };
 
@@ -236,13 +243,31 @@ function createServerForContext(
     const allTools = getMcpTools({
       publicOnly,
       maxAccessLevel,
-    }).map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
-      ...(t.annotations && { annotations: t.annotations }),
-      ...(t.outputSchema && { outputSchema: t.outputSchema }),
-    }));
+    }).map((t) => {
+      const securitySchemes = t.securitySchemes
+        ? publicOnly
+          ? [{ type: 'noauth' as const }, ...t.securitySchemes]
+          : t.securitySchemes
+        : undefined;
+      return {
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+        ...(t.annotations && { annotations: t.annotations }),
+        ...(t.outputSchema && { outputSchema: t.outputSchema }),
+        ...(securitySchemes && { securitySchemes }),
+        ...(t._meta || securitySchemes
+          ? {
+              _meta: {
+                ...(t._meta ?? {}),
+                // ChatGPT's legacy Apps clients read the same declarations
+                // from `_meta`; current MCP clients use the top-level field.
+                ...(securitySchemes && { securitySchemes }),
+              },
+            }
+          : {}),
+      };
+    });
 
     return { tools: allTools };
   });
@@ -255,10 +280,11 @@ function createServerForContext(
         uri,
         name: meta.name,
         description: meta.description,
-        mimeType: 'text/html',
+        mimeType: 'text/html;profile=mcp-app',
         _meta: {
           ui: {
             csp: meta.csp,
+            prefersBorder: meta.prefersBorder,
             // Origin the host should associate with this UI (the gateway that
             // serves the bundle + brokers the `tools/call` actions).
             domain: resolvedOrigin,
@@ -290,7 +316,20 @@ function createServerForContext(
       throw new Error(`MCP App bundle not built for ${uri} (run owletto build:mcp-apps)`);
     }
     return {
-      contents: [{ uri, mimeType: 'text/html', text: html }],
+      contents: [
+        {
+          uri,
+          mimeType: 'text/html;profile=mcp-app',
+          text: html,
+          _meta: {
+            ui: {
+              csp: app.csp,
+              prefersBorder: app.prefersBorder,
+              domain: resolvedOrigin,
+            },
+          },
+        },
+      ],
     };
   });
 
@@ -313,13 +352,6 @@ function createServerForContext(
       const text = formatRef.rawJson
         ? JSON.stringify(result)
         : formatToolResult(name, result, { includeRawJson: false });
-      // NOTE: our own SPA renders interactions (incl. the pending agent-change
-      // approval) through the `ui://lobu/interaction` MCP App, but it builds the
-      // `{title, blocks, actions}` view CLIENT-side from the SSE card payload —
-      // it does not consume this tool result's `_meta`. Rendering for EXTERNAL
-      // MCP hosts (Slack/Claude) needs the SERVER to author that view and stamp
-      // it here; that is a deliberate follow-up. Until then we return plain text
-      // rather than pointing an external host at a bundle it can't feed.
       // When the tool declares an `outputSchema`, also return the result as
       // `structuredContent` (MCP spec: declaring outputSchema implies the result
       // is structured — and a spec-compliant client validates it against the
@@ -355,6 +387,32 @@ function createServerForContext(
         ...(softError ? { isError: true } : {}),
       };
     } catch (error: any) {
+      const tool = getTool(name);
+      const requiredAccess = tool
+        ? getRequiredAccessLevel(name, args ?? {}, tool.annotations?.readOnlyHint === true)
+        : null;
+      const requiredScope =
+        requiredAccess === 'read'
+          ? 'mcp:read'
+          : requiredAccess === 'write'
+            ? 'mcp:write'
+            : requiredAccess === 'admin'
+              ? 'mcp:admin'
+              : null;
+      const scopeChallenge =
+        requiredAccess &&
+        requiredScope &&
+        (authCtx.tokenType === 'oauth' || authCtx.tokenType === 'pat') &&
+        !hasRequiredMcpScope(requiredAccess, authCtx.scopes)
+          ? buildBearerChallenge(
+              new Request(authCtx.requestUrl ?? `${resolvedOrigin}/mcp`),
+              {
+                error: 'insufficient_scope',
+                errorDescription: error?.message ?? 'The token lacks the required MCP scope.',
+                scope: requiredScope,
+              }
+            )
+          : null;
       // Surface the structured taxonomy (lobu#2051 Item 2) when the thrown error
       // carries a code, so the client/agent gets a stable code + retryability +
       // per-call correlation id alongside the human message.
@@ -376,16 +434,14 @@ function createServerForContext(
         ],
         isError: true,
         ...(structuredError ? { structuredContent: { error: structuredError } } : {}),
+        ...(scopeChallenge
+          ? { _meta: { 'mcp/www_authenticate': [scopeChallenge] } }
+          : {}),
       };
     }
   });
 
   return server;
-}
-
-function getProtectedResourceUrl(req: Request): string {
-  const baseUrl = resolvePublicOrigin(req.url);
-  return `${baseUrl}/.well-known/oauth-protected-resource`;
 }
 
 function buildUnauthorizedResponse(req: Request, description: string): Response {
@@ -398,7 +454,7 @@ function buildUnauthorizedResponse(req: Request, description: string): Response 
       status: 401,
       headers: {
         'Content-Type': 'application/json',
-        'WWW-Authenticate': `Bearer realm="${getProtectedResourceUrl(req)}"`,
+        'WWW-Authenticate': buildBearerChallenge(req),
       },
     }
   );

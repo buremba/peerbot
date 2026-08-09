@@ -75,9 +75,11 @@ describe('MCP Authentication', () => {
       });
 
       expect(response.status).toBe(401);
-      expect(response.headers.get('WWW-Authenticate')).toContain(
-        '/.well-known/oauth-protected-resource'
+      const challenge = response.headers.get('WWW-Authenticate');
+      expect(challenge).toContain(
+        'resource_metadata="http://localhost/.well-known/oauth-protected-resource"'
       );
+      expect(challenge).not.toContain('realm=');
     });
 
     // SKIP: post-#438 the unscoped /mcp endpoint refuses ALL anonymous POSTs
@@ -111,9 +113,11 @@ describe('MCP Authentication', () => {
       });
 
       expect(response.status).toBe(401);
-      expect(response.headers.get('WWW-Authenticate')).toContain(
-        '/.well-known/oauth-protected-resource'
+      const challenge = response.headers.get('WWW-Authenticate');
+      expect(challenge).toContain(
+        `resource_metadata="http://localhost/.well-known/oauth-protected-resource/mcp/${publicOrg.slug}"`
       );
+      expect(challenge).not.toContain('realm=');
     });
 
     // SKIP: post-#438 unscoped /mcp anonymous initialize returns 401 with no
@@ -1084,7 +1088,15 @@ describe('MCP Authentication', () => {
       // via REST and tools/call by name but are not advertised here.
       const toolNames = result.tools.map((t: any) => t.name);
       expect(toolNames.sort()).toEqual(
-        ['query_sdk', 'query_sql', 'run_sdk', 'save_memory', 'search_memory', 'search_sdk'].sort()
+        [
+          'query_sdk',
+          'query_sql',
+          'render_lobu_view',
+          'run_sdk',
+          'save_memory',
+          'search_memory',
+          'search_sdk',
+        ].sort()
       );
       expect(toolNames).not.toContain('list_organizations');
       expect(toolNames).not.toContain('list_metrics');

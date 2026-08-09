@@ -66,7 +66,7 @@ const PARENT_ROOT_JOINS_SQL = `
 
 const BASE_COLUMNS_SQL = `f.id, f.entity_ids, f.connection_id, f.feed_id, f.feed_key, f.behavior_id, fd.display_name as feed_name, COALESCE(wv.name, 'Behavior #' || f.behavior_id) as behavior_name, f.payload_text, f.title, f.author_name, f.source_url, f.occurred_at, f.semantic_type,
           f.connector_key as platform, f.origin_id, f.origin_parent_id, f.score, f.metadata, f.payload_type, f.payload_data, f.payload_template, f.attachments, f.origin_type,
-          f.interaction_type, f.interaction_status, f.interaction_input_schema, f.interaction_input, f.interaction_output, f.interaction_error, f.supersedes_event_id`;
+          f.interaction_type, f.interaction_status, f.interaction_input_schema, f.interaction_input, f.interaction_output, f.interaction_error, f.supersedes_event_id, f.run_id`;
 
 const CLASSIFICATION_COLUMNS_SQL = `fcl_all.attribute_key as classifier_attribute_key,
           lc_all."values" as classifier_values,

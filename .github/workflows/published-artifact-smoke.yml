@@ -15,16 +15,21 @@ name: Published-artifact smoke
 # scripts/sdk-e2e/, so no secret is required and the run is reproducible.
 
 on:
+  # Called by publish-packages.yml after npm accepts the new version. Keeping
+  # this in the same workflow makes the four-environment artifact matrix a
+  # required part of the publication run instead of a best-effort follow-up.
+  workflow_call:
+    inputs:
+      version:
+        description: Exact npm version to smoke
+        required: true
+        type: string
   # Every merge to main. The artifact on the registry is the PREVIOUS release,
   # so this is a standing check that what users can install right now still
   # works — it would have been red continuously through the __filename, glibc
   # and uid-0 breakages instead of waiting for someone to file an issue.
   push:
     branches: [main]
-  # After a release publishes, verify what actually landed on the registry.
-  workflow_run:
-    workflows: ["Publish Packages"]
-    types: [completed]
   # Daily canary. The registry can break without us pushing anything (a
   # dependency yanks a version, a transitive install changes), and a bad
   # release otherwise sits undetected until a user files an issue.

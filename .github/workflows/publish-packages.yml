@@ -33,6 +33,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: production
+    outputs:
+      published-version: ${{ steps.published-version.outputs.version }}
     env:
       # Step-level env is not visible to the same step's `if:` evaluator.
       CLAWHUB_TOKEN_SET: ${{ secrets.CLAWHUB_TOKEN != '' }}
@@ -162,3 +164,15 @@ jobs:
           else
             node scripts/publish-packages.mjs "$BUMP"
           fi
+
+      - name: Record the exact published CLI version
+        id: published-version
+        run: |
+          version=$(node -p "require('./packages/cli/package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  verify-published-artifact:
+    needs: publish-packages
+    uses: ./.github/workflows/published-artifact-smoke.yml
+    with:
+      version: ${{ needs.publish-packages.outputs.published-version }}

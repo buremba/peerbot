@@ -94,16 +94,23 @@ describe("remote exec wrapper", () => {
     expect(wrapped(workdir, "true").code).toBe(0);
   });
 
-  test("operators inside the command keep their meaning", () => {
-    for (const command of [
-      "echo a && echo b",
-      "false || echo fallback",
-      "echo x | tr x y",
-      "for i in 1 2; do echo $i; done",
-    ]) {
-      expect(wrapped(workdir, command).out).toBe(direct(command).out);
-    }
-  });
+  test(
+    "operators inside the command keep their meaning",
+    () => {
+      for (const command of [
+        "echo a && echo b",
+        "false || echo fallback",
+        "echo x | tr x y",
+        "for i in 1 2; do echo $i; done",
+      ]) {
+        expect(wrapped(workdir, command).out).toBe(direct(command).out);
+      }
+    },
+    // Eight real login-shell launches can exceed Bun's 5 s default on macOS
+    // even when each command is healthy. This test asserts shell semantics,
+    // not startup performance; leave enough headroom for a loaded CI host.
+    15_000
+  );
 
   test("the command still runs in a login shell", () => {
     expect(wrapped(workdir, "shopt -q login_shell && echo yes || echo no").out).toBe(

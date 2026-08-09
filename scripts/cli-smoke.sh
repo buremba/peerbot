@@ -16,9 +16,9 @@
 # non-zero at the end with a summary, so one run tells you exactly which commands
 # are broken.
 #
-# Commands that genuinely need a browser, a real TTY, an external Postgres, or a
-# configured chat platform can't be driven unattended -- those are exercised at
-# the "runs + fails gracefully" level or logged as SKIP with the reason.
+# Commands that genuinely need a browser, a real TTY, or a configured chat
+# platform can't be driven unattended -- those are exercised at the "runs +
+# fails gracefully" level or logged as SKIP with the reason.
 #
 # WHAT THIS GATE STRUCTURALLY CANNOT CATCH -- do not assume otherwise.
 # LOBU_BIN below points at the SOURCE TREE, which silently pins four things:
@@ -43,8 +43,13 @@
 # Kept ASCII-only on purpose: a stray non-ASCII byte hugging a $var expansion is
 # swallowed into the variable name under a UTF-8 locale ("unbound variable").
 #
-# Usage: scripts/cli-smoke.sh         (embedded Postgres, the default)
-#        DATABASE_URL=... scripts/cli-smoke.sh   (external Postgres; also exercises `token revoke`)
+# Usage: scripts/cli-smoke.sh
+#        CLI_SMOKE_REVOKE_DATABASE_URL=postgres://... scripts/cli-smoke.sh
+#
+# The main stack always uses embedded Postgres because only that mode performs
+# local-init + auto-apply. The optional URL must point at a migrated, disposable
+# database and is used solely by `token revoke`; it never becomes the stack's
+# DATABASE_URL.
 set -uo pipefail
 
 WT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -57,6 +62,15 @@ RUN_DIR="$WT/.cli-smoke-run"
 RUN_LOG="$RUN_DIR/run.log"
 MOCK_LOG="$RUN_DIR/mock.log"
 OUT="$RUN_DIR/cmd.out"                 # scratch for the most-recent command
+
+# `lobu run` against an external DATABASE_URL intentionally does not create a
+# local context or auto-apply. Failing immediately avoids a two-minute timeout
+# and, more importantly, prevents this destructive CRUD smoke from touching a
+# shared database by accident.
+if [ -n "${DATABASE_URL:-}" ]; then
+  echo "ABORT: CLI smoke owns an embedded database; use CLI_SMOKE_REVOKE_DATABASE_URL only for token revoke" >&2
+  exit 2
+fi
 
 # Node 22-24 is required (the worker uses isolated-vm). Prefer a Homebrew
 # node@22 locally; CI provides node via actions/setup-node.
@@ -141,9 +155,7 @@ rm -rf "$RUN_DIR"; mkdir -p "$RUN_DIR" "$HOME"
 cleanup  # free ports from any prior run
 
 # 0) Embedded-PG ICU shims on Linux (no-op on macOS). See sdk-e2e.sh step 0.
-if [ -z "${DATABASE_URL:-}" ]; then
-  node "$HARNESS/fix-embedded-pg-icu.mjs" || die "could not prepare embedded-postgres ICU symlinks"
-fi
+node "$HARNESS/fix-embedded-pg-icu.mjs" || die "could not prepare embedded-postgres ICU symlinks"
 
 # 1) Deterministic mock OpenAI-compatible provider.
 MOCK_PORT="$MOCK_PORT" MOCK_REPLY="$MOCK_REPLY" node "$HARNESS/mock-openai.mjs" > "$MOCK_LOG" 2>&1 &
@@ -169,6 +181,7 @@ VERSION="$(node "$LOBU_BIN" --version 2>/dev/null | tr -d '[:space:]')"
 expect_grep "lobu --version" "$VERSION" "$WT" --version
 expect_grep "lobu --help" "CLI for deploying and managing AI agents on Lobu" "$WT" --help
 expect_exit "lobu <unknown-command> -> usage error" 1 "$WT" definitely-not-a-command
+expect_fail_grep "lobu environment -> renamed sandbox" "renamed to lobu sandbox" "$WT" environment list
 
 note "init / validate / doctor / telemetry / agent scaffold (static)"
 expect_grep "lobu init --list-providers" "--provider" "$WT" init --list-providers
@@ -206,20 +219,19 @@ BADPROJ="$RUN_DIR/badproj"; mkdir -p "$BADPROJ"
 printf 'import { defineConfig } from "@lobu/cli/config";\nexport default defineConfig({ agents: [ }\n' > "$BADPROJ/lobu.config.ts"
 expect_exit "lobu validate (broken config -> non-zero)" 1 "$BADPROJ" validate
 
-# doctor's DB line is backend-specific: embedded mode prints "embedded
-# Postgres"; an external DATABASE_URL connects for real and prints no such
-# marker. Gate the embedded assertion on the mode (mirrors sdk-e2e.sh); always
-# assert there's no spurious connect failure.
+# The smoke always owns embedded Postgres, so doctor must recognize that
+# backend and must not report a spurious connection failure.
 runlobu "$PROJ" doctor
 if grep -qiE "connect failed|ENOTFOUND" "$OUT"; then
   softfail "lobu doctor false-failed the DB check (lobu doctor)"
-elif [ -z "${DATABASE_URL:-}" ] && ! grep -qF "embedded Postgres" "$OUT"; then
+elif ! grep -qF "embedded Postgres" "$OUT"; then
   softfail "lobu doctor did not recognize the embedded Postgres backend"
 else
   pass "lobu doctor (DB check healthy)"
 fi
 
 expect_grep "lobu telemetry status" "Telemetry:" "$PROJ" telemetry status
+expect_grep "lobu telemetry (default status)" "Telemetry:" "$PROJ" telemetry
 expect_grep "lobu telemetry on" "Telemetry enabled" "$PROJ" telemetry on
 expect_grep "lobu telemetry status (now on)" "Telemetry: on" "$PROJ" telemetry status
 expect_grep "lobu telemetry off" "Telemetry disabled" "$PROJ" telemetry off
@@ -249,7 +261,6 @@ note "boot: lobu run --port $GW_PORT"
   echo "MOCK_API_KEY=mock-key-smoke"
   echo "WORKER_ALLOWED_DOMAINS=127.0.0.1,localhost"
   echo "LOBU_DISABLE_SYSTEMD_RUN=1"
-  [ -n "${DATABASE_URL:-}" ] && echo "DATABASE_URL=$DATABASE_URL"
 } >> "$PROJ/.env"
 
 ( cd "$PROJ" && node "$LOBU_BIN" run --port "$GW_PORT" > "$RUN_LOG" 2>&1 ) &
@@ -261,6 +272,12 @@ for _ in $(seq 1 120); do
 done
 grep -qi "Apply complete" "$RUN_LOG" || die "lobu run did not auto-apply (skipped/halted?)"
 pass "lobu run booted + auto-applied the project"
+
+# The two compatibility aliases must reach the same run handler. Point them at
+# the already-listening gateway port: a controlled "already in use" failure
+# proves argv dispatch without booting two extra stacks.
+expect_fail_grep "lobu dev alias -> run handler" "already in use" "$PROJ" dev --port "$GW_PORT"
+expect_fail_grep "lobu start alias -> run handler" "already in use" "$PROJ" start --port "$GW_PORT"
 
 # Trigger loopback auth (local-init) + resolve the bootstrap org slug.
 runlobu "$PROJ" whoami -c local
@@ -285,13 +302,11 @@ runlobu "$PROJ" token -c local --raw
 { [ "$RC" -eq 0 ] && [ -s "$OUT" ]; } && pass "lobu token --raw (non-empty)" || softfail "lobu token --raw produced no token (exit=$RC)"
 expect_grep "lobu token create -c local" "created" "$PROJ" token create -c local --scope "mcp:read mcp:write" --name smoke-token
 
-# token revoke needs an EXTERNAL Postgres (direct INSERT into revoked_tokens).
-# In embedded mode the shell DATABASE_URL is unset -> assert the documented
-# guard fires gracefully; with an external DATABASE_URL, do a real revoke.
-if [ -n "${DATABASE_URL:-}" ] && [[ "${DATABASE_URL:-}" == postgres* ]]; then
-  JTI="$( ( cd "$PROJ" && node "$LOBU_BIN" token create -c local --scope "mcp:read" --json 2>/dev/null ) | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write(j.jti||j.id||"")}catch{}})' )"
-  if [ -n "$JTI" ]; then expect_grep "lobu token revoke (external PG)" "revoked" "$PROJ" token revoke "$JTI"
-  else skip "lobu token revoke -- token create --json exposed no jti"; fi
+# token revoke directly inserts into an EXTERNAL Postgres. Keep that URL
+# separate from the embedded server so the main smoke remains self-contained.
+if [ -n "${CLI_SMOKE_REVOKE_DATABASE_URL:-}" ]; then
+  ( cd "$PROJ" && DATABASE_URL="$CLI_SMOKE_REVOKE_DATABASE_URL" node "$LOBU_BIN" token revoke cli-smoke-jti --expires-at 2099-01-01T00:00:00Z ) > "$OUT" 2>&1 </dev/null; RC=$?
+  { [ "$RC" -eq 0 ] && grep -qiF "Token revoked" "$OUT"; } && pass "lobu token revoke (external PG)" || softfail "lobu token revoke (expected successful insert, exit=$RC)"
 else
   ( cd "$PROJ" && env -u DATABASE_URL node "$LOBU_BIN" token revoke smoke-jti ) > "$OUT" 2>&1 </dev/null; RC=$?
   { [ "$RC" -ne 0 ] && grep -qiF "DATABASE_URL is not set" "$OUT"; } && pass "lobu token revoke (graceful: needs external PG)" || softfail "lobu token revoke (expected 'DATABASE_URL is not set', exit=$RC)"
@@ -334,6 +349,59 @@ note "apply (dry-run + real, against the live server)"
 { [ "$RC" -eq 0 ] && grep -qiF "Dry run" "$OUT"; } && pass "lobu apply --dry-run" || softfail "lobu apply --dry-run (expected 'Dry run', exit=$RC)"
 ( cd "$PROJ" && MOCK_API_KEY=mock-key-smoke node "$LOBU_BIN" apply --only agents --yes --url "http://localhost:$GW_PORT" ) > "$OUT" 2>&1 </dev/null; RC=$?
 { [ "$RC" -eq 0 ] && grep -qiE "Apply complete|Nothing to apply|Provider keys applied" "$OUT"; } && pass "lobu apply --only agents --yes" || softfail "lobu apply --only agents (expected complete/noop, exit=$RC)"
+expect_grep "lobu deploy alias --dry-run" "Dry run" "$PROJ" deploy --dry-run --url "http://localhost:$GW_PORT"
+
+note "rollback (restore snapshot + pause/resume promotions)"
+# The apply above records a self-contained deployment snapshot. Resolve its id
+# through the same authenticated local API a Deployments UI reads, drift the
+# managed agent name, then prove `lobu rollback` restores it and pauses future
+# applies until the explicit --resume acknowledgement.
+PAT="$( ( cd "$PROJ" && node "$LOBU_BIN" token -c local --raw 2>/dev/null ) | tr -d '[:space:]' )"
+DEPLOYMENTS_JSON="$(curl -fsS -H "authorization: Bearer $PAT" -H "x-lobu-org: $ORG" "http://localhost:$GW_PORT/api/$ORG/deployments?limit=20" 2>/dev/null || true)"
+ROLLBACK_APPLY_ID="$(printf '%s' "$DEPLOYMENTS_JSON" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);const x=(j.items||[]).find(i=>i.type==="deployment"&&i.status==="succeeded"&&i.applyId);process.stdout.write(x?.applyId||"")}catch{}})')"
+if [ -n "$ROLLBACK_APPLY_ID" ]; then
+  expect_grep "rollback setup: drift managed agent" "Updated agent" "$PROJ" agent update echo -c local --name "Echo Drifted"
+  expect_grep "lobu rollback --yes" "Rollback complete" "$PROJ" rollback "$ROLLBACK_APPLY_ID" --yes --org "$ORG" --url "http://localhost:$GW_PORT"
+  expect_grep "lobu rollback restored snapshot" '"name": "Echo"' "$PROJ" agent get echo -c local
+  expect_fail_grep "lobu apply respects rollback pause" "Deployments are paused" "$PROJ" apply --yes --url "http://localhost:$GW_PORT"
+  ( cd "$PROJ" && MOCK_API_KEY=mock-key-smoke node "$LOBU_BIN" apply --resume --yes --url "http://localhost:$GW_PORT" ) > "$OUT" 2>&1 </dev/null; RC=$?
+  { [ "$RC" -eq 0 ] && grep -qF "Resumed deployments" "$OUT"; } && pass "lobu apply --resume clears rollback pause" || softfail "lobu apply --resume (expected pause clear, exit=$RC)"
+else
+  softfail "lobu rollback setup (no succeeded deployment snapshot found)"
+fi
+
+note "providers (org inference-provider CRUD)"
+export CLI_SMOKE_PROVIDER_KEY="smoke-provider-key"
+expect_grep "lobu providers catalog -c local" "Available provider kinds" "$PROJ" providers catalog -c local
+expect_grep "lobu providers list -c local" "mock" "$PROJ" providers list -c local
+expect_grep "lobu providers create -c local" "Created provider smoke-provider" "$PROJ" providers create smoke-provider --kind mock --key '$CLI_SMOKE_PROVIDER_KEY' --model mock-model -c local
+expect_grep "lobu providers update -c local" "Renamed provider smoke-provider" "$PROJ" providers update smoke-provider --name "Smoke Provider" -c local
+expect_grep "lobu providers set-key -c local" "Rotated API key" "$PROJ" providers set-key smoke-provider --key '$CLI_SMOKE_PROVIDER_KEY' -c local
+expect_grep "lobu providers set-capability -c local" "Updated text capabilities" "$PROJ" providers set-capability smoke-provider text --model mock-model --base-url "https://api.example.test/v1" -c local
+expect_grep "lobu providers set-default -c local" "org default" "$PROJ" providers set-default smoke-provider -c local
+expect_fail_grep "lobu providers delete (no --yes -> graceful)" "Refusing to delete" "$PROJ" providers delete smoke-provider -c local
+expect_grep "lobu providers delete --yes -c local" "Deleted provider smoke-provider" "$PROJ" providers delete smoke-provider --yes -c local
+unset CLI_SMOKE_PROVIDER_KEY
+
+note "sandbox (runtime-provider CRUD)"
+expect_grep "lobu sandbox list -c local" "builtin" "$PROJ" sandbox list -c local
+runlobu "$PROJ" sandbox create smoke-sandbox --provider vercel --json -c local
+SANDBOX_ID="$(node -e 'const fs=require("fs");try{const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(j.id||"")}catch{}' "$OUT")"
+if [ "$RC" -eq 0 ] && [ -n "$SANDBOX_ID" ]; then
+  pass "lobu sandbox create -c local"
+  expect_grep "lobu sandbox set-credential -c local" "Updated credential" "$PROJ" sandbox set-credential "$SANDBOX_ID" --credential token=smoke-token --credential teamId=smoke-team --credential projectId=smoke-project -c local
+  expect_grep "lobu sandbox list shows created row" "smoke-sandbox" "$PROJ" sandbox list -c local
+  expect_fail_grep "lobu sandbox delete (no --yes -> graceful)" "Refusing to delete" "$PROJ" sandbox delete "$SANDBOX_ID" -c local
+  expect_grep "lobu sandbox delete --yes -c local" "Deleted sandbox" "$PROJ" sandbox delete "$SANDBOX_ID" --yes -c local
+else
+  softfail "lobu sandbox create -c local (exit=$RC, no id returned)"
+fi
+
+note "clients (connected-client inventory + fail-closed revoke)"
+expect_ok "lobu clients list -c local" "$PROJ" clients list -c local
+expect_ok "lobu clients list --agent -c local" "$PROJ" clients list --agent echo -c local
+expect_fail_grep "lobu clients revoke (no --yes -> graceful)" "Refusing to revoke" "$PROJ" clients revoke smoke-missing-client -c local
+expect_fail_grep "lobu clients revoke --yes (missing -> graceful 404)" "Client not found" "$PROJ" clients revoke smoke-missing-client --yes -c local
 
 note "chat (a real worker turn through the mock provider)"
 ( cd "$PROJ" && timeout 90 node "$LOBU_BIN" chat "say the safe word" -c local --json ) > "$OUT" 2>&1 </dev/null; RC=$?
@@ -390,6 +458,10 @@ note "connector run (needs Chrome/Playwright + a browser_session profile)"
 # assert it fails gracefully (clean message, controlled exit), not a crash.
 runlobu "$PROJ" connector run --check -c local
 [ "$RC" -ne 0 ] && pass "lobu connector run --check (graceful failure without auth profile)" || softfail "lobu connector run --check unexpectedly succeeded (exit=$RC)"
+
+# The browser-auth check path is non-interactive and must fail cleanly when no
+# profile exists. The capture path remains a deliberate human/browser boundary.
+expect_fail_grep "lobu memory browser-auth --check (missing profile -> graceful)" "not found" "$PROJ" memory browser-auth --connector x --auth-profile-slug smoke-browser --check
 
 note "browser/interactive paths -- not unattended-runnable"
 skip "lobu login (interactive device-code happy path) -- needs a real TTY; --token + non-interactive bail covered above"

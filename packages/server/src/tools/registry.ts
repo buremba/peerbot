@@ -174,9 +174,16 @@ export interface ToolDefinition<T = any> {
   handler: (args: T, env: Env, ctx: ToolContext) => Promise<any>;
 }
 
-const READ_ONLY = { readOnlyHint: true, idempotentHint: true } as const;
+const READ_ONLY = {
+  readOnlyHint: true,
+  openWorldHint: false,
+  destructiveHint: false,
+  idempotentHint: true,
+} as const;
 
 const WRITE_WITHOUT_CONFIRM: ToolAnnotations = {
+  readOnlyHint: false,
+  openWorldHint: false,
   destructiveHint: false,
   idempotentHint: false,
 };
@@ -239,6 +246,8 @@ const AGENT_TOOLS: ToolDefinition[] = [
     inputSchema: RunSchema,
     outputSchema: SdkScriptResultSchema,
     annotations: {
+      readOnlyHint: false,
+      openWorldHint: true,
       destructiveHint: true,
       idempotentHint: false,
       title: 'Run SDK',

@@ -2729,36 +2729,9 @@ app.get("/openapi.json", (c) => {
 	return c.json(spec);
 });
 
-/**
- * ChatGPT plugin manifest
- */
-app.get("/.well-known/ai-plugin.json", (c) => {
-	const baseUrl = new URL(c.req.url).origin;
-	const openApiUrl = new URL("/openapi.json", baseUrl).toString();
-	const logoUrl =
-		c.env.PUBLIC_LOGO_URL ?? new URL("/logo.png", baseUrl).toString();
-	const legalInfoUrl =
-		c.env.PUBLIC_LEGAL_URL ?? new URL("/legal", baseUrl).toString();
-	return c.json({
-		schema_version: "v1",
-		name_for_human: "Lobu",
-		name_for_model: "lobu",
-		description_for_human:
-			"Build searchable workspace knowledge from customer content across platforms",
-		description_for_model:
-			"Access workspace knowledge and customer content from Reddit, Trustpilot, App Stores, and other platforms. Search knowledge, retrieve saved knowledge, and get watchers and analytics.",
-		auth: {
-			type: "none",
-		},
-		api: {
-			type: "openapi",
-			url: openApiUrl,
-		},
-		logo_url: logoUrl,
-		contact_email: "support@example.com",
-		legal_info_url: legalInfoUrl,
-	});
-});
+// The pre-MCP ChatGPT plugin manifest is retired. Keep an explicit 404 so the
+// generic discovery fallback below cannot masquerade as a valid manifest.
+app.get("/.well-known/ai-plugin.json", (c) => c.notFound());
 
 /**
  * Apply MCP authentication middleware and Streamable HTTP transport handler.

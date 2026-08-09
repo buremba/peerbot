@@ -86,8 +86,13 @@ export type ActivityCard = {
 	interaction_choice_field?: string;
 	interaction_choices?: Array<{ value: string; label: string }>;
 	member_run_ids?: number[];
+	platform?: string;
 	connection_id?: number;
+	feed_id?: number;
+	feed_key?: string;
+	feed_name?: string;
 	behavior_id?: number;
+	behavior_name?: string;
 };
 
 type RawCard = ActivityCard & {
@@ -413,6 +418,16 @@ export async function listOrgActivity(opts: {
 					href: resolveNotifHref(opts.ownerSlug, n),
 					unread: n.is_read === false || n.is_read === "f",
 					notification_id: Number(n.id),
+					platform: typeof n.platform === "string" ? n.platform : undefined,
+					connection_id:
+						typeof n.connection_id === "number" ? n.connection_id : undefined,
+					feed_id: typeof n.feed_id === "number" ? n.feed_id : undefined,
+					feed_key: typeof n.feed_key === "string" ? n.feed_key : undefined,
+					feed_name: typeof n.feed_name === "string" ? n.feed_name : undefined,
+					behavior_id:
+						typeof n.behavior_id === "number" ? n.behavior_id : undefined,
+					behavior_name:
+						typeof n.behavior_name === "string" ? n.behavior_name : undefined,
 					run_id: Number.isFinite(approvalRunId) ? approvalRunId : undefined,
 					interaction_type: interactionStatus != null ? interactionType : undefined,
 					interaction_status: interactionStatus,

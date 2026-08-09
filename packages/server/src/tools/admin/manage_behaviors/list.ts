@@ -9,6 +9,7 @@ import {
 } from "@lobu/core/contracts/tools/manage-behaviors";
 import { getDb } from "../../../db/client";
 import type { Env } from "../../../index";
+import { canonicalizeBehaviorText } from "../../../utils/behavior-vocabulary";
 import logger from "../../../utils/logger";
 import {
 	buildBehaviorUrl,
@@ -224,9 +225,9 @@ export async function handleList(
 		// rows still hold the legacy string). Rewrite it at read time so the
 		// public projection never surfaces the internal vocabulary.
 		if (typeof (rest as Record<string, unknown>).behavior_run_error === "string") {
-			(rest as Record<string, unknown>).behavior_run_error = (
-				(rest as Record<string, unknown>).behavior_run_error as string
-			).replaceAll("client.watchers.", "client.behaviors.");
+			(rest as Record<string, unknown>).behavior_run_error = canonicalizeBehaviorText(
+				(rest as Record<string, unknown>).behavior_run_error as string,
+			);
 		}
 
 		if (!args.include_details) {

@@ -9,7 +9,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Env } from "@lobu/connector-sdk";
-import type { Context } from "hono";
+import type { Context, Next } from "hono";
 import { Hono } from "hono";
 import { compress } from "hono/compress";
 import { cors } from "hono/cors";
@@ -400,6 +400,24 @@ async function serveStaticFile(
 const app = new Hono<{ Bindings: Env }>();
 app.use("/*", compress({ threshold: 1024 }));
 
+// Browser-origin validation is a security boundary for Streamable HTTP MCP.
+// Generic CORS middleware only omits the allow-origin response header for a
+// hostile Origin, which still lets the authenticated request execute. Reject
+// it before auth/tool dispatch. Requests without Origin remain valid for
+// native MCP clients.
+const rejectUntrustedMcpOrigin = async (
+	c: Context<{ Bindings: Env }>,
+	next: Next,
+) => {
+	const origin = c.req.header("Origin");
+	if (origin && !isAllowedCorsOrigin(origin, c.env, c.req.url)) {
+		return c.json({ error: "forbidden", message: "Untrusted MCP Origin" }, 403);
+	}
+	return next();
+};
+app.use("/mcp", rejectUntrustedMcpOrigin);
+app.use("/mcp/*", rejectUntrustedMcpOrigin);
+
 // Enable CORS for MCP clients and frontend
 app.use(
 	"/*",
@@ -418,8 +436,16 @@ app.use(
 			"Authorization",
 			"X-MCP-Format",
 			"X-Lobu-Client",
+			"Mcp-Session-Id",
+			"MCP-Protocol-Version",
+			"Last-Event-ID",
 		],
-		exposeHeaders: ["Content-Type"],
+		exposeHeaders: [
+			"Content-Type",
+			"Mcp-Session-Id",
+			"MCP-Protocol-Version",
+			"WWW-Authenticate",
+		],
 		credentials: true, // Required for better-auth cookies
 	}),
 );
@@ -760,7 +786,8 @@ app.get("/legal", (c) => {
 
 /**
  * REST API endpoints for ChatGPT Custom Actions and lightweight wrappers.
- * MCP tools are exposed through the generic /api/:orgSlug/:toolName proxy.
+ * Agent and internal tools are exposed through the generic
+ * /api/:orgSlug/:toolName proxy; MCP Apps presentation tools stay MCP-only.
  */
 // Health check and worker endpoints must be before mcpAuth middleware
 app.get("/api/health", restHealth);
@@ -2700,7 +2727,7 @@ app.post("/api/connector/:connector/connection/claim", async (c) => {
 app.get("/api/:orgSlug/tools", mcpAuth, restListTools);
 
 /**
- * Generic tool proxy - forwards to any MCP tool
+ * Generic tool proxy for the REST dispatch tool surface.
  * POST /api/:orgSlug/:toolName with JSON body
  */
 app.post("/api/:orgSlug/:toolName", mcpAuth, async (c) => {

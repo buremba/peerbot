@@ -28,7 +28,12 @@ import {
 } from "./tools/execute";
 import { getContent } from "./tools/get_content";
 import { getBehavior } from "./tools/get_behavior";
-import { getAllTools, getTool, type ToolContext } from "./tools/registry";
+import {
+	getAllTools,
+	getTool,
+	isRestDispatchTool,
+	type ToolContext,
+} from "./tools/registry";
 import {
 	errorMessage,
 	ToolNotRegisteredError,
@@ -278,10 +283,10 @@ export async function restToolAction(
 
 /**
  * POST /api/:orgSlug/:toolName
- * Generic proxy endpoint that forwards to any MCP tool
+ * Generic proxy endpoint for the REST dispatch tool surface.
  *
- * This allows all MCP tools to be called via REST API without
- * needing individual wrapper functions for each tool
+ * Agent and internal tools can be called without individual wrappers. MCP Apps
+ * presentation tools remain MCP-only and are rejected here.
  */
 export async function restToolProxy(
 	c: Context<{ Bindings: Env }>,
@@ -292,6 +297,9 @@ export async function restToolProxy(
 		const toolName = explicitToolName ?? c.req.param("toolName");
 		if (!toolName) {
 			return c.json({ error: "Tool name is required" }, 400);
+		}
+		if (!isRestDispatchTool(toolName)) {
+			throw new ToolNotRegisteredError(toolName);
 		}
 		const args: Record<string, unknown> = explicitArgs ?? (await c.req.json());
 		const authCtx = extractAuthContext(c);
@@ -320,8 +328,9 @@ export async function restToolProxy(
 
 /**
  * GET /api/:orgSlug/tools
- * List the tool surface available to the caller — the same uniform set MCP
- * `tools/list` returns, filtered by the caller's access level (role × scope).
+ * List the REST dispatch surface available to the caller, filtered by the
+ * caller's access level (role × scope). MCP Apps presentation tools are not
+ * part of this surface.
  */
 export async function restListTools(c: Context<{ Bindings: Env }>) {
 	try {

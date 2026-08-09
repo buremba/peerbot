@@ -1,3 +1,4 @@
+import { MCP_PROTOCOL_VERSION } from "@lobu/core";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Env } from "../../index";
 import { manageOperations } from "../../tools/admin/manage_operations";
@@ -30,6 +31,7 @@ describe("operations.execute backend lifecycle", () => {
 	let mcpConnectionId: number;
 	let secondMcpConnectionId: number;
 	let httpConnectionId: number;
+	let failedTransportCallCount = 0;
 
 	beforeAll(async () => {
 		await cleanupTestDatabase();
@@ -220,7 +222,29 @@ describe("operations.execute backend lifecycle", () => {
 						method: string;
 						params?: Record<string, unknown>;
 					};
+					if (request.method === "initialize") {
+						return new Response(
+							JSON.stringify({
+								jsonrpc: "2.0",
+								id: request.id,
+								result: {
+									protocolVersion: MCP_PROTOCOL_VERSION,
+									capabilities: { tools: {} },
+								},
+							}),
+							{
+								status: 200,
+								headers: {
+									"content-type": "application/json",
+									"mcp-session-id": "operations-backend-session",
+								},
+							},
+						);
+					}
 					if (request.method === "tools/list") {
+						expect(new Headers(init?.headers).get("mcp-protocol-version")).toBe(
+							MCP_PROTOCOL_VERSION,
+						);
 						return jsonResponse({
 							jsonrpc: "2.0",
 							id: request.id,
@@ -241,6 +265,7 @@ describe("operations.execute backend lifecycle", () => {
 							(request.params?.arguments as Record<string, unknown> | undefined)
 								?.fail_transport === true
 						) {
+							failedTransportCallCount++;
 							throw new Error("upstream transport failed");
 						}
 						const authorization = new Headers(init?.headers).get(
@@ -464,6 +489,7 @@ describe("operations.execute backend lifecycle", () => {
 	});
 
 	it("finalizes an upstream MCP run as failed when transport setup throws", async () => {
+		failedTransportCallCount = 0;
 		const result = await manageOperations(
 			{
 				action: "execute",
@@ -488,6 +514,9 @@ describe("operations.execute backend lifecycle", () => {
 			status: "failed",
 			error_message: "upstream transport failed",
 		});
+		// A transport exception is ambiguous: the upstream may have executed the
+		// destructive action before the response was lost. Never retry it here.
+		expect(failedTransportCallCount).toBe(1);
 	});
 
 	it("discovers and executes an OpenAPI HTTP operation", async () => {

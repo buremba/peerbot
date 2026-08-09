@@ -21,7 +21,7 @@ import {
   expect,
   test,
 } from "bun:test";
-import { generateWorkerToken, verifyWorkerToken } from "@lobu/core";
+import { generateWorkerToken, MCP_PROTOCOL_VERSION, verifyWorkerToken } from "@lobu/core";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import { takePendingTool } from "../auth/mcp/pending-tool-store.js";
 import type { DirectToolExecutionOptions } from "../auth/mcp/proxy.js";
@@ -68,6 +68,26 @@ function successFetch(body: object = { jsonrpc: "2.0", id: 1, result: { tools: [
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
+}
+
+function initializeResponse(sessionId: string) {
+  return new Response(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: 0,
+      result: {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: { tools: {} },
+      },
+    }),
+    {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Mcp-Session-Id": sessionId,
+      },
+    }
+  );
 }
 
 const TEST_ENCRYPTION_KEY =
@@ -960,10 +980,7 @@ describe("executeToolDirect", () => {
       requestHeaders.push(new Headers(init?.headers));
       const body = JSON.parse(String(init?.body)) as { method: string };
       if (body.method === "initialize") {
-        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 0, result: {} }), {
-          status: 200,
-          headers: { "Content-Type": "application/json", "Mcp-Session-Id": "session-1" },
-        });
+        return initializeResponse("session-1");
       }
       if (body.method === "notifications/initialized") {
         return new Response(null, { status: 202 });
@@ -1009,6 +1026,9 @@ describe("executeToolDirect", () => {
       expect(headers.get("authorization")).toMatch(/^Bearer /);
       expect(headers.get("x-lobu-memory-direct-auth")).toBe("1");
     }
+    expect(requestHeaders[0]?.get("mcp-protocol-version")).toBeNull();
+    expect(requestHeaders[1]?.get("mcp-protocol-version")).toBe(MCP_PROTOCOL_VERSION);
+    expect(requestHeaders[2]?.get("mcp-protocol-version")).toBe(MCP_PROTOCOL_VERSION);
   });
 
   test("approved execution re-initializes and retries once when the cached session went stale mid-call", async () => {
@@ -1027,10 +1047,7 @@ describe("executeToolDirect", () => {
       const body = JSON.parse(String(init?.body)) as { method: string };
       if (body.method === "initialize") {
         initCount++;
-        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 0, result: {} }), {
-          status: 200,
-          headers: { "Content-Type": "application/json", "Mcp-Session-Id": `session-${initCount}` },
-        });
+        return initializeResponse(`session-${initCount}`);
       }
       if (body.method === "notifications/initialized") {
         return new Response(null, { status: 202 });
@@ -1090,10 +1107,7 @@ describe("executeToolDirect", () => {
       const body = JSON.parse(String(init?.body)) as { method: string };
       if (body.method === "initialize") {
         initCount++;
-        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 0, result: {} }), {
-          status: 200,
-          headers: { "Content-Type": "application/json", "Mcp-Session-Id": `session-${initCount}` },
-        });
+        return initializeResponse(`session-${initCount}`);
       }
       if (body.method === "notifications/initialized") {
         return new Response(null, { status: 202 });
@@ -1175,7 +1189,14 @@ describe("executeToolDirect", () => {
     let requestHeaders = new Headers();
 
     globalThis.fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { method: string };
       requestHeaders = new Headers(init?.headers);
+      if (body.method === "initialize") {
+        return initializeResponse("session-auth");
+      }
+      if (body.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
       return new Response(
         JSON.stringify({
           jsonrpc: "2.0",
@@ -1237,7 +1258,14 @@ describe("executeToolDirect", () => {
     let requestHeaders = new Headers();
 
     globalThis.fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { method: string };
       requestHeaders = new Headers(init?.headers);
+      if (body.method === "initialize") {
+        return initializeResponse("session-no-admin");
+      }
+      if (body.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
       return new Response(
         JSON.stringify({
           jsonrpc: "2.0",
@@ -1286,8 +1314,15 @@ describe("executeToolDirect", () => {
     });
     const proxy = new McpProxy(configSource, {    });
 
-    globalThis.fetch = async () =>
-      new Response(
+    globalThis.fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { method: string };
+      if (body.method === "initialize") {
+        return initializeResponse("session-direct");
+      }
+      if (body.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      return new Response(
         JSON.stringify({
           jsonrpc: "2.0",
           id: 1,
@@ -1295,6 +1330,7 @@ describe("executeToolDirect", () => {
         }),
         { status: 200, headers: { "Content-Type": "application/json" } }
       );
+    };
 
     const result = await proxy.executeToolDirect(
       "agent1",

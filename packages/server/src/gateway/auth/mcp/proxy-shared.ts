@@ -1,4 +1,8 @@
-import { verifyWorkerToken, type WorkerTokenData } from "@lobu/core";
+import {
+	MCP_PROTOCOL_VERSION,
+	verifyWorkerToken,
+	type WorkerTokenData,
+} from "@lobu/core";
 import type { Context } from "hono";
 import { getOrgId, orgContext } from "../../../lobu/stores/org-context.js";
 import { getRevokedTokenStore } from "../revoked-token-store.js";
@@ -26,7 +30,7 @@ export const INITIALIZE_BODY = JSON.stringify({
 	jsonrpc: "2.0",
 	method: "initialize",
 	params: {
-		protocolVersion: "2024-11-05",
+		protocolVersion: MCP_PROTOCOL_VERSION,
 		capabilities: {},
 		clientInfo: { name: "lobu-gateway", version: "1.0.0" },
 	},
@@ -154,6 +158,7 @@ export function buildUpstreamHeaders(
 	sessionId: string | null,
 	credentialToken?: string,
 	internal?: boolean,
+	protocolVersion?: string | null,
 ): Record<string, string> {
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
@@ -174,6 +179,7 @@ export function buildUpstreamHeaders(
 
 	if (sessionId) {
 		headers["Mcp-Session-Id"] = sessionId;
+		headers["MCP-Protocol-Version"] = protocolVersion ?? MCP_PROTOCOL_VERSION;
 	}
 
 	return headers;

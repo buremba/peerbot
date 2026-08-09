@@ -6,7 +6,7 @@ import {
   expect,
   test,
 } from "bun:test";
-import { generateWorkerToken } from "@lobu/core";
+import { generateWorkerToken, MCP_PROTOCOL_VERSION } from "@lobu/core";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import { McpProxy } from "../auth/mcp/proxy.js";
 import { McpToolCache } from "../auth/mcp/tool-cache.js";
@@ -43,10 +43,27 @@ function createMockConfigSource(
 }
 
 function mockUpstreamFetch(responseData: any) {
-  globalThis.fetch = async () => {
-    return new Response(JSON.stringify(responseData), {
+  globalThis.fetch = async (_input, init) => {
+    const request = init?.body ? JSON.parse(String(init.body)) : {};
+    const body =
+      request.method === "initialize"
+        ? {
+            jsonrpc: "2.0",
+            id: 0,
+            result: {
+              protocolVersion: MCP_PROTOCOL_VERSION,
+              capabilities: { tools: {} },
+            },
+          }
+        : responseData;
+    return new Response(JSON.stringify(body), {
       status: 200,
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(request.method === "initialize"
+          ? { "Mcp-Session-Id": "test-session" }
+          : {}),
+      },
     });
   };
 }
@@ -206,6 +223,74 @@ describe("McpProxy", () => {
       expect(body.error).toContain("not found");
     });
 
+    test("accepts a server without tools capability without calling tools/list", async () => {
+      const configSource = createMockConfigSource({
+        "test-mcp": TEST_SERVER,
+      });
+      const proxy = new McpProxy(configSource, {});
+      const app = proxy.getApp();
+      const methods: string[] = [];
+
+      globalThis.fetch = async (_input, init) => {
+        const request = JSON.parse(String(init?.body)) as { method: string };
+        methods.push(request.method);
+        if (request.method === "initialize") {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 0,
+              result: {
+                protocolVersion: MCP_PROTOCOL_VERSION,
+                capabilities: {},
+              },
+            }),
+            {
+              status: 200,
+              headers: {
+                "Content-Type": "application/json",
+                "Mcp-Session-Id": "toolless-session",
+              },
+            },
+          );
+        }
+        return new Response(null, { status: 202 });
+      };
+
+      const res = await app.request("/test-mcp/tools", {
+        method: "GET",
+        headers: { Authorization: `Bearer ${validToken}` },
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ tools: [] });
+      expect(methods).toEqual(["initialize", "notifications/initialized"]);
+    });
+
+    test("treats an upstream initialize 401 as an unauthenticated empty catalog", async () => {
+      const configSource = createMockConfigSource({
+        "test-mcp": TEST_SERVER,
+      });
+      const proxy = new McpProxy(configSource, {});
+      const app = proxy.getApp();
+      let fetchCount = 0;
+
+      globalThis.fetch = async () => {
+        fetchCount++;
+        return new Response("authentication required", {
+          status: 401,
+          headers: { "WWW-Authenticate": "Bearer" },
+        });
+      };
+
+      const res = await app.request("/test-mcp/tools", {
+        method: "GET",
+        headers: { Authorization: `Bearer ${validToken}` },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ tools: [] });
+      expect(fetchCount).toBe(1);
+    });
+
     test("returns 502 on upstream error", async () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
@@ -236,8 +321,31 @@ describe("McpProxy", () => {
       const app = proxy.getApp();
 
       let fetchCount = 0;
-      globalThis.fetch = async () => {
+      globalThis.fetch = async (_input, init) => {
         fetchCount++;
+        const request = init?.body ? JSON.parse(String(init.body)) : {};
+        if (request.method === "initialize") {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 0,
+              result: {
+                protocolVersion: MCP_PROTOCOL_VERSION,
+                capabilities: { tools: {} },
+              },
+            }),
+            {
+              status: 200,
+              headers: {
+                "Content-Type": "application/json",
+                "Mcp-Session-Id": "cache-session",
+              },
+            },
+          );
+        }
+        if (request.method === "notifications/initialized") {
+          return new Response(null, { status: 202 });
+        }
         return new Response(
           JSON.stringify({
             jsonrpc: "2.0",
@@ -375,8 +483,9 @@ describe("McpProxy", () => {
       const app = proxy.getApp();
 
       let callCount = 0;
-      globalThis.fetch = async () => {
+      globalThis.fetch = async (_input, init) => {
         callCount++;
+        const request = init?.body ? JSON.parse(String(init.body)) : {};
         // The first call is the tool call that triggers the error.
         // After that, reinitializeSession sends initialize + notifications/initialized (2 calls).
         // Then the retry tool call is the 4th call.
@@ -387,7 +496,24 @@ describe("McpProxy", () => {
               id: 1,
               error: { code: -32000, message: "Server not initialized" },
             }),
-            { status: 200, headers: { "Content-Type": "application/json" } }
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (request.method === "initialize") {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 0,
+              result: {
+                protocolVersion: MCP_PROTOCOL_VERSION,
+                capabilities: { tools: {} },
+              },
+            }),
+            {
+              status: 200,
+              headers: {
+                "Content-Type": "application/json",
+                "Mcp-Session-Id": "reinitialized-session" } }
           );
         }
         // Re-init calls (initialize + notifications/initialized) and retry
@@ -591,7 +717,7 @@ describe("McpProxy", () => {
       const proxy = new McpProxy(configSource, {      });
       const app = proxy.getApp();
 
-      globalThis.fetch = async (url: string | URL | Request) => {
+      globalThis.fetch = async (url: string | URL | Request, init) => {
         const urlStr =
           typeof url === "string"
             ? url
@@ -601,6 +727,29 @@ describe("McpProxy", () => {
         const tools = urlStr.includes("upstream1")
           ? [{ name: "tool_a" }]
           : [{ name: "tool_b" }];
+        const request = init?.body ? JSON.parse(String(init.body)) : {};
+        if (request.method === "initialize") {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 0,
+              result: {
+                protocolVersion: MCP_PROTOCOL_VERSION,
+                capabilities: { tools: {} },
+              },
+            }),
+            {
+              status: 200,
+              headers: {
+                "Content-Type": "application/json",
+                "Mcp-Session-Id": `session-${urlStr}`,
+              },
+            },
+          );
+        }
+        if (request.method === "notifications/initialized") {
+          return new Response(null, { status: 202 });
+        }
         return new Response(
           JSON.stringify({
             jsonrpc: "2.0",
@@ -635,7 +784,7 @@ describe("McpProxy", () => {
       const proxy = new McpProxy(configSource, {      });
       const app = proxy.getApp();
 
-      globalThis.fetch = async (url: string | URL | Request) => {
+      globalThis.fetch = async (url: string | URL | Request, init) => {
         const urlStr =
           typeof url === "string"
             ? url
@@ -644,6 +793,29 @@ describe("McpProxy", () => {
               : url.url;
         if (urlStr.includes("bad-upstream")) {
           throw new Error("Connection refused");
+        }
+        const request = init?.body ? JSON.parse(String(init.body)) : {};
+        if (request.method === "initialize") {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 0,
+              result: {
+                protocolVersion: MCP_PROTOCOL_VERSION,
+                capabilities: { tools: {} },
+              },
+            }),
+            {
+              status: 200,
+              headers: {
+                "Content-Type": "application/json",
+                "Mcp-Session-Id": "good-session",
+              },
+            },
+          );
+        }
+        if (request.method === "notifications/initialized") {
+          return new Response(null, { status: 202 });
         }
         return new Response(
           JSON.stringify({

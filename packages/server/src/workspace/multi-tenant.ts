@@ -2,6 +2,11 @@ import { verifyWorkerToken } from '@lobu/core';
 import { getAuthConfig as getAuthConfigFromEnv } from '../auth/config';
 import { createAuth } from '../auth/index';
 import { OAuthProvider } from '../auth/oauth/provider';
+import {
+  buildMcpBearerChallenge,
+  getMcpResourceForRequest,
+  publicMcpRequestUrl,
+} from '../auth/oauth/resource-indicator';
 import type { AuthInfo } from '../auth/oauth/types';
 import { PersonalAccessTokenService } from '../auth/tokens';
 import { isPublicReadable } from '../auth/tool-access';
@@ -130,6 +135,12 @@ export class MultiTenantProvider implements WorkspaceProvider {
     const baseUrl = getConfiguredPublicOrigin() ?? new URL(c.req.url).origin;
     const requestPath = new URL(c.req.url).pathname;
     const isMcpRoute = requestPath === '/mcp' || requestPath.startsWith('/mcp/');
+    const bearerChallenge = (error?: string) =>
+      isMcpRoute
+        ? buildMcpBearerChallenge(publicMcpRequestUrl(c.req.raw), error)
+        : `Bearer resource_metadata="${baseUrl}/.well-known/oauth-protected-resource"${
+            error ? `, error="${error}"` : ''
+          }`;
     // Routes that don't carry an org context resolve to "authenticated user,
     // no active org" instead of failing on a missing orgSlug. Two cases today:
     //   - the bare /mcp endpoint (MCP discovery / initialization)
@@ -273,7 +284,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
           { error: 'invalid_token', error_description: 'Invalid or expired worker token' },
           401,
           {
-            'WWW-Authenticate': `Bearer realm="${baseUrl}/.well-known/oauth-protected-resource", error="invalid_token"`,
+            'WWW-Authenticate': bearerChallenge('invalid_token'),
           }
         );
       }
@@ -288,7 +299,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
           { error: 'invalid_token', error_description: 'Worker token missing agent context' },
           401,
           {
-            'WWW-Authenticate': `Bearer realm="${baseUrl}/.well-known/oauth-protected-resource", error="invalid_token"`,
+            'WWW-Authenticate': bearerChallenge('invalid_token'),
           }
         );
       }
@@ -316,7 +327,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
           { error: 'invalid_token', error_description: 'Worker token missing admin-tools actor' },
           401,
           {
-            'WWW-Authenticate': `Bearer realm="${baseUrl}/.well-known/oauth-protected-resource", error="invalid_token"`,
+            'WWW-Authenticate': bearerChallenge('invalid_token'),
           }
         );
       }
@@ -392,7 +403,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
             { error: 'invalid_token', error_description: 'Invalid or expired access token' },
             401,
             {
-              'WWW-Authenticate': `Bearer realm="${baseUrl}/.well-known/oauth-protected-resource", error="invalid_token"`,
+              'WWW-Authenticate': bearerChallenge('invalid_token'),
             }
           );
         }
@@ -404,6 +415,23 @@ export class MultiTenantProvider implements WorkspaceProvider {
           { error: 'invalid_token', error_description: 'Token missing user context' },
           401
         );
+      }
+
+      // RFC 8707-bound OAuth tokens are valid only for the exact MCP resource
+      // named during authorization. Legacy unbound tokens remain accepted for
+      // the first-party device/CLI compatibility flow.
+      if (!isPat && authInfo.resource && isMcpRoute) {
+        const requestedResource = getMcpResourceForRequest(publicMcpRequestUrl(c.req.raw));
+        if (!requestedResource || authInfo.resource !== requestedResource) {
+          return c.json(
+            {
+              error: 'invalid_token',
+              error_description: 'Access token is bound to a different MCP resource',
+            },
+            401,
+            { 'WWW-Authenticate': bearerChallenge('invalid_token') }
+          );
+        }
       }
 
       let effectiveOrgId = requestedOrgId;
@@ -634,7 +662,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
         { error: 'invalid_token', error_description: 'Invalid or expired access token' },
         401,
         {
-          'WWW-Authenticate': `Bearer realm="${baseUrl}/.well-known/oauth-protected-resource", error="invalid_token"`,
+          'WWW-Authenticate': bearerChallenge('invalid_token'),
         }
       );
     }
@@ -652,7 +680,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
           error_description: 'Authentication required. Use OAuth or API key.',
         },
         401,
-        { 'WWW-Authenticate': `Bearer realm="${baseUrl}/.well-known/oauth-protected-resource"` }
+        { 'WWW-Authenticate': bearerChallenge() }
       );
     }
 

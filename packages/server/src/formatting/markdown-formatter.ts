@@ -293,6 +293,7 @@ export function formatToolResult(
     read_knowledge: formatGetContentResult,
     manage_behaviors: formatManageBehaviorsResult,
     query_sql: formatQuerySqlResult,
+    render_lobu_view: formatLobuViewResult,
   };
 
   const formatter = formatters[toolName];
@@ -309,6 +310,60 @@ export function formatToolResult(
 
   // Fallback: pretty-print JSON
   return `\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``;
+}
+
+function escapeLobuViewMarkdown(value: unknown, singleLine = false): string {
+  const text = String(value ?? '');
+  const normalized = singleLine ? text.replace(/\s+/g, ' ').trim() : text;
+  return normalized.replace(/([\\`*_[\]{}<>()#+\-.!|])/g, '\\$1');
+}
+
+function formatLobuViewCode(value: unknown): string {
+  const code = String(value ?? '');
+  const longestRun = Math.max(0, ...Array.from(code.matchAll(/`+/g), (match) => match[0].length));
+  const fence = '`'.repeat(Math.max(3, longestRun + 1));
+  return `${fence}\n${code}\n${fence}`;
+}
+
+function safeLobuViewLink(href: unknown): string | null {
+  if (typeof href !== 'string') return null;
+  try {
+    const url = new URL(href);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+    return url.href.replace(/\(/g, '%28').replace(/\)/g, '%29');
+  } catch {
+    return null;
+  }
+}
+
+function formatLobuViewResult(result: any): string {
+  let markdown = result.title ? `## ${escapeLobuViewMarkdown(result.title, true)}\n\n` : '';
+  for (const block of result.blocks ?? []) {
+    if (block.type === 'text') {
+      markdown += `${
+        block.label ? `**${escapeLobuViewMarkdown(block.label, true)}**\n\n` : ''
+      }${escapeLobuViewMarkdown(block.value)}\n\n`;
+    } else if (block.type === 'code') {
+      markdown += `${formatLobuViewCode(block.value)}\n\n`;
+    } else if (block.type === 'diff') {
+      for (const field of block.fields ?? []) {
+        markdown += `- **${escapeLobuViewMarkdown(field.label, true)}**: ${
+          field.before === undefined
+            ? escapeLobuViewMarkdown(field.after, true)
+            : `${escapeLobuViewMarkdown(field.before || '—', true)} → ${escapeLobuViewMarkdown(
+                field.after || '—',
+                true
+              )}`
+        }\n`;
+      }
+      markdown += '\n';
+    }
+  }
+  for (const action of result.actions ?? []) {
+    const href = safeLobuViewLink(action.href);
+    if (href) markdown += `[${escapeLobuViewMarkdown(action.label, true)}](${href})\n\n`;
+  }
+  return markdown.trim() || 'Lobu view rendered.';
 }
 
 /**

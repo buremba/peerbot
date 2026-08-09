@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { getOwnedOwlettoExtensionIds, isAllowedCorsOrigin } from '../../index';
+import { app, getOwnedOwlettoExtensionIds, isAllowedCorsOrigin } from '../../index';
 import { __resetPublicOriginCachesForTests } from '../../utils/public-origin';
 
 // The Hono CORS middleware in packages/server/src/index.ts must accept
@@ -126,5 +126,50 @@ describe('isAllowedCorsOrigin — regression coverage for pre-existing branches'
 
   test('still rejects an arbitrary third-party origin', () => {
     expect(isAllowedCorsOrigin('https://evil.com', makeEnv(), REQUEST_URL)).toBe(false);
+  });
+});
+
+describe('MCP browser Origin boundary', () => {
+  test('rejects a hostile Origin before authentication or tool dispatch', async () => {
+    const response = await app.fetch(
+      new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: 'https://evil.example',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      }),
+      makeEnv()
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: 'forbidden',
+      message: 'Untrusted MCP Origin',
+    });
+  });
+
+  test('allows standard Streamable HTTP headers in browser preflight', async () => {
+    const response = await app.fetch(
+      new Request('http://localhost/mcp/acme', {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'http://localhost',
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers':
+            'authorization,content-type,mcp-session-id,mcp-protocol-version,last-event-id',
+        },
+      }),
+      makeEnv()
+    );
+    expect(response.status).toBe(204);
+    const allowHeaders = response.headers.get('access-control-allow-headers')?.toLowerCase() ?? '';
+    expect(allowHeaders).toContain('mcp-session-id');
+    expect(allowHeaders).toContain('mcp-protocol-version');
+    expect(allowHeaders).toContain('last-event-id');
+    const exposeHeaders = response.headers.get('access-control-expose-headers')?.toLowerCase() ?? '';
+    expect(exposeHeaders).toContain('mcp-session-id');
+    expect(exposeHeaders).toContain('mcp-protocol-version');
+    expect(exposeHeaders).toContain('www-authenticate');
   });
 });

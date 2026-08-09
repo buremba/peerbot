@@ -21,6 +21,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../../index";
 import { getSchedulerHealth } from "../../scheduled/scheduler-health";
 import { manageBehaviors } from "../../tools/admin/manage_behaviors";
+import { getBehavior } from "../../tools/get_behavior";
 import { computeBehaviorHealth } from "../../watchers/behavior-health";
 import { initWorkspaceProvider } from "../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
@@ -229,6 +230,28 @@ describe("behavior health surfacing (#2033)", () => {
       "Agent never called client.behaviors.completeWindow()",
     );
     expect(JSON.stringify(row)).not.toContain("client.watchers.");
+  });
+
+  it("3.5: get_behavior rewrites legacy persisted run errors everywhere", async () => {
+    const { behaviorId, ctx } = await createScheduledBehavior();
+    await getTestDb()`
+      INSERT INTO runs
+        (organization_id, run_type, watcher_id, status, approval_status,
+         error_message, created_at, completed_at)
+      VALUES
+        (${ctx.organizationId}, 'behavior', ${behaviorId}, 'failed', 'auto',
+         'Agent never called client.watchers.completeWindow()',
+         current_timestamp - interval '2 minutes', current_timestamp - interval '1 minute')
+    `;
+
+    const result = await getBehavior({ behavior_id: String(behaviorId) }, {} as Env, ctx);
+    expect(result.behavior?.behavior_run?.error_message).toBe(
+      "Agent never called client.behaviors.completeWindow()"
+    );
+    expect(result.behavior?.last_scheduling_error).toBe(
+      "Agent never called client.behaviors.completeWindow()"
+    );
+    expect(JSON.stringify(result)).not.toContain("client.watchers.");
   });
 
   it("3.2: getSchedulerHealth surfaces an overdue behavior in issues[]", async () => {

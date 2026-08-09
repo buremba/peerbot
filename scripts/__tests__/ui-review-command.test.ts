@@ -13,6 +13,7 @@ import { buildProofBody } from "../lib/ui-review-proof";
 const UI_REVIEW_SCRIPT = resolve(import.meta.dir, "..", "ui-review.ts");
 const BASE_POINTER = "1".repeat(40);
 const HEAD_POINTER = "2".repeat(40);
+const PRODUCT_POINTER = "4".repeat(40);
 const BASE_COMMIT = "a".repeat(40);
 
 interface MockState {
@@ -112,12 +113,25 @@ if (endpoint.includes("/contents/packages/owletto?ref=")) {
     : process.env.MOCK_HEAD_POINTER;
   output({ type: "submodule", sha });
 } else if (endpoint.includes("/commits/") && endpoint.endsWith("/pulls")) {
-  output([{
-    number: 712,
-    html_url: "https://github.com/lobu-ai/owletto/pull/712",
-    merge_commit_sha: process.env.MOCK_HEAD_POINTER,
-    merged_at: "2026-08-04T10:00:00Z",
-  }]);
+  const candidate = endpoint.split("/commits/")[1].split("/pulls")[0];
+  const squash = process.env.MOCK_FLUX_TAIL === "1"
+    ? process.env.MOCK_PRODUCT_POINTER
+    : process.env.MOCK_HEAD_POINTER;
+  output(candidate === squash ? [{
+      number: 712,
+      html_url: "https://github.com/lobu-ai/owletto/pull/712",
+      merge_commit_sha: squash,
+      merged_at: "2026-08-04T10:00:00Z",
+    }] : []);
+} else if (endpoint.includes("/commits/")) {
+  output({
+    commit: {
+      author: { email: "fluxcd@lobu.ai" },
+      message: "chore: update images",
+    },
+    files: [{ filename: "deploy/k8s/apps/lobu/base/helmrelease.yaml" }],
+    parents: [{ sha: process.env.MOCK_PRODUCT_POINTER }],
+  });
 } else if (endpoint.includes("/collaborators/") && endpoint.endsWith("/permission")) {
   output({ permission: "admin" });
 } else if (endpoint.includes("/statuses/") && method === "POST") {
@@ -176,6 +190,7 @@ function runUiReview(
       MOCK_HEAD_COMMIT: fixture.head,
       MOCK_BASE_POINTER: BASE_POINTER,
       MOCK_HEAD_POINTER: HEAD_POINTER,
+      MOCK_PRODUCT_POINTER: PRODUCT_POINTER,
       ...environment,
     },
     stdout: "pipe",
@@ -384,5 +399,22 @@ describe("ui-review command", () => {
     expect(status?.payload).toMatchObject({
       target_url: proof?.html_url,
     });
+  });
+
+  it("records exact-head proof on the product PR beneath a Flux-only tail", () => {
+    const fixture = createFixture();
+    const result = runUiReview(fixture, {
+      ARTIFACT: "https://claude.ai/code/artifact/flux-tail-proof",
+      MOCK_FLUX_TAIL: "1",
+    });
+
+    expectExit(result, 0);
+    const state = readState(fixture.stateFile);
+    const proof =
+      state.comments["repos/lobu-ai/owletto/issues/712/comments"]?.[0];
+    expect(proof?.body).toContain(HEAD_POINTER);
+    expect(proof?.body).toContain(
+      "https://claude.ai/code/artifact/flux-tail-proof"
+    );
   });
 });

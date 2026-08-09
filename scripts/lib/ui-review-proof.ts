@@ -24,8 +24,19 @@ export interface OwlettoPullRequest {
   merged_at: string | null;
 }
 
+export interface OwlettoCommit {
+  commit: {
+    author: { email: string | null } | null;
+    message: string;
+  };
+  files?: Array<{ filename: string }>;
+  parents: Array<{ sha: string }>;
+}
+
 const PROOF_MARKER = "<!-- lobu-ui-review-proof ";
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
+const FLUX_AUTHOR_EMAIL = "fluxcd@lobu.ai";
+const FLUX_SUBJECT = "chore: update images";
 
 function isProof(value: unknown): value is UiReviewProof {
   if (typeof value !== "object" || value === null) return false;
@@ -131,4 +142,25 @@ export function selectOwlettoPullRequest(
       (pull) => pull.merged_at !== null && pull.merge_commit_sha === owlettoSha
     ) ?? null
   );
+}
+
+/**
+ * Mirrors submodule-drift.yml's narrow exemption. UI proof still binds to the
+ * exact parent pointer, but a deploy-only Flux tail is reviewed on the merged
+ * product PR immediately beneath it.
+ */
+export function permittedFluxTailParent(commit: OwlettoCommit): string | null {
+  const subject = commit.commit.message.split("\n", 1)[0];
+  const files = commit.files ?? [];
+  if (
+    commit.commit.author?.email !== FLUX_AUTHOR_EMAIL ||
+    subject !== FLUX_SUBJECT ||
+    commit.parents.length !== 1 ||
+    files.length === 0 ||
+    files.some((file) => !file.filename.startsWith("deploy/"))
+  ) {
+    return null;
+  }
+  const parent = commit.parents[0]?.sha;
+  return parent && SHA_PATTERN.test(parent) ? parent : null;
 }

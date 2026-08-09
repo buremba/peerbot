@@ -1,4 +1,4 @@
-import { createLogger } from "@lobu/core";
+import { createLogger, MCP_PROTOCOL_VERSION } from "@lobu/core";
 import { isInternalUrl } from "../../proxy/ssrf-guard.js";
 import {
 	buildSessionKey,
@@ -6,6 +6,7 @@ import {
 	type HttpMcpServerConfig,
 	INITIALIZE_BODY,
 	INITIALIZED_NOTIFICATION_BODY,
+	parseJsonRpcResponse,
 	upstreamTimeoutSignal,
 } from "./proxy-shared.js";
 
@@ -57,7 +58,7 @@ export class McpUpstreamClient {
 	 */
 	private readonly sessions = new Map<
 		string,
-		{ sessionId: string; expiresAt: number }
+		{ sessionId: string; protocolVersion: string; expiresAt: number }
 	>();
 
 	getSession(key: string): string | null {
@@ -72,9 +73,16 @@ export class McpUpstreamClient {
 		return entry.sessionId;
 	}
 
-	setSession(key: string, sessionId: string): void {
+	getProtocolVersion(key: string): string | null {
+		const entry = this.sessions.get(key);
+		return entry && entry.expiresAt > Date.now() ? entry.protocolVersion : null;
+	}
+
+	setSession(key: string, sessionId: string, protocolVersion?: string): void {
 		this.sessions.set(key, {
 			sessionId,
+			protocolVersion:
+				protocolVersion ?? this.getProtocolVersion(key) ?? MCP_PROTOCOL_VERSION,
 			expiresAt: Date.now() + this.SESSION_TTL_SECONDS * 1000,
 		});
 	}
@@ -100,6 +108,7 @@ export class McpUpstreamClient {
 	): Promise<Response> {
 		const sessionKey = buildSessionKey(agentId, mcpId, scopeKey);
 		const sessionId = this.getSession(sessionKey);
+		const protocolVersion = this.getProtocolVersion(sessionKey);
 
 		// Internal MCPs (lobu-memory) live in the same Lobu process and accept
 		// the worker JWT directly.
@@ -112,6 +121,7 @@ export class McpUpstreamClient {
 			sessionId,
 			credentialToken,
 			httpServer.internal === true,
+			protocolVersion,
 		);
 		if (extraHeaders) {
 			for (const [key, value] of Object.entries(extraHeaders)) {
@@ -143,7 +153,7 @@ export class McpUpstreamClient {
 		scopeKey?: string,
 		directAuthToken?: string,
 	): Promise<Response> {
-		return this.sendUpstreamRequest(
+		const response = await this.sendUpstreamRequest(
 			httpServer,
 			agentId,
 			mcpId,
@@ -152,6 +162,27 @@ export class McpUpstreamClient {
 			scopeKey,
 			directAuthToken,
 		);
+		// Discovery deliberately treats an authentication challenge as an empty
+		// unauthenticated catalog. Preserve the raw response so the caller can
+		// inspect its status instead of trying to parse a non-JSON challenge body.
+		if (response.status === 401) return response;
+		const parsed = (await parseJsonRpcResponse(response.clone())) as {
+			result?: { protocolVersion?: unknown };
+			error?: { message?: string };
+		};
+		if (parsed.error) {
+			throw new Error(
+				`MCP initialize failed: ${parsed.error.message ?? "unknown error"}`,
+			);
+		}
+		const protocolVersion = parsed.result?.protocolVersion;
+		if (typeof protocolVersion !== "string" || protocolVersion.length === 0) {
+			throw new Error("MCP initialize response omitted protocolVersion");
+		}
+		const sessionKey = buildSessionKey(agentId, mcpId, scopeKey);
+		const sessionId = this.getSession(sessionKey);
+		if (sessionId) this.setSession(sessionKey, sessionId, protocolVersion);
+		return response;
 	}
 
 	/** Send the MCP `notifications/initialized` notification (best-effort). */

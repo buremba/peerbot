@@ -25,7 +25,7 @@ export const TIME = {
  * MCP protocol version this codebase advertises on `initialize` handshakes.
  * Kept in one place so the gateway, CLI, and native runtime stay in lockstep.
  */
-export const MCP_PROTOCOL_VERSION = "2025-03-26";
+export const MCP_PROTOCOL_VERSION = "2025-11-25";
 
 /**
  * Chat platforms Lobu operates a hosted bot for. A project connection using

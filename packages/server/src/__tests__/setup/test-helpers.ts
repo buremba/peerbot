@@ -7,6 +7,7 @@
  * MCP calls perform proper protocol initialization per session (keyed by token).
  */
 
+import { MCP_PROTOCOL_VERSION } from '@lobu/core';
 import { app, type Env } from '../../index';
 import { initWorkspaceProvider } from '../../workspace';
 
@@ -177,7 +178,7 @@ export async function ensureMcpSession(options?: {
       id: '__test_init__',
       method: 'initialize',
       params: {
-        protocolVersion: '2025-03-26',
+        protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: {},
         clientInfo: {
           name: 'lobu-test',
@@ -205,7 +206,10 @@ export async function ensureMcpSession(options?: {
       jsonrpc: '2.0',
       method: 'notifications/initialized',
     },
-    headers: { 'mcp-session-id': sessionId },
+    headers: {
+      'mcp-session-id': sessionId,
+      'mcp-protocol-version': MCP_PROTOCOL_VERSION,
+    },
     token: options?.token,
     cookie: options?.cookie,
     env: options?.env,
@@ -251,7 +255,10 @@ export async function mcpRequest<T = any>(
       method,
       params: params || {},
     },
-    headers: { 'mcp-session-id': sessionId },
+    headers: {
+      'mcp-session-id': sessionId,
+      'mcp-protocol-version': MCP_PROTOCOL_VERSION,
+    },
     token: options?.token,
     cookie: options?.cookie,
     env: options?.env,
@@ -281,7 +288,11 @@ export async function mcpToolsCall<T = any>(
       method: 'tools/call',
       params: { name: toolName, arguments: args },
     },
-    headers: { 'X-MCP-Format': 'json', 'mcp-session-id': sessionId },
+    headers: {
+      'X-MCP-Format': 'json',
+      'mcp-session-id': sessionId,
+      'mcp-protocol-version': MCP_PROTOCOL_VERSION,
+    },
     token: options?.token,
     env: options?.env,
   });

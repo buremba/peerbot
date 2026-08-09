@@ -11,6 +11,7 @@
  * so authenticated sessions can recover across restarts and replica hops.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { MCP_PROTOCOL_VERSION } from '@lobu/core';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -22,32 +23,39 @@ import {
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { Context } from 'hono';
-import { bindRequestAbortToStream, type AbortableStream } from './events/sse-abort-bridge';
 import { OAuthClientsStore } from './auth/oauth/clients';
-import { isPublicReadable, resolveMaxAccessLevel } from './auth/tool-access';
+import { buildMcpBearerChallenge, publicMcpRequestUrl } from './auth/oauth/resource-indicator';
+import {
+  getRequiredAccessLevel,
+  hasRequiredMcpScope,
+  isPublicReadable,
+  resolveMaxAccessLevel,
+} from './auth/tool-access';
 import { createDbClientFromEnv } from './db/client';
+import { type AbortableStream, bindRequestAbortToStream } from './events/sse-abort-bridge';
+import { formatToolResult } from './formatting/markdown-formatter';
 import type { Env } from './index';
 import {
   agentExistsInOrganization,
   isValidAgentId,
   touchAgentLastUsed,
 } from './lobu/stores/postgres-stores';
-import { readMcpAppBundle } from './utils/mcp-app-bundle';
-import { LOBU_SKILL_MARKDOWN } from './skills/lobu-skill.generated';
-import { McpSessionStore, type PersistedMcpSession } from './mcp-session-store';
 import {
   clearInMemoryMcpSessionsForTests as clearInMemoryMcpSessionsForTestsShared,
   mcpSessionMap,
 } from './mcp-session-state';
+import { McpSessionStore, type PersistedMcpSession } from './mcp-session-store';
+import { LOBU_SKILL_MARKDOWN } from './skills/lobu-skill.generated';
 import {
   type AuthContext,
   executeTool,
   extractAuthContext,
   isSoftErrorResult,
 } from './tools/execute';
+import { LOBU_INTERACTION_RESOURCE_URI } from './tools/mcp_app';
 import { getMcpTools, getTool } from './tools/registry';
 import { validateToolResult } from './tools/validate-args';
-import { formatToolResult } from './formatting/markdown-formatter';
+import { readMcpAppBundle } from './utils/mcp-app-bundle';
 import { resolvePublicOrigin } from './utils/public-origin';
 import { buildWorkspaceInstructions } from './utils/workspace-instructions';
 
@@ -56,6 +64,8 @@ import { buildWorkspaceInstructions } from './utils/workspace-instructions';
 // ---------------------------------------------------------------------------
 const SESSION_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 const SESSION_CLEANUP_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+const MCP_APP_MIME_TYPE = 'text/html;profile=mcp-app';
+const MCP_APP_EXTENSION_ID = 'io.modelcontextprotocol/ui';
 // ---------------------------------------------------------------------------
 // Session store
 // ---------------------------------------------------------------------------
@@ -141,18 +151,16 @@ export async function revokeInMemoryMcpSessionsForClient(
 // Build a low-level Server wired to our tool registry + auth context
 // ---------------------------------------------------------------------------
 
-/** Shared mutable ref so handleMcp can signal the format to tool handlers. */
-const formatRef = { rawJson: false };
+/** Request-local response formatting; concurrent MCP sessions must never race. */
+const mcpRequestFormat = new AsyncLocalStorage<{ rawJson: boolean }>();
 
 /**
  * MCP Apps UI resources (interactive iframe payloads a host renders in a
  * sandboxed iframe). Keyed by `ui://` uri → the built bundle's app dir under
  * owletto's `dist-mcp-apps/`. Served over `resources/read` + the asset route;
- * our own SPA fetches the one bundle and streams it a `{title, blocks, actions}`
- * view it builds CLIENT-side. (Pointing an external MCP host at a bundle via a
- * tool result's `_meta.ui.resourceUri` needs the SERVER to author that view —
- * a deliberate follow-up, so we don't stamp it today.) Adding an app = one
- * entry + its owletto `src/mcp-apps/<dir>` build — no gateway change.
+ * the decoupled `render_lobu_view` tool links to the resource and supplies a
+ * server-authored LobuViewV1 in `structuredContent`. Adding an app = one entry
+ * plus its owletto `src/mcp-apps/<dir>` build — no gateway change.
  */
 const MCP_APP_RESOURCES: Record<
   string,
@@ -162,21 +170,27 @@ const MCP_APP_RESOURCES: Record<
     description: string;
     appDir: string;
     /**
-     * CSP the host should apply to the rendered iframe. The interaction bundle is
-     * postMessage-only (no fetch/XHR/import/remote assets; verified in
-     * `_shared/host.tsx` + `interaction-card.tsx`), so the policy is strict: no
-     * network, scripts/styles same-origin only. Tailwind's runtime style
-     * injection needs `'unsafe-inline'` on `style-src`.
+     * Domains the host should allow the rendered iframe to reach, in the MCP
+     * Apps `_meta.ui.csp` shape. The host owns the resulting policy; we only
+     * declare what the bundle needs. Empty lists mean "nothing beyond the
+     * bundle's own origin".
      */
-    csp: string;
+    csp: {
+      connectDomains: string[];
+      resourceDomains: string[];
+      frameDomains: string[];
+    };
+    prefersBorder: boolean;
   }
 > = {
-  'ui://lobu/interaction': {
+  [LOBU_INTERACTION_RESOURCE_URI]: {
     name: 'Interaction',
     description:
-      'Interactive approval/question/tool-grant cards rendered in a sandboxed iframe; actions ride a `tools/call` back to the host.',
+      'Interactive Lobu cards rendered in a sandboxed iframe; actions use standard MCP tool calls or host-mediated external links.',
     appDir: 'interaction',
-    csp: "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+    // postMessage-only: the app makes no network requests and embeds no frames.
+    csp: { connectDomains: [], resourceDomains: [], frameDomains: [] },
+    prefersBorder: true,
   },
 };
 
@@ -214,10 +228,19 @@ const MCP_SKILL_RESOURCES: Record<
   },
 };
 
+function supportsMcpApps(capabilities: Record<string, unknown> | null | undefined): boolean {
+  const extensions = capabilities?.extensions;
+  if (!extensions || typeof extensions !== 'object') return false;
+  const uiExtension = (extensions as Record<string, unknown>)[MCP_APP_EXTENSION_ID];
+  if (!uiExtension || typeof uiExtension !== 'object') return false;
+  const mimeTypes = (uiExtension as Record<string, unknown>).mimeTypes;
+  return Array.isArray(mimeTypes) && mimeTypes.includes(MCP_APP_MIME_TYPE);
+}
+
 function createServerForContext(
   env: Env,
   authCtx: SessionAuthContext,
-  resolvedOrigin: string
+  mcpAppsSupported: boolean
 ): Server {
   const server = new Server(
     { name: 'lobu-mcp', version: '0.2.0' },
@@ -236,13 +259,32 @@ function createServerForContext(
     const allTools = getMcpTools({
       publicOnly,
       maxAccessLevel,
-    }).map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
-      ...(t.annotations && { annotations: t.annotations }),
-      ...(t.outputSchema && { outputSchema: t.outputSchema }),
-    }));
+    }).map((t) => {
+      const securitySchemes = t.securitySchemes
+        ? publicOnly
+          ? [{ type: 'noauth' as const }, ...t.securitySchemes]
+          : t.securitySchemes
+        : undefined;
+      const appMeta = mcpAppsSupported ? t._meta : undefined;
+      return {
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+        ...(t.annotations && { annotations: t.annotations }),
+        ...(t.outputSchema && { outputSchema: t.outputSchema }),
+        ...(securitySchemes && { securitySchemes }),
+        ...(appMeta || securitySchemes
+          ? {
+              _meta: {
+                ...(appMeta ?? {}),
+                // Legacy Apps hosts read OAuth declarations from `_meta`;
+                // current MCP clients use the top-level field above.
+                ...(securitySchemes && { securitySchemes }),
+              },
+            }
+          : {}),
+      };
+    });
 
     return { tools: allTools };
   });
@@ -255,13 +297,11 @@ function createServerForContext(
         uri,
         name: meta.name,
         description: meta.description,
-        mimeType: 'text/html',
+        mimeType: MCP_APP_MIME_TYPE,
         _meta: {
           ui: {
             csp: meta.csp,
-            // Origin the host should associate with this UI (the gateway that
-            // serves the bundle + brokers the `tools/call` actions).
-            domain: resolvedOrigin,
+            prefersBorder: meta.prefersBorder,
           },
         },
       })),
@@ -290,7 +330,14 @@ function createServerForContext(
       throw new Error(`MCP App bundle not built for ${uri} (run owletto build:mcp-apps)`);
     }
     return {
-      contents: [{ uri, mimeType: 'text/html', text: html }],
+      contents: [
+        {
+          uri,
+          mimeType: MCP_APP_MIME_TYPE,
+          text: html,
+          _meta: { ui: { csp: app.csp, prefersBorder: app.prefersBorder } },
+        },
+      ],
     };
   });
 
@@ -310,16 +357,9 @@ function createServerForContext(
         await touchAgentLastUsed(authCtx.organizationId, authCtx.agentId);
       }
 
-      const text = formatRef.rawJson
+      const text = mcpRequestFormat.getStore()?.rawJson
         ? JSON.stringify(result)
         : formatToolResult(name, result, { includeRawJson: false });
-      // NOTE: our own SPA renders interactions (incl. the pending agent-change
-      // approval) through the `ui://lobu/interaction` MCP App, but it builds the
-      // `{title, blocks, actions}` view CLIENT-side from the SSE card payload —
-      // it does not consume this tool result's `_meta`. Rendering for EXTERNAL
-      // MCP hosts (Slack/Claude) needs the SERVER to author that view and stamp
-      // it here; that is a deliberate follow-up. Until then we return plain text
-      // rather than pointing an external host at a bundle it can't feed.
       // When the tool declares an `outputSchema`, also return the result as
       // `structuredContent` (MCP spec: declaring outputSchema implies the result
       // is structured — and a spec-compliant client validates it against the
@@ -355,6 +395,29 @@ function createServerForContext(
         ...(softError ? { isError: true } : {}),
       };
     } catch (error: any) {
+      const tool = getTool(name);
+      const requiredAccess = tool
+        ? getRequiredAccessLevel(name, args ?? {}, tool.annotations?.readOnlyHint === true)
+        : null;
+      const requiredScope =
+        requiredAccess === 'read'
+          ? 'mcp:read'
+          : requiredAccess === 'write'
+            ? 'mcp:write'
+            : requiredAccess === 'admin'
+              ? 'mcp:admin'
+              : null;
+      const scopeChallenge =
+        requiredAccess &&
+        requiredScope &&
+        (authCtx.tokenType === 'oauth' || authCtx.tokenType === 'pat') &&
+        !hasRequiredMcpScope(requiredAccess, authCtx.scopes)
+          ? buildMcpBearerChallenge(authCtx.requestUrl, {
+              error: 'insufficient_scope',
+              errorDescription: error?.message ?? 'The token lacks the required MCP scope.',
+              scope: requiredScope,
+            })
+          : null;
       // Surface the structured taxonomy (lobu#2051 Item 2) when the thrown error
       // carries a code, so the client/agent gets a stable code + retryability +
       // per-call correlation id alongside the human message.
@@ -376,16 +439,12 @@ function createServerForContext(
         ],
         isError: true,
         ...(structuredError ? { structuredContent: { error: structuredError } } : {}),
+        ...(scopeChallenge ? { _meta: { 'mcp/www_authenticate': [scopeChallenge] } } : {}),
       };
     }
   });
 
   return server;
-}
-
-function getProtectedResourceUrl(req: Request): string {
-  const baseUrl = resolvePublicOrigin(req.url);
-  return `${baseUrl}/.well-known/oauth-protected-resource`;
 }
 
 function buildUnauthorizedResponse(req: Request, description: string): Response {
@@ -398,7 +457,7 @@ function buildUnauthorizedResponse(req: Request, description: string): Response 
       status: 401,
       headers: {
         'Content-Type': 'application/json',
-        'WWW-Authenticate': `Bearer realm="${getProtectedResourceUrl(req)}"`,
+        'WWW-Authenticate': buildMcpBearerChallenge(publicMcpRequestUrl(req)),
       },
     }
   );
@@ -521,9 +580,7 @@ async function refreshSessionState(
   lastAccessedAt: number = Date.now()
 ): Promise<boolean> {
   if (!sessionId) return true;
-  return mcpSessionStore.refreshSession(
-    buildPersistedSession(sessionId, authCtx, lastAccessedAt)
-  );
+  return mcpSessionStore.refreshSession(buildPersistedSession(sessionId, authCtx, lastAccessedAt));
 }
 
 async function deletePersistedSession(sessionId: string | null | undefined): Promise<void> {
@@ -819,7 +876,8 @@ async function handleAndMaybeConvert(
   req: Request,
   wantsSSE: boolean
 ): Promise<Response> {
-  const response = await transport.handleRequest(req);
+  const rawJson = req.headers.get('x-mcp-format')?.toLowerCase() === 'json';
+  const response = await mcpRequestFormat.run({ rawJson }, () => transport.handleRequest(req));
   if (!wantsSSE && response.headers.get('content-type')?.includes('text/event-stream')) {
     return sseToJson(response);
   }
@@ -838,6 +896,12 @@ async function resolveAuthWithInstructions(
   req?: Request
 ): Promise<AuthContext & { instructions?: string }> {
   const authCtx: AuthContext & { instructions?: string } = extractAuthContext(c);
+  const request = req ?? c.req.raw;
+  // `baseUrl` stays as extractAuthContext set it: empty means "no configured
+  // public origin", which is what makes `getPublicWebUrl` fall back to the
+  // hosted UI for backend-only self-hosters. Forcing the request origin here
+  // would point every MCP link at a host that serves no frontend.
+  authCtx.requestUrl = publicMcpRequestUrl(request);
   if (req) {
     const initialize = await readInitializeRequest(req);
     // Verified worker auth already supplies an agent. Only fall back to the
@@ -881,7 +945,7 @@ function createSessionTransport(
   env: Env,
   authCtx: SessionAuthContext,
   sessionIdGenerator: () => string,
-  resolvedOrigin: string
+  mcpAppsSupported: boolean
 ): { transport: WebStandardStreamableHTTPServerTransport; server: Server } {
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator,
@@ -904,7 +968,7 @@ function createSessionTransport(
       void deletePersistedSession(transport.sessionId);
     }
   };
-  const server = createServerForContext(env, authCtx, resolvedOrigin);
+  const server = createServerForContext(env, authCtx, mcpAppsSupported);
   return { transport, server };
 }
 
@@ -938,6 +1002,7 @@ async function initializeRecoveredSession(
       'content-type': 'application/json',
       accept: FULL_MCP_ACCEPT,
       'mcp-session-id': sessionId,
+      'mcp-protocol-version': MCP_PROTOCOL_VERSION,
     }),
     body: JSON.stringify({
       jsonrpc: '2.0',
@@ -955,7 +1020,6 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
   const wantsSSE = clientAcceptsSSE(c.req.raw);
   const req = normalizeAcceptHeader(c.req.raw);
   const sessionId = req.headers.get('mcp-session-id') ?? undefined;
-  formatRef.rawJson = req.headers.get('x-mcp-format')?.toLowerCase() === 'json';
 
   // Existing session → reuse
   if (sessionId && sessions.has(sessionId)) {
@@ -968,9 +1032,7 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
     // is deliberately a single atomic UPDATE rather than a check followed by an
     // upsert — a revoke committing between those two would be undone by the
     // write that follows it.
-    if (
-      !(await refreshSessionState(sessionId, session.authCtx, session.lastAccessedAt))
-    ) {
+    if (!(await refreshSessionState(sessionId, session.authCtx, session.lastAccessedAt))) {
       sessions.delete(sessionId);
       session.transport.close?.();
       return buildJsonRpcErrorResponse(
@@ -1067,9 +1129,7 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
     // the old binding. Persist the upgrade, but update-only: an upsert here
     // would re-INSERT a row deleted by a revoke that committed mid-request,
     // resurrecting exactly the session the refresh exists to catch.
-    if (
-      !(await refreshSessionState(sessionId, session.authCtx, session.lastAccessedAt))
-    ) {
+    if (!(await refreshSessionState(sessionId, session.authCtx, session.lastAccessedAt))) {
       clearSession();
       return buildJsonRpcErrorResponse(
         'MCP session expired or not recognized. Start a new session by sending an initialize request — spec-compliant clients re-initialize automatically on 404.',
@@ -1130,7 +1190,12 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
             c.env,
             recoveredAuthCtx,
             () => sessionId,
-            resolvePublicOrigin(req.url)
+            // The client's negotiated MCP Apps capability is not part of the
+            // persisted session row, so a recovered session cannot prove the
+            // host renders `ui://` bundles. Advertise the plain tool
+            // definition rather than a resource pointer the host may not
+            // understand; a client that re-initializes negotiates it again.
+            false
           );
           await server.connect(transport);
           await initializeRecoveredSession(transport, sessionId, req.url);
@@ -1211,7 +1276,7 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
       c.env,
       authCtx,
       () => randomUUID(),
-      resolvePublicOrigin(req.url)
+      supportsMcpApps(initialize?.capabilities)
     );
     await server.connect(transport);
     const response = await handleAndMaybeConvert(transport, req, wantsSSE);

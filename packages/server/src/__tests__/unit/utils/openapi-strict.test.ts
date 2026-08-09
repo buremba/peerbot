@@ -10,6 +10,7 @@ describe("generateOpenAPISpec", () => {
 	it("uses public Behavior terminology throughout ChatGPT metadata", () => {
 		const spec = generateOpenAPISpec("https://example.test");
 		expect(JSON.stringify(spec)).not.toMatch(/watcher/i);
+		expect(spec.paths["/api/{orgSlug}/render_lobu_view"]).toBeUndefined();
 		expect(spec.servers[0]?.description).toContain("Behaviors");
 	});
 });

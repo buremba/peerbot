@@ -24,18 +24,24 @@ import { ListMetricsSchema, listMetrics } from './admin/list_metrics';
 import { MetricSeriesSchema, metricSeries } from './admin/metric_series';
 import { QueryMetricSchema, queryMetric } from './admin/query_metric';
 import { QuerySqlSchema, querySql } from './admin/query_sql';
+import {
+  LOBU_INTERACTION_RESOURCE_URI,
+  LobuViewSchema,
+  RenderLobuViewSchema,
+  renderLobuView,
+} from './mcp_app';
 import { ListOrganizationsSchema } from './organizations';
-import { ResolvePathSchema, ResolvePathResultSchema, resolvePath } from './resolve_path';
+import { ResolvePathResultSchema, ResolvePathSchema, resolvePath } from './resolve_path';
 import { SaveContentSchema, saveContent } from './save_content';
-import { PublicSearchSchema, SearchSchema, UnifiedSearchResultSchema, search } from './search';
 import {
   QuerySchema,
-  RunSchema,
-  SdkScriptResultSchema,
   querySdkScript,
+  RunSchema,
   runSdkScript,
+  SdkScriptResultSchema,
 } from './sdk_run';
-import { SdkSearchSchema, SdkSearchResultSchema, sdkSearch } from './sdk_search';
+import { SdkSearchResultSchema, SdkSearchSchema, sdkSearch } from './sdk_search';
+import { PublicSearchSchema, SearchSchema, search, UnifiedSearchResultSchema } from './search';
 
 // ============================================
 // Tool Definitions
@@ -171,13 +177,26 @@ export interface ToolDefinition<T = any> {
    * same schema object here — one source of truth, no drift.
    */
   outputSchema?: any; // JSON Schema
+  /** OAuth scopes advertised to MCP hosts for this tool. */
+  securityScopes?: string[];
+  /** MCP extension metadata, such as an Apps UI resource linkage. */
+  mcpMeta?: Record<string, unknown>;
   handler: (args: T, env: Env, ctx: ToolContext) => Promise<any>;
 }
 
-const READ_ONLY = { readOnlyHint: true, idempotentHint: true } as const;
+const READ_ONLY = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  openWorldHint: false,
+  idempotentHint: true,
+} as const;
+
+const READ_ONLY_OPEN_WORLD = { ...READ_ONLY, openWorldHint: true } as const;
 
 const WRITE_WITHOUT_CONFIRM: ToolAnnotations = {
+  readOnlyHint: false,
   destructiveHint: false,
+  openWorldHint: false,
   idempotentHint: false,
 };
 
@@ -194,7 +213,10 @@ const AGENT_TOOLS: ToolDefinition[] = [
     // affordances. See search.ts → PublicSearchSchema.
     publicInputSchema: PublicSearchSchema,
     outputSchema: UnifiedSearchResultSchema,
-    annotations: { ...READ_ONLY, title: 'Search memory' },
+    // Search can query installed virtual feeds live, so it may read outside
+    // Lobu's persisted workspace even though it never mutates anything.
+    annotations: { ...READ_ONLY_OPEN_WORLD, title: 'Search memory' },
+    securityScopes: ['mcp:read'],
     handler: search,
   },
   {
@@ -203,6 +225,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
       'Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The write is immediately readable by returned event id via `client.knowledge.read({ content_ids: [id] })`; semantic search indexing is asynchronous and reported as `indexing_status`. Storage is append-only — pass `supersedes_event_id` to replace an existing fact (the old event is hidden from future searches without losing history). Optionally attach to entities via `entity_ids`. Always search first to avoid duplicates.',
     inputSchema: SaveContentSchema,
     annotations: { ...WRITE_WITHOUT_CONFIRM, title: 'Save memory' },
+    securityScopes: ['mcp:write'],
     handler: saveContent,
   },
   {
@@ -212,6 +235,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
     inputSchema: SdkSearchSchema,
     outputSchema: SdkSearchResultSchema,
     annotations: { ...READ_ONLY, title: 'Search SDK docs' },
+    securityScopes: ['mcp:read'],
     handler: sdkSearch,
   },
   // ─── Power tools — TS scripting + raw SQL ─────────────────────────────────
@@ -221,7 +245,9 @@ const AGENT_TOOLS: ToolDefinition[] = [
       'Read workspace data through typed SDK methods. Query entities, relationships, feeds, operations, metrics, and more. Use this for lookups and searches that do not change data. (For writes: use run_sdk. To discover available methods: use search_sdk. For polling: use await ctx.sleep(ms) in your script.)',
     inputSchema: QuerySchema,
     outputSchema: SdkScriptResultSchema,
-    annotations: { ...READ_ONLY, title: 'Query SDK (read-only)' },
+    // Read-only SDK methods include connector-backed live feed reads.
+    annotations: { ...READ_ONLY_OPEN_WORLD, title: 'Query SDK (read-only)' },
+    securityScopes: ['mcp:read'],
     handler: querySdkScript,
   },
   {
@@ -230,6 +256,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
       'Run a paginated, sortable, searchable read-only SQL query (member-safe). Table references auto-scope to the bound org. SELECT FROM events reads persisted/synced content only; virtual feeds are live-only and must be read explicitly with feed or via query_sdk client.feeds.readMany. Results may include coverage.suggested_virtual_feeds. Prefer client.metrics.query for declared measures; use client.query in query_sdk for simple one-shot SQL. Do NOT use positional parameters ($1, $2, …). Optional `org_slug` (OAuth on /mcp only) redirects to another member org.',
     inputSchema: QuerySqlSchema,
     annotations: { ...READ_ONLY, title: 'Query SQL' },
+    securityScopes: ['mcp:read'],
     handler: querySql,
   },
   {
@@ -239,11 +266,40 @@ const AGENT_TOOLS: ToolDefinition[] = [
     inputSchema: RunSchema,
     outputSchema: SdkScriptResultSchema,
     annotations: {
+      readOnlyHint: false,
       destructiveHint: true,
+      openWorldHint: true,
       idempotentHint: false,
       title: 'Run SDK',
     },
+    securityScopes: ['mcp:write'],
     handler: runSdkScript,
+  },
+];
+
+/**
+ * Presentation tools listed only on MCP `tools/list`. They stay executable by
+ * name for MCP dispatch, but are absent from `AGENT_TOOL_NAMES`,
+ * `getAllTools`, `getRawDispatchTools`, and `REST_DISPATCH_TOOL_NAMES`, keeping
+ * them out of REST, OpenAPI, and the ClientSDK.
+ */
+const MCP_APP_TOOLS: ToolDefinition[] = [
+  {
+    name: 'render_lobu_view',
+    description:
+      'Render a compact Lobu card after data has been selected, or render the review card for one pending approval run. Use action="render" only when a visual card materially helps; first call Lobu data tools and pass only the final content. Use action="review_approval" with a run_id returned by a pending action. Text-only clients receive the same information as readable text.',
+    inputSchema: RenderLobuViewSchema,
+    outputSchema: LobuViewSchema,
+    annotations: { ...READ_ONLY, title: 'Render Lobu view' },
+    securityScopes: ['mcp:read'],
+    mcpMeta: {
+      ui: {
+        resourceUri: LOBU_INTERACTION_RESOURCE_URI,
+        visibility: ['model', 'app'],
+      },
+      'openai/outputTemplate': LOBU_INTERACTION_RESOURCE_URI,
+    },
+    handler: renderLobuView,
   },
 ];
 
@@ -298,12 +354,17 @@ const INTERNAL_DISPATCH_TOOLS: ToolDefinition[] = [
   },
 ];
 
+const ALL_MCP_TOOLS: ToolDefinition[] = [...AGENT_TOOLS, ...MCP_APP_TOOLS];
 const ALL_DISPATCH_TOOLS: ToolDefinition[] = [...AGENT_TOOLS, ...INTERNAL_DISPATCH_TOOLS];
+const ALL_EXECUTABLE_TOOLS: ToolDefinition[] = [...ALL_DISPATCH_TOOLS, ...MCP_APP_TOOLS];
 
 export const AGENT_TOOL_NAMES: ReadonlySet<string> = new Set(AGENT_TOOLS.map((tool) => tool.name));
 
 const INTERNAL_TOOL_NAMES: ReadonlySet<string> = new Set(
   INTERNAL_DISPATCH_TOOLS.map((tool) => tool.name)
+);
+const REST_DISPATCH_TOOL_NAMES: ReadonlySet<string> = new Set(
+  ALL_DISPATCH_TOOLS.map((tool) => tool.name)
 );
 
 // ============================================
@@ -311,7 +372,7 @@ const INTERNAL_TOOL_NAMES: ReadonlySet<string> = new Set(
 // ============================================
 
 const DISPATCH_BY_NAME: Map<string, ToolDefinition> = new Map(
-  ALL_DISPATCH_TOOLS.map((tool) => [tool.name, tool])
+  ALL_EXECUTABLE_TOOLS.map((tool) => [tool.name, tool])
 );
 
 /**
@@ -323,6 +384,10 @@ export function getTool(name: string): ToolDefinition | undefined {
 
 export function isInternalDispatchTool(name: string): boolean {
   return INTERNAL_TOOL_NAMES.has(name);
+}
+
+export function isRestDispatchTool(name: string): boolean {
+  return REST_DISPATCH_TOOL_NAMES.has(name);
 }
 
 /**
@@ -489,7 +554,7 @@ type ListedToolOptions = {
  * Agent-facing tools for MCP `tools/list` and external OpenAPI.
  */
 export function getMcpTools(options?: ListedToolOptions) {
-  return getListedTools(AGENT_TOOLS, options);
+  return getListedTools(ALL_MCP_TOOLS, options);
 }
 
 /**
@@ -544,7 +609,8 @@ export function getRawDispatchTools(): RawDispatchTool[] {
 function getListedTools(source: ToolDefinition[], options?: ListedToolOptions) {
   const publicOnly = options?.publicOnly ?? false;
   const maxAccessLevel = options?.maxAccessLevel ?? 'admin';
-  const cacheKey = `${source === AGENT_TOOLS ? 'mcp' : 'all'}:${publicOnly ? 1 : 0}:${maxAccessLevel}`;
+  const sourceKey = source === ALL_MCP_TOOLS ? 'mcp' : 'all';
+  const cacheKey = `${sourceKey}:${publicOnly ? 1 : 0}:${maxAccessLevel}`;
   let cached = listedToolsCache.get(cacheKey);
   if (!cached) {
     cached = computeListedTools(source, publicOnly, maxAccessLevel);
@@ -594,6 +660,10 @@ function computeListedTools(
         description: tool.description,
         inputSchema,
         ...(tool.annotations && { annotations: tool.annotations }),
+        ...(tool.securityScopes && {
+          securitySchemes: [{ type: 'oauth2' as const, scopes: tool.securityScopes }],
+        }),
+        ...(tool.mcpMeta && { _meta: tool.mcpMeta }),
         // outputSchema keeps its discriminated variants (no flattening, no
         // access-level filtering — those are input concerns) but the MCP spec
         // requires a tool's outputSchema to be an OBJECT schema. TypeBox

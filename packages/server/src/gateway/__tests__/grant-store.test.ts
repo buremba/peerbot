@@ -24,7 +24,7 @@ describe("GrantStore (PG-backed)", () => {
 
   beforeAll(async () => {
     await ensureDbForGatewayTests();
-  });
+  }, 30_000);
 
   beforeEach(async () => {
     await resetTestDatabase();
@@ -32,7 +32,7 @@ describe("GrantStore (PG-backed)", () => {
     // test in this file so the inserts below succeed.
     await seedAgentRow("agent-1");
     store = new GrantStore();
-  });
+  }, 30_000);
 
   describe("grant", () => {
     test("stores grant without expiry when expiresAt is null", async () => {

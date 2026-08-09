@@ -8,6 +8,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import { get } from '../../setup/test-helpers';
+import { __resetPublicOriginCachesForTests } from '../../../utils/public-origin';
 
 describe('OAuth Discovery Endpoints', () => {
   beforeAll(async () => {
@@ -51,6 +52,33 @@ describe('OAuth Discovery Endpoints', () => {
       const authServerOrigin = new URL(body.authorization_servers[0]).origin;
 
       expect(resourceOrigin).toBe(authServerOrigin);
+    });
+
+    it('keeps the configured MCP resource origin when OAuth is served on a workspace host', async () => {
+      const originalPublicGatewayUrl = process.env.PUBLIC_GATEWAY_URL;
+      try {
+        process.env.PUBLIC_GATEWAY_URL = 'https://app.lobu.ai/lobu';
+        __resetPublicOriginCachesForTests();
+
+        const response = await get('/.well-known/oauth-protected-resource/mcp/acme', {
+          headers: {
+            'x-forwarded-proto': 'https',
+            'x-forwarded-host': 'acme.lobu.ai',
+          },
+        });
+        const body = await response.json();
+
+        expect(response.status).toBe(200);
+        expect(body.resource).toBe('https://app.lobu.ai/mcp/acme');
+        expect(body.authorization_servers).toEqual(['https://acme.lobu.ai']);
+      } finally {
+        if (originalPublicGatewayUrl === undefined) {
+          delete process.env.PUBLIC_GATEWAY_URL;
+        } else {
+          process.env.PUBLIC_GATEWAY_URL = originalPublicGatewayUrl;
+        }
+        __resetPublicOriginCachesForTests();
+      }
     });
   });
 

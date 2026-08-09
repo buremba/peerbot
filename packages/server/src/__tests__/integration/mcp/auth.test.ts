@@ -7,6 +7,7 @@
  * - Unauthenticated discovery requests
  */
 
+import { MCP_PROTOCOL_VERSION } from '@lobu/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { clearInMemoryMcpSessionsForTests } from '../../../mcp-handler';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -75,8 +76,8 @@ describe('MCP Authentication', () => {
       });
 
       expect(response.status).toBe(401);
-      expect(response.headers.get('WWW-Authenticate')).toContain(
-        '/.well-known/oauth-protected-resource'
+      expect(response.headers.get('WWW-Authenticate')).toBe(
+        'Bearer resource_metadata="http://localhost/.well-known/oauth-protected-resource/mcp", scope="mcp:read mcp:write"'
       );
     });
 
@@ -355,6 +356,32 @@ describe('MCP Authentication', () => {
 
       expect(result.tools).toBeInstanceOf(Array);
       expect(result.tools.length).toBeGreaterThan(0);
+    });
+
+    it('rejects an OAuth token bound to a different MCP resource', async () => {
+      const { token } = await createTestAccessToken(user.id, org.id, client.client_id, {
+        resource: `http://localhost/mcp/${org.slug}`,
+      });
+
+      await expect(mcpListTools({ token, orgSlug: org2.slug })).rejects.toThrow();
+
+      const response = await post(`/mcp/${org2.slug}`, {
+        body: {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: MCP_PROTOCOL_VERSION,
+            capabilities: {},
+            clientInfo: { name: 'audience-test', version: '1.0.0' },
+          },
+        },
+        token,
+      });
+      expect(response.status).toBe(401);
+      expect(response.headers.get('WWW-Authenticate')).toBe(
+        `Bearer resource_metadata="http://localhost/.well-known/oauth-protected-resource/mcp/${org2.slug}", scope="mcp:read mcp:write", error="invalid_token"`
+      );
     });
 
     it('allows a public-org scoped OAuth token for a non-member and only exposes public tools', async () => {
@@ -718,10 +745,9 @@ describe('MCP Authentication', () => {
       const aliceSessionId = await initMcpSession(aliceToken);
       const bobSessionId = await initMcpSession(bobToken);
 
-      const response = await del(
-        `/api/${org.slug}/clients/mcp/${sharedClient.client_id}`,
-        { cookie: revokerSession.cookieHeader }
-      );
+      const response = await del(`/api/${org.slug}/clients/mcp/${sharedClient.client_id}`, {
+        cookie: revokerSession.cookieHeader,
+      });
       expect(response.status).toBe(200);
 
       const tokenRows = await getTestDb()`
@@ -1084,7 +1110,15 @@ describe('MCP Authentication', () => {
       // via REST and tools/call by name but are not advertised here.
       const toolNames = result.tools.map((t: any) => t.name);
       expect(toolNames.sort()).toEqual(
-        ['query_sdk', 'query_sql', 'run_sdk', 'save_memory', 'search_memory', 'search_sdk'].sort()
+        [
+          'query_sdk',
+          'query_sql',
+          'render_lobu_view',
+          'run_sdk',
+          'save_memory',
+          'search_memory',
+          'search_sdk',
+        ].sort()
       );
       expect(toolNames).not.toContain('list_organizations');
       expect(toolNames).not.toContain('list_metrics');

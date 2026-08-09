@@ -4,6 +4,7 @@ import {
   findProofComment,
   isHttpsArtifact,
   parseProof,
+  permittedFluxTailParent,
   proofMatches,
   selectOwlettoPullRequest,
   type UiReviewComment,
@@ -106,6 +107,49 @@ describe("UI review proof", () => {
 
     expect(selectOwlettoPullRequest(pulls, HEAD_SHA)?.number).toBe(712);
     expect(selectOwlettoPullRequest(pulls, BASE_SHA)).toBeNull();
+  });
+
+  it("walks only the exact deploy-only Flux image tail", () => {
+    const parent = "4".repeat(40);
+    expect(
+      permittedFluxTailParent({
+        commit: {
+          author: { email: "fluxcd@lobu.ai" },
+          message: "chore: update images",
+        },
+        files: [{ filename: "deploy/k8s/apps/lobu/base/helmrelease.yaml" }],
+        parents: [{ sha: parent }],
+      })
+    ).toBe(parent);
+
+    for (const candidate of [
+      {
+        commit: {
+          author: { email: "human@lobu.ai" },
+          message: "chore: update images",
+        },
+        files: [{ filename: "deploy/app.yaml" }],
+        parents: [{ sha: parent }],
+      },
+      {
+        commit: {
+          author: { email: "fluxcd@lobu.ai" },
+          message: "chore: update images later",
+        },
+        files: [{ filename: "deploy/app.yaml" }],
+        parents: [{ sha: parent }],
+      },
+      {
+        commit: {
+          author: { email: "fluxcd@lobu.ai" },
+          message: "chore: update images",
+        },
+        files: [{ filename: "src/app.ts" }],
+        parents: [{ sha: parent }],
+      },
+    ]) {
+      expect(permittedFluxTailParent(candidate)).toBeNull();
+    }
   });
 
   it("requires a hosted HTTPS artifact", () => {

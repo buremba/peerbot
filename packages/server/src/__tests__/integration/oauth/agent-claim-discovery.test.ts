@@ -109,6 +109,58 @@ describe('auth.md discovery surface', () => {
 });
 
 describe('user_claimed flow — full loop', () => {
+  it('rejects an MCP device authorization that omits its resource audience', async () => {
+    const app = buildApp();
+    const reg = await call(app, 'POST', '/oauth/register', {
+      body: {
+        client_name: 'Unbound Claim Agent',
+        grant_types: [DEVICE_GRANT, 'refresh_token'],
+        token_endpoint_auth_method: 'none',
+      },
+    });
+    expect(reg.status).toBe(201);
+    const client = (await reg.json()) as { client_id: string };
+
+    const response = await call(app, 'POST', '/oauth/device_authorization', {
+      body: {
+        client_id: client.client_id,
+        scope: 'mcp:read mcp:write',
+      },
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as { error: string }).toEqual(
+      expect.objectContaining({ error: 'invalid_request' }),
+    );
+  });
+
+  it('rejects a cross-origin resource at the token endpoint before grant exchange', async () => {
+    const app = buildApp();
+    const reg = await call(app, 'POST', '/oauth/register', {
+      body: {
+        client_name: 'Cross-Origin Claim Agent',
+        grant_types: [DEVICE_GRANT, 'refresh_token'],
+        token_endpoint_auth_method: 'none',
+      },
+    });
+    expect(reg.status).toBe(201);
+    const client = (await reg.json()) as { client_id: string };
+
+    const response = await call(app, 'POST', '/oauth/token', {
+      body: {
+        grant_type: DEVICE_GRANT,
+        client_id: client.client_id,
+        device_code: 'not-a-real-device-code',
+        resource: 'https://evil.example/mcp',
+      },
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as { error: string }).toEqual(
+      expect.objectContaining({ error: 'invalid_request' }),
+    );
+  });
+
   it('agent registers a user by email and collects a scoped credential after consent', async () => {
     const app = buildApp();
     const org = await createTestOrganization({ name: 'Claim Org' });
@@ -155,9 +207,29 @@ describe('user_claimed flow — full loop', () => {
     expect(approve.status).toBe(200);
     expect((await approve.json()) as { status: string }).toEqual({ status: 'approved' });
 
-    // 5. Agent polls and collects the scoped credential.
+    // 5. A mismatched audience is rejected without consuming the one-time
+    // device code, so the correctly bound client can still complete.
+    const mismatch = await call(app, 'POST', '/oauth/token', {
+      body: {
+        grant_type: DEVICE_GRANT,
+        device_code,
+        client_id: client.client_id,
+        resource: `${ORIGIN}/mcp/not-the-authorized-org`,
+      },
+    });
+    expect(mismatch.status).toBe(400);
+    expect((await mismatch.json()) as { error: string }).toMatchObject({
+      error: 'invalid_grant',
+    });
+
+    // 6. Agent polls with the exact audience and collects the scoped credential.
     const tokenRes = await call(app, 'POST', '/oauth/token', {
-      body: { grant_type: DEVICE_GRANT, device_code, client_id: client.client_id },
+      body: {
+        grant_type: DEVICE_GRANT,
+        device_code,
+        client_id: client.client_id,
+        resource: `${ORIGIN}/mcp/${org.slug}`,
+      },
     });
     expect(tokenRes.status).toBe(200);
     const tokens = (await tokenRes.json()) as { access_token: string; scope?: string };

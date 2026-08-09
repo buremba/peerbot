@@ -504,6 +504,7 @@ export async function createTestAccessToken(
   options?: {
     expiresIn?: number; // seconds
     scope?: string;
+    resource?: string | null;
   }
 ): Promise<TestAccessToken> {
   const sql = getTestDb();
@@ -515,10 +516,10 @@ export async function createTestAccessToken(
   await sql`
     INSERT INTO oauth_tokens (
       id, token_type, token_hash, client_id, user_id, organization_id,
-      scope, expires_at, created_at
+      scope, resource, expires_at, created_at
     ) VALUES (
       ${id}, 'access', ${tokenHash}, ${clientId}, ${userId}, ${organizationId},
-      ${options?.scope || 'mcp:read mcp:write'}, ${expiresAt}, NOW()
+      ${options?.scope || 'mcp:read mcp:write'}, ${options?.resource ?? null}, ${expiresAt}, NOW()
     )
   `;
 

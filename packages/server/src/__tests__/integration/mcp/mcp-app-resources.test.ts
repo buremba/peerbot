@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { MCP_PROTOCOL_VERSION } from '@lobu/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { getDb } from '../../../db/client';
+import { clearInMemoryMcpSessionsForTests } from '../../../mcp-handler';
 import { insertEvent } from '../../../utils/insert-event';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
@@ -227,6 +228,32 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     }
   });
 
+  it('preserves negotiated Apps metadata after cross-replica session recovery', async () => {
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    clearInMemoryMcpSessionsForTests();
+
+    const response = await post(`/mcp/${org.slug}`, {
+      body: { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+      headers: {
+        'mcp-session-id': sessionId,
+        'mcp-protocol-version': MCP_PROTOCOL_VERSION,
+      },
+      token,
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    const tool = body.result?.tools?.find(
+      (entry: { name?: string }) => entry.name === 'render_lobu_view'
+    );
+    expect(tool?._meta?.ui).toEqual(
+      expect.objectContaining({
+        resourceUri: 'ui://lobu/interaction/v1',
+        visibility: ['model', 'app'],
+      })
+    );
+  });
+
   it('returns a validated LobuViewV1 with a safe text fallback', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const response = await post(`/mcp/${org.slug}`, {
@@ -275,6 +302,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     const sessionId = await initSession(`/mcp/${org.slug}`, {
       advertiseMcpApps: false,
     });
+    clearInMemoryMcpSessionsForTests();
     const response = await post(`/mcp/${org.slug}`, {
       body: { jsonrpc: '2.0', id: 1, method: 'tools/list' },
       headers: {

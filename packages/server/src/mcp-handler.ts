@@ -82,7 +82,10 @@ interface SessionEntry {
 const sessions = mcpSessionMap as Map<string, SessionEntry>;
 const mcpSessionStore = new McpSessionStore();
 
-type SessionAuthContext = AuthContext & { instructions?: string };
+type SessionAuthContext = AuthContext & {
+  instructions?: string;
+  supportsMcpApps?: boolean;
+};
 
 export function hostConversationIdFromMeta(value: unknown): string | null {
   if (typeof value !== 'object' || value === null) return null;
@@ -552,6 +555,7 @@ function buildPersistedSession(
     requestedAgentId: authCtx.requestedAgentId,
     isAuthenticated: authCtx.isAuthenticated,
     scopedToOrg: authCtx.scopedToOrg,
+    supportsMcpApps: authCtx.supportsMcpApps ?? false,
     lastAccessedAt,
     expiresAt: lastAccessedAt + SESSION_MAX_AGE_MS,
   };
@@ -673,6 +677,7 @@ async function recoverSessionAuthContext(
     return null;
   }
   authCtx.requestedAgentId = persisted.requestedAgentId ?? authCtx.requestedAgentId;
+  authCtx.supportsMcpApps = persisted.supportsMcpApps;
   authCtx.instructions = authCtx.organizationId
     ? ((await buildWorkspaceInstructions(authCtx.organizationId)) ?? undefined)
     : undefined;
@@ -894,8 +899,8 @@ async function handleAndMaybeConvert(
 async function resolveAuthWithInstructions(
   c: Context<{ Bindings: Env }>,
   req?: Request
-): Promise<AuthContext & { instructions?: string }> {
-  const authCtx: AuthContext & { instructions?: string } = extractAuthContext(c);
+): Promise<SessionAuthContext> {
+  const authCtx: SessionAuthContext = extractAuthContext(c);
   const request = req ?? c.req.raw;
   // `baseUrl` stays as extractAuthContext set it: empty means "no configured
   // public origin", which is what makes `getPublicWebUrl` fall back to the
@@ -914,9 +919,7 @@ async function resolveAuthWithInstructions(
   return authCtx;
 }
 
-async function syncAgentBinding(
-  authCtx: AuthContext & { instructions?: string }
-): Promise<string | null> {
+async function syncAgentBinding(authCtx: SessionAuthContext): Promise<string | null> {
   const requestedAgentId = authCtx.requestedAgentId?.trim() || null;
   authCtx.agentId = null;
 
@@ -944,8 +947,7 @@ async function syncAgentBinding(
 function createSessionTransport(
   env: Env,
   authCtx: SessionAuthContext,
-  sessionIdGenerator: () => string,
-  mcpAppsSupported: boolean
+  sessionIdGenerator: () => string
 ): { transport: WebStandardStreamableHTTPServerTransport; server: Server } {
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator,
@@ -968,7 +970,7 @@ function createSessionTransport(
       void deletePersistedSession(transport.sessionId);
     }
   };
-  const server = createServerForContext(env, authCtx, mcpAppsSupported);
+  const server = createServerForContext(env, authCtx, authCtx.supportsMcpApps ?? false);
   return { transport, server };
 }
 
@@ -1189,13 +1191,7 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
           const { transport, server } = createSessionTransport(
             c.env,
             recoveredAuthCtx,
-            () => sessionId,
-            // The client's negotiated MCP Apps capability is not part of the
-            // persisted session row, so a recovered session cannot prove the
-            // host renders `ui://` bundles. Advertise the plain tool
-            // definition rather than a resource pointer the host may not
-            // understand; a client that re-initializes negotiates it again.
-            false
+            () => sessionId
           );
           await server.connect(transport);
           await initializeRecoveredSession(transport, sessionId, req.url);
@@ -1272,11 +1268,11 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
     // null, which would deny role-gated actions to a real owner/admin.
     await hydrateScopedMemberRole(c.env, authCtx);
     await recordMcpClientActivity(c.env, authCtx, req, initialize);
+    authCtx.supportsMcpApps = supportsMcpApps(initialize?.capabilities);
     const { transport, server } = createSessionTransport(
       c.env,
       authCtx,
-      () => randomUUID(),
-      supportsMcpApps(initialize?.capabilities)
+      () => randomUUID()
     );
     await server.connect(transport);
     const response = await handleAndMaybeConvert(transport, req, wantsSSE);

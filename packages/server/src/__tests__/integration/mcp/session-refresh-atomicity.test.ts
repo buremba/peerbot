@@ -48,6 +48,7 @@ describe('mcp session refresh is update-only', () => {
       requestedAgentId: null,
       isAuthenticated: true,
       scopedToOrg: false,
+      supportsMcpApps: true,
       lastAccessedAt: Date.now(),
       expiresAt: Date.now() + 3_600_000,
     };
@@ -61,6 +62,7 @@ describe('mcp session refresh is update-only', () => {
 
     const row = await store.getSession(session.sessionId);
     expect(row).not.toBeNull();
+    expect(row?.supportsMcpApps).toBe(true);
   });
 
   it('does NOT resurrect a row deleted by a concurrent revoke', async () => {

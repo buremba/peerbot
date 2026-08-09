@@ -423,6 +423,118 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     });
   });
 
+  it('renders producer-authored Behavior fields instead of its execution envelope', async () => {
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (
+        organization_id, run_type, status, approval_status, action_key
+      ) VALUES (
+        ${org.id}, 'internal', 'pending', 'pending', 'manage_behaviors'
+      )
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_behavior_approval_${runId}`,
+      title: 'Update Behavior — pending approval',
+      content: 'Builder requested: Update Behavior',
+      semanticType: 'operation',
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+      interactionInput: { name: 'New name', reaction_script: '' },
+      metadata: {
+        tool: 'manage_behaviors',
+        current: { name: 'Old name', reaction_script: 'return true;' },
+        proposal: {
+          args: {
+            action: 'update',
+            behavior_id: 71,
+            name: 'New name',
+            reaction_script: '',
+          },
+          actingAgentId: 'internal-agent-id',
+          actingWatcherId: '71',
+        },
+      },
+    });
+
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 213,
+        method: 'tools/call',
+        params: {
+          name: 'render_lobu_view',
+          arguments: { action: 'review_approval', run_id: runId },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    const fields = body.result?.structuredContent?.blocks?.[0]?.fields;
+    expect(body.result?.isError).not.toBe(true);
+    expect(fields).toEqual([
+      { label: 'name', before: 'Old name', after: 'New name' },
+      { label: 'reaction_script', before: 'return true;', after: '' },
+    ]);
+    expect(fields?.map((field: { label: string }) => field.label)).not.toEqual(
+      expect.arrayContaining(['args', 'actingAgentId', 'actingWatcherId'])
+    );
+    expect(body.result?.content?.[0]?.text).toContain('return true; → ""');
+  });
+
+  it('keeps explicit null distinct from an empty string in approval diffs', async () => {
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (
+        organization_id, run_type, status, approval_status, connector_key, action_key
+      ) VALUES (
+        ${org.id}, 'action', 'pending', 'pending', 'github', 'update_issue'
+      )
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_null_approval_${runId}`,
+      title: 'Update issue — pending approval',
+      content: 'Review this issue update.',
+      semanticType: 'operation',
+      connectorKey: 'github',
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+      interactionInput: { cleared: null, emptied: '' },
+      metadata: { current: { cleared: 'before', emptied: 'before' } },
+    });
+
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 214,
+        method: 'tools/call',
+        params: {
+          name: 'render_lobu_view',
+          arguments: { action: 'review_approval', run_id: runId },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    expect(body.result?.structuredContent?.blocks?.[0]?.fields).toEqual([
+      { label: 'cleared', before: 'before', after: 'null' },
+      { label: 'emptied', before: 'before', after: '' },
+    ]);
+    expect(body.result?.content?.[0]?.text).toContain('before → null');
+    expect(body.result?.content?.[0]?.text).toContain('before → ""');
+  });
+
   it('returns an MCP reauthorization challenge for a tool-level scope failure', async () => {
     const readlessToken = (
       await createTestAccessToken(owner.id, org.id, client.client_id, {

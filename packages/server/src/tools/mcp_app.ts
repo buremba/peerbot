@@ -110,6 +110,9 @@ const MAX_TITLE_LENGTH = 200;
 const DIFF_ROUTING_KEYS = new Set([
   'action',
   'agent_id',
+  'acting_agent_id',
+  'acting_watcher_id',
+  'args',
   'base',
   'behavior_id',
   'entity_id',
@@ -126,6 +129,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isSensitiveKey(key: string): boolean {
   const snakeCase = key.replace(/([a-z0-9])([A-Z])/g, '$1_$2');
   return SENSITIVE_KEY.test(snakeCase);
+}
+
+function isDiffRoutingKey(key: string): boolean {
+  const snakeCase = key.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+  return DIFF_ROUTING_KEYS.has(snakeCase);
 }
 
 function redactSensitiveText(value: string): string {
@@ -158,7 +166,8 @@ function redactForDisplay(value: unknown): unknown {
 }
 
 function displayValue(value: unknown, maxLength = MAX_TEXT_LENGTH): string {
-  if (value === undefined || value === null) return '';
+  if (value === undefined) return '';
+  if (value === null) return 'null';
   if (typeof value === 'string') return truncateForDisplay(value, maxLength);
   const serialized = JSON.stringify(redactForDisplay(value), null, 2);
   return truncateRedactedText(serialized ?? String(value), maxLength);
@@ -198,13 +207,18 @@ function approvalBlocks(row: {
 }): Static<typeof LobuViewBlockSchema>[] {
   const metadata = row.metadata ?? {};
   const proposal = isRecord(metadata.proposal) ? metadata.proposal : null;
+  const proposalArgs = proposal && isRecord(proposal.args) ? proposal.args : null;
   const current = isRecord(metadata.current) ? metadata.current : null;
   const fields = isRecord(metadata.fields) ? metadata.fields : null;
-  const proposed = fields ?? proposal;
+  // Prefer the producer-authored review fields. Some approval proposals (most
+  // notably manage_behaviors) are execution envelopes shaped as
+  // `{ args, actingAgentId, actingWatcherId }`; rendering that envelope leaks
+  // routing details and hides the actual field-level change.
+  const proposed = fields ?? row.interaction_input ?? proposalArgs ?? proposal;
 
   if (proposed) {
     const diffFields = Object.entries(proposed)
-      .filter(([key, value]) => !DIFF_ROUTING_KEYS.has(key) && value !== undefined)
+      .filter(([key, value]) => !isDiffRoutingKey(key) && value !== undefined)
       .slice(0, 100)
       .map(([key, value]) => ({
         label: truncateForDisplay(key, MAX_LABEL_LENGTH) || 'Field',

@@ -16,7 +16,7 @@ import {
   createTestUser,
   seedSystemEntityTypes,
 } from '../../setup/test-fixtures';
-import { mcpListTools, mcpToolsCall, post } from '../../setup/test-helpers';
+import { get, mcpListTools, mcpToolsCall, post } from '../../setup/test-helpers';
 
 describe('MCP query_sdk / run_sdk tool surface', () => {
   let token: string;
@@ -46,20 +46,42 @@ describe('MCP query_sdk / run_sdk tool surface', () => {
     const result = await mcpListTools({ token, orgSlug: ownerSlug });
     const byName = new Map<string, any>(result.tools.map((t: any) => [t.name, t]));
     expect(byName.has('execute')).toBe(false);
-    // Assert the behavior-relevant hints specifically (not the whole object) so
-    // adding display metadata like `title` doesn't couple this test to it.
-    expect(byName.get('query_sdk')?.annotations?.readOnlyHint).toBe(true);
+
+    const expectedSafetyHints = {
+      // Both can reach installed virtual-feed connectors live, beyond Lobu's
+      // persisted workspace, so they must remain explicitly open-world.
+      search_memory: [true, true, false],
+      search_sdk: [true, false, false],
+      query_sdk: [true, true, false],
+      query_sql: [true, false, false],
+      save_memory: [false, false, false],
+      run_sdk: [false, true, true],
+    } as const;
+
+    for (const [toolName, [readOnlyHint, openWorldHint, destructiveHint]] of Object.entries(
+      expectedSafetyHints
+    )) {
+      const annotations = byName.get(toolName)?.annotations;
+      expect(annotations?.readOnlyHint, `${toolName}.readOnlyHint`).toBe(readOnlyHint);
+      expect(annotations?.openWorldHint, `${toolName}.openWorldHint`).toBe(openWorldHint);
+      expect(annotations?.destructiveHint, `${toolName}.destructiveHint`).toBe(
+        destructiveHint
+      );
+    }
+
     expect(byName.get('query_sdk')?.annotations?.idempotentHint).toBe(true);
-    expect(byName.get('run_sdk')?.annotations?.destructiveHint).toBe(true);
     expect(byName.get('run_sdk')?.inputSchema?.properties?.dry_run).toBeTruthy();
-    expect(byName.get('search_memory')?.annotations?.readOnlyHint).toBe(true);
     expect(byName.get('search_memory')?.annotations?.idempotentHint).toBe(true);
-    expect(byName.get('save_memory')?.annotations?.destructiveHint).toBe(false);
     expect(byName.has('search_knowledge')).toBe(false);
     expect(byName.has('save_knowledge')).toBe(false);
     expect(byName.has('search')).toBe(false);
     expect(byName.has('query')).toBe(false);
     expect(byName.has('run')).toBe(false);
+  });
+
+  it('does not advertise the retired legacy ChatGPT plugin manifest', async () => {
+    const response = await get('/.well-known/ai-plugin.json');
+    expect(response.status).toBe(404);
   });
 
   it('surfaces outputSchema on structured tools', async () => {

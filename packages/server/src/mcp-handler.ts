@@ -277,8 +277,8 @@ function createServerForContext(
           ? {
               _meta: {
                 ...(appMeta ?? {}),
-                // Legacy Apps hosts read OAuth declarations from `_meta`;
-                // current MCP clients use the top-level field above.
+                // MCP Apps 2025-11-25 retains `_meta.securitySchemes` as the
+                // compatibility mirror for hosts that predate the top-level field.
                 ...(securitySchemes && { securitySchemes }),
               },
             }

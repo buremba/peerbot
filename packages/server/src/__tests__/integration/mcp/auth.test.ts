@@ -65,6 +65,24 @@ describe('MCP Authentication', () => {
   });
 
   describe('Unauthenticated Requests', () => {
+    it('rejects an MCP authorization request that omits its RFC 8707 resource', async () => {
+      const query = new URLSearchParams({
+        client_id: client.client_id,
+        redirect_uri: client.redirect_uris.at(0) ?? '',
+        response_type: 'code',
+        scope: 'mcp:read',
+        code_challenge: 'test-pkce-challenge',
+        code_challenge_method: 'S256',
+      });
+      const response = await get(`/oauth/authorize?${query.toString()}`);
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: 'invalid_request',
+        error_description: 'A valid same-origin MCP resource is required',
+      });
+    });
+
     it('challenges unauthenticated requests on the unscoped /mcp endpoint with 401 + WWW-Authenticate', async () => {
       const response = await post('/mcp', {
         body: {

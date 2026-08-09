@@ -18,6 +18,13 @@ import {
 } from '../../setup/test-fixtures';
 import { get, mcpListTools, mcpToolsCall, post } from '../../setup/test-helpers';
 
+interface QuerySqlResult {
+  rows: Array<Record<string, unknown>>;
+  columns: Array<{ name: string; type: string }>;
+  total_count: number;
+  has_more: boolean;
+}
+
 describe('MCP query_sdk / run_sdk tool surface', () => {
   let token: string;
   let ownerOrgId: string;
@@ -135,6 +142,42 @@ describe('MCP query_sdk / run_sdk tool surface', () => {
     expect(rows[0].payload_data.sql_sha256).toEqual(expect.any(String));
     expect(rows[0].payload_data.sql_preview_redacted).toContain('SELECT id');
     expect(rows[0].payload_data).not.toHaveProperty('rows');
+  });
+
+  it('executes tableless SQL with sorting and pagination through MCP', async () => {
+    const result = await mcpToolsCall<QuerySqlResult>(
+      'query_sql',
+      {
+        sql: 'SELECT generate_series(1, 25) AS row_number',
+        sort_by: 'row_number',
+        sort_order: 'desc',
+        limit: 5,
+        offset: 5,
+      },
+      { token, orgSlug: ownerSlug }
+    );
+
+    expect(result.rows.map((row) => row.row_number)).toEqual([20, 19, 18, 17, 16]);
+    expect(result.columns).toEqual([{ name: 'row_number', type: 'integer' }]);
+    expect(result.total_count).toBe(25);
+    expect(result.has_more).toBe(true);
+  });
+
+  it('executes searched tableless CTEs without shifting parameter indexes', async () => {
+    const result = await mcpToolsCall<QuerySqlResult>(
+      'query_sql',
+      {
+        sql: "WITH labels(label) AS (VALUES ('Alpha'), ('Beta'), ('Gamma')) SELECT label FROM labels",
+        search_term: 'et',
+        search_columns: ['label'],
+      },
+      { token, orgSlug: ownerSlug }
+    );
+
+    expect(result.rows).toEqual([{ label: 'Beta' }]);
+    expect(result.columns).toEqual([{ name: 'label', type: 'text' }]);
+    expect(result.total_count).toBe(1);
+    expect(result.has_more).toBe(false);
   });
 
   it('hides write tools from anonymous visitors on a public /mcp/{slug}', async () => {

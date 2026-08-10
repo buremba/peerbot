@@ -113,6 +113,12 @@ function oidToTypeName(oid: number): string {
 }
 
 export const QuerySqlResultSchema = Type.Object({
+  sql: Type.Optional(
+    Type.String({
+      description:
+        'The original caller-supplied SQL statement. This is never the tenant-scoped SQL rewritten by Lobu and is absent for stored virtual-feed queries.',
+    })
+  ),
   rows: Type.Array(Type.Record(Type.String(), Type.Unknown())),
   columns: Type.Array(
     Type.Object({
@@ -130,6 +136,7 @@ export const QuerySqlResultSchema = Type.Object({
 });
 
 interface QuerySqlResult {
+  sql?: string;
   rows: Record<string, unknown>[];
   columns: { name: string; type: string }[];
   total_count: number;
@@ -521,6 +528,7 @@ export async function querySqlImpl(
           : undefined,
       });
       return {
+        sql: baseSql,
         rows: r.rows,
         columns: r.columns,
         total_count: r.total ?? r.rows.length,
@@ -672,6 +680,7 @@ export async function querySqlImpl(
       );
     }
     return {
+      sql: baseSql,
       rows,
       columns,
       total_count: totalCount,

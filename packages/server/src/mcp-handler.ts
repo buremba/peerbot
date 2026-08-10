@@ -51,14 +51,17 @@ import {
   executeTool,
   extractAuthContext,
   isSoftErrorResult,
+  toToolContext,
 } from './tools/execute';
 import { LOBU_INTERACTION_RESOURCE_URI } from './tools/mcp_app';
 import { getMcpResultMeta } from './tools/mcp-result-meta';
 import { getMcpTools, getTool, isAuthorizationReadOnly } from './tools/registry';
 import { validateToolResult } from './tools/validate-args';
 import { readMcpAppBundle, renderMcpAppTemplate } from './utils/mcp-app-bundle';
+import logger from './utils/logger';
 import { resolvePublicOrigin } from './utils/public-origin';
 import { buildWorkspaceInstructions } from './utils/workspace-instructions';
+import { storeMcpAppResultSnapshot } from './mcp-app-result-snapshots';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -94,6 +97,10 @@ const MCP_APP_RESOURCE_ALIASES: ReadonlyMap<
   [
     'ui://lobu/interaction/v6.html',
     { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
+  ],
+  [
+    'ui://lobu/interaction/v7.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
   ],
 ]);
 // ---------------------------------------------------------------------------
@@ -293,10 +300,15 @@ function mcpAppUiMeta(
     frameDomains: string[];
     baseUriDomains?: string[];
   };
+  permissions: { clipboardWrite: Record<string, never> };
   prefersBorder: boolean;
 } {
   if (template === 'embedded') {
-    return { csp: app.csp, prefersBorder: app.prefersBorder };
+    return {
+      csp: app.csp,
+      permissions: { clipboardWrite: {} },
+      prefersBorder: app.prefersBorder,
+    };
   }
   const publicOrigin = resolvePublicOrigin(authCtx.requestUrl);
   return {
@@ -305,6 +317,7 @@ function mcpAppUiMeta(
       resourceDomains: [...new Set([...app.csp.resourceDomains, publicOrigin])],
       baseUriDomains: [publicOrigin],
     },
+    permissions: { clipboardWrite: {} },
     prefersBorder: app.prefersBorder,
   };
 }
@@ -428,7 +441,7 @@ function createServerForContext(
   });
 
   // tools/call — access control + execution + formatting
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
     const callAuthCtx = {
       ...authCtx,
@@ -472,6 +485,21 @@ function createServerForContext(
       if (tool?.outputSchema && result && typeof result === 'object') {
         const structured = validateToolResult(tool.outputSchema, result);
         if (structured !== null) {
+          if (tool.audit !== false) {
+            try {
+              await storeMcpAppResultSnapshot({
+                ctx: toToolContext(callAuthCtx),
+                toolCallId: extra.requestId,
+                toolName: name,
+                data: structured as Record<string, unknown>,
+              });
+            } catch (snapshotError) {
+              logger.warn(
+                { err: snapshotError },
+                '[mcp-app] result snapshot write failed',
+              );
+            }
+          }
           return {
             content: [{ type: 'text' as const, text }],
             structuredContent: structured as Record<string, unknown>,

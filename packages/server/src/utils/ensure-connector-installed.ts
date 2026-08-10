@@ -109,8 +109,9 @@ export async function resolveConnectorCode(
 }
 
 /**
- * Fetch the stored artifact row for a connector (a specific `version`, or the
- * most recently created row when omitted) and resolve executable code from it.
+ * Fetch the stored artifact row for a connector. An explicit `version` resolves
+ * that retained version; when omitted, the org's active connector definition
+ * selects the version. Within that version, org-local code shadows shared code.
  * Shared by the pushdown / webhook / inline-operation paths, which don't carry
  * a version row of their own.
  */
@@ -120,11 +121,12 @@ export async function resolveConnectorCodeForKey(
   version?: string | null
 ): Promise<string> {
   const sql = getDb();
-  // Org-preferring resolution (#2045): the org's own artifact row shadows the
-  // shared bundled/legacy row for that org only; shared rows stay every org's
-  // fallback. The no-version variant prefers ANY org row over a newer shared
-  // row — an org that branched a bundled connector stays on its branch until
-  // it updates or rolls back.
+  // Org-preferring resolution (#2045) is scoped to ONE version. An org-local
+  // artifact shadows the shared bundled row only when both represent the same
+  // version. Without an explicit historical version, the org's ACTIVE
+  // connector_definitions.version is authoritative. Otherwise a retained stale
+  // org artifact can shadow a newly-promoted shared version (e.g. Calendar
+  // active=1.1.0 while an old org-local 1.0.0 row still exists).
   const rows = version
     ? await sql`
         SELECT id, version, compiled_code, compile_config_hash FROM connector_versions
@@ -134,10 +136,16 @@ export async function resolveConnectorCodeForKey(
         LIMIT 1
       `
     : await sql`
-        SELECT id, version, compiled_code, compile_config_hash FROM connector_versions
-        WHERE connector_key = ${connectorKey}
-          AND (organization_id = ${organizationId} OR organization_id IS NULL)
-        ORDER BY (organization_id IS NULL), created_at DESC
+        SELECT cv.id, cv.version, cv.compiled_code, cv.compile_config_hash
+        FROM connector_definitions cd
+        JOIN connector_versions cv
+          ON cv.connector_key = cd.key
+         AND cv.version = cd.version
+         AND (cv.organization_id = cd.organization_id OR cv.organization_id IS NULL)
+        WHERE cd.organization_id = ${organizationId}
+          AND cd.key = ${connectorKey}
+          AND cd.status = 'active'
+        ORDER BY cv.organization_id NULLS LAST
         LIMIT 1
       `;
   return resolveConnectorCode(connectorKey, (rows[0] as StoredConnectorVersion | undefined) ?? null);

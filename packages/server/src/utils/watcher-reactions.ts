@@ -152,7 +152,14 @@ export async function getPastReactionsSummary(
 }
 
 /**
- * Track a watcher reaction (fire-and-forget safe).
+ * Track a watcher reaction.
+ *
+ * A run-linked reaction is a durable feedback edge, not best-effort telemetry.
+ * Serialize concurrent retries for the same edge and insert only when it is
+ * missing. Callers that truly want fire-and-forget behavior can catch/log the
+ * propagated error at their own boundary. Entries without a run handle retain
+ * their historical best-effort behavior because they cannot be reconciled by a
+ * later idempotent replay.
  */
 export async function trackWatcherReaction(params: {
   organizationId: string;
@@ -166,6 +173,48 @@ export async function trackWatcherReaction(params: {
   runId?: number;
 }): Promise<void> {
   const sql = getDb();
+  if (params.runId != null) {
+    const lockKey = [
+      params.organizationId,
+      params.watcherId,
+      params.windowId,
+      params.reactionType,
+      params.toolName,
+      params.runId,
+    ].join(':');
+    await sql.begin(async (tx) => {
+      await tx`
+        SELECT pg_advisory_xact_lock(
+          hashtext('lobu:watcher-reaction'),
+          hashtext(${lockKey})
+        )
+      `;
+      await tx`
+        INSERT INTO watcher_reactions (
+          organization_id, watcher_id, window_id,
+          reaction_type, tool_name, tool_args, tool_result, entity_id, run_id
+        )
+        SELECT
+          ${params.organizationId}, ${params.watcherId}, ${params.windowId},
+          ${params.reactionType}, ${params.toolName},
+          ${tx.json(params.toolArgs)},
+          ${params.toolResult ? tx.json(params.toolResult) : null},
+          ${params.entityId ?? null},
+          ${params.runId}
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM watcher_reactions
+          WHERE organization_id = ${params.organizationId}
+            AND watcher_id = ${params.watcherId}
+            AND window_id = ${params.windowId}
+            AND reaction_type = ${params.reactionType}
+            AND tool_name = ${params.toolName}
+            AND run_id = ${params.runId}
+        )
+      `;
+    });
+    return;
+  }
   await sql`
     INSERT INTO watcher_reactions (
       organization_id, watcher_id, window_id,

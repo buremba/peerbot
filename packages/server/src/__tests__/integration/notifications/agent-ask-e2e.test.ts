@@ -466,4 +466,102 @@ describe("notify input_schema — agent asks a human", () => {
 			"The tone is too promotional for this discussion."
 		);
 	});
+
+	it("repairs a missing Behavior feedback edge when an idempotent ask retries", async () => {
+		const sql = getTestDb();
+		const suffix = `${process.pid}_${Date.now()}`;
+		const sequenceName = `ask_reaction_fail_seq_${suffix}`;
+		const functionName = `ask_reaction_fail_fn_${suffix}`;
+		const triggerName = `ask_reaction_fail_trigger_${suffix}`;
+		await sql.unsafe(`CREATE SEQUENCE ${sequenceName}`);
+		await sql.unsafe(`
+			CREATE FUNCTION ${functionName}() RETURNS trigger AS $$
+			BEGIN
+				IF nextval('${sequenceName}') = 1 THEN
+					RAISE EXCEPTION 'forced watcher reaction failure';
+				END IF;
+				RETURN NEW;
+			END;
+			$$ LANGUAGE plpgsql
+		`);
+		await sql.unsafe(`
+			CREATE TRIGGER ${triggerName}
+			BEFORE INSERT ON watcher_reactions
+			FOR EACH ROW
+			WHEN (NEW.watcher_id = ${behaviorId} AND NEW.tool_name = 'notify')
+			EXECUTE FUNCTION ${functionName}()
+		`);
+
+		const idempotencyKey = `ask-reaction-repair:${suffix}`;
+		const args = {
+			action: "send",
+			title: "Was the staged LinkedIn comment relevant?",
+			body: "Draft: Durable state makes this workflow dependable.",
+			input_schema: {
+				type: "object",
+				properties: {
+					outcome: { enum: ["posted_unchanged", "posted_edited"] },
+				},
+				required: ["outcome"],
+			},
+			idempotency_key: idempotencyKey,
+		};
+
+		try {
+			await expect(
+				executeTool("notify", args, TEST_ENV, behaviorCtx)
+			).rejects.toThrow(/forced watcher reaction failure/i);
+
+			const notificationsAfterFailure = await sql`
+				SELECT id FROM events
+				WHERE organization_id = ${orgId}
+				  AND metadata->>'_lobu_idempotency_key' = ${idempotencyKey}
+			`;
+			expect(notificationsAfterFailure).toHaveLength(1);
+
+			const retry = (await executeTool(
+				"notify",
+				args,
+				TEST_ENV,
+				behaviorCtx
+			)) as SendResult;
+			expect(retry).toMatchObject({
+				notified_count: 0,
+				event_id: Number(notificationsAfterFailure[0]?.id),
+			});
+			expect(retry.run_id).toBeGreaterThan(0);
+
+			const reactions = await sql`
+				SELECT id FROM watcher_reactions
+				WHERE organization_id = ${orgId}
+				  AND watcher_id = ${behaviorId}
+				  AND window_id = ${windowId}
+				  AND run_id = ${retry.run_id}
+				  AND tool_name = 'notify'
+			`;
+			expect(reactions).toHaveLength(1);
+
+			await executeTool(
+				"manage_operations",
+				{
+					action: "reject",
+					run_id: retry.run_id,
+					reason: "This discussion was not relevant to our product.",
+				},
+				TEST_ENV,
+				humanCtx
+			);
+			const summary = await getPastReactionsSummary(behaviorId);
+			expect(summary).toContain("Was the staged LinkedIn comment relevant?");
+			expect(summary).toContain(
+				"This discussion was not relevant to our product."
+			);
+		} finally {
+			await sql.unsafe(
+				`DROP TRIGGER IF EXISTS ${triggerName} ON watcher_reactions`
+			);
+			await sql.unsafe(`DROP FUNCTION IF EXISTS ${functionName}()`);
+			await sql.unsafe(`DROP SEQUENCE IF EXISTS ${sequenceName}`);
+		}
+	});
 });

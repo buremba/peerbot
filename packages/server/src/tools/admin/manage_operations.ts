@@ -1130,6 +1130,26 @@ async function handleExecute(
 	}
 
 	const input = args.input ?? {};
+	const reactionBehaviorId =
+		ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null;
+	const reactionWindowId =
+		ctx.actingWindowId ?? args.behavior_source?.window_id ?? null;
+	const trackOperationReaction = async (runId: number): Promise<void> => {
+		if (reactionBehaviorId === null || reactionWindowId === null) return;
+		await trackWatcherReaction({
+			organizationId: ctx.organizationId,
+			watcherId: reactionBehaviorId,
+			windowId: reactionWindowId,
+			reactionType: "action_executed",
+			toolName: "manage_operations",
+			toolArgs: {
+				operation_key: args.operation_key,
+				connection_id: args.connection_id,
+				input,
+			},
+			runId,
+		});
+	};
 	const validationError = validateOperationInput(operation, input);
 	if (validationError) {
 		return {
@@ -1311,6 +1331,7 @@ async function handleExecute(
 			return { claim: createdRun, eventId: Number(event.id) };
 		});
 		if (!claim.created) {
+			await trackOperationReaction(claim.runId);
 			return replayExistingOperationRun(claim, operation.name, ctx);
 		}
 		if (eventId == null) {
@@ -1320,25 +1341,7 @@ async function handleExecute(
 
 		// Telemetry + notification run AFTER the run+event are durably committed,
 		// so they never reference a rolled-back run and stay off the hot path.
-		const reactionBehaviorId =
-			ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null;
-		const reactionWindowId =
-			ctx.actingWindowId ?? args.behavior_source?.window_id ?? null;
-		if (reactionBehaviorId !== null && reactionWindowId !== null) {
-			await trackWatcherReaction({
-				organizationId: ctx.organizationId,
-				watcherId: reactionBehaviorId,
-				windowId: reactionWindowId,
-				reactionType: "action_executed",
-				toolName: "manage_operations",
-				toolArgs: {
-					operation_key: args.operation_key,
-					connection_id: args.connection_id,
-					input,
-				},
-				runId,
-			});
-		}
+		await trackOperationReaction(runId);
 
 		const { ownerSlug: orgSlug, baseUrl } = await getOrgUrlContext(ctx);
 		// Run-scoped, not event-scoped: the pending event is superseded on
@@ -1391,29 +1394,12 @@ async function handleExecute(
 		idempotencyKey: args.idempotency_key,
 	});
 	if (!claim.created) {
+		await trackOperationReaction(claim.runId);
 		return replayExistingOperationRun(claim, operation.name, ctx);
 	}
 	const runId = claim.runId;
 
-	const reactionBehaviorId =
-		ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null;
-	const reactionWindowId =
-		ctx.actingWindowId ?? args.behavior_source?.window_id ?? null;
-	if (reactionBehaviorId !== null && reactionWindowId !== null) {
-		await trackWatcherReaction({
-			organizationId: ctx.organizationId,
-			watcherId: reactionBehaviorId,
-			windowId: reactionWindowId,
-			reactionType: "action_executed",
-			toolName: "manage_operations",
-			toolArgs: {
-				operation_key: args.operation_key,
-				connection_id: args.connection_id,
-				input,
-			},
-			runId,
-		});
-	}
+	await trackOperationReaction(runId);
 
 	// Device-bound branch: the run is pending; a device worker (chrome
 	// extension, mac bridge, ...) will claim it via /api/workers/poll and

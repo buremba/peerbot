@@ -369,31 +369,37 @@ describe("operations.execute backend lifecycle", () => {
 	});
 
 	it("binds an action and its feedback record to the trusted Behavior window", async () => {
-		const result = (await manageOperations(
-			{
+		const execute = () =>
+			manageOperations(
+				{
 				action: "execute",
 				connection_id: localConnectionId,
 				operation_key: "echo",
 				input: { value: "behavior-provenance" },
 				idempotency_key: "operation-backend-test:behavior-provenance",
-			},
-			{} as Env,
-			{ ...ctx, actingWatcherId: behaviorId, actingWindowId: windowId },
-		)) as { run_id: number; status: string };
+				},
+				{} as Env,
+				{ ...ctx, actingWatcherId: behaviorId, actingWindowId: windowId },
+			);
+		const result = (await execute()) as { run_id: number; status: string };
+		const replay = (await execute()) as { run_id: number; status: string };
 
 		expect(result).toMatchObject({ status: "completed" });
+		expect(replay.run_id).toBe(result.run_id);
 		const sql = getTestDb();
 		const [run] = await sql`
 			SELECT watcher_id, window_id FROM runs WHERE id = ${result.run_id}
 		`;
 		expect(Number(run.watcher_id)).toBe(behaviorId);
 		expect(Number(run.window_id)).toBe(windowId);
-		const [reaction] = await sql`
+		const reactions = await sql`
 			SELECT run_id FROM watcher_reactions
-			WHERE watcher_id = ${behaviorId} AND window_id = ${windowId}
-			ORDER BY id DESC LIMIT 1
+			WHERE watcher_id = ${behaviorId}
+			  AND window_id = ${windowId}
+			  AND run_id = ${result.run_id}
 		`;
-		expect(Number(reaction.run_id)).toBe(result.run_id);
+		expect(reactions).toHaveLength(1);
+		expect(Number(reactions[0]?.run_id)).toBe(result.run_id);
 	});
 
 	it("concurrent action retries converge and mismatched key reuse fails closed", async () => {

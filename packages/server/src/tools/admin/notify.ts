@@ -224,6 +224,26 @@ async function handleSend(
 
   const orgSlug = await getOrgSlug(ctx.organizationId);
 
+  // Prefer trusted execution provenance. behavior_source remains the
+  // compatibility/attribution hint for non-Behavior callers, but a running
+  // Behavior cannot be redirected onto another Behavior's feedback history.
+  const reactionBehaviorId =
+    ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null;
+  const reactionWindowId =
+    ctx.actingWindowId ?? args.behavior_source?.window_id ?? null;
+  const trackNotificationReaction = async (runId?: number): Promise<void> => {
+    if (reactionBehaviorId === null || reactionWindowId === null) return;
+    await trackWatcherReaction({
+      organizationId: ctx.organizationId,
+      watcherId: reactionBehaviorId,
+      windowId: reactionWindowId,
+      reactionType: 'notification_sent',
+      toolName: 'notify',
+      toolArgs: { title: args.title, recipients: args.recipients },
+      ...(runId != null ? { runId } : {}),
+    });
+  };
+
   // An idempotent repeat of an ASK must resolve before anything is queued: the
   // pending run + interaction event are durable, so queueing first and letting
   // the notification insert dedupe would strand an orphan pending run — and
@@ -236,6 +256,12 @@ async function handleSend(
     );
     if (prior !== null) {
       const priorRunId = await findAskRunForNotification(ctx.organizationId, prior);
+      if (priorRunId !== null) {
+        // The notification can commit before this feedback edge. A failed first
+        // attempt therefore reconciles here on retry instead of returning early
+        // forever with an ask the Behavior cannot learn from.
+        await trackNotificationReaction(priorRunId);
+      }
       return {
         notified_count: 0,
         event_id: prior,
@@ -321,27 +347,14 @@ async function handleSend(
     );
   }
 
-  // Prefer trusted execution provenance. behavior_source remains the
-  // compatibility/attribution hint for non-Behavior callers, but a running
-  // Behavior cannot be redirected onto another Behavior's feedback history.
-  const reactionBehaviorId =
-    ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null;
-  const reactionWindowId =
-    ctx.actingWindowId ?? args.behavior_source?.window_id ?? null;
-  if (
-    notification.created &&
-    reactionBehaviorId !== null &&
-    reactionWindowId !== null
-  ) {
-    await trackWatcherReaction({
-      organizationId: ctx.organizationId,
-      watcherId: reactionBehaviorId,
-      windowId: reactionWindowId,
-      reactionType: 'notification_sent',
-      toolName: 'notify',
-      toolArgs: { title: args.title, recipients: args.recipients },
-      ...(askRunId !== null ? { runId: askRunId } : {}),
-    }).catch((err) => {
+  if (askRunId !== null) {
+    // The ask-to-Behavior edge is required and idempotent: if it fails, surface
+    // the failure so the caller retries and the preflight above repairs it.
+    await trackNotificationReaction(askRunId);
+  } else if (notification.created) {
+    // Plain FYI notifications have no run handle to use as a durable dedupe
+    // key, so retain their historical best-effort tracking behavior.
+    await trackNotificationReaction().catch((err) => {
       logger.warn(
         { err, behaviorId: reactionBehaviorId, windowId: reactionWindowId },
         'trackWatcherReaction failed'

@@ -292,6 +292,27 @@ describe("social interest radar reaction", () => {
     });
   });
 
+  it("keeps a LinkedIn draft staged when the feed card has no canonical post permalink", async () => {
+    const fixture = clientWithRows({
+      drafts: [
+        {
+          id: 604,
+          payload_text: "Draft",
+          source_url: "https://www.linkedin.com/feed/",
+          metadata: draftMetadata,
+        },
+      ],
+      chrome: [{ id: 432 }],
+    });
+
+    await runReaction(context(), fixture.client);
+
+    expect(fixture.operations).toHaveLength(0);
+    expect(fixture.logs.join("\n")).toMatch(
+      /canonical post permalink|leaving it staged/i
+    );
+  });
+
   it("stages a persisted draft only once when the same reaction retries", async () => {
     const fixture = clientWithRows({
       drafts: [

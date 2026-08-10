@@ -136,6 +136,21 @@ function notificationBody(lines: string[]): string {
   return body.length <= 1000 ? body : `${body.slice(0, 997)}...`;
 }
 
+export function isCanonicalLinkedInPostUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    if (hostname !== "linkedin.com" && hostname !== "www.linkedin.com") {
+      return false;
+    }
+    return /^\/feed\/update\/urn:li:(?:activity|share|ugcPost):\d+\/?$/.test(
+      url.pathname
+    );
+  } catch {
+    return false;
+  }
+}
+
 export default async (
   ctx: ReactionContext,
   client: ReactionClient
@@ -264,6 +279,14 @@ export default async (
         {
           draft_event_id: draft.id,
         }
+      );
+      continue;
+    }
+
+    if (platform === "linkedin" && !isCanonicalLinkedInPostUrl(sourceUrl)) {
+      client.log(
+        "LinkedIn draft has no canonical post permalink; leaving it staged without opening an invalid /feed/ comment action.",
+        { draft_event_id: draft.id, source_url: sourceUrl }
       );
       continue;
     }

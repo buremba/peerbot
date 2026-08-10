@@ -120,7 +120,7 @@ import { entityLinkMatchSql } from "./utils/content-search";
 import { isValidFrameAncestor } from "./utils/csp";
 import { errorMessage } from "./utils/errors";
 import logger from "./utils/logger";
-import { readMcpAppBundle } from "./utils/mcp-app-bundle";
+import { readMcpAppAsset, readMcpAppBundle } from "./utils/mcp-app-bundle";
 import { generateOpenAPISpec } from "./utils/openapi-generator";
 import {
 	extractSubdomainOrg,
@@ -2773,23 +2773,37 @@ app.all("/mcp/", handleMcp);
 app.all("/mcp/:orgSlug", handleMcp);
 app.all("/mcp/:orgSlug/", handleMcp);
 
-// MCP App bundle — asset-only static delivery (NOT an approval endpoint). Serves
-// the self-contained `ui://` iframe payload built by owletto `build:mcp-apps`
-// (dist-mcp-apps/interaction/index.html) so our own SPA can host every
-// interactive interaction (approval, question, tool grant, link) in a sandboxed
-// iframe. There is no action logic here — each action rides an MCP `tools/call`
-// brokered by the SPA host bridge. The same `readMcpAppBundle` resolver backs
-// the MCP `resources/read` path for external hosts.
+// MCP App rollout phase 1: keep serving the existing self-contained v2
+// template while staging the stable external assets on every replica. A later
+// release switches this HTML route and MCP discovery to the external template.
 app.get("/mcp-apps/:app/index.html", async (c) => {
 	const app_ = c.req.param("app");
 	// Only serve a bundle the MCP App registry declares — never an arbitrary
 	// path param.
 	if (!MCP_APP_DIRS.has(app_)) return c.notFound();
-	const html = await readMcpAppBundle(app_);
+	const html = await readMcpAppBundle(app_, "legacy-v2.html");
 	if (html == null) return c.notFound();
 	c.header("Content-Type", "text/html; charset=utf-8");
 	c.header("Cache-Control", "no-cache");
 	return c.body(html);
+});
+
+app.get("/mcp-apps/:app/assets/:asset", async (c) => {
+	const app_ = c.req.param("app");
+	if (!MCP_APP_DIRS.has(app_)) return c.notFound();
+	const assetName = c.req.param("asset");
+	const asset = await readMcpAppAsset(app_, `assets/${assetName}`);
+	if (asset == null) return c.notFound();
+	c.header(
+		"Content-Type",
+		assetName.endsWith(".js")
+			? "text/javascript; charset=utf-8"
+			: "text/css; charset=utf-8",
+	);
+	c.header("Cache-Control", "no-cache");
+	c.header("Access-Control-Allow-Origin", "*");
+	c.header("Cross-Origin-Resource-Policy", "cross-origin");
+	return c.body(Uint8Array.from(asset).buffer);
 });
 
 /**

@@ -17,11 +17,12 @@ import {
   createTestUser,
   seedSystemEntityTypes,
 } from '../../setup/test-fixtures';
-import { post } from '../../setup/test-helpers';
+import { get, post } from '../../setup/test-helpers';
 
-// Marker in the stub bundle so we can assert the served HTML is ours.
-const STUB_HTML =
-  '<!doctype html><html><body data-test="mcp-app-interaction-stub">interaction</body></html>';
+const STUB_LEGACY_HTML =
+  '<!doctype html><html><body data-test="mcp-app-legacy-v2-stub">legacy v2</body></html>';
+const STUB_EXTERNAL_HTML =
+  '<!doctype html><html><head><script type="module" src="./assets/app.js"></script></head><body>external v3</body></html>';
 
 describe('MCP App resources — ui:// serving (host-authored view)', () => {
   let org: Awaited<ReturnType<typeof createTestOrganization>>;
@@ -44,7 +45,25 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     mkdirSync(join(tmpRoot, 'dist-mcp-apps', 'interaction'), {
       recursive: true,
     });
-    writeFileSync(join(tmpRoot, 'dist-mcp-apps', 'interaction', 'index.html'), STUB_HTML);
+    mkdirSync(join(tmpRoot, 'dist-mcp-apps', 'interaction', 'assets'), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(tmpRoot, 'dist-mcp-apps', 'interaction', 'legacy-v2.html'),
+      STUB_LEGACY_HTML
+    );
+    writeFileSync(
+      join(tmpRoot, 'dist-mcp-apps', 'interaction', 'index.html'),
+      STUB_EXTERNAL_HTML
+    );
+    writeFileSync(
+      join(tmpRoot, 'dist-mcp-apps', 'interaction', 'assets', 'app.js'),
+      'document.body.dataset.mcpAppAsset = "loaded";'
+    );
+    writeFileSync(
+      join(tmpRoot, 'dist-mcp-apps', 'interaction', 'assets', 'app.css'),
+      '[data-mcp-app] { display: block; }'
+    );
     process.env.WEB_DIST_DIR = join(tmpRoot, 'dist');
 
     await cleanupTestDatabase();
@@ -142,7 +161,8 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     const content = body.result?.contents?.[0];
     expect(content?.uri).toBe('ui://lobu/interaction/v2');
     expect(content?.mimeType).toBe('text/html;profile=mcp-app');
-    expect(content?.text).toContain('mcp-app-interaction-stub');
+    expect(content?.text).toContain('mcp-app-legacy-v2-stub');
+    expect(content?.text).not.toContain('external v3');
     expect(content?._meta?.ui?.csp).toEqual({
       connectDomains: [],
       resourceDomains: [],
@@ -150,6 +170,31 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     });
     expect(content?._meta?.ui?.prefersBorder).toBe(true);
     expect(content?._meta?.ui?.domain).toBeUndefined();
+  });
+
+  it('stages stable assets without switching the v2 HTML route during phase 1', async () => {
+    const htmlResponse = await get('/mcp-apps/interaction/index.html');
+    expect(htmlResponse.status).toBe(200);
+    expect(await htmlResponse.text()).toContain('mcp-app-legacy-v2-stub');
+
+    const assetResponse = await get('/mcp-apps/interaction/assets/app.js');
+    expect(assetResponse.status).toBe(200);
+    expect(assetResponse.headers.get('content-type')).toContain('text/javascript');
+    expect(assetResponse.headers.get('cache-control')).toBe('no-cache');
+    expect(assetResponse.headers.get('access-control-allow-origin')).toBe('*');
+    expect(assetResponse.headers.get('cross-origin-resource-policy')).toBe('cross-origin');
+    expect(await assetResponse.text()).toContain('mcpAppAsset');
+
+    const styleResponse = await get('/mcp-apps/interaction/assets/app.css');
+    expect(styleResponse.status).toBe(200);
+    expect(styleResponse.headers.get('content-type')).toContain('text/css');
+    expect(styleResponse.headers.get('cache-control')).toBe('no-cache');
+    expect(styleResponse.headers.get('access-control-allow-origin')).toBe('*');
+    expect(styleResponse.headers.get('cross-origin-resource-policy')).toBe('cross-origin');
+    expect(await styleResponse.text()).toContain('[data-mcp-app]');
+
+    expect((await get('/mcp-apps/interaction/assets/app.txt')).status).toBe(404);
+    expect((await get('/mcp-apps/unknown/assets/app.js')).status).toBe(404);
   });
 
   it('advertises description and CSP metadata on resources/list without claiming a dedicated app domain', async () => {

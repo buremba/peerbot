@@ -208,5 +208,24 @@ describe("manage_operations.execute member authorization", () => {
 			expect(op.executable).toBe(true);
 			expect(op.readiness).toBe("ready");
 		});
+
+		it("authenticated NON-member with mcp:write sees membership_required, not scope elevation", async () => {
+			// A PAT/token caller not in the org has memberRole null: execute is
+			// denied for missing workspace membership, so readiness must point at
+			// joining the org — telling them to elevate scope would mislead.
+			const nonMemberCtx: ToolContext = {
+				organizationId: orgId,
+				userId: "user-not-a-member",
+				memberRole: null,
+				isAuthenticated: true,
+				scopes: ["mcp:read", "mcp:write"],
+			};
+			const op = await findRun(nonMemberCtx);
+			expect(op.executable).toBe(false);
+			expect(op.readiness).toBe("membership_required");
+			expect(op.reason).toMatch(/membership/i);
+			const next = op.next_action as Record<string, unknown>;
+			expect(next.action).toBe("request_membership");
+		});
 	});
 });

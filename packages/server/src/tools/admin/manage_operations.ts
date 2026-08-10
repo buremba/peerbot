@@ -523,6 +523,9 @@ function operationReadinessReason(
 	if (readiness === "session_scope_required") {
 		return SESSION_SCOPE_REASON;
 	}
+	if (readiness === "membership_required") {
+		return MEMBERSHIP_REASON;
+	}
 	if (readiness === "disabled") {
 		return "This operation is disabled on every visible connection.";
 	}
@@ -561,6 +564,12 @@ function resolveOperationReadiness(targets: ExecutionTarget[]): {
  * session at write tier (mcp:write / mcp:admin). */
 const SESSION_SCOPE_REASON =
 	"Executing operations requires an MCP session with write access (mcp:write or mcp:admin). This session has read-only access.";
+
+/** Shared copy for the caller-membership gate: a non-member can't execute even
+ * with mcp:write — routeAction denies at the membership check, so readiness
+ * must point at joining the workspace, not upgrading scope. */
+const MEMBERSHIP_REASON =
+	"Executing operations requires workspace membership with write access. This caller is not a member of the organization.";
 
 function operationMatchesQuery(
 	operation: AvailableOperation & Record<string, unknown>,
@@ -611,6 +620,15 @@ function buildOperationNextAction(args: {
 			manual: true,
 			reason: SESSION_SCOPE_REASON,
 			note: "Reconnect the MCP session with write access (mcp:write or mcp:admin) to execute operations.",
+		};
+	}
+	if (readiness === "membership_required") {
+		return {
+			action: "request_membership",
+			sdk_method: "operations.execute",
+			manual: true,
+			reason: MEMBERSHIP_REASON,
+			note: "Join the organization or ask an owner to grant membership before executing operations.",
 		};
 	}
 	if (readyTarget) {
@@ -730,8 +748,13 @@ function buildAvailableOperation(args: {
 	viewUrl: string | undefined;
 	/** The caller's highest reachable access tier (role × MCP scopes). */
 	callerMax: ToolAccessLevel;
+	/**
+	 * True for authenticated/anonymous non-members (memberRole null) — their
+	 * blocker is workspace membership, not MCP scope, so readiness must say so.
+	 */
+	callerLacksMembership: boolean;
 }): AvailableOperation & Record<string, unknown> {
-	const { operation, internalTargets, includeInputSchema, viewUrl, callerMax } = args;
+	const { operation, internalTargets, includeInputSchema, viewUrl, callerMax, callerLacksMembership } = args;
 	const { backend_config: _privateBackendConfig, ...publicOperation } =
 		operation;
 	const requiredScopes = operation.required_scopes ?? [];
@@ -791,12 +814,24 @@ function buildAvailableOperation(args: {
 	// prod-readiness review. Execution targets are overridden to match so no
 	// per-target row contradicts the top-level verdict.
 	const callerCanExecute = callerMax === "write" || callerMax === "admin";
+	// Two distinct blockers for a caller who can't execute: missing workspace
+	// MEMBERSHIP (authenticated/anon non-member — routeAction denies with
+	// "requires workspace membership", not a scope message) vs. a member whose
+	// session lacks mcp:write. Emit the right remediation for each.
+	const callerBlockedByMembership =
+		callerLacksMembership && !callerCanExecute;
+	const callerReadiness = callerBlockedByMembership
+		? "membership_required"
+		: "session_scope_required";
+	const callerReason = callerBlockedByMembership
+		? MEMBERSHIP_REASON
+		: SESSION_SCOPE_REASON;
 	const { readyTarget, executable, readiness } =
 		!callerCanExecute && base.executable
 			? {
 					readyTarget: undefined,
 					executable: false,
-					readiness: "session_scope_required",
+					readiness: callerReadiness,
 				}
 			: base;
 	const effectiveTargets = !callerCanExecute
@@ -805,7 +840,7 @@ function buildAvailableOperation(args: {
 					? {
 							...target,
 							executable: false,
-							reason: SESSION_SCOPE_REASON,
+							reason: callerReason,
 						}
 					: target,
 			)
@@ -1029,9 +1064,13 @@ async function handleListAvailable(
 	// memberRole null) bypass role/scope entirely at routeAction, so they must
 	// be treated as fully capable here — downgrading them would hide ready ops
 	// from Behavior reactions.
-	const callerMax = isSystemContext(ctx)
+	const isSystem = isSystemContext(ctx);
+	const callerMax = isSystem
 		? "admin"
 		: resolveMaxAccessLevel(ctx.memberRole, ctx.scopes);
+	// A non-member (memberRole null, and not a system context) is blocked by
+	// membership, not by MCP scope — the readiness copy must say so.
+	const callerLacksMembership = !isSystem && ctx.memberRole == null;
 	const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
 	const connectorViewUrl = (connectorKey: string): string | undefined =>
 		ownerSlug && baseUrl
@@ -1045,6 +1084,7 @@ async function handleListAvailable(
 				includeInputSchema: args.include_input_schema !== false,
 				viewUrl: connectorViewUrl(operation.connector_key),
 				callerMax,
+				callerLacksMembership,
 			}),
 		)
 		.filter((operation) => {

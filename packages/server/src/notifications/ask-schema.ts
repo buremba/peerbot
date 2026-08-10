@@ -58,7 +58,7 @@ export function resolveAskAffordance(
 }
 
 /** Friendly required-field error shown before full AJV answer validation. */
-export function findUnansweredRequired(
+function findUnansweredRequired(
 	schema: Record<string, unknown> | null | undefined,
 	input: Record<string, unknown> | null,
 ): string | null {
@@ -454,12 +454,7 @@ function checkArrayProperty(params: {
 		Math.floor(MAX_FIELD_ANSWER_BYTES / selections),
 	);
 	if ("error" in itemCheck) {
-		return {
-			error:
-				itemCheck.error.includes("size limits")
-					? itemCheck.error
-					: `input_schema array property '${field}' cannot be produced by the answer form`,
-		};
+		return itemCheck;
 	}
 	return {};
 }
@@ -467,9 +462,10 @@ function checkArrayProperty(params: {
 function checkFormProperty(params: {
 	field: string;
 	property: Record<string, unknown>;
+	required: boolean;
 	accepts: CompiledSchema["accepts"];
 }): PropertyCheck {
-	const { field, property, accepts } = params;
+	const { field, property, required, accepts } = params;
 	const { renderSchema, wrapped } = describeNullableProperty(property);
 	if (wrapped) {
 		const unsupportedSibling = Object.keys(property).find(
@@ -478,6 +474,11 @@ function checkFormProperty(params: {
 		if (unsupportedSibling) {
 			return {
 				error: `input_schema property '${field}' nullable wrapper sibling '${unsupportedSibling}' is not supported by the answer form`,
+			};
+		}
+		if (required) {
+			return {
+				error: `input_schema required nullable property '${field}' cannot be produced by the answer form`,
 			};
 		}
 	}
@@ -596,6 +597,7 @@ export function validateAskInputSchema(
 		const checked = checkFormProperty({
 			field,
 			property: property as Record<string, unknown>,
+			required: required.includes(field),
 			accepts: compiled.accepts,
 		});
 		if ("error" in checked) return checked.error;
@@ -641,6 +643,8 @@ export function validateAskAnswerForProposal(
 	},
 	input: Record<string, unknown> | null,
 ): string | null {
+	const requiredError = findUnansweredRequired(proposal.input_schema, input);
+	if (requiredError) return requiredError;
 	return proposal.input_schema_validation_version === CURRENT_ASK_SCHEMA_VERSION
 		? validateAskAnswer(proposal.input_schema, input)
 		: null;

@@ -881,6 +881,19 @@ describe("notify input_schema — agent asks a human", () => {
 				error: /nullable wrapper.*minItems.*not supported/i,
 			},
 			{
+				question: "Question with a required nullable field",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: {
+							anyOf: [{ type: "string" }, { type: "null" }],
+						},
+					},
+					required: ["answer"],
+				},
+				error: /required nullable property 'answer'.*answer form/i,
+			},
+			{
 				question: "Question requiring an empty array",
 				inputSchema: {
 					type: "object",

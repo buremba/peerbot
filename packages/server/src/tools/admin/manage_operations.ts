@@ -117,10 +117,7 @@ import {
 	AGENT_ASK_ACTION_KEY,
 	isAgentAskProposal,
 } from "../../notifications/ask";
-import {
-	findUnansweredRequired,
-	validateAskAnswerForProposal,
-} from "../../notifications/ask-schema";
+import { validateAskAnswerForProposal } from "../../notifications/ask-schema";
 import { callerIsAdmin } from "./helpers/db-helpers";
 import {
 	applyManageAgentsProposal,
@@ -1946,8 +1943,7 @@ function getBuilderApprovalHandlers(): BuilderApprovalHandler[] {
 			// Approving a blank form did exactly that (`{answer:{}}`).
 			validateInput: (proposal, input) =>
 				isAgentAskProposal(proposal)
-					? (findUnansweredRequired(proposal.input_schema, input) ??
-						validateAskAnswerForProposal(proposal, input))
+					? validateAskAnswerForProposal(proposal, input)
 					: null,
 		},
 	];

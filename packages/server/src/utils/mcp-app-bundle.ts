@@ -3,8 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * Locate + read a built MCP App bundle (a self-contained `ui://` iframe payload
- * produced by owletto's `build:mcp-apps`, e.g.
+ * Locate + read a built MCP App bundle produced by owletto's `build:mcp-apps`,
+ * e.g.
  * `packages/owletto/dist-mcp-apps/<appDir>/index.html`).
  *
  * Path resolution mirrors `resolveWebDistDirectory` in `index.ts` (the owletto
@@ -15,9 +15,11 @@ import { fileURLToPath } from 'node:url';
 
 // packages/server dir (mirror of APP_ROOT in index.ts).
 const APP_ROOT = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
+const ORIGIN_PLACEHOLDER = '__LOBU_MCP_APP_ORIGIN__';
+const SAFE_ASSET_PATH = /^assets\/[A-Za-z0-9._-]+\.(?:css|js)$/;
 
-function bundleCandidates(appDir: string): string[] {
-  const rel = path.join('dist-mcp-apps', appDir, 'index.html');
+function bundleFileCandidates(appDir: string, filename: string): string[] {
+  const rel = path.join('dist-mcp-apps', appDir, filename);
   const webDist = process.env.WEB_DIST_DIR?.trim();
   return [
     webDist ? path.join(webDist, '..', rel) : undefined,
@@ -35,17 +37,60 @@ function bundleCandidates(appDir: string): string[] {
 // instead of serving 404 until the pod restarts. Every interactive interaction
 // now depends on this one bundle, so a sticky miss would break all of them.
 const bundleCache = new Map<string, string>();
+const assetCache = new Map<string, Uint8Array>();
 
-/** Read a built MCP App bundle's HTML. Returns null when no build is present. */
-export async function readMcpAppBundle(appDir: string): Promise<string | null> {
+/**
+ * Read a built MCP App template. `publicOrigin` stamps an absolute base URL and
+ * the matching defense-in-depth CSP into the small HTML snapshot returned to a
+ * remote MCP host. The raw form remains useful to tests with minimal stubs.
+ */
+export async function readMcpAppBundle(
+  appDir: string,
+  publicOrigin?: string
+): Promise<string | null> {
   const cached = bundleCache.get(appDir);
+  let html = cached;
+  if (html === undefined) {
+    for (const candidate of bundleFileCandidates(appDir, 'index.html')) {
+      try {
+        await stat(candidate);
+        html = await readFile(candidate, 'utf8');
+        bundleCache.set(appDir, html);
+        break;
+      } catch {
+        // candidate absent — try the next
+      }
+    }
+  }
+  if (html === undefined) return null;
+  if (!publicOrigin) return html;
+
+  const assetBase = `${publicOrigin}/mcp-apps/${encodeURIComponent(appDir)}/`;
+  const withBase = html.includes('<base ')
+    ? html
+    : html.replace('<head>', `<head>\n\t\t<base href="${assetBase}" />`);
+  return withBase.replaceAll(ORIGIN_PLACEHOLDER, publicOrigin);
+}
+
+/**
+ * Read one content-hashed JS/CSS file referenced by an MCP App template.
+ * Callers must still validate `appDir` against the app registry; this function
+ * separately rejects traversal and every unrecognized extension.
+ */
+export async function readMcpAppAsset(
+  appDir: string,
+  assetPath: string
+): Promise<Uint8Array | null> {
+  if (!SAFE_ASSET_PATH.test(assetPath)) return null;
+  const cacheKey = `${appDir}/${assetPath}`;
+  const cached = assetCache.get(cacheKey);
   if (cached !== undefined) return cached;
-  for (const candidate of bundleCandidates(appDir)) {
+  for (const candidate of bundleFileCandidates(appDir, assetPath)) {
     try {
       await stat(candidate);
-      const html = await readFile(candidate, 'utf8');
-      bundleCache.set(appDir, html);
-      return html;
+      const asset = await readFile(candidate);
+      assetCache.set(cacheKey, asset);
+      return asset;
     } catch {
       // candidate absent — try the next
     }

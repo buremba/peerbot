@@ -91,7 +91,7 @@ import {
 } from "../../utils/url-builder";
 import { trackWatcherReaction } from "../../utils/watcher-reactions";
 import { dispatchChromeActionToExtension } from "../../worker-api/dispatch-chrome-action";
-import { isAdminOrOwnerRole } from "../access-control";
+import { isAdminOrOwnerRole, isSystemContext } from "../access-control";
 import type { ToolContext } from "../registry";
 import { getOrgUrlContext } from "../view-urls";
 import { action, defineActionTool } from "./action-tool";
@@ -1025,8 +1025,13 @@ async function handleListAvailable(
 		.filter(Boolean);
 	// The caller's own reachable tier (role × MCP scopes) feeds the readiness
 	// mapper: operations.execute is write-tier, so a read-only session must not
-	// be told an op is ready to execute.
-	const callerMax = resolveMaxAccessLevel(ctx.memberRole, ctx.scopes);
+	// be told an op is ready to execute. System/reaction contexts (userId null,
+	// memberRole null) bypass role/scope entirely at routeAction, so they must
+	// be treated as fully capable here — downgrading them would hide ready ops
+	// from Behavior reactions.
+	const callerMax = isSystemContext(ctx)
+		? "admin"
+		: resolveMaxAccessLevel(ctx.memberRole, ctx.scopes);
 	const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
 	const connectorViewUrl = (connectorKey: string): string | undefined =>
 		ownerSlug && baseUrl

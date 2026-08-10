@@ -192,5 +192,21 @@ describe("manage_operations.execute member authorization", () => {
 			const next = op.next_action as Record<string, unknown>;
 			expect(next.action).toBe("elevate_session_scope");
 		});
+
+		it("system/reaction context (bypasses role+scope at routeAction) still sees ready ops as executable", async () => {
+			// Watcher reactions run with userId=null + memberRole=null; routeAction
+			// bypasses the tier for them, so list_available must NOT downgrade a
+			// genuinely executable target to session_scope_required.
+			const systemCtx: ToolContext = {
+				organizationId: orgId,
+				userId: null,
+				memberRole: null,
+				isAuthenticated: true,
+				scopes: ["*"],
+			};
+			const op = await findRun(systemCtx);
+			expect(op.executable).toBe(true);
+			expect(op.readiness).toBe("ready");
+		});
 	});
 });

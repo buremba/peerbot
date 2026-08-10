@@ -582,15 +582,15 @@ describe("notify input_schema — agent asks a human", () => {
 	});
 
 	it("keeps a one-value finite numeric interval answerable", async () => {
-		const answer = 1 + Number.EPSILON;
+		const answer = 2;
 		const sent = await send({
-			title: "What is the next representable value after one?",
+			title: "What is the exact rollout multiplier?",
 			input_schema: {
 				type: "object",
 				properties: {
 					answer: {
 						type: "number",
-						exclusiveMinimum: 1,
+						minimum: answer,
 						maximum: answer,
 					},
 				},
@@ -766,6 +766,17 @@ describe("notify input_schema — agent asks a human", () => {
 					required: ["answer"],
 				},
 				error: /keyword 'format' is not supported/i,
+			},
+			{
+				question: "Question with an exclusive numeric bound",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: { type: "number", exclusiveMinimum: 0 },
+					},
+					required: ["answer"],
+				},
+				error: /keyword 'exclusiveMinimum' is not supported/i,
 			},
 			{
 				question: "Question with unsafe property-name patterns",
@@ -998,8 +1009,7 @@ describe("notify input_schema — agent asks a human", () => {
 					properties: {
 						answer: {
 							type: "number",
-							minimum: 0,
-							exclusiveMinimum: 10,
+							minimum: 10,
 							maximum: 5,
 						},
 					},
@@ -1008,42 +1018,14 @@ describe("notify input_schema — agent asks a human", () => {
 				error: /property 'answer'.*numeric bounds/i,
 			},
 			{
-				question: "Question beyond finite numeric input",
-				inputSchema: {
-					type: "object",
-					properties: {
-						answer: {
-							type: "number",
-							exclusiveMinimum: Number.MAX_VALUE,
-						},
-					},
-					required: ["answer"],
-				},
-				error: /property 'answer'.*finite number.*numeric bounds/i,
-			},
-			{
-				question: "Question below finite numeric input",
-				inputSchema: {
-					type: "object",
-					properties: {
-						answer: {
-							type: "number",
-							exclusiveMaximum: -Number.MAX_VALUE,
-						},
-					},
-					required: ["answer"],
-				},
-				error: /property 'answer'.*finite number.*numeric bounds/i,
-			},
-			{
-				question: "Question with no integer between exclusive bounds",
+				question: "Question with no integer between decimal bounds",
 				inputSchema: {
 					type: "object",
 					properties: {
 						answer: {
 							type: "integer",
-							exclusiveMinimum: 1,
-							exclusiveMaximum: 2,
+							minimum: 1.1,
+							maximum: 1.9,
 						},
 					},
 					required: ["answer"],

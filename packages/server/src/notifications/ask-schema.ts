@@ -11,10 +11,7 @@
 import { getErrorMessage } from "@lobu/core";
 import { createAjv, formatAjvError } from "@lobu/core/ajv";
 import type { ValidateFunction } from "ajv";
-import {
-	DEFAULT_METADATA_LIMITS,
-	exceedsValidationLimits,
-} from "../utils/metadata-limits";
+import { exceedsValidationLimits } from "../utils/metadata-limits";
 
 export interface AskChoice {
 	value: string;
@@ -25,6 +22,8 @@ export type AskAffordance =
 	| { kind: "binary" }
 	| { kind: "choice"; field: string; choices: AskChoice[] }
 	| { kind: "form" };
+
+export const CURRENT_ASK_SCHEMA_VERSION = 1;
 
 function readInlineChoices(value: unknown): AskChoice[] | null {
 	if (value === null || typeof value !== "object") return null;
@@ -86,6 +85,9 @@ const ASK_SCHEMA_LIMITS = {
 	maxNodes: 500,
 	maxBytes: 32_768,
 };
+const MAX_REQUIRED_FIELDS = 50;
+const MAX_FIELD_ANSWER_BYTES = 4_096;
+const MAX_ARRAY_ANSWER_ITEMS = 100;
 
 const UNSUPPORTED_KEYWORDS = new Set([
 	"$anchor",
@@ -103,6 +105,8 @@ const UNSUPPORTED_KEYWORDS = new Set([
 	"dependentRequired",
 	"dependentSchemas",
 	"else",
+	"exclusiveMaximum",
+	"exclusiveMinimum",
 	"format",
 	"formatExclusiveMaximum",
 	"formatExclusiveMinimum",
@@ -208,11 +212,7 @@ function compileSchema(
 }
 
 type Scalar = string | number | boolean;
-interface FormCost {
-	nodes: number;
-	bytes: number;
-}
-type PropertyCheck = { cost: FormCost } | { error: string };
+type PropertyCheck = { error: string } | Record<string, never>;
 
 function isScalarOption(value: unknown): value is Scalar {
 	return (
@@ -220,10 +220,6 @@ function isScalarOption(value: unknown): value is Scalar {
 		typeof value === "boolean" ||
 		(typeof value === "number" && Number.isFinite(value))
 	);
-}
-
-function scalarBytes(value: Scalar): number {
-	return Buffer.byteLength(String(value), "utf8");
 }
 
 function literalUnionOptions(value: unknown): unknown[] | null {
@@ -288,17 +284,13 @@ function checkOptions(params: {
 			error: `input_schema property '${params.field}' has choices the answer form cannot submit`,
 		};
 	}
-	return {
-		cost: {
-			nodes: 1,
-			bytes: Math.min(...(params.options as Scalar[]).map(scalarBytes)),
-		},
-	};
+	return {};
 }
 
-function stringCost(
+function checkString(
 	field: string,
 	schema: Record<string, unknown>,
+	maxMinimum = MAX_FIELD_ANSWER_BYTES,
 ): PropertyCheck {
 	const minimum = Math.max(
 		typeof schema.minLength === "number" ? schema.minLength : 0,
@@ -308,102 +300,42 @@ function stringCost(
 		typeof schema.maxLength === "number"
 			? schema.maxLength
 			: Number.POSITIVE_INFINITY;
-	return minimum <= maximum
-		? { cost: { nodes: 1, bytes: minimum } }
-		: {
+	if (minimum > maximum) {
+		return {
 				error: `input_schema property '${field}' has contradictory length bounds`,
+			};
+	}
+	return minimum <= maxMinimum
+		? {}
+		: {
+				error: "input_schema smallest form answer exceeds the allowed size limits",
 			};
 }
 
-function adjacentFiniteNumber(
-	value: number,
-	direction: "up" | "down",
-): number | null {
-	if (!Number.isFinite(value)) return null;
-	if (value === 0) {
-		return direction === "up" ? Number.MIN_VALUE : -Number.MIN_VALUE;
-	}
-	const view = new DataView(new ArrayBuffer(8));
-	view.setFloat64(0, value);
-	const increment = (direction === "up") === value > 0 ? 1n : -1n;
-	view.setBigUint64(0, view.getBigUint64(0) + increment);
-	const adjacent = view.getFloat64(0);
-	return Number.isFinite(adjacent) ? adjacent : null;
-}
-
-interface NumericBound {
-	value: number;
-	exclusive: boolean;
-}
-
-function numericCost(
+function checkNumeric(
 	field: string,
 	schema: Record<string, unknown>,
 	kind: "number" | "integer",
 ): PropertyCheck {
-	const lower = [
+	const minimum =
 		typeof schema.minimum === "number"
-			? { value: schema.minimum, exclusive: false }
-			: null,
-		typeof schema.exclusiveMinimum === "number"
-			? { value: schema.exclusiveMinimum, exclusive: true }
-			: null,
-	]
-		.filter((bound): bound is NumericBound => bound !== null)
-		.sort(
-			(a, b) => b.value - a.value || Number(b.exclusive) - Number(a.exclusive),
-		)[0];
-	const upper = [
+			? schema.minimum
+			: Number.NEGATIVE_INFINITY;
+	const maximum =
 		typeof schema.maximum === "number"
-			? { value: schema.maximum, exclusive: false }
-			: null,
-		typeof schema.exclusiveMaximum === "number"
-			? { value: schema.exclusiveMaximum, exclusive: true }
-			: null,
-	]
-		.filter((bound): bound is NumericBound => bound !== null)
-		.sort(
-			(a, b) => a.value - b.value || Number(b.exclusive) - Number(a.exclusive),
-		)[0];
-	if (
-		lower &&
-		upper &&
-		(lower.value > upper.value ||
-			(lower.value === upper.value && (lower.exclusive || upper.exclusive)))
-	) {
+			? schema.maximum
+			: Number.POSITIVE_INFINITY;
+	if (minimum > maximum) {
 		return {
 			error: `input_schema property '${field}' has contradictory numeric bounds`,
 		};
 	}
-	let candidate = lower
-		? lower.exclusive
-			? adjacentFiniteNumber(lower.value, "up")
-			: lower.value
-		: upper
-			? upper.exclusive
-				? adjacentFiniteNumber(upper.value, "down")
-				: upper.value
-			: 0;
-	if (
-		candidate !== null &&
-		kind === "integer" &&
-		!Number.isInteger(candidate)
-	) {
-		candidate = lower ? Math.ceil(candidate) : Math.floor(candidate);
-	}
-	const admitted =
-		candidate !== null &&
-		Number.isFinite(candidate) &&
-		(kind === "number" || Number.isInteger(candidate)) &&
-		(!lower ||
-			(lower.exclusive ? candidate > lower.value : candidate >= lower.value)) &&
-		(!upper ||
-			(upper.exclusive ? candidate < upper.value : candidate <= upper.value));
-	return admitted
-		? { cost: { nodes: 1, bytes: 32 } }
-		: {
+	if (kind === "integer" && Math.ceil(minimum) > Math.floor(maximum)) {
+		return {
 				error: `input_schema property '${field}' has no finite ${kind} within its numeric bounds`,
 			};
+	}
+	return {};
 }
 
 function genericArrayStringRoundTrips(value: string): boolean {
@@ -439,6 +371,11 @@ function checkArrayProperty(params: {
 			error: `input_schema array property '${field}' has an impossible item count`,
 		};
 	}
+	if (selections > MAX_ARRAY_ANSWER_ITEMS) {
+		return {
+			error: "input_schema smallest form answer exceeds the allowed size limits",
+		};
+	}
 	if (
 		schema.items === null ||
 		typeof schema.items !== "object" ||
@@ -470,20 +407,16 @@ function checkArrayProperty(params: {
 			accepts,
 		});
 		if ("error" in optionCheck) return optionCheck;
-		const distinct = new Map<string, number>();
+		const distinct = new Set<string>();
 		for (const option of options as Scalar[]) {
-			distinct.set(`${typeof option}:${String(option)}`, scalarBytes(option));
+			distinct.add(`${typeof option}:${String(option)}`);
 		}
 		if (distinct.size < selections) {
 			return {
 				error: `input_schema array property '${field}' has choices the answer form cannot submit`,
 			};
 		}
-		const bytes = [...distinct.values()]
-			.sort((a, b) => a - b)
-			.slice(0, selections)
-			.reduce((sum, value) => sum + value, 0);
-		return { cost: { nodes: 1 + selections, bytes } };
+		return {};
 	}
 	if (Object.hasOwn(items, "const")) {
 		const constant = items.const;
@@ -498,12 +431,12 @@ function checkArrayProperty(params: {
 				error: `input_schema array property '${field}' has a constant the answer form cannot submit`,
 			};
 		}
-		return {
-			cost: {
-				nodes: 1 + selections,
-				bytes: selections * Buffer.byteLength(constant, "utf8"),
-			},
-		};
+		return selections * Buffer.byteLength(constant, "utf8") <=
+			MAX_FIELD_ANSWER_BYTES
+			? {}
+			: {
+					error: "input_schema smallest form answer exceeds the allowed size limits",
+				};
 	}
 	if (items.type !== undefined && items.type !== "string") {
 		return {
@@ -515,18 +448,20 @@ function checkArrayProperty(params: {
 			error: `input_schema array property '${field}' cannot be produced by the answer form`,
 		};
 	}
-	const itemCost = stringCost(field, items);
-	if ("error" in itemCost) {
+	const itemCheck = checkString(
+		field,
+		items,
+		Math.floor(MAX_FIELD_ANSWER_BYTES / selections),
+	);
+	if ("error" in itemCheck) {
 		return {
-			error: `input_schema array property '${field}' cannot be produced by the answer form`,
+			error:
+				itemCheck.error.includes("size limits")
+					? itemCheck.error
+					: `input_schema array property '${field}' cannot be produced by the answer form`,
 		};
 	}
-	return {
-		cost: {
-			nodes: 1 + selections,
-			bytes: selections * itemCost.cost.bytes,
-		},
-	};
+	return {};
 }
 
 function checkFormProperty(params: {
@@ -601,15 +536,15 @@ function checkFormProperty(params: {
 				error: `input_schema property '${field}' has a constant the answer form cannot submit`,
 			};
 		}
-		return { cost: { nodes: 1, bytes: scalarBytes(constant) } };
+		return {};
 	}
 	if (renderSchema.type === "number" || renderSchema.type === "integer") {
-		return numericCost(field, renderSchema, renderSchema.type);
+		return checkNumeric(field, renderSchema, renderSchema.type);
 	}
 	if (renderSchema.type === "boolean") {
-		return { cost: { nodes: 1, bytes: 5 } };
+		return {};
 	}
-	return stringCost(field, renderSchema);
+	return checkString(field, renderSchema);
 }
 
 /** Validate the contract before a pending run/event is durably created. */
@@ -643,8 +578,10 @@ export function validateAskInputSchema(
 	if (missing.length > 0) {
 		return `input_schema requires fields missing from properties: ${missing.join(", ")}`;
 	}
+	if (required.length > MAX_REQUIRED_FIELDS) {
+		return "input_schema smallest form answer exceeds the allowed size limits";
+	}
 
-	const costs = new Map<string, FormCost>();
 	for (const [field, property] of Object.entries(properties)) {
 		if (Object.hasOwn(Object.prototype, field)) {
 			return `input_schema property name '${field}' is not supported by the answer form`;
@@ -662,24 +599,6 @@ export function validateAskInputSchema(
 			accepts: compiled.accepts,
 		});
 		if ("error" in checked) return checked.error;
-		costs.set(field, checked.cost);
-	}
-
-	const minimumAnswer = required.reduce<FormCost>(
-		(total, field) => {
-			const cost = costs.get(field) as FormCost;
-			return {
-				nodes: total.nodes + cost.nodes,
-				bytes: total.bytes + cost.bytes + Buffer.byteLength(field, "utf8"),
-			};
-		},
-		{ nodes: 0, bytes: 0 },
-	);
-	if (
-		minimumAnswer.nodes > DEFAULT_METADATA_LIMITS.maxNodes ||
-		minimumAnswer.bytes > DEFAULT_METADATA_LIMITS.maxBytes
-	) {
-		return "input_schema smallest form answer exceeds the allowed size limits";
 	}
 
 	const affordance = resolveAskAffordance(schema);
@@ -712,4 +631,17 @@ export function validateAskAnswer(
 	return firstError
 		? `Answer ${formatAjvError(firstError)}`
 		: "Answer does not match input_schema";
+}
+
+/** Preserve the original required-only behavior of asks queued before v1. */
+export function validateAskAnswerForProposal(
+	proposal: {
+		input_schema: Record<string, unknown>;
+		input_schema_validation_version?: number;
+	},
+	input: Record<string, unknown> | null,
+): string | null {
+	return proposal.input_schema_validation_version === CURRENT_ASK_SCHEMA_VERSION
+		? validateAskAnswer(proposal.input_schema, input)
+		: null;
 }

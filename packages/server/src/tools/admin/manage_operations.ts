@@ -115,12 +115,11 @@ import {
 } from "./entity-field-approval";
 import {
 	AGENT_ASK_ACTION_KEY,
-	AGENT_ASK_INPUT_SCHEMA_VALIDATION_VERSION,
 	isAgentAskProposal,
 } from "../../notifications/ask";
 import {
 	findUnansweredRequired,
-	validateAskAnswer,
+	validateAskAnswerForProposal,
 } from "../../notifications/ask-schema";
 import { callerIsAdmin } from "./helpers/db-helpers";
 import {
@@ -1948,10 +1947,7 @@ function getBuilderApprovalHandlers(): BuilderApprovalHandler[] {
 			validateInput: (proposal, input) =>
 				isAgentAskProposal(proposal)
 					? (findUnansweredRequired(proposal.input_schema, input) ??
-						(proposal.input_schema_validation_version ===
-						AGENT_ASK_INPUT_SCHEMA_VALIDATION_VERSION
-							? validateAskAnswer(proposal.input_schema, input)
-							: null))
+						validateAskAnswerForProposal(proposal, input))
 					: null,
 		},
 	];

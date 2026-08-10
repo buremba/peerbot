@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 // packages/server dir (mirror of APP_ROOT in index.ts).
 const APP_ROOT = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
+const ORIGIN_PLACEHOLDER = '__LOBU_MCP_APP_ORIGIN__';
 const SAFE_BUNDLE_FILENAME = /^(?:index|legacy-v2)\.html$/;
 const SAFE_ASSET_PATH = /^assets\/[A-Za-z0-9._-]+\.(?:css|js)$/;
 
@@ -59,6 +60,25 @@ export async function readMcpAppBundle(
     }
   }
   return null;
+}
+
+/**
+ * Render the current external-asset template for a remote MCP host. The raw
+ * HTML stays cached by filename; request-specific origins are stamped only
+ * after the cache read so one tenant/request cannot contaminate another.
+ */
+export async function renderMcpAppTemplate(
+  appDir: string,
+  publicOrigin: string
+): Promise<string | null> {
+  const html = await readMcpAppBundle(appDir, 'index.html');
+  if (html == null) return null;
+
+  const assetBase = `${publicOrigin}/mcp-apps/${encodeURIComponent(appDir)}/`;
+  const withBase = html.includes('<base ')
+    ? html
+    : html.replace('<head>', `<head>\n\t\t<base href="${assetBase}" />`);
+  return withBase.replaceAll(ORIGIN_PLACEHOLDER, publicOrigin);
 }
 
 /** Read one stable JS/CSS asset staged for the second rollout phase. */

@@ -125,7 +125,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     key: 'google.calendar',
     name: 'Google Calendar',
     description: 'Syncs calendar events from Google Calendar and supports creating new events.',
-    version: '1.1.0',
+    version: '1.1.1',
     faviconDomain: 'calendar.google.com',
     authSchema: {
       methods: [
@@ -499,16 +499,23 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
 
     const pages = paginateByCursor<CalendarEvent, string>(
       async (pageToken) => {
-        // Always request a full page — `maxResults` is a soft cap on *stored*
-        // events, not a reason to shrink the request size (shrinking to 1 once
-        // the cap is hit would crawl a busy calendar one event per round-trip).
-        const params = new URLSearchParams({
-          maxResults: '250',
-          orderBy: 'startTime',
-          singleEvents: 'true',
-          timeMin: timeMin.toISOString(),
-          timeMax: timeMax.toISOString(),
-        });
+        // The durable changes feed establishes Google's incremental cursor.
+        // Keep that request sync-compatible: no order/time filters and include
+        // deleted rows. The legacy collected events feed keeps its bounded
+        // snapshot request for backwards compatibility.
+        const params = durableChanges
+          ? new URLSearchParams({
+              maxResults: '250',
+              singleEvents: 'true',
+              showDeleted: 'true',
+            })
+          : new URLSearchParams({
+              maxResults: '250',
+              orderBy: 'startTime',
+              singleEvents: 'true',
+              timeMin: timeMin.toISOString(),
+              timeMax: timeMax.toISOString(),
+            });
         if (pageToken) {
           params.set('pageToken', pageToken);
         }
@@ -544,6 +551,12 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
           : this.calendarEventToEnvelope(calEvent);
         if (envelope) events.push(envelope);
       }
+    }
+
+    if (durableChanges && !nextSyncToken) {
+      throw new Error(
+        'Google Calendar changes traversal completed without a durable sync token.'
+      );
     }
 
     return this.buildResult(events, nextSyncToken, events.length);
@@ -608,12 +621,20 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
 
     const pages = paginateByCursor<CalendarEvent, string>(
       async (pageToken) => {
-        const params = new URLSearchParams({
-          // Page size shrinks toward the remaining cap as events accumulate,
-          // matching the original dynamic sizing.
-          maxResults: String(Math.max(1, Math.min(250, maxResults - events.length))),
-          syncToken,
-        });
+        // Once the durable changes cursor exists, every provider change must be
+        // consumed before we advance the token. max_results only limits the
+        // historical bootstrap; it must never truncate an incremental window.
+        const params = durableChanges
+          ? new URLSearchParams({
+              maxResults: '250',
+              syncToken,
+              singleEvents: 'true',
+              showDeleted: 'true',
+            })
+          : new URLSearchParams({
+              maxResults: String(Math.max(1, Math.min(250, maxResults - events.length))),
+              syncToken,
+            });
         if (pageToken) {
           params.set('pageToken', pageToken);
         }
@@ -648,6 +669,11 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     }
 
     if (syncTokenRejected) return null;
+    if (durableChanges && !nextSyncToken) {
+      throw new Error(
+        'Google Calendar incremental changes traversal completed without a durable sync token.'
+      );
+    }
 
     return { events, nextSyncToken };
   }

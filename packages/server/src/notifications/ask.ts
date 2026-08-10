@@ -181,6 +181,18 @@ export function findUnansweredRequired(
 		.join(", ")}. Approve again with those fields in \`input\`.`;
 }
 
+/**
+ * Question schemas are synchronously compiled on the gateway request path.
+ * A human-facing form should never need metadata's 10k-node/256 KiB ceiling;
+ * this tighter budget caps attacker-controlled AJV code generation while still
+ * allowing forms far larger than a reviewer can reasonably answer.
+ */
+const ASK_INPUT_SCHEMA_LIMITS = {
+	maxDepth: 16,
+	maxNodes: 500,
+	maxBytes: 32_768,
+};
+
 function compileAskInputSchema(schema: Record<string, unknown>):
 	| {
 			validate: ValidateFunction;
@@ -191,7 +203,7 @@ function compileAskInputSchema(schema: Record<string, unknown>):
 	// Bound the schema before AJV walks it, and build a request-scoped AJV so an
 	// unbounded stream of unique question schemas cannot grow a process-global
 	// validator cache for the lifetime of a gateway replica.
-	if (exceedsValidationLimits(schema)) {
+	if (exceedsValidationLimits(schema, ASK_INPUT_SCHEMA_LIMITS)) {
 		return { error: "input_schema exceeds the allowed size or nesting limits" };
 	}
 	const unsupportedKeyword = findUnsupportedAskKeyword(schema);
@@ -224,8 +236,12 @@ const ARRAY_SUBSCHEMA_KEYWORDS = ["anyOf", "oneOf"] as const;
 const MAP_SUBSCHEMA_KEYWORDS = ["$defs", "definitions", "properties"] as const;
 
 const UNSUPPORTED_ASK_KEYWORDS = new Set([
+	"$anchor",
 	"$async",
+	"$dynamicAnchor",
 	"$dynamicRef",
+	"$id",
+	"$recursiveAnchor",
 	"$recursiveRef",
 	"$ref",
 	"additionalItems",
@@ -235,6 +251,11 @@ const UNSUPPORTED_ASK_KEYWORDS = new Set([
 	"dependentRequired",
 	"dependentSchemas",
 	"else",
+	"format",
+	"formatExclusiveMaximum",
+	"formatExclusiveMinimum",
+	"formatMaximum",
+	"formatMinimum",
 	"if",
 	"maxContains",
 	"minContains",
@@ -247,6 +268,19 @@ const UNSUPPORTED_ASK_KEYWORDS = new Set([
 	"then",
 	"unevaluatedItems",
 	"unevaluatedProperties",
+]);
+
+const NULLABLE_WRAPPER_ANNOTATIONS = new Set([
+	"$comment",
+	"anyOf",
+	"default",
+	"deprecated",
+	"description",
+	"example",
+	"examples",
+	"readOnly",
+	"title",
+	"writeOnly",
 ]);
 
 /**
@@ -420,25 +454,21 @@ function schemaMayProduceNonEmptyString(value: unknown): boolean {
 	return typeof schema.maxLength !== "number" || schema.maxLength >= 1;
 }
 
-function minimumArraySelections(
-	schema: Record<string, unknown>,
-	isRequired: boolean,
-): number {
+function minimumArraySelections(schema: Record<string, unknown>): number {
 	const declared = typeof schema.minItems === "number" ? schema.minItems : 0;
-	// Empty arrays are intentionally dropped by DynamicConnectorForm, so a
-	// required array needs at least one actual selection even when minItems is 0.
-	return Math.max(declared, isRequired ? 1 : 0);
+	// Empty arrays are intentionally dropped by DynamicConnectorForm for every
+	// field. Any array property the form actually submits therefore contains at
+	// least one selection, including when the property itself is optional.
+	return Math.max(declared, 1);
 }
 
 function validateArrayFormProperty(params: {
 	field: string;
 	acceptanceSchema: Record<string, unknown>;
 	renderProperty: Record<string, unknown>;
-	isRequired: boolean;
 	accepts: (subschema: Record<string, unknown>, value: unknown) => boolean;
 }): string | null {
-	const { field, acceptanceSchema, renderProperty, isRequired, accepts } =
-		params;
+	const { field, acceptanceSchema, renderProperty, accepts } = params;
 	if (!schemaMayAcceptKind(acceptanceSchema, "array")) {
 		return `input_schema array property '${field}' cannot be produced by the answer form`;
 	}
@@ -448,7 +478,7 @@ function validateArrayFormProperty(params: {
 	) {
 		return `input_schema array property '${field}' uses tuple items the answer form does not support`;
 	}
-	const minimumSelections = minimumArraySelections(renderProperty, isRequired);
+	const minimumSelections = minimumArraySelections(renderProperty);
 	const maximumSelections =
 		typeof renderProperty.maxItems === "number"
 			? renderProperty.maxItems
@@ -601,7 +631,6 @@ function validateScalarBounds(
 function validateFormProperty(params: {
 	field: string;
 	property: Record<string, unknown>;
-	isRequired: boolean;
 	accepts: (subschema: Record<string, unknown>, value: unknown) => boolean;
 }): string | null {
 	const acceptanceSchema = params.property;
@@ -620,6 +649,12 @@ function validateFormProperty(params: {
 			nonNull.length === 1 &&
 			nonNull.length !== renderProperty.anyOf.length
 		) {
+			const unsupportedSibling = Object.keys(renderProperty).find(
+				(keyword) => !NULLABLE_WRAPPER_ANNOTATIONS.has(keyword),
+			);
+			if (unsupportedSibling) {
+				return `input_schema property '${params.field}' nullable wrapper sibling '${unsupportedSibling}' is not supported by the answer form`;
+			}
 			const unwrapped = nonNull[0];
 			if (
 				unwrapped !== null &&
@@ -795,7 +830,6 @@ function validateAskInputSchema(
 		const propertyError = validateFormProperty({
 			field,
 			property: propertySchema as Record<string, unknown>,
-			isRequired: required.includes(field),
 			accepts: compiled.accepts,
 		});
 		if (propertyError) return propertyError;

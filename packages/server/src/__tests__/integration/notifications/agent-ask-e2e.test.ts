@@ -569,6 +569,20 @@ describe("notify input_schema — agent asks a human", () => {
 				error: /keyword '\$ref' is not supported/i,
 			},
 			{
+				question: "Question with a detached schema identifier",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: {
+							$id: "https://example.com/schemas/agent-ask-answer",
+							type: "string",
+						},
+					},
+					required: ["answer"],
+				},
+				error: /keyword '\$id' is not supported/i,
+			},
+			{
 				question: "Question with an invisible required field",
 				inputSchema: { type: "object", required: ["missing"] },
 				error: /fields missing from properties: missing/i,
@@ -647,6 +661,17 @@ describe("notify input_schema — agent asks a human", () => {
 				error: /keyword 'pattern' is not supported/i,
 			},
 			{
+				question: "Question with an impossible formatted answer",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: { type: "string", format: "email", maxLength: 1 },
+					},
+					required: ["answer"],
+				},
+				error: /keyword 'format' is not supported/i,
+			},
+			{
 				question: "Question with unsafe property-name patterns",
 				inputSchema: {
 					type: "object",
@@ -691,6 +716,42 @@ describe("notify input_schema — agent asks a human", () => {
 					required: ["flags"],
 				},
 				error: /array property 'flags'.*answer form/i,
+			},
+			{
+				question: "Question with conflicting nullable array siblings",
+				inputSchema: {
+					type: "object",
+					properties: {
+						tags: {
+							anyOf: [
+								{
+									type: "array",
+									items: { type: "string" },
+									maxItems: 1,
+								},
+								{ type: "null" },
+							],
+							minItems: 2,
+						},
+					},
+					required: ["tags"],
+				},
+				error: /nullable wrapper.*minItems.*not supported/i,
+			},
+			{
+				question: "Question requiring an optional empty array",
+				inputSchema: {
+					type: "object",
+					minProperties: 1,
+					properties: {
+						tags: {
+							type: "array",
+							items: { type: "string" },
+							maxItems: 0,
+						},
+					},
+				},
+				error: /array property 'tags'.*item count/i,
 			},
 			{
 				question: "Question with contradictory field combinators",
@@ -756,6 +817,19 @@ describe("notify input_schema — agent asks a human", () => {
 					required: ["flags"],
 				},
 				error: /array property 'flags'.*answer form/i,
+			},
+			{
+				question: "Question with too many schema properties",
+				inputSchema: {
+					type: "object",
+					properties: Object.fromEntries(
+						Array.from({ length: 501 }, (_, index) => [
+							`field_${index}`,
+							{ type: "string" },
+						]),
+					),
+				},
+				error: /exceeds the allowed size or nesting limits/i,
 			},
 		];
 

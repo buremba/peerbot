@@ -430,6 +430,32 @@ describe("sandbox output budgets", () => {
     expect(result.returnTruncated?.kept_bytes).toBe(serialized);
   });
 
+  it("hard-fails an interactive return over the crossing budget before parsing", async () => {
+    const result = await runScript({
+      source: "export default async () => 'x'.repeat(5000000);",
+      sdk: stubSDK(),
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.name).toBe("OutputSizeExceeded");
+    expect(result.returnTruncated).toBeUndefined();
+  });
+
+  it("preserves an own __proto__ key when truncating", async () => {
+    const result = await runScript({
+      source: [
+        "export default async () => JSON.parse('{\"__proto__\":{\"a\":1},\"pad\":\"' + 'x'.repeat(1200000) + '\"}');",
+      ].join("\n"),
+      sdk: stubSDK(),
+    });
+
+    expect(result.success).toBe(true);
+    const value = result.returnValue as Record<string, unknown>;
+    expect(Object.hasOwn(value, "__proto__")).toBe(true);
+    expect((value["__proto__"] as Record<string, unknown>).a).toBe(1);
+    expect(result.returnTruncated?.dropped_chars).toBeGreaterThan(0);
+  });
+
   it("does not split a UTF-16 surrogate pair at the string boundary", async () => {
     const result = await runScript({
       source: "export default async () => '😀'.repeat(600000);",

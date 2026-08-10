@@ -312,7 +312,9 @@ function encodeWithinBudget(value: unknown, state: TruncState, depth: number): u
 			return SKIP;
 		}
 		state.used += 2; // braces
-		const out: Record<string, unknown> = {};
+		// Null prototype so an own `__proto__` key stays a data property instead
+		// of invoking the prototype setter (which would drop it from the output).
+		const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
 		const entries = Object.entries(value as Record<string, unknown>);
 		let kept = 0;
 		for (const [key, child] of entries) {
@@ -1144,11 +1146,17 @@ export async function runScript(
 			const envelopeBytes = Buffer.byteLength(returnJson, "utf8");
 			// `extractExport` reads a JSON Schema; a partially-cut schema would
 			// parse as a valid-but-wrong contract, so that path keeps hard-fail.
-			// Interactive return values are truncated below instead.
 			if (options.extractExport && envelopeBytes > limits.outputBytes) {
 				throw new Error(
 					`OutputSizeExceeded: extracted export exceeded ${limits.outputBytes} bytes`,
 				);
+			}
+			// An interactive return crosses the whole envelope to the host before
+			// truncation, so bound that copy BEFORE parsing: a huge return can
+			// otherwise force an arbitrarily large host JSON.parse. Returns up to
+			// the crossing budget are parsed and truncated; past it, hard-fail.
+			if (!options.extractExport && envelopeBytes > limits.crossingBytes) {
+				throw crossingOversizeError();
 			}
 		}
 		const parsedResult = returnJson ? JSON.parse(returnJson) : null;

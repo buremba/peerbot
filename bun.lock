@@ -304,6 +304,7 @@
         "echarts": "^5.5.0",
         "elkjs": "^0.12.0",
         "lucide-react": "^0.469.0",
+        "pako": "^1.0.11",
         "qrcode.react": "^4.2.0",
         "radix-ui": "^1.6.0",
         "react": "^19.0.0",

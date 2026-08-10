@@ -98,7 +98,6 @@ const ANNOTATION_KEYWORDS = new Set([
 
 const SUPPORTED_SCHEMA_KEYWORDS = new Set([
 	...ANNOTATION_KEYWORDS,
-	"$schema",
 	"additionalProperties",
 	"anyOf",
 	"enum",
@@ -126,8 +125,10 @@ function findUnsupportedKeyword(root: Record<string, unknown>): string | null {
 			continue;
 		}
 		const schema = current as Record<string, unknown>;
-		const unsupported = Object.keys(schema).find((keyword) =>
-			!SUPPORTED_SCHEMA_KEYWORDS.has(keyword),
+		const unsupported = Object.keys(schema).find(
+			(keyword) =>
+				!SUPPORTED_SCHEMA_KEYWORDS.has(keyword) &&
+				!(schema === root && keyword === "$schema"),
 		);
 		if (unsupported) return unsupported;
 		for (const keyword of ["additionalProperties", "items"]) {

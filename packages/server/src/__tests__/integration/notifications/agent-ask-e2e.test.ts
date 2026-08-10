@@ -783,6 +783,20 @@ describe("notify input_schema — agent asks a human", () => {
 				error: /keyword 'nullable' is not supported/i,
 			},
 			{
+				question: "Question with a nested schema dialect",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: {
+							$schema: "https://example.com/meta",
+							enum: ["one", "two"],
+						},
+					},
+					required: ["answer"],
+				},
+				error: /keyword '\$schema' is not supported/i,
+			},
+			{
 				question: "Question with an impossible formatted answer",
 				inputSchema: {
 					type: "object",

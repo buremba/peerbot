@@ -67,9 +67,22 @@ const SESSION_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 const SESSION_CLEANUP_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 const MCP_APP_MIME_TYPE = 'text/html;profile=mcp-app';
 const MCP_APP_EXTENSION_ID = 'io.modelcontextprotocol/ui';
-const MCP_APP_RESOURCE_ALIASES: ReadonlyMap<string, string> = new Map([
-  ['ui://lobu/interaction/v1', LOBU_INTERACTION_RESOURCE_URI],
-  ['ui://lobu/interaction/v2', LOBU_INTERACTION_RESOURCE_URI],
+const MCP_APP_RESOURCE_ALIASES: ReadonlyMap<
+  string,
+  { canonicalUri: string; template: 'legacy' | 'external' }
+> = new Map([
+  [
+    'ui://lobu/interaction/v1',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'legacy' },
+  ],
+  [
+    'ui://lobu/interaction/v2',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'legacy' },
+  ],
+  [
+    'ui://lobu/interaction/v3.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
+  ],
 ]);
 // ---------------------------------------------------------------------------
 // Session store
@@ -367,10 +380,11 @@ function createServerForContext(
         contents: [{ uri, mimeType: 'text/markdown', text: skill.text }],
       };
     }
-    const canonicalUri = MCP_APP_RESOURCE_ALIASES.get(uri) ?? uri;
+    const alias = MCP_APP_RESOURCE_ALIASES.get(uri);
+    const canonicalUri = alias?.canonicalUri ?? uri;
     const app = MCP_APP_RESOURCES[canonicalUri];
     if (!app) throw new Error(`Unknown resource: ${uri}`);
-    const isLegacyAlias = canonicalUri !== uri;
+    const isLegacyAlias = alias?.template === 'legacy';
     const html = isLegacyAlias
       ? await readMcpAppBundle(app.appDir, 'legacy-v2.html')
       : await renderMcpAppTemplate(

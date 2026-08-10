@@ -86,7 +86,7 @@ export const SdkScriptResultSchema = Type.Object({
           description: "Object keys dropped from the tail.",
         }),
         dropped_chars: Type.Integer({
-          description: "Characters dropped from truncated string values.",
+          description: "UTF-16 code units dropped from truncated string values.",
         }),
       },
       {

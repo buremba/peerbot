@@ -1,11 +1,12 @@
 /**
  * Compiles a TypeScript user-script via esbuild, runs it in a V8 isolate, and
  * bridges SDK calls back to the host. Output is budgeted per-purpose, not as
- * one combined counter: the return value is capped at 1 MB (truncated with a
- * `returnTruncated` report when exceeded, never a hard fail), console logs are
- * capped at 64 KB and dropped once full, and a 4 MB crossing guard bounds
- * host↔guest copies (SDK call envelopes + console crossing) as the DoS
- * backstop. Other caps: 200 SDK calls, 180s wall-clock max (device-bound
+ * one combined counter: interactive return values are capped at 1 MB and
+ * truncated with a `returnTruncated` report, console logs are capped at 64 KB
+ * and dropped once full, and a 4 MB crossing guard accounts for cumulative
+ * SDK payload/result and console traffic as the DoS backstop. Extracted named
+ * exports keep the old hard-fail behavior because truncation could corrupt a
+ * schema. Other caps: 200 SDK calls, 180s wall-clock max (device-bound
  * operations may wait up to ~155s), and 30s per `ctx.sleep()` call.
  * `client.org()` is stateless — each guest call carries
  * `orgPath` so the host re-walks org swaps without holding refs.
@@ -21,11 +22,11 @@ export interface RunLimits {
 	memoryMb?: number;
 	timeoutMs?: number;
 	sdkCallQuota?: number;
-	/** Serialization cap for the script's return value. Values that exceed it are truncated, not failed. */
+	/** Serialization cap for interactive return values; extracted exports hard-fail instead of truncating. */
 	outputBytes?: number;
-	/** Cap for captured console logs; messages past it are dropped (never a failure). */
+	/** Cap for captured console logs; messages past it are dropped. */
 	logBytes?: number;
-	/** DoS guard on host↔guest copies across SDK call envelopes and console output. */
+	/** DoS guard on host↔guest copies across SDK call payloads/results and console output. */
 	crossingBytes?: number;
 }
 
@@ -35,7 +36,7 @@ export interface RunLimits {
  * array is still an array) and the agent can never mistake partial data for
  * complete output.
  */
-export interface TruncatedValueInfo {
+interface TruncatedValueInfo {
 	total_bytes: number;
 	kept_bytes: number;
 	dropped_elements: number;
@@ -225,8 +226,6 @@ export function safeErrorDetails(value: unknown): unknown {
 }
 
 const TRUNCATE_SUFFIX = "\u2026 [truncated]";
-/** Reserved for the result envelope wrapping a return value (`ok`, marker keys). */
-const ENVELOPE_OVERHEAD_BYTES = 128;
 const MAX_TRUNCATE_DEPTH = 200;
 const SKIP = Symbol("truncate.skip");
 
@@ -295,9 +294,13 @@ function encodeWithinBudget(value: unknown, state: TruncState, depth: number): u
 		for (const item of value) {
 			const sep = out.length > 0 ? 1 : 0;
 			if (state.used + sep + 2 > state.budget) break;
+			const usedBeforeItem = state.used;
 			state.used += sep;
 			const encoded = encodeWithinBudget(item, state, depth + 1);
-			if (encoded === SKIP) break;
+			if (encoded === SKIP) {
+				state.used = usedBeforeItem;
+				break;
+			}
 			out.push(encoded);
 		}
 		state.droppedElements += value.length - out.length;
@@ -316,9 +319,13 @@ function encodeWithinBudget(value: unknown, state: TruncState, depth: number): u
 			const sep = kept > 0 ? 1 : 0;
 			const keyCost = jsonBytes(key);
 			if (state.used + sep + keyCost + 2 > state.budget) break;
+			const usedBeforeEntry = state.used;
 			state.used += sep + keyCost + 1; // comma + key + colon
 			const encoded = encodeWithinBudget(child, state, depth + 1);
-			if (encoded === SKIP) break;
+			if (encoded === SKIP) {
+				state.used = usedBeforeEntry;
+				break;
+			}
 			out[key] = encoded;
 			kept++;
 		}
@@ -376,7 +383,7 @@ function truncateJsonValue(
 		value: out,
 		meta: {
 			total_bytes: totalBytes,
-			kept_bytes: Math.min(state.used, totalBytes),
+			kept_bytes: jsonBytes(out),
 			dropped_elements: state.droppedElements,
 			dropped_keys: state.droppedKeys,
 			dropped_chars: state.droppedChars,
@@ -816,28 +823,38 @@ export async function runScript(
 	const sdkCallTrace: SdkCallTraceEntry[] = [];
 	const sideEffectPreview: SdkCallTraceEntry[] = [];
 	let sdkCalls = 0;
-	// Internal host↔guest copy guard (SDK call envelopes + console crossing).
-	// Distinct from the agent-facing return-value cap: this bounds what the host
-	// copies, not what the caller receives.
+	// Internal host↔guest traffic guard (SDK payloads/results + console crossing).
+	// Distinct from the agent-facing return-value cap: this accounts for internal
+	// bridge traffic, not what the caller receives.
 	let crossingBytes = 0;
 	let crossingOversize = false;
-	// Captured console budget. Logs are diagnostics: once full they drop, they
-	// never fail a run.
+	// Captured console budget. Messages past it are dropped; pathological logging
+	// can still trip the broader crossing guard.
 	let logBytesUsed = 0;
 	let logFull = false;
 
+	const crossingOversizeMessage =
+		`OutputSizeExceeded: sandbox exceeded the ${limits.crossingBytes}-byte crossing budget (SDK call payloads/results and console output)`;
 	const crossingOversizeError = () =>
-		new Error(
-			`OutputSizeExceeded: script output exceeded the ${limits.crossingBytes}-byte crossing budget (SDK call results and console output)`,
-		);
+		new Error(crossingOversizeMessage);
+	const crossingOversizeEnvelope = () =>
+		JSON.stringify({
+			__lobu_sdk_dispatch: 1,
+			ok: false,
+			error: {
+				name: "OutputSizeExceeded",
+				message: crossingOversizeMessage,
+			},
+		});
 
-	/** Charge an SDK call envelope against the crossing guard. */
-	function chargeCrossing(json: string): void {
+	/** Charge one serialized SDK payload or result against the crossing guard. */
+	function chargeCrossing(json: string): boolean {
 		crossingBytes += Buffer.byteLength(json, "utf8");
 		if (crossingBytes > limits.crossingBytes) {
 			crossingOversize = true;
-			throw crossingOversizeError();
+			return false;
 		}
+		return true;
 	}
 
 	const ivm = await loadIsolatedVm();
@@ -907,7 +924,7 @@ export async function runScript(
 				// Latch off once the crossing budget is saturated: don't run any
 				// more SDK work (DB/HTTP), just surface the oversize failure.
 				if (crossingOversize) {
-					throw crossingOversizeError();
+					return crossingOversizeEnvelope();
 				}
 				sdkCalls++;
 				if (sdkCalls > limits.sdkCallQuota) {
@@ -919,6 +936,9 @@ export async function runScript(
 					throw new Error(
 						`TimeoutError: script exceeded ${limits.timeoutMs}ms wall-clock budget`,
 					);
+				}
+				if (!chargeCrossing(payloadJson)) {
+					return crossingOversizeEnvelope();
 				}
 
 				const { args, orgPath } = JSON.parse(payloadJson) as {
@@ -1046,8 +1066,7 @@ export async function runScript(
 								details: safeErrorDetails(error.result),
 							},
 						});
-						chargeCrossing(json);
-						return json;
+						return chargeCrossing(json) ? json : crossingOversizeEnvelope();
 					}
 					throw error;
 				}
@@ -1057,8 +1076,7 @@ export async function runScript(
 					has_value: result !== undefined,
 					...(result === undefined ? {} : { value: result }),
 				});
-				chargeCrossing(json);
-				return json;
+				return chargeCrossing(json) ? json : crossingOversizeEnvelope();
 			}),
 		);
 
@@ -1172,11 +1190,11 @@ export async function runScript(
 		let finalReturnValue = returnValue;
 		if (
 			!options.extractExport &&
-			jsonBytes(returnValue) > limits.outputBytes - ENVELOPE_OVERHEAD_BYTES
+			jsonBytes(returnValue) > limits.outputBytes
 		) {
 			const truncated = truncateJsonValue(
 				returnValue,
-				Math.max(1, limits.outputBytes - ENVELOPE_OVERHEAD_BYTES),
+				limits.outputBytes,
 			);
 			finalReturnValue = truncated.value;
 			returnTruncated = truncated.meta;

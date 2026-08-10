@@ -554,9 +554,51 @@ describe("notify input_schema — agent asks a human", () => {
 				error: /must describe an object answer/i,
 			},
 			{
+				question: "Question with a root constant",
+				inputSchema: { type: "object", const: { answer: "hidden" } },
+				error: /root const and enum constraints are not supported/i,
+			},
+			{
+				question: "Question with a local schema reference",
+				inputSchema: {
+					type: "object",
+					$defs: { plan: { enum: ["legacy", "new"] } },
+					properties: { plan: { $ref: "#/$defs/plan" } },
+					required: ["plan"],
+				},
+				error: /keyword '\$ref' is not supported/i,
+			},
+			{
 				question: "Question with an invisible required field",
 				inputSchema: { type: "object", required: ["missing"] },
 				error: /fields missing from properties: missing/i,
+			},
+			{
+				question: "Question with an unsafe form field name",
+				inputSchema: {
+					type: "object",
+					properties: { toString: { type: "string" } },
+					required: ["toString"],
+				},
+				error: /property name 'toString' is not supported/i,
+			},
+			{
+				question: "Question with a hidden required field",
+				inputSchema: {
+					type: "object",
+					properties: { answer: { type: "string" } },
+					allOf: [{ required: ["missing"] }],
+				},
+				error: /keyword 'allOf' is not supported/i,
+			},
+			{
+				question: "Question excluded by not",
+				inputSchema: {
+					type: "object",
+					properties: { answer: { type: "string" } },
+					not: {},
+				},
+				error: /keyword 'not' is not supported/i,
 			},
 			{
 				question: "Question with choices that violate their field type",
@@ -660,6 +702,42 @@ describe("notify input_schema — agent asks a human", () => {
 							allOf: [{ type: "string" }],
 						},
 					},
+					required: ["answer"],
+				},
+				error: /keyword 'allOf' is not supported/i,
+			},
+			{
+				question: "Question with contradictory string bounds",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: { type: "string", minLength: 5, maxLength: 3 },
+					},
+					required: ["answer"],
+				},
+				error: /property 'answer'.*length bounds/i,
+			},
+			{
+				question: "Question with contradictory numeric bounds",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: {
+							type: "number",
+							minimum: 0,
+							exclusiveMinimum: 10,
+							maximum: 5,
+						},
+					},
+					required: ["answer"],
+				},
+				error: /property 'answer'.*numeric bounds/i,
+			},
+			{
+				question: "Question requiring an empty string",
+				inputSchema: {
+					type: "object",
+					properties: { answer: { type: "string", const: "" } },
 					required: ["answer"],
 				},
 				error: /property 'answer'.*answer form/i,

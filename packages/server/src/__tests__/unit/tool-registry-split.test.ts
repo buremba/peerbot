@@ -74,6 +74,8 @@ describe("tool registry split", () => {
 				"render_lobu_view",
 				"resolve_lobu_approval",
 				"run_sdk",
+				"restore_lobu_app_result",
+				"save_lobu_app_state",
 				"save_memory",
 				"search_memory",
 				"search_sdk",
@@ -86,6 +88,8 @@ describe("tool registry split", () => {
 		expect(AGENT_TOOL_NAMES.size).toBe(6);
 		expect(isRestDispatchTool("render_lobu_view")).toBe(false);
 		expect(isRestDispatchTool("resolve_lobu_approval")).toBe(false);
+		expect(isRestDispatchTool("restore_lobu_app_result")).toBe(false);
+		expect(isRestDispatchTool("save_lobu_app_state")).toBe(false);
 		expect(isRestDispatchTool("manage_connections")).toBe(true);
 	});
 

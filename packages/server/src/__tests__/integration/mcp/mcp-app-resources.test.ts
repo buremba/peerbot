@@ -143,14 +143,14 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     return sessionId!;
   }
 
-  it('serves the self-contained v7 interaction bundle over resources/read', async () => {
+  it('serves the self-contained v8 interaction bundle over resources/read', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const response = await post(`/mcp/${org.slug}`, {
       body: {
         jsonrpc: '2.0',
         id: 1,
         method: 'resources/read',
-        params: { uri: 'ui://lobu/interaction/v7.html' },
+        params: { uri: 'ui://lobu/interaction/v8.html' },
       },
       headers: { 'mcp-session-id': sessionId },
       token,
@@ -159,7 +159,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const content = body.result?.contents?.[0];
-    expect(content?.uri).toBe('ui://lobu/interaction/v7.html');
+    expect(content?.uri).toBe('ui://lobu/interaction/v8.html');
     expect(content?.mimeType).toBe('text/html;profile=mcp-app');
     expect(content?.text).toContain('mcp-app-embedded-stub');
     expect(content?.text).not.toContain('mcp-app-external-stub');
@@ -170,6 +170,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       resourceDomains: [],
       frameDomains: [],
     });
+    expect(content?._meta?.ui?.permissions).toEqual({ clipboardWrite: {} });
     expect(content?._meta?.ui?.prefersBorder).toBe(true);
     expect(content?._meta?.ui?.domain).toBeUndefined();
   });
@@ -267,6 +268,25 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     }
   });
 
+  it('keeps the v7 alias on the packed, network-free template', async () => {
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'resources/read',
+        params: { uri: 'ui://lobu/interaction/v7.html' },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    expect(response.status).toBe(200);
+    const content = (await response.json()).result?.contents?.[0];
+    expect(content?.uri).toBe('ui://lobu/interaction/v7.html');
+    expect(content?.text).toContain('mcp-app-embedded-stub');
+    expect(content?.text).not.toContain('./assets/');
+  });
+
   it('advertises description and CSP metadata on resources/list without claiming a dedicated app domain', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const response = await post(`/mcp/${org.slug}`, {
@@ -282,7 +302,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const resource = body.result?.resources?.find(
-      (r: { uri: string }) => r.uri === 'ui://lobu/interaction/v7.html'
+      (r: { uri: string }) => r.uri === 'ui://lobu/interaction/v8.html'
     );
     expect(resource).toBeDefined();
     expect(
@@ -330,10 +350,10 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         _meta: expect.objectContaining({
           securitySchemes: [{ type: 'oauth2', scopes: ['mcp:read'] }],
           ui: expect.objectContaining({
-            resourceUri: 'ui://lobu/interaction/v7.html',
+            resourceUri: 'ui://lobu/interaction/v8.html',
             visibility: ['model', 'app'],
           }),
-          'openai/outputTemplate': 'ui://lobu/interaction/v7.html',
+          'openai/outputTemplate': 'ui://lobu/interaction/v8.html',
         }),
       })
     );
@@ -352,12 +372,12 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       );
       expect(richTool?._meta?.ui).toEqual(
         expect.objectContaining({
-          resourceUri: 'ui://lobu/interaction/v7.html',
+          resourceUri: 'ui://lobu/interaction/v8.html',
           visibility: ['model', 'app'],
         })
       );
       expect(richTool?._meta?.['openai/outputTemplate']).toBe(
-        'ui://lobu/interaction/v7.html'
+        'ui://lobu/interaction/v8.html'
       );
       expect(richTool?.outputSchema).toEqual(expect.objectContaining({ type: 'object' }));
     }
@@ -380,6 +400,20 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         }),
       })
     );
+    for (const name of ['restore_lobu_app_result', 'save_lobu_app_state']) {
+      const helper = body.result?.tools?.find(
+        (entry: { name?: string }) => entry.name === name
+      );
+      expect(helper).toEqual(
+        expect.objectContaining({
+          securitySchemes: [{ type: 'oauth2', scopes: ['mcp:read'] }],
+          _meta: expect.objectContaining({
+            ui: { visibility: ['app'] },
+          }),
+        })
+      );
+      expect(helper?._meta?.ui?.resourceUri).toBeUndefined();
+    }
     for (const listed of body.result?.tools ?? []) {
       expect(listed.securitySchemes?.[0]?.type).toBe('oauth2');
       expect(listed.annotations?.readOnlyHint).toEqual(expect.any(Boolean));
@@ -410,7 +444,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     );
     expect(tool?._meta?.ui).toEqual(
       expect.objectContaining({
-        resourceUri: 'ui://lobu/interaction/v7.html',
+        resourceUri: 'ui://lobu/interaction/v8.html',
         visibility: ['model', 'app'],
       })
     );
@@ -458,6 +492,97 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(body.result?.content?.[0]?.text).toContain('Release readiness');
     expect(body.result?.content?.[0]?.text).toContain('Ready for review\\.');
     expect(JSON.stringify(body.result)).not.toContain('must-not-render');
+  });
+
+  it('restores the exact rich result and UI state without rerunning the tool', async () => {
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const conversationId = 'chatgpt-conversation-restore-test';
+    const queryResponse = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'originating-call-77',
+        method: 'tools/call',
+        params: {
+          name: 'query_sql',
+          arguments: { sql: 'SELECT 1 AS row_number' },
+          _meta: { 'openai/session': conversationId },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const queryBody = await queryResponse.json();
+    expect(queryBody.result?.structuredContent?.sql).toBe('SELECT 1 AS row_number');
+    expect(queryBody.result?.structuredContent?.rows).toEqual([{ row_number: 1 }]);
+
+    const restore = async (hostConversationId: string) => {
+      const response = await post(`/mcp/${org.slug}`, {
+        body: {
+          jsonrpc: '2.0',
+          id: `restore-${hostConversationId}`,
+          method: 'tools/call',
+          params: {
+            name: 'restore_lobu_app_result',
+            arguments: { tool_call_id: 'originating-call-77' },
+            _meta: { 'openai/session': hostConversationId },
+          },
+        },
+        headers: { 'mcp-session-id': sessionId },
+        token,
+      });
+      return (await response.json()).result?.structuredContent;
+    };
+
+    expect(await restore(`${conversationId}-wrong`)).toEqual({
+      found: false,
+      view_state: {},
+    });
+    const restored = await restore(conversationId);
+    expect(restored).toEqual({
+      found: true,
+      tool_name: 'query_sql',
+      data: queryBody.result.structuredContent,
+      view_state: {},
+    });
+
+    const saveResponse = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'save-state-77',
+        method: 'tools/call',
+        params: {
+          name: 'save_lobu_app_state',
+          arguments: {
+            tool_call_id: 'originating-call-77',
+            view_state: { 'table.sql.page': 2, nested: { dropped: true } },
+          },
+          _meta: { 'openai/session': conversationId },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    expect((await saveResponse.json()).result?.structuredContent).toEqual({ saved: true });
+    expect((await restore(conversationId))?.view_state).toEqual({ 'table.sql.page': 2 });
+
+    const [snapshot] = await getDb()<{
+      body: string;
+      conversation_key: string;
+      tool_call_key: string;
+    }>`SELECT body, conversation_key, tool_call_key
+       FROM public.mcp_app_result_snapshots
+       WHERE organization_id = ${org.id}`;
+    expect(snapshot.body).not.toContain('row_number');
+    expect(snapshot.conversation_key).not.toBe(conversationId);
+    expect(snapshot.tool_call_key).not.toBe('originating-call-77');
+
+    const helperAudits = await getDb()<{
+      tool_name: string;
+    }>`SELECT payload_data->>'tool_name' AS tool_name
+       FROM events
+       WHERE organization_id = ${org.id}
+         AND payload_data->>'tool_name' IN ('restore_lobu_app_result', 'save_lobu_app_state')`;
+    expect(helperAudits).toHaveLength(0);
   });
 
   it('keeps the text fallback when the client does not advertise MCP Apps support', async () => {

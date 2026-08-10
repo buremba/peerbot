@@ -11,6 +11,7 @@ import { runAclSyncTick } from '../authz/acl-sync';
 import type { CoreServices } from '../gateway/services/core-services';
 import { getChatInstanceManager } from '../lobu/gateway';
 import { cleanupExpiredMcpSessions } from '../mcp-handler';
+import { cleanupExpiredMcpAppResultSnapshots } from '../mcp-app-result-snapshots';
 import logger from '../utils/logger';
 import { runWatcherAutomationTick } from '../watchers/automation';
 import { checkStalledExecutions } from './check-stalled-executions';
@@ -138,6 +139,17 @@ function registerMaintenanceTasks(
     'mcp-session-cleanup',
     () => cleanupExpiredMcpSessions(),
     { cron: '*/10 * * * *' },
+  );
+
+  scheduler.register(
+    'mcp-app-result-snapshot-cleanup',
+    async () => {
+      const deleted = await cleanupExpiredMcpAppResultSnapshots();
+      if (deleted > 0) {
+        logger.info({ deleted }, '[task] expired MCP App result snapshots deleted');
+      }
+    },
+    { cron: '23 */6 * * *' },
   );
 
   // Hygiene sweep — drops expired rows from oauth_states, rate_limits,

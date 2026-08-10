@@ -323,18 +323,20 @@ export async function executeTool(
           shouldRetry: (err) => isRetryableToolError(err),
         })
       : await runHandler();
-    await recordToolInvocationAudit({
-      toolName,
-      args,
-      result,
-      durationMs: Date.now() - startTime,
-      ctx: toolContext,
-    });
-    await recordMcpConversationActivity({
-      ctx: toolContext,
-      toolName,
-      failed: isSoftErrorResult(result),
-    });
+    if (tool.audit !== false) {
+      await recordToolInvocationAudit({
+        toolName,
+        args,
+        result,
+        durationMs: Date.now() - startTime,
+        ctx: toolContext,
+      });
+      await recordMcpConversationActivity({
+        ctx: toolContext,
+        toolName,
+        failed: isSoftErrorResult(result),
+      });
+    }
     return result;
   } catch (error) {
     // Stamp the correlation id onto typed errors so the response boundaries can
@@ -342,18 +344,20 @@ export async function executeTool(
     if (error instanceof ToolError || error instanceof ToolUserError) {
       error.callId = callId;
     }
-    await recordToolInvocationAudit({
-      toolName,
-      args,
-      error,
-      durationMs: Date.now() - startTime,
-      ctx: toolContext,
-    });
-    await recordMcpConversationActivity({
-      ctx: toolContext,
-      toolName,
-      failed: true,
-    });
+    if (tool.audit !== false) {
+      await recordToolInvocationAudit({
+        toolName,
+        args,
+        error,
+        durationMs: Date.now() - startTime,
+        ctx: toolContext,
+      });
+      await recordMcpConversationActivity({
+        ctx: toolContext,
+        toolName,
+        failed: true,
+      });
+    }
     throw error;
   }
 }

@@ -44,6 +44,14 @@ import {
 } from './sdk_run';
 import { SdkSearchResultSchema, SdkSearchSchema, sdkSearch } from './sdk_search';
 import { PublicSearchSchema, SearchSchema, search, UnifiedSearchResultSchema } from './search';
+import {
+  RestoreMcpAppResultOutputSchema,
+  RestoreMcpAppResultSchema,
+  SaveMcpAppStateOutputSchema,
+  SaveMcpAppStateSchema,
+  restoreMcpAppResult,
+  saveMcpAppState,
+} from '../mcp-app-result-snapshots';
 
 // ============================================
 // Tool Definitions
@@ -193,6 +201,8 @@ export interface ToolDefinition<T = any> {
   securityScopes?: string[];
   /** MCP extension metadata, such as an Apps UI resource linkage. */
   mcpMeta?: Record<string, unknown>;
+  /** Derived app-state helpers opt out so pagination/reload never pollutes activity. */
+  audit?: boolean;
   handler: (args: T, env: Env, ctx: ToolContext) => Promise<any>;
 }
 
@@ -356,6 +366,32 @@ const MCP_APP_TOOLS: ToolDefinition[] = [
       'openai/outputTemplate': LOBU_INTERACTION_RESOURCE_URI,
     },
     handler: resolveLobuApproval,
+  },
+  {
+    name: 'restore_lobu_app_result',
+    description:
+      'Restore the display-only snapshot for the exact Lobu MCP App tool call. This app-only tool never reruns the originating operation.',
+    inputSchema: RestoreMcpAppResultSchema,
+    outputSchema: RestoreMcpAppResultOutputSchema,
+    annotations: { ...READ_ONLY, title: 'Restore Lobu app result' },
+    authorizationReadOnly: true,
+    securityScopes: ['mcp:read'],
+    mcpMeta: { ui: { visibility: ['app'] } },
+    audit: false,
+    handler: restoreMcpAppResult,
+  },
+  {
+    name: 'save_lobu_app_state',
+    description:
+      'Save bounded pagination and disclosure state for the exact Lobu MCP App tool call. This app-only helper never changes workspace data.',
+    inputSchema: SaveMcpAppStateSchema,
+    outputSchema: SaveMcpAppStateOutputSchema,
+    annotations: { ...READ_ONLY, title: 'Save Lobu app state' },
+    authorizationReadOnly: true,
+    securityScopes: ['mcp:read'],
+    mcpMeta: { ui: { visibility: ['app'] } },
+    audit: false,
+    handler: saveMcpAppState,
   },
 ];
 

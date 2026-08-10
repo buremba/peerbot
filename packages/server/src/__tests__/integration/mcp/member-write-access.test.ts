@@ -119,9 +119,17 @@ describe('MCP member write access', () => {
     expect(toolNames).not.toContain('save_memory');
     // manage_entity moved to the internal REST/CLI surface in #432; it's no
     // longer registered as an external MCP tool. Verify that read-only
-    // discovery surfaces (search_memory / search) are still visible.
-    expect(toolNames).toContain('search_memory');
-    expect(toolNames).toContain('search_sdk');
+    // discovery and data tools are still authorization-read-only even though
+    // their public OpenAI annotations disclose that Lobu appends audit records.
+    expect(toolNames).toEqual(
+      expect.arrayContaining([
+        'search_memory',
+        'search_sdk',
+        'query_sdk',
+        'query_sql',
+        'render_lobu_view',
+      ])
+    );
   });
 
   it('returns an upgrade-path message for public-org non-member write attempts', async () => {

@@ -22,7 +22,13 @@ import { getConfiguredPublicOrigin } from '../utils/public-origin';
 import { enforceRoleScopeAccess } from './access-control';
 import { recordToolInvocationAudit } from './audit';
 import { listOrganizations } from './organizations';
-import { getTool, type TokenType, type ToolContext, type ToolSourceContext } from './registry';
+import {
+  getTool,
+  isAuthorizationReadOnly,
+  type TokenType,
+  type ToolContext,
+  type ToolSourceContext,
+} from './registry';
 
 export interface AuthContext {
   organizationId: string | null;
@@ -175,7 +181,7 @@ export function checkToolAccess(toolName: string, args: unknown, authCtx: AuthCo
     throw new ToolNotRegisteredError(toolName);
   }
 
-  const isReadOnly = tool.annotations?.readOnlyHint === true;
+  const isReadOnly = isAuthorizationReadOnly(tool);
   const { memberRole: role } = authCtx;
   const requiredAccess = getRequiredAccessLevel(toolName, args, isReadOnly);
 

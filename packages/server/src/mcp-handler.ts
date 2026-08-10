@@ -54,7 +54,7 @@ import {
 } from './tools/execute';
 import { LOBU_INTERACTION_RESOURCE_URI } from './tools/mcp_app';
 import { getMcpResultMeta } from './tools/mcp-result-meta';
-import { getMcpTools, getTool } from './tools/registry';
+import { getMcpTools, getTool, isAuthorizationReadOnly } from './tools/registry';
 import { validateToolResult } from './tools/validate-args';
 import { readMcpAppBundle } from './utils/mcp-app-bundle';
 import { resolvePublicOrigin } from './utils/public-origin';
@@ -421,7 +421,7 @@ function createServerForContext(
     } catch (error: any) {
       const tool = getTool(name);
       const requiredAccess = tool
-        ? getRequiredAccessLevel(name, args ?? {}, tool.annotations?.readOnlyHint === true)
+        ? getRequiredAccessLevel(name, args ?? {}, isAuthorizationReadOnly(tool))
         : null;
       const requiredScope =
         requiredAccess === 'read'

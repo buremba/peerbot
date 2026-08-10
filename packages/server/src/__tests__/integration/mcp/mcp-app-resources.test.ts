@@ -201,10 +201,10 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(tool).toEqual(
       expect.objectContaining({
         annotations: expect.objectContaining({
-          readOnlyHint: true,
+          readOnlyHint: false,
           destructiveHint: false,
           openWorldHint: false,
-          idempotentHint: true,
+          idempotentHint: false,
         }),
         securitySchemes: [{ type: 'oauth2', scopes: ['mcp:read'] }],
         _meta: expect.objectContaining({
@@ -247,6 +247,13 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     );
     expect(resolveApproval).toEqual(
       expect.objectContaining({
+        annotations: expect.objectContaining({
+          readOnlyHint: false,
+          destructiveHint: true,
+          openWorldHint: true,
+          idempotentHint: false,
+        }),
+        outputSchema: expect.objectContaining({ type: 'object' }),
         securitySchemes: [{ type: 'oauth2', scopes: ['mcp:write'] }],
         _meta: expect.objectContaining({
           ui: expect.objectContaining({ visibility: ['app'] }),
@@ -258,6 +265,8 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       expect(listed.annotations?.readOnlyHint).toEqual(expect.any(Boolean));
       expect(listed.annotations?.destructiveHint).toEqual(expect.any(Boolean));
       expect(listed.annotations?.openWorldHint).toEqual(expect.any(Boolean));
+      expect(listed.annotations?.idempotentHint).toEqual(expect.any(Boolean));
+      expect(listed.outputSchema).toEqual(expect.objectContaining({ type: 'object' }));
     }
   });
 

@@ -54,11 +54,11 @@ import { PublicSearchSchema, SearchSchema, search, UnifiedSearchResultSchema } f
  * @see https://developers.openai.com/apps-sdk/reference#annotations
  */
 export interface ToolAnnotations {
-  /** Signal that the tool is read-only. ChatGPT can skip 'Are you sure?' prompts when true. */
+  /** Signal that the tool only retrieves or computes information without creating data outside the conversation. */
   readOnlyHint?: boolean;
-  /** Declare that the tool may delete or overwrite user data, requiring explicit approval. */
+  /** Declare that the tool may delete or overwrite user data. */
   destructiveHint?: boolean;
-  /** Declare that the tool publishes content or reaches outside the current user's account. */
+  /** Declare that the tool may change public internet state or an external third-party system. */
   openWorldHint?: boolean;
   /** Declare that calling the tool repeatedly with the same arguments has no additional effect. */
   idempotentHint?: boolean;
@@ -175,6 +175,12 @@ export interface ToolDefinition<T = any> {
   publicInputSchema?: any; // JSON Schema
   annotations?: ToolAnnotations;
   /**
+   * Internal access classification. This is deliberately separate from the
+   * public `readOnlyHint`: OAuth and PAT invocations append an audit/activity
+   * record, while these operations still require only `mcp:read`.
+   */
+  authorizationReadOnly?: boolean;
+  /**
    * JSON Schema describing the tool's structured result. When present, the
    * `tools/call` response carries matching `structuredContent` alongside the
    * text `content` (MCP spec: declaring `outputSchema` implies the result is
@@ -197,7 +203,15 @@ const READ_ONLY = {
   idempotentHint: true,
 } as const;
 
-const READ_ONLY_OPEN_WORLD = { ...READ_ONLY, openWorldHint: true } as const;
+// OpenAI Apps submission semantics reserve `openWorldHint` for tools that can
+// CHANGE public internet or third-party state. Live reads from a user's private
+// connectors remain closed-world even though they contact an external service.
+const AUDITED_READ = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  openWorldHint: false,
+  idempotentHint: false,
+} as const;
 
 const WRITE_WITHOUT_CONFIRM: ToolAnnotations = {
   readOnlyHint: false,
@@ -220,16 +234,15 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'search_memory',
     description:
-      'Search saved workspace memory: entities, facts, decisions, preferences, observations, and notes. Use this to answer “what do we know?” Pair writes with `save_memory`; use `search_sdk` / `query_sdk` only when you need SDK capabilities or programmable reads.',
+      'Search saved workspace memory: entities, facts, decisions, preferences, observations, and notes. Use this to answer “what do we know?” Pair writes with `save_memory`; use `search_sdk` / `query_sdk` only when you need SDK capabilities or programmable reads. The search does not change workspace content or external systems. OAuth and PAT calls append a private audit/activity record.',
     inputSchema: SearchSchema,
     // Advertise the narrower public schema: query_embedding (server pre-compute
     // optimization) and agent_id (auth-bound) are server-internal, not client
     // affordances. See search.ts → PublicSearchSchema.
     publicInputSchema: PublicSearchSchema,
     outputSchema: UnifiedSearchResultSchema,
-    // Search can query installed virtual feeds live, so it may read outside
-    // Lobu's persisted workspace even though it never mutates anything.
-    annotations: { ...READ_ONLY_OPEN_WORLD, title: 'Search memory' },
+    annotations: { ...AUDITED_READ, title: 'Search memory' },
+    authorizationReadOnly: true,
     securityScopes: ['mcp:read'],
     mcpMeta: RICH_RESULT_MCP_META,
     handler: search,
@@ -248,10 +261,11 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'search_sdk',
     description:
-      'Discover available SDK methods and runtime helpers. Search by method name, namespace (e.g. "entities", "connections", "behaviors"), or keyword. Returns documentation, signatures, and access requirements for each method. (Then call methods via query_sdk for reads or run_sdk for writes. Pass mode="read" to show only query_sdk-safe methods.)',
+      'Discover available SDK methods and runtime helpers. Search by method name, namespace (e.g. "entities", "connections", "behaviors"), or keyword. Returns documentation, signatures, and access requirements for each method. (Then call methods via query_sdk for reads or run_sdk for writes. Pass mode="read" to show only query_sdk-safe methods.) The search does not change workspace content or external systems. OAuth and PAT calls append a private audit/activity record.',
     inputSchema: SdkSearchSchema,
     outputSchema: SdkSearchResultSchema,
-    annotations: { ...READ_ONLY, title: 'Search SDK docs' },
+    annotations: { ...AUDITED_READ, title: 'Search SDK docs' },
+    authorizationReadOnly: true,
     securityScopes: ['mcp:read'],
     mcpMeta: RICH_RESULT_MCP_META,
     handler: sdkSearch,
@@ -260,11 +274,12 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'query_sdk',
     description:
-      'Read workspace data through typed SDK methods. Query entities, relationships, feeds, operations, metrics, and more. Use this for lookups and searches that do not change data. (For writes: use run_sdk. To discover available methods: use search_sdk. For polling: use await ctx.sleep(ms) in your script.)',
+      'Read workspace data through typed SDK methods. Query entities, relationships, feeds, operations, metrics, and more. Use this for lookups and searches that do not change workspace content or external systems. (For writes: use run_sdk. To discover available methods: use search_sdk. For polling: use await ctx.sleep(ms) in your script.) Lobu appends a private audit/activity record for the invocation.',
     inputSchema: QuerySchema,
     outputSchema: SdkScriptResultSchema,
-    // Read-only SDK methods include connector-backed live feed reads.
-    annotations: { ...READ_ONLY_OPEN_WORLD, title: 'Query SDK (read-only)' },
+    // Private connector reads do not mutate an external/public system.
+    annotations: { ...AUDITED_READ, title: 'Query SDK (read-only)' },
+    authorizationReadOnly: true,
     securityScopes: ['mcp:read'],
     mcpMeta: RICH_RESULT_MCP_META,
     handler: querySdkScript,
@@ -272,10 +287,11 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'query_sql',
     description:
-      'Run a paginated, sortable, searchable read-only SQL query (member-safe). Table references auto-scope to the bound org. SELECT FROM events reads persisted/synced content only; virtual feeds are live-only and must be read explicitly with feed or via query_sdk client.feeds.readMany. Results may include coverage.suggested_virtual_feeds. Prefer client.metrics.query for declared measures; use client.query in query_sdk for simple one-shot SQL. Do NOT use positional parameters ($1, $2, …). Optional `org_slug` (OAuth on /mcp only) redirects to another member org.',
+      'Run a paginated, sortable, searchable read-only SQL query (member-safe). Table references auto-scope to the bound org. SELECT FROM events reads persisted/synced content only; virtual feeds are live-only and must be read explicitly with feed or via query_sdk client.feeds.readMany. Results may include coverage.suggested_virtual_feeds. Prefer client.metrics.query for declared measures; use client.query in query_sdk for simple one-shot SQL. Do NOT use positional parameters ($1, $2, …). Optional `org_slug` (OAuth on /mcp only) redirects to another member org. The query does not change workspace content or external systems, but Lobu appends a private audit/activity record for the invocation.',
     inputSchema: QuerySqlSchema,
     outputSchema: QuerySqlResultSchema,
-    annotations: { ...READ_ONLY, title: 'Query SQL' },
+    annotations: { ...AUDITED_READ, title: 'Query SQL' },
+    authorizationReadOnly: true,
     securityScopes: ['mcp:read'],
     mcpMeta: RICH_RESULT_MCP_META,
     handler: querySql,
@@ -309,10 +325,11 @@ const MCP_APP_TOOLS: ToolDefinition[] = [
   {
     name: 'render_lobu_view',
     description:
-      'Render a compact Lobu card after data has been selected, or render the review card for one pending approval run. Use action="render" only when a visual card materially helps; first call Lobu data tools and pass only the final content. Use action="review_approval" with a run_id returned by a pending action. Text-only clients receive the same information as readable text.',
+      'Render a compact Lobu card after data has been selected, or render the review card for one pending approval run. Use action="render" only when a visual card materially helps; first call Lobu data tools and pass only the final content. Use action="review_approval" with a run_id returned by a pending action. Text-only clients receive the same information as readable text. Rendering does not change workspace content or external systems. OAuth and PAT calls append a private audit/activity record.',
     inputSchema: RenderLobuViewSchema,
     outputSchema: LobuViewSchema,
-    annotations: { ...READ_ONLY, title: 'Render Lobu view' },
+    annotations: { ...AUDITED_READ, title: 'Render Lobu view' },
+    authorizationReadOnly: true,
     securityScopes: ['mcp:read'],
     mcpMeta: RICH_RESULT_MCP_META,
     handler: renderLobuView,
@@ -550,6 +567,10 @@ function accessLevelRank(level: 'read' | 'write' | 'admin'): number {
   return 3;
 }
 
+export function isAuthorizationReadOnly(tool: ToolDefinition | undefined): boolean {
+  return tool?.authorizationReadOnly ?? (tool?.annotations?.readOnlyHint === true);
+}
+
 function filterSchemaForAccessLevel(
   toolName: string,
   schema: any,
@@ -671,7 +692,7 @@ function computeListedTools(
       // server-supplied fields (e.g. embeddings, auth-bound filters) are
       // accepted at the handler boundary but never advertised to clients.
       let inputSchema = tool.publicInputSchema ?? tool.inputSchema;
-      const readOnlyHint = tool.annotations?.readOnlyHint === true;
+      const authorizationReadOnly = isAuthorizationReadOnly(tool);
 
       if (publicOnly) {
         inputSchema = filterSchemaForPublicActions(tool.name, inputSchema);
@@ -681,7 +702,7 @@ function computeListedTools(
       inputSchema = filterSchemaForAccessLevel(
         tool.name,
         inputSchema,
-        readOnlyHint,
+        authorizationReadOnly,
         maxAccessLevel
       );
       if (!inputSchema) return null;

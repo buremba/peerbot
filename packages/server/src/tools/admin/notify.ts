@@ -224,13 +224,11 @@ async function handleSend(
 
   const orgSlug = await getOrgSlug(ctx.organizationId);
 
-  // Prefer trusted execution provenance. behavior_source remains the
-  // compatibility/attribution hint for non-Behavior callers, but a running
-  // Behavior cannot be redirected onto another Behavior's feedback history.
-  const reactionBehaviorId =
-    ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null;
-  const reactionWindowId =
-    ctx.actingWindowId ?? args.behavior_source?.window_id ?? null;
+  // Feedback is learned from server-stamped execution provenance only.
+  // `behavior_source` remains a validated canvas-attribution hint above, but
+  // caller input must never choose another Behavior's learning history.
+  const reactionBehaviorId = ctx.actingWatcherId ?? null;
+  const reactionWindowId = ctx.actingWindowId ?? null;
   const trackNotificationReaction = async (runId?: number): Promise<void> => {
     if (reactionBehaviorId === null || reactionWindowId === null) return;
     await trackWatcherReaction({

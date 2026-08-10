@@ -1130,10 +1130,10 @@ async function handleExecute(
 	}
 
 	const input = args.input ?? {};
-	const reactionBehaviorId =
-		ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null;
-	const reactionWindowId =
-		ctx.actingWindowId ?? args.behavior_source?.window_id ?? null;
+	// A caller-provided behavior_source is only an attribution hint. Durable
+	// feedback must follow the server-stamped Behavior execution context.
+	const reactionBehaviorId = ctx.actingWatcherId ?? null;
+	const reactionWindowId = ctx.actingWindowId ?? null;
 	const trackOperationReaction = async (runId: number): Promise<void> => {
 		if (reactionBehaviorId === null || reactionWindowId === null) return;
 		await trackWatcherReaction({

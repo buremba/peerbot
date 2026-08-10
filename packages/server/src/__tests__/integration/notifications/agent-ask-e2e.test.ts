@@ -467,6 +467,71 @@ describe("notify input_schema — agent asks a human", () => {
 		);
 	});
 
+	it("cannot attach a caller-supplied ask to another organization's Behavior history", async () => {
+		const victimOrg = await createTestOrganization({ name: "ask provenance victim" });
+		const victimOwner = await createTestUser({
+			email: `ask-victim-${Date.now()}@test.com`,
+		});
+		await addUserToOrganization(victimOwner.id, victimOrg.id, "owner");
+		const sql = getTestDb();
+		const [victimBehavior] = await sql`
+			WITH next_id AS (SELECT nextval('watchers_id_seq')::integer AS id)
+			INSERT INTO watchers (
+				id, watcher_group_id, organization_id, agent_id, created_by, name, slug
+			)
+			SELECT id, id, ${victimOrg.id}, 'victim-agent', ${victimOwner.id},
+				'Victim behavior', ${`victim-behavior-${Date.now()}`}
+			FROM next_id
+			RETURNING id
+		`;
+		const victimBehaviorId = Number(victimBehavior.id);
+		const [victimWindow] = await sql`
+			INSERT INTO events (
+				organization_id, semantic_type, payload_type, payload_data,
+				metadata, occurred_at, created_at, created_by
+			) VALUES (
+				${victimOrg.id}, 'canvas_state', 'json_template', '{}'::jsonb,
+				${sql.json({ watcher_id: victimBehaviorId })},
+				NOW(), NOW(), ${victimOwner.id}
+			)
+			RETURNING id
+		`;
+		const victimWindowId = Number(victimWindow.id);
+
+		const sent = await send({
+			title: "Forged cross-org review",
+			body: "This must never enter the victim Behavior prompt.",
+			input_schema: { type: "object" },
+			behavior_source: {
+				behavior_id: victimBehaviorId,
+				window_id: victimWindowId,
+			},
+		});
+		const [run] = await sql`
+			SELECT watcher_id, window_id FROM runs WHERE id = ${sent.run_id}
+		`;
+		expect(run.watcher_id).toBeNull();
+		expect(run.window_id).toBeNull();
+		const linked = await sql`
+			SELECT id FROM watcher_reactions WHERE run_id = ${sent.run_id}
+		`;
+		expect(linked).toHaveLength(0);
+
+		// Historical malformed rows are filtered on read as well: a feedback row
+		// cannot borrow a run or Behavior from a different organization.
+		await sql`
+			INSERT INTO watcher_reactions (
+				organization_id, watcher_id, window_id, reaction_type,
+				tool_name, tool_args, run_id
+			) VALUES (
+				${orgId}, ${victimBehaviorId}, ${victimWindowId},
+				'notification_sent', 'notify',
+				${sql.json({ title: "Forged cross-org review" })}, ${sent.run_id}
+			)
+		`;
+		expect(await getPastReactionsSummary(victimBehaviorId)).toBeUndefined();
+	});
+
 	it("repairs a missing Behavior feedback edge when an idempotent ask retries", async () => {
 		const sql = getTestDb();
 		const suffix = `${process.pid}_${Date.now()}`;

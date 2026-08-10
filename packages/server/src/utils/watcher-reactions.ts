@@ -94,11 +94,23 @@ export async function getPastReactionsSummary(
            decision.action_output AS decision_output,
            decision.error_message AS decision_error
     FROM watcher_reactions wr
-    LEFT JOIN canvas_windows ww ON ww.id = wr.window_id
+    JOIN watchers owning_watcher
+      ON owning_watcher.id = wr.watcher_id
+     AND owning_watcher.organization_id = wr.organization_id
+    LEFT JOIN canvas_windows ww
+      ON ww.id = wr.window_id
+     AND ww.watcher_id = wr.watcher_id
+    LEFT JOIN runs linked_run
+      ON linked_run.id = wr.run_id
+     AND linked_run.organization_id = wr.organization_id
+     AND linked_run.watcher_id = wr.watcher_id
+     AND linked_run.window_id = wr.window_id
     LEFT JOIN runs decision
-      ON decision.id = wr.run_id
-     AND decision.organization_id = wr.organization_id
+      ON decision.id = linked_run.id
+     AND decision.run_type = 'internal'
+     AND decision.action_key = 'agent_ask'
     WHERE wr.watcher_id = ${watcherId}
+      AND (wr.run_id IS NULL OR linked_run.id IS NOT NULL)
     ORDER BY wr.created_at DESC
     LIMIT ${limit}
   `;
@@ -189,6 +201,18 @@ export async function trackWatcherReaction(params: {
           hashtext(${lockKey})
         )
       `;
+      const matchingRuns = await tx`
+        SELECT id
+        FROM runs
+        WHERE id = ${params.runId}
+          AND organization_id = ${params.organizationId}
+          AND watcher_id = ${params.watcherId}
+          AND window_id = ${params.windowId}
+        FOR KEY SHARE
+      `;
+      if (matchingRuns.length === 0) {
+        throw new Error('Run provenance does not match the Behavior feedback edge.');
+      }
       await tx`
         INSERT INTO watcher_reactions (
           organization_id, watcher_id, window_id,

@@ -308,4 +308,64 @@ describe("output budget", () => {
     expect(result.success).toBe(false);
     expect(result.error?.name).toBe("OutputSizeExceeded");
   });
+
+  it("caps by serialized bytes, so escaped strings cannot exceed the budget", async () => {
+    const result = await runOrSkip({
+      // Each newline serializes as two bytes, so the raw prefix must be cut
+      // shorter than the budget to keep the serialized form under it.
+      source: "export default async () => '\\n'.repeat(700000);",
+      sdk: stubSDK(),
+      sdkMode: "full",
+    });
+    if (!result) return;
+    expect(result.success).toBe(true);
+    const serialized = Buffer.byteLength(
+      JSON.stringify(result.returnValue),
+      "utf8",
+    );
+    expect(serialized).toBeLessThanOrEqual(1_048_576 - 128);
+    expect(result.returnTruncated).toBeDefined();
+    expect(result.returnTruncated!.dropped_chars).toBeGreaterThan(0);
+  });
+
+  it("truncates key-heavy objects in linear time", async () => {
+    const result = await runOrSkip({
+      source: [
+        "export default async () => {",
+        "  const obj = {};",
+        "  for (let i = 0; i < 150000; i++) obj['k' + i] = i;",
+        "  return obj;",
+        "};",
+      ].join("\n"),
+      sdk: stubSDK(),
+      sdkMode: "full",
+    });
+    if (!result) return;
+    expect(result.success).toBe(true);
+    expect(result.returnTruncated).toBeDefined();
+    expect(result.returnTruncated!.dropped_keys).toBeGreaterThan(0);
+  });
+
+  it("latches the crossing guard so saturation stops later SDK work", async () => {
+    const sdk = stubSDK({
+      entities: {
+        list: async () => [{ ok: true }],
+      } as never,
+    });
+    const result = await runOrSkip({
+      source: [
+        "export default async (_ctx, client) => {",
+        "  console.log('x'.repeat(4200000));",
+        "  try { await client.entities.list(); } catch (e) {}",
+        "  try { await client.entities.list(); } catch (e) {}",
+        "  return 'done';",
+        "};",
+      ].join("\n"),
+      sdk,
+      sdkMode: "full",
+    });
+    if (!result) return;
+    expect(result.success).toBe(false);
+    expect(result.error?.name).toBe("OutputSizeExceeded");
+  });
 });

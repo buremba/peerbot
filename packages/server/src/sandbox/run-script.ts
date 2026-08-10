@@ -235,15 +235,28 @@ function jsonBytes(value: unknown): number {
 	return json === undefined ? 0 : Buffer.byteLength(json, "utf8");
 }
 
-/** Longest byte-bounded UTF-8 prefix of `value`. */
+/** Bytes of `value` as a JSON string literal, excluding the wrapping quotes. */
+function serializedStringBytes(value: string): number {
+	return jsonBytes(value) - 2;
+}
+
+/**
+ * Longest prefix of `value` whose JSON-serialized byte size fits `maxBytes`
+ * (not raw bytes — escaped characters such as `\n` or `"` serialize larger),
+ * without splitting a UTF-16 surrogate pair.
+ */
 function truncateStringToBytes(value: string, maxBytes: number): string {
-	if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+	if (serializedStringBytes(value) <= maxBytes) return value;
 	let lo = 0;
 	let hi = value.length;
 	while (lo < hi) {
 		const mid = (lo + hi + 1) >> 1;
-		if (Buffer.byteLength(value.slice(0, mid), "utf8") <= maxBytes) lo = mid;
+		if (serializedStringBytes(value.slice(0, mid)) <= maxBytes) lo = mid;
 		else hi = mid - 1;
+	}
+	if (lo > 0 && lo < value.length) {
+		const c = value.charCodeAt(lo - 1);
+		if (c >= 0xd800 && c <= 0xdbff) lo -= 1; // don't split a surrogate pair
 	}
 	return value.slice(0, lo);
 }
@@ -298,16 +311,18 @@ function encodeWithinBudget(value: unknown, state: TruncState, depth: number): u
 		state.used += 2; // braces
 		const out: Record<string, unknown> = {};
 		const entries = Object.entries(value as Record<string, unknown>);
+		let kept = 0;
 		for (const [key, child] of entries) {
-			const sep = Object.keys(out).length > 0 ? 1 : 0;
+			const sep = kept > 0 ? 1 : 0;
 			const keyCost = jsonBytes(key);
 			if (state.used + sep + keyCost + 2 > state.budget) break;
-			state.used += sep + keyCost;
+			state.used += sep + keyCost + 1; // comma + key + colon
 			const encoded = encodeWithinBudget(child, state, depth + 1);
 			if (encoded === SKIP) break;
 			out[key] = encoded;
+			kept++;
 		}
-		state.droppedKeys += entries.length - Object.keys(out).length;
+		state.droppedKeys += entries.length - kept;
 		return out;
 	}
 	if (typeof value === "string") {
@@ -353,6 +368,10 @@ function truncateJsonValue(
 	};
 	let out = encodeWithinBudget(value, state, 0);
 	if (out === SKIP) out = { __lobu_truncated: true };
+	if (jsonBytes(out) > budgetBytes) {
+		// Never emit more than the budget promised, even on a walker bug.
+		out = { __lobu_truncated: true, total_bytes: totalBytes };
+	}
 	return {
 		value: out,
 		meta: {
@@ -885,6 +904,11 @@ export async function runScript(
 		await jail.set(
 			"__sdk_dispatch",
 			new ivm.Reference(async (path: string, payloadJson: string) => {
+				// Latch off once the crossing budget is saturated: don't run any
+				// more SDK work (DB/HTTP), just surface the oversize failure.
+				if (crossingOversize) {
+					throw crossingOversizeError();
+				}
 				sdkCalls++;
 				if (sdkCalls > limits.sdkCallQuota) {
 					throw new Error(
@@ -1041,11 +1065,11 @@ export async function runScript(
 		await jail.set(
 			"__console_call",
 			new ivm.Reference((level: "log" | "warn" | "error", message: string) => {
-				// The crossing guard still counts console bytes — a huge or
-				// repeated message is a host↔guest copy even when the collected
-				// log budget is already full. The throw can't come from here (the
-				// guest console swallows host errors), so it surfaces at the next
-				// dispatch or at the final return via `crossingOversize`.
+				// Once saturated, stop processing console calls entirely. The
+				// crossing guard can't throw here (the guest console swallows host
+				// errors), so saturation surfaces at the next dispatch entry check
+				// or at the final return via `crossingOversize`.
+				if (crossingOversize) return;
 				crossingBytes += Buffer.byteLength(message, "utf8");
 				if (crossingBytes > limits.crossingBytes) {
 					crossingOversize = true;

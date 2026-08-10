@@ -252,7 +252,6 @@ describe("caller override never replaces a target-state verdict", () => {
 	// lacks execute()) must keep its "unsupported" verdict for every caller —
 	// the caller-scope downgrade only applies to ops whose target was ready.
 	let orgId: string;
-	let ownerCtx: ToolContext;
 	let readOnlyCtx: ToolContext;
 
 	beforeAll(async () => {
@@ -262,7 +261,6 @@ describe("caller override never replaces a target-state verdict", () => {
 			orgName: "Member Execute Unsupported Org",
 		});
 		orgId = org.id;
-		ownerCtx = ctx;
 
 		await createTestConnectorDefinition({
 			key: "demo.member.unsupported",

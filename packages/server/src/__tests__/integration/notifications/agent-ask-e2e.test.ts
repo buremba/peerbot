@@ -19,6 +19,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { pgTextArray } from "../../../db/client";
 import type { Env } from "../../../index";
 import { buildClientSDK } from "../../../sandbox/client-sdk";
+import { getNextNumericId } from "../../../tools/admin/helpers/db-helpers";
 import type { AuthContext } from "../../../tools/execute";
 import { executeTool } from "../../../tools/execute";
 import { getPastReactionsSummary } from "../../../utils/watcher-reactions";
@@ -89,7 +90,10 @@ describe("notify input_schema — agent asks a human", () => {
 
 	beforeAll(async () => {
 		// No cleanupTestDatabase: every assertion is scoped to this run's fresh
-		// org id, and the full-table wipe alone exceeds the 60s hook budget.
+		// org id, and the full-table wipe alone exceeds the 60s hook budget. Allocate
+		// the Behavior id with the same transaction-safe MAX(id)+1 path as the
+		// production create handler because earlier suites may leave the legacy
+		// watchers_id_seq behind the table.
 		await initWorkspaceProvider();
 		const org = await createTestOrganization({ name: "agent ask e2e" });
 		orgId = org.id;
@@ -98,16 +102,18 @@ describe("notify input_schema — agent asks a human", () => {
 		humanCtx = baseCtx(owner.id, null);
 		agentCtx = baseCtx(owner.id, "asking-agent");
 		const sql = getTestDb();
-		const [behavior] = await sql`
-			WITH next_id AS (SELECT nextval('watchers_id_seq')::integer AS id)
-			INSERT INTO watchers (
-				id, watcher_group_id, organization_id, agent_id, created_by, name, slug
-			)
-			SELECT id, id, ${org.id}, 'asking-agent', ${owner.id},
-				'Ask provenance behavior', 'ask-provenance-behavior'
-			FROM next_id
-			RETURNING id
-		`;
+		const [behavior] = await sql.begin(async (tx) => {
+			const id = await getNextNumericId(tx, "watchers");
+			return tx`
+				INSERT INTO watchers (
+					id, watcher_group_id, organization_id, agent_id, created_by, name, slug
+				) VALUES (
+					${id}, ${id}, ${org.id}, 'asking-agent', ${owner.id},
+					'Ask provenance behavior', 'ask-provenance-behavior'
+				)
+				RETURNING id
+			`;
+		});
 		behaviorId = Number(behavior.id);
 		const [window] = await sql`
 			INSERT INTO events (
@@ -1225,16 +1231,18 @@ describe("notify input_schema — agent asks a human", () => {
 		});
 		await addUserToOrganization(victimOwner.id, victimOrg.id, "owner");
 		const sql = getTestDb();
-		const [victimBehavior] = await sql`
-			WITH next_id AS (SELECT nextval('watchers_id_seq')::integer AS id)
-			INSERT INTO watchers (
-				id, watcher_group_id, organization_id, agent_id, created_by, name, slug
-			)
-			SELECT id, id, ${victimOrg.id}, 'victim-agent', ${victimOwner.id},
-				'Victim behavior', ${`victim-behavior-${Date.now()}`}
-			FROM next_id
-			RETURNING id
-		`;
+		const [victimBehavior] = await sql.begin(async (tx) => {
+			const id = await getNextNumericId(tx, "watchers");
+			return tx`
+				INSERT INTO watchers (
+					id, watcher_group_id, organization_id, agent_id, created_by, name, slug
+				) VALUES (
+					${id}, ${id}, ${victimOrg.id}, 'victim-agent', ${victimOwner.id},
+					'Victim behavior', ${`victim-behavior-${Date.now()}`}
+				)
+				RETURNING id
+			`;
+		});
 		const victimBehaviorId = Number(victimBehavior.id);
 		const [victimWindow] = await sql`
 			INSERT INTO events (

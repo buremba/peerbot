@@ -666,7 +666,7 @@ describe("notify input_schema — agent asks a human", () => {
 					properties: { plan: { $ref: "#/$defs/plan" } },
 					required: ["plan"],
 				},
-				error: /keyword '\$ref' is not supported/i,
+				error: /keyword '\$(?:defs|ref)' is not supported/i,
 			},
 			{
 				question: "Question with a detached schema identifier",
@@ -748,6 +748,26 @@ describe("notify input_schema — agent asks a human", () => {
 					required: ["answer"],
 				},
 				error: /keyword 'pattern' is not supported/i,
+			},
+			{
+				question: "Question with encoded string content",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: { type: "string", contentEncoding: "base64" },
+					},
+				},
+				error: /keyword 'contentEncoding' is not supported/i,
+			},
+			{
+				question: "Question with an OpenAPI nullable flag",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: { type: "string", nullable: true },
+					},
+				},
+				error: /keyword 'nullable' is not supported/i,
 			},
 			{
 				question: "Question with an impossible formatted answer",

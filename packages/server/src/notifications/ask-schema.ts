@@ -84,57 +84,8 @@ const ASK_SCHEMA_LIMITS = {
  * second, server-side implementation of JSON Schema satisfiability and keeps
  * already-admitted v1 asks stable across renderer changes.
  */
-const UNSUPPORTED_KEYWORDS = new Set([
-	"$anchor",
-	"$async",
-	"$dynamicAnchor",
-	"$dynamicRef",
-	"$id",
-	"$recursiveAnchor",
-	"$recursiveRef",
-	"$ref",
-	"additionalItems",
-	"allOf",
-	"const",
-	"contains",
-	"dependencies",
-	"dependentRequired",
-	"dependentSchemas",
-	"else",
-	"exclusiveMaximum",
-	"exclusiveMinimum",
-	"format",
-	"formatExclusiveMaximum",
-	"formatExclusiveMinimum",
-	"formatMaximum",
-	"formatMinimum",
-	"if",
-	"maxContains",
-	"maxItems",
-	"maxLength",
-	"maxProperties",
-	"maximum",
-	"minContains",
-	"minItems",
-	"minLength",
-	"minProperties",
-	"minimum",
-	"multipleOf",
-	"not",
-	"oneOf",
-	"pattern",
-	"patternProperties",
-	"prefixItems",
-	"propertyNames",
-	"then",
-	"unevaluatedItems",
-	"unevaluatedProperties",
-	"uniqueItems",
-]);
-
-const NULLABLE_WRAPPER_ANNOTATIONS = new Set([
+const ANNOTATION_KEYWORDS = new Set([
 	"$comment",
-	"anyOf",
 	"default",
 	"deprecated",
 	"description",
@@ -143,6 +94,22 @@ const NULLABLE_WRAPPER_ANNOTATIONS = new Set([
 	"readOnly",
 	"title",
 	"writeOnly",
+]);
+
+const SUPPORTED_SCHEMA_KEYWORDS = new Set([
+	...ANNOTATION_KEYWORDS,
+	"additionalProperties",
+	"anyOf",
+	"enum",
+	"items",
+	"properties",
+	"required",
+	"type",
+]);
+
+const NULLABLE_WRAPPER_KEYWORDS = new Set([
+	...ANNOTATION_KEYWORDS,
+	"anyOf",
 ]);
 
 /** Traverse schema positions, never property names such as a field named pattern. */
@@ -159,23 +126,21 @@ function findUnsupportedKeyword(root: Record<string, unknown>): string | null {
 		}
 		const schema = current as Record<string, unknown>;
 		const unsupported = Object.keys(schema).find((keyword) =>
-			UNSUPPORTED_KEYWORDS.has(keyword),
+			!SUPPORTED_SCHEMA_KEYWORDS.has(keyword),
 		);
 		if (unsupported) return unsupported;
-		for (const keyword of ["additionalProperties", "contentSchema", "items"]) {
+		for (const keyword of ["additionalProperties", "items"]) {
 			const child = schema[keyword];
 			if (child !== undefined) stack.push(child);
 		}
 		if (Array.isArray(schema.anyOf)) stack.push(...schema.anyOf);
-		for (const keyword of ["$defs", "definitions", "properties"]) {
-			const children = schema[keyword];
-			if (
-				children !== null &&
-				typeof children === "object" &&
-				!Array.isArray(children)
-			) {
-				stack.push(...Object.values(children));
-			}
+		const properties = schema.properties;
+		if (
+			properties !== null &&
+			typeof properties === "object" &&
+			!Array.isArray(properties)
+		) {
+			stack.push(...Object.values(properties));
 		}
 	}
 	return null;
@@ -316,7 +281,7 @@ function checkFormProperty(params: {
 	const { renderSchema, wrapped } = unwrapNullableProperty(property);
 	if (wrapped) {
 		const unsupportedSibling = Object.keys(property).find(
-			(keyword) => !NULLABLE_WRAPPER_ANNOTATIONS.has(keyword),
+			(keyword) => !NULLABLE_WRAPPER_KEYWORDS.has(keyword),
 		);
 		if (unsupportedSibling) {
 			return `input_schema property '${field}' nullable wrapper sibling '${unsupportedSibling}' is not supported by the answer form`;

@@ -16,7 +16,9 @@
  */
 
 import { beforeAll, describe, expect, it } from "vitest";
+import { pgTextArray } from "../../../db/client";
 import type { Env } from "../../../index";
+import { buildClientSDK } from "../../../sandbox/client-sdk";
 import type { AuthContext } from "../../../tools/execute";
 import { executeTool } from "../../../tools/execute";
 import { getPastReactionsSummary } from "../../../utils/watcher-reactions";
@@ -216,6 +218,32 @@ describe("notify input_schema — agent asks a human", () => {
 		]);
 	});
 
+	it("routes a numeric enum to the form so its JSON type is preserved", async () => {
+		const sent = await send({
+			title: "How many rollout waves?",
+			input_schema: {
+				type: "object",
+				properties: { waves: { type: "integer", enum: [2, 3] } },
+				required: ["waves"],
+			},
+		});
+		const card = (await activity()).items.find((i) => i.run_id === sent.run_id);
+
+		// Inline choices are strings in the Activity contract. Turning `2` into
+		// `"2"` would make the complete schema validator refuse every click, so a
+		// typed numeric enum must use the form instead.
+		expect(card?.interaction_inline).toBeFalsy();
+		expect(card?.interaction_choices).toBeUndefined();
+
+		const approved = (await executeTool(
+			"manage_operations",
+			{ action: "approve", run_id: sent.run_id, input: { waves: 2 } },
+			TEST_ENV,
+			humanCtx,
+		)) as { approved?: boolean };
+		expect(approved.approved).toBe(true);
+	});
+
 	it("a lone OPTIONAL enum routes to the form — buttons cannot say 'no answer'", async () => {
 		const sent = await send({
 			title: "Optional: preferred demo slot?",
@@ -309,6 +337,43 @@ describe("notify input_schema — agent asks a human", () => {
 		expect(run.action_output).toEqual({ answer: { plan: "legacy-pro" } });
 	});
 
+	it("completes the ClientSDK send → answer → getRun lifecycle", async () => {
+		const client = buildClientSDK(agentCtx, TEST_ENV);
+		const sent = await client.notifications.send({
+			title: "Which release lane should the SDK use?",
+			input_schema: {
+				type: "object",
+				properties: { lane: { enum: ["stable", "canary"] } },
+				required: ["lane"],
+			},
+		});
+		expect(sent.event_id).toBeGreaterThan(0);
+		expect(sent.run_id).toBeGreaterThan(0);
+
+		const pending = (await client.operations.getRun(Number(sent.run_id))) as {
+			run: Record<string, unknown>;
+		};
+		expect(pending.run.status).toBe("pending");
+
+		const approved = (await executeTool(
+			"manage_operations",
+			{
+				action: "approve",
+				run_id: sent.run_id,
+				input: { lane: "stable" },
+			},
+			TEST_ENV,
+			humanCtx,
+		)) as { approved?: boolean };
+		expect(approved.approved).toBe(true);
+
+		const completed = (await client.operations.getRun(Number(sent.run_id))) as {
+			run: Record<string, unknown>;
+		};
+		expect(completed.run.status).toBe("completed");
+		expect(completed.run.output).toEqual({ answer: { lane: "stable" } });
+	});
+
 	it("refuses a blank answer to a required field and keeps the run answerable", async () => {
 		const sent = await send({
 			title: "What should the enterprise tier cost?",
@@ -358,6 +423,112 @@ describe("notify input_schema — agent asks a human", () => {
 		`;
 		expect(done.approval_status).toBe("approved");
 		expect(done.action_output).toEqual({ answer: { price: 499 } });
+	});
+
+	it("refuses an answer that violates the declared JSON Schema and keeps the run answerable", async () => {
+		const sent = await send({
+			title: "Which plan should we grandfather?",
+			input_schema: {
+				type: "object",
+				properties: {
+					plan: {
+						type: "string",
+						enum: ["legacy-pro", "legacy-enterprise"],
+					},
+				},
+				required: ["plan"],
+				additionalProperties: false,
+			},
+		});
+
+		const invalid = (await executeTool(
+			"manage_operations",
+			{
+				action: "approve",
+				run_id: sent.run_id,
+				input: { plan: "made-up-plan" },
+			},
+			TEST_ENV,
+			humanCtx,
+		)) as { error?: string; approved?: boolean };
+		expect(invalid.approved).toBeUndefined();
+		expect(invalid.error).toMatch(/plan: must be one of/i);
+
+		const sql = getTestDb();
+		const [held] = await sql`
+			SELECT approval_status, status, action_output
+			FROM runs WHERE id = ${sent.run_id}
+		`;
+		expect(held.approval_status).toBe("pending");
+		expect(held.status).toBe("pending");
+		expect(held.action_output).toBeNull();
+	});
+
+	it("rejects invalid or unanswerable schemas before creating a pending run", async () => {
+		const cases = [
+			{
+				question: "Question with an invalid schema",
+				inputSchema: {
+					type: "object",
+					properties: { answer: { type: "not-a-json-schema-type" } },
+				},
+				error: /input_schema is invalid/i,
+			},
+			{
+				question: "Question with a scalar answer",
+				inputSchema: { type: "string" },
+				error: /must describe an object answer/i,
+			},
+			{
+				question: "Question with an invisible required field",
+				inputSchema: { type: "object", required: ["missing"] },
+				error: /fields missing from properties: missing/i,
+			},
+			{
+				question: "Question with choices that violate their field type",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: { type: "number", enum: ["one", "two"] },
+					},
+					required: ["answer"],
+				},
+				error: /choice 'one' does not satisfy/i,
+			},
+			{
+				question: "Question with a nested object",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: {
+							type: "object",
+							properties: { detail: { type: "string" } },
+						},
+					},
+				},
+				error: /must not contain a nested object/i,
+			},
+		];
+
+		for (const testCase of cases) {
+			await expect(
+				send({
+					title: testCase.question,
+					input_schema: testCase.inputSchema,
+				}),
+			).rejects.toThrow(testCase.error);
+		}
+
+		const sql = getTestDb();
+		const runs = await sql`
+			SELECT id FROM runs
+			WHERE organization_id = ${orgId}
+				AND action_key = 'agent_ask'
+				AND action_input->>'question' = ANY(
+					${pgTextArray(cases.map((testCase) => testCase.question))}::text[]
+				)
+		`;
+		expect(runs).toHaveLength(0);
 	});
 
 	it("stamps WHO is asking onto the interaction the reviewer opens", async () => {

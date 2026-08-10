@@ -494,19 +494,24 @@ export default async (_ctx, client) => {
 	},
 	"notifications.send": {
 		summary:
-			"Send a notification to org users. With `input_schema`, it becomes an answerable human question on the existing approval/rejection rail; the returned `run_id` can be read with `operations.getRun`, and Reject can carry a reason. Without `input_schema`, it writes an FYI `agent_message`. Both fan out to active bot connections. Pass `behavior_source` from a reaction for feedback attribution.",
+			"Send a notification to org users. With a flat object `input_schema`, it becomes a human question on the existing approval/rejection rail: in-app surfaces render answer controls, chat delivery links to Lobu when input is needed, and the returned `run_id` can be read with `operations.getRun` until its output contains `{ answer: ... }`. Without `input_schema`, it sends an FYI. Both fan out to active bot connections. Pass `behavior_source` from a reaction for feedback attribution.",
 		access: "write",
 		signature:
 			"notifications.send(input: { title: string; body?: string; card?: CardElement; recipients?: 'admins' | 'all' | string[]; resource_url?: string; idempotency_key?: string; connection_id?: string; data?: object; input_schema?: object; behavior_source?: { behavior_id: number; window_id: number } }): Promise<{ notified_count: number; event_id: number | null; url: string | null; run_id?: number }>",
 		example:
-			"await client.notifications.send({ title: 'Weekly funnel digest', body: '3 new leads...', behavior_source: { behavior_id: ctx.window.behavior_id, window_id: ctx.window.id } });",
-		usageExample: `// Push a Behavior digest to the org's Slack/Telegram connections + inbox.
-export default async (ctx, client) => {
-  await client.notifications.send({
-    title: 'Weekly funnel digest',
-    body: 'Top action: send the Acme pilot offer\\nNew leads: 3',
-    behavior_source: { behavior_id: ctx.window.behavior_id, window_id: ctx.window.id },
+			"await client.notifications.send({ title: 'Choose a launch window', input_schema: { type: 'object', properties: { window: { enum: ['Monday', 'Friday'] } }, required: ['window'] } });",
+		usageExample: `// Ask a human and return the durable handle the caller can poll.
+export default async (_ctx, client) => {
+  const pending = await client.notifications.send({
+    title: 'Choose a launch window',
+    body: 'Both candidates passed the release checks.',
+    input_schema: {
+      type: 'object',
+      properties: { window: { title: 'Launch window', enum: ['Monday', 'Friday'] } },
+      required: ['window'],
+    },
   });
+  return pending; // When run_id is present, read it later with operations.getRun.
 };`,
 	},
 

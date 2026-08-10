@@ -25,11 +25,16 @@
  * builder gate applies a held mutation, an ask records a human's answer.
  */
 
+import { getErrorMessage } from "@lobu/core";
+import { createAjv, formatAjvError } from "@lobu/core/ajv";
+import type { ValidateFunction } from "ajv";
 import { getDb } from "../db/client";
 import { currentMcpActivityEventMetadata } from "../lobu/stores/mcp-client-conversations";
 import { resolveRunInitiator } from "../tools/initiator";
 import type { ToolContext } from "../tools/registry";
+import { ToolUserError } from "../utils/errors";
 import { insertEvent } from "../utils/insert-event";
+import { exceedsValidationLimits } from "../utils/metadata-limits";
 
 /**
  * `runs.action_key` for an agent-authored ask.
@@ -94,14 +99,12 @@ function readEnumOptions(value: unknown): AskChoice[] | null {
 	if (candidate.length < 2) return null;
 	const choices: AskChoice[] = [];
 	for (const option of candidate) {
-		// Only scalars make sense as a button; an object-valued enum is a form.
-		if (typeof option === "string") {
-			choices.push({ value: option, label: option });
-		} else if (typeof option === "number" || typeof option === "boolean") {
-			choices.push({ value: String(option), label: String(option) });
-		} else {
-			return null;
-		}
+		// Inline choice values travel through the Activity contract as strings.
+		// Stringifying a numeric/boolean enum changes the answer's JSON type, so the
+		// complete schema validator would refuse every click. Route those schemas to
+		// the form, which preserves the option's original scalar value.
+		if (typeof option !== "string") return null;
+		choices.push({ value: option, label: option });
 	}
 	return choices;
 }
@@ -151,12 +154,11 @@ export function resolveAskAffordance(
  * Which required properties the answer left unanswered, as a reviewer-facing
  * message — or null when the answer is complete.
  *
- * Deliberately checks only presence of the REQUIRED fields, not full JSON Schema
- * validation: the question's own schema is the contract, and a reviewer who
- * answered every field the agent marked required has answered the question.
- * Empty string and empty array count as unanswered — the web form drops empty
- * inputs before submitting, so an untouched form arrives as `{}` and would
- * otherwise record a successful, empty answer.
+ * This helper only supplies the friendlier REQUIRED-field message; the approval
+ * handler follows it with full JSON Schema validation. Empty string and empty
+ * array count as unanswered — the web form drops empty inputs before submitting,
+ * so an untouched form arrives as `{}` and would otherwise record a successful,
+ * empty answer.
  */
 export function findUnansweredRequired(
 	schema: Record<string, unknown> | null | undefined,
@@ -179,6 +181,120 @@ export function findUnansweredRequired(
 		.join(", ")}. Approve again with those fields in \`input\`.`;
 }
 
+function compileAskInputSchema(
+	schema: Record<string, unknown>,
+): { validate: ValidateFunction } | { error: string } {
+	// Both the schema and the eventual answer are untrusted agent/user input.
+	// Bound the schema before AJV walks it, and build a request-scoped AJV so an
+	// unbounded stream of unique question schemas cannot grow a process-global
+	// validator cache for the lifetime of a gateway replica.
+	if (exceedsValidationLimits(schema)) {
+		return { error: "input_schema exceeds the allowed size or nesting limits" };
+	}
+	try {
+		const ajv = createAjv({
+			allErrors: false,
+			strict: false,
+			coerceTypes: false,
+		});
+		return { validate: ajv.compile(schema) };
+	} catch (error) {
+		return { error: `input_schema is invalid: ${getErrorMessage(error)}` };
+	}
+}
+
+/** Validate the contract before a pending run/event is durably created. */
+export function validateAskInputSchema(
+	schema: Record<string, unknown>,
+): string | null {
+	const compiled = compileAskInputSchema(schema);
+	if ("error" in compiled) return compiled.error;
+
+	// `manage_operations.approve` accepts an object input, and the in-app form
+	// renders top-level `properties`. A valid JSON Schema for a scalar root would
+	// therefore queue a question no available approval path can answer.
+	const declaredType = schema.type;
+	const acceptsObject =
+		declaredType === undefined ||
+		declaredType === "object" ||
+		(Array.isArray(declaredType) && declaredType.includes("object"));
+	if (!acceptsObject) {
+		return "input_schema must describe an object answer";
+	}
+
+	const properties =
+		schema.properties !== null &&
+		typeof schema.properties === "object" &&
+		!Array.isArray(schema.properties)
+			? (schema.properties as Record<string, unknown>)
+			: {};
+	const required = Array.isArray(schema.required)
+		? schema.required.filter((field): field is string => typeof field === "string")
+		: [];
+	const unrenderedRequired = required.filter(
+		(field) => !Object.hasOwn(properties, field),
+	);
+	if (unrenderedRequired.length > 0) {
+		return `input_schema requires fields missing from properties: ${unrenderedRequired.join(", ")}`;
+	}
+	for (const [field, propertySchema] of Object.entries(properties)) {
+		if (
+			propertySchema !== null &&
+			typeof propertySchema === "object" &&
+			!Array.isArray(propertySchema)
+		) {
+			const property = propertySchema as Record<string, unknown>;
+			const propertyType = property.type;
+			const itemSchema = property.items as Record<string, unknown> | undefined;
+			const itemType = itemSchema?.type;
+			const containsObject =
+				propertyType === "object" ||
+				(Array.isArray(propertyType) && propertyType.includes("object")) ||
+				itemType === "object" ||
+				(Array.isArray(itemType) && itemType.includes("object"));
+			if (containsObject) {
+				return `input_schema property '${field}' must not contain a nested object`;
+			}
+		}
+	}
+
+	const affordance = resolveAskAffordance(schema);
+	if (affordance.kind === "choice") {
+		for (const choice of affordance.choices) {
+			if (!compiled.validate({ [affordance.field]: choice.value })) {
+				return `input_schema choice '${choice.value}' does not satisfy the declared schema`;
+			}
+		}
+	}
+
+	// With no fields, every surface can only submit `{}` as an approval. Compile
+	// success alone is insufficient: constraints such as `minProperties`, `not`,
+	// or `allOf: [{ type: "string" }]` can still make that decision impossible.
+	if (affordance.kind === "binary" && !compiled.validate({})) {
+		return "input_schema cannot be answered as a no-field decision";
+	}
+
+	return null;
+}
+
+/** Validate a human answer against the complete agent-authored JSON Schema. */
+export function validateAskAnswer(
+	schema: Record<string, unknown>,
+	input: Record<string, unknown> | null,
+): string | null {
+	const answer = input ?? {};
+	if (exceedsValidationLimits(answer)) {
+		return "The answer exceeds the allowed size or nesting limits.";
+	}
+	const compiled = compileAskInputSchema(schema);
+	if ("error" in compiled) return compiled.error;
+	if (compiled.validate(answer)) return null;
+	const firstError = compiled.validate.errors?.[0];
+	return firstError
+		? `Answer ${formatAjvError(firstError)}`
+		: "Answer does not match input_schema";
+}
+
 /**
  * Queue an ask for a human: the pending run plus the interaction event that
  * carries its schema. The caller writes the notification that POINTS at the
@@ -191,6 +307,9 @@ export async function queueAgentAsk(params: {
 	body: string | null;
 	inputSchema: Record<string, unknown>;
 }): Promise<{ runId: number; interactionEventId: number }> {
+	const schemaError = validateAskInputSchema(params.inputSchema);
+	if (schemaError) throw new ToolUserError(schemaError, 422);
+
 	const sql = getDb();
 	const proposal: AgentAskProposal = {
 		question: params.question,

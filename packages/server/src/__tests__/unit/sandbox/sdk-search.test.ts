@@ -399,6 +399,19 @@ describe("sdkSearch", () => {
 		expect(send.results[0]).toContain("accepted aliases: message → body");
 	});
 
+	it("discovers the complete question contract for notifications.send", async () => {
+		const result = await sdkSearch(
+			{ query: "notifications.send" },
+			stubEnv,
+			writeCtx,
+		);
+
+		expect(result.match_count).toBe(1);
+		expect(result.results[0]).toContain("input_schema?: object");
+		expect(result.results[0]).toContain("run_id?: number");
+		expect(result.results[0]).toContain("operations.getRun");
+	});
+
 	it("advertises authProfiles.get to a read-tier caller", async () => {
 		const result = await sdkSearch(
 			{ query: "authProfiles.get", mode: "read" },

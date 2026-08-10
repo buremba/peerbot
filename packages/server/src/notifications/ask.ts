@@ -204,7 +204,7 @@ function compileAskInputSchema(
 }
 
 /** Validate the contract before a pending run/event is durably created. */
-export function validateAskInputSchema(
+function validateAskInputSchema(
 	schema: Record<string, unknown>,
 ): string | null {
 	const compiled = compileAskInputSchema(schema);
@@ -236,6 +236,24 @@ export function validateAskInputSchema(
 	);
 	if (unrenderedRequired.length > 0) {
 		return `input_schema requires fields missing from properties: ${unrenderedRequired.join(", ")}`;
+	}
+
+	// The form can only submit declared top-level properties. Bound the root
+	// cardinality contract to that exact set so a schema cannot require more
+	// answered fields than any supported surface can provide. This also catches
+	// contradictory minProperties/maxProperties and required/maxProperties pairs.
+	const minimumAnswered = Math.max(
+		typeof schema.minProperties === "number" ? schema.minProperties : 0,
+		required.length,
+	);
+	const maximumAnswerable = Math.min(
+		Object.keys(properties).length,
+		typeof schema.maxProperties === "number"
+			? schema.maxProperties
+			: Number.POSITIVE_INFINITY,
+	);
+	if (minimumAnswered > maximumAnswerable) {
+		return `input_schema requires at least ${minimumAnswered} answered fields but only ${maximumAnswerable} can be rendered`;
 	}
 	for (const [field, propertySchema] of Object.entries(properties)) {
 		if (

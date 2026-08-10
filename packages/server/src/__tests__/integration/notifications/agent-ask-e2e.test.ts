@@ -508,6 +508,16 @@ describe("notify input_schema — agent asks a human", () => {
 				},
 				error: /must not contain a nested object/i,
 			},
+			{
+				question: "Question requiring more fields than its form exposes",
+				inputSchema: {
+					type: "object",
+					properties: { answer: { type: "string" } },
+					minProperties: 2,
+					additionalProperties: false,
+				},
+				error: /requires at least 2 answered fields but only 1 can be rendered/i,
+			},
 		];
 
 		for (const testCase of cases) {

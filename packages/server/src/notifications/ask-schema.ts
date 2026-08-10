@@ -405,9 +405,6 @@ export function validateAskInputSchema(
 			}
 		}
 	}
-	if (affordance.kind === "binary" && !compiled.validate({})) {
-		return "input_schema cannot be answered as a no-field decision";
-	}
 	return null;
 }
 

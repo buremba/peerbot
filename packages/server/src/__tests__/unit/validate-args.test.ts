@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { Type } from "@sinclair/typebox";
-import { getAllTools, getTool } from "../../tools/registry";
+import { getAllTools, getMcpTools, getTool } from "../../tools/registry";
 import {
   markAcceptedInternalFields,
   validateToolArgs,
@@ -324,8 +324,9 @@ describe("registry completeness", () => {
     // `list_organizations` is a throw-stub in the registry: executeTool
     // special-cases it and calls the (wrapped) listOrganizations directly.
     const exempt = new Set(["list_organizations"]);
-    const unwrapped = getAllTools()
+    const unwrapped = [...getAllTools(), ...getMcpTools()]
       .map((t) => t.name)
+      .filter((name, index, names) => names.indexOf(name) === index)
       .filter((name) => !exempt.has(name))
       .filter((name) => brandedName(getTool(name)?.handler) !== name);
     expect(unwrapped).toEqual([]);

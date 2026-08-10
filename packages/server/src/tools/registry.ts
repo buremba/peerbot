@@ -201,7 +201,12 @@ export interface ToolDefinition<T = any> {
   securityScopes?: string[];
   /** MCP extension metadata, such as an Apps UI resource linkage. */
   mcpMeta?: Record<string, unknown>;
-  /** Derived app-state helpers opt out so pagination/reload never pollutes activity. */
+  /**
+   * Defaults to true. Setting it false suppresses BOTH the invocation
+   * audit/activity record and the MCP App result snapshot, so the derived
+   * app-state helpers neither pollute activity nor snapshot themselves over
+   * the originating result they were called to restore.
+   */
   audit?: boolean;
   handler: (args: T, env: Env, ctx: ToolContext) => Promise<any>;
 }
@@ -386,7 +391,17 @@ const MCP_APP_TOOLS: ToolDefinition[] = [
       'Save bounded pagination and disclosure state for the exact Lobu MCP App tool call. This app-only helper never changes workspace data.',
     inputSchema: SaveMcpAppStateSchema,
     outputSchema: SaveMcpAppStateOutputSchema,
-    annotations: { ...READ_ONLY, title: 'Save Lobu app state' },
+    // Persists a row, so it cannot claim `readOnlyHint` — the same bar that
+    // makes an audit-appending read `AUDITED_READ`. Repeating a save converges,
+    // so it stays idempotent, and `authorizationReadOnly` keeps it read-TIER
+    // (as for query_sql) so a member's app can save its own view state.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+      idempotentHint: true,
+      title: 'Save Lobu app state',
+    },
     authorizationReadOnly: true,
     securityScopes: ['mcp:read'],
     mcpMeta: { ui: { visibility: ['app'] } },

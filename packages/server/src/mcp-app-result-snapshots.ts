@@ -5,12 +5,13 @@ import { Type } from "@sinclair/typebox";
 import { getDb } from "./db/client";
 import type { Env } from "./index";
 import type { ToolContext } from "./tools/registry";
+import { withValidatedArgs } from "./tools/validate-args";
 
 const logger = createLogger("mcp-app-result-snapshots");
 
-export const MCP_APP_RESULT_MAX_BYTES = 512 * 1024;
-export const MCP_APP_RESULT_RETENTION_DAYS = 30;
-export const MCP_APP_RESULT_CONVERSATION_CAP = 50;
+const MCP_APP_RESULT_MAX_BYTES = 512 * 1024;
+const MCP_APP_RESULT_RETENTION_DAYS = 30;
+const MCP_APP_RESULT_CONVERSATION_CAP = 50;
 const TOOL_CALL_ID_MAX_LENGTH = 512;
 const VIEW_STATE_MAX_KEYS = 100;
 const VIEW_STATE_KEY_MAX_LENGTH = 120;
@@ -18,7 +19,7 @@ const VIEW_STATE_STRING_MAX_LENGTH = 500;
 const VIEW_STATE_MAX_BYTES = 8 * 1024;
 
 type UnknownRecord = Record<string, unknown>;
-export type McpAppViewState = Record<string, boolean | number | string>;
+type McpAppViewState = Record<string, boolean | number | string>;
 
 interface SnapshotPayload {
 	version: 1;
@@ -242,7 +243,7 @@ export const RestoreMcpAppResultOutputSchema = Type.Object({
 	),
 });
 
-export async function restoreMcpAppResult(
+async function restoreMcpAppResultImpl(
 	args: { tool_call_id: string | number },
 	_env: Env,
 	ctx: ToolContext,
@@ -277,6 +278,12 @@ export async function restoreMcpAppResult(
 	};
 }
 
+export const restoreMcpAppResult = withValidatedArgs(
+	"restore_lobu_app_result",
+	RestoreMcpAppResultSchema,
+	restoreMcpAppResultImpl,
+);
+
 export const SaveMcpAppStateSchema = Type.Object({
 	tool_call_id: Type.Union([
 		Type.String({ minLength: 1, maxLength: TOOL_CALL_ID_MAX_LENGTH }),
@@ -287,7 +294,7 @@ export const SaveMcpAppStateSchema = Type.Object({
 
 export const SaveMcpAppStateOutputSchema = Type.Object({ saved: Type.Boolean() });
 
-export async function saveMcpAppState(
+async function saveMcpAppStateImpl(
 	args: { tool_call_id: string | number; view_state: UnknownRecord },
 	_env: Env,
 	ctx: ToolContext,
@@ -328,6 +335,12 @@ export async function saveMcpAppState(
 		return { saved: true };
 	});
 }
+
+export const saveMcpAppState = withValidatedArgs(
+	"save_lobu_app_state",
+	SaveMcpAppStateSchema,
+	saveMcpAppStateImpl,
+);
 
 export async function cleanupExpiredMcpAppResultSnapshots(): Promise<number> {
 	const rows = await getDb()`

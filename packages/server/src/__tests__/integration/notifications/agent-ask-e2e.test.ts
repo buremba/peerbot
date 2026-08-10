@@ -779,6 +779,43 @@ describe("notify input_schema — agent asks a human", () => {
 				error: /property 'answer'.*length bounds/i,
 			},
 			{
+				question: "Question requiring an oversized string answer",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: { type: "string", minLength: 300_000 },
+					},
+					required: ["answer"],
+				},
+				error: /smallest form answer exceeds the allowed size/i,
+			},
+			{
+				question: "Question requiring too many array items",
+				inputSchema: {
+					type: "object",
+					properties: {
+						tags: {
+							type: "array",
+							items: { type: "string" },
+							minItems: 10_001,
+						},
+					},
+					required: ["tags"],
+				},
+				error: /smallest form answer exceeds the allowed size/i,
+			},
+			{
+				question: "Question with an array constant",
+				inputSchema: {
+					type: "object",
+					properties: {
+						codes: { type: "array", const: [5] },
+					},
+					required: ["codes"],
+				},
+				error: /array property 'codes'.*constant.*does not support/i,
+			},
+			{
 				question: "Question with contradictory numeric bounds",
 				inputSchema: {
 					type: "object",
@@ -830,6 +867,23 @@ describe("notify input_schema — agent asks a human", () => {
 					),
 				},
 				error: /exceeds the allowed size or nesting limits/i,
+			},
+			{
+				question: "Question whose required fields exceed the answer budget",
+				inputSchema: {
+					type: "object",
+					properties: Object.fromEntries(
+						Array.from({ length: 100 }, (_, index) => [
+							`answer_${index}`,
+							{ type: "string", minLength: 3_000 },
+						]),
+					),
+					required: Array.from(
+						{ length: 100 },
+						(_, index) => `answer_${index}`,
+					),
+				},
+				error: /smallest form answer exceeds the allowed size/i,
 			},
 		];
 
@@ -957,12 +1011,14 @@ describe("notify input_schema — agent asks a human", () => {
 		expect(summary).toContain("Durable state makes this workflow dependable.");
 		expect(summary).toMatch(/rejected/i);
 		expect(summary).toContain(
-			"The tone is too promotional for this discussion."
+			"The tone is too promotional for this discussion.",
 		);
 	});
 
 	it("cannot attach a caller-supplied ask to another organization's Behavior history", async () => {
-		const victimOrg = await createTestOrganization({ name: "ask provenance victim" });
+		const victimOrg = await createTestOrganization({
+			name: "ask provenance victim",
+		});
 		const victimOwner = await createTestUser({
 			email: `ask-victim-${Date.now()}@test.com`,
 		});
@@ -1068,7 +1124,7 @@ describe("notify input_schema — agent asks a human", () => {
 
 		try {
 			await expect(
-				executeTool("notify", args, TEST_ENV, behaviorCtx)
+				executeTool("notify", args, TEST_ENV, behaviorCtx),
 			).rejects.toThrow(/forced watcher reaction failure/i);
 
 			const notificationsAfterFailure = await sql`
@@ -1082,7 +1138,7 @@ describe("notify input_schema — agent asks a human", () => {
 				"notify",
 				args,
 				TEST_ENV,
-				behaviorCtx
+				behaviorCtx,
 			)) as SendResult;
 			expect(retry).toMatchObject({
 				notified_count: 0,
@@ -1108,16 +1164,16 @@ describe("notify input_schema — agent asks a human", () => {
 					reason: "This discussion was not relevant to our product.",
 				},
 				TEST_ENV,
-				humanCtx
+				humanCtx,
 			);
 			const summary = await getPastReactionsSummary(behaviorId);
 			expect(summary).toContain("Was the staged LinkedIn comment relevant?");
 			expect(summary).toContain(
-				"This discussion was not relevant to our product."
+				"This discussion was not relevant to our product.",
 			);
 		} finally {
 			await sql.unsafe(
-				`DROP TRIGGER IF EXISTS ${triggerName} ON watcher_reactions`
+				`DROP TRIGGER IF EXISTS ${triggerName} ON watcher_reactions`,
 			);
 			await sql.unsafe(`DROP FUNCTION IF EXISTS ${functionName}()`);
 			await sql.unsafe(`DROP SEQUENCE IF EXISTS ${sequenceName}`);

@@ -34,7 +34,10 @@ import { resolveRunInitiator } from "../tools/initiator";
 import type { ToolContext } from "../tools/registry";
 import { ToolUserError } from "../utils/errors";
 import { insertEvent } from "../utils/insert-event";
-import { exceedsValidationLimits } from "../utils/metadata-limits";
+import {
+	DEFAULT_METADATA_LIMITS,
+	exceedsValidationLimits,
+} from "../utils/metadata-limits";
 
 /**
  * `runs.action_key` for an agent-authored ask.
@@ -462,6 +465,51 @@ function minimumArraySelections(schema: Record<string, unknown>): number {
 	return Math.max(declared, 1);
 }
 
+function literalFormOptions(schema: Record<string, unknown>): unknown[] | null {
+	if (Array.isArray(schema.enum)) return schema.enum;
+	const union = Array.isArray(schema.anyOf)
+		? schema.anyOf
+		: Array.isArray(schema.oneOf)
+			? schema.oneOf
+			: null;
+	if (!union || union.length === 0) return null;
+	const options: unknown[] = [];
+	for (const branch of union) {
+		if (
+			branch === null ||
+			typeof branch !== "object" ||
+			Array.isArray(branch) ||
+			!Object.hasOwn(branch, "const")
+		) {
+			return null;
+		}
+		options.push((branch as Record<string, unknown>).const);
+	}
+	return options;
+}
+
+function unwrapNullableFormProperty(
+	property: Record<string, unknown>,
+): Record<string, unknown> {
+	if (!Array.isArray(property.anyOf)) return property;
+	const nonNull = property.anyOf.filter(
+		(branch) =>
+			branch === null ||
+			typeof branch !== "object" ||
+			Array.isArray(branch) ||
+			(branch as Record<string, unknown>).type !== "null",
+	);
+	if (nonNull.length !== 1 || nonNull.length === property.anyOf.length) {
+		return property;
+	}
+	const unwrapped = nonNull[0];
+	return unwrapped !== null &&
+		typeof unwrapped === "object" &&
+		!Array.isArray(unwrapped)
+		? (unwrapped as Record<string, unknown>)
+		: property;
+}
+
 function validateArrayFormProperty(params: {
 	field: string;
 	acceptanceSchema: Record<string, unknown>;
@@ -471,6 +519,9 @@ function validateArrayFormProperty(params: {
 	const { field, acceptanceSchema, renderProperty, accepts } = params;
 	if (!schemaMayAcceptKind(acceptanceSchema, "array")) {
 		return `input_schema array property '${field}' cannot be produced by the answer form`;
+	}
+	if (Object.hasOwn(renderProperty, "const")) {
+		return `input_schema array property '${field}' uses a constant the answer form does not support`;
 	}
 	if (
 		Array.isArray(renderProperty.items) ||
@@ -655,14 +706,7 @@ function validateFormProperty(params: {
 			if (unsupportedSibling) {
 				return `input_schema property '${params.field}' nullable wrapper sibling '${unsupportedSibling}' is not supported by the answer form`;
 			}
-			const unwrapped = nonNull[0];
-			if (
-				unwrapped !== null &&
-				typeof unwrapped === "object" &&
-				!Array.isArray(unwrapped)
-			) {
-				renderProperty = unwrapped as Record<string, unknown>;
-			}
+			renderProperty = unwrapNullableFormProperty(acceptanceSchema);
 		}
 	}
 
@@ -756,6 +800,124 @@ function validateFormProperty(params: {
 	return null;
 }
 
+interface MinimumFormAnswerCost {
+	nodes: number;
+	bytes: number;
+}
+
+function primitiveAnswerBytes(value: unknown): number {
+	return Buffer.byteLength(String(value), "utf8");
+}
+
+/** Minimum value cost for one field after the form's nullable unwrapping. */
+function minimumFormPropertyCost(
+	field: string,
+	property: Record<string, unknown>,
+): MinimumFormAnswerCost {
+	const renderProperty = unwrapNullableFormProperty(property);
+	const fieldBytes = Buffer.byteLength(field, "utf8");
+	if (renderProperty.type === "array") {
+		const selections = minimumArraySelections(renderProperty);
+		const items = renderProperty.items;
+		let valuesBytes: number;
+		if (items !== null && typeof items === "object" && !Array.isArray(items)) {
+			const itemSchema = items as Record<string, unknown>;
+			const options = literalFormOptions(itemSchema);
+			if (options) {
+				// A multi-select emits each typed option at most once. Validation has
+				// already proved that enough distinct options exist.
+				const distinct = new Map<string, number>();
+				for (const option of options) {
+					const key = `${typeof option}:${String(option)}`;
+					distinct.set(key, primitiveAnswerBytes(option));
+				}
+				valuesBytes = [...distinct.values()]
+					.sort((a, b) => a - b)
+					.slice(0, selections)
+					.reduce((sum, bytes) => sum + bytes, 0);
+			} else if (Object.hasOwn(itemSchema, "const")) {
+				valuesBytes = selections * primitiveAnswerBytes(itemSchema.const);
+			} else {
+				const itemLength = Math.max(
+					typeof itemSchema.minLength === "number" ? itemSchema.minLength : 0,
+					1,
+				);
+				valuesBytes = selections * itemLength;
+			}
+		} else {
+			// The generic array control emits non-empty strings.
+			valuesBytes = selections;
+		}
+		return {
+			nodes: 1 + selections,
+			bytes: fieldBytes + valuesBytes,
+		};
+	}
+
+	const options = literalFormOptions(renderProperty);
+	let valueBytes: number;
+	if (options) {
+		valueBytes = Math.min(...options.map(primitiveAnswerBytes));
+	} else if (Object.hasOwn(renderProperty, "const")) {
+		valueBytes = primitiveAnswerBytes(renderProperty.const);
+	} else if (renderProperty.type === "boolean") {
+		valueBytes = primitiveAnswerBytes(true);
+	} else if (
+		renderProperty.type === "number" ||
+		renderProperty.type === "integer"
+	) {
+		valueBytes = 1;
+	} else {
+		// Empty strings are dropped by the form, so even an optional submitted
+		// text field consumes at least one UTF-8 byte.
+		valueBytes = Math.max(
+			typeof renderProperty.minLength === "number"
+				? renderProperty.minLength
+				: 0,
+			1,
+		);
+	}
+	return { nodes: 1, bytes: fieldBytes + valueBytes };
+}
+
+/**
+ * Prove one minimally populated form answer fits the validator's own budget.
+ * Required fields are fixed; for root minProperties we choose the cheapest
+ * optional fields. Rejecting a rarer answerable combination is preferable to
+ * persisting a question for which every answer the validator accepts is too
+ * large to process.
+ */
+function minimumFormAnswerExceedsLimits(params: {
+	properties: Record<string, unknown>;
+	required: string[];
+	minimumAnswered: number;
+}): boolean {
+	const required = new Set(params.required);
+	const requiredCosts: MinimumFormAnswerCost[] = [];
+	const optionalCosts: MinimumFormAnswerCost[] = [];
+	for (const [field, property] of Object.entries(params.properties)) {
+		const cost = minimumFormPropertyCost(
+			field,
+			property as Record<string, unknown>,
+		);
+		(required.has(field) ? requiredCosts : optionalCosts).push(cost);
+	}
+	optionalCosts.sort((a, b) => a.bytes - b.bytes || a.nodes - b.nodes);
+	const extraFields = Math.max(0, params.minimumAnswered - required.size);
+	const selected = requiredCosts.concat(optionalCosts.slice(0, extraFields));
+	const total = selected.reduce<MinimumFormAnswerCost>(
+		(sum, cost) => ({
+			nodes: sum.nodes + cost.nodes,
+			bytes: sum.bytes + cost.bytes,
+		}),
+		{ nodes: 0, bytes: 0 },
+	);
+	return (
+		total.nodes > DEFAULT_METADATA_LIMITS.maxNodes ||
+		total.bytes > DEFAULT_METADATA_LIMITS.maxBytes
+	);
+}
+
 /** Validate the contract before a pending run/event is durably created. */
 function validateAskInputSchema(
 	schema: Record<string, unknown>,
@@ -833,6 +995,15 @@ function validateAskInputSchema(
 			accepts: compiled.accepts,
 		});
 		if (propertyError) return propertyError;
+	}
+	if (
+		minimumFormAnswerExceedsLimits({
+			properties,
+			required,
+			minimumAnswered,
+		})
+	) {
+		return "input_schema smallest form answer exceeds the allowed size limits";
 	}
 
 	const affordance = resolveAskAffordance(schema);

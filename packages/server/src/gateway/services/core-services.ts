@@ -22,6 +22,7 @@ import { PostgresSecretStore } from "../../lobu/stores/postgres-secret-store.js"
 import {
 	listInferenceProviders,
 	resolveInferenceProviderConfig,
+	resolveInferenceProviderCredential,
 } from "../../lobu/stores/provider-secrets.js";
 import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { ApiKeyProviderModule } from "../auth/api-key-provider-module.js";
@@ -82,7 +83,10 @@ import {
 	entryFromAgentConfig,
 } from "./declared-agent-registry.js";
 import { ImageGenerationService } from "./image-generation-service.js";
-import type { InferenceProviderConfigSource } from "./inference-provider-source.js";
+import type {
+	InferenceProviderConfigSource,
+	InferenceProviderCredentialSource,
+} from "./inference-provider-source.js";
 import { InstructionService } from "./instruction-service.js";
 import { ProviderConfigResolver } from "./provider-config-resolver.js";
 import {
@@ -657,6 +661,9 @@ export class CoreServices {
 		this.transcriptionService?.setInferenceProviderSource(
 			inferenceProviderSource,
 		);
+		this.transcriptionService?.setInferenceProviderCredentialSource(
+			this.buildInferenceProviderCredentialSource(),
+		);
 		this.imageGenerationService?.setInferenceProviderSource(
 			inferenceProviderSource,
 		);
@@ -1016,6 +1023,34 @@ export class CoreServices {
 				baseUrl: config.baseUrl,
 				model: config.model,
 				modelsEndpoint: config.modelsEndpoint,
+			};
+		};
+	}
+
+	/**
+	 * Resolve an org provider's credential even when no modality override block
+	 * exists. Transcription uses this only after providers.json has declared the
+	 * provider STT-capable, so a normal org OpenAI key enables the catalog's
+	 * trusted transcription defaults without hidden duplicate key setup.
+	 */
+	private buildInferenceProviderCredentialSource(): InferenceProviderCredentialSource {
+		return async (agentId, slug, modality) => {
+			const organizationId = await this.resolveAgentOrgId(agentId);
+			if (!organizationId) return null;
+
+			const credential = await resolveInferenceProviderCredential(
+				organizationId,
+				slug,
+				modality,
+			);
+			if (!credential?.apiKey) return null;
+
+			return {
+				kind: credential.kind,
+				apiKey: credential.apiKey,
+				baseUrl: credential.baseUrl,
+				model: credential.model,
+				modelsEndpoint: credential.modelsEndpoint,
 			};
 		};
 	}

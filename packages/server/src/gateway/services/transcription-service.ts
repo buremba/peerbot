@@ -16,7 +16,11 @@ import {
 	getErrorMessage,
 } from "@lobu/core";
 import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager.js";
-import type { InferenceProviderConfigSource } from "./inference-provider-source.js";
+import type {
+  InferenceProviderConfigSource,
+  InferenceProviderCredentialSource,
+  ResolvedInferenceProvider,
+} from "./inference-provider-source.js";
 
 const logger = createLogger("transcription-service");
 
@@ -110,6 +114,9 @@ export class TranscriptionService {
     | (() => Promise<Record<string, ProviderConfigEntry>>)
     | undefined;
   private inferenceProviderSource?: InferenceProviderConfigSource | undefined;
+  private inferenceProviderCredentialSource?:
+    | InferenceProviderCredentialSource
+    | undefined;
 
   constructor(
     private readonly authProfilesManager: AuthProfilesManager,
@@ -128,6 +135,12 @@ export class TranscriptionService {
 
   setInferenceProviderSource(source: InferenceProviderConfigSource): void {
     this.inferenceProviderSource = source;
+  }
+
+  setInferenceProviderCredentialSource(
+    source: InferenceProviderCredentialSource
+  ): void {
+    this.inferenceProviderCredentialSource = source;
   }
 
   /**
@@ -344,9 +357,33 @@ export class TranscriptionService {
       // present (one read → key + base_url + model + models_endpoint), else the
       // providers.json `stt` block, else the static OpenAI default. Field names
       // map 1:1 (base_url→baseUrl, models_endpoint→transcriptionPath, model).
-      const orgStt = this.inferenceProviderSource
-        ? await this.inferenceProviderSource(agentId, providerId, "stt")
-        : null;
+      // Unlike a custom per-modality config lookup, the credential source also
+      // returns the org row's key when `capabilities.stt` is absent. Reaching
+      // this point already proved the provider catalog declares STT, so using
+      // its trusted endpoint/model defaults is safe and avoids requiring a
+      // duplicate per-user OpenAI profile.
+      let orgStt: ResolvedInferenceProvider | null = null;
+      if (this.inferenceProviderCredentialSource) {
+        const credential = await this.inferenceProviderCredentialSource(
+          agentId,
+          providerId,
+          "stt"
+        );
+        if (credential?.kind === providerId) {
+          orgStt = credential;
+        } else if (credential) {
+          logger.warn("Ignoring mismatched STT provider credential", {
+            providerId,
+            credentialKind: credential.kind,
+          });
+        }
+      } else if (this.inferenceProviderSource) {
+        orgStt = await this.inferenceProviderSource(
+          agentId,
+          providerId,
+          "stt"
+        );
+      }
 
       const baseUrl =
         orgStt?.baseUrl || stt?.baseUrl || entry.upstreamBaseUrl;

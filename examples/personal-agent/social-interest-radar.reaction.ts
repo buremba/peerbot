@@ -136,7 +136,7 @@ function notificationBody(lines: string[]): string {
   return body.length <= 1000 ? body : `${body.slice(0, 997)}...`;
 }
 
-export function isCanonicalLinkedInPostUrl(value: string): boolean {
+function isCanonicalLinkedInPostUrl(value: string): boolean {
   try {
     const url = new URL(value);
     const hostname = url.hostname.toLowerCase();

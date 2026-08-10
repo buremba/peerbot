@@ -120,13 +120,14 @@ import { entityLinkMatchSql } from "./utils/content-search";
 import { isValidFrameAncestor } from "./utils/csp";
 import { errorMessage } from "./utils/errors";
 import logger from "./utils/logger";
-import { readMcpAppAsset, readMcpAppBundle } from "./utils/mcp-app-bundle";
+import { readMcpAppAsset, renderMcpAppTemplate } from "./utils/mcp-app-bundle";
 import { generateOpenAPISpec } from "./utils/openapi-generator";
 import {
 	extractSubdomainOrg,
 	getCanonicalRedirectUrl,
 	getConfiguredPublicOrigin,
 	getSubdomainZone,
+	resolvePublicOrigin,
 } from "./utils/public-origin";
 import {
 	getClientIP,
@@ -2773,15 +2774,18 @@ app.all("/mcp/", handleMcp);
 app.all("/mcp/:orgSlug", handleMcp);
 app.all("/mcp/:orgSlug/", handleMcp);
 
-// MCP App rollout phase 1: keep serving the existing self-contained v2
-// template while staging the stable external assets on every replica. A later
-// release switches this HTML route and MCP discovery to the external template.
+// MCP App public template. The same absolute origin and CSP contract is used by
+// `resources/read`; its content-versioned asset URLs remain safe across mixed
+// replica rollouts and downstream browser caches.
 app.get("/mcp-apps/:app/index.html", async (c) => {
 	const app_ = c.req.param("app");
 	// Only serve a bundle the MCP App registry declares — never an arbitrary
 	// path param.
 	if (!MCP_APP_DIRS.has(app_)) return c.notFound();
-	const html = await readMcpAppBundle(app_, "legacy-v2.html");
+	const html = await renderMcpAppTemplate(
+		app_,
+		resolvePublicOrigin(c.req.url),
+	);
 	if (html == null) return c.notFound();
 	c.header("Content-Type", "text/html; charset=utf-8");
 	c.header("Cache-Control", "no-cache");

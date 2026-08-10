@@ -552,6 +552,16 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       view_state: {},
     });
 
+    const [snapshotBeforeSave] = await getDb()<{
+      expires_at: Date;
+    }>`SELECT expires_at
+       FROM public.mcp_app_result_snapshots
+       WHERE organization_id = ${org.id}
+         AND tool_name = 'query_sql'
+       ORDER BY updated_at DESC
+       LIMIT 1`;
+    expect(snapshotBeforeSave).toBeDefined();
+
     const saveState = async (toolName: string) => {
       const response = await post(`/mcp/${org.slug}`, {
         body: {
@@ -580,13 +590,40 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     const [snapshot] = await getDb()<{
       body: string;
       conversation_key: string;
+      expires_at: Date;
       tool_call_key: string;
-    }>`SELECT body, conversation_key, tool_call_key
+    }>`SELECT body, conversation_key, expires_at, tool_call_key
        FROM public.mcp_app_result_snapshots
-       WHERE organization_id = ${org.id}`;
+       WHERE organization_id = ${org.id}
+         AND tool_name = 'query_sql'
+       ORDER BY updated_at DESC
+       LIMIT 1`;
+    expect(snapshot).toBeDefined();
     expect(snapshot.body).not.toContain('row_number');
     expect(snapshot.conversation_key).not.toBe(conversationId);
+    expect(snapshot.expires_at).toEqual(snapshotBeforeSave.expires_at);
     expect(snapshot.tool_call_key).not.toBe('originating-call-77');
+
+    const collidingResponse = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'originating-call-77',
+        method: 'tools/call',
+        params: {
+          name: 'query_sql',
+          arguments: { sql: 'SELECT 2 AS row_number' },
+          _meta: { 'openai/session': conversationId },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const collidingBody = await collidingResponse.json();
+    expect(collidingBody.result?.structuredContent?.rows).toEqual([{ row_number: 2 }]);
+    expect(await restore(conversationId)).toEqual({
+      found: false,
+      view_state: {},
+    });
 
     const helperAudits = await getDb()<{
       tool_name: string;

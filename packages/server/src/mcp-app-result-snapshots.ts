@@ -205,10 +205,9 @@ export async function storeMcpAppResultSnapshot(args: {
 			ON CONFLICT (
 				organization_id, client_id, user_id, conversation_key, tool_call_key
 			) DO UPDATE SET
-				tool_name = EXCLUDED.tool_name,
-				body = EXCLUDED.body,
-				plaintext_bytes = EXCLUDED.plaintext_bytes,
-				expires_at = EXCLUDED.expires_at,
+				-- A host request ID is not guaranteed to be unique forever. Never let a
+				-- collision replace the historical card with a different result.
+				expires_at = now(),
 				updated_at = now()
 		`;
 		await tx`
@@ -345,7 +344,6 @@ async function saveMcpAppStateImpl(
 			UPDATE public.mcp_app_result_snapshots
 			SET body = ${serialized.body},
 				plaintext_bytes = ${serialized.plaintextBytes},
-				expires_at = now() + (${MCP_APP_RESULT_RETENTION_DAYS} * interval '1 day'),
 				updated_at = now()
 			WHERE organization_id = ${identity.organizationId}
 				AND client_id = ${identity.clientId}

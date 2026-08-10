@@ -826,20 +826,22 @@ function buildAvailableOperation(args: {
 	const callerReason = callerBlockedByMembership
 		? MEMBERSHIP_REASON
 		: SESSION_SCOPE_REASON;
-	const { readyTarget, executable, readiness } =
-		!callerCanExecute && base.executable
-			? {
-					readyTarget: undefined,
-					executable: false,
-					readiness: callerReadiness,
-				}
-			: base;
-	const effectiveTargets = !callerCanExecute
+	// Only a caller-blocked op whose TARGET was ready gets downgraded. An op
+	// already not-executable for its own reasons (unsupported/disconnected/
+	// disabled) keeps its target-state verdict — the caller override must not
+	// replace it. Downgraded targets carry the caller readiness as their status
+	// too, so no per-target row contradicts the top-level verdict.
+	const shouldOverride = !callerCanExecute && base.executable;
+	const readyTarget = shouldOverride ? undefined : base.readyTarget;
+	const executable = shouldOverride ? false : base.executable;
+	const readiness = shouldOverride ? callerReadiness : base.readiness;
+	const effectiveTargets = shouldOverride
 		? targets.map((target) =>
 				target.executable
 					? {
 							...target,
 							executable: false,
+							status: callerReadiness,
 							reason: callerReason,
 						}
 					: target,

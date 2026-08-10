@@ -158,7 +158,11 @@ describe("manage_operations.execute member authorization", () => {
 			} catch (err) {
 				outcome = err instanceof Error ? err.message : String(err);
 			}
-			expect(String(outcome)).not.toMatch(
+			const text =
+				typeof outcome === "string"
+					? outcome
+					: JSON.stringify(outcome ?? null);
+			expect(text).not.toMatch(
 				/requires (an MCP session with )?(admin|write) access|admin or owner|Connection not found or not visible/i,
 			);
 		});
@@ -191,6 +195,13 @@ describe("manage_operations.execute member authorization", () => {
 			expect(op.reason).toMatch(/write access/i);
 			const next = op.next_action as Record<string, unknown>;
 			expect(next.action).toBe("elevate_session_scope");
+			// Per-target rows must not contradict the top-level verdict.
+			const targets = op.execution_targets as Array<Record<string, unknown>>;
+			expect(targets.length).toBeGreaterThan(0);
+			for (const target of targets) {
+				expect(target.executable).toBe(false);
+				expect(target.status).toBe("session_scope_required");
+			}
 		});
 
 		it("system/reaction context (bypasses role+scope at routeAction) still sees ready ops as executable", async () => {
@@ -226,6 +237,76 @@ describe("manage_operations.execute member authorization", () => {
 			expect(op.reason).toMatch(/membership/i);
 			const next = op.next_action as Record<string, unknown>;
 			expect(next.action).toBe("request_membership");
+			const targets = op.execution_targets as Array<Record<string, unknown>>;
+			expect(targets.length).toBeGreaterThan(0);
+			for (const target of targets) {
+				expect(target.executable).toBe(false);
+				expect(target.status).toBe("membership_required");
+			}
 		});
+	});
+});
+
+describe("caller override never replaces a target-state verdict", () => {
+	// An operation that is not executable for its OWN reasons (connector code
+	// lacks execute()) must keep its "unsupported" verdict for every caller —
+	// the caller-scope downgrade only applies to ops whose target was ready.
+	let orgId: string;
+	let ownerCtx: ToolContext;
+	let readOnlyCtx: ToolContext;
+
+	beforeAll(async () => {
+		await cleanupTestDatabase();
+		await initWorkspaceProvider();
+		const { org, ctx } = await seedOwnerContext({
+			orgName: "Member Execute Unsupported Org",
+		});
+		orgId = org.id;
+		ownerCtx = ctx;
+
+		await createTestConnectorDefinition({
+			key: "demo.member.unsupported",
+			name: "Member execute unsupported connector",
+			organization_id: org.id,
+		});
+		await getTestDb()`
+      UPDATE connector_definitions
+      SET actions_schema = ${getTestDb().json({
+				nope: { name: "Nope", kind: "write" },
+			})},
+          supports_execute = false
+      WHERE organization_id = ${org.id}
+        AND key = 'demo.member.unsupported'
+    `;
+		await createTestConnection({
+			organization_id: org.id,
+			connector_key: "demo.member.unsupported",
+			created_by: ctx.userId ?? undefined,
+			visibility: "org",
+		});
+
+		const member = await createTestUser({ name: "Unsupported Member" });
+		await addUserToOrganization(member.id, org.id);
+		readOnlyCtx = {
+			...ctx,
+			userId: member.id,
+			memberRole: "member",
+			scopes: ["mcp:read"],
+		};
+	});
+
+	it("read-only caller sees an unsupported op as unsupported, not session_scope_required", async () => {
+		const res = await manageOperations(
+			{ action: "list_available", connector_key: "demo.member.unsupported" },
+			{} as Env,
+			readOnlyCtx,
+		);
+		expect(res).not.toHaveProperty("error");
+		const op = (res as { operations: Array<Record<string, unknown>> })
+			.operations.find((o) => o.operation_key === "nope");
+		expect(op, "nope op should be listed").toBeDefined();
+		expect(op?.executable).toBe(false);
+		expect(op?.readiness).toBe("unsupported");
+		expect(op?.reason).toMatch(/not implement|unsupported/i);
 	});
 });

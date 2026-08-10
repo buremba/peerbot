@@ -224,6 +224,24 @@ async function handleSend(
 
   const orgSlug = await getOrgSlug(ctx.organizationId);
 
+  // Feedback is learned from server-stamped execution provenance only.
+  // `behavior_source` remains a validated canvas-attribution hint above, but
+  // caller input must never choose another Behavior's learning history.
+  const reactionBehaviorId = ctx.actingWatcherId ?? null;
+  const reactionWindowId = ctx.actingWindowId ?? null;
+  const trackNotificationReaction = async (runId?: number): Promise<void> => {
+    if (reactionBehaviorId === null || reactionWindowId === null) return;
+    await trackWatcherReaction({
+      organizationId: ctx.organizationId,
+      watcherId: reactionBehaviorId,
+      windowId: reactionWindowId,
+      reactionType: 'notification_sent',
+      toolName: 'notify',
+      toolArgs: { title: args.title, recipients: args.recipients },
+      ...(runId != null ? { runId } : {}),
+    });
+  };
+
   // An idempotent repeat of an ASK must resolve before anything is queued: the
   // pending run + interaction event are durable, so queueing first and letting
   // the notification insert dedupe would strand an orphan pending run — and
@@ -236,6 +254,12 @@ async function handleSend(
     );
     if (prior !== null) {
       const priorRunId = await findAskRunForNotification(ctx.organizationId, prior);
+      if (priorRunId !== null) {
+        // The notification can commit before this feedback edge. A failed first
+        // attempt therefore reconciles here on retry instead of returning early
+        // forever with an ask the Behavior cannot learn from.
+        await trackNotificationReaction(priorRunId);
+      }
       return {
         notified_count: 0,
         event_id: prior,
@@ -305,26 +329,10 @@ async function handleSend(
     emit(ctx.organizationId, { keys: ['notifications', 'notifications-unread-count'] });
   }
 
-  // Track watcher reaction if attribution source is provided
-  if (notification.created && args.behavior_source) {
-    await trackWatcherReaction({
-      organizationId: ctx.organizationId,
-      watcherId: args.behavior_source.behavior_id,
-      windowId: args.behavior_source.window_id,
-      reactionType: 'notification_sent',
-      toolName: 'notify',
-      toolArgs: { title: args.title, recipients: args.recipients },
-    }).catch((err) => {
-      logger.warn({ err, behaviorSource: args.behavior_source }, 'trackWatcherReaction failed');
-    });
-  }
-
   // Two replicas can race past the idempotency preflight above; the loser's
   // notification insert resolves to the winner's event, so the run WE queued is
-  // an orphan nothing points at. Hand back the winner's run so the agent polls
-  // the question the human actually sees; the orphan stays pending and is
-  // closed by the pending-approval expiry sweep — its terminal path already —
-  // rather than a hand-rolled cleanup here.
+  // an orphan nothing points at. Resolve the delivered run before reaction
+  // tracking so watcher_reactions always points at the decision the human sees.
   let askRunId = ask?.runId ?? null;
   if (ask && !notification.created && notification.eventId !== null) {
     askRunId = await findAskRunForNotification(
@@ -335,6 +343,21 @@ async function handleSend(
       { orphanRunId: ask.runId, eventId: notification.eventId, askRunId },
       '[notify] Concurrent duplicate ask; returning the delivered run, orphan left to the approval expiry sweep'
     );
+  }
+
+  if (askRunId !== null) {
+    // The ask-to-Behavior edge is required and idempotent: if it fails, surface
+    // the failure so the caller retries and the preflight above repairs it.
+    await trackNotificationReaction(askRunId);
+  } else if (notification.created) {
+    // Plain FYI notifications have no run handle to use as a durable dedupe
+    // key, so retain their historical best-effort tracking behavior.
+    await trackNotificationReaction().catch((err) => {
+      logger.warn(
+        { err, behaviorId: reactionBehaviorId, windowId: reactionWindowId },
+        'trackWatcherReaction failed'
+      );
+    });
   }
 
   // The event id IS the notification id — there is no second identifier — so an

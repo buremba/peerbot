@@ -337,7 +337,7 @@ interface HomeFeedRow {
    * heuristic when present.
    */
   author_control_label?: string;
-  /** Exact post permalink when the rendered card exposes a feed/update anchor. */
+  /** Exact post permalink recovered from LinkedIn's own Copy link action. */
   post_url?: string;
   /** Rendered identifier containing LinkedIn's stable shareId / ugcPostId. */
   post_identity?: string;
@@ -387,11 +387,16 @@ const HOME_FEED_SCRAPE_CONFIG = {
       attr: "aria-label",
     },
     post_url: {
-      // The opaque componentkey cannot be converted back into an activity id,
-      // so capture a canonical link while the real rendered DOM is available.
-      selector: 'a[href*="/feed/update/"]',
-      take: "attr",
-      attr: "href",
+      // Current cards expose neither a permalink anchor nor a post URN. Their
+      // control menu still has LinkedIn's own "Copy link to post" action. The
+      // generic scraper intercepts clipboard.writeText BEFORE clicking it, so
+      // this reads the canonical URL without changing the user's clipboard.
+      take: "clipboardAction",
+      triggerSelector: 'button[aria-label*="control menu for post by"]',
+      actionSelector: '[role="menuitem"]',
+      actionTextRegex: "^Copy link(?: to post)?$",
+      actionTextRegexFlags: "i",
+      maxWaitMs: 1500,
     },
     post_identity: {
       // Current feed cards embed the durable id in a translatable-commentary
@@ -655,9 +660,9 @@ export function isHomeFeedNoise(body: string): boolean {
 }
 
 /**
- * Map cs_scrape home-feed rows to event envelopes. Prefer a /feed/update anchor
- * or stable activity id embedded in the card DOM; otherwise source_url falls
- * back to /feed/.
+ * Map cs_scrape home-feed rows to event envelopes. Prefer the permalink
+ * recovered from LinkedIn's Copy-link action or a stable activity id embedded
+ * in the card DOM; otherwise source_url falls back to /feed/.
  * Home-feed posts expose no reliable timestamp, so the caller stamps
  * occurred_at with the sync time.
  */
@@ -1122,7 +1127,7 @@ export function buildInjectHandoffBannerExpression(opts: {
 
   const foot = document.createElement('div');
   foot.style.cssText = 'color:#64748b;margin:4px 0 0;font-size:12px';
-  foot.textContent = 'Open the Owletto side panel for run details.';
+  foot.textContent = 'After posting or editing, record the outcome in Lobu Activity. You can also reject it with a reason.';
   body.appendChild(foot);
 
   const close = document.createElement('button');
@@ -2177,7 +2182,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft for the human to Post; verify_staged_comment checks whether that draft appeared as a comment.",
-    version: "3.7.0",
+    version: "3.8.0",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com

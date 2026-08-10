@@ -1005,6 +1005,10 @@ export async function createConnectorOperationRun(params: {
   policyPrincipalId?: string | null;
   /** Trusted user who initiated the operation, used for downstream visibility checks. */
   createdByUserId?: string | null;
+  /** Trusted Behavior provenance from the executing ToolContext. */
+  watcherId?: number | null;
+  /** Trusted firing canvas/window id paired with watcherId. */
+  windowId?: number | null;
   /**
    * Optional transaction handle. When passed, the run INSERT (and its
    * connector-version read) execute on the caller's transaction instead of the
@@ -1058,6 +1062,7 @@ export async function createConnectorOperationRun(params: {
     INSERT INTO runs (
       organization_id, run_type, connection_id, connector_key, connector_version,
       action_key, action_input, approval_status, status,
+      watcher_id, window_id,
       policy_principal_kind, policy_principal_id, created_by_user_id,
       action_idempotency_key, created_at
     ) VALUES (
@@ -1065,6 +1070,7 @@ export async function createConnectorOperationRun(params: {
       ${params.connectorKey}, ${connectorVersion},
       ${params.operationKey}, ${sql.json(params.operationInput)},
       ${approvalStatus}, ${status},
+      ${params.watcherId ?? null}, ${params.windowId ?? null},
       ${params.policyPrincipalKind ?? null}, ${params.policyPrincipalId ?? null},
       ${params.createdByUserId ?? null},
       ${params.idempotencyKey ?? null},
@@ -1089,6 +1095,8 @@ export async function createConnectorOperationRun(params: {
       policy_principal_kind: string | null;
       policy_principal_id: string | null;
       created_by_user_id: string | null;
+      watcher_id: number | null;
+      window_id: number | null;
       status: string;
       approval_status: string;
       action_output: unknown;
@@ -1096,6 +1104,7 @@ export async function createConnectorOperationRun(params: {
     }>`
       SELECT id, connection_id, connector_key, action_key, action_input,
              policy_principal_kind, policy_principal_id, created_by_user_id,
+             watcher_id, window_id,
              status, approval_status, action_output, error_message
       FROM runs
       WHERE organization_id = ${params.organizationId}
@@ -1115,11 +1124,33 @@ export async function createConnectorOperationRun(params: {
       prior.policy_principal_kind === (params.policyPrincipalKind ?? null) &&
       prior.policy_principal_id === (params.policyPrincipalId ?? null) &&
       prior.created_by_user_id === (params.createdByUserId ?? null);
-    if (!sameRequest) {
+    const priorWatcherId = prior.watcher_id == null ? null : Number(prior.watcher_id);
+    const priorWindowId = prior.window_id == null ? null : Number(prior.window_id);
+    const requestedWatcherId = params.watcherId ?? null;
+    const requestedWindowId = params.windowId ?? null;
+    const compatibleProvenance =
+      (priorWatcherId == null || priorWatcherId === requestedWatcherId) &&
+      (priorWindowId == null || priorWindowId === requestedWindowId);
+    if (!sameRequest || !compatibleProvenance) {
       throw new ToolUserError(
         `Action idempotency key '${params.idempotencyKey}' is already bound to a different request.`,
         409
       );
+    }
+    // Runs created before Behavior action provenance was stamped can be safely
+    // hydrated on an exact idempotent replay. Never overwrite a non-null stamp:
+    // a key already bound to another window remains a conflict above.
+    if (
+      (priorWatcherId == null && requestedWatcherId != null) ||
+      (priorWindowId == null && requestedWindowId != null)
+    ) {
+      await sql`
+        UPDATE runs
+        SET watcher_id = COALESCE(watcher_id, ${requestedWatcherId}),
+            window_id = COALESCE(window_id, ${requestedWindowId})
+        WHERE id = ${Number(prior.id)}
+          AND organization_id = ${params.organizationId}
+      `;
     }
     return {
       runId: Number(prior.id),

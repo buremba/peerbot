@@ -1314,6 +1314,12 @@ describe("LinkedInConnector home_feed", () => {
           parts: Record<string, unknown>;
         };
         author_control_label: { selector: string; attr: string };
+        post_url: {
+          take: string;
+          triggerSelector: string;
+          actionSelector: string;
+          actionText: string;
+        };
       };
     };
     // objectAll captures each anchor with its href + accessible name, so the
@@ -1324,6 +1330,12 @@ describe("LinkedInConnector home_feed", () => {
     expect(cfg.fields.author_control_label.selector).toContain(
       "control menu for post by"
     );
+    expect(cfg.fields.post_url).toMatchObject({
+      take: "clipboardAction",
+      triggerSelector: 'button[aria-label*="control menu for post by"]',
+      actionSelector: '[role="menuitem"]',
+      actionTextRegex: "^Copy link(?: to post)?$",
+    });
 
     expect(res.events).toHaveLength(2);
     expect(res.events[0].origin_id).toBe("li_home_tok1");
@@ -1814,7 +1826,8 @@ describe("prepare_comment helpers", () => {
     });
     expect(expr).toContain("lobu-handoff-banner");
     expect(expr).toContain("Lobu staged this comment");
-    expect(expr).toContain("Owletto side panel");
+    expect(expr).toContain("record the outcome in Lobu Activity");
+    expect(expr).toContain("reject it with a reason");
     expect(expr).toContain('Met them at \\"AI\\" meetup');
     expect(expr).not.toMatch(/click\(\)\s*;[\s\S]*Post|Post[\s\S]*\.click\(/);
     expect(expr).not.toContain("setTimeout");
@@ -1835,7 +1848,7 @@ describe("prepare_comment helpers", () => {
     expect(action?.inputSchema?.properties?.browser_connection_id?.type).toBe(
       "integer"
     );
-    expect(c.definition.version).toBe("3.7.0");
+    expect(c.definition.version).toBe("3.8.0");
     expect(String(action?.description ?? "")).toMatch(/NEVER submits/i);
   });
 

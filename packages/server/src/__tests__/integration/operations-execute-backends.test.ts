@@ -7,6 +7,7 @@ import { createAuthProfile } from "../../utils/auth-profiles";
 import { initWorkspaceProvider } from "../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import {
+	createTestAgent,
 	createTestConnection,
 	createTestConnectorDefinition,
 	seedOwnerContext,
@@ -31,6 +32,8 @@ describe("operations.execute backend lifecycle", () => {
 	let mcpConnectionId: number;
 	let secondMcpConnectionId: number;
 	let httpConnectionId: number;
+	let behaviorId: number;
+	let windowId: number;
 	let failedTransportCallCount = 0;
 
 	beforeAll(async () => {
@@ -47,6 +50,10 @@ describe("operations.execute backend lifecycle", () => {
 		orgId = org.id;
 		userId = user.id;
 		ctx = ownerCtx;
+		const behaviorAgent = await createTestAgent({
+			organizationId: orgId,
+			ownerUserId: userId,
+		});
 
 		for (const [key, name] of [
 			[LOCAL, "Local backend"],
@@ -62,6 +69,28 @@ describe("operations.execute backend lifecycle", () => {
 		}
 
 		const sql = getTestDb();
+		const [behavior] = await sql`
+			WITH next_id AS (SELECT nextval('watchers_id_seq')::integer AS id)
+			INSERT INTO watchers (
+				id, watcher_group_id, organization_id, agent_id, created_by, name, slug
+			)
+			SELECT id, id, ${orgId}, ${behaviorAgent.agentId}, ${userId},
+				'Operation provenance behavior', 'operation-provenance-behavior'
+			FROM next_id
+			RETURNING id
+		`;
+		behaviorId = Number(behavior.id);
+		const [window] = await sql`
+			INSERT INTO events (
+				organization_id, semantic_type, payload_type, payload_data,
+				metadata, occurred_at, created_at, created_by
+			) VALUES (
+				${orgId}, 'canvas_state', 'json_template', '{}'::jsonb,
+				${sql.json({ watcher_id: behaviorId })}, NOW(), NOW(), ${userId}
+			)
+			RETURNING id
+		`;
+		windowId = Number(window.id);
 		await sql`
 			UPDATE connector_definitions
 			SET actions_schema = ${sql.json({
@@ -337,6 +366,114 @@ describe("operations.execute backend lifecycle", () => {
 			  AND action_idempotency_key = 'operation-backend-test:durable-once'
 		`;
 		expect(runs).toHaveLength(1);
+	});
+
+	it("binds an action and its feedback record to the trusted Behavior window", async () => {
+		const execute = () =>
+			manageOperations(
+				{
+				action: "execute",
+				connection_id: localConnectionId,
+				operation_key: "echo",
+				input: { value: "behavior-provenance" },
+				idempotency_key: "operation-backend-test:behavior-provenance",
+				},
+				{} as Env,
+				{ ...ctx, actingWatcherId: behaviorId, actingWindowId: windowId },
+			);
+		const result = (await execute()) as { run_id: number; status: string };
+		const replay = (await execute()) as { run_id: number; status: string };
+
+		expect(result).toMatchObject({ status: "completed" });
+		expect(replay.run_id).toBe(result.run_id);
+		const sql = getTestDb();
+		const [run] = await sql`
+			SELECT watcher_id, window_id FROM runs WHERE id = ${result.run_id}
+		`;
+		expect(Number(run.watcher_id)).toBe(behaviorId);
+		expect(Number(run.window_id)).toBe(windowId);
+		const reactions = await sql`
+			SELECT run_id FROM watcher_reactions
+			WHERE watcher_id = ${behaviorId}
+			  AND window_id = ${windowId}
+			  AND run_id = ${result.run_id}
+		`;
+		expect(reactions).toHaveLength(1);
+		expect(Number(reactions[0]?.run_id)).toBe(result.run_id);
+	});
+
+	it("repairs a failed feedback link without stranding or repeating an inline action", async () => {
+		const sql = getTestDb();
+		await sql.unsafe(`
+			CREATE SEQUENCE operation_reaction_failure_seq;
+			CREATE FUNCTION fail_first_operation_reaction() RETURNS trigger AS $$
+			BEGIN
+				IF NEW.watcher_id = ${behaviorId}
+					AND NEW.tool_name = 'manage_operations'
+					AND nextval('operation_reaction_failure_seq') = 1 THEN
+					RAISE EXCEPTION 'forced operation reaction failure';
+				END IF;
+				RETURN NEW;
+			END;
+			$$ LANGUAGE plpgsql;
+			CREATE TRIGGER fail_first_operation_reaction_trigger
+				BEFORE INSERT ON watcher_reactions
+				FOR EACH ROW EXECUTE FUNCTION fail_first_operation_reaction();
+		`);
+
+		const execute = () =>
+			manageOperations(
+				{
+					action: "execute",
+					connection_id: localConnectionId,
+					operation_key: "echo",
+					input: { value: "repair-feedback" },
+					idempotency_key: "operation-backend-test:repair-feedback",
+				},
+				{} as Env,
+				{ ...ctx, actingWatcherId: behaviorId, actingWindowId: windowId },
+			);
+
+		try {
+			await expect(execute()).rejects.toThrow(
+				"forced operation reaction failure",
+			);
+			const [persisted] = await sql`
+				SELECT id, status, action_output FROM runs
+				WHERE organization_id = ${orgId}
+				  AND action_idempotency_key = 'operation-backend-test:repair-feedback'
+			`;
+			expect(persisted.status).toBe("completed");
+			expect(persisted.action_output).toMatchObject({
+				backend: "local_action",
+				value: "repair-feedback",
+			});
+
+			const replay = (await execute()) as { run_id: number; status: string };
+			expect(replay).toMatchObject({
+				run_id: Number(persisted.id),
+				status: "completed",
+			});
+			const runs = await sql`
+				SELECT id FROM runs
+				WHERE organization_id = ${orgId}
+				  AND action_idempotency_key = 'operation-backend-test:repair-feedback'
+			`;
+			expect(runs).toHaveLength(1);
+			const reactions = await sql`
+				SELECT run_id FROM watcher_reactions
+				WHERE watcher_id = ${behaviorId}
+				  AND window_id = ${windowId}
+				  AND run_id = ${Number(persisted.id)}
+			`;
+			expect(reactions).toHaveLength(1);
+		} finally {
+			await sql.unsafe(`
+				DROP TRIGGER IF EXISTS fail_first_operation_reaction_trigger ON watcher_reactions;
+				DROP FUNCTION IF EXISTS fail_first_operation_reaction();
+				DROP SEQUENCE IF EXISTS operation_reaction_failure_seq;
+			`);
+		}
 	});
 
 	it("concurrent action retries converge and mismatched key reuse fails closed", async () => {

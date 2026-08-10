@@ -342,7 +342,13 @@ describe("method-metadata", () => {
 			["behaviors.setReactionScript", ["reaction_script: string"]],
 			[
 				"notifications.send",
-				["title: string", "body?: string", "'admins' | 'all' | string[]"],
+				[
+					"title: string",
+					"body?: string",
+					"'admins' | 'all' | string[]",
+					"input_schema?: object",
+					"run_id?: number",
+				],
 			],
 			["connections.update", ["display_name?: string"]],
 			["classifiers.classify", ["classifier_slug: string", "'llm' | 'user'"]],

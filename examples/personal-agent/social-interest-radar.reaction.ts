@@ -114,6 +114,7 @@ interface PersistedSignal {
 
 interface PersistedDraft {
   id: number;
+  author_name?: string | null;
   payload_text: string;
   source_url: string;
   metadata: {
@@ -135,6 +136,48 @@ function notificationBody(lines: string[]): string {
   const body = lines.join("\n");
   return body.length <= 1000 ? body : `${body.slice(0, 997)}...`;
 }
+
+function isReviewableLinkedInPostUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase().replace(/^www\./, "");
+    return (
+      (host === "linkedin.com" || host.endsWith(".linkedin.com")) &&
+      /^\/feed\/update\/urn:li:(?:activity|share|ugcPost):\d+\/?$/i.test(
+        url.pathname
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+const LINKEDIN_REVIEW_SCHEMA = {
+  type: "object",
+  properties: {
+    outcome: {
+      type: "string",
+      title: "Outcome",
+      enum: ["posted_unchanged", "posted_edited"],
+      description:
+        "Choose what you actually posted. Use Reject instead if the draft was not relevant or should not be posted.",
+    },
+    final_text: {
+      type: "string",
+      title: "Final text (if edited)",
+      description:
+        "If you changed the comment before posting, paste the final version so future suggestions can learn from the edit.",
+      maxLength: 3000,
+    },
+    note: {
+      type: "string",
+      title: "Optional note",
+      description: "Anything else the system should learn from your choice.",
+      maxLength: 1000,
+    },
+  },
+  required: ["outcome"],
+} as const;
 
 export default async (
   ctx: ReactionContext,
@@ -164,7 +207,7 @@ export default async (
      ORDER BY id`
   )) as PersistedSignal[];
   const deliveredDrafts = (await client.query(
-    `SELECT id, payload_text, source_url, metadata FROM events
+    `SELECT id, author_name, payload_text, source_url, metadata FROM events
      WHERE ${runPredicate}
        AND semantic_type = 'draft_reply'
        AND metadata->>'behavior_output' = 'drafts'
@@ -172,22 +215,29 @@ export default async (
      ORDER BY id`
   )) as PersistedDraft[];
 
-  const contentIds = deliveredSignals.flatMap((signal) => {
-    const sourceId = Number(signal.metadata.source_event_id);
-    return Number.isInteger(sourceId) && sourceId > 0
-      ? [sourceId, signal.id]
-      : [signal.id];
-  });
-  for (const draft of deliveredDrafts) contentIds.push(draft.id);
-  const body = notificationBody(
-    deliveredSignals.map(
+  const producerKey = producerRunKey(ctx);
+  const deliveryNotes: string[] = [];
+
+  const sendDigest = async (
+    signals: PersistedSignal[] = deliveredSignals,
+    includeDrafts = true
+  ): Promise<void> => {
+    if (signals.length === 0) return;
+    const contentIds = signals.flatMap((signal) => {
+      const sourceId = Number(signal.metadata.source_event_id);
+      return Number.isInteger(sourceId) && sourceId > 0
+        ? [sourceId, signal.id]
+        : [signal.id];
+    });
+    if (includeDrafts) {
+      for (const draft of deliveredDrafts) contentIds.push(draft.id);
+    }
+    const lines = signals.map(
       ({ author_name, metadata }) =>
         `[${metadata.priority ?? "normal"}] ${author_name ?? "Someone"} (${metadata.platform ?? "social"}) — ${metadata.why ?? "New signal"}`
-    )
-  );
-  const producerKey = producerRunKey(ctx);
-
-  if (deliveredSignals.length > 0) {
+    );
+    if (deliveryNotes.length > 0) lines.push("", ...deliveryNotes);
+    const body = notificationBody(lines);
     await client.notifications.send({
       title: "Social interest radar",
       body,
@@ -201,9 +251,12 @@ export default async (
         window_id: ctx.window.id,
       },
     });
-  }
+  };
 
-  if (deliveredDrafts.length === 0) return;
+  if (deliveredDrafts.length === 0) {
+    await sendDigest();
+    return;
+  }
 
   // This is intentionally a stable, human-selected pairing slug. Never pick an
   // arbitrary online Chrome connection: that can stage a draft in the wrong
@@ -240,6 +293,10 @@ export default async (
     client.log(
       "Interactive browser 'chrome-macbook' is not online; draft event was saved but no browser was guessed."
     );
+    deliveryNotes.push(
+      "Draft not staged: the pinned interactive Chrome is offline."
+    );
+    await sendDigest();
     return;
   }
 
@@ -247,6 +304,7 @@ export default async (
     behavior_id: ctx.behavior.id,
     window_id: ctx.window.id,
   };
+  const reviewedSourceEventIds = new Set<number>();
   for (const draft of deliveredDrafts) {
     const connectionId = Number(draft.metadata.source_connection_id);
     const body = draft.payload_text?.trim();
@@ -265,29 +323,69 @@ export default async (
           draft_event_id: draft.id,
         }
       );
+      deliveryNotes.push(
+        "Draft not staged: its saved handoff data is incomplete."
+      );
+      continue;
+    }
+    if (platform === "linkedin" && !isReviewableLinkedInPostUrl(sourceUrl)) {
+      client.log(
+        "Saved LinkedIn draft has only the generic feed URL; a durable post permalink is required before staging.",
+        { draft_event_id: draft.id, source_url: sourceUrl }
+      );
+      deliveryNotes.push(
+        "LinkedIn draft not staged: the post did not expose a durable link."
+      );
       continue;
     }
 
-    const result = await client.operations.execute({
-      connection_id: connectionId,
-      operation_key: platform === "x" ? "prepare_reply" : "prepare_comment",
-      idempotency_key: `social-radar:draft:${draft.id}`,
-      input:
-        platform === "x"
-          ? {
-              tweet_url: sourceUrl,
-              body,
-              reason: draft.metadata.why,
-              browser_connection_id: browserConnectionId,
-            }
-          : {
-              post_url: sourceUrl,
-              body,
-              reason: draft.metadata.why,
-              browser_connection_id: browserConnectionId,
-            },
-      behavior_source: behaviorSource,
-    });
+    let result: Awaited<ReturnType<ReactionClient["operations"]["execute"]>>;
+    try {
+      result = await client.operations.execute({
+        connection_id: connectionId,
+        operation_key: platform === "x" ? "prepare_reply" : "prepare_comment",
+        idempotency_key: `social-radar:draft:${draft.id}`,
+        input:
+          platform === "x"
+            ? {
+                tweet_url: sourceUrl,
+                body,
+                reason: draft.metadata.why,
+                browser_connection_id: browserConnectionId,
+              }
+            : {
+                post_url: sourceUrl,
+                body,
+                reason: draft.metadata.why,
+                browser_connection_id: browserConnectionId,
+              },
+        behavior_source: behaviorSource,
+      });
+    } catch (error) {
+      // A thrown execute call may have durably created the idempotent device
+      // run before an internal bookkeeping step failed. Retrying is the only
+      // safe way to distinguish that case from a handoff that never started;
+      // a terminal device failure is returned as a status below.
+      if (platform === "linkedin") {
+        throw error;
+      }
+      client.log(
+        "Social draft staging threw; continuing with the signal digest.",
+        {
+          draft_event_id: draft.id,
+          error: error instanceof Error ? error.message : String(error),
+        }
+      );
+      deliveryNotes.push(
+        `${draft.metadata.platform === "linkedin" ? "LinkedIn" : "Social"} draft not staged: the browser handoff errored.`
+      );
+      continue;
+    }
+    if (result.status === "in_progress") {
+      throw new Error(
+        `Social draft staging is still in progress for saved draft ${draft.id}.`
+      );
+    }
     if (result.status !== "completed") {
       client.log(
         "Could not stage the saved social draft in the interactive browser.",
@@ -297,6 +395,52 @@ export default async (
           error: result.error_message,
         }
       );
+      deliveryNotes.push(
+        `${platform === "linkedin" ? "LinkedIn" : "X"} draft not staged: the browser handoff failed.`
+      );
+      continue;
+    }
+
+    if (platform === "linkedin") {
+      const sourceEventId = Number(draft.metadata.source_event_id);
+      const matchingSignal = deliveredSignals.find(
+        (signal) => Number(signal.metadata.source_event_id) === sourceEventId
+      );
+      const author =
+        draft.author_name?.trim() ||
+        matchingSignal?.author_name?.trim() ||
+        "this post";
+      const reviewBody = notificationBody([
+        "Review the staged comment in LinkedIn. Record what you posted, or use Reject and explain why it was not relevant.",
+        "",
+        `Why it was suggested: ${draft.metadata.why ?? "Relevant social signal"}`,
+        "",
+        `Draft: ${body}`,
+        "",
+        `Post: ${sourceUrl}`,
+      ]);
+      // Once staging succeeds, review creation is part of the durable contract.
+      // Let a transient send failure retry the reaction; both calls are
+      // idempotent, so the browser handoff will not be duplicated.
+      await client.notifications.send({
+        title: `Review LinkedIn comment for ${author}`,
+        body: reviewBody,
+        recipients: "admins",
+        input_schema: LINKEDIN_REVIEW_SCHEMA,
+        idempotency_key: `social-radar:review:${draft.id}`,
+        behavior_source: behaviorSource,
+      });
+      if (Number.isSafeInteger(sourceEventId) && sourceEventId > 0) {
+        reviewedSourceEventIds.add(sourceEventId);
+      }
     }
   }
+
+  // The answerable review replaces the duplicate FYI for that LinkedIn signal,
+  // but unrelated signals from the same firing still get the normal digest.
+  const unreviewedSignals = deliveredSignals.filter(
+    (signal) =>
+      !reviewedSourceEventIds.has(Number(signal.metadata.source_event_id))
+  );
+  await sendDigest(unreviewedSignals, reviewedSourceEventIds.size === 0);
 };

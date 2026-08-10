@@ -250,6 +250,8 @@ export type {
   KnowledgeSaveResult,
   KnowledgeSearchInput,
   NotificationsSendInput,
+  NotificationsSendResult,
+  OperationsListRunsInput,
 } from './reaction-client-types.js';
 export type { Env } from './types.js';
 

@@ -1130,6 +1130,26 @@ async function handleExecute(
 	}
 
 	const input = args.input ?? {};
+	// A caller-provided behavior_source is only an attribution hint. Durable
+	// feedback must follow the server-stamped Behavior execution context.
+	const reactionBehaviorId = ctx.actingWatcherId ?? null;
+	const reactionWindowId = ctx.actingWindowId ?? null;
+	const trackOperationReaction = async (runId: number): Promise<void> => {
+		if (reactionBehaviorId === null || reactionWindowId === null) return;
+		await trackWatcherReaction({
+			organizationId: ctx.organizationId,
+			watcherId: reactionBehaviorId,
+			windowId: reactionWindowId,
+			reactionType: "action_executed",
+			toolName: "manage_operations",
+			toolArgs: {
+				operation_key: args.operation_key,
+				connection_id: args.connection_id,
+				input,
+			},
+			runId,
+		});
+	};
 	const validationError = validateOperationInput(operation, input);
 	if (validationError) {
 		return {
@@ -1263,6 +1283,8 @@ async function handleExecute(
 				policyPrincipalKind: actor.kind,
 				policyPrincipalId: actor.id,
 				createdByUserId: ctx.userId,
+				watcherId: ctx.actingWatcherId,
+				windowId: ctx.actingWindowId,
 				idempotencyKey: args.idempotency_key,
 				db: tx,
 			});
@@ -1309,6 +1331,7 @@ async function handleExecute(
 			return { claim: createdRun, eventId: Number(event.id) };
 		});
 		if (!claim.created) {
+			await trackOperationReaction(claim.runId);
 			return replayExistingOperationRun(claim, operation.name, ctx);
 		}
 		if (eventId == null) {
@@ -1318,21 +1341,7 @@ async function handleExecute(
 
 		// Telemetry + notification run AFTER the run+event are durably committed,
 		// so they never reference a rolled-back run and stay off the hot path.
-		if (args.behavior_source) {
-			await trackWatcherReaction({
-				organizationId: ctx.organizationId,
-				watcherId: args.behavior_source.behavior_id,
-				windowId: args.behavior_source.window_id,
-				reactionType: "action_executed",
-				toolName: "manage_operations",
-				toolArgs: {
-					operation_key: args.operation_key,
-					connection_id: args.connection_id,
-					input,
-				},
-				runId,
-			});
-		}
+		await trackOperationReaction(runId);
 
 		const { ownerSlug: orgSlug, baseUrl } = await getOrgUrlContext(ctx);
 		// Run-scoped, not event-scoped: the pending event is superseded on
@@ -1380,28 +1389,15 @@ async function handleExecute(
 		policyPrincipalKind: actor.kind,
 		policyPrincipalId: actor.id,
 		createdByUserId: ctx.userId,
+		watcherId: ctx.actingWatcherId,
+		windowId: ctx.actingWindowId,
 		idempotencyKey: args.idempotency_key,
 	});
 	if (!claim.created) {
+		await trackOperationReaction(claim.runId);
 		return replayExistingOperationRun(claim, operation.name, ctx);
 	}
 	const runId = claim.runId;
-
-	if (args.behavior_source) {
-		await trackWatcherReaction({
-			organizationId: ctx.organizationId,
-			watcherId: args.behavior_source.behavior_id,
-			windowId: args.behavior_source.window_id,
-			reactionType: "action_executed",
-			toolName: "manage_operations",
-			toolArgs: {
-				operation_key: args.operation_key,
-				connection_id: args.connection_id,
-				input,
-			},
-			runId,
-		});
-	}
 
 	// Device-bound branch: the run is pending; a device worker (chrome
 	// extension, mac bridge, ...) will claim it via /api/workers/poll and
@@ -1414,6 +1410,7 @@ async function handleExecute(
 			ctx.organizationId,
 			ctx.abortSignal,
 		);
+		await trackOperationReaction(runId);
 		if (result.status === "completed") {
 			return {
 				action: "execute",
@@ -1448,6 +1445,7 @@ async function handleExecute(
 		env,
 		ctx.abortSignal,
 	);
+	await trackOperationReaction(runId);
 	if (result.status === "completed") {
 		return {
 			action: "execute",
@@ -1611,7 +1609,7 @@ async function handleListRuns(
     pageWhere = sql`${pageWhere} AND (r.created_at, r.id) < (${args.before_created_at}::timestamptz, ${args.before_id})`;
   }
   const query = sql`
-    SELECT r.id, r.run_type, r.watcher_id AS behavior_id, r.connection_id, r.feed_id, r.connector_key, r.connector_version,
+    SELECT r.id, r.run_type, r.watcher_id AS behavior_id, r.window_id, r.connection_id, r.feed_id, r.connector_key, r.connector_version,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.items_collected, r.checkpoint,
            r.created_at, r.completed_at,
@@ -1652,7 +1650,7 @@ async function handleGetRun(
   // a run visible in the list is always fetchable here. Only the chat-message
   // transport lane (the list's default exclusion) stays unfetchable.
   const rows = await sql`
-    SELECT r.id, r.watcher_id AS behavior_id, r.connection_id, r.connector_key,
+    SELECT r.id, r.watcher_id AS behavior_id, r.window_id, r.connection_id, r.connector_key,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.run_type,
            r.created_at, r.completed_at,

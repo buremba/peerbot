@@ -494,10 +494,10 @@ export default async (_ctx, client) => {
 	},
 	"notifications.send": {
 		summary:
-			"Send a notification to org users. Writes an `agent_message` notification (in-app inbox) and fans it out to the org's active bot connections (Slack/Telegram) — the way a Behavior reaction surfaces its digest to a chat channel. Pass an optional `card` (a `chat` CardElement) for rich cross-platform rendering, and `behavior_source` when firing from a reaction.",
+			"Send a notification to org users. With `input_schema`, it becomes an answerable human question on the existing approval/rejection rail; the returned `run_id` can be read with `operations.getRun`, and Reject can carry a reason. Without `input_schema`, it writes an FYI `agent_message`. Both fan out to active bot connections. Pass `behavior_source` from a reaction for feedback attribution.",
 		access: "write",
 		signature:
-			"notifications.send(input: { title: string; body?: string; card?: CardElement; recipients?: 'admins' | 'all' | string[]; resource_url?: string; idempotency_key?: string; connection_id?: string; data?: object; behavior_source?: { behavior_id: number; window_id: number } }): Promise<{ notified_count: number }>",
+			"notifications.send(input: { title: string; body?: string; card?: CardElement; recipients?: 'admins' | 'all' | string[]; resource_url?: string; idempotency_key?: string; connection_id?: string; data?: object; input_schema?: object; behavior_source?: { behavior_id: number; window_id: number } }): Promise<{ notified_count: number; event_id: number | null; url: string | null; run_id?: number }>",
 		example:
 			"await client.notifications.send({ title: 'Weekly funnel digest', body: '3 new leads...', behavior_source: { behavior_id: ctx.window.behavior_id, window_id: ctx.window.id } });",
 		usageExample: `// Push a Behavior digest to the org's Slack/Telegram connections + inbox.

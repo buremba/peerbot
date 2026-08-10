@@ -130,6 +130,41 @@ export interface NotificationsSendInput {
   data?: Record<string, unknown>;
   /** Attribution when sent from a behavior reaction. */
   behavior_source?: { behavior_id: number; window_id: number };
+  /**
+   * Turn the notification into a human question on the existing approval rail.
+   * `{}` is a binary Approve/Reject decision; a field-shaped schema renders a
+   * form. Rejection can carry a reason through the standard reject action.
+   */
+  input_schema?: Record<string, unknown>;
+}
+
+export interface NotificationsSendResult {
+  notified_count: number;
+  /** Durable notification event, including on an idempotent replay. */
+  event_id: number | null;
+  /** Server-produced notification permalink. */
+  url: string | null;
+  /** Present for input_schema asks; poll/read this run for the answer. */
+  run_id?: number;
+}
+
+export interface OperationsListRunsInput {
+  connection_id?: number;
+  connection_ids?: number[];
+  feed_ids?: number[];
+  device_worker_id?: string;
+  connector_key?: string;
+  operation_key?: string;
+  status?: string;
+  approval_status?: string;
+  run_types?: string[];
+  created_after?: string;
+  created_before?: string;
+  behavior_ids?: number[];
+  limit?: number;
+  offset?: number;
+  before_id?: number;
+  before_created_at?: string;
 }
 
 // ── Client ───────────────────────────────────────────────────────────────────
@@ -200,7 +235,7 @@ export interface ReactionClient {
      * org's active bot connections (Slack/Telegram). This is how a reaction
      * surfaces its digest to a chat channel.
      */
-    send(input: NotificationsSendInput): Promise<{ notified_count: number }>;
+    send(input: NotificationsSendInput): Promise<NotificationsSendResult>;
   };
 
   /**
@@ -216,6 +251,16 @@ export interface ReactionClient {
       connection_id?: number;
       entity_id?: number;
     }): Promise<unknown>;
+    /** Read operational runs, including questions and staged connector actions. */
+    listRuns(input?: OperationsListRunsInput): Promise<{
+      runs: Array<Record<string, unknown>>;
+      total: number;
+      limit: number;
+      offset: number;
+      has_more: boolean;
+    }>;
+    /** Read one durable run and its completed answer/rejection state. */
+    getRun(run_id: number): Promise<{ run: Record<string, unknown> }>;
     /** Execute one operation and wait for its result. */
     execute(input: {
       connection_id: number;

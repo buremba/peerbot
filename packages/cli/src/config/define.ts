@@ -107,6 +107,23 @@ export interface EntityType {
    */
   eventKinds?: Record<string, EntityEventKind>;
   /**
+   * Entity-resolution policy (the `x-lobu-resolution` metadata_schema key the
+   * server reads to decide whether duplicate entities sharing a normalized
+   * identity auto-merge or queue human review). Declared here so the policy is
+   * git-audited like the rest of the schema; `lobu apply` folds it into the
+   * type's metadata_schema. A rule's `fields` are metadata keys or identity
+   * namespaces (e.g. `email`), `normalizer` is `email` | `phone` | `exact`, and
+   * `onMatch` is `auto_merge` | `review`. When the key is absent the server
+   * falls back to defaults (email/phone → review).
+   */
+  resolutionPolicy?: {
+    rules: Array<{
+      fields: string[];
+      normalizer: "email" | "phone" | "exact";
+      onMatch: "auto_merge" | "review";
+    }>;
+  };
+  /**
    * Default view template (render-DSL root node, optionally with a `data_sources`
    * key) for this entity type's detail page. Applied declaratively and
    * git-audited. Under `prune`, omitting it clears any existing template (the

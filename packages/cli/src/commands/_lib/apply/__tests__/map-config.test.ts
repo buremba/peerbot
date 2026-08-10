@@ -431,6 +431,55 @@ describe("mapProjectToDesiredState", () => {
     expect(byKey.person?.metrics).toBeUndefined();
   });
 
+  test("lowers a declared resolution policy to the raw x-lobu-resolution key; absent stays undefined", () => {
+    const person = defineEntityType({
+      key: "person",
+      name: "Person",
+      resolutionPolicy: {
+        rules: [
+          { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+          { fields: ["phone"], normalizer: "phone", onMatch: "review" },
+        ],
+      },
+    });
+    const company = defineEntityType({ key: "company", name: "Company" });
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [], entities: [person, company] })
+    );
+    const byKey = Object.fromEntries(
+      state.memorySchema.entityTypes.map((e) => [e.slug, e])
+    );
+    expect(byKey.person?.resolutionPolicy).toEqual({
+      "x-lobu-resolution": {
+        rules: [
+          { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+          { fields: ["phone"], normalizer: "phone", onMatch: "review" },
+        ],
+      },
+    });
+    // A type without a policy carries none — keeps the diff churn-free.
+    expect(byKey.company?.resolutionPolicy).toBeUndefined();
+  });
+
+  test("rejects malformed resolutionPolicy rules at load time", () => {
+    const bad = defineEntityType({
+      key: "person",
+      name: "Person",
+      resolutionPolicy: {
+        rules: [
+          {
+            fields: [],
+            normalizer: "email",
+            onMatch: "auto_merge",
+          },
+        ],
+      },
+    });
+    expect(() =>
+      mapProjectToDesiredState(defineConfig({ agents: [], entities: [bad] }))
+    ).toThrow(/invalid resolutionPolicy/i);
+  });
+
   test("rejects invalid metrics at load time (measure naming a missing eventSet)", () => {
     const bad = defineEntityType({
       key: "company",

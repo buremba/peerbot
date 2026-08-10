@@ -267,6 +267,81 @@ describe("apply diff — memory schema", () => {
     expect(plan.counts.update).toBe(0);
   });
 
+  test("declared resolutionPolicy diffs against the remote x-lobu-resolution", () => {
+    const declared = {
+      "x-lobu-resolution": {
+        rules: [
+          { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+        ],
+      },
+    };
+    const desired: DesiredState = {
+      agents: [],
+      memorySchema: {
+        entityTypes: [{ slug: "person", resolutionPolicy: declared }],
+        relationshipTypes: [],
+      },
+      watchers: [],
+      requiredSecrets: [],
+    };
+
+    // Match → noop.
+    const match = computeDiff(desired, {
+      ...emptyRemote(),
+      entityTypes: [{ slug: "person", schemaExtras: declared }],
+    });
+    expect(match.rows.find((r) => r.id === "person")?.verb).toBe("noop");
+
+    // Differs → update, flagged.
+    const mismatch = computeDiff(desired, {
+      ...emptyRemote(),
+      entityTypes: [
+        {
+          slug: "person",
+          schemaExtras: { "x-lobu-resolution": { rules: [] } },
+        },
+      ],
+    });
+    const row = mismatch.rows.find((r) => r.id === "person");
+    expect(row?.verb).toBe("update");
+    expect(row?.changedFields).toContain("resolutionPolicy");
+  });
+
+  test("omitted resolutionPolicy never churns an out-of-band policy", () => {
+    const desired: DesiredState = {
+      agents: [],
+      memorySchema: {
+        entityTypes: [{ slug: "person", name: "Person" }],
+        relationshipTypes: [],
+      },
+      watchers: [],
+      requiredSecrets: [],
+    };
+    const plan = computeDiff(desired, {
+      ...emptyRemote(),
+      entityTypes: [
+        {
+          slug: "person",
+          name: "Person",
+          schemaExtras: {
+            "x-lobu-resolution": {
+              rules: [
+                {
+                  fields: ["email"],
+                  normalizer: "email",
+                  onMatch: "auto_merge",
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+    const row = plan.rows.find((r) => r.id === "person");
+    expect(row?.verb).toBe("noop");
+    expect(plan.counts.update).toBe(0);
+  });
+
   test("relationship-type rules are a noop when remote rules match (idempotency)", () => {
     // Regression: the rel-type `list` action omits rules, so apply hydrates
     // them (listRelationshipTypeRules) into the snapshot. When the hydrated

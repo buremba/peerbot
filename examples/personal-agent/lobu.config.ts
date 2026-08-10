@@ -210,6 +210,20 @@ const person = defineEntityType({
       description: "WhatsApp chat the message belongs to.",
     },
   },
+  // Entity-resolution policy: a normalized email match auto-merges two persons
+  // (a normalized address is a strong unique key — the same human on LinkedIn,
+  // Gmail, X, etc.). Phone stays review-only: shared/work numbers collide too
+  // easily to merge without a human look. Declared here so `apply` folds it into
+  // the person type's metadata_schema and the duplicate-entity-resolution
+  // reaction's candidate submissions auto-merge on email.
+  resolutionPolicy: {
+    rules: [
+      { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+      { fields: ["emails"], normalizer: "email", onMatch: "auto_merge" },
+      { fields: ["phone"], normalizer: "phone", onMatch: "review" },
+      { fields: ["phones"], normalizer: "phone", onMatch: "review" },
+    ],
+  },
 });
 
 const company = defineEntityType({
@@ -913,6 +927,30 @@ const midasConnection = defineConnection({
   feeds: [{ feed: "assets", config: {} }],
 });
 
+// Gmail person-building, not mailbox mirroring. One narrow collected feed syncs
+// only person-relevant threads (human_senders_only) so the DB holds a small
+// high-signal set that drives person minting/merging — full email content stays
+// a live read via the connector's search/get_thread actions, never persisted.
+// Adopts the existing `gmail-buremba` slug so the OAuth grant already in place
+// is reused; the stale duplicate gmail connections/feeds in prod surface as
+// drift rows until cleaned up.
+const gmailConnection = defineConnection({
+  slug: "gmail-buremba",
+  connector: "google.gmail",
+  name: "Gmail",
+  feeds: [
+    {
+      feed: "threads",
+      config: {
+        human_senders_only: true,
+        labels: ["INBOX", "SENT"],
+        max_results: 500,
+        lookback_days: 365,
+      },
+    },
+  ],
+});
+
 // ── Relationships (only those the personal agent uses) ──────────
 // Tax-graph relationship types (account_contains, for_tax_year, …) belong in
 // examples/personal-finance — not here. With prune:true they are removed from
@@ -1223,5 +1261,6 @@ export default defineConfig({
     twitterTakeoutConnection,
     instagramTakeoutConnection,
     linkedinConnection,
+    gmailConnection,
   ],
 });

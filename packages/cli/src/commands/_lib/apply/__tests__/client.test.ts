@@ -469,6 +469,72 @@ describe("ApplyClient — prune", () => {
     });
   });
 
+  test("declared resolutionPolicy is folded into metadata_schema and wins over out-of-band extras", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    await client.upsertEntityType(
+      {
+        slug: "person",
+        properties: { email: { type: "string" } },
+        resolutionPolicy: {
+          "x-lobu-resolution": {
+            rules: [
+              { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+            ],
+          },
+        },
+      },
+      // Remote out-of-band value differs — the declared policy must win.
+      { "x-lobu-resolution": { rules: [] } }
+    );
+
+    const body = JSON.parse(String(calls[0]?.init?.body));
+    expect(body.metadata_schema["x-lobu-resolution"]).toEqual({
+      rules: [
+        { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+      ],
+    });
+    expect(body.metadata_schema.properties).toEqual({
+      email: { type: "string" },
+    });
+  });
+
+  test("out-of-band resolution extras survive when no policy is declared", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    await client.upsertEntityType(
+      { slug: "person", properties: { email: { type: "string" } } },
+      {
+        "x-lobu-resolution": {
+          rules: [
+            { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+          ],
+        },
+      }
+    );
+
+    const body = JSON.parse(String(calls[0]?.init?.body));
+    expect(body.metadata_schema["x-lobu-resolution"]).toEqual({
+      rules: [
+        { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+      ],
+    });
+  });
+
   test("config-owned metadata_schema keys win over stale carried-forward ones", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new ApplyClient(

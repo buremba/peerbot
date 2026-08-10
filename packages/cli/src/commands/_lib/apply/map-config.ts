@@ -446,6 +446,35 @@ function mapEntityType(entity: EntityType): DesiredEntityType {
       );
     }
   }
+  // Fail loud on malformed resolution rules: the server silently ignores rules
+  // that fail its own shape check, which would silently downgrade the policy to
+  // the default (email/phone → review).
+  if (entity.resolutionPolicy) {
+    const ruleErrors = (entity.resolutionPolicy.rules ?? []).flatMap(
+      (rule, index) => {
+        const fields =
+          Array.isArray(rule.fields) &&
+          rule.fields.every((f) => typeof f === "string" && f.trim())
+            ? rule.fields
+            : null;
+        const normalizerOk =
+          rule.normalizer === "email" ||
+          rule.normalizer === "phone" ||
+          rule.normalizer === "exact";
+        const onMatchOk =
+          rule.onMatch === "auto_merge" || rule.onMatch === "review";
+        if (fields && fields.length > 0 && normalizerOk && onMatchOk) return [];
+        return [
+          `rule ${index}: expected { fields: string[], normalizer: "email"|"phone"|"exact", onMatch: "auto_merge"|"review" }`,
+        ];
+      }
+    );
+    if (ruleErrors.length > 0) {
+      throw new ValidationError(
+        `entity type "${entity.key}" has invalid resolutionPolicy: ${ruleErrors.join("; ")}`
+      );
+    }
+  }
   return {
     slug: entity.key,
     ...(entity.name ? { name: entity.name } : {}),
@@ -456,6 +485,17 @@ function mapEntityType(entity: EntityType): DesiredEntityType {
     // on both sides and never churns the diff (mirrors `backing`/`metrics`).
     ...(entity.eventKinds && Object.keys(entity.eventKinds).length > 0
       ? { eventKinds: entity.eventKinds }
+      : {}),
+    // Resolution policy lowered to the raw metadata_schema key the server reads.
+    // Declared only when present so a type without one never churns the diff.
+    ...(entity.resolutionPolicy
+      ? {
+          resolutionPolicy: {
+            "x-lobu-resolution": {
+              rules: entity.resolutionPolicy.rules,
+            },
+          },
+        }
       : {}),
     // View template included only when declared so absence never churns the diff
     // (a no-prune apply leaves any UI-authored template untouched).

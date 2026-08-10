@@ -697,11 +697,16 @@ export class ApplyClient {
       eventKinds,
       backing,
       metrics,
+      resolutionPolicy,
     } = entity;
     const payload: Record<string, unknown> = { slug };
     if (name !== undefined) payload.name = name;
     if (description !== undefined) payload.description = description;
-    if (properties !== undefined || required !== undefined) {
+    if (
+      properties !== undefined ||
+      required !== undefined ||
+      resolutionPolicy !== undefined
+    ) {
       // Strip config-owned keys from the extras bag so config always wins —
       // spread order alone would let a stale `required` survive, because the
       // config's `required` is only spread when non-empty. (When the config
@@ -710,10 +715,15 @@ export class ApplyClient {
       const extras: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(schemaExtras ?? {})) {
         if (CONFIG_OWNED_SCHEMA_KEYS.has(key)) continue;
+        // The resolution policy is now config-owned when declared — the declared
+        // value wins over any out-of-band one.
+        if (resolutionPolicy !== undefined && key === "x-lobu-resolution")
+          continue;
         extras[key] = value;
       }
       payload.metadata_schema = {
         ...extras,
+        ...(resolutionPolicy ?? {}),
         type: "object",
         properties: properties ?? {},
         ...(required && required.length > 0 ? { required } : {}),

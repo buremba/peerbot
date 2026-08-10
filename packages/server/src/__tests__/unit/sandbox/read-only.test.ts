@@ -206,13 +206,103 @@ describe("guest-side proxy traps", () => {
   });
 });
 
-describe("output cap (1 MB)", () => {
-  it("rejects return values that serialize to over 1 MB", async () => {
+describe("output budget", () => {
+  it("truncates return values that serialize to over 1 MB instead of failing", async () => {
     const result = await runOrSkip({
       // 1.2 MB of 'a' + JSON quoting trips the cap.
       source: "export default async () => 'a'.repeat(1200000);",
       sdk: stubSDK(),
       sdkMode: "full",
+    });
+    if (!result) return;
+    expect(result.success).toBe(true);
+    expect(typeof result.returnValue).toBe("string");
+    expect(result.returnValue).toMatch(/^a+\u2026 \[truncated\]$/);
+    expect(result.returnTruncated).toBeDefined();
+    expect(result.returnTruncated!.dropped_chars).toBeGreaterThan(0);
+  });
+
+  it("keeps the leading structure and reports dropped elements when truncating", async () => {
+    const result = await runOrSkip({
+      source: [
+        "export default async () => {",
+        "  const rows = Array.from({ length: 50000 }, (_, i) => ({ id: i, body: 'x'.repeat(60) }));",
+        "  return rows;",
+        "};",
+      ].join("\n"),
+      sdk: stubSDK(),
+      sdkMode: "full",
+    });
+    if (!result) return;
+    expect(result.success).toBe(true);
+    const kept = result.returnValue as unknown[];
+    expect(Array.isArray(kept)).toBe(true);
+    expect(kept[0]).toEqual({ id: 0, body: "x".repeat(60) });
+    expect(result.returnTruncated).toBeDefined();
+    expect(result.returnTruncated!.dropped_elements).toBeGreaterThan(0);
+  });
+
+  it("drops console logs past the log cap without failing the run", async () => {
+    const result = await runOrSkip({
+      source: [
+        "export default async () => {",
+        "  console.log('x'.repeat(70000));",
+        "  console.log('y'.repeat(70000));",
+        "  return 'ok';",
+        "};",
+      ].join("\n"),
+      sdk: stubSDK(),
+      sdkMode: "full",
+    });
+    if (!result) return;
+    expect(result.success).toBe(true);
+    expect(result.returnValue).toBe("ok");
+    expect(result.returnTruncated).toBeUndefined();
+    expect(result.logs.length).toBeLessThanOrEqual(2);
+    expect(
+      result.logs.some((l) => l.message.includes("console output truncated")),
+    ).toBe(true);
+  });
+
+  it("does not let a large SDK call result evict a small return value", async () => {
+    const sdk = stubSDK({
+      entities: {
+        list: async () => ({ rows: "x".repeat(1_200_000) }),
+      } as never,
+    });
+    const result = await runOrSkip({
+      source: [
+        "export default async (_ctx, client) => {",
+        "  const big = await client.entities.list();",
+        "  return { count: big.rows.length };",
+        "};",
+      ].join("\n"),
+      sdk,
+      sdkMode: "full",
+    });
+    if (!result) return;
+    expect(result.success).toBe(true);
+    expect(result.returnValue).toEqual({ count: 1_200_000 });
+  });
+
+  it("still hard-fails an oversized crossing budget (pathological guest)", async () => {
+    const sdk = stubSDK({
+      entities: {
+        list: async () => ({ rows: "x".repeat(1_000_000) }),
+      } as never,
+    });
+    const result = await runOrSkip({
+      source: [
+        "export default async (_ctx, client) => {",
+        "  for (let i = 0; i < 6; i++) {",
+        "    try { await client.entities.list(); } catch (e) {}",
+        "  }",
+        "  return 'done';",
+        "};",
+      ].join("\n"),
+      sdk,
+      sdkMode: "full",
+      limits: { crossingBytes: 2_000_000 },
     });
     if (!result) return;
     expect(result.success).toBe(false);

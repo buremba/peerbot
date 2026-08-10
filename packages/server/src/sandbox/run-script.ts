@@ -1,8 +1,12 @@
 /**
  * Compiles a TypeScript user-script via esbuild, runs it in a V8 isolate, and
- * bridges SDK calls back to the host. Caps: 1 MB output, 200 SDK calls,
- * 180s wall-clock max (device-bound operations may wait up to ~155s), and
- * 30s per `ctx.sleep()` call.
+ * bridges SDK calls back to the host. Output is budgeted per-purpose, not as
+ * one combined counter: the return value is capped at 1 MB (truncated with a
+ * `returnTruncated` report when exceeded, never a hard fail), console logs are
+ * capped at 64 KB and dropped once full, and a 4 MB crossing guard bounds
+ * host↔guest copies (SDK call envelopes + console crossing) as the DoS
+ * backstop. Other caps: 200 SDK calls, 180s wall-clock max (device-bound
+ * operations may wait up to ~155s), and 30s per `ctx.sleep()` call.
  * `client.org()` is stateless — each guest call carries
  * `orgPath` so the host re-walks org swaps without holding refs.
  */
@@ -17,7 +21,26 @@ export interface RunLimits {
 	memoryMb?: number;
 	timeoutMs?: number;
 	sdkCallQuota?: number;
+	/** Serialization cap for the script's return value. Values that exceed it are truncated, not failed. */
 	outputBytes?: number;
+	/** Cap for captured console logs; messages past it are dropped (never a failure). */
+	logBytes?: number;
+	/** DoS guard on host↔guest copies across SDK call envelopes and console output. */
+	crossingBytes?: number;
+}
+
+/**
+ * What the host dropped when a return value exceeded `outputBytes`. Returned
+ * out-of-band so the truncated value itself stays shape-faithful (a truncated
+ * array is still an array) and the agent can never mistake partial data for
+ * complete output.
+ */
+export interface TruncatedValueInfo {
+	total_bytes: number;
+	kept_bytes: number;
+	dropped_elements: number;
+	dropped_keys: number;
+	dropped_chars: number;
 }
 
 /**
@@ -106,6 +129,8 @@ interface SdkCallTraceEntry {
 interface RunScriptResult {
 	success: boolean;
 	returnValue?: unknown;
+	/** Present when the return value exceeded `outputBytes` and was truncated. */
+	returnTruncated?: TruncatedValueInfo;
 	logs: LogEntry[];
 	sdkCallTrace: SdkCallTraceEntry[];
 	sideEffectPreview: SdkCallTraceEntry[];
@@ -126,6 +151,8 @@ const DEFAULT_LIMITS: Required<RunLimits> = {
 	timeoutMs: 60_000,
 	sdkCallQuota: 200,
 	outputBytes: 1_048_576,
+	logBytes: 65_536,
+	crossingBytes: 4_194_304,
 };
 /** Device action waits allow 60s queue + 95s post-claim; sandbox must outlive that. */
 export const MAX_SCRIPT_TIMEOUT_MS = 180_000;
@@ -195,6 +222,147 @@ export function safeErrorDetails(value: unknown): unknown {
 			message: "Structured SDK error details could not be serialized safely.",
 		};
 	}
+}
+
+const TRUNCATE_SUFFIX = "\u2026 [truncated]";
+/** Reserved for the result envelope wrapping a return value (`ok`, marker keys). */
+const ENVELOPE_OVERHEAD_BYTES = 128;
+const MAX_TRUNCATE_DEPTH = 200;
+const SKIP = Symbol("truncate.skip");
+
+function jsonBytes(value: unknown): number {
+	const json = JSON.stringify(value);
+	return json === undefined ? 0 : Buffer.byteLength(json, "utf8");
+}
+
+/** Longest byte-bounded UTF-8 prefix of `value`. */
+function truncateStringToBytes(value: string, maxBytes: number): string {
+	if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+	let lo = 0;
+	let hi = value.length;
+	while (lo < hi) {
+		const mid = (lo + hi + 1) >> 1;
+		if (Buffer.byteLength(value.slice(0, mid), "utf8") <= maxBytes) lo = mid;
+		else hi = mid - 1;
+	}
+	return value.slice(0, lo);
+}
+
+interface TruncState {
+	budget: number;
+	used: number;
+	droppedElements: number;
+	droppedKeys: number;
+	droppedChars: number;
+}
+
+/**
+ * Greedy bounded serializer: keep as much top-level structure as fits, then
+ * report what was dropped. A kept entry that itself overflows (nested array,
+ * object, string) is recursed into and truncated in place; `SKIP` marks a
+ * value that could not be kept at all. `state.used` never exceeds `state.budget`.
+ */
+function encodeWithinBudget(value: unknown, state: TruncState, depth: number): unknown {
+	const full = jsonBytes(value);
+	if (state.used + full <= state.budget) {
+		state.used += full;
+		return value;
+	}
+	if (depth >= MAX_TRUNCATE_DEPTH) {
+		dropAtomic(value, state);
+		return SKIP;
+	}
+	if (Array.isArray(value)) {
+		if (state.used + 2 > state.budget) {
+			state.droppedElements += value.length;
+			return SKIP;
+		}
+		state.used += 2; // brackets
+		const out: unknown[] = [];
+		for (const item of value) {
+			const sep = out.length > 0 ? 1 : 0;
+			if (state.used + sep + 2 > state.budget) break;
+			state.used += sep;
+			const encoded = encodeWithinBudget(item, state, depth + 1);
+			if (encoded === SKIP) break;
+			out.push(encoded);
+		}
+		state.droppedElements += value.length - out.length;
+		return out;
+	}
+	if (value !== null && typeof value === "object") {
+		if (state.used + 2 > state.budget) {
+			state.droppedKeys += Object.keys(value).length;
+			return SKIP;
+		}
+		state.used += 2; // braces
+		const out: Record<string, unknown> = {};
+		const entries = Object.entries(value as Record<string, unknown>);
+		for (const [key, child] of entries) {
+			const sep = Object.keys(out).length > 0 ? 1 : 0;
+			const keyCost = jsonBytes(key);
+			if (state.used + sep + keyCost + 2 > state.budget) break;
+			state.used += sep + keyCost;
+			const encoded = encodeWithinBudget(child, state, depth + 1);
+			if (encoded === SKIP) break;
+			out[key] = encoded;
+		}
+		state.droppedKeys += entries.length - Object.keys(out).length;
+		return out;
+	}
+	if (typeof value === "string") {
+		const suffixBytes = jsonBytes(TRUNCATE_SUFFIX);
+		const avail = state.budget - state.used - suffixBytes;
+		if (avail <= 0) {
+			state.droppedChars += value.length;
+			return SKIP;
+		}
+		const kept = truncateStringToBytes(value, avail);
+		state.droppedChars += value.length - kept.length;
+		const out = kept + TRUNCATE_SUFFIX;
+		state.used += jsonBytes(out);
+		return out;
+	}
+	dropAtomic(value, state);
+	return SKIP;
+}
+
+function dropAtomic(value: unknown, state: TruncState): void {
+	if (typeof value === "string") state.droppedChars += value.length;
+	else if (Array.isArray(value)) state.droppedElements += value.length;
+	else if (value !== null && typeof value === "object")
+		state.droppedKeys += Object.keys(value).length;
+}
+
+/**
+ * Truncate a return value to fit `budgetBytes`, preserving as much structure
+ * as possible. Only called when the serialized value already exceeds the
+ * budget, so `meta` always reports dropped content.
+ */
+function truncateJsonValue(
+	value: unknown,
+	budgetBytes: number,
+): { value: unknown; meta: TruncatedValueInfo } {
+	const totalBytes = jsonBytes(value);
+	const state: TruncState = {
+		budget: budgetBytes,
+		used: 0,
+		droppedElements: 0,
+		droppedKeys: 0,
+		droppedChars: 0,
+	};
+	let out = encodeWithinBudget(value, state, 0);
+	if (out === SKIP) out = { __lobu_truncated: true };
+	return {
+		value: out,
+		meta: {
+			total_bytes: totalBytes,
+			kept_bytes: Math.min(state.used, totalBytes),
+			dropped_elements: state.droppedElements,
+			dropped_keys: state.droppedKeys,
+			dropped_chars: state.droppedChars,
+		},
+	};
 }
 
 function classifyRuntimeError(error: {
@@ -285,6 +453,18 @@ function clampLimits(limits?: RunLimits): Required<RunLimits> {
 			DEFAULT_LIMITS.outputBytes,
 			1024,
 			DEFAULT_LIMITS.outputBytes,
+		),
+		logBytes: clampNumber(
+			limits?.logBytes,
+			DEFAULT_LIMITS.logBytes,
+			1024,
+			DEFAULT_LIMITS.logBytes,
+		),
+		crossingBytes: clampNumber(
+			limits?.crossingBytes,
+			DEFAULT_LIMITS.crossingBytes,
+			65_536,
+			DEFAULT_LIMITS.crossingBytes,
 		),
 	};
 }
@@ -617,7 +797,29 @@ export async function runScript(
 	const sdkCallTrace: SdkCallTraceEntry[] = [];
 	const sideEffectPreview: SdkCallTraceEntry[] = [];
 	let sdkCalls = 0;
-	let outputBytes = 0;
+	// Internal host↔guest copy guard (SDK call envelopes + console crossing).
+	// Distinct from the agent-facing return-value cap: this bounds what the host
+	// copies, not what the caller receives.
+	let crossingBytes = 0;
+	let crossingOversize = false;
+	// Captured console budget. Logs are diagnostics: once full they drop, they
+	// never fail a run.
+	let logBytesUsed = 0;
+	let logFull = false;
+
+	const crossingOversizeError = () =>
+		new Error(
+			`OutputSizeExceeded: script output exceeded the ${limits.crossingBytes}-byte crossing budget (SDK call results and console output)`,
+		);
+
+	/** Charge an SDK call envelope against the crossing guard. */
+	function chargeCrossing(json: string): void {
+		crossingBytes += Buffer.byteLength(json, "utf8");
+		if (crossingBytes > limits.crossingBytes) {
+			crossingOversize = true;
+			throw crossingOversizeError();
+		}
+	}
 
 	const ivm = await loadIsolatedVm();
 	if (!ivm) {
@@ -820,12 +1022,7 @@ export async function runScript(
 								details: safeErrorDetails(error.result),
 							},
 						});
-						outputBytes += Buffer.byteLength(json, "utf8");
-						if (outputBytes > limits.outputBytes) {
-							throw new Error(
-								`OutputSizeExceeded: combined output exceeded ${limits.outputBytes} bytes`,
-							);
-						}
+						chargeCrossing(json);
 						return json;
 					}
 					throw error;
@@ -836,12 +1033,7 @@ export async function runScript(
 					has_value: result !== undefined,
 					...(result === undefined ? {} : { value: result }),
 				});
-				outputBytes += Buffer.byteLength(json, "utf8");
-				if (outputBytes > limits.outputBytes) {
-					throw new Error(
-						`OutputSizeExceeded: combined output exceeded ${limits.outputBytes} bytes`,
-					);
-				}
+				chargeCrossing(json);
 				return json;
 			}),
 		);
@@ -849,8 +1041,28 @@ export async function runScript(
 		await jail.set(
 			"__console_call",
 			new ivm.Reference((level: "log" | "warn" | "error", message: string) => {
-				outputBytes += Buffer.byteLength(message, "utf8");
-				if (outputBytes > limits.outputBytes) return;
+				// The crossing guard still counts console bytes — a huge or
+				// repeated message is a host↔guest copy even when the collected
+				// log budget is already full. The throw can't come from here (the
+				// guest console swallows host errors), so it surfaces at the next
+				// dispatch or at the final return via `crossingOversize`.
+				crossingBytes += Buffer.byteLength(message, "utf8");
+				if (crossingBytes > limits.crossingBytes) {
+					crossingOversize = true;
+					return;
+				}
+				if (logFull) return;
+				const bytes = Buffer.byteLength(message, "utf8");
+				if (logBytesUsed + bytes > limits.logBytes) {
+					logFull = true;
+					logs.push({
+						level: "warn",
+						message: `[console output truncated: exceeded ${limits.logBytes} bytes]`,
+						ts: Date.now(),
+					});
+					return;
+				}
+				logBytesUsed += bytes;
 				logs.push({ level, message, ts: Date.now() });
 			}),
 		);
@@ -883,11 +1095,17 @@ export async function runScript(
 			}) as Promise<string | null>,
 			limits.timeoutMs,
 		)) as string | null;
+		if (crossingOversize) {
+			throw crossingOversizeError();
+		}
 		if (returnJson) {
-			outputBytes += Buffer.byteLength(returnJson, "utf8");
-			if (outputBytes > limits.outputBytes) {
+			const envelopeBytes = Buffer.byteLength(returnJson, "utf8");
+			// `extractExport` reads a JSON Schema; a partially-cut schema would
+			// parse as a valid-but-wrong contract, so that path keeps hard-fail.
+			// Interactive return values are truncated below instead.
+			if (options.extractExport && envelopeBytes > limits.outputBytes) {
 				throw new Error(
-					`OutputSizeExceeded: combined output exceeded ${limits.outputBytes} bytes (paginate or filter the script's return value)`,
+					`OutputSizeExceeded: extracted export exceeded ${limits.outputBytes} bytes`,
 				);
 			}
 		}
@@ -924,9 +1142,26 @@ export async function runScript(
 			? parsedResult
 			: parsedResult.value;
 
+		// Interactive return values truncate to fit instead of failing the run:
+		// the agent works with partial data and is told exactly what was dropped.
+		let returnTruncated: TruncatedValueInfo | undefined;
+		let finalReturnValue = returnValue;
+		if (
+			!options.extractExport &&
+			jsonBytes(returnValue) > limits.outputBytes - ENVELOPE_OVERHEAD_BYTES
+		) {
+			const truncated = truncateJsonValue(
+				returnValue,
+				Math.max(1, limits.outputBytes - ENVELOPE_OVERHEAD_BYTES),
+			);
+			finalReturnValue = truncated.value;
+			returnTruncated = truncated.meta;
+		}
+
 		return {
 			success: true,
-			returnValue,
+			returnValue: finalReturnValue,
+			...(returnTruncated ? { returnTruncated } : {}),
 			logs,
 			durationMs: Date.now() - started,
 			sdkCalls,

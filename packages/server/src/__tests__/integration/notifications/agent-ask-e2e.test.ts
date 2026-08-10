@@ -579,6 +579,57 @@ describe("notify input_schema — agent asks a human", () => {
 		expect(approved.approved).toBe(true);
 	});
 
+	it("keeps a one-value finite numeric interval answerable", async () => {
+		const answer = 1 + Number.EPSILON;
+		const sent = await send({
+			title: "What is the next representable value after one?",
+			input_schema: {
+				type: "object",
+				properties: {
+					answer: {
+						type: "number",
+						exclusiveMinimum: 1,
+						maximum: answer,
+					},
+				},
+				required: ["answer"],
+			},
+		});
+
+		const approved = (await executeTool(
+			"manage_operations",
+			{ action: "approve", run_id: sent.run_id, input: { answer } },
+			TEST_ENV,
+			humanCtx,
+		)) as { approved?: boolean };
+		expect(approved.approved).toBe(true);
+	});
+
+	it("keeps a round-trippable generic array item constant answerable", async () => {
+		const sent = await send({
+			title: "Repeat the required tag",
+			input_schema: {
+				type: "object",
+				properties: {
+					tags: {
+						type: "array",
+						items: { type: "string", const: "solo" },
+						minItems: 1,
+					},
+				},
+				required: ["tags"],
+			},
+		});
+
+		const approved = (await executeTool(
+			"manage_operations",
+			{ action: "approve", run_id: sent.run_id, input: { tags: ["solo"] } },
+			TEST_ENV,
+			humanCtx,
+		)) as { approved?: boolean };
+		expect(approved.approved).toBe(true);
+	});
+
 	it("rejects invalid or unanswerable schemas before creating a pending run", async () => {
 		const cases = [
 			{
@@ -878,6 +929,51 @@ describe("notify input_schema — agent asks a human", () => {
 				error: /array property 'codes'.*constant.*does not support/i,
 			},
 			{
+				question: "Question with a comma-bearing array item constant",
+				inputSchema: {
+					type: "object",
+					properties: {
+						tags: {
+							type: "array",
+							items: { type: "string", const: "a,b" },
+							minItems: 1,
+						},
+					},
+					required: ["tags"],
+				},
+				error: /array property 'tags'.*constant.*answer form/i,
+			},
+			{
+				question: "Question with a padded array item constant",
+				inputSchema: {
+					type: "object",
+					properties: {
+						tags: {
+							type: "array",
+							items: { type: "string", const: " padded" },
+							minItems: 1,
+						},
+					},
+					required: ["tags"],
+				},
+				error: /array property 'tags'.*constant.*answer form/i,
+			},
+			{
+				question: "Question with a multiline array item constant",
+				inputSchema: {
+					type: "object",
+					properties: {
+						tags: {
+							type: "array",
+							items: { type: "string", const: "line\nbreak" },
+							minItems: 1,
+						},
+					},
+					required: ["tags"],
+				},
+				error: /array property 'tags'.*constant.*answer form/i,
+			},
+			{
 				question: "Question with contradictory numeric bounds",
 				inputSchema: {
 					type: "object",
@@ -892,6 +988,49 @@ describe("notify input_schema — agent asks a human", () => {
 					required: ["answer"],
 				},
 				error: /property 'answer'.*numeric bounds/i,
+			},
+			{
+				question: "Question beyond finite numeric input",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: {
+							type: "number",
+							exclusiveMinimum: Number.MAX_VALUE,
+						},
+					},
+					required: ["answer"],
+				},
+				error: /property 'answer'.*finite number.*numeric bounds/i,
+			},
+			{
+				question: "Question below finite numeric input",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: {
+							type: "number",
+							exclusiveMaximum: -Number.MAX_VALUE,
+						},
+					},
+					required: ["answer"],
+				},
+				error: /property 'answer'.*finite number.*numeric bounds/i,
+			},
+			{
+				question: "Question with no integer between exclusive bounds",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: {
+							type: "integer",
+							exclusiveMinimum: 1,
+							exclusiveMaximum: 2,
+						},
+					},
+					required: ["answer"],
+				},
+				error: /property 'answer'.*finite integer.*numeric bounds/i,
 			},
 			{
 				question: "Question requiring an empty string",

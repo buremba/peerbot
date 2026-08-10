@@ -626,6 +626,16 @@ function unwrapNullableFormProperty(
 		: property;
 }
 
+/** Match the generic array control's split, trim, and empty-token removal. */
+function genericArrayStringRoundTrips(value: string): boolean {
+	if (value.includes("\n") || value.includes("\r")) return false;
+	const submitted = value
+		.split(",")
+		.map((part) => part.trim())
+		.filter(Boolean);
+	return submitted.length === 1 && submitted[0] === value;
+}
+
 function validateArrayFormProperty(params: {
 	field: string;
 	acceptanceSchema: Record<string, unknown>;
@@ -713,6 +723,7 @@ function validateArrayFormProperty(params: {
 		if (
 			typeof constant !== "string" ||
 			constant.length === 0 ||
+			!genericArrayStringRoundTrips(constant) ||
 			!accepts(itemSchema, constant) ||
 			(renderProperty.uniqueItems === true && minimumSelections > 1)
 		) {
@@ -728,6 +739,70 @@ function validateArrayFormProperty(params: {
 		return `input_schema array property '${field}' cannot be produced by the answer form`;
 	}
 	return null;
+}
+
+/** Return the adjacent IEEE-754 value, or null when that value is not finite. */
+function adjacentFiniteNumber(
+	value: number,
+	direction: "up" | "down",
+): number | null {
+	if (!Number.isFinite(value)) return null;
+	if (value === 0) {
+		return direction === "up" ? Number.MIN_VALUE : -Number.MIN_VALUE;
+	}
+	const view = new DataView(new ArrayBuffer(8));
+	view.setFloat64(0, value);
+	const increment = (direction === "up") === (value > 0) ? 1n : -1n;
+	view.setBigUint64(0, view.getBigUint64(0) + increment);
+	const adjacent = view.getFloat64(0);
+	return Number.isFinite(adjacent) ? adjacent : null;
+}
+
+function numericBoundsAdmitFiniteValue(params: {
+	minimum?: { value: number; exclusive: boolean };
+	maximum?: { value: number; exclusive: boolean };
+	kind: "number" | "integer";
+}): boolean {
+	const { minimum, maximum, kind } = params;
+	let candidate: number | null;
+	if (minimum) {
+		candidate = minimum.exclusive
+			? adjacentFiniteNumber(minimum.value, "up")
+			: minimum.value;
+	} else if (maximum) {
+		candidate = maximum.exclusive
+			? adjacentFiniteNumber(maximum.value, "down")
+			: maximum.value;
+	} else {
+		candidate = 0;
+	}
+	if (candidate === null || !Number.isFinite(candidate)) return false;
+	if (kind === "integer" && !Number.isInteger(candidate)) {
+		candidate = minimum ? Math.ceil(candidate) : Math.floor(candidate);
+	}
+	if (
+		!Number.isFinite(candidate) ||
+		(kind === "integer" && !Number.isInteger(candidate))
+	) {
+		return false;
+	}
+	if (
+		minimum &&
+		(minimum.exclusive
+			? candidate <= minimum.value
+			: candidate < minimum.value)
+	) {
+		return false;
+	}
+	if (
+		maximum &&
+		(maximum.exclusive
+			? candidate >= maximum.value
+			: candidate > maximum.value)
+	) {
+		return false;
+	}
+	return true;
 }
 
 function validateScalarBounds(
@@ -777,20 +852,8 @@ function validateScalarBounds(
 			return `input_schema property '${field}' has contradictory numeric bounds`;
 		}
 	}
-	if (kind === "integer") {
-		const first = minimum
-			? minimum.exclusive
-				? Math.floor(minimum.value) + 1
-				: Math.ceil(minimum.value)
-			: Number.NEGATIVE_INFINITY;
-		const last = maximum
-			? maximum.exclusive
-				? Math.ceil(maximum.value) - 1
-				: Math.floor(maximum.value)
-			: Number.POSITIVE_INFINITY;
-		if (first > last) {
-			return `input_schema property '${field}' has no integer within its numeric bounds`;
-		}
+	if (!numericBoundsAdmitFiniteValue({ minimum, maximum, kind })) {
+		return `input_schema property '${field}' has no finite ${kind} within its numeric bounds`;
 	}
 	return null;
 }

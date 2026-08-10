@@ -302,14 +302,14 @@ function checkString(
 			: Number.POSITIVE_INFINITY;
 	if (minimum > maximum) {
 		return {
-				error: `input_schema property '${field}' has contradictory length bounds`,
-			};
+			error: `input_schema property '${field}' has contradictory length bounds`,
+		};
 	}
 	return minimum <= maxMinimum
 		? {}
 		: {
-				error: "input_schema smallest form answer exceeds the allowed size limits",
-			};
+			error: "input_schema smallest form answer exceeds the allowed size limits",
+		};
 }
 
 function checkNumeric(
@@ -332,8 +332,8 @@ function checkNumeric(
 	}
 	if (kind === "integer" && Math.ceil(minimum) > Math.floor(maximum)) {
 		return {
-				error: `input_schema property '${field}' has no finite ${kind} within its numeric bounds`,
-			};
+			error: `input_schema property '${field}' has no finite ${kind} within its numeric bounds`,
+		};
 	}
 	return {};
 }
@@ -435,8 +435,8 @@ function checkArrayProperty(params: {
 			MAX_FIELD_ANSWER_BYTES
 			? {}
 			: {
-					error: "input_schema smallest form answer exceeds the allowed size limits",
-				};
+				error: "input_schema smallest form answer exceeds the allowed size limits",
+			};
 	}
 	if (items.type !== undefined && items.type !== "string") {
 		return {
@@ -616,7 +616,7 @@ export function validateAskInputSchema(
 }
 
 /** Validate a human answer against the complete agent-authored JSON Schema. */
-export function validateAskAnswer(
+function validateAskAnswer(
 	schema: Record<string, unknown>,
 	input: Record<string, unknown> | null,
 ): string | null {

@@ -19,13 +19,6 @@ import {
 /** `runs.action_key` for an agent-authored ask. */
 export const AGENT_ASK_ACTION_KEY = "agent_ask";
 
-/**
- * Marks asks created after full answer-schema validation became mandatory.
- * Older pending asks intentionally retain their required-field-only behavior.
- */
-export const AGENT_ASK_INPUT_SCHEMA_VALIDATION_VERSION =
-	CURRENT_ASK_SCHEMA_VERSION;
-
 /** What the agent asked, held in `runs.action_input` for the reviewer. */
 export interface AgentAskProposal {
 	question: string;
@@ -60,7 +53,7 @@ export async function queueAgentAsk(params: {
 	const proposal: AgentAskProposal = {
 		question: params.question,
 		...(params.body ? { context: params.body } : {}),
-		input_schema_validation_version: AGENT_ASK_INPUT_SCHEMA_VALIDATION_VERSION,
+		input_schema_validation_version: CURRENT_ASK_SCHEMA_VERSION,
 		input_schema: params.inputSchema,
 	};
 	const initiator = resolveRunInitiator(params.ctx);

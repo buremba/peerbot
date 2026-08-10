@@ -172,27 +172,27 @@ export async function storeMcpAppResultSnapshot(args: {
 	toolCallId: unknown;
 	toolName: string;
 	data: UnknownRecord;
-}): Promise<boolean> {
+}): Promise<void> {
 	const identity = snapshotIdentity(args.ctx, args.toolCallId);
 	if (
 		!identity ||
 		!args.toolName ||
 		args.toolName.length > TOOL_NAME_MAX_LENGTH
 	)
-		return false;
+		return;
 	const data = displaySafeMcpAppResult(args.data);
-	if (!isRecord(data)) return false;
+	if (!isRecord(data)) return;
 	const serialized = serializeSnapshot({
 		version: 1,
 		toolName: args.toolName,
 		data,
 		viewState: {},
 	});
-	if (!serialized) return false;
+	if (!serialized) return;
 
 	const sql = getDb();
-	await sql.begin(async (tx) => {
-		await tx`
+	const collided = await sql.begin(async (tx) => {
+		const [stored] = await tx<{ collided: boolean }>`
 			INSERT INTO public.mcp_app_result_snapshots (
 				organization_id, client_id, user_id, conversation_key,
 				tool_call_key, tool_name, body, plaintext_bytes, expires_at
@@ -209,6 +209,7 @@ export async function storeMcpAppResultSnapshot(args: {
 				-- collision replace the historical card with a different result.
 				expires_at = now(),
 				updated_at = now()
+			RETURNING expires_at <= now() AS collided
 		`;
 		await tx`
 			DELETE FROM public.mcp_app_result_snapshots snapshot
@@ -227,8 +228,14 @@ export async function storeMcpAppResultSnapshot(args: {
 					LIMIT ${MCP_APP_RESULT_CONVERSATION_CAP}
 				)
 		`;
+		return stored?.collided === true;
 	});
-	return true;
+	if (collided) {
+		logger.warn(
+			{ toolName: args.toolName },
+			"MCP App result snapshot key collision; historical restore disabled",
+		);
+	}
 }
 
 export const RestoreMcpAppResultSchema = Type.Object({

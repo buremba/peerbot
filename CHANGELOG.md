@@ -1,5 +1,33 @@
 # Changelog
 
+## [14.20.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.19.0...lobu-v14.20.0) (2026-08-10)
+
+
+### Features
+
+* **behaviors:** close the social draft decision loop ([#2632](https://github.com/lobu-ai/lobu/issues/2632)) ([6a56f13](https://github.com/lobu-ai/lobu/commit/6a56f13b7ad5f542df85777daceb4f62660654c8))
+* **mcp:** render rich tool results ([#2611](https://github.com/lobu-ai/lobu/issues/2611)) ([1d2863b](https://github.com/lobu-ai/lobu/commit/1d2863b2a8b10cd7373994d17618c6fa3ccde4f1))
+
+
+### Bug Fixes
+
+* **behaviors:** bound initial knowledge read ([#2614](https://github.com/lobu-ai/lobu/issues/2614)) ([d5b729d](https://github.com/lobu-ai/lobu/commit/d5b729d747a73d001a376c1c934c5a775eff3ab6))
+* **behaviors:** bound SQL-backed context reads ([#2620](https://github.com/lobu-ai/lobu/issues/2620)) ([af011b9](https://github.com/lobu-ai/lobu/commit/af011b9f414cd8572834d43b126a04e41bbdfbf3))
+* **behaviors:** honor provider retry horizons ([#2623](https://github.com/lobu-ai/lobu/issues/2623)) ([0fb06d8](https://github.com/lobu-ai/lobu/commit/0fb06d80ab876d2004de9311ad2d553408e71a17))
+* **calendar:** virtualize reads and isolate OAuth grants ([#2619](https://github.com/lobu-ai/lobu/issues/2619)) ([6afd29b](https://github.com/lobu-ai/lobu/commit/6afd29b52221bdd1cee37e8caf191a8c7bcd492d))
+* **connectors:** resolve active installed version ([#2626](https://github.com/lobu-ai/lobu/issues/2626)) ([7b9b395](https://github.com/lobu-ai/lobu/commit/7b9b39565d538cd13f5e37001e2f4a16c843833d))
+* **mcp:** activate external v3 app template ([#2633](https://github.com/lobu-ai/lobu/issues/2633)) ([589f27f](https://github.com/lobu-ai/lobu/commit/589f27f186befa71caafc35d2a5384f6d463965f))
+* **mcp:** publish accurate tool annotations ([#2624](https://github.com/lobu-ai/lobu/issues/2624)) ([e91789a](https://github.com/lobu-ai/lobu/commit/e91789ab999bdf5f925f53e929ed471bac63871b))
+* **mcp:** refresh ChatGPT app template ([#2622](https://github.com/lobu-ai/lobu/issues/2622)) ([fc969bd](https://github.com/lobu-ai/lobu/commit/fc969bd9b7e361ab4dbd065ffff67e7e9957a97d))
+* **mcp:** rehydrate ChatGPT sandbox cards ([#2639](https://github.com/lobu-ai/lobu/issues/2639)) ([c4b35b9](https://github.com/lobu-ai/lobu/commit/c4b35b99f79116174d0adae45b8fdfce863a17a6))
+* **mcp:** render embedded results reliably ([#2613](https://github.com/lobu-ai/lobu/issues/2613)) ([8b1aa1b](https://github.com/lobu-ai/lobu/commit/8b1aa1bf9652d95d8780765cf9fb0263e0bb4cd4))
+* **mcp:** restore historical ChatGPT app results ([#2637](https://github.com/lobu-ai/lobu/issues/2637)) ([d944363](https://github.com/lobu-ai/lobu/commit/d94436354b3dacfaa27e38c3299723c93f340fbe))
+* **mcp:** stage app assets before v3 rollout ([#2631](https://github.com/lobu-ai/lobu/issues/2631)) ([ec16ce0](https://github.com/lobu-ai/lobu/commit/ec16ce016ad0130699910d597dc91f6d5b6a77db))
+* **server:** propagate ToolUserError status on REST wrappers ([#2625](https://github.com/lobu-ai/lobu/issues/2625)) ([7741917](https://github.com/lobu-ai/lobu/commit/7741917038774aff9745bd204152efa604280834))
+* **server:** remove superseded REST window/execute routes ([#2630](https://github.com/lobu-ai/lobu/issues/2630)) ([621c81e](https://github.com/lobu-ai/lobu/commit/621c81e809cbde0eb001e0a07ee3eee423636816))
+* **server:** support tableless query_sql SELECTs ([#2616](https://github.com/lobu-ai/lobu/issues/2616)) ([5e6c845](https://github.com/lobu-ai/lobu/commit/5e6c84544d9ee19e8599b68dbff2013453d56d5f))
+* **whatsapp:** enable reliable voice-note transcription ([#2636](https://github.com/lobu-ai/lobu/issues/2636)) ([9a74d69](https://github.com/lobu-ai/lobu/commit/9a74d6910d5553eab36b49792d3fc1fa45a1a84e))
+
 ## [14.19.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.18.0...lobu-v14.19.0) (2026-08-09)
 
 

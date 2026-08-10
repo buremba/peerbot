@@ -184,9 +184,7 @@ describe("notify input_schema — agent asks a human", () => {
 		expect(interaction.interaction_status).toBe("pending");
 		expect(Number(interaction.run_id)).toBe(sent.run_id);
 
-		const card = (await activity()).items.find(
-			(i) => i.run_id === sent.run_id,
-		);
+		const card = (await activity()).items.find((i) => i.run_id === sent.run_id);
 		expect(card?.status).toBe("action_approval_needed");
 		expect(card?.interaction_type).toBe("approval");
 		expect(card?.interaction_status).toBe("pending");
@@ -244,6 +242,84 @@ describe("notify input_schema — agent asks a human", () => {
 		expect(approved.approved).toBe(true);
 	});
 
+	it("preserves typed values for array enum choices", async () => {
+		const sent = await send({
+			title: "Which rollout waves should run?",
+			input_schema: {
+				type: "object",
+				properties: {
+					waves: {
+						type: "array",
+						items: { type: "integer", enum: [2, 3] },
+						minItems: 1,
+					},
+				},
+				required: ["waves"],
+			},
+		});
+
+		// DynamicConnectorForm renders item enums as a multi-select and submits
+		// the original enum values, rather than comma-separated strings.
+		const approved = (await executeTool(
+			"manage_operations",
+			{ action: "approve", run_id: sent.run_id, input: { waves: [2] } },
+			TEST_ENV,
+			humanCtx,
+		)) as { approved?: boolean };
+		expect(approved.approved).toBe(true);
+	});
+
+	it("keeps string-capable array combinators answerable", async () => {
+		const sent = await send({
+			title: "Which release tags should run?",
+			input_schema: {
+				type: "object",
+				properties: {
+					tags: {
+						type: "array",
+						items: {
+							anyOf: [{ type: "string", minLength: 1 }, { type: "integer" }],
+						},
+					},
+				},
+				required: ["tags"],
+			},
+		});
+		const approved = (await executeTool(
+			"manage_operations",
+			{
+				action: "approve",
+				run_id: sent.run_id,
+				input: { tags: ["stable"] },
+			},
+			TEST_ENV,
+			humanCtx,
+		)) as { approved?: boolean };
+		expect(approved.approved).toBe(true);
+	});
+
+	it("allows a field literally named pattern without treating it as a regex", async () => {
+		const sent = await send({
+			title: "What naming pattern should we use?",
+			input_schema: {
+				type: "object",
+				properties: { pattern: { type: "string" } },
+				required: ["pattern"],
+			},
+		});
+		const approved = (await executeTool(
+			"manage_operations",
+			{
+				action: "approve",
+				run_id: sent.run_id,
+				input: { pattern: "release-{date}" },
+			},
+			TEST_ENV,
+			humanCtx,
+		)) as { approved?: boolean };
+		expect(approved.approved).toBe(true);
+	});
+
 	it("a lone OPTIONAL enum routes to the form — buttons cannot say 'no answer'", async () => {
 		const sent = await send({
 			title: "Optional: preferred demo slot?",
@@ -295,9 +371,7 @@ describe("notify input_schema — agent asks a human", () => {
 				required: ["price"],
 			},
 		});
-		const card = (await activity()).items.find(
-			(i) => i.run_id === sent.run_id,
-		);
+		const card = (await activity()).items.find((i) => i.run_id === sent.run_id);
 		expect(card?.interaction_status).toBe("pending");
 		// Two buttons here would silently discard the number the human typed.
 		expect(card?.interaction_inline).toBeFalsy();
@@ -493,7 +567,7 @@ describe("notify input_schema — agent asks a human", () => {
 					},
 					required: ["answer"],
 				},
-				error: /choice 'one' does not satisfy/i,
+				error: /choices the answer form cannot submit/i,
 			},
 			{
 				question: "Question with a nested object",
@@ -516,7 +590,94 @@ describe("notify input_schema — agent asks a human", () => {
 					minProperties: 2,
 					additionalProperties: false,
 				},
-				error: /requires at least 2 answered fields but only 1 can be rendered/i,
+				error:
+					/requires at least 2 answered fields but only 1 can be rendered/i,
+			},
+			{
+				question: "Question with an unsafe answer pattern",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: { type: "string", pattern: "^(a+)+$" },
+					},
+					required: ["answer"],
+				},
+				error: /keyword 'pattern' is not supported/i,
+			},
+			{
+				question: "Question with unsafe property-name patterns",
+				inputSchema: {
+					type: "object",
+					properties: { answer: { type: "string" } },
+					patternProperties: { "^(a+)+$": { type: "string" } },
+				},
+				error: /keyword 'patternProperties' is not supported/i,
+			},
+			{
+				question: "Question with asynchronous validation",
+				inputSchema: { $async: true, type: "object", properties: {} },
+				error: /keyword '\$async' is not supported/i,
+			},
+			{
+				question: "Question with integer array items",
+				inputSchema: {
+					type: "object",
+					properties: {
+						codes: {
+							type: "array",
+							items: { type: "integer" },
+							minItems: 1,
+						},
+					},
+					required: ["codes"],
+				},
+				error: /array property 'codes'.*answer form/i,
+			},
+			{
+				question: "Question with combinator-only typed array items",
+				inputSchema: {
+					type: "object",
+					properties: {
+						flags: {
+							type: "array",
+							items: {
+								anyOf: [{ type: "integer" }, { type: "boolean" }],
+							},
+							minItems: 1,
+						},
+					},
+					required: ["flags"],
+				},
+				error: /array property 'flags'.*answer form/i,
+			},
+			{
+				question: "Question with contradictory field combinators",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: {
+							anyOf: [{ type: "number" }, { type: "null" }],
+							allOf: [{ type: "string" }],
+						},
+					},
+					required: ["answer"],
+				},
+				error: /property 'answer'.*answer form/i,
+			},
+			{
+				question: "Question with boolean array items",
+				inputSchema: {
+					type: "object",
+					properties: {
+						flags: {
+							type: "array",
+							items: { type: "boolean" },
+							minItems: 1,
+						},
+					},
+					required: ["flags"],
+				},
+				error: /array property 'flags'.*answer form/i,
 			},
 		];
 

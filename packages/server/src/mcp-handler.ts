@@ -344,7 +344,10 @@ function createServerForContext(
     }
     const app = MCP_APP_RESOURCES[uri];
     if (!app) throw new Error(`Unknown resource: ${uri}`);
-    const html = await readMcpAppBundle(app.appDir);
+    // Phase 1 of the external-asset rollout keeps discovery on the exact
+    // self-contained v2 template while the new asset endpoint reaches every
+    // replica. A later release switches discovery to index.html/v3.
+    const html = await readMcpAppBundle(app.appDir, 'legacy-v2.html');
     if (html == null) {
       throw new Error(`MCP App bundle not built for ${uri} (run owletto build:mcp-apps)`);
     }

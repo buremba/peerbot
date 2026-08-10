@@ -3,8 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * Locate + read a built MCP App bundle (a self-contained `ui://` iframe payload
- * produced by owletto's `build:mcp-apps`, e.g.
+ * Locate + read a built MCP App artifact produced by owletto's
+ * `build:mcp-apps`, e.g.
  * `packages/owletto/dist-mcp-apps/<appDir>/index.html`).
  *
  * Path resolution mirrors `resolveWebDistDirectory` in `index.ts` (the owletto
@@ -15,9 +15,11 @@ import { fileURLToPath } from 'node:url';
 
 // packages/server dir (mirror of APP_ROOT in index.ts).
 const APP_ROOT = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
+const SAFE_BUNDLE_FILENAME = /^(?:index|legacy-v2)\.html$/;
+const SAFE_ASSET_PATH = /^assets\/[A-Za-z0-9._-]+\.(?:css|js)$/;
 
-function bundleCandidates(appDir: string): string[] {
-  const rel = path.join('dist-mcp-apps', appDir, 'index.html');
+function bundleFileCandidates(appDir: string, filename: string): string[] {
+  const rel = path.join('dist-mcp-apps', appDir, filename);
   const webDist = process.env.WEB_DIST_DIR?.trim();
   return [
     webDist ? path.join(webDist, '..', rel) : undefined,
@@ -35,17 +37,45 @@ function bundleCandidates(appDir: string): string[] {
 // instead of serving 404 until the pod restarts. Every interactive interaction
 // now depends on this one bundle, so a sticky miss would break all of them.
 const bundleCache = new Map<string, string>();
+const assetCache = new Map<string, Uint8Array>();
 
 /** Read a built MCP App bundle's HTML. Returns null when no build is present. */
-export async function readMcpAppBundle(appDir: string): Promise<string | null> {
-  const cached = bundleCache.get(appDir);
+export async function readMcpAppBundle(
+  appDir: string,
+  filename = 'index.html'
+): Promise<string | null> {
+  if (!SAFE_BUNDLE_FILENAME.test(filename)) return null;
+  const cacheKey = `${appDir}/${filename}`;
+  const cached = bundleCache.get(cacheKey);
   if (cached !== undefined) return cached;
-  for (const candidate of bundleCandidates(appDir)) {
+  for (const candidate of bundleFileCandidates(appDir, filename)) {
     try {
       await stat(candidate);
       const html = await readFile(candidate, 'utf8');
-      bundleCache.set(appDir, html);
+      bundleCache.set(cacheKey, html);
       return html;
+    } catch {
+      // candidate absent — try the next
+    }
+  }
+  return null;
+}
+
+/** Read one stable JS/CSS asset staged for the second rollout phase. */
+export async function readMcpAppAsset(
+  appDir: string,
+  assetPath: string
+): Promise<Uint8Array | null> {
+  if (!SAFE_ASSET_PATH.test(assetPath)) return null;
+  const cacheKey = `${appDir}/${assetPath}`;
+  const cached = assetCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  for (const candidate of bundleFileCandidates(appDir, assetPath)) {
+    try {
+      await stat(candidate);
+      const asset = await readFile(candidate);
+      assetCache.set(cacheKey, asset);
+      return asset;
     } catch {
       // candidate absent — try the next
     }

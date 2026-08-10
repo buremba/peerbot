@@ -22,6 +22,7 @@ import type { ToolContext } from '../../../tools/registry';
 import {
   ensureConnectorInstalled,
   resolveConnectorCodeForKey,
+  upsertBundledConnectorForOrg,
 } from '../../../utils/ensure-connector-installed';
 
 const TEST_ENV = {
@@ -144,6 +145,49 @@ describe('connector_versions org isolation (#2045 read cutover)', () => {
       ctxB
     );
     expect('error' in rolled ? rolled.error : '').toContain("No retained version '3.0.0'");
+  });
+
+  it('resolves the active definition version before preferring an org-local artifact', async () => {
+    // Reproduce the production Calendar shape: an org retains an older private
+    // artifact, then the bundled catalog advances the active definition to a
+    // newer shared version. A no-version execution must follow the ACTIVE
+    // definition; org-local preference only applies within that exact version.
+    const KEY = 'hackernews';
+    const staleVersion = '0.0.1-stale-org';
+    const stale = await manageConnections(
+      {
+        action: 'install_connector',
+        source_code: sourceFor(KEY, staleVersion, 'STALE-ORG-CODE'),
+      },
+      TEST_ENV,
+      ctxA
+    );
+    expect('error' in stale ? stale.error : undefined).toBeUndefined();
+
+    const promoted = await upsertBundledConnectorForOrg({
+      organizationId: orgA,
+      connectorKey: KEY,
+    });
+    expect(promoted).not.toBeNull();
+    expect(promoted?.version).not.toBe(staleVersion);
+
+    const sql = getTestDb();
+    const [definition] = await sql`
+      SELECT version FROM connector_definitions
+      WHERE organization_id = ${orgA} AND key = ${KEY} AND status = 'active'
+      LIMIT 1
+    `;
+    expect(definition?.version).toBe(promoted?.version);
+
+    // This is the regression: old resolution picked the org-local stale row
+    // before considering the active definition's newer shared version.
+    const activeCode = await resolveConnectorCodeForKey(KEY, orgA);
+    expect(activeCode).not.toContain('STALE-ORG-CODE');
+
+    // Explicit historical-version resolution keeps rollback/debug semantics:
+    // within the requested version, the org-local artifact still wins.
+    const staleCode = await resolveConnectorCodeForKey(KEY, orgA, staleVersion);
+    expect(staleCode).toContain('STALE-ORG-CODE');
   });
 
   it('branching a bundled connector shadows it for the branching org only', async () => {

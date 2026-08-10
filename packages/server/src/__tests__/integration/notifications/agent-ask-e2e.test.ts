@@ -278,7 +278,9 @@ describe("notify input_schema — agent asks a human", () => {
 					tags: {
 						type: "array",
 						items: {
-							anyOf: [{ type: "string", minLength: 1 }, { type: "integer" }],
+							type: "string",
+							minLength: 2,
+							anyOf: [{ type: "string", maxLength: 4 }, { type: "integer" }],
 						},
 					},
 				},
@@ -290,7 +292,7 @@ describe("notify input_schema — agent asks a human", () => {
 			{
 				action: "approve",
 				run_id: sent.run_id,
-				input: { tags: ["stable"] },
+				input: { tags: ["beta"] },
 			},
 			TEST_ENV,
 			humanCtx,
@@ -716,6 +718,25 @@ describe("notify input_schema — agent asks a human", () => {
 					required: ["flags"],
 				},
 				error: /array property 'flags'.*answer form/i,
+			},
+			{
+				question: "Question with contradictory array item combinators",
+				inputSchema: {
+					type: "object",
+					properties: {
+						tags: {
+							type: "array",
+							items: {
+								type: "string",
+								maxLength: 1,
+								anyOf: [{ type: "string", minLength: 2 }],
+							},
+							minItems: 1,
+						},
+					},
+					required: ["tags"],
+				},
+				error: /array property 'tags'.*answer form/i,
 			},
 			{
 				question: "Question with conflicting nullable array siblings",

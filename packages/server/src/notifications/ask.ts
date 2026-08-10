@@ -434,27 +434,132 @@ function isScalarFormOptionValue(
 	return isFormOptionValue(value) && value !== "";
 }
 
-function schemaMayProduceNonEmptyString(value: unknown): boolean {
-	if (!schemaMayAcceptKind(value, "string")) return false;
-	if (value === null || typeof value !== "object" || Array.isArray(value)) {
-		return value === true;
+/**
+ * Find the cheapest non-empty string the generic text control can emit.
+ *
+ * The supported schema subset can constrain strings only through types,
+ * constants/enums, length bounds, and anyOf/oneOf. Its truth value therefore
+ * changes only at a declared length boundary or for a declared literal. Probe
+ * those finite candidates against the COMPLETE item schema so sibling
+ * constraints are treated as intersections (rather than inspecting a union
+ * branch in isolation). Length-only candidates are evaluated arithmetically,
+ * so an attacker cannot make this check allocate a schema-sized string.
+ */
+function minimumFormStringBytes(
+	value: unknown,
+	accepts: (subschema: Record<string, unknown>, value: unknown) => boolean,
+): number | null {
+	if (
+		value === false ||
+		value === null ||
+		typeof value !== "object" ||
+		Array.isArray(value)
+	) {
+		return value === true ? 1 : null;
 	}
 	const schema = value as Record<string, unknown>;
-	if (Object.hasOwn(schema, "const")) {
-		return typeof schema.const === "string" && schema.const.length > 0;
+	const literalCandidates = new Set<string>();
+	const lengths = new Set<number>([1]);
+	const stack: unknown[] = [schema];
+	while (stack.length > 0) {
+		const current = stack.pop();
+		if (
+			current === null ||
+			typeof current !== "object" ||
+			Array.isArray(current)
+		) {
+			continue;
+		}
+		const subschema = current as Record<string, unknown>;
+		if (typeof subschema.const === "string" && subschema.const.length > 0) {
+			literalCandidates.add(subschema.const);
+		}
+		if (Array.isArray(subschema.enum)) {
+			for (const option of subschema.enum) {
+				if (typeof option === "string" && option.length > 0) {
+					literalCandidates.add(option);
+				}
+			}
+		}
+		for (const keyword of ["minLength", "maxLength"] as const) {
+			const boundary = subschema[keyword];
+			if (
+				typeof boundary === "number" &&
+				Number.isSafeInteger(boundary) &&
+				boundary >= 1
+			) {
+				lengths.add(boundary);
+			}
+		}
+		if (
+			typeof subschema.maxLength === "number" &&
+			Number.isSafeInteger(subschema.maxLength) &&
+			subschema.maxLength >= 0 &&
+			subschema.maxLength < Number.MAX_SAFE_INTEGER
+		) {
+			lengths.add(subschema.maxLength + 1);
+		}
+		for (const keyword of ARRAY_SUBSCHEMA_KEYWORDS) {
+			const branches = subschema[keyword];
+			if (Array.isArray(branches)) stack.push(...branches);
+		}
 	}
-	if (Array.isArray(schema.enum)) {
-		return schema.enum.some(
-			(option) => typeof option === "string" && option.length > 0,
-		);
+
+	let minimum: number | null = null;
+	for (const candidate of literalCandidates) {
+		if (!accepts(schema, candidate)) continue;
+		const bytes = Buffer.byteLength(candidate, "utf8");
+		minimum = minimum === null ? bytes : Math.min(minimum, bytes);
 	}
-	if (Array.isArray(schema.anyOf)) {
-		return schema.anyOf.some(schemaMayProduceNonEmptyString);
+	for (const length of lengths) {
+		if (!schemaAcceptsGenericStringLength(schema, length)) continue;
+		minimum = minimum === null ? length : Math.min(minimum, length);
 	}
-	if (Array.isArray(schema.oneOf)) {
-		return schema.oneOf.some(schemaMayProduceNonEmptyString);
+	return minimum;
+}
+
+/** Evaluate a non-literal ASCII string without allocating it. */
+function schemaAcceptsGenericStringLength(
+	value: unknown,
+	length: number,
+): boolean {
+	if (value === true) return true;
+	if (
+		value === false ||
+		value === null ||
+		typeof value !== "object" ||
+		Array.isArray(value)
+	) {
+		return false;
 	}
-	return typeof schema.maxLength !== "number" || schema.maxLength >= 1;
+	const schema = value as Record<string, unknown>;
+	if (!declaredTypeAllows(schema.type, "string")) return false;
+	// Literal contracts are tested separately with the real value and AJV.
+	if (Object.hasOwn(schema, "const") || Array.isArray(schema.enum))
+		return false;
+	if (typeof schema.minLength === "number" && length < schema.minLength) {
+		return false;
+	}
+	if (typeof schema.maxLength === "number" && length > schema.maxLength) {
+		return false;
+	}
+	if (
+		Array.isArray(schema.anyOf) &&
+		!schema.anyOf.some((branch) =>
+			schemaAcceptsGenericStringLength(branch, length),
+		)
+	) {
+		return false;
+	}
+	if (
+		Array.isArray(schema.oneOf) &&
+		schema.oneOf.filter((branch) =>
+			schemaAcceptsGenericStringLength(branch, length),
+		).length !== 1
+	) {
+		return false;
+	}
+	return true;
 }
 
 function minimumArraySelections(schema: Record<string, unknown>): number {
@@ -608,7 +713,7 @@ function validateArrayFormProperty(params: {
 	// The generic array input splits comma-separated text and therefore emits
 	// strings only. Reject integer/boolean/object/array item schemas, including
 	// those types inside the supported unions.
-	if (!schemaMayProduceNonEmptyString(itemSchema)) {
+	if (minimumFormStringBytes(itemSchema, accepts) === null) {
 		return `input_schema array property '${field}' cannot be produced by the answer form`;
 	}
 	return null;
@@ -782,7 +887,7 @@ function validateFormProperty(params: {
 	if (boundsError) return boundsError;
 	if (
 		emittedKind === "string"
-			? !schemaMayProduceNonEmptyString(acceptanceSchema)
+			? minimumFormStringBytes(acceptanceSchema, params.accepts) === null
 			: !schemaMayAcceptKind(acceptanceSchema, emittedKind)
 	) {
 		return `input_schema property '${params.field}' cannot be produced by the answer form`;
@@ -813,6 +918,7 @@ function primitiveAnswerBytes(value: unknown): number {
 function minimumFormPropertyCost(
 	field: string,
 	property: Record<string, unknown>,
+	accepts: (subschema: Record<string, unknown>, value: unknown) => boolean,
 ): MinimumFormAnswerCost {
 	const renderProperty = unwrapNullableFormProperty(property);
 	const fieldBytes = Buffer.byteLength(field, "utf8");
@@ -838,10 +944,7 @@ function minimumFormPropertyCost(
 			} else if (Object.hasOwn(itemSchema, "const")) {
 				valuesBytes = selections * primitiveAnswerBytes(itemSchema.const);
 			} else {
-				const itemLength = Math.max(
-					typeof itemSchema.minLength === "number" ? itemSchema.minLength : 0,
-					1,
-				);
+				const itemLength = minimumFormStringBytes(itemSchema, accepts) ?? 1;
 				valuesBytes = selections * itemLength;
 			}
 		} else {
@@ -891,6 +994,7 @@ function minimumFormAnswerExceedsLimits(params: {
 	properties: Record<string, unknown>;
 	required: string[];
 	minimumAnswered: number;
+	accepts: (subschema: Record<string, unknown>, value: unknown) => boolean;
 }): boolean {
 	const required = new Set(params.required);
 	const requiredCosts: MinimumFormAnswerCost[] = [];
@@ -899,6 +1003,7 @@ function minimumFormAnswerExceedsLimits(params: {
 		const cost = minimumFormPropertyCost(
 			field,
 			property as Record<string, unknown>,
+			params.accepts,
 		);
 		(required.has(field) ? requiredCosts : optionalCosts).push(cost);
 	}
@@ -1001,6 +1106,7 @@ function validateAskInputSchema(
 			properties,
 			required,
 			minimumAnswered,
+			accepts: compiled.accepts,
 		})
 	) {
 		return "input_schema smallest form answer exceeds the allowed size limits";

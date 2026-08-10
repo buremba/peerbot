@@ -540,6 +540,45 @@ describe("notify input_schema — agent asks a human", () => {
 		expect(held.action_output).toBeNull();
 	});
 
+	it("keeps a legacy pending ask completable under its original validation contract", async () => {
+		const sent = await send({
+			title: "Legacy question queued before strict schema validation",
+			input_schema: {},
+		});
+		const sql = getTestDb();
+		await sql`
+			UPDATE runs
+			SET action_input = ${sql.json({
+				question: "Legacy question queued before strict schema validation",
+				input_schema: {
+					type: "object",
+					properties: {
+						code: { type: "string", pattern: "^A+$" },
+					},
+					required: ["code"],
+				},
+			})}
+			WHERE id = ${sent.run_id}
+		`;
+
+		const missing = (await executeTool(
+			"manage_operations",
+			{ action: "approve", run_id: sent.run_id, input: {} },
+			TEST_ENV,
+			humanCtx,
+		)) as { error?: string; approved?: boolean };
+		expect(missing.approved).toBeUndefined();
+		expect(missing.error).toMatch(/`code`/);
+
+		const approved = (await executeTool(
+			"manage_operations",
+			{ action: "approve", run_id: sent.run_id, input: { code: "AAA" } },
+			TEST_ENV,
+			humanCtx,
+		)) as { approved?: boolean };
+		expect(approved.approved).toBe(true);
+	});
+
 	it("rejects invalid or unanswerable schemas before creating a pending run", async () => {
 		const cases = [
 			{
@@ -641,15 +680,17 @@ describe("notify input_schema — agent asks a human", () => {
 				error: /must not contain a nested object/i,
 			},
 			{
-				question: "Question requiring more fields than its form exposes",
+				question: "Question with exact optional boolean cardinality",
 				inputSchema: {
 					type: "object",
-					properties: { answer: { type: "string" } },
-					minProperties: 2,
-					additionalProperties: false,
+					properties: {
+						first: { type: "boolean" },
+						second: { type: "boolean" },
+					},
+					minProperties: 1,
+					maxProperties: 1,
 				},
-				error:
-					/requires at least 2 answered fields but only 1 can be rendered/i,
+				error: /keyword '(?:minProperties|maxProperties)' is not supported/i,
 			},
 			{
 				question: "Question with an unsafe answer pattern",
@@ -760,10 +801,9 @@ describe("notify input_schema — agent asks a human", () => {
 				error: /nullable wrapper.*minItems.*not supported/i,
 			},
 			{
-				question: "Question requiring an optional empty array",
+				question: "Question requiring an empty array",
 				inputSchema: {
 					type: "object",
-					minProperties: 1,
 					properties: {
 						tags: {
 							type: "array",
@@ -771,6 +811,7 @@ describe("notify input_schema — agent asks a human", () => {
 							maxItems: 0,
 						},
 					},
+					required: ["tags"],
 				},
 				error: /array property 'tags'.*item count/i,
 			},

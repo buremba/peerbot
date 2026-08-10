@@ -48,11 +48,20 @@ import {
  */
 export const AGENT_ASK_ACTION_KEY = "agent_ask";
 
+/**
+ * Marks asks created after full answer-schema validation became mandatory.
+ * Older pending asks intentionally have no version and retain their original
+ * required-field-only approval behavior so a deploy cannot strand them.
+ */
+export const AGENT_ASK_INPUT_SCHEMA_VALIDATION_VERSION = 1;
+
 /** What the agent asked, held in `runs.action_input` for the reviewer. */
 export interface AgentAskProposal {
 	question: string;
 	/** Reviewer context retained so future Behavior runs can interpret the answer. */
 	context?: string;
+	/** Absent on legacy pending asks created before strict answer validation. */
+	input_schema_validation_version?: number;
 	/**
 	 * JSON Schema for the answer. An EMPTY schema is meaningful and common: it
 	 * means "decide, no fields" — the binary yes/no that renders as inline
@@ -260,8 +269,10 @@ const UNSUPPORTED_ASK_KEYWORDS = new Set([
 	"formatMaximum",
 	"formatMinimum",
 	"if",
+	"maxProperties",
 	"maxContains",
 	"minContains",
+	"minProperties",
 	"multipleOf",
 	"not",
 	"pattern",
@@ -985,31 +996,22 @@ function minimumFormPropertyCost(
 
 /**
  * Prove one minimally populated form answer fits the validator's own budget.
- * Required fields are fixed; for root minProperties we choose the cheapest
- * optional fields. Rejecting a rarer answerable combination is preferable to
- * persisting a question for which every answer the validator accepts is too
- * large to process.
+ * Root cardinality constraints are rejected because the renderer does not
+ * expose field-presence semantics consistently; required fields are therefore
+ * the complete minimum answer.
  */
 function minimumFormAnswerExceedsLimits(params: {
 	properties: Record<string, unknown>;
 	required: string[];
-	minimumAnswered: number;
 	accepts: (subschema: Record<string, unknown>, value: unknown) => boolean;
 }): boolean {
-	const required = new Set(params.required);
-	const requiredCosts: MinimumFormAnswerCost[] = [];
-	const optionalCosts: MinimumFormAnswerCost[] = [];
-	for (const [field, property] of Object.entries(params.properties)) {
-		const cost = minimumFormPropertyCost(
+	const selected = params.required.map((field) =>
+		minimumFormPropertyCost(
 			field,
-			property as Record<string, unknown>,
+			params.properties[field] as Record<string, unknown>,
 			params.accepts,
-		);
-		(required.has(field) ? requiredCosts : optionalCosts).push(cost);
-	}
-	optionalCosts.sort((a, b) => a.bytes - b.bytes || a.nodes - b.nodes);
-	const extraFields = Math.max(0, params.minimumAnswered - required.size);
-	const selected = requiredCosts.concat(optionalCosts.slice(0, extraFields));
+		),
+	);
 	const total = selected.reduce<MinimumFormAnswerCost>(
 		(sum, cost) => ({
 			nodes: sum.nodes + cost.nodes,
@@ -1066,23 +1068,6 @@ function validateAskInputSchema(
 		return `input_schema requires fields missing from properties: ${unrenderedRequired.join(", ")}`;
 	}
 
-	// The form can only submit declared top-level properties. Bound the root
-	// cardinality contract to that exact set so a schema cannot require more
-	// answered fields than any supported surface can provide. This also catches
-	// contradictory minProperties/maxProperties and required/maxProperties pairs.
-	const minimumAnswered = Math.max(
-		typeof schema.minProperties === "number" ? schema.minProperties : 0,
-		required.length,
-	);
-	const maximumAnswerable = Math.min(
-		Object.keys(properties).length,
-		typeof schema.maxProperties === "number"
-			? schema.maxProperties
-			: Number.POSITIVE_INFINITY,
-	);
-	if (minimumAnswered > maximumAnswerable) {
-		return `input_schema requires at least ${minimumAnswered} answered fields but only ${maximumAnswerable} can be rendered`;
-	}
 	for (const [field, propertySchema] of Object.entries(properties)) {
 		if (Object.hasOwn(Object.prototype, field)) {
 			return `input_schema property name '${field}' is not supported by the answer form`;
@@ -1105,7 +1090,6 @@ function validateAskInputSchema(
 		minimumFormAnswerExceedsLimits({
 			properties,
 			required,
-			minimumAnswered,
 			accepts: compiled.accepts,
 		})
 	) {
@@ -1122,8 +1106,8 @@ function validateAskInputSchema(
 	}
 
 	// With no fields, every surface can only submit `{}` as an approval. Compile
-	// success alone is insufficient: constraints such as `minProperties`, `not`,
-	// or `allOf: [{ type: "string" }]` can still make that decision impossible.
+	// success alone is insufficient: a valid-looking no-field schema can still
+	// reject the only `{}` answer that a binary decision submits.
 	if (affordance.kind === "binary" && !compiled.validate({})) {
 		return "input_schema cannot be answered as a no-field decision";
 	}
@@ -1168,6 +1152,7 @@ export async function queueAgentAsk(params: {
 	const proposal: AgentAskProposal = {
 		question: params.question,
 		...(params.body ? { context: params.body } : {}),
+		input_schema_validation_version: AGENT_ASK_INPUT_SCHEMA_VALIDATION_VERSION,
 		input_schema: params.inputSchema,
 	};
 	const initiator = resolveRunInitiator(params.ctx);

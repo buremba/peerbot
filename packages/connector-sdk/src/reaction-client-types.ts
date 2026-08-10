@@ -126,7 +126,12 @@ export interface NotificationsSendInput {
   idempotency_key?: string;
   /** Deliver only through this specific bot connection (its id). */
   connection_id?: string;
-  /** Arbitrary JSON payload appended to the body as formatted JSON. */
+  /**
+   * Structured payload. With `semantic_type`, this becomes the event's render
+   * data (binds the kind's `json_template` chart in the Memory view) instead of
+   * being appended to the body. Without `semantic_type`, it is stored in the
+   * notification body as formatted JSON (legacy).
+   */
   data?: Record<string, unknown>;
   /**
    * Event semantic type (kind) for the notification's content, validated

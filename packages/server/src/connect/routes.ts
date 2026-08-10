@@ -773,11 +773,34 @@ async function handleOAuthCallback(
   let resolvedAuthProfileId = tokenRow.auth_profile_id;
 
   await sql.begin(async (tx) => {
-    const tokenTarget = tokenRow.connection_id ?? tokenRow.auth_profile_id ?? Date.now();
-    const accountId = `connect_${tokenTarget}_${Date.now()}`;
+    const tokenTarget = tokenRow.connection_id ?? tokenRow.auth_profile_id ?? tokenRow.id;
+    const generatedAccountId = `connect_${tokenTarget}_${Date.now()}`;
     const expiresAt = tokens.expiresIn
       ? new Date(Date.now() + tokens.expiresIn * 1000).toISOString()
       : null;
+
+    // Connector OAuth grants are not social-login identities. Different Lobu
+    // connectors can authorize the same upstream user with different scopes and
+    // refresh tokens (for example Gmail and Calendar). Keying these rows by the
+    // provider's user id makes one connector overwrite another connector's grant.
+    // Reuse an already-isolated connector account on reauth; legacy shared rows
+    // are intentionally NOT reused so the next successful reauth repairs them.
+    let grantAccountIdentity: string | null = null;
+    if (resolvedAuthProfileId) {
+      const existingGrantRows = (await tx`
+        SELECT a."accountId"
+        FROM auth_profiles ap
+        JOIN account a ON a.id = ap.account_id
+        WHERE ap.id = ${resolvedAuthProfileId}
+          AND ap.organization_id = ${tokenRow.organization_id}
+        LIMIT 1
+      `) as Array<{ accountId: string }>;
+      const existingIdentity = existingGrantRows[0]?.accountId;
+      if (existingIdentity?.startsWith('lobu-connector:')) {
+        grantAccountIdentity = existingIdentity;
+      }
+    }
+    grantAccountIdentity ??= `lobu-connector:${tokenRow.organization_id}:${tokenRow.connector_key}:${tokenTarget}`;
 
     const upsertResult = await tx`
       INSERT INTO account (
@@ -785,8 +808,8 @@ async function handleOAuthCallback(
         "accessToken", "refreshToken", "accessTokenExpiresAt",
         scope, "createdAt", "updatedAt"
       ) VALUES (
-        ${accountId},
-        ${userInfo?.id ?? accountId},
+        ${generatedAccountId},
+        ${grantAccountIdentity},
         ${authConfig!.provider},
         ${actorUserId},
         ${tokens.accessToken},

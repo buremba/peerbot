@@ -119,8 +119,9 @@ export interface ProviderConfigEntry {
   catalogVisible?: boolean;
   /**
    * Optional speech-to-text configuration.
-   * If omitted and sdkCompat is "openai", STT is enabled with default endpoint/model.
-   * Use this block to override endpoint/model or disable STT for a provider.
+   * An enabled block declares STT even when `modalities` omits it. Without a
+   * block, `modalities` must include `"stt"` to enable the default
+   * endpoint/model.
    */
   stt?: {
     /** Set false to disable STT even when this block exists. */

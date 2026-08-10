@@ -20,6 +20,7 @@ import {
   markInferenceProviderUnhealthy,
   readOrgSharedProviderApiKey,
   resolveInferenceProviderConfig,
+  resolveInferenceProviderCredential,
   rotateInferenceProviderKey,
   setInferenceProviderDefault,
   softDeleteInferenceProvider,
@@ -120,6 +121,43 @@ describe('inference-provider store', () => {
     expect(recreated.id).not.toBe(created.id);
     expect(recreated.apiKeyRef).toBe(`secret://${ORG}/openai-${recreated.id}`);
     expect(await readKey(ORG, 'openai')).toBe('sk-brand-new');
+  });
+
+  it('resolves the row credential without a modality block and includes overrides when present', async () => {
+    const created = await createInferenceProvider({
+      organizationId: ORG,
+      slug: 'openai',
+      kind: 'openai',
+      apiKey: 'sk-transcription',
+      capabilities: { text: { model: 'gpt-x' } },
+    });
+    if ('error' in created) throw new Error('expected create to succeed');
+
+    expect(
+      await resolveInferenceProviderCredential(ORG, 'openai', 'stt')
+    ).toEqual({
+      kind: 'openai',
+      baseUrl: undefined,
+      model: undefined,
+      modelsEndpoint: undefined,
+      apiKey: 'sk-transcription',
+    });
+
+    await updateInferenceProviderCapabilities(ORG, 'openai', 'stt', {
+      base_url: 'https://speech.example.com/v1',
+      model: 'speech-model',
+      models_endpoint: '/audio/transcriptions',
+    });
+
+    expect(
+      await resolveInferenceProviderCredential(ORG, 'openai', 'stt')
+    ).toEqual({
+      kind: 'openai',
+      baseUrl: 'https://speech.example.com/v1',
+      model: 'speech-model',
+      modelsEndpoint: '/audio/transcriptions',
+      apiKey: 'sk-transcription',
+    });
   });
 
   it('returns a typed slug_conflict on a live duplicate slug', async () => {

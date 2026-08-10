@@ -440,7 +440,13 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://platform.openai.com/api-keys\" target=\"_blank\" class=\"text-blue-600 hover:underline\">OpenAI Dashboard</a>",
           "apiKeyPlaceholder": "sk-...",
           "sdkCompat": "openai",
-          "modalities": ["text", "image", "tts"],
+          "modalities": ["text", "image", "stt", "tts"],
+          "stt": {
+            "enabled": true,
+            "sdkCompat": "openai",
+            "transcriptionPath": "/audio/transcriptions",
+            "model": "gpt-4o-transcribe"
+          },
           "defaultModel": "gpt-5.6-sol",
           "modelsEndpoint": "/models",
           "models": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]

@@ -1019,6 +1019,8 @@ export async function resolveInferenceProviderConfig(
 interface ResolvedInferenceProviderCredential {
 	kind: string;
 	baseUrl?: string;
+	model?: string;
+	modelsEndpoint?: string;
 	apiKey?: string;
 }
 
@@ -1065,6 +1067,8 @@ export async function resolveInferenceProviderCredential(
 	return {
 		kind: row.kind,
 		baseUrl: row.block?.base_url,
+		model: row.block?.model,
+		modelsEndpoint: row.block?.models_endpoint,
 		apiKey,
 	};
 }

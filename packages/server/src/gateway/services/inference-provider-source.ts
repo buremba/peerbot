@@ -46,3 +46,22 @@ export type InferenceProviderConfigSource = (
   slug: string,
   modality: InferenceModality
 ) => Promise<ResolvedInferenceProvider | null>;
+
+export interface ResolvedInferenceProviderCredential
+  extends ResolvedInferenceProvider {
+  /** Catalog kind the row was created from; must match trusted catalog defaults. */
+  kind: string;
+}
+
+/**
+ * Resolve an org provider credential for a catalog-declared capability even
+ * when the row has no per-modality override block. The returned fields still
+ * come from one row read: a present block supplies its URL/model overrides;
+ * an absent block supplies only the row key so the caller can use the trusted
+ * provider-catalog defaults.
+ */
+export type InferenceProviderCredentialSource = (
+  agentId: string,
+  slug: string,
+  modality: InferenceModality
+) => Promise<ResolvedInferenceProviderCredential | null>;

@@ -1,5 +1,24 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import type { ProviderConfigEntry } from "@lobu/core";
 import { TranscriptionService } from "../services/transcription-service.js";
+
+const openAiProviderConfig = (): Record<string, ProviderConfigEntry> => ({
+  openai: {
+    displayName: "OpenAI",
+    iconUrl: "https://example.com/icon.png",
+    envVarName: "OPENAI_API_KEY",
+    upstreamBaseUrl: "https://api.openai.com/v1",
+    apiKeyInstructions: "x",
+    apiKeyPlaceholder: "x",
+    sdkCompat: "openai",
+    modalities: ["text", "stt"],
+    stt: {
+      enabled: true,
+      transcriptionPath: "/audio/transcriptions",
+      model: "gpt-transcribe",
+    },
+  },
+});
 
 describe("TranscriptionService provider fallback", () => {
   afterEach(() => {
@@ -82,6 +101,94 @@ describe("TranscriptionService provider fallback", () => {
     }
   });
 
+  test("uses the org inference-provider key without requiring an stt override block", async () => {
+    const authProfilesManager = {
+      getBestProfile: mock(async () => null),
+    } as any;
+    const providerConfigSource = mock(async () => openAiProviderConfig());
+    const orgCredentialSource = mock(async () => ({
+      kind: "openai",
+      apiKey: "org-openai-key",
+    }));
+    const service = new TranscriptionService(
+      authProfilesManager,
+      providerConfigSource
+    );
+    service.setInferenceProviderCredentialSource(orgCredentialSource);
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        expect(String(input)).toBe(
+          "https://api.openai.com/v1/audio/transcriptions"
+        );
+        expect((init?.headers as Record<string, string>)?.Authorization).toBe(
+          "Bearer org-openai-key"
+        );
+        const body = init?.body as FormData;
+        expect(body.get("model")).toBe("gpt-transcribe");
+        return new Response(JSON.stringify({ text: "hello from whatsapp" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    ) as any;
+
+    try {
+      const result = await service.transcribe(
+        Buffer.from("m4a audio"),
+        "agent-buremba",
+        "audio/m4a"
+      );
+      expect(result).toEqual({
+        text: "hello from whatsapp",
+        provider: "openai",
+      });
+      expect(orgCredentialSource).toHaveBeenCalledWith(
+        "agent-buremba",
+        "openai",
+        "stt"
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("does not send a differently-kinded org credential to the catalog endpoint", async () => {
+    const authProfilesManager = {
+      getBestProfile: mock(async () => null),
+    } as any;
+    const providerConfigSource = mock(async () => openAiProviderConfig());
+    const service = new TranscriptionService(
+      authProfilesManager,
+      providerConfigSource
+    );
+    service.setInferenceProviderCredentialSource(
+      mock(async () => ({ kind: "gemini", apiKey: "gemini-key" }))
+    );
+
+    const originalFetch = globalThis.fetch;
+    const fetchMock = mock(async () => {
+      throw new Error("a Gemini credential must not be sent to OpenAI");
+    });
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const result = await service.transcribe(
+        Buffer.from("audio"),
+        "agent-credential-boundary",
+        "audio/m4a"
+      );
+      expect(result).toEqual({
+        error: "No transcription provider configured",
+        availableProviders: ["openai"],
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("uses config-driven OpenAI-compatible STT provider", async () => {
     const authProfilesManager = {
       getBestProfile: mock(async (_agentId: string, providerId: string) => {
@@ -101,6 +208,7 @@ describe("TranscriptionService provider fallback", () => {
         apiKeyInstructions: "x",
         apiKeyPlaceholder: "x",
         sdkCompat: "openai",
+        modalities: ["text"],
         stt: {
           enabled: true,
           transcriptionPath: "/audio/transcriptions",

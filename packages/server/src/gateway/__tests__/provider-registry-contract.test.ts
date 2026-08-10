@@ -73,6 +73,18 @@ describe("provider registry contract (config/providers.json)", () => {
 		expect(flattened.length).toBeGreaterThan(0);
 	});
 
+	test("OpenAI API exposes its supported transcription route", () => {
+		const openai = flattened.find(({ id }) => id === "openai")?.provider;
+		expect(openai).toBeDefined();
+		expect(openai!.modalities).toContain("stt");
+		expect(openai!.stt).toMatchObject({
+			enabled: true,
+			sdkCompat: "openai",
+			transcriptionPath: "/audio/transcriptions",
+			model: "gpt-4o-transcribe",
+		});
+	});
+
 	test("provider ids are unique", () => {
 		const ids = flattened.map((f) => f.id);
 		expect(new Set(ids).size).toBe(ids.length);

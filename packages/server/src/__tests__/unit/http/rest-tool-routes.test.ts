@@ -183,6 +183,15 @@ describe("fixed-action REST route registrations", () => {
 		expect(indexSrc.match(/restToolAction\(/g)).toHaveLength(3);
 	});
 
+	it("no longer registers the superseded window/execute REST routes", () => {
+		// Both were replaced by the generic tool-dispatch surface
+		// (`get_behavior` via `/behaviors?behavior_id=…` and the
+		// `POST /:orgSlug/:toolName` proxy). Asserting the literals are gone
+		// names exactly what was deleted and stops a re-introduction.
+		expect(indexSrc).not.toContain("behaviors/windows/:windowId");
+		expect(indexSrc).not.toContain("actions/execute");
+	});
+
 	it("registers read-only proxy GETs from the declaration table", () => {
 		expect(indexSrc).toContain("for (const route of REST_TOOL_GET_ROUTES)");
 	});

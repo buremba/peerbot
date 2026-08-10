@@ -428,7 +428,7 @@ function schemaMayAcceptKind(value: unknown, kind: JsonValueKind): boolean {
 			return false;
 		}
 	}
-	return validateScalarBounds("value", schema, kind) === null;
+	return getScalarBoundsIssue(schema, kind) === null;
 }
 
 function isFormOptionValue(value: unknown): value is string | number | boolean {
@@ -649,10 +649,7 @@ function validateArrayFormProperty(params: {
 	if (Object.hasOwn(renderProperty, "const")) {
 		return `input_schema array property '${field}' uses a constant the answer form does not support`;
 	}
-	if (
-		Array.isArray(renderProperty.items) ||
-		renderProperty.prefixItems !== undefined
-	) {
+	if (Array.isArray(renderProperty.items)) {
 		return `input_schema array property '${field}' uses tuple items the answer form does not support`;
 	}
 	const minimumSelections = minimumArraySelections(renderProperty);
@@ -805,21 +802,22 @@ function numericBoundsAdmitFiniteValue(params: {
 	return true;
 }
 
-function validateScalarBounds(
-	field: string,
+type ScalarBoundsIssue =
+	| "contradictory_length_bounds"
+	| "contradictory_numeric_bounds"
+	| "no_finite_numeric_value";
+
+function getScalarBoundsIssue(
 	schema: Record<string, unknown>,
 	kind: JsonValueKind,
-): string | null {
+): ScalarBoundsIssue | null {
 	if (kind === "string") {
 		const minimum = typeof schema.minLength === "number" ? schema.minLength : 0;
 		const maximum =
 			typeof schema.maxLength === "number"
 				? schema.maxLength
 				: Number.POSITIVE_INFINITY;
-		if (minimum > maximum) {
-			return `input_schema property '${field}' has contradictory length bounds`;
-		}
-		return null;
+		return minimum > maximum ? "contradictory_length_bounds" : null;
 	}
 	if (kind !== "number" && kind !== "integer") return null;
 
@@ -849,13 +847,30 @@ function validateScalarBounds(
 			(minimum.value === maximum.value &&
 				(minimum.exclusive || maximum.exclusive))
 		) {
-			return `input_schema property '${field}' has contradictory numeric bounds`;
+			return "contradictory_numeric_bounds";
 		}
 	}
 	if (!numericBoundsAdmitFiniteValue({ minimum, maximum, kind })) {
-		return `input_schema property '${field}' has no finite ${kind} within its numeric bounds`;
+		return "no_finite_numeric_value";
 	}
 	return null;
+}
+
+function validateScalarBounds(
+	field: string,
+	schema: Record<string, unknown>,
+	kind: JsonValueKind,
+): string | null {
+	switch (getScalarBoundsIssue(schema, kind)) {
+		case "contradictory_length_bounds":
+			return `input_schema property '${field}' has contradictory length bounds`;
+		case "contradictory_numeric_bounds":
+			return `input_schema property '${field}' has contradictory numeric bounds`;
+		case "no_finite_numeric_value":
+			return `input_schema property '${field}' has no finite ${kind} within its numeric bounds`;
+		default:
+			return null;
+	}
 }
 
 function validateFormProperty(params: {

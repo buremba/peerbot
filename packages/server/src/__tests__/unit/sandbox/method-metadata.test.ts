@@ -108,18 +108,27 @@ describe("method-metadata", () => {
 		expect(METHOD_METADATA["organizations.list"].access).toBe("read");
 	});
 
-	it("exposes org-read admin lists in read mode (agents.list/get, schedules.list)", () => {
+	it("exposes org-read admin lists in read mode (agents.list/get)", () => {
 		// These are org-read-gated at runtime (requireOrgReadAccess / org-scoped
 		// query) but were tagged access:"admin", so query_sdk read mode dropped the
 		// whole namespace → opaque "Cannot read properties of undefined". Reclassify
 		// ONLY the reads; the mutating siblings must stay admin.
 		expect(METHOD_METADATA["agents.list"].access).toBe("read");
 		expect(METHOD_METADATA["agents.get"].access).toBe("read");
-		expect(METHOD_METADATA["schedules.list"].access).toBe("read");
 		// Mutations stay admin-gated — reclassifying reads must not leak writes.
 		expect(METHOD_METADATA["agents.create"].access).toBe("admin");
 		expect(METHOD_METADATA["agents.update"].access).toBe("admin");
 		expect(METHOD_METADATA["agents.delete"].access).toBe("admin");
+	});
+
+	it("schedules.* discovery matches the enforced manage_schedules tier (all admin)", () => {
+		// manage_schedules is owner-admin for every action (schedule rows carry
+		// agent prompts and delivery context), enforced via the explicit
+		// OWNER_ADMIN_ACTIONS entry and pinned by the tool-access matrix. The SDK
+		// metadata must say the same: a method that advertises read-safe but is
+		// denied at runtime is discovery-vs-enforcement drift (#2607), so
+		// `schedules.list` is admin — not read.
+		expect(METHOD_METADATA["schedules.list"].access).toBe("admin");
 		expect(METHOD_METADATA["schedules.create"].access).toBe("admin");
 		expect(METHOD_METADATA["schedules.update"].access).toBe("admin");
 		expect(METHOD_METADATA["schedules.pause"].access).toBe("admin");

@@ -29,6 +29,7 @@ import {
 	readGrantedScopesFromAuthData,
 	readRequestedScopesFromAuthData,
 } from "../../auth/oauth/scopes";
+import { resolveMaxAccessLevel, type ToolAccessLevel } from "../../auth/tool-access";
 import { compileConnectionRowVisibility } from "../../authz/connection-visibility";
 import {
 	agentExistsInOrg,
@@ -519,6 +520,9 @@ function operationReadinessReason(
 	if (readiness === "scope_upgrade_required") {
 		return "This operation needs OAuth scopes the connection has not granted. Reauthorize to grant them.";
 	}
+	if (readiness === "session_scope_required") {
+		return SESSION_SCOPE_REASON;
+	}
 	if (readiness === "disabled") {
 		return "This operation is disabled on every visible connection.";
 	}
@@ -552,6 +556,11 @@ function resolveOperationReadiness(targets: ExecutionTarget[]): {
 			"inactive",
 	};
 }
+
+/** Shared copy for the caller-scope gate: executing operations requires an MCP
+ * session at write tier (mcp:write / mcp:admin). */
+const SESSION_SCOPE_REASON =
+	"Executing operations requires an MCP session with write access (mcp:write or mcp:admin). This session has read-only access.";
 
 function operationMatchesQuery(
 	operation: AvailableOperation & Record<string, unknown>,
@@ -595,6 +604,15 @@ function buildOperationNextAction(args: {
 		requestedScopes,
 		viewUrl,
 	} = args;
+	if (readiness === "session_scope_required") {
+		return {
+			action: "elevate_session_scope",
+			sdk_method: "operations.execute",
+			manual: true,
+			reason: SESSION_SCOPE_REASON,
+			note: "Reconnect the MCP session with write access (mcp:write or mcp:admin) to execute operations.",
+		};
+	}
 	if (readyTarget) {
 		const requiredInput =
 			Array.isArray(operation.input_schema?.required) &&
@@ -710,8 +728,10 @@ function buildAvailableOperation(args: {
 	internalTargets: InternalExecutionTarget[];
 	includeInputSchema: boolean;
 	viewUrl: string | undefined;
+	/** The caller's highest reachable access tier (role × MCP scopes). */
+	callerMax: ToolAccessLevel;
 }): AvailableOperation & Record<string, unknown> {
-	const { operation, internalTargets, includeInputSchema, viewUrl } = args;
+	const { operation, internalTargets, includeInputSchema, viewUrl, callerMax } = args;
 	const { backend_config: _privateBackendConfig, ...publicOperation } =
 		operation;
 	const requiredScopes = operation.required_scopes ?? [];
@@ -760,11 +780,39 @@ function buildAvailableOperation(args: {
 	const executeUnsupported =
 		operation.backend === "local_action" &&
 		(operation as OperationDescriptor).supports_execute === false;
-	const { readyTarget, executable, readiness } = executeUnsupported
-		? { readyTarget: undefined, executable: false, readiness: "unsupported" }
+	const base = executeUnsupported
+		? { readyTarget: undefined as ExecutionTarget | undefined, executable: false, readiness: "unsupported" }
 		: resolveOperationReadiness(targets);
+	// Caller-awareness: readiness answers "is the TARGET ready", but the same
+	// operation must not be advertised as executable to a caller whose session
+	// could never invoke it (operations.execute is write-tier). A read-only
+	// caller sees the catalog but every op is marked not-executable with a
+	// scope-upgrade next_action — the "ready but denied" lie from the
+	// prod-readiness review. Execution targets are overridden to match so no
+	// per-target row contradicts the top-level verdict.
+	const callerCanExecute = callerMax === "write" || callerMax === "admin";
+	const { readyTarget, executable, readiness } =
+		!callerCanExecute && base.executable
+			? {
+					readyTarget: undefined,
+					executable: false,
+					readiness: "session_scope_required",
+				}
+			: base;
+	const effectiveTargets = !callerCanExecute
+		? targets.map((target) =>
+				target.executable
+					? {
+							...target,
+							executable: false,
+							reason: SESSION_SCOPE_REASON,
+						}
+					: target,
+			)
+		: targets;
 	const remediationTarget =
-		targets.find((target) => target.status === readiness) ?? targets[0];
+		effectiveTargets.find((target) => target.status === readiness) ??
+		effectiveTargets[0];
 	const remediationInternalTarget = internalTargets.find(
 		(target) => target.connection_id === remediationTarget?.connection_id,
 	);
@@ -784,7 +832,7 @@ function buildAvailableOperation(args: {
 		readiness,
 		reason: operationReadinessReason(readiness, executable),
 		connection_count: targets.length,
-		execution_targets: targets,
+		execution_targets: effectiveTargets,
 		next_action: buildOperationNextAction({
 			operation,
 			readyTarget,
@@ -975,6 +1023,10 @@ async function handleListAvailable(
 		.toLocaleLowerCase()
 		.split(/\s+/)
 		.filter(Boolean);
+	// The caller's own reachable tier (role × MCP scopes) feeds the readiness
+	// mapper: operations.execute is write-tier, so a read-only session must not
+	// be told an op is ready to execute.
+	const callerMax = resolveMaxAccessLevel(ctx.memberRole, ctx.scopes);
 	const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
 	const connectorViewUrl = (connectorKey: string): string | undefined =>
 		ownerSlug && baseUrl
@@ -987,6 +1039,7 @@ async function handleListAvailable(
 				internalTargets: targetsByConnector.get(operation.connector_key) ?? [],
 				includeInputSchema: args.include_input_schema !== false,
 				viewUrl: connectorViewUrl(operation.connector_key),
+				callerMax,
 			}),
 		)
 		.filter((operation) => {

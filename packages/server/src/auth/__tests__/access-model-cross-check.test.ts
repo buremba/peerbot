@@ -50,6 +50,7 @@ const TIERED_NAMESPACES = [
 	["viewTemplates", "manage_view_templates", "../../tools/admin/manage_view_templates", "manageViewTemplates"],
 	["catalog", "manage_catalog", "../../tools/admin/manage_catalog", "manageCatalog"],
 	["agents", "manage_agents", "../../tools/admin/manage_agents", "manageAgents"],
+	["schedules", "manage_schedules", "../../tools/admin/manage_schedules", "manageSchedules"],
 ] as const;
 
 const NAMESPACE_TOOL = Object.fromEntries(

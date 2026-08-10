@@ -414,8 +414,8 @@ export default async (ctx, client) => {
 	},
 	"schedules.list": {
 		summary:
-			"List scheduled jobs with optional filters. Results are scoped to the caller's organization.",
-		access: "read",
+			"List scheduled jobs with optional filters. Results are scoped to the caller's organization. Requires admin (schedule rows carry agent prompts and delivery context).",
+		access: "admin",
 		example:
 			"const { schedules } = await client.schedules.list({ agent_id: 'builder' });",
 	},

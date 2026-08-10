@@ -56,7 +56,7 @@ import { LOBU_INTERACTION_RESOURCE_URI } from './tools/mcp_app';
 import { getMcpResultMeta } from './tools/mcp-result-meta';
 import { getMcpTools, getTool, isAuthorizationReadOnly } from './tools/registry';
 import { validateToolResult } from './tools/validate-args';
-import { readMcpAppBundle } from './utils/mcp-app-bundle';
+import { readMcpAppBundle, renderMcpAppTemplate } from './utils/mcp-app-bundle';
 import { resolvePublicOrigin } from './utils/public-origin';
 import { buildWorkspaceInstructions } from './utils/workspace-instructions';
 
@@ -67,6 +67,10 @@ const SESSION_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 const SESSION_CLEANUP_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 const MCP_APP_MIME_TYPE = 'text/html;profile=mcp-app';
 const MCP_APP_EXTENSION_ID = 'io.modelcontextprotocol/ui';
+const MCP_APP_RESOURCE_ALIASES: ReadonlyMap<string, string> = new Map([
+  ['ui://lobu/interaction/v1', LOBU_INTERACTION_RESOURCE_URI],
+  ['ui://lobu/interaction/v2', LOBU_INTERACTION_RESOURCE_URI],
+]);
 // ---------------------------------------------------------------------------
 // Session store
 // ---------------------------------------------------------------------------
@@ -200,7 +204,8 @@ const MCP_APP_RESOURCES: Record<
     description:
       'Interactive Lobu cards rendered in a sandboxed iframe; actions use standard MCP tool calls or host-mediated external links.',
     appDir: 'interaction',
-    // postMessage-only: the app makes no network requests and embeds no frames.
+    // App logic is postMessage-only. The serving origin is added dynamically as
+    // the sole resource domain for the external JS/CSS bundle.
     csp: { connectDomains: [], resourceDomains: [], frameDomains: [] },
     prefersBorder: true,
   },
@@ -247,6 +252,29 @@ function supportsMcpApps(capabilities: Record<string, unknown> | null | undefine
   if (!uiExtension || typeof uiExtension !== 'object') return false;
   const mimeTypes = (uiExtension as Record<string, unknown>).mimeTypes;
   return Array.isArray(mimeTypes) && mimeTypes.includes(MCP_APP_MIME_TYPE);
+}
+
+function mcpAppUiMeta(
+  authCtx: SessionAuthContext,
+  app: (typeof MCP_APP_RESOURCES)[string]
+): {
+  csp: {
+    connectDomains: string[];
+    resourceDomains: string[];
+    frameDomains: string[];
+    baseUriDomains: string[];
+  };
+  prefersBorder: boolean;
+} {
+  const publicOrigin = resolvePublicOrigin(authCtx.requestUrl);
+  return {
+    csp: {
+      ...app.csp,
+      resourceDomains: [...new Set([...app.csp.resourceDomains, publicOrigin])],
+      baseUriDomains: [publicOrigin],
+    },
+    prefersBorder: app.prefersBorder,
+  };
 }
 
 function createServerForContext(
@@ -318,10 +346,7 @@ function createServerForContext(
         description: meta.description,
         mimeType: MCP_APP_MIME_TYPE,
         _meta: {
-          ui: {
-            csp: meta.csp,
-            prefersBorder: meta.prefersBorder,
-          },
+          ui: mcpAppUiMeta(authCtx, meta),
         },
       })),
       ...Object.entries(MCP_SKILL_RESOURCES).map(([uri, meta]) => ({
@@ -342,12 +367,16 @@ function createServerForContext(
         contents: [{ uri, mimeType: 'text/markdown', text: skill.text }],
       };
     }
-    const app = MCP_APP_RESOURCES[uri];
+    const canonicalUri = MCP_APP_RESOURCE_ALIASES.get(uri) ?? uri;
+    const app = MCP_APP_RESOURCES[canonicalUri];
     if (!app) throw new Error(`Unknown resource: ${uri}`);
-    // Phase 1 of the external-asset rollout keeps discovery on the exact
-    // self-contained v2 template while the new asset endpoint reaches every
-    // replica. A later release switches discovery to index.html/v3.
-    const html = await readMcpAppBundle(app.appDir, 'legacy-v2.html');
+    const isLegacyAlias = canonicalUri !== uri;
+    const html = isLegacyAlias
+      ? await readMcpAppBundle(app.appDir, 'legacy-v2.html')
+      : await renderMcpAppTemplate(
+          app.appDir,
+          resolvePublicOrigin(authCtx.requestUrl)
+        );
     if (html == null) {
       throw new Error(`MCP App bundle not built for ${uri} (run owletto build:mcp-apps)`);
     }
@@ -357,7 +386,11 @@ function createServerForContext(
           uri,
           mimeType: MCP_APP_MIME_TYPE,
           text: html,
-          _meta: { ui: { csp: app.csp, prefersBorder: app.prefersBorder } },
+          _meta: {
+            ui: isLegacyAlias
+              ? { csp: app.csp, prefersBorder: app.prefersBorder }
+              : mcpAppUiMeta(authCtx, app),
+          },
         },
       ],
     };

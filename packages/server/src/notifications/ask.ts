@@ -32,7 +32,13 @@ export interface AgentAskProposal {
 
 export function isAgentAskProposal(value: unknown): value is AgentAskProposal {
 	if (value === null || typeof value !== "object") return false;
-	return typeof (value as Record<string, unknown>).question === "string";
+	const proposal = value as Record<string, unknown>;
+	return (
+		typeof proposal.question === "string" &&
+		proposal.input_schema !== null &&
+		typeof proposal.input_schema === "object" &&
+		!Array.isArray(proposal.input_schema)
+	);
 }
 
 /**

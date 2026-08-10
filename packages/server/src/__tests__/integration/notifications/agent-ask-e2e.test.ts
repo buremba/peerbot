@@ -202,6 +202,7 @@ describe("notify input_schema — agent asks a human", () => {
 		const sent = await send({
 			title: "The Acme renewal is at risk — how do we play it?",
 			input_schema: {
+				$schema: "http://json-schema.org/draft-07/schema#",
 				type: "object",
 				properties: {
 					play: { enum: ["Discount 15%", "Exec sponsor call", "Let it churn"] },
@@ -732,6 +733,18 @@ describe("notify input_schema — agent asks a human", () => {
 					properties: {
 						answer: {
 							type: "object",
+							properties: { detail: { type: "string" } },
+						},
+					},
+				},
+				error: /must not contain a nested object/i,
+			},
+			{
+				question: "Question with an implicit nested object",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: {
 							properties: { detail: { type: "string" } },
 						},
 					},

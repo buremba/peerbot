@@ -98,6 +98,7 @@ const ANNOTATION_KEYWORDS = new Set([
 
 const SUPPORTED_SCHEMA_KEYWORDS = new Set([
 	...ANNOTATION_KEYWORDS,
+	"$schema",
 	"additionalProperties",
 	"anyOf",
 	"enum",
@@ -304,7 +305,7 @@ function checkFormProperty(params: {
 	if (renderSchema.type === "array") {
 		return checkArrayProperty({ field, schema: renderSchema, accepts });
 	}
-	if (renderSchema.type === "object") {
+	if (renderSchema.type === "object" || renderSchema.properties !== undefined) {
 		return `input_schema property '${field}' must not contain a nested object`;
 	}
 	return renderSchema.type === undefined ||

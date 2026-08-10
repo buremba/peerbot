@@ -1263,6 +1263,8 @@ async function handleExecute(
 				policyPrincipalKind: actor.kind,
 				policyPrincipalId: actor.id,
 				createdByUserId: ctx.userId,
+				watcherId: ctx.actingWatcherId,
+				windowId: ctx.actingWindowId,
 				idempotencyKey: args.idempotency_key,
 				db: tx,
 			});
@@ -1318,11 +1320,15 @@ async function handleExecute(
 
 		// Telemetry + notification run AFTER the run+event are durably committed,
 		// so they never reference a rolled-back run and stay off the hot path.
-		if (args.behavior_source) {
+		const reactionBehaviorId =
+			ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null;
+		const reactionWindowId =
+			ctx.actingWindowId ?? args.behavior_source?.window_id ?? null;
+		if (reactionBehaviorId !== null && reactionWindowId !== null) {
 			await trackWatcherReaction({
 				organizationId: ctx.organizationId,
-				watcherId: args.behavior_source.behavior_id,
-				windowId: args.behavior_source.window_id,
+				watcherId: reactionBehaviorId,
+				windowId: reactionWindowId,
 				reactionType: "action_executed",
 				toolName: "manage_operations",
 				toolArgs: {
@@ -1380,6 +1386,8 @@ async function handleExecute(
 		policyPrincipalKind: actor.kind,
 		policyPrincipalId: actor.id,
 		createdByUserId: ctx.userId,
+		watcherId: ctx.actingWatcherId,
+		windowId: ctx.actingWindowId,
 		idempotencyKey: args.idempotency_key,
 	});
 	if (!claim.created) {
@@ -1387,11 +1395,15 @@ async function handleExecute(
 	}
 	const runId = claim.runId;
 
-	if (args.behavior_source) {
+	const reactionBehaviorId =
+		ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null;
+	const reactionWindowId =
+		ctx.actingWindowId ?? args.behavior_source?.window_id ?? null;
+	if (reactionBehaviorId !== null && reactionWindowId !== null) {
 		await trackWatcherReaction({
 			organizationId: ctx.organizationId,
-			watcherId: args.behavior_source.behavior_id,
-			windowId: args.behavior_source.window_id,
+			watcherId: reactionBehaviorId,
+			windowId: reactionWindowId,
 			reactionType: "action_executed",
 			toolName: "manage_operations",
 			toolArgs: {
@@ -1611,7 +1623,7 @@ async function handleListRuns(
     pageWhere = sql`${pageWhere} AND (r.created_at, r.id) < (${args.before_created_at}::timestamptz, ${args.before_id})`;
   }
   const query = sql`
-    SELECT r.id, r.run_type, r.watcher_id AS behavior_id, r.connection_id, r.feed_id, r.connector_key, r.connector_version,
+    SELECT r.id, r.run_type, r.watcher_id AS behavior_id, r.window_id, r.connection_id, r.feed_id, r.connector_key, r.connector_version,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.items_collected, r.checkpoint,
            r.created_at, r.completed_at,
@@ -1652,7 +1664,7 @@ async function handleGetRun(
   // a run visible in the list is always fetchable here. Only the chat-message
   // transport lane (the list's default exclusion) stays unfetchable.
   const rows = await sql`
-    SELECT r.id, r.watcher_id AS behavior_id, r.connection_id, r.connector_key,
+    SELECT r.id, r.watcher_id AS behavior_id, r.window_id, r.connection_id, r.connector_key,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.run_type,
            r.created_at, r.completed_at,

@@ -9,6 +9,10 @@
  */
 
 import type { CardElement } from "chat";
+import type {
+	NotificationsSendInput as ReactionNotificationsSendInput,
+	NotificationsSendResult,
+} from "@lobu/connector-sdk";
 import type { Env } from "../../index";
 import { listNotifications, markAsRead } from "../../notifications/service";
 import { notify } from "../../tools/admin/notify";
@@ -16,32 +20,16 @@ import type { ToolContext } from "../../tools/registry";
 import { ToolUserError } from "../../utils/errors";
 import { createActionCaller, idArg } from "./action-call";
 
-export interface NotificationsSendInput {
-	/** Notification title (≤200 chars). */
-	title: string;
-	/** Body text (≤1000 chars). */
-	body?: string;
+export type NotificationsSendInput = Omit<
+	ReactionNotificationsSendInput,
+	"card"
+> & {
 	/**
 	 * Optional rich card (`chat` `CardElement`) for bot-connection delivery,
 	 * rendered to each platform's native format (Block Kit / Adaptive Cards / …).
 	 */
 	card?: CardElement;
-	/**
-	 * Who to notify. `"admins"` (default): org admins/owners. `"all"`: every
-	 * member. Or an array of specific user IDs.
-	 */
-	recipients?: "admins" | "all" | string[];
-	/** Relative URL the notification links to (e.g. `/acme/entities`). */
-	resource_url?: string;
-	/** Stable producer key used to collapse retried sends. */
-	idempotency_key?: string;
-	/** Deliver only through this specific bot connection (its id). */
-	connection_id?: string;
-	/** Arbitrary JSON payload appended to the body as formatted JSON. */
-	data?: Record<string, unknown>;
-	/** Attribution when sent from a watcher reaction — both ids are numeric. */
-	behavior_source?: { behavior_id: number; window_id: number };
-}
+};
 
 export interface NotificationsListInput {
 	/** Keyset cursor: return notifications with id strictly less than this. */
@@ -58,7 +46,7 @@ export interface NotificationsListResult {
 }
 
 export interface NotificationsNamespace {
-	send(input: NotificationsSendInput): Promise<{ notified_count: number }>;
+	send(input: NotificationsSendInput): Promise<NotificationsSendResult>;
 	list(input?: NotificationsListInput): Promise<NotificationsListResult>;
 	/**
 	 * Mark one of the caller's notifications as read. Accepts a positional id

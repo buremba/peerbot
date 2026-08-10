@@ -86,9 +86,18 @@ export async function getPastReactionsSummary(
   // view resolves the period (LEFT JOIN — tombstoned roots null).
   const reactions = await sql`
     SELECT wr.reaction_type, wr.tool_name, wr.tool_args, wr.created_at,
-           ww.window_start, ww.window_end
+           ww.window_start, ww.window_end,
+           decision.action_key AS decision_action_key,
+           decision.status AS decision_status,
+           decision.approval_status AS decision_approval_status,
+           decision.action_input AS decision_input,
+           decision.action_output AS decision_output,
+           decision.error_message AS decision_error
     FROM watcher_reactions wr
     LEFT JOIN canvas_windows ww ON ww.id = wr.window_id
+    LEFT JOIN runs decision
+      ON decision.id = wr.run_id
+     AND decision.organization_id = wr.organization_id
     WHERE wr.watcher_id = ${watcherId}
     ORDER BY wr.created_at DESC
     LIMIT ${limit}
@@ -103,7 +112,41 @@ export async function getPastReactionsSummary(
       : '?';
     const toolArgs = r.tool_args as Record<string, unknown> | null;
     const detail = toolArgs ? JSON.stringify(toolArgs) : '';
-    lines.push(`- Window ${date}: ${r.reaction_type} via ${r.tool_name} ${detail}`);
+    let decision = '';
+    if (r.decision_action_key === 'agent_ask') {
+      const proposal = r.decision_input as
+        | { question?: string; context?: string }
+        | null;
+      const question = String(proposal?.question ?? 'Human review');
+      const context = String(proposal?.context ?? '');
+      decision = ` — Asked: ${question}`;
+      if (context) {
+        decision += ` | Context: ${context.slice(0, 600)}${context.length > 600 ? '…' : ''}`;
+      }
+      const approval = String(r.decision_approval_status ?? '');
+      const status = String(r.decision_status ?? '');
+      if (approval === 'approved' && status === 'completed') {
+        const output = r.decision_output as
+          | { answer?: Record<string, unknown> }
+          | null;
+        const answer = output?.answer ?? {};
+        decision += ` — Human answered: ${JSON.stringify(answer)}`;
+        if (answer.outcome === 'posted_edited' && !answer.final_text) {
+          decision += ' (edited final text was not provided)';
+        }
+      } else if (approval === 'rejected') {
+        decision += ` — Human rejected: ${String(r.decision_error ?? 'Rejected by user')}`;
+      } else if (approval === 'expired') {
+        // Expiry means no decision. Keep it explicit so the model never learns
+        // an unattended question as negative preference feedback.
+        decision += ' — Question expired without a human decision (neutral)';
+      } else {
+        decision += ' — Awaiting human decision';
+      }
+    }
+    lines.push(
+      `- Window ${date}: ${r.reaction_type} via ${r.tool_name} ${detail}${decision}`
+    );
   }
   return lines.join('\n');
 }

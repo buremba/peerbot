@@ -84,6 +84,7 @@ function clientWithRows(options: {
     metadata: typeof draftMetadata;
   }>;
   chrome?: Array<{ id: number; slug?: string; device_online?: boolean }>;
+  operationError?: Error;
 }) {
   const queries: string[] = [];
   const notifications: Record<string, unknown>[] = [];
@@ -114,11 +115,17 @@ function clientWithRows(options: {
     notifications: {
       send: async (input: Record<string, unknown>) => {
         notifications.push(input);
-        return { notified_count: 1 };
+        return {
+          notified_count: 1,
+          event_id: 700 + notifications.length,
+          url: `/buremba/memory?run_ids=${800 + notifications.length}`,
+          ...(input.input_schema ? { run_id: 800 + notifications.length } : {}),
+        };
       },
     },
     operations: {
       execute: async (input: Record<string, unknown>) => {
+        if (options.operationError) throw options.operationError;
         const idempotencyKey = input.idempotency_key;
         if (typeof idempotencyKey === "string") {
           const prior = operationResults.get(idempotencyKey);
@@ -138,7 +145,7 @@ function clientWithRows(options: {
 }
 
 describe("social interest radar reaction", () => {
-  it("links the notification to declaratively persisted source and reply events", async () => {
+  it("stages the LinkedIn draft and creates one answerable review instead of a duplicate FYI", async () => {
     const fixture = clientWithRows({
       signals: [{ id: 501, author_name: "Ada", metadata: signalMetadata }],
       drafts: [
@@ -157,12 +164,25 @@ describe("social interest radar reaction", () => {
     await runReaction(context(), fixture.client);
 
     expect(fixture.queries[0]).toContain("run_id = 88");
-    expect(fixture.notifications).toEqual([
-      expect.objectContaining({
-        resource_url: "/buremba/memory?content_ids=101,501,601",
-        idempotency_key: "social-radar:notification:run:88",
-      }),
-    ]);
+    expect(fixture.notifications).toHaveLength(1);
+    expect(fixture.notifications[0]).toMatchObject({
+      title: "Review LinkedIn comment for Ada",
+      idempotency_key: "social-radar:review:601",
+      behavior_source: { behavior_id: 71, window_id: 44 },
+      input_schema: {
+        type: "object",
+        required: ["outcome"],
+        properties: {
+          outcome: {
+            enum: ["posted_unchanged", "posted_edited"],
+          },
+        },
+      },
+    });
+    expect(fixture.notifications[0]).not.toHaveProperty("resource_url");
+    expect(String(fixture.notifications[0]?.body)).toContain(
+      "Durable state is the difference"
+    );
     expect(fixture.operations).toEqual([
       {
         connection_id: 410,
@@ -177,6 +197,98 @@ describe("social interest radar reaction", () => {
         behavior_source: { behavior_id: 71, window_id: 44 },
       },
     ]);
+  });
+
+  it("keeps unrelated signals in a digest when one LinkedIn signal becomes a review", async () => {
+    const otherMetadata = {
+      ...signalMetadata,
+      platform: "x",
+      source_event_id: 202,
+      why: "A separate launch signal.",
+    };
+    const fixture = clientWithRows({
+      signals: [
+        { id: 501, author_name: "Ada", metadata: signalMetadata },
+        { id: 502, author_name: "Grace", metadata: otherMetadata },
+      ],
+      drafts: [
+        {
+          id: 601,
+          payload_text: "A staged answer.",
+          source_url:
+            "https://www.linkedin.com/feed/update/urn:li:activity:123",
+          metadata: draftMetadata,
+        },
+      ],
+      chrome: [{ id: 432 }],
+    });
+
+    await runReaction(context(), fixture.client);
+
+    expect(fixture.notifications).toHaveLength(2);
+    expect(fixture.notifications[0]?.title).toBe(
+      "Review LinkedIn comment for Ada"
+    );
+    expect(fixture.notifications[1]).toMatchObject({
+      title: "Social interest radar",
+      idempotency_key: "social-radar:notification:run:88",
+    });
+    expect(String(fixture.notifications[1]?.body)).toContain("Grace");
+    expect(String(fixture.notifications[1]?.body)).not.toContain("Ada");
+    expect(String(fixture.notifications[1]?.resource_url)).toContain(
+      "content_ids=202,502"
+    );
+  });
+
+  it("does not create an impossible review or stage against the generic LinkedIn feed URL", async () => {
+    const fixture = clientWithRows({
+      signals: [{ id: 501, author_name: "Ada", metadata: signalMetadata }],
+      drafts: [
+        {
+          id: 601,
+          payload_text: "Draft",
+          source_url: "https://www.linkedin.com/feed/",
+          metadata: draftMetadata,
+        },
+      ],
+      chrome: [{ id: 432 }],
+    });
+
+    await runReaction(context(), fixture.client);
+
+    expect(fixture.operations).toHaveLength(0);
+    expect(fixture.notifications).toHaveLength(1);
+    expect(fixture.notifications[0]).not.toHaveProperty("input_schema");
+    expect(fixture.notifications[0]?.resource_url).toBe(
+      "/buremba/memory?content_ids=101,501,601"
+    );
+    expect(fixture.logs.join("\n")).toMatch(/permalink|feed URL/i);
+  });
+
+  it("still delivers the signal digest when browser staging throws", async () => {
+    const fixture = clientWithRows({
+      signals: [{ id: 501, author_name: "Ada", metadata: signalMetadata }],
+      drafts: [
+        {
+          id: 601,
+          payload_text: "Draft",
+          source_url:
+            "https://www.linkedin.com/feed/update/urn:li:activity:123",
+          metadata: draftMetadata,
+        },
+      ],
+      chrome: [{ id: 432 }],
+      operationError: new Error("idempotency conflict"),
+    });
+
+    await runReaction(context(), fixture.client);
+
+    expect(fixture.notifications).toHaveLength(1);
+    expect(fixture.notifications[0]?.title).toBe("Social interest radar");
+    expect(String(fixture.notifications[0]?.body)).toContain(
+      "LinkedIn draft not staged"
+    );
+    expect(fixture.logs.join("\n")).toContain("staging threw");
   });
 
   it("names the author from the event column, not from a restated metadata copy", async () => {

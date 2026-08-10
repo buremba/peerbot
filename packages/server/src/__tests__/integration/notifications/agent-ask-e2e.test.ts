@@ -19,6 +19,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import type { Env } from "../../../index";
 import type { AuthContext } from "../../../tools/execute";
 import { executeTool } from "../../../tools/execute";
+import { getPastReactionsSummary } from "../../../utils/watcher-reactions";
 import { initWorkspaceProvider } from "../../../workspace";
 import { getTestDb } from "../../setup/test-db";
 import {
@@ -60,6 +61,9 @@ describe("notify input_schema — agent asks a human", () => {
 	let orgId: string;
 	let humanCtx: AuthContext;
 	let agentCtx: AuthContext;
+	let behaviorCtx: AuthContext;
+	let behaviorId: number;
+	let windowId: number;
 
 	const baseCtx = (
 		userId: string,
@@ -91,6 +95,40 @@ describe("notify input_schema — agent asks a human", () => {
 		await addUserToOrganization(owner.id, org.id, "owner");
 		humanCtx = baseCtx(owner.id, null);
 		agentCtx = baseCtx(owner.id, "asking-agent");
+		const sql = getTestDb();
+		const [behavior] = await sql`
+			WITH next_id AS (SELECT nextval('watchers_id_seq')::integer AS id)
+			INSERT INTO watchers (
+				id, watcher_group_id, organization_id, agent_id, created_by, name, slug
+			)
+			SELECT id, id, ${org.id}, 'asking-agent', ${owner.id},
+				'Ask provenance behavior', 'ask-provenance-behavior'
+			FROM next_id
+			RETURNING id
+		`;
+		behaviorId = Number(behavior.id);
+		const [window] = await sql`
+			INSERT INTO events (
+				organization_id, semantic_type, payload_type, payload_data,
+				metadata, occurred_at, created_at, created_by
+			) VALUES (
+				${org.id}, 'canvas_state', 'json_template', '{}'::jsonb,
+				${sql.json({
+					watcher_id: behaviorId,
+					granularity: "hour",
+					window_start: "2026-08-10T00:00:00.000Z",
+					window_end: "2026-08-10T01:00:00.000Z",
+				})},
+				NOW(), NOW(), ${owner.id}
+			)
+			RETURNING id
+		`;
+		windowId = Number(window.id);
+		behaviorCtx = {
+			...baseCtx(owner.id, null),
+			actingWatcherId: behaviorId,
+			actingWindowId: windowId,
+		};
 	});
 
 	async function send(args: Record<string, unknown>): Promise<SendResult> {
@@ -369,5 +407,63 @@ describe("notify input_schema — agent asks a human", () => {
 			SELECT approval_status FROM runs WHERE id = ${sent.run_id}
 		`;
 		expect(run.approval_status).toBe("pending");
+	});
+
+	it("binds a Behavior ask and its rejection reason back to the firing window", async () => {
+		const sent = (await executeTool(
+			"notify",
+			{
+				action: "send",
+				title: "Review the staged LinkedIn comment",
+				body: "Draft: Durable state makes this workflow dependable.",
+				input_schema: {
+					type: "object",
+					properties: {
+						outcome: {
+							enum: ["posted_unchanged", "posted_edited"],
+						},
+					},
+					required: ["outcome"],
+				},
+				behavior_source: {
+					behavior_id: behaviorId,
+					window_id: windowId,
+				},
+			},
+			TEST_ENV,
+			behaviorCtx,
+		)) as SendResult;
+
+		const sql = getTestDb();
+		const [run] = await sql`
+			SELECT watcher_id, window_id
+			FROM runs WHERE id = ${sent.run_id}
+		`;
+		expect(Number(run.watcher_id)).toBe(behaviorId);
+		expect(Number(run.window_id)).toBe(windowId);
+
+		const [reaction] = await sql`
+			SELECT run_id FROM watcher_reactions
+			WHERE watcher_id = ${behaviorId} AND window_id = ${windowId}
+			ORDER BY id DESC LIMIT 1
+		`;
+		expect(Number(reaction.run_id)).toBe(sent.run_id);
+
+		await executeTool(
+			"manage_operations",
+			{
+				action: "reject",
+				run_id: sent.run_id,
+				reason: "The tone is too promotional for this discussion.",
+			},
+			TEST_ENV,
+			humanCtx,
+		);
+		const summary = await getPastReactionsSummary(behaviorId);
+		expect(summary).toContain("Durable state makes this workflow dependable.");
+		expect(summary).toMatch(/rejected/i);
+		expect(summary).toContain(
+			"The tone is too promotional for this discussion."
+		);
 	});
 });

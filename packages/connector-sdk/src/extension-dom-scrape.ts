@@ -46,12 +46,28 @@ interface ExtensionScrapeField {
    * capture a row's repeated structures (e.g. every profile link as
    * {href, name}) and disambiguate them by content rather than DOM position.
    */
-  take?: 'attr' | 'text' | 'html' | 'objectAll' | (string & {});
+  take?: 'attr' | 'text' | 'html' | 'objectAll' | 'clipboardAction' | (string & {});
   attr?: string;
   firstLine?: boolean;
   const?: unknown;
   /** Sub-spec for `objectAll`: the named parts to read off each matched element. */
   parts?: Record<string, ExtensionScrapePart>;
+  /**
+   * `clipboardAction` only: a row-local control that opens a menu/popover.
+   * The scraper intercepts clipboard.writeText before clicking, so the copied
+   * value is returned without changing the user's real clipboard.
+   */
+  triggerSelector?: string;
+  /** `clipboardAction` only: global selector for the opened action. */
+  actionSelector?: string;
+  /** `clipboardAction` only: exact visible text of the action to click. */
+  actionText?: string;
+  /** `clipboardAction` only: visible-text regex used when exact text varies. */
+  actionTextRegex?: string;
+  /** Optional flags for `actionTextRegex` (for example, `i`). */
+  actionTextRegexFlags?: string;
+  /** Maximum wait for the action/value (default 1500ms). */
+  maxWaitMs?: number;
 }
 
 /** The `.result` payload of a `cs_scrape` dispatch. */

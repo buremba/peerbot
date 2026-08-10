@@ -305,26 +305,10 @@ async function handleSend(
     emit(ctx.organizationId, { keys: ['notifications', 'notifications-unread-count'] });
   }
 
-  // Track watcher reaction if attribution source is provided
-  if (notification.created && args.behavior_source) {
-    await trackWatcherReaction({
-      organizationId: ctx.organizationId,
-      watcherId: args.behavior_source.behavior_id,
-      windowId: args.behavior_source.window_id,
-      reactionType: 'notification_sent',
-      toolName: 'notify',
-      toolArgs: { title: args.title, recipients: args.recipients },
-    }).catch((err) => {
-      logger.warn({ err, behaviorSource: args.behavior_source }, 'trackWatcherReaction failed');
-    });
-  }
-
   // Two replicas can race past the idempotency preflight above; the loser's
   // notification insert resolves to the winner's event, so the run WE queued is
-  // an orphan nothing points at. Hand back the winner's run so the agent polls
-  // the question the human actually sees; the orphan stays pending and is
-  // closed by the pending-approval expiry sweep — its terminal path already —
-  // rather than a hand-rolled cleanup here.
+  // an orphan nothing points at. Resolve the delivered run before reaction
+  // tracking so watcher_reactions always points at the decision the human sees.
   let askRunId = ask?.runId ?? null;
   if (ask && !notification.created && notification.eventId !== null) {
     askRunId = await findAskRunForNotification(
@@ -335,6 +319,34 @@ async function handleSend(
       { orphanRunId: ask.runId, eventId: notification.eventId, askRunId },
       '[notify] Concurrent duplicate ask; returning the delivered run, orphan left to the approval expiry sweep'
     );
+  }
+
+  // Prefer trusted execution provenance. behavior_source remains the
+  // compatibility/attribution hint for non-Behavior callers, but a running
+  // Behavior cannot be redirected onto another Behavior's feedback history.
+  const reactionBehaviorId =
+    ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null;
+  const reactionWindowId =
+    ctx.actingWindowId ?? args.behavior_source?.window_id ?? null;
+  if (
+    notification.created &&
+    reactionBehaviorId !== null &&
+    reactionWindowId !== null
+  ) {
+    await trackWatcherReaction({
+      organizationId: ctx.organizationId,
+      watcherId: reactionBehaviorId,
+      windowId: reactionWindowId,
+      reactionType: 'notification_sent',
+      toolName: 'notify',
+      toolArgs: { title: args.title, recipients: args.recipients },
+      ...(askRunId !== null ? { runId: askRunId } : {}),
+    }).catch((err) => {
+      logger.warn(
+        { err, behaviorId: reactionBehaviorId, windowId: reactionWindowId },
+        'trackWatcherReaction failed'
+      );
+    });
   }
 
   // The event id IS the notification id — there is no second identifier — so an

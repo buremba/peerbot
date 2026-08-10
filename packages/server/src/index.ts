@@ -768,7 +768,7 @@ app.get("/legal", (c) => {
   <p>This is an AI-powered MCP server for collecting customer content and building searchable workspace knowledge across multiple platforms including Reddit, Trustpilot, App Stores, Google Maps, GitHub, Hacker News, and more.</p>
 
   <h2>Data Collection</h2>
-  <p>This service collects publicly available user events erom various platforms. All data is collected in accordance with each platform's terms of service and API usage policies.</p>
+  <p>This service collects publicly available user events from various platforms. All data is collected in accordance with each platform's terms of service and API usage policies.</p>
 
   <h2>Privacy</h2>
   <p>We process publicly available content data. No personal information is collected beyond what is publicly visible on the source platforms.</p>

@@ -116,10 +116,12 @@ import {
 import {
 	AGENT_ASK_ACTION_KEY,
 	AGENT_ASK_INPUT_SCHEMA_VALIDATION_VERSION,
-	findUnansweredRequired,
 	isAgentAskProposal,
-	validateAskAnswer,
 } from "../../notifications/ask";
+import {
+	findUnansweredRequired,
+	validateAskAnswer,
+} from "../../notifications/ask-schema";
 import { callerIsAdmin } from "./helpers/db-helpers";
 import {
 	applyManageAgentsProposal,

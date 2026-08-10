@@ -275,7 +275,7 @@ describe("notify input_schema — agent asks a human", () => {
 		expect(approved.approved).toBe(true);
 	});
 
-	it("keeps string-capable array combinators answerable", async () => {
+	it("keeps constrained string arrays answerable", async () => {
 		const sent = await send({
 			title: "Which release tags should run?",
 			input_schema: {
@@ -283,11 +283,7 @@ describe("notify input_schema — agent asks a human", () => {
 				properties: {
 					tags: {
 						type: "array",
-						items: {
-							type: "string",
-							minLength: 2,
-							anyOf: [{ type: "string", maxLength: 4 }, { type: "integer" }],
-						},
+						items: { type: "string", minLength: 2, maxLength: 4 },
 					},
 				},
 				required: ["tags"],
@@ -816,6 +812,22 @@ describe("notify input_schema — agent asks a human", () => {
 					required: ["flags"],
 				},
 				error: /array property 'flags'.*answer form/i,
+			},
+			{
+				question: "Question with a generic array item union",
+				inputSchema: {
+					type: "object",
+					properties: {
+						tags: {
+							type: "array",
+							items: {
+								anyOf: [{ type: "string" }, { type: "integer" }],
+							},
+						},
+					},
+					required: ["tags"],
+				},
+				error: /array property 'tags'.*union.*cannot render/i,
 			},
 			{
 				question: "Question with contradictory array item combinators",

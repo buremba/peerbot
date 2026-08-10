@@ -13,13 +13,6 @@ import { ToolUserError } from "../utils/errors";
 import { insertEvent } from "../utils/insert-event";
 import { validateAskInputSchema } from "./ask-schema";
 
-export type { AskAffordance, AskChoice } from "./ask-schema";
-export {
-	findUnansweredRequired,
-	resolveAskAffordance,
-	validateAskAnswer,
-} from "./ask-schema";
-
 /** `runs.action_key` for an agent-authored ask. */
 export const AGENT_ASK_ACTION_KEY = "agent_ask";
 

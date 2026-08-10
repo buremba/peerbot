@@ -9,10 +9,8 @@
 import { getDb, pgTextArray } from "../../../db/client";
 import { listNotifications } from "../../../notifications/service";
 import { buildResourcePermalink } from "../../../utils/url-builder";
-import {
-	AGENT_ASK_ACTION_KEY,
-	resolveAskAffordance,
-} from "../../../notifications/ask";
+import { AGENT_ASK_ACTION_KEY } from "../../../notifications/ask";
+import { resolveAskAffordance } from "../../../notifications/ask-schema";
 import { ENTITY_CHANGE_ACTION_KEYS } from "../entity-field-approval";
 
 /**

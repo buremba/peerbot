@@ -69,15 +69,15 @@ const MCP_APP_MIME_TYPE = 'text/html;profile=mcp-app';
 const MCP_APP_EXTENSION_ID = 'io.modelcontextprotocol/ui';
 const MCP_APP_RESOURCE_ALIASES: ReadonlyMap<
   string,
-  { canonicalUri: string; template: 'legacy' | 'external' }
+  { canonicalUri: string; template: 'embedded' | 'external' }
 > = new Map([
   [
     'ui://lobu/interaction/v1',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'legacy' },
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
   ],
   [
     'ui://lobu/interaction/v2',
-    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'legacy' },
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
   ],
   [
     'ui://lobu/interaction/v3.html',
@@ -89,6 +89,10 @@ const MCP_APP_RESOURCE_ALIASES: ReadonlyMap<
   ],
   [
     'ui://lobu/interaction/v5.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
+  ],
+  [
+    'ui://lobu/interaction/v6.html',
     { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
   ],
 ]);
@@ -206,6 +210,8 @@ const MCP_APP_RESOURCES: Record<
     /** Surfaced on `resources/list` — clients show it in resource browsers. */
     description: string;
     appDir: string;
+    /** How resources/read delivers the current immutable host resource. */
+    template: 'embedded' | 'external';
     /**
      * Domains the host should allow the rendered iframe to reach, in the MCP
      * Apps `_meta.ui.csp` shape. The host owns the resulting policy; we only
@@ -225,8 +231,9 @@ const MCP_APP_RESOURCES: Record<
     description:
       'Interactive Lobu cards rendered in a sandboxed iframe; actions use standard MCP tool calls or host-mediated external links.',
     appDir: 'interaction',
-    // App logic is postMessage-only. The serving origin is added dynamically as
-    // the sole resource domain for the external JS/CSS bundle.
+    // Keep the host resource self-contained. The public /mcp-apps route still
+    // serves the external build for Lobu's own same-origin views and review.
+    template: 'embedded',
     csp: { connectDomains: [], resourceDomains: [], frameDomains: [] },
     prefersBorder: true,
   },
@@ -277,16 +284,20 @@ function supportsMcpApps(capabilities: Record<string, unknown> | null | undefine
 
 function mcpAppUiMeta(
   authCtx: SessionAuthContext,
-  app: (typeof MCP_APP_RESOURCES)[string]
+  app: (typeof MCP_APP_RESOURCES)[string],
+  template: 'embedded' | 'external' = app.template
 ): {
   csp: {
     connectDomains: string[];
     resourceDomains: string[];
     frameDomains: string[];
-    baseUriDomains: string[];
+    baseUriDomains?: string[];
   };
   prefersBorder: boolean;
 } {
+  if (template === 'embedded') {
+    return { csp: app.csp, prefersBorder: app.prefersBorder };
+  }
   const publicOrigin = resolvePublicOrigin(authCtx.requestUrl);
   return {
     csp: {
@@ -392,8 +403,8 @@ function createServerForContext(
     const canonicalUri = alias?.canonicalUri ?? uri;
     const app = MCP_APP_RESOURCES[canonicalUri];
     if (!app) throw new Error(`Unknown resource: ${uri}`);
-    const isLegacyAlias = alias?.template === 'legacy';
-    const html = isLegacyAlias
+    const template = alias?.template ?? app.template;
+    const html = template === 'embedded'
       ? await readMcpAppBundle(app.appDir, 'legacy-v2.html')
       : await renderMcpAppTemplate(
           app.appDir,
@@ -409,9 +420,7 @@ function createServerForContext(
           mimeType: MCP_APP_MIME_TYPE,
           text: html,
           _meta: {
-            ui: isLegacyAlias
-              ? { csp: app.csp, prefersBorder: app.prefersBorder }
-              : mcpAppUiMeta(authCtx, app),
+            ui: mcpAppUiMeta(authCtx, app, template),
           },
         },
       ],

@@ -58,7 +58,7 @@ export interface ToolAnnotations {
   readOnlyHint?: boolean;
   /** Declare that the tool may delete or overwrite user data. */
   destructiveHint?: boolean;
-  /** Declare that the tool publishes content or reaches outside the caller's account. */
+  /** Declare that the tool may change public internet state or an external third-party system. */
   openWorldHint?: boolean;
   /** Declare that calling the tool repeatedly with the same arguments has no additional effect. */
   idempotentHint?: boolean;
@@ -203,6 +203,9 @@ const READ_ONLY = {
   idempotentHint: true,
 } as const;
 
+// OpenAI Apps submission semantics reserve `openWorldHint` for tools that can
+// CHANGE public internet or third-party state. Live reads from a user's private
+// connectors remain closed-world even though they contact an external service.
 const AUDITED_READ = {
   readOnlyHint: false,
   destructiveHint: false,

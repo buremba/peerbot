@@ -472,6 +472,15 @@ export async function fetchIncludeSuperseded(opts: {
     queryParams.push(pgTextArray(types));
     paramIndex += 1;
   }
+  if (args.is_notification) {
+    // Notification presence, not semantic_type: a notification event can carry
+    // any kind, so the reliable "is this a notification" signal is the
+    // notification_targets row. Indexed on notification_targets.event_id (PK),
+    // so this is a bounded row probe, not history aggregation.
+    conditions.push(
+      `EXISTS (SELECT 1 FROM notification_targets nt WHERE nt.event_id = e.id)`
+    );
+  }
   if (args.interaction_status) {
     conditions.push(`e.interaction_status = $${paramIndex}`);
     queryParams.push(args.interaction_status);

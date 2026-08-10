@@ -47,6 +47,8 @@ interface NormalizedScoreFilters {
   classification_filters?: Array<{ classifier_slug: string; value: string }>;
   classification_source?: 'user' | 'embedding' | 'llm';
   semantic_type?: string | string[];
+  /** Limit to notification events (have a notification_targets row). */
+  is_notification?: boolean;
   interaction_status?: 'pending' | 'approved' | 'rejected' | 'completed' | 'failed';
   /**
    * Connection-visibility scope. Folds into the WHERE so events from
@@ -241,6 +243,14 @@ async function buildFilterConditionsAndJoins(
       : [filters.semantic_type];
     params.push(pgTextArray(types));
     filterConditions.push(`f.semantic_type = ANY($${paramIndex++}::text[])`);
+  }
+
+  if (filters?.is_notification) {
+    // Notification presence, not semantic_type: a kind notification carries its
+    // own semantic_type, so the reliable signal is the notification_targets row.
+    filterConditions.push(
+      `EXISTS (SELECT 1 FROM notification_targets nt WHERE nt.event_id = f.id)`
+    );
   }
 
   if (filters?.interaction_status) {

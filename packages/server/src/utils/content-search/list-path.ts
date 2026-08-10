@@ -357,6 +357,14 @@ export async function listContentInternal(
       baseParams.push(pgTextArray(types));
       baseConditions.push(`f.semantic_type = ANY($${baseParams.length}::text[])`);
     }
+    if (options.is_notification) {
+      // Notification presence, not semantic_type: a kind notification carries
+      // its own semantic_type, so the reliable signal is the notification_targets
+      // row. Indexed on notification_targets.event_id (PK).
+      baseConditions.push(
+        `EXISTS (SELECT 1 FROM notification_targets nt WHERE nt.event_id = f.id)`
+      );
+    }
     if (options.interaction_status) {
       baseParams.push(options.interaction_status);
       baseConditions.push(`f.interaction_status = $${baseParams.length}`);

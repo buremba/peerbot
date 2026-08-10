@@ -128,6 +128,14 @@ export interface NotificationsSendInput {
   connection_id?: string;
   /** Arbitrary JSON payload appended to the body as formatted JSON. */
   data?: Record<string, unknown>;
+  /**
+   * Event semantic type (kind) for the notification's content, validated
+   * against the org's `$member.event_kinds`. When set, the notification
+   * renders through the event-kind pipeline: `data` feeds the kind's
+   * `json_template` chart in the Memory/Events view, and the inbox keeps the
+   * markdown `body`. Mutually exclusive with `input_schema`.
+   */
+  semantic_type?: string;
   /** Attribution when sent from a behavior reaction. */
   behavior_source?: { behavior_id: number; window_id: number };
   /**

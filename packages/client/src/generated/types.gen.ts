@@ -3952,6 +3952,10 @@ export type NotifyData = {
       [key: string]: unknown;
     };
     /**
+     * Event semantic type (kind) for this notification's content, validated against the org's `$member.event_kinds`. When set, the notification renders through the event-kind pipeline: `data` feeds the kind's `json_template` chart in the Memory/Events view, and the inbox keeps the markdown `body`. Mutually exclusive with `input_schema`.
+     */
+    semantic_type?: string;
+    /**
      * A `chat` CardElement (built with the card primitives) for rich bot-connection delivery. When set, the bound channel gets this card instead of the markdown body.
      */
     card?: {

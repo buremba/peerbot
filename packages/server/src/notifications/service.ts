@@ -20,6 +20,20 @@ interface CreateNotificationParams {
 		| "agent_message";
 	title: string;
 	body?: string | null;
+	/**
+	 * Event semantic type (kind) for the notification's content. When set, the
+	 * event carries THIS semantic_type with an `empty` payload, so the event-kind
+	 * render tail synthesizes the render template from the kind's `jsonTemplate`
+	 * (the same path every other `empty` event takes). Omit for the default
+	 * `notification` semantic type + plain text body — the ask/approval path
+	 * always omits it, keeping its `notification` marker and its separate
+	 * interaction-event supersede chain.
+	 */
+	semanticType?: string;
+	/** Override the event payload type. Defaults to `text`. */
+	payloadType?: "text" | "markdown" | "json_template" | "media" | "empty";
+	/** Structured payload merged into the event metadata (binds render templates). */
+	payloadData?: Record<string, unknown>;
 	resourceType?: string | null;
 	resourceId?: string | null;
 	resourceUrl?: string | null;
@@ -461,6 +475,11 @@ export async function createNotificationForUsers(
 	const sql = getDb();
 
 	const metadata: Record<string, unknown> = {
+		// Chart/structured payload binds against the kind's render template the
+		// same way every event's metadata does (get_content's render tail sets
+		// payload_data = metadata). Spread it FIRST so notification bookkeeping
+		// below can never be clobbered by caller data.
+		...(params.payloadData ?? {}),
 		notification_type: params.type,
 		resource_type: params.resourceType ?? null,
 		resource_id: params.resourceId ?? null,
@@ -506,8 +525,13 @@ export async function createNotificationForUsers(
 					originId: randomUUID(),
 					title: params.title,
 					content: params.body ?? null,
-					payloadType: "text",
-					semanticType: "notification",
+					// Notifications are events: route the render through the event's
+					// own payload columns. `semanticType` (the kind) drives the
+					// event-kind render tail; without one, the default keeps the
+					// notification's plain text body.
+					semanticType: params.semanticType ?? "notification",
+					payloadType: params.payloadType ?? "text",
+					payloadData: params.payloadData,
 					metadata,
 					clientId: params.mcpActivity?.clientId ?? null,
 					runId: params.runId ?? null,

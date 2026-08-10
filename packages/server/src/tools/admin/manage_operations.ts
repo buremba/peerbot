@@ -1399,8 +1399,6 @@ async function handleExecute(
 	}
 	const runId = claim.runId;
 
-	await trackOperationReaction(runId);
-
 	// Device-bound branch: the run is pending; a device worker (chrome
 	// extension, mac bridge, ...) will claim it via /api/workers/poll and
 	// post completion to /api/workers/complete-action. Poll runs.status
@@ -1412,6 +1410,7 @@ async function handleExecute(
 			ctx.organizationId,
 			ctx.abortSignal,
 		);
+		await trackOperationReaction(runId);
 		if (result.status === "completed") {
 			return {
 				action: "execute",
@@ -1446,6 +1445,7 @@ async function handleExecute(
 		env,
 		ctx.abortSignal,
 	);
+	await trackOperationReaction(runId);
 	if (result.status === "completed") {
 		return {
 			action: "execute",

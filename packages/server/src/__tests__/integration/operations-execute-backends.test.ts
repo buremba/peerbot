@@ -402,6 +402,80 @@ describe("operations.execute backend lifecycle", () => {
 		expect(Number(reactions[0]?.run_id)).toBe(result.run_id);
 	});
 
+	it("repairs a failed feedback link without stranding or repeating an inline action", async () => {
+		const sql = getTestDb();
+		await sql.unsafe(`
+			CREATE SEQUENCE operation_reaction_failure_seq;
+			CREATE FUNCTION fail_first_operation_reaction() RETURNS trigger AS $$
+			BEGIN
+				IF NEW.watcher_id = ${behaviorId}
+					AND NEW.tool_name = 'manage_operations'
+					AND nextval('operation_reaction_failure_seq') = 1 THEN
+					RAISE EXCEPTION 'forced operation reaction failure';
+				END IF;
+				RETURN NEW;
+			END;
+			$$ LANGUAGE plpgsql;
+			CREATE TRIGGER fail_first_operation_reaction_trigger
+				BEFORE INSERT ON watcher_reactions
+				FOR EACH ROW EXECUTE FUNCTION fail_first_operation_reaction();
+		`);
+
+		const execute = () =>
+			manageOperations(
+				{
+					action: "execute",
+					connection_id: localConnectionId,
+					operation_key: "echo",
+					input: { value: "repair-feedback" },
+					idempotency_key: "operation-backend-test:repair-feedback",
+				},
+				{} as Env,
+				{ ...ctx, actingWatcherId: behaviorId, actingWindowId: windowId },
+			);
+
+		try {
+			await expect(execute()).rejects.toThrow(
+				"forced operation reaction failure",
+			);
+			const [persisted] = await sql`
+				SELECT id, status, action_output FROM runs
+				WHERE organization_id = ${orgId}
+				  AND action_idempotency_key = 'operation-backend-test:repair-feedback'
+			`;
+			expect(persisted.status).toBe("completed");
+			expect(persisted.action_output).toMatchObject({
+				backend: "local_action",
+				value: "repair-feedback",
+			});
+
+			const replay = (await execute()) as { run_id: number; status: string };
+			expect(replay).toMatchObject({
+				run_id: Number(persisted.id),
+				status: "completed",
+			});
+			const runs = await sql`
+				SELECT id FROM runs
+				WHERE organization_id = ${orgId}
+				  AND action_idempotency_key = 'operation-backend-test:repair-feedback'
+			`;
+			expect(runs).toHaveLength(1);
+			const reactions = await sql`
+				SELECT run_id FROM watcher_reactions
+				WHERE watcher_id = ${behaviorId}
+				  AND window_id = ${windowId}
+				  AND run_id = ${Number(persisted.id)}
+			`;
+			expect(reactions).toHaveLength(1);
+		} finally {
+			await sql.unsafe(`
+				DROP TRIGGER IF EXISTS fail_first_operation_reaction_trigger ON watcher_reactions;
+				DROP FUNCTION IF EXISTS fail_first_operation_reaction();
+				DROP SEQUENCE IF EXISTS operation_reaction_failure_seq;
+			`);
+		}
+	});
+
 	it("concurrent action retries converge and mismatched key reuse fails closed", async () => {
 		const key = "operation-backend-test:concurrent";
 		const execute = (value: string) =>

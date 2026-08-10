@@ -8,6 +8,7 @@
 import { toJsonSafe } from "@lobu/core";
 import * as Sentry from "@sentry/node";
 import type { Context } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import {
 	resolveMaxAccessLevel,
 	SCOPE_CHECK_NOT_APPLICABLE,
@@ -123,13 +124,7 @@ async function withPublicOrg<T>(
 		const result = await handler(organizationId);
 		return c.json(toJsonSafe(result));
 	} catch (error) {
-		if (error instanceof ToolUserError) {
-			return c.json(
-				toolUserErrorBody(error),
-				error.httpStatus as 400 | 403 | 404 | 409 | 422
-			);
-		}
-		return c.json({ error: errorMessage(error) }, 400);
+		return restErrorResponse(c, error);
 	}
 }
 
@@ -148,6 +143,19 @@ function toolUserErrorBody(error: ToolUserError): Record<string, unknown> {
 				}
 			: {}),
 	};
+}
+
+function restErrorResponse(
+	c: Context<{ Bindings: Env }>,
+	error: unknown
+): Response {
+	if (error instanceof ToolUserError) {
+		return c.json(
+			toolUserErrorBody(error),
+			error.httpStatus as ContentfulStatusCode
+		);
+	}
+	return c.json({ error: errorMessage(error) }, 400);
 }
 
 /**
@@ -197,7 +205,7 @@ export async function restGetBehaviors(c: Context<{ Bindings: Env }>) {
 		const result = await getBehavior(params as any, c.env, ctx);
 		return c.json(toJsonSafe(result));
 	} catch (error) {
-		return c.json({ error: errorMessage(error) }, 400);
+		return restErrorResponse(c, error);
 	}
 }
 
@@ -265,7 +273,7 @@ export async function publicRestGetBehaviors(c: Context<{ Bindings: Env }>) {
 export async function restHealth(c: Context<{ Bindings: Env }>) {
 	return c.json({
 		status: "healthy",
-		service: "user-research-mcp",
+		service: "lobu-api",
 		timestamp: new Date().toISOString(),
 		...getRuntimeInfo(c.env),
 	});
@@ -306,12 +314,6 @@ export async function restToolProxy(
 		const result = await executeTool(toolName, args, c.env, authCtx);
 		return c.json(toJsonSafe(result));
 	} catch (error) {
-		if (error instanceof ToolUserError) {
-			return c.json(
-				toolUserErrorBody(error),
-				error.httpStatus as 400 | 403 | 404 | 409 | 422
-			);
-		}
 		if (error instanceof ToolNotRegisteredError) {
 			// Registry/frontend drift — surface to Sentry so the next "Tool not
 			// found" outage doesn't sit silent behind a 400 the page swallows.
@@ -322,7 +324,7 @@ export async function restToolProxy(
 				extra: { tool_name: error.toolName },
 			});
 		}
-		return c.json({ error: errorMessage(error) }, 400);
+		return restErrorResponse(c, error);
 	}
 }
 
@@ -361,7 +363,7 @@ export async function restListTools(c: Context<{ Bindings: Env }>) {
 			})),
 		});
 	} catch (error) {
-		return c.json({ error: errorMessage(error) }, 400);
+		return restErrorResponse(c, error);
 	}
 }
 
@@ -455,7 +457,7 @@ export async function restSearchKnowledge(c: Context<{ Bindings: Env }>) {
 		return c.json(toJsonSafe(result));
 	} catch (error) {
 		logger.error({ error }, "[REST API] Knowledge search error");
-		return c.json({ error: errorMessage(error) }, 400);
+		return restErrorResponse(c, error);
 	}
 }
 
@@ -833,6 +835,6 @@ export async function restUpdateContentClassification(
 		);
 	} catch (error) {
 		logger.error({ error }, "[REST API] Update classification error");
-		return c.json({ error: errorMessage(error) }, 400);
+		return restErrorResponse(c, error);
 	}
 }

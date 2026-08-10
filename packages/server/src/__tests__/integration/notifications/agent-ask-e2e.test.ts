@@ -773,6 +773,18 @@ describe("notify input_schema — agent asks a human", () => {
 				error: /keyword 'contentEncoding' is not supported/i,
 			},
 			{
+				question: "Question with a regex hidden in tuple items",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: {
+							items: [{ pattern: "^(a+)+$" }],
+						},
+					},
+				},
+				error: /keyword 'pattern' is not supported/i,
+			},
+			{
 				question: "Question with an OpenAPI nullable flag",
 				inputSchema: {
 					type: "object",

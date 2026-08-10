@@ -133,7 +133,8 @@ function findUnsupportedKeyword(root: Record<string, unknown>): string | null {
 		if (unsupported) return unsupported;
 		for (const keyword of ["additionalProperties", "items"]) {
 			const child = schema[keyword];
-			if (child !== undefined) stack.push(child);
+			if (Array.isArray(child)) stack.push(...child);
+			else if (child !== undefined) stack.push(child);
 		}
 		if (Array.isArray(schema.anyOf)) stack.push(...schema.anyOf);
 		const properties = schema.properties;
@@ -309,6 +310,9 @@ function checkFormProperty(params: {
 	if (renderSchema.type === "object" || renderSchema.properties !== undefined) {
 		return `input_schema property '${field}' must not contain a nested object`;
 	}
+	if (renderSchema.items !== undefined) {
+		return `input_schema property '${field}' must declare type 'array' when it declares items`;
+	}
 	return renderSchema.type === undefined ||
 		["string", "number", "integer", "boolean"].includes(
 			String(renderSchema.type),
@@ -364,14 +368,6 @@ export function validateAskInputSchema(
 		if (error) return error;
 	}
 
-	const affordance = resolveAskAffordance(schema);
-	if (affordance.kind === "choice") {
-		for (const choice of affordance.choices) {
-			if (!compiled.validate({ [affordance.field]: choice.value })) {
-				return `input_schema choice '${choice.value}' does not satisfy the declared schema`;
-			}
-		}
-	}
 	return null;
 }
 

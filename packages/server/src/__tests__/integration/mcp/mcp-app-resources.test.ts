@@ -60,6 +60,10 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       join(tmpRoot, 'dist-mcp-apps', 'interaction', 'assets', 'app.js'),
       'document.body.dataset.mcpAppAsset = "loaded";'
     );
+    writeFileSync(
+      join(tmpRoot, 'dist-mcp-apps', 'interaction', 'assets', 'app.css'),
+      '[data-mcp-app] { display: block; }'
+    );
     process.env.WEB_DIST_DIR = join(tmpRoot, 'dist');
 
     await cleanupTestDatabase();
@@ -180,6 +184,14 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(assetResponse.headers.get('access-control-allow-origin')).toBe('*');
     expect(assetResponse.headers.get('cross-origin-resource-policy')).toBe('cross-origin');
     expect(await assetResponse.text()).toContain('mcpAppAsset');
+
+    const styleResponse = await get('/mcp-apps/interaction/assets/app.css');
+    expect(styleResponse.status).toBe(200);
+    expect(styleResponse.headers.get('content-type')).toContain('text/css');
+    expect(styleResponse.headers.get('cache-control')).toBe('no-cache');
+    expect(styleResponse.headers.get('access-control-allow-origin')).toBe('*');
+    expect(styleResponse.headers.get('cross-origin-resource-policy')).toBe('cross-origin');
+    expect(await styleResponse.text()).toContain('[data-mcp-app]');
 
     expect((await get('/mcp-apps/interaction/assets/app.txt')).status).toBe(404);
     expect((await get('/mcp-apps/unknown/assets/app.js')).status).toBe(404);

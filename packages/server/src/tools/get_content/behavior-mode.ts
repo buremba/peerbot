@@ -105,23 +105,39 @@ async function queryContentData(
   const sqlSources = normalizedSources
     .filter((source) => source.kind !== 'metric')
     .map(({ name, query }) => ({ name, query }));
+  // Every SQL-backed source is part of the agent-facing knowledge.read payload,
+  // including context:true entity rows and streaming channel context. Bound all
+  // of them when this is a paged read so one large context source cannot turn a
+  // 25-row Behavior read into a six-figure-token model request. Metric sources
+  // are already aggregate outputs and bypass executeDataSources.
+  const boundedSourceNames = new Set(sqlSources.map((source) => source.name));
   const metricSources = normalizedSources.filter(isMetricSource);
 
   const results = await executeDataSources(sqlSources, queryContext, sql, {
-	throwOnError: params.throwOnSourceError,
+    throwOnError: params.throwOnSourceError,
     wrapQuery: page
       ? (scopedQuery, queryParams, sourceName) => {
-          // Bound EVERY event source, not just the cursor-bearing one. All of
-          // them land in `sources` on the response, and the sandbox counts
-          // every SDK result as it crosses the isolate boundary — an unbounded
-          // secondary source blows the output cap no matter what the script
-          // keeps. Only the primary source carries the keyset cursor; the rest
-          // are capped at the same page size and report truncation through
-          // `sources_page`, so a bounded read is never silent.
-          if (!eventSourceNames.has(sourceName)) return scopedQuery;
-          const isCursorSource = sourceName === page.sourceName;
-
+          const isEventSource = eventSourceNames.has(sourceName);
+          const isCursorSource = isEventSource && sourceName === page.sourceName;
           const nextParams = [...queryParams];
+
+          // Context sources do not share the event cursor contract (their id may
+          // be an entity id and they may not expose occurred_at). They still get
+          // the same row budget plus one sentinel so sources_page can state
+          // explicitly when the payload was truncated. Fingerprinting does not
+          // pass page, so skip_if_unchanged still sees the complete source state.
+          if (!isEventSource) {
+            nextParams.push(page.limit + 1);
+            const limitParam = `$${nextParams.length}`;
+            return {
+              // security-allowed: scopedQuery is an internally-built, already-scoped SQL fragment.
+              sql: `SELECT * FROM (${scopedQuery}) AS _watcher_context LIMIT ${limitParam}`,
+              params: nextParams,
+            };
+          }
+
+          // Event sources retain keyset pagination. Only the named primary source
+          // carries a cursor; every event source is still bounded.
           const where: string[] = [
             '_watcher_page.id IS NOT NULL',
             '_watcher_page.occurred_at IS NOT NULL',
@@ -207,14 +223,14 @@ async function queryContentData(
   }
 
   let pageResult: { has_more: boolean; next_cursor?: { occurred_at: string; id: number } } | undefined;
-  // Per-source truncation. Every event source fetches `limit + 1` rows to
-  // detect overflow, so the sentinel row must be trimmed off the secondary
-  // sources too. Only the primary source gets a cursor; the rest report
-  // `has_more` so a caller can tell a truncated window from the whole one.
+  // Per-source truncation. Every SQL-backed source fetches `limit + 1` rows
+  // to detect overflow. Context sources have no event cursor, but sources_page
+  // still reports that they were capped instead of silently injecting the full
+  // result set into the model turn.
   const sourcesPage: Record<string, { returned: number; limit: number; has_more: boolean }> = {};
   if (page) {
-    for (const sourceName of eventSourceNames) {
-      if (sourceName === page.sourceName) continue;
+    for (const sourceName of boundedSourceNames) {
+      if (sourceName === page.sourceName && eventSourceNames.has(sourceName)) continue;
       const rows = results[sourceName] ?? [];
       const hasMore = rows.length > page.limit;
       if (hasMore) results[sourceName] = rows.slice(0, page.limit);
@@ -224,29 +240,36 @@ async function queryContentData(
         has_more: hasMore,
       };
     }
-    const rows = results[page.sourceName] ?? [];
-    const trimmed = rows.slice(0, page.limit);
-    const hasMore = rows.length > page.limit;
-    results[page.sourceName] = trimmed;
-    const last = trimmed[trimmed.length - 1] as Record<string, unknown> | undefined;
-    const lastOccurredAt = last?.occurred_at;
-    const lastId = Number(last?.id);
-    sourcesPage[page.sourceName] = {
-      returned: trimmed.length,
-      limit: page.limit,
-      has_more: hasMore,
-    };
-    pageResult = {
-      has_more: hasMore,
-      ...(hasMore && lastOccurredAt && Number.isFinite(lastId)
-        ? {
-            next_cursor: {
-              occurred_at: new Date(lastOccurredAt as string | Date).toISOString(),
-              id: Math.trunc(lastId),
-            },
-          }
-        : {}),
-    };
+
+    // Only an event source can carry the chronological keyset cursor. Some
+    // Behaviors deliberately name their primary event source something other
+    // than "content"; those sources are still bounded above and report
+    // sources_page.has_more, but no fake cursor row is synthesized.
+    if (eventSourceNames.has(page.sourceName)) {
+      const rows = results[page.sourceName] ?? [];
+      const trimmed = rows.slice(0, page.limit);
+      const hasMore = rows.length > page.limit;
+      results[page.sourceName] = trimmed;
+      const last = trimmed[trimmed.length - 1] as Record<string, unknown> | undefined;
+      const lastOccurredAt = last?.occurred_at;
+      const lastId = Number(last?.id);
+      sourcesPage[page.sourceName] = {
+        returned: trimmed.length,
+        limit: page.limit,
+        has_more: hasMore,
+      };
+      pageResult = {
+        has_more: hasMore,
+        ...(hasMore && lastOccurredAt && Number.isFinite(lastId)
+          ? {
+              next_cursor: {
+                occurred_at: new Date(lastOccurredAt as string | Date).toISOString(),
+                id: Math.trunc(lastId),
+              },
+            }
+          : {}),
+      };
+    }
   }
 
   const seen = new Set<number>();
@@ -657,8 +680,8 @@ export async function handleBehaviorMode(
     },
     extraction_schema: templateExtractionSchema ?? undefined,
     sources: sourcesContent as Record<string, ContentItem[]>,
-    // Per-source page state. Every event source is capped at `limit`, so this
-    // is how a caller tells a fully-read source from a truncated one.
+    // Per-source page state. Every SQL-backed source is capped at `limit`, so
+    // this is how a caller tells a fully-read source from a truncated one.
     sources_page: sourcesPage,
     entities: boundEntities.length > 0 ? boundEntities : undefined,
     classifiers: classifiers.length > 0 ? classifiers : undefined,

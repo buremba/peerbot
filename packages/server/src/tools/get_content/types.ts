@@ -113,10 +113,10 @@ export const GetContentResultSchema = Type.Object({
   extraction_schema: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
   sources: Type.Optional(Type.Record(Type.String(), Type.Array(Type.Unknown()))),
   /**
-   * Per-source page state, keyed by source name. Every event source is capped
-   * at the request's `limit`; this is how a caller distinguishes a fully-read
-   * source from a truncated one. Only the primary source carries a cursor (see
-   * `page.next_cursor`); the rest report `has_more` alone.
+   * Per-source page state, keyed by source name. Every SQL-backed source is
+   * capped at the request's `limit`; this is how a caller distinguishes a
+   * fully-read source from a truncated one. Only the primary event source
+   * carries a cursor (see `page.next_cursor`); the rest report `has_more` alone.
    */
   sources_page: Type.Optional(
     Type.Record(

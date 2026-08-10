@@ -19,6 +19,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import type { Env } from "../../../index";
 import type { AuthContext } from "../../../tools/execute";
 import { executeTool } from "../../../tools/execute";
+import { getPastReactionsSummary } from "../../../utils/watcher-reactions";
 import { initWorkspaceProvider } from "../../../workspace";
 import { getTestDb } from "../../setup/test-db";
 import {
@@ -60,6 +61,9 @@ describe("notify input_schema — agent asks a human", () => {
 	let orgId: string;
 	let humanCtx: AuthContext;
 	let agentCtx: AuthContext;
+	let behaviorCtx: AuthContext;
+	let behaviorId: number;
+	let windowId: number;
 
 	const baseCtx = (
 		userId: string,
@@ -91,6 +95,40 @@ describe("notify input_schema — agent asks a human", () => {
 		await addUserToOrganization(owner.id, org.id, "owner");
 		humanCtx = baseCtx(owner.id, null);
 		agentCtx = baseCtx(owner.id, "asking-agent");
+		const sql = getTestDb();
+		const [behavior] = await sql`
+			WITH next_id AS (SELECT nextval('watchers_id_seq')::integer AS id)
+			INSERT INTO watchers (
+				id, watcher_group_id, organization_id, agent_id, created_by, name, slug
+			)
+			SELECT id, id, ${org.id}, 'asking-agent', ${owner.id},
+				'Ask provenance behavior', 'ask-provenance-behavior'
+			FROM next_id
+			RETURNING id
+		`;
+		behaviorId = Number(behavior.id);
+		const [window] = await sql`
+			INSERT INTO events (
+				organization_id, semantic_type, payload_type, payload_data,
+				metadata, occurred_at, created_at, created_by
+			) VALUES (
+				${org.id}, 'canvas_state', 'json_template', '{}'::jsonb,
+				${sql.json({
+					watcher_id: behaviorId,
+					granularity: "hour",
+					window_start: "2026-08-10T00:00:00.000Z",
+					window_end: "2026-08-10T01:00:00.000Z",
+				})},
+				NOW(), NOW(), ${owner.id}
+			)
+			RETURNING id
+		`;
+		windowId = Number(window.id);
+		behaviorCtx = {
+			...baseCtx(owner.id, null),
+			actingWatcherId: behaviorId,
+			actingWindowId: windowId,
+		};
 	});
 
 	async function send(args: Record<string, unknown>): Promise<SendResult> {
@@ -369,5 +407,226 @@ describe("notify input_schema — agent asks a human", () => {
 			SELECT approval_status FROM runs WHERE id = ${sent.run_id}
 		`;
 		expect(run.approval_status).toBe("pending");
+	});
+
+	it("binds a Behavior ask and its rejection reason back to the firing window", async () => {
+		const sent = (await executeTool(
+			"notify",
+			{
+				action: "send",
+				title: "Review the staged LinkedIn comment",
+				body: "Draft: Durable state makes this workflow dependable.",
+				input_schema: {
+					type: "object",
+					properties: {
+						outcome: {
+							enum: ["posted_unchanged", "posted_edited"],
+						},
+					},
+					required: ["outcome"],
+				},
+				behavior_source: {
+					behavior_id: behaviorId,
+					window_id: windowId,
+				},
+			},
+			TEST_ENV,
+			behaviorCtx,
+		)) as SendResult;
+
+		const sql = getTestDb();
+		const [run] = await sql`
+			SELECT watcher_id, window_id
+			FROM runs WHERE id = ${sent.run_id}
+		`;
+		expect(Number(run.watcher_id)).toBe(behaviorId);
+		expect(Number(run.window_id)).toBe(windowId);
+
+		const [reaction] = await sql`
+			SELECT run_id FROM watcher_reactions
+			WHERE watcher_id = ${behaviorId} AND window_id = ${windowId}
+			ORDER BY id DESC LIMIT 1
+		`;
+		expect(Number(reaction.run_id)).toBe(sent.run_id);
+
+		await executeTool(
+			"manage_operations",
+			{
+				action: "reject",
+				run_id: sent.run_id,
+				reason: "The tone is too promotional for this discussion.",
+			},
+			TEST_ENV,
+			humanCtx,
+		);
+		const summary = await getPastReactionsSummary(behaviorId);
+		expect(summary).toContain("Durable state makes this workflow dependable.");
+		expect(summary).toMatch(/rejected/i);
+		expect(summary).toContain(
+			"The tone is too promotional for this discussion."
+		);
+	});
+
+	it("cannot attach a caller-supplied ask to another organization's Behavior history", async () => {
+		const victimOrg = await createTestOrganization({ name: "ask provenance victim" });
+		const victimOwner = await createTestUser({
+			email: `ask-victim-${Date.now()}@test.com`,
+		});
+		await addUserToOrganization(victimOwner.id, victimOrg.id, "owner");
+		const sql = getTestDb();
+		const [victimBehavior] = await sql`
+			WITH next_id AS (SELECT nextval('watchers_id_seq')::integer AS id)
+			INSERT INTO watchers (
+				id, watcher_group_id, organization_id, agent_id, created_by, name, slug
+			)
+			SELECT id, id, ${victimOrg.id}, 'victim-agent', ${victimOwner.id},
+				'Victim behavior', ${`victim-behavior-${Date.now()}`}
+			FROM next_id
+			RETURNING id
+		`;
+		const victimBehaviorId = Number(victimBehavior.id);
+		const [victimWindow] = await sql`
+			INSERT INTO events (
+				organization_id, semantic_type, payload_type, payload_data,
+				metadata, occurred_at, created_at, created_by
+			) VALUES (
+				${victimOrg.id}, 'canvas_state', 'json_template', '{}'::jsonb,
+				${sql.json({ watcher_id: victimBehaviorId })},
+				NOW(), NOW(), ${victimOwner.id}
+			)
+			RETURNING id
+		`;
+		const victimWindowId = Number(victimWindow.id);
+
+		const sent = await send({
+			title: "Forged cross-org review",
+			body: "This must never enter the victim Behavior prompt.",
+			input_schema: { type: "object" },
+			behavior_source: {
+				behavior_id: victimBehaviorId,
+				window_id: victimWindowId,
+			},
+		});
+		const [run] = await sql`
+			SELECT watcher_id, window_id FROM runs WHERE id = ${sent.run_id}
+		`;
+		expect(run.watcher_id).toBeNull();
+		expect(run.window_id).toBeNull();
+		const linked = await sql`
+			SELECT id FROM watcher_reactions WHERE run_id = ${sent.run_id}
+		`;
+		expect(linked).toHaveLength(0);
+
+		// Historical malformed rows are filtered on read as well: a feedback row
+		// cannot borrow a run or Behavior from a different organization.
+		await sql`
+			INSERT INTO watcher_reactions (
+				organization_id, watcher_id, window_id, reaction_type,
+				tool_name, tool_args, run_id
+			) VALUES (
+				${orgId}, ${victimBehaviorId}, ${victimWindowId},
+				'notification_sent', 'notify',
+				${sql.json({ title: "Forged cross-org review" })}, ${sent.run_id}
+			)
+		`;
+		expect(await getPastReactionsSummary(victimBehaviorId)).toBeUndefined();
+	});
+
+	it("repairs a missing Behavior feedback edge when an idempotent ask retries", async () => {
+		const sql = getTestDb();
+		const suffix = `${process.pid}_${Date.now()}`;
+		const sequenceName = `ask_reaction_fail_seq_${suffix}`;
+		const functionName = `ask_reaction_fail_fn_${suffix}`;
+		const triggerName = `ask_reaction_fail_trigger_${suffix}`;
+		await sql.unsafe(`CREATE SEQUENCE ${sequenceName}`);
+		await sql.unsafe(`
+			CREATE FUNCTION ${functionName}() RETURNS trigger AS $$
+			BEGIN
+				IF nextval('${sequenceName}') = 1 THEN
+					RAISE EXCEPTION 'forced watcher reaction failure';
+				END IF;
+				RETURN NEW;
+			END;
+			$$ LANGUAGE plpgsql
+		`);
+		await sql.unsafe(`
+			CREATE TRIGGER ${triggerName}
+			BEFORE INSERT ON watcher_reactions
+			FOR EACH ROW
+			WHEN (NEW.watcher_id = ${behaviorId} AND NEW.tool_name = 'notify')
+			EXECUTE FUNCTION ${functionName}()
+		`);
+
+		const idempotencyKey = `ask-reaction-repair:${suffix}`;
+		const args = {
+			action: "send",
+			title: "Was the staged LinkedIn comment relevant?",
+			body: "Draft: Durable state makes this workflow dependable.",
+			input_schema: {
+				type: "object",
+				properties: {
+					outcome: { enum: ["posted_unchanged", "posted_edited"] },
+				},
+				required: ["outcome"],
+			},
+			idempotency_key: idempotencyKey,
+		};
+
+		try {
+			await expect(
+				executeTool("notify", args, TEST_ENV, behaviorCtx)
+			).rejects.toThrow(/forced watcher reaction failure/i);
+
+			const notificationsAfterFailure = await sql`
+				SELECT id FROM events
+				WHERE organization_id = ${orgId}
+				  AND metadata->>'_lobu_idempotency_key' = ${idempotencyKey}
+			`;
+			expect(notificationsAfterFailure).toHaveLength(1);
+
+			const retry = (await executeTool(
+				"notify",
+				args,
+				TEST_ENV,
+				behaviorCtx
+			)) as SendResult;
+			expect(retry).toMatchObject({
+				notified_count: 0,
+				event_id: Number(notificationsAfterFailure[0]?.id),
+			});
+			expect(retry.run_id).toBeGreaterThan(0);
+
+			const reactions = await sql`
+				SELECT id FROM watcher_reactions
+				WHERE organization_id = ${orgId}
+				  AND watcher_id = ${behaviorId}
+				  AND window_id = ${windowId}
+				  AND run_id = ${retry.run_id}
+				  AND tool_name = 'notify'
+			`;
+			expect(reactions).toHaveLength(1);
+
+			await executeTool(
+				"manage_operations",
+				{
+					action: "reject",
+					run_id: retry.run_id,
+					reason: "This discussion was not relevant to our product.",
+				},
+				TEST_ENV,
+				humanCtx
+			);
+			const summary = await getPastReactionsSummary(behaviorId);
+			expect(summary).toContain("Was the staged LinkedIn comment relevant?");
+			expect(summary).toContain(
+				"This discussion was not relevant to our product."
+			);
+		} finally {
+			await sql.unsafe(
+				`DROP TRIGGER IF EXISTS ${triggerName} ON watcher_reactions`
+			);
+			await sql.unsafe(`DROP FUNCTION IF EXISTS ${functionName}()`);
+			await sql.unsafe(`DROP SEQUENCE IF EXISTS ${sequenceName}`);
+		}
 	});
 });

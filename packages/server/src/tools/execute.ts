@@ -43,6 +43,12 @@ export interface AuthContext {
   userId: string | null;
   memberRole: string | null;
   agentId: string | null;
+  /** Trusted internal reaction provenance. Never populated from request input. */
+  actingWatcherId?: number | null;
+  /** Trusted internal reaction window. Never populated from request input. */
+  actingWindowId?: number | null;
+  /** Trusted internal reaction run. Never populated from request input. */
+  actingRunId?: number | null;
   requestedAgentId: string | null;
   sourceContext?: ToolSourceContext | null;
   isAuthenticated: boolean;
@@ -384,6 +390,9 @@ export function toToolContext(authCtx: AuthContext): ToolContext {
     userId: authCtx.userId,
     memberRole: authCtx.memberRole,
     agentId: authCtx.agentId,
+    actingWatcherId: authCtx.actingWatcherId ?? null,
+    actingWindowId: authCtx.actingWindowId ?? null,
+    actingRunId: authCtx.actingRunId ?? null,
     sourceContext: authCtx.sourceContext ?? null,
     isAuthenticated: authCtx.isAuthenticated,
     clientId: authCtx.clientId,

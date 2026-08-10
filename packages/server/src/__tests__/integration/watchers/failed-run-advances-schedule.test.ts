@@ -7,6 +7,7 @@ import {
   advanceWatcherSchedule,
   deviceProviderQuotaResetNotBefore,
   parseProviderQuotaResetAt,
+  parseProviderRetryAfter,
   providerQuotaResetNotBefore,
 } from "../../../watchers/schedule-cursor";
 import { getTestDb } from "../../setup/test-db";
@@ -246,19 +247,40 @@ describe("provider quota reset parsing", () => {
     "Gemini returned an error: 429 status code (no body)",
     "429 Too Many Requests",
     "rate limit exceeded, retry shortly",
-    // Gemini's per-minute free-tier 429 reuses OpenAI's billing wording but
-    // names a retry horizon — the horizon is what marks it self-healing.
-    "429 You exceeded your current quota, please check your plan and billing details. Please retry in 26.5s.",
-    // Every spelling of a named horizon, including the quoted header form.
-    "429 insufficient quota; retryDelay: 26s",
-    "429 out of credits (Retry-After: 30)",
-  ])("does not park a self-healing rate limit (%s)", (message) => {
+  ])("leaves an undated self-healing rate limit on normal cadence (%s)", (message) => {
     const now = new Date("2026-08-05T10:00:00.000Z");
 
     expect(
       providerQuotaResetNotBefore(message, "PROVIDER_QUOTA_EXHAUSTED", now)
     ).toBeNull();
     expect(deviceProviderQuotaResetNotBefore(message, now)).toBeNull();
+  });
+
+  it.each([
+    [
+      "429 You exceeded your current quota. Please try again in 25.137s.",
+      "2026-08-05T10:00:26.137Z",
+    ],
+    [
+      "429 insufficient quota; retryDelay: 26s",
+      "2026-08-05T10:00:27.000Z",
+    ],
+    [
+      "429 out of credits (Retry-After: 30)",
+      "2026-08-05T10:00:31.000Z",
+    ],
+    [
+      "429 out of credits (Retry-After: Wed, 05 Aug 2026 10:00:30 GMT)",
+      "2026-08-05T10:00:31.000Z",
+    ],
+  ])("honors an explicit transient retry horizon (%s)", (message, expected) => {
+    const now = new Date("2026-08-05T10:00:00.000Z");
+
+    expect(parseProviderRetryAfter(message, now)?.toISOString()).toBe(expected);
+    expect(
+      providerQuotaResetNotBefore(message, "PROVIDER_QUOTA_EXHAUSTED", now)?.toISOString()
+    ).toBe(expected);
+    expect(deviceProviderQuotaResetNotBefore(message, now)?.toISOString()).toBe(expected);
   });
 
   it("still requires quota classification for balance wording", () => {
@@ -353,6 +375,40 @@ describe("a terminally failed Behavior run advances next_run_at", () => {
     const expectedNotBefore =
       Math.floor(resetAt.getTime() / 1000) * 1000 + 60_000;
     expect(after.getTime()).toBe(expectedNotBefore);
+  });
+
+  it("retries a scheduled transient quota failure before the next cron tick", async () => {
+    const { watcherId, runId } = await createDueWatcherWithDispatchedRun({
+      slug: "retry-transient-provider-limit",
+      messageId: "msg-provider-retry",
+    });
+    const before = Date.now();
+
+    const renderer = new ApiResponseRenderer({
+      broadcast() {},
+    } as unknown as ConstructorParameters<typeof ApiResponseRenderer>[0]);
+    await renderer.handleError(
+      {
+        messageId: "msg-provider-retry",
+        channelId: "api-provider-retry",
+        conversationId: "api-provider-retry",
+        userId: "watcher-test",
+        teamId: "api",
+        timestamp: Date.now(),
+        error: "Provider rate limited this turn.",
+        bookkeepingError:
+          "Rate limit reached for gpt-5.6-luna. Please try again in 25.137s.",
+        errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+      }
+    );
+
+    const sql = getTestDb();
+    const [run] = await sql`SELECT status FROM runs WHERE id = ${runId}`;
+    expect(run.status).toBe("failed");
+
+    const after = await cursorOf(watcherId);
+    expect(after.getTime()).toBeGreaterThanOrEqual(before + 26_000);
+    expect(after.getTime()).toBeLessThan(before + 60_000);
   });
 
   it("advances the cursor when the agent never calls complete_window", async () => {

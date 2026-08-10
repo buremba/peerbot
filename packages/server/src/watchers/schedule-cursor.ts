@@ -4,6 +4,8 @@ import { nextRunAt } from "../utils/cron";
 import logger from "../utils/logger";
 
 const PROVIDER_RESET_GRACE_MS = 60_000;
+const PROVIDER_RETRY_GRACE_MS = 1_000;
+const PROVIDER_RETRY_MAX_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Extract the reset timestamp from provider quota errors such as:
@@ -90,6 +92,74 @@ export function parseProviderQuotaResetAt(
 }
 
 /**
+ * Extract an explicit short retry horizon from provider errors such as:
+ *
+ * - "Please try again in 25.137s"
+ * - "retryDelay: 26s"
+ * - "Retry-After: 30"
+ * - "Retry-After: Wed, 05 Aug 2026 10:00:30 GMT"
+ *
+ * Retry-After accepts either delta-seconds or an HTTP date. The one-second
+ * grace avoids retrying exactly on the provider boundary. Ignore implausibly
+ * long values: those belong to quota-reset / balance handling instead.
+ */
+export function parseProviderRetryAfter(
+	message: string,
+	now: Date = new Date()
+): Date | null {
+	const unitMatch =
+		message.match(
+			/\b(?:please\s+)?(?:try\s+again\s+in|retry(?:[-_ ]?(?:in|after|delay))?\s*:?)\s*(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|secs?|seconds?|m|mins?|minutes?)\b/i
+		) ?? null;
+	const headerMatch =
+		unitMatch == null
+			? message.match(/\bretry[-_ ]?after\s*:\s*(\d+(?:\.\d+)?)\b/i)
+			: null;
+	const headerDateMatch =
+		unitMatch == null && headerMatch == null
+			? message.match(
+					/\bretry[-_ ]?after\s*:\s*((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+\d{2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+GMT)\b/i
+				)
+			: null;
+	const match = unitMatch ?? headerMatch;
+	if (!match && !headerDateMatch) return null;
+
+	if (headerDateMatch) {
+		const rawBoundary = headerDateMatch[1].replace(/\s+/g, " ");
+		const boundaryMs = Date.parse(rawBoundary);
+		const delayMs = boundaryMs - now.getTime();
+		if (
+			!Number.isFinite(boundaryMs) ||
+			new Date(boundaryMs).toUTCString().toLowerCase() !==
+				rawBoundary.toLowerCase() ||
+			delayMs <= 0 ||
+			delayMs > PROVIDER_RETRY_MAX_MS
+		) {
+			return null;
+		}
+		return new Date(boundaryMs + PROVIDER_RETRY_GRACE_MS);
+	}
+	if (!match) return null;
+
+	const rawValue = Number(match[1]);
+	if (!Number.isFinite(rawValue) || rawValue <= 0) return null;
+
+	const unit = unitMatch?.[2]?.toLowerCase();
+	let delayMs: number;
+	if (unit === "ms" || unit?.startsWith("millisecond")) {
+		delayMs = rawValue;
+	} else if (unit === "m" || unit?.startsWith("min")) {
+		delayMs = rawValue * 60_000;
+	} else {
+		delayMs = rawValue * 1_000;
+	}
+	if (!Number.isFinite(delayMs) || delayMs > PROVIDER_RETRY_MAX_MS) {
+		return null;
+	}
+	return new Date(now.getTime() + delayMs + PROVIDER_RETRY_GRACE_MS);
+}
+
+/**
  * How long a depleted balance parks a schedule.
  *
  * A depleted balance is not a rate limit: it does not tick back on a timer, so
@@ -150,6 +220,7 @@ export function providerQuotaResetNotBefore(
 	}
 	return (
 		parseProviderQuotaResetAt(message, now) ??
+		parseProviderRetryAfter(message, now) ??
 		balanceExhaustedNotBefore(message, now)
 	);
 }
@@ -176,6 +247,7 @@ export function deviceProviderQuotaResetNotBefore(
 	if (!hasQuotaEvidence) return null;
 	return (
 		parseProviderQuotaResetAt(message, now) ??
+		parseProviderRetryAfter(message, now) ??
 		balanceExhaustedNotBefore(message, now)
 	);
 }
@@ -183,7 +255,8 @@ export function deviceProviderQuotaResetNotBefore(
 /**
  * Move a watcher's `next_run_at` forward without shortening its current park.
  *
- * The target is `nextRunAt(schedule, now)` unless the caller supplies a later
+ * The target is `nextRunAt(schedule, now)` unless a scheduled failure supplies
+ * an earlier transient retry boundary or any caller supplies a later
  * `notBefore` boundary. The write never moves an existing cursor backward, so
  * overlapping completions cannot erase a quota park.
  * (Basing it on `max(now, next_run_at)` instead compounded the schedule: each
@@ -211,7 +284,8 @@ export function deviceProviderQuotaResetNotBefore(
 export async function advanceWatcherSchedule(
 	sql: DbClient,
 	watcherId: number | null | undefined,
-	notBefore?: Date | null
+	notBefore?: Date | null,
+	allowBeforeNextTick = false
 ): Promise<void> {
 	if (watcherId == null) return;
 	const rows = await sql`
@@ -247,7 +321,7 @@ export async function advanceWatcherSchedule(
 	const target =
 		typeof notBeforeMs === "number" &&
 		Number.isFinite(notBeforeMs) &&
-		notBeforeMs > new Date(nextTick).getTime()
+		(allowBeforeNextTick || notBeforeMs > new Date(nextTick).getTime())
 			? new Date(notBeforeMs).toISOString()
 			: nextTick;
 
@@ -273,5 +347,12 @@ export async function advanceScheduleAfterTerminalFailure(
 	notBefore?: Date | null
 ): Promise<void> {
 	if (dispatchSource === "event" && notBefore == null) return;
-	await advanceWatcherSchedule(sql, watcherId, notBefore);
+	const scheduledDispatch =
+		dispatchSource == null || dispatchSource === "scheduled";
+	await advanceWatcherSchedule(
+		sql,
+		watcherId,
+		notBefore,
+		scheduledDispatch && notBefore != null
+	);
 }

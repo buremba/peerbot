@@ -161,6 +161,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       connectDomains: [],
       resourceDomains: [resourceOrigin],
       frameDomains: [],
+      baseUriDomains: [resourceOrigin],
     });
     expect(content?._meta?.ui?.prefersBorder).toBe(true);
     expect(content?._meta?.ui?.domain).toBeUndefined();
@@ -238,6 +239,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       connectDomains: [],
       resourceDomains: [resourceOrigin],
       frameDomains: [],
+      baseUriDomains: [resourceOrigin],
     });
     expect(resource._meta?.ui?.prefersBorder).toBe(true);
     expect(resource._meta?.ui?.domain).toBeUndefined();

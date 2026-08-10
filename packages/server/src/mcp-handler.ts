@@ -262,6 +262,7 @@ function mcpAppUiMeta(
     connectDomains: string[];
     resourceDomains: string[];
     frameDomains: string[];
+    baseUriDomains: string[];
   };
   prefersBorder: boolean;
 } {
@@ -272,6 +273,7 @@ function mcpAppUiMeta(
     csp: {
       ...app.csp,
       resourceDomains: [...new Set([...app.csp.resourceDomains, publicOrigin])],
+      baseUriDomains: [publicOrigin],
     },
     prefersBorder: app.prefersBorder,
   };

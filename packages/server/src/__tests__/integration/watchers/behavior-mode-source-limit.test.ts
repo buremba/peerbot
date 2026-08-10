@@ -1,5 +1,6 @@
 /**
- * Behavior-mode `limit` must bound EVERY event source, not just the primary one.
+ * Behavior-mode `limit` must bound every SQL-backed source, not just the
+ * primary event source.
  *
  * `queryContentData` builds its page descriptor with a hardcoded
  * `sourceName: 'content'`, and `wrapQuery` used to apply the LIMIT only when
@@ -13,9 +14,9 @@
  * the output cap before the script could filter anything — `limit: 1` and
  * `limit: 5` failed identically.
  *
- * The guard: seed more rows than the limit into two distinct feeds, ask for
- * fewer, and require BOTH sources to be capped and to report their truncation
- * through `sources_page`.
+ * The guards cover both failure classes: secondary event sources and
+ * context-only SQL sources must be capped and report their truncation through
+ * `sources_page`.
  */
 
 import { beforeAll, describe, expect, it } from "vitest";
@@ -36,7 +37,7 @@ const ROWS_PER_FEED = 3;
 /** What the caller asks for. Below ROWS_PER_FEED on purpose. */
 const PAGE_LIMIT = 2;
 
-describe("behavior-mode limit bounds every event source", () => {
+describe("behavior-mode limit bounds every SQL-backed source", () => {
 	let owner: TestApiClient;
 	let orgId: string;
 	let agentId: string;
@@ -148,6 +149,51 @@ describe("behavior-mode limit bounds every event source", () => {
 			has_more: true,
 		});
 		expect(result.sources_page?.content).toEqual({
+			returned: PAGE_LIMIT,
+			limit: PAGE_LIMIT,
+			has_more: true,
+		});
+	});
+
+	it("caps context:true SQL sources and reports truncation", async () => {
+		const created = (await owner.behaviors.create({
+			entity_id: entityId,
+			slug: "context-source-limit",
+			name: "Context Source Limit",
+			prompt: "Summarize {{content}} with {{context_rows}}.",
+			agent_id: agentId,
+			sources: [
+				{ name: "content", query: `@feed:${primaryFeedId}` },
+				{
+					name: "context_rows",
+					query: "SELECT id, name, metadata FROM entities WHERE deleted_at IS NULL ORDER BY updated_at DESC",
+					context: true,
+				},
+			],
+		})) as { behavior_id: string };
+
+		// Add enough context entities to exceed PAGE_LIMIT. These ids are entity
+		// ids, not event ids — the exact reason context:true bypasses event paging.
+		for (let i = 0; i < ROWS_PER_FEED; i++) {
+			await createTestEntity({
+				name: `Context Entity ${i}`,
+				entity_type: "company",
+				organization_id: orgId,
+			});
+		}
+
+		const result = (await owner.knowledge.read({
+			behavior_id: created.behavior_id,
+			since: "today",
+			until: "today",
+			limit: PAGE_LIMIT,
+		})) as {
+			sources: Record<string, unknown[]>;
+			sources_page?: Record<string, { returned: number; limit: number; has_more: boolean }>;
+		};
+
+		expect(result.sources.context_rows).toHaveLength(PAGE_LIMIT);
+		expect(result.sources_page?.context_rows).toEqual({
 			returned: PAGE_LIMIT,
 			limit: PAGE_LIMIT,
 			has_more: true,

@@ -84,13 +84,14 @@ function clientWithRows(options: {
     metadata: typeof draftMetadata;
   }>;
   chrome?: Array<{ id: number; slug?: string; device_online?: boolean }>;
-  operationError?: Error;
+  operationSequence?: Array<Error | Record<string, unknown>>;
   reviewError?: Error;
 }) {
   const queries: string[] = [];
   const notifications: Record<string, unknown>[] = [];
   const operations: Record<string, unknown>[] = [];
   const operationResults = new Map<string, Record<string, unknown>>();
+  let operationCall = 0;
   const logs: string[] = [];
   let reviewError = options.reviewError;
   const client = {
@@ -132,15 +133,27 @@ function clientWithRows(options: {
     },
     operations: {
       execute: async (input: Record<string, unknown>) => {
-        if (options.operationError) throw options.operationError;
         const idempotencyKey = input.idempotency_key;
+        let result: Record<string, unknown> | undefined;
         if (typeof idempotencyKey === "string") {
-          const prior = operationResults.get(idempotencyKey);
-          if (prior) return prior;
+          result = operationResults.get(idempotencyKey);
         }
-        operations.push(input);
-        const result = { status: "completed", output: { prepared: true } };
-        if (typeof idempotencyKey === "string") {
+        if (!result) {
+          operations.push(input);
+          result = { status: "completed", output: { prepared: true } };
+          if (typeof idempotencyKey === "string") {
+            operationResults.set(idempotencyKey, result);
+          }
+        }
+        const sequencedResult =
+          options.operationSequence?.[
+            Math.min(operationCall, options.operationSequence.length - 1)
+          ];
+        operationCall += 1;
+        if (sequencedResult instanceof Error) throw sequencedResult;
+        if (sequencedResult) {
+          result = sequencedResult;
+        } else if (typeof idempotencyKey === "string") {
           operationResults.set(idempotencyKey, result);
         }
         return result;
@@ -272,7 +285,7 @@ describe("social interest radar reaction", () => {
     expect(fixture.logs.join("\n")).toMatch(/permalink|feed URL/i);
   });
 
-  it("still delivers the signal digest when browser staging throws", async () => {
+  it("still delivers the signal digest when browser staging reaches a terminal failure", async () => {
     const fixture = clientWithRows({
       signals: [{ id: 501, author_name: "Ada", metadata: signalMetadata }],
       drafts: [
@@ -285,7 +298,9 @@ describe("social interest radar reaction", () => {
         },
       ],
       chrome: [{ id: 432 }],
-      operationError: new Error("idempotency conflict"),
+      operationSequence: [
+        { status: "failed", error_message: "browser handoff failed" },
+      ],
     });
 
     await runReaction(context(), fixture.client);
@@ -295,7 +310,46 @@ describe("social interest radar reaction", () => {
     expect(String(fixture.notifications[0]?.body)).toContain(
       "LinkedIn draft not staged"
     );
-    expect(fixture.logs.join("\n")).toContain("staging threw");
+    expect(fixture.logs.join("\n")).toContain("Could not stage");
+  });
+
+  it("retries a persisted LinkedIn handoff until it completes before creating the review", async () => {
+    const fixture = clientWithRows({
+      signals: [{ id: 501, author_name: "Ada", metadata: signalMetadata }],
+      drafts: [
+        {
+          id: 601,
+          payload_text: "Draft",
+          source_url:
+            "https://www.linkedin.com/feed/update/urn:li:activity:123",
+          metadata: draftMetadata,
+        },
+      ],
+      chrome: [{ id: 432 }],
+      operationSequence: [
+        new Error("reaction tracking temporarily unavailable"),
+        { status: "in_progress" },
+        { status: "completed", output: { prepared: true } },
+      ],
+    });
+
+    await expect(runReaction(context(), fixture.client)).rejects.toThrow(
+      "reaction tracking temporarily unavailable"
+    );
+    await expect(runReaction(context(), fixture.client)).rejects.toThrow(
+      "still in progress"
+    );
+    expect(fixture.operations).toHaveLength(1);
+    expect(fixture.notifications).toHaveLength(0);
+
+    await runReaction(context(), fixture.client);
+
+    expect(fixture.operations).toHaveLength(1);
+    expect(fixture.notifications).toHaveLength(1);
+    expect(fixture.notifications[0]).toMatchObject({
+      title: "Review LinkedIn comment for Ada",
+      input_schema: { required: ["outcome"] },
+    });
   });
 
   it("retries review creation after staging instead of completing without an answerable review", async () => {

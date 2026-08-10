@@ -362,6 +362,13 @@ export default async (
         behavior_source: behaviorSource,
       });
     } catch (error) {
+      // A thrown execute call may have durably created the idempotent device
+      // run before an internal bookkeeping step failed. Retrying is the only
+      // safe way to distinguish that case from a handoff that never started;
+      // a terminal device failure is returned as a status below.
+      if (platform === "linkedin") {
+        throw error;
+      }
       client.log(
         "Social draft staging threw; continuing with the signal digest.",
         {
@@ -373,6 +380,11 @@ export default async (
         `${draft.metadata.platform === "linkedin" ? "LinkedIn" : "Social"} draft not staged: the browser handoff errored.`
       );
       continue;
+    }
+    if (result.status === "in_progress") {
+      throw new Error(
+        `Social draft staging is still in progress for saved draft ${draft.id}.`
+      );
     }
     if (result.status !== "completed") {
       client.log(

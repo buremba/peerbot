@@ -515,7 +515,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(queryBody.result?.structuredContent?.sql).toBe('SELECT 1 AS row_number');
     expect(queryBody.result?.structuredContent?.rows).toEqual([{ row_number: 1 }]);
 
-    const restore = async (hostConversationId: string) => {
+    const restore = async (hostConversationId: string, toolName = 'query_sql') => {
       const response = await post(`/mcp/${org.slug}`, {
         body: {
           jsonrpc: '2.0',
@@ -523,7 +523,10 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
           method: 'tools/call',
           params: {
             name: 'restore_lobu_app_result',
-            arguments: { tool_call_id: 'originating-call-77' },
+            arguments: {
+              tool_call_id: 'originating-call-77',
+              tool_name: toolName,
+            },
             _meta: { 'openai/session': hostConversationId },
           },
         },
@@ -537,6 +540,10 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       found: false,
       view_state: {},
     });
+    expect(await restore(conversationId, 'run_sdk')).toEqual({
+      found: false,
+      view_state: {},
+    });
     const restored = await restore(conversationId);
     expect(restored).toEqual({
       found: true,
@@ -545,24 +552,29 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       view_state: {},
     });
 
-    const saveResponse = await post(`/mcp/${org.slug}`, {
-      body: {
-        jsonrpc: '2.0',
-        id: 'save-state-77',
-        method: 'tools/call',
-        params: {
-          name: 'save_lobu_app_state',
-          arguments: {
-            tool_call_id: 'originating-call-77',
-            view_state: { 'table.sql.page': 2, nested: { dropped: true } },
+    const saveState = async (toolName: string) => {
+      const response = await post(`/mcp/${org.slug}`, {
+        body: {
+          jsonrpc: '2.0',
+          id: `save-state-77-${toolName}`,
+          method: 'tools/call',
+          params: {
+            name: 'save_lobu_app_state',
+            arguments: {
+              tool_call_id: 'originating-call-77',
+              tool_name: toolName,
+              view_state: { 'table.sql.page': 2, nested: { dropped: true } },
+            },
+            _meta: { 'openai/session': conversationId },
           },
-          _meta: { 'openai/session': conversationId },
         },
-      },
-      headers: { 'mcp-session-id': sessionId },
-      token,
-    });
-    expect((await saveResponse.json()).result?.structuredContent).toEqual({ saved: true });
+        headers: { 'mcp-session-id': sessionId },
+        token,
+      });
+      return (await response.json()).result?.structuredContent;
+    };
+    expect(await saveState('run_sdk')).toEqual({ saved: false });
+    expect(await saveState('query_sql')).toEqual({ saved: true });
     expect((await restore(conversationId))?.view_state).toEqual({ 'table.sql.page': 2 });
 
     const [snapshot] = await getDb()<{

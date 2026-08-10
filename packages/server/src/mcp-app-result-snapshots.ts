@@ -13,6 +13,7 @@ const MCP_APP_RESULT_MAX_BYTES = 512 * 1024;
 const MCP_APP_RESULT_RETENTION_DAYS = 30;
 const MCP_APP_RESULT_CONVERSATION_CAP = 50;
 const TOOL_CALL_ID_MAX_LENGTH = 512;
+const TOOL_NAME_MAX_LENGTH = 120;
 const VIEW_STATE_MAX_KEYS = 100;
 const VIEW_STATE_KEY_MAX_LENGTH = 120;
 const VIEW_STATE_STRING_MAX_LENGTH = 500;
@@ -173,7 +174,12 @@ export async function storeMcpAppResultSnapshot(args: {
 	data: UnknownRecord;
 }): Promise<boolean> {
 	const identity = snapshotIdentity(args.ctx, args.toolCallId);
-	if (!identity || !args.toolName || args.toolName.length > 120) return false;
+	if (
+		!identity ||
+		!args.toolName ||
+		args.toolName.length > TOOL_NAME_MAX_LENGTH
+	)
+		return false;
 	const data = displaySafeMcpAppResult(args.data);
 	if (!isRecord(data)) return false;
 	const serialized = serializeSnapshot({
@@ -231,6 +237,9 @@ export const RestoreMcpAppResultSchema = Type.Object({
 		Type.String({ minLength: 1, maxLength: TOOL_CALL_ID_MAX_LENGTH }),
 		Type.Number(),
 	]),
+	tool_name: Type.Optional(
+		Type.String({ minLength: 1, maxLength: TOOL_NAME_MAX_LENGTH }),
+	),
 });
 
 export const RestoreMcpAppResultOutputSchema = Type.Object({
@@ -244,7 +253,7 @@ export const RestoreMcpAppResultOutputSchema = Type.Object({
 });
 
 async function restoreMcpAppResultImpl(
-	args: { tool_call_id: string | number },
+	args: { tool_call_id: string | number; tool_name?: string },
 	_env: Env,
 	ctx: ToolContext,
 ) {
@@ -262,8 +271,10 @@ async function restoreMcpAppResultImpl(
 			AND expires_at > now()
 	`;
 	if (!row) return { found: false, view_state: {} };
+	if (args.tool_name && row.tool_name !== args.tool_name)
+		return { found: false, view_state: {} };
 	const snapshot = parseSnapshot(row.body);
-	if (!snapshot) {
+	if (!snapshot || snapshot.toolName !== row.tool_name) {
 		logger.warn(
 			{ toolName: row.tool_name },
 			"Discarded unreadable MCP App result snapshot",
@@ -289,13 +300,20 @@ export const SaveMcpAppStateSchema = Type.Object({
 		Type.String({ minLength: 1, maxLength: TOOL_CALL_ID_MAX_LENGTH }),
 		Type.Number(),
 	]),
+	tool_name: Type.Optional(
+		Type.String({ minLength: 1, maxLength: TOOL_NAME_MAX_LENGTH }),
+	),
 	view_state: Type.Record(Type.String(), Type.Unknown()),
 });
 
 export const SaveMcpAppStateOutputSchema = Type.Object({ saved: Type.Boolean() });
 
 async function saveMcpAppStateImpl(
-	args: { tool_call_id: string | number; view_state: UnknownRecord },
+	args: {
+		tool_call_id: string | number;
+		tool_name?: string;
+		view_state: UnknownRecord;
+	},
 	_env: Env,
 	ctx: ToolContext,
 ) {
@@ -316,8 +334,11 @@ async function saveMcpAppStateImpl(
 			FOR UPDATE
 		`;
 		if (!row) return { saved: false };
+		if (args.tool_name && row.tool_name !== args.tool_name)
+			return { saved: false };
 		const snapshot = parseSnapshot(row.body);
-		if (!snapshot) return { saved: false };
+		if (!snapshot || snapshot.toolName !== row.tool_name)
+			return { saved: false };
 		const serialized = serializeSnapshot({ ...snapshot, viewState });
 		if (!serialized) return { saved: false };
 		await tx`

@@ -266,6 +266,8 @@ function mcpAppUiMeta(
   prefersBorder: boolean;
 } {
   const publicOrigin = resolvePublicOrigin(authCtx.requestUrl);
+  // This is an asset origin only. Keep it in CSP resourceDomains; ui.domain
+  // requests a dedicated host sandbox origin and must not be populated here.
   return {
     csp: {
       ...app.csp,

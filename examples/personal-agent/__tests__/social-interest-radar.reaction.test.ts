@@ -85,12 +85,14 @@ function clientWithRows(options: {
   }>;
   chrome?: Array<{ id: number; slug?: string; device_online?: boolean }>;
   operationError?: Error;
+  reviewError?: Error;
 }) {
   const queries: string[] = [];
   const notifications: Record<string, unknown>[] = [];
   const operations: Record<string, unknown>[] = [];
   const operationResults = new Map<string, Record<string, unknown>>();
   const logs: string[] = [];
+  let reviewError = options.reviewError;
   const client = {
     query: async (sql: string) => {
       queries.push(sql);
@@ -114,6 +116,11 @@ function clientWithRows(options: {
     },
     notifications: {
       send: async (input: Record<string, unknown>) => {
+        if (input.input_schema && reviewError) {
+          const error = reviewError;
+          reviewError = undefined;
+          throw error;
+        }
         notifications.push(input);
         return {
           notified_count: 1,
@@ -289,6 +296,42 @@ describe("social interest radar reaction", () => {
       "LinkedIn draft not staged"
     );
     expect(fixture.logs.join("\n")).toContain("staging threw");
+  });
+
+  it("retries review creation after staging instead of completing without an answerable review", async () => {
+    const fixture = clientWithRows({
+      signals: [{ id: 501, author_name: "Ada", metadata: signalMetadata }],
+      drafts: [
+        {
+          id: 601,
+          payload_text: "Draft",
+          source_url:
+            "https://www.linkedin.com/feed/update/urn:li:activity:123",
+          metadata: draftMetadata,
+        },
+      ],
+      chrome: [{ id: 432 }],
+      reviewError: new Error("notification service unavailable"),
+    });
+
+    await expect(runReaction(context(), fixture.client)).rejects.toThrow(
+      "notification service unavailable"
+    );
+    expect(fixture.operations).toHaveLength(1);
+    expect(fixture.notifications).toHaveLength(0);
+
+    await runReaction(context(), fixture.client);
+
+    expect(fixture.operations).toHaveLength(1);
+    expect(fixture.notifications).toHaveLength(1);
+    expect(fixture.notifications[0]).toMatchObject({
+      title: "Review LinkedIn comment for Ada",
+      idempotency_key: "social-radar:review:601",
+      input_schema: {
+        type: "object",
+        required: ["outcome"],
+      },
+    });
   });
 
   it("names the author from the event column, not from a restated metadata copy", async () => {

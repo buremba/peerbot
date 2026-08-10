@@ -306,41 +306,42 @@ export default async (
   };
   const reviewedSourceEventIds = new Set<number>();
   for (const draft of deliveredDrafts) {
-    try {
-      const connectionId = Number(draft.metadata.source_connection_id);
-      const body = draft.payload_text?.trim();
-      const sourceUrl = draft.source_url?.trim();
-      const platform = draft.metadata.platform;
-      if (
-        !Number.isSafeInteger(connectionId) ||
-        connectionId <= 0 ||
-        !body ||
-        !sourceUrl ||
-        (platform !== "x" && platform !== "linkedin")
-      ) {
-        client.log(
-          "Saved social draft is missing a valid source connection, URL, or body.",
-          {
-            draft_event_id: draft.id,
-          }
-        );
-        deliveryNotes.push(
-          "Draft not staged: its saved handoff data is incomplete."
-        );
-        continue;
-      }
-      if (platform === "linkedin" && !isReviewableLinkedInPostUrl(sourceUrl)) {
-        client.log(
-          "Saved LinkedIn draft has only the generic feed URL; a durable post permalink is required before staging.",
-          { draft_event_id: draft.id, source_url: sourceUrl }
-        );
-        deliveryNotes.push(
-          "LinkedIn draft not staged: the post did not expose a durable link."
-        );
-        continue;
-      }
+    const connectionId = Number(draft.metadata.source_connection_id);
+    const body = draft.payload_text?.trim();
+    const sourceUrl = draft.source_url?.trim();
+    const platform = draft.metadata.platform;
+    if (
+      !Number.isSafeInteger(connectionId) ||
+      connectionId <= 0 ||
+      !body ||
+      !sourceUrl ||
+      (platform !== "x" && platform !== "linkedin")
+    ) {
+      client.log(
+        "Saved social draft is missing a valid source connection, URL, or body.",
+        {
+          draft_event_id: draft.id,
+        }
+      );
+      deliveryNotes.push(
+        "Draft not staged: its saved handoff data is incomplete."
+      );
+      continue;
+    }
+    if (platform === "linkedin" && !isReviewableLinkedInPostUrl(sourceUrl)) {
+      client.log(
+        "Saved LinkedIn draft has only the generic feed URL; a durable post permalink is required before staging.",
+        { draft_event_id: draft.id, source_url: sourceUrl }
+      );
+      deliveryNotes.push(
+        "LinkedIn draft not staged: the post did not expose a durable link."
+      );
+      continue;
+    }
 
-      const result = await client.operations.execute({
+    let result: Awaited<ReturnType<ReactionClient["operations"]["execute"]>>;
+    try {
+      result = await client.operations.execute({
         connection_id: connectionId,
         operation_key: platform === "x" ? "prepare_reply" : "prepare_comment",
         idempotency_key: `social-radar:draft:${draft.id}`,
@@ -360,51 +361,6 @@ export default async (
               },
         behavior_source: behaviorSource,
       });
-      if (result.status !== "completed") {
-        client.log(
-          "Could not stage the saved social draft in the interactive browser.",
-          {
-            draft_event_id: draft.id,
-            status: result.status,
-            error: result.error_message,
-          }
-        );
-        deliveryNotes.push(
-          `${platform === "linkedin" ? "LinkedIn" : "X"} draft not staged: the browser handoff failed.`
-        );
-        continue;
-      }
-
-      if (platform === "linkedin") {
-        const sourceEventId = Number(draft.metadata.source_event_id);
-        const matchingSignal = deliveredSignals.find(
-          (signal) => Number(signal.metadata.source_event_id) === sourceEventId
-        );
-        const author =
-          draft.author_name?.trim() ||
-          matchingSignal?.author_name?.trim() ||
-          "this post";
-        const reviewBody = notificationBody([
-          "Review the staged comment in LinkedIn. Record what you posted, or use Reject and explain why it was not relevant.",
-          "",
-          `Why it was suggested: ${draft.metadata.why ?? "Relevant social signal"}`,
-          "",
-          `Draft: ${body}`,
-          "",
-          `Post: ${sourceUrl}`,
-        ]);
-        await client.notifications.send({
-          title: `Review LinkedIn comment for ${author}`,
-          body: reviewBody,
-          recipients: "admins",
-          input_schema: LINKEDIN_REVIEW_SCHEMA,
-          idempotency_key: `social-radar:review:${draft.id}`,
-          behavior_source: behaviorSource,
-        });
-        if (Number.isSafeInteger(sourceEventId) && sourceEventId > 0) {
-          reviewedSourceEventIds.add(sourceEventId);
-        }
-      }
     } catch (error) {
       client.log(
         "Social draft staging threw; continuing with the signal digest.",
@@ -416,6 +372,55 @@ export default async (
       deliveryNotes.push(
         `${draft.metadata.platform === "linkedin" ? "LinkedIn" : "Social"} draft not staged: the browser handoff errored.`
       );
+      continue;
+    }
+    if (result.status !== "completed") {
+      client.log(
+        "Could not stage the saved social draft in the interactive browser.",
+        {
+          draft_event_id: draft.id,
+          status: result.status,
+          error: result.error_message,
+        }
+      );
+      deliveryNotes.push(
+        `${platform === "linkedin" ? "LinkedIn" : "X"} draft not staged: the browser handoff failed.`
+      );
+      continue;
+    }
+
+    if (platform === "linkedin") {
+      const sourceEventId = Number(draft.metadata.source_event_id);
+      const matchingSignal = deliveredSignals.find(
+        (signal) => Number(signal.metadata.source_event_id) === sourceEventId
+      );
+      const author =
+        draft.author_name?.trim() ||
+        matchingSignal?.author_name?.trim() ||
+        "this post";
+      const reviewBody = notificationBody([
+        "Review the staged comment in LinkedIn. Record what you posted, or use Reject and explain why it was not relevant.",
+        "",
+        `Why it was suggested: ${draft.metadata.why ?? "Relevant social signal"}`,
+        "",
+        `Draft: ${body}`,
+        "",
+        `Post: ${sourceUrl}`,
+      ]);
+      // Once staging succeeds, review creation is part of the durable contract.
+      // Let a transient send failure retry the reaction; both calls are
+      // idempotent, so the browser handoff will not be duplicated.
+      await client.notifications.send({
+        title: `Review LinkedIn comment for ${author}`,
+        body: reviewBody,
+        recipients: "admins",
+        input_schema: LINKEDIN_REVIEW_SCHEMA,
+        idempotency_key: `social-radar:review:${draft.id}`,
+        behavior_source: behaviorSource,
+      });
+      if (Number.isSafeInteger(sourceEventId) && sourceEventId > 0) {
+        reviewedSourceEventIds.add(sourceEventId);
+      }
     }
   }
 

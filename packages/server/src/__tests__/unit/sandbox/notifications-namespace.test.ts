@@ -12,6 +12,11 @@ import type { ToolContext } from "../../../tools/registry";
 const listCalls: Array<Record<string, unknown>> = [];
 const markCalls: Array<{ organizationId: string; userId: string; id: number }> =
 	[];
+const notifyCalls: Array<{
+	args: Record<string, unknown>;
+	env: Env;
+	ctx: ToolContext;
+}> = [];
 let listResult: {
 	notifications: Array<Record<string, unknown>>;
 	nextCursor: number | null;
@@ -34,7 +39,19 @@ mock.module("../../../notifications/service", () => ({
 }));
 
 mock.module("../../../tools/admin/notify", () => ({
-	notify: async () => ({ notified_count: 0 }),
+	notify: async (
+		args: Record<string, unknown>,
+		notifyEnv: Env,
+		notifyCtx: ToolContext,
+	) => {
+		notifyCalls.push({ args, env: notifyEnv, ctx: notifyCtx });
+		return {
+			notified_count: 1,
+			event_id: 41,
+			url: "/atlas/activity?event=41",
+			run_id: 42,
+		};
+	},
 }));
 
 const env = { ENVIRONMENT: "test" } as Env;
@@ -52,6 +69,39 @@ beforeAll(async () => {
 });
 
 describe("notifications namespace — list/markRead", () => {
+	it("send forwards the question schema and returns its durable handles", async () => {
+		notifyCalls.length = 0;
+		const ns = buildNotificationsNamespace(ctx, env);
+		const inputSchema = {
+			type: "object",
+			properties: { plan: { enum: ["legacy", "new"] } },
+			required: ["plan"],
+		};
+
+		const result = await ns.send({
+			title: "Which plan?",
+			input_schema: inputSchema,
+		});
+
+		expect(notifyCalls).toEqual([
+			{
+				args: {
+					title: "Which plan?",
+					input_schema: inputSchema,
+					action: "send",
+				},
+				env,
+				ctx,
+			},
+		]);
+		expect(result).toEqual({
+			notified_count: 1,
+			event_id: 41,
+			url: "/atlas/activity?event=41",
+			run_id: 42,
+		});
+	});
+
 	it("list forwards org/user scope and pagination to the shared service", async () => {
 		listCalls.length = 0;
 		listResult = {

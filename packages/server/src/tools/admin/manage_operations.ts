@@ -115,9 +115,9 @@ import {
 } from "./entity-field-approval";
 import {
 	AGENT_ASK_ACTION_KEY,
-	findUnansweredRequired,
 	isAgentAskProposal,
 } from "../../notifications/ask";
+import { validateAskAnswerForProposal } from "../../notifications/ask-schema";
 import { callerIsAdmin } from "./helpers/db-helpers";
 import {
 	applyManageAgentsProposal,
@@ -1943,7 +1943,7 @@ function getBuilderApprovalHandlers(): BuilderApprovalHandler[] {
 			// Approving a blank form did exactly that (`{answer:{}}`).
 			validateInput: (proposal, input) =>
 				isAgentAskProposal(proposal)
-					? findUnansweredRequired(proposal.input_schema, input)
+					? validateAskAnswerForProposal(proposal, input)
 					: null,
 		},
 	];

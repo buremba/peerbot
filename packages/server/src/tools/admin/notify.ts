@@ -79,7 +79,7 @@ const SendAction = Type.Object({
   input_schema: Type.Optional(
     Type.Record(Type.String(), Type.Any(), {
       description:
-        'Turn this notification into a QUESTION the recipient answers, instead of an FYI. JSON Schema for the answer. Pass {} for a plain yes/no decision (renders as Approve/Reject inline, in-app and in chat). Pass a single required enum property to offer one-click named options. Pass several properties to collect fields (the recipient gets a form; give each property a `title` — without one the form labels the field with its full `description`). Properties must be flat: nested objects do not render. Answering records the result and emits it — read it back with manage_operations get_run.',
+        'Turn this notification into a QUESTION the recipient answers, instead of an FYI. Pass {} for a plain yes/no decision; a single required string-enum property for one-click options; or a flat object of primitive fields, scalar enums, string/scalar-enum arrays, and optional nullable anyOf wrappers for a form. Give each property a `title`. Nested objects, references, other combinators, constants, formats, patterns, and string/number/array constraints are unsupported and fail with HTTP 422 before a run is created. Read the answer with manage_operations get_run.',
     })
   ),
   behavior_source: Type.Optional(

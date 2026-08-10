@@ -16,7 +16,10 @@
  */
 
 import { beforeAll, describe, expect, it } from "vitest";
+import { pgTextArray } from "../../../db/client";
 import type { Env } from "../../../index";
+import { buildClientSDK } from "../../../sandbox/client-sdk";
+import { getNextNumericId } from "../../../tools/admin/helpers/db-helpers";
 import type { AuthContext } from "../../../tools/execute";
 import { executeTool } from "../../../tools/execute";
 import { getPastReactionsSummary } from "../../../utils/watcher-reactions";
@@ -87,7 +90,10 @@ describe("notify input_schema — agent asks a human", () => {
 
 	beforeAll(async () => {
 		// No cleanupTestDatabase: every assertion is scoped to this run's fresh
-		// org id, and the full-table wipe alone exceeds the 60s hook budget.
+		// org id, and the full-table wipe alone exceeds the 60s hook budget. Allocate
+		// the Behavior id with the same transaction-safe MAX(id)+1 path as the
+		// production create handler because earlier suites may leave the legacy
+		// watchers_id_seq behind the table.
 		await initWorkspaceProvider();
 		const org = await createTestOrganization({ name: "agent ask e2e" });
 		orgId = org.id;
@@ -96,16 +102,18 @@ describe("notify input_schema — agent asks a human", () => {
 		humanCtx = baseCtx(owner.id, null);
 		agentCtx = baseCtx(owner.id, "asking-agent");
 		const sql = getTestDb();
-		const [behavior] = await sql`
-			WITH next_id AS (SELECT nextval('watchers_id_seq')::integer AS id)
-			INSERT INTO watchers (
-				id, watcher_group_id, organization_id, agent_id, created_by, name, slug
-			)
-			SELECT id, id, ${org.id}, 'asking-agent', ${owner.id},
-				'Ask provenance behavior', 'ask-provenance-behavior'
-			FROM next_id
-			RETURNING id
-		`;
+		const [behavior] = await sql.begin(async (tx) => {
+			const id = await getNextNumericId(tx, "watchers");
+			return tx`
+				INSERT INTO watchers (
+					id, watcher_group_id, organization_id, agent_id, created_by, name, slug
+				) VALUES (
+					${id}, ${id}, ${org.id}, 'asking-agent', ${owner.id},
+					'Ask provenance behavior', 'ask-provenance-behavior'
+				)
+				RETURNING id
+			`;
+		});
 		behaviorId = Number(behavior.id);
 		const [window] = await sql`
 			INSERT INTO events (
@@ -182,9 +190,7 @@ describe("notify input_schema — agent asks a human", () => {
 		expect(interaction.interaction_status).toBe("pending");
 		expect(Number(interaction.run_id)).toBe(sent.run_id);
 
-		const card = (await activity()).items.find(
-			(i) => i.run_id === sent.run_id,
-		);
+		const card = (await activity()).items.find((i) => i.run_id === sent.run_id);
 		expect(card?.status).toBe("action_approval_needed");
 		expect(card?.interaction_type).toBe("approval");
 		expect(card?.interaction_status).toBe("pending");
@@ -196,6 +202,7 @@ describe("notify input_schema — agent asks a human", () => {
 		const sent = await send({
 			title: "The Acme renewal is at risk — how do we play it?",
 			input_schema: {
+				$schema: "http://json-schema.org/draft-07/schema#",
 				type: "object",
 				properties: {
 					play: { enum: ["Discount 15%", "Exec sponsor call", "Let it churn"] },
@@ -214,6 +221,107 @@ describe("notify input_schema — agent asks a human", () => {
 			"Exec sponsor call",
 			"Let it churn",
 		]);
+	});
+
+	it("routes a numeric enum to the form so its JSON type is preserved", async () => {
+		const sent = await send({
+			title: "How many rollout waves?",
+			input_schema: {
+				type: "object",
+				properties: { waves: { type: "integer", enum: [2, 3] } },
+				required: ["waves"],
+			},
+		});
+		const card = (await activity()).items.find((i) => i.run_id === sent.run_id);
+
+		// Inline choices are strings in the Activity contract. Turning `2` into
+		// `"2"` would make the complete schema validator refuse every click, so a
+		// typed numeric enum must use the form instead.
+		expect(card?.interaction_inline).toBeFalsy();
+		expect(card?.interaction_choices).toBeUndefined();
+
+		const approved = (await executeTool(
+			"manage_operations",
+			{ action: "approve", run_id: sent.run_id, input: { waves: 2 } },
+			TEST_ENV,
+			humanCtx,
+		)) as { approved?: boolean };
+		expect(approved.approved).toBe(true);
+	});
+
+	it("preserves typed values for array enum choices", async () => {
+		const sent = await send({
+			title: "Which rollout waves should run?",
+			input_schema: {
+				type: "object",
+				properties: {
+					waves: {
+						type: "array",
+						items: { type: "integer", enum: [2, 3] },
+					},
+				},
+				required: ["waves"],
+			},
+		});
+
+		// DynamicConnectorForm renders item enums as a multi-select and submits
+		// the original enum values, rather than comma-separated strings.
+		const approved = (await executeTool(
+			"manage_operations",
+			{ action: "approve", run_id: sent.run_id, input: { waves: [2] } },
+			TEST_ENV,
+			humanCtx,
+		)) as { approved?: boolean };
+		expect(approved.approved).toBe(true);
+	});
+
+	it("keeps string arrays answerable", async () => {
+		const sent = await send({
+			title: "Which release tags should run?",
+			input_schema: {
+				type: "object",
+				properties: {
+					tags: {
+						type: "array",
+						items: { type: "string" },
+					},
+				},
+				required: ["tags"],
+			},
+		});
+		const approved = (await executeTool(
+			"manage_operations",
+			{
+				action: "approve",
+				run_id: sent.run_id,
+				input: { tags: ["beta"] },
+			},
+			TEST_ENV,
+			humanCtx,
+		)) as { approved?: boolean };
+		expect(approved.approved).toBe(true);
+	});
+
+	it("allows a field literally named pattern without treating it as a regex", async () => {
+		const sent = await send({
+			title: "What naming pattern should we use?",
+			input_schema: {
+				type: "object",
+				properties: { pattern: { type: "string" } },
+				required: ["pattern"],
+			},
+		});
+		const approved = (await executeTool(
+			"manage_operations",
+			{
+				action: "approve",
+				run_id: sent.run_id,
+				input: { pattern: "release-{date}" },
+			},
+			TEST_ENV,
+			humanCtx,
+		)) as { approved?: boolean };
+		expect(approved.approved).toBe(true);
 	});
 
 	it("a lone OPTIONAL enum routes to the form — buttons cannot say 'no answer'", async () => {
@@ -267,9 +375,7 @@ describe("notify input_schema — agent asks a human", () => {
 				required: ["price"],
 			},
 		});
-		const card = (await activity()).items.find(
-			(i) => i.run_id === sent.run_id,
-		);
+		const card = (await activity()).items.find((i) => i.run_id === sent.run_id);
 		expect(card?.interaction_status).toBe("pending");
 		// Two buttons here would silently discard the number the human typed.
 		expect(card?.interaction_inline).toBeFalsy();
@@ -307,6 +413,43 @@ describe("notify input_schema — agent asks a human", () => {
 		// Drop the `input` argument from handler.apply() and this is `{}` while
 		// everything above still passes — which is exactly how the bug hid.
 		expect(run.action_output).toEqual({ answer: { plan: "legacy-pro" } });
+	});
+
+	it("completes the ClientSDK send → answer → getRun lifecycle", async () => {
+		const client = buildClientSDK(agentCtx, TEST_ENV);
+		const sent = await client.notifications.send({
+			title: "Which release lane should the SDK use?",
+			input_schema: {
+				type: "object",
+				properties: { lane: { enum: ["stable", "canary"] } },
+				required: ["lane"],
+			},
+		});
+		expect(sent.event_id).toBeGreaterThan(0);
+		expect(sent.run_id).toBeGreaterThan(0);
+
+		const pending = (await client.operations.getRun(Number(sent.run_id))) as {
+			run: Record<string, unknown>;
+		};
+		expect(pending.run.status).toBe("pending");
+
+		const approved = (await executeTool(
+			"manage_operations",
+			{
+				action: "approve",
+				run_id: sent.run_id,
+				input: { lane: "stable" },
+			},
+			TEST_ENV,
+			humanCtx,
+		)) as { approved?: boolean };
+		expect(approved.approved).toBe(true);
+
+		const completed = (await client.operations.getRun(Number(sent.run_id))) as {
+			run: Record<string, unknown>;
+		};
+		expect(completed.run.status).toBe("completed");
+		expect(completed.run.output).toEqual({ answer: { lane: "stable" } });
 	});
 
 	it("refuses a blank answer to a required field and keeps the run answerable", async () => {
@@ -358,6 +501,461 @@ describe("notify input_schema — agent asks a human", () => {
 		`;
 		expect(done.approval_status).toBe("approved");
 		expect(done.action_output).toEqual({ answer: { price: 499 } });
+	});
+
+	it("refuses an answer that violates the declared JSON Schema and keeps the run answerable", async () => {
+		const sent = await send({
+			title: "Which plan should we grandfather?",
+			input_schema: {
+				type: "object",
+				properties: {
+					plan: {
+						type: "string",
+						enum: ["legacy-pro", "legacy-enterprise"],
+					},
+				},
+				required: ["plan"],
+				additionalProperties: false,
+			},
+		});
+
+		const invalid = (await executeTool(
+			"manage_operations",
+			{
+				action: "approve",
+				run_id: sent.run_id,
+				input: { plan: "made-up-plan" },
+			},
+			TEST_ENV,
+			humanCtx,
+		)) as { error?: string; approved?: boolean };
+		expect(invalid.approved).toBeUndefined();
+		expect(invalid.error).toMatch(/plan: must be one of/i);
+
+		const sql = getTestDb();
+		const [held] = await sql`
+			SELECT approval_status, status, action_output
+			FROM runs WHERE id = ${sent.run_id}
+		`;
+		expect(held.approval_status).toBe("pending");
+		expect(held.status).toBe("pending");
+		expect(held.action_output).toBeNull();
+	});
+
+	it("keeps a legacy pending ask completable under its original validation contract", async () => {
+		const sent = await send({
+			title: "Legacy question queued before strict schema validation",
+			input_schema: {},
+		});
+		const sql = getTestDb();
+		await sql`
+			UPDATE runs
+			SET action_input = ${sql.json({
+				question: "Legacy question queued before strict schema validation",
+				input_schema: {
+					type: "object",
+					properties: {
+						code: { type: "string", pattern: "^A+$" },
+					},
+					required: ["code"],
+				},
+			})}
+			WHERE id = ${sent.run_id}
+		`;
+
+		const missing = (await executeTool(
+			"manage_operations",
+			{ action: "approve", run_id: sent.run_id, input: {} },
+			TEST_ENV,
+			humanCtx,
+		)) as { error?: string; approved?: boolean };
+		expect(missing.approved).toBeUndefined();
+		expect(missing.error).toMatch(/`code`/);
+
+		const approved = (await executeTool(
+			"manage_operations",
+			{ action: "approve", run_id: sent.run_id, input: { code: "AAA" } },
+			TEST_ENV,
+			humanCtx,
+		)) as { approved?: boolean };
+		expect(approved.approved).toBe(true);
+	});
+
+	it("keeps numeric fields answerable", async () => {
+		const answer = 2;
+		const sent = await send({
+			title: "What is the exact rollout multiplier?",
+			input_schema: {
+				type: "object",
+				properties: {
+					answer: {
+						type: "number",
+					},
+				},
+				required: ["answer"],
+			},
+		});
+
+		const approved = (await executeTool(
+			"manage_operations",
+			{ action: "approve", run_id: sent.run_id, input: { answer } },
+			TEST_ENV,
+			humanCtx,
+		)) as { approved?: boolean };
+		expect(approved.approved).toBe(true);
+	});
+
+	it("keeps optional nullable fields answerable", async () => {
+		const sent = await send({
+			title: "Optional: why should we delay?",
+			input_schema: {
+				type: "object",
+				properties: {
+					reason: {
+						anyOf: [{ type: "string" }, { type: "null" }],
+					},
+				},
+			},
+		});
+
+		const approved = (await executeTool(
+			"manage_operations",
+			{ action: "approve", run_id: sent.run_id, input: {} },
+			TEST_ENV,
+			humanCtx,
+		)) as { approved?: boolean };
+		expect(approved.approved).toBe(true);
+	});
+
+	it("rejects invalid or unanswerable schemas before creating a pending run", async () => {
+		const cases = [
+			{
+				question: "Question with an invalid schema",
+				inputSchema: {
+					type: "object",
+					properties: { answer: { type: "not-a-json-schema-type" } },
+				},
+				error: /input_schema is invalid/i,
+			},
+			{
+				question: "Question with a scalar answer",
+				inputSchema: { type: "string" },
+				error: /must describe an object answer/i,
+			},
+			{
+				question: "Question with a root union",
+				inputSchema: {
+					type: "object",
+					anyOf: [{ required: ["first"] }, { required: ["second"] }],
+					properties: {
+						first: { type: "string" },
+						second: { type: "string" },
+					},
+				},
+				error: /root unions are not supported/i,
+			},
+			{
+				question: "Question with a root constant",
+				inputSchema: { type: "object", const: { answer: "hidden" } },
+				error: /keyword 'const' is not supported/i,
+			},
+			{
+				question: "Question with a local schema reference",
+				inputSchema: {
+					type: "object",
+					$defs: { plan: { enum: ["legacy", "new"] } },
+					properties: { plan: { $ref: "#/$defs/plan" } },
+					required: ["plan"],
+				},
+				error: /keyword '\$(?:defs|ref)' is not supported/i,
+			},
+			{
+				question: "Question with a detached schema identifier",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: {
+							$id: "https://example.com/schemas/agent-ask-answer",
+							type: "string",
+						},
+					},
+					required: ["answer"],
+				},
+				error: /keyword '\$id' is not supported/i,
+			},
+			{
+				question: "Question with an invisible required field",
+				inputSchema: { type: "object", required: ["missing"] },
+				error: /fields missing from properties: missing/i,
+			},
+			{
+				question: "Question with an unsafe form field name",
+				inputSchema: {
+					type: "object",
+					properties: { toString: { type: "string" } },
+					required: ["toString"],
+				},
+				error: /property name 'toString' is not supported/i,
+			},
+			{
+				question: "Question with a hidden required field",
+				inputSchema: {
+					type: "object",
+					properties: { answer: { type: "string" } },
+					allOf: [{ required: ["missing"] }],
+				},
+				error: /keyword 'allOf' is not supported/i,
+			},
+			{
+				question: "Question excluded by not",
+				inputSchema: {
+					type: "object",
+					properties: { answer: { type: "string" } },
+					not: {},
+				},
+				error: /keyword 'not' is not supported/i,
+			},
+			{
+				question: "Question with choices that violate their field type",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: { type: "number", enum: ["one", "two"] },
+					},
+					required: ["answer"],
+				},
+				error: /choices the answer form cannot submit/i,
+			},
+			{
+				question: "Question with a nested object",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: {
+							type: "object",
+							properties: { detail: { type: "string" } },
+						},
+					},
+				},
+				error: /must not contain a nested object/i,
+			},
+			{
+				question: "Question with an implicit nested object",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: {
+							properties: { detail: { type: "string" } },
+						},
+					},
+				},
+				error: /must not contain a nested object/i,
+			},
+			{
+				question: "Question with an unsafe answer pattern",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: { type: "string", pattern: "^(a+)+$" },
+					},
+					required: ["answer"],
+				},
+				error: /keyword 'pattern' is not supported/i,
+			},
+			{
+				question: "Question with encoded string content",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: { type: "string", contentEncoding: "base64" },
+					},
+				},
+				error: /keyword 'contentEncoding' is not supported/i,
+			},
+			{
+				question: "Question with a regex hidden in tuple items",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: {
+							items: [{ pattern: "^(a+)+$" }],
+						},
+					},
+				},
+				error: /keyword 'pattern' is not supported/i,
+			},
+			{
+				question: "Question with an OpenAPI nullable flag",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: { type: "string", nullable: true },
+					},
+				},
+				error: /keyword 'nullable' is not supported/i,
+			},
+			{
+				question: "Question with a nested schema dialect",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: {
+							$schema: "https://example.com/meta",
+							enum: ["one", "two"],
+						},
+					},
+					required: ["answer"],
+				},
+				error: /keyword '\$schema' is not supported/i,
+			},
+			{
+				question: "Question with an impossible formatted answer",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: { type: "string", format: "email" },
+					},
+					required: ["answer"],
+				},
+				error: /keyword 'format' is not supported/i,
+			},
+			{
+				question: "Question with an exclusive numeric bound",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: { type: "number", exclusiveMinimum: 0 },
+					},
+					required: ["answer"],
+				},
+				error: /keyword 'exclusiveMinimum' is not supported/i,
+			},
+			{
+				question: "Question with unsafe property-name patterns",
+				inputSchema: {
+					type: "object",
+					properties: { answer: { type: "string" } },
+					patternProperties: { "^(a+)+$": { type: "string" } },
+				},
+				error: /keyword 'patternProperties' is not supported/i,
+			},
+			{
+				question: "Question with asynchronous validation",
+				inputSchema: { $async: true, type: "object", properties: {} },
+				error: /keyword '\$async' is not supported/i,
+			},
+			{
+				question: "Question with integer array items",
+				inputSchema: {
+					type: "object",
+					properties: {
+						codes: {
+							type: "array",
+							items: { type: "integer" },
+						},
+					},
+					required: ["codes"],
+				},
+				error: /array property 'codes'.*scalar enum items/i,
+			},
+			{
+				question: "Question with a generic array item union",
+				inputSchema: {
+					type: "object",
+					properties: {
+						tags: {
+							type: "array",
+							items: {
+								anyOf: [{ type: "string" }, { type: "integer" }],
+							},
+						},
+					},
+					required: ["tags"],
+				},
+				error: /array property 'tags'.*union.*cannot render/i,
+			},
+			{
+				question: "Question with a nullable wrapper sibling",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: {
+							anyOf: [{ type: "string" }, { type: "null" }],
+							type: "string",
+						},
+					},
+				},
+				error: /nullable wrapper sibling 'type' is not supported/i,
+			},
+			{
+				question: "Question with a required nullable field",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: {
+							anyOf: [{ type: "string" }, { type: "null" }],
+						},
+					},
+					required: ["answer"],
+				},
+				error: /required nullable property 'answer'.*answer form/i,
+			},
+			{
+				question: "Question with a string-length constraint",
+				inputSchema: {
+					type: "object",
+					properties: {
+						answer: { type: "string", minLength: 5 },
+					},
+					required: ["answer"],
+				},
+				error: /keyword 'minLength' is not supported/i,
+			},
+			{
+				question: "Question with an array constant",
+				inputSchema: {
+					type: "object",
+					properties: {
+						codes: { type: "array", const: [5] },
+					},
+					required: ["codes"],
+				},
+				error: /keyword 'const' is not supported/i,
+			},
+			{
+				question: "Question with too many schema properties",
+				inputSchema: {
+					type: "object",
+					properties: Object.fromEntries(
+						Array.from({ length: 501 }, (_, index) => [
+							`field_${index}`,
+							{ type: "string" },
+						]),
+					),
+				},
+				error: /exceeds the allowed size or nesting limits/i,
+			},
+		];
+
+		for (const testCase of cases) {
+			await expect(
+				send({
+					title: testCase.question,
+					input_schema: testCase.inputSchema,
+				}),
+			).rejects.toThrow(testCase.error);
+		}
+
+		const sql = getTestDb();
+		const runs = await sql`
+			SELECT id FROM runs
+			WHERE organization_id = ${orgId}
+				AND action_key = 'agent_ask'
+				AND action_input->>'question' = ANY(
+					${pgTextArray(cases.map((testCase) => testCase.question))}::text[]
+				)
+		`;
+		expect(runs).toHaveLength(0);
 	});
 
 	it("stamps WHO is asking onto the interaction the reviewer opens", async () => {
@@ -463,27 +1061,31 @@ describe("notify input_schema — agent asks a human", () => {
 		expect(summary).toContain("Durable state makes this workflow dependable.");
 		expect(summary).toMatch(/rejected/i);
 		expect(summary).toContain(
-			"The tone is too promotional for this discussion."
+			"The tone is too promotional for this discussion.",
 		);
 	});
 
 	it("cannot attach a caller-supplied ask to another organization's Behavior history", async () => {
-		const victimOrg = await createTestOrganization({ name: "ask provenance victim" });
+		const victimOrg = await createTestOrganization({
+			name: "ask provenance victim",
+		});
 		const victimOwner = await createTestUser({
 			email: `ask-victim-${Date.now()}@test.com`,
 		});
 		await addUserToOrganization(victimOwner.id, victimOrg.id, "owner");
 		const sql = getTestDb();
-		const [victimBehavior] = await sql`
-			WITH next_id AS (SELECT nextval('watchers_id_seq')::integer AS id)
-			INSERT INTO watchers (
-				id, watcher_group_id, organization_id, agent_id, created_by, name, slug
-			)
-			SELECT id, id, ${victimOrg.id}, 'victim-agent', ${victimOwner.id},
-				'Victim behavior', ${`victim-behavior-${Date.now()}`}
-			FROM next_id
-			RETURNING id
-		`;
+		const [victimBehavior] = await sql.begin(async (tx) => {
+			const id = await getNextNumericId(tx, "watchers");
+			return tx`
+				INSERT INTO watchers (
+					id, watcher_group_id, organization_id, agent_id, created_by, name, slug
+				) VALUES (
+					${id}, ${id}, ${victimOrg.id}, 'victim-agent', ${victimOwner.id},
+					'Victim behavior', ${`victim-behavior-${Date.now()}`}
+				)
+				RETURNING id
+			`;
+		});
 		const victimBehaviorId = Number(victimBehavior.id);
 		const [victimWindow] = await sql`
 			INSERT INTO events (
@@ -574,7 +1176,7 @@ describe("notify input_schema — agent asks a human", () => {
 
 		try {
 			await expect(
-				executeTool("notify", args, TEST_ENV, behaviorCtx)
+				executeTool("notify", args, TEST_ENV, behaviorCtx),
 			).rejects.toThrow(/forced watcher reaction failure/i);
 
 			const notificationsAfterFailure = await sql`
@@ -588,7 +1190,7 @@ describe("notify input_schema — agent asks a human", () => {
 				"notify",
 				args,
 				TEST_ENV,
-				behaviorCtx
+				behaviorCtx,
 			)) as SendResult;
 			expect(retry).toMatchObject({
 				notified_count: 0,
@@ -614,16 +1216,16 @@ describe("notify input_schema — agent asks a human", () => {
 					reason: "This discussion was not relevant to our product.",
 				},
 				TEST_ENV,
-				humanCtx
+				humanCtx,
 			);
 			const summary = await getPastReactionsSummary(behaviorId);
 			expect(summary).toContain("Was the staged LinkedIn comment relevant?");
 			expect(summary).toContain(
-				"This discussion was not relevant to our product."
+				"This discussion was not relevant to our product.",
 			);
 		} finally {
 			await sql.unsafe(
-				`DROP TRIGGER IF EXISTS ${triggerName} ON watcher_reactions`
+				`DROP TRIGGER IF EXISTS ${triggerName} ON watcher_reactions`,
 			);
 			await sql.unsafe(`DROP FUNCTION IF EXISTS ${functionName}()`);
 			await sql.unsafe(`DROP SEQUENCE IF EXISTS ${sequenceName}`);

@@ -3,7 +3,7 @@ import { getDb } from "../db/client";
 import { emit } from "../events/emitter";
 import type { McpActivityAttribution } from "../lobu/stores/mcp-client-conversations";
 import { buildResourcePermalink } from "../utils/url-builder";
-import { resolveAskAffordance } from "./ask";
+import { resolveAskAffordance } from "./ask-schema";
 import { createNotificationForUsers, getOrgSlug } from "./service";
 
 /** Notification content minus the org id (the dispatch helpers stamp it). */

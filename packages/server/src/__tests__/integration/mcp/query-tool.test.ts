@@ -55,14 +55,16 @@ describe('MCP query_sdk / run_sdk tool surface', () => {
     expect(byName.has('execute')).toBe(false);
 
     const expectedSafetyHints = {
-      // Both can reach installed virtual-feed connectors live, beyond Lobu's
-      // persisted workspace, so they must remain explicitly open-world.
-      search_memory: [true, true, false],
-      search_sdk: [true, false, false],
-      query_sdk: [true, true, false],
-      query_sql: [true, false, false],
+      // These operations do not change workspace content or external systems,
+      // but OAuth and PAT invocations append private audit/activity records.
+      // OpenAI's read-only and idempotent hints therefore both remain false.
+      search_memory: [false, false, false],
+      search_sdk: [false, false, false],
+      query_sdk: [false, false, false],
+      query_sql: [false, false, false],
       save_memory: [false, false, false],
       run_sdk: [false, true, true],
+      render_lobu_view: [false, false, false],
     } as const;
 
     for (const [toolName, [readOnlyHint, openWorldHint, destructiveHint]] of Object.entries(
@@ -76,9 +78,18 @@ describe('MCP query_sdk / run_sdk tool surface', () => {
       );
     }
 
-    expect(byName.get('query_sdk')?.annotations?.idempotentHint).toBe(true);
+    for (const name of [
+      'search_memory',
+      'search_sdk',
+      'query_sdk',
+      'query_sql',
+      'render_lobu_view',
+    ]) {
+      expect(byName.get(name)?.annotations?.idempotentHint, `${name}.idempotentHint`).toBe(
+        false
+      );
+    }
     expect(byName.get('run_sdk')?.inputSchema?.properties?.dry_run).toBeTruthy();
-    expect(byName.get('search_memory')?.annotations?.idempotentHint).toBe(true);
     expect(byName.has('search_knowledge')).toBe(false);
     expect(byName.has('save_knowledge')).toBe(false);
     expect(byName.has('search')).toBe(false);

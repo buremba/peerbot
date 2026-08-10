@@ -11,7 +11,12 @@ import { describe, expect, it } from 'vitest';
 import { ToolNotRegisteredError } from '../../utils/errors';
 import { routeAction } from '../../tools/admin/action-router';
 import { type AuthContext, checkToolAccess, extractAuthContext } from '../../tools/execute';
-import { getAllTools, getTool, type ToolContext } from '../../tools/registry';
+import {
+  getAllTools,
+  getTool,
+  isAuthorizationReadOnly,
+  type ToolContext,
+} from '../../tools/registry';
 import {
   getRequiredAccessLevel,
   hasRequiredMcpScope,
@@ -771,7 +776,7 @@ describe('pinned access matrix', () => {
       publicOnly: false,
       maxAccessLevel: 'admin',
     }).map((tool) => {
-      const readOnly = tool.annotations?.readOnlyHint === true;
+      const readOnly = isAuthorizationReadOnly(getTool(tool.name));
       const parts = [...(actionsOf(tool.inputSchema) ?? ['-']), '?'].map((action) => {
         const args = action === '-' ? {} : { action };
         const tier = getRequiredAccessLevel(tool.name, args, readOnly);

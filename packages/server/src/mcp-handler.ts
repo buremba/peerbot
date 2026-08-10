@@ -205,7 +205,7 @@ const MCP_APP_RESOURCES: Record<
       'Interactive Lobu cards rendered in a sandboxed iframe; actions use standard MCP tool calls or host-mediated external links.',
     appDir: 'interaction',
     // App logic is postMessage-only. The serving origin is added dynamically as
-    // the sole resource domain for the content-hashed JS/CSS bundle.
+    // the sole resource domain for the stable, revalidated JS/CSS bundle.
     csp: { connectDomains: [], resourceDomains: [], frameDomains: [] },
     prefersBorder: true,
   },

@@ -21,7 +21,7 @@ import { get, post } from '../../setup/test-helpers';
 
 // Marker in the stub bundle so we can assert the served HTML is ours.
 const STUB_HTML =
-  '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="script-src __LOBU_MCP_APP_ORIGIN__"><script type="module" src="./assets/index-test.js"></script></head><body data-test="mcp-app-interaction-stub">interaction</body></html>';
+  '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="script-src __LOBU_MCP_APP_ORIGIN__"><script type="module" src="./assets/app.js"></script></head><body data-test="mcp-app-interaction-stub">interaction</body></html>';
 
 describe('MCP App resources — ui:// serving (host-authored view)', () => {
   let org: Awaited<ReturnType<typeof createTestOrganization>>;
@@ -49,7 +49,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     });
     writeFileSync(join(tmpRoot, 'dist-mcp-apps', 'interaction', 'index.html'), STUB_HTML);
     writeFileSync(
-      join(tmpRoot, 'dist-mcp-apps', 'interaction', 'assets', 'index-test.js'),
+      join(tmpRoot, 'dist-mcp-apps', 'interaction', 'assets', 'app.js'),
       'document.body.dataset.mcpAppAsset = "loaded";'
     );
     process.env.WEB_DIST_DIR = join(tmpRoot, 'dist');
@@ -166,19 +166,17 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(content?._meta?.ui?.domain).toBeUndefined();
   });
 
-  it('serves only registered content-hashed MCP App JS/CSS assets with cross-origin headers', async () => {
-    const response = await get('/mcp-apps/interaction/assets/index-test.js');
+  it('serves only registered stable MCP App JS/CSS assets with revalidation and cross-origin headers', async () => {
+    const response = await get('/mcp-apps/interaction/assets/app.js');
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/javascript');
-    expect(response.headers.get('cache-control')).toBe(
-      'public, max-age=31536000, immutable'
-    );
+    expect(response.headers.get('cache-control')).toBe('no-cache');
     expect(response.headers.get('access-control-allow-origin')).toBe('*');
     expect(response.headers.get('cross-origin-resource-policy')).toBe('cross-origin');
     expect(await response.text()).toContain('mcpAppAsset');
 
-    expect((await get('/mcp-apps/interaction/assets/index-test.txt')).status).toBe(404);
-    expect((await get('/mcp-apps/unknown/assets/index-test.js')).status).toBe(404);
+    expect((await get('/mcp-apps/interaction/assets/app.txt')).status).toBe(404);
+    expect((await get('/mcp-apps/unknown/assets/app.js')).status).toBe(404);
   });
 
   it('keeps retired Lobu interaction URIs readable for cached conversations', async () => {
@@ -229,7 +227,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(typeof resource.description).toBe('string');
     expect(resource.description.length).toBeGreaterThan(0);
     // CSP rides the current nested _meta.ui shape and allows only the serving
-    // origin to provide content-hashed JS/CSS assets. `ui.domain` is omitted:
+    // origin to provide stable JS/CSS assets. `ui.domain` is omitted:
     // that field asks the host for a dedicated sandbox origin, not an asset host.
     expect(resource.mimeType).toBe('text/html;profile=mcp-app');
     const resourceDomains = resource._meta?.ui?.csp?.resourceDomains;

@@ -2775,9 +2775,10 @@ app.all("/mcp/:orgSlug", handleMcp);
 app.all("/mcp/:orgSlug/", handleMcp);
 
 // MCP App bundle — public asset delivery (NOT an approval endpoint). The small
-// HTML template is returned by `resources/read`; content-hashed JS/CSS is loaded
-// from this explicitly declared resource domain. There is no action logic here
-// — each action rides an MCP `tools/call` brokered by the host bridge.
+// HTML template is returned by `resources/read`; stable JS/CSS is loaded from
+// this explicitly declared resource domain and revalidated on every use. Stable
+// names keep cached templates working across mixed-replica rollouts. There is no
+// action logic here — each action rides an MCP `tools/call` brokered by the host bridge.
 app.get("/mcp-apps/:app/index.html", async (c) => {
 	const app_ = c.req.param("app");
 	// Only serve a bundle the MCP App registry declares — never an arbitrary
@@ -2802,7 +2803,7 @@ app.get("/mcp-apps/:app/assets/:asset", async (c) => {
 			? "text/javascript; charset=utf-8"
 			: "text/css; charset=utf-8",
 	);
-	c.header("Cache-Control", "public, max-age=31536000, immutable");
+	c.header("Cache-Control", "no-cache");
 	c.header("Access-Control-Allow-Origin", "*");
 	c.header("Cross-Origin-Resource-Policy", "cross-origin");
 	return c.body(Uint8Array.from(asset).buffer);

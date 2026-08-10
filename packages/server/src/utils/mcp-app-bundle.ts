@@ -73,7 +73,7 @@ export async function readMcpAppBundle(
 }
 
 /**
- * Read one content-hashed JS/CSS file referenced by an MCP App template.
+ * Read one stable JS/CSS file referenced by an MCP App template.
  * Callers must still validate `appDir` against the app registry; this function
  * separately rejects traversal and every unrecognized extension.
  */

@@ -1,19 +1,17 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../../../index";
+import { getBehavior } from "../../../tools/get_behavior";
 import { manageBehaviors } from "../../../tools/admin/manage_behaviors";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase } from "../../setup/test-db";
 import {
 	createCanvasWindow,
-	createTestAccessToken,
 	createTestAgent,
 	createTestEntity,
-	createTestOAuthClient,
 	seedOwnerContext,
 } from "../../setup/test-fixtures";
-import { get } from "../../setup/test-helpers";
 
-describe("REST behavior window vocabulary", () => {
+describe("Behavior window vocabulary", () => {
 	beforeAll(async () => {
 		await initWorkspaceProvider();
 	});
@@ -57,7 +55,7 @@ describe("REST behavior window vocabulary", () => {
 		const behaviorId = Number(created.behavior_id);
 		expect(Number.isFinite(behaviorId)).toBe(true);
 
-		const windowId = await createCanvasWindow({
+		await createCanvasWindow({
 			watcherId: behaviorId,
 			organizationId: org.id,
 			granularity: "day",
@@ -67,28 +65,19 @@ describe("REST behavior window vocabulary", () => {
 			extractedData: { summary: "window" },
 		});
 
-		const client = await createTestOAuthClient({ client_name: "Test" });
-		const login = await createTestAccessToken(
-			user.id,
-			org.id,
-			client.client_id,
-			{
-				scope: "mcp:read mcp:write",
-			},
+		const detail = await getBehavior(
+			{ behavior_id: String(behaviorId) },
+			{} as Env,
+			ctx,
 		);
+		expect(detail.windows).toHaveLength(1);
 
-		const response = await get(
-			`/api/${org.slug}/behaviors/windows/${windowId}`,
-			{ token: login.token },
-		);
-		expect(response.status).toBe(200);
-
-		const body = (await response.json()) as Record<string, unknown>;
-		expect(body).not.toHaveProperty("watcher_id");
-		expect(body).not.toHaveProperty("watcher_slug");
-		expect(body).not.toHaveProperty("watcher_name");
-		expect(String(body.behavior_id)).toBe(String(behaviorId));
-		expect(body.behavior_slug).toBe("window-vocab");
-		expect(body.behavior_name).toBe("Window vocab");
+		const window = detail.windows[0];
+		expect(window).not.toHaveProperty("watcher_id");
+		expect(window).not.toHaveProperty("watcher_slug");
+		expect(window).not.toHaveProperty("watcher_name");
+		expect(String(window.behavior_id)).toBe(String(behaviorId));
+		expect(window.behavior_name).toBe("Window vocab");
+		expect(detail.behavior?.slug).toBe("window-vocab");
 	});
 });

@@ -1169,60 +1169,6 @@ app.patch(
 );
 app.get("/api/:orgSlug/behaviors", mcpAuth, restGetBehaviors);
 app.get("/api/:orgSlug/public/behaviors", publicRestGetBehaviors);
-app.get("/api/:orgSlug/behaviors/windows/:windowId", mcpAuth, async (c) => {
-	const sql = getDb();
-	const windowId = c.req.param("windowId");
-	const organizationId = c.var.organizationId;
-
-	try {
-		// Canvas-on-events: windowId is the canvas ROOT event id; canvas_windows
-		// resolves the chain (head payload + run provenance). Content links are
-		// counted off watcher_window_events.window_id (re-keyed to the root id).
-		const windowResult = await sql`
-      SELECT
-        iw.id,
-        iw.watcher_id AS behavior_id,
-        iw.granularity,
-        iw.window_start,
-        iw.window_end,
-        iw.version_id,
-        iw.created_at,
-        iw.extracted_data,
-        iw.content_analyzed,
-        iw.client_id,
-        iw.model_used,
-        iw.run_metadata,
-        i.entity_ids,
-        i.slug AS behavior_slug,
-        i.name AS behavior_name,
-        e.name as entity_name,
-        et.slug AS entity_type,
-        parent.name as parent_name,
-        CAST(COUNT(iwf.event_id) AS INTEGER) as content_count
-      FROM canvas_windows iw
-      JOIN watchers i ON i.id = iw.watcher_id
-      JOIN entities e ON e.id = ANY(i.entity_ids)
-      JOIN entity_types et ON et.id = e.entity_type_id
-      LEFT JOIN entities parent ON e.parent_id = parent.id
-      LEFT JOIN watcher_window_events iwf ON iwf.window_id = iw.id
-      WHERE iw.id = ${windowId}
-        AND e.organization_id = ${organizationId}
-        AND i.status = 'active'
-      GROUP BY iw.id, iw.watcher_id, iw.granularity, iw.window_start, iw.window_end,
-               iw.version_id, iw.created_at, iw.extracted_data, iw.content_analyzed,
-               iw.client_id, iw.model_used, iw.run_metadata,
-               i.entity_ids, i.slug, i.name, e.name, et.slug, parent.name
-    `;
-
-		if (windowResult.length === 0) {
-			return c.json({ error: "Window not found" }, 404);
-		}
-
-		return c.json(windowResult[0]);
-	} catch (error) {
-		return c.json({ error: errorMessage(error) }, 500);
-	}
-});
 
 async function handleContentDistribution(c: Context<{ Bindings: Env }>) {
 	const sql = getDb();
@@ -1300,12 +1246,6 @@ app.delete("/api/:orgSlug/connections/:id", mcpAuth, async (c) => {
 	return restToolAction(c, "manage_connections", "delete", {
 		connection_id: Number(c.req.param("id")),
 	});
-});
-
-// Actions
-app.post("/api/:orgSlug/actions/execute", mcpAuth, async (c) => {
-	const body = await c.req.json();
-	return restToolAction(c, "manage_operations", "execute", body);
 });
 
 function serializeEntityApprovalPolicy(policy: EntityApprovalPolicy) {

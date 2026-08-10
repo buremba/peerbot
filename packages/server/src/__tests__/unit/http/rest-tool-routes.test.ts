@@ -180,7 +180,7 @@ describe("fixed-action REST route registrations", () => {
 		const bareProxyCalls = indexSrc.match(/restToolProxy\(/g) ?? [];
 		expect(bareProxyCalls).toHaveLength(1);
 
-		expect(indexSrc.match(/restToolAction\(/g)).toHaveLength(4);
+		expect(indexSrc.match(/restToolAction\(/g)).toHaveLength(3);
 	});
 
 	it("registers read-only proxy GETs from the declaration table", () => {

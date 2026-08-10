@@ -257,7 +257,6 @@ describe("notify input_schema — agent asks a human", () => {
 					waves: {
 						type: "array",
 						items: { type: "integer", enum: [2, 3] },
-						minItems: 1,
 					},
 				},
 				required: ["waves"],
@@ -275,7 +274,7 @@ describe("notify input_schema — agent asks a human", () => {
 		expect(approved.approved).toBe(true);
 	});
 
-	it("keeps constrained string arrays answerable", async () => {
+	it("keeps string arrays answerable", async () => {
 		const sent = await send({
 			title: "Which release tags should run?",
 			input_schema: {
@@ -283,7 +282,7 @@ describe("notify input_schema — agent asks a human", () => {
 				properties: {
 					tags: {
 						type: "array",
-						items: { type: "string", minLength: 2, maxLength: 4 },
+						items: { type: "string" },
 					},
 				},
 				required: ["tags"],
@@ -581,7 +580,7 @@ describe("notify input_schema — agent asks a human", () => {
 		expect(approved.approved).toBe(true);
 	});
 
-	it("keeps a one-value finite numeric interval answerable", async () => {
+	it("keeps numeric fields answerable", async () => {
 		const answer = 2;
 		const sent = await send({
 			title: "What is the exact rollout multiplier?",
@@ -590,8 +589,6 @@ describe("notify input_schema — agent asks a human", () => {
 				properties: {
 					answer: {
 						type: "number",
-						minimum: answer,
-						maximum: answer,
 					},
 				},
 				required: ["answer"],
@@ -607,25 +604,22 @@ describe("notify input_schema — agent asks a human", () => {
 		expect(approved.approved).toBe(true);
 	});
 
-	it("keeps a round-trippable generic array item constant answerable", async () => {
+	it("keeps optional nullable fields answerable", async () => {
 		const sent = await send({
-			title: "Repeat the required tag",
+			title: "Optional: why should we delay?",
 			input_schema: {
 				type: "object",
 				properties: {
-					tags: {
-						type: "array",
-						items: { type: "string", const: "solo" },
-						minItems: 1,
+					reason: {
+						anyOf: [{ type: "string" }, { type: "null" }],
 					},
 				},
-				required: ["tags"],
 			},
 		});
 
 		const approved = (await executeTool(
 			"manage_operations",
-			{ action: "approve", run_id: sent.run_id, input: { tags: ["solo"] } },
+			{ action: "approve", run_id: sent.run_id, input: {} },
 			TEST_ENV,
 			humanCtx,
 		)) as { approved?: boolean };
@@ -648,9 +642,21 @@ describe("notify input_schema — agent asks a human", () => {
 				error: /must describe an object answer/i,
 			},
 			{
+				question: "Question with a root union",
+				inputSchema: {
+					type: "object",
+					anyOf: [{ required: ["first"] }, { required: ["second"] }],
+					properties: {
+						first: { type: "string" },
+						second: { type: "string" },
+					},
+				},
+				error: /root unions are not supported/i,
+			},
+			{
 				question: "Question with a root constant",
 				inputSchema: { type: "object", const: { answer: "hidden" } },
-				error: /root const and enum constraints are not supported/i,
+				error: /keyword 'const' is not supported/i,
 			},
 			{
 				question: "Question with a local schema reference",
@@ -733,19 +739,6 @@ describe("notify input_schema — agent asks a human", () => {
 				error: /must not contain a nested object/i,
 			},
 			{
-				question: "Question with exact optional boolean cardinality",
-				inputSchema: {
-					type: "object",
-					properties: {
-						first: { type: "boolean" },
-						second: { type: "boolean" },
-					},
-					minProperties: 1,
-					maxProperties: 1,
-				},
-				error: /keyword '(?:minProperties|maxProperties)' is not supported/i,
-			},
-			{
 				question: "Question with an unsafe answer pattern",
 				inputSchema: {
 					type: "object",
@@ -761,7 +754,7 @@ describe("notify input_schema — agent asks a human", () => {
 				inputSchema: {
 					type: "object",
 					properties: {
-						answer: { type: "string", format: "email", maxLength: 1 },
+						answer: { type: "string", format: "email" },
 					},
 					required: ["answer"],
 				},
@@ -800,29 +793,11 @@ describe("notify input_schema — agent asks a human", () => {
 						codes: {
 							type: "array",
 							items: { type: "integer" },
-							minItems: 1,
 						},
 					},
 					required: ["codes"],
 				},
-				error: /array property 'codes'.*answer form/i,
-			},
-			{
-				question: "Question with combinator-only typed array items",
-				inputSchema: {
-					type: "object",
-					properties: {
-						flags: {
-							type: "array",
-							items: {
-								anyOf: [{ type: "integer" }, { type: "boolean" }],
-							},
-							minItems: 1,
-						},
-					},
-					required: ["flags"],
-				},
-				error: /array property 'flags'.*answer form/i,
+				error: /array property 'codes'.*scalar enum items/i,
 			},
 			{
 				question: "Question with a generic array item union",
@@ -841,44 +816,17 @@ describe("notify input_schema — agent asks a human", () => {
 				error: /array property 'tags'.*union.*cannot render/i,
 			},
 			{
-				question: "Question with contradictory array item combinators",
+				question: "Question with a nullable wrapper sibling",
 				inputSchema: {
 					type: "object",
 					properties: {
-						tags: {
-							type: "array",
-							items: {
-								type: "string",
-								maxLength: 1,
-								anyOf: [{ type: "string", minLength: 2 }],
-							},
-							minItems: 1,
+						answer: {
+							anyOf: [{ type: "string" }, { type: "null" }],
+							type: "string",
 						},
 					},
-					required: ["tags"],
 				},
-				error: /array property 'tags'.*answer form/i,
-			},
-			{
-				question: "Question with conflicting nullable array siblings",
-				inputSchema: {
-					type: "object",
-					properties: {
-						tags: {
-							anyOf: [
-								{
-									type: "array",
-									items: { type: "string" },
-									maxItems: 1,
-								},
-								{ type: "null" },
-							],
-							minItems: 2,
-						},
-					},
-					required: ["tags"],
-				},
-				error: /nullable wrapper.*minItems.*not supported/i,
+				error: /nullable wrapper sibling 'type' is not supported/i,
 			},
 			{
 				question: "Question with a required nullable field",
@@ -894,70 +842,15 @@ describe("notify input_schema — agent asks a human", () => {
 				error: /required nullable property 'answer'.*answer form/i,
 			},
 			{
-				question: "Question requiring an empty array",
+				question: "Question with a string-length constraint",
 				inputSchema: {
 					type: "object",
 					properties: {
-						tags: {
-							type: "array",
-							items: { type: "string" },
-							maxItems: 0,
-						},
-					},
-					required: ["tags"],
-				},
-				error: /array property 'tags'.*item count/i,
-			},
-			{
-				question: "Question with contradictory field combinators",
-				inputSchema: {
-					type: "object",
-					properties: {
-						answer: {
-							anyOf: [{ type: "number" }, { type: "null" }],
-							allOf: [{ type: "string" }],
-						},
+						answer: { type: "string", minLength: 5 },
 					},
 					required: ["answer"],
 				},
-				error: /keyword 'allOf' is not supported/i,
-			},
-			{
-				question: "Question with contradictory string bounds",
-				inputSchema: {
-					type: "object",
-					properties: {
-						answer: { type: "string", minLength: 5, maxLength: 3 },
-					},
-					required: ["answer"],
-				},
-				error: /property 'answer'.*length bounds/i,
-			},
-			{
-				question: "Question requiring an oversized string answer",
-				inputSchema: {
-					type: "object",
-					properties: {
-						answer: { type: "string", minLength: 300_000 },
-					},
-					required: ["answer"],
-				},
-				error: /smallest form answer exceeds the allowed size/i,
-			},
-			{
-				question: "Question requiring too many array items",
-				inputSchema: {
-					type: "object",
-					properties: {
-						tags: {
-							type: "array",
-							items: { type: "string" },
-							minItems: 10_001,
-						},
-					},
-					required: ["tags"],
-				},
-				error: /smallest form answer exceeds the allowed size/i,
+				error: /keyword 'minLength' is not supported/i,
 			},
 			{
 				question: "Question with an array constant",
@@ -968,106 +861,7 @@ describe("notify input_schema — agent asks a human", () => {
 					},
 					required: ["codes"],
 				},
-				error: /array property 'codes'.*constant.*does not support/i,
-			},
-			{
-				question: "Question with a comma-bearing array item constant",
-				inputSchema: {
-					type: "object",
-					properties: {
-						tags: {
-							type: "array",
-							items: { type: "string", const: "a,b" },
-							minItems: 1,
-						},
-					},
-					required: ["tags"],
-				},
-				error: /array property 'tags'.*constant.*answer form/i,
-			},
-			{
-				question: "Question with a padded array item constant",
-				inputSchema: {
-					type: "object",
-					properties: {
-						tags: {
-							type: "array",
-							items: { type: "string", const: " padded" },
-							minItems: 1,
-						},
-					},
-					required: ["tags"],
-				},
-				error: /array property 'tags'.*constant.*answer form/i,
-			},
-			{
-				question: "Question with a multiline array item constant",
-				inputSchema: {
-					type: "object",
-					properties: {
-						tags: {
-							type: "array",
-							items: { type: "string", const: "line\nbreak" },
-							minItems: 1,
-						},
-					},
-					required: ["tags"],
-				},
-				error: /array property 'tags'.*constant.*answer form/i,
-			},
-			{
-				question: "Question with contradictory numeric bounds",
-				inputSchema: {
-					type: "object",
-					properties: {
-						answer: {
-							type: "number",
-							minimum: 10,
-							maximum: 5,
-						},
-					},
-					required: ["answer"],
-				},
-				error: /property 'answer'.*numeric bounds/i,
-			},
-			{
-				question: "Question with no integer between decimal bounds",
-				inputSchema: {
-					type: "object",
-					properties: {
-						answer: {
-							type: "integer",
-							minimum: 1.1,
-							maximum: 1.9,
-						},
-					},
-					required: ["answer"],
-				},
-				error: /property 'answer'.*finite integer.*numeric bounds/i,
-			},
-			{
-				question: "Question requiring an empty string",
-				inputSchema: {
-					type: "object",
-					properties: { answer: { type: "string", const: "" } },
-					required: ["answer"],
-				},
-				error: /property 'answer'.*answer form/i,
-			},
-			{
-				question: "Question with boolean array items",
-				inputSchema: {
-					type: "object",
-					properties: {
-						flags: {
-							type: "array",
-							items: { type: "boolean" },
-							minItems: 1,
-						},
-					},
-					required: ["flags"],
-				},
-				error: /array property 'flags'.*answer form/i,
+				error: /keyword 'const' is not supported/i,
 			},
 			{
 				question: "Question with too many schema properties",
@@ -1081,23 +875,6 @@ describe("notify input_schema — agent asks a human", () => {
 					),
 				},
 				error: /exceeds the allowed size or nesting limits/i,
-			},
-			{
-				question: "Question whose required fields exceed the answer budget",
-				inputSchema: {
-					type: "object",
-					properties: Object.fromEntries(
-						Array.from({ length: 100 }, (_, index) => [
-							`answer_${index}`,
-							{ type: "string", minLength: 3_000 },
-						]),
-					),
-					required: Array.from(
-						{ length: 100 },
-						(_, index) => `answer_${index}`,
-					),
-				},
-				error: /smallest form answer exceeds the allowed size/i,
 			},
 		];
 

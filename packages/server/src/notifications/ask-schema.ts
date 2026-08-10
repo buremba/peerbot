@@ -1,11 +1,10 @@
 /**
- * Answer-contract boundary for agent-authored questions.
+ * Answer contract for agent-authored questions.
  *
- * Agent input is both untrusted JSON Schema and a UI contract. We validate the
- * complete schema with AJV, then admit only the small subset the existing answer
- * form faithfully emits: flat primitives, typed choices, simple string arrays,
- * and the TypeBox nullable wrapper. Submitted answers are validated with the
- * same request-scoped AJV compiler.
+ * The web answer form deliberately supports a small JSON Schema subset: flat
+ * primitive fields, scalar enums, string arrays, and optional TypeBox-nullable
+ * wrappers. This module admits exactly that subset, then uses request-scoped AJV
+ * validation for every submitted answer.
  */
 
 import { getErrorMessage } from "@lobu/core";
@@ -38,12 +37,7 @@ export function resolveAskAffordance(
 	schema: Record<string, unknown> | null | undefined,
 ): AskAffordance {
 	if (!schema) return { kind: "binary" };
-	const properties =
-		schema.properties !== null &&
-		typeof schema.properties === "object" &&
-		!Array.isArray(schema.properties)
-			? (schema.properties as Record<string, unknown>)
-			: {};
+	const properties = readProperties(schema);
 	const names = Object.keys(properties);
 	const required = Array.isArray(schema.required) ? schema.required : [];
 	if (names.length === 0) {
@@ -57,12 +51,11 @@ export function resolveAskAffordance(
 	return { kind: "form" };
 }
 
-/** Friendly required-field error shown before full AJV answer validation. */
 function findUnansweredRequired(
-	schema: Record<string, unknown> | null | undefined,
+	schema: Record<string, unknown>,
 	input: Record<string, unknown> | null,
 ): string | null {
-	const required = Array.isArray(schema?.required) ? schema.required : [];
+	const required = Array.isArray(schema.required) ? schema.required : [];
 	const answer = input ?? {};
 	const missing = required.filter((field): field is string => {
 		if (typeof field !== "string") return false;
@@ -85,10 +78,12 @@ const ASK_SCHEMA_LIMITS = {
 	maxNodes: 500,
 	maxBytes: 32_768,
 };
-const MAX_REQUIRED_FIELDS = 50;
-const MAX_FIELD_ANSWER_BYTES = 4_096;
-const MAX_ARRAY_ANSWER_ITEMS = 100;
 
+/**
+ * Constraints outside the form's explicit contract fail closed. This avoids a
+ * second, server-side implementation of JSON Schema satisfiability and keeps
+ * already-admitted v1 asks stable across renderer changes.
+ */
 const UNSUPPORTED_KEYWORDS = new Set([
 	"$anchor",
 	"$async",
@@ -100,6 +95,7 @@ const UNSUPPORTED_KEYWORDS = new Set([
 	"$ref",
 	"additionalItems",
 	"allOf",
+	"const",
 	"contains",
 	"dependencies",
 	"dependentRequired",
@@ -114,11 +110,18 @@ const UNSUPPORTED_KEYWORDS = new Set([
 	"formatMinimum",
 	"if",
 	"maxContains",
+	"maxItems",
+	"maxLength",
 	"maxProperties",
+	"maximum",
 	"minContains",
+	"minItems",
+	"minLength",
 	"minProperties",
+	"minimum",
 	"multipleOf",
 	"not",
+	"oneOf",
 	"pattern",
 	"patternProperties",
 	"prefixItems",
@@ -126,6 +129,7 @@ const UNSUPPORTED_KEYWORDS = new Set([
 	"then",
 	"unevaluatedItems",
 	"unevaluatedProperties",
+	"uniqueItems",
 ]);
 
 const NULLABLE_WRAPPER_ANNOTATIONS = new Set([
@@ -141,7 +145,7 @@ const NULLABLE_WRAPPER_ANNOTATIONS = new Set([
 	"writeOnly",
 ]);
 
-/** Traverse JSON Schema positions, never property names. */
+/** Traverse schema positions, never property names such as a field named pattern. */
 function findUnsupportedKeyword(root: Record<string, unknown>): string | null {
 	const stack: unknown[] = [root];
 	while (stack.length > 0) {
@@ -154,17 +158,15 @@ function findUnsupportedKeyword(root: Record<string, unknown>): string | null {
 			continue;
 		}
 		const schema = current as Record<string, unknown>;
-		for (const keyword of UNSUPPORTED_KEYWORDS) {
-			if (Object.hasOwn(schema, keyword)) return keyword;
-		}
+		const unsupported = Object.keys(schema).find((keyword) =>
+			UNSUPPORTED_KEYWORDS.has(keyword),
+		);
+		if (unsupported) return unsupported;
 		for (const keyword of ["additionalProperties", "contentSchema", "items"]) {
 			const child = schema[keyword];
 			if (child !== undefined) stack.push(child);
 		}
-		for (const keyword of ["anyOf", "oneOf"]) {
-			const children = schema[keyword];
-			if (Array.isArray(children)) stack.push(...children);
-		}
+		if (Array.isArray(schema.anyOf)) stack.push(...schema.anyOf);
 		for (const keyword of ["$defs", "definitions", "properties"]) {
 			const children = schema[keyword];
 			if (
@@ -211,10 +213,17 @@ function compileSchema(
 	}
 }
 
-type Scalar = string | number | boolean;
-type PropertyCheck = { error: string } | Record<string, never>;
+function readProperties(
+	schema: Record<string, unknown>,
+): Record<string, unknown> {
+	return schema.properties !== null &&
+		typeof schema.properties === "object" &&
+		!Array.isArray(schema.properties)
+		? (schema.properties as Record<string, unknown>)
+		: {};
+}
 
-function isScalarOption(value: unknown): value is Scalar {
+function isScalarOption(value: unknown): boolean {
 	return (
 		(typeof value === "string" && value !== "") ||
 		typeof value === "boolean" ||
@@ -222,24 +231,25 @@ function isScalarOption(value: unknown): value is Scalar {
 	);
 }
 
-function literalUnionOptions(value: unknown): unknown[] | null {
-	if (!Array.isArray(value) || value.length === 0) return null;
-	const options: unknown[] = [];
-	for (const branch of value) {
-		if (
-			branch === null ||
-			typeof branch !== "object" ||
-			Array.isArray(branch) ||
-			!Object.hasOwn(branch, "const")
-		) {
-			return null;
-		}
-		options.push((branch as Record<string, unknown>).const);
-	}
-	return options;
+function checkOptions(params: {
+	field: string;
+	options: unknown[];
+	acceptanceSchema: Record<string, unknown>;
+	accepts: CompiledSchema["accepts"];
+}): string | null {
+	const valid =
+		params.options.length > 0 &&
+		params.options.every(
+			(option) =>
+				isScalarOption(option) &&
+				params.accepts(params.acceptanceSchema, option),
+		);
+	return valid
+		? null
+		: `input_schema property '${params.field}' has choices the answer form cannot submit`;
 }
 
-function describeNullableProperty(property: Record<string, unknown>): {
+function unwrapNullableProperty(property: Record<string, unknown>): {
 	renderSchema: Record<string, unknown>;
 	wrapped: boolean;
 } {
@@ -266,197 +276,34 @@ function describeNullableProperty(property: Record<string, unknown>): {
 	return { renderSchema: branch as Record<string, unknown>, wrapped: true };
 }
 
-function checkOptions(params: {
-	field: string;
-	options: unknown[];
-	acceptanceSchema: Record<string, unknown>;
-	accepts: CompiledSchema["accepts"];
-}): PropertyCheck {
-	if (
-		params.options.length === 0 ||
-		params.options.some(
-			(option) =>
-				!isScalarOption(option) ||
-				!params.accepts(params.acceptanceSchema, option),
-		)
-	) {
-		return {
-			error: `input_schema property '${params.field}' has choices the answer form cannot submit`,
-		};
-	}
-	return {};
-}
-
-function checkString(
-	field: string,
-	schema: Record<string, unknown>,
-	maxMinimum = MAX_FIELD_ANSWER_BYTES,
-): PropertyCheck {
-	const minimum = Math.max(
-		typeof schema.minLength === "number" ? schema.minLength : 0,
-		1,
-	);
-	const maximum =
-		typeof schema.maxLength === "number"
-			? schema.maxLength
-			: Number.POSITIVE_INFINITY;
-	if (minimum > maximum) {
-		return {
-			error: `input_schema property '${field}' has contradictory length bounds`,
-		};
-	}
-	return minimum <= maxMinimum
-		? {}
-		: {
-			error: "input_schema smallest form answer exceeds the allowed size limits",
-		};
-}
-
-function checkNumeric(
-	field: string,
-	schema: Record<string, unknown>,
-	kind: "number" | "integer",
-): PropertyCheck {
-	const minimum =
-		typeof schema.minimum === "number"
-			? schema.minimum
-			: Number.NEGATIVE_INFINITY;
-	const maximum =
-		typeof schema.maximum === "number"
-			? schema.maximum
-			: Number.POSITIVE_INFINITY;
-	if (minimum > maximum) {
-		return {
-			error: `input_schema property '${field}' has contradictory numeric bounds`,
-		};
-	}
-	if (kind === "integer" && Math.ceil(minimum) > Math.floor(maximum)) {
-		return {
-			error: `input_schema property '${field}' has no finite ${kind} within its numeric bounds`,
-		};
-	}
-	return {};
-}
-
-function genericArrayStringRoundTrips(value: string): boolean {
-	if (value.includes("\n") || value.includes("\r")) return false;
-	const submitted = value
-		.split(",")
-		.map((part) => part.trim())
-		.filter(Boolean);
-	return submitted.length === 1 && submitted[0] === value;
-}
-
 function checkArrayProperty(params: {
 	field: string;
 	schema: Record<string, unknown>;
 	accepts: CompiledSchema["accepts"];
-}): PropertyCheck {
+}): string | null {
 	const { field, schema, accepts } = params;
-	if (Object.hasOwn(schema, "const")) {
-		return {
-			error: `input_schema array property '${field}' uses a constant the answer form does not support`,
-		};
-	}
-	const selections = Math.max(
-		typeof schema.minItems === "number" ? schema.minItems : 0,
-		1,
-	);
-	const maximum =
-		typeof schema.maxItems === "number"
-			? schema.maxItems
-			: Number.POSITIVE_INFINITY;
-	if (selections > maximum) {
-		return {
-			error: `input_schema array property '${field}' has an impossible item count`,
-		};
-	}
-	if (selections > MAX_ARRAY_ANSWER_ITEMS) {
-		return {
-			error: "input_schema smallest form answer exceeds the allowed size limits",
-		};
-	}
 	if (
 		schema.items === null ||
 		typeof schema.items !== "object" ||
 		Array.isArray(schema.items)
 	) {
-		return {
-			error: `input_schema array property '${field}' cannot be produced by the answer form`,
-		};
+		return `input_schema array property '${field}' must declare renderable items`;
 	}
 	const items = schema.items as Record<string, unknown>;
-	const union = Array.isArray(items.anyOf)
-		? items.anyOf
-		: Array.isArray(items.oneOf)
-			? items.oneOf
-			: null;
-	const options = Array.isArray(items.enum)
-		? items.enum
-		: literalUnionOptions(union);
-	if (union && !options) {
-		return {
-			error: `input_schema array property '${field}' uses a union the answer form cannot render`,
-		};
+	if (Array.isArray(items.anyOf)) {
+		return `input_schema array property '${field}' uses a union the answer form cannot render`;
 	}
-	if (options) {
-		const optionCheck = checkOptions({
+	if (Array.isArray(items.enum)) {
+		return checkOptions({
 			field,
-			options,
+			options: items.enum,
 			acceptanceSchema: items,
 			accepts,
 		});
-		if ("error" in optionCheck) return optionCheck;
-		const distinct = new Set<string>();
-		for (const option of options as Scalar[]) {
-			distinct.add(`${typeof option}:${String(option)}`);
-		}
-		if (distinct.size < selections) {
-			return {
-				error: `input_schema array property '${field}' has choices the answer form cannot submit`,
-			};
-		}
-		return {};
 	}
-	if (Object.hasOwn(items, "const")) {
-		const constant = items.const;
-		if (
-			typeof constant !== "string" ||
-			constant === "" ||
-			!genericArrayStringRoundTrips(constant) ||
-			!accepts(items, constant) ||
-			(schema.uniqueItems === true && selections > 1)
-		) {
-			return {
-				error: `input_schema array property '${field}' has a constant the answer form cannot submit`,
-			};
-		}
-		return selections * Buffer.byteLength(constant, "utf8") <=
-			MAX_FIELD_ANSWER_BYTES
-			? {}
-			: {
-				error: "input_schema smallest form answer exceeds the allowed size limits",
-			};
-	}
-	if (items.type !== undefined && items.type !== "string") {
-		return {
-			error: `input_schema array property '${field}' cannot be produced by the answer form`,
-		};
-	}
-	if (schema.uniqueItems === true && selections > 1) {
-		return {
-			error: `input_schema array property '${field}' cannot be produced by the answer form`,
-		};
-	}
-	const itemCheck = checkString(
-		field,
-		items,
-		Math.floor(MAX_FIELD_ANSWER_BYTES / selections),
-	);
-	if ("error" in itemCheck) {
-		return itemCheck;
-	}
-	return {};
+	return items.type === undefined || items.type === "string"
+		? null
+		: `input_schema array property '${field}' can only use string items or scalar enum items`;
 }
 
 function checkFormProperty(params: {
@@ -464,23 +311,22 @@ function checkFormProperty(params: {
 	property: Record<string, unknown>;
 	required: boolean;
 	accepts: CompiledSchema["accepts"];
-}): PropertyCheck {
+}): string | null {
 	const { field, property, required, accepts } = params;
-	const { renderSchema, wrapped } = describeNullableProperty(property);
+	const { renderSchema, wrapped } = unwrapNullableProperty(property);
 	if (wrapped) {
 		const unsupportedSibling = Object.keys(property).find(
 			(keyword) => !NULLABLE_WRAPPER_ANNOTATIONS.has(keyword),
 		);
 		if (unsupportedSibling) {
-			return {
-				error: `input_schema property '${field}' nullable wrapper sibling '${unsupportedSibling}' is not supported by the answer form`,
-			};
+			return `input_schema property '${field}' nullable wrapper sibling '${unsupportedSibling}' is not supported by the answer form`;
 		}
 		if (required) {
-			return {
-				error: `input_schema required nullable property '${field}' cannot be produced by the answer form`,
-			};
+			return `input_schema required nullable property '${field}' cannot be produced by the answer form`;
 		}
+	}
+	if (Array.isArray(renderSchema.anyOf)) {
+		return `input_schema property '${field}' uses a union the answer form cannot render`;
 	}
 	if (Array.isArray(renderSchema.enum)) {
 		return checkOptions({
@@ -490,62 +336,18 @@ function checkFormProperty(params: {
 			accepts,
 		});
 	}
-	if (Array.isArray(renderSchema.anyOf)) {
-		const options = literalUnionOptions(renderSchema.anyOf);
-		return options
-			? checkOptions({
-					field,
-					options,
-					acceptanceSchema: property,
-					accepts,
-				})
-			: {
-					error: `input_schema property '${field}' uses a union the answer form cannot render`,
-				};
-	}
-	if (Array.isArray(renderSchema.oneOf)) {
-		return {
-			error: `input_schema property '${field}' uses oneOf, which the answer form cannot render`,
-		};
-	}
 	if (renderSchema.type === "array") {
 		return checkArrayProperty({ field, schema: renderSchema, accepts });
 	}
 	if (renderSchema.type === "object") {
-		return {
-			error: `input_schema property '${field}' must not contain a nested object`,
-		};
+		return `input_schema property '${field}' must not contain a nested object`;
 	}
-	if (
-		renderSchema.type !== undefined &&
-		!["string", "number", "integer", "boolean"].includes(
+	return renderSchema.type === undefined ||
+		["string", "number", "integer", "boolean"].includes(
 			String(renderSchema.type),
 		)
-	) {
-		return {
-			error: `input_schema property '${field}' cannot be produced by the answer form`,
-		};
-	}
-	if (Object.hasOwn(renderSchema, "const")) {
-		const constant = renderSchema.const;
-		if (
-			!isScalarOption(constant) ||
-			!accepts(property, constant) ||
-			(renderSchema.type === undefined && typeof constant !== "string")
-		) {
-			return {
-				error: `input_schema property '${field}' has a constant the answer form cannot submit`,
-			};
-		}
-		return {};
-	}
-	if (renderSchema.type === "number" || renderSchema.type === "integer") {
-		return checkNumeric(field, renderSchema, renderSchema.type);
-	}
-	if (renderSchema.type === "boolean") {
-		return {};
-	}
-	return checkString(field, renderSchema);
+		? null
+		: `input_schema property '${field}' cannot be produced by the answer form`;
 }
 
 /** Validate the contract before a pending run/event is durably created. */
@@ -557,19 +359,14 @@ export function validateAskInputSchema(
 	if (schema.type !== undefined && schema.type !== "object") {
 		return "input_schema must describe an object answer";
 	}
-	if (Object.hasOwn(schema, "const") || Array.isArray(schema.enum)) {
-		return "input_schema root const and enum constraints are not supported by the answer form";
+	if (Array.isArray(schema.enum)) {
+		return "input_schema root enum constraints are not supported by the answer form";
 	}
-	if (Array.isArray(schema.anyOf) || Array.isArray(schema.oneOf)) {
+	if (Array.isArray(schema.anyOf)) {
 		return "input_schema root unions are not supported by the answer form";
 	}
 
-	const properties =
-		schema.properties !== null &&
-		typeof schema.properties === "object" &&
-		!Array.isArray(schema.properties)
-			? (schema.properties as Record<string, unknown>)
-			: {};
+	const properties = readProperties(schema);
 	const required = Array.isArray(schema.required)
 		? schema.required.filter(
 				(field): field is string => typeof field === "string",
@@ -578,9 +375,6 @@ export function validateAskInputSchema(
 	const missing = required.filter((field) => !Object.hasOwn(properties, field));
 	if (missing.length > 0) {
 		return `input_schema requires fields missing from properties: ${missing.join(", ")}`;
-	}
-	if (required.length > MAX_REQUIRED_FIELDS) {
-		return "input_schema smallest form answer exceeds the allowed size limits";
 	}
 
 	for (const [field, property] of Object.entries(properties)) {
@@ -594,13 +388,13 @@ export function validateAskInputSchema(
 		) {
 			return `input_schema property '${field}' must be a renderable schema`;
 		}
-		const checked = checkFormProperty({
+		const error = checkFormProperty({
 			field,
 			property: property as Record<string, unknown>,
 			required: required.includes(field),
 			accepts: compiled.accepts,
 		});
-		if ("error" in checked) return checked.error;
+		if (error) return error;
 	}
 
 	const affordance = resolveAskAffordance(schema);
@@ -617,7 +411,6 @@ export function validateAskInputSchema(
 	return null;
 }
 
-/** Validate a human answer against the complete agent-authored JSON Schema. */
 function validateAskAnswer(
 	schema: Record<string, unknown>,
 	input: Record<string, unknown> | null,
@@ -635,7 +428,7 @@ function validateAskAnswer(
 		: "Answer does not match input_schema";
 }
 
-/** Preserve the original required-only behavior of asks queued before v1. */
+/** Keep pre-v1 pending asks on their original required-field-only contract. */
 export function validateAskAnswerForProposal(
 	proposal: {
 		input_schema: Record<string, unknown>;

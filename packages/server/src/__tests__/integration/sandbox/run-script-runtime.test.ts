@@ -133,7 +133,12 @@ describe("sandbox runtime", () => {
       notifications: {
         send: async (input: unknown) => {
           captured = input;
-          return { notified_count: 1 };
+          return {
+            notified_count: 1,
+            event_id: 41,
+            url: "/atlas/activity?event=41",
+            run_id: 42,
+          };
         },
       },
       log: () => undefined,
@@ -141,16 +146,25 @@ describe("sandbox runtime", () => {
 
     const result = await runScript({
       source:
-        "export default async (ctx, client) => client.notifications.send({ title: 'Digest', body: 'x', behavior_source: { behavior_id: 7, window_id: 9 } });",
+        "export default async (ctx, client) => client.notifications.send({ title: 'Choose a plan', input_schema: { type: 'object', properties: { plan: { enum: ['legacy', 'new'] } }, required: ['plan'] }, behavior_source: { behavior_id: 7, window_id: 9 } });",
       sdk: stubSdk,
     });
 
     expect(result.success).toBe(true);
-    expect(result.returnValue).toEqual({ notified_count: 1 });
+    expect(result.returnValue).toEqual({
+      notified_count: 1,
+      event_id: 41,
+      url: "/atlas/activity?event=41",
+      run_id: 42,
+    });
     expect(result.sdkCalls).toBe(1);
     expect(captured).toEqual({
-      title: "Digest",
-      body: "x",
+      title: "Choose a plan",
+      input_schema: {
+        type: "object",
+        properties: { plan: { enum: ["legacy", "new"] } },
+        required: ["plan"],
+      },
       behavior_source: { behavior_id: 7, window_id: 9 },
     });
   });

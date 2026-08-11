@@ -64,6 +64,21 @@ describe("lobu skill resource", () => {
     expect(LOBU_SKILL_MARKDOWN).toContain("entities.create");
     expect(LOBU_SKILL_MARKDOWN).toContain("Promise.allSettled");
   });
+
+  it("keeps organization deletion human-owned", () => {
+    expect(LOBU_SKILL_MARKDOWN).toContain(
+      "opened from that workspace's settings button in the organization switcher"
+    );
+    expect(LOBU_SKILL_MARKDOWN).toContain(
+      "ClientSDK and Lobu CLI intentionally expose no organization-delete method"
+    );
+    expect(LOBU_SKILL_MARKDOWN).toContain(
+      "one production organization at a time"
+    );
+    expect(LOBU_SKILL_MARKDOWN).toContain(
+      "A `401` or `403` is a stop signal"
+    );
+  });
 });
 
 describe("lobu operator skill", () => {

@@ -60,7 +60,8 @@ describe('Behavior event outputs', () => {
       prompt: 'Handle the exact observation event.',
       triggers: [
         {
-          kind: 'workspace_event',
+          kind: 'event',
+          source: 'workspace',
           event_types: ['observation'],
           execution: 'window',
           active_run: 'queue',
@@ -228,7 +229,8 @@ describe('Behavior event outputs', () => {
         `workspace-event:${observationTask.action_input.payload.eventId}`,
       ],
       trigger_signal: {
-        kind: 'workspace_event',
+        kind: 'event',
+        source: 'workspace',
         event_id: observationTask.action_input.payload.eventId,
         causal_behavior_ids: [watcherId],
         depth: 1,

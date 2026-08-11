@@ -67,10 +67,11 @@ describe("behavior event trigger", () => {
     ).toBe(true);
   });
 
-  test("subscribes to durable workspace events without pretending they are connector events", () => {
+  test("subscribes to durable workspace events through the shared event primitive", () => {
     expect(
       Value.Check(BehaviorWorkspaceEventTriggerSchema, {
-        kind: "workspace_event",
+        kind: "event",
+        source: "workspace",
         entity_type: "account",
         event_types: ["risk_detected"],
         match: { severity: "high", reviewed: false },
@@ -80,8 +81,15 @@ describe("behavior event trigger", () => {
     ).toBe(true);
     expect(
       Value.Check(BehaviorWorkspaceEventTriggerSchema, {
-        kind: "workspace_event",
+        kind: "event",
+        source: "workspace",
         connector_key: "github",
+        event_types: ["risk_detected"],
+      })
+    ).toBe(false);
+    expect(
+      Value.Check(BehaviorWorkspaceEventTriggerSchema, {
+        kind: "event",
         event_types: ["risk_detected"],
       })
     ).toBe(false);

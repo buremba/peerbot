@@ -90,7 +90,7 @@ export interface WatcherRunPayload {
 }
 
 function behaviorEventTriggerKey(trigger: BehaviorActivationTrigger): string {
-  if (trigger.kind === 'workspace_event') {
+  if (trigger.source === 'workspace') {
     return stableJson({
       kind: trigger.kind,
       entity_type: trigger.entity_type ?? null,
@@ -766,7 +766,7 @@ export async function createBehaviorEventRun(
     }
 
     const policy = params.trigger.active_run ??
-      (params.trigger.kind === 'workspace_event' ? 'coalesce' : 'queue');
+      (params.trigger.source === 'workspace' ? 'coalesce' : 'queue');
     const triggerKey = behaviorEventTriggerKey(params.trigger);
     const occurredAt = params.signal.occurred_at
       ? new Date(params.signal.occurred_at)
@@ -884,10 +884,10 @@ export async function createBehaviorEventRun(
       trigger_signals: [params.signal],
       delivery_ids: [params.signal.delivery_id],
       trigger_execution: params.trigger.execution ??
-        (params.trigger.kind === 'workspace_event' ? 'window' : 'turn'),
-      trigger_output: params.trigger.kind === 'event'
-        ? (params.trigger.output ?? 'silent')
-        : 'silent',
+        (params.trigger.source === 'workspace' ? 'window' : 'turn'),
+      trigger_output: params.trigger.source === 'workspace'
+        ? 'silent'
+        : (params.trigger.output ?? 'silent'),
       trigger_key: triggerKey,
     };
     const inserted = await tx`

@@ -17,7 +17,8 @@ describe("watcher dispatch message", () => {
 				version_id: 3,
 				trigger_execution: "turn",
 				trigger_signal: {
-					kind: "workspace_event",
+					kind: "event",
+					source: "workspace",
 					event_id: 40,
 					event_type: "risk_detected",
 					delivery_id: "workspace-event:40",
@@ -49,7 +50,8 @@ describe("watcher dispatch message", () => {
 				version_id: 3,
 				trigger_execution: "window",
 				trigger_signal: {
-					kind: "workspace_event",
+					kind: "event",
+					source: "workspace",
 					event_id: 40,
 					event_type: "risk_detected",
 					delivery_id: "workspace-event:40",

@@ -42,7 +42,7 @@ describe("generated AGENTS.md onboarding guidance", () => {
   });
 
   test("documents durable Behavior chaining without making every event a trigger", () => {
-    expect(template).toContain('kind: "workspace_event"');
+    expect(template).toContain('source: "workspace"');
     expect(template).toContain("declared event output");
     expect(template).toContain(
       "Ordinary knowledge saves and connector-ingested events remain data"

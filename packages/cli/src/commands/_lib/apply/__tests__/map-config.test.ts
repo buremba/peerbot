@@ -583,6 +583,8 @@ describe("mapProjectToDesiredState", () => {
       skip_if_unchanged: true,
     });
     expect(dw?.triggers?.[0]).toMatchObject({
+      kind: "event",
+      source: "connector",
       connector_key: "github",
       connectionSlug: "github-main",
       execution: "turn",
@@ -597,6 +599,7 @@ describe("mapProjectToDesiredState", () => {
       true
     );
     expect(state.watchers[0]?.triggers?.[0]).toMatchObject({
+      source: "connector",
       connector_key: "github",
       connection_id: 91,
     });
@@ -649,7 +652,8 @@ describe("mapProjectToDesiredState", () => {
       prompt: "Investigate the account risk.",
       triggers: [
         {
-          kind: "workspace_event",
+          kind: "event",
+          source: "workspace",
           entity_type: "account",
           event_types: ["risk_detected", "risk_detected"],
           match: { severity: "high" },
@@ -662,7 +666,8 @@ describe("mapProjectToDesiredState", () => {
     );
     expect(state.watchers[0]?.triggers).toEqual([
       {
-        kind: "workspace_event",
+        kind: "event",
+        source: "workspace",
         entity_type: "account",
         event_types: ["risk_detected"],
         match: { severity: "high" },

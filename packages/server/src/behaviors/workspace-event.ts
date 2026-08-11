@@ -141,7 +141,8 @@ export async function findMatchingWorkspaceEventActivations(
 ): Promise<MatchingWorkspaceEventActivation[]> {
   const needle = [
     {
-      kind: 'workspace_event',
+      kind: 'event',
+      source: 'workspace',
       event_types: [signal.event_type],
     },
   ];
@@ -166,7 +167,8 @@ export async function findMatchingWorkspaceEventActivations(
       : [];
     const trigger = triggers.find(
       (candidate) =>
-        candidate.kind === 'workspace_event' &&
+        candidate.kind === 'event' &&
+        candidate.source === 'workspace' &&
         matchesWorkspaceEventTrigger(candidate, event)
     );
     if (!trigger) continue;
@@ -256,7 +258,8 @@ export async function activateWorkspaceEventTask(
   }
 
   const signal: WorkspaceEventTriggerSignal = {
-    kind: 'workspace_event',
+    kind: 'event',
+    source: 'workspace',
     event_id: event.id,
     event_type: event.semanticType,
     delivery_id: `workspace-event:${event.id}`,

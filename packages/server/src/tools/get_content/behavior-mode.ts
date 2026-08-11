@@ -463,7 +463,7 @@ export async function handleBehaviorMode(
     sources = [{ name: 'content', query: DEFAULT_BEHAVIOR_SOURCE_QUERY }];
   }
 
-  // A workspace-event window receives exact durable pointers in addition to
+  // A workspace-sourced event window receives exact durable pointers in addition to
   // its authored context sources. Include those rows in the same Behavior read
   // so the returned window_token proves what the agent saw and complete_window
   // can link or cite the triggering events normally. IDs are numeric values
@@ -484,9 +484,9 @@ export async function handleBehaviorMode(
   }
   if (triggerContentIds.length > 0) {
     const occupiedNames = new Set(sources.map((source) => source.name));
-    let sourceName = '__workspace_event_inputs';
+    let sourceName = '__event_inputs';
     for (let suffix = 2; occupiedNames.has(sourceName); suffix++) {
-      sourceName = `__workspace_event_inputs_${suffix}`;
+      sourceName = `__event_inputs_${suffix}`;
     }
     sources = [
       {

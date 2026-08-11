@@ -592,10 +592,10 @@ function assertBehaviorSkills(watcher: DesiredWatcher): void {
     Object.keys(watcher.outputs).length > 0 &&
     triggers.some(
       (trigger) =>
-        (trigger.kind === "event" &&
-          (trigger.execution ?? "turn") === "turn") ||
-        (trigger.kind === "workspace_event" &&
-          (trigger.execution ?? "window") === "turn")
+        trigger.kind === "event" &&
+        (trigger.source === "workspace"
+          ? (trigger.execution ?? "window") === "turn"
+          : (trigger.execution ?? "turn") === "turn")
     )
   ) {
     throw new ValidationError(
@@ -654,7 +654,7 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
         skip_if_unchanged: trigger.skip_if_unchanged ?? true,
       };
     }
-    if (trigger.kind === "workspace_event") {
+    if (trigger.kind === "event" && trigger.source === "workspace") {
       return {
         ...trigger,
         entity_type: trigger.entity_type?.trim() || undefined,
@@ -670,6 +670,7 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
     const { connection, ...eventTrigger } = trigger;
     const normalizedEventTrigger = {
       ...eventTrigger,
+      source: "connector" as const,
       event_types: Array.from(new Set(eventTrigger.event_types)),
       match:
         eventTrigger.match && Object.keys(eventTrigger.match).length > 0
@@ -991,7 +992,13 @@ export function mapProjectToDesiredState(
     }
     assertBehaviorSkills(watcher);
     for (const trigger of watcher.triggers ?? []) {
-      if (trigger.kind !== "event" || !trigger.connectionSlug) continue;
+      if (
+        trigger.kind !== "event" ||
+        trigger.source === "workspace" ||
+        !trigger.connectionSlug
+      ) {
+        continue;
+      }
       const connection = (project.connections ?? []).find(
         (candidate) => candidate.slug === trigger.connectionSlug
       );

@@ -1,5 +1,8 @@
 import type { ConnectorTriggerSignal } from "@lobu/connector-sdk";
-import type { BehaviorEventTrigger } from "@lobu/core/contracts/tools/manage-behaviors";
+import type {
+  BehaviorEventTrigger,
+  BehaviorTrigger,
+} from "@lobu/core/contracts/tools/manage-behaviors";
 import type { DbClient } from "../db/client";
 import { getDb } from "../db/client";
 import { runtimeConnectionIdToSlug } from "../lobu/stores/connections-projection";
@@ -134,7 +137,7 @@ export async function findMatchingBehaviorActivations(
   const matches: MatchingBehaviorActivation[] = [];
   for (const row of rows) {
     const triggers = Array.isArray(row.triggers)
-      ? (row.triggers as BehaviorEventTrigger[])
+      ? (row.triggers as BehaviorTrigger[])
       : [];
     // Multi-trigger Behaviors OR activations: any matching event trigger is
     // enough to run once. When several match the same signal, the first in
@@ -142,7 +145,7 @@ export async function findMatchingBehaviorActivations(
     const [trigger] = matchingBehaviorTriggers(
       triggers.filter(
         (candidate): candidate is BehaviorEventTrigger =>
-          candidate.kind === "event",
+          candidate.kind === "event" && candidate.source !== "workspace",
       ),
       signal,
     );

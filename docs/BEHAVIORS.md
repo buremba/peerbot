@@ -34,22 +34,33 @@ execution and busy policy wins.
 |---|---|---|---|
 | No trigger | Explicit manual/API/SDK runs | Window | Existing run policy |
 | `schedule` | Time-based analysis | Window | Coalesce |
-| `event` | Authenticated connector deliveries such as a Slack message or GitHub PR | Turn | Queue |
-| `workspace_event` | A declared durable event output from another Behavior | Window | Coalesce |
+| `event`, `source: "connector"` | Authenticated connector deliveries such as a Slack message or GitHub PR | Turn | Queue |
+| `event`, `source: "workspace"` | A declared durable event output from another Behavior | Window | Coalesce |
 
-Connector `behavior_events` are the allowed catalog for `kind: "event"`.
+`event` is one public trigger primitive; `source` records its provenance.
+Existing connector triggers that omit `source` remain readable and normalize to
+`source: "connector"` on write. Connector `behavior_events` are the allowed
+catalog for connector-sourced events.
 Connector feed `eventKinds` describe stored feed data and are not trigger
 subscriptions. Entity-type `eventKinds` describe durable workspace semantics
-and are the catalog for `kind: "workspace_event"`.
+and are the catalog for workspace-sourced events.
 
 Sources never activate a Behavior. A subscription is the trigger declaration
 that gives an event immediate activation semantics; it is not a second mutable
 subscription record.
 
+The UI mirrors this contract: choose **Event**, select either **Current
+workspace** or an active connection as the **Source**, then choose one or more
+catalog events in the searchable **Events** multi-select. New Event triggers
+default to the current workspace. Its catalog combines the declared event kinds
+in that organization; an optional entity-type filter lives under **Trigger
+options** for the narrower case. One trigger may group events only when they
+share the same source, filters, and run options.
+
 ## Behavior-to-Behavior chaining
 
 Only newly persisted events from a declared Behavior output activate
-`workspace_event` triggers. Ordinary `save_memory` calls, connector ingestion,
+events with `source: "workspace"`. Ordinary `save_memory` calls, connector ingestion,
 and arbitrary rows already in `events` remain data. This explicit producer
 boundary prevents every knowledge write from accidentally becoming a workflow
 command.
@@ -58,7 +69,7 @@ command.
 flowchart LR
   A["Producer Behavior window"] --> B["Declared event output"]
   B --> C["Append event and activation task in one transaction"]
-  C --> D["Match active workspace_event triggers"]
+  C --> D["Match active events whose source is workspace"]
   D --> E["Create deduplicated downstream run"]
   E --> F["Read exact event pointers plus authored sources"]
   F --> G["Downstream outputs can continue the chain"]
@@ -98,7 +109,8 @@ const investigateRisk = defineBehavior({
   prompt: "Investigate the exact risk observation and recommend the next action.",
   triggers: [
     {
-      kind: "workspace_event",
+      kind: "event",
+      source: "workspace",
       event_types: ["observation"],
       match: { namespace: "account-risk" },
       execution: "window",
@@ -127,8 +139,9 @@ events are included even when those sources return nothing.
   set would exceed 256 distinct Behaviors, bounding the durable signal size.
 - Entity-scoped trigger inputs are checked against the downstream agent's read
   policy. Unbound inputs use the workspace-wide `$member` policy envelope.
-- Connector delivery and workspace-event delivery have separate trigger kinds
-  because they cross different trust boundaries.
+- Connector delivery and workspace delivery share the public `event` primitive,
+  but retain separate provenance values and internal activation paths because
+  they cross different trust boundaries.
 - External actions retain their connector authorization, approval, and
   idempotency behavior. Chaining does not make a side effect exactly-once.
 

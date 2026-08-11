@@ -209,6 +209,7 @@ describe('behavior event trigger matching', () => {
     const normalized = normalizeBehaviorTriggers([falseFilter]);
     expect(normalized[0]).toMatchObject({
       kind: 'event',
+      source: 'connector',
       match: { channel_id: 'C123' },
     });
     expect((normalized[0] as BehaviorEventTrigger).match).not.toHaveProperty(
@@ -303,7 +304,8 @@ describe('behavior event trigger matching', () => {
 
   test('matches workspace events by semantic type, entity type, and exact metadata', () => {
     const trigger: BehaviorWorkspaceEventTrigger = {
-      kind: 'workspace_event',
+      kind: 'event',
+      source: 'workspace',
       entity_type: 'account',
       event_types: ['risk_detected'],
       match: { severity: 'high', reviewed: false },
@@ -331,11 +333,16 @@ describe('behavior event trigger matching', () => {
   test('defaults workspace-event analysis to coalesced windows', () => {
     expect(
       normalizeBehaviorTriggers([
-        { kind: 'workspace_event', event_types: ['risk_detected'] },
+        {
+          kind: 'event',
+          source: 'workspace',
+          event_types: ['risk_detected'],
+        },
       ])
     ).toEqual([
       {
-        kind: 'workspace_event',
+        kind: 'event',
+        source: 'workspace',
         event_types: ['risk_detected'],
         entity_type: undefined,
         match: undefined,
@@ -347,7 +354,8 @@ describe('behavior event trigger matching', () => {
 
   test('extends causal ancestry once across coalesced workspace signals', () => {
     const signal = {
-      kind: 'workspace_event' as const,
+      kind: 'event' as const,
+      source: 'workspace' as const,
       event_id: 40,
       event_type: 'risk_detected',
       delivery_id: 'workspace-event:40',
@@ -365,7 +373,8 @@ describe('behavior event trigger matching', () => {
 
   test('measures causal depth by hops when coalescing independent branches', () => {
     const signal = (root: number, ancestor: number) => ({
-      kind: 'workspace_event' as const,
+      kind: 'event' as const,
+      source: 'workspace' as const,
       event_id: root,
       event_type: 'risk_detected',
       delivery_id: `workspace-event:${root}`,
@@ -392,7 +401,8 @@ describe('behavior event trigger matching', () => {
       deriveWorkspaceEventCausality(
         [
           {
-            kind: 'workspace_event',
+            kind: 'event',
+            source: 'workspace',
             event_id: 40,
             event_type: 'risk_detected',
             delivery_id: 'workspace-event:40',

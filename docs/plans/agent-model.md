@@ -1,7 +1,7 @@
 # Agent Model — Behaviors, Surfaces, Workflows
 
 > **Status (2026-08-11):** **Reactive Behaviors and durable event chaining are
-> implemented**—connector event, workspace event, schedule, and manual
+> implemented**—connector-sourced event, workspace-sourced event, schedule, and manual
 > activation share one model and editor. See `docs/BEHAVIORS.md` for the current
 > contract and limits. Correlated workflow WAIT, joins, and the broader
 > proactivity policy remain future work.
@@ -73,7 +73,8 @@ decides reply‑vs‑silence and must be per‑context.
 ## 3. Backend mapping
 
 - **Behaviors are canonical `watchers` rows.** The `triggers` JSON array holds
-  connector-event, workspace-event, and schedule activations; an empty array is manual-only. Prompt,
+  event and schedule activations; event provenance is selected with
+  `source: "connector" | "workspace"`, and an empty array is manual-only. Prompt,
   sources, version history, execution settings, and activity remain on the
   existing watcher/version/run spine. No parallel Behavior table was added.
 - **`manage_behaviors` is the canonical declarative writer** for API, MCP, CLI,
@@ -97,7 +98,7 @@ decides reply‑vs‑silence and must be per‑context.
   schedule always runs.
 - **Declared output events form the pipeline boundary.** A completed window
   persists its output event and a durable activation task atomically. The task
-  matches `workspace_event` triggers after commit and uses the existing run
+  matches `event` triggers with `source: "workspace"` after commit and uses the existing run
   queue for retry, dedupe, cooldown, coalescing, and dispatch. Ordinary event
   writes do not activate Behaviors.
 - **Chat links are Behaviors only.** A one-shot migration backfills legacy

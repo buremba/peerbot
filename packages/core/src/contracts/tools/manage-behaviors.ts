@@ -15,6 +15,12 @@ const BehaviorTriggerMatchValueSchema = Type.Union([
 export const BehaviorEventTriggerSchema = Type.Object(
   {
     kind: Type.Literal("event"),
+    source: Type.Optional(
+      Type.Literal("connector", {
+        description:
+          'Event provenance. Omitted legacy triggers normalize to "connector".',
+      })
+    ),
     connector_key: Type.String({ minLength: 1, maxLength: 100 }),
     connection_id: Type.Optional(Type.Integer({ minimum: 1 })),
     event_types: Type.Array(Type.String({ minLength: 1, maxLength: 100 }), {
@@ -70,9 +76,9 @@ export type BehaviorEventTrigger = Static<typeof BehaviorEventTriggerSchema>;
 
 /**
  * Activation from an event already written to the Lobu workspace by another
- * Behavior. This is deliberately distinct from `kind: "event"`: connector
- * triggers cross an authenticated external-delivery boundary, while workspace
- * triggers follow an append-only event that is already governed by Lobu.
+ * Behavior. Workspace and connector activations share the public `event`
+ * primitive; `source` preserves their provenance and selects the appropriate
+ * delivery and authorization path.
  *
  * In v1 only declared Behavior event outputs emit this activation. Ordinary
  * knowledge saves and connector ingestion remain durable data, not implicit
@@ -80,7 +86,8 @@ export type BehaviorEventTrigger = Static<typeof BehaviorEventTriggerSchema>;
  */
 export const BehaviorWorkspaceEventTriggerSchema = Type.Object(
   {
-    kind: Type.Literal("workspace_event"),
+    kind: Type.Literal("event"),
+    source: Type.Literal("workspace"),
     entity_type: Type.Optional(
       Type.String({
         minLength: 1,

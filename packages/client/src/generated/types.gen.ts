@@ -4294,6 +4294,10 @@ export type ManageBehaviorsData = {
     triggers?: Array<
       | {
           kind: "event";
+          /**
+           * Event provenance. Omitted legacy triggers normalize to "connector".
+           */
+          source?: "connector";
           connector_key: string;
           connection_id?: number;
           event_types: Array<string>;
@@ -4321,7 +4325,8 @@ export type ManageBehaviorsData = {
           skip_if_unchanged?: boolean;
         }
       | {
-          kind: "workspace_event";
+          kind: "event";
+          source: "workspace";
           /**
            * Optional entity-type slug. When set, the event must be linked to an entity of this type.
            */
@@ -4844,6 +4849,10 @@ export type GetBehaviorResponses = {
       triggers?: Array<
         | {
             kind: "event";
+            /**
+             * Event provenance. Omitted legacy triggers normalize to "connector".
+             */
+            source?: "connector";
             connector_key: string;
             connection_id?: number;
             event_types: Array<string>;
@@ -4871,7 +4880,8 @@ export type GetBehaviorResponses = {
             skip_if_unchanged?: boolean;
           }
         | {
-            kind: "workspace_event";
+            kind: "event";
+            source: "workspace";
             /**
              * Optional entity-type slug. When set, the event must be linked to an entity of this type.
              */
@@ -5152,7 +5162,7 @@ export type ReadKnowledgeData = {
      */
     classification_source?: "user" | "embedding" | "llm";
     /**
-     * Filter to specific content IDs. With behavior_id, these exact durable rows are added to the Behavior read and signed into its window token in addition to authored sources; this is how workspace-event activations pass bounded event pointers without copying payloads.
+     * Filter to specific content IDs. With behavior_id, these exact durable rows are added to the Behavior read and signed into its window token in addition to authored sources; this is how workspace-sourced event activations pass bounded event pointers without copying payloads.
      */
     content_ids?: Array<number>;
     /**

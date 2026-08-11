@@ -14,7 +14,8 @@ export const MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS = 256;
  * append-only event store; this signal carries only delivery/correlation data.
  */
 export interface WorkspaceEventTriggerSignal {
-  kind: 'workspace_event';
+  kind: 'event';
+  source: 'workspace';
   event_id: number;
   event_type: string;
   delivery_id: string;
@@ -38,7 +39,8 @@ export function isWorkspaceEventTriggerSignal(
   if (!value || typeof value !== 'object') return false;
   const signal = value as Partial<WorkspaceEventTriggerSignal>;
   return (
-    signal.kind === 'workspace_event' &&
+    signal.kind === 'event' &&
+    signal.source === 'workspace' &&
     Number.isSafeInteger(signal.event_id) &&
     Number(signal.event_id) > 0 &&
     typeof signal.event_type === 'string' &&

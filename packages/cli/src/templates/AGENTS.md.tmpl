@@ -280,7 +280,7 @@ Every credential is a `secret("ENV_NAME")` placeholder resolved from `.env` — 
 paste a real key into the config, and never fabricate one. If a secret is missing,
 ask the user to add it to `.env`.
 
-### Behavior (connector event, workspace event, schedule, or manual) + outputs
+### Behavior (event from a connector or workspace, schedule, or manual) + outputs
 
 A Behavior's instructions come from the agent's skill library: list skill names
 in `skills` and `lobu apply` compiles their bodies (in order) into the frozen
@@ -304,9 +304,9 @@ const digest = defineBehavior({
   triggers: [
     { kind: "schedule", cron: "0 9 * * *", active_run: "coalesce", skip_if_unchanged: true },
     // Or react to a connector event:
-    // { kind: "event", connector_key: "github", connection: gh, event_types: ["pull_request.created"] },
+    // { kind: "event", source: "connector", connector_key: "github", connection: gh, event_types: ["pull_request.created"] },
     // Or to a declared event output from another Behavior:
-    // { kind: "workspace_event", event_types: ["observation"], match: { namespace: "account-risk" } },
+    // { kind: "event", source: "workspace", event_types: ["observation"], match: { namespace: "account-risk" } },
   ],
   skills: ["daily-digest"],
   outputs: {
@@ -321,8 +321,8 @@ Declared outputs are persisted whether or not a `reaction` is present, and the
 complete result remains on Canvas. A `reaction` lets the Behavior act (post a
 message, call connectors, or request a governed merge) and can consume those
 persisted drafts. Omit `outputs` for a Canvas-only or reaction-only Behavior.
-Only newly persisted declared event outputs activate `workspace_event`
-triggers. Ordinary knowledge saves and connector-ingested events remain data,
+Only newly persisted declared event outputs activate events with
+`source: "workspace"`. Ordinary knowledge saves and connector-ingested events remain data,
 and SQL sources are reads rather than subscriptions. The downstream run reads
 the exact event pointers plus its authored sources under the owning agent's
 ACL. See the complete primitive and limit model at

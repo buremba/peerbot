@@ -86,7 +86,13 @@ export function resolveBehaviorConnectionRefs(
   for (const watcher of watchers) {
     if (!watcher.triggers) continue;
     watcher.triggers = watcher.triggers.map((trigger) => {
-      if (trigger.kind !== "event" || !trigger.connectionSlug) return trigger;
+      if (
+        trigger.kind !== "event" ||
+        trigger.source === "workspace" ||
+        !trigger.connectionSlug
+      ) {
+        return trigger;
+      }
       const connectionId = connectionIdBySlug.get(trigger.connectionSlug);
       if (connectionId === undefined) {
         if (requireResolved) {
@@ -379,7 +385,9 @@ export async function fetchRemoteSnapshot(
     state.watchers.some((watcher) =>
       watcher.triggers?.some(
         (trigger) =>
-          trigger.kind === "event" && trigger.connectionSlug !== undefined
+          trigger.kind === "event" &&
+          trigger.source !== "workspace" &&
+          trigger.connectionSlug !== undefined
       )
     );
   const connectorDefinitions = fetchConnectors

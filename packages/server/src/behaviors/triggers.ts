@@ -143,6 +143,7 @@ function normalizedEventTrigger(
 	}
 	return {
 		...trigger,
+		source: "connector",
 		event_types: Array.from(new Set(trigger.event_types)),
 		match,
 		execution,
@@ -201,7 +202,7 @@ export function normalizeBehaviorTriggers(
 			}
 			return normalizedScheduleTrigger(trigger);
 		}
-		if (trigger.kind === "workspace_event") {
+		if (trigger.kind === "event" && trigger.source === "workspace") {
 			return normalizedWorkspaceEventTrigger(trigger);
 		}
 		return normalizedEventTrigger(trigger);
@@ -261,9 +262,12 @@ export function behaviorRequiresInstructions(
 	return triggers.some(
 		(trigger) =>
 			trigger.kind === "schedule" ||
-			(trigger.kind === "workspace_event" &&
+			(trigger.kind === "event" &&
+				trigger.source === "workspace" &&
 				(trigger.execution ?? "window") === "window") ||
-			(trigger.kind === "event" && trigger.execution === "window")
+			(trigger.kind === "event" &&
+				trigger.source !== "workspace" &&
+				trigger.execution === "window")
 	);
 }
 
@@ -279,8 +283,11 @@ export function assertBehaviorOutputsUseWindowExecution(
 	if (!outputs || Object.keys(outputs).length === 0) return;
 	const turnTrigger = triggers.find(
 		(trigger) =>
-			(trigger.kind === "event" && (trigger.execution ?? "turn") === "turn") ||
-			(trigger.kind === "workspace_event" &&
+			(trigger.kind === "event" &&
+				trigger.source !== "workspace" &&
+				(trigger.execution ?? "turn") === "turn") ||
+			(trigger.kind === "event" &&
+				trigger.source === "workspace" &&
 				(trigger.execution ?? "window") === "turn")
 	);
 	if (!turnTrigger) return;
@@ -322,7 +329,8 @@ export async function assertBehaviorTriggerConnections(
 	triggers: BehaviorTrigger[]
 ): Promise<void> {
 	const eventTriggers = triggers.filter(
-		(trigger): trigger is BehaviorEventTrigger => trigger.kind === "event"
+		(trigger): trigger is BehaviorEventTrigger =>
+			trigger.kind === "event" && trigger.source !== "workspace"
 	);
 	const catalogs = new Map<string, ConnectorBehaviorEventCatalog>();
 	for (const trigger of eventTriggers) {
@@ -395,42 +403,55 @@ export async function assertBehaviorTriggerConnections(
 
 	const workspaceTriggers = triggers.filter(
 		(trigger): trigger is BehaviorWorkspaceEventTrigger =>
-			trigger.kind === "workspace_event"
+			trigger.kind === "event" && trigger.source === "workspace"
 	);
 	const eventKindsByEntityType = new Map<
 		string,
 		{ name: string; eventKinds: Record<string, unknown> | null }
 	>();
 	for (const trigger of workspaceTriggers) {
-		const entityTypeSlug = trigger.entity_type ?? "$member";
-		let catalog = eventKindsByEntityType.get(entityTypeSlug);
+		const entityTypeSlug = trigger.entity_type;
+		const catalogKey = entityTypeSlug ?? "*";
+		let catalog = eventKindsByEntityType.get(catalogKey);
 		if (!catalog) {
-			const rows = await sql`
-				SELECT name, event_kinds
-				FROM entity_types
-				WHERE organization_id = ${organizationId}
-				  AND slug = ${entityTypeSlug}
-				  AND deleted_at IS NULL
-				LIMIT 1
-			`;
-			if (rows.length === 0) {
+			const rows = entityTypeSlug
+				? await sql`
+					SELECT name, event_kinds
+					FROM entity_types
+					WHERE organization_id = ${organizationId}
+					  AND slug = ${entityTypeSlug}
+					  AND deleted_at IS NULL
+					LIMIT 1
+				`
+				: await sql`
+					SELECT name, event_kinds
+					FROM entity_types
+					WHERE organization_id = ${organizationId}
+					  AND deleted_at IS NULL
+				`;
+			if (entityTypeSlug && rows.length === 0) {
 				throw new ToolUserError(
 					`Workspace event trigger entity type '${entityTypeSlug}' was not found in this organization.`
 				);
 			}
-			const eventKinds = rows[0]?.event_kinds;
+			const eventKinds = Object.assign(
+				{},
+				...rows.map((row) =>
+					row.event_kinds && typeof row.event_kinds === "object"
+						? row.event_kinds
+						: {}
+				)
+			);
 			catalog = {
-				name: String(rows[0]?.name ?? entityTypeSlug),
-				eventKinds:
-					eventKinds && typeof eventKinds === "object"
-						? (eventKinds as Record<string, unknown>)
-						: null,
+				name: entityTypeSlug
+					? String(rows[0]?.name ?? entityTypeSlug)
+					: "Workspace",
+				eventKinds,
 			};
-			eventKindsByEntityType.set(entityTypeSlug, catalog);
+			eventKindsByEntityType.set(catalogKey, catalog);
 		}
-		if (!catalog.eventKinds) continue;
 		for (const eventType of trigger.event_types) {
-			if (!(eventType in catalog.eventKinds)) {
+			if (!catalog.eventKinds || !(eventType in catalog.eventKinds)) {
 				throw new ToolUserError(
 					`${catalog.name} does not declare workspace event '${eventType}'.`
 				);

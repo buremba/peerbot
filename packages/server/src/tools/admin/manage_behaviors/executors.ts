@@ -84,12 +84,9 @@ export function assertBehaviorExecutorsResolve(
   triggers: BehaviorTriggerInput[] | null | undefined,
   defaults: BehaviorExecutorDefaults
 ): void {
-  const automated = (triggers ?? []).some(
-    (trigger) =>
-      trigger.kind === "event" ||
-      trigger.kind === "workspace_event" ||
-      trigger.kind === "schedule"
-  );
+	const automated = (triggers ?? []).some(
+		(trigger) => trigger.kind === "event" || trigger.kind === "schedule"
+	);
   if (!automated) return;
   if (!resolveBehaviorExecutor(defaults)) {
     throw new ToolUserError(

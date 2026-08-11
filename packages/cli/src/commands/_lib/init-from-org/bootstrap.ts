@@ -535,7 +535,11 @@ function emitBehavior(
   if (w.description) fields.push(`description: ${str(w.description)}`);
   if (w.triggers?.length) {
     const triggers = w.triggers.map((trigger) => {
-      if (trigger.kind !== "event" || trigger.connection_id == null) {
+      if (
+        trigger.kind !== "event" ||
+        trigger.source === "workspace" ||
+        trigger.connection_id == null
+      ) {
         return trigger;
       }
       const connectionHandle = connectionHandlesById.get(trigger.connection_id);

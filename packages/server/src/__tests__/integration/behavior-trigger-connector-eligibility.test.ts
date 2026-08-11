@@ -120,7 +120,18 @@ describe("event-trigger connector eligibility", () => {
 		await expect(
 			assertBehaviorTriggerConnections(sql, orgId, [
 				{
-					kind: "workspace_event",
+					kind: "event",
+					source: "workspace",
+					event_types: ["risk_detected"],
+				},
+			]),
+		).resolves.toBeUndefined();
+
+		await expect(
+			assertBehaviorTriggerConnections(sql, orgId, [
+				{
+					kind: "event",
+					source: "workspace",
 					entity_type: "account",
 					event_types: ["risk_detected"],
 				},
@@ -130,7 +141,8 @@ describe("event-trigger connector eligibility", () => {
 		await expect(
 			assertBehaviorTriggerConnections(sql, orgId, [
 				{
-					kind: "workspace_event",
+					kind: "event",
+					source: "workspace",
 					entity_type: "missing-type",
 					event_types: ["risk_detected"],
 				},
@@ -140,7 +152,8 @@ describe("event-trigger connector eligibility", () => {
 		await expect(
 			assertBehaviorTriggerConnections(sql, orgId, [
 				{
-					kind: "workspace_event",
+					kind: "event",
+					source: "workspace",
 					entity_type: "account",
 					event_types: ["undeclared_kind"],
 				},

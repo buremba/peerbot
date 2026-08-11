@@ -32,6 +32,7 @@ import { errorMessage } from '../utils/errors';
 import { resolveAuthCredentials } from '../utils/auth-credential-secrets';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
 import { stripServerOnlyExecutionConfig } from '../tools/admin/behavior-execution-config';
+import { supersedeActionEvent } from '../tools/admin/approval-events';
 import logger from '../utils/logger';
 import { recordLifecycleEvent } from '../utils/insert-event';
 import { isCloudMode } from '../utils/cloud-mode';
@@ -47,6 +48,60 @@ const DISPATCH_FAILURE_OUTCOME: RunOutcome = 'infra_error';
 const DUE_FEEDS_LOCK_KEY = 71001;
 const DUE_FEED_MATERIALIZE_COOLDOWN_MS = 5000;
 let lastDueFeedMaterializeAttemptAt = 0;
+
+/**
+ * Fail a run that this worker already claimed. Approval-gated actions also
+ * have a durable card, so the run failure and failed-card supersede share one
+ * short transaction. Other worker lanes have no approval card and retain the
+ * existing single-row terminal transition.
+ */
+export async function failClaimedWorkerRun(params: {
+  runId: number;
+  workerId: string;
+  errorMessage: string;
+}): Promise<boolean> {
+  const sql = getDb();
+  return sql.begin(async (tx) => {
+    const rows = await tx<{
+      organization_id: string;
+      run_type: string;
+      approval_status: string;
+      action_key: string | null;
+    }>`
+      UPDATE runs
+      SET status = 'failed',
+          outcome = ${DISPATCH_FAILURE_OUTCOME},
+          completed_at = current_timestamp,
+          error_message = ${params.errorMessage}
+      WHERE id = ${params.runId}
+        AND status = 'running'
+        AND claimed_by = ${params.workerId}
+      RETURNING organization_id, run_type, approval_status, action_key
+    `;
+    if (rows.length === 0) return false;
+
+    const row = rows[0];
+    if (row.run_type === 'action' && row.approval_status === 'approved') {
+      const actionKey = row.action_key ?? 'Action';
+      const eventId = await supersedeActionEvent(
+        params.runId,
+        row.organization_id,
+        'failed',
+        `${actionKey} — failed`,
+        `Action failed before worker dispatch: ${actionKey} — ${params.errorMessage}`,
+        { error_message: params.errorMessage },
+        null,
+        tx
+      );
+      if (eventId === undefined) {
+        throw new Error(
+          `Cannot fail approval run ${params.runId}: its approval card is missing`
+        );
+      }
+    }
+    return true;
+  });
+}
 
 /** jsonb columns arrive as objects, text columns as JSON strings — normalize to an object or null. */
 function parseClaimJson(raw: unknown): Record<string, unknown> | null {
@@ -756,14 +811,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       );
     } catch (err) {
       const message = errorMessage(err);
-      await sql`
-        UPDATE runs
-        SET status = 'failed',
-            outcome = ${DISPATCH_FAILURE_OUTCOME},
-            completed_at = current_timestamp,
-            error_message = ${message}
-        WHERE id = ${row.run_id}
-      `;
+      await failClaimedWorkerRun({
+        runId: row.run_id,
+        workerId: worker_id,
+        errorMessage: message,
+      });
       logger.error(
         { run_id: row.run_id, err },
         'Failed to resolve pinned Behavior skills for device dispatch'
@@ -859,14 +911,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       assertConnectorAllowedInCloud(row.connector_key);
     } catch (err) {
       const message = errorMessage(err);
-      await sql`
-        UPDATE runs
-        SET status = 'failed',
-            outcome = ${DISPATCH_FAILURE_OUTCOME},
-            completed_at = current_timestamp,
-            error_message = ${message}
-        WHERE id = ${row.run_id}
-      `;
+      await failClaimedWorkerRun({
+        runId: row.run_id,
+        workerId: worker_id,
+        errorMessage: message,
+      });
       logger.warn(
         { run_id: row.run_id, connector_key: row.connector_key },
         'Blocked cloud-restricted connector run under LOBU_CLOUD_MODE'
@@ -904,14 +953,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       });
     } catch (err) {
       const message = errorMessage(err);
-      await sql`
-        UPDATE runs
-        SET status = 'failed',
-            outcome = ${DISPATCH_FAILURE_OUTCOME},
-            completed_at = current_timestamp,
-            error_message = ${message}
-        WHERE id = ${row.run_id}
-      `;
+      await failClaimedWorkerRun({
+        runId: row.run_id,
+        workerId: worker_id,
+        errorMessage: message,
+      });
       logger.error(
         { run_id: row.run_id, connector_key: row.connector_key, err },
         'Failed to resolve connector code for claimed worker run'

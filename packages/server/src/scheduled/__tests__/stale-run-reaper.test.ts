@@ -24,6 +24,10 @@ import { reapStaleRuns } from "../check-stalled-executions";
 
 const ORG_ID = "reaper-org";
 const STALE_THRESHOLD_SECONDS = 60;
+const DROP_FAILED_APPROVAL_EVENT_TRIGGER = `
+DROP TRIGGER IF EXISTS test_fail_stale_approval_event_trg ON events;
+DROP FUNCTION IF EXISTS test_fail_stale_approval_event();
+`;
 
 beforeAll(async () => {
 	await ensureDbForGatewayTests();
@@ -134,6 +138,41 @@ async function approvalStatusOf(runId: number): Promise<string> {
     SELECT approval_status FROM runs WHERE id = ${runId}
   `) as unknown as Array<{ approval_status: string }>;
 	return rows[0]?.approval_status ?? "missing";
+}
+
+async function seedApprovedActionCard(runId: number): Promise<void> {
+	const sql = getDb();
+	await sql`
+    UPDATE runs SET action_key = 'stale_action' WHERE id = ${runId}
+  `;
+	await sql`
+    INSERT INTO events (
+      organization_id, origin_id, title, payload_text, run_id,
+      semantic_type, interaction_type, interaction_status, metadata
+    ) VALUES (
+      ${ORG_ID}, ${`run_${runId}_confirmed`}, 'stale_action — executing',
+      'Operation confirmed: stale_action', ${runId}, 'operation',
+      'approval', 'approved', ${sql.json({
+			status: "confirmed",
+			action_key: "stale_action",
+			run_id: runId,
+		})}
+    )
+  `;
+}
+
+async function currentApprovalCardStatus(runId: number): Promise<string> {
+	const rows = await getDb()<{
+		interaction_status: string;
+	}>`
+    SELECT interaction_status
+    FROM current_event_records
+    WHERE organization_id = ${ORG_ID}
+      AND run_id = ${runId}
+      AND semantic_type = 'operation'
+      AND interaction_type = 'approval'
+  `;
+	return rows[0]?.interaction_status ?? "missing";
 }
 
 describe("reapStaleRuns — connector lanes", () => {
@@ -357,6 +396,58 @@ describe("reapStaleRuns — connector lanes", () => {
       SELECT error_message FROM runs WHERE id = ${staleId}
     `) as unknown as Array<{ error_message: string | null }>;
 		expect(reaped[0].error_message).toBe("worker_heartbeat_lost");
+	});
+
+	test("approved action timeout supersedes its card in the same transition", async () => {
+		const runId = await seedRun({
+			status: "running",
+			lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+			claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+			runType: "action",
+			approvalStatus: "approved",
+		});
+		await seedApprovedActionCard(runId);
+
+		const result = await reapStaleRuns();
+
+		expect(result.reaped).toBe(1);
+		expect(await statusOf(runId)).toBe("timeout");
+		expect(await currentApprovalCardStatus(runId)).toBe("failed");
+	});
+
+	test("approved action timeout rolls back when its card write fails", async () => {
+		const runId = await seedRun({
+			status: "running",
+			lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+			claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+			runType: "action",
+			approvalStatus: "approved",
+		});
+		await seedApprovedActionCard(runId);
+		await getDb().unsafe(`
+      CREATE OR REPLACE FUNCTION test_fail_stale_approval_event()
+        RETURNS trigger AS $fn$
+      BEGIN
+        IF NEW.interaction_type = 'approval' AND NEW.interaction_status = 'failed' THEN
+          RAISE EXCEPTION 'simulated stale approval-event write failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $fn$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_fail_stale_approval_event_trg
+        BEFORE INSERT ON events
+        FOR EACH ROW EXECUTE FUNCTION test_fail_stale_approval_event();
+    `);
+
+		try {
+			const result = await reapStaleRuns();
+
+			expect(result.reaped).toBe(0);
+			expect(await statusOf(runId)).toBe("running");
+			expect(await currentApprovalCardStatus(runId)).toBe("approved");
+		} finally {
+			await getDb().unsafe(DROP_FAILED_APPROVAL_EVENT_TRIGGER);
+		}
 	});
 
 	test("claimed rows that never sent any heartbeat are reaped via claimed_at", async () => {

@@ -9,6 +9,7 @@
  */
 
 import { beforeEach, describe, expect, it } from "vitest";
+import { insertEvent } from "../../utils/insert-event";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import {
 	createTestConnection,
@@ -34,7 +35,22 @@ async function seedPendingApprovalRun(opts: {
 		)
 		RETURNING id
 	`;
-	return Number(run.id);
+	const runId = Number(run.id);
+	await insertEvent({
+		entityIds: [],
+		organizationId: opts.organizationId,
+		originId: `run_${runId}_pending`,
+		title: `${opts.actionKey} — pending approval`,
+		content: "Awaiting review",
+		semanticType: "operation",
+		connectorKey: opts.connectorKey,
+		connectionId: opts.connectionId,
+		runId,
+		interactionType: "approval",
+		interactionStatus: "pending",
+		metadata: { action_key: opts.actionKey, run_id: runId },
+	});
+	return runId;
 }
 
 describe("connection delete expires pending approvals", () => {
@@ -76,6 +92,15 @@ describe("connection delete expires pending approvals", () => {
 		expect(row?.approval_status).toBe("expired");
 		expect(row?.status).toBe("cancelled");
 		expect(row?.completed_at).not.toBeNull();
+		const [card] = await sql`
+			SELECT interaction_status, metadata
+			FROM current_event_records
+			WHERE organization_id = ${org.id}
+			  AND run_id = ${runId}
+			  AND interaction_type = 'approval'
+		`;
+		expect(card?.interaction_status).toBe("rejected");
+		expect(card?.metadata?.approval_status).toBe("expired");
 	});
 
 	it("leaves pending approvals on other connections untouched", async () => {

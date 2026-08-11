@@ -36,7 +36,7 @@ import { emit } from "../events/emitter";
 import { parseJsonBody } from "../gateway/routes/shared/helpers";
 import type { Env } from "../index";
 import { notifyBrowserAuthExpired } from "../notifications/triggers";
-import { supersedeActionEvent } from "../tools/admin/manage_operations";
+import { supersedeActionEvent } from "../tools/admin/approval-events";
 import {
 	type AuthProfileKind,
 	getAuthProfileById,
@@ -1930,19 +1930,56 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 		const sql = getDb();
 
 		// Atomic terminal-state transition with the shared F2 guard (see
-		// finalizeRun), so a no-op (0 rows) means the row was already finalized by
-		// another path (e.g. waitForDeviceActionRun timed out and marked it
-		// 'timeout'). Without it a slow worker could overwrite a gateway-side
-		// timeout decision with success — and the caller has already returned
-		// timeout to its caller, so the action would double-finalize.
-		const updatedRuns = await finalizeRun(sql, {
-			runId: req.run_id,
-			workerId: req.worker_id,
-			status: req.status === "success" ? "completed" : "failed",
-			extraSet: sql`,
-          action_output = ${req.action_output ? sql.json(req.action_output) : null},
-          error_message = ${req.error_message ?? null}`,
-			returning: sql`organization_id, action_key`,
+		// finalizeRun) AND, for approval-gated runs, the card supersede in ONE
+		// transaction, so a card INSERT failure rolls the run terminal state
+		// back instead of leaving a terminal run whose timeline is stuck at the
+		// prior card. Auto/no-approval runs (`approval_status='auto'`) have no
+		// card and finalize normally — no supersede is attempted. A no-op (0
+		// rows) means the row was already finalized by another path (e.g.
+		// waitForDeviceActionRun timed out and marked it 'timeout'). Without it a
+		// slow worker could overwrite a gateway-side timeout decision with
+		// success — and the caller has already returned timeout to its caller, so
+		// the action would double-finalize.
+		const updatedRuns = await sql.begin(async (tx) => {
+			const rows = await finalizeRun(tx, {
+				runId: req.run_id,
+				workerId: req.worker_id,
+				status: req.status === "success" ? "completed" : "failed",
+				extraSet: tx`,
+					action_output = ${req.action_output ? tx.json(req.action_output) : null},
+					error_message = ${req.error_message ?? null}`,
+				returning: tx`organization_id, action_key, approval_status`,
+			});
+			if (rows.length === 0) return rows;
+
+			const organizationId = (rows[0] as any)?.organization_id;
+			const actionKey = (rows[0] as any)?.action_key ?? "Action";
+			if (
+				organizationId &&
+				(rows[0] as any)?.approval_status === "approved"
+			) {
+				const newStatus = req.status === "success" ? "completed" : "failed";
+				const eventId = await supersedeActionEvent(
+					req.run_id,
+					organizationId,
+					newStatus,
+					`${actionKey} — ${newStatus}`,
+					req.status === "success"
+						? `Action completed: ${actionKey}`
+						: `Action failed: ${actionKey}${req.error_message ? ` — ${req.error_message}` : ""}`,
+					req.status === "success"
+						? { action_output: req.action_output }
+						: { error_message: req.error_message },
+					null,
+					tx,
+				);
+				if (eventId === undefined) {
+					throw new Error(
+						`Cannot finalize approval run ${req.run_id} as '${newStatus}': its approval card is missing`,
+					);
+				}
+			}
+			return rows;
 		});
 		if (updatedRuns.length === 0) {
 			// Either the run was already finalized (timeout race) or the
@@ -1961,23 +1998,8 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 		}
 
 		const organizationId = (updatedRuns[0] as any)?.organization_id;
-		const actionKey = (updatedRuns[0] as any)?.action_key ?? "Action";
 
 		if (organizationId) {
-			const newStatus = req.status === "success" ? "completed" : "failed";
-			await supersedeActionEvent(
-				req.run_id,
-				organizationId,
-				newStatus,
-				`${actionKey} — ${newStatus}`,
-				req.status === "success"
-					? `Action completed: ${actionKey}`
-					: `Action failed: ${actionKey}${req.error_message ? ` — ${req.error_message}` : ""}`,
-				req.status === "success"
-					? { action_output: req.action_output }
-					: { error_message: req.error_message }
-			);
-
 			emit(organizationId, { keys: ["contents-filtered", "notifications"] });
 		}
 

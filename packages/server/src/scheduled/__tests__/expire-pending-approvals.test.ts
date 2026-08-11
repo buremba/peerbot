@@ -82,7 +82,25 @@ async function seedApproval(opts: SeedApprovalOpts): Promise<number> {
 			opts.ageDays,
 		],
 	)) as unknown as Array<{ id: number | string }>;
-	return Number(rows[0].id);
+	const runId = Number(rows[0].id);
+	// Production queued approvals always carry their pending card (the #2033
+	// queue path writes run + card in one transaction), and the expiry sweep
+	// supersedes that card — so a seeded PENDING run must have one here too.
+	// Non-pending states (approved/rejected/auto) never go through the sweep,
+	// so they get no card.
+	if (opts.approvalStatus === "pending") {
+		await getDb()`
+      INSERT INTO events (
+        organization_id, origin_id, title, payload_text, run_id,
+        semantic_type, interaction_type, interaction_status
+      ) VALUES (
+        ${opts.organizationId ?? ORG_ID}, ${`run_${runId}_pending`},
+        'Pending approval', 'Awaiting review', ${runId},
+        'operation', 'approval', 'pending'
+      )
+    `;
+	}
+	return runId;
 }
 
 async function runStateOf(
@@ -260,21 +278,12 @@ describe("expirePendingApprovals", () => {
 			ageDays: TTL_DAYS + 2,
 		});
 		const sql = getDb();
-		await sql`
-      INSERT INTO events (
-        organization_id, origin_id, title, payload_text, run_id,
-        semantic_type, interaction_type, interaction_status
-      ) VALUES (
-        ${ORG_ID}, ${`run_${staleId}_pending`}, 'Pending approval',
-        'Awaiting review', ${staleId}, 'operation', 'approval', 'pending'
-      )
-    `;
 		failTriggerCleanupNeeded = true;
 		await sql.unsafe(`
       CREATE OR REPLACE FUNCTION test_fail_expiry_supersede()
         RETURNS trigger AS $fn$
       BEGIN
-        IF NEW.supersedes_event_id IS NOT NULL THEN
+        IF NEW.supersedes_event_id IS NOT NULL AND NEW.run_id = ${staleId} THEN
           RAISE EXCEPTION 'simulated expiry supersede failure';
         END IF;
         RETURN NEW;
@@ -342,13 +351,28 @@ describe("expirePendingApprovals — draining and cross-org fairness", () => {
 		ageDays: number,
 	): Promise<void> {
 		const sql = getDb();
+		// One statement: insert the runs AND each one's pending approval card in
+		// a single data-modifying CTE, scoped exactly to the rows this call
+		// inserted — repeated calls can never backfill (and duplicate) cards for
+		// runs seeded by earlier calls.
 		await sql.unsafe(
-			`INSERT INTO runs (
-         organization_id, run_type, status, approval_status, action_key, created_at
+			`WITH inserted AS (
+         INSERT INTO runs (
+           organization_id, run_type, status, approval_status, action_key, created_at
+         )
+         SELECT $1, 'action', 'pending', 'pending', 'send_message',
+                now() - ($3::int * interval '1 day') - (g * interval '1 second')
+         FROM generate_series(1, $2::int) AS g
+         RETURNING id, organization_id
        )
-       SELECT $1, 'action', 'pending', 'pending', 'send_message',
-              now() - ($3::int * interval '1 day') - (g * interval '1 second')
-       FROM generate_series(1, $2::int) AS g`,
+       INSERT INTO events (
+         organization_id, origin_id, title, payload_text, run_id,
+         semantic_type, interaction_type, interaction_status
+       )
+       SELECT organization_id, 'run_' || id || '_pending',
+              'Pending approval', 'Awaiting review', id,
+              'operation', 'approval', 'pending'
+       FROM inserted`,
 			[organizationId, count, ageDays],
 		);
 	}

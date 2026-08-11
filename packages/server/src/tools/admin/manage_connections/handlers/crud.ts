@@ -118,6 +118,7 @@ import {
 	oauthAppSetupContinuation,
 } from "../../helpers/connect-setup-continuation";
 import { createConnectionSetupBundle } from "../../helpers/interactive-connection-setup";
+import { supersedeActionEvent } from "../../approval-events";
 
 // ============================================
 // handleListConnectorGroups
@@ -2088,17 +2089,65 @@ export async function handleDelete(
   // would be blind. Same terminal state as the pending-approval TTL sweep
   // (scheduled/expire-pending-approvals): approval_status='expired',
   // status='cancelled'.
-  await sql`
-    UPDATE runs
-    SET approval_status = 'expired',
-        status = 'cancelled',
-        error_message = 'Connection deleted before approval; approval expired.',
-        completed_at = NOW()
+  const approvalExpiryReason =
+    'Connection deleted before approval; approval expired.';
+  const pendingApprovals = await sql<{ id: number; action_key: string | null }>`
+    SELECT id, action_key
+    FROM runs
     WHERE organization_id = ${organizationId}
       AND connection_id = ${args.connection_id}
       AND approval_status = 'pending'
       AND run_type = ANY(${pgTextArray([...APPROVAL_RUN_TYPES])}::text[])
+    ORDER BY id
   `;
+  for (const pendingApproval of pendingApprovals) {
+    try {
+      await sql.begin(async (tx) => {
+        const expired = await tx<{ action_key: string | null }>`
+          UPDATE runs
+          SET approval_status = 'expired',
+              status = 'cancelled',
+              error_message = ${approvalExpiryReason},
+              completed_at = NOW()
+          WHERE id = ${pendingApproval.id}
+            AND organization_id = ${organizationId}
+            AND connection_id = ${args.connection_id}
+            AND approval_status = 'pending'
+            AND run_type = ANY(${pgTextArray([...APPROVAL_RUN_TYPES])}::text[])
+          RETURNING action_key
+        `;
+        if (expired.length === 0) return;
+
+        const actionKey = expired[0].action_key ?? 'Action';
+        const eventId = await supersedeActionEvent(
+          pendingApproval.id,
+          organizationId,
+          'rejected',
+          `${actionKey} — expired`,
+          approvalExpiryReason,
+          {
+            expiry_reason: approvalExpiryReason,
+            approval_status: 'expired',
+          },
+          null,
+          tx
+        );
+        if (eventId === undefined) {
+          throw new Error(
+            `Cannot expire approval run ${pendingApproval.id}: its approval card is missing`
+          );
+        }
+      });
+    } catch (error) {
+      // Leave only this run pending if its append-only card cannot advance.
+      // The long-horizon approval sweep can retry it; other approvals and the
+      // connection deletion are not blocked by one corrupt historical row.
+      logger.warn(
+        { run_id: pendingApproval.id, error: String(error) },
+        '[connections.delete] approval expiry rolled back after card failure'
+      );
+    }
+  }
 
   // Record change event in knowledge for audit trail
   const conn = deleted[0];

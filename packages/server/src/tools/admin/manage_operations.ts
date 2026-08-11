@@ -95,6 +95,14 @@ import { isAdminOrOwnerRole, isSystemContext } from "../access-control";
 import type { ToolContext } from "../registry";
 import { getOrgUrlContext } from "../view-urls";
 import { action, defineActionTool } from "./action-tool";
+import {
+	type ApprovalReviewer,
+	supersedeActionEvent,
+} from "./approval-events";
+export {
+	type ApprovalReviewer,
+	supersedeActionEvent,
+} from "./approval-events";
 // Lives in its own module so dispatch-chrome-action does not import this file
 // (breaks a circular init cycle that left MANAGE_BEHAVIORS_ACTION_KEY in TDZ).
 import { waitForDeviceActionRun } from "./device-action-wait";
@@ -137,7 +145,7 @@ type InlineExecutionResult =
 			output: Record<string, unknown>;
 			metadata?: Record<string, unknown>;
 	  }
-	| { status: "failed"; error_message: string };
+	| { status: "failed"; error_message: string; output?: Record<string, unknown> };
 
 type ConnectionRow = {
   id: number;
@@ -216,13 +224,19 @@ export { ManageOperationsResultSchema, ManageOperationsSchema };
 export const manageOperations = manageOperationsTool.run;
 
 // Update the run to failed status and return the error result in one call.
+// When `deferTerminalWrite` is set the runs write is skipped — the caller
+// (approve's phase 2) persists the terminal state AND the card event in one
+// transaction, so the executor must not commit the run terminal state first.
 async function failRunInline(
 	runId: number,
 	organizationId: string,
 	errorMsg: string,
+	deferTerminalWrite = false,
 ): Promise<InlineExecutionResult> {
-	const sql = getDb();
-	await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMsg} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+	if (!deferTerminalWrite) {
+		const sql = getDb();
+		await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMsg} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+	}
 	return { status: "failed", error_message: errorMsg };
 }
 
@@ -231,9 +245,12 @@ async function completeRunInline(
 	runId: number,
 	organizationId: string,
 	output: Record<string, unknown>,
+	deferTerminalWrite = false,
 ): Promise<InlineExecutionResult> {
-	const sql = getDb();
-	await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(output)} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+	if (!deferTerminalWrite) {
+		const sql = getDb();
+		await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(output)} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+	}
 	return { status: "completed", output };
 }
 
@@ -266,6 +283,7 @@ async function executeLocalActionInline(
 	requesterUserId: string | null,
 	env: Env,
 	abortSignal?: AbortSignal,
+	deferTerminalWrite = false,
 ): Promise<InlineExecutionResult> {
 	const sql = getDb();
 
@@ -283,7 +301,12 @@ async function executeLocalActionInline(
 			connectorVersion ?? null,
 		);
 	} catch (err) {
-		return failRunInline(runId, organizationId, getErrorMessage(err));
+		return failRunInline(
+			runId,
+			organizationId,
+			getErrorMessage(err),
+			deferTerminalWrite,
+		);
 	}
 
 	const { credentials, connectionCredentials, sessionState } =
@@ -356,9 +379,19 @@ async function executeLocalActionInline(
 		if (result.mode !== "action") {
 			throw new Error(`Expected action result, got mode=${result.mode}`);
 		}
-		return completeRunInline(runId, organizationId, result.output);
+		return completeRunInline(
+			runId,
+			organizationId,
+			result.output,
+			deferTerminalWrite,
+		);
 	} catch (error) {
-		return failRunInline(runId, organizationId, getErrorMessage(error));
+		return failRunInline(
+			runId,
+			organizationId,
+			getErrorMessage(error),
+			deferTerminalWrite,
+		);
 	}
 }
 
@@ -368,6 +401,7 @@ async function executeMcpToolInline(
 	connection: ConnectionRow,
 	operation: OperationDescriptor,
 	actionInput: Record<string, unknown>,
+	deferTerminalWrite = false,
 ): Promise<InlineExecutionResult> {
 	if (operation.backend_config.backend !== "mcp_tool") {
 		return {
@@ -390,7 +424,12 @@ async function executeMcpToolInline(
 			connection.id,
   );
 	} catch (error) {
-		return failRunInline(runId, organizationId, getErrorMessage(error));
+		return failRunInline(
+			runId,
+			organizationId,
+			getErrorMessage(error),
+			deferTerminalWrite,
+		);
 	}
 
   if (result.isError) {
@@ -398,12 +437,35 @@ async function executeMcpToolInline(
       (result.content as Array<{ type: string; text?: string }>).find(
 				(item) => item?.type === "text",
 			)?.text ?? "Upstream MCP error";
-    return failRunInline(runId, organizationId, errorText);
+    return failRunInline(
+      runId,
+      organizationId,
+      errorText,
+      deferTerminalWrite,
+    );
   }
 
-	return completeRunInline(runId, organizationId, {
-		content: result.content,
-	} as Record<string, unknown>);
+	return completeRunInline(
+		runId,
+		organizationId,
+		{
+			content: result.content,
+		} as Record<string, unknown>,
+		deferTerminalWrite,
+	);
+}
+
+/**
+ * Options for {@link executeOperationInline}.
+ */
+interface InlineExecutionOptions {
+	/**
+	 * Skip the executor's terminal `runs` write. Used by approve's phase 2:
+	 * the terminal run state and its card event must commit together, so the
+	 * executor cannot commit the run terminal state on the pool first (that
+	 * would leave a terminal run with no card when the card INSERT fails).
+	 */
+	deferTerminalWrite?: boolean;
 }
 
 async function executeOperationInline(
@@ -415,19 +477,22 @@ async function executeOperationInline(
 	requesterUserId: string | null,
 	env: Env,
 	abortSignal?: AbortSignal,
+	options?: InlineExecutionOptions,
 ): Promise<InlineExecutionResult> {
+	const deferTerminalWrite = options?.deferTerminalWrite ?? false;
 	if (operation.backend === "local_action") {
-    return executeLocalActionInline(
-      runId,
-      organizationId,
-      connection,
-      operation,
-      actionInput,
+		return executeLocalActionInline(
+			runId,
+			organizationId,
+			connection,
+			operation,
+			actionInput,
 			requesterUserId,
-      env,
+			env,
 			abortSignal,
-    );
-  }
+			deferTerminalWrite,
+		);
+	}
 	if (operation.backend === "mcp_tool") {
 		return executeMcpToolInline(
 			runId,
@@ -435,8 +500,9 @@ async function executeOperationInline(
 			connection,
 			operation,
 			actionInput,
+			deferTerminalWrite,
 		);
-  }
+	}
 	return executeHttpOperation(
 		runId,
 		organizationId,
@@ -444,6 +510,7 @@ async function executeOperationInline(
 		operation,
 		actionInput,
 		abortSignal,
+		deferTerminalWrite,
 	);
 }
 
@@ -1769,126 +1836,25 @@ async function handleGetRun(
 }
 
 /**
- * The human who decided an approval. Threaded from the approve/reject handler
- * (a web session — `ctx.userId` is the acting user) into every event of the
- * post-decision chain (approved → completed/failed), so each state records who
- * authorized it. `null` for system-driven supersessions with no acting user
- * (e.g. a worker completing a device action it was told to run).
+ * Fail-closed guard for managed approval transitions. {@link
+ * supersedeActionEvent} returns `undefined` when the run has NO approval card
+ * (`current_event_records` has no matching `interaction_type='approval'` row) —
+ * which is legitimate only for auto/no-approval worker actions that never had a
+ * card. A managed approval DECISION (approve/reject/expire) must never commit
+ * its runs write without the card, or the run goes terminal while the timeline
+ * stays stuck at the prior card. Callers throw on `undefined` so the enclosing
+ * transaction rolls the runs write back.
  */
-export interface ApprovalReviewer {
-  userId: string;
-  /** Display name resolved at decision time; falls back to userId when unknown. */
-  name: string | null;
-}
-
-export async function supersedeActionEvent(
+function requireApprovalCard(
 	runId: number,
-	organizationId: string,
-	status: string,
-	title: string,
-	content: string,
-	extraMetadata: Record<string, unknown> = {},
-	reviewer: ApprovalReviewer | null = null,
-	db: DbClient = getDb(),
-	interactionInput?: Record<string, unknown> | null,
-): Promise<number | undefined> {
-  const sql = db;
-  const originalEvent = await sql`
-    SELECT id, entity_ids, connection_id, connector_key, metadata, author_name, interaction_input_schema, interaction_input
-    FROM current_event_records
-    WHERE run_id = ${runId}
-      AND organization_id = ${organizationId}
-      AND semantic_type = 'operation'
-      AND interaction_type = 'approval'
-    LIMIT 1
-  `;
-	if (originalEvent.length === 0) return undefined;
-
-	const orig = originalEvent[0] as any;
-	// Carry the reviewer forward. A decision (approve/reject) supplies one; the
-	// later system transitions (completed/failed) don't re-supply it, so inherit
-	// the reviewer already stamped on the prior state — the person who authorized
-	// the run owns its whole outcome in the audit trail.
-	const priorMetadata = (orig.metadata ?? {}) as Record<string, unknown>;
-	const reviewedById =
-		reviewer?.userId ??
-		(priorMetadata.reviewed_by_id as string | undefined) ??
-		null;
-	const reviewedByName =
-		reviewer?.name ??
-		(priorMetadata.reviewed_by_name as string | undefined) ??
-		null;
-
-	const nextEvent = await insertEvent(
-		{
-		entityIds: Array.isArray(orig.entity_ids)
-			? orig.entity_ids.map(Number)
-			: [],
-		organizationId,
-		originId: `run_${runId}_${status}_${Date.now()}`,
-		title,
-		content,
-		semanticType: "operation",
-		connectorKey: orig.connector_key,
-		connectionId: orig.connection_id,
-		runId,
-		interactionType: "approval",
-		interactionStatus:
-			status === "confirmed"
-				? "approved"
-				: status === "rejected"
-					? "rejected"
-					: status === "completed"
-						? "completed"
-						: status === "failed"
-							? "failed"
-							: "pending",
-		interactionInputSchema:
-				(orig.interaction_input_schema as Record<string, unknown> | null) ??
-				null,
-		interactionInput:
-			interactionInput === undefined
-				? ((orig.interaction_input as Record<string, unknown> | null) ?? null)
-				: interactionInput,
-		interactionOutput:
-			((extraMetadata.output ?? extraMetadata.action_output) as
-				| Record<string, unknown>
-				| undefined) ?? null,
-		interactionError:
-			(extraMetadata.error_message as string | undefined) ?? null,
-		supersedesEventId: Number(orig.id),
-		// The durable identity (FK → user); set on the first decision event and
-		// preserved down the chain.
-		createdBy: reviewedById,
-		metadata: {
-			...priorMetadata,
-			status,
-			...(reviewedById ? { reviewed_by_id: reviewedById } : {}),
-			...(reviewedByName ? { reviewed_by_name: reviewedByName } : {}),
-				...(extraMetadata.output
-					? { action_output: extraMetadata.output }
-					: {}),
-			...(extraMetadata.error_message
-				? { error_message: extraMetadata.error_message }
-				: {}),
-			...extraMetadata,
-			// Superseding copies the prior metadata forward, so a durable approval
-			// written before the Behaviors rename (#2034) would keep minting NEW
-			// rows carrying `resourceKind: "watcher"` every time it is resolved.
-			// Canonicalize on write: history keeps whatever it recorded, but nothing
-			// emitted from here reintroduces the pre-rename value. Must stay below
-			// both spreads so neither the prior row nor a caller can restore it.
-			...(priorMetadata.resourceKind === "watcher" ||
-			extraMetadata.resourceKind === "watcher"
-				? { resourceKind: "behavior" }
-				: {}),
-		},
-		authorName: orig.author_name ?? null,
-		},
-		{ sql },
-	);
-
-	return Number(nextEvent.id);
+	eventId: number | undefined,
+	transition: string,
+): asserts eventId is number {
+	if (eventId === undefined) {
+		throw new Error(
+			`Cannot transition approval run ${runId} to '${transition}': its approval card is missing`,
+		);
+	}
 }
 
 /**
@@ -2063,12 +2029,13 @@ async function claimBuilderRun(
 	organizationId: string,
 	decision: "approved" | "rejected",
 	rejectReason?: string,
+	db: DbClient = getDb(),
 ): Promise<{
 	handler: BuilderApprovalHandler;
 	proposal: unknown;
 	requesterUserId: string | null;
 } | null> {
-	const sql = getDb();
+	const sql = db;
 	const handlers = getBuilderApprovalHandlers();
 	const actionKeys = pgTextArray(handlers.map((h) => h.actionKey));
 	const rows =
@@ -2118,19 +2085,28 @@ async function failBuilderRun(
 	errorMessage: string,
 	reviewer: ApprovalReviewer | null,
 ): Promise<ManageOperationsResult> {
-	await getDb()`
-    UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMessage}
-    WHERE id = ${runId} AND organization_id = ${organizationId}
-  `;
-	const eventId = await supersedeActionEvent(
-		runId,
-		organizationId,
-		"failed",
-		`${handler.nounLabel}: ${desc} — failed`,
-		`Builder action failed: ${desc} — ${errorMessage}`,
-		{ error_message: errorMessage },
-		reviewer,
-	);
+	// Atomic: the failed runs write and the 'failed' card supersede commit
+	// together. The card guard runs INSIDE the transaction, so a missing card
+	// throws while the tx is open and rolls the runs write back — the run must
+	// never land terminal with no card.
+	const eventId = await getDb().begin(async (tx) => {
+		await tx`
+			UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMessage}
+			WHERE id = ${runId} AND organization_id = ${organizationId}
+		`;
+		const cardId = await supersedeActionEvent(
+			runId,
+			organizationId,
+			"failed",
+			`${handler.nounLabel}: ${desc} — failed`,
+			`Builder action failed: ${desc} — ${errorMessage}`,
+			{ error_message: errorMessage },
+			reviewer,
+			tx,
+		);
+		requireApprovalCard(runId, cardId, "failed");
+		return cardId;
+	});
 	return {
 		action: "approve",
 		approved: true,
@@ -2192,28 +2168,48 @@ async function tryApproveBuilderRun(
 	const refusal = await validateBuilderRunInput(args, ctx.organizationId);
 	if (refusal) return { error: refusal };
 
-	const claimed = await claimBuilderRun(
-		args.run_id,
-		ctx.organizationId,
-		"approved",
-	);
+	const reviewer = await resolveReviewer(ctx);
+
+	// Phase 1 (atomic): claim the run AND write the 'confirmed' card in ONE
+	// transaction. If the card INSERT fails (or the card is missing), the claim
+	// rolls back and the run stays pending — never an approved run with no card
+	// (or a card with no run).
+	const claimed = await getDb().begin(async (tx) => {
+		const claim = await claimBuilderRun(
+			args.run_id,
+			ctx.organizationId,
+			"approved",
+			undefined,
+			tx,
+		);
+		if (!claim) return null;
+		const desc = claim.handler.describe(claim.proposal);
+		const confirmedEventId = await supersedeActionEvent(
+			args.run_id,
+			ctx.organizationId,
+			"confirmed",
+			`${claim.handler.nounLabel}: ${desc} — executing`,
+			`Builder action confirmed: ${desc}`,
+			{},
+			reviewer,
+			tx,
+		);
+		requireApprovalCard(args.run_id, confirmedEventId, "confirmed");
+		return { ...claim, desc };
+	});
 	if (!claimed) return null;
 
-	const { handler, proposal, requesterUserId } = claimed;
-	const desc = handler.describe(proposal);
-	const reviewer = await resolveReviewer(ctx);
-	await supersedeActionEvent(
-		args.run_id,
-		ctx.organizationId,
-		"confirmed",
-		`${handler.nounLabel}: ${desc} — executing`,
-		`Builder action confirmed: ${desc}`,
-		{},
-		reviewer,
-	);
+	const { handler, proposal, requesterUserId, desc } = claimed;
 
+	// Apply runs OUTSIDE any transaction — the family's write can be
+	// slow/network-bound and must not hold a DB transaction open. The catch
+	// scope is DELIBERATELY only apply + its soft-failure detection: a failure
+	// AFTER apply (the completed run/card transaction) is a PERSISTENCE
+	// failure, not a business failure, and must not be recorded as 'failed' via
+	// failBuilderRun.
+	let output: unknown;
 	try {
-		const output = await handler.apply(
+		output = await handler.apply(
 			proposal,
 			ctx,
 			env,
@@ -2234,27 +2230,6 @@ async function tryApproveBuilderRun(
 				reviewer,
 			);
 		}
-		await getDb()`
-      UPDATE runs SET status = 'completed', completed_at = NOW(),
-        action_output = ${getDb().json(output as unknown as Record<string, unknown>)}
-      WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
-    `;
-		const eventId = await supersedeActionEvent(
-			args.run_id,
-			ctx.organizationId,
-			"completed",
-			`${handler.nounLabel}: ${desc} — completed`,
-			`Builder action completed: ${desc}`,
-			{ output: output as unknown as Record<string, unknown> },
-			reviewer,
-		);
-		return {
-			action: "approve",
-			approved: true,
-			run_id: args.run_id,
-			event_id: eventId,
-			message: `${handler.nounLabel} ${desc} approved and applied.`,
-		};
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		return failBuilderRun(
@@ -2266,6 +2241,39 @@ async function tryApproveBuilderRun(
 			reviewer,
 		);
 	}
+
+	// Phase 2 (atomic): the terminal completed runs write + the 'completed'
+	// card supersede commit together. OUTSIDE the apply catch: if the card
+	// INSERT fails (or the card is missing — the guard runs INSIDE the tx, so
+	// the completed runs write rolls back too), the run is NOT left completed
+	// or marked 'failed' — it stays in its claimed approved/running state and
+	// the persistence failure propagates to the caller.
+	const eventId = await getDb().begin(async (tx) => {
+		await tx`
+			UPDATE runs SET status = 'completed', completed_at = NOW(),
+				action_output = ${tx.json(output as unknown as Record<string, unknown>)}
+			WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
+		`;
+		const cardId = await supersedeActionEvent(
+			args.run_id,
+			ctx.organizationId,
+			"completed",
+			`${handler.nounLabel}: ${desc} — completed`,
+			`Builder action completed: ${desc}`,
+			{ output: output as unknown as Record<string, unknown> },
+			reviewer,
+			tx,
+		);
+		requireApprovalCard(args.run_id, cardId, "completed");
+		return cardId;
+	});
+	return {
+		action: "approve",
+		approved: true,
+		run_id: args.run_id,
+		event_id: eventId,
+		message: `${handler.nounLabel} ${desc} approved and applied.`,
+	};
 }
 
 /**
@@ -2279,31 +2287,39 @@ async function tryRejectBuilderRun(
 	reason: string,
 	reviewer: ApprovalReviewer | null,
 ): Promise<ManageOperationsResult | null> {
-	const claimed = await claimBuilderRun(
-		args.run_id,
-		ctx.organizationId,
-		"rejected",
-		reason,
-	);
-	if (!claimed) return null;
+	// Atomic: the cancelled runs write and the 'rejected' card supersede commit
+	// together. If the card INSERT fails, the run stays pending — never a
+	// cancelled run with the timeline stuck at 'pending'.
+	return getDb().begin(async (tx) => {
+		const claimed = await claimBuilderRun(
+			args.run_id,
+			ctx.organizationId,
+			"rejected",
+			reason,
+			tx,
+		);
+		if (!claimed) return null;
 
-	const { handler, proposal } = claimed;
-	const desc = handler.describe(proposal);
-	const eventId = await supersedeActionEvent(
-		args.run_id,
-		ctx.organizationId,
-		"rejected",
-		`${handler.nounLabel}: ${desc} — rejected`,
-		`Builder action rejected: ${desc}${args.reason ? ` — ${args.reason}` : ""}`,
-		{ reason },
-		reviewer,
-	);
-	return {
-		action: "reject",
-		rejected: true,
-		run_id: args.run_id,
-		event_id: eventId,
-	};
+		const { handler, proposal } = claimed;
+		const desc = handler.describe(proposal);
+		const eventId = await supersedeActionEvent(
+			args.run_id,
+			ctx.organizationId,
+			"rejected",
+			`${handler.nounLabel}: ${desc} — rejected`,
+			`Builder action rejected: ${desc}${args.reason ? ` — ${args.reason}` : ""}`,
+			{ reason },
+			reviewer,
+			tx,
+		);
+		requireApprovalCard(args.run_id, eventId, "rejected");
+		return {
+			action: "reject",
+			rejected: true,
+			run_id: args.run_id,
+			event_id: eventId,
+		};
+	});
 }
 
 /**
@@ -2505,7 +2521,7 @@ async function tryApproveEntityChangeRun(
 	): Promise<ManageOperationsResult> => {
 		const operation = entityChangeOperation(proposal);
 		const description = describeEntityChange(proposal);
-		await supersedeActionEvent(
+		const confirmedEventId = await supersedeActionEvent(
 			args.run_id,
 			ctx.organizationId,
 			"confirmed",
@@ -2519,6 +2535,7 @@ async function tryApproveEntityChangeRun(
 			reviewer,
 			db,
 		);
+		requireApprovalCard(args.run_id, confirmedEventId, "confirmed");
 
 		const result = await applyEntityChangeProposal(
 			proposal,
@@ -2568,6 +2585,7 @@ async function tryApproveEntityChangeRun(
 			reviewer,
 			db,
 		);
+		requireApprovalCard(args.run_id, eventId, "completed");
 		return {
 			action: "approve",
 			approved: true,
@@ -2651,32 +2669,41 @@ async function tryApproveEntityChangeRun(
 		// Apply failures here are often transient/situational (entity gained
 		// children before a non-force delete, schema changed, etc.). Put the run
 		// BACK to pending instead of burning the proposal on one errant click —
-		// the reviewer can retry after fixing the blocker, or reject it.
-		const reset = await sql`
-      UPDATE runs SET approval_status = 'pending', status = 'pending', error_message = ${errorMessage}
-      WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
-		AND (
-		  (approval_status = 'approved' AND status = 'running')
-		  OR (approval_status = 'pending' AND status = 'pending')
-		)
-		RETURNING id
-    `;
-		if (reset.length === 0) {
+		// the reviewer can retry after fixing the blocker, or reject it. The
+		// reset and the 'apply_failed' card share one transaction so a card
+		// failure cannot leave a pending run with no card.
+		const reset = await sql.begin(async (tx) => {
+			const resetRows = await tx`
+				UPDATE runs SET approval_status = 'pending', status = 'pending', error_message = ${errorMessage}
+				WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
+				AND (
+				  (approval_status = 'approved' AND status = 'running')
+				  OR (approval_status = 'pending' AND status = 'pending')
+				)
+				RETURNING id
+			`;
+			if (resetRows.length > 0) {
+				const eventId = await supersedeActionEvent(
+					args.run_id,
+					ctx.organizationId,
+					"apply_failed",
+					pendingOperation === "update"
+						? "entity_field_change — apply failed, still pending"
+						: `entity_${pendingOperation} — apply failed, still pending`,
+					`Applying the approved change failed: ${errorMessage}. The approval is pending again — fix the blocker and approve once more, or reject it.`,
+					{ error_message: errorMessage },
+					reviewer,
+					tx,
+				);
+				requireApprovalCard(args.run_id, eventId, "apply_failed");
+			}
+			return resetRows.length;
+		});
+		if (reset === 0) {
 			return {
 				error: `Failed to apply entity ${pendingOperation}: ${errorMessage}. The approval changed concurrently; refresh before retrying.`,
 			};
 		}
-		await supersedeActionEvent(
-			args.run_id,
-			ctx.organizationId,
-			"apply_failed",
-			pendingOperation === "update"
-				? "entity_field_change — apply failed, still pending"
-				: `entity_${pendingOperation} — apply failed, still pending`,
-			`Applying the approved change failed: ${errorMessage}. The approval is pending again — fix the blocker and approve once more, or reject it.`,
-			{ error_message: errorMessage },
-			reviewer,
-		);
 		return {
 			error: `Failed to apply entity ${pendingOperation}: ${errorMessage}. The approval is back to pending — approve again after fixing the blocker, or reject it.`,
 		};
@@ -2697,7 +2724,7 @@ async function tryApproveEntityChangeRun(
 			RETURNING id
 		`;
 		if (cancelled.length === 0) return null;
-		await supersedeActionEvent(
+		const eventId = await supersedeActionEvent(
 			args.run_id,
 			ctx.organizationId,
 			"rejected",
@@ -2709,6 +2736,7 @@ async function tryApproveEntityChangeRun(
 			null,
 			db,
 		);
+		requireApprovalCard(args.run_id, eventId, "rejected");
 		return {
 			error:
 				"This duplicate candidate was already rejected. Refresh the Behavior run.",
@@ -2777,14 +2805,24 @@ async function tryApproveEntityChangeRun(
 		}
 	}
 
-	const claimed = await claimEntityChangeRun(
-		args.run_id,
-		ctx.organizationId,
-		"approved",
-	);
-	if (!claimed) return null;
 	try {
-		return await completeApproval(sql, claimed.proposal);
+		// The non-merge family runs claim + confirm + apply + terminal write +
+		// completed card in ONE transaction, exactly like the merge family
+		// above: `applyEntityChangeProposal` is DB-only (never network-bound),
+		// so no external work is held open across the tx. The claim inside the
+		// tx is authoritative — returning null falls through to the connector
+		// path, and a rollback leaves the run exactly as it was.
+		return await sql.begin(async (tx) => {
+			const claimedInTx = await claimEntityChangeRun(
+				args.run_id,
+				ctx.organizationId,
+				"approved",
+				undefined,
+				tx,
+			);
+			if (!claimedInTx) return null;
+			return await completeApproval(tx, claimedInTx.proposal);
+		});
 	} catch (error) {
 		return applyFailure(error);
 	}
@@ -2852,6 +2890,7 @@ async function tryRejectEntityChangeRun(
 			reviewer,
 			db,
 		);
+		requireApprovalCard(args.run_id, eventId, "rejected");
 		return {
 			action: "reject",
 			rejected: true,
@@ -2860,7 +2899,9 @@ async function tryRejectEntityChangeRun(
 		};
 	};
 
-	if (!pendingIsMerge) return reject(sql);
+	// Both families reject atomically: the cancelled runs write and the
+	// 'rejected' card supersede commit together (claimEntityChangeRun and
+	// supersedeActionEvent both run on the same tx handle).
 	return sql.begin(reject);
 }
 
@@ -2998,22 +3039,40 @@ async function handleApprove(
 				? `Operation '${pendingRun.action_key}' is now disabled on this connection.`
 				: `Policy now denies '${pendingRun.action_key}' for the requesting principal.`;
 		const reviewer = await resolveReviewer(ctx);
-		await sql`
-      UPDATE runs
-      SET approval_status = 'rejected', status = 'cancelled',
-          error_message = ${why}, completed_at = NOW()
-      WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
-        AND approval_status = 'pending'
-    `;
-		await supersedeActionEvent(
-			args.run_id,
-			ctx.organizationId,
-			"rejected",
-			`${pendingRun.action_key} — blocked by policy`,
-			why,
-			{ reason: why },
-			reviewer,
-		);
+		// The claim re-asserts `approval_status = 'pending'`, so a run approved
+		// concurrently (or otherwise no longer pending) matches ZERO rows. In
+		// that case the decision did not happen and the card must NOT be
+		// superseded — return an explicit changed-concurrently outcome instead
+		// of writing a 'rejected' card over a live approval.
+		const cancelled = await sql.begin(async (tx) => {
+			const rows = await tx`
+				UPDATE runs
+				SET approval_status = 'rejected', status = 'cancelled',
+					error_message = ${why}, completed_at = NOW()
+				WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
+					AND approval_status = 'pending'
+				RETURNING id
+			`;
+			if (rows.length === 0) return false;
+			const eventId = await supersedeActionEvent(
+				args.run_id,
+				ctx.organizationId,
+				"rejected",
+				`${pendingRun.action_key} — blocked by policy`,
+				why,
+				{ reason: why },
+				reviewer,
+				tx,
+			);
+			requireApprovalCard(args.run_id, eventId, "rejected");
+			return true;
+		});
+		if (!cancelled) {
+			return {
+				error:
+					"The approval was already decided while this request was in flight. Refresh before acting.",
+			};
+		}
 		return { error: `${why} The approval was cancelled.` };
 	}
 
@@ -3028,20 +3087,50 @@ async function handleApprove(
 		};
 	}
 
-	const runRows = await sql`
-    UPDATE runs
-    SET approval_status = 'approved',
-        action_input = ${args.input ? sql.json(args.input) : sql`action_input`}
-    WHERE id = ${args.run_id}
-      AND organization_id = ${ctx.organizationId}
-      AND approval_status = 'pending'
-      AND run_type = 'action'
-    RETURNING id, connection_id, action_key, action_input, created_by_user_id
-  `;
-	if (runRows.length === 0) {
-		return { error: "Run not found or not pending approval" };
-	}
+	const reviewer = await resolveReviewer(ctx);
 
+	// Phase 1 (atomic): claim the run (approval_status → approved) AND write the
+	// 'confirmed' card in ONE transaction. If the card INSERT fails (or the card
+	// is missing), the claim rolls back and the run stays pending — never an
+	// approved run whose card the UI can't show.
+	//
+	// `local_action` runs are executed by a worker poll that claims
+	// `status='pending'` rows, so they keep status 'pending'. Every other
+	// backend executes inline below, so its status flips to 'running' IN the
+	// same transaction as the claim + confirmed card — there is no separate
+	// post-claim status write to race with the card.
+	const setRunning = resolved.operation.backend !== "local_action";
+	const claimed = await sql.begin(async (tx) => {
+		const statusSet = setRunning ? tx`, status = 'running'` : tx``;
+		const rows = await tx`
+			UPDATE runs
+			SET approval_status = 'approved'
+				${statusSet},
+				action_input = ${args.input ? tx.json(args.input) : tx`action_input`}
+			WHERE id = ${args.run_id}
+				AND organization_id = ${ctx.organizationId}
+				AND approval_status = 'pending'
+				AND run_type = 'action'
+			RETURNING id, connection_id, action_key, action_input, created_by_user_id
+		`;
+		if (rows.length === 0) return null;
+		// The confirmed card's event id is the run's approval identity for this
+		// decision; both terminal branches report it, exactly as before.
+		const confirmedEventId = await supersedeActionEvent(
+			args.run_id,
+			ctx.organizationId,
+			"confirmed",
+			`${(rows[0] as { action_key: string }).action_key} — executing`,
+			`Operation confirmed: ${(rows[0] as { action_key: string }).action_key} — waiting for execution`,
+			args.input ? { approved_input: args.input } : {},
+			reviewer,
+			tx,
+		);
+		requireApprovalCard(args.run_id, confirmedEventId, "confirmed");
+		return { runRows: rows, eventId: confirmedEventId };
+	});
+	if (!claimed) return { error: "Run not found or not pending approval" };
+	const { runRows, eventId } = claimed;
 	const run = runRows[0] as {
 		id: number;
 		connection_id: number;
@@ -3050,18 +3139,8 @@ async function handleApprove(
 		created_by_user_id: string | null;
 	};
 
-	const reviewer = await resolveReviewer(ctx);
-	const eventId = await supersedeActionEvent(
-		args.run_id,
-		ctx.organizationId,
-		"confirmed",
-		`${run.action_key} — executing`,
-		`Operation confirmed: ${run.action_key} — waiting for execution`,
-		args.input ? { approved_input: args.input } : {},
-		reviewer,
-	);
-
 	if (resolved.operation.backend === "local_action") {
+		// Status stays 'pending' so the worker poll claims this run.
 		return {
 			action: "approve",
 			approved: true,
@@ -3071,7 +3150,9 @@ async function handleApprove(
 		};
 	}
 
-	await sql`UPDATE runs SET status = 'running' WHERE id = ${args.run_id}`;
+	// Execution runs OUTSIDE any transaction — it is network/connector work that
+	// must not hold a DB transaction open. The executor defers its terminal runs
+	// write so phase 2 below can pair it with the terminal card atomically.
 	const result = await executeOperationInline(
 		args.run_id,
 		ctx.organizationId,
@@ -3080,18 +3161,33 @@ async function handleApprove(
 		(run.action_input ?? {}) as Record<string, unknown>,
 		run.created_by_user_id,
 		env,
+		undefined,
+		{ deferTerminalWrite: true },
 	);
 
 	if (result.status === "completed") {
-		await supersedeActionEvent(
-			args.run_id,
-			ctx.organizationId,
-			"completed",
-			`${run.action_key} — completed`,
-			`Operation completed: ${run.action_key}`,
-			{ output: result.output },
-			reviewer,
-		);
+		// Phase 2 (atomic): terminal completed runs write + 'completed' card.
+		// The card guard runs INSIDE the tx so a missing card rolls the
+		// completed runs write back.
+		await sql.begin(async (tx) => {
+			await tx`
+				UPDATE runs SET status = 'completed', completed_at = NOW(),
+					action_output = ${tx.json(result.output)}
+				WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
+			`;
+			const cardId = await supersedeActionEvent(
+				args.run_id,
+				ctx.organizationId,
+				"completed",
+				`${run.action_key} — completed`,
+				`Operation completed: ${run.action_key}`,
+				{ output: result.output },
+				reviewer,
+				tx,
+			);
+			requireApprovalCard(args.run_id, cardId, "completed");
+			return cardId;
+		});
 		return {
 			action: "approve",
 			approved: true,
@@ -3101,15 +3197,29 @@ async function handleApprove(
 		};
 	}
 
-	await supersedeActionEvent(
-		args.run_id,
-		ctx.organizationId,
-		"failed",
-		`${run.action_key} — failed`,
-		`Operation failed: ${run.action_key}${result.error_message ? ` — ${result.error_message}` : ""}`,
-		{ error_message: result.error_message },
-		reviewer,
-	);
+	// Phase 2 (atomic): terminal failed runs write + 'failed' card. The card
+	// guard runs INSIDE the tx so a missing card rolls the failed runs write
+	// back.
+	await sql.begin(async (tx) => {
+		await tx`
+			UPDATE runs SET status = 'failed', completed_at = NOW(),
+				action_output = ${result.output ? tx.json(result.output) : null},
+				error_message = ${result.error_message}
+			WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
+		`;
+		const cardId = await supersedeActionEvent(
+			args.run_id,
+			ctx.organizationId,
+			"failed",
+			`${run.action_key} — failed`,
+			`Operation failed: ${run.action_key}${result.error_message ? ` — ${result.error_message}` : ""}`,
+			{ error_message: result.error_message },
+			reviewer,
+			tx,
+		);
+		requireApprovalCard(args.run_id, cardId, "failed");
+		return cardId;
+	});
 	return {
 		action: "approve",
 		approved: true,
@@ -3139,35 +3249,42 @@ async function handleReject(
 	const fieldChangeReject = await tryRejectEntityChangeRun(args, ctx);
 	if (fieldChangeReject) return fieldChangeReject;
 
-	const updated = await sql`
-    UPDATE runs
-    SET approval_status = 'rejected', status = 'cancelled', error_message = ${reason}, completed_at = NOW()
-    WHERE id = ${args.run_id}
-      AND organization_id = ${ctx.organizationId}
-      AND approval_status = 'pending'
-      AND run_type = 'action'
-    RETURNING id, action_key
-  `;
-	if (updated.length === 0) {
+	// Atomic: the cancelled runs write and the 'rejected' card commit together.
+	const outcome = await sql.begin(async (tx) => {
+		const updated = await tx`
+			UPDATE runs
+			SET approval_status = 'rejected', status = 'cancelled', error_message = ${reason}, completed_at = NOW()
+			WHERE id = ${args.run_id}
+				AND organization_id = ${ctx.organizationId}
+				AND approval_status = 'pending'
+				AND run_type = 'action'
+			RETURNING id, action_key
+		`;
+		if (updated.length === 0) return null;
+
+		const operationKey = (updated[0] as { action_key: string }).action_key;
+		const eventId = await supersedeActionEvent(
+			args.run_id,
+			ctx.organizationId,
+			"rejected",
+			`${operationKey} — rejected`,
+			`Operation rejected: ${operationKey}${args.reason ? ` — ${args.reason}` : ""}`,
+			{ reason },
+			reviewer,
+			tx,
+		);
+		requireApprovalCard(args.run_id, eventId, "rejected");
+		return eventId;
+	});
+	if (outcome === null) {
 		return { error: "Run not found or not pending approval" };
 	}
-
-	const operationKey = (updated[0] as any).action_key;
-	const eventId = await supersedeActionEvent(
-		args.run_id,
-		ctx.organizationId,
-		"rejected",
-		`${operationKey} — rejected`,
-		`Operation rejected: ${operationKey}${args.reason ? ` — ${args.reason}` : ""}`,
-		{ reason },
-		reviewer,
-	);
 
 	return {
 		action: "reject",
 		rejected: true,
 		run_id: args.run_id,
-		event_id: eventId,
+		event_id: outcome,
 	};
 }
 

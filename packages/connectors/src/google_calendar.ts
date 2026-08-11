@@ -466,6 +466,13 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     const events: EventEnvelope[] = [];
     const durableChanges = ctx.feedKey === 'changes';
 
+    // No cursor-version guard: v1.1.0 changes tokens (minted without
+    // showDeleted) were retired by a one-time migration that cleared any
+    // unversioned changes checkpoint. Hosted prod carried exactly one such feed
+    // and it was already versioned, so the migration was a no-op. Self-hosted
+    // installs upgrading from that release with a v1.1.0 changes token are out
+    // of migration reach and may see Google reject the token under the current
+    // query shape; their recovery is to clear the feed checkpoint.
     if (checkpoint.sync_token) {
       const result = await this.syncWithToken(
         http,

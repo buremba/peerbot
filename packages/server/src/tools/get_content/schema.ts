@@ -229,7 +229,7 @@ export const GetContentSchema = Type.Object({
       ],
       {
         description:
-          'Filter by semantic type. Pass a single value (e.g. "note") or an array (e.g. ["note","summary"]) to match any. Matches the semantic_type set via save_memory.',
+          'Filter by semantic type. Pass a single value (e.g. "note") or an array (e.g. ["note","summary"]) to match any. The reserved "notification" value matches events with notification targets, including kind-backed notifications whose stored semantic_type is their content kind.',
       }
     )
   ),

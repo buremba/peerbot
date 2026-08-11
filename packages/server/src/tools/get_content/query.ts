@@ -11,6 +11,7 @@ import {
   buildFutureOccurredAtClause,
   fetchEntityIdentityScopes,
 } from '../../utils/content-search';
+import { buildSemanticTypeFilterSql } from '../../utils/content-search/params';
 import logger from '../../utils/logger';
 import { validateNumericId } from '../../utils/sql-validation';
 import type { GetContentArgs } from './schema';
@@ -468,7 +469,7 @@ export async function fetchIncludeSuperseded(opts: {
     const types = Array.isArray(args.semantic_type)
       ? args.semantic_type
       : [args.semantic_type];
-    conditions.push(`e.semantic_type = ANY($${paramIndex}::text[])`);
+    conditions.push(buildSemanticTypeFilterSql('e', `$${paramIndex}`));
     queryParams.push(pgTextArray(types));
     paramIndex += 1;
   }

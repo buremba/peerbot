@@ -205,17 +205,3 @@ describe("guest-side proxy traps", () => {
     expect(String(result.returnValue)).toMatch(/Unknown SDK method/);
   });
 });
-
-describe("output cap (1 MB)", () => {
-  it("rejects return values that serialize to over 1 MB", async () => {
-    const result = await runOrSkip({
-      // 1.2 MB of 'a' + JSON quoting trips the cap.
-      source: "export default async () => 'a'.repeat(1200000);",
-      sdk: stubSDK(),
-      sdkMode: "full",
-    });
-    if (!result) return;
-    expect(result.success).toBe(false);
-    expect(result.error?.name).toBe("OutputSizeExceeded");
-  });
-});

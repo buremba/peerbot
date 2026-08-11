@@ -16,6 +16,7 @@ import {
   buildSourceOnlyExistsClause,
   resolveClassifierIds,
 } from './content-search/classification';
+import { buildSemanticTypeFilterSql } from './content-search/params';
 import type { DbClient } from '../db/client';
 import logger from './logger';
 import { getScoringFormulaSql, resolveStoredScoringProfile } from './scoring-profiles';
@@ -240,7 +241,7 @@ async function buildFilterConditionsAndJoins(
       ? filters.semantic_type
       : [filters.semantic_type];
     params.push(pgTextArray(types));
-    filterConditions.push(`f.semantic_type = ANY($${paramIndex++}::text[])`);
+    filterConditions.push(buildSemanticTypeFilterSql('f', `$${paramIndex++}`));
   }
 
   if (filters?.interaction_status) {

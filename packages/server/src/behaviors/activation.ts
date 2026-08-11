@@ -1,7 +1,8 @@
 import type { ConnectorTriggerSignal } from "@lobu/connector-sdk";
-import type {
-  BehaviorEventTrigger,
-  BehaviorTrigger,
+import {
+  resolvedEventExecution,
+  type BehaviorEventTrigger,
+  type BehaviorTrigger,
 } from "@lobu/core/contracts/tools/manage-behaviors";
 import type { DbClient } from "../db/client";
 import { getDb } from "../db/client";
@@ -77,7 +78,7 @@ export function planBehaviorActivations(
     // the durable background lane instead.
     if (
       match.agentId != null &&
-      (match.trigger.execution ?? "turn") === "turn" &&
+      resolvedEventExecution(match.trigger) === "turn" &&
       (match.trigger.output ?? "silent") === "reply_to_source"
     ) {
       replyTargets.push({ ...match, agentId: match.agentId });

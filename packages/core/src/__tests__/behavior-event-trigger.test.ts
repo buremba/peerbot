@@ -6,6 +6,7 @@ import {
   BehaviorSourceSchema,
   BehaviorWorkspaceEventTriggerSchema,
   ManageBehaviorsSchema,
+  resolvedEventExecution,
 } from "../contracts/tools/manage-behaviors";
 
 const query = "SELECT id, payload_text FROM events ORDER BY occurred_at DESC";
@@ -93,6 +94,31 @@ describe("behavior event trigger", () => {
         event_types: ["risk_detected"],
       })
     ).toBe(false);
+  });
+
+  test("resolves event execution defaults from the selected source", () => {
+    expect(
+      resolvedEventExecution({
+        kind: "event",
+        connector_key: "github",
+        event_types: ["pull_request.created"],
+      })
+    ).toBe("turn");
+    expect(
+      resolvedEventExecution({
+        kind: "event",
+        source: "workspace",
+        event_types: ["risk_detected"],
+      })
+    ).toBe("window");
+    expect(
+      resolvedEventExecution({
+        kind: "event",
+        source: "workspace",
+        event_types: ["risk_detected"],
+        execution: "turn",
+      })
+    ).toBe("turn");
   });
 
   test("rejects unsupported queued schedule ticks", () => {

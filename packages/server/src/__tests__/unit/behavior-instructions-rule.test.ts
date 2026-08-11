@@ -26,6 +26,12 @@ const eventWindow: BehaviorTrigger = {
 	execution: "window",
 };
 
+const workspaceEventDefault: BehaviorTrigger = {
+	kind: "event",
+	source: "workspace",
+	event_types: ["risk_detected"],
+};
+
 const schedule: BehaviorTrigger = {
 	kind: "schedule",
 	cron: "0 9 * * *",
@@ -41,6 +47,7 @@ describe("behaviorRequiresInstructions", () => {
 	test("schedule, window-event, and empty (manual) trigger sets require instructions", () => {
 		expect(behaviorRequiresInstructions([schedule])).toBe(true);
 		expect(behaviorRequiresInstructions([eventWindow])).toBe(true);
+		expect(behaviorRequiresInstructions([workspaceEventDefault])).toBe(true);
 		expect(behaviorRequiresInstructions([])).toBe(true);
 		// Mixed: one non-turn trigger is enough.
 		expect(behaviorRequiresInstructions([eventTurn, schedule])).toBe(true);
@@ -54,7 +61,12 @@ describe("assertBehaviorInstructions", () => {
 	});
 
 	test("rejects empty instructions for schedule/window/manual shapes", () => {
-		for (const triggers of [[schedule], [eventWindow], [] as BehaviorTrigger[]]) {
+		for (const triggers of [
+			[schedule],
+			[eventWindow],
+			[workspaceEventDefault],
+			[] as BehaviorTrigger[],
+		]) {
 			expect(() => assertBehaviorInstructions(triggers, undefined)).toThrow(
 				/needs instructions/
 			);

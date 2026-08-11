@@ -129,6 +129,19 @@ export type BehaviorWorkspaceEventTrigger = Static<
   typeof BehaviorWorkspaceEventTriggerSchema
 >;
 
+/**
+ * Apply the event execution default once for every consumer of the shared
+ * trigger primitive. Connector events default to conversational turns;
+ * workspace events default to analysis windows.
+ */
+export function resolvedEventExecution(
+  trigger: BehaviorEventTrigger | BehaviorWorkspaceEventTrigger
+): "turn" | "window" {
+  return (
+    trigger.execution ?? (trigger.source === "workspace" ? "window" : "turn")
+  );
+}
+
 export const BehaviorScheduleTriggerSchema = Type.Object(
   {
     kind: Type.Literal("schedule"),

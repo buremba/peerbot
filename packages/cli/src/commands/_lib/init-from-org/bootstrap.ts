@@ -17,6 +17,7 @@ import { randomBytes } from "node:crypto";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import type { AgentSettings } from "@lobu/core";
+import { resolvedEventExecution } from "@lobu/core/contracts/tools/manage-behaviors";
 import chalk from "chalk";
 import { UNRESOLVED_MODEL_SUFFIX } from "../../../config/index.js";
 import { printText } from "../../../internal/output.js";
@@ -513,9 +514,7 @@ function behaviorRequiresInstructions(
   return list.some(
     (trigger) =>
       trigger.kind === "schedule" ||
-      (trigger.kind === "event" &&
-        (trigger.execution ??
-          (trigger.source === "workspace" ? "window" : "turn")) === "window")
+      (trigger.kind === "event" && resolvedEventExecution(trigger) === "window")
   );
 }
 

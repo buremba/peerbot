@@ -31,6 +31,11 @@ describe('Behavior event outputs', () => {
       organization_id: workspace.org.id,
       created_by: ownerUserId,
     });
+    const unrelatedParent = await createTestEntity({
+      name: 'Unrelated account',
+      organization_id: workspace.org.id,
+      created_by: ownerUserId,
+    });
     const agent = await createTestAgent({
       organizationId: workspace.org.id,
       ownerUserId,
@@ -74,6 +79,22 @@ describe('Behavior event outputs', () => {
       agent_id: agent.agentId,
     })) as { behavior_id: string };
     const consumerId = Number(consumer.behavior_id);
+    const unrelatedConsumer = (await api.behaviors.create({
+      entity_id: unrelatedParent.id,
+      slug: 'unrelated-observation-consumer',
+      prompt: 'Only handle observations linked to the bound account.',
+      triggers: [
+        {
+          kind: 'event',
+          source: 'workspace',
+          event_types: ['observation'],
+          execution: 'window',
+          active_run: 'queue',
+        },
+      ],
+      agent_id: agent.agentId,
+    })) as { behavior_id: string };
+    const unrelatedConsumerId = Number(unrelatedConsumer.behavior_id);
     await sql`UPDATE watchers SET next_run_at = NOW() - INTERVAL '10 minutes' WHERE id = ${watcherId}`;
 
     const granularity = inferBehaviorGranularityFromSchedule('0 9 * * *');
@@ -237,6 +258,14 @@ describe('Behavior event outputs', () => {
         depth: 1,
       },
     });
+    expect(
+      await sql`
+        SELECT id
+        FROM runs
+        WHERE run_type = 'behavior'
+          AND watcher_id = ${unrelatedConsumerId}
+      `
+    ).toHaveLength(0);
 
     const triggerRead = (await api.knowledge.read({
       behavior_id: consumerId,

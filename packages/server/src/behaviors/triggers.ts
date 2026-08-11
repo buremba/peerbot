@@ -1,9 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
-import type {
-	BehaviorEventTrigger,
-	BehaviorScheduleTrigger,
-	BehaviorTrigger,
-	BehaviorWorkspaceEventTrigger,
+import {
+	resolvedEventExecution,
+	type BehaviorEventTrigger,
+	type BehaviorScheduleTrigger,
+	type BehaviorTrigger,
+	type BehaviorWorkspaceEventTrigger,
 } from "@lobu/core/contracts/tools/manage-behaviors";
 import type { DbClient } from "../db/client";
 import { listCatalogEntries } from "../catalog/load";
@@ -108,7 +109,7 @@ async function getConnectorBehaviorEventCatalog(
 function normalizedEventTrigger(
 	trigger: BehaviorEventTrigger
 ): BehaviorEventTrigger {
-	const execution = trigger.execution ?? "turn";
+	const execution = resolvedEventExecution(trigger);
 	const activeRun = trigger.active_run ?? "queue";
 	const output = trigger.output ?? "silent";
 	if (execution === "window" && activeRun === "steer") {
@@ -183,7 +184,7 @@ function normalizedWorkspaceEventTrigger(
 			trigger.match && Object.keys(trigger.match).length > 0
 				? trigger.match
 				: undefined,
-		execution: trigger.execution ?? "window",
+		execution: resolvedEventExecution(trigger),
 		active_run: trigger.active_run ?? "coalesce",
 	};
 }
@@ -244,19 +245,6 @@ export function resolveBehaviorTriggerWrite(args: {
 		schedule: scheduleTrigger?.cron ?? null,
 		timezone: scheduleTrigger?.timezone ?? null,
 	};
-}
-
-/**
- * Execution an event trigger runs under once the contract default is applied.
- * The default differs by provenance: a connector delivery is a conversational
- * turn unless asked otherwise, a workspace event is an analysis window.
- */
-function resolvedEventExecution(
-	trigger: BehaviorEventTrigger | BehaviorWorkspaceEventTrigger
-): "turn" | "window" {
-	return (
-		trigger.execution ?? (trigger.source === "workspace" ? "window" : "turn")
-	);
 }
 
 /**

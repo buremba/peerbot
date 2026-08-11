@@ -21,6 +21,7 @@ interface WorkspaceEventRecord {
   id: number;
   semanticType: string;
   metadata: Record<string, unknown>;
+  entityIds: number[];
   entityTypeSlugs: string[];
   occurredAt: string;
   producerBehaviorId: number;
@@ -119,6 +120,7 @@ async function loadWorkspaceEvent(
     semanticType: String(row.semantic_type),
     metadata:
       row.metadata && typeof row.metadata === 'object' ? row.metadata : {},
+    entityIds,
     entityTypeSlugs: entityTypes.map((item) => String(item.slug)),
     occurredAt: new Date(row.occurred_at).toISOString(),
     producerBehaviorId: Number(row.behavior_id),
@@ -139,7 +141,7 @@ async function findMatchingWorkspaceEventActivations(
     },
   ];
   const rows = await db`
-    SELECT w.id, w.organization_id, w.agent_id,
+    SELECT w.id, w.organization_id, w.agent_id, w.entity_ids,
            w.device_worker_id::text AS device_worker_id,
            w.agent_kind, w.triggers
     FROM watchers w
@@ -155,6 +157,13 @@ async function findMatchingWorkspaceEventActivations(
   for (const row of rows) {
     const behaviorId = Number(row.id);
     if (signal.causal_behavior_ids.includes(behaviorId)) continue;
+    const boundEntityIds = parsePgNumberArray(row.entity_ids);
+    if (
+      boundEntityIds.length > 0 &&
+      !boundEntityIds.some((entityId) => event.entityIds.includes(entityId))
+    ) {
+      continue;
+    }
     const triggers = Array.isArray(row.triggers)
       ? (row.triggers as BehaviorWorkspaceEventTrigger[])
       : [];

@@ -981,6 +981,23 @@ describe("mapProjectToDesiredState", () => {
         })
       )
     ).toThrow(/needs instructions/i);
+    // Workspace events default to window execution even when execution is
+    // omitted, so the same instruction requirement applies.
+    expect(
+      map(
+        defineBehavior({
+          agent: crm,
+          slug: "workspace-default-window",
+          triggers: [
+            {
+              kind: "event",
+              source: "workspace",
+              event_types: ["risk_detected"],
+            },
+          ],
+        })
+      )
+    ).toThrow(/needs instructions/i);
     // No triggers (manual-only), no skills → rejected.
     expect(map(defineBehavior({ agent: crm, slug: "manual" }))).toThrow(
       /needs instructions/i

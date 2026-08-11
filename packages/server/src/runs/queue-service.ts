@@ -8,9 +8,10 @@
  */
 
 import type { DbClient } from '../db/client';
-import type {
-  BehaviorEventTrigger,
-  BehaviorWorkspaceEventTrigger,
+import {
+  resolvedEventExecution,
+  type BehaviorEventTrigger,
+  type BehaviorWorkspaceEventTrigger,
 } from '@lobu/core/contracts/tools/manage-behaviors';
 import type { ConnectorTriggerSignal } from '@lobu/connector-sdk';
 import {
@@ -97,7 +98,7 @@ function behaviorEventTriggerKey(trigger: BehaviorActivationTrigger): string {
       entity_type: trigger.entity_type ?? null,
       event_types: [...trigger.event_types].sort(),
       match: trigger.match ?? null,
-      execution: trigger.execution ?? 'window',
+      execution: resolvedEventExecution(trigger),
       active_run: trigger.active_run ?? 'coalesce',
     });
   }
@@ -107,7 +108,7 @@ function behaviorEventTriggerKey(trigger: BehaviorActivationTrigger): string {
     connection_id: trigger.connection_id ?? null,
     event_types: [...trigger.event_types].sort(),
     match: trigger.match ?? null,
-    execution: trigger.execution ?? 'turn',
+    execution: resolvedEventExecution(trigger),
     active_run: trigger.active_run ?? 'queue',
     output: trigger.output ?? 'silent',
     skip_if_unchanged: trigger.skip_if_unchanged ?? true,
@@ -893,8 +894,7 @@ export async function createBehaviorEventRun(
       trigger_signal: params.signal,
       trigger_signals: [params.signal],
       delivery_ids: [params.signal.delivery_id],
-      trigger_execution: params.trigger.execution ??
-        (params.trigger.source === 'workspace' ? 'window' : 'turn'),
+      trigger_execution: resolvedEventExecution(params.trigger),
       trigger_output: params.trigger.source === 'workspace'
         ? 'silent'
         : (params.trigger.output ?? 'silent'),

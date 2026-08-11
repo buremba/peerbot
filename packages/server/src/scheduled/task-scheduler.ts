@@ -150,12 +150,11 @@ export async function enqueueTasksInTransaction<P>(
     id: number | string;
     idempotency_key: string;
   }>`
-    SELECT DISTINCT ON (r.idempotency_key) r.id, r.idempotency_key
+    SELECT r.id, r.idempotency_key
     FROM public.runs r
     JOIN jsonb_array_elements_text(${tx.json(keys)}::jsonb) requested(key)
       ON requested.key = r.idempotency_key
     WHERE r.status IN ('pending', 'claimed', 'running')
-    ORDER BY r.idempotency_key, r.id DESC
   `;
   const idByKey = new Map(
     resolved.map((row) => [row.idempotency_key, String(row.id)]),

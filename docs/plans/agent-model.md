@@ -1,7 +1,7 @@
 # Agent Model — Behaviors, Surfaces, Workflows
 
 > **Status (2026-08-11):** **Reactive Behaviors and durable event chaining are
-> implemented**—connector-sourced event, workspace-sourced event, schedule, and manual
+> implemented** — connector-sourced event, workspace-sourced event, schedule, and manual
 > activation share one model and editor. See `docs/BEHAVIORS.md` for the current
 > contract and limits. Correlated workflow WAIT, joins, and the broader
 > proactivity policy remain future work.

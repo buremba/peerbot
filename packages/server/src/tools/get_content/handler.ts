@@ -49,6 +49,8 @@ import { handleBehaviorMode } from './behavior-mode';
 import { resolveMcpActivitySessionIds } from './mcp-activity-filter';
 import { withValidatedArgs } from '../validate-args';
 
+const MAX_EXACT_CONTENT_IDS = 2000;
+
 /**
  * Connection-visibility principal for Behavior knowledge.read.
  *
@@ -179,6 +181,12 @@ async function getContentImpl(
     throw new ToolUserError(
       'mcp_activity_id cannot be combined with content_ids.',
       400
+    );
+  }
+  if ((args.content_ids?.length ?? 0) > MAX_EXACT_CONTENT_IDS) {
+    throw new ToolUserError(
+      `read_knowledge accepts at most ${MAX_EXACT_CONTENT_IDS} content_ids per request.`,
+      422
     );
   }
 

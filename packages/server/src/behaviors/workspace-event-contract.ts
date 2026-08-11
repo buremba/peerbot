@@ -7,6 +7,7 @@
 export const MAX_WORKSPACE_EVENT_DEPTH = 8;
 export const MAX_WORKSPACE_EVENT_FANOUT = 32;
 export const MAX_COALESCED_BEHAVIOR_EVENT_INPUTS = 25;
+export const MAX_WORKSPACE_EVENT_ROOTS = MAX_COALESCED_BEHAVIOR_EVENT_INPUTS;
 export const MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS = 256;
 
 /**
@@ -20,7 +21,7 @@ export interface WorkspaceEventTriggerSignal {
   event_type: string;
   delivery_id: string;
   occurred_at: string;
-  root_event_id: number;
+  root_event_ids: number[];
   causal_behavior_ids: number[];
   depth: number;
 }
@@ -28,7 +29,7 @@ export interface WorkspaceEventTriggerSignal {
 export interface WorkspaceEventActivationTaskPayload {
   organizationId: string;
   eventId: number;
-  rootEventId: number;
+  rootEventIds: number[];
   causalBehaviorIds: number[];
   depth: number;
 }
@@ -45,8 +46,13 @@ export function isWorkspaceEventTriggerSignal(
     Number(signal.event_id) > 0 &&
     typeof signal.event_type === 'string' &&
     typeof signal.delivery_id === 'string' &&
-    Number.isSafeInteger(signal.root_event_id) &&
-    Number(signal.root_event_id) > 0 &&
+    Array.isArray(signal.root_event_ids) &&
+    signal.root_event_ids.length > 0 &&
+    signal.root_event_ids.length <= MAX_WORKSPACE_EVENT_ROOTS &&
+    signal.root_event_ids.every(
+      (eventId) => Number.isSafeInteger(eventId) && eventId > 0
+    ) &&
+    new Set(signal.root_event_ids).size === signal.root_event_ids.length &&
     Array.isArray(signal.causal_behavior_ids) &&
     signal.causal_behavior_ids.length <=
       MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS &&
@@ -64,10 +70,14 @@ export function isWorkspaceEventTriggerSignal(
 export function deriveWorkspaceEventCausality(
   signals: readonly unknown[],
   producerBehaviorId: number
-): { rootEventId: number | null; causalBehaviorIds: number[]; depth: number } {
+): { rootEventIds: number[]; causalBehaviorIds: number[]; depth: number } {
   const workspaceSignals = signals.filter(isWorkspaceEventTriggerSignal);
+  const rootEventIds: number[] = [];
   const causalBehaviorIds: number[] = [];
   for (const signal of workspaceSignals) {
+    for (const eventId of signal.root_event_ids) {
+      if (!rootEventIds.includes(eventId)) rootEventIds.push(eventId);
+    }
     for (const behaviorId of signal.causal_behavior_ids) {
       if (!causalBehaviorIds.includes(behaviorId))
         causalBehaviorIds.push(behaviorId);
@@ -81,8 +91,13 @@ export function deriveWorkspaceEventCausality(
       `Workspace event causality exceeds ${MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS} distinct Behaviors`
     );
   }
+  if (rootEventIds.length > MAX_WORKSPACE_EVENT_ROOTS) {
+    throw new Error(
+      `Workspace event causality exceeds ${MAX_WORKSPACE_EVENT_ROOTS} distinct roots`
+    );
+  }
   return {
-    rootEventId: workspaceSignals[0]?.root_event_id ?? null,
+    rootEventIds,
     causalBehaviorIds,
     // Depth is the longest causal chain, not the number of distinct ancestors.
     // Coalescing two branches may increase the ancestor set without adding hops.

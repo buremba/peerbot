@@ -2,7 +2,7 @@ import type { BehaviorWorkspaceEventTrigger } from '@lobu/core/contracts/tools/m
 import type { DbClient } from '../db/client';
 import { getDb, parsePgNumberArray, pgBigintArray } from '../db/client';
 import { createBehaviorEventRun } from '../runs/queue-service';
-import { enqueueTaskInTransaction } from '../scheduled/task-scheduler';
+import { enqueueTasksInTransaction } from '../scheduled/task-scheduler';
 import { resolveBehaviorExecutor } from '../tools/admin/manage_behaviors/executors';
 import logger from '../utils/logger';
 import { dispatchBehaviorRunsBestEffort } from './activation';
@@ -10,17 +10,7 @@ import {
   MAX_WORKSPACE_EVENT_DEPTH,
   MAX_WORKSPACE_EVENT_FANOUT,
   MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS,
-  type WorkspaceEventActivationTaskPayload,
-  type WorkspaceEventTriggerSignal,
-} from './workspace-event-contract';
-
-export {
-  deriveWorkspaceEventCausality,
-  isWorkspaceEventTriggerSignal,
-  MAX_COALESCED_BEHAVIOR_EVENT_INPUTS,
-  MAX_WORKSPACE_EVENT_DEPTH,
-  MAX_WORKSPACE_EVENT_FANOUT,
-  MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS,
+  MAX_WORKSPACE_EVENT_ROOTS,
   type WorkspaceEventActivationTaskPayload,
   type WorkspaceEventTriggerSignal,
 } from './workspace-event-contract';
@@ -36,7 +26,7 @@ interface WorkspaceEventRecord {
   producerBehaviorId: number;
 }
 
-export interface MatchingWorkspaceEventActivation {
+interface MatchingWorkspaceEventActivation {
   behaviorId: number;
   organizationId: string;
   agentId: string | null;
@@ -45,19 +35,21 @@ export interface MatchingWorkspaceEventActivation {
   trigger: BehaviorWorkspaceEventTrigger;
 }
 
-export async function enqueueWorkspaceEventActivation(
+export async function enqueueWorkspaceEventActivations(
   tx: DbClient,
-  payload: WorkspaceEventActivationTaskPayload
-): Promise<string> {
-  return enqueueTaskInTransaction(
+  payloads: WorkspaceEventActivationTaskPayload[]
+): Promise<string[]> {
+  return enqueueTasksInTransaction(
     tx,
-    WORKSPACE_EVENT_ACTIVATION_TASK,
-    payload,
-    {
+    payloads.map((payload) => ({
+      name: WORKSPACE_EVENT_ACTIVATION_TASK,
+      payload,
+      opts: {
       idempotencyKey: `workspace-event-activation:${payload.eventId}`,
       maxAttempts: 5,
       organizationId: payload.organizationId,
-    }
+      },
+    }))
   );
 }
 
@@ -133,7 +125,7 @@ async function loadWorkspaceEvent(
   };
 }
 
-export async function findMatchingWorkspaceEventActivations(
+async function findMatchingWorkspaceEventActivations(
   organizationId: string,
   signal: WorkspaceEventTriggerSignal,
   event: WorkspaceEventRecord,
@@ -213,8 +205,13 @@ export async function activateWorkspaceEventTask(
     !payload.organizationId ||
     !Number.isSafeInteger(payload.eventId) ||
     payload.eventId <= 0 ||
-    !Number.isSafeInteger(payload.rootEventId) ||
-    payload.rootEventId <= 0 ||
+    !Array.isArray(payload.rootEventIds) ||
+    payload.rootEventIds.length === 0 ||
+    payload.rootEventIds.length > MAX_WORKSPACE_EVENT_ROOTS ||
+    payload.rootEventIds.some(
+      (eventId) => !Number.isSafeInteger(eventId) || eventId <= 0
+    ) ||
+    new Set(payload.rootEventIds).size !== payload.rootEventIds.length ||
     !Number.isSafeInteger(payload.depth) ||
     payload.depth < 1 ||
     causalBehaviorIds.length > MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS ||
@@ -264,7 +261,7 @@ export async function activateWorkspaceEventTask(
     event_type: event.semanticType,
     delivery_id: `workspace-event:${event.id}`,
     occurred_at: event.occurredAt,
-    root_event_id: payload.rootEventId,
+    root_event_ids: payload.rootEventIds,
     causal_behavior_ids: causalBehaviorIds,
     depth: payload.depth,
   };

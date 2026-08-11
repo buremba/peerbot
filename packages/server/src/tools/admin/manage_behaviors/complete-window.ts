@@ -7,10 +7,11 @@
 
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
+import { enqueueWorkspaceEventActivations } from '../../../behaviors/workspace-event';
 import {
   deriveWorkspaceEventCausality,
-  enqueueWorkspaceEventActivation,
-} from '../../../behaviors/workspace-event';
+  type WorkspaceEventActivationTaskPayload,
+} from '../../../behaviors/workspace-event-contract';
 import { createDbClientFromEnv, getDb, parsePgNumberArray } from '../../../db/client';
 import type { Env } from '../../../index';
 import { ToolUserError } from '../../../utils/errors';
@@ -784,6 +785,7 @@ export async function handleCompleteWindow(
       kind: 'created' | 'updated';
       applied: Record<string, unknown>;
     }>;
+    const workspaceEventActivations: WorkspaceEventActivationTaskPayload[] = [];
     for (const [outputName, output] of Object.entries(outputs ?? {})) {
       if ('entity' in output) {
         const promote = await promoteBehaviorEntityOutput({
@@ -819,17 +821,20 @@ export async function handleCompleteWindow(
         });
         for (const event of persistedEvents) {
           if (event.change === 'unchanged') continue;
-          await enqueueWorkspaceEventActivation(tx, {
+          workspaceEventActivations.push({
             organizationId: watcherOrgId,
             eventId: Number(event.id),
-            rootEventId:
-              workspaceEventCausality.rootEventId ?? Number(event.id),
+            rootEventIds:
+              workspaceEventCausality.rootEventIds.length > 0
+                ? workspaceEventCausality.rootEventIds
+                : [Number(event.id)],
             causalBehaviorIds: workspaceEventCausality.causalBehaviorIds,
             depth: workspaceEventCausality.depth,
           });
         }
       }
     }
+    await enqueueWorkspaceEventActivations(tx, workspaceEventActivations);
 
     // One run-level change set covers every entity output.
     if (entityChanges.length > 0 && watcherRunId && Number.isFinite(watcherRunId)) {

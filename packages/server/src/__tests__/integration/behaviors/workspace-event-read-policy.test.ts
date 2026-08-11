@@ -91,6 +91,15 @@ describe('workspace-event exact-input read policy', () => {
     await expect(
       executeTool(
         'read_knowledge',
+        { content_ids: Array.from({ length: 2001 }, (_, index) => index + 1) },
+        TEST_ENV,
+        ctx
+      )
+    ).rejects.toThrow(/at most 2000 content_ids/);
+
+    await expect(
+      executeTool(
+        'read_knowledge',
         { content_ids: [event.id], limit: 1 },
         TEST_ENV,
         ctx

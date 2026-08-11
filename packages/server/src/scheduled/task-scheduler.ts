@@ -89,6 +89,17 @@ interface TaskJobData {
   __scheduledTick?: string;
 }
 
+interface TransactionalTask<P = unknown> {
+  name: string;
+  payload: P;
+  opts: {
+    idempotencyKey: string;
+    maxAttempts?: number;
+    priority?: number;
+    organizationId?: string;
+  };
+}
+
 /**
  * Transactional one-shot task enqueue for writers that must commit their
  * domain row and its durable handoff atomically. Unlike `spawn()`, this never
@@ -107,39 +118,78 @@ export async function enqueueTaskInTransaction<P>(
     organizationId?: string;
   },
 ): Promise<string> {
-  const data: TaskJobData = { name, payload };
-  const inserted = await tx<{ id: number | string }>`
+  const [id] = await enqueueTasksInTransaction(tx, [
+    { name, payload, opts },
+  ]);
+  if (!id) throw new Error(`Failed to enqueue transactional task "${name}"`);
+  return id;
+}
+
+/**
+ * Bulk form of `enqueueTaskInTransaction`. Domain writers often persist a
+ * bounded set of rows in one transaction; their durable task handoffs should
+ * use one INSERT and one NOTIFY rather than one database round-trip per row.
+ * Returned ids preserve input order, including duplicate idempotency keys.
+ */
+export async function enqueueTasksInTransaction<P>(
+  tx: DbClient,
+  tasks: TransactionalTask<P>[],
+): Promise<string[]> {
+  if (tasks.length === 0) return [];
+  const requested = tasks.map(({ name, payload, opts }) => ({
+    name,
+    data: { name, payload } satisfies TaskJobData,
+    idempotency_key: opts.idempotencyKey,
+    max_attempts: opts.maxAttempts ?? 5,
+    priority: opts.priority ?? 0,
+    organization_id: opts.organizationId ?? null,
+  }));
+  await tx`
     INSERT INTO public.runs (
       run_type, queue_name, action_key, action_input, idempotency_key,
       max_attempts, attempts, status, run_at, priority, organization_id
-    ) VALUES (
-      'task', ${TASK_QUEUE_NAME}, ${name}, ${tx.json(data)},
-      ${opts.idempotencyKey}, ${opts.maxAttempts ?? 5}, 0, 'pending', now(),
-      ${opts.priority ?? 0}, ${opts.organizationId ?? null}
+    )
+    SELECT
+      'task', ${TASK_QUEUE_NAME}, task.name, task.data, task.idempotency_key,
+      task.max_attempts, 0, 'pending', now(), task.priority,
+      task.organization_id
+    FROM jsonb_to_recordset(${tx.json(requested)}::jsonb) AS task(
+      name text,
+      data jsonb,
+      idempotency_key text,
+      max_attempts integer,
+      priority integer,
+      organization_id text
     )
     ON CONFLICT (idempotency_key)
       WHERE idempotency_key IS NOT NULL
         AND status IN ('pending', 'claimed', 'running')
     DO NOTHING
-    RETURNING id
   `;
-  let id = inserted[0]?.id == null ? '' : String(inserted[0].id);
-  if (!id) {
-    const existing = await tx<{ id: number | string }>`
-      SELECT id
-      FROM public.runs
-      WHERE idempotency_key = ${opts.idempotencyKey}
-        AND status IN ('pending', 'claimed', 'running')
-      ORDER BY id DESC
-      LIMIT 1
-    `;
-    id = existing[0]?.id == null ? '' : String(existing[0].id);
-  }
-  if (!id) {
-    throw new Error(`Failed to enqueue transactional task "${name}"`);
+  const keys = requested.map((task) => task.idempotency_key);
+  const resolved = await tx<{
+    id: number | string;
+    idempotency_key: string;
+  }>`
+    SELECT DISTINCT ON (r.idempotency_key) r.id, r.idempotency_key
+    FROM public.runs r
+    JOIN jsonb_array_elements_text(${tx.json(keys)}::jsonb) requested(key)
+      ON requested.key = r.idempotency_key
+    WHERE r.status IN ('pending', 'claimed', 'running')
+    ORDER BY r.idempotency_key, r.id DESC
+  `;
+  const idByKey = new Map(
+    resolved.map((row) => [row.idempotency_key, String(row.id)]),
+  );
+  const ids = keys.map((key) => idByKey.get(key) ?? '');
+  const missingTask = requested.find((_, index) => !ids[index]);
+  if (missingTask) {
+    throw new Error(
+      `Failed to enqueue transactional task "${missingTask.name}"`,
+    );
   }
   await tx`SELECT pg_notify(${TASK_NOTIFY_CHANNEL}, ${TASK_QUEUE_NAME})`;
-  return id;
+  return ids;
 }
 
 interface TaskRegistration {

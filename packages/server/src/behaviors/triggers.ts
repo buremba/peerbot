@@ -247,13 +247,25 @@ export function resolveBehaviorTriggerWrite(args: {
 }
 
 /**
+ * Execution an event trigger runs under once the contract default is applied.
+ * The default differs by provenance: a connector delivery is a conversational
+ * turn unless asked otherwise, a workspace event is an analysis window.
+ */
+function resolvedEventExecution(
+	trigger: BehaviorEventTrigger | BehaviorWorkspaceEventTrigger
+): "turn" | "window" {
+	return (
+		trigger.execution ?? (trigger.source === "workspace" ? "window" : "turn")
+	);
+}
+
+/**
  * Whether this trigger set runs on stored instructions alone. An event trigger
  * executing as "turn" carries its own content — the incoming message/event is
  * the input, and the built-in default instruction applies when the Behavior
  * has none. Schedule triggers, event triggers with execution "window", and an
  * empty trigger set (manual runs) have no such content, so they need
- * instruction text. An omitted event execution defaults to "turn"
- * (the contract's default).
+ * instruction text.
  */
 export function behaviorRequiresInstructions(
 	triggers: BehaviorTrigger[]
@@ -262,12 +274,7 @@ export function behaviorRequiresInstructions(
 	return triggers.some(
 		(trigger) =>
 			trigger.kind === "schedule" ||
-			(trigger.kind === "event" &&
-				trigger.source === "workspace" &&
-				(trigger.execution ?? "window") === "window") ||
-			(trigger.kind === "event" &&
-				trigger.source !== "workspace" &&
-				trigger.execution === "window")
+			(trigger.kind === "event" && resolvedEventExecution(trigger) === "window")
 	);
 }
 
@@ -283,12 +290,7 @@ export function assertBehaviorOutputsUseWindowExecution(
 	if (!outputs || Object.keys(outputs).length === 0) return;
 	const turnTrigger = triggers.find(
 		(trigger) =>
-			(trigger.kind === "event" &&
-				trigger.source !== "workspace" &&
-				(trigger.execution ?? "turn") === "turn") ||
-			(trigger.kind === "event" &&
-				trigger.source === "workspace" &&
-				(trigger.execution ?? "window") === "turn")
+			trigger.kind === "event" && resolvedEventExecution(trigger) === "turn"
 	);
 	if (!turnTrigger) return;
 	throw new ToolUserError(
@@ -407,7 +409,7 @@ export async function assertBehaviorTriggerConnections(
 	);
 	const eventKindsByEntityType = new Map<
 		string,
-		{ name: string; eventKinds: Record<string, unknown> | null }
+		{ name: string; eventKinds: Record<string, unknown> }
 	>();
 	for (const trigger of workspaceTriggers) {
 		const entityTypeSlug = trigger.entity_type;
@@ -451,7 +453,7 @@ export async function assertBehaviorTriggerConnections(
 			eventKindsByEntityType.set(catalogKey, catalog);
 		}
 		for (const eventType of trigger.event_types) {
-			if (!catalog.eventKinds || !(eventType in catalog.eventKinds)) {
+			if (!(eventType in catalog.eventKinds)) {
 				throw new ToolUserError(
 					`${catalog.name} does not declare workspace event '${eventType}'.`
 				);

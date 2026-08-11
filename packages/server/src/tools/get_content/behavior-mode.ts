@@ -466,9 +466,14 @@ export async function handleBehaviorMode(
   // A workspace-sourced event window receives exact durable pointers in addition to
   // its authored context sources. Include those rows in the same Behavior read
   // so the returned window_token proves what the agent saw and complete_window
-  // can link or cite the triggering events normally. IDs are numeric values
-  // already validated by TypeBox; the bounded coalesce contract keeps this
-  // source within the per-source page budget.
+  // can link or cite the triggering events normally.
+  //
+  // The ids are inlined rather than bound because `executeDataSources` takes SQL
+  // text, so the safe-integer filter below — not the looser `Type.Number()` in
+  // the request schema — is what makes the interpolation safe. The rows stay
+  // governed: this source reads the same org/window/entity-scoped `events` CTE
+  // as every authored source, so an id outside the Behavior's scope resolves to
+  // no row rather than to unscoped data.
   const triggerContentIds = [
     ...new Set(
       (args.content_ids ?? [])

@@ -288,7 +288,7 @@ instructions for that Behavior version. Schedule triggers, connector events
 with `execution: "window"`, workspace events with their default window
 execution, and Behaviors with no triggers (manual) require a prompt, a skill, or
 both. A connector event with `execution: "turn"` (chat/webhook listen) may omit
-both—the incoming message is the content and a built-in default applies.
+both — the incoming message is the content and a built-in default applies.
 
 ```ts
 const digestSkill = defineSkill({
@@ -321,7 +321,7 @@ Declared outputs are persisted whether or not a `reaction` is present, and the
 complete result remains on Canvas. A `reaction` lets the Behavior act (post a
 message, call connectors, or request a governed merge) and can consume those
 persisted drafts. Omit `outputs` for a Canvas-only or reaction-only Behavior.
-Only newly persisted declared event outputs activate events with
+Only newly persisted declared event outputs activate triggers with
 `source: "workspace"`. Ordinary knowledge saves and connector-ingested events remain data,
 and SQL sources are reads rather than subscriptions. The downstream run reads
 the exact event pointers plus its authored sources under the owning agent's

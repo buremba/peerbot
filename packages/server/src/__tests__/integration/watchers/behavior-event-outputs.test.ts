@@ -1,9 +1,7 @@
 import { inferBehaviorGranularityFromSchedule } from '@lobu/connector-sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
-import {
-  activateWorkspaceEventTask,
-  type WorkspaceEventActivationTaskPayload,
-} from '../../../behaviors/workspace-event';
+import { activateWorkspaceEventTask } from '../../../behaviors/workspace-event';
+import type { WorkspaceEventActivationTaskPayload } from '../../../behaviors/workspace-event-contract';
 import type { DbClient } from '../../../db/client';
 import { createWatcherRun } from '../../../runs/queue-service';
 import { ensureMemberEntityType } from '../../../utils/member-entity-type';
@@ -199,7 +197,10 @@ describe('Behavior event outputs', () => {
         (task) =>
           task.action_input.name === 'activate-workspace-event' &&
           task.action_input.payload.depth === 1 &&
-          task.action_input.payload.causalBehaviorIds[0] === watcherId
+          task.action_input.payload.causalBehaviorIds[0] === watcherId &&
+          task.action_input.payload.rootEventIds.length === 1 &&
+          task.action_input.payload.rootEventIds[0] ===
+            task.action_input.payload.eventId
       )
     ).toBe(true);
 

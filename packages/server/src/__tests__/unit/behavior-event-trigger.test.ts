@@ -9,11 +9,11 @@ import {
   assertBehaviorOutputsUseWindowExecution,
   normalizeBehaviorTriggers,
 } from '../../behaviors/triggers';
+import { matchesWorkspaceEventTrigger } from '../../behaviors/workspace-event';
 import {
   deriveWorkspaceEventCausality,
   MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS,
-  matchesWorkspaceEventTrigger,
-} from '../../behaviors/workspace-event';
+} from '../../behaviors/workspace-event-contract';
 
 const githubTrigger: BehaviorEventTrigger = {
   kind: 'event',
@@ -51,7 +51,7 @@ describe('behavior event trigger matching', () => {
       matchingBehaviorTriggers([githubTrigger, slackTrigger], {
         ...githubSignal,
         connection_id: 42,
-      })
+      }),
     ).toEqual([githubTrigger]);
   });
 
@@ -75,7 +75,7 @@ describe('behavior event trigger matching', () => {
     };
 
     expect(
-      matchingBehaviorTriggers([githubTrigger, slackTrigger], slackSignal)
+      matchingBehaviorTriggers([githubTrigger, slackTrigger], slackSignal),
     ).toEqual([slackTrigger]);
     expect(slackSignal.input_text).toBe('Can you summarize this thread?');
   });
@@ -100,7 +100,7 @@ describe('behavior event trigger matching', () => {
       matchingBehaviorTriggers([teamScopedTrigger], {
         ...baseSignal,
         attributes: { ...baseSignal.attributes, team_id: 'T_THEIRS' },
-      })
+      }),
     ).toEqual([teamScopedTrigger]);
     // Payloads that omit team entirely must still route.
     expect(matchingBehaviorTriggers([teamScopedTrigger], baseSignal)).toEqual([
@@ -111,7 +111,7 @@ describe('behavior event trigger matching', () => {
       matchingBehaviorTriggers([teamScopedTrigger], {
         ...baseSignal,
         attributes: { ...baseSignal.attributes, channel_id: 'C999' },
-      })
+      }),
     ).toEqual([]);
   });
 
@@ -143,7 +143,7 @@ describe('behavior event trigger matching', () => {
       specific,
     ]);
     expect(matchingBehaviorTriggers([specific, broad], signal)[0]).toBe(
-      specific
+      specific,
     );
   });
 
@@ -152,7 +152,7 @@ describe('behavior event trigger matching', () => {
       normalizeBehaviorTriggers([
         { kind: 'schedule', cron: '0 9 * * *' },
         { kind: 'schedule', cron: '0 18 * * *' },
-      ])
+      ]),
     ).toThrow(/at most one schedule/i);
   });
 
@@ -212,9 +212,9 @@ describe('behavior event trigger matching', () => {
       source: 'connector',
       match: { channel_id: 'C123' },
     });
-    expect((normalized[0] as BehaviorEventTrigger).match).not.toHaveProperty(
-      'mention_only'
-    );
+    expect(
+      (normalized[0] as BehaviorEventTrigger).match,
+    ).not.toHaveProperty('mention_only');
   });
 
   test('mention_only:true still requires a mention signal', () => {
@@ -260,7 +260,7 @@ describe('behavior event trigger matching', () => {
           active_run: 'steer',
           output: 'silent',
         },
-      ])
+      ]),
     ).toThrow('Window execution does not support steering');
     expect(() =>
       normalizeBehaviorTriggers([
@@ -270,7 +270,7 @@ describe('behavior event trigger matching', () => {
           active_run: 'coalesce',
           output: 'reply_to_source',
         },
-      ])
+      ]),
     ).toThrow('Window execution cannot reply to the source');
     expect(() =>
       normalizeBehaviorTriggers([
@@ -280,7 +280,7 @@ describe('behavior event trigger matching', () => {
           active_run: 'steer',
           output: 'silent',
         },
-      ])
+      ]),
     ).toThrow('Steering requires a turn that replies to the source');
   });
 
@@ -360,12 +360,12 @@ describe('behavior event trigger matching', () => {
       event_type: 'risk_detected',
       delivery_id: 'workspace-event:40',
       occurred_at: '2026-08-11T00:00:00.000Z',
-      root_event_id: 40,
+      root_event_ids: [40],
       causal_behavior_ids: [7],
       depth: 1,
     };
     expect(deriveWorkspaceEventCausality([signal, signal], 9)).toEqual({
-      rootEventId: 40,
+      rootEventIds: [40],
       causalBehaviorIds: [7, 9],
       depth: 2,
     });
@@ -379,14 +379,14 @@ describe('behavior event trigger matching', () => {
       event_type: 'risk_detected',
       delivery_id: `workspace-event:${root}`,
       occurred_at: '2026-08-11T00:00:00.000Z',
-      root_event_id: root,
+      root_event_ids: [root],
       causal_behavior_ids: [7, ancestor],
       depth: 2,
     });
     expect(
       deriveWorkspaceEventCausality([signal(40, 8), signal(41, 10)], 12)
     ).toEqual({
-      rootEventId: 40,
+      rootEventIds: [40, 41],
       causalBehaviorIds: [7, 8, 10, 12],
       depth: 3,
     });
@@ -407,7 +407,7 @@ describe('behavior event trigger matching', () => {
             event_type: 'risk_detected',
             delivery_id: 'workspace-event:40',
             occurred_at: '2026-08-11T00:00:00.000Z',
-            root_event_id: 40,
+            root_event_ids: [40],
             causal_behavior_ids: causalBehaviorIds,
             depth: 2,
           },

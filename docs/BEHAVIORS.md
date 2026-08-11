@@ -39,8 +39,8 @@ execution and busy policy wins.
 
 `event` is one public trigger primitive; `source` records its provenance.
 Existing connector triggers that omit `source` remain readable and normalize to
-`source: "connector"` on write. Connector `behavior_events` are the allowed
-catalog for connector-sourced events.
+`source: "connector"` on write. A connector's declared `behaviorEvents` are the
+allowed catalog for connector-sourced events.
 Connector feed `eventKinds` describe stored feed data and are not trigger
 subscriptions. Entity-type `eventKinds` describe durable workspace semantics
 and are the catalog for workspace-sourced events.
@@ -60,7 +60,7 @@ share the same source, filters, and run options.
 ## Behavior-to-Behavior chaining
 
 Only newly persisted events from a declared Behavior output activate
-events with `source: "workspace"`. Ordinary `save_memory` calls, connector ingestion,
+triggers with `source: "workspace"`. Ordinary `save_memory` calls, connector ingestion,
 and arbitrary rows already in `events` remain data. This explicit producer
 boundary prevents every knowledge write from accidentally becoming a workflow
 command.
@@ -69,14 +69,14 @@ command.
 flowchart LR
   A["Producer Behavior window"] --> B["Declared event output"]
   B --> C["Append event and activation task in one transaction"]
-  C --> D["Match active events whose source is workspace"]
+  C --> D["Match active triggers whose source is workspace"]
   D --> E["Create deduplicated downstream run"]
   E --> F["Read exact event pointers plus authored sources"]
   F --> G["Downstream outputs can continue the chain"]
 ```
 
-The handoff is pointer-based. A signal carries the event ID, delivery ID, root
-event ID, causal Behavior IDs, and depth—not a copied payload. Turn execution
+The handoff is pointer-based. A signal carries the event ID, delivery ID, bounded
+root event IDs, causal Behavior IDs, and depth — not a copied payload. Turn execution
 reads the exact event once. Window execution adds the exact event IDs to the
 same governed knowledge read as the authored sources and signs them into the
 window token.
@@ -88,7 +88,18 @@ Replaying the same completed output does not create another activation.
 
 ### Config example
 
+The subscribed `event_types` are validated against the organization's declared
+entity-type `eventKinds`, so the kind the producer emits has to exist in the
+schema before either Behavior applies:
+
 ```ts
+const account = defineEntityType({
+  key: "account",
+  eventKinds: {
+    observation: { description: "A material observation about an account." },
+  },
+});
+
 const detectRisk = defineBehavior({
   agent,
   slug: "detect-risk",
@@ -111,6 +122,7 @@ const investigateRisk = defineBehavior({
     {
       kind: "event",
       source: "workspace",
+      entity_type: account.key,
       event_types: ["observation"],
       match: { namespace: "account-risk" },
       execution: "window",
@@ -121,7 +133,9 @@ const investigateRisk = defineBehavior({
 ```
 
 The downstream Behavior may also declare ordinary SQL sources. The triggering
-events are included even when those sources return nothing.
+events are included even when those sources return nothing. They are read
+through the same governed `events` scope as any source, so a Behavior bound to
+specific entities still only sees trigger inputs linked to those entities.
 
 ## Delivery and safety semantics
 

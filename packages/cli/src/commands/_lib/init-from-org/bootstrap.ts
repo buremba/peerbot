@@ -513,7 +513,9 @@ function behaviorRequiresInstructions(
   return list.some(
     (trigger) =>
       trigger.kind === "schedule" ||
-      (trigger.kind === "event" && trigger.execution === "window")
+      (trigger.kind === "event" &&
+        (trigger.execution ??
+          (trigger.source === "workspace" ? "window" : "turn")) === "window")
   );
 }
 

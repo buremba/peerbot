@@ -11,8 +11,8 @@ import { runAclSyncTick } from '../authz/acl-sync';
 import {
   activateWorkspaceEventTask,
   WORKSPACE_EVENT_ACTIVATION_TASK,
-  type WorkspaceEventActivationTaskPayload,
 } from '../behaviors/workspace-event';
+import type { WorkspaceEventActivationTaskPayload } from '../behaviors/workspace-event-contract';
 import type { CoreServices } from '../gateway/services/core-services';
 import { getChatInstanceManager } from '../lobu/gateway';
 import { cleanupExpiredMcpSessions } from '../mcp-handler';

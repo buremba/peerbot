@@ -116,7 +116,7 @@ Lobu runs a **data pipeline** instead. Connectors poll and webhooks push into on
 
 **Entities.** You define the schema (`Company`, `Project`, `Incident`, …) in `lobu.config.ts`. Events attach to entity instances (`Company:Acme`) and build a live knowledge graph the whole org shares. Corrections supersede old facts; nothing is deleted, so provenance and time-travel stay intact.
 
-**Behaviors.** Versioned jobs activated manually, on a schedule, by a declared connector event, or by a durable event output from another Behavior. They read governed sources, persist structured entities and append-only events, and may run a [reaction](https://lobu.ai/sdks/reactions/) to notify Slack, open a ticket, or kick off agent work—while nobody is in chat. See the [activation and chaining model](docs/BEHAVIORS.md).
+**Behaviors.** Versioned jobs activated manually, on a schedule, by a declared connector event, or by a durable event output from another Behavior. They read governed sources, persist structured entities and append-only events, and may run a [reaction](https://lobu.ai/sdks/reactions/) to notify Slack, open a ticket, or kick off agent work — while nobody is in chat. See the [activation and chaining model](docs/BEHAVIORS.md).
 
 Docs: [Memory](https://lobu.ai/getting-started/memory/) · [Connectors](https://lobu.ai/sdks/connectors/) · [Reactions](https://lobu.ai/sdks/reactions/)
 

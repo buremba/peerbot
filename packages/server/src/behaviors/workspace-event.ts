@@ -45,9 +45,9 @@ export async function enqueueWorkspaceEventActivations(
       name: WORKSPACE_EVENT_ACTIVATION_TASK,
       payload,
       opts: {
-      idempotencyKey: `workspace-event-activation:${payload.eventId}`,
-      maxAttempts: 5,
-      organizationId: payload.organizationId,
+        idempotencyKey: `workspace-event-activation:${payload.eventId}`,
+        maxAttempts: 5,
+        organizationId: payload.organizationId,
       },
     }))
   );
@@ -143,6 +143,7 @@ async function findMatchingWorkspaceEventActivations(
            w.device_worker_id::text AS device_worker_id,
            w.agent_kind, w.triggers
     FROM watchers w
+    JOIN watcher_versions v ON v.id = w.current_version_id
     WHERE w.organization_id = ${organizationId}
       AND w.status = 'active'
       AND (w.agent_id IS NOT NULL OR w.device_worker_id IS NOT NULL)

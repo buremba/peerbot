@@ -143,14 +143,16 @@ specific entities still only sees trigger inputs linked to those entities.
   values. It is not a general expression language.
 - `queue` keeps each activation separate. `coalesce` combines pending inputs
   for one Behavior, with at most 25 exact event pointers per run; overflow
-  creates another durable run instead of dropping data.
+  starts another durable run when the Behavior's cooldown permits it. A
+  configured cooldown may intentionally suppress that new activation.
 - One output event may fan out to at most 32 matching Behaviors. Exceeding the
   limit fails and retries the activation task instead of silently selecting a
   subset.
 - Causal depth is capped at eight, with the root producer output at depth one.
   A Behavior already in the causal path cannot be re-entered, which prevents
   direct and indirect loops. Coalescing also stops before its inherited causal
-  set would exceed 256 distinct Behaviors, bounding the durable signal size.
+  set would exceed 256 distinct Behaviors or 25 root events, bounding the
+  durable signal size.
 - Entity-scoped trigger inputs are checked against the downstream agent's read
   policy. Unbound inputs use the workspace-wide `$member` policy envelope.
 - Connector delivery and workspace delivery share the public `event` primitive,

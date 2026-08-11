@@ -253,6 +253,37 @@ describe('Behavior event outputs', () => {
     ]);
     expect(triggerRead.window_token).toBeTruthy();
 
+    const otherObservationTask = activationTasks.find(
+      (task) =>
+        Number(task.action_input.payload.eventId) !==
+          Number(observationTask.action_input.payload.eventId) &&
+        observations.some(
+          (event) =>
+            Number(event.id) === Number(task.action_input.payload.eventId)
+        )
+    );
+    if (!otherObservationTask)
+      throw new Error('Second observation activation task was not written');
+    await sql`
+      UPDATE watchers
+      SET current_version_id = NULL
+      WHERE id = ${consumerId}
+    `;
+    expect(
+      await activateWorkspaceEventTask(
+        otherObservationTask.action_input.payload,
+        sql
+      )
+    ).toMatchObject({ matched: 0, queued: 0 });
+    expect(
+      await sql`
+        SELECT id
+        FROM runs
+        WHERE run_type = 'behavior'
+          AND watcher_id = ${consumerId}
+      `
+    ).toHaveLength(1);
+
     // A source-derived idempotency key is intentionally stronger than the
     // Canvas-revision retry key: a later run that rediscovers the same post
     // reuses the original event instead of appending a duplicate.

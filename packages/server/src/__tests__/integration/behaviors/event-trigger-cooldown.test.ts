@@ -30,7 +30,10 @@ import {
 	claimBehaviorCooldownStandalone,
 	lockBehaviorForActivation,
 } from "../../../behaviors/cooldown";
-import { MAX_COALESCED_BEHAVIOR_EVENT_INPUTS } from "../../../behaviors/workspace-event-contract";
+import {
+	MAX_COALESCED_BEHAVIOR_EVENT_INPUTS,
+	MAX_WORKSPACE_EVENT_ROOTS,
+} from "../../../behaviors/workspace-event-contract";
 import type { DbClient } from "../../../db/client";
 import type { Env } from "../../../index";
 import { createBehaviorEventRun } from "../../../runs/queue-service";
@@ -354,6 +357,74 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 		expect(rows.map((row) => Number(row.delivery_count))).toEqual([
 			MAX_COALESCED_BEHAVIOR_EVENT_INPUTS,
 			1,
+		]);
+	});
+
+	it("splits coalesced workspace roots before causal payload exceeds its bound", async () => {
+		const fixture = await behaviorWithCooldown(0);
+		const trigger = {
+			kind: "event" as const,
+			source: "workspace" as const,
+			event_types: ["risk_detected"],
+			execution: "window" as const,
+			active_run: "coalesce" as const,
+		};
+		const queue = (deliveryId: string, rootEventIds: number[]) =>
+			createBehaviorEventRun({
+				organizationId: fixture.organizationId,
+				watcherId: fixture.behaviorId,
+				agentId: fixture.workspace.agentId,
+				trigger,
+				signal: {
+					kind: "event",
+					source: "workspace",
+					event_id: rootEventIds[0] ?? 1,
+					event_type: "risk_detected",
+					delivery_id: deliveryId,
+					occurred_at: "2026-08-11T00:00:00.000Z",
+					root_event_ids: rootEventIds,
+					causal_behavior_ids: [9000],
+					depth: 2,
+				},
+			});
+
+		expect(
+			(
+				await queue(
+					"workspace-event:bounded-roots:1",
+					Array.from(
+						{ length: MAX_WORKSPACE_EVENT_ROOTS },
+						(_, index) => index + 1,
+					),
+				)
+			).disposition,
+		).toBe("queued");
+		expect(
+			(await queue("workspace-event:bounded-roots:2", [1000])).disposition,
+		).toBe("queued");
+
+		const rows = await getTestDb()<{
+			delivery_count: number;
+			root_count: number;
+		}>`
+			SELECT
+				jsonb_array_length(approved_input->'delivery_ids') AS delivery_count,
+				jsonb_array_length(
+					approved_input->'trigger_signals'->0->'root_event_ids'
+				) AS root_count
+			FROM runs
+			WHERE watcher_id = ${fixture.behaviorId}
+			  AND run_type = 'behavior'
+			ORDER BY id
+		`;
+		expect(
+			rows.map((row) => ({
+				deliveryCount: Number(row.delivery_count),
+				rootCount: Number(row.root_count),
+			})),
+		).toEqual([
+			{ deliveryCount: 1, rootCount: MAX_WORKSPACE_EVENT_ROOTS },
+			{ deliveryCount: 1, rootCount: 1 },
 		]);
 	});
 

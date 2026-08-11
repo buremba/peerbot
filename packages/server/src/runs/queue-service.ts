@@ -20,6 +20,7 @@ import {
 import {
   MAX_COALESCED_BEHAVIOR_EVENT_INPUTS,
   MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS,
+  MAX_WORKSPACE_EVENT_ROOTS,
   isWorkspaceEventTriggerSignal,
   type WorkspaceEventTriggerSignal,
 } from '../behaviors/workspace-event-contract';
@@ -799,16 +800,25 @@ export async function createBehaviorEventRun(
         const deliveryIds = input.delivery_ids ??
           signals.map((signal) => signal.delivery_id);
         const nextSignals = [...signals, params.signal];
+        const nextWorkspaceSignals = nextSignals.filter(
+          isWorkspaceEventTriggerSignal
+        );
         const causalBehaviorIds = new Set(
-          nextSignals
-            .filter(isWorkspaceEventTriggerSignal)
-            .flatMap((signal) => signal.causal_behavior_ids)
+          nextWorkspaceSignals.flatMap((signal) => signal.causal_behavior_ids)
         );
         causalBehaviorIds.add(params.watcherId);
+        const rootEventIds = new Set(
+          nextWorkspaceSignals.flatMap((signal) => signal.root_event_ids)
+        );
         // A coalesced run inherits the union of every incoming causal path when
         // it emits a downstream event. Split into another durable run before
-        // that set becomes an unbounded payload.
-        if (causalBehaviorIds.size <= MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS) {
+        // either half of that ancestry becomes an unbounded payload — and
+        // before `deriveWorkspaceEventCausality` would have to reject the
+        // producer's completed window for exceeding the same bounds.
+        if (
+          causalBehaviorIds.size <= MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS &&
+          rootEventIds.size <= MAX_WORKSPACE_EVENT_ROOTS
+        ) {
           const currentWindowStart = Date.parse(input.window_start);
           const currentWindowEnd = Date.parse(input.window_end);
           const nextInput: WatcherRunPayload = {

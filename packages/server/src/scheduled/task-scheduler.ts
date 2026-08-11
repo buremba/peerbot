@@ -44,13 +44,13 @@ import { createLogger } from '@lobu/core';
 import * as Sentry from '@sentry/node';
 import type { DbClient } from '../db/client';
 import { incrementCounter } from '../gateway/metrics/prometheus';
+import { notifyChannelFor } from '../gateway/infrastructure/queue/runs-queue';
 import type { IMessageQueue, QueueJob } from '../gateway/infrastructure/queue/types';
 import { nextRunAt } from '../utils/cron';
 
 const logger = createLogger('task-scheduler');
 
 const TASK_QUEUE_NAME = 'task';
-const TASK_NOTIFY_CHANNEL = 'runs_lobu:task';
 
 interface TaskContext<P = unknown> {
   /** Decoded task payload. */
@@ -101,35 +101,14 @@ interface TransactionalTask<P = unknown> {
 }
 
 /**
- * Transactional one-shot task enqueue for writers that must commit their
- * domain row and its durable handoff atomically. Unlike `spawn()`, this never
- * opens a nested transaction and acquires no domain/Behavior locks. Postgres
- * holds the NOTIFY until the caller commits; the queue poller remains the
- * fallback if notification delivery fails.
- */
-export async function enqueueTaskInTransaction<P>(
-  tx: DbClient,
-  name: string,
-  payload: P,
-  opts: {
-    idempotencyKey: string;
-    maxAttempts?: number;
-    priority?: number;
-    organizationId?: string;
-  },
-): Promise<string> {
-  const [id] = await enqueueTasksInTransaction(tx, [
-    { name, payload, opts },
-  ]);
-  if (!id) throw new Error(`Failed to enqueue transactional task "${name}"`);
-  return id;
-}
-
-/**
- * Bulk form of `enqueueTaskInTransaction`. Domain writers often persist a
- * bounded set of rows in one transaction; their durable task handoffs should
- * use one INSERT and one NOTIFY rather than one database round-trip per row.
- * Returned ids preserve input order, including duplicate idempotency keys.
+ * Transactional task enqueue for writers that must commit their domain rows
+ * and their durable handoffs atomically. Unlike `spawn()`, this never opens a
+ * nested transaction and acquires no domain/Behavior locks. Postgres holds the
+ * NOTIFY until the caller commits; the queue poller remains the fallback if
+ * notification delivery fails. Domain writers persist a bounded set of rows in
+ * one transaction, so the whole batch takes one INSERT and one NOTIFY rather
+ * than a database round-trip per row. Returned ids preserve input order,
+ * including duplicate idempotency keys.
  */
 export async function enqueueTasksInTransaction<P>(
   tx: DbClient,
@@ -188,7 +167,7 @@ export async function enqueueTasksInTransaction<P>(
       `Failed to enqueue transactional task "${missingTask.name}"`,
     );
   }
-  await tx`SELECT pg_notify(${TASK_NOTIFY_CHANNEL}, ${TASK_QUEUE_NAME})`;
+  await tx`SELECT pg_notify(${notifyChannelFor(TASK_QUEUE_NAME)}, ${TASK_QUEUE_NAME})`;
   return ids;
 }
 

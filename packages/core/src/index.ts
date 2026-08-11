@@ -42,6 +42,8 @@ export * from "./contracts/interaction-envelope";
 export * from "./credentials";
 // Errors & logging
 export * from "./errors";
+// Read-time run error classification (category + retryable + incident flag)
+export * from "./error-classification";
 // Guardrail primitive (type + registry + parallel runner + no-op builtin)
 export * from "./guardrails";
 // Shared base for InstructionProvider implementations (server + worker)

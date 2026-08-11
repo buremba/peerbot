@@ -75,6 +75,7 @@ describe('search_memory > recall contract', () => {
   const STRONG_SIM = 0.8;
   const WEAK_SIM = 0.54;
   const strongIds: number[] = [];
+  let exactMemoryId: number;
 
   // Fuzzy-name fixture for the ENTITY-side min_similarity floor. Nonsense words
   // so nothing else in the org can match them. Trigram similarities against
@@ -138,11 +139,37 @@ describe('search_memory > recall contract', () => {
       strongIds.push(ev.id);
     }
 
+    const exactMemory = await createTestEvent({
+      entity_id: entity.id,
+      connection_id: connection.id,
+      content: 'Exact reviewer checklist memory',
+      organization_id: org.id,
+    });
+    exactMemoryId = exactMemory.id;
+
     ctx = {
       organizationId: org.id,
       userId: user.id,
       tokenType: 'session',
     } as ToolContext;
+  });
+
+  it('opens an exact content id from reviewer-style "memory <id>" language', async () => {
+    const result = await search(
+      {
+        query: 'memory ' + exactMemoryId,
+        include_content: true,
+      },
+      env,
+      ctx
+    );
+
+    expect(result.discovery_status).toBe('complete');
+    expect(result.content?.map((item) => item.id)).toContain(exactMemoryId);
+    expect(result.content?.find((item) => item.id === exactMemoryId)?.text_content).toBe(
+      'Exact reviewer checklist memory'
+    );
+    expect(result.suggestion ?? '').not.toContain('entities.create');
   });
 
   // ── ORDERING GUARD (never-broken behaviour, pinned) ──────────────────────

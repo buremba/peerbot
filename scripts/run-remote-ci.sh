@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run the Linux CI graph on Depot against the current working tree. Depot
-# applies committed, uncommitted, and untracked changes after checkout, so an
-# agent can get a full preflight before pushing without using local CPU.
+# Run the Linux CI graph on Depot against local changes. Full preflights
+# require a staged tree and reject untracked files, so their attestation can
+# survive the following commit without using local CPU.
 
 set -euo pipefail
 
@@ -31,9 +31,14 @@ DEFAULT_JOBS=(
   format-lint
   typecheck
   migrations
+  sdk-cli-build
+  sdk-lifecycle-e2e
+  sdk-error-taxonomy-e2e
+  cli-command-smoke
+  sdk-cli-e2e
+  dead-code-report
   optional-smoke-filter
   connector-parity-smoke
-  sdk-cli-e2e
 )
 
 for cmd in depot git jq tee; do
@@ -78,15 +83,18 @@ echo ">> checking Depot repository access"
 depot ci migrate preflight --org "$DEPOT_ORG_ID" >/dev/null
 
 full_gate=0
+attested_tree=""
 if [ "$#" -eq 0 ]; then
   jobs=("${DEFAULT_JOBS[@]}")
   full_gate=1
+  attested_tree="$(remote_ci_staged_tree)" || exit $?
 else
   jobs=("$@")
+  remote_ci_require_no_untracked || exit $?
 fi
 
-# Starting a new full run invalidates any prior same-HEAD attestation until the
-# new run reaches an authoritative success state. Subset runs do not attest.
+# Starting a new full run invalidates any prior tree attestation until the new
+# run reaches an authoritative success state. Subset runs do not attest.
 if [ "$full_gate" = "1" ]; then
   rm -f "$ATTESTATION_FILE"
 fi
@@ -167,9 +175,18 @@ fi
 echo ">> Depot run $run_id passed"
 jq -r '.workflows[].jobs[].attempts[-1].view_url // empty' <<<"$status_json" | sort -u
 
-# Only a clean, full-graph success may suppress review.sh's duplicate local
-# package build. A subset run or any tree change cannot create an attestation.
-if [ "$full_gate" = "1" ] && [ -z "$(git status --porcelain)" ]; then
-  git rev-parse HEAD > "$ATTESTATION_FILE"
-  echo ">> recorded full remote preflight for $(git rev-parse --short HEAD)"
+# Only an unchanged, settled full-graph success may suppress review.sh's
+# duplicate local package build. The tree id remains stable across the commit
+# that follows this staged preflight; a subset run can never attest.
+if [ "$full_gate" = "1" ]; then
+  current_tree="$(remote_ci_staged_tree)" || {
+    echo "The worktree changed while Depot was running; remote preflight is not attested." >&2
+    exit 1
+  }
+  if [ "$current_tree" != "$attested_tree" ]; then
+    echo "The staged tree changed while Depot was running; rerun the full preflight." >&2
+    exit 1
+  fi
+  printf '%s\n' "$attested_tree" > "$ATTESTATION_FILE"
+  echo ">> recorded full remote preflight for tree $attested_tree"
 fi

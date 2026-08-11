@@ -41,9 +41,10 @@ Run focused tests while iterating, then the settled-diff gates in this order:
 
 ```bash
 bun test <path>                     # focused local iteration
-make pre-pr-remote                  # full Linux graph on Depot; no local CPU
+make pre-pr-remote-fast             # broad required graph on Depot; iteration only
 make review-fix                     # unposted fixer pass; inspect its edits
 git add -- <paths>                  # explicit paths only, never -A
+make pre-pr-remote                  # full staged Linux graph on Depot; no local CPU
 git commit -m '<type>(<scope>): <summary>'
 git diff --name-only origin/main...HEAD
 git push -u origin <branch>
@@ -53,7 +54,7 @@ gh pr checks <number> --required
 gh pr merge <number> --squash --admin
 ```
 
-`make pre-pr-remote` uploads committed, uncommitted, and untracked work, so it does not require a push. It excludes the macOS-only app lane. Use the CPU-heavy local `make pre-pr` only as an explicit fallback when Depot is unavailable; reviewed CI workflow/action changes require `DEPOT_ALLOW_WORKFLOW_CHANGES=1 make pre-pr-remote`.
+`make pre-pr-remote-fast` runs the complete required Linux merge graph for broad iteration but never creates a final attestation. `make pre-pr-remote` uploads committed and staged tracked work, so it does not require a push. Stage every intended new file explicitly; the full command fails closed on untracked or unstaged changes so its tree attestation survives the following commit. It excludes the macOS-only app lane. Rerun a single failed lane with `make pre-pr-remote REMOTE_JOBS=unit`; subset runs never attest. Use the CPU-heavy local `make pre-pr` only as an explicit fallback when Depot is unavailable; reviewed CI workflow/action changes require `DEPOT_ALLOW_WORKFLOW_CHANGES=1 make pre-pr-remote`.
 
 Never bypass a check that has not reported. For a production-visible change, wait for deployment and prove the PR's squash merge commit is an ancestor of the deployed SHA before running the live check. Clean up the task worktree with `make task-clean` after merge.
 

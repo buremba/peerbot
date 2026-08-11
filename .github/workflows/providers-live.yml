@@ -9,10 +9,9 @@ name: Live Providers
 #   - keyless: probes every composed chat/models route against the real API
 #     (a wrong path 404s, a right path 401s) and checks each defaultModel
 #     against the public catalogs. Runs with NO secrets, every time.
-#   - keyed:   full models + chat + tool-call round-trip for each provider
-#     whose API key is present below; the rest skip cleanly. Add a repo
-#     secret named after the provider's env var (e.g. OPENAI_API_KEY) to
-#     light up its row — no code change needed.
+#   - keyed:   production-adapter streaming + tool-call round-trip. The required
+#     readiness tier fails closed when a credential is missing; extra provider
+#     secrets remain optional coverage.
 
 on:
   schedule:
@@ -56,13 +55,14 @@ jobs:
       - name: Validate providers (keyless + keyed)
         run: make test-providers-live
         env:
+          REQUIRED_LIVE_PROVIDERS: claude,openai,gemini,openrouter
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TOGETHER_API_KEY: ${{ secrets.TOGETHER_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          # z-ai: the live suite accepts either name; provide whichever exists.
-          Z_AI_API_KEY: ${{ secrets.Z_AI_API_KEY }}
-          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}

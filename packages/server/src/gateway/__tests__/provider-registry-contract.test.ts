@@ -18,6 +18,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isSdkCompat } from "@lobu/core";
+import { providerCompletionUrl } from "../../__tests__/live-providers/provider-protocol.js";
 import { ApiKeyProviderModule } from "../auth/api-key-provider-module.js";
 import { resolveProviderRegistryFromRaw } from "../services/provider-registry-service.js";
 
@@ -115,9 +117,7 @@ describe("provider registry contract (config/providers.json)", () => {
 
 			test("sdkCompat, when set, is a known protocol", () => {
 				if (provider.sdkCompat !== undefined) {
-					// Config-driven OpenAI-compat providers use "openai"; Claude's
-					// subscription entry uses "anthropic" (Messages API).
-					expect(["openai", "anthropic"]).toContain(provider.sdkCompat);
+					expect(isSdkCompat(provider.sdkCompat)).toBe(true);
 				}
 			});
 
@@ -186,11 +186,10 @@ describe("provider registry contract (config/providers.json)", () => {
 
 /**
  * Composed-URL invariant. Production composes provider URLs with NO
- * version-segment magic (verified by driving the real OpenAI SDK + the proxy
- * `forward()` with a mocked upstream):
- *   - chat   = `${upstreamBaseUrl}/chat/completions`
- *               (the worker's OpenAI SDK appends `/chat/completions` verbatim
- *                to its baseURL; the proxy forwards `upstreamBaseUrl + path`)
+ * version-segment magic (verified by the protocol-adapter E2E):
+ *   - completion = the adapter-specific path appended to upstreamBaseUrl
+ *                  (Anthropic Messages, OpenAI Responses, ChatGPT Codex
+ *                  Responses, or OpenAI-compatible Chat Completions)
  *   - models = `${upstreamBaseUrl}${modelsEndpoint}`
  *               (ApiKeyProviderModule.fetchModelsGeneric, direct fetch)
  *
@@ -205,8 +204,8 @@ describe("composed upstream URLs", () => {
 	const DOUBLED_VERSION = /\/v\d+\/v\d+\//;
 	for (const { id, provider } of flattened) {
 		test(`${id}: composed URLs have no doubled version segment`, () => {
+			expect(providerCompletionUrl(id, provider)).not.toMatch(DOUBLED_VERSION);
 			const base = provider.upstreamBaseUrl.replace(/\/$/, "");
-			expect(`${base}/chat/completions`).not.toMatch(DOUBLED_VERSION);
 			if (provider.modelsEndpoint) {
 				expect(`${base}${provider.modelsEndpoint}`).not.toMatch(DOUBLED_VERSION);
 			}

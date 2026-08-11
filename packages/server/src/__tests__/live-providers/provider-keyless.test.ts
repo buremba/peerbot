@@ -2,10 +2,10 @@
  * Keyless provider validation — network-gated, but needs NO API keys.
  *
  * The oracle is each provider's own live API, exploited through two facts:
- *   1. An unauthenticated request to a RIGHT path is rejected with 401/403
- *      (or 400 for malformed-body checks that run before auth); a WRONG path
- *      404s. So `status !== 404` validates every composed endpoint URL
- *      against reality with zero credentials — no pinned URL tables.
+ *   1. An unauthenticated request to the protocol-correct path is rejected
+ *      before inference. A 404/405 catches an upstream route that disappeared.
+ *      Exact protocol serialization is covered deterministically by the worker
+ *      adapter E2E; this network check only detects upstream drift.
  *   2. Some providers serve their model catalog publicly. When the models
  *      endpoint answers 200 with a non-empty list, the configured
  *      defaultModel must be in it — which catches model deprecations (this
@@ -14,8 +14,8 @@
  *      are skipped automatically, so nothing here is hardcoded per provider.
  *
  * Everything is derived from config/providers.json, mirroring production
- * composition: chat = `upstreamBaseUrl + /chat/completions` (what the
- * worker's OpenAI SDK + gateway proxy produce), models =
+ * composition: completion path comes from the production adapter protocol;
+ * models =
  * `upstreamBaseUrl + modelsEndpoint` (fetchModelsGeneric).
  *
  * Runs as part of `make test-providers-live` (this directory) — so even a
@@ -27,6 +27,8 @@ import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { SdkCompat } from "@lobu/core";
+import { providerCompletionUrl } from "./provider-protocol.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(thisDir, "../../../../..");
@@ -36,6 +38,7 @@ interface ProviderEntry {
 	upstreamBaseUrl: string;
 	defaultModel?: string;
 	modelsEndpoint?: string;
+	sdkCompat?: SdkCompat;
 }
 
 const registry = JSON.parse(
@@ -68,19 +71,20 @@ async function probe(
 
 for (const { id, provider } of flattened) {
 	const base = provider.upstreamBaseUrl.replace(/\/$/, "");
+	const completionUrl = providerCompletionUrl(id, provider);
 
 	describe(`keyless: ${id} (${provider.displayName})`, () => {
 		test(
-			"chat endpoint exists (route must not 404)",
+			"completion endpoint exists (route must not 404)",
 			async () => {
-				const { status } = await probe(`${base}/chat/completions`, {
+				const { status } = await probe(completionUrl, {
 					method: "POST",
 					headers: { "content-type": "application/json" },
 					body: "{}",
 				});
 				expect(
 					[404, 405].includes(status),
-					`${id} chat route ${base}/chat/completions answered ${status} — ` +
+					`${id} completion route ${completionUrl} answered ${status} — ` +
 						"the composed URL does not exist upstream",
 				).toBe(false);
 			},

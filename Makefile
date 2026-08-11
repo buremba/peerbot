@@ -208,12 +208,11 @@ test-e2e-cli:
 
 # Live provider validation — opt-in, networked, NOT part of the default gates.
 # Two tiers, both derived from config/providers.json:
-#   keyless — probes every composed chat/models route against the real APIs
-#             (wrong path 404s, right path 401s) and checks defaultModel
-#             against the public catalogs; needs NO keys, runs every time.
-#   keyed   — full models + chat + tool-call round-trip per provider whose API
-#             key is in the env; the rest skip cleanly. Replaces the manual
-#             provider pass. Pass keys via .env or the environment.
+#   keyless — probes every protocol-correct completion/models route against the
+#             real APIs and checks defaultModel against public catalogs.
+#   keyed   — production-adapter streaming + parsed tool-call round-trip per
+#             configured credential. REQUIRED_LIVE_PROVIDERS fails closed when
+#             a required credential is absent.
 #   make test-providers-live                      # keyless tier + whichever keys are set
 #   OPENAI_API_KEY=sk-... make test-providers-live
 test-providers-live:

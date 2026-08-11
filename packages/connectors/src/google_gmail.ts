@@ -236,6 +236,32 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
                   },
                 },
               },
+              {
+                role: 'authored_by',
+                // Legacy gate for v1.0.3 run payloads, which carry `replied` but
+                // not `person_relevant`. Keep it until old in-flight runs/caches
+                // drain: the server loads the current definition by connector key,
+                // so a rolling deploy would otherwise silently skip person creation
+                // for a pre-refresh event. Both rules share the email identity, so
+                // the pipeline's first-writer-wins dedupes them for new payloads.
+                autoCreate: true,
+                target: {
+                  entityType: 'person',
+                  createWhen: { path: 'metadata.replied', equals: true },
+                  titlePath: 'metadata.from_name',
+                  identities: [{ namespace: 'email', eventPath: 'metadata.from_email' }],
+                },
+                traits: {
+                  from_name: {
+                    eventPath: 'metadata.from_name',
+                    behavior: 'prefer_non_empty',
+                  },
+                  last_email_at: {
+                    eventPath: 'occurred_at',
+                    behavior: 'overwrite',
+                  },
+                },
+              },
             ],
           },
         },

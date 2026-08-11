@@ -204,18 +204,23 @@ describe('Gmail person attribution rule', () => {
     expect(new GmailConnector().definition.version).toBe('1.0.4');
   });
 
-  test('autoCreate is on but gated on metadata.person_relevant — promotion is interaction/human driven', () => {
+  test('autoCreate is gated on person_relevant, with a legacy replied rule for pre-refresh payloads', () => {
     const connector = new GmailConnector();
     const rules = connector.definition.feeds.threads.eventKinds.thread.attributions;
-    expect(rules).toHaveLength(1);
-    const rule = rules[0];
-    expect(rule.role).toBe('authored_by');
-    expect(rule.autoCreate).toBe(true);
-    expect(rule.target.entityType).toBe('person');
-    expect(rule.target.createWhen).toEqual({ path: 'metadata.person_relevant', equals: true });
-    expect(rule.target.identities).toEqual([
-      { namespace: 'email', eventPath: 'metadata.from_email' },
-    ]);
+    expect(rules).toHaveLength(2);
+    const byGate = Object.fromEntries(
+      rules.map((rule) => [JSON.stringify(rule.target.createWhen), rule])
+    );
+    expect(byGate['{"path":"metadata.person_relevant","equals":true}']).toBeDefined();
+    expect(byGate['{"path":"metadata.replied","equals":true}']).toBeDefined();
+    for (const rule of rules) {
+      expect(rule.role).toBe('authored_by');
+      expect(rule.autoCreate).toBe(true);
+      expect(rule.target.entityType).toBe('person');
+      expect(rule.target.identities).toEqual([
+        { namespace: 'email', eventPath: 'metadata.from_email' },
+      ]);
+    }
   });
 });
 

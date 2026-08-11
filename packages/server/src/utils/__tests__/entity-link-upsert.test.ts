@@ -925,4 +925,28 @@ describe('gmail promote-on-interaction (real connector rule)', () => {
     expect(people.map((p) => p.name)).toEqual(['Alice']);
     expect((later.metadata as Record<string, unknown>).email).toBe('alice@example.com');
   });
+
+  it('a legacy v1.0.3 {replied:true} payload still mints a person under the new definition', async () => {
+    const { org, sql } = await setupGmailOrg();
+
+    // Pre-refresh run payloads carry `replied` but not `person_relevant`. The
+    // server loads the current definition by connector key, so the legacy rule
+    // must keep minting during a rolling deploy — otherwise in-flight old runs
+    // silently skip person creation.
+    await applyEventAttributions({
+      connectorKey: GMAIL_KEY,
+      feedKey: GMAIL_FEED,
+      orgId: org.id,
+      items: [
+        thread({
+          from_email: 'alice@example.com',
+          from_name: 'Alice',
+          replied: true,
+        }),
+      ],
+    });
+
+    const people = await personRows(sql, org.id);
+    expect(people.map((p) => p.name)).toEqual(['Alice']);
+  });
 });

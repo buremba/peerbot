@@ -134,6 +134,19 @@ describe('Behavior event outputs', () => {
       agent_id: agent.agentId,
     })) as { behavior_id: string };
     const watcherId = Number(created.behavior_id);
+    await api.behaviors.update({
+      behavior_id: String(watcherId),
+      triggers: [
+        { kind: 'schedule', cron: '0 9 * * *' },
+        {
+          kind: 'event',
+          source: 'workspace',
+          event_types: ['observation'],
+          execution: 'window',
+          active_run: 'coalesce',
+        },
+      ],
+    });
     const consumer = (await api.behaviors.create({
       slug: 'observation-consumer',
       prompt: 'Handle the exact observation event.',
@@ -300,6 +313,40 @@ describe('Behavior event outputs', () => {
             task.action_input.payload.eventId
       )
     ).toBe(true);
+
+    await api.behaviors.completeWindow({
+      behavior_id: String(watcherId),
+      window_token: knowledge.window_token,
+      extracted_data: {
+        ...extracted,
+        observations: [
+          ...extracted.observations,
+          {
+            title: 'Missing ancestry observation',
+            content: 'Persist this output without restarting its causal chain.',
+            metadata: { rank: 3 },
+          },
+        ],
+      },
+    });
+    const missingAncestryEvents = await sql<{ id: number }>`
+      SELECT id
+      FROM events
+      WHERE organization_id = ${workspace.org.id}
+        AND behavior_id = ${watcherId}
+        AND metadata->>'behavior_output' = 'observations'
+        AND metadata->>'rank' = '3'
+    `;
+    expect(missingAncestryEvents).toHaveLength(1);
+    expect(
+      await sql`
+        SELECT id
+        FROM runs
+        WHERE run_type = 'task'
+          AND action_key = 'activate-workspace-event'
+          AND action_input->'payload'->>'eventId' = ${String(missingAncestryEvents[0]?.id)}
+      `
+    ).toHaveLength(0);
 
     const observationTask = activationTasks.find((task) =>
       observations.some(

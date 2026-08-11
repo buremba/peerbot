@@ -378,8 +378,7 @@ export async function handleCompleteWindow(
   const watcherOrgId = watcherRows[0].organization_id as string;
   const watcherCreatedBy = (watcherRows[0].created_by as string | null) ?? null;
   const watcherTriggers = parseJson(watcherRows[0].triggers);
-  if (
-    watcherRunId == null &&
+  const hasWorkspaceEventTrigger =
     Array.isArray(watcherTriggers) &&
     watcherTriggers.some(
       (trigger) =>
@@ -387,17 +386,17 @@ export async function handleCompleteWindow(
         typeof trigger === 'object' &&
         (trigger as { kind?: unknown }).kind === 'event' &&
         (trigger as { source?: unknown }).source === 'workspace'
-    )
-  ) {
+    );
+  const workspaceEventCausality =
+    watcherRunId == null && hasWorkspaceEventTrigger
+      ? null
+      : deriveWorkspaceEventCausality(runTriggerSignals, Number(watcherId));
+  if (workspaceEventCausality == null) {
     logger.warn(
       { watcherId },
-      '[complete_window] workspace-event Behavior completed without a run id; causal ancestry resets at this output'
+      '[complete_window] workspace-event Behavior completed without a run id; output persisted without downstream activation'
     );
   }
-  const workspaceEventCausality = deriveWorkspaceEventCausality(
-    runTriggerSignals,
-    Number(watcherId)
-  );
   // entity_ids is bigint[]; the prod pool runs fetch_types:false, so postgres.js
   // hands it back as the literal string "{4}" (NOT a JS array) — parse it.
   const boundEntityIds = parsePgNumberArray(watcherRows[0].entity_ids);
@@ -850,7 +849,8 @@ export async function handleCompleteWindow(
         for (const event of persistedEvents) {
           if (
             event.change === 'unchanged' ||
-            !subscribedWorkspaceEventTypes.has(output.event)
+            !subscribedWorkspaceEventTypes.has(output.event) ||
+            workspaceEventCausality == null
           ) {
             continue;
           }

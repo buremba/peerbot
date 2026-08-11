@@ -10,7 +10,7 @@ export const WORKSPACE_EVENT_ACTIVATION_TASK = {
   name: 'activate-workspace-event',
 } as const;
 
-export const TRANSACTIONAL_TASK_DEFINITIONS = [
+const TRANSACTIONAL_TASK_DEFINITIONS = [
   WORKSPACE_EVENT_ACTIVATION_TASK,
 ] as const;
 

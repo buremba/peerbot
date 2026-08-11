@@ -8,16 +8,14 @@ import {
 } from '../../behaviors/connector-derived';
 
 const context: ConnectorDeriveFeedContext = {
-  organizationId: 'org',
   connectorKey: 'x',
   feedKey: 'home_feed',
-  feedCheckpointed: true,
+  feedPreviouslySynced: true,
   eventKinds: { tweet: { description: 'A tweet' }, dm_message: {} },
 };
 
 const baseEvent: ConnectorDeriveEventInput = {
   connectionId: 7,
-  feedId: 9,
   runId: 100,
   originId: '2083959735481716957',
   kind: 'tweet',
@@ -33,12 +31,11 @@ const baseEvent: ConnectorDeriveEventInput = {
 };
 
 describe('deriveConnectorActivationSignals', () => {
-  test('fires on an inserted event for a declared kind with a checkpointed feed', () => {
+  test('fires on an inserted event for a declared kind with a prior sync', () => {
     const signals = deriveConnectorActivationSignals(
       context,
       baseEvent,
       'inserted',
-      123,
     );
     expect(signals).toHaveLength(1);
     const signal = signals[0] as ConnectorTriggerSignal;
@@ -47,7 +44,7 @@ describe('deriveConnectorActivationSignals', () => {
     expect(signal.event_type).toBe('tweet');
     expect(signal.resource_type).toBe('tweet');
     expect(signal.resource_ref).toBe(baseEvent.originId);
-    expect(signal.delivery_id).toBe('sync:100:event:123:derived');
+    expect(signal.delivery_id).toBe('derived:x:7:2083959735481716957');
     expect(signal.label).toBe(baseEvent.title);
     expect(signal.input_text).toBe(baseEvent.payloadText);
     expect(signal.url).toBe(baseEvent.sourceUrl);
@@ -60,53 +57,52 @@ describe('deriveConnectorActivationSignals', () => {
     });
   });
 
-  test('suppresses a poll-driven cold-start batch before the first successful sync', () => {
-    const coldStart = { ...context, feedCheckpointed: false };
+  test('suppresses a poll-driven cold-start batch before any successful sync', () => {
+    const coldStart = { ...context, feedPreviouslySynced: false };
     expect(
-      deriveConnectorActivationSignals(coldStart, baseEvent, 'inserted', 123),
+      deriveConnectorActivationSignals(coldStart, baseEvent, 'inserted'),
     ).toEqual([]);
   });
 
-  test('never suppresses webhook-STORE delivery, even without a checkpoint', () => {
-    const coldStart = { ...context, feedCheckpointed: false };
+  test('never suppresses webhook-STORE delivery, even without a prior sync', () => {
+    const coldStart = { ...context, feedPreviouslySynced: false };
     const storeEvent = { ...baseEvent, runId: null };
     const signals = deriveConnectorActivationSignals(
       coldStart,
       storeEvent,
       'inserted',
-      456,
     );
     expect(signals).toHaveLength(1);
-    expect(signals[0].delivery_id).toBe('store:x:7:2083959735481716957');
+    expect(signals[0].delivery_id).toBe('derived:x:7:2083959735481716957');
   });
 
   test('does not fire on superseded or unchanged rows', () => {
     expect(
-      deriveConnectorActivationSignals(context, baseEvent, 'superseded', 123),
+      deriveConnectorActivationSignals(context, baseEvent, 'superseded'),
     ).toEqual([]);
     expect(
-      deriveConnectorActivationSignals(context, baseEvent, 'unchanged', 123),
+      deriveConnectorActivationSignals(context, baseEvent, 'unchanged'),
     ).toEqual([]);
   });
 
   test('does not fire for a kind the feed does not declare', () => {
     const undeclared = { ...baseEvent, kind: 'like' };
     expect(
-      deriveConnectorActivationSignals(context, undeclared, 'inserted', 123),
+      deriveConnectorActivationSignals(context, undeclared, 'inserted'),
     ).toEqual([]);
   });
 
   test('does not fire when the feed declares no eventKinds at all', () => {
     const noKinds = { ...context, eventKinds: null };
     expect(
-      deriveConnectorActivationSignals(noKinds, baseEvent, 'inserted', 123),
+      deriveConnectorActivationSignals(noKinds, baseEvent, 'inserted'),
     ).toEqual([]);
   });
 
   test('does not fire when the event is not a collected feed row', () => {
-    const unconnected = { ...baseEvent, connectionId: null, feedId: null };
+    const unconnected = { ...baseEvent, connectionId: null };
     expect(
-      deriveConnectorActivationSignals(context, unconnected, 'inserted', 123),
+      deriveConnectorActivationSignals(context, unconnected, 'inserted'),
     ).toEqual([]);
   });
 });

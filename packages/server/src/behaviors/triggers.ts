@@ -22,6 +22,7 @@ export interface BehaviorTriggerProjection {
 
 interface BehaviorEventDefinition {
 	key: string;
+	label?: string;
 	capabilities?: {
 		steering?: boolean;
 		replyToSource?: boolean;
@@ -83,7 +84,8 @@ async function getConnectorBehaviorEventCatalog(
 	// present; otherwise every declared kind is a trigger event_type.
 	const declared = parseBehaviorEventDefinitions(row?.behavior_events);
 	const derived = deriveBehaviorEventCatalogFromFeeds(row?.feeds_schema);
-	const storedEvents = declared.length > 0 ? declared : derived;
+	const storedEvents: BehaviorEventDefinition[] =
+		declared.length > 0 ? declared : derived;
 	if (storedEvents.length > 0 || countDeclaredFeeds(row?.feeds_schema) > 0) {
 		return {
 			name: row?.name ?? connectorKey,
@@ -107,7 +109,7 @@ async function getConnectorBehaviorEventCatalog(
 	const derivedFallback = deriveBehaviorEventCatalogFromFeeds(
 		catalog?.detail.feeds_schema,
 	);
-	const fallbackEvents =
+	const fallbackEvents: BehaviorEventDefinition[] =
 		declaredFallback.length > 0 ? declaredFallback : derivedFallback;
 	return {
 		name: row?.name ?? catalog?.name ?? connectorKey,

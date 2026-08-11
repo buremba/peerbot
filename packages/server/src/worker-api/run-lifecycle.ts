@@ -341,32 +341,24 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 
 			// Platform-derived Behavior activation: loaded once per batch, shared
 			// by every item. A connector that still attaches `behavior_signals`
-			// (legacy) wins — the derived path only fires for connectors that
-			// declare none. A load failure skips derivation for the batch (no
-			// activation is the safe direction — it can never flood) but must not
-			// fail the ingest itself.
+			// (legacy) wins for those items. Loading is part of durable delivery:
+			// failure aborts the batch so a retry cannot persist an event without
+			// its matching Behavior run.
 			let deriveContext: ConnectorDeriveFeedContext | null = null;
 			if (
 				run.feed_id != null &&
 				run.feed_key &&
 				batch.items.some((item) => (item.behavior_signals?.length ?? 0) === 0)
 			) {
-				try {
-					deriveContext = await loadConnectorDeriveFeedContext(
-						{
-							organizationId: run.organization_id,
-							connectorKey: run.connector_key,
-							feedKey: run.feed_key,
-							feedId: run.feed_id,
-						},
-						db,
-					);
-				} catch (error) {
-					logger.warn(
-						{ error, feed_id: run.feed_id, connector: run.connector_key },
-						"[stream] failed to load derived-activation context; skipping activation for batch",
-					);
-				}
+				deriveContext = await loadConnectorDeriveFeedContext(
+					{
+						organizationId: run.organization_id,
+						connectorKey: run.connector_key,
+						feedKey: run.feed_key,
+						feedId: run.feed_id,
+					},
+					db,
+				);
 			}
 
 			for (const item of batch.items) {
@@ -481,7 +473,6 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 									deriveContext,
 									{
 										connectionId: run.connection_id,
-										feedId: run.feed_id,
 										runId: batch.run_id,
 										originId: item.id,
 										kind: itemOriginType ?? itemSemanticType,
@@ -493,7 +484,6 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 											item.metadata as Record<string, unknown> | undefined,
 									},
 									persisted.change,
-									persisted.id,
 								);
 								for (const signal of derived) {
 									activations.push(

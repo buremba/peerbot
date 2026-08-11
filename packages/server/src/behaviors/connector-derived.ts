@@ -1,6 +1,5 @@
 import type { ConnectorTriggerSignal } from "@lobu/connector-sdk";
 import { type DbClient, getDb } from "../db/client";
-import { getConnectorEventKinds } from "../utils/event-kind-validation";
 
 /**
  * Platform-derived connector activation: the events table is the bus, and the
@@ -20,26 +19,24 @@ import { getConnectorEventKinds } from "../utils/event-kind-validation";
  *
  * Safety bounds:
  *  - Poll-driven ingestion only activates once the feed has a prior successful
- *    sync (`feeds.checkpoint IS NOT NULL`); a cold-start backfill would flood
- *    subscribers with every first-seen row. Webhook-STORE delivery is
+ *    non-dry sync; a cold-start backfill would flood subscribers with every
+ *    first-seen row. Webhook-STORE delivery is
  *    definitionally steady-state (a live push) and is never suppressed.
  *  - Only kinds the feed declares are activatable, so a trigger a user could
  *    never author (the picker reads the same catalog) can never fire.
  */
 
 export interface ConnectorDeriveFeedContext {
-	organizationId: string;
 	connectorKey: string;
 	feedKey: string;
-	/** A prior successful poll sync exists (`feeds.checkpoint IS NOT NULL`). */
-	feedCheckpointed: boolean;
+	/** A prior successful, non-dry poll sync exists for this feed. */
+	feedPreviouslySynced: boolean;
 	/** Declared eventKinds for this feed, or null when the connector declares none. */
 	eventKinds: Record<string, unknown> | null;
 }
 
 export interface ConnectorDeriveEventInput {
 	connectionId: number | null;
-	feedId: number | null;
 	/** null when the row was webhook-STORE'd (no poll run). */
 	runId: number | null;
 	originId: string;
@@ -62,23 +59,49 @@ export async function loadConnectorDeriveFeedContext(
 	db?: DbClient,
 ): Promise<ConnectorDeriveFeedContext> {
 	const sql = db ?? getDb();
-	const rows = await sql<{ checkpoint: unknown }>`
-		SELECT checkpoint
-		FROM feeds
-		WHERE id = ${args.feedId}
+	const rows = await sql<{
+		event_kinds: unknown;
+		feed_previously_synced: boolean;
+	}>`
+		SELECT
+			d.feeds_schema -> ${args.feedKey} -> 'eventKinds' AS event_kinds,
+			EXISTS (
+				SELECT 1
+				FROM runs r
+				WHERE r.feed_id = f.id
+				  AND r.run_type = 'sync'
+				  AND r.status = 'completed'
+				  AND NOT r.dry_run
+			) AS feed_previously_synced
+		FROM feeds f
+		JOIN connections c
+		  ON c.id = f.connection_id
+		 AND c.organization_id = f.organization_id
+		JOIN connector_definitions d
+		  ON d.organization_id = f.organization_id
+		 AND d.key = c.connector_key
+		 AND d.status = 'active'
+		WHERE f.id = ${args.feedId}
+		  AND f.organization_id = ${args.organizationId}
+		  AND f.feed_key = ${args.feedKey}
+		  AND c.connector_key = ${args.connectorKey}
 		LIMIT 1
 	`;
-	const eventKinds = await getConnectorEventKinds(
-		args.connectorKey,
-		args.feedKey,
-		args.organizationId,
-	);
+	const row = rows[0];
+	if (!row) {
+		throw new Error(
+			`Cannot derive Behavior activation for missing feed ${args.feedId} (${args.connectorKey}/${args.feedKey})`,
+		);
+	}
+	const eventKinds =
+		row.event_kinds && typeof row.event_kinds === "object"
+			? (row.event_kinds as Record<string, unknown>)
+			: null;
 	return {
-		organizationId: args.organizationId,
 		connectorKey: args.connectorKey,
 		feedKey: args.feedKey,
-		feedCheckpointed: rows[0]?.checkpoint != null,
-		eventKinds: (eventKinds as Record<string, unknown> | null) ?? null,
+		feedPreviouslySynced: row.feed_previously_synced,
+		eventKinds,
 	};
 }
 
@@ -91,11 +114,10 @@ export function deriveConnectorActivationSignals(
 	ctx: ConnectorDeriveFeedContext,
 	event: ConnectorDeriveEventInput,
 	change: "inserted" | "superseded" | "unchanged",
-	eventId: number,
 ): ConnectorTriggerSignal[] {
 	if (change !== "inserted") return [];
-	if (event.connectionId == null || event.feedId == null) return [];
-	if (event.runId != null && !ctx.feedCheckpointed) return [];
+	if (event.connectionId == null) return [];
+	if (event.runId != null && !ctx.feedPreviouslySynced) return [];
 	if (ctx.eventKinds == null || ctx.eventKinds[event.kind] == null) return [];
 
 	const occurred = new Date(event.occurredAt);
@@ -129,10 +151,7 @@ export function deriveConnectorActivationSignals(
 			resource_type: event.kind,
 			resource_ref: event.originId,
 			event_type: event.kind,
-			delivery_id:
-				event.runId != null
-					? `sync:${event.runId}:event:${eventId}:derived`
-					: `store:${ctx.connectorKey}:${event.connectionId}:${event.originId}`,
+			delivery_id: `derived:${ctx.connectorKey}:${event.connectionId}:${event.originId}`,
 			label: event.title ?? `${ctx.connectorKey} ${event.kind}`,
 			input_text:
 				event.payloadText ??
@@ -153,7 +172,7 @@ export function deriveConnectorActivationSignals(
  */
 export function deriveBehaviorEventCatalogFromFeeds(
 	feeds: unknown,
-): Array<{ key: string }> {
+): Array<{ key: string; label: string }> {
 	if (!feeds || typeof feeds !== "object") return [];
 	const seen = new Set<string>();
 	for (const feed of Object.values(feeds as Record<string, unknown>)) {
@@ -164,5 +183,12 @@ export function deriveBehaviorEventCatalogFromFeeds(
 			if (kind) seen.add(kind);
 		}
 	}
-	return [...seen].map((key) => ({ key }));
+	return [...seen].map((key) => ({
+		key,
+		label: key
+			.split(/[._-]+/)
+			.filter(Boolean)
+			.map((part) => part[0]?.toUpperCase() + part.slice(1))
+			.join(" "),
+	}));
 }

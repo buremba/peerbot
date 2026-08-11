@@ -71,17 +71,15 @@ describe("platform-derived connector activation", () => {
 		const behaviorId = Number(created.behavior_id);
 
 		const deriveContext: ConnectorDeriveFeedContext = {
-			organizationId: org.id,
 			connectorKey: "x",
 			feedKey: "home_feed",
-			feedCheckpointed: true,
+			feedPreviouslySynced: true,
 			eventKinds: {
 				tweet: { description: "A tweet from your home timeline" },
 			},
 		};
 		const event: ConnectorDeriveEventInput = {
 			connectionId: connection.id,
-			feedId: 1,
 			runId: 100,
 			originId: "2083959735481716957",
 			kind: "tweet",
@@ -96,7 +94,6 @@ describe("platform-derived connector activation", () => {
 			deriveContext,
 			event,
 			"inserted",
-			123,
 		);
 		expect(signal).toBeDefined();
 		const activations = await activateBehaviorSignal({
@@ -118,7 +115,7 @@ describe("platform-derived connector activation", () => {
 		expect(runs[0]?.approved_input).toMatchObject({
 			dispatch_source: "event",
 			trigger_execution: "turn",
-			delivery_ids: ["sync:100:event:123:derived"],
+			delivery_ids: [`derived:x:${connection.id}:2083959735481716957`],
 		});
 	});
 
@@ -160,15 +157,13 @@ describe("platform-derived connector activation", () => {
 		);
 
 		const coldStart: ConnectorDeriveFeedContext = {
-			organizationId: org.id,
 			connectorKey: "x",
 			feedKey: "home_feed",
-			feedCheckpointed: false,
+			feedPreviouslySynced: false,
 			eventKinds: { tweet: {} },
 		};
 		const event: ConnectorDeriveEventInput = {
 			connectionId: connection.id,
-			feedId: 1,
 			runId: 100,
 			originId: "1",
 			kind: "tweet",
@@ -182,7 +177,6 @@ describe("platform-derived connector activation", () => {
 			coldStart,
 			event,
 			"inserted",
-			1,
 		);
 		expect(signals).toEqual([]);
 	});

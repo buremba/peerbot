@@ -969,7 +969,6 @@ async function landGithubStarEvent(params: {
 					deriveContext,
 					{
 						connectionId: target.connectionId,
-						feedId: target.feedId,
 						runId: null,
 						originId,
 						kind: "stargazer",
@@ -987,7 +986,6 @@ async function landGithubStarEvent(params: {
 						},
 					},
 					persisted.change,
-					persisted.id,
 				);
 				for (const signal of derived) {
 					storeActivations.push(

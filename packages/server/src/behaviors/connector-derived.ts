@@ -145,21 +145,25 @@ export function deriveConnectorActivationSignals(
 	// `match` runs exact-equality over signal attributes; surface the row's
 	// scalar metadata so connectors get matchable fields for free. Non-scalar
 	// values (the TriggerAttributeValueSchema is scalar-only) are dropped.
-	const attributes: Record<string, string | number | boolean | null> = {
-		feed_key: ctx.feedKey,
-		change,
-	};
+	// Reserved provenance keys win: connector metadata must not be able to
+	// rewrite feed_key/change and route activation to the wrong feed.
+	const attributes: Record<string, string | number | boolean | null> = {};
 	for (const [key, value] of Object.entries(event.metadata ?? {})) {
 		if (
-			value !== null &&
-			value !== undefined &&
-			(typeof value === "string" ||
-				typeof value === "number" ||
-				typeof value === "boolean")
+			key === "feed_key" ||
+			key === "change" ||
+			value === null ||
+			value === undefined ||
+			(typeof value !== "string" &&
+				typeof value !== "number" &&
+				typeof value !== "boolean")
 		) {
-			attributes[key] = value;
+			continue;
 		}
+		attributes[key] = value;
 	}
+	attributes.feed_key = ctx.feedKey;
+	attributes.change = change;
 
 	return [
 		{

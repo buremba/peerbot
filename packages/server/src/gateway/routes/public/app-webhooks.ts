@@ -48,7 +48,6 @@ import {
 import {
 	deriveConnectorActivationSignals,
 	loadConnectorDeriveFeedContext,
-	type ConnectorDeriveFeedContext,
 } from "../../../behaviors/connector-derived.js";
 import {
 	handleWebhookIngest,
@@ -917,22 +916,16 @@ async function landGithubStarEvent(params: {
 
 	// Platform-derived activation: a live webhook delivery is definitionally
 	// steady-state (never a backfill), so the store path needs no checkpoint
-	// gate — only the declared-kind check applies. A context-load failure skips
-	// activation (never the store) so one bad read cannot drop a star.
-	let deriveContext: ConnectorDeriveFeedContext | null = null;
-	try {
-		deriveContext = await loadConnectorDeriveFeedContext({
-			organizationId,
-			connectorKey,
-			feedKey,
-			feedId: target.feedId,
-		});
-	} catch (error) {
-		logger.warn(
-			{ error, feed_id: target.feedId, connector: connectorKey },
-			"[app-webhook] failed to load derived-activation context; skipping activation for STORE event",
-		);
-	}
+	// gate — only the declared-kind check applies. A missing definition is a
+	// no-op context (no activation, star still lands); a real load failure
+	// propagates so the webhook is retried instead of persisting an event
+	// without its matching Behavior run (fail-closed durable delivery).
+	const deriveContext = await loadConnectorDeriveFeedContext({
+		organizationId,
+		connectorKey,
+		feedKey,
+		feedId: target.feedId,
+	});
 	const storeActivations: Awaited<
 		ReturnType<typeof activateBehaviorSignal>
 	>[] = [];
@@ -964,7 +957,6 @@ async function landGithubStarEvent(params: {
 		{
 			onConflictUpdate: true,
 			afterPersist: async (persisted, tx) => {
-				if (!deriveContext) return;
 				const derived = deriveConnectorActivationSignals(
 					deriveContext,
 					{

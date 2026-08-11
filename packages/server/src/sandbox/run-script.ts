@@ -29,7 +29,7 @@ export interface RunLimits {
 	outputBytes?: number;
 	/** Cap for captured console logs; messages past it are dropped. */
 	logBytes?: number;
-	/** Total serialized cap for `sdk_call_trace` and `side_effect_preview`; oldest entries are dropped past it. */
+	/** Serialized cap for EACH of `sdk_call_trace` and `side_effect_preview`; oldest entries are dropped past it. */
 	traceBytes?: number;
 	/** Single-message cap for host↔guest bridge traffic; a larger message terminates the run. */
 	messageBytes?: number;

@@ -44,6 +44,10 @@ interface SnapshotRow {
 	tool_name: string;
 }
 
+interface SnapshotLookupRow extends SnapshotRow {
+	tool_call_key: string;
+}
+
 function isRecord(value: unknown): value is UnknownRecord {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -89,24 +93,13 @@ function snapshotIdentity(
 
 /** Remove live approval mutations before a historical result is persisted. */
 export function displaySafeMcpAppResult(value: unknown): unknown {
-	if (Array.isArray(value)) return value.map(displaySafeMcpAppResult);
-	if (!isRecord(value)) return value;
-	return Object.fromEntries(
-		Object.entries(value).map(([key, inner]) => {
-			if (key === "actions" && Array.isArray(inner)) {
-				return [
-					key,
-					inner
-						.filter(
-							(action) =>
-								!isRecord(action) || action.tool !== "resolve_lobu_approval",
-						)
-						.map(displaySafeMcpAppResult),
-				];
-			}
-			return [key, displaySafeMcpAppResult(inner)];
-		}),
-	);
+	if (!isRecord(value) || !Array.isArray(value.actions)) return value;
+	return {
+		...value,
+		actions: value.actions.filter(
+			(action) => !isRecord(action) || action.tool !== "resolve_lobu_approval",
+		),
+	};
 }
 
 /** Accept only small primitive interaction state; result data never flows here. */
@@ -251,10 +244,15 @@ export async function storeMcpAppResultSnapshot(args: {
 }
 
 export const RestoreMcpAppResultSchema = Type.Object({
-	tool_call_id: Type.Union([
+	tool_call_id: Type.Optional(
+		Type.Union([
+			Type.String({ minLength: 1, maxLength: TOOL_CALL_ID_MAX_LENGTH }),
+			Type.Number(),
+		]),
+	),
+	snapshot_capability: Type.Optional(
 		Type.String({ minLength: 1, maxLength: TOOL_CALL_ID_MAX_LENGTH }),
-		Type.Number(),
-	]),
+	),
 	tool_name: Type.Optional(
 		Type.String({ minLength: 1, maxLength: TOOL_NAME_MAX_LENGTH }),
 	),
@@ -271,25 +269,54 @@ export const RestoreMcpAppResultOutputSchema = Type.Object({
 });
 
 async function restoreMcpAppResultImpl(
-	args: { tool_call_id: string | number; tool_name?: string },
+	args: {
+		tool_call_id?: string | number;
+		snapshot_capability?: string;
+		tool_name?: string;
+	},
 	_env: Env,
 	ctx: ToolContext,
 ) {
-	const identity = snapshotIdentity(ctx, args.tool_call_id);
-	if (!identity) return { found: false, view_state: {} };
 	const sql = getDb();
-	const [row] = await sql<SnapshotRow>`
-		SELECT body, tool_name
-		FROM public.mcp_app_result_snapshots
-		WHERE organization_id = ${identity.organizationId}
-			AND client_id = ${identity.clientId}
-			AND user_id = ${identity.userId}
-			AND conversation_key = ${identity.conversationKey}
-			AND tool_call_key = ${identity.toolCallKey}
-			AND expires_at > now()
-	`;
-	if (!row) return { found: false, view_state: {} };
-	if (args.tool_name && row.tool_name !== args.tool_name)
+	const capabilityIdentity = snapshotIdentity(ctx, args.snapshot_capability);
+	const identity =
+		args.tool_call_id === undefined
+			? null
+			: snapshotIdentity(ctx, args.tool_call_id);
+	let row: SnapshotRow | undefined;
+	if (capabilityIdentity) {
+		const candidates = await sql<SnapshotLookupRow>`
+			SELECT body, tool_name, tool_call_key
+				FROM public.mcp_app_result_snapshots
+				WHERE organization_id = ${capabilityIdentity.organizationId}
+					AND client_id = ${capabilityIdentity.clientId}
+					AND user_id = ${capabilityIdentity.userId}
+					AND conversation_key = ${capabilityIdentity.conversationKey}
+					AND expires_at > now()
+				ORDER BY updated_at DESC, tool_call_key
+				LIMIT ${MCP_APP_RESULT_CONVERSATION_CAP}
+			`;
+		row = candidates.find((candidate) => {
+			const snapshot = parseSnapshot(candidate.body);
+			return snapshot?.bindingKey === capabilityIdentity.toolCallKey;
+		});
+	} else if (args.snapshot_capability !== undefined) {
+		// A supplied capability is a correlation assertion. Fail closed instead of
+		// falling back to a potentially reused host card id when it is invalid.
+		return { found: false, view_state: {} };
+	} else if (identity) {
+		[row] = await sql<SnapshotRow>`
+			SELECT body, tool_name
+			FROM public.mcp_app_result_snapshots
+			WHERE organization_id = ${identity.organizationId}
+				AND client_id = ${identity.clientId}
+				AND user_id = ${identity.userId}
+				AND conversation_key = ${identity.conversationKey}
+				AND tool_call_key = ${identity.toolCallKey}
+				AND expires_at > now()
+		`;
+	}
+	if (!row || (args.tool_name && row.tool_name !== args.tool_name))
 		return { found: false, view_state: {} };
 	const snapshot = parseSnapshot(row.body);
 	if (!snapshot || snapshot.toolName !== row.tool_name) {
@@ -314,10 +341,12 @@ export const restoreMcpAppResult = withValidatedArgs(
 );
 
 export const SaveMcpAppStateSchema = Type.Object({
-	tool_call_id: Type.Union([
-		Type.String({ minLength: 1, maxLength: TOOL_CALL_ID_MAX_LENGTH }),
-		Type.Number(),
-	]),
+	tool_call_id: Type.Optional(
+		Type.Union([
+			Type.String({ minLength: 1, maxLength: TOOL_CALL_ID_MAX_LENGTH }),
+			Type.Number(),
+		]),
+	),
 	snapshot_capability: Type.Optional(
 		Type.String({ minLength: 1, maxLength: TOOL_CALL_ID_MAX_LENGTH }),
 	),
@@ -331,7 +360,7 @@ export const SaveMcpAppStateOutputSchema = Type.Object({ saved: Type.Boolean() }
 
 async function saveMcpAppStateImpl(
 	args: {
-		tool_call_id: string | number;
+		tool_call_id?: string | number;
 		snapshot_capability?: string;
 		tool_name?: string;
 		view_state: UnknownRecord;
@@ -339,8 +368,10 @@ async function saveMcpAppStateImpl(
 	_env: Env,
 	ctx: ToolContext,
 ) {
-	const identity = snapshotIdentity(ctx, args.tool_call_id);
-	if (!identity) return { saved: false };
+	const identity =
+		args.tool_call_id === undefined
+			? null
+			: snapshotIdentity(ctx, args.tool_call_id);
 	const viewState = boundedMcpAppViewState(args.view_state);
 	const sql = getDb();
 	const bindingIdentity = snapshotIdentity(
@@ -350,10 +381,58 @@ async function saveMcpAppStateImpl(
 		// capability end to end; metadata remains supported for standard hosts.
 		args.snapshot_capability ?? ctx.mcpAppSnapshotCapability,
 	);
-	if (
-		bindingIdentity &&
-		bindingIdentity.toolCallKey !== identity.toolCallKey
-	) {
+	if (!identity && !bindingIdentity) return { saved: false };
+	if (!identity && bindingIdentity) {
+		try {
+			return await sql.begin(async (tx) => {
+				const candidates = await tx<SnapshotLookupRow>`
+					SELECT body, tool_name, tool_call_key
+					FROM public.mcp_app_result_snapshots
+					WHERE organization_id = ${bindingIdentity.organizationId}
+						AND client_id = ${bindingIdentity.clientId}
+						AND user_id = ${bindingIdentity.userId}
+						AND conversation_key = ${bindingIdentity.conversationKey}
+						AND expires_at > now()
+					ORDER BY updated_at DESC, tool_call_key
+					LIMIT ${MCP_APP_RESULT_CONVERSATION_CAP}
+					FOR UPDATE
+				`;
+				const row = candidates.find((candidate) => {
+					const snapshot = parseSnapshot(candidate.body);
+					return snapshot?.bindingKey === bindingIdentity.toolCallKey;
+				});
+				if (!row || (args.tool_name && row.tool_name !== args.tool_name))
+					return { saved: false };
+				const snapshot = parseSnapshot(row.body);
+				if (!snapshot || snapshot.toolName !== row.tool_name)
+					return { saved: false };
+				const serialized = serializeSnapshot({ ...snapshot, viewState });
+				if (!serialized) return { saved: false };
+				const updated = await tx`
+					UPDATE public.mcp_app_result_snapshots
+					SET tool_call_key = ${bindingIdentity.toolCallKey},
+						body = ${serialized.body},
+						plaintext_bytes = ${serialized.plaintextBytes},
+						updated_at = now()
+					WHERE organization_id = ${bindingIdentity.organizationId}
+						AND client_id = ${bindingIdentity.clientId}
+						AND user_id = ${bindingIdentity.userId}
+						AND conversation_key = ${bindingIdentity.conversationKey}
+						AND tool_call_key = ${row.tool_call_key}
+				`;
+				return { saved: updated.count === 1 };
+			});
+		} catch (error) {
+			if (!isRecord(error) || error.code !== "23505") throw error;
+			logger.warn(
+				{ toolName: args.tool_name },
+				"MCP App capability key collision; candidate restore disabled",
+			);
+			return { saved: false };
+		}
+	}
+	if (!identity) return { saved: false };
+	if (bindingIdentity && bindingIdentity.toolCallKey !== identity.toolCallKey) {
 		try {
 			return await sql.begin(async (tx) => {
 				const [candidate] = await tx<SnapshotRow>`

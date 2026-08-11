@@ -10,7 +10,7 @@ import { withValidatedArgs } from "./validate-args";
 const SCRIPT_FIELDS = {
   script: Type.String({
     description:
-      "TypeScript source. Must `export default async (ctx, client) => { ... }` — `ctx` is `{ organization_id, user_id, mode, sleep(ms) }`, where `await ctx.sleep(ms)` provides a bounded, abort-aware 0–30000ms polling delay; unrestricted timer globals are unavailable. `client` is the ClientSDK. The script's return value comes back as `return_value` in the result; return values that exceed the output cap are truncated to fit and reported in `return_value_truncated`. Use `search_sdk` to discover SDK methods and `ctx.sleep`.",
+      "TypeScript source. Must `export default async (ctx, client) => { ... }` — `ctx` is `{ organization_id, user_id, mode, sleep(ms) }`, where `await ctx.sleep(ms)` provides a bounded, abort-aware 0–30000ms polling delay; unrestricted timer globals are unavailable. `client` is the ClientSDK. The script's return value comes back as `return_value`; return it only for computed results and bounded samples. For bulk data prefer `client.query` / `query_sql` or paginated SDK reads — a return over the output cap is replaced by a `return_value_preview` head and a `return_truncated` report instead of shipping the full set to the model. Use `search_sdk` to discover SDK methods and `ctx.sleep`.",
     minLength: 1,
     maxLength: 100_000,
   }),
@@ -68,30 +68,29 @@ const SdkCallTraceEntrySchema = Type.Object({
 export const SdkScriptResultSchema = Type.Object({
   success: Type.Boolean({ description: "Whether the script ran to completion." }),
   return_value: Type.Optional(
-    Type.Unknown({ description: "The script's default-export return value." }),
+    Type.Unknown({
+      description:
+        "The script's default-export return value. Omitted when the return exceeded the output cap (see return_value_preview).",
+    }),
   ),
-  return_value_truncated: Type.Optional(
+  return_value_preview: Type.Optional(
+    Type.String({
+      description:
+        "UTF-8-safe head of the serialized return value when it exceeded the output cap; return_value is then omitted. This is a preview, not the value — rerun with filtering / LIMIT / OFFSET, or pull slices with client.query / query_sql. Don't re-return the whole set.",
+    }),
+  ),
+  return_truncated: Type.Optional(
     Type.Object(
       {
         total_bytes: Type.Integer({
           description: "Serialized size of the original return value.",
         }),
         kept_bytes: Type.Integer({
-          description: "Serialized size of the truncated return value.",
-        }),
-        dropped_elements: Type.Integer({
-          description: "Array elements dropped from the tail.",
-        }),
-        dropped_keys: Type.Integer({
-          description: "Object keys dropped from the tail.",
-        }),
-        dropped_chars: Type.Integer({
-          description: "UTF-16 code units dropped from truncated string values.",
+          description: "UTF-8 size of the preview string.",
         }),
       },
       {
-        description:
-          "Present when the script's return value exceeded the output cap and was truncated to fit. return_value is partial — paginate or filter the script and re-run for the rest.",
+        description: "Present with return_value_preview: the original and preview byte sizes.",
       },
     ),
   ),
@@ -99,7 +98,6 @@ export const SdkScriptResultSchema = Type.Object({
     Type.Object({
       level: Type.Union([Type.Literal("log"), Type.Literal("warn"), Type.Literal("error")]),
       message: Type.String(),
-      data: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
       ts: Type.Number(),
     }),
     { description: "console.log/warn/error output captured from the script." },
@@ -225,7 +223,8 @@ async function runSandbox(
   return {
     success: result.success,
     return_value: result.returnValue,
-    return_value_truncated: result.returnTruncated,
+    return_value_preview: result.returnValuePreview,
+    return_truncated: result.returnTruncated,
     logs: result.logs,
     error,
     duration_ms: result.durationMs,

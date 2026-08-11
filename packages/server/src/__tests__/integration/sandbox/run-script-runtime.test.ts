@@ -256,22 +256,45 @@ describe("sandbox output budgets", () => {
 
     expect(result.success).toBe(true);
     expect(Buffer.byteLength(JSON.stringify(result.returnValue), "utf8")).toBe(1_048_576);
+    expect(result.returnValuePreview).toBeUndefined();
     expect(result.returnTruncated).toBeUndefined();
   });
 
-  it("truncates return values that serialize to over 1 MB instead of failing", async () => {
+  it("replaces an oversized return with a bounded preview instead of shipping it", async () => {
     const result = await runScript({
       source: "export default async () => 'a'.repeat(1200000);",
       sdk: stubSDK(),
     });
 
     expect(result.success).toBe(true);
-    expect(typeof result.returnValue).toBe("string");
-    expect(result.returnValue).toMatch(/^a+\u2026 \[truncated\]$/);
-    expect(result.returnTruncated?.dropped_chars).toBeGreaterThan(0);
+    expect(result.returnValue).toBeUndefined();
+    expect(typeof result.returnValuePreview).toBe("string");
+    expect(result.returnValuePreview).toMatch(/^"a+\u2026 \[truncated\]$/);
+    expect(result.returnTruncated).toBeDefined();
+    expect(result.returnTruncated!.total_bytes).toBeGreaterThan(1_048_576);
+    expect(result.returnTruncated!.kept_bytes).toBe(
+      Buffer.byteLength(result.returnValuePreview!, "utf8"),
+    );
   });
 
-  it("hard-fails an oversized extracted schema instead of truncating it", async () => {
+  it("keeps the preview within a lowered output cap", async () => {
+    const result = await runScript({
+      source: "export default async () => 'a'.repeat(2000);",
+      sdk: stubSDK(),
+      limits: { outputBytes: 1024 },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.returnValue).toBeUndefined();
+    expect(result.returnTruncated!.total_bytes).toBeGreaterThan(
+      result.returnTruncated!.kept_bytes,
+    );
+    expect(
+      Buffer.byteLength(result.returnValuePreview!, "utf8"),
+    ).toBeLessThanOrEqual(1024);
+  });
+
+  it("hard-fails an oversized extracted schema instead of previewing it", async () => {
     const result = await runScript({
       source: [
         "export const input = { type: 'string', description: 'x'.repeat(2000) };",
@@ -284,10 +307,10 @@ describe("sandbox output budgets", () => {
 
     expect(result.success).toBe(false);
     expect(result.error?.name).toBe("OutputSizeExceeded");
-    expect(result.returnTruncated).toBeUndefined();
+    expect(result.returnValuePreview).toBeUndefined();
   });
 
-  it("keeps leading structure and reports the exact serialized size", async () => {
+  it("previews an oversized array as a text head and reports byte sizes", async () => {
     const result = await runScript({
       source: [
         "export default async () => {",
@@ -299,32 +322,15 @@ describe("sandbox output budgets", () => {
     });
 
     expect(result.success).toBe(true);
-    const kept = result.returnValue as unknown[];
-    expect(Array.isArray(kept)).toBe(true);
-    expect(kept[0]).toEqual({ id: 0, body: "x".repeat(60) });
-    expect(result.returnTruncated?.dropped_elements).toBeGreaterThan(0);
-    expect(result.returnTruncated?.kept_bytes).toBe(
-      Buffer.byteLength(JSON.stringify(result.returnValue), "utf8"),
+    expect(result.returnValue).toBeUndefined();
+    const preview = result.returnValuePreview!;
+    expect(preview.startsWith("[")).toBe(true);
+    expect(result.returnTruncated).toBeDefined();
+    expect(result.returnTruncated!.total_bytes).toBeGreaterThan(
+      result.returnTruncated!.kept_bytes,
     );
-  });
-
-  it("reports the exact kept size when an atomic object value cannot fit", async () => {
-    const result = await runScript({
-      source: [
-        "export default async () => {",
-        "  const obj = {};",
-        "  for (let i = 0; i < 100; i++) obj[String(i).padStart(3, '0')] = 123456789;",
-        "  return obj;",
-        "};",
-      ].join("\n"),
-      sdk: stubSDK(),
-      limits: { outputBytes: 1024 },
-    });
-
-    expect(result.success).toBe(true);
-    expect(result.returnTruncated?.dropped_keys).toBeGreaterThan(0);
-    expect(result.returnTruncated?.kept_bytes).toBe(
-      Buffer.byteLength(JSON.stringify(result.returnValue), "utf8"),
+    expect(result.returnTruncated!.kept_bytes).toBe(
+      Buffer.byteLength(preview, "utf8"),
     );
   });
 
@@ -347,6 +353,44 @@ describe("sandbox output budgets", () => {
     expect(result.logs[0]?.message).toContain("console output truncated");
   });
 
+  it("stops forwarding console calls after the log cap fills", async () => {
+    const result = await runScript({
+      source: [
+        "export default async () => {",
+        "  const line = 'x'.repeat(1024);",
+        "  for (let i = 0; i < 1000000; i++) console.log(line);",
+        "  return 'done';",
+        "};",
+      ].join("\n"),
+      sdk: stubSDK(),
+      limits: { timeoutMs: 1000 },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.returnValue).toBe("done");
+    expect(result.logs).toHaveLength(65);
+    expect(result.logs.at(-1)?.message).toContain("console output truncated");
+  });
+
+  it("terminates a guest that bypasses the saturated console latch", async () => {
+    const result = await runScript({
+      source: [
+        "export default async () => {",
+        "  const line = 'x'.repeat(1024);",
+        "  for (let i = 0; i < 1000; i++) {",
+        "    try { __console_call.applySync(undefined, ['log', line]); } catch (e) {}",
+        "  }",
+        "  return 'done';",
+        "};",
+      ].join("\n"),
+      sdk: stubSDK(),
+      limits: { timeoutMs: 5000 },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.name).toBe("OutputSizeExceeded");
+  });
+
   it("does not let a large SDK call result evict a small return value", async () => {
     const sdk = stubSDK({
       entities: {
@@ -367,13 +411,13 @@ describe("sandbox output budgets", () => {
     expect(result.returnValue).toEqual({ count: 1_200_000 });
   });
 
-  it("hard-fails and latches an oversized SDK result crossing budget", async () => {
+  it("hard-fails a single oversized SDK result message", async () => {
     let hostCalls = 0;
     const sdk = stubSDK({
       entities: {
         list: async () => {
           hostCalls++;
-          return { rows: "x".repeat(1_000_000) };
+          return { rows: "x".repeat(5_000_000) };
         },
       } as never,
     });
@@ -387,12 +431,13 @@ describe("sandbox output budgets", () => {
         "};",
       ].join("\n"),
       sdk,
-      limits: { crossingBytes: 2_000_000 },
+      limits: { messageBytes: 65_536 },
     });
 
     expect(result.success).toBe(false);
     expect(result.error?.name).toBe("OutputSizeExceeded");
-    expect(hostCalls).toBe(2);
+    // Only the first result ran host work before the message cap terminated.
+    expect(hostCalls).toBe(1);
   });
 
   it("rejects an oversized SDK request payload before host work", async () => {
@@ -409,7 +454,7 @@ describe("sandbox output budgets", () => {
       source:
         "export default async (_ctx, client) => { await client.entities.list({ q: 'x'.repeat(70000) }); return 'done'; };",
       sdk,
-      limits: { crossingBytes: 65_536 },
+      limits: { messageBytes: 65_536 },
     });
 
     expect(result.success).toBe(false);
@@ -417,20 +462,7 @@ describe("sandbox output budgets", () => {
     expect(hostCalls).toBe(0);
   });
 
-  it("caps by serialized bytes, so escaped strings cannot exceed the budget", async () => {
-    const result = await runScript({
-      source: "export default async () => '\\n'.repeat(700000);",
-      sdk: stubSDK(),
-    });
-
-    expect(result.success).toBe(true);
-    const serialized = Buffer.byteLength(JSON.stringify(result.returnValue), "utf8");
-    expect(serialized).toBeLessThanOrEqual(1_048_576);
-    expect(result.returnTruncated?.dropped_chars).toBeGreaterThan(0);
-    expect(result.returnTruncated?.kept_bytes).toBe(serialized);
-  });
-
-  it("hard-fails an interactive return over the crossing budget before parsing", async () => {
+  it("hard-fails an interactive return over the message cap before parsing", async () => {
     const result = await runScript({
       source: "export default async () => 'x'.repeat(5000000);",
       sdk: stubSDK(),
@@ -438,59 +470,31 @@ describe("sandbox output budgets", () => {
 
     expect(result.success).toBe(false);
     expect(result.error?.name).toBe("OutputSizeExceeded");
-    expect(result.returnTruncated).toBeUndefined();
+    expect(result.returnValuePreview).toBeUndefined();
   });
 
-  it("preserves an own __proto__ key when truncating", async () => {
-    const result = await runScript({
-      source: [
-        "export default async () => JSON.parse('{\"__proto__\":{\"a\":1},\"pad\":\"' + 'x'.repeat(1200000) + '\"}');",
-      ].join("\n"),
-      sdk: stubSDK(),
-    });
-
-    expect(result.success).toBe(true);
-    const value = result.returnValue as Record<string, unknown>;
-    expect(Object.hasOwn(value, "__proto__")).toBe(true);
-    expect((value["__proto__"] as Record<string, unknown>).a).toBe(1);
-    expect(result.returnTruncated?.dropped_chars).toBeGreaterThan(0);
-  });
-
-  it("does not split a UTF-16 surrogate pair at the string boundary", async () => {
+  it("does not split a UTF-16 surrogate pair at the preview boundary", async () => {
     const result = await runScript({
       source: "export default async () => '😀'.repeat(600000);",
       sdk: stubSDK(),
     });
 
     expect(result.success).toBe(true);
-    const value = result.returnValue as string;
+    const preview = result.returnValuePreview!;
     const suffix = "\u2026 [truncated]";
-    const prefix = value.slice(0, -suffix.length);
-    expect(value.endsWith(suffix)).toBe(true);
+    expect(preview.endsWith(suffix)).toBe(true);
+    const prefix = preview.slice(0, -suffix.length);
     expect(prefix.endsWith("😀")).toBe(true);
-    expect(result.returnTruncated?.dropped_chars).toBe(1_200_000 - prefix.length);
+    for (let i = 0; i < prefix.length; i++) {
+      const c = prefix.charCodeAt(i);
+      if (c >= 0xd800 && c <= 0xdbff) {
+        const next = prefix.charCodeAt(i + 1);
+        expect(next >= 0xdc00 && next <= 0xdfff).toBe(true);
+      }
+    }
   });
 
-  it("truncates key-heavy objects in linear time", async () => {
-    const result = await runScript({
-      source: [
-        "export default async () => {",
-        "  const obj = {};",
-        "  for (let i = 0; i < 150000; i++) obj['k' + i] = i;",
-        "  return obj;",
-        "};",
-      ].join("\n"),
-      sdk: stubSDK(),
-    });
-
-    expect(result.success).toBe(true);
-    expect(result.returnTruncated?.dropped_keys).toBeGreaterThan(0);
-    expect(result.returnTruncated?.kept_bytes).toBe(
-      Buffer.byteLength(JSON.stringify(result.returnValue), "utf8"),
-    );
-  });
-
-  it("latches console saturation so later SDK work never starts", async () => {
+  it("terminates on console output over the message cap before any SDK work", async () => {
     let hostCalls = 0;
     const sdk = stubSDK({
       entities: {
@@ -505,7 +509,6 @@ describe("sandbox output budgets", () => {
         "export default async (_ctx, client) => {",
         "  console.log('x'.repeat(4200000));",
         "  try { await client.entities.list(); } catch (e) {}",
-        "  try { await client.entities.list(); } catch (e) {}",
         "  return 'done';",
         "};",
       ].join("\n"),
@@ -517,7 +520,33 @@ describe("sandbox output budgets", () => {
     expect(hostCalls).toBe(0);
   });
 
-  it("terminates a guest that keeps crossing after saturation", async () => {
+  it("makes quota exhaustion terminal (uncatchable)", async () => {
+    const sdk = stubSDK({
+      entities: {
+        list: async () => [{ ok: true }],
+      } as never,
+    });
+    const started = Date.now();
+    const result = await runScript({
+      source: [
+        "export default async (_ctx, client) => {",
+        "  for (let i = 0; i < 300; i++) {",
+        "    try { await client.entities.list(); } catch (e) {}",
+        "  }",
+        "  return 'done';",
+        "};",
+      ].join("\n"),
+      sdk,
+      limits: { sdkCallQuota: 5, timeoutMs: 5000 },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.name).toBe("QuotaExceeded");
+    // Terminated on quota exhaustion, not left spinning until the timeout.
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  it("terminates a guest that loops dispatch with oversized payloads", async () => {
     const sdk = stubSDK({
       entities: {
         list: async () => [{ ok: true }],
@@ -533,13 +562,12 @@ describe("sandbox output budgets", () => {
         "};",
       ].join("\n"),
       sdk,
-      limits: { crossingBytes: 65_536, timeoutMs: 5000 },
+      limits: { messageBytes: 65_536, timeoutMs: 5000 },
     });
 
     expect(result.success).toBe(false);
-    // The guest was interrupted at saturation (well under the 5s timeout) —
-    // not left spinning crossing payloads until the wall-clock budget.
     expect(result.error?.name).toBe("OutputSizeExceeded");
+    // Interrupted at the first oversized payload, well under the 5s timeout.
     expect(Date.now() - started).toBeLessThan(3000);
   });
 });

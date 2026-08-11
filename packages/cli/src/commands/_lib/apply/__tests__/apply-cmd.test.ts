@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { ApiError } from "../../../memory/_lib/errors.js";
 import {
   executePlan,
+  fetchRemoteSnapshot,
   locallyDeclaredConnectorKeys,
   pushProviderApiKeys,
   readBoundedBody,
@@ -337,6 +338,54 @@ describe("executePlan — entity-type schema fidelity", () => {
 
     expect(upsertEntityType).toHaveBeenCalledTimes(1);
     expect(upsertEntityType.mock.calls[0]?.[1]).toEqual(schemaExtras);
+  });
+});
+
+describe("fetchRemoteSnapshot — view-template fetch is org-scoped", () => {
+  test("does not fetch a template for a foreign public type whose slug is also config-declared", async () => {
+    const templateCalls: string[] = [];
+    const client = {
+      listAgents: async () => [],
+      listEntityTypes: async () => [
+        // Foreign public type (owned by another org) — same slug as a config type.
+        { slug: "company", organization_id: "org-market" },
+        // Org-owned type with a declared template.
+        { slug: "task", organization_id: "org-acme" },
+      ],
+      listRelationshipTypes: async () => [],
+      listBehaviors: async () => [],
+      listConnectors: async () => [],
+      listAuthProfiles: async () => [],
+      listConnections: async () => [],
+      listInferenceProviders: async () => [],
+      getEntityTypeViewTemplate: async (slug: string) => {
+        templateCalls.push(slug);
+        return { root: { type: "box" } };
+      },
+    } as unknown as ApplyClient;
+
+    const state: DesiredState = {
+      agents: [],
+      prune: true,
+      memorySchema: {
+        entityTypes: [
+          { slug: "company", viewTemplate: { root: { type: "box" } } },
+          { slug: "task", viewTemplate: { root: { type: "box" } } },
+        ],
+        relationshipTypes: [],
+      },
+      watchers: [],
+      connectors: { definitions: [], authProfiles: [], connections: [] },
+      providers: [],
+      requiredSecrets: [],
+    };
+
+    const remote = await fetchRemoteSnapshot(client, state, undefined, true, "org-acme");
+    expect(templateCalls).toEqual(["task"]);
+    expect(remote.entityTypes.find((e) => e.slug === "task")?.viewTemplate).toBeDefined();
+    // The foreign type's slug is still surfaced for visibility, but its template
+    // was never fetched (the org-local copy is absent/deleted and would 404).
+    expect(remote.entityTypes.find((e) => e.slug === "company")?.viewTemplate).toBeUndefined();
   });
 });
 

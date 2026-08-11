@@ -159,11 +159,14 @@ async function getContentImpl(
   }
 
   // Workspace-identity audit events carry member emails / invitation details.
-  // Exclude them for every non-member caller (anonymous AND signed-in
-  // outsiders of a public workspace), but NOT for in-process system contexts
-  // (behavior runs: userId=null, isAuthenticated=true) which are trusted.
+  // Exclude them for everyone EXCEPT owners/admins and trusted in-process
+  // system contexts (behavior runs: userId=null, isAuthenticated=true).
+  // Ordinary members do not see another member's invitation PII — the $member
+  // read policy reserves that for owner/admin.
   const excludeWorkspaceAudit =
-    ctx.memberRole === null && !isSystemContext(ctx);
+    ctx.memberRole !== 'owner' &&
+    ctx.memberRole !== 'admin' &&
+    !isSystemContext(ctx);
 
   // Dual client: PG for auth, PG for data
   const pgSql = createDbClientFromEnv(env);

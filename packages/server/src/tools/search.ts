@@ -930,11 +930,14 @@ async function searchImpl(
             queryEmbedding: args.query_embedding,
             minSimilarity: args.min_similarity,
             // Workspace-identity audit events carry member emails / invitation
-            // details; non-member readers of public workspaces must never
-            // retrieve them through search_memory (system contexts stay
-            // allowed).
+            // details; only owners/admins and in-process system contexts may
+            // recall them (ordinary members do not see another member's
+            // invitation PII — the $member read policy reserves that for
+            // owner/admin).
             excludeWorkspaceAudit:
-              ctx.memberRole === null && !isSystemContext(ctx),
+              ctx.memberRole !== 'owner' &&
+              ctx.memberRole !== 'admin' &&
+              !isSystemContext(ctx),
           }
         )
       : Promise.resolve({});

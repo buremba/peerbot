@@ -70,6 +70,21 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     } as ToolContext;
   }
 
+  function memberCtx(): ToolContext {
+    // An ordinary member (not owner/admin): can read the workspace, but must
+    // not see another member's invitation / email audit PII.
+    return {
+      organizationId: org.id,
+      userId: alice.id,
+      memberRole: 'member',
+      isAuthenticated: true,
+      tokenType: 'oauth',
+      scopedToOrg: false,
+      allowCrossOrg: true,
+      scopes: ['mcp:read'],
+    } as ToolContext;
+  }
+
   async function listIds(ctx: ToolContext): Promise<Set<number>> {
     const result = await getContent(
       { entity_id: entity.id, limit: 100, sort_by: 'date', sort_order: 'desc' } as never,
@@ -225,6 +240,23 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     const ids = await listOrgWideIds(signedInOutsiderCtx());
     expect(ids.has(orgWideWorkspaceAuditEventId)).toBe(false);
     expect(ids.has(workspaceAuditEventId)).toBe(false);
+  });
+
+  it('ordinary member does NOT see workspace audit PII (list / exact-ID / search)', async () => {
+    // List (entity-scoped)
+    const listed = await listIds(memberCtx());
+    expect(listed.has(workspaceAuditEventId)).toBe(false);
+    expect(listed.has(normalEventId)).toBe(true);
+
+    // Exact-ID
+    const exact = await readExactIds(memberCtx(), [workspaceAuditEventId, normalEventId]);
+    expect(exact.has(workspaceAuditEventId)).toBe(false);
+    expect(exact.has(normalEventId)).toBe(true);
+
+    // Search recall
+    const recall = await recallIds(memberCtx());
+    expect(recall.has(orgWideWorkspaceAuditEventId)).toBe(false);
+    expect(recall.has(workspaceAuditEventId)).toBe(false);
   });
 
   it('anonymous org-wide read excludes unbound workspace audit rows', async () => {

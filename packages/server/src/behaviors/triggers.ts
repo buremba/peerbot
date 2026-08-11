@@ -406,27 +406,35 @@ export async function assertBehaviorTriggerConnections(
 		if (!catalog) {
 			const rows = entityTypeSlug
 				? await sql`
-					SELECT name, event_kinds
+					SELECT slug, name, event_kinds
 					FROM entity_types
 					WHERE organization_id = ${organizationId}
-					  AND slug = ${entityTypeSlug}
+					  AND slug IN (${entityTypeSlug}, '$member')
 					  AND deleted_at IS NULL
-					LIMIT 1
 				`
 				: await sql`
-					SELECT name, event_kinds
+					SELECT slug, name, event_kinds
 					FROM entity_types
 					WHERE organization_id = ${organizationId}
 					  AND deleted_at IS NULL
 				`;
-			if (entityTypeSlug && rows.length === 0) {
+			const requestedType = entityTypeSlug
+				? rows.find((row) => row.slug === entityTypeSlug)
+				: undefined;
+			if (entityTypeSlug && !requestedType) {
 				throw new ToolUserError(
 					`Workspace event trigger entity type '${entityTypeSlug}' was not found in this organization.`
 				);
 			}
+			const orderedRows = entityTypeSlug
+				? [
+						rows.find((row) => row.slug === '$member'),
+						requestedType,
+					].filter(Boolean)
+				: rows;
 			const eventKinds = Object.assign(
 				{},
-				...rows.map((row) =>
+				...orderedRows.map((row) =>
 					row.event_kinds && typeof row.event_kinds === "object"
 						? row.event_kinds
 						: {}
@@ -434,7 +442,7 @@ export async function assertBehaviorTriggerConnections(
 			);
 			catalog = {
 				name: entityTypeSlug
-					? String(rows[0]?.name ?? entityTypeSlug)
+					? String(requestedType?.name ?? entityTypeSlug)
 					: "Workspace",
 				eventKinds,
 			};

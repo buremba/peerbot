@@ -11,6 +11,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import type { BehaviorTrigger } from "@lobu/core/contracts/tools/manage-behaviors";
 import { assertBehaviorTriggerConnections } from "../../behaviors/triggers";
+import { ensureMemberEntityType } from "../../utils/member-entity-type";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import { createTestOrganization } from "../setup/test-fixtures";
 
@@ -57,12 +58,20 @@ describe("event-trigger connector eligibility", () => {
 		orgId = (await createTestOrganization({ name: "Trigger Eligibility Org" }))
 			.id;
 		const sql = getTestDb();
+		await ensureMemberEntityType(orgId);
 		await sql`
 			INSERT INTO entity_types
 			  (organization_id, slug, name, event_kinds)
 			VALUES
 			  (${orgId}, 'account', 'Account',
 			   ${sql.json({ risk_detected: { description: "Risk detected" } })})
+		`;
+		await sql`
+			UPDATE entity_types
+			SET event_kinds = COALESCE(event_kinds, '{}'::jsonb) ||
+				${sql.json({ org_wide_signal: { description: "Org-wide signal" } })}::jsonb
+			WHERE organization_id = ${orgId}
+			  AND slug = '$member'
 		`;
 
 		// No declared events, no feeds → nothing can ever fire.
@@ -123,6 +132,17 @@ describe("event-trigger connector eligibility", () => {
 					kind: "event",
 					source: "workspace",
 					event_types: ["risk_detected"],
+				},
+			]),
+		).resolves.toBeUndefined();
+
+		await expect(
+			assertBehaviorTriggerConnections(sql, orgId, [
+				{
+					kind: "event",
+					source: "workspace",
+					entity_type: "account",
+					event_types: ["org_wide_signal"],
 				},
 			]),
 		).resolves.toBeUndefined();

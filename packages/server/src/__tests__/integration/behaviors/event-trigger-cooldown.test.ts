@@ -360,6 +360,42 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 		]);
 	});
 
+	it("coalesces into a legacy pending run whose delivery_ids is JSON null", async () => {
+		const fixture = await behaviorWithCooldown(0);
+		const activation = await match(fixture);
+		const queue = (deliveryId: string) =>
+			createBehaviorEventRun({
+				organizationId: fixture.organizationId,
+				watcherId: fixture.behaviorId,
+				agentId: fixture.workspace.agentId,
+				trigger: activation.trigger,
+				signal: { ...fixture.signal, delivery_id: deliveryId },
+			});
+
+		expect((await queue("event:legacy-null:1")).disposition).toBe("queued");
+		await getTestDb()`
+			UPDATE runs
+			SET approved_input = jsonb_set(
+				approved_input,
+				'{delivery_ids}',
+				'null'::jsonb
+			)
+			WHERE watcher_id = ${fixture.behaviorId}
+			  AND run_type = 'behavior'
+		`;
+
+		expect((await queue("event:legacy-null:2")).disposition).toBe("coalesced");
+		const [row] = await getTestDb()<{
+			delivery_count: number;
+		}>`
+			SELECT jsonb_array_length(approved_input->'delivery_ids') AS delivery_count
+			FROM runs
+			WHERE watcher_id = ${fixture.behaviorId}
+			  AND run_type = 'behavior'
+		`;
+		expect(Number(row.delivery_count)).toBe(2);
+	});
+
 	it("splits coalesced workspace roots before causal payload exceeds its bound", async () => {
 		const fixture = await behaviorWithCooldown(0);
 		const trigger = {
@@ -402,6 +438,9 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 		expect(
 			(await queue("workspace-event:bounded-roots:2", [1000])).disposition,
 		).toBe("queued");
+		expect(
+			(await queue("workspace-event:bounded-roots:3", [1001])).disposition,
+		).toBe("coalesced");
 
 		const rows = await getTestDb()<{
 			delivery_count: number;
@@ -424,7 +463,7 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 			})),
 		).toEqual([
 			{ deliveryCount: 1, rootCount: MAX_WORKSPACE_EVENT_ROOTS },
-			{ deliveryCount: 1, rootCount: 1 },
+			{ deliveryCount: 2, rootCount: 1 },
 		]);
 	});
 

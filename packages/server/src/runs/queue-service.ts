@@ -787,10 +787,12 @@ export async function createBehaviorEventRun(
           AND status = 'pending'
           AND approved_input->>'dispatch_source' = 'event'
           AND approved_input->>'trigger_key' = ${triggerKey}
-          AND jsonb_array_length(
-            COALESCE(approved_input->'delivery_ids', '[]'::jsonb)
-          ) < ${MAX_COALESCED_BEHAVIOR_EVENT_INPUTS}
-        ORDER BY created_at ASC
+          AND CASE
+            WHEN jsonb_typeof(approved_input->'delivery_ids') = 'array'
+              THEN jsonb_array_length(approved_input->'delivery_ids')
+            ELSE 0
+          END < ${MAX_COALESCED_BEHAVIOR_EVENT_INPUTS}
+        ORDER BY created_at DESC
         LIMIT 1
         FOR UPDATE
       `;

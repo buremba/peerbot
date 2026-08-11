@@ -18,6 +18,10 @@ permissions:
 # runs alive consumed the same 20-slot hosted-runner pool while newer required
 # PR checks waited. Deployment is driven by Build and Push Images, not this
 # workflow, so only the newest CI result per ref is useful.
+#
+# CI_LINUX_RUNNER is an optional repository variable used for runner A/B tests.
+# Leaving it unset preserves GitHub-hosted execution; setting it changes only
+# the machine behind these jobs, not their names, events, secrets, or checks.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -28,7 +32,7 @@ jobs:
   # waiting behind DB setup. Worker tests run under bun (full suite, not the
   # cherry-picked subset that used to live here).
   unit:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -199,7 +203,7 @@ jobs:
     # merge-critical checks finish. During a PR burst these jobs used slots
     # while required integration shards remained queued for 10+ minutes.
     needs: [unit, frontend, integration, format-lint, typecheck, migrations]
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -315,7 +319,7 @@ jobs:
   # white-screen" packaging bugs. Build uses the same `bun run build` path as
   # docker/app/Dockerfile. Forks without the deploy key get a stub and skip.
   frontend:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
@@ -369,7 +373,7 @@ jobs:
   # closed unless every shard and Bun/Postgres suite succeeds.
   server-integration-vitest:
     name: integration-vitest (${{ matrix.shard }}/3)
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -494,7 +498,7 @@ jobs:
   # Vitest shards removes another ~2 minutes from the serial critical path.
   server-integration-bun:
     name: integration-bun
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 15
     services:
       postgres:
@@ -645,7 +649,7 @@ jobs:
           test "$BUN_RESULT" = success
 
   format-lint:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -806,7 +810,7 @@ jobs:
           bash scripts/lib/__tests__/review-cache.test.sh
 
   typecheck:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -916,7 +920,7 @@ jobs:
     # uses (scripts/migrate-up.mjs), so a migration that only the prod runner
     # can apply (e.g. transaction:false heal-DO + CONCURRENTLY) is validated
     # here instead of silently diverging from `dbmate up`.
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 10
     services:
       postgres:
@@ -1146,7 +1150,7 @@ jobs:
   # never matches. On push events there is no PR base, so both smokes run.
   optional-smoke-filter:
     needs: [unit, frontend, integration, format-lint, typecheck, migrations]
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     outputs:
       mac: ${{ steps.filter.outputs.mac }}
       connector: ${{ steps.filter.outputs.connector }}
@@ -1251,7 +1255,7 @@ jobs:
   connector-parity-smoke:
     needs: optional-smoke-filter
     if: needs.optional-smoke-filter.outputs.connector == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7

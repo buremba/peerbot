@@ -596,7 +596,10 @@ function createServerForContext(
         ],
         isError: true,
         ...(structuredError ? { structuredContent: { error: structuredError } } : {}),
-        ...(scopeChallenge ? { _meta: { 'mcp/www_authenticate': [scopeChallenge] } } : {}),
+        _meta: {
+          'lobu/member-role': authCtx.memberRole ?? null,
+          ...(scopeChallenge ? { 'mcp/www_authenticate': [scopeChallenge] } : {}),
+        },
       };
     }
   });

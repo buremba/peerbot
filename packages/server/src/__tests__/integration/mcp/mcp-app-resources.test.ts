@@ -920,6 +920,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     const missingCapabilityBody = await missingCapabilityResponse.json();
     expect(missingCapabilityBody.result?.isError).toBe(true);
     expect(missingCapabilityBody.result?.content?.[0]?.text).toMatch(/approval capability/i);
+    expect(missingCapabilityBody.result?._meta?.['lobu/member-role']).toBe('owner');
 
     const rejectResponse = await post(`/mcp/${org.slug}`, {
       body: {

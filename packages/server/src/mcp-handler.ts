@@ -102,6 +102,10 @@ const MCP_APP_RESOURCE_ALIASES: ReadonlyMap<
     'ui://lobu/interaction/v7.html',
     { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
   ],
+  [
+    'ui://lobu/interaction/v8.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
+  ],
 ]);
 // ---------------------------------------------------------------------------
 // Session store
@@ -138,6 +142,14 @@ function approvalCapabilityFromMeta(value: unknown): string | null {
   if (typeof token !== 'string') return null;
   const trimmed = token.trim();
   return trimmed && trimmed.length <= 4_096 ? trimmed : null;
+}
+
+function snapshotCapabilityFromMeta(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const token = (value as Record<string, unknown>)['lobu/mcp-app-snapshot-capability'];
+  if (typeof token !== 'string') return null;
+  const trimmed = token.trim();
+  return trimmed && trimmed.length <= 512 ? trimmed : null;
 }
 
 // Periodic cleanup of stale IN-MEMORY sessions. This must stay as a per-pod
@@ -441,13 +453,14 @@ function createServerForContext(
   });
 
   // tools/call — access control + execution + formatting
-  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     const callAuthCtx = {
       ...authCtx,
       mcpAppsSupported,
       mcpConversationId: hostConversationIdFromMeta(request.params._meta),
       mcpAppApprovalCapability: approvalCapabilityFromMeta(request.params._meta),
+      mcpAppSnapshotCapability: snapshotCapabilityFromMeta(request.params._meta),
     };
 
     // Regular tool execution
@@ -485,14 +498,18 @@ function createServerForContext(
       if (tool?.outputSchema && result && typeof result === 'object') {
         const structured = validateToolResult(tool.outputSchema, result);
         if (structured !== null) {
+          let snapshotCapability: string | null = null;
           if (tool.audit !== false) {
             try {
-              await storeMcpAppResultSnapshot({
+              const capability = randomUUID();
+              const stored = await storeMcpAppResultSnapshot({
                 ctx: toToolContext(callAuthCtx),
-                toolCallId: extra.requestId,
+                toolCallId: capability,
+                bindingCapability: capability,
                 toolName: name,
                 data: structured as Record<string, unknown>,
               });
+              if (stored) snapshotCapability = capability;
             } catch (snapshotError) {
               logger.warn(
                 { err: snapshotError },
@@ -503,7 +520,16 @@ function createServerForContext(
           return {
             content: [{ type: 'text' as const, text }],
             structuredContent: structured as Record<string, unknown>,
-            ...(resultMeta ? { _meta: resultMeta } : {}),
+            ...(resultMeta || snapshotCapability
+              ? {
+                  _meta: {
+                    ...(resultMeta ?? {}),
+                    ...(snapshotCapability
+                      ? { 'lobu/mcp-app-snapshot-capability': snapshotCapability }
+                      : {}),
+                  },
+                }
+              : {}),
             ...(softError ? { isError: true } : {}),
           };
         }

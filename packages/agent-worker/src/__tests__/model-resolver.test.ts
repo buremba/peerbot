@@ -388,6 +388,7 @@ describe("buildDynamicOpenAIModel — never silently route to OpenAI", () => {
     expect(model.baseUrl).toBe(
       "http://localhost:8118/api/proxy/gemini/a/agent-1"
     );
+    expect(model.compat?.supportsStore).toBe(false);
   });
 
   test("uses the passed pi-ai api for non-openai protocols (generic)", () => {
@@ -401,6 +402,7 @@ describe("buildDynamicOpenAIModel — never silently route to OpenAI", () => {
     expect(model.api).toBe("anthropic-messages");
     expect(model.provider).toBe("anthropic");
     expect(model.id).toBe("claude-opus-4-8");
+    expect(model.compat).toBeUndefined();
   });
 
   test("defaults to openai-completions when no api is passed", () => {
@@ -479,6 +481,19 @@ describe("resolveDynamicModelApi — real OpenAI uses the Responses API", () => 
   test("non-openai registry aliases resolve through the alias map", () => {
     expect(resolveDynamicModelApi("my-claude", "anthropic")).toBe(
       "anthropic-messages"
+    );
+  });
+
+  test("a dynamic official-OpenAI alias preserves its Responses protocol", () => {
+    const providerId = "test-openai-responses-alias";
+    registerDynamicProvider(providerId, {
+      sdkCompat: "openai-responses",
+      baseUrlEnvVar: "TEST_OPENAI_RESPONSES_BASE_URL",
+    });
+
+    expect(PROVIDER_REGISTRY_ALIASES[providerId]).toBe("openai");
+    expect(resolveDynamicModelApi(providerId, "openai")).toBe(
+      "openai-responses"
     );
   });
 });

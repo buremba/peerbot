@@ -95,6 +95,9 @@ export const PIAI_API_BY_REGISTRY_ALIAS: Record<string, PiAiApi> =
       .map((p) => [p.registryAlias, p.api])
   );
 
+/** Exact adapters for dynamically registered provider slugs. */
+const PIAI_API_BY_DYNAMIC_PROVIDER: Record<string, PiAiApi> = {};
+
 /**
  * Resolve the pi-ai wire adapter for a DYNAMIC model entry (one not present in
  * pi-ai's static registry).
@@ -115,6 +118,8 @@ export function resolveDynamicModelApi(
   registryProvider: string
 ): PiAiApi | undefined {
   if (rawProvider === "openai") return "openai-responses";
+  const registeredApi = PIAI_API_BY_DYNAMIC_PROVIDER[rawProvider];
+  if (registeredApi) return registeredApi;
   return PIAI_API_BY_REGISTRY_ALIAS[registryProvider];
 }
 
@@ -129,6 +134,11 @@ export function registerDynamicProvider(
 ): void {
   const alreadyRegistered = !!DEFAULT_PROVIDER_BASE_URL_ENV[id];
 
+  const protocol = resolveSdkCompat(config.sdkCompat);
+  if (protocol && !PIAI_API_BY_DYNAMIC_PROVIDER[id]) {
+    PIAI_API_BY_DYNAMIC_PROVIDER[id] = protocol.api;
+  }
+
   if (!alreadyRegistered) {
     DEFAULT_PROVIDER_BASE_URL_ENV[id] = config.baseUrlEnvVar;
   }
@@ -141,8 +151,7 @@ export function registerDynamicProvider(
   // Map to model registry name: explicit alias, else the protocol's registry
   // alias (e.g. openai-compatible → "openai", anthropic → "anthropic").
   if (!PROVIDER_REGISTRY_ALIASES[id]) {
-    const alias =
-      config.registryAlias || resolveSdkCompat(config.sdkCompat)?.registryAlias;
+    const alias = config.registryAlias || protocol?.registryAlias;
     if (alias) {
       PROVIDER_REGISTRY_ALIASES[id] = alias;
     }
@@ -173,6 +182,9 @@ interface DynamicModel {
   };
   contextWindow: number;
   maxTokens: number;
+  compat?: {
+    supportsStore: boolean;
+  };
 }
 
 /**
@@ -221,6 +233,14 @@ export function buildDynamicOpenAIModel(args: {
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 128000,
     maxTokens: 16384,
+    // pi-ai assumes Chat Completions endpoints accept OpenAI's `store` field.
+    // Third-party compat APIs such as Gemini reject it with a protocol-level
+    // 400 ("Unknown name 'store'"). Session setup applies the same defensive
+    // override to static models; put it on dynamic entries at construction too
+    // so every direct consumer gets the production-safe payload.
+    ...(api === "openai-completions" && !isRealOpenAI
+      ? { compat: { supportsStore: false } }
+      : {}),
   };
 }
 

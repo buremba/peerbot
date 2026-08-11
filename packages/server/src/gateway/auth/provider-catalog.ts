@@ -467,9 +467,22 @@ export class ProviderCatalogService {
         // OpenAI-compatible). An unknown kind contributes no baseUrl, so such a
         // row still routes only if it names its own upstream.
         const catalogEntry = catalogByKind?.get(row.kind);
+        // A catalog-backed alias of the official OpenAI provider must preserve
+        // OpenAI's Responses transport. `sdkCompat: "openai"` is the generic
+        // Chat Completions protocol for third-party compatible endpoints, but
+        // Lobu routes the official OpenAI provider through Responses so current
+        // reasoning models can use tools. Keep custom tenant upstreams on their
+        // declared compatibility protocol; only the trusted catalog fallback is
+        // known to be official OpenAI.
+        const sdkCompat =
+          row.kind === "openai" &&
+          !row.capabilities.text?.base_url &&
+          catalogEntry?.sdkCompat === "openai"
+            ? "openai-responses"
+            : catalogEntry?.sdkCompat ?? "openai";
         const synthesized = this.synthesizeOrgProviderModule(
           row,
-          catalogEntry?.sdkCompat ?? "openai",
+          sdkCompat,
           catalogEntry?.baseUrl
         );
         if (synthesized) modules.push(synthesized);

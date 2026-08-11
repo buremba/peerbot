@@ -68,12 +68,15 @@ const SdkCallTraceEntrySchema = Type.Object({
 export const SdkScriptResultSchema = Type.Object({
   success: Type.Boolean({ description: "Whether the script ran to completion." }),
   return_value: Type.Optional(
-    Type.Unknown({ description: "The script's default-export return value. Omitted when the return exceeded the output cap (see return_value_preview)." }),
+    Type.Unknown({
+      description:
+        "The script's default-export return value. Omitted when the return exceeded the output cap (see return_value_preview).",
+    }),
   ),
   return_value_preview: Type.Optional(
     Type.String({
       description:
-        "UTF-8-safe head of the serialized return value when it exceeded the output cap; return_value is then omitted. This is a preview, not the value — the full data is still queryable: rerun with filtering / LIMIT / OFFSET, or pull slices with client.query / query_sql. Don't re-return the whole set.",
+        "UTF-8-safe head of the serialized return value when it exceeded the output cap; return_value is then omitted. This is a preview, not the value — rerun with filtering / LIMIT / OFFSET, or pull slices with client.query / query_sql. Don't re-return the whole set.",
     }),
   ),
   return_truncated: Type.Optional(
@@ -83,7 +86,7 @@ export const SdkScriptResultSchema = Type.Object({
           description: "Serialized size of the original return value.",
         }),
         kept_bytes: Type.Integer({
-          description: "Serialized size of the preview.",
+          description: "UTF-8 size of the preview string.",
         }),
       },
       {

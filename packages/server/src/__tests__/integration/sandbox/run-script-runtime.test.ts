@@ -277,6 +277,23 @@ describe("sandbox output budgets", () => {
     );
   });
 
+  it("keeps the preview within a lowered output cap", async () => {
+    const result = await runScript({
+      source: "export default async () => 'a'.repeat(2000);",
+      sdk: stubSDK(),
+      limits: { outputBytes: 1024 },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.returnValue).toBeUndefined();
+    expect(result.returnTruncated!.total_bytes).toBeGreaterThan(
+      result.returnTruncated!.kept_bytes,
+    );
+    expect(
+      Buffer.byteLength(result.returnValuePreview!, "utf8"),
+    ).toBeLessThanOrEqual(1024);
+  });
+
   it("hard-fails an oversized extracted schema instead of previewing it", async () => {
     const result = await runScript({
       source: [
@@ -334,6 +351,44 @@ describe("sandbox output budgets", () => {
     expect(result.returnTruncated).toBeUndefined();
     expect(result.logs).toHaveLength(1);
     expect(result.logs[0]?.message).toContain("console output truncated");
+  });
+
+  it("stops forwarding console calls after the log cap fills", async () => {
+    const result = await runScript({
+      source: [
+        "export default async () => {",
+        "  const line = 'x'.repeat(1024);",
+        "  for (let i = 0; i < 1000000; i++) console.log(line);",
+        "  return 'done';",
+        "};",
+      ].join("\n"),
+      sdk: stubSDK(),
+      limits: { timeoutMs: 1000 },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.returnValue).toBe("done");
+    expect(result.logs).toHaveLength(65);
+    expect(result.logs.at(-1)?.message).toContain("console output truncated");
+  });
+
+  it("terminates a guest that bypasses the saturated console latch", async () => {
+    const result = await runScript({
+      source: [
+        "export default async () => {",
+        "  const line = 'x'.repeat(1024);",
+        "  for (let i = 0; i < 1000; i++) {",
+        "    try { __console_call.applySync(undefined, ['log', line]); } catch (e) {}",
+        "  }",
+        "  return 'done';",
+        "};",
+      ].join("\n"),
+      sdk: stubSDK(),
+      limits: { timeoutMs: 5000 },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.name).toBe("OutputSizeExceeded");
   });
 
   it("does not let a large SDK call result evict a small return value", async () => {

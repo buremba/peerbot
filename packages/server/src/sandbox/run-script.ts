@@ -3,7 +3,8 @@
  * bridges SDK calls back to the host. Output is bounded per-purpose: interactive
  * return values are capped at 1 MB (an oversized value is replaced by a bounded
  * `returnValuePreview` head plus a report, never shipped in full to the model),
- * console logs are capped at 64 KB and dropped once full, and each single
+ * console logs are capped at 64 KB and the guest console bridge is disabled
+ * once full. Each single
  * host↔guest bridge message (SDK payload, SDK result, or return envelope) is
  * capped at 4 MB — a larger message, or exhausting the 200-call quota,
  * terminates the run by disposing the isolate (uncatchable by the guest).
@@ -24,7 +25,7 @@ export interface RunLimits {
 	memoryMb?: number;
 	timeoutMs?: number;
 	sdkCallQuota?: number;
-	/** Serialization cap for interactive return values; extracted exports hard-fail instead of previewing. */
+	/** Preview threshold and byte cap for interactive returns; extracted exports hard-fail instead. */
 	outputBytes?: number;
 	/** Cap for captured console logs; messages past it are dropped. */
 	logBytes?: number;
@@ -125,7 +126,7 @@ interface RunScriptResult {
 	returnValue?: unknown;
 	/** UTF-8-safe head of the serialized return value when it exceeded `outputBytes`. */
 	returnValuePreview?: string;
-	/** Present with `returnValuePreview`: the original and kept byte sizes. */
+	/** Present with `returnValuePreview`: original JSON and preview-string byte sizes. */
 	returnTruncated?: ReturnPreviewInfo;
 	logs: LogEntry[];
 	sdkCallTrace: SdkCallTraceEntry[];
@@ -220,13 +221,8 @@ export function safeErrorDetails(value: unknown): unknown {
 	}
 }
 
-const RETURN_PREVIEW_BYTES = 262_144;
+const MAX_RETURN_PREVIEW_BYTES = 262_144;
 const PREVIEW_SUFFIX = "\u2026 [truncated]";
-
-function jsonBytes(value: unknown): number {
-	const json = JSON.stringify(value);
-	return json === undefined ? 0 : Buffer.byteLength(json, "utf8");
-}
 
 /** Longest byte-bounded prefix of `value` that does not split a UTF-16 surrogate pair. */
 function byteBoundedPrefix(value: string, maxBytes: number): string {
@@ -253,11 +249,12 @@ function byteBoundedPrefix(value: string, maxBytes: number): string {
  */
 function buildReturnPreview(
 	valueJson: string,
+	totalBytes: number,
+	maxBytes: number,
 ): { preview: string; info: ReturnPreviewInfo } {
-	const totalBytes = Buffer.byteLength(valueJson, "utf8");
 	const kept = byteBoundedPrefix(
 		valueJson,
-		RETURN_PREVIEW_BYTES - Buffer.byteLength(PREVIEW_SUFFIX, "utf8"),
+		maxBytes - Buffer.byteLength(PREVIEW_SUFFIX, "utf8"),
 	);
 	const preview = `${kept}${PREVIEW_SUFFIX}`;
 	return {
@@ -601,10 +598,18 @@ function __makeClient(orgPath) {
 
 const client = __makeClient([]);
 
+let __console_enabled = true;
+function __emitConsole(level, args) {
+  if (!__console_enabled) return;
+  try {
+    const accepted = __console_call.applySync(undefined, [level, args.map(String).join(' ')]);
+    if (accepted === false) __console_enabled = false;
+  } catch (e) {}
+}
 const console = {
-  log: (...a) => { try { __console_call.applySync(undefined, ['log', a.map(String).join(' ')]); } catch (e) {} },
-  warn: (...a) => { try { __console_call.applySync(undefined, ['warn', a.map(String).join(' ')]); } catch (e) {} },
-  error: (...a) => { try { __console_call.applySync(undefined, ['error', a.map(String).join(' ')]); } catch (e) {} },
+  log: (...a) => __emitConsole('log', a),
+  warn: (...a) => __emitConsole('warn', a),
+  error: (...a) => __emitConsole('error', a),
 };
 
 const module = { exports: {} };
@@ -704,8 +709,8 @@ export async function runScript(
 	// Captured console budget. Messages past it are dropped, never a failure.
 	let logBytesUsed = 0;
 	let logFull = false;
-	// A terminal failure (message over the per-message cap, or quota exhausted)
-	// disposes the isolate so the guest cannot keep crossing bridge traffic.
+	// Terminal bridge failures dispose the isolate so the guest cannot keep
+	// crossing traffic after a message, call, or log budget is exhausted.
 	// Hoisted because `isolate` is assigned inside the try block below.
 	let isolate: import("isolated-vm").Isolate | null = null;
 	const terminalState = { name: "", message: "" };
@@ -713,6 +718,7 @@ export async function runScript(
 
 	const quotaMessage = `QuotaExceeded: SDK call quota of ${limits.sdkCallQuota} reached`;
 	const oversizeMessage = `OutputSizeExceeded: a single bridge message exceeded ${limits.messageBytes} bytes (SDK call payload/result or return value)`;
+	const consoleFloodMessage = `OutputSizeExceeded: console output continued after the ${limits.logBytes}-byte log cap`;
 	const terminalEnvelope = () =>
 		terminated
 			? JSON.stringify({
@@ -726,13 +732,13 @@ export async function runScript(
 			: null;
 
 	/**
-	 * Terminal failure: the guest is pathological (oversized single message or
-	 * quota exhaustion). A thrown error would not help — the guest can catch it
-	 * and loop, and every loop iteration still crosses a payload across the
-	 * isolate boundary. Only interrupting the guest guarantees the budget holds,
-	 * so dispose the isolate (uncatchable by the guest).
+	 * Terminal failure: the guest sent an oversized single message, exhausted
+	 * call quota, or bypassed a saturated console bridge. A thrown error would
+	 * not help — the guest can catch it and loop, and every loop iteration still
+	 * crosses a payload. Disposing the isolate makes the failure uncatchable.
 	 */
 	function terminateRun(name: string, message: string): void {
+		if (terminated) return;
 		terminalState.name = name;
 		terminalState.message = message;
 		terminated = true;
@@ -983,8 +989,13 @@ export async function runScript(
 			"__console_call",
 			new ivm.Reference((level: "log" | "warn" | "error", message: string) => {
 				// A single pathological message crosses the whole string; terminate.
-				if (!guardMessage(message)) return;
-				if (logFull) return;
+				if (!guardMessage(message)) return false;
+				if (logFull) {
+					// The normal guest console disables itself on the first false return.
+					// Reaching the host again means the script bypassed that latch.
+					terminateRun("OutputSizeExceeded", consoleFloodMessage);
+					return false;
+				}
 				const bytes = Buffer.byteLength(message, "utf8");
 				if (logBytesUsed + bytes > limits.logBytes) {
 					logFull = true;
@@ -993,10 +1004,11 @@ export async function runScript(
 						message: `[console output truncated: exceeded ${limits.logBytes} bytes]`,
 						ts: Date.now(),
 					});
-					return;
+					return false;
 				}
 				logBytesUsed += bytes;
 				logs.push({ level, message, ts: Date.now() });
+				return true;
 			}),
 		);
 
@@ -1088,10 +1100,17 @@ export async function runScript(
 		let returnTruncated: ReturnPreviewInfo | undefined;
 		if (!options.extractExport) {
 			const valueJson = JSON.stringify(returnValue);
-			if (valueJson !== undefined && jsonBytes(returnValue) > limits.outputBytes) {
-				const built = buildReturnPreview(valueJson);
-				returnValuePreview = built.preview;
-				returnTruncated = built.info;
+			if (valueJson !== undefined) {
+				const totalBytes = Buffer.byteLength(valueJson, "utf8");
+				if (totalBytes > limits.outputBytes) {
+					const built = buildReturnPreview(
+						valueJson,
+						totalBytes,
+						Math.min(MAX_RETURN_PREVIEW_BYTES, limits.outputBytes),
+					);
+					returnValuePreview = built.preview;
+					returnTruncated = built.info;
+				}
 			}
 		}
 

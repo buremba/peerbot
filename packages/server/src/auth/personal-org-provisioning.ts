@@ -10,6 +10,7 @@
 import { slugify as slugifyBase } from "@lobu/core";
 import { getDb } from "../db/client";
 import { RESERVED_PATHS_SET } from "../utils/reserved";
+import { recordWorkspaceChangeEvent } from "../utils/insert-event";
 import { generateSecureToken } from "./oauth/utils";
 import { provisionMemberAndCoreIdentities } from "./subject-identities";
 import logger from "../utils/logger";
@@ -74,6 +75,9 @@ interface EnsureResult {
 	organizationId: string;
 	slug: string;
 	created: boolean;
+	/** Audit fields — populated only when `created` is true. */
+	memberId?: string;
+	orgName?: string;
 }
 
 export function personalOrgLockKey(userId: string): number {
@@ -150,7 +154,7 @@ export async function ensurePersonalOrganization(
       VALUES (${memberId}, ${user.id}, ${orgId}, 'owner', NOW())
     `;
 
-		result = { organizationId: orgId, slug, created: true };
+		result = { organizationId: orgId, slug, created: true, memberId, orgName };
 	});
 
 	const finalResult = result as EnsureResult | null;
@@ -158,6 +162,43 @@ export async function ensurePersonalOrganization(
 		throw new Error(
 			"Personal organization transaction did not produce a result",
 		);
+	}
+
+	// Org + owner membership audit trail (workspace category: appears in All
+	// activity, not the Deployments feed). Emitted AFTER the transaction
+	// commits — the events FK references the organization row, so the insert
+	// must not race the commit.
+	if (finalResult.created) {
+		const orgState = {
+			id: finalResult.organizationId,
+			name: finalResult.orgName ?? null,
+			slug: finalResult.slug,
+			visibility: 'private',
+		};
+		recordWorkspaceChangeEvent({
+			organizationId: finalResult.organizationId,
+			resourceKind: 'organization',
+			resourceId: finalResult.organizationId,
+			op: 'created',
+			summary: `Organization "${finalResult.orgName ?? finalResult.slug}" created`,
+			state: orgState,
+			changedFields: ['id', 'name', 'slug', 'visibility'],
+			actorSource: 'ui',
+			createdBy: user.id,
+		});
+		if (finalResult.memberId) {
+			recordWorkspaceChangeEvent({
+				organizationId: finalResult.organizationId,
+				resourceKind: 'member',
+				resourceId: finalResult.memberId,
+				op: 'created',
+				summary: `Member "${user.name || user.email}" joined as owner`,
+				state: { id: finalResult.memberId, user_id: user.id, role: 'owner' },
+				changedFields: ['user_id', 'role'],
+				actorSource: 'ui',
+				createdBy: user.id,
+			});
+		}
 	}
 
 	// Mirror the personal org slug onto the user's username when unset. The

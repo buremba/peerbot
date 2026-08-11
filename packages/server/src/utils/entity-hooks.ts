@@ -13,6 +13,7 @@ import type { Env } from '../index';
 import { getDb } from '../db/client';
 import { resolveMemberSchemaFields } from './member-entity';
 import { getConfiguredPublicOrigin } from './public-origin';
+import { recordWorkspaceChangeEvent } from './insert-event';
 import type { CreatedEntity, EntityData } from './entity-management';
 import logger from './logger';
 
@@ -61,7 +62,7 @@ registerEntityHooks('$member', {
     if (email) {
       // Insert a Better Auth invitation (skip if one already pending)
       const sql = getDb();
-      await sql`
+      const inserted = (await sql`
         INSERT INTO invitation (id, "organizationId", email, role, status, "expiresAt", "inviterId", "createdAt")
         SELECT
           gen_random_uuid()::text,
@@ -78,7 +79,26 @@ registerEntityHooks('$member', {
             AND email = ${email}
             AND status = 'pending'
         )
-      `;
+        RETURNING id
+      `) as unknown as Array<{ id: string }>;
+      if (inserted.length > 0) {
+        recordWorkspaceChangeEvent({
+          organizationId: ctx.organizationId,
+          resourceKind: 'invitation',
+          resourceId: inserted[0].id,
+          op: 'created',
+          summary: `Invitation sent to ${email}`,
+          state: {
+            id: inserted[0].id,
+            email,
+            role: 'member',
+            status: 'pending',
+          },
+          changedFields: ['email', 'role', 'status'],
+          actorSource: 'ui',
+          createdBy: ctx.userId ?? null,
+        });
+      }
       meta.status = 'invited';
     } else {
       meta.status = meta.status ?? 'active';

@@ -7,7 +7,12 @@
 
 import { retryWithBackoff } from '@lobu/core';
 import { type DbClient, getDb } from '../db/client';
-import { type ConfigResourceKind, redactConfigState } from './config-redaction';
+import {
+  type AuditResourceKind,
+  type ConfigResourceKind,
+  redactConfigState,
+  type WorkspaceAuditResourceKind,
+} from './config-redaction';
 import {
   lookupGeoEnrichment,
   mergeEnrichedMetadata,
@@ -669,10 +674,9 @@ interface LifecycleEventParams {
 type ConfigOp = 'created' | 'updated' | 'deleted';
 type ConfigActorSource = 'cli' | 'ui' | 'api' | 'agent';
 
-interface ConfigChangeEventParams {
+interface StateChangeEventParams<ResourceKind extends AuditResourceKind> {
   organizationId: string;
-  /** DiffRow-kind slug (`agent`, `agent-settings`, `connection`, ...). */
-  resourceKind: ConfigResourceKind;
+  resourceKind: ResourceKind;
   resourceId: string | number;
   op: ConfigOp;
   /** Human-readable summary (e.g. "Agent 'Marketing' settings updated"). */
@@ -691,17 +695,28 @@ interface ConfigChangeEventParams {
   clientId?: string | null;
 }
 
+interface ConfigChangeEventParams extends StateChangeEventParams<ConfigResourceKind> {}
+
+interface WorkspaceChangeEventParams
+  extends StateChangeEventParams<WorkspaceAuditResourceKind> {}
+
 /**
- * Record a config mutation as a `semantic_type='change'` event with
- * `metadata.category='config'` and the full (redacted) post-change state in
- * `payload_data.state`. This is the settings audit trail behind the
+ * Record a state mutation as a `semantic_type='change'` event with the full
+ * redacted post-change state in `payload_data.state`. Config mutations use
+ * `metadata.category='config'`, the settings audit trail behind the
  * Deployments feed; distinct from `category='lifecycle'` rows, which carry no
  * state and feed dashboard metric_series — handlers that emit lifecycle
  * events dual-write this one. Fire-and-forget, same retry/ERROR contract as
  * the writers above.
+ *
+ * Workspace identity mutations use `metadata.category='workspace'`, keeping
+ * them out of the Deployments feed while still showing them in All activity.
  */
-export function recordConfigChangeEvent(params: ConfigChangeEventParams): void {
-  const externalId = `config_${params.resourceKind}_${params.op}_${params.resourceId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+function recordStateChangeEvent(
+  params: StateChangeEventParams<AuditResourceKind>,
+  category: 'config' | 'workspace'
+): void {
+  const externalId = `${category}_${params.resourceKind}_${params.op}_${params.resourceId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const state = redactConfigState(params.resourceKind, params.state);
 
   retryWithBackoff(
@@ -712,11 +727,11 @@ export function recordConfigChangeEvent(params: ConfigChangeEventParams): void {
         originId: externalId,
         title: params.summary,
         semanticType: 'change',
-        originType: `config_${params.resourceKind}_${params.op}`,
+        originType: `${category}_${params.resourceKind}_${params.op}`,
         payloadType: 'empty',
         payloadData: { state },
         metadata: {
-          category: 'config',
+          category,
           resource_kind: params.resourceKind,
           resource_id: String(params.resourceId),
           op: params.op,
@@ -739,9 +754,17 @@ export function recordConfigChangeEvent(params: ConfigChangeEventParams): void {
         resourceId: String(params.resourceId),
         summary: params.summary,
       },
-      '[insert-event] config audit event DROPPED after retry — audit trail is missing this row'
+      `[insert-event] ${category} audit event DROPPED after retry — audit trail is missing this row`
     );
   });
+}
+
+export function recordConfigChangeEvent(params: ConfigChangeEventParams): void {
+  recordStateChangeEvent(params, 'config');
+}
+
+export function recordWorkspaceChangeEvent(params: WorkspaceChangeEventParams): void {
+  recordStateChangeEvent(params, 'workspace');
 }
 
 export function recordLifecycleEvent(params: LifecycleEventParams): void {

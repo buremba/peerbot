@@ -22,7 +22,7 @@ import {
 import { WelcomeEmail, welcomeSubject } from "../email/templates/welcome";
 import type { Env } from "../index";
 import { notifyInvitationReceived } from "../notifications/triggers";
-import { recordLifecycleEvent } from "../utils/insert-event";
+import { recordLifecycleEvent, recordWorkspaceChangeEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
 import {
 	deleteMemberEntity,
@@ -312,6 +312,22 @@ export async function createAuth(
 					// their Lobu bridge gets a 403 on every poll.
 					afterCreateOrganization: async ({ organization: org, user }) => {
 						try {
+							recordWorkspaceChangeEvent({
+								organizationId: org.id,
+								resourceKind: "organization",
+								resourceId: org.id,
+								op: "created",
+								summary: `Organization "${org.name}" created`,
+								state: {
+									id: org.id,
+									name: org.name,
+									slug: org.slug,
+									visibility: org.visibility ?? null,
+								},
+								changedFields: ["id", "name", "slug", "visibility"],
+								actorSource: "ui",
+								createdBy: user.id,
+							});
 							if (org.visibility !== "private") return;
 							const sql = getDb();
 							const existing = await findExistingPersonalOrg(user.id, sql);
@@ -354,6 +370,22 @@ export async function createAuth(
 								summary: `Member "${user.name || user.email}" added`,
 								extra: { user_id: user.id, role: member.role },
 							});
+							recordWorkspaceChangeEvent({
+								organizationId: org.id,
+								resourceKind: "member",
+								resourceId: member.id,
+								op: "created",
+								summary: `Member "${user.name || user.email}" added`,
+								state: {
+									id: member.id,
+									user_id: user.id,
+									role: member.role,
+									email: user.email ?? null,
+								},
+								changedFields: ["user_id", "role"],
+								actorSource: "ui",
+								createdBy: user.id,
+							});
 						} catch (err) {
 							// A swallow here is how projection drift enters: the member
 							// row commits but its $member + auth:signup claim doesn't, so
@@ -394,6 +426,22 @@ export async function createAuth(
 								"../workspace/multi-tenant"
 							);
 							invalidateMembershipRoleCache(org.id, user.id);
+							recordWorkspaceChangeEvent({
+								organizationId: org.id,
+								resourceKind: "member",
+								resourceId: member.id,
+								op: "created",
+								summary: `Member "${user.name || user.email}" joined`,
+								state: {
+									id: member.id,
+									user_id: user.id,
+									role: member.role,
+									email: user.email ?? null,
+								},
+								changedFields: ["user_id", "role"],
+								actorSource: "ui",
+								createdBy: user.id,
+							});
 						} catch (err) {
 							// See afterAddMember: a swallow here leaves the accepted
 							// member without a resolvable claim → enforced channels
@@ -420,6 +468,16 @@ export async function createAuth(
 								entityId: user.id,
 								summary: `Member "${user.name || user.email}" removed`,
 							});
+							recordWorkspaceChangeEvent({
+								organizationId: org.id,
+								resourceKind: "member",
+								resourceId: user.id,
+								op: "deleted",
+								summary: `Member "${user.name || user.email}" removed`,
+								state: null,
+								actorSource: "ui",
+								createdBy: user.id,
+							});
 							const { invalidateMembershipRoleCache } = await import(
 								"../workspace/multi-tenant"
 							);
@@ -445,6 +503,21 @@ export async function createAuth(
 								"../workspace/multi-tenant"
 							);
 							invalidateMembershipRoleCache(org.id, user.id);
+							recordWorkspaceChangeEvent({
+								organizationId: org.id,
+								resourceKind: "member",
+								resourceId: member.id,
+								op: "updated",
+								summary: `Member "${user.name || user.email}" role set to ${member.role}`,
+								state: {
+									id: member.id,
+									user_id: user.id,
+									role: member.role,
+								},
+								changedFields: ["role"],
+								actorSource: "ui",
+								createdBy: user.id,
+							});
 						} catch (err) {
 							console.error(
 								"[Auth] Failed to update $member entity after updateMemberRole:",
@@ -476,6 +549,22 @@ export async function createAuth(
 								role: invitation.role,
 								status: "invited",
 							});
+							recordWorkspaceChangeEvent({
+								organizationId: org.id,
+								resourceKind: "invitation",
+								resourceId: invitation.id,
+								op: "created",
+								summary: `Invitation sent to ${invitation.email}`,
+								state: {
+									id: invitation.id,
+									email: invitation.email,
+									role: invitation.role,
+									status: invitation.status ?? "pending",
+								},
+								changedFields: ["email", "role", "status"],
+								actorSource: "ui",
+								createdBy: inviter.id,
+							});
 						} catch (err) {
 							console.error(
 								"[Auth] Failed to create $member entity after createInvitation:",
@@ -486,6 +575,15 @@ export async function createAuth(
 					afterCancelInvitation: async ({ invitation, organization: org }) => {
 						try {
 							await deleteMemberEntity(org.id, invitation.email);
+							recordWorkspaceChangeEvent({
+								organizationId: org.id,
+								resourceKind: "invitation",
+								resourceId: invitation.id,
+								op: "deleted",
+								summary: `Invitation to ${invitation.email} cancelled`,
+								state: null,
+								actorSource: "ui",
+							});
 						} catch (err) {
 							console.error(
 								"[Auth] Failed to delete $member entity after cancelInvitation:",
@@ -496,6 +594,15 @@ export async function createAuth(
 					afterRejectInvitation: async ({ invitation, organization: org }) => {
 						try {
 							await deleteMemberEntity(org.id, invitation.email);
+							recordWorkspaceChangeEvent({
+								organizationId: org.id,
+								resourceKind: "invitation",
+								resourceId: invitation.id,
+								op: "deleted",
+								summary: `Invitation to ${invitation.email} rejected`,
+								state: null,
+								actorSource: "ui",
+							});
 						} catch (err) {
 							console.error(
 								"[Auth] Failed to delete $member entity after rejectInvitation:",

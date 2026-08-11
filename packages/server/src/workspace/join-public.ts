@@ -1,6 +1,7 @@
 import { generateSecureToken } from '../auth/oauth/utils';
 import { getDb } from '../db/client';
 import { ensureMemberEntity } from '../utils/member-entity';
+import { recordWorkspaceChangeEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
 import { invalidateMembershipRoleCache } from './multi-tenant';
 
@@ -95,6 +96,18 @@ export async function joinPublicOrganization({
   }
 
   invalidateMembershipRoleCache(organizationId, userId);
+
+  recordWorkspaceChangeEvent({
+    organizationId,
+    resourceKind: 'member',
+    resourceId: memberId,
+    op: 'created',
+    summary: `Member "${user.name || user.email}" joined public workspace`,
+    state: { id: memberId, user_id: userId, role: 'member' },
+    changedFields: ['user_id', 'role'],
+    actorSource: 'ui',
+    createdBy: userId,
+  });
 
   return { status: 'joined', organizationId, role: 'member' };
 }

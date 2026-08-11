@@ -1,9 +1,9 @@
 /**
- * Redaction for config-change audit snapshots (`metadata.category='config'`
- * events). Mutation payloads can carry resolved secret material — platform
- * config arrives from `lobu apply` with `$VAR`/`secret()` refs already
- * resolved to plaintext — so every state snapshot is passed through here
- * before it is persisted into `events.payload_data`.
+ * Redaction for state-change audit snapshots. Mutation payloads can carry
+ * resolved secret material — platform config arrives from `lobu apply` with
+ * `$VAR`/`secret()` refs already resolved to plaintext — so every state
+ * snapshot is passed through here before it is persisted into
+ * `events.payload_data`.
  *
  * The denylist walk and sentinel live in @lobu/core (`secret-redaction`),
  * shared with the CLI's manifest hashing; this module adds the per-kind
@@ -33,6 +33,14 @@ export type ConfigResourceKind =
   | 'inference-provider'
   | 'provider-key';
 
+/** Server-emitted workspace identity resources; never part of `lobu apply`. */
+export type WorkspaceAuditResourceKind =
+  | 'organization'
+  | 'member'
+  | 'invitation';
+
+export type AuditResourceKind = ConfigResourceKind | WorkspaceAuditResourceKind;
+
 /**
  * Redact a post-change state snapshot before persisting it.
  *
@@ -44,9 +52,12 @@ export type ConfigResourceKind =
  *  - `inference-provider`: `apiKey`/`api_key` (already denylisted; kept
  *    explicit as a guarantee, not a heuristic).
  *  - `provider-key`: never snapshotted — state is forced to null.
+ *  - `organization` / `member` / `invitation`: no additional hard rules;
+ *    ordinary identity fields remain visible while the denylist still strips
+ *    any unexpectedly nested secret material.
  */
 export function redactConfigState(
-  kind: ConfigResourceKind,
+  kind: AuditResourceKind,
   state: Record<string, unknown> | null
 ): Record<string, unknown> | null {
   if (state === null) return null;

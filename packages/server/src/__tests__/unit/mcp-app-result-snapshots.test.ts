@@ -30,6 +30,21 @@ describe("MCP App result snapshot boundaries", () => {
 		});
 	});
 
+	it("preserves nested action records in generic tool results", () => {
+		const result = {
+			return_value: {
+				actions: [
+					{
+						tool: "resolve_lobu_approval",
+						status: "historical record",
+					},
+					{ tool: "safe", status: "kept" },
+				],
+			},
+		};
+		expect(displaySafeMcpAppResult(result)).toEqual(result);
+	});
+
 	it("accepts only bounded primitive UI state", () => {
 		expect(
 			boundedMcpAppViewState({

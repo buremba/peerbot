@@ -17,6 +17,7 @@ import { randomBytes } from "node:crypto";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import type { AgentSettings } from "@lobu/core";
+import { resolvedEventExecution } from "@lobu/core/contracts/tools/manage-behaviors";
 import chalk from "chalk";
 import { UNRESOLVED_MODEL_SUFFIX } from "../../../config/index.js";
 import { printText } from "../../../internal/output.js";
@@ -513,7 +514,7 @@ function behaviorRequiresInstructions(
   return list.some(
     (trigger) =>
       trigger.kind === "schedule" ||
-      (trigger.kind === "event" && trigger.execution === "window")
+      (trigger.kind === "event" && resolvedEventExecution(trigger) === "window")
   );
 }
 
@@ -535,7 +536,11 @@ function emitBehavior(
   if (w.description) fields.push(`description: ${str(w.description)}`);
   if (w.triggers?.length) {
     const triggers = w.triggers.map((trigger) => {
-      if (trigger.kind !== "event" || trigger.connection_id == null) {
+      if (
+        trigger.kind !== "event" ||
+        trigger.source === "workspace" ||
+        trigger.connection_id == null
+      ) {
         return trigger;
       }
       const connectionHandle = connectionHandlesById.get(trigger.connection_id);

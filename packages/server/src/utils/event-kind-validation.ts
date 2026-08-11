@@ -276,8 +276,8 @@ function validateKindAgainstDefinitions(
 
 /**
  * Validate kind + metadata for user/watcher content.
- * Resolves against the org's $member.event_kinds, merged with entity type
- * event_kinds when entityIds are provided.
+ * Resolves against the org's $member.event_kinds and every linked entity
+ * type's event_kinds when entityIds are provided.
  */
 export async function validateSaveContentSemanticType(
   semanticType: string,
@@ -287,10 +287,12 @@ export async function validateSaveContentSemanticType(
 ): Promise<KindValidationResult> {
   const memberKinds = await getMemberEventKinds(orgId);
 
-  // If entity IDs provided, also check entity type custom event_kinds
+  // An event can be linked to several entity types. Accept a custom kind when
+  // any linked type declares it; array order must not change authorability.
   if (entityIds && entityIds.length > 0) {
-    const entityTypeKinds = await getEntityTypeEventKinds(orgId, entityIds[0]);
-    if (entityTypeKinds) {
+    for (const entityId of entityIds) {
+      const entityTypeKinds = await getEntityTypeEventKinds(orgId, entityId);
+      if (!entityTypeKinds) continue;
       // Try entity type kinds first (more specific)
       const entityResult = validateKindAgainstDefinitions(semanticType, metadata, entityTypeKinds);
       if (entityResult.valid) return entityResult;
@@ -303,7 +305,7 @@ export async function validateSaveContentSemanticType(
 /**
  * Resolve the single event-kind definition that governs an event, for
  * rendering. Resolution order mirrors validateSaveContentSemanticType:
- * entity-type event_kinds (most specific) first, then the org-wide $member
+ * linked entity-type event_kinds (most specific) first, then the org-wide $member
  * event_kinds. Returns null when no definition declares this kind (the caller
  * then has no schema to render from). Reuses the same per-pod TTL cache.
  */
@@ -313,9 +315,11 @@ export async function resolveEventKindDefinition(
   entityIds?: number[]
 ): Promise<EventKindDefinition | null> {
   if (entityIds && entityIds.length > 0) {
-    const entityTypeKinds = await getEntityTypeEventKinds(orgId, entityIds[0]);
-    const entityDef = entityTypeKinds?.[semanticType];
-    if (entityDef) return entityDef;
+    for (const entityId of entityIds) {
+      const entityTypeKinds = await getEntityTypeEventKinds(orgId, entityId);
+      const entityDef = entityTypeKinds?.[semanticType];
+      if (entityDef) return entityDef;
+    }
   }
   const memberKinds = await getMemberEventKinds(orgId);
   return memberKinds?.[semanticType] ?? null;

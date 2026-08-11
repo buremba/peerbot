@@ -24,6 +24,7 @@
 import type {
   BehaviorEventTrigger,
   BehaviorScheduleTrigger,
+  BehaviorWorkspaceEventTrigger,
 } from "@lobu/core/contracts/tools/manage-behaviors";
 import type { DbClient } from "../../../db/client";
 import { ToolUserError } from "../../../utils/errors";
@@ -33,6 +34,7 @@ import { assertAgentExists } from "./shared";
 
 export type BehaviorTriggerInput =
   | BehaviorEventTrigger
+  | BehaviorWorkspaceEventTrigger
   | BehaviorScheduleTrigger;
 
 /** Behavior-level executor (columns on the watchers row). */

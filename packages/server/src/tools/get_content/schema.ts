@@ -212,7 +212,7 @@ export const GetContentSchema = Type.Object({
   content_ids: Type.Optional(
     Type.Array(Type.Number(), {
       description:
-        'Filter to specific content IDs. Useful for showing content linked to Behavior analysis.',
+        'Filter to specific content IDs. With behavior_id, these exact durable rows are added to the Behavior read and signed into its window token in addition to authored sources; this is how workspace-sourced event activations pass bounded event pointers without copying payloads.',
     })
   ),
   exclude_behavior_id: Type.Optional(

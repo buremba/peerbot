@@ -431,6 +431,66 @@ describe("mapProjectToDesiredState", () => {
     expect(byKey.person?.metrics).toBeUndefined();
   });
 
+  test("lowers a declared resolution policy to the raw x-lobu-resolution key; absent stays undefined", () => {
+    const person = defineEntityType({
+      key: "person",
+      name: "Person",
+      resolutionPolicy: {
+        rules: [
+          { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+          { fields: ["phone"], normalizer: "phone", onMatch: "review" },
+        ],
+      },
+    });
+    const company = defineEntityType({ key: "company", name: "Company" });
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [], entities: [person, company] })
+    );
+    const byKey = Object.fromEntries(
+      state.memorySchema.entityTypes.map((e) => [e.slug, e])
+    );
+    expect(byKey.person?.resolutionPolicy).toEqual({
+      "x-lobu-resolution": {
+        rules: [
+          { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+          { fields: ["phone"], normalizer: "phone", onMatch: "review" },
+        ],
+      },
+    });
+    // A type without a policy carries none — keeps the diff churn-free.
+    expect(byKey.company?.resolutionPolicy).toBeUndefined();
+  });
+
+  test("rejects malformed resolutionPolicy rules at load time", () => {
+    const bad = defineEntityType({
+      key: "person",
+      name: "Person",
+      resolutionPolicy: {
+        rules: [
+          {
+            fields: [],
+            normalizer: "email",
+            onMatch: "auto_merge",
+          },
+        ],
+      },
+    });
+    expect(() =>
+      mapProjectToDesiredState(defineConfig({ agents: [], entities: [bad] }))
+    ).toThrow(/invalid resolutionPolicy/i);
+  });
+
+  test("rejects a resolutionPolicy without a rules array", () => {
+    const bad = defineEntityType({
+      key: "person",
+      name: "Person",
+      resolutionPolicy: {} as never,
+    });
+    expect(() =>
+      mapProjectToDesiredState(defineConfig({ agents: [], entities: [bad] }))
+    ).toThrow(/expected rules to be an array/i);
+  });
+
   test("rejects invalid metrics at load time (measure naming a missing eventSet)", () => {
     const bad = defineEntityType({
       key: "company",
@@ -523,6 +583,8 @@ describe("mapProjectToDesiredState", () => {
       skip_if_unchanged: true,
     });
     expect(dw?.triggers?.[0]).toMatchObject({
+      kind: "event",
+      source: "connector",
       connector_key: "github",
       connectionSlug: "github-main",
       execution: "turn",
@@ -537,6 +599,7 @@ describe("mapProjectToDesiredState", () => {
       true
     );
     expect(state.watchers[0]?.triggers?.[0]).toMatchObject({
+      source: "connector",
       connector_key: "github",
       connection_id: 91,
     });
@@ -579,6 +642,39 @@ describe("mapProjectToDesiredState", () => {
         })
       )
     ).toThrow(/trigger is github.*uses slack/i);
+  });
+
+  test("maps workspace event triggers without connector fields", () => {
+    const crm = defineAgent({ id: "crm" });
+    const behavior = defineBehavior({
+      agent: crm,
+      slug: "risk-follow-up",
+      prompt: "Investigate the account risk.",
+      triggers: [
+        {
+          kind: "event",
+          source: "workspace",
+          entity_type: "account",
+          event_types: ["risk_detected", "risk_detected"],
+          match: { severity: "high" },
+        },
+      ],
+    });
+
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [crm], behaviors: [behavior] })
+    );
+    expect(state.watchers[0]?.triggers).toEqual([
+      {
+        kind: "event",
+        source: "workspace",
+        entity_type: "account",
+        event_types: ["risk_detected"],
+        match: { severity: "high" },
+        execution: "window",
+        active_run: "coalesce",
+      },
+    ]);
   });
 
   test("rejects a Behavior trigger with both connection forms", () => {
@@ -880,6 +976,23 @@ describe("mapProjectToDesiredState", () => {
               connector_key: "github",
               event_types: ["pull_request.created"],
               execution: "window",
+            },
+          ],
+        })
+      )
+    ).toThrow(/needs instructions/i);
+    // Workspace events default to window execution even when execution is
+    // omitted, so the same instruction requirement applies.
+    expect(
+      map(
+        defineBehavior({
+          agent: crm,
+          slug: "workspace-default-window",
+          triggers: [
+            {
+              kind: "event",
+              source: "workspace",
+              event_types: ["risk_detected"],
             },
           ],
         })

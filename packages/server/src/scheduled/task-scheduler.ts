@@ -42,9 +42,12 @@
 
 import { createLogger } from '@lobu/core';
 import * as Sentry from '@sentry/node';
+import type { DbClient } from '../db/client';
 import { incrementCounter } from '../gateway/metrics/prometheus';
+import { notifyChannelFor } from '../gateway/infrastructure/queue/runs-queue';
 import type { IMessageQueue, QueueJob } from '../gateway/infrastructure/queue/types';
 import { nextRunAt } from '../utils/cron';
+import { isTransactionalTaskName } from './task-definitions';
 
 const logger = createLogger('task-scheduler');
 
@@ -85,6 +88,92 @@ interface TaskJobData {
    *  tick as the currently-claimed row, the seed conflicts, no new row is
    *  inserted, and the cron permanently stops. */
   __scheduledTick?: string;
+}
+
+interface TransactionalTask<P = unknown> {
+  name: string;
+  payload: P;
+  opts: {
+    idempotencyKey: string;
+    maxAttempts?: number;
+    priority?: number;
+    organizationId?: string;
+  };
+}
+
+/**
+ * Transactional task enqueue for writers that must commit their domain rows
+ * and their durable handoffs atomically. Unlike `spawn()`, this never opens a
+ * nested transaction and acquires no domain/Behavior locks. Postgres holds the
+ * NOTIFY until the caller commits; the queue poller remains the fallback if
+ * notification delivery fails. Domain writers persist a bounded set of rows in
+ * one transaction, so the whole batch takes one INSERT and one NOTIFY rather
+ * than a database round-trip per row. Transactional handoffs deliberately have
+ * no expiry: if every worker is unavailable, the durable row must remain until
+ * it is claimed.
+ */
+export async function enqueueTasksInTransaction<P>(
+  tx: DbClient,
+  tasks: TransactionalTask<P>[],
+): Promise<void> {
+  if (tasks.length === 0) return;
+  const unknownTask = tasks.find((task) => !isTransactionalTaskName(task.name));
+  if (unknownTask) {
+    throw new Error(
+      `Cannot enqueue unknown transactional task "${unknownTask.name}"`,
+    );
+  }
+  const requested = tasks.map(({ name, payload, opts }) => ({
+    name,
+    data: { name, payload } satisfies TaskJobData,
+    idempotency_key: opts.idempotencyKey,
+    max_attempts: opts.maxAttempts ?? 5,
+    priority: opts.priority ?? 0,
+    organization_id: opts.organizationId ?? null,
+  }));
+  await tx`
+    INSERT INTO public.runs (
+      run_type, queue_name, action_key, action_input, idempotency_key,
+      max_attempts, attempts, status, run_at, priority, expires_at,
+      organization_id
+    )
+    SELECT
+      'task', ${TASK_QUEUE_NAME}, task.name, task.data, task.idempotency_key,
+      task.max_attempts, 0, 'pending', now(), task.priority, NULL,
+      task.organization_id
+    FROM jsonb_to_recordset(${tx.json(requested)}::jsonb) AS task(
+      name text,
+      data jsonb,
+      idempotency_key text,
+      max_attempts integer,
+      priority integer,
+      organization_id text
+    )
+    ON CONFLICT (idempotency_key)
+      WHERE idempotency_key IS NOT NULL
+        AND status IN ('pending', 'claimed', 'running')
+    DO NOTHING
+  `;
+  const keys = requested.map((task) => task.idempotency_key);
+  const resolved = await tx<{ idempotency_key: string }>`
+    SELECT r.idempotency_key
+    FROM public.runs r
+    JOIN jsonb_array_elements_text(${tx.json(keys)}::jsonb) requested(key)
+      ON requested.key = r.idempotency_key
+    WHERE r.run_type = 'task'
+      AND r.queue_name = ${TASK_QUEUE_NAME}
+      AND r.status IN ('pending', 'claimed', 'running')
+  `;
+  const resolvedKeys = new Set(resolved.map((row) => row.idempotency_key));
+  const missingTask = requested.find(
+    (task) => !resolvedKeys.has(task.idempotency_key),
+  );
+  if (missingTask) {
+    throw new Error(
+      `Failed to enqueue transactional task "${missingTask.name}"`,
+    );
+  }
+  await tx`SELECT pg_notify(${notifyChannelFor(TASK_QUEUE_NAME)}, ${TASK_QUEUE_NAME})`;
 }
 
 interface TaskRegistration {

@@ -51,6 +51,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/review-skip.sh"
 # shellcheck source=scripts/lib/review-cache.sh
 . "$SCRIPT_DIR/lib/review-cache.sh"
+# shellcheck source=scripts/lib/remote-ci.sh
+. "$SCRIPT_DIR/lib/remote-ci.sh"
 
 # --- preflight --------------------------------------------------------------
 
@@ -97,6 +99,7 @@ REVIEWER_CLI="${REVIEWER_CLI:-auto}"
 # the skip decision alongside the real verdict for measuring the false-skip rate.
 REVIEWER_MODE="${REVIEWER_MODE:-light}"
 REVIEWER_SHADOW="${REVIEWER_SHADOW:-0}"
+REVIEW_ALLOW_LOCAL_BUILD="${REVIEW_ALLOW_LOCAL_BUILD:-0}"
 PI_REVIEW_STATUS_CONTEXT="${PI_REVIEW_STATUS_CONTEXT:-pi-review}"
 
 # Verdict shape both the fresh-review validation and the cache-hit check rely
@@ -471,6 +474,21 @@ if [ -n "$CACHE_FILE" ]; then
   fi
 fi
 
+# A fresh full review must reuse the exact settled tree that passed Depot.
+# Refuse to surprise the operator with a CPU-heavy local package build; the
+# explicit override is reserved for a documented Depot outage.
+REMOTE_PREFLIGHT_FILE="$(git rev-parse --git-path lobu-remote-preflight)"
+HEAD_TREE="$(git rev-parse 'HEAD^{tree}')"
+REMOTE_BUILD_ATTESTED=0
+if [ -z "$(git status --porcelain)" ] && remote_ci_attestation_matches "$HEAD_TREE" "$REMOTE_PREFLIGHT_FILE"; then
+  REMOTE_BUILD_ATTESTED=1
+elif [ "$CACHE_HIT" != "1" ] && [ "$REVIEW_ALLOW_LOCAL_BUILD" != "1" ]; then
+  echo "make review requires a full Depot preflight for the current committed tree." >&2
+  echo "Run make pre-pr-remote before committing, or again on the clean commit." >&2
+  echo "During a Depot outage only: REVIEW_ALLOW_LOCAL_BUILD=1 make review" >&2
+  exit 2
+fi
+
 REVIEW_STATUS_STARTED=0
 if [ "$CACHE_HIT" != "1" ]; then
   review_require_reviewer
@@ -507,17 +525,23 @@ sed 's/^/>>   /' "$CI_CHECKS_FILE"
 
 # --- build ------------------------------------------------------------------
 # The reviewer's exploratory probes (targeted bun test runs, CLI invocations)
-# need workspace packages built. Worktree's `dist/` may be stale or missing —
-# always rebuild. Cheap if up-to-date.
+# need workspace packages built. Reuse a clean exact-tree full Depot preflight;
+# otherwise rebuild locally so a stale or missing dist cannot create noise.
 
 BUILD_LOG="$REVIEW_RUN_DIR/build.log"
-echo ">> make build-packages → $BUILD_LOG"
-set +e
-run_review_child make build-packages > "$BUILD_LOG" 2>&1
-BUILD_EXIT=$?
-set -e
-if [ $BUILD_EXIT -ne 0 ]; then
-  echo "!! build failed (exit $BUILD_EXIT) — proceeding so $REVIEWER_CLI_SELECTED can review the diff, but exploratory probes may fail" >&2
+if [ "$REMOTE_BUILD_ATTESTED" = "1" ]; then
+  echo ">> full Depot preflight already passed for tree $HEAD_TREE; skipping duplicate local package build"
+  printf 'Skipped: full Depot preflight passed for tree %s\n' "$HEAD_TREE" > "$BUILD_LOG"
+  BUILD_EXIT=0
+else
+  echo ">> make build-packages → $BUILD_LOG"
+  set +e
+  run_review_child make build-packages > "$BUILD_LOG" 2>&1
+  BUILD_EXIT=$?
+  set -e
+  if [ $BUILD_EXIT -ne 0 ]; then
+    echo "!! build failed (exit $BUILD_EXIT) — proceeding so $REVIEWER_CLI_SELECTED can review the diff, but exploratory probes may fail" >&2
+  fi
 fi
 
 # --- agent review -----------------------------------------------------------

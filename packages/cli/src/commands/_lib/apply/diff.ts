@@ -383,12 +383,28 @@ function diffEntityType(
         changed: (d, r) => stringChanged(d.description, r.description),
       },
       {
+        // required — prune-aware, like eventKinds. Declared: diff and set on
+        // change. Omitted + prune: a present remote set is a removal (apply
+        // clears it). Omitted + no prune: unmanaged, never churns — so an
+        // extension-only declaration (e.g. resolutionPolicy) is a noop on
+        // repeat apply instead of a perpetual update that wipes the live core.
         name: "required",
-        changed: (d, r) => !deepEqual(d.required ?? [], r.required ?? []),
+        changed: (d, r) =>
+          d.required !== undefined
+            ? !deepEqual(d.required, r.required ?? [])
+            : prune && (r.required ?? []).length > 0,
       },
       {
+        // properties — prune-aware, like eventKinds (see `required` above).
+        // An already-cleared empty object is not a removal: flagging it would
+        // re-report an update on every apply instead of converging.
         name: "properties",
-        changed: (d, r) => !deepEqual(d.properties, r.properties),
+        changed: (d, r) =>
+          d.properties !== undefined
+            ? !deepEqual(d.properties, r.properties)
+            : prune &&
+              r.properties !== undefined &&
+              Object.keys(r.properties).length > 0,
       },
       {
         // Derived types store metadata_schema verbatim (no inferred superset),
@@ -414,6 +430,23 @@ function diffEntityType(
           d.eventKinds !== undefined
             ? !deepEqual(d.eventKinds, r.eventKinds)
             : prune && r.eventKinds !== undefined,
+      },
+      {
+        // Resolution policy — prune-aware, like eventKinds. Declared: diff
+        // against the remote x-lobu-resolution and set on change. Omitted +
+        // prune: a present remote policy is a removal (apply clears it).
+        // Omitted + no prune: unmanaged, never churns — an out-of-band authored
+        // policy is preserved (the server keeps it), matching the carry-forward
+        // in upsertEntityType.
+        name: "resolutionPolicy",
+        changed: (d, r) => {
+          if (d.resolutionPolicy !== undefined) {
+            const desired = d.resolutionPolicy["x-lobu-resolution"];
+            const remote = r.schemaExtras?.["x-lobu-resolution"];
+            return !deepEqual(desired, remote);
+          }
+          return prune && r.schemaExtras?.["x-lobu-resolution"] !== undefined;
+        },
       },
       {
         // View template — prune-aware. Declared: diff against the remote current

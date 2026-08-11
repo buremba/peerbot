@@ -788,6 +788,8 @@ describe('applyEventAttributions', () => {
  * rule — not a hand-built test rule — so a regression in the connector's
  * declared gate (e.g. flipping autoCreate back on ungated) fails here, at the
  * pipeline level where the raw-sender person flood would actually re-appear.
+ * The gate is `metadata.person_relevant` (replied in default mode; stricter
+ * counterparty selection under human_senders_only).
  */
 describe('gmail promote-on-interaction (real connector rule)', () => {
   const GMAIL_KEY = 'google.gmail';
@@ -830,7 +832,7 @@ describe('gmail promote-on-interaction (real connector rule)', () => {
     `;
   }
 
-  it('promotes only replied-to counterparties: no raw-sender rows, bidirectional contact minted with metric aliases', async () => {
+  it('promotes only person-relevant counterparties: no raw-sender rows, bidirectional contact minted with metric aliases', async () => {
     const { org, sql } = await setupGmailOrg();
 
     await applyEventAttributions({
@@ -839,9 +841,19 @@ describe('gmail promote-on-interaction (real connector rule)', () => {
       orgId: org.id,
       items: [
         // Inbound-only brand blast — has a from_name, still must NOT mint.
-        thread({ from_email: 'promo@brand.example', from_name: 'Brand', replied: false }),
+        thread({
+          from_email: 'promo@brand.example',
+          from_name: 'Brand',
+          replied: false,
+          person_relevant: false,
+        }),
         // Genuine bidirectional exchange — promotes.
-        thread({ from_email: 'alice@example.com', from_name: 'Alice', replied: true }),
+        thread({
+          from_email: 'alice@example.com',
+          from_name: 'Alice',
+          replied: true,
+          person_relevant: true,
+        }),
       ],
     });
 
@@ -861,7 +873,14 @@ describe('gmail promote-on-interaction (real connector rule)', () => {
 
   it('promotion is idempotent: re-syncing the same replied thread never duplicates the contact', async () => {
     const { org, sql } = await setupGmailOrg();
-    const items = [thread({ from_email: 'alice@example.com', from_name: 'Alice', replied: true })];
+    const items = [
+      thread({
+        from_email: 'alice@example.com',
+        from_name: 'Alice',
+        replied: true,
+        person_relevant: true,
+      }),
+    ];
 
     await applyEventAttributions({ connectorKey: GMAIL_KEY, feedKey: GMAIL_FEED, orgId: org.id, items });
     await applyEventAttributions({ connectorKey: GMAIL_KEY, feedKey: GMAIL_FEED, orgId: org.id, items });
@@ -878,9 +897,21 @@ describe('gmail promote-on-interaction (real connector rule)', () => {
       connectorKey: GMAIL_KEY,
       feedKey: GMAIL_FEED,
       orgId: org.id,
-      items: [thread({ from_email: 'alice@example.com', from_name: 'Alice', replied: true })],
+      items: [
+        thread({
+          from_email: 'alice@example.com',
+          from_name: 'Alice',
+          replied: true,
+          person_relevant: true,
+        }),
+      ],
     });
-    const later = thread({ from_email: 'alice@example.com', from_name: 'Alice', replied: false });
+    const later = thread({
+      from_email: 'alice@example.com',
+      from_name: 'Alice',
+      replied: false,
+      person_relevant: false,
+    });
     await applyEventAttributions({
       connectorKey: GMAIL_KEY,
       feedKey: GMAIL_FEED,
@@ -893,5 +924,29 @@ describe('gmail promote-on-interaction (real connector rule)', () => {
     const people = await personRows(sql, org.id);
     expect(people.map((p) => p.name)).toEqual(['Alice']);
     expect((later.metadata as Record<string, unknown>).email).toBe('alice@example.com');
+  });
+
+  it('a legacy v1.0.3 {replied:true} payload still mints a person under the new definition', async () => {
+    const { org, sql } = await setupGmailOrg();
+
+    // Pre-refresh run payloads carry `replied` but not `person_relevant`. The
+    // server loads the current definition by connector key, so the legacy rule
+    // must keep minting during a rolling deploy — otherwise in-flight old runs
+    // silently skip person creation.
+    await applyEventAttributions({
+      connectorKey: GMAIL_KEY,
+      feedKey: GMAIL_FEED,
+      orgId: org.id,
+      items: [
+        thread({
+          from_email: 'alice@example.com',
+          from_name: 'Alice',
+          replied: true,
+        }),
+      ],
+    });
+
+    const people = await personRows(sql, org.id);
+    expect(people.map((p) => p.name)).toEqual(['Alice']);
   });
 });

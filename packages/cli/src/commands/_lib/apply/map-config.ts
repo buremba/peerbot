@@ -11,6 +11,10 @@
 import { validateEntityMetrics } from "@lobu/connector-sdk/metrics";
 import { type AgentSettings, isHostedChatPlatform } from "@lobu/core";
 import type { AgentSettingsStored } from "@lobu/core/contracts/agent-settings";
+import {
+  normalizeWorkspaceEventTrigger,
+  resolvedEventExecution,
+} from "@lobu/core/contracts/tools/manage-behaviors";
 
 /**
  * Exhaustiveness projection over the stored AgentSettings shape. Every key is
@@ -446,6 +450,37 @@ function mapEntityType(entity: EntityType): DesiredEntityType {
       );
     }
   }
+  // Fail loud on malformed resolution rules: the server drops invalid rules,
+  // which can silently disable the intended matching policy.
+  if (entity.resolutionPolicy) {
+    if (!Array.isArray(entity.resolutionPolicy.rules)) {
+      throw new ValidationError(
+        `entity type "${entity.key}" has invalid resolutionPolicy: expected rules to be an array`
+      );
+    }
+    const ruleErrors = entity.resolutionPolicy.rules.flatMap((rule, index) => {
+      const fields =
+        Array.isArray(rule.fields) &&
+        rule.fields.every((f) => typeof f === "string" && f.trim())
+          ? rule.fields
+          : null;
+      const normalizerOk =
+        rule.normalizer === "email" ||
+        rule.normalizer === "phone" ||
+        rule.normalizer === "exact";
+      const onMatchOk =
+        rule.onMatch === "auto_merge" || rule.onMatch === "review";
+      if (fields && fields.length > 0 && normalizerOk && onMatchOk) return [];
+      return [
+        `rule ${index}: expected { fields: string[], normalizer: "email"|"phone"|"exact", onMatch: "auto_merge"|"review" }`,
+      ];
+    });
+    if (ruleErrors.length > 0) {
+      throw new ValidationError(
+        `entity type "${entity.key}" has invalid resolutionPolicy: ${ruleErrors.join("; ")}`
+      );
+    }
+  }
   return {
     slug: entity.key,
     ...(entity.name ? { name: entity.name } : {}),
@@ -456,6 +491,17 @@ function mapEntityType(entity: EntityType): DesiredEntityType {
     // on both sides and never churns the diff (mirrors `backing`/`metrics`).
     ...(entity.eventKinds && Object.keys(entity.eventKinds).length > 0
       ? { eventKinds: entity.eventKinds }
+      : {}),
+    // Resolution policy lowered to the raw metadata_schema key the server reads.
+    // Declared only when present so a type without one never churns the diff.
+    ...(entity.resolutionPolicy
+      ? {
+          resolutionPolicy: {
+            "x-lobu-resolution": {
+              rules: entity.resolutionPolicy.rules,
+            },
+          },
+        }
       : {}),
     // View template included only when declared so absence never churns the diff
     // (a no-prune apply leaves any UI-authored template untouched).
@@ -550,7 +596,7 @@ function assertBehaviorSkills(watcher: DesiredWatcher): void {
     Object.keys(watcher.outputs).length > 0 &&
     triggers.some(
       (trigger) =>
-        trigger.kind === "event" && (trigger.execution ?? "turn") === "turn"
+        trigger.kind === "event" && resolvedEventExecution(trigger) === "turn"
     )
   ) {
     throw new ValidationError(
@@ -560,7 +606,10 @@ function assertBehaviorSkills(watcher: DesiredWatcher): void {
   const requiresSkills =
     triggers.length === 0 ||
     triggers.some(
-      (trigger) => trigger.kind === "schedule" || trigger.execution === "window"
+      (trigger) =>
+        trigger.kind === "schedule" ||
+        (trigger.kind === "event" &&
+          resolvedEventExecution(trigger) === "window")
     );
   // Either instruction source satisfies the rule. A Behavior whose whole job is
   // "run this skill" has no task statement to write, and one that spells its
@@ -609,15 +658,19 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
         skip_if_unchanged: trigger.skip_if_unchanged ?? true,
       };
     }
+    if (trigger.kind === "event" && trigger.source === "workspace") {
+      return normalizeWorkspaceEventTrigger(trigger);
+    }
     const { connection, ...eventTrigger } = trigger;
     const normalizedEventTrigger = {
       ...eventTrigger,
+      source: "connector" as const,
       event_types: Array.from(new Set(eventTrigger.event_types)),
       match:
         eventTrigger.match && Object.keys(eventTrigger.match).length > 0
           ? eventTrigger.match
           : undefined,
-      execution: eventTrigger.execution ?? "turn",
+      execution: resolvedEventExecution(eventTrigger),
       active_run: eventTrigger.active_run ?? "queue",
       output: eventTrigger.output ?? "silent",
       skip_if_unchanged: eventTrigger.skip_if_unchanged ?? true,
@@ -933,7 +986,13 @@ export function mapProjectToDesiredState(
     }
     assertBehaviorSkills(watcher);
     for (const trigger of watcher.triggers ?? []) {
-      if (trigger.kind !== "event" || !trigger.connectionSlug) continue;
+      if (
+        trigger.kind !== "event" ||
+        trigger.source === "workspace" ||
+        !trigger.connectionSlug
+      ) {
+        continue;
+      }
       const connection = (project.connections ?? []).find(
         (candidate) => candidate.slug === trigger.connectionSlug
       );

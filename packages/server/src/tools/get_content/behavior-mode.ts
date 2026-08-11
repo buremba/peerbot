@@ -9,9 +9,11 @@
 import { createHash } from 'node:crypto';
 import type { ContentItem } from '@lobu/connector-sdk';
 import { inferBehaviorGranularityFromSchedule } from '@lobu/connector-sdk';
+import { MAX_COALESCED_BEHAVIOR_EVENT_INPUTS } from '../../behaviors/workspace-event-contract';
 import { type DbClient, parsePgNumberArray } from '../../db/client';
 import type { Env } from '../../index';
 import type { Outputs, UnprocessedRange, WatcherSource } from '../../types/watchers';
+import { ToolUserError } from '../../utils/errors';
 import { type DataSourceContext, executeDataSources } from '../../utils/execute-data-sources';
 import logger from '../../utils/logger';
 import { runMetric } from '../../metrics/run-metric';
@@ -52,6 +54,8 @@ interface ContentQueryParams {
    */
   userId: string | null;
   entityIds?: number[];
+  query?: Record<string, string>;
+  minimumSourceLimits?: Record<string, number>;
   /**
    * The Behavior these sources belong to. Its own output is excluded from the
    * result — see `excludeProducedByBehaviorId` in execute-data-sources.
@@ -90,6 +94,7 @@ async function queryContentData(
     organizationId: params.organizationId,
     userId: params.userId,
     entityIds: params.entityIds,
+    query: params.query,
     windowStart: params.window_start,
     windowEnd: params.window_end,
     excludeProducedByBehaviorId: params.behaviorId,
@@ -119,6 +124,10 @@ async function queryContentData(
       ? (scopedQuery, queryParams, sourceName) => {
           const isEventSource = eventSourceNames.has(sourceName);
           const isCursorSource = isEventSource && sourceName === page.sourceName;
+          const sourceLimit = Math.max(
+            page.limit,
+            params.minimumSourceLimits?.[sourceName] ?? 0
+          );
           const nextParams = [...queryParams];
 
           // Context sources do not share the event cursor contract (their id may
@@ -127,7 +136,7 @@ async function queryContentData(
           // explicitly when the payload was truncated. Fingerprinting does not
           // pass page, so skip_if_unchanged still sees the complete source state.
           if (!isEventSource) {
-            nextParams.push(page.limit + 1);
+            nextParams.push(sourceLimit + 1);
             const limitParam = `$${nextParams.length}`;
             return {
               // security-allowed: scopedQuery is an internally-built, already-scoped SQL fragment.
@@ -152,7 +161,7 @@ async function queryContentData(
                 `(_watcher_page.occurred_at = ${occurredAtParam}::timestamptz AND _watcher_page.id < ${idParam}::bigint))`
             );
           }
-          nextParams.push(page.limit + 1);
+          nextParams.push(sourceLimit + 1);
           const limitParam = `$${nextParams.length}`;
 
           return {
@@ -232,11 +241,15 @@ async function queryContentData(
     for (const sourceName of boundedSourceNames) {
       if (sourceName === page.sourceName && eventSourceNames.has(sourceName)) continue;
       const rows = results[sourceName] ?? [];
-      const hasMore = rows.length > page.limit;
-      if (hasMore) results[sourceName] = rows.slice(0, page.limit);
+      const sourceLimit = Math.max(
+        page.limit,
+        params.minimumSourceLimits?.[sourceName] ?? 0
+      );
+      const hasMore = rows.length > sourceLimit;
+      if (hasMore) results[sourceName] = rows.slice(0, sourceLimit);
       sourcesPage[sourceName] = {
         returned: (results[sourceName] ?? []).length,
-        limit: page.limit,
+        limit: sourceLimit,
         has_more: hasMore,
       };
     }
@@ -461,6 +474,48 @@ export async function handleBehaviorMode(
     sources = [{ name: 'content', query: DEFAULT_BEHAVIOR_SOURCE_QUERY }];
   }
 
+  // A workspace-sourced event window receives exact durable pointers in addition to
+  // its authored context sources. Include those rows in the same Behavior read
+  // so the returned window_token proves what the agent saw and complete_window
+  // can link or cite the triggering events normally.
+  //
+  // The rows stay governed: this source reads the same
+  // org/window/entity-scoped `events` CTE as every authored source, so an id
+  // outside the Behavior's scope resolves to no row rather than to unscoped
+  // data. The exact ids travel through the data-source placeholder compiler so
+  // they remain bound parameters instead of executable SQL text.
+  const triggerContentIds = [
+    ...new Set(
+      (args.content_ids ?? [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isSafeInteger(id) && id > 0)
+    ),
+  ];
+  let triggerInputSourceName: string | null = null;
+  if (triggerContentIds.length > MAX_COALESCED_BEHAVIOR_EVENT_INPUTS) {
+    throw new ToolUserError(
+      `Behavior event windows accept at most ${MAX_COALESCED_BEHAVIOR_EVENT_INPUTS} exact trigger inputs.`,
+      422
+    );
+  }
+  if (triggerContentIds.length > 0) {
+    const occupiedNames = new Set(sources.map((source) => source.name));
+    let sourceName = '__event_inputs';
+    for (let suffix = 2; occupiedNames.has(sourceName); suffix++) {
+      sourceName = `__event_inputs_${suffix}`;
+    }
+    triggerInputSourceName = sourceName;
+    sources = [
+      {
+        name: sourceName,
+        query: `SELECT * FROM events
+          WHERE id = ANY(string_to_array({{query.eventContentIds}}, ',')::bigint[])
+          ORDER BY occurred_at DESC`,
+      },
+      ...sources,
+    ];
+  }
+
   // Fetch classifiers attached to this watcher
   const classifiersResult = await sql`
     SELECT
@@ -534,6 +589,13 @@ export async function handleBehaviorMode(
     organizationId: watcher.organization_id as string,
     userId: visibilityUserId,
     entityIds: watcherEntityIds,
+    query:
+      triggerContentIds.length > 0
+        ? { eventContentIds: triggerContentIds.join(',') }
+        : undefined,
+    minimumSourceLimits: triggerInputSourceName
+      ? { [triggerInputSourceName]: triggerContentIds.length }
+      : undefined,
     behaviorId: Number(watcher.id),
     page: {
       sourceName: 'content',

@@ -13,6 +13,7 @@
 import type {
   BehaviorEventTrigger,
   BehaviorScheduleTrigger,
+  BehaviorWorkspaceEventTrigger,
   ConnectorClass,
   ConnectorRuntime,
   Dimension,
@@ -106,6 +107,23 @@ export interface EntityType {
    * the rest of the schema (mirrors a connector feed's `eventKinds`).
    */
   eventKinds?: Record<string, EntityEventKind>;
+  /**
+   * Entity-resolution policy (the `x-lobu-resolution` metadata_schema key the
+   * server reads to decide whether duplicate entities sharing a normalized
+   * identity auto-merge or queue human review). Declared here so the policy is
+   * git-audited like the rest of the schema; `lobu apply` folds it into the
+   * type's metadata_schema. A rule's `fields` are metadata keys or identity
+   * namespaces (e.g. `email`), `normalizer` is `email` | `phone` | `exact`, and
+   * `onMatch` is `auto_merge` | `review`. When the key is absent, `person`
+   * falls back to email/phone review rules; other entity types have no rules.
+   */
+  resolutionPolicy?: {
+    rules: Array<{
+      fields: string[];
+      normalizer: "email" | "phone" | "exact";
+      onMatch: "auto_merge" | "review";
+    }>;
+  };
   /**
    * Default view template (render-DSL root node, optionally with a `data_sources`
    * key) for this entity type's detail page. Applied declaratively and
@@ -415,6 +433,7 @@ export type BehaviorEventTriggerConfig = Omit<
 
 export type BehaviorTriggerConfig =
   | BehaviorEventTriggerConfig
+  | BehaviorWorkspaceEventTrigger
   | BehaviorScheduleTrigger;
 
 export interface Behavior {
@@ -425,7 +444,10 @@ export interface Behavior {
   agent: Agent | string;
   name?: string;
   description?: string;
-  /** Connector events and/or cadence that activate this Behavior. */
+  /**
+   * Connector events, declared event outputs from other Behaviors, and/or a
+   * cadence that activate this Behavior. Omit for manual-only execution.
+   */
   triggers?: BehaviorTriggerConfig[];
   /**
    * The task this Behavior performs, in plain text — *what to do when it fires*,

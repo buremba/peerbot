@@ -73,6 +73,7 @@ function eventTrigger(args: {
 }): BehaviorEventTrigger {
 	return {
 		kind: "event",
+		source: "connector",
 		connector_key: args.platform,
 		connection_id: args.connectionId,
 		event_types: ["message.created"],

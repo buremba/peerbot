@@ -267,6 +267,279 @@ describe("apply diff — memory schema", () => {
     expect(plan.counts.update).toBe(0);
   });
 
+  test("declared resolutionPolicy diffs against the remote x-lobu-resolution", () => {
+    const declared = {
+      "x-lobu-resolution": {
+        rules: [
+          { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+        ],
+      },
+    };
+    const desired: DesiredState = {
+      agents: [],
+      memorySchema: {
+        entityTypes: [{ slug: "person", resolutionPolicy: declared }],
+        relationshipTypes: [],
+      },
+      watchers: [],
+      requiredSecrets: [],
+    };
+
+    // Match → noop.
+    const match = computeDiff(desired, {
+      ...emptyRemote(),
+      entityTypes: [{ slug: "person", schemaExtras: declared }],
+    });
+    expect(match.rows.find((r) => r.id === "person")?.verb).toBe("noop");
+
+    // Differs → update, flagged.
+    const mismatch = computeDiff(desired, {
+      ...emptyRemote(),
+      entityTypes: [
+        {
+          slug: "person",
+          schemaExtras: { "x-lobu-resolution": { rules: [] } },
+        },
+      ],
+    });
+    const row = mismatch.rows.find((r) => r.id === "person");
+    expect(row?.verb).toBe("update");
+    expect(row?.changedFields).toContain("resolutionPolicy");
+  });
+
+  test("omitted resolutionPolicy never churns an out-of-band policy", () => {
+    const desired: DesiredState = {
+      agents: [],
+      memorySchema: {
+        entityTypes: [{ slug: "person", name: "Person" }],
+        relationshipTypes: [],
+      },
+      watchers: [],
+      requiredSecrets: [],
+    };
+    const plan = computeDiff(desired, {
+      ...emptyRemote(),
+      entityTypes: [
+        {
+          slug: "person",
+          name: "Person",
+          schemaExtras: {
+            "x-lobu-resolution": {
+              rules: [
+                {
+                  fields: ["email"],
+                  normalizer: "email",
+                  onMatch: "auto_merge",
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+    const row = plan.rows.find((r) => r.id === "person");
+    expect(row?.verb).toBe("noop");
+    expect(plan.counts.update).toBe(0);
+  });
+
+  test("under prune, omitting resolutionPolicy flags a removal, then converges to noop", () => {
+    const live = {
+      "x-lobu-resolution": {
+        rules: [
+          { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+        ],
+      },
+    };
+    const desired: DesiredState = {
+      agents: [],
+      memorySchema: {
+        entityTypes: [{ slug: "person", name: "Person" }],
+        relationshipTypes: [],
+      },
+      watchers: [],
+      requiredSecrets: [],
+    };
+
+    // First apply: remote policy present + prune → removal.
+    const removal = computeDiff(
+      desired,
+      {
+        ...emptyRemote(),
+        entityTypes: [{ slug: "person", name: "Person", schemaExtras: live }],
+      },
+      { prune: true }
+    );
+    const removalRow = removal.rows.find((r) => r.id === "person");
+    expect(removalRow?.verb).toBe("update");
+    expect(removalRow?.changedFields).toContain("resolutionPolicy");
+
+    // Second apply: policy already cleared → noop.
+    const converged = computeDiff(
+      desired,
+      {
+        ...emptyRemote(),
+        entityTypes: [{ slug: "person", name: "Person", properties: {} }],
+      },
+      { prune: true }
+    );
+    expect(converged.rows.find((r) => r.id === "person")?.verb).toBe("noop");
+    expect(converged.counts.update).toBe(0);
+  });
+
+  test("a policy-only declaration with a populated remote schema is noop on repeat apply", () => {
+    const declared = {
+      "x-lobu-resolution": {
+        rules: [
+          { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+        ],
+      },
+    };
+    const desired: DesiredState = {
+      agents: [],
+      memorySchema: {
+        entityTypes: [{ slug: "person", resolutionPolicy: declared }],
+        relationshipTypes: [],
+      },
+      watchers: [],
+      requiredSecrets: [],
+    };
+    // The live type has a full schema + the same policy. Omitted properties/
+    // required must be treated as unmanaged (never churn), so a second apply
+    // is a noop rather than a perpetual properties update.
+    const plan = computeDiff(desired, {
+      ...emptyRemote(),
+      entityTypes: [
+        {
+          slug: "person",
+          properties: { email: { type: "string" }, handle: { type: "string" } },
+          required: ["email"],
+          schemaExtras: declared,
+        },
+      ],
+    });
+    const row = plan.rows.find((r) => r.id === "person");
+    expect(row?.verb).toBe("noop");
+    expect(plan.counts.update).toBe(0);
+  });
+
+  test("under prune, omitting properties/required flags a removal (declarative fields stay pruneable)", async () => {
+    const desired: DesiredState = {
+      agents: [],
+      memorySchema: {
+        entityTypes: [
+          {
+            slug: "person",
+            name: "Person",
+            resolutionPolicy: {
+              "x-lobu-resolution": {
+                rules: [
+                  {
+                    fields: ["email"],
+                    normalizer: "email",
+                    onMatch: "auto_merge",
+                  },
+                ],
+              },
+            },
+          },
+        ],
+        relationshipTypes: [],
+      },
+      watchers: [],
+      requiredSecrets: [],
+    };
+    // Prune treats the config as the source of truth: a live `required` schema
+    // the config no longer declares must be removed, not silently kept.
+    const plan = computeDiff(
+      desired,
+      {
+        ...emptyRemote(),
+        entityTypes: [
+          {
+            slug: "person",
+            name: "Person",
+            properties: { email: { type: "string" } },
+            required: ["email"],
+            schemaExtras: {
+              "x-lobu-resolution": {
+                rules: [
+                  {
+                    fields: ["email"],
+                    normalizer: "email",
+                    onMatch: "auto_merge",
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+      { prune: true }
+    );
+    const row = plan.rows.find((r) => r.id === "person");
+    expect(row?.verb).toBe("update");
+    expect(row?.changedFields).toContain("properties");
+    expect(row?.changedFields).toContain("required");
+  });
+
+  test("under prune, an already-cleared empty schema is a noop (converges on repeat apply)", async () => {
+    const desired: DesiredState = {
+      agents: [],
+      memorySchema: {
+        entityTypes: [
+          {
+            slug: "person",
+            name: "Person",
+            resolutionPolicy: {
+              "x-lobu-resolution": {
+                rules: [
+                  {
+                    fields: ["email"],
+                    normalizer: "email",
+                    onMatch: "auto_merge",
+                  },
+                ],
+              },
+            },
+          },
+        ],
+        relationshipTypes: [],
+      },
+      watchers: [],
+      requiredSecrets: [],
+    };
+    // After the first prune apply cleared the live schema, a second apply sees
+    // `properties: {}` — that is not a removal, so it must be a noop.
+    const plan = computeDiff(
+      desired,
+      {
+        ...emptyRemote(),
+        entityTypes: [
+          {
+            slug: "person",
+            name: "Person",
+            properties: {},
+            schemaExtras: {
+              "x-lobu-resolution": {
+                rules: [
+                  {
+                    fields: ["email"],
+                    normalizer: "email",
+                    onMatch: "auto_merge",
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+      { prune: true }
+    );
+    const row = plan.rows.find((r) => r.id === "person");
+    expect(row?.verb).toBe("noop");
+    expect(plan.counts.update).toBe(0);
+  });
+
   test("relationship-type rules are a noop when remote rules match (idempotency)", () => {
     // Regression: the rel-type `list` action omits rules, so apply hydrates
     // them (listRelationshipTypeRules) into the snapshot. When the hydrated

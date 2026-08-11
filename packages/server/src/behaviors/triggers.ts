@@ -1,8 +1,11 @@
 import { isDeepStrictEqual } from "node:util";
-import type {
-	BehaviorEventTrigger,
-	BehaviorScheduleTrigger,
-	BehaviorTrigger,
+import {
+	normalizeWorkspaceEventTrigger,
+	resolvedEventExecution,
+	type BehaviorEventTrigger,
+	type BehaviorScheduleTrigger,
+	type BehaviorTrigger,
+	type BehaviorWorkspaceEventTrigger,
 } from "@lobu/core/contracts/tools/manage-behaviors";
 import type { DbClient } from "../db/client";
 import { listCatalogEntries } from "../catalog/load";
@@ -107,7 +110,7 @@ async function getConnectorBehaviorEventCatalog(
 function normalizedEventTrigger(
 	trigger: BehaviorEventTrigger
 ): BehaviorEventTrigger {
-	const execution = trigger.execution ?? "turn";
+	const execution = resolvedEventExecution(trigger);
 	const activeRun = trigger.active_run ?? "queue";
 	const output = trigger.output ?? "silent";
 	if (execution === "window" && activeRun === "steer") {
@@ -142,6 +145,7 @@ function normalizedEventTrigger(
 	}
 	return {
 		...trigger,
+		source: "connector",
 		event_types: Array.from(new Set(trigger.event_types)),
 		match,
 		execution,
@@ -183,6 +187,9 @@ export function normalizeBehaviorTriggers(
 				);
 			}
 			return normalizedScheduleTrigger(trigger);
+		}
+		if (trigger.kind === "event" && trigger.source === "workspace") {
+			return normalizeWorkspaceEventTrigger(trigger);
 		}
 		return normalizedEventTrigger(trigger);
 	});
@@ -231,8 +238,7 @@ export function resolveBehaviorTriggerWrite(args: {
  * the input, and the built-in default instruction applies when the Behavior
  * has none. Schedule triggers, event triggers with execution "window", and an
  * empty trigger set (manual runs) have no such content, so they need
- * instruction text. An omitted event execution defaults to "turn"
- * (the contract's default).
+ * instruction text.
  */
 export function behaviorRequiresInstructions(
 	triggers: BehaviorTrigger[]
@@ -241,7 +247,7 @@ export function behaviorRequiresInstructions(
 	return triggers.some(
 		(trigger) =>
 			trigger.kind === "schedule" ||
-			(trigger.kind === "event" && trigger.execution === "window")
+			(trigger.kind === "event" && resolvedEventExecution(trigger) === "window")
 	);
 }
 
@@ -257,7 +263,7 @@ export function assertBehaviorOutputsUseWindowExecution(
 	if (!outputs || Object.keys(outputs).length === 0) return;
 	const turnTrigger = triggers.find(
 		(trigger) =>
-			trigger.kind === "event" && (trigger.execution ?? "turn") === "turn"
+			trigger.kind === "event" && resolvedEventExecution(trigger) === "turn"
 	);
 	if (!turnTrigger) return;
 	throw new ToolUserError(
@@ -298,7 +304,8 @@ export async function assertBehaviorTriggerConnections(
 	triggers: BehaviorTrigger[]
 ): Promise<void> {
 	const eventTriggers = triggers.filter(
-		(trigger): trigger is BehaviorEventTrigger => trigger.kind === "event"
+		(trigger): trigger is BehaviorEventTrigger =>
+			trigger.kind === "event" && trigger.source !== "workspace"
 	);
 	const catalogs = new Map<string, ConnectorBehaviorEventCatalog>();
 	for (const trigger of eventTriggers) {
@@ -364,6 +371,63 @@ export async function assertBehaviorTriggerConnections(
 			) {
 				throw new ToolUserError(
 					`${catalog.name} event '${eventType}' does not support replying to the source.`
+				);
+			}
+		}
+	}
+
+	const workspaceTriggers = triggers.filter(
+		(trigger): trigger is BehaviorWorkspaceEventTrigger =>
+			trigger.kind === "event" && trigger.source === "workspace"
+	);
+	const eventKindsByEntityType = new Map<
+		string,
+		{ name: string; eventKinds: Record<string, unknown> }
+	>();
+	for (const trigger of workspaceTriggers) {
+		const entityTypeSlug = trigger.entity_type;
+		const catalogKey = entityTypeSlug ?? "*";
+		let catalog = eventKindsByEntityType.get(catalogKey);
+		if (!catalog) {
+			const rows = await sql`
+				SELECT slug, name, event_kinds
+				FROM entity_types
+				WHERE organization_id = ${organizationId}
+				  AND deleted_at IS NULL
+				  AND (
+					${entityTypeSlug ?? null}::text IS NULL
+					OR slug IN (${entityTypeSlug ?? null}, '$member')
+				  )
+				ORDER BY (slug = '$member') DESC, slug ASC
+			`;
+			const requestedType = entityTypeSlug
+				? rows.find((row) => row.slug === entityTypeSlug)
+				: undefined;
+			if (entityTypeSlug && !requestedType) {
+				throw new ToolUserError(
+					`Workspace event trigger entity type '${entityTypeSlug}' was not found in this organization.`
+				);
+			}
+			const eventKinds = Object.assign(
+				{},
+				...rows.map((row) =>
+					row.event_kinds && typeof row.event_kinds === "object"
+						? row.event_kinds
+						: {}
+				)
+			);
+			catalog = {
+				name: entityTypeSlug
+					? String(requestedType?.name ?? entityTypeSlug)
+					: "Workspace",
+				eventKinds,
+			};
+			eventKindsByEntityType.set(catalogKey, catalog);
+		}
+		for (const eventType of trigger.event_types) {
+			if (!(eventType in catalog.eventKinds)) {
+				throw new ToolUserError(
+					`${catalog.name} does not declare workspace event '${eventType}'.`
 				);
 			}
 		}

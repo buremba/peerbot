@@ -69,8 +69,17 @@ interface GmailCheckpoint {
 
 interface GmailConfig {
   label?: string;
+  /** Non-empty labels to union in the sync query. Overrides `label`. */
+  labels?: string[];
   max_results?: number;
   lookback_days?: number;
+  /**
+   * Only emit person-relevant threads: replied non-role counterparties or
+   * unreplied senders/recipients that pass the human-address heuristic. Drives
+   * person minting/merging from a narrow subset of the mailbox while everything
+   * else stays a virtual/live read.
+   */
+  human_senders_only?: boolean;
 }
 
 /** Stable column set returned by live `query()`/`search()` pushdown reads. */
@@ -96,7 +105,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
     name: 'Gmail',
     description:
       'Syncs Gmail threads, live-reads matching messages, and supports sending, drafts, and replies.',
-    version: '1.0.3',
+    version: '1.0.4',
     faviconDomain: 'mail.google.com',
     authSchema: {
       methods: [
@@ -129,7 +138,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
         name: 'Threads',
         requiredScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
         description:
-          'Collected feeds sync Gmail threads; virtual feeds return live matching messages. Collected sync powers contact promotion (replied attributions).',
+          'Collected feeds sync Gmail threads; virtual feeds return live matching messages. Collected sync powers person attribution.',
         // Collected remains the default: contact promotion + Behaviors need
         // durable events. Virtual is fully supported when the caller sets
         // virtual:true (query() / search() already implemented).
@@ -146,6 +155,12 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
               default: 'INBOX',
               description: 'Gmail label to sync (e.g. "INBOX", "SENT", "STARRED").',
             },
+            labels: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'Non-empty labels to union in the sync query, e.g. ["INBOX", "SENT"]. Overrides `label` so outbound-initiated threads are covered.',
+            },
             max_results: {
               type: 'integer',
               minimum: 1,
@@ -159,6 +174,12 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
               maximum: 365,
               default: 30,
               description: 'Number of days to look back on initial sync.',
+            },
+            human_senders_only: {
+              type: 'boolean',
+              default: false,
+              description:
+                'Emit only person-relevant threads for person building: replied non-role counterparties or unreplied senders/recipients that pass the human-address heuristic.',
             },
           },
         },
@@ -176,22 +197,53 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
                 replied: {
                   type: 'boolean',
                   description:
-                    'True when the thread contains both a counterparty message and a mailbox-authored SENT-labeled message — the interaction signal that gates contact promotion.',
+                    'True when the thread contains both a non-self counterparty message and a mailbox-authored SENT-labeled message.',
+                },
+                person_relevant: {
+                  type: 'boolean',
+                  description:
+                    'True when the selected counterparty qualifies for person minting under the feed mode.',
                 },
               },
             },
             attributions: [
               {
                 role: 'authored_by',
-                // Promote on interaction, never on receipt. Every from-address is
-                // a sender — overwhelmingly brands, newsletters, and no-reply
+                // Promote on interaction, never on receipt alone. Every from-address
+                // is a sender — overwhelmingly brands, newsletters, and no-reply
                 // system addresses, all of which carry a from_name — so receipt
-                // alone must not mint a contact. `replied` (computed in sync from
-                // per-message SENT labels) marks a genuine bidirectional exchange.
-                // Only those senders materialize a `person`; everything else still
-                // links to an existing contact on identity match. A thread replied
-                // to after its first sync re-syncs (the reply is a new message
-                // inside the `after:` window), so promotion follows the reply.
+                // alone must not mint a contact. The gate is `person_relevant`,
+                // computed by the connector: it is `replied` by default; the
+                // human_senders_only mode additionally admits human-looking
+                // unreplied counterparties and rejects role/list/broadcast noise.
+                // Only person-relevant senders materialize a `person`; everything
+                // else still links to an existing contact on identity match.
+                autoCreate: true,
+                target: {
+                  entityType: 'person',
+                  createWhen: { path: 'metadata.person_relevant', equals: true },
+                  titlePath: 'metadata.from_name',
+                  identities: [{ namespace: 'email', eventPath: 'metadata.from_email' }],
+                },
+                traits: {
+                  from_name: {
+                    eventPath: 'metadata.from_name',
+                    behavior: 'prefer_non_empty',
+                  },
+                  last_email_at: {
+                    eventPath: 'occurred_at',
+                    behavior: 'overwrite',
+                  },
+                },
+              },
+              {
+                role: 'authored_by',
+                // Legacy gate for v1.0.3 run payloads, which carry `replied` but
+                // not `person_relevant`. Keep it until old in-flight runs/caches
+                // drain: the server loads the current definition by connector key,
+                // so a rolling deploy would otherwise silently skip person creation
+                // for a pre-refresh event. Both rules share the email identity, so
+                // the pipeline's first-writer-wins dedupes them for new payloads.
                 autoCreate: true,
                 target: {
                   entityType: 'person',
@@ -323,8 +375,14 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
     }
 
     const label = ctx.config.label || 'INBOX';
+    const labels = Array.isArray(ctx.config.labels)
+      ? ctx.config.labels
+          .filter((l) => typeof l === 'string' && l.trim().length > 0)
+          .map((l) => l.trim())
+      : [];
     const maxResults = Math.min(ctx.config.max_results ?? 50, 500);
     const lookbackDays = ctx.config.lookback_days ?? 30;
+    const humanSendersOnly = ctx.config.human_senders_only === true;
 
     const checkpoint = ctx.checkpoint ?? {}
 
@@ -341,17 +399,25 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
     // precision. Using `YYYY/MM/DD` (day granularity, host timezone) meant every
     // sync within the same day re-fetched the whole day's threads as duplicates.
     const afterEpochSeconds = Math.floor(afterDate.getTime() / 1000);
-    const query = `after:${afterEpochSeconds} label:${label}`;
+    // `labels` unions multiple labels (e.g. INBOX + SENT) so outbound-initiated
+    // threads — often the strongest "this is a real contact" signal — are covered.
+    const query =
+      labels.length > 0
+        ? `after:${afterEpochSeconds} {${labels.map((l) => `label:${l}`).join(' ')}}`
+        : `after:${afterEpochSeconds} label:${label}`;
 
     const http = this.createClient(token);
     const events: EventEnvelope[] = [];
-    let totalCollected = 0;
+    // Bounds the threads FETCHED per run (each is an API call), independent of
+    // how many survive the person filter — a narrow feed must not scan the whole
+    // lookback just because most threads are rejected.
+    let inspected = 0;
 
     const pages = paginateByCursor<NonNullable<GmailThreadListResponse['threads']>[number], string>(
       async (pageToken) => {
         const params = new URLSearchParams({
           q: query,
-          maxResults: String(Math.min(100, maxResults - totalCollected)),
+          maxResults: String(Math.min(100, maxResults - inspected)),
         });
         if (pageToken) {
           params.set('pageToken', pageToken);
@@ -378,7 +444,10 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
       // Fetch each thread with metadata format
       for (const threadStub of threads) {
         try {
-          const threadUrl = `${this.BASE_URL}/threads/${threadStub.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`;
+          // Count the GET attempt up front so failed/empty/malformed responses
+          // also consume max_results — the cap bounds API calls, not just events.
+          inspected++;
+          const threadUrl = `${this.BASE_URL}/threads/${threadStub.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Date&metadataHeaders=List-Id&metadataHeaders=Precedence`;
           const threadResponse = await http.raw(threadUrl);
 
           if (!threadResponse.ok) continue;
@@ -388,13 +457,11 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
           if (!thread.messages || thread.messages.length === 0) continue;
 
           const firstMessage = thread.messages[0];
-          const isSent = (m: GmailMessage) => (m.labelIds ?? []).includes('SENT');
-          const counterpartyMessage = thread.messages.find((message) => !isSent(message));
+          const attribution = this.resolvePersonAttribution(
+            thread.messages,
+            humanSendersOnly
+          );
           const subject = this.getHeader(firstMessage, 'Subject') || '(no subject)';
-          const from = counterpartyMessage
-            ? this.getHeader(counterpartyMessage, 'From') || 'Unknown'
-            : 'Unknown';
-          const { name: fromName, email: fromEmail } = this.parseFromHeader(from);
           const dateHeader = this.getHeader(firstMessage, 'Date');
           const occurredAt = dateHeader
             ? new Date(dateHeader)
@@ -402,17 +469,17 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
 
           if (Number.isNaN(occurredAt.getTime())) continue;
 
-          // A bidirectional exchange has at least one mailbox-authored message
-          // and one counterparty-authored message, regardless of who started it.
-          // Attribute the event to the first counterparty message so an
-          // owner-started thread never promotes the mailbox owner's own address.
-          const replied = counterpartyMessage !== undefined && thread.messages.some(isSent);
+          // Under human_senders_only the sync is deliberately narrow — only
+          // person-relevant threads are persisted (everything else stays a live
+          // read), so the DB only holds the high-signal set that drives person
+          // building.
+          if (humanSendersOnly && !attribution.personRelevant) continue;
 
           const event: EventEnvelope = {
             origin_id: thread.id,
             title: subject,
             payload_text: firstMessage.snippet || '',
-            author_name: from,
+            author_name: attribution.from,
             source_url: `https://mail.google.com/mail/u/0/#inbox/${thread.id}`,
             occurred_at: occurredAt,
             origin_type: 'thread',
@@ -420,22 +487,27 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
               message_count: thread.messages.length,
               label_ids: firstMessage.labelIds ?? [],
               snippet: firstMessage.snippet,
-              replied,
-              ...(fromEmail ? { from_email: fromEmail } : {}),
-              ...(fromName ? { from_name: fromName } : {}),
+              replied: attribution.replied,
+              person_relevant: attribution.personRelevant,
+              ...(attribution.fromEmail ? { from_email: attribution.fromEmail } : {}),
+              ...(attribution.fromName ? { from_name: attribution.fromName } : {}),
             },
           };
 
           events.push(event);
-          totalCollected++;
-
-          await sleep(this.RATE_LIMIT_MS);
         } catch {
           /* skip individual thread failures */
+        } finally {
+          // Filtering must not remove the per-thread API delay: a narrow feed
+          // can reject most fetched threads and still has to respect Gmail.
+          // The cap check lives here too — a `continue` in the try (failed or
+          // filtered thread) must still consume max_results and halt.
+          await sleep(this.RATE_LIMIT_MS);
+          if (inspected >= maxResults) break;
         }
       }
 
-      if (totalCollected >= maxResults) break;
+      if (inspected >= maxResults) break;
     }
 
     // Sort by occurred_at descending
@@ -873,6 +945,142 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
   // Helpers
   // -------------------------------------------------------------------------
 
+  private resolvePersonAttribution(
+    messages: GmailMessage[],
+    humanSendersOnly: boolean
+  ): {
+    replied: boolean;
+    personRelevant: boolean;
+    from: string;
+    fromName: string | null;
+    fromEmail: string | null;
+  } {
+    const sentMessages = messages.filter(isSentMessage);
+    const draftMessages = messages.filter(isDraftMessage);
+    const selfMessages = [...sentMessages, ...draftMessages];
+    const selfAddresses = new Set(
+      selfMessages
+        .map((message) =>
+          normalizeSelfEmail(this.parseFromHeader(this.getHeader(message, 'From') ?? '').email)
+        )
+        .filter(Boolean)
+    );
+    const isSelf = (email: string): boolean =>
+      selfAddresses.has(normalizeSelfEmail(email));
+    const inbound = messages
+      // DRAFTs are self-authored (unsent) — never inbound counterparties.
+      .filter((message) => !isSentMessage(message) && !isDraftMessage(message))
+      .flatMap((message) => {
+        const from = this.getHeader(message, 'From') ?? 'Unknown';
+        const parsed = this.parseFromHeader(from);
+        return parsed.email ? [{ from, name: parsed.name, email: parsed.email }] : [];
+      })
+      .filter((sender) => !isSelf(sender.email));
+
+    // A SENT message with no parseable From leaves self-vs-counterparty
+    // unknowable. It may still be stored in default mode, but must not drive
+    // person creation or count a mailbox copy as a reply.
+    const hasKnownSelf = sentMessages.length === 0 || selfAddresses.size > 0;
+    const replied = sentMessages.length > 0 && hasKnownSelf && inbound.length > 0;
+    let selected = humanSendersOnly
+      ? inbound.find((sender) => isPersonRelevantSender(sender.email, sender.name, replied))
+      : inbound[0];
+
+    // Outbound-only fallback: no plausible human inbound sender, so look for a
+    // plausible human RECIPIENT across every sent message's To+Cc — the first
+    // sent message may target a role address while a human sits in Cc or on a
+    // later sent message. `selectedSentMessage` remembers which message carried
+    // the recipient so the broadcast-cap check counts that message, not the
+    // first sent one.
+    let selectedSentMessage: GmailMessage | undefined;
+    if (!selected && humanSendersOnly && hasKnownSelf) {
+      for (const sentMessage of sentMessages) {
+        const recipient = this.parseAddressList(
+          `${this.getHeader(sentMessage, 'To') ?? ''}, ${this.getHeader(sentMessage, 'Cc') ?? ''}`
+        ).find(
+          (sender) =>
+            !isSelf(sender.email) &&
+            isPersonRelevantSender(sender.email, sender.name, false)
+        );
+        if (recipient) {
+          selected = recipient;
+          selectedSentMessage = sentMessage;
+          break;
+        }
+      }
+    }
+
+    const fromEmail = selected?.email ?? null;
+    const fromName = selected?.name ?? null;
+    const personRelevant = humanSendersOnly
+      ? !!selected &&
+        hasKnownSelf &&
+        !this.isListThread(messages) &&
+        (replied ||
+          this.externalRecipientCount(selectedSentMessage, isSelf) <= BROADCAST_RECIPIENT_CAP)
+      : replied;
+
+    return {
+      replied,
+      personRelevant,
+      from: selected?.from ?? 'Unknown',
+      fromName,
+      fromEmail,
+    };
+  }
+
+  private isListThread(messages: GmailMessage[]): boolean {
+    return messages.some((message) => {
+      if ((this.getHeader(message, 'List-Id') ?? '').trim()) return true;
+      const precedence = (this.getHeader(message, 'Precedence') ?? '').trim().toLowerCase();
+      return BULK_PRECEDENCE.has(precedence);
+    });
+  }
+
+  private externalRecipientCount(
+    message: GmailMessage | undefined,
+    isSelf: (email: string) => boolean
+  ): number {
+    if (!message) return 0;
+    const recipients = [
+      ...this.parseAddressList(this.getHeader(message, 'To')),
+      ...this.parseAddressList(this.getHeader(message, 'Cc')),
+    ];
+    return new Set(
+      recipients
+        .map((recipient) => normalizeEmail(recipient.email))
+        .filter((email) => email && !isSelf(email))
+    ).size;
+  }
+
+  /** Split an RFC 5322 address list without splitting quoted display names. */
+  private parseAddressList(
+    raw: string | undefined
+  ): Array<{ from: string; name: string | null; email: string }> {
+    if (!raw?.trim()) return [];
+    const parts: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    let inAngle = false;
+    for (const char of raw) {
+      if (char === '"') inQuotes = !inQuotes;
+      else if (char === '<' && !inQuotes) inAngle = true;
+      else if (char === '>' && !inQuotes) inAngle = false;
+      if (char === ',' && !inQuotes && !inAngle) {
+        parts.push(current);
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    parts.push(current);
+    return parts.flatMap((part) => {
+      const from = part.trim();
+      const parsed = this.parseFromHeader(from);
+      return parsed.email ? [{ from, name: parsed.name, email: parsed.email }] : [];
+    });
+  }
+
   private getHeader(message: GmailMessage, name: string): string | undefined {
     const header = message.payload.headers.find((h) => h.name.toLowerCase() === name.toLowerCase());
     return header?.value;
@@ -944,4 +1152,95 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
   private createClient(token: string): HttpClient {
     return createHttpClient({ token, errorPrefix: 'Gmail API' });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Person-relevance heuristic
+// ---------------------------------------------------------------------------
+
+const BULK_PRECEDENCE = new Set(['bulk', 'list', 'junk']);
+const BROADCAST_RECIPIENT_CAP = 3;
+const isSentMessage = (message: GmailMessage): boolean =>
+  (message.labelIds ?? []).includes('SENT');
+const isDraftMessage = (message: GmailMessage): boolean =>
+  (message.labelIds ?? []).includes('DRAFT');
+const normalizeEmail = (email: string | null | undefined): string =>
+  (email ?? '').trim().toLowerCase();
+/**
+ * Canonicalize an address for SELF-detection (the mailbox owner): lowercase
+ * plus Gmail/Workspace `+tag` removal, so `me+archive@example.com` counts as
+ * the same mailbox as `me@example.com`. Only for self-vs-counterparty
+ * comparison — the event's from_email identity is kept verbatim.
+ */
+const normalizeSelfEmail = (email: string | null | undefined): string => {
+  const normalized = normalizeEmail(email);
+  const at = normalized.lastIndexOf('@');
+  if (at <= 0) return normalized;
+  const local = normalized.slice(0, at).split('+', 1)[0];
+  return `${local}@${normalized.slice(at + 1)}`;
+};
+
+/**
+ * Local-parts that are almost never a human counterparty: automated/system
+ * addresses (no-reply, bounce, mailer-daemon) and shared brand inboxes
+ * (info@, marketing@, support@, hello@, …). Matched against the lowercased
+ * local part of the From address.
+ */
+const AUTOMATED_LOCAL_PARTS = /^(?:no[._-]?reply|do[._-]?not[._-]?reply|donotreply|noreply|no\.reply|bounce|mailer[._-]?daemon|postmaster|abuse|notif(?:ications?|y)?|alert(?:s)?|support|team|info|news(?:letter)?s?|market(?:ing)?s?|contact(?:s)?|update(?:s)?|jobs|careers|press|media|event(?:s)?|webmaster|automated|robot|hello|sales|billing|accounts|security|admin|root)$/;
+
+/**
+ * Consumer mail providers — a bare address here is overwhelmingly a personal
+ * mailbox even without a display name or a replied thread.
+ */
+const CONSUMER_MAIL_DOMAINS = new Set([
+  'gmail.com',
+  'googlemail.com',
+  'outlook.com',
+  'hotmail.com',
+  'live.com',
+  'msn.com',
+  'icloud.com',
+  'me.com',
+  'mac.com',
+  'yahoo.com',
+  'ymail.com',
+  'proton.me',
+  'protonmail.com',
+  'fastmail.com',
+  'zoho.com',
+  'mail.com',
+  'aol.com',
+]);
+
+/**
+ * A display name that looks like a person's name: two or more capitalized
+ * words ("John Smith", "Ana-Maria O'Brien"). Single-word brands ("LinkedIn",
+ * "Spotify") and lowercase handles fail this, so a non-consumer corporate
+ * sender needs a human-looking name to clear the bar.
+ */
+const HUMAN_NAME_RE = /^[A-ZÀ-Ý][a-zà-ÿ]+(?:[ '\u2019-][A-ZÀ-Ý][a-zà-ÿ]+)+$/;
+
+/**
+ * Whether a thread's counterparty is eligible for person minting under
+ * `human_senders_only`. Role/system mailboxes never qualify. A replied
+ * non-role address qualifies directly; an unreplied address additionally needs
+ * a consumer-mail domain or a human-looking display name.
+ */
+export function isPersonRelevantSender(
+  email: string | null | undefined,
+  name: string | null | undefined,
+  replied: boolean
+): boolean {
+  if (!email) return false;
+  if (email.indexOf('@') !== email.lastIndexOf('@')) return false;
+  const at = email.lastIndexOf('@');
+  if (at <= 0) return false;
+  const local = email.slice(0, at).trim().toLowerCase();
+  const domain = email.slice(at + 1).trim().toLowerCase();
+  const baseLocal = local.split('+', 1)[0];
+  if (!local || !domain || AUTOMATED_LOCAL_PARTS.test(baseLocal)) return false;
+  if (replied) return true;
+  if (CONSUMER_MAIL_DOMAINS.has(domain)) return true;
+  if (!name) return false;
+  return HUMAN_NAME_RE.test(name.trim());
 }

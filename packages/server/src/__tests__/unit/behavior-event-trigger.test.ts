@@ -1,11 +1,19 @@
 import { describe, expect, test } from 'bun:test';
-import type { BehaviorEventTrigger } from '@lobu/core/contracts/tools/manage-behaviors';
 import type { ConnectorTriggerSignal } from '@lobu/connector-sdk';
+import type {
+  BehaviorEventTrigger,
+  BehaviorWorkspaceEventTrigger,
+} from '@lobu/core/contracts/tools/manage-behaviors';
 import { matchingBehaviorTriggers } from '../../behaviors/event-trigger';
 import {
   assertBehaviorOutputsUseWindowExecution,
   normalizeBehaviorTriggers,
 } from '../../behaviors/triggers';
+import { matchesWorkspaceEventTrigger } from '../../behaviors/workspace-event';
+import {
+  deriveWorkspaceEventCausality,
+  MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS,
+} from '../../behaviors/workspace-event-contract';
 
 const githubTrigger: BehaviorEventTrigger = {
   kind: 'event',
@@ -201,6 +209,7 @@ describe('behavior event trigger matching', () => {
     const normalized = normalizeBehaviorTriggers([falseFilter]);
     expect(normalized[0]).toMatchObject({
       kind: 'event',
+      source: 'connector',
       match: { channel_id: 'C123' },
     });
     expect(
@@ -291,5 +300,145 @@ describe('behavior event trigger matching', () => {
     expect(() =>
       assertBehaviorOutputsUseWindowExecution([githubTrigger], null)
     ).not.toThrow();
+  });
+
+  test('matches workspace events by semantic type, entity type, and exact metadata', () => {
+    const trigger: BehaviorWorkspaceEventTrigger = {
+      kind: 'event',
+      source: 'workspace',
+      entity_type: 'account',
+      event_types: ['risk_detected'],
+      match: { severity: 'high', reviewed: false },
+    };
+    const event = {
+      semanticType: 'risk_detected',
+      entityTypeSlugs: ['account'],
+      metadata: { severity: 'high', reviewed: false, score: 92 },
+    };
+    expect(matchesWorkspaceEventTrigger(trigger, event)).toBe(true);
+    expect(
+      matchesWorkspaceEventTrigger(trigger, {
+        ...event,
+        entityTypeSlugs: ['contact'],
+      })
+    ).toBe(false);
+    expect(
+      matchesWorkspaceEventTrigger(trigger, {
+        ...event,
+        metadata: { ...event.metadata, severity: 'low' },
+      })
+    ).toBe(false);
+  });
+
+  test('defaults workspace-event analysis to coalesced windows', () => {
+    expect(
+      normalizeBehaviorTriggers([
+        {
+          kind: 'event',
+          source: 'workspace',
+          event_types: ['risk_detected'],
+        },
+      ])
+    ).toEqual([
+      {
+        kind: 'event',
+        source: 'workspace',
+        event_types: ['risk_detected'],
+        entity_type: undefined,
+        match: undefined,
+        execution: 'window',
+        active_run: 'coalesce',
+      },
+    ]);
+  });
+
+  test('extends causal ancestry once across coalesced workspace signals', () => {
+    const signal = {
+      kind: 'event' as const,
+      source: 'workspace' as const,
+      event_id: 40,
+      event_type: 'risk_detected',
+      delivery_id: 'workspace-event:40',
+      occurred_at: '2026-08-11T00:00:00.000Z',
+      root_event_ids: [40],
+      causal_behavior_ids: [7],
+      depth: 1,
+    };
+    expect(deriveWorkspaceEventCausality([signal, signal], 9)).toEqual({
+      rootEventIds: [40],
+      causalBehaviorIds: [7, 9],
+      depth: 2,
+    });
+  });
+
+  test('preserves a producer already present in its inherited causal path', () => {
+    expect(
+      deriveWorkspaceEventCausality(
+        [
+          {
+            kind: 'event',
+            source: 'workspace',
+            event_id: 40,
+            event_type: 'risk_detected',
+            delivery_id: 'workspace-event:40',
+            occurred_at: '2026-08-11T00:00:00.000Z',
+            root_event_ids: [40],
+            causal_behavior_ids: [7, 9],
+            depth: 2,
+          },
+        ],
+        9
+      )
+    ).toEqual({
+      rootEventIds: [40],
+      causalBehaviorIds: [7, 9],
+      depth: 3,
+    });
+  });
+
+  test('measures causal depth by hops when coalescing independent branches', () => {
+    const signal = (root: number, ancestor: number) => ({
+      kind: 'event' as const,
+      source: 'workspace' as const,
+      event_id: root,
+      event_type: 'risk_detected',
+      delivery_id: `workspace-event:${root}`,
+      occurred_at: '2026-08-11T00:00:00.000Z',
+      root_event_ids: [root],
+      causal_behavior_ids: [7, ancestor],
+      depth: 2,
+    });
+    expect(
+      deriveWorkspaceEventCausality([signal(40, 8), signal(41, 10)], 12)
+    ).toEqual({
+      rootEventIds: [40, 41],
+      causalBehaviorIds: [7, 8, 10, 12],
+      depth: 3,
+    });
+  });
+
+  test('bounds the inherited causal set carried by a durable signal', () => {
+    const causalBehaviorIds = Array.from(
+      { length: MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS },
+      (_, index) => index + 1
+    );
+    expect(() =>
+      deriveWorkspaceEventCausality(
+        [
+          {
+            kind: 'event',
+            source: 'workspace',
+            event_id: 40,
+            event_type: 'risk_detected',
+            delivery_id: 'workspace-event:40',
+            occurred_at: '2026-08-11T00:00:00.000Z',
+            root_event_ids: [40],
+            causal_behavior_ids: causalBehaviorIds,
+            depth: 2,
+          },
+        ],
+        MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS + 1
+      )
+    ).toThrow(/causality exceeds/i);
   });
 });

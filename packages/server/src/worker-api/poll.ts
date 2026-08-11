@@ -8,6 +8,10 @@
 import { authorizeCapabilities } from '@lobu/core';
 import type { PollRequest } from '@lobu/core/contracts/worker/protocol';
 import type { Context } from 'hono';
+import {
+  behaviorTriggerSignals,
+  isWorkspaceEventTriggerSignal,
+} from '../behaviors/workspace-event-contract';
 import { getDb, pgTextArray } from '../db/client';
 import type { Outputs } from '../types/watchers';
 import { deriveWatcherExtractionSchema } from '../utils/watcher-extraction-schema';
@@ -706,6 +710,13 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // matching device can land on this row.
   if (row.run_type === 'behavior') {
     const approved = (row.approved_input ?? {}) as Record<string, unknown>;
+    const triggerSignals = behaviorTriggerSignals({
+      trigger_signal: approved.trigger_signal,
+      trigger_signals: approved.trigger_signals,
+    });
+    const workspaceEventIds = triggerSignals
+      .filter(isWorkspaceEventTriggerSignal)
+      .map((signal) => signal.event_id);
     const firedAtRaw = row.run_created_at;
     const firedAt =
       firedAtRaw instanceof Date
@@ -793,7 +804,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           extraction_schema: watcherExtractionSchema,
         },
         event: {
-          trigger_event_id: null,
+          trigger_event_id:
+            workspaceEventIds.length === 1
+              ? String(workspaceEventIds[0])
+              : null,
           fired_at: firedAt,
           payload: approved,
         },

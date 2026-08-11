@@ -79,7 +79,7 @@ describe('MCP Authentication', () => {
       expect(response.status).toBe(400);
       expect(await response.json()).toEqual({
         error: 'invalid_request',
-        error_description: 'A valid same-origin MCP resource is required',
+        error_description: 'A valid trusted MCP resource is required',
       });
     });
 

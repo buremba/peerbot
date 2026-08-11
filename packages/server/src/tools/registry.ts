@@ -251,7 +251,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'search_memory',
     description:
-      'Search saved workspace memory: entities, facts, decisions, preferences, observations, and notes. Use this to answer “what do we know?” Pair writes with `save_memory`; use `search_sdk` / `query_sdk` only when you need SDK capabilities or programmable reads. The search does not change workspace content or external systems. OAuth and PAT calls append a private audit/activity record.',
+      'Search saved workspace memory: entities, facts, decisions, preferences, observations, and notes. Use this to answer “what do we know?” A query such as `memory 4939822` performs an exact permission-checked content read. Pair writes with `save_memory`; use `search_sdk` / `query_sdk` only when you need SDK capabilities or programmable reads. The search does not change workspace content or external systems. OAuth and PAT calls append a private audit/activity record.',
     inputSchema: SearchSchema,
     // Advertise the narrower public schema: query_embedding (server pre-compute
     // optimization) and agent_id (auth-bound) are server-internal, not client
@@ -267,7 +267,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'save_memory',
     description:
-      'Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The write is immediately readable by returned event id via `client.knowledge.read({ content_ids: [id] })`; semantic search indexing is asynchronous and reported as `indexing_status`. Storage is append-only — pass `supersedes_event_id` to replace an existing fact (the old event is hidden from future searches without losing history). Optionally attach to entities via `entity_ids`. Always search first to avoid duplicates.',
+      'Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The write is immediately readable by returned event id via `client.knowledge.read({ content_ids: [id] })`; semantic search indexing is asynchronous and reported as `indexing_status`. Storage is append-only — pass `supersedes_event_id` to replace an existing fact (the old event is hidden from future searches without losing history). Use a stable `idempotency_key` when a write may be retried. Optionally attach to entities via `entity_ids`. Always search first to avoid duplicates.',
     inputSchema: SaveContentSchema,
     outputSchema: SaveContentResultSchema,
     annotations: { ...WRITE_WITHOUT_CONFIRM, title: 'Save memory' },
@@ -291,7 +291,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'query_sdk',
     description:
-      'Read workspace data through typed SDK methods. Query entities, relationships, feeds, operations, metrics, and more. Use this for lookups and searches that do not change workspace content or external systems. (For writes: use run_sdk. To discover available methods: use search_sdk. For polling: use await ctx.sleep(ms) in your script.) Lobu appends a private audit/activity record for the invocation.',
+      'Run capability-scoped, read-only TypeScript through the Lobu SDK. Query entities, relationships, feeds, operations, metrics, and authorized connected-source data; write, administrative, and external-action methods are rejected by the sandbox. Use `run_sdk` for mutations, `search_sdk` to discover methods, and `await ctx.sleep(ms)` for bounded polling. Lobu appends a private audit/activity record for the invocation.',
     inputSchema: QuerySchema,
     outputSchema: SdkScriptResultSchema,
     // Private connector reads do not mutate an external/public system.
@@ -316,7 +316,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'run_sdk',
     description:
-      'Perform any workspace action: create/update/delete entities, set up connections (e.g. client.connections.connect({ connector_key: "github" })), manage Behaviors and feeds, run operations, or modify templates. Use this for anything that changes data. (For read-only access: use query_sdk. To discover available methods: use search_sdk. Preview changes without executing: set dry_run=true.)',
+      'Execute a capability-scoped Lobu SDK script against the current workspace. The script can create, update, or delete Lobu data and invoke connector, agent, or device operations only through documented `client` methods; workspace permissions, operation policies, human approvals, and audit remain enforced. Use `query_sdk` for reads, `search_sdk` to discover methods, and `dry_run=true` to preview write, administrative, or external calls without executing them.',
     inputSchema: RunSchema,
     outputSchema: SdkScriptResultSchema,
     annotations: {

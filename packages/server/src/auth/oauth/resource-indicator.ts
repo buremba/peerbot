@@ -6,7 +6,7 @@
  * and advertises the matching RFC 9728 metadata URL in `WWW-Authenticate`.
  */
 
-import { resolvePublicOrigin } from '../../utils/public-origin';
+import { getConfiguredSubdomainZone, normalizeHost } from '../../utils/public-origin';
 import { resolveBaseUrl } from '../base-url';
 import { DEFAULT_SCOPES_STRING } from './scopes';
 
@@ -22,7 +22,12 @@ import { DEFAULT_SCOPES_STRING } from './scopes';
  * TLS-terminating proxy.
  */
 export function publicMcpRequestUrl(request: Request): string {
-  const origin = resolveBaseUrl({ request });
+  // The MCP protected-resource identifier belongs to the resource server, not
+  // the authorization server / general web gateway. In production those are
+  // intentionally different (`lobu.ai/mcp` vs `app.lobu.ai`). Prefer the
+  // actual serving/forwarded host for the MCP request so RFC 9728 metadata and
+  // WWW-Authenticate stay bound to the URL the client called.
+  const origin = resolveBaseUrl({ request, skipEnvOverride: true });
   const pathname = new URL(request.url).pathname.replace(/\/+$/, '') || '/';
   return `${origin}${pathname}`;
 }
@@ -39,25 +44,51 @@ export function canonicalizeMcpResource(
   } catch {
     return null;
   }
-  const publicOrigin = resolvePublicOrigin(requestUrl);
-  if (parsed.origin !== publicOrigin || parsed.search || parsed.hash) return null;
+  // The resource server may intentionally use a sibling/parent host from the
+  // authorization server (prod: lobu.ai/mcp vs app.lobu.ai/oauth/*). Accept the
+  // exact request origin, plus hosts inside the explicitly configured cookie /
+  // workspace zone. Never infer a parent domain from hostname text: without an
+  // explicit AUTH_COOKIE_DOMAIN, cross-origin resources stay fail-closed.
+  const request = new URL(requestUrl);
+  const resourceHost = normalizeHost(parsed.hostname);
+  const requestHost = normalizeHost(request.hostname);
+  const zone = getConfiguredSubdomainZone();
+  const sameOrigin = parsed.origin === request.origin;
+  const sameTransport = parsed.protocol === request.protocol && parsed.port === request.port;
+  const inConfiguredZone = Boolean(
+    sameTransport &&
+      zone &&
+      resourceHost &&
+      (resourceHost === zone || resourceHost.endsWith(`.${zone}`))
+  );
+  if (
+    (!sameOrigin && !inConfiguredZone) ||
+    !resourceHost ||
+    !requestHost ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    return null;
+  }
   const path = parsed.pathname.replace(/\/+$/, '') || '/';
   if (path !== '/mcp' && !/^\/mcp\/[^/]+$/.test(path)) return null;
-  return `${publicOrigin}${path}`;
+  return `${parsed.origin}${path}`;
 }
 
 /** The resource URI the incoming request is addressing, if it is an MCP route. */
 export function getMcpResourceForRequest(requestUrl: string): string | null {
   const request = new URL(requestUrl);
   return canonicalizeMcpResource(
-    `${resolvePublicOrigin(requestUrl)}${request.pathname}`,
+    `${request.origin}${request.pathname}`,
     requestUrl
   );
 }
 
 /** RFC 9728 metadata URL for the resource the request addresses. */
 export function getProtectedResourceMetadataUrl(requestUrl: string): string {
-  const publicOrigin = resolvePublicOrigin(requestUrl);
+  const publicOrigin = new URL(requestUrl).origin;
   const resource = getMcpResourceForRequest(requestUrl);
   if (!resource) return `${publicOrigin}/.well-known/oauth-protected-resource`;
   return `${publicOrigin}/.well-known/oauth-protected-resource${new URL(resource).pathname}`;

@@ -55,6 +55,7 @@ import {
 } from './tools/execute';
 import { LOBU_INTERACTION_RESOURCE_URI } from './tools/mcp_app';
 import { getMcpResultMeta } from './tools/mcp-result-meta';
+import { toMcpPublicSdkScriptResult } from './tools/sdk_run';
 import { getMcpTools, getTool, isAuthorizationReadOnly } from './tools/registry';
 import { validateToolResult } from './tools/validate-args';
 import { readMcpAppBundle, renderMcpAppTemplate } from './utils/mcp-app-bundle';
@@ -503,9 +504,15 @@ function createServerForContext(
         await touchAgentLastUsed(authCtx.organizationId, authCtx.agentId);
       }
 
+      // Keep rich SDK diagnostics in Lobu's internal audit result, but never
+      // expose logs/timestamps/stacks/org traversal/call traces to MCP clients.
+      const publicResult =
+        name === 'run_sdk' || name === 'query_sdk'
+          ? toMcpPublicSdkScriptResult(result)
+          : result;
       const text = mcpRequestFormat.getStore()?.rawJson
-        ? JSON.stringify(result)
-        : formatToolResult(name, result, { includeRawJson: false });
+        ? JSON.stringify(publicResult)
+        : formatToolResult(name, publicResult, { includeRawJson: false });
       // When the tool declares an `outputSchema`, also return the result as
       // `structuredContent` (MCP spec: declaring outputSchema implies the result
       // is structured — and a spec-compliant client validates it against the
@@ -524,14 +531,13 @@ function createServerForContext(
       // `isError`; otherwise the client treats it as a normal result. query_sql
       // also renders the error explicitly because its formatter would otherwise
       // turn `{ rows: [], error }` into a clean empty CSV result.
-      const softError = isSoftErrorResult(result);
-      const tool = getTool(name);
+      const softError = isSoftErrorResult(publicResult);
       const attachedMeta = getMcpResultMeta(result);
       const resultMeta = uiMemberRoleMeta
         ? { ...attachedMeta, ...uiMemberRoleMeta }
         : attachedMeta;
       if (tool?.outputSchema && result && typeof result === 'object') {
-        const structured = validateToolResult(tool.outputSchema, result);
+        const structured = validateToolResult(tool.outputSchema, publicResult);
         if (structured !== null) {
           let snapshotCapability: string | null = null;
           if (tool.audit !== false) {

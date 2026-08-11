@@ -54,6 +54,7 @@ interface ContentQueryParams {
    */
   userId: string | null;
   entityIds?: number[];
+  query?: Record<string, string>;
   /**
    * The Behavior these sources belong to. Its own output is excluded from the
    * result — see `excludeProducedByBehaviorId` in execute-data-sources.
@@ -92,6 +93,7 @@ async function queryContentData(
     organizationId: params.organizationId,
     userId: params.userId,
     entityIds: params.entityIds,
+    query: params.query,
     windowStart: params.window_start,
     windowEnd: params.window_end,
     excludeProducedByBehaviorId: params.behaviorId,
@@ -468,12 +470,11 @@ export async function handleBehaviorMode(
   // so the returned window_token proves what the agent saw and complete_window
   // can link or cite the triggering events normally.
   //
-  // The ids are inlined rather than bound because `executeDataSources` takes SQL
-  // text, so the safe-integer filter below — not the looser `Type.Number()` in
-  // the request schema — is what makes the interpolation safe. The rows stay
-  // governed: this source reads the same org/window/entity-scoped `events` CTE
-  // as every authored source, so an id outside the Behavior's scope resolves to
-  // no row rather than to unscoped data.
+  // The rows stay governed: this source reads the same
+  // org/window/entity-scoped `events` CTE as every authored source, so an id
+  // outside the Behavior's scope resolves to no row rather than to unscoped
+  // data. The exact ids travel through the data-source placeholder compiler so
+  // they remain bound parameters instead of executable SQL text.
   const triggerContentIds = [
     ...new Set(
       (args.content_ids ?? [])
@@ -496,9 +497,9 @@ export async function handleBehaviorMode(
     sources = [
       {
         name: sourceName,
-        query:
-          `SELECT * FROM events WHERE id IN (${triggerContentIds.join(', ')}) ` +
-          'ORDER BY occurred_at DESC',
+        query: `SELECT * FROM events
+          WHERE id = ANY(string_to_array({{query.eventContentIds}}, ',')::bigint[])
+          ORDER BY occurred_at DESC`,
       },
       ...sources,
     ];
@@ -577,6 +578,10 @@ export async function handleBehaviorMode(
     organizationId: watcher.organization_id as string,
     userId: visibilityUserId,
     entityIds: watcherEntityIds,
+    query:
+      triggerContentIds.length > 0
+        ? { eventContentIds: triggerContentIds.join(',') }
+        : undefined,
     behaviorId: Number(watcher.id),
     page: {
       sourceName: 'content',

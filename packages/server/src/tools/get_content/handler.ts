@@ -531,6 +531,9 @@ async function getContentImpl(
         ...(args.classification_source && { classification_source: args.classification_source }),
         ...(args.semantic_type && { semantic_type: args.semantic_type }),
         ...(args.interaction_status && { interaction_status: args.interaction_status }),
+        ...(ctx.isAuthenticated === false && {
+          exclude_workspace_audit: true,
+        }),
         visibility_scope: visibilityScope,
       };
 
@@ -575,6 +578,11 @@ async function getContentImpl(
         semantic_type: args.semantic_type,
         entity_types: args.entity_types,
         interaction_status: args.interaction_status,
+        // Workspace-identity audit events carry member emails / invitation
+        // details; anonymous public-workspace readers must never retrieve them.
+        ...(ctx.isAuthenticated === false && {
+          exclude_workspace_audit: true,
+        }),
         limit,
         offset,
         // When a query is provided and no explicit sort_by, rank by combined_score

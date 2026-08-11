@@ -414,6 +414,7 @@ export async function createAuth(
 						}
 					},
 					afterAcceptInvitation: async ({
+						invitation,
 						member,
 						user,
 						organization: org,
@@ -421,6 +422,24 @@ export async function createAuth(
 						// The accepted member row is already committed. Audit first so
 						// the acceptance is never lost to a projection failure. `user`
 						// IS the actor here — the invitee accepting their own invite.
+						// Better Auth retains the invitation and updates its status to
+						// 'accepted', so record that transition faithfully.
+						recordWorkspaceChangeEvent({
+							organizationId: org.id,
+							resourceKind: "invitation",
+							resourceId: invitation.id,
+							op: "updated",
+							summary: `Invitation to ${invitation.email} accepted`,
+							state: {
+								id: invitation.id,
+								email: invitation.email,
+								role: invitation.role,
+								status: invitation.status ?? "accepted",
+							},
+							changedFields: ["status"],
+							actorSource: "ui",
+							createdBy: user.id,
+						});
 						recordWorkspaceChangeEvent({
 							organizationId: org.id,
 							resourceKind: "member",
@@ -590,14 +609,22 @@ export async function createAuth(
 						}
 					},
 					afterCancelInvitation: async ({ invitation, organization: org }) => {
-						// Cancellation is already committed. Audit first.
+						// Cancellation is already committed. Audit first. Better Auth
+						// RETAINS the invitation row and flips its status to 'canceled'
+						// (it does not delete), so record that transition faithfully
+						// instead of a phantom delete.
 						recordWorkspaceChangeEvent({
 							organizationId: org.id,
 							resourceKind: "invitation",
 							resourceId: invitation.id,
-							op: "deleted",
+							op: "updated",
 							summary: `Invitation to ${invitation.email} cancelled`,
-							state: null,
+							state: {
+								id: invitation.id,
+								email: invitation.email,
+								status: invitation.status ?? "canceled",
+							},
+							changedFields: ["status"],
 							actorSource: "ui",
 						});
 						try {
@@ -610,14 +637,22 @@ export async function createAuth(
 						}
 					},
 					afterRejectInvitation: async ({ invitation, organization: org }) => {
-						// Rejection is already committed. Audit first.
+						// Rejection is already committed. Audit first. Better Auth
+						// RETAINS the invitation row and flips its status to 'rejected'
+						// (it does not delete), so record that transition faithfully
+						// instead of a phantom delete.
 						recordWorkspaceChangeEvent({
 							organizationId: org.id,
 							resourceKind: "invitation",
 							resourceId: invitation.id,
-							op: "deleted",
+							op: "updated",
 							summary: `Invitation to ${invitation.email} rejected`,
-							state: null,
+							state: {
+								id: invitation.id,
+								email: invitation.email,
+								status: invitation.status ?? "rejected",
+							},
+							changedFields: ["status"],
 							actorSource: "ui",
 						});
 						try {

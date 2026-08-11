@@ -50,6 +50,12 @@ interface NormalizedScoreFilters {
   semantic_type?: string | string[];
   interaction_status?: 'pending' | 'approved' | 'rejected' | 'completed' | 'failed';
   /**
+   * Exclude workspace-identity audit events (`metadata.category='workspace'`),
+   * which carry member emails / invitation details. Set for anonymous
+   * public-workspace readers so they never retrieve them.
+   */
+  exclude_workspace_audit?: boolean;
+  /**
    * Connection-visibility scope. Folds into the WHERE so events from
    * private connections the caller can't see don't appear in score-sorted
    * results. Mirrors the clause used by `listContentInternal` and the
@@ -247,6 +253,12 @@ async function buildFilterConditionsAndJoins(
   if (filters?.interaction_status) {
     params.push(filters.interaction_status);
     filterConditions.push(`f.interaction_status = $${paramIndex++}`);
+  }
+
+  if (filters?.exclude_workspace_audit) {
+    filterConditions.push(
+      `(f.metadata->>'category') IS DISTINCT FROM 'workspace'`
+    );
   }
 
   // Classification filters share the single version-ID-aware builder used by

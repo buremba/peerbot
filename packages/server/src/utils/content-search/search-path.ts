@@ -203,6 +203,7 @@ export async function searchContentBySingleQuery(
           ${producedClause.sql}
           ${analyzedClause.sql}
           ${visibilityClause.sql}
+          ${options.exclude_workspace_audit ? `AND (f.metadata->>'category') IS DISTINCT FROM 'workspace'` : ''}
           ${orgScope.sql}${entityTypesClause.sql}`;
 
   const textDocumentExpr = buildSearchDocumentExpr('f');

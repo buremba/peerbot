@@ -362,6 +362,9 @@ export async function listContentInternal(
       baseParams.push(pgTextArray(types));
       baseConditions.push(buildSemanticTypeFilterSql('f', `$${baseParams.length}`));
     }
+    if (options.exclude_workspace_audit) {
+      baseConditions.push(`(f.metadata->>'category') IS DISTINCT FROM 'workspace'`);
+    }
     if (options.interaction_status) {
       baseParams.push(options.interaction_status);
       baseConditions.push(`f.interaction_status = $${baseParams.length}`);
@@ -534,6 +537,7 @@ export async function listContentInternal(
           AND ${connectionCondition}
           AND ${feedCondition}
           AND ${runCondition}
+          ${options.exclude_workspace_audit ? `AND (f.metadata->>'category') IS DISTINCT FROM 'workspace'` : ''}
           ${excludeClause.sql}
           ${producedFilterClause.sql}
           ${analyzedFilterClause.sql}

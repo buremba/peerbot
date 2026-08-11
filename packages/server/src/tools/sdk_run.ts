@@ -139,7 +139,7 @@ export const SdkScriptResultSchema = Type.Object({
   }),
   sdk_call_trace: Type.Array(SdkCallTraceEntrySchema, {
     description:
-      "Every dispatched SDK call, in order. Bounded (tail-kept): when the total exceeds the trace cap, the oldest entries are dropped and reported in sdk_call_trace_truncated — the last (usually failing) call is always kept.",
+      "Every dispatched SDK call, in order. Bounded (tail-kept): when the total exceeds the trace cap the oldest entries are dropped and reported in sdk_call_trace_truncated; a single entry larger than the cap is dropped and counted too.",
   }),
   side_effect_preview: Type.Array(SdkCallTraceEntrySchema, {
     description:

@@ -55,8 +55,12 @@ export function canonicalizeMcpResource(
   const zone = getConfiguredSubdomainZone();
   const sameOrigin = parsed.origin === request.origin;
   const sameTransport = parsed.protocol === request.protocol && parsed.port === request.port;
+  const requestInConfiguredZone = Boolean(
+    zone && requestHost && (requestHost === zone || requestHost.endsWith(`.${zone}`))
+  );
   const inConfiguredZone = Boolean(
     sameTransport &&
+      requestInConfiguredZone &&
       zone &&
       resourceHost &&
       (resourceHost === zone || resourceHost.endsWith(`.${zone}`))

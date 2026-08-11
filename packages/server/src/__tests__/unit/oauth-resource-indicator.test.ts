@@ -74,6 +74,9 @@ describe('MCP OAuth resource indicators', () => {
     expect(
       canonicalizeMcpResource('https://acme.lobu.ai/mcp/acme', 'https://app.lobu.ai/oauth/token')
     ).toBe('https://acme.lobu.ai/mcp/acme');
+    expect(
+      canonicalizeMcpResource('https://lobu.ai/mcp', 'https://evil.example/oauth/authorize')
+    ).toBeNull();
   });
 
   test('rejects cross-origin MCP resources when no explicit zone authorizes them', () => {

@@ -84,4 +84,26 @@ describe("SDK MCP public result", () => {
 			expect(schema).not.toContain(forbidden);
 		}
 	});
+
+	test("normalizes the bounded dry-run preview contract", () => {
+		const publicResult = toMcpPublicSdkScriptResult({
+			success: true,
+			skipped_calls: 3,
+			side_effect_preview: [
+				{ path: "entities.create", access: "mystery", args: [] },
+				{ path: 42, args: [] },
+			],
+			return_value_preview: "head",
+			return_truncated: { total_bytes: 10, kept_bytes: 4 },
+			dry_run: true,
+		}) as Record<string, unknown>;
+
+		expect(validateToolResult(SdkScriptResultSchema, publicResult)).not.toBeNull();
+		expect(publicResult.side_effect_preview).toEqual([
+			{ path: "entities.create", access: "unknown", args: [] },
+		]);
+		expect(publicResult.side_effect_preview_truncated).toEqual({ dropped_entries: 2 });
+		expect(publicResult.return_value_preview).toBe("head");
+		expect(publicResult.return_truncated).toEqual({ total_bytes: 10, kept_bytes: 4 });
+	});
 });

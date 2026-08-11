@@ -180,4 +180,32 @@ describe("event-trigger connector eligibility", () => {
 			]),
 		).rejects.toThrow(/does not declare workspace event 'undeclared_kind'/i);
 	});
+
+	it("keeps the bundled curated catalog for a legacy connector with NULL behavior_events", async () => {
+		// A legacy install predates the persisted behavior_events column: the
+		// row has NULL behavior_events and a populated feeds_schema. The bundled
+		// immutable catalog must win over the default-on derivation, so a live
+		// `pull_request.created` trigger keeps matching instead of being rejected
+		// against derived kind slugs.
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO connector_definitions
+				(organization_id, key, name, version, auth_schema, feeds_schema,
+				 behavior_events, status)
+			VALUES (${orgId}, 'github', 'GitHub', '3.11.0',
+				${sql.json({ methods: [{ type: "app_installation" }] })},
+				${sql.json({ pulls: { eventKinds: { pull_request: {} } } })},
+				NULL,
+				'active')
+			ON CONFLICT DO NOTHING
+		`;
+
+		await expect(
+			assertBehaviorTriggerConnections(
+				sql,
+				orgId,
+				eventTrigger("github", "pull_request.created"),
+			),
+		).resolves.toBeUndefined();
+	});
 });

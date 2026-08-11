@@ -79,44 +79,53 @@ async function getConnectorBehaviorEventCatalog(
 		| { name: string; behavior_events: unknown; feeds_schema: unknown }
 		| undefined;
 
-	// Default-on: a connector's declared `eventKinds` are its subscribable
-	// trigger catalog. Hand-declared `behavior_events` (Slack, legacy) win when
-	// present; otherwise every declared kind is a trigger event_type.
+	// Precedence: persisted declaration > bundled immutable catalog (legacy
+	// installs predate the behavior_events column) > default-on derivation from
+	// eventKinds. A legacy GitHub row with NULL behavior_events must keep its
+	// curated bundled catalog (`pull_request.created` etc.), not collapse to
+	// derived kind slugs — otherwise live triggers stop matching.
 	const declared = parseBehaviorEventDefinitions(row?.behavior_events);
-	const derived = deriveBehaviorEventCatalogFromFeeds(row?.feeds_schema);
-	const storedEvents: BehaviorEventDefinition[] =
-		declared.length > 0 ? declared : derived;
-	if (storedEvents.length > 0 || countDeclaredFeeds(row?.feeds_schema) > 0) {
+	if (declared.length > 0) {
 		return {
 			name: row?.name ?? connectorKey,
 			events: withPlatformBehaviorEvents(
-				storedEvents,
+				declared,
 			) as BehaviorEventDefinition[],
-			declaredCount: storedEvents.length,
+			declaredCount: declared.length,
 			feedCount: countDeclaredFeeds(row?.feeds_schema),
 		};
 	}
 
-	// Existing bundled installations predate the persisted event-catalog
-	// column. The immutable bundled catalog is a safe rolling-migration fallback;
-	// new and custom installs persist their own metadata above.
+	// The immutable bundled catalog is the fallback for installations that
+	// predate the persisted column.
 	const catalog = (await listCatalogEntries(["connectors"])).connectors.find(
 		(entry) => entry.id === connectorKey
 	);
-	const declaredFallback = parseBehaviorEventDefinitions(
+	const bundledDeclared = parseBehaviorEventDefinitions(
 		catalog?.detail.behavior_events,
 	);
-	const derivedFallback = deriveBehaviorEventCatalogFromFeeds(
-		catalog?.detail.feeds_schema,
+	if (bundledDeclared.length > 0) {
+		return {
+			name: row?.name ?? catalog?.name ?? connectorKey,
+			events: withPlatformBehaviorEvents(
+				bundledDeclared,
+			) as BehaviorEventDefinition[],
+			declaredCount: bundledDeclared.length,
+			feedCount: countDeclaredFeeds(
+				row?.feeds_schema ?? catalog?.detail.feeds_schema,
+			),
+		};
+	}
+
+	// Default-on: with no declaration anywhere, a connector's declared
+	// eventKinds are its subscribable trigger catalog.
+	const derived = deriveBehaviorEventCatalogFromFeeds(
+		row?.feeds_schema ?? catalog?.detail.feeds_schema,
 	);
-	const fallbackEvents: BehaviorEventDefinition[] =
-		declaredFallback.length > 0 ? declaredFallback : derivedFallback;
 	return {
 		name: row?.name ?? catalog?.name ?? connectorKey,
-		events: withPlatformBehaviorEvents(
-			fallbackEvents,
-		) as BehaviorEventDefinition[],
-		declaredCount: fallbackEvents.length,
+		events: withPlatformBehaviorEvents(derived) as BehaviorEventDefinition[],
+		declaredCount: derived.length,
 		feedCount: countDeclaredFeeds(
 			row?.feeds_schema ?? catalog?.detail.feeds_schema,
 		),

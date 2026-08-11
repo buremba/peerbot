@@ -172,10 +172,14 @@ export function deriveConnectorActivationSignals(
 			event_type: event.kind,
 			delivery_id: `derived:${ctx.connectorKey}:${event.connectionId}:${event.originId}`,
 			label: event.title ?? `${ctx.connectorKey} ${event.kind}`,
+			// Blank payload/title strings count as absent: a title-only event
+			// (payload_text: "") must still feed the title to the run.
 			input_text:
-				event.payloadText ??
-				event.title ??
-				`${ctx.connectorKey} ${event.kind}: ${event.originId}`,
+				event.payloadText && event.payloadText.trim().length > 0
+					? event.payloadText
+					: event.title && event.title.trim().length > 0
+						? event.title
+						: `${ctx.connectorKey} ${event.kind}: ${event.originId}`,
 			...(event.sourceUrl ? { url: event.sourceUrl } : {}),
 			occurred_at: occurredAt,
 			attributes,

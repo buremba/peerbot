@@ -157,6 +157,15 @@ describe('resolveBehaviorEventCatalog', () => {
     });
   });
 
+  test('falls back to the title for a blank payload_text', () => {
+    const signals = deriveConnectorActivationSignals(
+      context,
+      { ...baseEvent, payloadText: '', title: 'Ask HN: Show your tools' },
+      'inserted',
+    );
+    expect(signals[0]?.input_text).toBe('Ask HN: Show your tools');
+  });
+
   test('an org override with a null feedsSchema never borrows the bundled feeds', () => {
     const resolved = resolveBehaviorEventCatalog({
       persistedEvents: null,

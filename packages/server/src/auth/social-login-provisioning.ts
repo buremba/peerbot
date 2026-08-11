@@ -129,13 +129,26 @@ export async function provisionConnectorFromSocialLogin(params: {
       provider,
     });
 
+    // Reuse an existing live connection for this connector + OAuth account
+    // instead of minting a new one on every login/link event. Dedupe on the
+    // STABLE account identity (auth_profiles.account_id = the provider account
+    // id), not just the auth-profile row: the same Google account can surface
+    // as several oauth_account profiles over time (re-links, duplicate profile
+    // rows), and auto-provisioned connections can even carry a null
+    // auth_profile_id — so keying on auth_profile_id alone has historically
+    // created a duplicate connection per profile.
     const existingConnectionRows = await sql`
-      SELECT id
-      FROM connections
-      WHERE organization_id = ${organizationId}
-        AND auth_profile_id = ${authProfile.id}
-        AND deleted_at IS NULL
-      ORDER BY updated_at DESC, id DESC
+      SELECT c.id
+      FROM connections c
+      LEFT JOIN auth_profiles ap ON ap.id = c.auth_profile_id
+      WHERE c.organization_id = ${organizationId}
+        AND c.connector_key = ${row.key}
+        AND c.deleted_at IS NULL
+        AND (
+          c.auth_profile_id = ${authProfile.id}
+          OR ap.account_id = ${params.account.id}
+        )
+      ORDER BY c.updated_at DESC, c.id DESC
       LIMIT 1
     `;
 

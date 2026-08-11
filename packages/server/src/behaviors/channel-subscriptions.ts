@@ -20,6 +20,7 @@ function channelSubscriptions(
 	for (const trigger of triggers) {
 		if (
 			trigger.kind !== "event" ||
+			trigger.source === "workspace" ||
 			trigger.connection_id == null ||
 			!trigger.event_types.includes("message.created")
 		) {

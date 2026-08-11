@@ -13,6 +13,7 @@ import { createAjv } from "@lobu/core/ajv";
 import type {
   BehaviorEventTrigger,
   BehaviorScheduleTrigger,
+  BehaviorWorkspaceEventTrigger,
 } from "@lobu/core/contracts/tools/manage-behaviors";
 import type Ajv from "ajv";
 import type {
@@ -56,6 +57,13 @@ export interface DesiredEntityType {
    * to `entity_types.event_kinds` via manage_entity_schema.
    */
   eventKinds?: Record<string, unknown>;
+  /**
+   * The `x-lobu-resolution` metadata_schema key, lowered from the config's
+   * `resolutionPolicy`. Present only when declared; folded into the upserted
+   * metadata_schema (config wins over any out-of-band value) and diffed against
+   * the remote `schemaExtras`.
+   */
+  resolutionPolicy?: Record<string, unknown>;
   /**
    * Default view template (render-DSL root node) for this type's detail page.
    * Present only when declared. Applied via manage_view_templates set/clear and
@@ -150,6 +158,7 @@ export type DesiredBehaviorEventTrigger = BehaviorEventTrigger & {
 };
 export type DesiredBehaviorTrigger =
   | DesiredBehaviorEventTrigger
+  | BehaviorWorkspaceEventTrigger
   | BehaviorScheduleTrigger;
 
 export interface DesiredFeed {

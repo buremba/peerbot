@@ -57,6 +57,16 @@ function makeClient(dispatcherUrl = "https://gw.example.com") {
 // ---------------------------------------------------------------------------
 
 describe("consumePendingConfigNotifications", () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
   test("returns empty array when no notifications are pending", () => {
     // Drain any notifications from earlier tests first
     consumePendingConfigNotifications();

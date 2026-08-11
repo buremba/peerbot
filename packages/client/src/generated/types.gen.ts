@@ -433,7 +433,7 @@ export type SearchSdkResponse = SearchSdkResponses[keyof SearchSdkResponses];
 export type QuerySdkData = {
   body: {
     /**
-     * TypeScript source. Must `export default async (ctx, client) => { ... }` — `ctx` is `{ organization_id, user_id, mode, sleep(ms) }`, where `await ctx.sleep(ms)` provides a bounded, abort-aware 0–30000ms polling delay; unrestricted timer globals are unavailable. `client` is the ClientSDK. The script's return value comes back as `return_value` in the result. Use `search_sdk` to discover SDK methods and `ctx.sleep`.
+     * TypeScript source. Must `export default async (ctx, client) => { ... }` — `ctx` is `{ organization_id, user_id, mode, sleep(ms) }`, where `await ctx.sleep(ms)` provides a bounded, abort-aware 0–30000ms polling delay; unrestricted timer globals are unavailable. `client` is the ClientSDK. The script's return value comes back as `return_value`; return it only for computed results and bounded samples. For bulk data prefer `client.query` / `query_sql` or paginated SDK reads — a return over the output cap is replaced by a `return_value_preview` head and a `return_truncated` report instead of shipping the full set to the model. Use `search_sdk` to discover SDK methods and `ctx.sleep`.
      */
     script: string;
     /**
@@ -486,18 +486,32 @@ export type QuerySdkResponses = {
      */
     success: boolean;
     /**
-     * The script's default-export return value.
+     * The script's default-export return value. Omitted when the return exceeded the output cap (see return_value_preview).
      */
     return_value?: unknown;
+    /**
+     * UTF-8-safe head of the serialized return value when it exceeded the output cap; return_value is then omitted. This is a preview, not the value — rerun with filtering / LIMIT / OFFSET, or pull slices with client.query / query_sql. Don't re-return the whole set.
+     */
+    return_value_preview?: string;
+    /**
+     * Present with return_value_preview: the original and preview byte sizes.
+     */
+    return_truncated?: {
+      /**
+       * Serialized size of the original return value.
+       */
+      total_bytes: number;
+      /**
+       * UTF-8 size of the preview string.
+       */
+      kept_bytes: number;
+    };
     /**
      * console.log/warn/error output captured from the script.
      */
     logs: Array<{
       level: "log" | "warn" | "error";
       message: string;
-      data?: {
-        [key: string]: unknown;
-      };
       ts: number;
     }>;
     /**
@@ -524,11 +538,15 @@ export type QuerySdkResponses = {
     };
     duration_ms: number;
     /**
-     * Number of SDK calls the script made.
+     * Number of SDK calls the script made (dispatched + skipped).
      */
     sdk_calls: number;
     /**
-     * Every SDK call the script made, in order.
+     * Total calls skipped because dry_run=true — the full dry-run surface, even when side_effect_preview is truncated.
+     */
+    skipped_calls: number;
+    /**
+     * Every dispatched SDK call, in order. Bounded (tail-kept): when the total exceeds the trace cap the oldest entries are dropped and reported in sdk_call_trace_truncated; a single entry larger than the cap is dropped and counted too.
      */
     sdk_call_trace: Array<{
       /**
@@ -553,7 +571,7 @@ export type QuerySdkResponses = {
       skipped: boolean;
     }>;
     /**
-     * Write/admin/external calls that were skipped because dry_run=true. This is a method-level side-effect preview, not proof that the skipped handler would accept the payload.
+     * Write/admin/external calls that were skipped because dry_run=true (skipped: true). Bounded like sdk_call_trace; see skipped_calls for the total. Method-level side-effect preview, not proof the skipped handler would accept the payload.
      */
     side_effect_preview: Array<{
       /**
@@ -577,6 +595,15 @@ export type QuerySdkResponses = {
        */
       skipped: boolean;
     }>;
+    /**
+     * Present when sdk_call_trace or side_effect_preview was truncated (oldest entries dropped).
+     */
+    sdk_call_trace_truncated?: {
+      /**
+       * Trace/preview entries dropped because the trace cap was exceeded.
+       */
+      dropped_entries: number;
+    };
     dry_run: boolean;
   };
 };
@@ -692,7 +719,7 @@ export type QuerySqlResponse = QuerySqlResponses[keyof QuerySqlResponses];
 export type RunSdkData = {
   body: {
     /**
-     * TypeScript source. Must `export default async (ctx, client) => { ... }` — `ctx` is `{ organization_id, user_id, mode, sleep(ms) }`, where `await ctx.sleep(ms)` provides a bounded, abort-aware 0–30000ms polling delay; unrestricted timer globals are unavailable. `client` is the ClientSDK. The script's return value comes back as `return_value` in the result. Use `search_sdk` to discover SDK methods and `ctx.sleep`.
+     * TypeScript source. Must `export default async (ctx, client) => { ... }` — `ctx` is `{ organization_id, user_id, mode, sleep(ms) }`, where `await ctx.sleep(ms)` provides a bounded, abort-aware 0–30000ms polling delay; unrestricted timer globals are unavailable. `client` is the ClientSDK. The script's return value comes back as `return_value`; return it only for computed results and bounded samples. For bulk data prefer `client.query` / `query_sql` or paginated SDK reads — a return over the output cap is replaced by a `return_value_preview` head and a `return_truncated` report instead of shipping the full set to the model. Use `search_sdk` to discover SDK methods and `ctx.sleep`.
      */
     script: string;
     /**
@@ -749,18 +776,32 @@ export type RunSdkResponses = {
      */
     success: boolean;
     /**
-     * The script's default-export return value.
+     * The script's default-export return value. Omitted when the return exceeded the output cap (see return_value_preview).
      */
     return_value?: unknown;
+    /**
+     * UTF-8-safe head of the serialized return value when it exceeded the output cap; return_value is then omitted. This is a preview, not the value — rerun with filtering / LIMIT / OFFSET, or pull slices with client.query / query_sql. Don't re-return the whole set.
+     */
+    return_value_preview?: string;
+    /**
+     * Present with return_value_preview: the original and preview byte sizes.
+     */
+    return_truncated?: {
+      /**
+       * Serialized size of the original return value.
+       */
+      total_bytes: number;
+      /**
+       * UTF-8 size of the preview string.
+       */
+      kept_bytes: number;
+    };
     /**
      * console.log/warn/error output captured from the script.
      */
     logs: Array<{
       level: "log" | "warn" | "error";
       message: string;
-      data?: {
-        [key: string]: unknown;
-      };
       ts: number;
     }>;
     /**
@@ -787,11 +828,15 @@ export type RunSdkResponses = {
     };
     duration_ms: number;
     /**
-     * Number of SDK calls the script made.
+     * Number of SDK calls the script made (dispatched + skipped).
      */
     sdk_calls: number;
     /**
-     * Every SDK call the script made, in order.
+     * Total calls skipped because dry_run=true — the full dry-run surface, even when side_effect_preview is truncated.
+     */
+    skipped_calls: number;
+    /**
+     * Every dispatched SDK call, in order. Bounded (tail-kept): when the total exceeds the trace cap the oldest entries are dropped and reported in sdk_call_trace_truncated; a single entry larger than the cap is dropped and counted too.
      */
     sdk_call_trace: Array<{
       /**
@@ -816,7 +861,7 @@ export type RunSdkResponses = {
       skipped: boolean;
     }>;
     /**
-     * Write/admin/external calls that were skipped because dry_run=true. This is a method-level side-effect preview, not proof that the skipped handler would accept the payload.
+     * Write/admin/external calls that were skipped because dry_run=true (skipped: true). Bounded like sdk_call_trace; see skipped_calls for the total. Method-level side-effect preview, not proof the skipped handler would accept the payload.
      */
     side_effect_preview: Array<{
       /**
@@ -840,6 +885,15 @@ export type RunSdkResponses = {
        */
       skipped: boolean;
     }>;
+    /**
+     * Present when sdk_call_trace or side_effect_preview was truncated (oldest entries dropped).
+     */
+    sdk_call_trace_truncated?: {
+      /**
+       * Trace/preview entries dropped because the trace cap was exceeded.
+       */
+      dropped_entries: number;
+    };
     dry_run: boolean;
   };
 };
@@ -4012,11 +4066,15 @@ export type NotifyData = {
      */
     connection_id?: string;
     /**
-     * Arbitrary JSON payload stored in notification body as formatted JSON
+     * Structured payload. With `semantic_type`, this becomes the event's render data (bound to the kind's `jsonTemplate` in the Memory view) instead of being appended to the body. Without `semantic_type`, it is stored in the notification body as formatted JSON (legacy).
      */
     data?: {
       [key: string]: unknown;
     };
+    /**
+     * Event semantic type (kind) for this notification's content, validated against the org's `$member.event_kinds`. When set, the notification renders through the event-kind pipeline: `data` feeds the kind's `jsonTemplate` in the Memory/Events view, and the inbox keeps the markdown `body`. Mutually exclusive with `input_schema`.
+     */
+    semantic_type?: string;
     /**
      * A `chat` CardElement (built with the card primitives) for rich bot-connection delivery. When set, the bound channel gets this card instead of the markdown body.
      */
@@ -4356,6 +4414,10 @@ export type ManageBehaviorsData = {
     triggers?: Array<
       | {
           kind: "event";
+          /**
+           * Event provenance. Omitted legacy triggers normalize to "connector".
+           */
+          source?: "connector";
           connector_key: string;
           connection_id?: number;
           event_types: Array<string>;
@@ -4381,6 +4443,32 @@ export type ManageBehaviorsData = {
            * For window execution, do not enqueue an agent run when connector polling produced no durable source change.
            */
           skip_if_unchanged?: boolean;
+        }
+      | {
+          kind: "event";
+          source: "workspace";
+          /**
+           * Optional entity-type slug. When set, the event must be linked to an entity of this type.
+           */
+          entity_type?: string;
+          /**
+           * Exact durable event semantic types that activate this Behavior.
+           */
+          event_types: Array<string>;
+          /**
+           * Exact-match fields from the durable event metadata.
+           */
+          match?: {
+            [key: string]: unknown | string | number | boolean | null;
+          };
+          /**
+           * "turn" handles the exact event pointer once; "window" runs the Behavior analysis flow.
+           */
+          execution?: "turn" | "window";
+          /**
+           * What to do when this Behavior is busy: queue every event or combine waiting events.
+           */
+          active_run?: "queue" | "coalesce";
         }
       | {
           kind: "schedule";
@@ -4881,6 +4969,10 @@ export type GetBehaviorResponses = {
       triggers?: Array<
         | {
             kind: "event";
+            /**
+             * Event provenance. Omitted legacy triggers normalize to "connector".
+             */
+            source?: "connector";
             connector_key: string;
             connection_id?: number;
             event_types: Array<string>;
@@ -4906,6 +4998,32 @@ export type GetBehaviorResponses = {
              * For window execution, do not enqueue an agent run when connector polling produced no durable source change.
              */
             skip_if_unchanged?: boolean;
+          }
+        | {
+            kind: "event";
+            source: "workspace";
+            /**
+             * Optional entity-type slug. When set, the event must be linked to an entity of this type.
+             */
+            entity_type?: string;
+            /**
+             * Exact durable event semantic types that activate this Behavior.
+             */
+            event_types: Array<string>;
+            /**
+             * Exact-match fields from the durable event metadata.
+             */
+            match?: {
+              [key: string]: unknown | string | number | boolean | null;
+            };
+            /**
+             * "turn" handles the exact event pointer once; "window" runs the Behavior analysis flow.
+             */
+            execution?: "turn" | "window";
+            /**
+             * What to do when this Behavior is busy: queue every event or combine waiting events.
+             */
+            active_run?: "queue" | "coalesce";
           }
         | {
             kind: "schedule";
@@ -5164,7 +5282,7 @@ export type ReadKnowledgeData = {
      */
     classification_source?: "user" | "embedding" | "llm";
     /**
-     * Filter to specific content IDs. Useful for showing content linked to Behavior analysis.
+     * Filter to specific content IDs. With behavior_id, these exact durable rows are added to the Behavior read and signed into its window token in addition to authored sources; this is how workspace-sourced event activations pass bounded event pointers without copying payloads.
      */
     content_ids?: Array<number>;
     /**
@@ -5172,7 +5290,7 @@ export type ReadKnowledgeData = {
      */
     exclude_behavior_id?: number;
     /**
-     * Filter by semantic type. Pass a single value (e.g. "note") or an array (e.g. ["note","summary"]) to match any. Matches the semantic_type set via save_memory.
+     * Filter by semantic type. Pass a single value (e.g. "note") or an array (e.g. ["note","summary"]) to match any. The reserved "notification" value matches events with notification targets, including kind-backed notifications whose stored semantic_type is their content kind.
      */
     semantic_type?: string | Array<string>;
     /**

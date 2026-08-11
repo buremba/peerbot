@@ -86,7 +86,13 @@ export function resolveBehaviorConnectionRefs(
   for (const watcher of watchers) {
     if (!watcher.triggers) continue;
     watcher.triggers = watcher.triggers.map((trigger) => {
-      if (trigger.kind !== "event" || !trigger.connectionSlug) return trigger;
+      if (
+        trigger.kind !== "event" ||
+        trigger.source === "workspace" ||
+        !trigger.connectionSlug
+      ) {
+        return trigger;
+      }
       const connectionId = connectionIdBySlug.get(trigger.connectionSlug);
       if (connectionId === undefined) {
         if (requireResolved) {
@@ -312,7 +318,8 @@ export async function fetchRemoteSnapshot(
   client: ApplyClient,
   state: DesiredState,
   only?: "agents" | "memory",
-  prune = false
+  prune = false,
+  orgId?: string
 ): Promise<RemoteSnapshot> {
   const agents: RemoteAgent[] =
     only === "memory" ? [] : await client.listAgents();
@@ -344,6 +351,17 @@ export async function fetchRemoteSnapshot(
     for (const remote of entityTypes) {
       const desired = desiredBySlug.get(remote.slug);
       if (!desired) continue;
+      // The list also surfaces public types owned by OTHER orgs. Fetch a
+      // template only for types this org owns: the fetch resolves by slug in
+      // THIS org, so a foreign public type whose local slug is absent (or
+      // soft-deleted) would 404 and abort the whole apply.
+      if (
+        orgId !== undefined &&
+        remote.organization_id !== undefined &&
+        remote.organization_id !== orgId
+      ) {
+        continue;
+      }
       if (desired.viewTemplate === undefined && !prune) continue;
       const tpl = await client.getEntityTypeViewTemplate(remote.slug);
       if (tpl) remote.viewTemplate = tpl;
@@ -379,7 +397,9 @@ export async function fetchRemoteSnapshot(
     state.watchers.some((watcher) =>
       watcher.triggers?.some(
         (trigger) =>
-          trigger.kind === "event" && trigger.connectionSlug !== undefined
+          trigger.kind === "event" &&
+          trigger.source !== "workspace" &&
+          trigger.connectionSlug !== undefined
       )
     );
   const connectorDefinitions = fetchConnectors
@@ -807,7 +827,15 @@ export async function executePlan(
     // computeDiff already made against the ORG-OWNED types only; re-deriving it
     // from the raw snapshot would let a foreign public type of the same slug
     // shadow the owned one (see the ownership filter in computeDiff).
-    await ctx.client.upsertEntityType(row.desired, row.remote?.schemaExtras);
+    await ctx.client.upsertEntityType(
+      row.desired,
+      row.remote?.schemaExtras,
+      {
+        properties: row.remote?.properties,
+        required: row.remote?.required,
+      },
+      new Set(row.changedFields ?? [])
+    );
     // View template is a separate, version-appending tool. Reconcile it only on
     // create (when declared) or a flagged change — never every run, so the
     // version history doesn't churn. Declared ⇒ set; omitted-under-prune ⇒ clear.
@@ -1447,7 +1475,13 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   // this (current/stale) catalog — "create" when the key isn't installed,
   // "update" when it is. Connector defs are NOT installed here; that happens in
   // `executePlan`, AFTER plan confirmation.
-  const remote = await fetchRemoteSnapshot(client, state, opts.only, prune);
+  const remote = await fetchRemoteSnapshot(
+    client,
+    state,
+    opts.only,
+    prune,
+    resolvedOrg?.id
+  );
   resolveBehaviorConnectionRefs(
     state.watchers,
     new Map(

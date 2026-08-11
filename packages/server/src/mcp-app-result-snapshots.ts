@@ -27,6 +27,8 @@ interface SnapshotPayload {
 	toolName: string;
 	data: UnknownRecord;
 	viewState: McpAppViewState;
+	/** SHA-256 of the single-use capability; retained after binding for idempotency. */
+	bindingKey?: string;
 }
 
 interface SnapshotIdentity {
@@ -150,6 +152,10 @@ function parseSnapshot(body: string): SnapshotPayload | null {
 			toolName: parsed.toolName,
 			data: parsed.data,
 			viewState: boundedMcpAppViewState(parsed.viewState),
+			...(typeof parsed.bindingKey === "string" &&
+				/^[a-f0-9]{64}$/.test(parsed.bindingKey)
+				? { bindingKey: parsed.bindingKey }
+				: {}),
 		};
 	} catch {
 		return null;
@@ -170,25 +176,30 @@ function serializeSnapshot(payload: SnapshotPayload): {
 export async function storeMcpAppResultSnapshot(args: {
 	ctx: ToolContext;
 	toolCallId: unknown;
+	bindingCapability?: unknown;
 	toolName: string;
 	data: UnknownRecord;
-}): Promise<void> {
+}): Promise<boolean> {
 	const identity = snapshotIdentity(args.ctx, args.toolCallId);
 	if (
 		!identity ||
 		!args.toolName ||
 		args.toolName.length > TOOL_NAME_MAX_LENGTH
 	)
-		return;
+		return false;
+	const bindingCapability = normalizeMcpAppToolCallId(args.bindingCapability);
 	const data = displaySafeMcpAppResult(args.data);
-	if (!isRecord(data)) return;
+	if (!isRecord(data)) return false;
 	const serialized = serializeSnapshot({
 		version: 1,
 		toolName: args.toolName,
 		data,
 		viewState: {},
+		...(bindingCapability
+			? { bindingKey: hashIdentity(bindingCapability) }
+			: {}),
 	});
-	if (!serialized) return;
+	if (!serialized) return false;
 
 	const sql = getDb();
 	const collided = await sql.begin(async (tx) => {
@@ -236,6 +247,7 @@ export async function storeMcpAppResultSnapshot(args: {
 			"MCP App result snapshot key collision; historical restore disabled",
 		);
 	}
+	return !collided;
 }
 
 export const RestoreMcpAppResultSchema = Type.Object({
@@ -306,6 +318,9 @@ export const SaveMcpAppStateSchema = Type.Object({
 		Type.String({ minLength: 1, maxLength: TOOL_CALL_ID_MAX_LENGTH }),
 		Type.Number(),
 	]),
+	snapshot_capability: Type.Optional(
+		Type.String({ minLength: 1, maxLength: TOOL_CALL_ID_MAX_LENGTH }),
+	),
 	tool_name: Type.Optional(
 		Type.String({ minLength: 1, maxLength: TOOL_NAME_MAX_LENGTH }),
 	),
@@ -317,6 +332,7 @@ export const SaveMcpAppStateOutputSchema = Type.Object({ saved: Type.Boolean() }
 async function saveMcpAppStateImpl(
 	args: {
 		tool_call_id: string | number;
+		snapshot_capability?: string;
 		tool_name?: string;
 		view_state: UnknownRecord;
 	},
@@ -327,6 +343,89 @@ async function saveMcpAppStateImpl(
 	if (!identity) return { saved: false };
 	const viewState = boundedMcpAppViewState(args.view_state);
 	const sql = getDb();
+	const bindingIdentity = snapshotIdentity(
+		ctx,
+		// Some hosts preserve their own request metadata but intentionally strip
+		// app-supplied metadata. This private app-only argument keeps the one-time
+		// capability end to end; metadata remains supported for standard hosts.
+		args.snapshot_capability ?? ctx.mcpAppSnapshotCapability,
+	);
+	if (
+		bindingIdentity &&
+		bindingIdentity.toolCallKey !== identity.toolCallKey
+	) {
+		try {
+			return await sql.begin(async (tx) => {
+				const [candidate] = await tx<SnapshotRow>`
+					SELECT body, tool_name
+					FROM public.mcp_app_result_snapshots
+					WHERE organization_id = ${bindingIdentity.organizationId}
+						AND client_id = ${bindingIdentity.clientId}
+						AND user_id = ${bindingIdentity.userId}
+						AND conversation_key = ${bindingIdentity.conversationKey}
+						AND tool_call_key = ${bindingIdentity.toolCallKey}
+						AND expires_at > now()
+					FOR UPDATE
+				`;
+				const row =
+					candidate ??
+					(
+						await tx<SnapshotRow>`
+							SELECT body, tool_name
+							FROM public.mcp_app_result_snapshots
+							WHERE organization_id = ${identity.organizationId}
+								AND client_id = ${identity.clientId}
+								AND user_id = ${identity.userId}
+								AND conversation_key = ${identity.conversationKey}
+								AND tool_call_key = ${identity.toolCallKey}
+								AND expires_at > now()
+						`
+					)[0];
+				if (!row) return { saved: false };
+				if (args.tool_name && row.tool_name !== args.tool_name)
+					return { saved: false };
+				const snapshot = parseSnapshot(row.body);
+				if (
+					!snapshot ||
+					snapshot.toolName !== row.tool_name ||
+					snapshot.bindingKey !== bindingIdentity.toolCallKey
+				)
+					return { saved: false };
+				const serialized = serializeSnapshot({ ...snapshot, viewState });
+				if (!serialized) return { saved: false };
+				const sourceIdentity = candidate ? bindingIdentity : identity;
+				const updated = await tx`
+					UPDATE public.mcp_app_result_snapshots
+					SET tool_call_key = ${identity.toolCallKey},
+						body = ${serialized.body},
+						plaintext_bytes = ${serialized.plaintextBytes},
+						updated_at = now()
+					WHERE organization_id = ${sourceIdentity.organizationId}
+						AND client_id = ${sourceIdentity.clientId}
+						AND user_id = ${sourceIdentity.userId}
+						AND conversation_key = ${sourceIdentity.conversationKey}
+						AND tool_call_key = ${sourceIdentity.toolCallKey}
+				`;
+				return { saved: updated.count === 1 };
+			});
+		} catch (error) {
+			if (!isRecord(error) || error.code !== "23505") throw error;
+			await sql`
+				UPDATE public.mcp_app_result_snapshots
+				SET expires_at = now(), updated_at = now()
+				WHERE organization_id = ${bindingIdentity.organizationId}
+					AND client_id = ${bindingIdentity.clientId}
+					AND user_id = ${bindingIdentity.userId}
+					AND conversation_key = ${bindingIdentity.conversationKey}
+					AND tool_call_key = ${bindingIdentity.toolCallKey}
+			`;
+			logger.warn(
+				{ toolName: args.tool_name },
+				"MCP App host card key collision; candidate restore disabled",
+			);
+			return { saved: false };
+		}
+	}
 	return sql.begin(async (tx) => {
 		const [row] = await tx<SnapshotRow>`
 			SELECT body, tool_name

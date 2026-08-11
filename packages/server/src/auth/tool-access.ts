@@ -50,12 +50,19 @@ export const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 	// recorded FIELD OWNER of an entity-change proposal (a plain member) can
 	// decide their own run. The handler enforces admin-or-run-owner per run — a
 	// member who is not that run's owner is rejected there with the same
-	// admin-access message. `execute` stays admin-tier below.
+	// admin-access message. `execute` is write-tier too: a member runs connector
+	// operations only on connections VISIBLE to them (the handler re-runs the
+	// per-principal visibility query), and every existing gate (active status,
+	// input validation, per-connection action_modes, per-principal
+	// connector_action policy) still applies. This is the "ready means the
+	// TARGET is ready" contract made caller-aware: an action advertised as
+	// ready/executable must be invocable by the caller who sees it.
 	manage_operations: new Set([
 		"approve",
 		"reject",
 		"approve_batch",
 		"reject_batch",
+		"execute",
 	]),
 	// A member sends a message to their own agent's conversation. `send` runs the
 	// turn in the conversation's pinned sandbox; the handler binds the
@@ -120,9 +127,17 @@ export const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 		"delete_auth_profile",
 		"set_default_auth_profile",
 	]),
-	// `approve`/`reject` live in MEMBER_WRITE_ACTIONS (handler enforces
-	// admin-or-run-owner); only `execute` is unconditionally admin.
-	manage_operations: new Set(["execute"]),
+	// `approve`/`reject`/`execute` all live in MEMBER_WRITE_ACTIONS; the handler
+	// enforces admin-or-run-owner for approvals and per-principal connection
+	// visibility for execution, so nothing in manage_operations is
+	// unconditionally admin.
+	manage_operations: new Set([]),
+	// `manage_schedules` is admin throughout (schedule rows carry agent prompts
+	// and delivery context). Declared explicitly so the access-model cross-check
+	// can cover the schedules namespace — the previous no-policy fallback made
+	// every action admin but was invisible to the drift guard, letting
+	// METHOD_METADATA advertise `schedules.list` as read (drift #2607-adjacent).
+	manage_schedules: new Set(["list", "create", "update", "pause", "cancel"]),
 	manage_behaviors: new Set([
 		// `complete_window` and `trigger` are in MEMBER_WRITE_ACTIONS — the
 		// execution path (server workers + device CLI + manual MCP clients),

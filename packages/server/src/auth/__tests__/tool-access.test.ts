@@ -56,8 +56,12 @@ describe('requiresOwnerAdmin', () => {
     expect(isPublicReadable('manage_classifiers', { action: 'apply' })).toBe(false);
   });
 
-  it('should require admin for manage_operations execute; approve/reject are write-tier (handler enforces admin-or-run-owner)', () => {
-    expect(requiresOwnerAdmin('manage_operations', { action: 'execute' }, false)).toBe(true);
+  it('should NOT require admin for manage_operations execute; it is member-write (handler re-checks per-principal visibility)', () => {
+    // Members run connector operations on connections VISIBLE to them; the
+    // execute handler re-runs the per-principal visibility query and every
+    // existing gate (active status, action_modes, connector_action policy).
+    expect(requiresOwnerAdmin('manage_operations', { action: 'execute' }, false)).toBe(false);
+    expect(requiresMemberWrite('manage_operations', { action: 'execute' }, false)).toBe(true);
     // Owner-routed approvals: the recorded field owner (a plain member) may
     // decide their own entity-change run, so approve/reject sit at write tier
     // and manage_operations enforces admin-or-run-owner per run.
@@ -736,9 +740,9 @@ manage_agents: list=read+public get=read+public create=admin update=admin delete
 manage_conversations: list=read get=read send=write ?=read
 manage_feeds: list_feeds=read+public read_feed=read+public read_feeds=read+public create_feed=admin update_feed=admin delete_feed=admin trigger_feed=admin ?=read
 manage_auth_profiles: list_auth_profiles=read+public get_auth_profile=read+public test_auth_profile=admin create_auth_profile=write update_auth_profile=write delete_auth_profile=admin set_default_auth_profile=admin ?=read
-manage_operations: list_available=read+public execute=admin list_runs=read+public get_run=read+public list_activity=read+public approve=write reject=write approve_batch=write reject_batch=write ?=read
+manage_operations: list_available=read+public execute=write list_runs=read+public get_run=read+public list_activity=read+public approve=write reject=write approve_batch=write reject_batch=write ?=read
 notify: send=admin ?=admin
-manage_schedules: create=admin list=admin update=admin pause=admin cancel=admin ?=admin
+manage_schedules: create=admin list=admin update=admin pause=admin cancel=admin ?=read
 manage_behaviors: create=admin list=read+public update=admin create_version=admin complete_window=write trigger=write delete=admin set_reaction_script=admin get_versions=read+public get_version_details=read+public get_component_reference=read+public submit_feedback=admin get_feedback=read+public list_promoted=read create_from_version=admin ?=read
 get_behavior: read+public ?=read+public
 read_knowledge: read+public ?=read+public

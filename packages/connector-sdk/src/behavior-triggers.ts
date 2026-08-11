@@ -7,6 +7,7 @@ export type {
 	BehaviorEventTrigger,
 	BehaviorScheduleTrigger,
 	BehaviorTrigger,
+	BehaviorWorkspaceEventTrigger,
 } from "@lobu/core/contracts/tools/manage-behaviors";
 
 /**

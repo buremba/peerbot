@@ -20,6 +20,18 @@ interface CreateNotificationParams {
 		| "agent_message";
 	title: string;
 	body?: string | null;
+	/**
+	 * Event semantic type (kind) for the notification's content. When set, the
+	 * event carries THIS semantic_type with an `empty` payload type, so the event-kind
+	 * render tail synthesizes the render template from the kind's `jsonTemplate`
+	 * (the same path every other `empty` event takes). Omit for the default
+	 * `notification` semantic type + plain text body — the ask/approval path
+	 * always omits it, keeping its `notification` marker and its separate
+	 * interaction-event supersede chain.
+	 */
+	semanticType?: string;
+	/** Structured payload bound to the event kind's render template. */
+	payloadData?: Record<string, unknown>;
 	resourceType?: string | null;
 	resourceId?: string | null;
 	resourceUrl?: string | null;
@@ -450,8 +462,8 @@ async function deliverToBotConnections(
  * ONE event + N targets; "mark read" updates a target row; "unread count"
  * counts target rows without `read_at`.
  *
- * The legacy public.notifications table was migrated by
- * 20260513200000_notifications_as_events.sql and dropped.
+ * The legacy public.notifications table was migrated into events and dropped;
+ * that migration is now folded into the baseline schema.
  */
 export async function createNotificationForUsers(
 	userIds: string[],
@@ -506,8 +518,9 @@ export async function createNotificationForUsers(
 					originId: randomUUID(),
 					title: params.title,
 					content: params.body ?? null,
-					payloadType: "text",
-					semanticType: "notification",
+					semanticType: params.semanticType ?? "notification",
+					payloadType: params.semanticType ? "empty" : "text",
+					payloadData: params.semanticType ? params.payloadData : undefined,
 					metadata,
 					clientId: params.mcpActivity?.clientId ?? null,
 					runId: params.runId ?? null,

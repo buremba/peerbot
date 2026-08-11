@@ -49,6 +49,8 @@ import { handleBehaviorMode } from './behavior-mode';
 import { resolveMcpActivitySessionIds } from './mcp-activity-filter';
 import { withValidatedArgs } from '../validate-args';
 
+const MAX_EXACT_CONTENT_IDS = 2000;
+
 /**
  * Connection-visibility principal for Behavior knowledge.read.
  *
@@ -181,6 +183,12 @@ async function getContentImpl(
       400
     );
   }
+  if ((args.content_ids?.length ?? 0) > MAX_EXACT_CONTENT_IDS) {
+    throw new ToolUserError(
+      `read_knowledge accepts at most ${MAX_EXACT_CONTENT_IDS} content_ids per request.`,
+      422
+    );
+  }
 
   // Agent/watcher: entity-type read policy (same envelope as manage_entity /
   // search_memory). Humans skip — role ACL is separate.
@@ -209,6 +217,38 @@ async function getContentImpl(
         `;
         if (typeRows[0]?.entity_type) {
           typeSlugs.add(String(typeRows[0].entity_type));
+        }
+      }
+      if (args.content_ids?.length) {
+        const eventTypeRows = await sql<{ entity_type: string | null }>`
+          SELECT DISTINCT et.slug AS entity_type
+          FROM events ev
+          LEFT JOIN LATERAL unnest(ev.entity_ids) linked(entity_id) ON TRUE
+          LEFT JOIN entities e
+            ON e.id = linked.entity_id
+           AND e.deleted_at IS NULL
+          LEFT JOIN entity_types et
+            ON et.id = e.entity_type_id
+           AND et.deleted_at IS NULL
+          WHERE ev.id = ANY(${pgBigintArray(args.content_ids)}::bigint[])
+            AND (
+              ev.organization_id = ${ctx.organizationId}
+              OR ev.linked_org_ids @> ARRAY[${ctx.organizationId}]::text[]
+              OR EXISTS (
+                SELECT 1 FROM entities scoped_entity
+                WHERE scoped_entity.id = ANY(ev.entity_ids)
+                  AND scoped_entity.organization_id = ${ctx.organizationId}
+              )
+              OR EXISTS (
+                SELECT 1 FROM connections scoped_connection
+                WHERE scoped_connection.id = ev.connection_id
+                  AND scoped_connection.organization_id = ${ctx.organizationId}
+              )
+            )
+        `;
+        for (const row of eventTypeRows) {
+          // Unbound events use the workspace-wide $member policy envelope.
+          typeSlugs.add(row.entity_type ? String(row.entity_type) : '$member');
         }
       }
       for (const slug of typeSlugs) {

@@ -4,7 +4,9 @@ import {
   BehaviorEventTriggerSchema,
   BehaviorScheduleTriggerSchema,
   BehaviorSourceSchema,
+  BehaviorWorkspaceEventTriggerSchema,
   ManageBehaviorsSchema,
+  resolvedEventExecution,
 } from "../contracts/tools/manage-behaviors";
 
 const query = "SELECT id, payload_text FROM events ORDER BY occurred_at DESC";
@@ -64,6 +66,59 @@ describe("behavior event trigger", () => {
         skip_if_unchanged: true,
       })
     ).toBe(true);
+  });
+
+  test("subscribes to durable workspace events through the shared event primitive", () => {
+    expect(
+      Value.Check(BehaviorWorkspaceEventTriggerSchema, {
+        kind: "event",
+        source: "workspace",
+        entity_type: "account",
+        event_types: ["risk_detected"],
+        match: { severity: "high", reviewed: false },
+        execution: "window",
+        active_run: "coalesce",
+      })
+    ).toBe(true);
+    expect(
+      Value.Check(BehaviorWorkspaceEventTriggerSchema, {
+        kind: "event",
+        source: "workspace",
+        connector_key: "github",
+        event_types: ["risk_detected"],
+      })
+    ).toBe(false);
+    expect(
+      Value.Check(BehaviorWorkspaceEventTriggerSchema, {
+        kind: "event",
+        event_types: ["risk_detected"],
+      })
+    ).toBe(false);
+  });
+
+  test("resolves event execution defaults from the selected source", () => {
+    expect(
+      resolvedEventExecution({
+        kind: "event",
+        connector_key: "github",
+        event_types: ["pull_request.created"],
+      })
+    ).toBe("turn");
+    expect(
+      resolvedEventExecution({
+        kind: "event",
+        source: "workspace",
+        event_types: ["risk_detected"],
+      })
+    ).toBe("window");
+    expect(
+      resolvedEventExecution({
+        kind: "event",
+        source: "workspace",
+        event_types: ["risk_detected"],
+        execution: "turn",
+      })
+    ).toBe("turn");
   });
 
   test("rejects unsupported queued schedule ticks", () => {

@@ -6,6 +6,21 @@
 import { pgTextArray } from '../../db/client';
 import type { ContentSearchOptions } from './types';
 
+/**
+ * `notification` is a virtual Activity kind: notification identity comes from
+ * notification_targets, while the event's semantic_type may be its content
+ * kind (for example `funnel_digest`). Expand only that sentinel to the
+ * authoritative row-presence check. Mixed selections remain an OR.
+ */
+export function buildSemanticTypeFilterSql(alias: string, paramSql: string): string {
+  return `((${paramSql}::text[] @> ARRAY['notification']::text[]
+            AND EXISTS (
+              SELECT 1 FROM notification_targets nt
+              WHERE nt.event_id = ${alias}.id
+            ))
+           OR ${alias}.semantic_type = ANY(array_remove(${paramSql}::text[], 'notification')))`;
+}
+
 export function buildStandardParams(
   options: ContentSearchOptions & { offset?: number },
   extra: {
@@ -71,7 +86,7 @@ export function buildStandardWhereSql(entityLinkSql: string): string {
             WHERE lc_source.event_id = f.id
               AND lc_source.source = $8::text
           ))
-          AND ($9::text[] IS NULL OR f.semantic_type = ANY($9::text[]))
+          AND ($9::text[] IS NULL OR ${buildSemanticTypeFilterSql('f', '$9')})
           AND ($10::text IS NULL OR f.interaction_status = $10::text)
           AND ($11::text IS NULL OR f.metadata->>'agent_id' = $11::text)
           AND ($12::text[] IS NULL OR f.client_id = ANY($12::text[]))

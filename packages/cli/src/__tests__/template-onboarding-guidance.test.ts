@@ -41,6 +41,16 @@ describe("generated AGENTS.md onboarding guidance", () => {
     );
   });
 
+  test("documents durable Behavior chaining without making every event a trigger", () => {
+    expect(template).toContain('source: "workspace"');
+    expect(template).toContain("declared event output");
+    expect(template).toContain(
+      "Ordinary knowledge saves and connector-ingested events remain data"
+    );
+    expect(template).toContain("exact event pointers");
+    expect(template).toContain("docs/BEHAVIORS.md");
+  });
+
   test("treats Slack install, surfaces, and member knowledge as separate proofs", () => {
     expect(template).toContain("install the Lobu app into an existing");
     expect(template).toContain("their DM with Lobu, a named channel, or both");

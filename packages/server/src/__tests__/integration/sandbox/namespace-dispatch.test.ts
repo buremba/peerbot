@@ -156,4 +156,10 @@ describe("ClientSDK namespace dispatch (read paths)", () => {
 		const rows = await sdk.query("SELECT COUNT(*)::int AS n FROM entities");
 		expect(Array.isArray(rows)).toBe(true);
 	});
+
+	it("query caps results at 5000 rows so a broad SELECT can't flood the host", async () => {
+		const rows = await sdk.query("SELECT generate_series(1, 10000) AS n");
+		expect(rows).toHaveLength(5000);
+		expect(rows[0]).toEqual({ n: 1 });
+	});
 });

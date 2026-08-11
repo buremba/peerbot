@@ -8,6 +8,10 @@
 
 import type { Env } from '@lobu/connector-sdk';
 import { runAclSyncTick } from '../authz/acl-sync';
+import {
+  activateWorkspaceEventTask,
+} from '../behaviors/workspace-event';
+import type { WorkspaceEventActivationTaskPayload } from '../behaviors/workspace-event-contract';
 import type { CoreServices } from '../gateway/services/core-services';
 import { getChatInstanceManager } from '../lobu/gateway';
 import { cleanupExpiredMcpSessions } from '../mcp-handler';
@@ -26,6 +30,7 @@ import {
   validateDeliveryAuthorization,
 } from './scheduled-jobs-service';
 import { TaskScheduler } from './task-scheduler';
+import { WORKSPACE_EVENT_ACTIVATION_TASK } from './task-definitions';
 import { triggerEmbedBackfill } from './trigger-embed-backfill';
 import { runMemberClaimDriftCheck } from './member-claim-drift';
 import { runReapStaleDeviceWorkers } from './reap-stale-device-workers';
@@ -404,6 +409,24 @@ function registerMaintenanceTasks(
     },
     { cron: '* * * * *' },
   );
+
+  // A Behavior output event and this task row commit together. The handler
+  // performs subscriber lookup and takes downstream per-Behavior locks only
+  // after the producer's window transaction has released its own resources.
+  scheduler.register(WORKSPACE_EVENT_ACTIVATION_TASK, async (ctx) => {
+    const result = await activateWorkspaceEventTask(
+      ctx.payload as WorkspaceEventActivationTaskPayload,
+    );
+    if (
+      result.matched > 0 ||
+      result.depthLimited ||
+      result.causalBreadthLimited ||
+      result.fanoutLimited ||
+      result.invalidCausalPath
+    ) {
+      logger.info(result, '[task] activate-workspace-event completed');
+    }
+  });
 
   // scheduled_jobs ticker: scans the table every minute, spawns due rows
   // as task runs via this same scheduler. The actual firing handlers are

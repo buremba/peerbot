@@ -1,8 +1,16 @@
 /**
  * Compiles a TypeScript user-script via esbuild, runs it in a V8 isolate, and
- * bridges SDK calls back to the host. Caps: 1 MB output, 200 SDK calls,
- * 180s wall-clock max (device-bound operations may wait up to ~155s), and
- * 30s per `ctx.sleep()` call.
+ * bridges SDK calls back to the host. Output is bounded per-purpose: interactive
+ * return values are capped at 1 MB (an oversized value is replaced by a bounded
+ * `returnValuePreview` head plus a report, never shipped in full to the model),
+ * console logs are capped at 64 KB and the guest console bridge is disabled
+ * once full. Each single
+ * host↔guest bridge message (SDK payload, SDK result, or return envelope) is
+ * capped at 4 MB — a larger message, or exhausting the 200-call quota,
+ * terminates the run by disposing the isolate (uncatchable by the guest).
+ * Extracted named exports keep the old hard-fail behavior because a partial
+ * schema would be worse than none. Other caps: 180s wall-clock max
+ * (device-bound operations may wait up to ~155s), and 30s per `ctx.sleep()`.
  * `client.org()` is stateless — each guest call carries
  * `orgPath` so the host re-walks org swaps without holding refs.
  */
@@ -17,7 +25,20 @@ export interface RunLimits {
 	memoryMb?: number;
 	timeoutMs?: number;
 	sdkCallQuota?: number;
+	/** Preview threshold and byte cap for interactive returns; extracted exports hard-fail instead. */
 	outputBytes?: number;
+	/** Cap for captured console logs; messages past it are dropped. */
+	logBytes?: number;
+	/** Serialized cap for EACH of `sdk_call_trace` and `side_effect_preview`; oldest entries are dropped past it. */
+	traceBytes?: number;
+	/** Single-message cap for host↔guest bridge traffic; a larger message terminates the run. */
+	messageBytes?: number;
+}
+
+/** What the host kept when a return value exceeded `outputBytes` and became a preview. */
+interface ReturnPreviewInfo {
+	total_bytes: number;
+	kept_bytes: number;
 }
 
 /**
@@ -91,7 +112,6 @@ export interface RunScriptOptions {
 interface LogEntry {
 	level: "log" | "warn" | "error";
 	message: string;
-	data?: Record<string, unknown>;
 	ts: number;
 }
 
@@ -106,6 +126,14 @@ interface SdkCallTraceEntry {
 interface RunScriptResult {
 	success: boolean;
 	returnValue?: unknown;
+	/** UTF-8-safe head of the serialized return value when it exceeded `outputBytes`. */
+	returnValuePreview?: string;
+	/** Present with `returnValuePreview`: original JSON and preview-string byte sizes. */
+	returnTruncated?: ReturnPreviewInfo;
+	/** Total calls skipped under dry-run (independent of preview retention). */
+	skippedCalls: number;
+	/** Trace entries dropped because the `traceBytes` cap was exceeded. */
+	traceDropped: number;
 	logs: LogEntry[];
 	sdkCallTrace: SdkCallTraceEntry[];
 	sideEffectPreview: SdkCallTraceEntry[];
@@ -126,6 +154,9 @@ const DEFAULT_LIMITS: Required<RunLimits> = {
 	timeoutMs: 60_000,
 	sdkCallQuota: 200,
 	outputBytes: 1_048_576,
+	logBytes: 65_536,
+	traceBytes: 131_072,
+	messageBytes: 4_194_304,
 };
 /** Device action waits allow 60s queue + 95s post-claim; sandbox must outlive that. */
 export const MAX_SCRIPT_TIMEOUT_MS = 180_000;
@@ -134,6 +165,11 @@ const MAX_TRACE_ARGS_BYTES = 8192;
 const MAX_ERROR_DETAILS_BYTES = 16_384;
 const SENSITIVE_TRACE_KEY =
 	/(api[_-]?key|apikey|auth[_-]?data|auth[_-]?values|authorization|cookie|credential|password|private[_-]?key|secret|token)/i;
+
+function jsonBytes(value: unknown): number {
+	const json = JSON.stringify(value);
+	return json === undefined ? 0 : Buffer.byteLength(json, "utf8");
+}
 
 function redactTraceValue(
 	value: unknown,
@@ -195,6 +231,51 @@ export function safeErrorDetails(value: unknown): unknown {
 			message: "Structured SDK error details could not be serialized safely.",
 		};
 	}
+}
+
+const MAX_RETURN_PREVIEW_BYTES = 262_144;
+const PREVIEW_SUFFIX = "\u2026 [truncated]";
+
+/** Longest byte-bounded prefix of `value` that does not split a UTF-16 surrogate pair. */
+function byteBoundedPrefix(value: string, maxBytes: number): string {
+	if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+	let lo = 0;
+	let hi = value.length;
+	while (lo < hi) {
+		const mid = (lo + hi + 1) >> 1;
+		if (Buffer.byteLength(value.slice(0, mid), "utf8") <= maxBytes) lo = mid;
+		else hi = mid - 1;
+	}
+	if (lo > 0 && lo < value.length) {
+		const c = value.charCodeAt(lo - 1);
+		if (c >= 0xd800 && c <= 0xdbff) lo -= 1; // don't split a surrogate pair
+	}
+	return value.slice(0, lo);
+}
+
+/**
+ * Build the preview for an oversized interactive return value: a UTF-8-safe
+ * head of the serialized JSON (a preview the model reads to decide what to
+ * query, never a value it could mistake for complete output) plus the byte
+ * sizes. Only called when the serialized value already exceeds `outputBytes`.
+ */
+function buildReturnPreview(
+	valueJson: string,
+	totalBytes: number,
+	maxBytes: number,
+): { preview: string; info: ReturnPreviewInfo } {
+	const kept = byteBoundedPrefix(
+		valueJson,
+		maxBytes - Buffer.byteLength(PREVIEW_SUFFIX, "utf8"),
+	);
+	const preview = `${kept}${PREVIEW_SUFFIX}`;
+	return {
+		preview,
+		info: {
+			total_bytes: totalBytes,
+			kept_bytes: Buffer.byteLength(preview, "utf8"),
+		},
+	};
 }
 
 function classifyRuntimeError(error: {
@@ -285,6 +366,24 @@ function clampLimits(limits?: RunLimits): Required<RunLimits> {
 			DEFAULT_LIMITS.outputBytes,
 			1024,
 			DEFAULT_LIMITS.outputBytes,
+		),
+		logBytes: clampNumber(
+			limits?.logBytes,
+			DEFAULT_LIMITS.logBytes,
+			1024,
+			DEFAULT_LIMITS.logBytes,
+		),
+		traceBytes: clampNumber(
+			limits?.traceBytes,
+			DEFAULT_LIMITS.traceBytes,
+			1024,
+			DEFAULT_LIMITS.traceBytes,
+		),
+		messageBytes: clampNumber(
+			limits?.messageBytes,
+			DEFAULT_LIMITS.messageBytes,
+			65_536,
+			DEFAULT_LIMITS.messageBytes,
 		),
 	};
 }
@@ -517,10 +616,18 @@ function __makeClient(orgPath) {
 
 const client = __makeClient([]);
 
+let __console_enabled = true;
+function __emitConsole(level, args) {
+  if (!__console_enabled) return;
+  try {
+    const accepted = __console_call.applySync(undefined, [level, args.map(String).join(' ')]);
+    if (accepted === false) __console_enabled = false;
+  } catch (e) {}
+}
 const console = {
-  log: (...a) => { try { __console_call.applySync(undefined, ['log', a.map(String).join(' ')]); } catch (e) {} },
-  warn: (...a) => { try { __console_call.applySync(undefined, ['warn', a.map(String).join(' ')]); } catch (e) {} },
-  error: (...a) => { try { __console_call.applySync(undefined, ['error', a.map(String).join(' ')]); } catch (e) {} },
+  log: (...a) => __emitConsole('log', a),
+  warn: (...a) => __emitConsole('warn', a),
+  error: (...a) => __emitConsole('error', a),
 };
 
 const module = { exports: {} };
@@ -617,7 +724,96 @@ export async function runScript(
 	const sdkCallTrace: SdkCallTraceEntry[] = [];
 	const sideEffectPreview: SdkCallTraceEntry[] = [];
 	let sdkCalls = 0;
-	let outputBytes = 0;
+	// Total calls skipped under dry-run, independent of preview retention so a
+	// truncated preview never undercounts the dry-run surface.
+	let skippedCalls = 0;
+	// Captured console budget. Messages past it are dropped, never a failure.
+	let logBytesUsed = 0;
+	let logFull = false;
+	// Terminal bridge failures dispose the isolate so the guest cannot keep
+	// crossing traffic after a message, call, or log budget is exhausted.
+	// Hoisted because `isolate` is assigned inside the try block below.
+	let isolate: import("isolated-vm").Isolate | null = null;
+	const terminalState = { name: "", message: "" };
+	let terminated = false;
+
+	const quotaMessage = `QuotaExceeded: SDK call quota of ${limits.sdkCallQuota} reached`;
+	const oversizeMessage = `OutputSizeExceeded: a single bridge message exceeded ${limits.messageBytes} bytes (SDK call payload/result or return value)`;
+	const consoleFloodMessage = `OutputSizeExceeded: console output continued after the ${limits.logBytes}-byte log cap`;
+	const terminalEnvelope = () =>
+		terminated
+			? JSON.stringify({
+					__lobu_sdk_dispatch: 1,
+					ok: false,
+					error: {
+						name: terminalState.name,
+						message: terminalState.message,
+					},
+				})
+			: null;
+
+	/**
+	 * Terminal failure: the guest sent an oversized single message, exhausted
+	 * call quota, or bypassed a saturated console bridge. A thrown error would
+	 * not help — the guest can catch it and loop, and every loop iteration still
+	 * crosses a payload. Disposing the isolate makes the failure uncatchable.
+	 */
+	function terminateRun(name: string, message: string): void {
+		if (terminated) return;
+		terminalState.name = name;
+		terminalState.message = message;
+		terminated = true;
+		try {
+			if (isolate && !isolate.isDisposed) {
+				// A guest parked on `await __sdk_dispatch` is NOT executing, so
+				// terminateExecution() no-ops there. Disposing the isolate rejects
+				// the pending run instead — the only way to stop a guest that
+				// would otherwise keep crossing payloads until the wall-clock
+				// timeout.
+				isolate.dispose();
+			}
+		} catch {
+			// Isolate already finished; the terminal state carries the failure.
+		}
+	}
+
+	/** True when the single message fits the per-message cap; otherwise the run is terminated. */
+	function guardMessage(json: string): boolean {
+		if (Buffer.byteLength(json, "utf8") <= limits.messageBytes) return true;
+		terminateRun("OutputSizeExceeded", oversizeMessage);
+		return false;
+	}
+
+	/**
+	 * Bounded trace appender: keeps a strict serialized-byte budget on a trace
+	 * array by dropping the OLDEST entries (failures are at the tail) and
+	 * counting what it drops. Brackets and commas are included so the retained
+	 * array can never serialize beyond the budget. A single entry that does not
+	 * fit even alone is dropped and counted.
+	 */
+	function makeTraceAppender(budget: number) {
+		let used = 2; // JSON array brackets
+		let dropped = 0;
+		return {
+			dropped: () => dropped,
+			append(target: SdkCallTraceEntry[], entry: SdkCallTraceEntry): void {
+				const entryBytes = jsonBytes(entry);
+				if (entryBytes + 2 > budget) {
+					dropped++;
+					return;
+				}
+				target.push(entry);
+				used += entryBytes + (target.length > 1 ? 1 : 0); // comma
+				while (used > budget && target.length > 0) {
+					const removed = target.shift()!;
+					used -= jsonBytes(removed) + (target.length > 0 ? 1 : 0);
+					dropped++;
+				}
+			},
+		};
+	}
+	const appendTrace = makeTraceAppender(limits.traceBytes);
+	const appendPreview = makeTraceAppender(limits.traceBytes);
 
 	const ivm = await loadIsolatedVm();
 	if (!ivm) {
@@ -632,6 +828,8 @@ export async function runScript(
 			},
 			durationMs: Date.now() - started,
 			sdkCalls: 0,
+			skippedCalls: 0,
+			traceDropped: 0,
 			sdkCallTrace,
 			sideEffectPreview,
 		};
@@ -668,12 +866,13 @@ export async function runScript(
 			},
 			durationMs: Date.now() - started,
 			sdkCalls: 0,
+			skippedCalls: 0,
+			traceDropped: 0,
 			sdkCallTrace,
 			sideEffectPreview,
 		};
 	}
 
-	let isolate: import("isolated-vm").Isolate | null = null;
 	try {
 		isolate = new ivm.Isolate({ memoryLimit: limits.memoryMb });
 		const context = await isolate.createContext();
@@ -683,16 +882,24 @@ export async function runScript(
 		await jail.set(
 			"__sdk_dispatch",
 			new ivm.Reference(async (path: string, payloadJson: string) => {
+				// Once terminated, don't run any more SDK work (DB/HTTP).
+				if (terminated) {
+					return terminalEnvelope();
+				}
 				sdkCalls++;
 				if (sdkCalls > limits.sdkCallQuota) {
-					throw new Error(
-						`QuotaExceeded: SDK call quota of ${limits.sdkCallQuota} reached`,
-					);
+					// Quota exhaustion is terminal (uncatchable) so a guest cannot
+					// catch the error and keep crossing payloads.
+					terminateRun("QuotaExceeded", quotaMessage);
+					return terminalEnvelope();
 				}
 				if (abortController.signal.aborted) {
 					throw new Error(
 						`TimeoutError: script exceeded ${limits.timeoutMs}ms wall-clock budget`,
 					);
+				}
+				if (!guardMessage(payloadJson)) {
+					return terminalEnvelope();
 				}
 
 				const { args, orgPath } = JSON.parse(payloadJson) as {
@@ -732,7 +939,7 @@ export async function runScript(
 							args[0] as string,
 							args[1] as Record<string, unknown> | undefined,
 						);
-						sdkCallTrace.push({
+						appendTrace.append(sdkCallTrace, {
 							path,
 							orgPath,
 							access: METHOD_METADATA[path]?.access ?? "unknown",
@@ -742,7 +949,7 @@ export async function runScript(
 						return undefined;
 					}
 					if (path === "query") {
-						sdkCallTrace.push({
+						appendTrace.append(sdkCallTrace, {
 							path,
 							orgPath,
 							access: METHOD_METADATA[path]?.access ?? "unknown",
@@ -795,11 +1002,14 @@ export async function runScript(
 							path,
 						}),
 					};
-					sdkCallTrace.push(trace);
+					// Skipped (dry-run) calls live only in `side_effect_preview`;
+					// dispatched calls only in `sdk_call_trace` — no double shipping.
 					if (trace.skipped) {
-						sideEffectPreview.push(trace);
+						skippedCalls++;
+						appendPreview.append(sideEffectPreview, trace);
 						return { dry_run: true, skipped_call: path, access };
 					}
+					appendTrace.append(sdkCallTrace, trace);
 					return namespace[method](...args);
 				})();
 
@@ -820,13 +1030,7 @@ export async function runScript(
 								details: safeErrorDetails(error.result),
 							},
 						});
-						outputBytes += Buffer.byteLength(json, "utf8");
-						if (outputBytes > limits.outputBytes) {
-							throw new Error(
-								`OutputSizeExceeded: combined output exceeded ${limits.outputBytes} bytes`,
-							);
-						}
-						return json;
+						return guardMessage(json) ? json : terminalEnvelope();
 					}
 					throw error;
 				}
@@ -836,22 +1040,34 @@ export async function runScript(
 					has_value: result !== undefined,
 					...(result === undefined ? {} : { value: result }),
 				});
-				outputBytes += Buffer.byteLength(json, "utf8");
-				if (outputBytes > limits.outputBytes) {
-					throw new Error(
-						`OutputSizeExceeded: combined output exceeded ${limits.outputBytes} bytes`,
-					);
-				}
-				return json;
+				return guardMessage(json) ? json : terminalEnvelope();
 			}),
 		);
 
 		await jail.set(
 			"__console_call",
 			new ivm.Reference((level: "log" | "warn" | "error", message: string) => {
-				outputBytes += Buffer.byteLength(message, "utf8");
-				if (outputBytes > limits.outputBytes) return;
+				// A single pathological message crosses the whole string; terminate.
+				if (!guardMessage(message)) return false;
+				if (logFull) {
+					// The normal guest console disables itself on the first false return.
+					// Reaching the host again means the script bypassed that latch.
+					terminateRun("OutputSizeExceeded", consoleFloodMessage);
+					return false;
+				}
+				const bytes = Buffer.byteLength(message, "utf8");
+				if (logBytesUsed + bytes > limits.logBytes) {
+					logFull = true;
+					logs.push({
+						level: "warn",
+						message: `[console output truncated: exceeded ${limits.logBytes} bytes]`,
+						ts: Date.now(),
+					});
+					return false;
+				}
+				logBytesUsed += bytes;
 				logs.push({ level, message, ts: Date.now() });
+				return true;
 			}),
 		);
 
@@ -883,12 +1099,23 @@ export async function runScript(
 			}) as Promise<string | null>,
 			limits.timeoutMs,
 		)) as string | null;
+		if (terminated) {
+			throw new Error(terminalState.message);
+		}
 		if (returnJson) {
-			outputBytes += Buffer.byteLength(returnJson, "utf8");
-			if (outputBytes > limits.outputBytes) {
+			const envelopeBytes = Buffer.byteLength(returnJson, "utf8");
+			// `extractExport` reads a JSON Schema; a partially-cut schema would
+			// parse as a valid-but-wrong contract, so that path keeps hard-fail.
+			if (options.extractExport && envelopeBytes > limits.outputBytes) {
 				throw new Error(
-					`OutputSizeExceeded: combined output exceeded ${limits.outputBytes} bytes (paginate or filter the script's return value)`,
+					`OutputSizeExceeded: extracted export exceeded ${limits.outputBytes} bytes`,
 				);
+			}
+			// An interactive return crosses the whole envelope to the host before
+			// previewing, so bound that copy BEFORE parsing: a huge return can
+			// otherwise force an arbitrarily large host JSON.parse.
+			if (!options.extractExport && envelopeBytes > limits.messageBytes) {
+				throw new Error(oversizeMessage);
 			}
 		}
 		const parsedResult = returnJson ? JSON.parse(returnJson) : null;
@@ -915,6 +1142,8 @@ export async function runScript(
 					error: classifyRuntimeError(scriptError ?? {}),
 					durationMs: Date.now() - started,
 					sdkCalls,
+					skippedCalls,
+					traceDropped: appendTrace.dropped() + appendPreview.dropped(),
 					sdkCallTrace,
 					sideEffectPreview,
 				};
@@ -924,23 +1153,53 @@ export async function runScript(
 			? parsedResult
 			: parsedResult.value;
 
+		// An oversized interactive return becomes a bounded preview, never the
+		// value: the model reads the head to decide what to query, and the
+		// `returnTruncated` report tells it the data is partial (query it, don't
+		// re-dump). extractExport keeps the full value (already hard-failed above).
+		let returnValuePreview: string | undefined;
+		let returnTruncated: ReturnPreviewInfo | undefined;
+		if (!options.extractExport) {
+			const valueJson = JSON.stringify(returnValue);
+			if (valueJson !== undefined) {
+				const totalBytes = Buffer.byteLength(valueJson, "utf8");
+				if (totalBytes > limits.outputBytes) {
+					const built = buildReturnPreview(
+						valueJson,
+						totalBytes,
+						Math.min(MAX_RETURN_PREVIEW_BYTES, limits.outputBytes),
+					);
+					returnValuePreview = built.preview;
+					returnTruncated = built.info;
+				}
+			}
+		}
+
 		return {
 			success: true,
-			returnValue,
+			...(returnValuePreview !== undefined
+				? { returnValuePreview, returnTruncated }
+				: { returnValue }),
 			logs,
 			durationMs: Date.now() - started,
 			sdkCalls,
+			skippedCalls,
+			traceDropped: appendTrace.dropped() + appendPreview.dropped(),
 			sdkCallTrace,
 			sideEffectPreview,
 		};
 	} catch (err) {
-		const e = err as Error;
+		// A terminal failure disposes the isolate, which rejects with a raw
+		// termination error — report the terminal reason instead.
+		const e = (terminated ? new Error(terminalState.message) : err) as Error;
 		return {
 			success: false,
 			logs,
 			error: classifyRuntimeError(e),
 			durationMs: Date.now() - started,
 			sdkCalls,
+			skippedCalls,
+			traceDropped: appendTrace.dropped() + appendPreview.dropped(),
 			sdkCallTrace,
 			sideEffectPreview,
 		};

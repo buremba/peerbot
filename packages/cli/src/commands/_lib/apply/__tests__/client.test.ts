@@ -286,7 +286,7 @@ describe("ApplyClient — prune", () => {
     expect(types[0]?.backing).toEqual({ sql: "SELECT 1 AS x" });
   });
 
-  test("upsertEntityType POSTs backing:null for a stored type", async () => {
+  test("upsertEntityType sends backing:null only when the diff flagged the revert", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new ApplyClient(
       { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
@@ -296,10 +296,19 @@ describe("ApplyClient — prune", () => {
       }) as typeof fetch
     );
 
+    // A stored type with no diff flag: backing is omitted, so a fired update
+    // for an unrelated field never reverts out-of-band backing.
     await client.upsertEntityType({ slug: "company", name: "Company" });
+    expect(JSON.parse(String(calls[0]?.init?.body)).backing).toBeUndefined();
 
-    const body = JSON.parse(String(calls[0]?.init?.body));
-    expect(body.backing).toBeNull();
+    // Flagged revert (derived → stored): backing:null is sent.
+    await client.upsertEntityType(
+      { slug: "company", name: "Company" },
+      undefined,
+      undefined,
+      new Set(["backing"])
+    );
+    expect(JSON.parse(String(calls[1]?.init?.body)).backing).toBeNull();
   });
 
   test("upsertEntityType POSTs metrics_config for a metric type", async () => {
@@ -328,7 +337,7 @@ describe("ApplyClient — prune", () => {
     expect(body.metrics_config).toEqual(metrics);
   });
 
-  test("upsertEntityType POSTs metrics_config:null for a non-metric type", async () => {
+  test("upsertEntityType sends metrics_config:null only when the diff flagged the removal", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new ApplyClient(
       { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
@@ -339,12 +348,20 @@ describe("ApplyClient — prune", () => {
     );
 
     await client.upsertEntityType({ slug: "company", name: "Company" });
+    expect(
+      JSON.parse(String(calls[0]?.init?.body)).metrics_config
+    ).toBeUndefined();
 
-    const body = JSON.parse(String(calls[0]?.init?.body));
-    expect(body.metrics_config).toBeNull();
+    await client.upsertEntityType(
+      { slug: "company", name: "Company" },
+      undefined,
+      undefined,
+      new Set(["metrics"])
+    );
+    expect(JSON.parse(String(calls[1]?.init?.body)).metrics_config).toBeNull();
   });
 
-  test("upsertEntityType POSTs event_kinds for a type that declares kinds, null otherwise", async () => {
+  test("upsertEntityType sends event_kinds when declared, omits when not, clears when flagged", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new ApplyClient(
       { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
@@ -365,8 +382,19 @@ describe("ApplyClient — prune", () => {
       eventKinds
     );
 
+    // Not declared + not flagged → omitted, so an unrelated update never wipes
+    // out-of-band eventKinds. Flagged prune removal → null is sent.
     await client.upsertEntityType({ slug: "person", name: "Person" });
-    expect(JSON.parse(String(calls[1]?.init?.body)).event_kinds).toBeNull();
+    expect(
+      JSON.parse(String(calls[1]?.init?.body)).event_kinds
+    ).toBeUndefined();
+    await client.upsertEntityType(
+      { slug: "person", name: "Person" },
+      undefined,
+      undefined,
+      new Set(["eventKinds"])
+    );
+    expect(JSON.parse(String(calls[2]?.init?.body)).event_kinds).toBeNull();
   });
 
   test("listEntityTypes hoists event_kinds; null/empty stays undefined", async () => {
@@ -393,13 +421,10 @@ describe("ApplyClient — prune", () => {
     expect(byKey.empty?.eventKinds).toBeUndefined();
   });
 
-  test("metadata_schema keys the config cannot express survive an apply round-trip", async () => {
-    // `x-lobu-resolution` is authored out-of-band (manage_entity_schema / UI /
-    // an agent) and read by the server's entity-resolution policy to decide
-    // whether duplicate entities auto-merge. `lobu.config.ts` has no way to
-    // declare it, and upsertEntityType rebuilds metadata_schema from the flat
-    // properties/required — so it must be carried forward or the next apply
-    // erases the dedupe rules with no diff row and no warning.
+  test("an undeclared metadata_schema extension survives an apply round-trip", async () => {
+    // A policy authored out-of-band is unmanaged when resolutionPolicy is
+    // omitted from config. Since upsert rebuilds metadata_schema from flat
+    // properties/required, the extension must ride along or apply erases it.
     const resolution = {
       rules: [
         {
@@ -440,7 +465,7 @@ describe("ApplyClient — prune", () => {
 
     const [person, company] = await client.listEntityTypes();
     expect(person?.schemaExtras).toEqual({ "x-lobu-resolution": resolution });
-    // A type with nothing but config-owned keys stays undefined (no churn).
+    // A type with nothing but hoisted core keys stays undefined (no churn).
     expect(company?.schemaExtras).toBeUndefined();
 
     // Re-apply a config that adds a field: properties come from config, the
@@ -466,6 +491,211 @@ describe("ApplyClient — prune", () => {
       },
       required: ["email"],
       "x-lobu-resolution": resolution,
+    });
+  });
+
+  test("declared resolutionPolicy is folded into metadata_schema and wins over out-of-band extras", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    await client.upsertEntityType(
+      {
+        slug: "person",
+        properties: { email: { type: "string" } },
+        resolutionPolicy: {
+          "x-lobu-resolution": {
+            rules: [
+              { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+            ],
+          },
+        },
+      },
+      // Remote out-of-band value differs — the declared policy must win.
+      { "x-lobu-resolution": { rules: [] } }
+    );
+
+    const body = JSON.parse(String(calls[0]?.init?.body));
+    expect(body.metadata_schema["x-lobu-resolution"]).toEqual({
+      rules: [
+        { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+      ],
+    });
+    expect(body.metadata_schema.properties).toEqual({
+      email: { type: "string" },
+    });
+  });
+
+  test("out-of-band resolution extras survive when no policy is declared", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    await client.upsertEntityType(
+      { slug: "person", properties: { email: { type: "string" } } },
+      {
+        "x-lobu-resolution": {
+          rules: [
+            { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+          ],
+        },
+      }
+    );
+    const body = JSON.parse(String(calls[0]?.init?.body));
+    expect(body.metadata_schema["x-lobu-resolution"]).toEqual({
+      rules: [
+        { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+      ],
+    });
+  });
+
+  test("an extension-only type never wipes the live properties/required (remote core round-trips)", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    // Config declares ONLY the resolution policy — no properties/required. The
+    // live type has a full schema, which must survive the rebuild verbatim.
+    await client.upsertEntityType(
+      {
+        slug: "person",
+        resolutionPolicy: {
+          "x-lobu-resolution": {
+            rules: [
+              { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+            ],
+          },
+        },
+      },
+      undefined,
+      {
+        properties: { email: { type: "string" }, handle: { type: "string" } },
+        required: ["email"],
+      }
+    );
+
+    const body = JSON.parse(String(calls[0]?.init?.body));
+    expect(body.metadata_schema).toEqual({
+      type: "object",
+      properties: { email: { type: "string" }, handle: { type: "string" } },
+      required: ["email"],
+      "x-lobu-resolution": {
+        rules: [
+          { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+        ],
+      },
+    });
+  });
+
+  test("a policy-only upsert omits undeclared facets instead of clearing them", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    await client.upsertEntityType({
+      slug: "person",
+      resolutionPolicy: {
+        "x-lobu-resolution": {
+          rules: [
+            { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+          ],
+        },
+      },
+    });
+
+    const body = JSON.parse(String(calls[0]?.init?.body)) as Record<
+      string,
+      unknown
+    >;
+    // Facets the config does not own must not be sent at all — sending null
+    // would clear live eventKinds/backing/metrics on the server.
+    expect("event_kinds" in body).toBe(false);
+    expect("backing" in body).toBe(false);
+    expect("metrics_config" in body).toBe(false);
+  });
+
+  test("a prune-flagged removal clears properties/required instead of preserving them", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    await client.upsertEntityType(
+      {
+        slug: "person",
+        resolutionPolicy: {
+          "x-lobu-resolution": {
+            rules: [
+              { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+            ],
+          },
+        },
+      },
+      undefined,
+      {
+        properties: { email: { type: "string" } },
+        required: ["email"],
+      },
+      new Set(["properties", "required"])
+    );
+
+    const body = JSON.parse(String(calls[0]?.init?.body));
+    expect(body.metadata_schema.properties).toEqual({});
+    expect("required" in body.metadata_schema).toBe(false);
+  });
+
+  test("a prune-flagged resolutionPolicy removal drops x-lobu-resolution from the schema", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    await client.upsertEntityType(
+      { slug: "person", name: "Person" },
+      {
+        "x-lobu-resolution": {
+          rules: [
+            { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+          ],
+        },
+      },
+      { properties: { email: { type: "string" } } },
+      new Set(["resolutionPolicy"])
+    );
+
+    const body = JSON.parse(String(calls[0]?.init?.body));
+    expect(body.metadata_schema["x-lobu-resolution"]).toBeUndefined();
+    // The live core round-trips; only the pruned extension is dropped.
+    expect(body.metadata_schema.properties).toEqual({
+      email: { type: "string" },
     });
   });
 

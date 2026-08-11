@@ -249,6 +249,32 @@ describe("ProviderCatalogService.getInstalledModules — org inference providers
     ]);
   });
 
+  test("an official OpenAI alias uses Responses, not Chat Completions", async () => {
+    registerCatalogModule(
+      "openai",
+      "openai",
+      "https://api.openai.com/v1"
+    );
+    const catalog = makeCatalog({
+      models: ["my-openai/gpt-5.6-sol"],
+      orgRows: [
+        customUpstreamRow("my-openai", {
+          kind: "openai",
+          capabilities: { text: { model: "gpt-5.6-sol" } },
+          hasCustomUpstream: false,
+        }),
+      ],
+      registerUpstream: () => {},
+    });
+
+    const modules = await catalog.getInstalledModules("agent-1", "org-1");
+    const mod = modules[0] as ApiKeyProviderModule;
+    expect(mod.getUpstreamConfig()?.upstreamBaseUrl).toBe(
+      "https://api.openai.com/v1"
+    );
+    expect(mod.getProviderMetadata()?.sdkCompat).toBe("openai-responses");
+  });
+
   test("an OAuth kind contributes NO fallback upstream", async () => {
     // An OAuth provider (chatgpt, claude) registers as a plain module, not an
     // ApiKeyProviderModule, so buildProviderCatalog() reports baseUrl "" for it

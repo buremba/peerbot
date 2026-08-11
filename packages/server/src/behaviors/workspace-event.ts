@@ -17,6 +17,7 @@ import {
   MAX_WORKSPACE_EVENT_FANOUT,
   MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS,
   MAX_COALESCED_BEHAVIOR_EVENT_INPUTS,
+  isBoundedPositiveIntegerList,
   type WorkspaceEventActivationTaskPayload,
   type WorkspaceEventTriggerSignal,
 } from './workspace-event-contract';
@@ -96,7 +97,7 @@ export async function enqueueWorkspaceEventActivations(
   await enqueueTasksInTransaction(
     tx,
     payloads.map((payload) => ({
-      name: WORKSPACE_EVENT_ACTIVATION_TASK.name,
+      name: WORKSPACE_EVENT_ACTIVATION_TASK,
       payload,
       opts: {
         idempotencyKey: `workspace-event-activation:${payload.eventId}`,
@@ -276,27 +277,25 @@ export async function activateWorkspaceEventTask(
   payload: WorkspaceEventActivationTaskPayload,
   db: DbClient = getDb()
 ): Promise<WorkspaceEventActivationResult> {
-  const causalBehaviorIds = payload.causalBehaviorIds.filter(
-    (value) => Number.isSafeInteger(value) && value > 0
-  );
   if (
     !payload.organizationId ||
     !Number.isSafeInteger(payload.eventId) ||
     payload.eventId <= 0 ||
-    !Array.isArray(payload.rootEventIds) ||
-    payload.rootEventIds.length === 0 ||
-    payload.rootEventIds.length > MAX_COALESCED_BEHAVIOR_EVENT_INPUTS ||
-    payload.rootEventIds.some(
-      (eventId) => !Number.isSafeInteger(eventId) || eventId <= 0
+    !isBoundedPositiveIntegerList(
+      payload.rootEventIds,
+      MAX_COALESCED_BEHAVIOR_EVENT_INPUTS
     ) ||
-    new Set(payload.rootEventIds).size !== payload.rootEventIds.length ||
+    payload.rootEventIds.length === 0 ||
     !Number.isSafeInteger(payload.depth) ||
     payload.depth < 1 ||
-    causalBehaviorIds.length > MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS ||
-    new Set(causalBehaviorIds).size !== causalBehaviorIds.length
+    !isBoundedPositiveIntegerList(
+      payload.causalBehaviorIds,
+      MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS
+    )
   ) {
     throw new Error('Invalid workspace event activation task payload');
   }
+  const causalBehaviorIds = payload.causalBehaviorIds;
   const event = await loadWorkspaceEvent(
     payload.organizationId,
     payload.eventId,

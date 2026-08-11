@@ -21,6 +21,7 @@ import {
 import {
   MAX_COALESCED_BEHAVIOR_EVENT_INPUTS,
   MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS,
+  behaviorTriggerSignals,
   isWorkspaceEventTriggerSignal,
   type WorkspaceEventTriggerSignal,
 } from '../behaviors/workspace-event-contract';
@@ -804,8 +805,7 @@ export async function createBehaviorEventRun(
       `;
       if (pending.length > 0) {
         const input = (pending[0]?.approved_input ?? {}) as WatcherRunPayload;
-        const signals = input.trigger_signals ??
-          (input.trigger_signal ? [input.trigger_signal] : []);
+        const signals = behaviorTriggerSignals(input);
         const deliveryIds = input.delivery_ids ??
           signals.map((signal) => signal.delivery_id);
         const nextSignals = [...signals, params.signal];

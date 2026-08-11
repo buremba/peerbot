@@ -33,6 +33,28 @@ export interface WorkspaceEventActivationTaskPayload {
   depth: number;
 }
 
+export function isBoundedPositiveIntegerList(
+  value: unknown,
+  maxLength: number
+): value is number[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= maxLength &&
+    value.every((item) => Number.isSafeInteger(item) && item > 0) &&
+    new Set(value).size === value.length
+  );
+}
+
+export function behaviorTriggerSignals<T = unknown>(payload: {
+  trigger_signal?: T;
+  trigger_signals?: unknown;
+}): T[] {
+  if (Array.isArray(payload.trigger_signals)) {
+    return payload.trigger_signals as T[];
+  }
+  return payload.trigger_signal == null ? [] : [payload.trigger_signal];
+}
+
 export function isWorkspaceEventTriggerSignal(
   value: unknown
 ): value is WorkspaceEventTriggerSignal {
@@ -45,21 +67,15 @@ export function isWorkspaceEventTriggerSignal(
     Number(signal.event_id) > 0 &&
     typeof signal.event_type === 'string' &&
     typeof signal.delivery_id === 'string' &&
-    Array.isArray(signal.root_event_ids) &&
+    isBoundedPositiveIntegerList(
+      signal.root_event_ids,
+      MAX_COALESCED_BEHAVIOR_EVENT_INPUTS
+    ) &&
     signal.root_event_ids.length > 0 &&
-    signal.root_event_ids.length <= MAX_COALESCED_BEHAVIOR_EVENT_INPUTS &&
-    signal.root_event_ids.every(
-      (eventId) => Number.isSafeInteger(eventId) && eventId > 0
+    isBoundedPositiveIntegerList(
+      signal.causal_behavior_ids,
+      MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS
     ) &&
-    new Set(signal.root_event_ids).size === signal.root_event_ids.length &&
-    Array.isArray(signal.causal_behavior_ids) &&
-    signal.causal_behavior_ids.length <=
-      MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS &&
-    signal.causal_behavior_ids.every(
-      (behaviorId) => Number.isSafeInteger(behaviorId) && behaviorId > 0
-    ) &&
-    new Set(signal.causal_behavior_ids).size ===
-      signal.causal_behavior_ids.length &&
     Number.isSafeInteger(signal.depth) &&
     Number(signal.depth) > 0
   );

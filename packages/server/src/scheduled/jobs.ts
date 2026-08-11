@@ -413,7 +413,7 @@ function registerMaintenanceTasks(
   // A Behavior output event and this task row commit together. The handler
   // performs subscriber lookup and takes downstream per-Behavior locks only
   // after the producer's window transaction has released its own resources.
-  scheduler.register(WORKSPACE_EVENT_ACTIVATION_TASK.name, async (ctx) => {
+  scheduler.register(WORKSPACE_EVENT_ACTIVATION_TASK, async (ctx) => {
     const result = await activateWorkspaceEventTask(
       ctx.payload as WorkspaceEventActivationTaskPayload,
     );

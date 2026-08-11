@@ -142,6 +142,22 @@ export function resolvedEventExecution(
   );
 }
 
+export function normalizeWorkspaceEventTrigger(
+  trigger: BehaviorWorkspaceEventTrigger
+): BehaviorWorkspaceEventTrigger {
+  return {
+    ...trigger,
+    entity_type: trigger.entity_type?.trim() || undefined,
+    event_types: Array.from(new Set(trigger.event_types)),
+    match:
+      trigger.match && Object.keys(trigger.match).length > 0
+        ? trigger.match
+        : undefined,
+    execution: resolvedEventExecution(trigger),
+    active_run: trigger.active_run ?? "coalesce",
+  };
+}
+
 export const BehaviorScheduleTriggerSchema = Type.Object(
   {
     kind: Type.Literal("schedule"),

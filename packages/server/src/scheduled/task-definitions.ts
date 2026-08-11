@@ -6,16 +6,14 @@
  * task names. Boot registration and enqueue sites import the same definition,
  * so adding another transactional task is an explicit platform change.
  */
-export const WORKSPACE_EVENT_ACTIVATION_TASK = {
-  name: 'activate-workspace-event',
-} as const;
+export const WORKSPACE_EVENT_ACTIVATION_TASK = 'activate-workspace-event';
 
 const TRANSACTIONAL_TASK_DEFINITIONS = [
   WORKSPACE_EVENT_ACTIVATION_TASK,
 ] as const;
 
 const transactionalTaskNames = new Set<string>(
-  TRANSACTIONAL_TASK_DEFINITIONS.map((definition) => definition.name)
+  TRANSACTIONAL_TASK_DEFINITIONS
 );
 
 export function isTransactionalTaskName(name: string): boolean {

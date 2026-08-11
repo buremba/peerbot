@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import {
+	normalizeWorkspaceEventTrigger,
 	resolvedEventExecution,
 	type BehaviorEventTrigger,
 	type BehaviorScheduleTrigger,
@@ -173,22 +174,6 @@ function normalizedScheduleTrigger(
 	};
 }
 
-function normalizedWorkspaceEventTrigger(
-	trigger: BehaviorWorkspaceEventTrigger
-): BehaviorWorkspaceEventTrigger {
-	return {
-		...trigger,
-		entity_type: trigger.entity_type?.trim() || undefined,
-		event_types: Array.from(new Set(trigger.event_types)),
-		match:
-			trigger.match && Object.keys(trigger.match).length > 0
-				? trigger.match
-				: undefined,
-		execution: resolvedEventExecution(trigger),
-		active_run: trigger.active_run ?? "coalesce",
-	};
-}
-
 export function normalizeBehaviorTriggers(
 	triggers: BehaviorTrigger[]
 ): BehaviorTrigger[] {
@@ -204,7 +189,7 @@ export function normalizeBehaviorTriggers(
 			return normalizedScheduleTrigger(trigger);
 		}
 		if (trigger.kind === "event" && trigger.source === "workspace") {
-			return normalizedWorkspaceEventTrigger(trigger);
+			return normalizeWorkspaceEventTrigger(trigger);
 		}
 		return normalizedEventTrigger(trigger);
 	});
@@ -404,20 +389,17 @@ export async function assertBehaviorTriggerConnections(
 		const catalogKey = entityTypeSlug ?? "*";
 		let catalog = eventKindsByEntityType.get(catalogKey);
 		if (!catalog) {
-			const rows = entityTypeSlug
-				? await sql`
-					SELECT slug, name, event_kinds
-					FROM entity_types
-					WHERE organization_id = ${organizationId}
-					  AND slug IN (${entityTypeSlug}, '$member')
-					  AND deleted_at IS NULL
-				`
-				: await sql`
-					SELECT slug, name, event_kinds
-					FROM entity_types
-					WHERE organization_id = ${organizationId}
-					  AND deleted_at IS NULL
-				`;
+			const rows = await sql`
+				SELECT slug, name, event_kinds
+				FROM entity_types
+				WHERE organization_id = ${organizationId}
+				  AND deleted_at IS NULL
+				  AND (
+					${entityTypeSlug ?? null}::text IS NULL
+					OR slug IN (${entityTypeSlug ?? null}, '$member')
+				  )
+				ORDER BY (slug = '$member') DESC, slug ASC
+			`;
 			const requestedType = entityTypeSlug
 				? rows.find((row) => row.slug === entityTypeSlug)
 				: undefined;
@@ -426,15 +408,9 @@ export async function assertBehaviorTriggerConnections(
 					`Workspace event trigger entity type '${entityTypeSlug}' was not found in this organization.`
 				);
 			}
-			const orderedRows = entityTypeSlug
-				? [
-						rows.find((row) => row.slug === '$member'),
-						requestedType,
-					].filter(Boolean)
-				: rows;
 			const eventKinds = Object.assign(
 				{},
-				...orderedRows.map((row) =>
+				...rows.map((row) =>
 					row.event_kinds && typeof row.event_kinds === "object"
 						? row.event_kinds
 						: {}

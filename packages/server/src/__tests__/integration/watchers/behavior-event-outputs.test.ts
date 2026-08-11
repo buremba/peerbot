@@ -455,6 +455,15 @@ describe('Behavior event outputs', () => {
       activateWorkspaceEventTask(
         {
           ...observationTask.action_input.payload,
+          causalBehaviorIds: [watcherId, 0],
+        },
+        sql
+      )
+    ).rejects.toThrow(/invalid workspace event activation task payload/i);
+    await expect(
+      activateWorkspaceEventTask(
+        {
+          ...observationTask.action_input.payload,
           causalBehaviorIds: [watcherId, watcherId + 1000],
         },
         sql

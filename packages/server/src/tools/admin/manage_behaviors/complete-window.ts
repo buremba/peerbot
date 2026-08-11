@@ -12,6 +12,7 @@ import {
   findSubscribedWorkspaceEventTypes,
 } from '../../../behaviors/workspace-event';
 import {
+  behaviorTriggerSignals,
   deriveWorkspaceEventCausality,
   type WorkspaceEventActivationTaskPayload,
 } from '../../../behaviors/workspace-event-contract';
@@ -302,11 +303,7 @@ export async function handleCompleteWindow(
         trigger_signal?: unknown;
         trigger_signals?: unknown[];
       };
-      runTriggerSignals = Array.isArray(input.trigger_signals)
-        ? input.trigger_signals
-        : input.trigger_signal
-          ? [input.trigger_signal]
-          : [];
+      runTriggerSignals = behaviorTriggerSignals(input);
     }
   }
 

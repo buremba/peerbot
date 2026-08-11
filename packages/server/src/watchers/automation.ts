@@ -7,7 +7,10 @@ import {
 	type BehaviorTimeGranularity,
 } from "@lobu/connector-sdk";
 import { generateWorkerToken, getErrorMessage } from "@lobu/core";
-import { isWorkspaceEventTriggerSignal } from "../behaviors/workspace-event-contract";
+import {
+	behaviorTriggerSignals,
+	isWorkspaceEventTriggerSignal,
+} from "../behaviors/workspace-event-contract";
 import { intervals } from "../config/intervals";
 import type { DbClient } from "../db/client";
 import { getDb, parsePgNumberArray, pgTextArray } from "../db/client";
@@ -1022,9 +1025,7 @@ export function buildDispatchMessage(params: {
 		params.behaviorInstructions.trim().length > 0
 			? params.behaviorInstructions
 			: undefined;
-	const signals =
-		params.payload.trigger_signals ??
-		(params.payload.trigger_signal ? [params.payload.trigger_signal] : []);
+	const signals = behaviorTriggerSignals(params.payload);
 	const workspaceSignals = signals.filter(isWorkspaceEventTriggerSignal);
 	if (
 		params.payload.dispatch_source === "event" &&

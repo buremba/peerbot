@@ -11,7 +11,10 @@
 import { validateEntityMetrics } from "@lobu/connector-sdk/metrics";
 import { type AgentSettings, isHostedChatPlatform } from "@lobu/core";
 import type { AgentSettingsStored } from "@lobu/core/contracts/agent-settings";
-import { resolvedEventExecution } from "@lobu/core/contracts/tools/manage-behaviors";
+import {
+  normalizeWorkspaceEventTrigger,
+  resolvedEventExecution,
+} from "@lobu/core/contracts/tools/manage-behaviors";
 
 /**
  * Exhaustiveness projection over the stored AgentSettings shape. Every key is
@@ -656,17 +659,7 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
       };
     }
     if (trigger.kind === "event" && trigger.source === "workspace") {
-      return {
-        ...trigger,
-        entity_type: trigger.entity_type?.trim() || undefined,
-        event_types: Array.from(new Set(trigger.event_types)),
-        match:
-          trigger.match && Object.keys(trigger.match).length > 0
-            ? trigger.match
-            : undefined,
-        execution: resolvedEventExecution(trigger),
-        active_run: trigger.active_run ?? "coalesce",
-      } as const;
+      return normalizeWorkspaceEventTrigger(trigger);
     }
     const { connection, ...eventTrigger } = trigger;
     const normalizedEventTrigger = {

@@ -48,7 +48,12 @@ export interface ConnectorDeriveEventInput {
 	metadata: Record<string, unknown> | undefined;
 }
 
-/** Load the per-feed context a batch of events shares (once per sync, not per row). */
+/**
+ * Load the per-feed context a batch of events shares (once per sync, not per
+ * row). A feed/definition that resolves to no activation surface returns a
+ * no-op context (no kinds, not previously synced) rather than throwing — only
+ * a genuine query failure propagates, fail-closed, to the caller.
+ */
 export async function loadConnectorDeriveFeedContext(
 	args: {
 		organizationId: string;
@@ -77,7 +82,12 @@ export async function loadConnectorDeriveFeedContext(
 		JOIN connections c
 		  ON c.id = f.connection_id
 		 AND c.organization_id = f.organization_id
-		JOIN connector_definitions d
+		-- LEFT: a feed whose connector has no active definition (test harnesses,
+		-- device manifests, org overrides removed) has no activation surface —
+		-- that is a deterministic state, not an activation failure. Only a real
+		-- query error below propagates (fail-closed); a missing definition just
+		-- yields no eventKinds and therefore no activation.
+		LEFT JOIN connector_definitions d
 		  ON d.organization_id = f.organization_id
 		 AND d.key = c.connector_key
 		 AND d.status = 'active'
@@ -89,9 +99,16 @@ export async function loadConnectorDeriveFeedContext(
 	`;
 	const row = rows[0];
 	if (!row) {
-		throw new Error(
-			`Cannot derive Behavior activation for missing feed ${args.feedId} (${args.connectorKey}/${args.feedKey})`,
-		);
+		// The feed (or its connection) is not present — a sync referencing a
+		// feed that no longer exists has no activation surface. Return a no-op
+		// context so the batch ingests without activation; only a real query
+		// failure aborts (fail-closed in the caller).
+		return {
+			connectorKey: args.connectorKey,
+			feedKey: args.feedKey,
+			feedPreviouslySynced: false,
+			eventKinds: null,
+		};
 	}
 	const eventKinds =
 		row.event_kinds && typeof row.event_kinds === "object"

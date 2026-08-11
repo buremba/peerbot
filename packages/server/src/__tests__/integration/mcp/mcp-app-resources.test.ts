@@ -548,7 +548,8 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     const bindCard = async (
       toolCallId: string,
       capability: string,
-      viewState: Record<string, unknown> = {}
+      viewState: Record<string, unknown> = {},
+      capabilityTransport: 'argument' | 'metadata' = 'argument'
     ) => {
       const response = await post(`/mcp/${org.slug}`, {
         body: {
@@ -561,10 +562,15 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
               tool_call_id: toolCallId,
               tool_name: 'query_sql',
               view_state: viewState,
-              snapshot_capability: capability,
+              ...(capabilityTransport === 'argument'
+                ? { snapshot_capability: capability }
+                : {}),
             },
             _meta: {
               'openai/session': conversationId,
+              ...(capabilityTransport === 'metadata'
+                ? { 'lobu/mcp-app-snapshot-capability': capability }
+                : {}),
             },
           },
         },
@@ -609,7 +615,9 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     const secondCapability = secondBody.result?._meta?.['lobu/mcp-app-snapshot-capability'];
     expect(secondCapability).toEqual(expect.any(String));
     expect(secondCapability).not.toBe(firstCapability);
-    expect(await bindCard('host-card-2', secondCapability)).toEqual({ saved: true });
+    expect(await bindCard('host-card-2', secondCapability, {}, 'metadata')).toEqual({
+      saved: true,
+    });
     expect((await restore('host-card-1'))?.data?.rows).toEqual([{ row_number: 1 }]);
     expect((await restore('host-card-2'))?.data?.rows).toEqual([{ row_number: 2 }]);
 

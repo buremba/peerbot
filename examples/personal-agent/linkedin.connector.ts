@@ -753,17 +753,21 @@ export function buildHomeFeedEvents(
       row.post_url ??
         (embeddedId ? `urn:li:${embeddedNamespace}:${embeddedId}` : "")
     );
+    const canonicalUrn = postUrl?.match(
+      /urn:li:(activity|share|ugcPost):(\d{6,})/i
+    );
+    const postIdentity = canonicalUrn
+      ? `urn:li:${linkedInUrnNamespace(canonicalUrn[1] ?? "")}:${canonicalUrn[2]}`
+      : null;
 
     // Persist the durable post identity (canonical URL + URN) so downstream
     // action callers (prepare_comment) can address the post with a supported
     // durable identifier. When no durable identity is recoverable the event
     // carries NONE — never substitute the generic linkedin.com/feed/ root,
     // which looks like a specific post identity but resolves to the whole
-    // feed (#durable-post-identity).
+    // feed.
     if (postUrl) metadata.post_url = postUrl;
-    if (embeddedId) {
-      metadata.post_identity = `urn:li:${embeddedNamespace}:${embeddedId}`;
-    }
+    if (postIdentity) metadata.post_identity = postIdentity;
 
     events.push({
       origin_id: `li_home_${row.id}`,
@@ -2536,7 +2540,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
               type: "string",
               enum: ["not_actionable", "prepared"],
               description:
-                "not_actionable when the input did not carry a durable post id (no browser action was taken).",
+                "prepared after the draft is staged; not_actionable when the input did not carry a durable post id (no browser action was taken).",
             },
             reason: {
               type: "string",
@@ -2611,7 +2615,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
               type: "string",
               enum: ["not_actionable", "verified"],
               description:
-                "not_actionable when the input did not carry a durable post id (no browser action was taken).",
+                "verified after a matching comment is found; not_actionable when the input did not carry a durable post id (no browser action was taken).",
             },
             reason: {
               type: "string",
@@ -2693,7 +2697,13 @@ export default class LinkedInConnector extends ConnectorRuntime<
           author_hint: authorHint || undefined,
           focus: ctx.input.focus !== false,
         });
-        return { success: true, output };
+        return {
+          success: true,
+          output: {
+            ...output,
+            ...(output.verified ? { status: "verified" } : {}),
+          },
+        };
       }
 
       const reason =
@@ -2720,7 +2730,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
         messageId: messageId || undefined,
         targetBrowserConnectionId: resolveTargetBrowserConnectionId(ctx.input),
       });
-      return { success: true, output };
+      return { success: true, output: { ...output, status: "prepared" } };
     } catch (error) {
       return {
         success: false,

@@ -2346,6 +2346,7 @@ describe("prepare_comment helpers", () => {
     });
     expect(result.success).toBe(true);
     expect(result.output?.prepared).toBe(true);
+    expect(result.output?.status).toBe("prepared");
     expect(result.output?.tab_id).toBe(5);
     expect(result.output?.method).toBe("evaluate");
   });
@@ -2389,6 +2390,7 @@ describe("prepare_comment helpers", () => {
     });
     expect(result.success).toBe(true);
     expect(result.output?.verified).toBe(true);
+    expect(result.output?.status).toBe("verified");
     expect(result.output?.match?.author).toBe("Burak");
   });
 
@@ -2455,6 +2457,7 @@ describe("prepare_comment helpers", () => {
     });
     expect(result.success).toBe(true);
     expect(result.output?.prepared).toBe(true);
+    expect(result.output?.status).toBe("prepared");
     expect(result.output?.post_url).toBe(
       "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567"
     );
@@ -2494,6 +2497,7 @@ describe("prepare_comment helpers", () => {
     });
     expect(result.success).toBe(true);
     expect(result.output?.prepared).toBe(true);
+    expect(result.output?.status).toBe("prepared");
     expect(result.output?.post_url).toBe(
       "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567"
     );
@@ -2548,6 +2552,22 @@ describe("prepare_comment helpers", () => {
     expect(ev.metadata?.post_identity).toBe(
       "urn:li:activity:7345678901234567890"
     );
+  });
+
+  test("buildHomeFeedEvents derives post identity from the canonical URL", () => {
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "opaque_component_key",
+          body: "Feed post Ada Lovelace • 1st A durable agents post with enough body text",
+          author: "Ada Lovelace",
+          post_url:
+            "/feed/update/urn:li:share:7345678901234567890?utm_source=feed",
+        },
+      ],
+      new Date("2026-08-01T12:00:00.000Z")
+    );
+    expect(ev.metadata?.post_identity).toBe("urn:li:share:7345678901234567890");
   });
 
   test("buildHomeFeedEvents does NOT emit the generic feed URL as a fake post identity", () => {

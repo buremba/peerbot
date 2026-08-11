@@ -12,18 +12,21 @@
  * quotes; this module treats them as `snapshot_price` / `snapshot_value`.
  *
  * ## Currency
- * USD and TRY totals are kept SEPARATE and never silently combined. A
- * consolidated total is only produced when an explicit, timestamped FX rate
- * is supplied; without one the portfolio is per-currency.
+ * USD and TRY totals are kept SEPARATE and never silently combined.
  *
  * ## Quote failure
  *   - Never zero as a fallback.
  *   - A failed lookup → `quote_unavailable`, holding + cost basis preserved.
- *   - The last valid quote is used only when its timestamp and stale state
- *     are explicit (the provider's Quote carries both).
+ *   - A provider-supplied stale quote is usable only when its timestamp and
+ *     stale state are explicit and the caller opts in.
  */
 
-import type { Quote, QuoteProvider, QuoteResult } from "./quote-provider";
+import {
+  quotePriceOrUnavailable,
+  type Quote,
+  type QuoteProvider,
+  type QuoteResult,
+} from "./quote-provider";
 import {
   resolveWorldEntity,
   tickerIdentityKey,
@@ -118,7 +121,12 @@ export function holdingFromMidasEvent(
   if (!market || !symbol) return null;
 
   const num = (v: unknown): number | null => {
-    const n = typeof v === "number" ? v : Number.parseFloat(String(v));
+    const n =
+      typeof v === "number"
+        ? v
+        : typeof v === "string" && v.trim()
+          ? Number(v)
+          : Number.NaN;
     return Number.isFinite(n) ? n : null;
   };
   const shares = num(raw.shares);
@@ -127,10 +135,11 @@ export function holdingFromMidasEvent(
   const snapshotValue = num(raw.value ?? raw.snapshotValue);
   if (shares == null || avgCost == null || snapshotPrice == null) return null;
 
-  const currency = (
-    String(raw.currency ?? "").toUpperCase() === "TRY" ? "TRY" : "USD"
-  ) as "USD" | "TRY";
+  const currencyRaw = String(raw.currency ?? "").toUpperCase();
+  if (currencyRaw !== "USD" && currencyRaw !== "TRY") return null;
+  const currency = currencyRaw as "USD" | "TRY";
   const occurredAt = String(raw.occurred_at ?? raw.occurredAt ?? "");
+  if (!occurredAt || !Number.isFinite(Date.parse(occurredAt))) return null;
 
   return {
     market: market.toUpperCase(),
@@ -216,10 +225,26 @@ export async function computePortfolio(opts: {
       continue;
     }
 
-    const quoteResult: QuoteResult = await opts.quotes.quote({
-      market: holding.market,
-      symbol: holding.symbol,
-    });
+    let quoteResult: QuoteResult;
+    try {
+      quoteResult = await opts.quotes.quote({
+        market: holding.market,
+        symbol: holding.symbol,
+      });
+    } catch {
+      positions.push({
+        ...base,
+        quote: {
+          status: "quote_unavailable",
+          reason: "quote provider request failed",
+          provider: opts.quotes.providerId,
+        },
+        currentValue: null,
+        unrealizedPnl: null,
+        unrealizedPnlPct: null,
+      });
+      continue;
+    }
 
     if (quoteResult.status === "quote_unavailable") {
       positions.push({
@@ -237,14 +262,20 @@ export async function computePortfolio(opts: {
     }
 
     const quote: Quote = quoteResult;
-    // A stale quote is only used when the caller accepts staleness explicitly;
-    // otherwise it is a quote_unavailable that preserves the holding.
-    if (!allowStale && quote.stale) {
+    const quoteCurrency = quote.currency.toUpperCase();
+    const usablePrice = quotePriceOrUnavailable(quote, { allowStale });
+    if (quoteCurrency !== holding.currency || usablePrice == null) {
+      const reason =
+        quoteCurrency !== holding.currency
+          ? `quote currency ${quote.currency} does not match holding currency ${holding.currency}`
+          : quote.stale && !allowStale
+            ? `stale quote (as_of ${quote.asOf})`
+            : "quote has an invalid price or as_of timestamp";
       positions.push({
         ...base,
         quote: {
           status: "quote_unavailable",
-          reason: `stale quote (as_of ${quote.asOf})`,
+          reason,
           provider: quote.provider,
         },
         currentValue: null,
@@ -254,9 +285,10 @@ export async function computePortfolio(opts: {
       continue;
     }
 
-    const value = currentValue(holding, quote);
-    const pnl = unrealizedPnl(holding, quote);
-    const pct = unrealizedPnlPct(holding, quote);
+    const value = holding.shares * usablePrice;
+    const cost = costBasis(holding);
+    const pnl = value - cost;
+    const pct = cost > 0 ? value / cost - 1 : null;
 
     positions.push({
       ...base,

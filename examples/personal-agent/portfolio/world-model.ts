@@ -3,20 +3,19 @@
  *
  * A SHALLOW entity model: a listed company or fund is described by a small,
  * flat set of properties — never a generic instrument entity, never a fund
- * subtype of company. Funds link to their manager/sponsor company via a
- * `managed_by` / `sponsored_by` relationship, not by inheritance.
+ * subtype of company.
  *
  * These descriptors are the RESOLUTION TABLE, not a database model: they tell
- * the portfolio path which public `company` / `fund` entity a Midas holding's
+ * the portfolio path which company or fund descriptor a Midas holding's
  * (market, symbol) maps to, and what quoting identity it carries. Nothing here
  * persists holdings; the Midas events remain the source of truth.
  *
- * Ticker identity is (market/exchange, symbol) — never symbol alone. Fallback
- * keys are `US:NVDA`, `TR:THYAO` style; an exchange MIC is preferred when one
- * is already available. No FIGI/OpenFIGI is introduced.
+ * Ticker identity is the Midas source pair (market, symbol) — never symbol
+ * alone. Keys are `US:NVDA`, `TR:THYAO` style; resolved descriptors record the
+ * exact exchange MIC separately. No FIGI/OpenFIGI is introduced.
  */
 
-/** A company or fund. Funds are NOT a subtype of company — separate entity_type. */
+/** A company or fund. Funds are not represented as companies. */
 export type WorldEntityType = "company" | "fund";
 
 /** A single listing of the entity on an exchange. */
@@ -28,18 +27,17 @@ export interface WorldListing {
 }
 
 /**
- * Shallow descriptor for a company or fund entity in a public Market catalog.
- * Every field optional except the essentials; extra catalog fields are allowed
- * and preserved by callers.
+ * Shallow company or fund descriptor for portfolio calculation.
+ * Fields beyond the essentials describe the primary listing or fund.
  */
 export interface WorldEntity {
-  /** entity_type — 'company' | 'fund'. */
+  /** Descriptor category: 'company' | 'fund'. */
   entityType: WorldEntityType;
-  /** Canonical display name (e.g. "NVIDIA"). */
+  /** Human-readable display name (e.g. "NVIDIA"). */
   name: string;
   /** Primary ticker for the entity's home market. */
   primaryTicker?: string | null;
-  /** Exchange MIC of the primary listing (e.g. XNAS) or market name. */
+  /** Exchange MIC of the primary listing (e.g. XNAS), when known. */
   primaryExchange?: string | null;
   /** Trading currency of the primary listing. */
   currency?: string | null;
@@ -51,16 +49,7 @@ export interface WorldEntity {
    */
   fundType?: string | null;
   benchmark?: string | null;
-  /**
-   * Relationship target (a company entity key or name) for
-   * `fund --managed_by--> company` (or `sponsored_by` when legally accurate).
-   */
-  managedBy?: string | null;
-  sponsoredBy?: string | null;
 }
-
-/** Stable key for a world entity, usable as a catalog lookup key. */
-export type WorldEntityKey = string;
 
 /**
  * The canonical, curated world-model resolution table used by the portfolio
@@ -69,7 +58,7 @@ export type WorldEntityKey = string;
  * Unknown symbols (e.g. ALTIN.S1 with no exact mapping) resolve to `null` and
  * the caller must surface an explicit unresolved state, never a guess.
  */
-export const WORLD_ENTITIES: Record<string, WorldEntity> = {
+const WORLD_ENTITIES: Record<string, WorldEntity> = {
   // ── Companies (US) ──────────────────────────────────────────────────
   "US:NVDA": {
     entityType: "company",
@@ -122,10 +111,10 @@ export const WORLD_ENTITIES: Record<string, WorldEntity> = {
     entityType: "fund",
     name: "SPDR S&P 500 ETF Trust",
     primaryTicker: "SPY",
-    primaryExchange: "XASE",
+    primaryExchange: "ARCX",
     currency: "USD",
     listings: [
-      { symbol: "SPY", exchangeMic: "XASE", currency: "USD", isPrimary: true },
+      { symbol: "SPY", exchangeMic: "ARCX", currency: "USD", isPrimary: true },
     ],
     fundType: "etf",
     benchmark: "S&P 500",
@@ -134,23 +123,22 @@ export const WORLD_ENTITIES: Record<string, WorldEntity> = {
     entityType: "fund",
     name: "iShares Gold Trust",
     primaryTicker: "IAU",
-    primaryExchange: "XASE",
+    primaryExchange: "ARCX",
     currency: "USD",
     listings: [
-      { symbol: "IAU", exchangeMic: "XASE", currency: "USD", isPrimary: true },
+      { symbol: "IAU", exchangeMic: "ARCX", currency: "USD", isPrimary: true },
     ],
-    fundType: "etf",
-    benchmark: "Gold spot price",
+    fundType: "commodity",
+    benchmark: "LBMA Gold Price",
   },
 };
 
 /**
  * Identity key for a Midas holding's acquisition: `(market, symbol)`.
  *
- * `market` is the Midas market ("US" | "TR"), which is exactly the quoting
- * market for these holdings. When an exchange MIC is already known it is
- * preferred, but the Midas connector exposes only the market — the key is the
- * market-scoped identity the mission requires.
+ * `market` is the Midas market ("US" | "TR"), which scopes both acquisition
+ * and quoting. The connector does not expose an exchange MIC; that belongs to
+ * the resolved listing descriptor, not this source identity.
  */
 export function tickerIdentityKey(market: string, symbol: string): string {
   const m = market.trim().toUpperCase();
@@ -168,22 +156,4 @@ export function resolveWorldEntity(
   symbol: string
 ): WorldEntity | null {
   return WORLD_ENTITIES[tickerIdentityKey(market, symbol)] ?? null;
-}
-
-/**
- * The canonical catalog entity key for a resolved world entity, or `null` when
- * unresolved. The public Market catalog is expected to key company/fund
- * entities by this value.
- */
-export function worldEntityCatalogKey(
-  market: string,
-  symbol: string
-): string | null {
-  const resolved = resolveWorldEntity(market, symbol);
-  return resolved ? tickerIdentityKey(market, symbol) : null;
-}
-
-/** All (market, symbol) holdings the world model currently knows. */
-export function knownTickerIdentities(): string[] {
-  return Object.keys(WORLD_ENTITIES);
 }

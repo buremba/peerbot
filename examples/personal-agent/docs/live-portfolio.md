@@ -1,9 +1,8 @@
 # Live portfolio path
 
-Status: implemented as a pure, provider-neutral read-time path; **no live quote
-provider is wired** because none exists in the platform today. The seam is
-defined and tested; a real provider requires a credential this repo does not
-have.
+Status: implemented as a pure, provider-neutral calculation seam only. It is
+not wired into `lobu.config.ts` and produces no live portfolio output. This
+repository snapshot has no live quote provider or market-data credential.
 
 ## Source of truth
 
@@ -40,15 +39,15 @@ Tests: `examples/personal-agent/__tests__/portfolio.test.ts`.
 A live provider needs a credential/feed this repo does not have — e.g. a
 market-data API key (Twelve Data, Alpha Vantage, Finnhub) or a trading-account
 mark-to-market feed. That is an unapproved external dependency; it was NOT
-introduced. The `QuoteProvider` interface is the only thing to implement; the
+introduced. A complete path still needs a real `QuoteProvider`, credential
+configuration, and a caller that reads Midas events and renders the result. The
 fixture provider is a test double and must never be used as a live source.
 
 ## Guarantees
 
-- Private holdings (shares, avg cost, account identity, P&L) never enter public
-  Market entities.
+- This seam performs no entity writes; private holdings (shares, avg cost,
+  account identity, P&L) stay in the calculation result.
 - No high-frequency quote events are persisted into the public organisation.
 - Quotes are computed at read time; a quote failure returns `quote_unavailable`
   (holding + cost basis preserved), never a zero.
-- USD and TRY totals stay separate unless an explicit timestamped FX rate is
-  supplied.
+- USD and TRY totals stay separate; this seam has no FX conversion path.

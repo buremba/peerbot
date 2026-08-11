@@ -10,8 +10,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   FixtureQuoteProvider,
-  DEFAULT_FRESHNESS_MS,
-  isQuoteFresh,
   quotePriceOrUnavailable,
 } from "../portfolio/quote-provider";
 import {
@@ -25,10 +23,8 @@ import {
   type MidasHoldingEvent,
 } from "../portfolio/portfolio";
 import {
-  knownTickerIdentities,
   resolveWorldEntity,
   tickerIdentityKey,
-  worldEntityCatalogKey,
 } from "../portfolio/world-model";
 
 const NVDA_EVENT: MidasHoldingEvent = {
@@ -70,11 +66,12 @@ describe("world-model resolution", () => {
     expect(spy?.benchmark).toBe("S&P 500");
     const iau = resolveWorldEntity("US", "IAU");
     expect(iau?.entityType).toBe("fund");
+    expect(iau?.fundType).toBe("commodity");
+    expect(iau?.benchmark).toBe("LBMA Gold Price");
   });
 
   test("ALTIN.S1 is explicitly unresolved, never guessed", () => {
     expect(resolveWorldEntity("TR", "ALTIN.S1")).toBeNull();
-    expect(worldEntityCatalogKey("TR", "ALTIN.S1")).toBeNull();
   });
 
   test("ticker identity is market-scoped, never symbol alone", () => {
@@ -84,10 +81,9 @@ describe("world-model resolution", () => {
     expect(tickerIdentityKey("", "NVDA")).toBe("");
   });
 
-  test("known identities are non-empty and market-qualified", () => {
-    const known = knownTickerIdentities();
-    expect(known.length).toBeGreaterThan(0);
-    expect(known.every((k) => k.includes(":"))).toBe(true);
+  test("fund listings use their NYSE Arca MIC", () => {
+    expect(resolveWorldEntity("US", "SPY")?.primaryExchange).toBe("ARCX");
+    expect(resolveWorldEntity("US", "IAU")?.primaryExchange).toBe("ARCX");
   });
 });
 
@@ -113,6 +109,7 @@ describe("Midas event → holding", () => {
       avg_cost: 250,
       value: 7500,
       currency: "TRY",
+      occurred_at: "2026-08-01T12:00:00.000Z",
     });
     expect(h?.market).toBe("TR");
     expect(h?.avgCost).toBe(250);
@@ -122,6 +119,18 @@ describe("Midas event → holding", () => {
   test("returns null for a row missing market or symbol", () => {
     expect(holdingFromMidasEvent({ symbol: "NVDA" } as never)).toBeNull();
     expect(holdingFromMidasEvent({ market: "US" } as never)).toBeNull();
+  });
+
+  test("returns null rather than inventing currency or snapshot time", () => {
+    expect(
+      holdingFromMidasEvent({ ...NVDA_EVENT, currency: "EUR" } as never)
+    ).toBeNull();
+    expect(
+      holdingFromMidasEvent({ ...NVDA_EVENT, occurredAt: "not-a-date" })
+    ).toBeNull();
+    expect(
+      holdingFromMidasEvent({ ...NVDA_EVENT, shares: "10 shares" } as never)
+    ).toBeNull();
   });
 
   test("latestMidasHoldings keeps only the newest event per identity", () => {
@@ -174,8 +183,6 @@ describe("portfolio math", () => {
 });
 
 describe("computePortfolio", () => {
-  const now = new Date();
-
   function holding(partial: Partial<MidasHoldingEvent>): MidasHoldingEvent {
     return { ...NVDA_EVENT, ...partial };
   }
@@ -212,7 +219,9 @@ describe("computePortfolio", () => {
     const provider = new FixtureQuoteProvider({});
     const res = await computePortfolio({
       holdings: [
-        holdingFromMidasEvent(holding({ symbol: "ALTIN.S1", market: "TR" }))!,
+        holdingFromMidasEvent(
+          holding({ symbol: "ALTIN.S1", market: "TR", currency: "TRY" })
+        )!,
       ],
       quotes: provider,
     });
@@ -231,7 +240,9 @@ describe("computePortfolio", () => {
     });
     const res = await computePortfolio({
       holdings: [
-        holdingFromMidasEvent(holding({ market: "TR", symbol: "THYAO" }))!,
+        holdingFromMidasEvent(
+          holding({ market: "TR", symbol: "THYAO", currency: "TRY" })
+        )!,
       ],
       quotes: provider,
     });
@@ -243,7 +254,7 @@ describe("computePortfolio", () => {
   test("a stale quote is treated as quote_unavailable unless allowStale", async () => {
     const stale = new FixtureQuoteProvider(
       { "US:NVDA": { price: 120, currency: "USD" } },
-      { stale: true, asOf: new Date(Date.now() - DEFAULT_FRESHNESS_MS * 2) }
+      { stale: true, asOf: new Date(Date.now() - 48 * 60 * 60 * 1000) }
     );
     const strict = await computePortfolio({
       holdings: [holdingFromMidasEvent(NVDA_EVENT)!],
@@ -291,55 +302,75 @@ describe("computePortfolio", () => {
     expect(tryT.costBasis).toBe(6250);
   });
 
-  test("quote providers never return zero — a zero-price quote is rejected at the consumer boundary", async () => {
-    const zeroQuote = {
-      status: "quoted" as const,
-      price: 0,
-      currency: "USD",
-      provider: "fixture",
-      asOf: new Date().toISOString(),
-      stale: false,
-      tier: "eod" as const,
+  test("invalid and wrong-currency quotes become quote_unavailable", async () => {
+    const provider = new FixtureQuoteProvider({
+      "TR:THYAO": { price: 0, currency: "USD" },
+    });
+    const result = await computePortfolio({
+      holdings: [
+        holdingFromMidasEvent(
+          holding({ market: "TR", symbol: "THYAO", currency: "TRY" })
+        )!,
+      ],
+      quotes: provider,
+    });
+    expect(result.positions[0]?.quote.status).toBe("quote_unavailable");
+    expect(result.positions[0]?.currentValue).toBeNull();
+    expect(result.totals).toEqual([]);
+  });
+
+  test("a thrown provider lookup preserves the holding as quote_unavailable", async () => {
+    const provider = {
+      providerId: "throwing",
+      isSupported: () => true,
+      quote: async () => {
+        throw new Error("upstream credential leaked here");
+      },
     };
-    expect(quotePriceOrUnavailable(zeroQuote, { allowStale: true })).toBeNull();
+    const result = await computePortfolio({
+      holdings: [holdingFromMidasEvent(NVDA_EVENT)!],
+      quotes: provider,
+    });
+    expect(result.positions[0]?.quote).toEqual({
+      status: "quote_unavailable",
+      reason: "quote provider request failed",
+      provider: "throwing",
+    });
   });
 });
 
-describe("quote freshness", () => {
-  const now = new Date("2026-08-10T12:00:00.000Z");
+describe("quote validation", () => {
   const quote = {
     status: "quoted" as const,
     price: 1,
     currency: "USD",
     provider: "fixture",
-    asOf: now.toISOString(),
+    asOf: "2026-08-10T12:00:00.000Z",
     stale: false,
     tier: "eod" as const,
   };
 
-  test("a fresh quote is fresh; an old quote is not", () => {
-    expect(isQuoteFresh(quote, now)).toBe(true);
-    const old = {
-      ...quote,
-      asOf: new Date(now.getTime() - DEFAULT_FRESHNESS_MS - 1000).toISOString(),
-    };
-    expect(isQuoteFresh(old, now)).toBe(false);
+  test("rejects non-positive/non-finite prices and invalid timestamps", () => {
+    expect(
+      quotePriceOrUnavailable({ ...quote, price: 0 }, { allowStale: true })
+    ).toBeNull();
+    expect(
+      quotePriceOrUnavailable(
+        { ...quote, price: Number.NaN },
+        { allowStale: true }
+      )
+    ).toBeNull();
+    expect(
+      quotePriceOrUnavailable(
+        { ...quote, asOf: "invalid" },
+        { allowStale: true }
+      )
+    ).toBeNull();
   });
 
-  test("a future as-of (clock skew) counts as fresh", () => {
-    const future = {
-      ...quote,
-      asOf: new Date(now.getTime() + 60000).toISOString(),
-    };
-    expect(isQuoteFresh(future, now)).toBe(true);
-  });
-
-  test("quotePriceOrUnavailable honors allowStale", () => {
-    const old = {
-      ...quote,
-      asOf: new Date(now.getTime() - DEFAULT_FRESHNESS_MS - 1000).toISOString(),
-    };
-    expect(quotePriceOrUnavailable(old, { allowStale: false, now })).toBeNull();
-    expect(quotePriceOrUnavailable(old, { allowStale: true, now })).toBe(1);
+  test("honors the provider's explicit stale state", () => {
+    const stale = { ...quote, stale: true };
+    expect(quotePriceOrUnavailable(stale, { allowStale: false })).toBeNull();
+    expect(quotePriceOrUnavailable(stale, { allowStale: true })).toBe(1);
   });
 });

@@ -195,14 +195,12 @@ describe("run_sdk / query_sdk: script contract on the wire", () => {
 		const sample = {
 			success: false,
 			return_value: { anything: [1, "two", null] },
-			return_value_truncated: {
+			return_value_preview: '{"anything":[1,"two",nul… [truncated]',
+			return_truncated: {
 				total_bytes: 2_000_000,
 				kept_bytes: 1_048_576,
-				dropped_elements: 20,
-				dropped_keys: 3,
-				dropped_chars: 400,
 			},
-			logs: [{ level: "warn", message: "m", data: { k: 1 }, ts: 123 }],
+			logs: [{ level: "warn", message: "m", ts: 123 }],
 			error: { name: "TypeError", message: "boom", stack: "s", line: 3, column: 7 },
 			duration_ms: 42,
 			sdk_calls: 2,
@@ -237,8 +235,8 @@ describe("run_sdk / query_sdk: script contract on the wire", () => {
 			expect(script?.description?.includes("30000"), `${name} script must document the sleep limit`).toBe(true);
 			expect(script?.description?.includes("return_value"), `${name} script must document return_value`).toBe(true);
 			expect(
-				script?.description?.includes("return_value_truncated"),
-				`${name} script must document return_value_truncated`,
+				script?.description?.includes("return_value_preview"),
+				`${name} script must document return_value_preview`,
 			).toBe(true);
 			expect(script?.description?.includes("search_sdk"), `${name} script must point at search_sdk`).toBe(true);
 		}

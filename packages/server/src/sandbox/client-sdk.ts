@@ -20,6 +20,15 @@ import {
 import { METHOD_METADATA } from "./method-metadata";
 import type { SDKMode } from "./sdk-manifest";
 
+/**
+ * Hard row ceiling on `client.query` results. `query_sql` paginates to at most
+ * 500 rows, but the sandbox `client.query` takes arbitrary SQL — without an
+ * outer LIMIT a script could `SELECT * FROM events` and materialize unbounded
+ * rows host-side. The sandbox per-message cap is a backstop; this stops the
+ * allocation at the source. Agents page with their own LIMIT/OFFSET.
+ */
+const CLIENT_QUERY_MAX_ROWS = 5000;
+
 export { enumerateSDKManifest, type SDKMode } from "./sdk-manifest";
 
 import {
@@ -243,11 +252,14 @@ export function buildClientSDK(
 						? undefined
 						: ADMIN_ONLY_QUERYABLE_TABLES,
 			});
+			// Outer LIMIT caps rows at the source so a broad SELECT can't
+			// materialize an unbounded result set host-side.
+			const boundedSql = `SELECT * FROM (${scoped.sql.replace(/;\s*$/, "")}) AS __q LIMIT ${CLIENT_QUERY_MAX_ROWS}`;
 			const rows = await raceAbort(
 				getDb().begin(async (tx) => {
 					await tx.unsafe("SET TRANSACTION READ ONLY");
 					await tx.unsafe("SET LOCAL statement_timeout = '5000'");
-					return tx.unsafe(scoped.sql, scoped.params as unknown[]);
+					return tx.unsafe(boundedSql, scoped.params as unknown[]);
 				}),
 				ctx.abortSignal
 			);

@@ -600,6 +600,35 @@ describe("sandbox output budgets", () => {
     expect(result.traceDropped).toBeGreaterThan(0);
   });
 
+  it("stays within traceBytes even at the 200-entry boundary", async () => {
+    const sdk = stubSDK({
+      entities: {
+        list: async () => [{ id: 1 }],
+      } as never,
+    });
+    const result = await runScript({
+      source: [
+        "export default async (_ctx, client) => {",
+        "  for (let i = 0; i < 200; i++) {",
+        "    await client.entities.list({ big: 'x'.repeat(600) });",
+        "  }",
+        "  return 'done';",
+        "};",
+      ].join("\n"),
+      sdk,
+    });
+
+    expect(result.success).toBe(true);
+    // Entry-byte sum alone is under the cap, but with commas/brackets the
+    // serialized array would exceed it — the strict bound must still hold.
+    const serialized = Buffer.byteLength(
+      JSON.stringify(result.sdkCallTrace),
+      "utf8",
+    );
+    expect(serialized).toBeLessThanOrEqual(131_072);
+    expect(result.traceDropped).toBeGreaterThan(0);
+  });
+
   it("keeps the failing call in the tail of a bounded trace", async () => {
     let calls = 0;
     const sdk = stubSDK({

@@ -785,27 +785,28 @@ export async function runScript(
 	}
 
 	/**
-	 * Bounded trace appender: keeps a serialized-byte budget on a trace array by
-	 * dropping the OLDEST entries (failures are at the tail), and counts what it
-	 * drops. A single entry larger than the whole budget is dropped and counted.
-	 * Bound is on the sum of entry JSON bytes — array brackets/commas add at most
-	 * ~2 bytes per retained entry, negligible at this scale.
+	 * Bounded trace appender: keeps a strict serialized-byte budget on a trace
+	 * array by dropping the OLDEST entries (failures are at the tail) and
+	 * counting what it drops. Brackets and commas are included so the retained
+	 * array can never serialize beyond the budget. A single entry that does not
+	 * fit even alone is dropped and counted.
 	 */
 	function makeTraceAppender(budget: number) {
-		let used = 0;
+		let used = 2; // JSON array brackets
 		let dropped = 0;
 		return {
 			dropped: () => dropped,
 			append(target: SdkCallTraceEntry[], entry: SdkCallTraceEntry): void {
 				const entryBytes = jsonBytes(entry);
-				if (entryBytes > budget) {
+				if (entryBytes + 2 > budget) {
 					dropped++;
 					return;
 				}
 				target.push(entry);
-				used += entryBytes;
+				used += entryBytes + (target.length > 1 ? 1 : 0); // comma
 				while (used > budget && target.length > 0) {
-					used -= jsonBytes(target.shift()!);
+					const removed = target.shift()!;
+					used -= jsonBytes(removed) + (target.length > 0 ? 1 : 0);
 					dropped++;
 				}
 			},

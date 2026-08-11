@@ -7,10 +7,10 @@
 import type { ContentItem } from '@lobu/connector-sdk';
 import { parseJsonObject } from '@lobu/core';
 import { type DbClient, parsePgNumberArray, pgBigintArray, pgTextArray } from '../../db/client';
-import logger from '../../utils/logger';
-import { buildResourcePermalink } from '../../utils/url-builder';
 import { resolveEntityRender } from '../../utils/default-entity-template';
 import { resolveEventKindDefinition } from '../../utils/event-kind-validation';
+import logger from '../../utils/logger';
+import { buildResourcePermalink } from '../../utils/url-builder';
 import { isAdminOrOwnerRole } from '../access-control';
 import { AUDIT_SEMANTIC_TYPE } from '../constants';
 import type { ContentRow } from './types';
@@ -365,11 +365,14 @@ export async function buildContentItems(opts: {
   // from the kind's metadataSchema (same generator as entity auto-default). An
   // event with real body content (text/markdown/media) or an explicit template
   // is left untouched. Resolution rides the cached event_kinds registry, so the
-  // per-event lookups are cheap and bounded to the metadata-only minority.
+  // per-event lookups are cheap and bounded to the metadata-only minority. Kind
+  // notifications keep routing metadata separate and bind their payload_data.
   await Promise.all(
     contentItems.map(async (item) => {
       if (item.payload_template || item.payload_type !== 'empty') return;
-      if (!item.metadata || Object.keys(item.metadata).length === 0) return;
+      const isNotification = typeof item.metadata?.notification_type === 'string';
+      const renderData = isNotification ? (item.payload_data ?? {}) : item.metadata;
+      if (!isNotification && (!renderData || Object.keys(renderData).length === 0)) return;
       const kind = await resolveEventKindDefinition(
         item.semantic_type,
         organizationId,
@@ -380,7 +383,7 @@ export async function buildContentItems(opts: {
       if (!root) return;
       item.payload_template = { root };
       item.payload_type = 'json_template';
-      item.payload_data = item.metadata;
+      item.payload_data = renderData;
     })
   );
 

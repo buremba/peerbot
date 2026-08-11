@@ -490,7 +490,6 @@ async function getContentImpl(
         ...(classificationFilters?.length && { classification_filters: classificationFilters }),
         ...(args.classification_source && { classification_source: args.classification_source }),
         ...(args.semantic_type && { semantic_type: args.semantic_type }),
-        ...(args.is_notification && { is_notification: args.is_notification }),
         ...(args.interaction_status && { interaction_status: args.interaction_status }),
         visibility_scope: visibilityScope,
       };
@@ -534,7 +533,6 @@ async function getContentImpl(
         classification_filters: classificationFilters,
         classification_source: args.classification_source,
         semantic_type: args.semantic_type,
-        is_notification: args.is_notification,
         entity_types: args.entity_types,
         interaction_status: args.interaction_status,
         limit,

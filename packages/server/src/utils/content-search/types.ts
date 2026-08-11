@@ -40,13 +40,12 @@ export interface ContentSearchOptions {
   min_similarity?: number; // 0.0 - 1.0, default: 0.6
   limit?: number; // default: 50, max: 100
   content_ids?: number[]; // Filter to specific content IDs
-  semantic_type?: string | string[]; // Filter by semantic type — single value or array (matches any)
   /**
-   * Limit to notification events (have a notification_targets row). Notification
-   * events can carry any semantic_type — a kind notification is semantic_type=kind —
-   * so this presence filter is the reliable way to browse them.
+   * Filter by semantic type — single value or array (matches any). The reserved
+   * `notification` value expands to notification_targets presence because a
+   * kind-backed notification stores its content kind as semantic_type.
    */
-  is_notification?: boolean;
+  semantic_type?: string | string[];
   /** Org-wide filter: events whose entity_ids overlap entities of these type slugs. */
   entity_types?: string[];
   interaction_status?: 'pending' | 'approved' | 'rejected' | 'completed' | 'failed';

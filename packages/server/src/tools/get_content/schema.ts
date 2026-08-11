@@ -229,15 +229,9 @@ export const GetContentSchema = Type.Object({
       ],
       {
         description:
-          'Filter by semantic type. Pass a single value (e.g. "note") or an array (e.g. ["note","summary"]) to match any. Matches the semantic_type set via save_memory.',
+          'Filter by semantic type. Pass a single value (e.g. "note") or an array (e.g. ["note","summary"]) to match any. The reserved "notification" value matches events with notification targets, including kind-backed notifications whose stored semantic_type is their content kind.',
       }
     )
-  ),
-  is_notification: Type.Optional(
-    Type.Boolean({
-      description:
-        'Limit to events that are notifications (have a notification_targets row). Notification events can carry any semantic_type — a kind notification is semantic_type=kind — so this presence filter is the reliable way to browse them, unlike a semantic_type string match.',
-    })
   ),
   entity_types: Type.Optional(
     Type.Array(Type.String(), {

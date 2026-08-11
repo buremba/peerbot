@@ -1,24 +1,4 @@
-/**
- * Integration test: notifications with `semantic_type` (kind) render through
- * the event-kind pipeline.
- *
- * A notification is an events row + notification_targets rows. `semantic_type`
- * routes a content notification through the same event-kind machinery as every
- * other event: the kind is validated against `$member.event_kinds`, the event
- * is written with `payload_type='empty'` + `payload_data`, and get_content's
- * render tail resolves the chart template from the kind's `jsonTemplate`.
- *
- * Pinned behavior:
- *   - kind + data writes the event with semantic_type=<kind>, payload_type
- *     'empty', and payload_data, so the render tail synthesizes a chart.
- *   - an unregistered kind is rejected (422), matching save_content.
- *   - `semantic_type` + `input_schema` together are rejected — content vs ask.
- *   - the ask path (`input_schema`) is untouched: the notification keeps
- *     semantic_type='notification' and its interaction-event chain.
- *
- * Vitest CI gap note (mirrors neighbors): runs locally / in the CI integration
- * job against the pgvector DB via DATABASE_URL.
- */
+/** Integration coverage for kind-backed notification write, render, and filtering. */
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createNotificationForUsers } from '../../../notifications/service';
@@ -26,6 +6,7 @@ import { notify } from '../../../tools/admin/notify';
 import { getContent } from '../../../tools/get_content';
 import type { ToolContext } from '../../../tools/registry';
 import { primeMemberEventKinds } from '../../../utils/event-kind-validation';
+import { insertEvent } from '../../../utils/insert-event';
 import { ensureMemberEntityType } from '../../../utils/member-entity-type';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -80,12 +61,22 @@ describe('notify > semantic_type (kind) payload', () => {
       SET event_kinds = ${sql.json({
         funnel_digest: {
           description: 'Weekly funnel digest',
-          jsonTemplate: {
-            root: {
-              type: 'bar-chart',
-              data: { $ref: '#/data/rows' },
+          metadataSchema: {
+            type: 'object',
+            properties: {
+              rows: { type: 'array' },
             },
+            required: ['rows'],
           },
+          jsonTemplate: {
+            type: 'bar-chart',
+            data: '{{rows}}',
+          },
+        },
+        static_digest: {
+          description: 'Static digest',
+          metadataSchema: { type: 'object' },
+          jsonTemplate: { type: 'bar-chart', data: [] },
         },
       })}
       WHERE slug = '$member'
@@ -95,12 +86,22 @@ describe('notify > semantic_type (kind) payload', () => {
     primeMemberEventKinds(org.id, {
       funnel_digest: {
         description: 'Weekly funnel digest',
-        jsonTemplate: {
-          root: {
-            type: 'bar-chart',
-            data: { $ref: '#/data/rows' },
+        metadataSchema: {
+          type: 'object',
+          properties: {
+            rows: { type: 'array' },
           },
+          required: ['rows'],
         },
+        jsonTemplate: {
+          type: 'bar-chart',
+          data: '{{rows}}',
+        },
+      },
+      static_digest: {
+        description: 'Static digest',
+        metadataSchema: { type: 'object' },
+        jsonTemplate: { type: 'bar-chart', data: [] },
       },
     } as never);
   });
@@ -111,6 +112,9 @@ describe('notify > semantic_type (kind) payload', () => {
         { label: 'Mon', value: 10 },
         { label: 'Tue', value: 24 },
       ],
+      _lobu_idempotency_key: 'caller-controlled',
+      card: { type: 'caller-controlled' },
+      mcp_session_id: 'caller-controlled',
     };
     const { notified_count, event_id } = await notify({
       action: 'send',
@@ -123,31 +127,48 @@ describe('notify > semantic_type (kind) payload', () => {
     expect(notified_count).toBe(1);
     expect(event_id).not.toBeNull();
 
-    const rows = await sql<{ semantic_type: string; payload_type: string; payload_data: unknown }>`
-      SELECT semantic_type, payload_type, payload_data
+    const rows = await sql<{
+      semantic_type: string;
+      payload_type: string;
+      payload_text: string;
+      payload_data: unknown;
+    }>`
+      SELECT semantic_type, payload_type, payload_text, payload_data
       FROM events
       WHERE id = ${event_id}
     `;
     expect(rows[0].semantic_type).toBe('funnel_digest');
     expect(rows[0].payload_type).toBe('empty');
+    expect(rows[0].payload_text).toBe('Two new leads this week.');
     expect(rows[0].payload_data).toEqual(data);
 
-    // The event's metadata carries the render payload too — the render tail
-    // binds the chart against it (payload_data = metadata).
     const meta = await sql<{ metadata: Record<string, unknown> }>`
       SELECT metadata FROM events WHERE id = ${event_id}
     `;
-    expect(meta[0].metadata.rows).toEqual(data.rows);
+    expect(meta[0].metadata.notification_type).toBe('agent_message');
+    expect(meta[0].metadata).not.toHaveProperty('rows');
+    expect(meta[0].metadata).not.toHaveProperty('_lobu_idempotency_key');
+    expect(meta[0].metadata).not.toHaveProperty('card');
+    expect(meta[0].metadata).not.toHaveProperty('mcp_session_id');
   });
 
   it('renders a chart template for a kind notification via get_content', async () => {
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: 'notify-kind-non-notification-control',
+      title: 'only-nonnotification-control-94721',
+      semanticType: 'funnel_digest',
+      payloadType: 'empty',
+      payloadData: { rows: [{ label: 'Wed', value: 7 }] },
+      metadata: { rows: [{ label: 'Wed', value: 7 }] },
+    });
     await createNotificationForUsers([user.id], {
       organizationId: org.id,
       type: 'agent_message',
       title: 'Chart notification',
       body: 'Daily events',
       semanticType: 'funnel_digest',
-      payloadType: 'empty',
       payloadData: {
         rows: [
           { label: 'Mon', value: 10 },
@@ -155,11 +176,25 @@ describe('notify > semantic_type (kind) payload', () => {
         ],
       },
     });
-
+    await notify({
+      action: 'send',
+      title: 'Kind notification without data',
+      semantic_type: 'static_digest',
+      data: {},
+    }, {} as never, ctx);
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: 'notify-kind-summary-control',
+      title: 'Summary control',
+      semanticType: 'summary',
+      payloadType: 'text',
+      content: 'A normal summary',
+    });
     const content = await getContent(
       {
         limit: 10,
-        is_notification: true,
+        semantic_type: 'notification',
       } as never,
       {} as never,
       ctx
@@ -167,19 +202,55 @@ describe('notify > semantic_type (kind) payload', () => {
 
     const chartItem = content.content?.find((item) => item.title === 'Chart notification');
     expect(chartItem).toBeDefined();
-    // The render tail synthesized a json_template from the kind's jsonTemplate.
-    expect(chartItem!.payload_type).toBe('json_template');
-    // resolveEntityRender normalizes the authored `{ root: node }` template and
-    // the render tail wraps the result in its own `{ root }`, so the stored
-    // template is `{ root: { root: <node> } }` — the renderer's consumed shape.
-    expect(chartItem!.payload_template).toEqual({
+    expect(
+      content.content?.some((item) => item.title === 'only-nonnotification-control-94721')
+    ).toBe(false);
+    expect(chartItem?.payload_type).toBe('json_template');
+    expect(chartItem?.payload_data).toEqual({
+      rows: [
+        { label: 'Mon', value: 10 },
+        { label: 'Tue', value: 24 },
+      ],
+    });
+    expect(chartItem?.payload_template).toEqual({
       root: {
-        root: {
-          type: 'bar-chart',
-          data: { $ref: '#/data/rows' },
-        },
+        type: 'bar-chart',
+        data: '{{rows}}',
       },
     });
+    const noDataItem = content.content?.find(
+      (item) => item.title === 'Kind notification without data'
+    );
+    expect(noDataItem?.payload_type).toBe('json_template');
+    expect(noDataItem?.payload_template).toEqual({
+      root: { type: 'bar-chart', data: [] },
+    });
+    expect(noDataItem?.payload_data).toEqual({});
+
+    const search = await getContent(
+      {
+        query: 'only-nonnotification-control-94721',
+        sort_by: 'date',
+        semantic_type: 'notification',
+      } as never,
+      {} as never,
+      ctx
+    );
+    expect(search.content).toEqual([]);
+
+    const mixedKinds = await getContent(
+      {
+        limit: 20,
+        semantic_type: ['notification', 'summary'],
+      } as never,
+      {} as never,
+      ctx
+    );
+    expect(mixedKinds.content?.some((item) => item.title === 'Chart notification')).toBe(true);
+    expect(mixedKinds.content?.some((item) => item.title === 'Summary control')).toBe(true);
+    expect(
+      mixedKinds.content?.some((item) => item.title === 'only-nonnotification-control-94721')
+    ).toBe(false);
   });
 
   it('rejects an unregistered kind', async () => {
@@ -195,6 +266,21 @@ describe('notify > semantic_type (kind) payload', () => {
         ctx
       )
     ).rejects.toThrow(/Invalid kind 'does_not_exist'/);
+  });
+
+  it('rejects data that does not match the kind metadata schema', async () => {
+    await expect(
+      notify(
+        {
+          action: 'send',
+          title: 'Bad data',
+          semantic_type: 'funnel_digest',
+          data: { total: 12 },
+        } as never,
+        {} as never,
+        ctx
+      )
+    ).rejects.toThrow(/Metadata validation failed for kind 'funnel_digest'/);
   });
 
   it('rejects semantic_type combined with input_schema', async () => {

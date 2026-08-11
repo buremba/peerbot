@@ -22,7 +22,7 @@ interface CreateNotificationParams {
 	body?: string | null;
 	/**
 	 * Event semantic type (kind) for the notification's content. When set, the
-	 * event carries THIS semantic_type with an `empty` payload, so the event-kind
+	 * event carries THIS semantic_type with an `empty` payload type, so the event-kind
 	 * render tail synthesizes the render template from the kind's `jsonTemplate`
 	 * (the same path every other `empty` event takes). Omit for the default
 	 * `notification` semantic type + plain text body — the ask/approval path
@@ -30,9 +30,7 @@ interface CreateNotificationParams {
 	 * interaction-event supersede chain.
 	 */
 	semanticType?: string;
-	/** Override the event payload type. Defaults to `text`. */
-	payloadType?: "text" | "markdown" | "json_template" | "media" | "empty";
-	/** Structured payload merged into the event metadata (binds render templates). */
+	/** Structured payload bound to the event kind's render template. */
 	payloadData?: Record<string, unknown>;
 	resourceType?: string | null;
 	resourceId?: string | null;
@@ -464,8 +462,8 @@ async function deliverToBotConnections(
  * ONE event + N targets; "mark read" updates a target row; "unread count"
  * counts target rows without `read_at`.
  *
- * The legacy public.notifications table was migrated by
- * 20260513200000_notifications_as_events.sql and dropped.
+ * The legacy public.notifications table was migrated into events and dropped;
+ * that migration is now folded into the baseline schema.
  */
 export async function createNotificationForUsers(
 	userIds: string[],
@@ -475,11 +473,6 @@ export async function createNotificationForUsers(
 	const sql = getDb();
 
 	const metadata: Record<string, unknown> = {
-		// Chart/structured payload binds against the kind's render template the
-		// same way every event's metadata does (get_content's render tail sets
-		// payload_data = metadata). Spread it FIRST so notification bookkeeping
-		// below can never be clobbered by caller data.
-		...(params.payloadData ?? {}),
 		notification_type: params.type,
 		resource_type: params.resourceType ?? null,
 		resource_id: params.resourceId ?? null,
@@ -530,8 +523,8 @@ export async function createNotificationForUsers(
 					// event-kind render tail; without one, the default keeps the
 					// notification's plain text body.
 					semanticType: params.semanticType ?? "notification",
-					payloadType: params.payloadType ?? "text",
-					payloadData: params.payloadData,
+					payloadType: params.semanticType ? "empty" : "text",
+					payloadData: params.semanticType ? params.payloadData : undefined,
 					metadata,
 					clientId: params.mcpActivity?.clientId ?? null,
 					runId: params.runId ?? null,

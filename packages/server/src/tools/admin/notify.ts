@@ -10,20 +10,20 @@
 import { type Static, Type } from '@sinclair/typebox';
 import type { CardElement } from 'chat';
 import { getDb, pgTextArray } from '../../db/client';
-import { WATCHER_CANVAS_NAMESPACE } from '../../utils/canvas-events';
-import { validateSaveContentSemanticType } from '../../utils/event-kind-validation';
 import { emit } from '../../events/emitter';
+import { currentMcpActivityAttribution } from '../../lobu/stores/mcp-client-conversations';
 import { queueAgentAsk } from '../../notifications/ask';
-import { buildActionApprovalCard } from '../../notifications/triggers';
 import {
   createNotificationForUsers,
   findNotificationByIdempotencyKey,
   getOrgSlug,
 } from '../../notifications/service';
-import { buildResourcePermalink } from '../../utils/url-builder';
-import { currentMcpActivityAttribution } from '../../lobu/stores/mcp-client-conversations';
+import { buildActionApprovalCard } from '../../notifications/triggers';
+import { WATCHER_CANVAS_NAMESPACE } from '../../utils/canvas-events';
 import { ToolUserError } from '../../utils/errors';
+import { validateSaveContentSemanticType } from '../../utils/event-kind-validation';
 import logger from '../../utils/logger';
+import { buildResourcePermalink } from '../../utils/url-builder';
 import { trackWatcherReaction } from '../../utils/watcher-reactions';
 import type { ToolContext } from '../registry';
 import { action, defineActionTool } from './action-tool';
@@ -70,13 +70,14 @@ const SendAction = Type.Object({
   data: Type.Optional(
     Type.Record(Type.String(), Type.Any(), {
       description:
-        'Structured payload. With `semantic_type`, this becomes the event\'s render data (binds the kind\'s `json_template` chart in the Memory view) instead of being appended to the body. Without `semantic_type`, it is stored in the notification body as formatted JSON (legacy).',
+        'Structured payload. With `semantic_type`, this becomes the event\'s render data (bound to the kind\'s `jsonTemplate` in the Memory view) instead of being appended to the body. Without `semantic_type`, it is stored in the notification body as formatted JSON (legacy).',
     })
   ),
   semantic_type: Type.Optional(
     Type.String({
+      minLength: 1,
       description:
-        'Event semantic type (kind) for this notification\'s content, validated against the org\'s `$member.event_kinds`. When set, the notification renders through the event-kind pipeline: `data` feeds the kind\'s `json_template` chart in the Memory/Events view, and the inbox keeps the markdown `body`. Mutually exclusive with `input_schema`.',
+        'Event semantic type (kind) for this notification\'s content, validated against the org\'s `$member.event_kinds`. When set, the notification renders through the event-kind pipeline: `data` feeds the kind\'s `jsonTemplate` in the Memory/Events view, and the inbox keeps the markdown `body`. Mutually exclusive with `input_schema`.',
     })
   ),
   card: Type.Optional(
@@ -157,22 +158,15 @@ async function handleSend(
     return { notified_count: 0, event_id: null, url: null };
   }
 
-  // A kind turns the notification into a content event (chart/digest) on the
-  // existing event-kind pipeline; an ask is a QUESTION on the approval rail.
   const kind = args.semantic_type ?? null;
 
-  // They are mutually exclusive renderings of the same row — reject the
-  // combination rather than guessing which one the caller wanted.
   if (kind && args.input_schema) {
     throw new ToolUserError(
       'notify: `semantic_type` and `input_schema` are mutually exclusive — a notification is either content (kind + data) or a question (input_schema), not both.'
     );
   }
 
-  // Validate kind + data against the org's `$member.event_kinds` registry — the
-  // same check `save_content` runs — so a notification rendered through the
-  // event-kind pipeline can never reference an unregistered kind or feed the
-  // chart data that fails the kind's metadata schema.
+  // Reuse save_content's kind + metadata validation before persisting the event.
   if (kind) {
     const kindValidation = await validateSaveContentSemanticType(
       kind,
@@ -184,10 +178,7 @@ async function handleSend(
     }
   }
 
-  // Build body: prefer explicit body, append data as JSON if provided. When a
-  // `semantic_type` (kind) is given, `data` is the event's render payload — it
-  // feeds the kind's json_template chart in the Memory view — so it is NOT
-  // flattened into the body here; the inbox keeps the markdown body.
+  // Kind data renders separately; legacy untyped data remains appended to body.
   let body = args.body ?? null;
   if (args.data && !kind) {
     const dataStr = JSON.stringify(args.data, null, 2);
@@ -338,12 +329,8 @@ async function handleSend(
     type: ask ? 'action_approval_needed' : 'agent_message',
     title: args.title,
     body,
-    // A kind notification writes its render payload through the event's own
-    // payload columns (payload_type='empty' + payload_data) so the event-kind
-    // render tail resolves the chart from the kind's jsonTemplate. Asks keep
-    // their interaction-event chain untouched.
+    // `empty` lets the event-kind render tail synthesize the authored template.
     semanticType: kind ?? undefined,
-    payloadType: kind ? 'empty' : undefined,
     payloadData: kind ? args.data : undefined,
     resourceType: ask ? 'event' : null,
     resourceId: ask ? String(ask.interactionEventId) : null,

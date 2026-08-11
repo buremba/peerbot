@@ -20,6 +20,7 @@ import {
   buildTsqueryString,
 } from './fts';
 import { buildFinalSelect, deduplicateWithClassifications } from './sql-fragments';
+import { buildSemanticTypeFilterSql } from './params';
 import {
   buildDateCandidateOrderBy,
   buildDateCursorClause,
@@ -183,15 +184,6 @@ export async function searchContentBySingleQuery(
   // present) so a hostile float can't break out of the comparison expression.
   const minSimilarityParamIdx = baseParamIdx + (hasEmbedding ? 1 : 0);
 
-  // Notification-presence filter (param-free: a static indexed EXISTS). Kept
-  // OUT of the fixed $1-$13 slot scheme so adding it can't renumber every
-  // downstream slot. A notification event can carry any semantic_type — a kind
-  // notification is semantic_type=kind — so this row probe, not a semantic_type
-  // string match, is the reliable way to browse notifications.
-  const isNotificationSql = options.is_notification
-    ? `AND EXISTS (SELECT 1 FROM notification_targets nt WHERE nt.event_id = f.id)`
-    : '';
-
   const standardFiltersSQL = `($2::bigint IS NULL OR ${searchEntityLinkSql})
           AND ${connectionCondition}
           AND ${feedCondition}
@@ -202,12 +194,11 @@ export async function searchContentBySingleQuery(
           AND ($6::int IS NULL OR iwf.window_id = $6::int)
           AND ($7::numeric IS NULL OR f.score >= $7::numeric)
           AND ($8::numeric IS NULL OR f.score <= $8::numeric)
-          AND ($9::text[] IS NULL OR f.semantic_type = ANY($9::text[]))
+          AND ($9::text[] IS NULL OR ${buildSemanticTypeFilterSql('f', '$9')})
           AND ($10::text IS NULL OR f.interaction_status = $10::text)
           AND ($11::text IS NULL OR f.metadata->>'agent_id' = $11::text)
           AND ($12::text[] IS NULL OR f.client_id = ANY($12::text[]))
           AND ($13::text[] IS NULL OR f.metadata->>'mcp_session_id' = ANY($13::text[]))
-          ${isNotificationSql}
           ${excludeClause.sql}
           ${producedClause.sql}
           ${analyzedClause.sql}

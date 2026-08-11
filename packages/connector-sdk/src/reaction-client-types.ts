@@ -128,7 +128,7 @@ export interface NotificationsSendInput {
   connection_id?: string;
   /**
    * Structured payload. With `semantic_type`, this becomes the event's render
-   * data (binds the kind's `json_template` chart in the Memory view) instead of
+   * data (bound to the kind's `jsonTemplate` in the Memory view) instead of
    * being appended to the body. Without `semantic_type`, it is stored in the
    * notification body as formatted JSON (legacy).
    */
@@ -137,7 +137,7 @@ export interface NotificationsSendInput {
    * Event semantic type (kind) for the notification's content, validated
    * against the org's `$member.event_kinds`. When set, the notification
    * renders through the event-kind pipeline: `data` feeds the kind's
-   * `json_template` chart in the Memory/Events view, and the inbox keeps the
+   * `jsonTemplate` in the Memory/Events view, and the inbox keeps the
    * markdown `body`. Mutually exclusive with `input_schema`.
    */
   semantic_type?: string;

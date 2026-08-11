@@ -40,7 +40,12 @@ import {
   buildOrgScopeWhere,
   buildProducedByBehaviorClause,
 } from './visibility';
-import { buildStandardParams, buildStandardWhereSql, WINDOW_JOIN_SQL } from './params';
+import {
+  buildSemanticTypeFilterSql,
+  buildStandardParams,
+  buildStandardWhereSql,
+  WINDOW_JOIN_SQL,
+} from './params';
 
 /**
  * Shared count + query-pair execution for both `listContentInternal` branches.
@@ -355,15 +360,7 @@ export async function listContentInternal(
         ? options.semantic_type
         : [options.semantic_type];
       baseParams.push(pgTextArray(types));
-      baseConditions.push(`f.semantic_type = ANY($${baseParams.length}::text[])`);
-    }
-    if (options.is_notification) {
-      // Notification presence, not semantic_type: a kind notification carries
-      // its own semantic_type, so the reliable signal is the notification_targets
-      // row. Indexed on notification_targets.event_id (PK).
-      baseConditions.push(
-        `EXISTS (SELECT 1 FROM notification_targets nt WHERE nt.event_id = f.id)`
-      );
+      baseConditions.push(buildSemanticTypeFilterSql('f', `$${baseParams.length}`));
     }
     if (options.interaction_status) {
       baseParams.push(options.interaction_status);

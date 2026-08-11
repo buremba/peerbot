@@ -895,6 +895,98 @@ describe('MCP Authentication', () => {
     });
   });
 
+  describe('Human approval transport boundary', () => {
+    let approvalSession: Awaited<ReturnType<typeof createTestSession>>;
+
+    beforeAll(async () => {
+      const approvalOwner = await createTestUser({
+        email: 'mcp-session-approval-owner@test.example.com',
+      });
+      await addUserToOrganization(approvalOwner.id, org.id, 'owner');
+      approvalSession = await createTestSession(approvalOwner.id);
+    });
+
+    async function seedPendingApproval(): Promise<number> {
+      const [run] = await getTestDb()<[{ id: number }]>`
+        INSERT INTO runs (
+          organization_id, run_type, status, approval_status, action_key
+        ) VALUES (
+          ${org.id}, 'action', 'pending', 'pending', 'session_auth_reject_probe'
+        )
+        RETURNING id
+      `;
+      return Number(run.id);
+    }
+
+    async function approvalStatus(runId: number): Promise<string> {
+      const [run] = await getTestDb()<[{ approval_status: string }]>`
+        SELECT approval_status
+        FROM runs
+        WHERE id = ${runId} AND organization_id = ${org.id}
+      `;
+      return String(run?.approval_status ?? 'missing');
+    }
+
+    it('denies direct approve/reject sent through an unbound cookie-authenticated MCP session', async () => {
+      const approveRunId = await seedPendingApproval();
+      const rejectRunId = await seedPendingApproval();
+      const calls = [];
+      for (const arguments_ of [
+        { action: 'approve', run_id: approveRunId },
+        { action: 'reject', run_id: rejectRunId, reason: 'MCP must not decide' },
+      ]) {
+        calls.push(
+          await mcpRequest<{ content?: Array<{ text?: string }> }>(
+            'tools/call',
+            { name: 'manage_operations', arguments: arguments_ },
+            { cookie: approvalSession.cookieHeader, orgSlug: org.slug }
+          )
+        );
+      }
+
+      expect(await approvalStatus(approveRunId)).toBe('pending');
+      expect(await approvalStatus(rejectRunId)).toBe('pending');
+      for (const call of calls) {
+        expect(call.error).toBeUndefined();
+        expect(call.result?.content?.[0]?.text).toContain('human web session');
+      }
+    });
+
+    it('denies approve/reject through run_sdk on an unbound Better Auth session bearer', async () => {
+      const approveRunId = await seedPendingApproval();
+      const rejectRunId = await seedPendingApproval();
+      const result = await mcpRequest<{ content?: Array<{ text?: string }> }>(
+        'tools/call',
+        {
+          name: 'run_sdk',
+          arguments: {
+            script: `export default async (_ctx, client) => {
+              const message = async (call) => {
+                try {
+                  const value = await call();
+                  return JSON.stringify(value);
+                } catch (error) {
+                  return String(error && error.message ? error.message : error);
+                }
+              };
+              return {
+                approve: await message(() => client.operations.approve({ run_id: ${approveRunId} })),
+                reject: await message(() => client.operations.reject({ run_id: ${rejectRunId}, reason: 'MCP SDK must not decide' })),
+              };
+            };`,
+          },
+        },
+        { token: approvalSession.token, orgSlug: org.slug }
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(await approvalStatus(approveRunId)).toBe('pending');
+      expect(await approvalStatus(rejectRunId)).toBe('pending');
+      const text = result.result?.content?.[0]?.text ?? '';
+      expect(text.match(/human web session/g) ?? []).toHaveLength(2);
+    });
+  });
+
   describe('Personal Access Token Authentication', () => {
     it('should accept valid PAT (owl_pat_*)', async () => {
       const { token } = await createTestPAT(user.id, org.id);

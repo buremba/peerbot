@@ -563,6 +563,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
               claimed_by = ${worker_id}
           WHERE id = ${runId}
             AND status = 'pending'
+            AND (expires_at IS NULL OR expires_at > now())
           RETURNING id
         `;
         if (claimed.length === 0) return null;

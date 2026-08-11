@@ -41,6 +41,21 @@ describe("classifyRunError — status-driven verdicts", () => {
       retryable: false,
       operationalIncident: true,
     });
+    // Real prod writers: the connector reaper's never-claimed marker and the
+    // device-action wait's message both mean "nobody claimed it" → retryable.
+    expect(
+      classifyRunError({
+        status: "timeout",
+        errorMessage: "worker_claim_timeout",
+      }).retryable
+    ).toBe(true);
+    expect(
+      classifyRunError({
+        status: "timeout",
+        errorMessage:
+          "waitForDeviceActionRun: no device claimed the run within 60s",
+      }).retryable
+    ).toBe(true);
   });
 
   test("completed is not an incident", () => {
@@ -189,19 +204,49 @@ describe("classifyRunError — message classification", () => {
     expect(res.operationalIncident).toBe(true);
   });
 
+  test("unknown failure on a manual feed is not an incident", () => {
+    const res = classifyRunError({
+      status: "failed",
+      errorMessage: "Some novel error we have never seen before",
+      executionMode: "manual",
+    });
+    expect(res.category).toBe("internal");
+    expect(res.operationalIncident).toBe(false);
+  });
+
   test("empty message with failed status → internal", () => {
     const res = classifyRunError({ status: "failed", errorMessage: null });
     expect(res.category).toBe("internal");
     expect(res.retryable).toBe(true);
   });
+
+  test("empty message on a manual feed is NOT an operational incident", () => {
+    const res = classifyRunError({
+      status: "failed",
+      errorMessage: null,
+      executionMode: "manual",
+    });
+    expect(res.operationalIncident).toBe(false);
+  });
 });
 
 describe("classifyRunError — auth signal sharpening", () => {
-  test("auth_signal presence + auth wording → auth_required even without status", () => {
+  test("auth_signal presence does NOT classify a non-auth message as auth_required", () => {
+    // The classifier keys on the message, not the signal: a stray auth_signal
+    // on a transport failure must not be relabeled auth.
     const res = classifyRunError({
       status: "failed",
-      errorMessage: "session invalid",
+      errorMessage: "upstream connect error",
       authSignal: { name: "auth.expired" },
+    });
+    expect(res.category).not.toBe("auth_required");
+    expect(res.category).toBe("transient_external");
+  });
+
+  test("auth wording classifies as auth_required", () => {
+    const res = classifyRunError({
+      status: "failed",
+      errorMessage: "Not logged into LinkedIn (landed on /login)",
     });
     expect(res.category).toBe("auth_required");
     expect(res.operationalIncident).toBe(false);

@@ -113,7 +113,6 @@ export function classifyRunError(input: {
 }): RunErrorClassification {
   const status = input.status ?? "";
   const message = input.errorMessage ?? "";
-  const authInvolved = input.authSignal != null || input.errorCode != null;
 
   // Terminal human/policy decisions are never incidents and never retried.
   if (status === "cancelled" || status === "expired") {
@@ -131,7 +130,9 @@ export function classifyRunError(input: {
     return {
       category: "timeout",
       retryable:
-        message.includes("never claimed") || message.includes("not claimed"),
+        /worker_claim_timeout|never claimed|not claimed|no device claimed/i.test(
+          message
+        ),
       operationalIncident: true,
     };
   }
@@ -144,14 +145,7 @@ export function classifyRunError(input: {
     };
   }
 
-  // Failed / running / pending: classify from message + hints.
-  if (authInvolved && AUTH_RE.test(message)) {
-    return {
-      category: "auth_required",
-      retryable: false,
-      operationalIncident: false,
-    };
-  }
+  // Failed / running / pending: classify from the message.
   if (AUTH_RE.test(message)) {
     return {
       category: "auth_required",
@@ -217,16 +211,24 @@ export function classifyRunError(input: {
     return {
       category: "internal",
       retryable: TRANSIENT_STATUSES.has(status),
-      operationalIncident: true,
+      operationalIncident: input.executionMode !== "manual",
     };
   }
   if (message.length === 0) {
     // Failed with no message at all: we cannot see a cause, so classify as an
     // internal visibility failure that is safe to retry (the queue may surface
     // a message on the next attempt).
-    return { category: "internal", retryable: true, operationalIncident: true };
+    return {
+      category: "internal",
+      retryable: true,
+      operationalIncident: input.executionMode !== "manual",
+    };
   }
 
   // Unknown failure with a message: fail toward visibility.
-  return { category: "internal", retryable: true, operationalIncident: true };
+  return {
+    category: "internal",
+    retryable: true,
+    operationalIncident: input.executionMode !== "manual",
+  };
 }

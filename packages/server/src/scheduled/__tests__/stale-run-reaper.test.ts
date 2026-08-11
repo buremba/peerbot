@@ -508,6 +508,42 @@ describe("reapStaleRuns — connector lanes", () => {
 			expect(second.reaped).toBe(0);
 			expect(await statusOf(lapsedId)).toBe("timeout");
 		});
+
+		test("#2044 × expires_at: an approval-pending run with a lapsed horizon is NOT reaped", async () => {
+			// A queued action awaiting HUMAN approval sits at approval_status=
+			// 'pending' — no worker will ever claim it, so the claim-timeout must
+			// never reap it even if it carries an expires_at that lapsed (the
+			// expiry is an ephemeral-device horizon; a human decision outlives it).
+			const approvalId = await seedRun({
+				status: "pending",
+				approvalStatus: "pending",
+				lastHeartbeatAgoSeconds: null,
+				runType: "action",
+				createdAtAgoSeconds: 5,
+				expiresAtAgoSeconds: 1,
+			});
+
+			const result = await reapStaleRuns();
+			expect(result.reaped).toBe(0);
+			expect(await statusOf(approvalId)).toBe("pending");
+		});
+
+		test("a lapsed-expiry RUNNING row is not reaped (expires_at only governs pending claims)", async () => {
+			// The expires_at term lives in the pending branch. A claimed/running
+			// run is judged on heartbeat staleness, never on its claim horizon —
+			// otherwise a long-but-live device action would be killed mid-flight.
+			const runningId = await seedRun({
+				status: "running",
+				lastHeartbeatAgoSeconds: 5,
+				claimedAtAgoSeconds: 5,
+				runType: "action",
+				expiresAtAgoSeconds: 1,
+			});
+
+			const result = await reapStaleRuns();
+			expect(result.reaped).toBe(0);
+			expect(await statusOf(runningId)).toBe("running");
+		});
 	});
 });
 

@@ -255,9 +255,9 @@ export async function gatewayCompletion(
     () => callCompletionOnce(request),
     {
       // The calling features are fail-open and latency-sensitive (followup
-      // chips, query rewriting). 2 retries keep the total bounded well under
-      // a second when the upstream is just throttled, without stacking the
-      // user-visible request.
+      // chips, query rewriting). 2 retries with a 200ms base and 2s cap keep
+      // the total bounded (worst case with full jitter ≈ 200+400+800 × [1,2)
+      // ≈ 2.8s) without stacking the user-visible request.
       maxRetries: 2,
       baseDelay: 200,
       maxDelay: 2000,

@@ -532,6 +532,55 @@ describe('Gmail human_senders_only sync mode', () => {
     expect(events).toHaveLength(0);
   });
 
+  test('attributes a human Cc recipient when the To is a role address', async () => {
+    const events = await syncThreads(
+      [
+        {
+          id: 't-cc',
+          messages: [
+            {
+              id: 'm1',
+              labelIds: ['SENT'],
+              from: 'Me <me@example.com>',
+              to: 'support@vendor.example',
+              cc: 'Jane Doe <jane@acme.example>',
+            },
+          ],
+        },
+      ],
+      { human_senders_only: true }
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0].metadata.from_email).toBe('jane@acme.example');
+  });
+
+  test('attributes a human recipient on a later sent message, not the first', async () => {
+    const events = await syncThreads(
+      [
+        {
+          id: 't-later-sent',
+          messages: [
+            {
+              id: 'm1',
+              labelIds: ['SENT'],
+              from: 'Me <me@example.com>',
+              to: 'team@vendor.example',
+            },
+            {
+              id: 'm2',
+              labelIds: ['SENT'],
+              from: 'Me <me@example.com>',
+              to: 'Bob Smith <bob@example.com>',
+            },
+          ],
+        },
+      ],
+      { human_senders_only: true }
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0].metadata.from_email).toBe('bob@example.com');
+  });
+
   test('failed thread GETs consume max_results (cap bounds API calls)', async () => {
     const connector = new GmailConnector();
     const urls: string[] = [];

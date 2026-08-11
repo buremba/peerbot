@@ -986,12 +986,28 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
       ? inbound.find((sender) => isPersonRelevantSender(sender.email, sender.name, replied))
       : inbound[0];
 
-    if (!selected && humanSendersOnly && sentMessages[0] && hasKnownSelf) {
-      selected = this.parseAddressList(this.getHeader(sentMessages[0], 'To')).find(
-        (sender) =>
-          !isSelf(sender.email) &&
-          isPersonRelevantSender(sender.email, sender.name, false)
-      );
+    // Outbound-only fallback: no plausible human inbound sender, so look for a
+    // plausible human RECIPIENT across every sent message's To+Cc — the first
+    // sent message may target a role address while a human sits in Cc or on a
+    // later sent message. `selectedSentMessage` remembers which message carried
+    // the recipient so the broadcast-cap check counts that message, not the
+    // first sent one.
+    let selectedSentMessage: GmailMessage | undefined;
+    if (!selected && humanSendersOnly && hasKnownSelf) {
+      for (const sentMessage of sentMessages) {
+        const recipient = this.parseAddressList(
+          `${this.getHeader(sentMessage, 'To') ?? ''}, ${this.getHeader(sentMessage, 'Cc') ?? ''}`
+        ).find(
+          (sender) =>
+            !isSelf(sender.email) &&
+            isPersonRelevantSender(sender.email, sender.name, false)
+        );
+        if (recipient) {
+          selected = recipient;
+          selectedSentMessage = sentMessage;
+          break;
+        }
+      }
     }
 
     const fromEmail = selected?.email ?? null;
@@ -1001,7 +1017,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
         hasKnownSelf &&
         !this.isListThread(messages) &&
         (replied ||
-          this.externalRecipientCount(sentMessages[0], isSelf) <= BROADCAST_RECIPIENT_CAP)
+          this.externalRecipientCount(selectedSentMessage, isSelf) <= BROADCAST_RECIPIENT_CAP)
       : replied;
 
     return {

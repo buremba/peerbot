@@ -10,7 +10,6 @@ import {
 
 const context: ConnectorDeriveFeedContext = {
   connectorKey: 'x',
-  feedKey: 'home_feed',
   feedPreviouslySynced: true,
   eventKinds: { tweet: { description: 'A tweet' }, dm_message: {} },
 };

@@ -72,7 +72,6 @@ describe("platform-derived connector activation", () => {
 
 		const deriveContext: ConnectorDeriveFeedContext = {
 			connectorKey: "x",
-			feedKey: "home_feed",
 			feedPreviouslySynced: true,
 			eventKinds: {
 				tweet: { description: "A tweet from your home timeline" },

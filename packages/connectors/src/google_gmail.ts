@@ -956,8 +956,10 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
     fromEmail: string | null;
   } {
     const sentMessages = messages.filter(isSentMessage);
+    const draftMessages = messages.filter(isDraftMessage);
+    const selfMessages = [...sentMessages, ...draftMessages];
     const selfAddresses = new Set(
-      sentMessages
+      selfMessages
         .map((message) =>
           normalizeSelfEmail(this.parseFromHeader(this.getHeader(message, 'From') ?? '').email)
         )
@@ -966,7 +968,8 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
     const isSelf = (email: string): boolean =>
       selfAddresses.has(normalizeSelfEmail(email));
     const inbound = messages
-      .filter((message) => !isSentMessage(message))
+      // DRAFTs are self-authored (unsent) — never inbound counterparties.
+      .filter((message) => !isSentMessage(message) && !isDraftMessage(message))
       .flatMap((message) => {
         const from = this.getHeader(message, 'From') ?? 'Unknown';
         const parsed = this.parseFromHeader(from);
@@ -1143,6 +1146,8 @@ const BULK_PRECEDENCE = new Set(['bulk', 'list', 'junk']);
 const BROADCAST_RECIPIENT_CAP = 3;
 const isSentMessage = (message: GmailMessage): boolean =>
   (message.labelIds ?? []).includes('SENT');
+const isDraftMessage = (message: GmailMessage): boolean =>
+  (message.labelIds ?? []).includes('DRAFT');
 const normalizeEmail = (email: string | null | undefined): string =>
   (email ?? '').trim().toLowerCase();
 /**

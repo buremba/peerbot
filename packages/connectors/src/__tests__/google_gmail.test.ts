@@ -509,6 +509,29 @@ describe('Gmail human_senders_only sync mode', () => {
     expect(events).toHaveLength(0);
   });
 
+  test('a self-authored DRAFT is never attributed as the counterparty', async () => {
+    const events = await syncThreads(
+      [
+        {
+          id: 't-draft',
+          messages: [
+            // Role-address INBOX message first, then an unsent self-authored draft.
+            { id: 'm1', labelIds: ['INBOX'], from: 'Support <support@vendor.example>' },
+            {
+              id: 'm2',
+              labelIds: ['DRAFT'],
+              from: 'Me <me@example.com>',
+              to: 'Jane Doe <jane@acme.example>',
+            },
+          ],
+        },
+      ],
+      { human_senders_only: true }
+    );
+    // The DRAFT is self-authored — no person-relevant counterparty exists.
+    expect(events).toHaveLength(0);
+  });
+
   test('failed thread GETs consume max_results (cap bounds API calls)', async () => {
     const connector = new GmailConnector();
     const urls: string[] = [];

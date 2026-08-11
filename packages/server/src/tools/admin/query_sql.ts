@@ -24,6 +24,13 @@ import { classifyToolError, getErrorMessage, isRetryable, type ToolErrorCode } f
 import { ToolUserError } from '../../utils/errors';
 
 export const QuerySqlSchema = Type.Object({
+  title: Type.Optional(
+    Type.String({
+      description:
+        'Optional human-friendly heading for this result (e.g. "Recent support tickets"). When set, the UI renders it as the section title instead of a generic "Inspecting data".',
+      maxLength: 200,
+    })
+  ),
   sql: Type.Optional(
     Type.String({
       description:
@@ -113,6 +120,12 @@ function oidToTypeName(oid: number): string {
 }
 
 export const QuerySqlResultSchema = Type.Object({
+  title: Type.Optional(
+    Type.String({
+      description: 'The caller-supplied human-friendly heading for this result, echoed back for the UI.',
+      maxLength: 200,
+    })
+  ),
   sql: Type.Optional(
     Type.String({
       description:
@@ -136,6 +149,7 @@ export const QuerySqlResultSchema = Type.Object({
 });
 
 interface QuerySqlResult {
+  title?: string;
   sql?: string;
   rows: Record<string, unknown>[];
   columns: { name: string; type: string }[];
@@ -366,6 +380,7 @@ export async function querySqlImpl(
   ctx: ToolContext
 ): Promise<QuerySqlResult> {
   const startTime = Date.now();
+  const title = args.title?.trim() || undefined;
 
   const baseSql = (args.sql ?? '').trim();
   // `feed` runs a STORED query, so caller `sql` is optional there; every other
@@ -482,6 +497,7 @@ export async function querySqlImpl(
           : undefined,
       });
       return {
+        ...(title ? { title } : {}),
         rows: r.rows,
         columns: r.columns,
         total_count: r.total ?? r.rows.length,
@@ -528,6 +544,7 @@ export async function querySqlImpl(
           : undefined,
       });
       return {
+        ...(title ? { title } : {}),
         sql: baseSql,
         rows: r.rows,
         columns: r.columns,
@@ -680,6 +697,7 @@ export async function querySqlImpl(
       );
     }
     return {
+      ...(title ? { title } : {}),
       sql: baseSql,
       rows,
       columns,

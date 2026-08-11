@@ -482,6 +482,14 @@ function createServerForContext(
       const softError = isSoftErrorResult(result);
       const tool = getTool(name);
       const resultMeta = getMcpResultMeta(result);
+      // Viewer role rides the same host-only `_meta` channel as the approval
+      // capability: the MCP Apps host forwards it into the rendered bundle so
+      // the UI can gate admin-only surfaces (e.g. the raw result toggle) —
+      // including on restore and ChatGPT rehydration.
+      const viewerMeta = {
+        ...(resultMeta ?? {}),
+        'lobu/member-role': authCtx.memberRole ?? null,
+      };
       if (tool?.outputSchema && result && typeof result === 'object') {
         const structured = validateToolResult(tool.outputSchema, result);
         if (structured !== null) {
@@ -503,14 +511,14 @@ function createServerForContext(
           return {
             content: [{ type: 'text' as const, text }],
             structuredContent: structured as Record<string, unknown>,
-            ...(resultMeta ? { _meta: resultMeta } : {}),
+            ...(resultMeta || viewerMeta ? { _meta: viewerMeta } : {}),
             ...(softError ? { isError: true } : {}),
           };
         }
       }
       return {
         content: [{ type: 'text' as const, text }],
-        ...(resultMeta ? { _meta: resultMeta } : {}),
+        ...(resultMeta || viewerMeta ? { _meta: viewerMeta } : {}),
         ...(softError ? { isError: true } : {}),
       };
     } catch (error: any) {

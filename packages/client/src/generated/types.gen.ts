@@ -7,6 +7,10 @@ export type ClientOptions = {
 export type SearchMemoryData = {
   body: {
     /**
+     * Optional human-friendly heading for this result (e.g. "What we know about Acme"). When set, the UI renders it as the section title instead of the default.
+     */
+    title?: string;
+    /**
      * Search query (entity name). Required unless entity_id is provided.
      */
     query?: string;
@@ -97,6 +101,10 @@ export type SearchMemoryResponses = {
    * Successful response
    */
   200: {
+    /**
+     * The caller-supplied human-friendly heading for this result, echoed back for the UI.
+     */
+    title?: string;
     entity_type: string | null;
     entity: {
       id: number;
@@ -331,7 +339,24 @@ export type SaveMemoryResponses = {
    * Successful response
    */
   200: {
-    [key: string]: unknown;
+    id: number;
+    entity_ids: Array<number>;
+    title: string | null;
+    semantic_type: string;
+    created_at: string;
+    supersedes_event_id?: number;
+    view_url?: string;
+    durable_at: string;
+    indexing_status: "pending" | "completed";
+    searchable: boolean;
+    created: boolean;
+    metadata: {
+      [key: string]: unknown;
+    };
+    exact_read: {
+      method: "client.knowledge.read";
+      content_ids: [unknown];
+    };
   };
 };
 
@@ -415,6 +440,10 @@ export type QuerySdkData = {
      * Wall-clock budget. Default 60000 (max 180000 — device-bound operations may wait ~155s).
      */
     timeout_ms?: number;
+    /**
+     * Optional human-friendly heading for this result (e.g. "Company pipeline"). When set, the UI renders it as the section title instead of the per-mode default.
+     */
+    title?: string;
   };
   path: {
     /**
@@ -448,6 +477,10 @@ export type QuerySdkResponses = {
    * Successful response
    */
   200: {
+    /**
+     * The caller-supplied human-friendly heading for this result, echoed back for the UI.
+     */
+    title?: string;
     /**
      * Whether the script ran to completion.
      */
@@ -553,6 +586,10 @@ export type QuerySdkResponse = QuerySdkResponses[keyof QuerySdkResponses];
 export type QuerySqlData = {
   body: {
     /**
+     * Optional human-friendly heading for this result (e.g. "Recent support tickets"). When set, the UI renders it as the section title instead of a generic "Inspecting data".
+     */
+    title?: string;
+    /**
      * Base SELECT query. Required unless `feed` is set. Table references are auto-scoped to your organization. `SELECT FROM events` reads persisted/synced content only; virtual feeds are live-only and are not included. It is wrapped as a subquery, so ORDER BY / LIMIT / window functions inside it are fine; pagination + sort are added on the outside via sort_by/limit/offset.
      */
     sql?: string;
@@ -625,7 +662,28 @@ export type QuerySqlResponses = {
    * Successful response
    */
   200: {
-    [key: string]: unknown;
+    /**
+     * The caller-supplied human-friendly heading for this result, echoed back for the UI.
+     */
+    title?: string;
+    /**
+     * The original caller-supplied SQL statement. This is never the tenant-scoped SQL rewritten by Lobu and is absent for stored virtual-feed queries.
+     */
+    sql?: string;
+    rows: Array<{
+      [key: string]: unknown;
+    }>;
+    columns: Array<{
+      name: string;
+      type: string;
+    }>;
+    total_count: number;
+    has_more: boolean;
+    execution_time_ms: number;
+    coverage?: unknown;
+    error?: string;
+    error_code?: string;
+    retryable?: boolean;
   };
 };
 
@@ -641,6 +699,10 @@ export type RunSdkData = {
      * Wall-clock budget. Default 60000 (max 180000 — device-bound operations may wait ~155s).
      */
     timeout_ms?: number;
+    /**
+     * Optional human-friendly heading for this result (e.g. "Company pipeline"). When set, the UI renders it as the section title instead of the per-mode default.
+     */
+    title?: string;
     /**
      * Preview mode. Read SDK calls still execute, but write/admin/external SDK calls are skipped and returned in side_effect_preview. Dry-run validates the SDK method path and access tier, but it does not execute the skipped handler or fully validate that handler's payload shape.
      */
@@ -678,6 +740,10 @@ export type RunSdkResponses = {
    * Successful response
    */
   200: {
+    /**
+     * The caller-supplied human-friendly heading for this result, echoed back for the UI.
+     */
+    title?: string;
     /**
      * Whether the script ran to completion.
      */
@@ -3958,7 +4024,7 @@ export type NotifyData = {
       [key: string]: unknown;
     };
     /**
-     * Turn this notification into a QUESTION the recipient answers, instead of an FYI. JSON Schema for the answer. Pass {} for a plain yes/no decision (renders as Approve/Reject inline, in-app and in chat). Pass a single required enum property to offer one-click named options. Pass several properties to collect fields (the recipient gets a form; give each property a `title` — without one the form labels the field with its full `description`). Properties must be flat: nested objects do not render. Answering records the result and emits it — read it back with manage_operations get_run.
+     * Turn this notification into a QUESTION the recipient answers, instead of an FYI. Pass {} for a plain yes/no decision; a single required string-enum property for one-click options; or a flat object of primitive fields, scalar enums, string/scalar-enum arrays, and optional nullable anyOf wrappers for a form. Give each property a `title`. Nested objects, references, other combinators, constants, formats, patterns, and string/number/array constraints are unsupported and fail with HTTP 422 before a run is created. Read the answer with manage_operations get_run.
      */
     input_schema?: {
       [key: string]: unknown;

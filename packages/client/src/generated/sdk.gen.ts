@@ -240,7 +240,7 @@ export const searchSdk = <ThrowOnError extends boolean = false>(
 /**
  * Read workspace data through typed SDK methods
  *
- * Read workspace data through typed SDK methods. Query entities, relationships, feeds, operations, metrics, and more. Use this for lookups and searches that do not change data. (For writes: use run_sdk. To discover available methods: use search_sdk. For polling: use await ctx.sleep(ms) in your script.
+ * Read workspace data through typed SDK methods. Query entities, relationships, feeds, operations, metrics, and more. Use this for lookups and searches that do not change workspace content or external systems. (For writes: use run_sdk. To discover available methods: use search_sdk.
  */
 export const querySdk = <ThrowOnError extends boolean = false>(
   options: Options<QuerySdkData, ThrowOnError>,

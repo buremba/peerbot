@@ -40,6 +40,13 @@ import { getErrorMessage } from '@lobu/core';
 // ============================================
 
 export const SearchSchema = Type.Object({
+  title: Type.Optional(
+    Type.String({
+      description:
+        'Optional human-friendly heading for this result (e.g. "What we know about Acme"). When set, the UI renders it as the section title instead of the default.',
+      maxLength: 200,
+    })
+  ),
   query: Type.Optional(
     Type.String({
       description: 'Search query (entity name). Required unless entity_id is provided.',
@@ -293,6 +300,12 @@ type VirtualFeedRows = Static<typeof VirtualFeedRowsSchema>;
  * schema-derived, so there is no hand-written interface that can drift.
  */
 export const UnifiedSearchResultSchema = Type.Object({
+  title: Type.Optional(
+    Type.String({
+      description: "The caller-supplied human-friendly heading for this result, echoed back for the UI.",
+      maxLength: 200,
+    })
+  ),
   entity_type: Type.Union([Type.String(), Type.Null()]),
   entity: Type.Union([EntitySchema, Type.Null()]),
   matches: Type.Array(EntitySchema),
@@ -1453,6 +1466,7 @@ async function formatEntityResult(
   }
 
   return {
+    ...(args.title?.trim() ? { title: args.title.trim() } : {}),
     entity_type: entityType,
     entity: primaryEntity,
     matches,

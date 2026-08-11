@@ -26,6 +26,13 @@ const SCRIPT_FIELDS = {
 
 export const RunSchema = Type.Object({
   ...SCRIPT_FIELDS,
+  title: Type.Optional(
+    Type.String({
+      description:
+        'Optional human-friendly heading for this result (e.g. "Company pipeline"). When set, the UI renders it as the section title instead of the per-mode default.',
+      maxLength: 200,
+    }),
+  ),
   dry_run: Type.Optional(
     Type.Boolean({
       description:
@@ -33,7 +40,16 @@ export const RunSchema = Type.Object({
     }),
   ),
 });
-export const QuerySchema = Type.Object(SCRIPT_FIELDS);
+export const QuerySchema = Type.Object({
+  ...SCRIPT_FIELDS,
+  title: Type.Optional(
+    Type.String({
+      description:
+        'Optional human-friendly heading for this result (e.g. "Company pipeline"). When set, the UI renders it as the section title instead of the per-mode default.',
+      maxLength: 200,
+    }),
+  ),
+});
 type RunArgs = Static<typeof RunSchema>;
 type QueryArgs = Static<typeof QuerySchema>;
 
@@ -66,6 +82,12 @@ const SdkCallTraceEntrySchema = Type.Object({
  * (`validateToolResult`), never a failed call.
  */
 export const SdkScriptResultSchema = Type.Object({
+  title: Type.Optional(
+    Type.String({
+      description: "The caller-supplied human-friendly heading for this result, echoed back for the UI.",
+      maxLength: 200,
+    }),
+  ),
   success: Type.Boolean({ description: "Whether the script ran to completion." }),
   return_value: Type.Optional(
     Type.Unknown({ description: "The script's default-export return value." }),
@@ -197,7 +219,9 @@ async function runSandbox(
         return { ...result.error, code, retryable: isRetryable(code) };
       })()
     : result.error;
+  const title = "title" in args && typeof args.title === "string" ? args.title.trim() || undefined : undefined;
   return {
+    ...(title ? { title } : {}),
     success: result.success,
     return_value: result.returnValue,
     logs: result.logs,

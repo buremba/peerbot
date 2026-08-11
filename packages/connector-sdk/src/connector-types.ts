@@ -61,6 +61,13 @@ export interface ConnectorDefinition {
   optionsSchema?: Record<string, unknown>;
   /** Domain for favicon lookup (e.g. 'x.com') */
   faviconDomain?: string;
+  /**
+   * The connector's identifying color (CSS color), used by the UI/charts as the
+   * primary series color for this connector. Optional — the neutral palette is
+   * the fallback. Keeps connector brand data out of the Lobu codebase: the
+   * connector declares its own primary color here.
+   */
+  primaryColor?: string;
   /** Optional upstream MCP configuration */
   mcpConfig?: {
     upstreamUrl: string;

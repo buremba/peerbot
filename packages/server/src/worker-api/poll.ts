@@ -430,6 +430,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           LIMIT 1
         ) cd ON true
         WHERE r.status = 'pending'
+          AND (r.expires_at IS NULL OR r.expires_at > now())
           AND (r.approval_status = 'auto' OR r.approval_status = 'approved')
           AND (
             -- (1) Connector-worker lanes: sync / action / embed_backfill / auth.

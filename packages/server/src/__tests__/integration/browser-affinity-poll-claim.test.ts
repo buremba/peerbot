@@ -95,6 +95,29 @@ async function seedPendingSync(opts: {
   return Number(row.id);
 }
 
+async function seedPendingAction(opts: {
+  orgId: string;
+  connectionId: number;
+  connectorKey: string;
+  expiresAtAgoSeconds?: number | null;
+}): Promise<number> {
+  const sql = getTestDb();
+  const [row] = (await sql`
+    INSERT INTO runs (
+      organization_id, run_type, connection_id, connector_key,
+      action_key, action_input, approval_status, status, created_at, expires_at
+    ) VALUES (
+      ${opts.orgId}, 'action', ${opts.connectionId}, ${opts.connectorKey},
+      'open_tab', ${sql.json({})}, 'auto', 'pending', current_timestamp,
+      ${opts.expiresAtAgoSeconds == null
+        ? null
+        : sql`current_timestamp - make_interval(secs => ${opts.expiresAtAgoSeconds})`}
+    )
+    RETURNING id
+  `) as unknown as Array<{ id: number }>;
+  return Number(row.id);
+}
+
 async function pollExtension(workerId: string) {
   return post('/api/workers/poll', {
     body: {
@@ -261,5 +284,72 @@ describe('browser-affinity poll claim', () => {
       SELECT status FROM runs WHERE id = ${runId}
     `) as unknown as Array<{ status: string }>;
     expect(row.status).toBe('pending');
+  });
+
+  it('chrome-extension does NOT claim an action run whose expires_at lapsed (ephemeral action horizon)', async () => {
+    const { userId, orgId } = await seedOrg();
+    const { deviceWorkerId, workerId } = await seedExtWorker(userId, orgId);
+    const connId = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'chrome',
+      deviceWorkerId,
+    });
+    const runId = await seedPendingAction({
+      orgId,
+      connectionId: connId,
+      connectorKey: 'chrome',
+      expiresAtAgoSeconds: 60,
+    });
+
+    // Warm registration + claim attempt. The run is pending + auto-approved and
+    // would otherwise match this device's claim branches — but its claim
+    // horizon lapsed, so the poll must leave it untouched.
+    const res = await pollExtension(workerId);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { run_id?: number };
+    expect(body.run_id).toBeUndefined();
+
+    const sql = getTestDb();
+    const [row] = (await sql`
+      SELECT status, claimed_by FROM runs WHERE id = ${runId}
+    `) as unknown as Array<{ status: string; claimed_by: string | null }>;
+    expect(row.status).toBe('pending');
+    expect(row.claimed_by).toBeNull();
+  });
+
+  it('chrome-extension still claims an action run with a live expires_at', async () => {
+    const { userId, orgId } = await seedOrg();
+    const { deviceWorkerId, workerId } = await seedExtWorker(userId, orgId);
+    const connId = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'chrome',
+      deviceWorkerId,
+    });
+    const runId = await seedPendingAction({
+      orgId,
+      connectionId: connId,
+      connectorKey: 'chrome',
+      // expires_at in the future → claimable
+      expiresAtAgoSeconds: -60,
+    });
+
+    const res = await pollExtension(workerId);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      run_id?: number;
+      skipped_run_id?: number;
+    };
+    // chrome may fail-after-claim without compiled sources — either proves the
+    // claim path reached this run.
+    const claimedId = Number(body.run_id ?? body.skipped_run_id);
+    expect(claimedId).toBe(runId);
+
+    const sql = getTestDb();
+    const [row] = (await sql`
+      SELECT status FROM runs WHERE id = ${runId}
+    `) as unknown as Array<{ status: string }>;
+    expect(row.status).not.toBe('pending');
   });
 });

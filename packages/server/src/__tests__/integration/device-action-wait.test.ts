@@ -27,6 +27,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { waitForDeviceActionRun } from '../../tools/admin/manage_operations';
+import { createConnectorOperationRun } from '../../runs/queue-service';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import { createTestOrganization } from '../setup/test-fixtures';
 
@@ -353,5 +354,128 @@ describe('waitForDeviceActionRun', () => {
       SELECT status FROM runs WHERE id = ${runId}
     `) as Array<{ status: string }>;
     expect(rows[0].status).toBe('timeout');
+  });
+});
+
+describe('createConnectorOperationRun — ephemeral expires_at semantics', () => {
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+  });
+
+  async function expiresAtOf(runId: number): Promise<Date | null> {
+    const sql = getTestDb();
+    const rows = (await sql`
+      SELECT expires_at FROM runs WHERE id = ${runId}
+    `) as Array<{ expires_at: Date | null }>;
+    return rows[0]?.expires_at ?? null;
+  }
+
+  it('device-mode (ephemeral browser/device) runs get a bounded expires_at', async () => {
+    const org = await createTestOrganization();
+    await insertChromeConnector(org.id);
+    const connId = await insertChromeConnection(org.id);
+
+    const claim = await createConnectorOperationRun({
+      organizationId: org.id,
+      connectionId: connId,
+      connectorKey: 'chrome',
+      operationKey: 'open_tab',
+      operationInput: { url: 'about:blank' },
+      approvalMode: 'device',
+      requireCompiledCode: false,
+    });
+    expect(claim.status).toBe('pending');
+    expect(claim.approvalStatus).toBe('auto');
+
+    const expiresAt = await expiresAtOf(claim.runId);
+    expect(expiresAt).not.toBeNull();
+    // Bounded claim horizon: in the near future, not eternal.
+    const ms = (expiresAt as Date).getTime();
+    expect(ms).toBeGreaterThan(Date.now());
+    expect(ms).toBeLessThan(Date.now() + 10 * 60 * 1000);
+  });
+
+  it('queued (durable human-decision) runs get NO expires_at', async () => {
+    const org = await createTestOrganization();
+    await insertChromeConnector(org.id);
+    const connId = await insertChromeConnection(org.id);
+
+    const claim = await createConnectorOperationRun({
+      organizationId: org.id,
+      connectionId: connId,
+      connectorKey: 'chrome',
+      operationKey: 'open_tab',
+      operationInput: { url: 'about:blank' },
+      approvalMode: 'queued',
+      requireCompiledCode: false,
+      idempotencyKey: `durable-${Date.now()}`,
+    });
+    expect(claim.approvalStatus).toBe('pending');
+    expect(await expiresAtOf(claim.runId)).toBeNull();
+  });
+
+  it('inline (immediate gateway-executed) runs get NO expires_at', async () => {
+    const org = await createTestOrganization();
+    await insertChromeConnector(org.id);
+    const connId = await insertChromeConnection(org.id);
+
+    const claim = await createConnectorOperationRun({
+      organizationId: org.id,
+      connectionId: connId,
+      connectorKey: 'chrome',
+      operationKey: 'open_tab',
+      operationInput: { url: 'about:blank' },
+      approvalMode: 'inline',
+      requireCompiledCode: false,
+      idempotencyKey: `inline-${Date.now()}`,
+    });
+    expect(claim.status).toBe('running');
+    expect(await expiresAtOf(claim.runId)).toBeNull();
+  });
+
+  it('an idempotent replay of an expired device run returns the prior terminal row', async () => {
+    const org = await createTestOrganization();
+    await insertChromeConnector(org.id);
+    const connId = await insertChromeConnection(org.id);
+    const key = `replay-${Date.now()}`;
+
+    const first = await createConnectorOperationRun({
+      organizationId: org.id,
+      connectionId: connId,
+      connectorKey: 'chrome',
+      operationKey: 'open_tab',
+      operationInput: { url: 'about:blank' },
+      approvalMode: 'device',
+      requireCompiledCode: false,
+      idempotencyKey: key,
+    });
+    expect(first.created).toBe(true);
+
+    // Age the run to terminal timeout with a lapsed expiry (as the reaper or
+    // waitForDeviceActionRun would after the claim horizon).
+    const sql = getTestDb();
+    await sql`
+      UPDATE runs
+      SET status = 'timeout',
+          completed_at = current_timestamp,
+          expires_at = now() - interval '1 second'
+      WHERE id = ${first.runId}
+    `;
+
+    // The same idempotency key must not mint a second run, and must return the
+    // prior (now terminal) run rather than resurrecting it.
+    const replay = await createConnectorOperationRun({
+      organizationId: org.id,
+      connectionId: connId,
+      connectorKey: 'chrome',
+      operationKey: 'open_tab',
+      operationInput: { url: 'about:blank' },
+      approvalMode: 'device',
+      requireCompiledCode: false,
+      idempotencyKey: key,
+    });
+    expect(replay.created).toBe(false);
+    expect(replay.runId).toBe(first.runId);
+    expect(replay.status).toBe('timeout');
   });
 });

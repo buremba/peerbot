@@ -64,6 +64,7 @@
 
 ## Session efficiency
 - Default broad iteration to `make pre-pr-remote-fast` and final full validation to `make pre-pr-remote`; never start a simultaneous local full gate. Exact local tests remain the fastest red-green loop, while Depot owns CPU-heavy breadth. To rerun one failed lane, pass it explicitly, for example `make pre-pr-remote REMOTE_JOBS=unit`; subset runs never attest. `make review` requires the matching full Depot tree attestation and refuses a surprise local build; only a documented Depot outage permits `REVIEW_ALLOW_LOCAL_BUILD=1 make review`.
+- When a live app is needed without loading the developer's machine, commit first and run `make dev-remote`; it syncs tracked code to private Daytona compute, resumes or starts Lobu, and prints a signed preview URL. Run `make dev-remote-pause` when finished. Keep this direct and private: do not add hooks, a public preview, or a custom proxy.
 - Never poll in the foreground (`sleep`/`until`/`while` wait loops, repeated `tail`). Run long waits (dev-server boot, CI, deploys) in the background and act on the completion notification.
 - Prefer DOM reads (`get_page_text`, `read_page`, `javascript_tool`) over screenshots; screenshot only when visual layout itself is under test. Screenshots are the #1 context-bloat source.
 - Read a file before editing it, and re-read it after any external change (a fixer pass, another agent, a rebase). Blind edits fail and cost a retry round-trip.

@@ -94,6 +94,7 @@ export async function loadConnectorDeriveFeedContext(
 		WHERE f.id = ${args.feedId}
 		  AND f.organization_id = ${args.organizationId}
 		  AND f.feed_key = ${args.feedKey}
+		  AND f.deleted_at IS NULL
 		  AND c.connector_key = ${args.connectorKey}
 		LIMIT 1
 	`;

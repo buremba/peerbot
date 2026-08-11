@@ -142,6 +142,15 @@ async function runTurn(
   consumer: MessageConsumer,
   done: () => boolean,
 ): Promise<void> {
+  // This suite exercises deployment ownership only. Keep the connector-tooling
+  // fold on its test seam so importing MessageConsumer never turns these
+  // database-free tests into accidental integration tests.
+  spyOn(
+    consumer as unknown as {
+      foldConnectorTooling: (data: MessagePayload) => Promise<string>;
+    },
+    "foldConnectorTooling",
+  ).mockResolvedValue("test-no-connector-tooling");
   await (
     consumer as unknown as {
       handleMessage: (job: unknown) => Promise<void>;

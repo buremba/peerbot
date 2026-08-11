@@ -346,7 +346,7 @@ describe('workspace-identity audit events > public-read exclusion', () => {
           AND metadata->>'category' = 'workspace'
           AND metadata->>'resource_kind' = 'invitation'
           AND metadata->>'op' = 'updated'
-          AND title ILIKE '%cancel-me@example.com%'
+          AND metadata->>'resource_id' = ${invRows[0].id}
         LIMIT 1
       `;
       if (audit.length > 0) {

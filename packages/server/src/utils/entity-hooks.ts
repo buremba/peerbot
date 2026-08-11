@@ -87,14 +87,13 @@ registerEntityHooks('$member', {
           resourceKind: 'invitation',
           resourceId: inserted[0].id,
           op: 'created',
-          summary: `Invitation sent to ${email}`,
+          summary: 'Invitation sent',
           state: {
             id: inserted[0].id,
-            email,
             role: 'member',
             status: 'pending',
           },
-          changedFields: ['email', 'role', 'status'],
+          changedFields: ['role', 'status'],
           actorSource: 'ui',
           createdBy: ctx.userId ?? null,
         });
@@ -161,10 +160,9 @@ registerEntityHooks('$member', {
       WHERE "organizationId" = ${ctx.organizationId}
         AND email = ${email}
         AND status = 'pending'
-      RETURNING id, email, role, status
+      RETURNING id, role, status
     `) as unknown as Array<{
       id: string;
-      email: string;
       role: string | null;
       status: string | null;
     }>;
@@ -177,10 +175,9 @@ registerEntityHooks('$member', {
         resourceKind: 'invitation',
         resourceId: inv.id,
         op: 'updated',
-        summary: `Invitation to ${inv.email} cancelled`,
+        summary: 'Invitation cancelled',
         state: {
           id: inv.id,
-          email: inv.email,
           role: inv.role ?? 'member',
           status: inv.status ?? 'canceled',
         },

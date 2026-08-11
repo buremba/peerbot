@@ -114,7 +114,7 @@ export async function joinPublicOrganization({
     resourceKind: 'member',
     resourceId: committedMemberId,
     op: 'created',
-    summary: `Member "${user.name || user.email}" joined public workspace`,
+    summary: `Member "${user.name || 'a member'}" joined public workspace`,
     state: { id: committedMemberId, user_id: userId, role: 'member' },
     changedFields: ['user_id', 'role'],
     actorSource: 'ui',

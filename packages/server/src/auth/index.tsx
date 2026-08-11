@@ -363,12 +363,11 @@ export async function createAuth(
 							resourceKind: "member",
 							resourceId: member.id,
 							op: "created",
-							summary: `Member "${user.name || user.email}" added`,
+							summary: `Member "${user.name || 'a member'}" added`,
 							state: {
 								id: member.id,
 								user_id: user.id,
 								role: member.role,
-								email: user.email ?? null,
 							},
 							changedFields: ["user_id", "role"],
 							actorSource: "ui",
@@ -391,7 +390,7 @@ export async function createAuth(
 								entityType: "member",
 								op: "created",
 								entityId: member.id,
-								summary: `Member "${user.name || user.email}" added`,
+								summary: `Member "${user.name || 'a member'}" added`,
 								extra: { user_id: user.id, role: member.role },
 							});
 						} catch (err) {
@@ -429,10 +428,9 @@ export async function createAuth(
 							resourceKind: "invitation",
 							resourceId: invitation.id,
 							op: "updated",
-							summary: `Invitation to ${invitation.email} accepted`,
+							summary: "Invitation accepted",
 							state: {
 								id: invitation.id,
-								email: invitation.email,
 								role: invitation.role,
 								status: invitation.status ?? "accepted",
 							},
@@ -445,12 +443,11 @@ export async function createAuth(
 							resourceKind: "member",
 							resourceId: member.id,
 							op: "created",
-							summary: `Member "${user.name || user.email}" joined`,
+							summary: `Member "${user.name || 'a member'}" joined`,
 							state: {
 								id: member.id,
 								user_id: user.id,
 								role: member.role,
-								email: user.email ?? null,
 							},
 							changedFields: ["user_id", "role"],
 							actorSource: "ui",
@@ -497,7 +494,7 @@ export async function createAuth(
 							resourceKind: "member",
 							resourceId: member.id,
 							op: "deleted",
-							summary: `Member "${user.name || user.email}" removed`,
+							summary: `Member "${user.name || 'a member'}" removed`,
 							state: null,
 							actorSource: "ui",
 						});
@@ -508,7 +505,7 @@ export async function createAuth(
 								entityType: "member",
 								op: "deleted",
 								entityId: user.id,
-								summary: `Member "${user.name || user.email}" removed`,
+								summary: `Member "${user.name || 'a member'}" removed`,
 							});
 							const { invalidateMembershipRoleCache } = await import(
 								"../workspace/multi-tenant"
@@ -533,7 +530,7 @@ export async function createAuth(
 							resourceKind: "member",
 							resourceId: member.id,
 							op: "updated",
-							summary: `Member "${user.name || user.email}" role set to ${member.role}`,
+							summary: `Member "${user.name || 'a member'}" role set to ${member.role}`,
 							state: {
 								id: member.id,
 								user_id: user.id,
@@ -571,14 +568,13 @@ export async function createAuth(
 							resourceKind: "invitation",
 							resourceId: invitation.id,
 							op: "created",
-							summary: `Invitation sent to ${invitation.email}`,
+							summary: "Invitation sent",
 							state: {
 								id: invitation.id,
-								email: invitation.email,
 								role: invitation.role,
 								status: invitation.status ?? "pending",
 							},
-							changedFields: ["email", "role", "status"],
+							changedFields: ["role", "status"],
 							actorSource: "ui",
 							createdBy: inviter.id,
 						});
@@ -622,10 +618,9 @@ export async function createAuth(
 							resourceKind: "invitation",
 							resourceId: invitation.id,
 							op: "updated",
-							summary: `Invitation to ${invitation.email} cancelled`,
+							summary: "Invitation cancelled",
 							state: {
 								id: invitation.id,
-								email: invitation.email,
 								status: invitation.status ?? "canceled",
 							},
 							changedFields: ["status"],
@@ -651,10 +646,9 @@ export async function createAuth(
 							resourceKind: "invitation",
 							resourceId: invitation.id,
 							op: "updated",
-							summary: `Invitation to ${invitation.email} rejected`,
+							summary: "Invitation rejected",
 							state: {
 								id: invitation.id,
-								email: invitation.email,
 								status: invitation.status ?? "rejected",
 							},
 							changedFields: ["status"],

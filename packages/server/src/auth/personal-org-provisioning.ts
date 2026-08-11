@@ -197,7 +197,7 @@ export async function ensurePersonalOrganization(
 			resourceKind: 'member',
 			resourceId: finalResult.memberId,
 			op: 'created',
-			summary: `Member "${user.name || user.email}" joined as owner`,
+			summary: `Member "${user.name || 'the owner'}" joined as owner`,
 			state: { id: finalResult.memberId, user_id: user.id, role: 'owner' },
 			changedFields: ['user_id', 'role'],
 			actorSource: 'ui',

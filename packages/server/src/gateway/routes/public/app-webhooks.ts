@@ -42,6 +42,15 @@ import type { StoredConnection } from "@lobu/core";
 import type { ConnectorWebhookSchema } from "@lobu/connector-sdk";
 import { type DbClient, getDb } from "../../../db/client.js";
 import {
+	activateBehaviorSignal,
+	dispatchBehaviorRunsBestEffort,
+} from "../../../behaviors/activation.js";
+import {
+	deriveConnectorActivationSignals,
+	loadConnectorDeriveFeedContext,
+	type ConnectorDeriveFeedContext,
+} from "../../../behaviors/connector-derived.js";
+import {
 	handleWebhookIngest,
 	readBodyWithCap,
 	WEBHOOK_INGEST_MAX_BODY_BYTES,
@@ -906,6 +915,27 @@ async function landGithubStarEvent(params: {
 		return null;
 	});
 
+	// Platform-derived activation: a live webhook delivery is definitionally
+	// steady-state (never a backfill), so the store path needs no checkpoint
+	// gate — only the declared-kind check applies. A context-load failure skips
+	// activation (never the store) so one bad read cannot drop a star.
+	let deriveContext: ConnectorDeriveFeedContext | null = null;
+	try {
+		deriveContext = await loadConnectorDeriveFeedContext({
+			organizationId,
+			connectorKey,
+			feedKey,
+			feedId: target.feedId,
+		});
+	} catch (error) {
+		logger.warn(
+			{ error, feed_id: target.feedId, connector: connectorKey },
+			"[app-webhook] failed to load derived-activation context; skipping activation for STORE event",
+		);
+	}
+	const storeActivations: Awaited<
+		ReturnType<typeof activateBehaviorSignal>
+	>[] = [];
 	await insertEvent(
 		{
 			organizationId,
@@ -931,8 +961,49 @@ async function landGithubStarEvent(params: {
 				...(resolution?.metadata ?? {}),
 			},
 		},
-		{ onConflictUpdate: true },
+		{
+			onConflictUpdate: true,
+			afterPersist: async (persisted, tx) => {
+				if (!deriveContext) return;
+				const derived = deriveConnectorActivationSignals(
+					deriveContext,
+					{
+						connectionId: target.connectionId,
+						feedId: target.feedId,
+						runId: null,
+						originId,
+						kind: "stargazer",
+						title: `${actor.author_login} starred ${owner}/${name}`,
+						payloadText: null,
+						sourceUrl: profileUrl,
+						occurredAt: starredAt,
+						metadata: {
+							action: "starred",
+							starred_at: starredAt,
+							source: "github_star_webhook",
+							author_login: actor.author_login,
+							...(actor.author_id ? { author_id: actor.author_id } : {}),
+							...(resolution?.metadata ?? {}),
+						},
+					},
+					persisted.change,
+					persisted.id,
+				);
+				for (const signal of derived) {
+					storeActivations.push(
+						await activateBehaviorSignal({
+							organizationId,
+							signal,
+							db: tx,
+						}),
+					);
+				}
+			},
+		},
 	);
+	// ESCAPES THE TX: the activation rows roll back with the insert tx, but a
+	// dispatched agent run has already left the database.
+	await dispatchBehaviorRunsBestEffort(storeActivations.flat());
 	return true;
 }
 

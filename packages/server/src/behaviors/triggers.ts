@@ -12,6 +12,7 @@ import { listCatalogEntries } from "../catalog/load";
 import { validateSchedule, validateTimezone } from "../utils/cron";
 import { ToolUserError } from "../utils/errors";
 import { withPlatformBehaviorEvents } from "./platform-event-catalog";
+import { deriveBehaviorEventCatalogFromFeeds } from "./connector-derived";
 
 export interface BehaviorTriggerProjection {
 	triggers: BehaviorTrigger[];
@@ -76,13 +77,21 @@ async function getConnectorBehaviorEventCatalog(
 	const row = rows[0] as
 		| { name: string; behavior_events: unknown; feeds_schema: unknown }
 		| undefined;
-	if (Array.isArray(row?.behavior_events)) {
-		const declared = parseBehaviorEventDefinitions(row.behavior_events);
+
+	// Default-on: a connector's declared `eventKinds` are its subscribable
+	// trigger catalog. Hand-declared `behavior_events` (Slack, legacy) win when
+	// present; otherwise every declared kind is a trigger event_type.
+	const declared = parseBehaviorEventDefinitions(row?.behavior_events);
+	const derived = deriveBehaviorEventCatalogFromFeeds(row?.feeds_schema);
+	const storedEvents = declared.length > 0 ? declared : derived;
+	if (storedEvents.length > 0 || countDeclaredFeeds(row?.feeds_schema) > 0) {
 		return {
-			name: row.name,
-			events: withPlatformBehaviorEvents(declared) as BehaviorEventDefinition[],
-			declaredCount: declared.length,
-			feedCount: countDeclaredFeeds(row.feeds_schema),
+			name: row?.name ?? connectorKey,
+			events: withPlatformBehaviorEvents(
+				storedEvents,
+			) as BehaviorEventDefinition[],
+			declaredCount: storedEvents.length,
+			feedCount: countDeclaredFeeds(row?.feeds_schema),
 		};
 	}
 
@@ -95,12 +104,17 @@ async function getConnectorBehaviorEventCatalog(
 	const declaredFallback = parseBehaviorEventDefinitions(
 		catalog?.detail.behavior_events,
 	);
+	const derivedFallback = deriveBehaviorEventCatalogFromFeeds(
+		catalog?.detail.feeds_schema,
+	);
+	const fallbackEvents =
+		declaredFallback.length > 0 ? declaredFallback : derivedFallback;
 	return {
 		name: row?.name ?? catalog?.name ?? connectorKey,
 		events: withPlatformBehaviorEvents(
-			declaredFallback,
+			fallbackEvents,
 		) as BehaviorEventDefinition[],
-		declaredCount: declaredFallback.length,
+		declaredCount: fallbackEvents.length,
 		feedCount: countDeclaredFeeds(
 			row?.feeds_schema ?? catalog?.detail.feeds_schema,
 		),

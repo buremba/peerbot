@@ -1,4 +1,5 @@
 import type { GuardrailStage } from "@lobu/core";
+import { deriveBehaviorEventCatalogFromFeeds } from "../behaviors/connector-derived";
 import { withPlatformBehaviorEvents } from "../behaviors/platform-event-catalog";
 import { getModelProviderModules } from "../gateway/modules/module-system";
 import type { Env } from "../index";
@@ -27,6 +28,7 @@ import type {
 /** Installed UI metadata: merge platform Behavior events into each connector. */
 function behaviorEventsForUi(
 	raw: Array<Record<string, unknown>> | null | undefined,
+	feedsSchema?: unknown,
 ): Array<Record<string, unknown>> | undefined {
 	const declared = Array.isArray(raw)
 		? raw.filter(
@@ -34,7 +36,11 @@ function behaviorEventsForUi(
 					typeof event?.key === "string" && event.key.length > 0,
 			)
 		: [];
-	const merged = withPlatformBehaviorEvents(declared);
+	// Default-on: when the connector declares no behavior events, its feed's
+	// eventKinds ARE the subscribable catalog (see connector-derived.ts).
+	const source =
+		declared.length > 0 ? declared : deriveBehaviorEventCatalogFromFeeds(feedsSchema);
+	const merged = withPlatformBehaviorEvents(source);
 	return merged.length > 0 ? (merged as Array<Record<string, unknown>>) : undefined;
 }
 
@@ -77,7 +83,7 @@ export async function listOrgInstalled(
 					auth_schema: row.auth_schema,
 					feeds_schema: row.feeds_schema,
 					actions_schema: row.actions_schema,
-					behavior_events: behaviorEventsForUi(row.behavior_events),
+					behavior_events: behaviorEventsForUi(row.behavior_events, row.feeds_schema),
 					options_schema: row.options_schema,
 					favicon_domain: row.favicon_domain,
 					required_capability: row.required_capability,

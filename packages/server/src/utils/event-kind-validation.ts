@@ -169,7 +169,7 @@ async function getEntityTypeEventKinds(
  * Fetch event_kinds from connector_definitions for a specific feed.
  * Returns null if connector or feed not found, or eventKinds not defined.
  */
-async function getConnectorEventKinds(
+export async function getConnectorEventKinds(
   connectorKey: string,
   feedKey: string,
   orgId: string

@@ -110,6 +110,25 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     return new Set((result.content ?? []).map((c) => c.id));
   }
 
+  async function readClassified(ctx: ToolContext, opts: { orgWide?: boolean } = {}): Promise<number> {
+    const result = await getContent(
+      {
+        ...(opts.orgWide ? {} : { entity_id: entity.id }),
+        limit: 100,
+        sort_by: 'date',
+        sort_order: 'desc',
+        include_classification: 'summary',
+      } as never,
+      {} as never,
+      ctx
+    );
+    const stats = result.classification_stats as Record<
+      string,
+      Record<string, number> | undefined
+    > | null;
+    return stats?.['audit-severity']?.['sensitive'] ?? 0;
+  }
+
   beforeAll(async () => {
     await initWorkspaceProvider();
     await cleanupTestDatabase();
@@ -168,6 +187,26 @@ describe('workspace-identity audit events > public-read exclusion', () => {
         },
       })
     ).id;
+
+    // Classify the workspace audit row so classification STATS (which are
+    // aggregated across all matching content) could leak its presence to
+    // non-members even when the row itself is filtered out.
+    const { getDb } = await import('../../../db/client');
+    const sql = getDb();
+    const facet = await sql`
+      INSERT INTO classify_facet (organization_id, slug, name, attribute_key, status,
+                                  created_by, entity_ids, attribute_values, min_similarity)
+      VALUES (${org.id}, 'audit-severity', 'Audit severity', 'severity', 'active', ${alice.id},
+              ARRAY[]::bigint[], ${sql.json({ sensitive: { description: 'S', examples: [] } })}, 0.7)
+      RETURNING id
+    `;
+    const facetId = Number(facet[0].id);
+    await sql`
+      INSERT INTO event_classifications (event_id, classifier_id, watcher_id, window_id,
+                                         "values", confidences, source, is_manual)
+      VALUES (${orgWideWorkspaceAuditEventId}, ${facetId}, NULL, NULL, ${'{sensitive}'}::text[],
+              ${sql.json({ sensitive: 1 })}, 'user', true)
+    `;
   });
 
   it('authenticated member sees the workspace audit event in the feed', async () => {
@@ -211,6 +250,17 @@ describe('workspace-identity audit events > public-read exclusion', () => {
         signedInOutsiderCtx()
       )
     ).rejects.toThrow(/workspace membership/);
+  });
+
+  it('classification stats exclude workspace audit rows for non-members', async () => {
+    // Anonymous and signed-in non-members must not see the 'sensitive' count
+    // that derives from the classified workspace-audit row (org-wide read).
+    expect(await readClassified(unauthedCtx(), { orgWide: true })).toBe(0);
+    expect(await readClassified(signedInOutsiderCtx(), { orgWide: true })).toBe(0);
+  });
+
+  it('classification stats include workspace audit rows for members', async () => {
+    expect(await readClassified(authedCtx(), { orgWide: true })).toBe(1);
   });
 
   it('anonymous content_ids exact-ID read excludes workspace audit but keeps ordinary events', async () => {

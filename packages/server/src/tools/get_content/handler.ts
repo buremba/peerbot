@@ -699,6 +699,7 @@ async function getContentImpl(
         untilDate,
         visibilityScope,
         mcpSessionIds,
+        excludeWorkspaceAudit,
       });
     }
 

@@ -562,6 +562,7 @@ export async function fetchClassificationStats(opts: {
   untilDate: Date | null;
   visibilityScope: VisibilityScope;
   mcpSessionIds: string[] | undefined;
+  excludeWorkspaceAudit?: boolean;
 }): Promise<NonNullable<GetContentResult['classification_stats']>> {
   const {
     args,
@@ -572,12 +573,17 @@ export async function fetchClassificationStats(opts: {
     untilDate,
     visibilityScope,
     mcpSessionIds,
+    excludeWorkspaceAudit,
   } = opts;
 
   // Build dynamic WHERE conditions using inline SQL
   const conditions: string[] = ['1=1'];
   const params: Array<string | number | null> = [];
   let paramIndex = 1;
+
+  if (excludeWorkspaceAudit) {
+    conditions.push(`(f.metadata->>'category') IS DISTINCT FROM 'workspace'`);
+  }
 
   if (args.entity_id) {
     // Use the trimmed UNION here too so the stats CTE doesn't pay for

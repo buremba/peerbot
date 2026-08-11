@@ -32,7 +32,6 @@ import { type DbClient, getDb } from "../db/client";
 
 export interface ConnectorDeriveFeedContext {
 	connectorKey: string;
-	feedKey: string;
 	/** A prior successful, non-dry poll sync exists for this feed. */
 	feedPreviouslySynced: boolean;
 	/** Declared eventKinds for this feed, or null when the connector declares none. */
@@ -108,7 +107,6 @@ export async function loadConnectorDeriveFeedContext(
 		// failure aborts (fail-closed in the caller).
 		return {
 			connectorKey: args.connectorKey,
-			feedKey: args.feedKey,
 			feedPreviouslySynced: false,
 			eventKinds: null,
 		};
@@ -119,7 +117,6 @@ export async function loadConnectorDeriveFeedContext(
 			: null;
 	return {
 		connectorKey: args.connectorKey,
-		feedKey: args.feedKey,
 		feedPreviouslySynced: row.feed_previously_synced,
 		eventKinds,
 	};

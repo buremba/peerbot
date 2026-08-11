@@ -124,6 +124,26 @@ async function handleSend(
   run_id?: number;
 }> {
   const sql = getDb();
+  const kind = args.semantic_type ?? null;
+
+  if (kind && args.input_schema) {
+    throw new ToolUserError(
+      'notify: `semantic_type` and `input_schema` are mutually exclusive — a notification is either content (kind + data) or a question (input_schema), not both.'
+    );
+  }
+
+  // Validate the request even when recipient resolution later produces no rows.
+  if (kind) {
+    const kindValidation = await validateSaveContentSemanticType(
+      kind,
+      args.data,
+      ctx.organizationId
+    );
+    if (!kindValidation.valid) {
+      throw new ToolUserError(kindValidation.errors.join('\n'), 422);
+    }
+  }
+
   const recipients = args.recipients ?? 'admins';
 
   let userIds: string[];
@@ -156,26 +176,6 @@ async function handleSend(
 
   if (userIds.length === 0) {
     return { notified_count: 0, event_id: null, url: null };
-  }
-
-  const kind = args.semantic_type ?? null;
-
-  if (kind && args.input_schema) {
-    throw new ToolUserError(
-      'notify: `semantic_type` and `input_schema` are mutually exclusive — a notification is either content (kind + data) or a question (input_schema), not both.'
-    );
-  }
-
-  // Reuse save_content's kind + metadata validation before persisting the event.
-  if (kind) {
-    const kindValidation = await validateSaveContentSemanticType(
-      kind,
-      args.data,
-      ctx.organizationId
-    );
-    if (!kindValidation.valid) {
-      throw new ToolUserError(kindValidation.errors.join('\n'), 422);
-    }
   }
 
   // Kind data renders separately; legacy untyped data remains appended to body.

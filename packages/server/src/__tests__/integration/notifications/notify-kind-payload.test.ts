@@ -291,6 +291,7 @@ describe('notify > semantic_type (kind) payload', () => {
           title: 'Mixed',
           semantic_type: 'funnel_digest',
           input_schema: {},
+          recipients: ['missing-user'],
         } as never,
         {} as never,
         ctx

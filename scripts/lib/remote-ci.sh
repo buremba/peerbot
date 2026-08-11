@@ -19,6 +19,19 @@ remote_ci_status_succeeded() {
   ' >/dev/null
 }
 
+remote_ci_status_terminal() {
+  jq -e '.status == "finished" or .status == "failed" or .status == "cancelled"' >/dev/null
+}
+
+remote_ci_status_summary() {
+  jq -r '
+    [.workflows[].jobs[].status]
+    | group_by(.)
+    | map("\(.[0])=\(length)")
+    | join(" ")
+  '
+}
+
 remote_ci_print_failures() {
   jq -r '
     "Depot run status: \(.status)",

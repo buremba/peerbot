@@ -25,12 +25,24 @@ success='{
   ]}]
 }'
 remote_ci_status_succeeded <<<"$success" || fail "finished graph was rejected"
+remote_ci_status_terminal <<<"$success" || fail "finished graph was not terminal"
+assert_eq "$(remote_ci_status_summary <<<"$success")" "finished=1"
 
 for bad_status in failed running cancelled queued; do
   bad="${success/\"status\":\"finished\"/\"status\":\"$bad_status\"}"
   if remote_ci_status_succeeded <<<"$bad"; then
     fail "$bad_status graph was accepted"
   fi
+  case "$bad_status" in
+    failed|cancelled)
+      remote_ci_status_terminal <<<"$bad" || fail "$bad_status graph was not terminal"
+      ;;
+    *)
+      if remote_ci_status_terminal <<<"$bad"; then
+        fail "$bad_status graph was terminal"
+      fi
+      ;;
+  esac
 done
 
 failed_job='{

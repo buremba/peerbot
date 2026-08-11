@@ -12,6 +12,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 DEPOT_ORG_ID="${DEPOT_ORG_ID:-b9ffw2rv84}"
+REMOTE_CI_TIMEOUT_SECONDS="${REMOTE_CI_TIMEOUT_SECONDS:-2700}"
+REMOTE_CI_POLL_INTERVAL_SECONDS="${REMOTE_CI_POLL_INTERVAL_SECONDS:-5}"
 WORKFLOW=".github/workflows/ci.yml"
 SOURCE_ACTION=".github/actions/setup-submodule/action.yml"
 DEPOT_ACTION=".depot/actions/setup-submodule/action.yml"
@@ -36,6 +38,13 @@ DEFAULT_JOBS=(
 for cmd in depot git jq tee; do
   command -v "$cmd" >/dev/null 2>&1 || {
     echo "$cmd not found on PATH." >&2
+    exit 2
+  }
+done
+
+for value in "$REMOTE_CI_TIMEOUT_SECONDS" "$REMOTE_CI_POLL_INTERVAL_SECONDS"; do
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || {
+    echo "Remote CI timeout and poll interval must be positive integers." >&2
     exit 2
   }
 done
@@ -71,6 +80,12 @@ else
   jobs=("$@")
 fi
 
+# Starting a new full run invalidates any prior same-HEAD attestation until the
+# new run reaches an authoritative success state. Subset runs do not attest.
+if [ "$full_gate" = "1" ]; then
+  rm -f "$ATTESTATION_FILE"
+fi
+
 job_args=()
 for job in "${jobs[@]}"; do
   job_args+=(--job "$job")
@@ -80,14 +95,14 @@ echo ">> running ${#jobs[@]} Linux CI jobs on Depot: ${jobs[*]}"
 log_file="$(mktemp "${TMPDIR:-/tmp}/lobu-depot-ci.XXXXXX")"
 trap 'rm -f "$log_file"' EXIT
 
-# depot ci run --follow has returned zero for a failed job. Capture its output,
-# then always query the authoritative run status below.
+# Start the whole graph without --follow: Depot's follower can stream only one
+# selected job and exits early for a multi-job run. Capture the run id, then
+# query the authoritative graph state until it reaches a terminal status.
 set +e
 depot ci run \
   --workflow "$WORKFLOW" \
   --org "$DEPOT_ORG_ID" \
-  "${job_args[@]}" \
-  --follow 2>&1 | tee "$log_file"
+  "${job_args[@]}" 2>&1 | tee "$log_file"
 cli_exit=${PIPESTATUS[0]}
 set -e
 
@@ -97,7 +112,28 @@ if [ -z "$run_id" ]; then
   exit 1
 fi
 
-status_json="$(depot ci status "$run_id" --org "$DEPOT_ORG_ID" --output json)"
+deadline=$((SECONDS + REMOTE_CI_TIMEOUT_SECONDS))
+last_summary=""
+while :; do
+  status_json="$(depot ci status "$run_id" --org "$DEPOT_ORG_ID" --output json)" || {
+    echo "Could not read Depot status for run $run_id." >&2
+    exit 1
+  }
+  summary="$(remote_ci_status_summary <<<"$status_json")"
+  if [ "$summary" != "$last_summary" ]; then
+    echo ">> Depot run $run_id: ${summary:-waiting for jobs}"
+    last_summary="$summary"
+  fi
+  if remote_ci_status_terminal <<<"$status_json"; then
+    break
+  fi
+  if [ "$SECONDS" -ge "$deadline" ]; then
+    echo "Depot run $run_id did not finish within ${REMOTE_CI_TIMEOUT_SECONDS}s; it is still running remotely." >&2
+    exit 1
+  fi
+  sleep "$REMOTE_CI_POLL_INTERVAL_SECONDS"
+done
+
 if ! remote_ci_status_succeeded <<<"$status_json"; then
   remote_ci_print_failures <<<"$status_json" >&2
   echo "Depot run $run_id failed (CLI exit $cli_exit)." >&2
@@ -108,8 +144,7 @@ echo ">> Depot run $run_id passed"
 jq -r '.workflows[].jobs[].attempts[-1].view_url // empty' <<<"$status_json" | sort -u
 
 # Only a clean, full-graph success may suppress review.sh's duplicate local
-# package build. A subset run or any tree change invalidates the attestation.
-rm -f "$ATTESTATION_FILE"
+# package build. A subset run or any tree change cannot create an attestation.
 if [ "$full_gate" = "1" ] && [ -z "$(git status --porcelain)" ]; then
   git rev-parse HEAD > "$ATTESTATION_FILE"
   echo ">> recorded full remote preflight for $(git rev-parse --short HEAD)"

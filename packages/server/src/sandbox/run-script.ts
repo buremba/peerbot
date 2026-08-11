@@ -834,6 +834,9 @@ export async function runScript(
 	// can still trip the broader crossing guard.
 	let logBytesUsed = 0;
 	let logFull = false;
+	// Assigned inside the try block below; hoisted so `saturateCrossing` can
+	// interrupt the guest when the crossing budget is exceeded.
+	let isolate: import("isolated-vm").Isolate | null = null;
 
 	const crossingOversizeMessage =
 		`OutputSizeExceeded: sandbox exceeded the ${limits.crossingBytes}-byte crossing budget (SDK call payloads/results and console output)`;
@@ -849,11 +852,35 @@ export async function runScript(
 			},
 		});
 
+	/**
+	 * Crossing saturation is terminal. A thrown error would not help — the guest
+	 * can catch it and loop, and every loop iteration still crosses a payload
+	 * across the isolate boundary. Only interrupting the guest guarantees the
+	 * budget holds, so terminate the isolate's execution (uncatchable by the
+	 * guest). The final `crossingOversize` check still reports the failure as
+	 * `OutputSizeExceeded` even if the isolate was already stopped.
+	 */
+	function saturateCrossing(): void {
+		crossingOversize = true;
+		try {
+			if (isolate && !isolate.isDisposed) {
+				// A guest parked on `await __sdk_dispatch` is NOT executing, so
+				// terminateExecution() no-ops there. Disposing the isolate rejects
+				// the pending run instead — the only way to stop a guest that
+				// would otherwise keep crossing payloads until the wall-clock
+				// timeout.
+				isolate.dispose();
+			}
+		} catch {
+			// Isolate already finished; `crossingOversize` carries the failure.
+		}
+	}
+
 	/** Charge one serialized SDK payload or result against the crossing guard. */
 	function chargeCrossing(json: string): boolean {
 		crossingBytes += Buffer.byteLength(json, "utf8");
 		if (crossingBytes > limits.crossingBytes) {
-			crossingOversize = true;
+			saturateCrossing();
 			return false;
 		}
 		return true;
@@ -913,7 +940,6 @@ export async function runScript(
 		};
 	}
 
-	let isolate: import("isolated-vm").Isolate | null = null;
 	try {
 		isolate = new ivm.Isolate({ memoryLimit: limits.memoryMb });
 		const context = await isolate.createContext();
@@ -1085,14 +1111,12 @@ export async function runScript(
 		await jail.set(
 			"__console_call",
 			new ivm.Reference((level: "log" | "warn" | "error", message: string) => {
-				// Once saturated, stop processing console calls entirely. The
-				// crossing guard can't throw here (the guest console swallows host
-				// errors), so saturation surfaces at the next dispatch entry check
-				// or at the final return via `crossingOversize`.
+				// Once saturated, stop processing console calls entirely and
+				// interrupt the guest so it cannot keep crossing messages.
 				if (crossingOversize) return;
 				crossingBytes += Buffer.byteLength(message, "utf8");
 				if (crossingBytes > limits.crossingBytes) {
-					crossingOversize = true;
+					saturateCrossing();
 					return;
 				}
 				if (logFull) return;
@@ -1219,7 +1243,9 @@ export async function runScript(
 			sideEffectPreview,
 		};
 	} catch (err) {
-		const e = err as Error;
+		// Crossing saturation terminates the isolate, which rejects with a raw
+		// termination error — report it as the OutputSizeExceeded it was.
+		const e = (crossingOversize ? crossingOversizeError() : err) as Error;
 		return {
 			success: false,
 			logs,

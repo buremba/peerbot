@@ -516,4 +516,30 @@ describe("sandbox output budgets", () => {
     expect(result.error?.name).toBe("OutputSizeExceeded");
     expect(hostCalls).toBe(0);
   });
+
+  it("terminates a guest that keeps crossing after saturation", async () => {
+    const sdk = stubSDK({
+      entities: {
+        list: async () => [{ ok: true }],
+      } as never,
+    });
+    const started = Date.now();
+    const result = await runScript({
+      source: [
+        "export default async (_ctx, client) => {",
+        "  while (true) {",
+        "    try { await client.entities.list({ big: 'x'.repeat(70000) }); } catch (e) {}",
+        "  }",
+        "};",
+      ].join("\n"),
+      sdk,
+      limits: { crossingBytes: 65_536, timeoutMs: 5000 },
+    });
+
+    expect(result.success).toBe(false);
+    // The guest was interrupted at saturation (well under the 5s timeout) —
+    // not left spinning crossing payloads until the wall-clock budget.
+    expect(result.error?.name).toBe("OutputSizeExceeded");
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
 });

@@ -35,6 +35,21 @@ async function readWorkspaceEvents(organizationId: string) {
   `;
 }
 
+/** Audit writers are fire-and-forget; poll briefly for rows to land. */
+async function waitForEvents(
+	organizationId: string,
+	expectedCount: number,
+): Promise<unknown[]> {
+	const deadline = Date.now() + 2000;
+	let rows: unknown[] = [];
+	while (Date.now() < deadline) {
+		rows = await readWorkspaceEvents(organizationId);
+		if (rows.length >= expectedCount) return rows;
+		await new Promise((r) => setTimeout(r, 50));
+	}
+	return rows;
+}
+
 describe("personal org workspace audit events", () => {
 	beforeEach(async () => {
 		await cleanupTestDatabase();
@@ -51,7 +66,7 @@ describe("personal org workspace audit events", () => {
 		});
 		expect(res.created).toBe(true);
 
-		const rows = await readWorkspaceEvents(res.organizationId);
+		const rows = await waitForEvents(res.organizationId, 2);
 		expect(rows).toHaveLength(2);
 
 		const all = rows as unknown as Array<{
@@ -108,7 +123,7 @@ describe("personal org workspace audit events", () => {
 		});
 		expect(second.created).toBe(false);
 
-		const rows = await readWorkspaceEvents(first.organizationId);
+		const rows = await waitForEvents(first.organizationId, 2);
 		expect(rows).toHaveLength(2);
 	});
 });

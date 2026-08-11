@@ -35,6 +35,21 @@ async function readWorkspaceEvents(organizationId: string) {
   `;
 }
 
+/** Audit writers are fire-and-forget; poll briefly for the row to land. */
+async function waitFor(
+	fn: () => Promise<unknown[]>,
+	timeoutMs = 2000,
+): Promise<unknown[]> {
+	const deadline = Date.now() + timeoutMs;
+	let rows: unknown[] = [];
+	while (Date.now() < deadline) {
+		rows = await fn();
+		if (rows.length > 0) return rows;
+		await new Promise((r) => setTimeout(r, 50));
+	}
+	return rows;
+}
+
 describe("public workspace join audit events", () => {
 	beforeEach(async () => {
 		await cleanupTestDatabase();
@@ -68,18 +83,25 @@ describe("public workspace join audit events", () => {
 		});
 		expect(second.status).toBe("already_member");
 
-		const rows = await readWorkspaceEvents(org.organizationId);
-		const joinerCreated = rows.filter(
-			(r) =>
-				(r.metadata as { resource_kind?: string }).resource_kind === "member" &&
-				(r.metadata as { op?: string }).op === "created" &&
-				(
-					(r as { payload_data?: { state?: Record<string, unknown> } })
-						.payload_data?.state as Record<string, unknown> | undefined
-				)?.user_id === joiner.id,
+		// Audit writers are fire-and-forget — poll until the joiner's
+		// member-created row lands.
+		const rows = await waitFor(() =>
+			readWorkspaceEvents(org.organizationId).then((all) => {
+				const matches = all.filter(
+					(r) =>
+						(r.metadata as { resource_kind?: string }).resource_kind ===
+							"member" &&
+						(r.metadata as { op?: string }).op === "created" &&
+						(
+							(r as { payload_data?: { state?: Record<string, unknown> } })
+								.payload_data?.state as Record<string, unknown> | undefined
+						)?.user_id === joiner.id,
+				);
+				return matches;
+			}),
 		);
-		expect(joinerCreated).toHaveLength(1);
-		const state = (joinerCreated[0] as { payload_data?: { state?: Record<string, unknown> } })
+		expect(rows).toHaveLength(1);
+		const state = (rows[0] as { payload_data?: { state?: Record<string, unknown> } })
 			.payload_data?.state;
 		// Keyed on the committed member id (the row that exists), and the actor
 		// is the joining member.

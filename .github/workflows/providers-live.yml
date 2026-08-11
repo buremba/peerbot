@@ -6,9 +6,9 @@ name: Live Providers
 # an endpoint, or changing its auth scheme surfaces here instead of in prod.
 #
 # Two tiers (both driven by `make test-providers-live`):
-#   - keyless: probes every composed chat/models route against the real API
-#     (a wrong path 404s, a right path 401s) and checks each defaultModel
-#     against the public catalogs. Runs with NO secrets, every time.
+#   - keyless: probes every protocol-correct completion/models route against
+#     the real API and checks each defaultModel against public catalogs. Runs
+#     with NO secrets, every time.
 #   - keyed:   production-adapter streaming + tool-call round-trip. The required
 #     readiness tier fails closed when a credential is missing; extra provider
 #     secrets remain optional coverage.

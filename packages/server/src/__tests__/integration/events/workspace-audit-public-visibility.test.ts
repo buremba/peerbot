@@ -263,6 +263,69 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     expect(await readClassified(authedCtx(), { orgWide: true })).toBe(1);
   });
 
+  it('deleting an invited member emits an invitation-cancelled audit event', async () => {
+    const { getEntityHooks } = await import('../../../utils/entity-hooks');
+    const { getDb } = await import('../../../db/client');
+    const sql = getDb();
+
+    // Insert a pending invitation directly (the $member beforeCreate hook
+    // does exactly this when a $member entity is created with an email).
+    await sql`
+      INSERT INTO invitation (id, "organizationId", email, role, status, "expiresAt", "inviterId", "createdAt")
+      VALUES (gen_random_uuid()::text, ${org.id}, 'cancel-me@example.com', 'member',
+              'pending', NOW() + interval '48 hours', ${alice.id}, NOW())
+    `;
+    const invRows = (await sql`
+      SELECT id FROM invitation
+      WHERE "organizationId" = ${org.id}
+        AND email = 'cancel-me@example.com'
+        AND status = 'pending'
+    `) as unknown as Array<{ id: string }>;
+    expect(invRows).toHaveLength(1);
+
+    // Deleting the member fires beforeDelete → cancels the invitation.
+    const hooks = getEntityHooks('$member');
+    expect(hooks?.beforeDelete).toBeDefined();
+    await hooks!.beforeDelete!(
+      {
+        id: 999999,
+        entity_type: '$member',
+        metadata: { email: 'cancel-me@example.com' },
+      },
+      { organizationId: org.id, userId: alice.id }
+    );
+
+    // The invitation is now canceled and the cancellation is audited.
+    const cancelledRows = (await sql`
+      SELECT status FROM invitation
+      WHERE "organizationId" = ${org.id}
+        AND email = 'cancel-me@example.com'
+    `) as unknown as Array<{ status: string }>;
+    expect(cancelledRows[0]?.status).toBe('canceled');
+
+    // Poll for the fire-and-forget audit row.
+    const deadline = Date.now() + 2000;
+    let sawCancelled = false;
+    while (Date.now() < deadline) {
+      const audit = await sql`
+        SELECT 1 FROM events
+        WHERE organization_id = ${org.id}
+          AND semantic_type = 'change'
+          AND metadata->>'category' = 'workspace'
+          AND metadata->>'resource_kind' = 'invitation'
+          AND metadata->>'op' = 'updated'
+          AND title ILIKE '%cancel-me@example.com%'
+        LIMIT 1
+      `;
+      if (audit.length > 0) {
+        sawCancelled = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(sawCancelled).toBe(true);
+  });
+
   it('anonymous content_ids exact-ID read excludes workspace audit but keeps ordinary events', async () => {
     const ids = await readExactIds(unauthedCtx(), [
       workspaceAuditEventId,

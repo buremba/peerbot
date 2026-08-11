@@ -155,12 +155,39 @@ registerEntityHooks('$member', {
 
     // Cancel any pending invitation for this email
     const sql = getDb();
-    await sql`
+    const cancelled = (await sql`
       UPDATE invitation
       SET status = 'canceled'
       WHERE "organizationId" = ${ctx.organizationId}
         AND email = ${email}
         AND status = 'pending'
-    `;
+      RETURNING id, email, role, status
+    `) as unknown as Array<{
+      id: string;
+      email: string;
+      role: string | null;
+      status: string | null;
+    }>;
+    // The $member delete cancels every pending invite; record each
+    // cancellation so the invitation lifecycle audit (send → canceled) stays
+    // complete. Fire-and-forget — the update already committed.
+    for (const inv of cancelled) {
+      recordWorkspaceChangeEvent({
+        organizationId: ctx.organizationId,
+        resourceKind: 'invitation',
+        resourceId: inv.id,
+        op: 'updated',
+        summary: `Invitation to ${inv.email} cancelled`,
+        state: {
+          id: inv.id,
+          email: inv.email,
+          role: inv.role ?? 'member',
+          status: inv.status ?? 'canceled',
+        },
+        changedFields: ['status'],
+        actorSource: 'ui',
+        createdBy: ctx.userId ?? null,
+      });
+    }
   },
 });

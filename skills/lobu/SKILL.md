@@ -1,6 +1,6 @@
 ---
 name: lobu
-description: Set up new Lobu agents end to end and operate existing Lobu projects and memory: interview, scaffold, validate, authenticate, connect feeds, execute operations, and test Behaviors.
+description: "Set up new Lobu agents end to end and operate existing Lobu projects and memory: interview, scaffold, validate, authenticate, connect feeds, execute operations, and test Behaviors."
 ---
 
 # Lobu
@@ -107,6 +107,12 @@ npx @lobu/cli@latest login
 - Headless, on a *user's* behalf: `lobu login --email <address>`. The server emails the user a one-click approval link and the CLI polls until they approve, then stores the scoped credential — no TTY, no pre-minted token. This is the auth.md "user_claimed" flow.
 
 An external agent not using this CLI can drive the same flow over HTTP: read `<origin>/auth.md` (linked from the `agent_auth` block in `<origin>/.well-known/oauth-authorization-server`) for the endpoints. Today only the email user_claimed flow exists (no zero-touch ID-JAG). Never fabricate a token.
+
+## Organization Deletion
+
+Treat organization deletion as permanent and restricted to organization owners. The supported path is the **Organization settings** page, opened from that workspace's settings button in the organization switcher. ClientSDK and Lobu CLI intentionally expose no organization-delete method. When asked to delete organizations, identify each exact target and its data impact read-only, surface one production organization at a time for explicit confirmation, then direct an owner to that page or use their logged-in browser only when explicitly authorized. Never invent a hosted URL, call the raw Better Auth route, bypass a failed authorization check, delete organization rows directly, or batch confirmations.
+
+Cloud CLI OAuth/PAT credentials are not a Better Auth browser session. A `401` or `403` is a stop signal: report the authorization boundary and leave the organization intact.
 
 <!-- lobu-memory-guidance:start -->
 ## Memory Defaults

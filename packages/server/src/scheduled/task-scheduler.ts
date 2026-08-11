@@ -107,8 +107,10 @@ interface TransactionalTask<P = unknown> {
  * NOTIFY until the caller commits; the queue poller remains the fallback if
  * notification delivery fails. Domain writers persist a bounded set of rows in
  * one transaction, so the whole batch takes one INSERT and one NOTIFY rather
- * than a database round-trip per row. Returned ids preserve input order,
- * including duplicate idempotency keys.
+ * than a database round-trip per row. Transactional handoffs deliberately have
+ * no expiry: if every worker is unavailable, the durable row must remain until
+ * it is claimed. Returned ids preserve input order, including duplicate
+ * idempotency keys.
  */
 export async function enqueueTasksInTransaction<P>(
   tx: DbClient,
@@ -126,11 +128,12 @@ export async function enqueueTasksInTransaction<P>(
   await tx`
     INSERT INTO public.runs (
       run_type, queue_name, action_key, action_input, idempotency_key,
-      max_attempts, attempts, status, run_at, priority, organization_id
+      max_attempts, attempts, status, run_at, priority, expires_at,
+      organization_id
     )
     SELECT
       'task', ${TASK_QUEUE_NAME}, task.name, task.data, task.idempotency_key,
-      task.max_attempts, 0, 'pending', now(), task.priority,
+      task.max_attempts, 0, 'pending', now(), task.priority, NULL,
       task.organization_id
     FROM jsonb_to_recordset(${tx.json(requested)}::jsonb) AS task(
       name text,

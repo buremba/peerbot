@@ -371,6 +371,27 @@ describe('behavior event trigger matching', () => {
     });
   });
 
+  test('rejects a producer that already appears in its inherited causal path', () => {
+    expect(() =>
+      deriveWorkspaceEventCausality(
+        [
+          {
+            kind: 'event',
+            source: 'workspace',
+            event_id: 40,
+            event_type: 'risk_detected',
+            delivery_id: 'workspace-event:40',
+            occurred_at: '2026-08-11T00:00:00.000Z',
+            root_event_ids: [40],
+            causal_behavior_ids: [7, 9],
+            depth: 2,
+          },
+        ],
+        9
+      )
+    ).toThrow(/cannot re-enter Behavior 9/i);
+  });
+
   test('measures causal depth by hops when coalescing independent branches', () => {
     const signal = (root: number, ancestor: number) => ({
       kind: 'event' as const,

@@ -83,9 +83,14 @@ export function deriveWorkspaceEventCausality(
         causalBehaviorIds.push(behaviorId);
     }
   }
-  if (!causalBehaviorIds.includes(producerBehaviorId)) {
-    causalBehaviorIds.push(producerBehaviorId);
+  // The producer is the final causal element. activateWorkspaceEventTask uses
+  // that position to verify the persisted event's producer before dispatch.
+  if (causalBehaviorIds.includes(producerBehaviorId)) {
+    throw new Error(
+      `Workspace event causality cannot re-enter Behavior ${producerBehaviorId}`
+    );
   }
+  causalBehaviorIds.push(producerBehaviorId);
   if (causalBehaviorIds.length > MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS) {
     throw new Error(
       `Workspace event causality exceeds ${MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS} distinct Behaviors`

@@ -7,6 +7,15 @@
 
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
+import {
+  enqueueWorkspaceEventActivations,
+  findSubscribedWorkspaceEventTypes,
+} from '../../../behaviors/workspace-event';
+import {
+  behaviorTriggerSignals,
+  deriveWorkspaceEventCausality,
+  type WorkspaceEventActivationTaskPayload,
+} from '../../../behaviors/workspace-event-contract';
 import { createDbClientFromEnv, getDb, parsePgNumberArray } from '../../../db/client';
 import type { Env } from '../../../index';
 import { ToolUserError } from '../../../utils/errors';
@@ -272,15 +281,29 @@ export async function handleCompleteWindow(
   // can't read another watcher's snapshot.
   let snapshotVersionId: number | null =
     typeof args.template_version_id === 'number' ? args.template_version_id : null;
-  if (snapshotVersionId == null && watcherRunId != null) {
+  let runTriggerSignals: unknown[] = [];
+  if (watcherRunId != null) {
     const runRows = await sql`
-      SELECT (approved_input->>'version_id')::bigint AS version_id
+      SELECT (approved_input->>'version_id')::bigint AS version_id,
+             approved_input
       FROM runs
       WHERE id = ${watcherRunId} AND watcher_id = ${watcherId}
       LIMIT 1
     `;
-    if (runRows.length > 0 && runRows[0].version_id != null) {
+    if (
+      snapshotVersionId == null &&
+      runRows.length > 0 &&
+      runRows[0].version_id != null
+    ) {
       snapshotVersionId = Number(runRows[0].version_id);
+    }
+    const approvedInput = runRows[0]?.approved_input;
+    if (approvedInput && typeof approvedInput === 'object') {
+      const input = approvedInput as {
+        trigger_signal?: unknown;
+        trigger_signals?: unknown[];
+      };
+      runTriggerSignals = behaviorTriggerSignals(input);
     }
   }
 
@@ -293,6 +316,7 @@ export async function handleCompleteWindow(
       i.entity_ids,
       i.organization_id,
       i.created_by,
+      i.triggers,
       wv.id as version_id,
       wv.outputs
     FROM watchers i
@@ -350,6 +374,26 @@ export async function handleCompleteWindow(
   // guaranteed-live user (same FK), so it's the correct attribution.
   const watcherOrgId = watcherRows[0].organization_id as string;
   const watcherCreatedBy = (watcherRows[0].created_by as string | null) ?? null;
+  const watcherTriggers = parseJson(watcherRows[0].triggers);
+  const hasWorkspaceEventTrigger =
+    Array.isArray(watcherTriggers) &&
+    watcherTriggers.some(
+      (trigger) =>
+        trigger &&
+        typeof trigger === 'object' &&
+        (trigger as { kind?: unknown }).kind === 'event' &&
+        (trigger as { source?: unknown }).source === 'workspace'
+    );
+  const workspaceEventCausality =
+    watcherRunId == null && hasWorkspaceEventTrigger
+      ? null
+      : deriveWorkspaceEventCausality(runTriggerSignals, Number(watcherId));
+  if (workspaceEventCausality == null) {
+    logger.warn(
+      { watcherId },
+      '[complete_window] workspace-event Behavior completed without a run id; output persisted without downstream activation'
+    );
+  }
   // entity_ids is bigint[]; the prod pool runs fetch_types:false, so postgres.js
   // hands it back as the literal string "{4}" (NOT a JS array) — parse it.
   const boundEntityIds = parsePgNumberArray(watcherRows[0].entity_ids);
@@ -758,6 +802,14 @@ export async function handleCompleteWindow(
       kind: 'created' | 'updated';
       applied: Record<string, unknown>;
     }>;
+    const subscribedWorkspaceEventTypes = await findSubscribedWorkspaceEventTypes(
+      watcherOrgId,
+      Object.values(outputs ?? {}).flatMap((output) =>
+        'event' in output ? [output.event] : []
+      ),
+      tx
+    );
+    const workspaceEventActivations: WorkspaceEventActivationTaskPayload[] = [];
     for (const [outputName, output] of Object.entries(outputs ?? {})) {
       if ('entity' in output) {
         const promote = await promoteBehaviorEntityOutput({
@@ -775,7 +827,7 @@ export async function handleCompleteWindow(
         deferredApprovals.push(...promote.deferred);
         entityChanges.push(...promote.changes);
       } else {
-        await persistBehaviorEventOutput({
+        const persistedEvents = await persistBehaviorEventOutput({
           tx,
           rows: extractedData[outputName],
           outputName,
@@ -791,8 +843,28 @@ export async function handleCompleteWindow(
           occurredAt: producedAt,
           createdBy: watcherCreatedBy,
         });
+        for (const event of persistedEvents) {
+          if (
+            event.change === 'unchanged' ||
+            !subscribedWorkspaceEventTypes.has(output.event) ||
+            workspaceEventCausality == null
+          ) {
+            continue;
+          }
+          workspaceEventActivations.push({
+            organizationId: watcherOrgId,
+            eventId: Number(event.id),
+            rootEventIds:
+              workspaceEventCausality.rootEventIds.length > 0
+                ? workspaceEventCausality.rootEventIds
+                : [Number(event.id)],
+            causalBehaviorIds: workspaceEventCausality.causalBehaviorIds,
+            depth: workspaceEventCausality.depth,
+          });
+        }
       }
     }
+    await enqueueWorkspaceEventActivations(tx, workspaceEventActivations);
 
     // One run-level change set covers every entity output.
     if (entityChanges.length > 0 && watcherRunId && Number.isFinite(watcherRunId)) {

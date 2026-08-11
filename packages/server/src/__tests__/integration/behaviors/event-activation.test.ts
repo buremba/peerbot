@@ -38,6 +38,7 @@ describe("Behavior connector-event activation", () => {
 		});
 		const trigger = {
 			kind: "event" as const,
+			source: "connector" as const,
 			connector_key: "github",
 			connection_id: connection.id,
 			event_types: ["pull_request.created"],

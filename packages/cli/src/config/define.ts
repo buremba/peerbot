@@ -13,6 +13,7 @@
 import type {
   BehaviorEventTrigger,
   BehaviorScheduleTrigger,
+  BehaviorWorkspaceEventTrigger,
   ConnectorClass,
   ConnectorRuntime,
   Dimension,
@@ -432,6 +433,7 @@ export type BehaviorEventTriggerConfig = Omit<
 
 export type BehaviorTriggerConfig =
   | BehaviorEventTriggerConfig
+  | BehaviorWorkspaceEventTrigger
   | BehaviorScheduleTrigger;
 
 export interface Behavior {
@@ -442,7 +444,10 @@ export interface Behavior {
   agent: Agent | string;
   name?: string;
   description?: string;
-  /** Connector events and/or cadence that activate this Behavior. */
+  /**
+   * Connector events, declared event outputs from other Behaviors, and/or a
+   * cadence that activate this Behavior. Omit for manual-only execution.
+   */
   triggers?: BehaviorTriggerConfig[];
   /**
    * The task this Behavior performs, in plain text — *what to do when it fires*,

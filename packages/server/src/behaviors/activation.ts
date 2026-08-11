@@ -1,5 +1,9 @@
 import type { ConnectorTriggerSignal } from "@lobu/connector-sdk";
-import type { BehaviorEventTrigger } from "@lobu/core/contracts/tools/manage-behaviors";
+import {
+  resolvedEventExecution,
+  type BehaviorEventTrigger,
+  type BehaviorTrigger,
+} from "@lobu/core/contracts/tools/manage-behaviors";
 import type { DbClient } from "../db/client";
 import { getDb } from "../db/client";
 import { runtimeConnectionIdToSlug } from "../lobu/stores/connections-projection";
@@ -74,7 +78,7 @@ export function planBehaviorActivations(
     // the durable background lane instead.
     if (
       match.agentId != null &&
-      (match.trigger.execution ?? "turn") === "turn" &&
+      resolvedEventExecution(match.trigger) === "turn" &&
       (match.trigger.output ?? "silent") === "reply_to_source"
     ) {
       replyTargets.push({ ...match, agentId: match.agentId });
@@ -134,7 +138,7 @@ export async function findMatchingBehaviorActivations(
   const matches: MatchingBehaviorActivation[] = [];
   for (const row of rows) {
     const triggers = Array.isArray(row.triggers)
-      ? (row.triggers as BehaviorEventTrigger[])
+      ? (row.triggers as BehaviorTrigger[])
       : [];
     // Multi-trigger Behaviors OR activations: any matching event trigger is
     // enough to run once. When several match the same signal, the first in
@@ -142,7 +146,7 @@ export async function findMatchingBehaviorActivations(
     const [trigger] = matchingBehaviorTriggers(
       triggers.filter(
         (candidate): candidate is BehaviorEventTrigger =>
-          candidate.kind === "event",
+          candidate.kind === "event" && candidate.source !== "workspace",
       ),
       signal,
     );

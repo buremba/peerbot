@@ -13,6 +13,7 @@ import { createAjv } from "@lobu/core/ajv";
 import type {
   BehaviorEventTrigger,
   BehaviorScheduleTrigger,
+  BehaviorWorkspaceEventTrigger,
 } from "@lobu/core/contracts/tools/manage-behaviors";
 import type Ajv from "ajv";
 import type {
@@ -157,6 +158,7 @@ export type DesiredBehaviorEventTrigger = BehaviorEventTrigger & {
 };
 export type DesiredBehaviorTrigger =
   | DesiredBehaviorEventTrigger
+  | BehaviorWorkspaceEventTrigger
   | BehaviorScheduleTrigger;
 
 export interface DesiredFeed {

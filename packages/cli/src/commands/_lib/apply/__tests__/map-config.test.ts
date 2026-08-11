@@ -583,6 +583,8 @@ describe("mapProjectToDesiredState", () => {
       skip_if_unchanged: true,
     });
     expect(dw?.triggers?.[0]).toMatchObject({
+      kind: "event",
+      source: "connector",
       connector_key: "github",
       connectionSlug: "github-main",
       execution: "turn",
@@ -597,6 +599,7 @@ describe("mapProjectToDesiredState", () => {
       true
     );
     expect(state.watchers[0]?.triggers?.[0]).toMatchObject({
+      source: "connector",
       connector_key: "github",
       connection_id: 91,
     });
@@ -639,6 +642,39 @@ describe("mapProjectToDesiredState", () => {
         })
       )
     ).toThrow(/trigger is github.*uses slack/i);
+  });
+
+  test("maps workspace event triggers without connector fields", () => {
+    const crm = defineAgent({ id: "crm" });
+    const behavior = defineBehavior({
+      agent: crm,
+      slug: "risk-follow-up",
+      prompt: "Investigate the account risk.",
+      triggers: [
+        {
+          kind: "event",
+          source: "workspace",
+          entity_type: "account",
+          event_types: ["risk_detected", "risk_detected"],
+          match: { severity: "high" },
+        },
+      ],
+    });
+
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [crm], behaviors: [behavior] })
+    );
+    expect(state.watchers[0]?.triggers).toEqual([
+      {
+        kind: "event",
+        source: "workspace",
+        entity_type: "account",
+        event_types: ["risk_detected"],
+        match: { severity: "high" },
+        execution: "window",
+        active_run: "coalesce",
+      },
+    ]);
   });
 
   test("rejects a Behavior trigger with both connection forms", () => {
@@ -940,6 +976,23 @@ describe("mapProjectToDesiredState", () => {
               connector_key: "github",
               event_types: ["pull_request.created"],
               execution: "window",
+            },
+          ],
+        })
+      )
+    ).toThrow(/needs instructions/i);
+    // Workspace events default to window execution even when execution is
+    // omitted, so the same instruction requirement applies.
+    expect(
+      map(
+        defineBehavior({
+          agent: crm,
+          slug: "workspace-default-window",
+          triggers: [
+            {
+              kind: "event",
+              source: "workspace",
+              event_types: ["risk_detected"],
             },
           ],
         })

@@ -44,7 +44,7 @@ const logger = createLogger("runs-queue");
  * would wake on every insert regardless of which queue it owns.
  */
 const NOTIFY_CHANNEL_PREFIX = "runs_lobu:";
-function notifyChannelFor(queueName: string): string {
+export function notifyChannelFor(queueName: string): string {
   return `${NOTIFY_CHANNEL_PREFIX}${queueName}`;
 }
 // Poll cadence lives in config/intervals.ts (`runsPollIntervalMs`),

@@ -132,6 +132,7 @@ export function deriveConnectorActivationSignals(
 	ctx: ConnectorDeriveFeedContext,
 	event: ConnectorDeriveEventInput,
 	change: "inserted" | "superseded" | "unchanged",
+	eventId: number,
 ): ConnectorTriggerSignal[] {
 	if (change !== "inserted") return [];
 	if (event.connectionId == null) return [];
@@ -193,6 +194,12 @@ export function deriveConnectorActivationSignals(
 	const resourceRef =
 		event.originId.length <= 500 ? event.originId : undefined;
 
+	// delivery_id is keyed on the persisted events.id, NOT the unbounded
+	// origin_id: the idempotency_key built from it lives under a btree unique
+	// index, and an overlong origin_id (e.g. a user-controlled postgres text
+	// PK) would blow the index row-size limit and permanently block ingestion.
+	// The event id is bounded, stable for dedupe (a re-emitted origin is
+	// 'unchanged' and never derives), and matches the legacy signal path.
 	return [
 		{
 			connector_key: ctx.connectorKey,
@@ -200,7 +207,7 @@ export function deriveConnectorActivationSignals(
 			resource_type: kind,
 			...(resourceRef ? { resource_ref: resourceRef } : {}),
 			event_type: kind,
-			delivery_id: `derived:${ctx.connectorKey}:${event.connectionId}:${event.originId}`,
+			delivery_id: `derived:${ctx.connectorKey}:${event.connectionId}:event:${eventId}`,
 			label,
 			input_text: inputText,
 			...(event.sourceUrl ? { url: event.sourceUrl.slice(0, 2_000) } : {}),

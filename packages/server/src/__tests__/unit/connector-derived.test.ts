@@ -34,7 +34,7 @@ describe('deriveConnectorActivationSignals', () => {
     const signals = deriveConnectorActivationSignals(
       context,
       baseEvent,
-      'inserted',
+      'inserted', 123,
     );
     expect(signals).toHaveLength(1);
     const signal = signals[0] as ConnectorTriggerSignal;
@@ -43,7 +43,7 @@ describe('deriveConnectorActivationSignals', () => {
     expect(signal.event_type).toBe('tweet');
     expect(signal.resource_type).toBe('tweet');
     expect(signal.resource_ref).toBe(baseEvent.originId);
-    expect(signal.delivery_id).toBe('derived:x:7:2083959735481716957');
+    expect(signal.delivery_id).toBe('derived:x:7:event:123');
     expect(signal.label).toBe(baseEvent.title);
     expect(signal.input_text).toBe(baseEvent.payloadText);
     expect(signal.url).toBe(baseEvent.sourceUrl);
@@ -58,37 +58,37 @@ describe('deriveConnectorActivationSignals', () => {
   test('suppresses a poll-driven cold-start batch before any successful sync', () => {
     const coldStart = { ...context, feedPreviouslySynced: false };
     expect(
-      deriveConnectorActivationSignals(coldStart, baseEvent, 'inserted'),
+      deriveConnectorActivationSignals(coldStart, baseEvent, 'inserted', 123),
     ).toEqual([]);
   });
 
   test('does not fire on superseded or unchanged rows', () => {
     expect(
-      deriveConnectorActivationSignals(context, baseEvent, 'superseded'),
+      deriveConnectorActivationSignals(context, baseEvent, 'superseded', 123),
     ).toEqual([]);
     expect(
-      deriveConnectorActivationSignals(context, baseEvent, 'unchanged'),
+      deriveConnectorActivationSignals(context, baseEvent, 'unchanged', 123),
     ).toEqual([]);
   });
 
   test('does not fire for a kind the feed does not declare', () => {
     const undeclared = { ...baseEvent, kind: 'like' };
     expect(
-      deriveConnectorActivationSignals(context, undeclared, 'inserted'),
+      deriveConnectorActivationSignals(context, undeclared, 'inserted', 123),
     ).toEqual([]);
   });
 
   test('does not fire when the feed declares no eventKinds at all', () => {
     const noKinds = { ...context, eventKinds: null };
     expect(
-      deriveConnectorActivationSignals(noKinds, baseEvent, 'inserted'),
+      deriveConnectorActivationSignals(noKinds, baseEvent, 'inserted', 123),
     ).toEqual([]);
   });
 
   test('does not fire when the event is not a collected feed row', () => {
     const unconnected = { ...baseEvent, connectionId: null };
     expect(
-      deriveConnectorActivationSignals(context, unconnected, 'inserted'),
+      deriveConnectorActivationSignals(context, unconnected, 'inserted', 123),
     ).toEqual([]);
   });
 });
@@ -149,7 +149,7 @@ describe('resolveBehaviorEventCatalog', () => {
     const signals = deriveConnectorActivationSignals(
       context,
       { ...baseEvent, metadata: { assignee: null, nested: { deep: true } } },
-      'inserted',
+      'inserted', 123,
     );
     expect(signals[0]?.attributes).toEqual({
       change: 'inserted',
@@ -161,7 +161,7 @@ describe('resolveBehaviorEventCatalog', () => {
     const signals = deriveConnectorActivationSignals(
       context,
       { ...baseEvent, payloadText: '', title: 'Ask HN: Show your tools' },
-      'inserted',
+      'inserted', 123,
     );
     expect(signals[0]?.input_text).toBe('Ask HN: Show your tools');
   });
@@ -170,7 +170,7 @@ describe('resolveBehaviorEventCatalog', () => {
     const signals = deriveConnectorActivationSignals(
       context,
       { ...baseEvent, title: '', payloadText: 'body only' },
-      'inserted',
+      'inserted', 123,
     );
     expect(signals[0]?.label).toBe('x tweet');
   });
@@ -186,7 +186,7 @@ describe('resolveBehaviorEventCatalog', () => {
     const signals = deriveConnectorActivationSignals(
       { ...context, eventKinds: { [longKindA]: {}, [longKindB]: {} } },
       { ...baseEvent, kind: longKindA },
-      'inserted',
+      'inserted', 123,
     );
     expect(signals).toEqual([]);
   });
@@ -205,7 +205,7 @@ describe('resolveBehaviorEventCatalog', () => {
           long_value: String('v').repeat(1_200),
         },
       },
-      'inserted',
+      'inserted', 123,
     );
     const signal = signals[0] as ConnectorTriggerSignal;
     expect(signal.input_text.length).toBe(32_000);

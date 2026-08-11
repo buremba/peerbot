@@ -92,6 +92,7 @@ describe("platform-derived connector activation", () => {
 			deriveContext,
 			event,
 			"inserted",
+			123,
 		);
 		expect(signal).toBeDefined();
 		const activations = await activateBehaviorSignal({
@@ -113,7 +114,7 @@ describe("platform-derived connector activation", () => {
 		expect(runs[0]?.approved_input).toMatchObject({
 			dispatch_source: "event",
 			trigger_execution: "turn",
-			delivery_ids: [`derived:x:${connection.id}:2083959735481716957`],
+			delivery_ids: [`derived:x:${connection.id}:event:123`],
 		});
 	});
 
@@ -303,7 +304,7 @@ describe("platform-derived connector activation", () => {
 		expect(runs[0]?.approved_input).toMatchObject({
 			dispatch_source: "event",
 			trigger_execution: "turn",
-			delivery_ids: [`derived:x:${connection.id}:2083959735481716957`],
+			delivery_ids: [expect.stringMatching(new RegExp(`^derived:x:${connection.id}:event:\\d+$`))],
 		});
 	});
 
@@ -398,5 +399,106 @@ describe("platform-derived connector activation", () => {
 			SELECT id FROM runs WHERE watcher_id = ${behaviorId}
 		`;
 		expect(runs).toHaveLength(0);
+	});
+
+	it("ingests an overlong origin_id without blowing the idempotency btree", async () => {
+		// A user-controlled origin_id (e.g. a postgres text PK) can exceed the
+		// btree row-size limit. The derived delivery_id must key on the bounded
+		// persisted event id, not the origin_id, or the run INSERT fails inside
+		// the event transaction and permanently blocks ingestion.
+		const { org, user, ctx } = await seedOwnerContext();
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: user.id,
+		});
+		const connection = await createTestConnection({
+			organization_id: org.id,
+			connector_key: "x",
+			slug: "xconn-overlong",
+			created_by: user.id,
+		});
+		const db = getTestDb();
+		await db`
+			INSERT INTO connector_definitions (organization_id, key, name, feeds_schema, status)
+			VALUES (${org.id}, 'x', 'X', ${db.json({
+				home_feed: { eventKinds: { tweet: {} } },
+			})}, 'active')
+		`;
+		const [feed] = await db`
+			INSERT INTO feeds (organization_id, connection_id, feed_key, status, created_at, updated_at)
+			VALUES (${org.id}, ${connection.id}, 'home_feed', 'active', NOW(), NOW())
+			RETURNING id
+		`;
+		const feedId = Number((feed as { id: number }).id);
+		await db`
+			INSERT INTO runs
+				(organization_id, run_type, feed_id, connection_id, connector_key, connector_version, status, approval_status, created_at)
+			VALUES
+				(${org.id}, 'sync', ${feedId}, ${connection.id}, 'x', '1.0.0', 'completed', 'auto', current_timestamp)
+		`;
+		const [run] = await db`
+			INSERT INTO runs
+				(organization_id, run_type, feed_id, connection_id, connector_key, connector_version, status, approval_status, created_at)
+			VALUES
+				(${org.id}, 'sync', ${feedId}, ${connection.id}, 'x', '1.0.0', 'running', 'auto', current_timestamp)
+			RETURNING id
+		`;
+		const runId = Number((run as { id: number }).id);
+		const created = await manageBehaviors(
+			{
+				action: "create",
+				slug: "x-overlong-listener",
+				name: "X overlong listener",
+				prompt: "Draft a reply worth making.",
+				agent_id: agent.agentId,
+				triggers: [
+					{
+						kind: "event",
+						source: "connector",
+						connector_key: "x",
+						connection_id: connection.id,
+						event_types: ["tweet"],
+						execution: "turn",
+						active_run: "queue",
+						output: "silent",
+						skip_if_unchanged: true,
+					},
+				],
+			},
+			{} as Env,
+			ctx,
+		);
+		if (created.action !== "create" || !("behavior_id" in created)) {
+			throw new Error("Behavior creation did not complete");
+		}
+		const behaviorId = Number(created.behavior_id);
+
+		const res = await post("/api/workers/stream", {
+			body: {
+				type: "batch",
+				run_id: runId,
+				items: [
+					{
+						id: "k".repeat(3_000),
+						origin_type: "tweet",
+						title: "someone: hello",
+						payload_text: "hello",
+						occurred_at: "2026-08-11T10:00:00.000Z",
+					},
+				],
+			},
+		});
+		expect(res.status).toBe(200);
+
+		const runs = await db`
+			SELECT approved_input
+			FROM runs
+			WHERE watcher_id = ${behaviorId}
+			ORDER BY id ASC
+		`;
+		expect(runs).toHaveLength(1);
+		expect(
+			(runs[0]?.approved_input as { delivery_ids?: string[] }).delivery_ids?.[0],
+		).toMatch(new RegExp(`^derived:x:${connection.id}:event:\\d+$`));
 	});
 });

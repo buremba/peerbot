@@ -483,6 +483,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 											item.metadata as Record<string, unknown> | undefined,
 									},
 									persisted.change,
+									persisted.id,
 								);
 								for (const signal of derived) {
 									activations.push(

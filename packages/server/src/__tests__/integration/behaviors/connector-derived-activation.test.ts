@@ -332,6 +332,14 @@ describe("platform-derived connector activation", () => {
 			RETURNING id
 		`;
 		const feedId = Number((feed as { id: number }).id);
+		// A prior completed sync puts the feed past cold start, so the deleted_at
+		// guard — not the backfill gate — is what must suppress the late batch.
+		await db`
+			INSERT INTO runs
+				(organization_id, run_type, feed_id, connection_id, connector_key, connector_version, status, approval_status, created_at)
+			VALUES
+				(${org.id}, 'sync', ${feedId}, ${connection.id}, 'x', '1.0.0', 'completed', 'auto', current_timestamp)
+		`;
 		const [run] = await db`
 			INSERT INTO runs
 				(organization_id, run_type, feed_id, connection_id, connector_key, connector_version, status, approval_status, created_at)

@@ -7,7 +7,7 @@ export type ClientOptions = {
 export type SearchMemoryData = {
   body: {
     /**
-     * Optional human-friendly heading for this result (e.g. "What we know about Acme"). When set, the UI renders it as the section title instead of the default.
+     * Optional human-friendly heading for this result (e.g. "What we know about Acme"). When set, the UI renders it above the search result.
      */
     title?: string;
     /**
@@ -441,7 +441,7 @@ export type QuerySdkData = {
      */
     timeout_ms?: number;
     /**
-     * Optional human-friendly heading for this result (e.g. "Company pipeline"). When set, the UI renders it as the section title instead of the per-mode default.
+     * Optional human-friendly heading for this result (e.g. "Company pipeline"). When set, the UI renders it above the execution status.
      */
     title?: string;
   };
@@ -613,7 +613,7 @@ export type QuerySdkResponse = QuerySdkResponses[keyof QuerySdkResponses];
 export type QuerySqlData = {
   body: {
     /**
-     * Optional human-friendly heading for this result (e.g. "Recent support tickets"). When set, the UI renders it as the section title instead of a generic "Inspecting data".
+     * Optional human-friendly heading for this result (e.g. "Recent support tickets"). When set, the UI renders it in the query result summary.
      */
     title?: string;
     /**
@@ -727,7 +727,7 @@ export type RunSdkData = {
      */
     timeout_ms?: number;
     /**
-     * Optional human-friendly heading for this result (e.g. "Company pipeline"). When set, the UI renders it as the section title instead of the per-mode default.
+     * Optional human-friendly heading for this result (e.g. "Company pipeline"). When set, the UI renders it above the execution status.
      */
     title?: string;
     /**

@@ -505,9 +505,9 @@ function createServerForContext(
       const resultMeta = getMcpResultMeta(result);
       // Viewer role rides the same host-only `_meta` channel as the approval
       // capability: the MCP Apps host forwards it into the rendered bundle so
-      // the UI can gate admin-only surfaces (e.g. the raw result toggle) —
+      // the UI can gate admin-only surfaces (e.g. the Debug toggle) —
       // including on restore and ChatGPT rehydration.
-      const viewerMeta = {
+      const responseMeta = {
         ...(resultMeta ?? {}),
         'lobu/member-role': authCtx.memberRole ?? null,
       };
@@ -536,24 +536,19 @@ function createServerForContext(
           return {
             content: [{ type: 'text' as const, text }],
             structuredContent: structured as Record<string, unknown>,
-            ...(resultMeta || viewerMeta || snapshotCapability
-              ? {
-                  _meta: {
-                    ...(resultMeta ?? {}),
-                    ...(viewerMeta ? { 'lobu/member-role': viewerMeta['lobu/member-role'] } : {}),
-                    ...(snapshotCapability
-                      ? { 'lobu/mcp-app-snapshot-capability': snapshotCapability }
-                      : {}),
-                  },
-                }
-              : {}),
+            _meta: {
+              ...responseMeta,
+              ...(snapshotCapability
+                ? { 'lobu/mcp-app-snapshot-capability': snapshotCapability }
+                : {}),
+            },
             ...(softError ? { isError: true } : {}),
           };
         }
       }
       return {
         content: [{ type: 'text' as const, text }],
-        ...(resultMeta || viewerMeta ? { _meta: viewerMeta } : {}),
+        _meta: responseMeta,
         ...(softError ? { isError: true } : {}),
       };
     } catch (error: any) {

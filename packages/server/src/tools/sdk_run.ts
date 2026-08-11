@@ -22,17 +22,17 @@ const SCRIPT_FIELDS = {
       maximum: MAX_SCRIPT_TIMEOUT_MS,
     }),
   ),
+  title: Type.Optional(
+    Type.String({
+      description:
+        'Optional human-friendly heading for this result (e.g. "Company pipeline"). When set, the UI renders it above the execution status.',
+      maxLength: 200,
+    }),
+  ),
 };
 
 export const RunSchema = Type.Object({
   ...SCRIPT_FIELDS,
-  title: Type.Optional(
-    Type.String({
-      description:
-        'Optional human-friendly heading for this result (e.g. "Company pipeline"). When set, the UI renders it as the section title instead of the per-mode default.',
-      maxLength: 200,
-    }),
-  ),
   dry_run: Type.Optional(
     Type.Boolean({
       description:
@@ -40,16 +40,7 @@ export const RunSchema = Type.Object({
     }),
   ),
 });
-export const QuerySchema = Type.Object({
-  ...SCRIPT_FIELDS,
-  title: Type.Optional(
-    Type.String({
-      description:
-        'Optional human-friendly heading for this result (e.g. "Company pipeline"). When set, the UI renders it as the section title instead of the per-mode default.',
-      maxLength: 200,
-    }),
-  ),
-});
+export const QuerySchema = Type.Object(SCRIPT_FIELDS);
 type RunArgs = Static<typeof RunSchema>;
 type QueryArgs = Static<typeof QuerySchema>;
 
@@ -258,7 +249,7 @@ async function runSandbox(
         return { ...result.error, code, retryable: isRetryable(code) };
       })()
     : result.error;
-  const title = "title" in args && typeof args.title === "string" ? args.title.trim() || undefined : undefined;
+  const title = args.title?.trim() || undefined;
   return {
     ...(title ? { title } : {}),
     success: result.success,

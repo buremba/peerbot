@@ -122,7 +122,6 @@ function buildDefinition(spec: ConnectorSpec): ConnectorDefinition {
     authSchema: spec.authSchema,
     optionsSchema: spec.optionsSchema,
     faviconDomain: spec.faviconDomain,
-    primaryColor: spec.primaryColor,
     mcpConfig: spec.mcpConfig,
     openapiConfig: spec.openapiConfig,
     requiredCapability: spec.requiredCapability,

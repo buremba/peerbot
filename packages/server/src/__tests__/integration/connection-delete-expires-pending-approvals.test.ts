@@ -139,4 +139,100 @@ describe("connection delete expires pending approvals", () => {
 		expect(row?.approval_status).toBe("pending");
 		expect(row?.status).toBe("pending");
 	});
+
+	it("rolls back the deletion and every expiry when one approval card cannot advance", async () => {
+		const sql = getTestDb();
+		const org = await createTestOrganization({ name: "Acme atomic delete" });
+		const user = await createTestUser();
+		const conn = await createTestConnection({
+			organization_id: org.id,
+			connector_key: "apple.computer_use",
+			created_by: user.id,
+		});
+		const firstRunId = await seedPendingApprovalRun({
+			organizationId: org.id,
+			connectionId: conn.id,
+			connectorKey: "apple.computer_use",
+			actionKey: "observe",
+		});
+		const failingRunId = await seedPendingApprovalRun({
+			organizationId: org.id,
+			connectionId: conn.id,
+			connectorKey: "apple.computer_use",
+			actionKey: "click",
+		});
+
+		await sql.unsafe(`
+			CREATE OR REPLACE FUNCTION test_fail_connection_delete_supersede()
+				RETURNS trigger AS $fn$
+			BEGIN
+				IF NEW.supersedes_event_id IS NOT NULL AND NEW.run_id = ${failingRunId} THEN
+					RAISE EXCEPTION 'simulated connection-delete supersede failure';
+				END IF;
+				RETURN NEW;
+			END;
+			$fn$ LANGUAGE plpgsql;
+			CREATE TRIGGER test_fail_connection_delete_supersede_trg
+				BEFORE INSERT ON events
+				FOR EACH ROW EXECUTE FUNCTION test_fail_connection_delete_supersede();
+		`);
+
+		try {
+			const client = await TestApiClient.for({
+				organizationId: org.id,
+				userId: user.id,
+				memberRole: "owner",
+			});
+			await expect(client.connections.delete(conn.id)).rejects.toThrow(
+				/supersede failure/i,
+			);
+
+			const [connection] = await sql`
+				SELECT deleted_at FROM connections WHERE id = ${conn.id}
+			`;
+			expect(connection?.deleted_at).toBeNull();
+
+			const runs = await sql`
+				SELECT id, approval_status, status
+				FROM runs
+				WHERE id IN (${firstRunId}, ${failingRunId})
+				ORDER BY id
+			`;
+			expect(runs).toEqual([
+				expect.objectContaining({
+					id: firstRunId,
+					approval_status: "pending",
+					status: "pending",
+				}),
+				expect.objectContaining({
+					id: failingRunId,
+					approval_status: "pending",
+					status: "pending",
+				}),
+			]);
+
+			const cards = await sql`
+				SELECT run_id, interaction_status
+				FROM current_event_records
+				WHERE run_id IN (${firstRunId}, ${failingRunId})
+				  AND interaction_type = 'approval'
+				ORDER BY run_id
+			`;
+			expect(cards).toEqual([
+				expect.objectContaining({
+					run_id: firstRunId,
+					interaction_status: "pending",
+				}),
+				expect.objectContaining({
+					run_id: failingRunId,
+					interaction_status: "pending",
+				}),
+			]);
+		} finally {
+			await sql.unsafe(`
+				DROP TRIGGER IF EXISTS test_fail_connection_delete_supersede_trg ON events;
+				DROP FUNCTION IF EXISTS test_fail_connection_delete_supersede();
+			`);
+		}
+	});
 });

@@ -70,12 +70,11 @@ export async function listOrgInstalled(
 			rows.map((row) => row.key)
 		);
 		// Bundled immutable catalog, for the persisted > bundled > derived
-		// behavior-event precedence shared with trigger validation.
+		// behavior-event precedence shared with trigger validation. Loaded once
+		// and reused by the merge below.
+		const bundledConnectors = (await listCatalogEntries(["connectors"])).connectors;
 		const bundledByKey = new Map(
-			(await listCatalogEntries(["connectors"])).connectors.map((entry) => [
-				entry.id,
-				entry.detail,
-			])
+			bundledConnectors.map((entry) => [entry.id, entry.detail])
 		);
 		const installedItems = rows.map((row) => {
 			const operationsSummary = summaries.get(row.key) ?? {
@@ -112,10 +111,7 @@ export async function listOrgInstalled(
 		result.connectors = {
 			kind: "connectors",
 			items: options.includeCatalog
-				? mergeConnectorInstalledWithCatalog(
-						installedItems,
-						(await listCatalogEntries(["connectors"])).connectors
-					)
+				? mergeConnectorInstalledWithCatalog(installedItems, bundledConnectors)
 				: installedItems,
 		};
 	}

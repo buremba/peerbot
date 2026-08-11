@@ -20,6 +20,7 @@ import {
   buildTsqueryString,
 } from './fts';
 import { buildFinalSelect, deduplicateWithClassifications } from './sql-fragments';
+import { buildSemanticTypeFilterSql } from './params';
 import {
   buildDateCandidateOrderBy,
   buildDateCursorClause,
@@ -193,7 +194,7 @@ export async function searchContentBySingleQuery(
           AND ($6::int IS NULL OR iwf.window_id = $6::int)
           AND ($7::numeric IS NULL OR f.score >= $7::numeric)
           AND ($8::numeric IS NULL OR f.score <= $8::numeric)
-          AND ($9::text[] IS NULL OR f.semantic_type = ANY($9::text[]))
+          AND ($9::text[] IS NULL OR ${buildSemanticTypeFilterSql('f', '$9')})
           AND ($10::text IS NULL OR f.interaction_status = $10::text)
           AND ($11::text IS NULL OR f.metadata->>'agent_id' = $11::text)
           AND ($12::text[] IS NULL OR f.client_id = ANY($12::text[]))

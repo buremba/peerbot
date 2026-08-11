@@ -3946,11 +3946,15 @@ export type NotifyData = {
      */
     connection_id?: string;
     /**
-     * Arbitrary JSON payload stored in notification body as formatted JSON
+     * Structured payload. With `semantic_type`, this becomes the event's render data (bound to the kind's `jsonTemplate` in the Memory view) instead of being appended to the body. Without `semantic_type`, it is stored in the notification body as formatted JSON (legacy).
      */
     data?: {
       [key: string]: unknown;
     };
+    /**
+     * Event semantic type (kind) for this notification's content, validated against the org's `$member.event_kinds`. When set, the notification renders through the event-kind pipeline: `data` feeds the kind's `jsonTemplate` in the Memory/Events view, and the inbox keeps the markdown `body`. Mutually exclusive with `input_schema`.
+     */
+    semantic_type?: string;
     /**
      * A `chat` CardElement (built with the card primitives) for rich bot-connection delivery. When set, the bound channel gets this card instead of the markdown body.
      */
@@ -5106,7 +5110,7 @@ export type ReadKnowledgeData = {
      */
     exclude_behavior_id?: number;
     /**
-     * Filter by semantic type. Pass a single value (e.g. "note") or an array (e.g. ["note","summary"]) to match any. Matches the semantic_type set via save_memory.
+     * Filter by semantic type. Pass a single value (e.g. "note") or an array (e.g. ["note","summary"]) to match any. The reserved "notification" value matches events with notification targets, including kind-backed notifications whose stored semantic_type is their content kind.
      */
     semantic_type?: string | Array<string>;
     /**

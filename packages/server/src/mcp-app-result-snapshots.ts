@@ -318,6 +318,9 @@ export const SaveMcpAppStateSchema = Type.Object({
 		Type.String({ minLength: 1, maxLength: TOOL_CALL_ID_MAX_LENGTH }),
 		Type.Number(),
 	]),
+	snapshot_capability: Type.Optional(
+		Type.String({ minLength: 1, maxLength: TOOL_CALL_ID_MAX_LENGTH }),
+	),
 	tool_name: Type.Optional(
 		Type.String({ minLength: 1, maxLength: TOOL_NAME_MAX_LENGTH }),
 	),
@@ -329,6 +332,7 @@ export const SaveMcpAppStateOutputSchema = Type.Object({ saved: Type.Boolean() }
 async function saveMcpAppStateImpl(
 	args: {
 		tool_call_id: string | number;
+		snapshot_capability?: string;
 		tool_name?: string;
 		view_state: UnknownRecord;
 	},
@@ -341,7 +345,10 @@ async function saveMcpAppStateImpl(
 	const sql = getDb();
 	const bindingIdentity = snapshotIdentity(
 		ctx,
-		ctx.mcpAppSnapshotCapability,
+		// Some hosts preserve their own request metadata but intentionally strip
+		// app-supplied metadata. This private app-only argument keeps the one-time
+		// capability end to end; metadata remains supported for standard hosts.
+		args.snapshot_capability ?? ctx.mcpAppSnapshotCapability,
 	);
 	if (
 		bindingIdentity &&

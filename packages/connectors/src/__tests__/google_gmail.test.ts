@@ -33,15 +33,27 @@ interface FakeThread {
 /**
  * Fake Gmail HTTP client: serves threads.list (one page) and threads/<id>
  * lookups from the given fixtures. Header values come from the per-message
- * `from`/`date` fields; snippets are constant.
+ * `from`/`date` fields; snippets are constant. `failThreadIds` respond 404.
  */
-function fakeHttp(threads: FakeThread[], onRequest?: (url: string) => void) {
+function fakeHttp(
+  threads: FakeThread[],
+  onRequest?: (url: string) => void,
+  failThreadIds: ReadonlySet<string> = new Set()
+) {
   const byId = new Map(threads.map((t) => [t.id, t]));
   return {
     raw: async (url: string) => {
       onRequest?.(url);
       const u = new URL(url);
       const threadMatch = u.pathname.match(/\/threads\/([^/]+)$/);
+      if (threadMatch && failThreadIds.has(threadMatch[1])) {
+        return {
+          ok: false,
+          status: 404,
+          json: async () => ({}),
+          text: async () => '',
+        } as unknown as Response;
+      }
       const body = threadMatch
         ? toThreadResponse(byId.get(threadMatch[1]))
         : { threads: threads.map((t) => ({ id: t.id, historyId: '1', snippet: 's' })) };
@@ -464,6 +476,62 @@ describe('Gmail human_senders_only sync mode', () => {
     expect(events).toHaveLength(1);
     expect(events[0].metadata.replied).toBe(true);
     expect(events[0].metadata.person_relevant).toBe(true);
+  });
+
+  test('a Gmail plus-tag copy of the mailbox owner is never treated as external', async () => {
+    const events = await syncThreads(
+      [
+        {
+          id: 't-tag-self',
+          messages: [
+            { id: 'm1', labelIds: ['SENT'], from: 'Me <me+archive@example.com>' },
+            {
+              id: 'm2',
+              labelIds: ['INBOX'],
+              from: 'me@example.com',
+            },
+          ],
+        },
+      ],
+      { human_senders_only: true }
+    );
+    // The INBOX copy is the owner via a +tag alias, not a reply from a person.
+    expect(events).toHaveLength(0);
+  });
+
+  test('failed thread GETs consume max_results (cap bounds API calls)', async () => {
+    const connector = new GmailConnector();
+    const urls: string[] = [];
+    connector.createClient = () =>
+      fakeHttp(
+        [
+          {
+            id: 't-missing',
+            messages: [
+              { id: 'm1', labelIds: ['INBOX'], from: 'Bob <bob@acme.example>' },
+            ],
+          },
+          {
+            id: 't-ok',
+            messages: [
+              { id: 'm1', labelIds: ['INBOX'], from: 'Jane Doe <jane@acme.example>' },
+            ],
+          },
+        ],
+        (url) => urls.push(url),
+        new Set(['t-missing'])
+      );
+
+    await connector.sync({
+      config: { max_results: 1, human_senders_only: true },
+      credentials: { accessToken: 'tok' },
+      checkpoint: {},
+    });
+
+    // max_results=1: the 404 consumes the cap, so only ONE thread GET runs.
+    const threadGets = urls.filter((url) => url.includes('/threads/'));
+    expect(threadGets).toHaveLength(1);
+    expect(threadGets[0]).toContain('t-missing');
   });
 });
 

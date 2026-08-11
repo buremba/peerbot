@@ -384,11 +384,21 @@ function diffEntityType(
       },
       {
         name: "required",
-        changed: (d, r) => !deepEqual(d.required ?? [], r.required ?? []),
+        changed: (d, r) =>
+          d.required !== undefined
+            ? !deepEqual(d.required, r.required ?? [])
+            : false,
       },
       {
+        // Declared-only: a config that omits `properties` does not own them, so
+        // they must not churn — otherwise an extension-only declaration (e.g.
+        // resolutionPolicy) re-reports a properties update on every apply while
+        // the upsert just round-trips the live core.
         name: "properties",
-        changed: (d, r) => !deepEqual(d.properties, r.properties),
+        changed: (d, r) =>
+          d.properties !== undefined
+            ? !deepEqual(d.properties, r.properties)
+            : false,
       },
       {
         // Derived types store metadata_schema verbatim (no inferred superset),

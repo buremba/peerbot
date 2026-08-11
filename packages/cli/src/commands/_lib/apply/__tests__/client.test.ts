@@ -286,7 +286,7 @@ describe("ApplyClient — prune", () => {
     expect(types[0]?.backing).toEqual({ sql: "SELECT 1 AS x" });
   });
 
-  test("upsertEntityType POSTs backing:null for a stored type", async () => {
+  test("upsertEntityType sends backing:null only when the diff flagged the revert", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new ApplyClient(
       { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
@@ -296,10 +296,19 @@ describe("ApplyClient — prune", () => {
       }) as typeof fetch
     );
 
+    // A stored type with no diff flag: backing is omitted, so a fired update
+    // for an unrelated field never reverts out-of-band backing.
     await client.upsertEntityType({ slug: "company", name: "Company" });
+    expect(JSON.parse(String(calls[0]?.init?.body)).backing).toBeUndefined();
 
-    const body = JSON.parse(String(calls[0]?.init?.body));
-    expect(body.backing).toBeNull();
+    // Flagged revert (derived → stored): backing:null is sent.
+    await client.upsertEntityType(
+      { slug: "company", name: "Company" },
+      undefined,
+      undefined,
+      new Set(["backing"])
+    );
+    expect(JSON.parse(String(calls[1]?.init?.body)).backing).toBeNull();
   });
 
   test("upsertEntityType POSTs metrics_config for a metric type", async () => {
@@ -328,7 +337,7 @@ describe("ApplyClient — prune", () => {
     expect(body.metrics_config).toEqual(metrics);
   });
 
-  test("upsertEntityType POSTs metrics_config:null for a non-metric type", async () => {
+  test("upsertEntityType sends metrics_config:null only when the diff flagged the removal", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new ApplyClient(
       { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
@@ -339,12 +348,20 @@ describe("ApplyClient — prune", () => {
     );
 
     await client.upsertEntityType({ slug: "company", name: "Company" });
+    expect(
+      JSON.parse(String(calls[0]?.init?.body)).metrics_config
+    ).toBeUndefined();
 
-    const body = JSON.parse(String(calls[0]?.init?.body));
-    expect(body.metrics_config).toBeNull();
+    await client.upsertEntityType(
+      { slug: "company", name: "Company" },
+      undefined,
+      undefined,
+      new Set(["metrics"])
+    );
+    expect(JSON.parse(String(calls[1]?.init?.body)).metrics_config).toBeNull();
   });
 
-  test("upsertEntityType POSTs event_kinds for a type that declares kinds, null otherwise", async () => {
+  test("upsertEntityType sends event_kinds when declared, omits when not, clears when flagged", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new ApplyClient(
       { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
@@ -365,8 +382,19 @@ describe("ApplyClient — prune", () => {
       eventKinds
     );
 
+    // Not declared + not flagged → omitted, so an unrelated update never wipes
+    // out-of-band eventKinds. Flagged prune removal → null is sent.
     await client.upsertEntityType({ slug: "person", name: "Person" });
-    expect(JSON.parse(String(calls[1]?.init?.body)).event_kinds).toBeNull();
+    expect(
+      JSON.parse(String(calls[1]?.init?.body)).event_kinds
+    ).toBeUndefined();
+    await client.upsertEntityType(
+      { slug: "person", name: "Person" },
+      undefined,
+      undefined,
+      new Set(["eventKinds"])
+    );
+    expect(JSON.parse(String(calls[2]?.init?.body)).event_kinds).toBeNull();
   });
 
   test("listEntityTypes hoists event_kinds; null/empty stays undefined", async () => {
@@ -572,6 +600,38 @@ describe("ApplyClient — prune", () => {
         ],
       },
     });
+  });
+
+  test("a policy-only upsert omits undeclared facets instead of clearing them", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    await client.upsertEntityType({
+      slug: "person",
+      resolutionPolicy: {
+        "x-lobu-resolution": {
+          rules: [
+            { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+          ],
+        },
+      },
+    });
+
+    const body = JSON.parse(String(calls[0]?.init?.body)) as Record<
+      string,
+      unknown
+    >;
+    // Facets the config does not own must not be sent at all — sending null
+    // would clear live eventKinds/backing/metrics on the server.
+    expect("event_kinds" in body).toBe(false);
+    expect("backing" in body).toBe(false);
+    expect("metrics_config" in body).toBe(false);
   });
 
   test("config-owned metadata_schema keys win over stale carried-forward ones", async () => {

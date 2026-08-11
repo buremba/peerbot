@@ -342,6 +342,42 @@ describe("apply diff — memory schema", () => {
     expect(plan.counts.update).toBe(0);
   });
 
+  test("a policy-only declaration with a populated remote schema is noop on repeat apply", () => {
+    const declared = {
+      "x-lobu-resolution": {
+        rules: [
+          { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+        ],
+      },
+    };
+    const desired: DesiredState = {
+      agents: [],
+      memorySchema: {
+        entityTypes: [{ slug: "person", resolutionPolicy: declared }],
+        relationshipTypes: [],
+      },
+      watchers: [],
+      requiredSecrets: [],
+    };
+    // The live type has a full schema + the same policy. Omitted properties/
+    // required must be treated as unmanaged (never churn), so a second apply
+    // is a noop rather than a perpetual properties update.
+    const plan = computeDiff(desired, {
+      ...emptyRemote(),
+      entityTypes: [
+        {
+          slug: "person",
+          properties: { email: { type: "string" }, handle: { type: "string" } },
+          required: ["email"],
+          schemaExtras: declared,
+        },
+      ],
+    });
+    const row = plan.rows.find((r) => r.id === "person");
+    expect(row?.verb).toBe("noop");
+    expect(plan.counts.update).toBe(0);
+  });
+
   test("relationship-type rules are a noop when remote rules match (idempotency)", () => {
     // Regression: the rel-type `list` action omits rules, so apply hydrates
     // them (listRelationshipTypeRules) into the snapshot. When the hydrated

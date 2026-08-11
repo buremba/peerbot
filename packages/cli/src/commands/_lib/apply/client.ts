@@ -689,7 +689,15 @@ export class ApplyClient {
     remoteSchemaCore?: {
       properties?: Record<string, unknown>;
       required?: string[];
-    }
+    },
+    /**
+     * Facet names the apply diff flagged for CLEARING (prune removal of
+     * out-of-band eventKinds, derived→stored backing revert, metric removal).
+     * Facets are declared-only otherwise: an update fired for an unrelated
+     * field must never wipe live values the config does not own, and the server
+     * clears a facet only when its key is present in the payload.
+     */
+    clearFacets?: ReadonlySet<string>
   ): Promise<UpsertEntityTypeResult> {
     // The server stores per-type fields as a single `metadata_schema` JSON
     // Schema (`{ type, properties, required }`) — it does NOT read top-level
@@ -744,22 +752,24 @@ export class ApplyClient {
           : {}),
       };
     }
-    // Event kinds sent on every upsert so it is deterministic: an object declares
-    // the type's kinds; `null` clears them. Stored verbatim in event_kinds.
-    payload.event_kinds = eventKinds ?? null;
-    // Backing is sent on every upsert so it is deterministic: `{ sql }` makes
-    // the type derived; `null` makes it stored (and reverts a previously-derived
-    // type). `connection` (a slug) is forwarded so the server can bind the view
-    // to an external database; the server resolves slug → connection at read time.
-    payload.backing = backing
-      ? {
-          sql: backing.sql,
-          ...(backing.connection ? { connection: backing.connection } : {}),
-        }
-      : null;
-    // Metrics sent on every upsert so it is deterministic: an object declares
-    // the type's metrics; `null` clears them. Stored verbatim in metrics_config.
-    payload.metrics_config = metrics ?? null;
+    // Facets are declared-only, with an explicit clear when the diff flagged
+    // them (prune removal / derived-revert / metric removal). Sending `null`
+    // unconditionally — the old behavior — wiped out-of-band values whenever
+    // ANY field changed; the server clears a facet only when its key is present.
+    if (eventKinds !== undefined || clearFacets?.has("eventKinds")) {
+      payload.event_kinds = eventKinds ?? null;
+    }
+    if (backing !== undefined || clearFacets?.has("backing")) {
+      payload.backing = backing
+        ? {
+            sql: backing.sql,
+            ...(backing.connection ? { connection: backing.connection } : {}),
+          }
+        : null;
+    }
+    if (metrics !== undefined || clearFacets?.has("metrics")) {
+      payload.metrics_config = metrics ?? null;
+    }
     return this.upsertSchemaResource("entity_type", payload);
   }
 

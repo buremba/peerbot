@@ -418,6 +418,9 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
       // Fetch each thread with metadata format
       for (const threadStub of threads) {
         try {
+          // Count the GET attempt up front so failed/empty/malformed responses
+          // also consume max_results — the cap bounds API calls, not just events.
+          inspected++;
           const threadUrl = `${this.BASE_URL}/threads/${threadStub.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Date&metadataHeaders=List-Id&metadataHeaders=Precedence`;
           const threadResponse = await http.raw(threadUrl);
 
@@ -426,8 +429,6 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
           const thread = (await threadResponse.json()) as GmailThreadGetResponse;
 
           if (!thread.messages || thread.messages.length === 0) continue;
-
-          inspected++;
 
           const firstMessage = thread.messages[0];
           const attribution = this.resolvePersonAttribution(
@@ -473,10 +474,11 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
         } finally {
           // Filtering must not remove the per-thread API delay: a narrow feed
           // can reject most fetched threads and still has to respect Gmail.
+          // The cap check lives here too — a `continue` in the try (failed or
+          // filtered thread) must still consume max_results and halt.
           await sleep(this.RATE_LIMIT_MS);
+          if (inspected >= maxResults) break;
         }
-
-        if (inspected >= maxResults) break;
       }
 
       if (inspected >= maxResults) break;
@@ -931,11 +933,12 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
     const selfAddresses = new Set(
       sentMessages
         .map((message) =>
-          normalizeEmail(this.parseFromHeader(this.getHeader(message, 'From') ?? '').email)
+          normalizeSelfEmail(this.parseFromHeader(this.getHeader(message, 'From') ?? '').email)
         )
         .filter(Boolean)
     );
-    const isSelf = (email: string): boolean => selfAddresses.has(normalizeEmail(email));
+    const isSelf = (email: string): boolean =>
+      selfAddresses.has(normalizeSelfEmail(email));
     const inbound = messages
       .filter((message) => !isSentMessage(message))
       .flatMap((message) => {
@@ -1116,6 +1119,19 @@ const isSentMessage = (message: GmailMessage): boolean =>
   (message.labelIds ?? []).includes('SENT');
 const normalizeEmail = (email: string | null | undefined): string =>
   (email ?? '').trim().toLowerCase();
+/**
+ * Canonicalize an address for SELF-detection (the mailbox owner): lowercase
+ * plus Gmail/Workspace `+tag` removal, so `me+archive@example.com` counts as
+ * the same mailbox as `me@example.com`. Only for self-vs-counterparty
+ * comparison — the event's from_email identity is kept verbatim.
+ */
+const normalizeSelfEmail = (email: string | null | undefined): string => {
+  const normalized = normalizeEmail(email);
+  const at = normalized.lastIndexOf('@');
+  if (at <= 0) return normalized;
+  const local = normalized.slice(0, at).split('+', 1)[0];
+  return `${local}@${normalized.slice(at + 1)}`;
+};
 
 /**
  * Local-parts that are almost never a human counterparty: automated/system

@@ -147,10 +147,11 @@ export function deriveConnectorActivationSignals(
 	// payload_text) would produce an invalid run input. Capped at the draft
 	// schema maxima: input_text 32,000, label 300, url 2,000, resource_ref 500,
 	// resource_type 100, attribute keys 100, string attribute values 1,000.
-	const label = (event.title ?? `${ctx.connectorKey} ${event.kind}`).slice(
-		0,
-		300,
-	);
+	const label = (
+		event.title && event.title.trim().length > 0
+			? event.title
+			: `${ctx.connectorKey} ${event.kind}`
+	).slice(0, 300);
 	const inputText = (
 		event.payloadText && event.payloadText.trim().length > 0
 			? event.payloadText
@@ -183,13 +184,19 @@ export function deriveConnectorActivationSignals(
 	}
 	attributes.change = change;
 
+	const kind = normalizeEventKind(event.kind);
+	// Omit resource_ref for an overlong origin_id rather than truncating it —
+	// truncation could collide two distinct source identities.
+	const resourceRef =
+		event.originId.length <= 500 ? event.originId : undefined;
+
 	return [
 		{
 			connector_key: ctx.connectorKey,
 			connection_id: event.connectionId,
-			resource_type: event.kind.slice(0, 100),
-			resource_ref: event.originId.slice(0, 500),
-			event_type: event.kind.slice(0, 100),
+			resource_type: kind,
+			...(resourceRef ? { resource_ref: resourceRef } : {}),
+			event_type: kind,
 			delivery_id: `derived:${ctx.connectorKey}:${event.connectionId}:${event.originId}`,
 			label,
 			input_text: inputText,
@@ -198,6 +205,16 @@ export function deriveConnectorActivationSignals(
 			attributes,
 		},
 	];
+}
+
+/**
+ * Event-kind identity, normalized identically in the catalog and at activation
+ * so a trigger the picker advertises always matches what the signal emits.
+ * Kinds are connector-declared; the 100-char schema bound is enforced the same
+ * way on both surfaces.
+ */
+function normalizeEventKind(kind: string): string {
+	return kind.slice(0, 100);
 }
 
 /**
@@ -216,7 +233,8 @@ export function deriveBehaviorEventCatalogFromFeeds(
 		const eventKinds = (feed as Record<string, unknown>).eventKinds;
 		if (!eventKinds || typeof eventKinds !== "object") continue;
 		for (const kind of Object.keys(eventKinds as Record<string, unknown>)) {
-			if (kind) seen.add(kind);
+			const normalized = normalizeEventKind(kind);
+			if (normalized) seen.add(normalized);
 		}
 	}
 	return [...seen].map((key) => ({
@@ -252,7 +270,7 @@ function parseDeclaredBehaviorEvents(
 }
 
 /** Bundled immutable catalog shape consumed by {@link resolveBehaviorEventCatalog}. */
-export interface BundledBehaviorCatalogEntry {
+interface BundledBehaviorCatalogEntry {
 	behavior_events?: unknown;
 	feeds_schema?: unknown;
 }

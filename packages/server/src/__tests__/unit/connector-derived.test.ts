@@ -166,6 +166,31 @@ describe('resolveBehaviorEventCatalog', () => {
     expect(signals[0]?.input_text).toBe('Ask HN: Show your tools');
   });
 
+  test('label never goes blank even for a blank title', () => {
+    const signals = deriveConnectorActivationSignals(
+      context,
+      { ...baseEvent, title: '', payloadText: 'body only' },
+      'inserted',
+    );
+    expect(signals[0]?.label).toBe('x tweet');
+  });
+
+  test('kind is normalized identically in catalog and signal', () => {
+    const longKind = 'a'.repeat(150);
+    const catalog = deriveBehaviorEventCatalogFromFeeds({
+      home_feed: { eventKinds: { [longKind]: {} } },
+    });
+    expect(catalog).toHaveLength(1);
+    expect(catalog[0].key).toBe('a'.repeat(100));
+    const signals = deriveConnectorActivationSignals(
+      { ...context, eventKinds: { [longKind]: {} } },
+      { ...baseEvent, kind: longKind },
+      'inserted',
+    );
+    expect(signals[0]?.event_type).toBe('a'.repeat(100));
+    expect(signals[0]?.resource_type).toBe('a'.repeat(100));
+  });
+
   test('caps derived fields to the connector-signal schema limits', () => {
     const signals = deriveConnectorActivationSignals(
       context,
@@ -186,7 +211,8 @@ describe('resolveBehaviorEventCatalog', () => {
     expect(signal.input_text.length).toBe(32_000);
     expect(signal.label.length).toBe(300);
     expect(signal.url?.length).toBe(2_000);
-    expect(signal.resource_ref?.length).toBe(500);
+    // Overlong origin_id is omitted (not truncated) so identities cannot collide.
+    expect(signal.resource_ref).toBeUndefined();
     expect(signal.resource_type?.length).toBeLessThanOrEqual(100);
     expect(signal.attributes?.long_value).toBe('v'.repeat(1_000));
     expect(signal.attributes?.[String('k').repeat(120)]).toBeUndefined();

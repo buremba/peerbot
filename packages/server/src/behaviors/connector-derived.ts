@@ -23,9 +23,9 @@ import { type DbClient, getDb } from "../db/client";
  * Safety bounds:
  *  - Ingestion only activates once the feed has a prior successful non-dry
  *    sync; a cold-start backfill would flood subscribers with every first-seen
- *    row. (The webhook-STORE path is expected to derive without that gate when
- *    it lands — a live push is definitionally steady-state — but no producer
- *    uses it yet.)
+ *    row. (The webhook-STORE path — GitHub star/watch already store events via
+ *    app-webhooks.ts — is expected to derive without that gate when it lands; a
+ *    live push is definitionally steady-state.)
  *  - Only kinds the feed declares are activatable, so a trigger a user could
  *    never author (the picker reads the same catalog) can never fire.
  */
@@ -143,23 +143,23 @@ export function deriveConnectorActivationSignals(
 		: new Date().toISOString();
 
 	// `match` runs exact-equality over signal attributes; surface the row's
-	// scalar metadata so connectors get matchable fields for free. Non-scalar
-	// values (the TriggerAttributeValueSchema is scalar-only) are dropped.
+	// scalar metadata so connectors get matchable fields for free. null is a
+	// valid match value (TriggerAttributeValueSchema includes Null), so it is
+	// preserved; undefined and non-scalar object/array values are dropped.
 	// Reserved provenance keys win: connector metadata must not be able to
 	// rewrite the change attribute and route activation to the wrong kind.
 	const attributes: Record<string, string | number | boolean | null> = {};
 	for (const [key, value] of Object.entries(event.metadata ?? {})) {
-		if (
-			key === "change" ||
-			value === null ||
-			value === undefined ||
-			(typeof value !== "string" &&
-				typeof value !== "number" &&
-				typeof value !== "boolean")
+		if (key === "change" || value === undefined) continue;
+		if (value === null) {
+			attributes[key] = null;
+		} else if (
+			typeof value === "string" ||
+			typeof value === "number" ||
+			typeof value === "boolean"
 		) {
-			continue;
+			attributes[key] = value;
 		}
-		attributes[key] = value;
 	}
 	attributes.change = change;
 

@@ -145,6 +145,18 @@ describe('resolveBehaviorEventCatalog', () => {
     });
   });
 
+  test('preserves null metadata as a matchable attribute value', () => {
+    const signals = deriveConnectorActivationSignals(
+      context,
+      { ...baseEvent, metadata: { assignee: null, nested: { deep: true } } },
+      'inserted',
+    );
+    expect(signals[0]?.attributes).toEqual({
+      change: 'inserted',
+      assignee: null,
+    });
+  });
+
   test('an org override with a null feedsSchema never borrows the bundled feeds', () => {
     const resolved = resolveBehaviorEventCatalog({
       persistedEvents: null,

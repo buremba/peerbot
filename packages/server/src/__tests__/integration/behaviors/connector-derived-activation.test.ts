@@ -38,9 +38,9 @@ describe("platform-derived connector activation", () => {
 			created_by: user.id,
 		});
 
-		// A timeline-listener trigger on the derived kind `tweet`, scoped to the
-		// home feed via match. Creation proves the connector's behavior_events
-		// catalog was derived from its eventKinds (X declares none by hand).
+		// A timeline-listener trigger on the derived kind `tweet`. Creation
+		// proves the connector's behavior_events catalog was derived from its
+		// eventKinds (X declares none by hand).
 		const created = await manageBehaviors(
 			{
 				action: "create",

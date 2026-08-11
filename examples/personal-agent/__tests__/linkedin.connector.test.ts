@@ -2578,6 +2578,12 @@ describe("prepare_comment helpers", () => {
       isGenericLinkedInFeedUrl("https://www.linkedin.com/feed/update")
     ).toBe(true);
     expect(
+      isGenericLinkedInFeedUrl("https://www.linkedin.com/feed/hashtag/ai/")
+    ).toBe(true);
+    expect(
+      isGenericLinkedInFeedUrl("https://www.linkedin.com/feed/trending")
+    ).toBe(true);
+    expect(
       isGenericLinkedInFeedUrl(
         "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567"
       )

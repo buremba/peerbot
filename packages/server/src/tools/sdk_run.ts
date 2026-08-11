@@ -10,7 +10,7 @@ import { withValidatedArgs } from "./validate-args";
 const SCRIPT_FIELDS = {
   script: Type.String({
     description:
-      "TypeScript source. Must `export default async (ctx, client) => { ... }` — `ctx` is `{ organization_id, user_id, mode, sleep(ms) }`, where `await ctx.sleep(ms)` provides a bounded, abort-aware 0–30000ms polling delay; unrestricted timer globals are unavailable. `client` is the ClientSDK. The script's return value comes back as `return_value` in the result. Use `search_sdk` to discover SDK methods and `ctx.sleep`.",
+      "TypeScript source. Must `export default async (ctx, client) => { ... }` — `ctx` is `{ organization_id, user_id, mode, sleep(ms) }`, where `await ctx.sleep(ms)` provides a bounded, abort-aware 0–30000ms polling delay; unrestricted timer globals are unavailable. `client` is the ClientSDK. The script's return value comes back as `return_value` in the result; return values that exceed the output cap are truncated to fit and reported in `return_value_truncated`. Use `search_sdk` to discover SDK methods and `ctx.sleep`.",
     minLength: 1,
     maxLength: 100_000,
   }),
@@ -69,6 +69,31 @@ export const SdkScriptResultSchema = Type.Object({
   success: Type.Boolean({ description: "Whether the script ran to completion." }),
   return_value: Type.Optional(
     Type.Unknown({ description: "The script's default-export return value." }),
+  ),
+  return_value_truncated: Type.Optional(
+    Type.Object(
+      {
+        total_bytes: Type.Integer({
+          description: "Serialized size of the original return value.",
+        }),
+        kept_bytes: Type.Integer({
+          description: "Serialized size of the truncated return value.",
+        }),
+        dropped_elements: Type.Integer({
+          description: "Array elements dropped from the tail.",
+        }),
+        dropped_keys: Type.Integer({
+          description: "Object keys dropped from the tail.",
+        }),
+        dropped_chars: Type.Integer({
+          description: "UTF-16 code units dropped from truncated string values.",
+        }),
+      },
+      {
+        description:
+          "Present when the script's return value exceeded the output cap and was truncated to fit. return_value is partial — paginate or filter the script and re-run for the rest.",
+      },
+    ),
   ),
   logs: Type.Array(
     Type.Object({
@@ -200,6 +225,7 @@ async function runSandbox(
   return {
     success: result.success,
     return_value: result.returnValue,
+    return_value_truncated: result.returnTruncated,
     logs: result.logs,
     error,
     duration_ms: result.durationMs,

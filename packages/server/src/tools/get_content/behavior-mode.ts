@@ -9,9 +9,11 @@
 import { createHash } from 'node:crypto';
 import type { ContentItem } from '@lobu/connector-sdk';
 import { inferBehaviorGranularityFromSchedule } from '@lobu/connector-sdk';
+import { MAX_COALESCED_BEHAVIOR_EVENT_INPUTS } from '../../behaviors/workspace-event-contract';
 import { type DbClient, parsePgNumberArray } from '../../db/client';
 import type { Env } from '../../index';
 import type { Outputs, UnprocessedRange, WatcherSource } from '../../types/watchers';
+import { ToolUserError } from '../../utils/errors';
 import { type DataSourceContext, executeDataSources } from '../../utils/execute-data-sources';
 import logger from '../../utils/logger';
 import { runMetric } from '../../metrics/run-metric';
@@ -459,6 +461,42 @@ export async function handleBehaviorMode(
     sources = watcherSources;
   } else {
     sources = [{ name: 'content', query: DEFAULT_BEHAVIOR_SOURCE_QUERY }];
+  }
+
+  // A workspace-event window receives exact durable pointers in addition to
+  // its authored context sources. Include those rows in the same Behavior read
+  // so the returned window_token proves what the agent saw and complete_window
+  // can link or cite the triggering events normally. IDs are numeric values
+  // already validated by TypeBox; the bounded coalesce contract keeps this
+  // source within the per-source page budget.
+  const triggerContentIds = [
+    ...new Set(
+      (args.content_ids ?? [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isSafeInteger(id) && id > 0)
+    ),
+  ];
+  if (triggerContentIds.length > MAX_COALESCED_BEHAVIOR_EVENT_INPUTS) {
+    throw new ToolUserError(
+      `Behavior event windows accept at most ${MAX_COALESCED_BEHAVIOR_EVENT_INPUTS} exact trigger inputs.`,
+      422
+    );
+  }
+  if (triggerContentIds.length > 0) {
+    const occupiedNames = new Set(sources.map((source) => source.name));
+    let sourceName = '__workspace_event_inputs';
+    for (let suffix = 2; occupiedNames.has(sourceName); suffix++) {
+      sourceName = `__workspace_event_inputs_${suffix}`;
+    }
+    sources = [
+      {
+        name: sourceName,
+        query:
+          `SELECT * FROM events WHERE id IN (${triggerContentIds.join(', ')}) ` +
+          'ORDER BY occurred_at DESC',
+      },
+      ...sources,
+    ];
   }
 
   // Fetch classifiers attached to this watcher

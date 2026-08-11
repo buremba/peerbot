@@ -17,9 +17,10 @@ An open-source, event-sourced backend for AI agents:
   **entities** and **relationships**.
 - **Agents** react to messages in real time and answer over chat platforms, HTTP,
   and MCP.
-- **Behaviors** subscribe an agent to connector events, schedules, or an
-  explicit call (a PR review, Slack reply, daily digest, etc.). Their
-  instructions come from the agent's skills, referenced by name.
+- **Behaviors** subscribe an agent to connector events, declared event outputs
+  from other Behaviors, schedules, or an explicit call (a PR review, Slack
+  reply, daily digest, etc.). Their instructions come from prompts and the
+  agent's skills, referenced by name.
 
 `lobu run` boots the whole thing (gateway + worker + memory) as one Node process
 on http://localhost:{{GATEWAY_PORT}}.
@@ -279,15 +280,15 @@ Every credential is a `secret("ENV_NAME")` placeholder resolved from `.env` — 
 paste a real key into the config, and never fabricate one. If a secret is missing,
 ask the user to add it to `.env`.
 
-### Behavior (event, schedule, or manual) + outputs
+### Behavior (connector event, workspace event, schedule, or manual) + outputs
 
 A Behavior's instructions come from the agent's skill library: list skill names
 in `skills` and `lobu apply` compiles their bodies (in order) into the frozen
-instructions for that Behavior version. Schedule triggers, event triggers with
-`execution: "window"`, and Behaviors with no triggers (manual) require at least
-one skill; an event trigger with `execution: "turn"` (chat/webhook listen) may
-omit `skills` — the incoming message is the content and a built-in default
-applies.
+instructions for that Behavior version. Schedule triggers, connector events
+with `execution: "window"`, workspace events with their default window
+execution, and Behaviors with no triggers (manual) require a prompt, a skill, or
+both. A connector event with `execution: "turn"` (chat/webhook listen) may omit
+both—the incoming message is the content and a built-in default applies.
 
 ```ts
 const digestSkill = defineSkill({
@@ -304,6 +305,8 @@ const digest = defineBehavior({
     { kind: "schedule", cron: "0 9 * * *", active_run: "coalesce", skip_if_unchanged: true },
     // Or react to a connector event:
     // { kind: "event", connector_key: "github", connection: gh, event_types: ["pull_request.created"] },
+    // Or to a declared event output from another Behavior:
+    // { kind: "workspace_event", event_types: ["observation"], match: { namespace: "account-risk" } },
   ],
   skills: ["daily-digest"],
   outputs: {
@@ -318,6 +321,12 @@ Declared outputs are persisted whether or not a `reaction` is present, and the
 complete result remains on Canvas. A `reaction` lets the Behavior act (post a
 message, call connectors, or request a governed merge) and can consume those
 persisted drafts. Omit `outputs` for a Canvas-only or reaction-only Behavior.
+Only newly persisted declared event outputs activate `workspace_event`
+triggers. Ordinary knowledge saves and connector-ingested events remain data,
+and SQL sources are reads rather than subscriptions. The downstream run reads
+the exact event pointers plus its authored sources under the owning agent's
+ACL. See the complete primitive and limit model at
+https://github.com/lobu-ai/lobu/blob/main/docs/BEHAVIORS.md.
 For an entity output, `key: ["a", "b"]` is one exact composite identity tuple,
 not two alternative keys. Use one to four durable fields; every row must include
 every field as a non-blank string (at most 256 UTF-8 bytes), safe integer, or

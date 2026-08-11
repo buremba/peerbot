@@ -641,6 +641,37 @@ describe("mapProjectToDesiredState", () => {
     ).toThrow(/trigger is github.*uses slack/i);
   });
 
+  test("maps workspace event triggers without connector fields", () => {
+    const crm = defineAgent({ id: "crm" });
+    const behavior = defineBehavior({
+      agent: crm,
+      slug: "risk-follow-up",
+      prompt: "Investigate the account risk.",
+      triggers: [
+        {
+          kind: "workspace_event",
+          entity_type: "account",
+          event_types: ["risk_detected", "risk_detected"],
+          match: { severity: "high" },
+        },
+      ],
+    });
+
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [crm], behaviors: [behavior] })
+    );
+    expect(state.watchers[0]?.triggers).toEqual([
+      {
+        kind: "workspace_event",
+        entity_type: "account",
+        event_types: ["risk_detected"],
+        match: { severity: "high" },
+        execution: "window",
+        active_run: "coalesce",
+      },
+    ]);
+  });
+
   test("rejects a Behavior trigger with both connection forms", () => {
     const crm = defineAgent({ id: "crm" });
     const github = defineConnection({

@@ -4,6 +4,7 @@ import {
   BehaviorEventTriggerSchema,
   BehaviorScheduleTriggerSchema,
   BehaviorSourceSchema,
+  BehaviorWorkspaceEventTriggerSchema,
   ManageBehaviorsSchema,
 } from "../contracts/tools/manage-behaviors";
 
@@ -64,6 +65,26 @@ describe("behavior event trigger", () => {
         skip_if_unchanged: true,
       })
     ).toBe(true);
+  });
+
+  test("subscribes to durable workspace events without pretending they are connector events", () => {
+    expect(
+      Value.Check(BehaviorWorkspaceEventTriggerSchema, {
+        kind: "workspace_event",
+        entity_type: "account",
+        event_types: ["risk_detected"],
+        match: { severity: "high", reviewed: false },
+        execution: "window",
+        active_run: "coalesce",
+      })
+    ).toBe(true);
+    expect(
+      Value.Check(BehaviorWorkspaceEventTriggerSchema, {
+        kind: "workspace_event",
+        connector_key: "github",
+        event_types: ["risk_detected"],
+      })
+    ).toBe(false);
   });
 
   test("rejects unsupported queued schedule ticks", () => {

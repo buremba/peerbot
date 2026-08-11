@@ -4321,6 +4321,31 @@ export type ManageBehaviorsData = {
           skip_if_unchanged?: boolean;
         }
       | {
+          kind: "workspace_event";
+          /**
+           * Optional entity-type slug. When set, the event must be linked to an entity of this type.
+           */
+          entity_type?: string;
+          /**
+           * Exact durable event semantic types that activate this Behavior.
+           */
+          event_types: Array<string>;
+          /**
+           * Exact-match fields from the durable event metadata.
+           */
+          match?: {
+            [key: string]: unknown | string | number | boolean | null;
+          };
+          /**
+           * "turn" handles the exact event pointer once; "window" runs the Behavior analysis flow.
+           */
+          execution?: "turn" | "window";
+          /**
+           * What to do when this Behavior is busy: queue every event or combine waiting events.
+           */
+          active_run?: "queue" | "coalesce";
+        }
+      | {
           kind: "schedule";
           cron: string;
           timezone?: string | null;
@@ -4846,6 +4871,31 @@ export type GetBehaviorResponses = {
             skip_if_unchanged?: boolean;
           }
         | {
+            kind: "workspace_event";
+            /**
+             * Optional entity-type slug. When set, the event must be linked to an entity of this type.
+             */
+            entity_type?: string;
+            /**
+             * Exact durable event semantic types that activate this Behavior.
+             */
+            event_types: Array<string>;
+            /**
+             * Exact-match fields from the durable event metadata.
+             */
+            match?: {
+              [key: string]: unknown | string | number | boolean | null;
+            };
+            /**
+             * "turn" handles the exact event pointer once; "window" runs the Behavior analysis flow.
+             */
+            execution?: "turn" | "window";
+            /**
+             * What to do when this Behavior is busy: queue every event or combine waiting events.
+             */
+            active_run?: "queue" | "coalesce";
+          }
+        | {
             kind: "schedule";
             cron: string;
             timezone?: string | null;
@@ -5102,7 +5152,7 @@ export type ReadKnowledgeData = {
      */
     classification_source?: "user" | "embedding" | "llm";
     /**
-     * Filter to specific content IDs. Useful for showing content linked to Behavior analysis.
+     * Filter to specific content IDs. With behavior_id, these exact durable rows are added to the Behavior read and signed into its window token in addition to authored sources; this is how workspace-event activations pass bounded event pointers without copying payloads.
      */
     content_ids?: Array<number>;
     /**

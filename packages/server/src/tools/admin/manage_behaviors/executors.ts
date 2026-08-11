@@ -24,6 +24,7 @@
 import type {
   BehaviorEventTrigger,
   BehaviorScheduleTrigger,
+  BehaviorWorkspaceEventTrigger,
 } from "@lobu/core/contracts/tools/manage-behaviors";
 import type { DbClient } from "../../../db/client";
 import { ToolUserError } from "../../../utils/errors";
@@ -33,6 +34,7 @@ import { assertAgentExists } from "./shared";
 
 export type BehaviorTriggerInput =
   | BehaviorEventTrigger
+  | BehaviorWorkspaceEventTrigger
   | BehaviorScheduleTrigger;
 
 /** Behavior-level executor (columns on the watchers row). */
@@ -83,7 +85,10 @@ export function assertBehaviorExecutorsResolve(
   defaults: BehaviorExecutorDefaults
 ): void {
   const automated = (triggers ?? []).some(
-    (trigger) => trigger.kind === "event" || trigger.kind === "schedule"
+    (trigger) =>
+      trigger.kind === "event" ||
+      trigger.kind === "workspace_event" ||
+      trigger.kind === "schedule"
   );
   if (!automated) return;
   if (!resolveBehaviorExecutor(defaults)) {

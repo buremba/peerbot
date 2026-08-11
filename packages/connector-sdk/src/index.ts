@@ -167,6 +167,7 @@ export type {
   BehaviorEventTrigger,
   BehaviorScheduleTrigger,
   BehaviorTrigger,
+  BehaviorWorkspaceEventTrigger,
   ConnectorBehaviorEvent,
   ConnectorBehaviorSignalDraft,
   ConnectorTriggerSignal,

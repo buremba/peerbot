@@ -211,6 +211,26 @@ async function getContentImpl(
           typeSlugs.add(String(typeRows[0].entity_type));
         }
       }
+      if (args.content_ids?.length) {
+        const eventTypeRows = await sql<{ entity_type: string | null }>`
+          SELECT DISTINCT et.slug AS entity_type
+          FROM events ev
+          LEFT JOIN LATERAL unnest(ev.entity_ids) linked(entity_id) ON TRUE
+          LEFT JOIN entities e
+            ON e.id = linked.entity_id
+           AND e.organization_id = ev.organization_id
+           AND e.deleted_at IS NULL
+          LEFT JOIN entity_types et
+            ON et.id = e.entity_type_id
+           AND et.deleted_at IS NULL
+          WHERE ev.organization_id = ${ctx.organizationId}
+            AND ev.id = ANY(${pgBigintArray(args.content_ids)}::bigint[])
+        `;
+        for (const row of eventTypeRows) {
+          // Unbound events use the workspace-wide $member policy envelope.
+          typeSlugs.add(row.entity_type ? String(row.entity_type) : '$member');
+        }
+      }
       for (const slug of typeSlugs) {
         const decision = await evaluateEntityMutation({
           organizationId: ctx.organizationId,

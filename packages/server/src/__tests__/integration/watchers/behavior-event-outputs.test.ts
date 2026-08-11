@@ -1,7 +1,12 @@
 import { inferBehaviorGranularityFromSchedule } from '@lobu/connector-sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
+import {
+  activateWorkspaceEventTask,
+  type WorkspaceEventActivationTaskPayload,
+} from '../../../behaviors/workspace-event';
 import type { DbClient } from '../../../db/client';
 import { createWatcherRun } from '../../../runs/queue-service';
+import { ensureMemberEntityType } from '../../../utils/member-entity-type';
 import { persistBehaviorEventOutput } from '../../../utils/persist-behavior-event-output';
 import {
   BEHAVIOR_EVENT_IDENTITY_NS,
@@ -21,6 +26,7 @@ describe('Behavior event outputs', () => {
   it('appends multiple run-linked events and deduplicates a completion retry', async () => {
     const sql = getTestDb();
     const workspace = await TestWorkspace.create({ name: 'Behavior Event Output Org' });
+    await ensureMemberEntityType(workspace.org.id);
     const ownerUserId = workspace.users.owner.id;
     const parent = await createTestEntity({
       name: 'Observed account',
@@ -49,6 +55,26 @@ describe('Behavior event outputs', () => {
       agent_id: agent.agentId,
     })) as { behavior_id: string };
     const watcherId = Number(created.behavior_id);
+    const consumer = (await api.behaviors.create({
+      slug: 'observation-consumer',
+      prompt: 'Handle the exact observation event.',
+      triggers: [
+        {
+          kind: 'workspace_event',
+          event_types: ['observation'],
+          execution: 'window',
+          active_run: 'queue',
+        },
+      ],
+      sources: [
+        {
+          name: 'authored_context',
+          query: 'SELECT id, payload_text, occurred_at FROM events WHERE false',
+        },
+      ],
+      agent_id: agent.agentId,
+    })) as { behavior_id: string };
+    const consumerId = Number(consumer.behavior_id);
     await sql`UPDATE watchers SET next_run_at = NOW() - INTERVAL '10 minutes' WHERE id = ${watcherId}`;
 
     const granularity = inferBehaviorGranularityFromSchedule('0 9 * * *');
@@ -142,6 +168,87 @@ describe('Behavior event outputs', () => {
       origin_parent_id: source.origin_id,
     });
     expect(observations.map((row) => Number(row.metadata.rank))).toEqual([1, 2]);
+
+    const activationTasks = await sql<{
+      status: string;
+      max_attempts: number;
+      action_input: {
+        name: string;
+        payload: WorkspaceEventActivationTaskPayload;
+      };
+    }>`
+      SELECT status, max_attempts, action_input
+      FROM runs
+      WHERE run_type = 'task'
+        AND action_key = 'activate-workspace-event'
+        AND organization_id = ${workspace.org.id}
+      ORDER BY id
+    `;
+    expect(activationTasks).toHaveLength(3);
+    expect(
+      activationTasks.every(
+        (task) => task.status === 'pending' && Number(task.max_attempts) === 5
+      )
+    ).toBe(true);
+    expect(
+      activationTasks.map((task) => Number(task.action_input.payload.eventId))
+    ).toEqual(rows.map((row) => Number(row.id)));
+    expect(
+      activationTasks.every(
+        (task) =>
+          task.action_input.name === 'activate-workspace-event' &&
+          task.action_input.payload.depth === 1 &&
+          task.action_input.payload.causalBehaviorIds[0] === watcherId
+      )
+    ).toBe(true);
+
+    const observationTask = activationTasks.find((task) =>
+      observations.some(
+        (event) => Number(event.id) === Number(task.action_input.payload.eventId)
+      )
+    );
+    if (!observationTask)
+      throw new Error('Observation activation task was not written');
+    const activation = await activateWorkspaceEventTask(
+      observationTask.action_input.payload,
+      sql
+    );
+    expect(activation).toMatchObject({ matched: 1, queued: 1 });
+    await activateWorkspaceEventTask(observationTask.action_input.payload, sql);
+    const downstreamRuns = await sql`
+      SELECT approved_input
+      FROM runs
+      WHERE run_type = 'behavior'
+        AND watcher_id = ${consumerId}
+    `;
+    expect(downstreamRuns).toHaveLength(1);
+    expect(downstreamRuns[0].approved_input).toMatchObject({
+      trigger_execution: 'window',
+      delivery_ids: [
+        `workspace-event:${observationTask.action_input.payload.eventId}`,
+      ],
+      trigger_signal: {
+        kind: 'workspace_event',
+        event_id: observationTask.action_input.payload.eventId,
+        causal_behavior_ids: [watcherId],
+        depth: 1,
+      },
+    });
+
+    const triggerRead = (await api.knowledge.read({
+      behavior_id: consumerId,
+      content_ids: [Number(observationTask.action_input.payload.eventId)],
+      since: pending.windowStart.toISOString(),
+      until: pending.windowEnd.toISOString(),
+      limit: 25,
+    })) as {
+      content: Array<{ id: number }>;
+      window_token: string;
+    };
+    expect(triggerRead.content.map((item) => Number(item.id))).toEqual([
+      Number(observationTask.action_input.payload.eventId),
+    ]);
+    expect(triggerRead.window_token).toBeTruthy();
 
     // A source-derived idempotency key is intentionally stronger than the
     // Canvas-revision retry key: a later run that rediscovers the same post

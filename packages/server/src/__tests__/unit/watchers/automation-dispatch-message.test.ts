@@ -2,6 +2,70 @@ import { describe, expect, it } from "vitest";
 import { buildDispatchMessage } from "../../../watchers/automation";
 
 describe("watcher dispatch message", () => {
+	it("dereferences workspace-event turn inputs instead of embedding event content", () => {
+		const message = buildDispatchMessage({
+			watcherId: 21,
+			runId: 88,
+			agentId: "risk-agent",
+			sessionAgentId: "risk-agent_watcher_21_run_88",
+			payload: {
+				watcher_id: 21,
+				agent_id: "risk-agent",
+				window_start: "2026-08-11T00:00:00.000Z",
+				window_end: "2026-08-11T00:00:00.001Z",
+				dispatch_source: "event",
+				version_id: 3,
+				trigger_execution: "turn",
+				trigger_signal: {
+					kind: "workspace_event",
+					event_id: 40,
+					event_type: "risk_detected",
+					delivery_id: "workspace-event:40",
+					occurred_at: "2026-08-11T00:00:00.000Z",
+					root_event_id: 40,
+					causal_behavior_ids: [7],
+					depth: 1,
+				},
+			},
+		});
+
+		expect(message).toContain("client.knowledge.read({ content_ids: [40] })");
+		expect(message).toContain("pointer and causal metadata only");
+		expect(message).not.toContain("normalized connector event");
+	});
+
+	it("signs workspace-event pointers into window reads", () => {
+		const message = buildDispatchMessage({
+			watcherId: 21,
+			runId: 89,
+			agentId: "risk-agent",
+			sessionAgentId: "risk-agent_watcher_21_run_89",
+			payload: {
+				watcher_id: 21,
+				agent_id: "risk-agent",
+				window_start: "2026-08-11T00:00:00.000Z",
+				window_end: "2026-08-11T00:00:00.001Z",
+				dispatch_source: "event",
+				version_id: 3,
+				trigger_execution: "window",
+				trigger_signal: {
+					kind: "workspace_event",
+					event_id: 40,
+					event_type: "risk_detected",
+					delivery_id: "workspace-event:40",
+					occurred_at: "2026-08-11T00:00:00.000Z",
+					root_event_id: 40,
+					causal_behavior_ids: [7],
+					depth: 1,
+				},
+			},
+		});
+
+		expect(message).toContain("content_ids: [40]");
+		expect(message).toContain("signs its exact id into the window_token");
+		expect(message).toContain("Analyze each trigger input exactly once");
+	});
+
 	it("instructs the agent to analyze source results when event content is empty", () => {
 		const message = buildDispatchMessage({
 			watcherId: 13,

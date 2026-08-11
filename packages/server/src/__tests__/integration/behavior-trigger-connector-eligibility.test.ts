@@ -56,6 +56,14 @@ describe("event-trigger connector eligibility", () => {
 		await cleanupTestDatabase();
 		orgId = (await createTestOrganization({ name: "Trigger Eligibility Org" }))
 			.id;
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO entity_types
+			  (organization_id, slug, name, event_kinds)
+			VALUES
+			  (${orgId}, 'account', 'Account',
+			   ${sql.json({ risk_detected: { description: "Risk detected" } })})
+		`;
 
 		// No declared events, no feeds → nothing can ever fire.
 		await defineConnector("elig-barren", { events: [], feeds: {} });
@@ -105,5 +113,38 @@ describe("event-trigger connector eligibility", () => {
 				eventTrigger("elig-rich", "message.created"),
 			),
 		).resolves.toBeUndefined();
+	});
+
+	it("validates workspace-event types against the organization's event catalog", async () => {
+		const sql = getTestDb();
+		await expect(
+			assertBehaviorTriggerConnections(sql, orgId, [
+				{
+					kind: "workspace_event",
+					entity_type: "account",
+					event_types: ["risk_detected"],
+				},
+			]),
+		).resolves.toBeUndefined();
+
+		await expect(
+			assertBehaviorTriggerConnections(sql, orgId, [
+				{
+					kind: "workspace_event",
+					entity_type: "missing-type",
+					event_types: ["risk_detected"],
+				},
+			]),
+		).rejects.toThrow(/entity type 'missing-type' was not found/i);
+
+		await expect(
+			assertBehaviorTriggerConnections(sql, orgId, [
+				{
+					kind: "workspace_event",
+					entity_type: "account",
+					event_types: ["undeclared_kind"],
+				},
+			]),
+		).rejects.toThrow(/does not declare workspace event 'undeclared_kind'/i);
 	});
 });

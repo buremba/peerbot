@@ -68,6 +68,60 @@ export const BehaviorEventTriggerSchema = Type.Object(
 );
 export type BehaviorEventTrigger = Static<typeof BehaviorEventTriggerSchema>;
 
+/**
+ * Activation from an event already written to the Lobu workspace by another
+ * Behavior. This is deliberately distinct from `kind: "event"`: connector
+ * triggers cross an authenticated external-delivery boundary, while workspace
+ * triggers follow an append-only event that is already governed by Lobu.
+ *
+ * In v1 only declared Behavior event outputs emit this activation. Ordinary
+ * knowledge saves and connector ingestion remain durable data, not implicit
+ * workflow commands.
+ */
+export const BehaviorWorkspaceEventTriggerSchema = Type.Object(
+  {
+    kind: Type.Literal("workspace_event"),
+    entity_type: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: 100,
+        description:
+          "Optional entity-type slug. When set, the event must be linked to an entity of this type.",
+      })
+    ),
+    event_types: Type.Array(Type.String({ minLength: 1, maxLength: 100 }), {
+      minItems: 1,
+      maxItems: 32,
+      uniqueItems: true,
+      description:
+        "Exact durable event semantic types that activate this Behavior.",
+    }),
+    match: Type.Optional(
+      Type.Record(Type.String(), BehaviorTriggerMatchValueSchema, {
+        description: "Exact-match fields from the durable event metadata.",
+      })
+    ),
+    execution: Type.Optional(
+      Type.Union([Type.Literal("turn"), Type.Literal("window")], {
+        description:
+          '"turn" handles the exact event pointer once; "window" runs the Behavior analysis flow.',
+        default: "window",
+      })
+    ),
+    active_run: Type.Optional(
+      Type.Union([Type.Literal("queue"), Type.Literal("coalesce")], {
+        description:
+          "What to do when this Behavior is busy: queue every event or combine waiting events.",
+        default: "coalesce",
+      })
+    ),
+  },
+  { additionalProperties: false }
+);
+export type BehaviorWorkspaceEventTrigger = Static<
+  typeof BehaviorWorkspaceEventTriggerSchema
+>;
+
 export const BehaviorScheduleTriggerSchema = Type.Object(
   {
     kind: Type.Literal("schedule"),
@@ -91,6 +145,7 @@ export type BehaviorScheduleTrigger = Static<
 
 export const BehaviorTriggerSchema = Type.Union([
   BehaviorEventTriggerSchema,
+  BehaviorWorkspaceEventTriggerSchema,
   BehaviorScheduleTriggerSchema,
 ]);
 export type BehaviorTrigger = Static<typeof BehaviorTriggerSchema>;

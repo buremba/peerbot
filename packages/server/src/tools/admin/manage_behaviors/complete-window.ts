@@ -7,6 +7,10 @@
 
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
+import {
+  deriveWorkspaceEventCausality,
+  enqueueWorkspaceEventActivation,
+} from '../../../behaviors/workspace-event';
 import { createDbClientFromEnv, getDb, parsePgNumberArray } from '../../../db/client';
 import type { Env } from '../../../index';
 import { ToolUserError } from '../../../utils/errors';
@@ -272,15 +276,33 @@ export async function handleCompleteWindow(
   // can't read another watcher's snapshot.
   let snapshotVersionId: number | null =
     typeof args.template_version_id === 'number' ? args.template_version_id : null;
-  if (snapshotVersionId == null && watcherRunId != null) {
+  let runTriggerSignals: unknown[] = [];
+  if (watcherRunId != null) {
     const runRows = await sql`
-      SELECT (approved_input->>'version_id')::bigint AS version_id
+      SELECT (approved_input->>'version_id')::bigint AS version_id,
+             approved_input
       FROM runs
       WHERE id = ${watcherRunId} AND watcher_id = ${watcherId}
       LIMIT 1
     `;
-    if (runRows.length > 0 && runRows[0].version_id != null) {
+    if (
+      snapshotVersionId == null &&
+      runRows.length > 0 &&
+      runRows[0].version_id != null
+    ) {
       snapshotVersionId = Number(runRows[0].version_id);
+    }
+    const approvedInput = runRows[0]?.approved_input;
+    if (approvedInput && typeof approvedInput === 'object') {
+      const input = approvedInput as {
+        trigger_signal?: unknown;
+        trigger_signals?: unknown[];
+      };
+      runTriggerSignals = Array.isArray(input.trigger_signals)
+        ? input.trigger_signals
+        : input.trigger_signal
+          ? [input.trigger_signal]
+          : [];
     }
   }
 
@@ -350,6 +372,10 @@ export async function handleCompleteWindow(
   // guaranteed-live user (same FK), so it's the correct attribution.
   const watcherOrgId = watcherRows[0].organization_id as string;
   const watcherCreatedBy = (watcherRows[0].created_by as string | null) ?? null;
+  const workspaceEventCausality = deriveWorkspaceEventCausality(
+    runTriggerSignals,
+    Number(watcherId)
+  );
   // entity_ids is bigint[]; the prod pool runs fetch_types:false, so postgres.js
   // hands it back as the literal string "{4}" (NOT a JS array) — parse it.
   const boundEntityIds = parsePgNumberArray(watcherRows[0].entity_ids);
@@ -775,7 +801,7 @@ export async function handleCompleteWindow(
         deferredApprovals.push(...promote.deferred);
         entityChanges.push(...promote.changes);
       } else {
-        await persistBehaviorEventOutput({
+        const persistedEvents = await persistBehaviorEventOutput({
           tx,
           rows: extractedData[outputName],
           outputName,
@@ -791,6 +817,17 @@ export async function handleCompleteWindow(
           occurredAt: producedAt,
           createdBy: watcherCreatedBy,
         });
+        for (const event of persistedEvents) {
+          if (event.change === 'unchanged') continue;
+          await enqueueWorkspaceEventActivation(tx, {
+            organizationId: watcherOrgId,
+            eventId: Number(event.id),
+            rootEventId:
+              workspaceEventCausality.rootEventId ?? Number(event.id),
+            causalBehaviorIds: workspaceEventCausality.causalBehaviorIds,
+            depth: workspaceEventCausality.depth,
+          });
+        }
       }
     }
 

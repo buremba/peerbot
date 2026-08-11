@@ -30,6 +30,7 @@ import {
 	claimBehaviorCooldownStandalone,
 	lockBehaviorForActivation,
 } from "../../../behaviors/cooldown";
+import { MAX_COALESCED_BEHAVIOR_EVENT_INPUTS } from "../../../behaviors/workspace-event-contract";
 import type { DbClient } from "../../../db/client";
 import type { Env } from "../../../index";
 import { createBehaviorEventRun } from "../../../runs/queue-service";
@@ -323,6 +324,37 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 		expect(afterCoalesce.last_event_activation_at).toEqual(
 			claimed.last_event_activation_at,
 		);
+	});
+
+	it("bounds a coalesced run and rolls overflow into another durable run", async () => {
+		const fixture = await behaviorWithCooldown(0);
+		const activation = await match(fixture);
+		for (let index = 0; index <= MAX_COALESCED_BEHAVIOR_EVENT_INPUTS; index++) {
+			await createBehaviorEventRun({
+				organizationId: fixture.organizationId,
+				watcherId: fixture.behaviorId,
+				agentId: fixture.workspace.agentId,
+				trigger: activation.trigger,
+				signal: {
+					...fixture.signal,
+					delivery_id: `event:bounded-coalesce:${index}`,
+				},
+			});
+		}
+
+		const rows = await getTestDb()<{
+			delivery_count: number;
+		}>`
+			SELECT jsonb_array_length(approved_input->'delivery_ids') AS delivery_count
+			FROM runs
+			WHERE watcher_id = ${fixture.behaviorId}
+			  AND run_type = 'behavior'
+			ORDER BY id
+		`;
+		expect(rows.map((row) => Number(row.delivery_count))).toEqual([
+			MAX_COALESCED_BEHAVIOR_EVENT_INPUTS,
+			1,
+		]);
 	});
 
 	it("measures the cooldown at claim time, not transaction start", async () => {

@@ -1,8 +1,10 @@
 # Agent Model — Behaviors, Surfaces, Workflows
 
-> **Status (2026-07-17):** **Reactive Behaviors implemented** — event, schedule,
-> and manual activation now share one model and editor. Surfaces, workflow WAIT,
-> and the broader proactivity policy remain future work.
+> **Status (2026-08-11):** **Reactive Behaviors and durable event chaining are
+> implemented**—connector event, workspace event, schedule, and manual
+> activation share one model and editor. See `docs/BEHAVIORS.md` for the current
+> contract and limits. Correlated workflow WAIT, joins, and the broader
+> proactivity policy remain future work.
 
 Design of record for consolidating the agent config surface. Supersedes the
 separate "Reach", "Watchers", and "Schedules" tabs. Written after review by
@@ -40,6 +42,8 @@ One list. Each row is a sentence + an activation badge:
 
 - **Event** — a normalized event from a connection, such as
   `pull_request.created` or `message.created`.
+- **Workspace event** — a newly persisted declared event output from another
+  Behavior, with bounded causality and fan-out.
 - **Schedule** — a clock / cron, optionally skipping unchanged source state.
 - **Manual** — explicitly started from Lobu, API, CLI, or MCP.
 
@@ -69,7 +73,7 @@ decides reply‑vs‑silence and must be per‑context.
 ## 3. Backend mapping
 
 - **Behaviors are canonical `watchers` rows.** The `triggers` JSON array holds
-  event and schedule activations; an empty array is manual-only. Prompt,
+  connector-event, workspace-event, and schedule activations; an empty array is manual-only. Prompt,
   sources, version history, execution settings, and activity remain on the
   existing watcher/version/run spine. No parallel Behavior table was added.
 - **`manage_behaviors` is the canonical declarative writer** for API, MCP, CLI,
@@ -91,6 +95,11 @@ decides reply‑vs‑silence and must be per‑context.
   their durable state before dispatch. Empty or identical state advances the
   schedule without creating an agent run or LLM call. Without the flag, the
   schedule always runs.
+- **Declared output events form the pipeline boundary.** A completed window
+  persists its output event and a durable activation task atomically. The task
+  matches `workspace_event` triggers after commit and uses the existing run
+  queue for retry, dedupe, cooldown, coalescing, and dispatch. Ordinary event
+  writes do not activate Behaviors.
 - **Chat links are Behaviors only.** A one-shot migration backfills legacy
   `agent_channel_bindings` into tagged Event Behaviors, then drops that table.
   Runtime routing and ACL readers use active message triggers from

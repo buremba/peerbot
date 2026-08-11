@@ -42,6 +42,7 @@
 
 import { createLogger } from '@lobu/core';
 import * as Sentry from '@sentry/node';
+import type { DbClient } from '../db/client';
 import { incrementCounter } from '../gateway/metrics/prometheus';
 import type { IMessageQueue, QueueJob } from '../gateway/infrastructure/queue/types';
 import { nextRunAt } from '../utils/cron';
@@ -49,6 +50,7 @@ import { nextRunAt } from '../utils/cron';
 const logger = createLogger('task-scheduler');
 
 const TASK_QUEUE_NAME = 'task';
+const TASK_NOTIFY_CHANNEL = 'runs_lobu:task';
 
 interface TaskContext<P = unknown> {
   /** Decoded task payload. */
@@ -85,6 +87,59 @@ interface TaskJobData {
    *  tick as the currently-claimed row, the seed conflicts, no new row is
    *  inserted, and the cron permanently stops. */
   __scheduledTick?: string;
+}
+
+/**
+ * Transactional one-shot task enqueue for writers that must commit their
+ * domain row and its durable handoff atomically. Unlike `spawn()`, this never
+ * opens a nested transaction and acquires no domain/Behavior locks. Postgres
+ * holds the NOTIFY until the caller commits; the queue poller remains the
+ * fallback if notification delivery fails.
+ */
+export async function enqueueTaskInTransaction<P>(
+  tx: DbClient,
+  name: string,
+  payload: P,
+  opts: {
+    idempotencyKey: string;
+    maxAttempts?: number;
+    priority?: number;
+    organizationId?: string;
+  },
+): Promise<string> {
+  const data: TaskJobData = { name, payload };
+  const inserted = await tx<{ id: number | string }>`
+    INSERT INTO public.runs (
+      run_type, queue_name, action_key, action_input, idempotency_key,
+      max_attempts, attempts, status, run_at, priority, organization_id
+    ) VALUES (
+      'task', ${TASK_QUEUE_NAME}, ${name}, ${tx.json(data)},
+      ${opts.idempotencyKey}, ${opts.maxAttempts ?? 5}, 0, 'pending', now(),
+      ${opts.priority ?? 0}, ${opts.organizationId ?? null}
+    )
+    ON CONFLICT (idempotency_key)
+      WHERE idempotency_key IS NOT NULL
+        AND status IN ('pending', 'claimed', 'running')
+    DO NOTHING
+    RETURNING id
+  `;
+  let id = inserted[0]?.id == null ? '' : String(inserted[0].id);
+  if (!id) {
+    const existing = await tx<{ id: number | string }>`
+      SELECT id
+      FROM public.runs
+      WHERE idempotency_key = ${opts.idempotencyKey}
+        AND status IN ('pending', 'claimed', 'running')
+      ORDER BY id DESC
+      LIMIT 1
+    `;
+    id = existing[0]?.id == null ? '' : String(existing[0].id);
+  }
+  if (!id) {
+    throw new Error(`Failed to enqueue transactional task "${name}"`);
+  }
+  await tx`SELECT pg_notify(${TASK_NOTIFY_CHANNEL}, ${TASK_QUEUE_NAME})`;
+  return id;
 }
 
 interface TaskRegistration {

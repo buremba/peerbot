@@ -592,7 +592,10 @@ function assertBehaviorSkills(watcher: DesiredWatcher): void {
     Object.keys(watcher.outputs).length > 0 &&
     triggers.some(
       (trigger) =>
-        trigger.kind === "event" && (trigger.execution ?? "turn") === "turn"
+        (trigger.kind === "event" &&
+          (trigger.execution ?? "turn") === "turn") ||
+        (trigger.kind === "workspace_event" &&
+          (trigger.execution ?? "window") === "turn")
     )
   ) {
     throw new ValidationError(
@@ -650,6 +653,19 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
         active_run: "coalesce" as const,
         skip_if_unchanged: trigger.skip_if_unchanged ?? true,
       };
+    }
+    if (trigger.kind === "workspace_event") {
+      return {
+        ...trigger,
+        entity_type: trigger.entity_type?.trim() || undefined,
+        event_types: Array.from(new Set(trigger.event_types)),
+        match:
+          trigger.match && Object.keys(trigger.match).length > 0
+            ? trigger.match
+            : undefined,
+        execution: trigger.execution ?? "window",
+        active_run: trigger.active_run ?? "coalesce",
+      } as const;
     }
     const { connection, ...eventTrigger } = trigger;
     const normalizedEventTrigger = {

@@ -8,12 +8,21 @@
  */
 
 import type { DbClient } from '../db/client';
-import type { BehaviorEventTrigger } from '@lobu/core/contracts/tools/manage-behaviors';
+import type {
+  BehaviorEventTrigger,
+  BehaviorWorkspaceEventTrigger,
+} from '@lobu/core/contracts/tools/manage-behaviors';
 import type { ConnectorTriggerSignal } from '@lobu/connector-sdk';
 import {
   claimBehaviorCooldown,
   lockBehaviorForActivation,
 } from '../behaviors/cooldown';
+import {
+  MAX_COALESCED_BEHAVIOR_EVENT_INPUTS,
+  MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS,
+  isWorkspaceEventTriggerSignal,
+  type WorkspaceEventTriggerSignal,
+} from '../behaviors/workspace-event-contract';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { isCloudMode } from '../utils/cloud-mode';
@@ -28,6 +37,12 @@ import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 import { BEHAVIOR_RUN_TYPES_PG } from "./run-types.js";
 
 type WatcherDispatchSource = 'scheduled' | 'manual' | 'event';
+export type BehaviorActivationTrigger =
+  | BehaviorEventTrigger
+  | BehaviorWorkspaceEventTrigger;
+export type BehaviorActivationSignal =
+  | ConnectorTriggerSignal
+  | WorkspaceEventTriggerSignal;
 
 export interface WatcherRunPayload {
   watcher_id: number;
@@ -63,10 +78,10 @@ export interface WatcherRunPayload {
    * default agent".
    */
   agent_kind?: string | null;
-  /** Present for connector-event activations; raw webhook bodies never enter a run. */
-  trigger_signal?: ConnectorTriggerSignal;
+  /** Present for event activations; each signal points at already-durable input. */
+  trigger_signal?: BehaviorActivationSignal;
   /** Coalesced deliveries waiting in this run, including trigger_signal. */
-  trigger_signals?: ConnectorTriggerSignal[];
+  trigger_signals?: BehaviorActivationSignal[];
   delivery_ids?: string[];
   trigger_execution?: 'turn' | 'window';
   trigger_output?: 'silent' | 'reply_to_source';
@@ -74,7 +89,17 @@ export interface WatcherRunPayload {
   source_fingerprint?: string;
 }
 
-function behaviorEventTriggerKey(trigger: BehaviorEventTrigger): string {
+function behaviorEventTriggerKey(trigger: BehaviorActivationTrigger): string {
+  if (trigger.kind === 'workspace_event') {
+    return stableJson({
+      kind: trigger.kind,
+      entity_type: trigger.entity_type ?? null,
+      event_types: [...trigger.event_types].sort(),
+      match: trigger.match ?? null,
+      execution: trigger.execution ?? 'window',
+      active_run: trigger.active_run ?? 'coalesce',
+    });
+  }
   return stableJson({
     kind: 'event',
     connector_key: trigger.connector_key,
@@ -701,7 +726,7 @@ export type BehaviorEventRunResult =
   | BehaviorEventRunSuppressed;
 
 /**
- * Durably materialize a normalized connector signal as a Behavior run. A
+ * Durably materialize a normalized event signal as a Behavior run. A
  * per-Behavior transaction lock makes queue/coalesce decisions replica-safe;
  * delivery_ids in historical runs provide dedupe without a webhook ledger.
  */
@@ -710,8 +735,8 @@ export async function createBehaviorEventRun(
     organizationId: string;
     watcherId: number;
     agentId?: string | null;
-    trigger: BehaviorEventTrigger;
-    signal: ConnectorTriggerSignal;
+    trigger: BehaviorActivationTrigger;
+    signal: BehaviorActivationSignal;
     deviceWorkerId?: string | null;
     agentKind?: string | null;
   },
@@ -740,7 +765,8 @@ export async function createBehaviorEventRun(
       };
     }
 
-    const policy = params.trigger.active_run ?? 'queue';
+    const policy = params.trigger.active_run ??
+      (params.trigger.kind === 'workspace_event' ? 'coalesce' : 'queue');
     const triggerKey = behaviorEventTriggerKey(params.trigger);
     const occurredAt = params.signal.occurred_at
       ? new Date(params.signal.occurred_at)
@@ -759,6 +785,9 @@ export async function createBehaviorEventRun(
           AND status = 'pending'
           AND approved_input->>'dispatch_source' = 'event'
           AND approved_input->>'trigger_key' = ${triggerKey}
+          AND jsonb_array_length(
+            COALESCE(approved_input->'delivery_ids', '[]'::jsonb)
+          ) < ${MAX_COALESCED_BEHAVIOR_EVENT_INPUTS}
         ORDER BY created_at ASC
         LIMIT 1
         FOR UPDATE
@@ -769,38 +798,50 @@ export async function createBehaviorEventRun(
           (input.trigger_signal ? [input.trigger_signal] : []);
         const deliveryIds = input.delivery_ids ??
           signals.map((signal) => signal.delivery_id);
-        const currentWindowStart = Date.parse(input.window_start);
-        const currentWindowEnd = Date.parse(input.window_end);
-        const nextInput: WatcherRunPayload = {
-          ...input,
-          window_start: Number.isFinite(currentWindowStart) &&
-              currentWindowStart <= safeOccurredAt.getTime()
-            ? input.window_start
-            : signalWindowStart,
-          window_end: Number.isFinite(currentWindowEnd) &&
-              currentWindowEnd >= safeOccurredAt.getTime() + 1
-            ? input.window_end
-            : signalWindowEnd,
-          trigger_signals: [...signals, params.signal],
-          delivery_ids: [...deliveryIds, params.signal.delivery_id],
-        };
-        const merged = await tx`
-          UPDATE runs
-          SET approved_input = ${tx.json(nextInput)}
-          WHERE id = ${pending[0]?.id}
-            AND status = 'pending'
-        `;
-        // A zero rowcount means the run left 'pending' between the snapshot
-        // and the merge (only possible for writers outside our advisory
-        // lock, e.g. old pods during a rolling deploy). Fall through and
-        // queue a fresh run rather than dropping the signal.
-        if (merged.count > 0) {
-          return {
-            runId: Number(pending[0]?.id),
-            status: String(pending[0]?.status),
-            created: false,
-            disposition: 'coalesced',
+        const nextSignals = [...signals, params.signal];
+        const causalBehaviorIds = new Set(
+          nextSignals
+            .filter(isWorkspaceEventTriggerSignal)
+            .flatMap((signal) => signal.causal_behavior_ids)
+        );
+        causalBehaviorIds.add(params.watcherId);
+        // A coalesced run inherits the union of every incoming causal path when
+        // it emits a downstream event. Split into another durable run before
+        // that set becomes an unbounded payload.
+        if (causalBehaviorIds.size <= MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS) {
+          const currentWindowStart = Date.parse(input.window_start);
+          const currentWindowEnd = Date.parse(input.window_end);
+          const nextInput: WatcherRunPayload = {
+            ...input,
+            window_start: Number.isFinite(currentWindowStart) &&
+                currentWindowStart <= safeOccurredAt.getTime()
+              ? input.window_start
+              : signalWindowStart,
+            window_end: Number.isFinite(currentWindowEnd) &&
+                currentWindowEnd >= safeOccurredAt.getTime() + 1
+              ? input.window_end
+              : signalWindowEnd,
+            trigger_signals: nextSignals,
+            delivery_ids: [...deliveryIds, params.signal.delivery_id],
           };
+          const merged = await tx`
+            UPDATE runs
+            SET approved_input = ${tx.json(nextInput)}
+            WHERE id = ${pending[0]?.id}
+              AND status = 'pending'
+          `;
+          // A zero rowcount means the run left 'pending' between the snapshot
+          // and the merge (only possible for writers outside our advisory
+          // lock, e.g. old pods during a rolling deploy). Fall through and
+          // queue a fresh run rather than dropping the signal.
+          if (merged.count > 0) {
+            return {
+              runId: Number(pending[0]?.id),
+              status: String(pending[0]?.status),
+              created: false,
+              disposition: 'coalesced',
+            };
+          }
         }
       }
     }
@@ -842,8 +883,11 @@ export async function createBehaviorEventRun(
       trigger_signal: params.signal,
       trigger_signals: [params.signal],
       delivery_ids: [params.signal.delivery_id],
-      trigger_execution: params.trigger.execution ?? 'turn',
-      trigger_output: params.trigger.output ?? 'silent',
+      trigger_execution: params.trigger.execution ??
+        (params.trigger.kind === 'workspace_event' ? 'window' : 'turn'),
+      trigger_output: params.trigger.kind === 'event'
+        ? (params.trigger.output ?? 'silent')
+        : 'silent',
       trigger_key: triggerKey,
     };
     const inserted = await tx`

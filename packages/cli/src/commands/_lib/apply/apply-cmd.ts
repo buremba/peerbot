@@ -1467,7 +1467,13 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   // this (current/stale) catalog — "create" when the key isn't installed,
   // "update" when it is. Connector defs are NOT installed here; that happens in
   // `executePlan`, AFTER plan confirmation.
-  const remote = await fetchRemoteSnapshot(client, state, opts.only, prune, resolvedOrg?.id);
+  const remote = await fetchRemoteSnapshot(
+    client,
+    state,
+    opts.only,
+    prune,
+    resolvedOrg?.id
+  );
   resolveBehaviorConnectionRefs(
     state.watchers,
     new Map(

@@ -8,7 +8,7 @@
  *      { status: 'completed', output }
  *   2. worker-failed: worker posts 'failed' → returns
  *      { status: 'failed', error_message }
- *   3. timeout-pre-claim: run never claimed before QUEUE_BUDGET_MS →
+ *   3. timeout-pre-claim: run never claimed before the queue budget →
  *      gateway marks the row 'timeout', returns timeout
  *   4. race: worker posts completion AFTER our timeout decision but
  *      BEFORE we re-read. The atomic UPDATE in completeActionRun
@@ -17,17 +17,15 @@
  *
  * The test stubs `setTimeout` to keep poll loops fast.
  *
- * NOTE: waitForDeviceActionRun is not exported. We re-implement the
- * same shape here against the real DB to keep the import surface
- * stable. The production helper is small enough that a focused
- * behavioral test is the right contract — we're testing the SQL
- * transitions, not the function body. Update both together if the
- * shape changes.
+ * The abort path calls the production helper directly. The longer phase and
+ * race tests use a budget-parameterized mirror so they complete in
+ * milliseconds while exercising the same SQL transitions.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { waitForDeviceActionRun } from '../../tools/admin/manage_operations';
+import { DEVICE_ACTION_QUEUE_BUDGET_MS } from '../../config/intervals';
 import { createConnectorOperationRun } from '../../runs/queue-service';
+import { waitForDeviceActionRun } from '../../tools/admin/device-action-wait';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import { createTestOrganization } from '../setup/test-fixtures';
 
@@ -261,7 +259,7 @@ describe('waitForDeviceActionRun', () => {
     expect(out.error_message).toBe('worker-failed');
   });
 
-  it('times out + marks row when no worker claims within QUEUE_BUDGET_MS', async () => {
+  it('times out + marks row when no worker claims within the queue budget', async () => {
     const org = await createTestOrganization();
     await insertChromeConnector(org.id);
     const connId = await insertChromeConnection(org.id);
@@ -375,6 +373,7 @@ describe('createConnectorOperationRun — ephemeral expires_at semantics', () =>
     await insertChromeConnector(org.id);
     const connId = await insertChromeConnection(org.id);
 
+    const createdBefore = Date.now();
     const claim = await createConnectorOperationRun({
       organizationId: org.id,
       connectionId: connId,
@@ -389,10 +388,9 @@ describe('createConnectorOperationRun — ephemeral expires_at semantics', () =>
 
     const expiresAt = await expiresAtOf(claim.runId);
     expect(expiresAt).not.toBeNull();
-    // Bounded claim horizon: in the near future, not eternal.
-    const ms = (expiresAt as Date).getTime();
-    expect(ms).toBeGreaterThan(Date.now());
-    expect(ms).toBeLessThan(Date.now() + 10 * 60 * 1000);
+    const expiresInMs = (expiresAt as Date).getTime() - createdBefore;
+    expect(expiresInMs).toBeGreaterThan(DEVICE_ACTION_QUEUE_BUDGET_MS - 5_000);
+    expect(expiresInMs).toBeLessThan(DEVICE_ACTION_QUEUE_BUDGET_MS + 5_000);
   });
 
   it('queued (durable human-decision) runs get NO expires_at', async () => {

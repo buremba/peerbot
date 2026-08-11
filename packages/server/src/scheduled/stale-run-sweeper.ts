@@ -142,7 +142,9 @@ export function buildStaleRunWhereSql(spec: StaleRunSweepSpec): string {
            -- execute later — terminalize it even if it is younger than the
            -- coarse interval (device action runs carry expires_at; see
            -- runs/queue-service.ts).
-           OR (expires_at IS NOT NULL AND expires_at <= current_timestamp)
+           OR (run_type = 'action'
+               AND expires_at IS NOT NULL
+               AND expires_at <= current_timestamp)
          ))
         OR ${inProgressPredicate})`
 		: inProgressPredicate;

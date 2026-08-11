@@ -41,6 +41,20 @@ describe("executionMode", () => {
     ).toBe("manual");
   });
 
+  test("streaming feed is streaming, not a never-run manual collector", () => {
+    expect(
+      deriveFeedHealthSemantics({
+        kind: "streaming",
+        status: "active",
+        connection_status: "active",
+      })
+    ).toEqual({
+      executionMode: "streaming",
+      attention: "healthy",
+      incidentEligible: false,
+    });
+  });
+
   test("empty-string schedule is manual (treated as absent)", () => {
     expect(
       deriveFeedHealthSemantics({
@@ -206,49 +220,63 @@ describe("attention state", () => {
     ).toBe("healthy");
   });
 
-  test("misconfigured when expectSchedule and feed is manual", () => {
-    expect(
-      deriveFeedHealthSemantics({
-        kind: "collected",
-        schedule: null,
-        status: "active",
-        connection_status: "active",
-        expectSchedule: true,
-      }).attention
-    ).toBe("misconfigured");
-  });
-
-  test("not misconfigured without expectSchedule opt-in", () => {
-    expect(
-      deriveFeedHealthSemantics({
-        kind: "collected",
-        schedule: null,
-        status: "active",
-        connection_status: "active",
-      }).attention
-    ).toBe("never_run");
-  });
-
   test("error connection status is misconfigured when not auth", () => {
-    // 'error' connection status is treated as needs_auth by the auth rule;
-    // the error branch covers a plain error status not otherwise classified.
     expect(
       deriveFeedHealthSemantics({
         kind: "collected",
         schedule: "0 */6 * * *",
-        status: "error",
-        connection_status: "active",
+        status: "active",
+        connection_status: "error",
       }).attention
     ).toBe("misconfigured");
   });
 
-  test("virtual feed is always healthy (evaluated on demand)", () => {
+  test("streaming feed still surfaces connection and device attention", () => {
     expect(
-      deriveFeedHealthSemantics({ kind: "virtual", status: "active" }).attention
+      deriveFeedHealthSemantics({
+        kind: "streaming",
+        status: "active",
+        connection_status: "pending_auth",
+      }).attention
+    ).toBe("needs_auth");
+    expect(
+      deriveFeedHealthSemantics({
+        kind: "streaming",
+        status: "active",
+        connection_status: "paused",
+      }).attention
+    ).toBe("paused");
+    expect(
+      deriveFeedHealthSemantics({
+        kind: "streaming",
+        status: "active",
+        connection_status: "active",
+        device_worker_id: "dw-1",
+        device_online: false,
+      }).attention
+    ).toBe("device_offline");
+  });
+
+  test("virtual feed ignores sync history but surfaces connection attention", () => {
+    expect(
+      deriveFeedHealthSemantics({
+        kind: "virtual",
+        status: "active",
+        connection_status: "active",
+        last_sync_status: "failed",
+        consecutive_failures: 3,
+      }).attention
     ).toBe("healthy");
     expect(
       deriveFeedHealthSemantics({ kind: "virtual", status: "paused" }).attention
-    ).toBe("healthy");
+    ).toBe("paused");
+    expect(
+      deriveFeedHealthSemantics({
+        kind: "virtual",
+        status: "active",
+        connection_status: "pending_auth",
+      }).attention
+    ).toBe("needs_auth");
   });
 });
 

@@ -8,6 +8,7 @@
  * TDZ and red-failed CI unit on main).
  */
 
+import { DEVICE_ACTION_QUEUE_BUDGET_MS } from '../../config/intervals';
 import { getDb } from '../../db/client';
 import { classifyRunOutcome } from '../../runs/run-outcome';
 import { describeDeviceLastSeen } from '../../utils/device-liveness';
@@ -44,7 +45,7 @@ export async function describeRunDeviceLastSeen(
 //
 //   - PRE-CLAIM (status='pending'): how long the device has to even
 //     pick the run up. The chrome extension polls /poll every 5s; we
-//     allow up to QUEUE_BUDGET_MS for it to arrive.
+//     allow up to the shared device-action queue budget for it to arrive.
 //
 //   - POST-CLAIM (status='running'): how long the device has to
 //     execute, after it claimed the run. The chrome extension's own
@@ -73,10 +74,9 @@ export async function waitForDeviceActionRun(
   error_message?: string;
 }> {
   const sql = getDb();
-  const QUEUE_BUDGET_MS = 60_000; // generous: device may be sleeping
   const POST_CLAIM_BUDGET_MS = 95_000; // matches extension's 90s + 5s buffer
   const POLL_MS = 500;
-  const queueDeadline = Date.now() + QUEUE_BUDGET_MS;
+  const queueDeadline = Date.now() + DEVICE_ACTION_QUEUE_BUDGET_MS;
   let claimedAtMs: number | null = null;
 
   while (true) {
@@ -146,7 +146,7 @@ export async function waitForDeviceActionRun(
     deviceDiagnostic == null
       ? 'waitForDeviceActionRun: device claimed the run but did not complete in time'
       : `waitForDeviceActionRun: no device claimed the run within ${Math.round(
-          QUEUE_BUDGET_MS / 1000
+          DEVICE_ACTION_QUEUE_BUDGET_MS / 1000
         )}s (${deviceDiagnostic})`;
 
   // Atomic timeout finalization. The WHERE clause matches only non-
@@ -198,6 +198,6 @@ export async function waitForDeviceActionRun(
     error_message:
       deviceDiagnostic == null
         ? `Run ${runId} claimed but the device worker didn't finish within ${POST_CLAIM_BUDGET_MS}ms.`
-        : `Run ${runId} was never claimed within ${QUEUE_BUDGET_MS}ms — ${deviceDiagnostic}.`,
+        : `Run ${runId} was never claimed within ${DEVICE_ACTION_QUEUE_BUDGET_MS}ms — ${deviceDiagnostic}.`,
   };
 }

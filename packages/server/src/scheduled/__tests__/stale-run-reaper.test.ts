@@ -473,6 +473,20 @@ describe("reapStaleRuns — connector lanes", () => {
 			expect(await statusOf(liveId)).toBe("pending");
 		});
 
+		test("expires_at does not shorten the coarse horizon for non-action runs", async () => {
+			const syncId = await seedRun({
+				status: "pending",
+				lastHeartbeatAgoSeconds: null,
+				runType: "sync",
+				createdAtAgoSeconds: 5,
+				expiresAtAgoSeconds: 1,
+			});
+
+			const result = await reapStaleRuns();
+			expect(result.reaped).toBe(0);
+			expect(await statusOf(syncId)).toBe("pending");
+		});
+
 		test("a lapsed-expiry action run is never retried as a sync", async () => {
 			const feedId = 7771;
 			await seedFeed(feedId);

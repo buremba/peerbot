@@ -110,6 +110,19 @@ describe("gatewayCompletion", () => {
     expect(calls.length).toBe(3);
   });
 
+  test("does NOT start a retry whose backoff cannot fit the shared timeout budget", async () => {
+    const { calls } = stubFetch({}, { status: 500 });
+    await expect(
+      gatewayCompletion({
+        target: TARGET,
+        systemPrompt: "s",
+        userPrompt: "u",
+        timeoutMs: 100,
+      })
+    ).rejects.toThrow(/500/);
+    expect(calls.length).toBe(1);
+  });
+
   test("retries a 429 then succeeds", async () => {
     const original = globalThis.fetch;
     let attempts = 0;
@@ -174,10 +187,12 @@ describe("gatewayCompletion", () => {
 
   test("an elapsed timeout aborts the request", async () => {
     const original = globalThis.fetch;
+    let calls = 0;
     globalThis.fetch = ((_url: string, init: RequestInit) =>
       new Promise((_resolve, reject) => {
+        calls += 1;
         init.signal?.addEventListener("abort", () =>
-          reject(new Error("aborted"))
+          reject(new DOMException("The operation was aborted", "AbortError"))
         );
       })) as unknown as typeof fetch;
     restore = () => {
@@ -192,5 +207,6 @@ describe("gatewayCompletion", () => {
         timeoutMs: 10,
       })
     ).rejects.toThrow();
+    expect(calls).toBe(1);
   });
 });

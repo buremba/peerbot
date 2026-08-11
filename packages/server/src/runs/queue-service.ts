@@ -26,7 +26,7 @@ import {
   type WorkspaceEventTriggerSignal,
 } from '../behaviors/workspace-event-contract';
 import { getDb } from '../db/client';
-import { intervals } from '../config/intervals';
+import { DEVICE_ACTION_QUEUE_BUDGET_MS } from '../config/intervals';
 import type { Env } from '../index';
 import { isCloudMode } from '../utils/cloud-mode';
 import { findBundledConnectorFile } from '../utils/connector-catalog';
@@ -1097,13 +1097,13 @@ export async function createConnectorOperationRun(params: {
   // a `device` run waits for a device worker to claim it via /poll, and an
   // unclaimed one must not sit pending forever — nor must a stale run be
   // claimable by a device that polls back after the operator already gave up.
-  // The horizon is the same coarse interval the stale-run reaper uses, so the
-  // run becomes unclaimable exactly when the reaper terminalizes it as
-  // `timeout`. Durable human-gated runs (`queued`) get NO expiry here — the
-  // long-horizon approval reaper owns their lifecycle. `inline` runs execute
-  // immediately on the gateway and are already claimed.
+  // The horizon matches the gateway's pre-claim wait budget: polling stops
+  // claiming the run when the caller gives up, and the reaper terminalizes it
+  // on its next tick. Durable human-gated runs (`queued`) get NO expiry here —
+  // the long-horizon approval reaper owns their lifecycle. `inline` runs
+  // execute immediately on the gateway and are already claimed.
   const expiresAtSeconds =
-    params.approvalMode === 'device' ? intervals.runsReaperStaleAfterSeconds : null;
+    params.approvalMode === 'device' ? DEVICE_ACTION_QUEUE_BUDGET_MS / 1000 : null;
 
   // Resolve connector version, verifying it is runnable only when the caller
   // requires compiled code (device/inline executors that load the bundle).

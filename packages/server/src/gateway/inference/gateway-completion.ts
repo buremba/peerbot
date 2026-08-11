@@ -166,8 +166,8 @@ export async function resolveCompletionTarget(
 }
 
 /**
- * A transport/upstream failure that carries its HTTP status (0 for network/
- * timeout) so the retry policy can distinguish retryable from terminal.
+ * An upstream HTTP failure that carries its status so the retry policy can
+ * distinguish retryable from terminal responses.
  */
 class GatewayCompletionHttpError extends Error {
   readonly status: number;
@@ -181,88 +181,96 @@ class GatewayCompletionHttpError extends Error {
 
 /**
  * Whether a gateway-completion failure is worth retrying. Retry ONLY retryable
- * transient conditions: 429/5xx statuses and network/timeout errors. Auth
- * (401/403), invalid-request (400/404/422), and "no text returned" are
- * terminal — retrying them is pure backoff burn with no chance of success.
+ * transient conditions: 429/5xx statuses and network errors. A caller-budget
+ * abort is terminal because the budget is already exhausted. Auth (401/403),
+ * invalid-request (400/404/422), and "no text returned" are terminal too.
  */
 function isRetryableGatewayCompletionError(error: Error): boolean {
   if (error instanceof GatewayCompletionHttpError) {
     return error.status === 429 || (error.status >= 500 && error.status < 600);
   }
-  // Network/timeout failures surface as AbortError (timeout) or fetch-type
-  // messages; both are transient.
-  return error.name === "AbortError" || /network|fetch|ECONN|timed? ?out/i.test(error.message);
+  return /network|fetch|ECONN/i.test(error.message);
 }
 
 /** One attempt at the upstream call. Throws {@link GatewayCompletionHttpError}
- *  on non-2xx and network/timeout errors; returns the assistant text on
- *  success. */
+ * on non-2xx; returns the assistant text on success. */
 async function callCompletionOnce(
+  request: GatewayCompletionRequest,
+  signal: AbortSignal
+): Promise<string> {
+  const { target } = request;
+
+  const response = await fetch(`${target.baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${target.apiKey}`,
+    },
+    body: JSON.stringify({
+      model: target.model,
+      temperature: request.temperature ?? 0,
+      messages: [
+        { role: "system", content: request.systemPrompt },
+        { role: "user", content: request.userPrompt },
+      ],
+    }),
+    signal,
+  });
+
+  if (!response.ok) {
+    throw new GatewayCompletionHttpError(
+      response.status,
+      `Gateway completion failed: ${response.status} ${response.statusText}`
+    );
+  }
+
+  const data = (await response.json()) as ChatCompletionResponse;
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error("Gateway completion returned no text");
+  return content;
+}
+
+/**
+ * Call the resolved target and return raw assistant text. Bounded retry with
+ * exponential backoff + jitter on retryable transient failures
+ * (429/5xx/network). The request's timeoutMs is one shared wall-clock budget
+ * across every attempt and delay; a budget abort is never retried. Terminal
+ * failures (auth, invalid request, empty content) also stop immediately.
+ */
+export async function gatewayCompletion(
   request: GatewayCompletionRequest
 ): Promise<string> {
-  const { target, timeoutMs } = request;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
+  const deadline = Date.now() + request.timeoutMs;
+  const timeout = setTimeout(() => controller.abort(), request.timeoutMs);
+  const baseDelay = 200;
   try {
-    const response = await fetch(`${target.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${target.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: target.model,
-        temperature: request.temperature ?? 0,
-        messages: [
-          { role: "system", content: request.systemPrompt },
-          { role: "user", content: request.userPrompt },
-        ],
-      }),
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      throw new GatewayCompletionHttpError(
-        response.status,
-        `Gateway completion failed: ${response.status} ${response.statusText}`
-      );
-    }
-
-    const data = (await response.json()) as ChatCompletionResponse;
-    const content = data.choices?.[0]?.message?.content;
-    if (!content) throw new Error("Gateway completion returned no text");
-    return content;
+    return await retryWithBackoff(
+      () => callCompletionOnce(request, controller.signal),
+      {
+        // Two retries add at most <1.2s of backoff (200ms + 400ms, each with
+        // a multiplier in [1, 2)). Refuse a retry unless even its maximum
+        // upcoming delay fits inside the caller's shared deadline.
+        maxRetries: 2,
+        baseDelay,
+        maxDelay: 2000,
+        jitter: "full",
+        shouldRetry: (error, attempt) => {
+          if (
+            controller.signal.aborted ||
+            !isRetryableGatewayCompletionError(error)
+          ) {
+            return false;
+          }
+          const maxUpcomingDelay = baseDelay * 2 ** (attempt - 1) * 2;
+          return Date.now() + maxUpcomingDelay < deadline;
+        },
+      }
+    );
   } catch (error) {
     if (error instanceof Error) throw error;
     throw new Error(getErrorMessage(error));
   } finally {
     clearTimeout(timeout);
   }
-}
-
-/**
- * Call the resolved target and return raw assistant text. Bounded retry with
- * exponential backoff + jitter on retryable transient failures (429/5xx/
- * network/timeout); terminal failures (auth, invalid request, empty content)
- * stop immediately. Throws on eventual failure; fail-open callers catch and
- * return their empty value.
- */
-export async function gatewayCompletion(
-  request: GatewayCompletionRequest
-): Promise<string> {
-  return retryWithBackoff(
-    () => callCompletionOnce(request),
-    {
-      // The calling features are fail-open and latency-sensitive (followup
-      // chips, query rewriting). 2 retries with a 200ms base and 2s cap keep
-      // the total bounded (worst case with full jitter ≈ 200+400+800 × [1,2)
-      // ≈ 2.8s) without stacking the user-visible request.
-      maxRetries: 2,
-      baseDelay: 200,
-      maxDelay: 2000,
-      jitter: "full",
-      shouldRetry: isRetryableGatewayCompletionError,
-    }
-  );
 }

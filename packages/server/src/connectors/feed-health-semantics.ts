@@ -7,17 +7,18 @@
  *
  * ## Why derive instead of store
  *
- * A feed's execution nature (`virtual` vs `scheduled` vs `manual`) is a pure
- * function of `kind`/`virtual`/`schedule`. Its attention state is a pure
- * function of `status`, `last_sync_status`, `last_error`, auth-profile status,
- * and device liveness. Storing these would duplicate state that already lives
- * on the row and drift when the source columns move (auto-pause, backoff,
- * resume). Read-time derivation is O(1) per feed and cannot diverge.
+ * A feed's execution nature (`virtual` vs `streaming` vs `scheduled` vs
+ * `manual`) is a pure function of `kind`/`virtual`/`schedule`. Its attention
+ * state is a pure function of lifecycle/sync state, auth-profile status, and
+ * device liveness. Storing these would duplicate state that already lives on
+ * the row and drift when the source columns move (auto-pause, backoff, resume).
+ * Read-time derivation is O(1) per feed and cannot diverge.
  *
  * ## The three outputs
  *
  * - `executionMode` — how this feed is *supposed* to run:
  *   - `virtual` — a virtual (live-pushdown) feed evaluated on demand.
+ *   - `streaming` — a chat channel populated by incoming messages.
  *   - `scheduled` — a non-virtual feed with an active schedule.
  *   - `manual` — a non-virtual feed without a schedule.
  * - `attention` — what a human/UI should be told about the feed right now,
@@ -45,9 +46,9 @@
  *     infra incident)
  */
 
-export type FeedExecutionMode = "virtual" | "scheduled" | "manual";
+type FeedExecutionMode = "virtual" | "streaming" | "scheduled" | "manual";
 
-export type FeedAttentionState =
+type FeedAttentionState =
   | "healthy"
   | "paused"
   | "needs_auth"
@@ -56,7 +57,7 @@ export type FeedAttentionState =
   | "device_offline"
   | "misconfigured";
 
-export interface FeedHealthSemanticsInput {
+interface FeedHealthSemanticsInput {
   /** `feeds.kind` — 'collected' | 'streaming' | 'virtual'. */
   kind?: string | null;
   /** Legacy `feeds.virtual` boolean (two-phase migration keeps both). */
@@ -80,15 +81,9 @@ export interface FeedHealthSemanticsInput {
   device_worker_id?: string | null;
   /** Derived `device_online` flag (device polled within the liveness window). */
   device_online?: boolean | null;
-  /**
-   * True when a non-virtual feed is expected to carry a schedule but does not
-   * (only surfaced as `misconfigured` when the caller opts in — a
-   * freshly-created feed can legitimately be schedule-less for a moment).
-   */
-  expectSchedule?: boolean;
 }
 
-export interface FeedHealthSemantics {
+interface FeedHealthSemantics {
   executionMode: FeedExecutionMode;
   attention: FeedAttentionState;
   incidentEligible: boolean;
@@ -96,6 +91,9 @@ export interface FeedHealthSemantics {
 
 const isVirtual = (input: FeedHealthSemanticsInput): boolean =>
   input.kind === "virtual" || input.virtual === true;
+
+const isStreaming = (input: FeedHealthSemanticsInput): boolean =>
+  input.kind === "streaming";
 
 const isScheduled = (input: FeedHealthSemanticsInput): boolean =>
   !isVirtual(input) &&
@@ -108,8 +106,7 @@ const isActive = (status?: string | null): boolean => status === "active";
 function needsAuth(input: FeedHealthSemanticsInput): boolean {
   if (
     input.connection_status === "pending_auth" ||
-    input.connection_status === "revoked" ||
-    input.connection_status === "error"
+    input.connection_status === "revoked"
   ) {
     return true;
   }
@@ -142,6 +139,19 @@ function isPaused(input: FeedHealthSemanticsInput): boolean {
   return input.status === "paused" || input.connection_status === "paused";
 }
 
+/** Attention for feed kinds that do not run collector sync jobs. */
+function nonCollectorAttention(
+  input: FeedHealthSemanticsInput
+): FeedAttentionState {
+  if (needsAuth(input)) return "needs_auth";
+  if (isPaused(input)) return "paused";
+  if (input.status === "error" || input.connection_status === "error") {
+    return "misconfigured";
+  }
+  if (deviceOffline(input)) return "device_offline";
+  return "healthy";
+}
+
 /**
  * Derive execution mode + attention state + incident eligibility from the
  * stored feed/connection/device columns. Pure: the caller feeds the joined row
@@ -155,7 +165,17 @@ export function deriveFeedHealthSemantics(
   if (isVirtual(input)) {
     return {
       executionMode: "virtual",
-      attention: "healthy",
+      attention: nonCollectorAttention(input),
+      incidentEligible: false,
+    };
+  }
+
+  // Streaming feeds are chat channels backed by channel_messages, not
+  // collector jobs. They have no sync history or schedule to classify.
+  if (isStreaming(input)) {
+    return {
+      executionMode: "streaming",
+      attention: nonCollectorAttention(input),
       incidentEligible: false,
     };
   }
@@ -177,8 +197,6 @@ export function deriveFeedHealthSemantics(
   } else if (isPaused(input)) {
     attention = "paused";
   } else if (input.status === "error" || input.connection_status === "error") {
-    attention = "misconfigured";
-  } else if (input.expectSchedule && executionMode === "manual") {
     attention = "misconfigured";
   } else if (deviceOffline(input)) {
     attention = "device_offline";

@@ -144,4 +144,19 @@ describe('resolveBehaviorEventCatalog', () => {
       capabilities: { steering: true, replyToSource: true },
     });
   });
+
+  test('an org override with a null feedsSchema never borrows the bundled feeds', () => {
+    const resolved = resolveBehaviorEventCatalog({
+      persistedEvents: null,
+      feedsSchema: null,
+      bundled: {
+        feeds_schema: {
+          pulls: { eventKinds: { pull_request: {} } },
+        },
+        behavior_events: null,
+      },
+      useBundledFallback: false,
+    });
+    expect(resolved).toEqual([]);
+  });
 });

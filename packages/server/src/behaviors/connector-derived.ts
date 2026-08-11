@@ -271,8 +271,13 @@ export function resolveBehaviorEventCatalog(args: {
 	}
 
 	// An org-scoped override, or a bundled install with no curated events:
-	// derive from the persisted feedsSchema (the definition's own code).
+	// derive from the feedsSchema of the definition's own code. An override
+	// must NEVER fall back to the bundled feedsSchema (its code emits nothing
+	// per its own schema); only a bundled-install resolution may borrow the
+	// bundled feeds.
 	return deriveBehaviorEventCatalogFromFeeds(
-		args.feedsSchema ?? args.bundled?.feeds_schema,
+		args.useBundledFallback
+			? args.feedsSchema ?? args.bundled?.feeds_schema
+			: args.feedsSchema,
 	);
 }

@@ -432,16 +432,20 @@ function diffEntityType(
             : prune && r.eventKinds !== undefined,
       },
       {
-        // Resolution policy — declared (config-owned) only. When declared, diff
-        // against the remote x-lobu-resolution and set on change. When omitted,
-        // never churns: an out-of-band authored policy is preserved (the server
-        // keeps it), matching the carry-forward in upsertEntityType.
+        // Resolution policy — prune-aware, like eventKinds. Declared: diff
+        // against the remote x-lobu-resolution and set on change. Omitted +
+        // prune: a present remote policy is a removal (apply clears it).
+        // Omitted + no prune: unmanaged, never churns — an out-of-band authored
+        // policy is preserved (the server keeps it), matching the carry-forward
+        // in upsertEntityType.
         name: "resolutionPolicy",
         changed: (d, r) => {
-          if (d.resolutionPolicy === undefined) return false;
-          const desired = d.resolutionPolicy["x-lobu-resolution"];
-          const remote = r.schemaExtras?.["x-lobu-resolution"];
-          return !deepEqual(desired, remote);
+          if (d.resolutionPolicy !== undefined) {
+            const desired = d.resolutionPolicy["x-lobu-resolution"];
+            const remote = r.schemaExtras?.["x-lobu-resolution"];
+            return !deepEqual(desired, remote);
+          }
+          return prune && r.schemaExtras?.["x-lobu-resolution"] !== undefined;
         },
       },
       {

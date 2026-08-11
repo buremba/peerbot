@@ -668,6 +668,37 @@ describe("ApplyClient — prune", () => {
     expect("required" in body.metadata_schema).toBe(false);
   });
 
+  test("a prune-flagged resolutionPolicy removal drops x-lobu-resolution from the schema", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    await client.upsertEntityType(
+      { slug: "person", name: "Person" },
+      {
+        "x-lobu-resolution": {
+          rules: [
+            { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+          ],
+        },
+      },
+      { properties: { email: { type: "string" } } },
+      new Set(["resolutionPolicy"])
+    );
+
+    const body = JSON.parse(String(calls[0]?.init?.body));
+    expect(body.metadata_schema["x-lobu-resolution"]).toBeUndefined();
+    // The live core round-trips; only the pruned extension is dropped.
+    expect(body.metadata_schema.properties).toEqual({
+      email: { type: "string" },
+    });
+  });
+
   test("config-owned metadata_schema keys win over stale carried-forward ones", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new ApplyClient(

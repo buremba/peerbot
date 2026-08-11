@@ -723,7 +723,8 @@ export class ApplyClient {
       required !== undefined ||
       resolutionPolicy !== undefined ||
       clearFacets?.has("properties") ||
-      clearFacets?.has("required")
+      clearFacets?.has("required") ||
+      clearFacets?.has("resolutionPolicy")
     ) {
       // Strip config-owned keys from the extras bag so config always wins —
       // spread order alone would let a stale `required` survive, because the
@@ -733,9 +734,13 @@ export class ApplyClient {
       const extras: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(schemaExtras ?? {})) {
         if (HOISTED_SCHEMA_KEYS.has(key)) continue;
-        // The resolution policy is now config-owned when declared — the declared
-        // value wins over any out-of-band one.
-        if (resolutionPolicy !== undefined && key === "x-lobu-resolution")
+        // The resolution policy is config-owned when declared, and removed under
+        // prune — either way the declared/cleared value wins over out-of-band.
+        if (
+          (resolutionPolicy !== undefined ||
+            clearFacets?.has("resolutionPolicy")) &&
+          key === "x-lobu-resolution"
+        )
           continue;
         extras[key] = value;
       }

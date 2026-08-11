@@ -342,6 +342,50 @@ describe("apply diff — memory schema", () => {
     expect(plan.counts.update).toBe(0);
   });
 
+  test("under prune, omitting resolutionPolicy flags a removal, then converges to noop", () => {
+    const live = {
+      "x-lobu-resolution": {
+        rules: [
+          { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+        ],
+      },
+    };
+    const desired: DesiredState = {
+      agents: [],
+      memorySchema: {
+        entityTypes: [{ slug: "person", name: "Person" }],
+        relationshipTypes: [],
+      },
+      watchers: [],
+      requiredSecrets: [],
+    };
+
+    // First apply: remote policy present + prune → removal.
+    const removal = computeDiff(
+      desired,
+      {
+        ...emptyRemote(),
+        entityTypes: [{ slug: "person", name: "Person", schemaExtras: live }],
+      },
+      { prune: true }
+    );
+    const removalRow = removal.rows.find((r) => r.id === "person");
+    expect(removalRow?.verb).toBe("update");
+    expect(removalRow?.changedFields).toContain("resolutionPolicy");
+
+    // Second apply: policy already cleared → noop.
+    const converged = computeDiff(
+      desired,
+      {
+        ...emptyRemote(),
+        entityTypes: [{ slug: "person", name: "Person", properties: {} }],
+      },
+      { prune: true }
+    );
+    expect(converged.rows.find((r) => r.id === "person")?.verb).toBe("noop");
+    expect(converged.counts.update).toBe(0);
+  });
+
   test("a policy-only declaration with a populated remote schema is noop on repeat apply", () => {
     const declared = {
       "x-lobu-resolution": {

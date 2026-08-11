@@ -414,7 +414,6 @@ describe('GoogleCalendarConnector durable changes feed', () => {
     expect(result.events[0]?.metadata?.status).toBe('cancelled');
     expect(result.events[0]?.metadata?.change_type).toBe('cancelled');
     expect(result.checkpoint.sync_token).toBe('NEXT');
-    expect(result.checkpoint.param_version).toBe(1);
 
     const first = new URL(urls[0]);
     expect(first.searchParams.get('singleEvents')).toBe('true');
@@ -443,14 +442,13 @@ describe('GoogleCalendarConnector durable changes feed', () => {
       feedKey: 'changes',
       config: { calendar_id: 'primary', max_results: 1 },
       credentials: { accessToken: 'tok' },
-      checkpoint: { sync_token: 'OLD', param_version: 1 },
+      checkpoint: { sync_token: 'OLD' },
     });
 
     expect(
       result.events.map((event: { origin_id: string }) => event.origin_id).sort()
     ).toEqual(['changed-1', 'changed-2']);
     expect(result.checkpoint.sync_token).toBe('FRESH');
-    expect(result.checkpoint.param_version).toBe(1);
     expect(urls).toHaveLength(2);
 
     const first = new URL(urls[0]);
@@ -467,36 +465,6 @@ describe('GoogleCalendarConnector durable changes feed', () => {
     expect(second.searchParams.get('pageToken')).toBe('p2');
     expect(second.searchParams.get('singleEvents')).toBe('true');
     expect(second.searchParams.get('showDeleted')).toBe('true');
-  });
-
-  test('a legacy (unversioned) changes checkpoint rolls over with one full traversal instead of replaying its token', async () => {
-    const connector = new GoogleCalendarConnector();
-    const { client, urls } = fakeHttp([
-      { items: [calEvent('rolled-1', '2026-08-10T10:00:00Z')], nextSyncToken: 'V2' },
-    ]);
-    connector.client = () => client;
-
-    const result = await connector.sync({
-      feedKey: 'changes',
-      config: { calendar_id: 'primary', max_results: 100 },
-      credentials: { accessToken: 'tok' },
-      checkpoint: { sync_token: 'LEGACY' },
-    });
-
-    const first = new URL(urls[0]);
-    expect(first.searchParams.get('syncToken')).toBeNull();
-    expect(first.searchParams.get('singleEvents')).toBe('true');
-    expect(first.searchParams.get('showDeleted')).toBe('true');
-    expect(first.searchParams.get('orderBy')).toBeNull();
-    expect(first.searchParams.get('timeMin')).toBeTruthy();
-    expect(first.searchParams.get('timeMax')).toBeNull();
-    expect(urls).toHaveLength(1);
-
-    expect(result.events.map((event: { origin_id: string }) => event.origin_id)).toEqual([
-      'rolled-1',
-    ]);
-    expect(result.checkpoint.sync_token).toBe('V2');
-    expect(result.checkpoint.param_version).toBe(1);
   });
 
   test('fails closed when a changes traversal completes without a durable sync token', async () => {
@@ -524,7 +492,7 @@ describe('GoogleCalendarConnector durable changes feed', () => {
         feedKey: 'changes',
         config: { calendar_id: 'primary', max_results: 100 },
         credentials: { accessToken: 'tok' },
-        checkpoint: { sync_token: 'OLD', param_version: 1 },
+        checkpoint: { sync_token: 'OLD' },
       })
     ).rejects.toThrow(/sync token/i);
   });

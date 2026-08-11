@@ -15,7 +15,7 @@
  * deliberately unsupported here; the calling feature fails open.
  */
 
-import { createLogger, getErrorMessage } from "@lobu/core";
+import { createLogger, getErrorMessage, retryWithBackoff } from "@lobu/core";
 import {
   getOrgDefaultModel,
   resolveInferenceProviderCredential,
@@ -166,10 +166,38 @@ export async function resolveCompletionTarget(
 }
 
 /**
- * Call the resolved target and return raw assistant text. Throws on transport
- * or API failure; fail-open callers catch and return their empty value.
+ * A transport/upstream failure that carries its HTTP status (0 for network/
+ * timeout) so the retry policy can distinguish retryable from terminal.
  */
-export async function gatewayCompletion(
+class GatewayCompletionHttpError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "GatewayCompletionHttpError";
+    this.status = status;
+  }
+}
+
+/**
+ * Whether a gateway-completion failure is worth retrying. Retry ONLY retryable
+ * transient conditions: 429/5xx statuses and network/timeout errors. Auth
+ * (401/403), invalid-request (400/404/422), and "no text returned" are
+ * terminal — retrying them is pure backoff burn with no chance of success.
+ */
+function isRetryableGatewayCompletionError(error: Error): boolean {
+  if (error instanceof GatewayCompletionHttpError) {
+    return error.status === 429 || (error.status >= 500 && error.status < 600);
+  }
+  // Network/timeout failures surface as AbortError (timeout) or fetch-type
+  // messages; both are transient.
+  return error.name === "AbortError" || /network|fetch|ECONN|timed? ?out/i.test(error.message);
+}
+
+/** One attempt at the upstream call. Throws {@link GatewayCompletionHttpError}
+ *  on non-2xx and network/timeout errors; returns the assistant text on
+ *  success. */
+async function callCompletionOnce(
   request: GatewayCompletionRequest
 ): Promise<string> {
   const { target, timeoutMs } = request;
@@ -195,7 +223,8 @@ export async function gatewayCompletion(
     });
 
     if (!response.ok) {
-      throw new Error(
+      throw new GatewayCompletionHttpError(
+        response.status,
         `Gateway completion failed: ${response.status} ${response.statusText}`
       );
     }
@@ -210,4 +239,30 @@ export async function gatewayCompletion(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/**
+ * Call the resolved target and return raw assistant text. Bounded retry with
+ * exponential backoff + jitter on retryable transient failures (429/5xx/
+ * network/timeout); terminal failures (auth, invalid request, empty content)
+ * stop immediately. Throws on eventual failure; fail-open callers catch and
+ * return their empty value.
+ */
+export async function gatewayCompletion(
+  request: GatewayCompletionRequest
+): Promise<string> {
+  return retryWithBackoff(
+    () => callCompletionOnce(request),
+    {
+      // The calling features are fail-open and latency-sensitive (followup
+      // chips, query rewriting). 2 retries keep the total bounded well under
+      // a second when the upstream is just throttled, without stacking the
+      // user-visible request.
+      maxRetries: 2,
+      baseDelay: 200,
+      maxDelay: 2000,
+      jitter: "full",
+      shouldRetry: isRetryableGatewayCompletionError,
+    }
+  );
 }

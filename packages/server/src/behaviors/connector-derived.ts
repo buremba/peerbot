@@ -217,9 +217,9 @@ export function deriveBehaviorEventCatalogFromFeeds(
 
 function parseDeclaredBehaviorEvents(
 	value: unknown,
-): Array<{ key: string; label?: string }> {
+): Array<{ key: string; label?: string; capabilities?: unknown }> {
 	if (!Array.isArray(value)) return [];
-	const out: Array<{ key: string; label?: string }> = [];
+	const out: Array<{ key: string; label?: string; capabilities?: unknown }> = [];
 	for (const item of value) {
 		if (
 			typeof item === "object" &&
@@ -231,6 +231,9 @@ function parseDeclaredBehaviorEvents(
 			out.push({
 				key: String(entry.key),
 				...(typeof entry.label === "string" ? { label: entry.label } : {}),
+				// Preserve declared capabilities (steering / replyToSource) —
+				// trigger validation reads them off the catalog entry.
+				...(entry.capabilities ? { capabilities: entry.capabilities } : {}),
 			});
 		}
 	}
@@ -256,7 +259,7 @@ export function resolveBehaviorEventCatalog(args: {
 	persistedEvents: unknown;
 	feedsSchema: unknown;
 	bundled?: BundledBehaviorCatalogEntry | null;
-}): Array<{ key: string; label?: string }> {
+}): Array<{ key: string; label?: string; capabilities?: unknown }> {
 	const declared = parseDeclaredBehaviorEvents(args.persistedEvents);
 	if (declared.length > 0) return declared;
 	const bundled = parseDeclaredBehaviorEvents(args.bundled?.behavior_events);

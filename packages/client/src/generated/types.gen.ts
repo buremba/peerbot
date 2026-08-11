@@ -331,7 +331,24 @@ export type SaveMemoryResponses = {
    * Successful response
    */
   200: {
-    [key: string]: unknown;
+    id: number;
+    entity_ids: Array<number>;
+    title: string | null;
+    semantic_type: string;
+    created_at: string;
+    supersedes_event_id?: number;
+    view_url?: string;
+    durable_at: string;
+    indexing_status: "pending" | "completed";
+    searchable: boolean;
+    created: boolean;
+    metadata: {
+      [key: string]: unknown;
+    };
+    exact_read: {
+      method: "client.knowledge.read";
+      content_ids: [unknown];
+    };
   };
 };
 
@@ -408,7 +425,7 @@ export type SearchSdkResponse = SearchSdkResponses[keyof SearchSdkResponses];
 export type QuerySdkData = {
   body: {
     /**
-     * TypeScript source. Must `export default async (ctx, client) => { ... }` — `ctx` is `{ organization_id, user_id, mode, sleep(ms) }`, where `await ctx.sleep(ms)` provides a bounded, abort-aware 0–30000ms polling delay; unrestricted timer globals are unavailable. `client` is the ClientSDK. The script's return value comes back as `return_value` in the result. Use `search_sdk` to discover SDK methods and `ctx.sleep`.
+     * TypeScript source. Must `export default async (ctx, client) => { ... }` — `ctx` is `{ organization_id, user_id, mode, sleep(ms) }`, where `await ctx.sleep(ms)` provides a bounded, abort-aware 0–30000ms polling delay; unrestricted timer globals are unavailable. `client` is the ClientSDK. The script's return value comes back as `return_value`; return it only for computed results and bounded samples. For bulk data prefer `client.query` / `query_sql` or paginated SDK reads — a return over the output cap is replaced by a `return_value_preview` head and a `return_truncated` report instead of shipping the full set to the model. Use `search_sdk` to discover SDK methods and `ctx.sleep`.
      */
     script: string;
     /**
@@ -453,18 +470,32 @@ export type QuerySdkResponses = {
      */
     success: boolean;
     /**
-     * The script's default-export return value.
+     * The script's default-export return value. Omitted when the return exceeded the output cap (see return_value_preview).
      */
     return_value?: unknown;
+    /**
+     * UTF-8-safe head of the serialized return value when it exceeded the output cap; return_value is then omitted. This is a preview, not the value — rerun with filtering / LIMIT / OFFSET, or pull slices with client.query / query_sql. Don't re-return the whole set.
+     */
+    return_value_preview?: string;
+    /**
+     * Present with return_value_preview: the original and preview byte sizes.
+     */
+    return_truncated?: {
+      /**
+       * Serialized size of the original return value.
+       */
+      total_bytes: number;
+      /**
+       * UTF-8 size of the preview string.
+       */
+      kept_bytes: number;
+    };
     /**
      * console.log/warn/error output captured from the script.
      */
     logs: Array<{
       level: "log" | "warn" | "error";
       message: string;
-      data?: {
-        [key: string]: unknown;
-      };
       ts: number;
     }>;
     /**
@@ -491,11 +522,15 @@ export type QuerySdkResponses = {
     };
     duration_ms: number;
     /**
-     * Number of SDK calls the script made.
+     * Number of SDK calls the script made (dispatched + skipped).
      */
     sdk_calls: number;
     /**
-     * Every SDK call the script made, in order.
+     * Total calls skipped because dry_run=true — the full dry-run surface, even when side_effect_preview is truncated.
+     */
+    skipped_calls: number;
+    /**
+     * Every dispatched SDK call, in order. Bounded (tail-kept): when the total exceeds the trace cap, the oldest entries are dropped and reported in sdk_call_trace_truncated — the last (usually failing) call is always kept.
      */
     sdk_call_trace: Array<{
       /**
@@ -520,7 +555,7 @@ export type QuerySdkResponses = {
       skipped: boolean;
     }>;
     /**
-     * Write/admin/external calls that were skipped because dry_run=true. This is a method-level side-effect preview, not proof that the skipped handler would accept the payload.
+     * Write/admin/external calls that were skipped because dry_run=true (skipped: true). Bounded like sdk_call_trace; see skipped_calls for the total. Method-level side-effect preview, not proof the skipped handler would accept the payload.
      */
     side_effect_preview: Array<{
       /**
@@ -544,6 +579,15 @@ export type QuerySdkResponses = {
        */
       skipped: boolean;
     }>;
+    /**
+     * Present when sdk_call_trace or side_effect_preview was truncated (oldest entries dropped).
+     */
+    sdk_call_trace_truncated?: {
+      /**
+       * Trace/preview entries dropped because the trace cap was exceeded.
+       */
+      dropped_entries: number;
+    };
     dry_run: boolean;
   };
 };
@@ -625,7 +669,24 @@ export type QuerySqlResponses = {
    * Successful response
    */
   200: {
-    [key: string]: unknown;
+    /**
+     * The original caller-supplied SQL statement. This is never the tenant-scoped SQL rewritten by Lobu and is absent for stored virtual-feed queries.
+     */
+    sql?: string;
+    rows: Array<{
+      [key: string]: unknown;
+    }>;
+    columns: Array<{
+      name: string;
+      type: string;
+    }>;
+    total_count: number;
+    has_more: boolean;
+    execution_time_ms: number;
+    coverage?: unknown;
+    error?: string;
+    error_code?: string;
+    retryable?: boolean;
   };
 };
 
@@ -634,7 +695,7 @@ export type QuerySqlResponse = QuerySqlResponses[keyof QuerySqlResponses];
 export type RunSdkData = {
   body: {
     /**
-     * TypeScript source. Must `export default async (ctx, client) => { ... }` — `ctx` is `{ organization_id, user_id, mode, sleep(ms) }`, where `await ctx.sleep(ms)` provides a bounded, abort-aware 0–30000ms polling delay; unrestricted timer globals are unavailable. `client` is the ClientSDK. The script's return value comes back as `return_value` in the result. Use `search_sdk` to discover SDK methods and `ctx.sleep`.
+     * TypeScript source. Must `export default async (ctx, client) => { ... }` — `ctx` is `{ organization_id, user_id, mode, sleep(ms) }`, where `await ctx.sleep(ms)` provides a bounded, abort-aware 0–30000ms polling delay; unrestricted timer globals are unavailable. `client` is the ClientSDK. The script's return value comes back as `return_value`; return it only for computed results and bounded samples. For bulk data prefer `client.query` / `query_sql` or paginated SDK reads — a return over the output cap is replaced by a `return_value_preview` head and a `return_truncated` report instead of shipping the full set to the model. Use `search_sdk` to discover SDK methods and `ctx.sleep`.
      */
     script: string;
     /**
@@ -683,18 +744,32 @@ export type RunSdkResponses = {
      */
     success: boolean;
     /**
-     * The script's default-export return value.
+     * The script's default-export return value. Omitted when the return exceeded the output cap (see return_value_preview).
      */
     return_value?: unknown;
+    /**
+     * UTF-8-safe head of the serialized return value when it exceeded the output cap; return_value is then omitted. This is a preview, not the value — rerun with filtering / LIMIT / OFFSET, or pull slices with client.query / query_sql. Don't re-return the whole set.
+     */
+    return_value_preview?: string;
+    /**
+     * Present with return_value_preview: the original and preview byte sizes.
+     */
+    return_truncated?: {
+      /**
+       * Serialized size of the original return value.
+       */
+      total_bytes: number;
+      /**
+       * UTF-8 size of the preview string.
+       */
+      kept_bytes: number;
+    };
     /**
      * console.log/warn/error output captured from the script.
      */
     logs: Array<{
       level: "log" | "warn" | "error";
       message: string;
-      data?: {
-        [key: string]: unknown;
-      };
       ts: number;
     }>;
     /**
@@ -721,11 +796,15 @@ export type RunSdkResponses = {
     };
     duration_ms: number;
     /**
-     * Number of SDK calls the script made.
+     * Number of SDK calls the script made (dispatched + skipped).
      */
     sdk_calls: number;
     /**
-     * Every SDK call the script made, in order.
+     * Total calls skipped because dry_run=true — the full dry-run surface, even when side_effect_preview is truncated.
+     */
+    skipped_calls: number;
+    /**
+     * Every dispatched SDK call, in order. Bounded (tail-kept): when the total exceeds the trace cap, the oldest entries are dropped and reported in sdk_call_trace_truncated — the last (usually failing) call is always kept.
      */
     sdk_call_trace: Array<{
       /**
@@ -750,7 +829,7 @@ export type RunSdkResponses = {
       skipped: boolean;
     }>;
     /**
-     * Write/admin/external calls that were skipped because dry_run=true. This is a method-level side-effect preview, not proof that the skipped handler would accept the payload.
+     * Write/admin/external calls that were skipped because dry_run=true (skipped: true). Bounded like sdk_call_trace; see skipped_calls for the total. Method-level side-effect preview, not proof the skipped handler would accept the payload.
      */
     side_effect_preview: Array<{
       /**
@@ -774,6 +853,15 @@ export type RunSdkResponses = {
        */
       skipped: boolean;
     }>;
+    /**
+     * Present when sdk_call_trace or side_effect_preview was truncated (oldest entries dropped).
+     */
+    sdk_call_trace_truncated?: {
+      /**
+       * Trace/preview entries dropped because the trace cap was exceeded.
+       */
+      dropped_entries: number;
+    };
     dry_run: boolean;
   };
 };
@@ -3962,7 +4050,7 @@ export type NotifyData = {
       [key: string]: unknown;
     };
     /**
-     * Turn this notification into a QUESTION the recipient answers, instead of an FYI. JSON Schema for the answer. Pass {} for a plain yes/no decision (renders as Approve/Reject inline, in-app and in chat). Pass a single required enum property to offer one-click named options. Pass several properties to collect fields (the recipient gets a form; give each property a `title` — without one the form labels the field with its full `description`). Properties must be flat: nested objects do not render. Answering records the result and emits it — read it back with manage_operations get_run.
+     * Turn this notification into a QUESTION the recipient answers, instead of an FYI. Pass {} for a plain yes/no decision; a single required string-enum property for one-click options; or a flat object of primitive fields, scalar enums, string/scalar-enum arrays, and optional nullable anyOf wrappers for a form. Give each property a `title`. Nested objects, references, other combinators, constants, formats, patterns, and string/number/array constraints are unsupported and fail with HTTP 422 before a run is created. Read the answer with manage_operations get_run.
      */
     input_schema?: {
       [key: string]: unknown;

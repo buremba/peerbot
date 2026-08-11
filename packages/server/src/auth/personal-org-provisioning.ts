@@ -71,14 +71,20 @@ async function findAvailableSlug(base: string, sql: Sql): Promise<string> {
 		.replace(/[^a-z0-9]/g, "")}`;
 }
 
-interface EnsureResult {
-	organizationId: string;
-	slug: string;
-	created: boolean;
-	/** Audit fields — populated only when `created` is true. */
-	memberId?: string;
-	orgName?: string;
-}
+type EnsureResult =
+	| {
+			organizationId: string;
+			slug: string;
+			created: false;
+	  }
+	| {
+			organizationId: string;
+			slug: string;
+			created: true;
+			/** Audit fields — populated only on the created branch. */
+			memberId: string;
+			orgName: string;
+	  };
 
 export function personalOrgLockKey(userId: string): number {
 	let hash = 0x811c9dc5;
@@ -171,7 +177,7 @@ export async function ensurePersonalOrganization(
 	if (finalResult.created) {
 		const orgState = {
 			id: finalResult.organizationId,
-			name: finalResult.orgName ?? null,
+			name: finalResult.orgName,
 			slug: finalResult.slug,
 			visibility: 'private',
 		};
@@ -180,25 +186,23 @@ export async function ensurePersonalOrganization(
 			resourceKind: 'organization',
 			resourceId: finalResult.organizationId,
 			op: 'created',
-			summary: `Organization "${finalResult.orgName ?? finalResult.slug}" created`,
+			summary: `Organization "${finalResult.orgName}" created`,
 			state: orgState,
 			changedFields: ['id', 'name', 'slug', 'visibility'],
 			actorSource: 'ui',
 			createdBy: user.id,
 		});
-		if (finalResult.memberId) {
-			recordWorkspaceChangeEvent({
-				organizationId: finalResult.organizationId,
-				resourceKind: 'member',
-				resourceId: finalResult.memberId,
-				op: 'created',
-				summary: `Member "${user.name || user.email}" joined as owner`,
-				state: { id: finalResult.memberId, user_id: user.id, role: 'owner' },
-				changedFields: ['user_id', 'role'],
-				actorSource: 'ui',
-				createdBy: user.id,
-			});
-		}
+		recordWorkspaceChangeEvent({
+			organizationId: finalResult.organizationId,
+			resourceKind: 'member',
+			resourceId: finalResult.memberId,
+			op: 'created',
+			summary: `Member "${user.name || user.email}" joined as owner`,
+			state: { id: finalResult.memberId, user_id: user.id, role: 'owner' },
+			changedFields: ['user_id', 'role'],
+			actorSource: 'ui',
+			createdBy: user.id,
+		});
 	}
 
 	// Mirror the personal org slug onto the user's username when unset. The

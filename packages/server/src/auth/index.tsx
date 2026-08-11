@@ -311,23 +311,26 @@ export async function createAuth(
 					// in the device-worker auth middleware (index.ts:602-607), so
 					// their Lobu bridge gets a 403 on every poll.
 					afterCreateOrganization: async ({ organization: org, user }) => {
+						// The org row is already committed when this hook fires. Audit
+						// first so the creation trail survives a personal-org marker
+						// failure below. `user` IS the acting session user (creator).
+						recordWorkspaceChangeEvent({
+							organizationId: org.id,
+							resourceKind: "organization",
+							resourceId: org.id,
+							op: "created",
+							summary: `Organization "${org.name}" created`,
+							state: {
+								id: org.id,
+								name: org.name,
+								slug: org.slug,
+								visibility: org.visibility ?? null,
+							},
+							changedFields: ["id", "name", "slug", "visibility"],
+							actorSource: "ui",
+							createdBy: user.id,
+						});
 						try {
-							recordWorkspaceChangeEvent({
-								organizationId: org.id,
-								resourceKind: "organization",
-								resourceId: org.id,
-								op: "created",
-								summary: `Organization "${org.name}" created`,
-								state: {
-									id: org.id,
-									name: org.name,
-									slug: org.slug,
-									visibility: org.visibility ?? null,
-								},
-								changedFields: ["id", "name", "slug", "visibility"],
-								actorSource: "ui",
-								createdBy: user.id,
-							});
 							if (org.visibility !== "private") return;
 							const sql = getDb();
 							const existing = await findExistingPersonalOrg(user.id, sql);
@@ -349,6 +352,27 @@ export async function createAuth(
 						}
 					},
 					afterAddMember: async ({ member, user, organization: org }) => {
+						// The member row is already committed when this hook fires.
+						// Emit the audit trail BEFORE the fallible $member projection so
+						// a projection failure cannot suppress the durable audit row.
+						// Better Auth does not expose the acting session user here —
+						// `user` is the added member (the subject), not the actor — so
+						// createdBy stays null rather than misattributing.
+						recordWorkspaceChangeEvent({
+							organizationId: org.id,
+							resourceKind: "member",
+							resourceId: member.id,
+							op: "created",
+							summary: `Member "${user.name || user.email}" added`,
+							state: {
+								id: member.id,
+								user_id: user.id,
+								role: member.role,
+								email: user.email ?? null,
+							},
+							changedFields: ["user_id", "role"],
+							actorSource: "ui",
+						});
 						try {
 							await ensureMemberEntity({
 								organizationId: org.id,
@@ -369,22 +393,6 @@ export async function createAuth(
 								entityId: member.id,
 								summary: `Member "${user.name || user.email}" added`,
 								extra: { user_id: user.id, role: member.role },
-							});
-							recordWorkspaceChangeEvent({
-								organizationId: org.id,
-								resourceKind: "member",
-								resourceId: member.id,
-								op: "created",
-								summary: `Member "${user.name || user.email}" added`,
-								state: {
-									id: member.id,
-									user_id: user.id,
-									role: member.role,
-									email: user.email ?? null,
-								},
-								changedFields: ["user_id", "role"],
-								actorSource: "ui",
-								createdBy: user.id,
 							});
 						} catch (err) {
 							// A swallow here is how projection drift enters: the member
@@ -410,6 +418,25 @@ export async function createAuth(
 						user,
 						organization: org,
 					}) => {
+						// The accepted member row is already committed. Audit first so
+						// the acceptance is never lost to a projection failure. `user`
+						// IS the actor here — the invitee accepting their own invite.
+						recordWorkspaceChangeEvent({
+							organizationId: org.id,
+							resourceKind: "member",
+							resourceId: member.id,
+							op: "created",
+							summary: `Member "${user.name || user.email}" joined`,
+							state: {
+								id: member.id,
+								user_id: user.id,
+								role: member.role,
+								email: user.email ?? null,
+							},
+							changedFields: ["user_id", "role"],
+							actorSource: "ui",
+							createdBy: user.id,
+						});
 						try {
 							// Update existing invited entity to active, or create if missing
 							await updateMemberEntityStatus(org.id, user.email, "active");
@@ -426,22 +453,6 @@ export async function createAuth(
 								"../workspace/multi-tenant"
 							);
 							invalidateMembershipRoleCache(org.id, user.id);
-							recordWorkspaceChangeEvent({
-								organizationId: org.id,
-								resourceKind: "member",
-								resourceId: member.id,
-								op: "created",
-								summary: `Member "${user.name || user.email}" joined`,
-								state: {
-									id: member.id,
-									user_id: user.id,
-									role: member.role,
-									email: user.email ?? null,
-								},
-								changedFields: ["user_id", "role"],
-								actorSource: "ui",
-								createdBy: user.id,
-							});
 						} catch (err) {
 							// See afterAddMember: a swallow here leaves the accepted
 							// member without a resolvable claim → enforced channels
@@ -458,7 +469,19 @@ export async function createAuth(
 							);
 						}
 					},
-					afterRemoveMember: async ({ user, organization: org }) => {
+					afterRemoveMember: async ({ member, user, organization: org }) => {
+						// The member row is already deleted when this hook fires. Audit
+						// first so the removal survives projection drift. `user` is the
+						// removed member (subject), not the acting session user.
+						recordWorkspaceChangeEvent({
+							organizationId: org.id,
+							resourceKind: "member",
+							resourceId: member.id,
+							op: "deleted",
+							summary: `Member "${user.name || user.email}" removed`,
+							state: null,
+							actorSource: "ui",
+						});
 						try {
 							await deleteMemberEntity(org.id, user.email);
 							recordLifecycleEvent({
@@ -467,16 +490,6 @@ export async function createAuth(
 								op: "deleted",
 								entityId: user.id,
 								summary: `Member "${user.name || user.email}" removed`,
-							});
-							recordWorkspaceChangeEvent({
-								organizationId: org.id,
-								resourceKind: "member",
-								resourceId: user.id,
-								op: "deleted",
-								summary: `Member "${user.name || user.email}" removed`,
-								state: null,
-								actorSource: "ui",
-								createdBy: user.id,
 							});
 							const { invalidateMembershipRoleCache } = await import(
 								"../workspace/multi-tenant"
@@ -494,6 +507,22 @@ export async function createAuth(
 						user,
 						organization: org,
 					}) => {
+						// The role change is already committed. Audit first; `user` is
+						// the affected member (subject), not the acting session user.
+						recordWorkspaceChangeEvent({
+							organizationId: org.id,
+							resourceKind: "member",
+							resourceId: member.id,
+							op: "updated",
+							summary: `Member "${user.name || user.email}" role set to ${member.role}`,
+							state: {
+								id: member.id,
+								user_id: user.id,
+								role: member.role,
+							},
+							changedFields: ["role"],
+							actorSource: "ui",
+						});
 						try {
 							await updateMemberEntityAccess(org.id, user.email, {
 								role: member.role,
@@ -503,21 +532,6 @@ export async function createAuth(
 								"../workspace/multi-tenant"
 							);
 							invalidateMembershipRoleCache(org.id, user.id);
-							recordWorkspaceChangeEvent({
-								organizationId: org.id,
-								resourceKind: "member",
-								resourceId: member.id,
-								op: "updated",
-								summary: `Member "${user.name || user.email}" role set to ${member.role}`,
-								state: {
-									id: member.id,
-									user_id: user.id,
-									role: member.role,
-								},
-								changedFields: ["role"],
-								actorSource: "ui",
-								createdBy: user.id,
-							});
 						} catch (err) {
 							console.error(
 								"[Auth] Failed to update $member entity after updateMemberRole:",
@@ -530,6 +544,25 @@ export async function createAuth(
 						inviter,
 						organization: org,
 					}) => {
+						// The invitation row is already committed. Audit first so an
+						// invitee-placeholder projection failure cannot lose the trail.
+						// `inviter` IS the acting session user.
+						recordWorkspaceChangeEvent({
+							organizationId: org.id,
+							resourceKind: "invitation",
+							resourceId: invitation.id,
+							op: "created",
+							summary: `Invitation sent to ${invitation.email}`,
+							state: {
+								id: invitation.id,
+								email: invitation.email,
+								role: invitation.role,
+								status: invitation.status ?? "pending",
+							},
+							changedFields: ["email", "role", "status"],
+							actorSource: "ui",
+							createdBy: inviter.id,
+						});
 						try {
 							// Create the invitee's placeholder $member keyed on the
 							// INVITED email. Attribute authorship to the inviter via
@@ -549,22 +582,6 @@ export async function createAuth(
 								role: invitation.role,
 								status: "invited",
 							});
-							recordWorkspaceChangeEvent({
-								organizationId: org.id,
-								resourceKind: "invitation",
-								resourceId: invitation.id,
-								op: "created",
-								summary: `Invitation sent to ${invitation.email}`,
-								state: {
-									id: invitation.id,
-									email: invitation.email,
-									role: invitation.role,
-									status: invitation.status ?? "pending",
-								},
-								changedFields: ["email", "role", "status"],
-								actorSource: "ui",
-								createdBy: inviter.id,
-							});
 						} catch (err) {
 							console.error(
 								"[Auth] Failed to create $member entity after createInvitation:",
@@ -573,17 +590,18 @@ export async function createAuth(
 						}
 					},
 					afterCancelInvitation: async ({ invitation, organization: org }) => {
+						// Cancellation is already committed. Audit first.
+						recordWorkspaceChangeEvent({
+							organizationId: org.id,
+							resourceKind: "invitation",
+							resourceId: invitation.id,
+							op: "deleted",
+							summary: `Invitation to ${invitation.email} cancelled`,
+							state: null,
+							actorSource: "ui",
+						});
 						try {
 							await deleteMemberEntity(org.id, invitation.email);
-							recordWorkspaceChangeEvent({
-								organizationId: org.id,
-								resourceKind: "invitation",
-								resourceId: invitation.id,
-								op: "deleted",
-								summary: `Invitation to ${invitation.email} cancelled`,
-								state: null,
-								actorSource: "ui",
-							});
 						} catch (err) {
 							console.error(
 								"[Auth] Failed to delete $member entity after cancelInvitation:",
@@ -592,17 +610,18 @@ export async function createAuth(
 						}
 					},
 					afterRejectInvitation: async ({ invitation, organization: org }) => {
+						// Rejection is already committed. Audit first.
+						recordWorkspaceChangeEvent({
+							organizationId: org.id,
+							resourceKind: "invitation",
+							resourceId: invitation.id,
+							op: "deleted",
+							summary: `Invitation to ${invitation.email} rejected`,
+							state: null,
+							actorSource: "ui",
+						});
 						try {
 							await deleteMemberEntity(org.id, invitation.email);
-							recordWorkspaceChangeEvent({
-								organizationId: org.id,
-								resourceKind: "invitation",
-								resourceId: invitation.id,
-								op: "deleted",
-								summary: `Invitation to ${invitation.email} rejected`,
-								state: null,
-								actorSource: "ui",
-							});
 						} catch (err) {
 							console.error(
 								"[Auth] Failed to delete $member entity after rejectInvitation:",

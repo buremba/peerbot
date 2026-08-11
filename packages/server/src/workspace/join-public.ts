@@ -68,11 +68,19 @@ export async function joinPublicOrganization({
   const user = userRows[0];
 
   const memberId = `member_${generateSecureToken(8)}`;
-  await sql`
+  // ON CONFLICT DO NOTHING + RETURNING: when a concurrent request wins the
+  // race and already inserted this member, no row is returned and we must NOT
+  // emit an audit event for a phantom (never-inserted) member id.
+  const inserted = (await sql`
     INSERT INTO "member" (id, "organizationId", "userId", role, "createdAt")
     VALUES (${memberId}, ${organizationId}, ${userId}, 'member', NOW())
     ON CONFLICT ("organizationId", "userId") DO NOTHING
-  `;
+    RETURNING id
+  `) as unknown as Array<{ id: string }>;
+  if (inserted.length === 0) {
+    return { status: 'already_member', organizationId, role: 'member' };
+  }
+  const committedMemberId = inserted[0].id;
 
   try {
     await ensureMemberEntity({
@@ -97,13 +105,16 @@ export async function joinPublicOrganization({
 
   invalidateMembershipRoleCache(organizationId, userId);
 
+  // The member row is committed; audit BEFORE the fallible projection so a
+  // drift failure cannot suppress the durable audit trail. `user` is the
+  // joining member — the actor of this self-service join.
   recordWorkspaceChangeEvent({
     organizationId,
     resourceKind: 'member',
-    resourceId: memberId,
+    resourceId: committedMemberId,
     op: 'created',
     summary: `Member "${user.name || user.email}" joined public workspace`,
-    state: { id: memberId, user_id: userId, role: 'member' },
+    state: { id: committedMemberId, user_id: userId, role: 'member' },
     changedFields: ['user_id', 'role'],
     actorSource: 'ui',
     createdBy: userId,

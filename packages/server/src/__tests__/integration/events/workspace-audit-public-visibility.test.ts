@@ -8,6 +8,7 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import { getContent } from '../../../tools/get_content';
+import { search } from '../../../tools/search';
 import type { ToolContext } from '../../../tools/registry';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase } from '../../setup/test-db';
@@ -23,9 +24,11 @@ import {
 describe('workspace-identity audit events > public-read exclusion', () => {
   let org: Awaited<ReturnType<typeof createTestOrganization>>;
   let alice: Awaited<ReturnType<typeof createTestUser>>;
+  let outsider: Awaited<ReturnType<typeof createTestUser>>;
   let entity: Awaited<ReturnType<typeof createTestEntity>>;
   let workspaceAuditEventId: number;
   let normalEventId: number;
+  let orgWideWorkspaceAuditEventId: number;
 
   function authedCtx(): ToolContext {
     return {
@@ -52,9 +55,33 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     } as ToolContext;
   }
 
+  function signedInOutsiderCtx(): ToolContext {
+    // A signed-in user with NO membership in this public workspace — they can
+    // read public content, but must not see workspace-identity audit rows.
+    return {
+      organizationId: org.id,
+      userId: outsider.id,
+      memberRole: null,
+      isAuthenticated: true,
+      tokenType: 'oauth',
+      scopedToOrg: true,
+      allowCrossOrg: false,
+      scopes: ['mcp:read'],
+    } as ToolContext;
+  }
+
   async function listIds(ctx: ToolContext): Promise<Set<number>> {
     const result = await getContent(
       { entity_id: entity.id, limit: 100, sort_by: 'date', sort_order: 'desc' } as never,
+      {} as never,
+      ctx
+    );
+    return new Set(result.content.map((c) => c.id));
+  }
+
+  async function listOrgWideIds(ctx: ToolContext): Promise<Set<number>> {
+    const result = await getContent(
+      { limit: 100, sort_by: 'date', sort_order: 'desc' } as never,
       {} as never,
       ctx
     );
@@ -70,6 +97,19 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     return new Set(result.content.map((c) => c.id));
   }
 
+  async function recallIds(ctx: ToolContext): Promise<Set<number>> {
+    const result = await search(
+      {
+        query: 'invitation',
+        include_content: true,
+        content_limit: 50,
+      } as never,
+      {} as never,
+      ctx
+    );
+    return new Set((result.content ?? []).map((c) => c.id));
+  }
+
   beforeAll(async () => {
     await initWorkspaceProvider();
     await cleanupTestDatabase();
@@ -78,6 +118,7 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     org = await createTestOrganization({ name: 'Workspace Audit Visibility Org' });
     alice = await createTestUser({ email: 'alice-workspace-audit@example.com' });
     await addUserToOrganization(alice.id, org.id, 'owner');
+    outsider = await createTestUser({ email: 'outsider-workspace-audit@example.com' });
 
     entity = await createTestEntity({
       name: 'Workspace Audit Entity',
@@ -109,6 +150,24 @@ describe('workspace-identity audit events > public-read exclusion', () => {
         },
       })
     ).id;
+
+    // Unbound (org-wide, no entity / connection) workspace audit row — the
+    // shape an anonymous or signed-in non-member could otherwise retrieve
+    // through an org-wide read of a public workspace.
+    orgWideWorkspaceAuditEventId = (
+      await createTestEvent({
+        organization_id: org.id,
+        title: 'Invitation sent to orgwide.member@example.com',
+        content: 'org-wide workspace audit event',
+        semantic_type: 'change',
+        metadata: {
+          category: 'workspace',
+          resource_kind: 'invitation',
+          resource_id: 'inv_xyz',
+          op: 'created',
+        },
+      })
+    ).id;
   });
 
   it('authenticated member sees the workspace audit event in the feed', async () => {
@@ -121,6 +180,24 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     const ids = await listIds(unauthedCtx());
     expect(ids.has(workspaceAuditEventId)).toBe(false);
     expect(ids.has(normalEventId)).toBe(true);
+  });
+
+  it('signed-in non-member does NOT see workspace audit events via org-wide read', async () => {
+    const ids = await listOrgWideIds(signedInOutsiderCtx());
+    expect(ids.has(orgWideWorkspaceAuditEventId)).toBe(false);
+    expect(ids.has(workspaceAuditEventId)).toBe(false);
+  });
+
+  it('anonymous org-wide read excludes unbound workspace audit rows', async () => {
+    const ids = await listOrgWideIds(unauthedCtx());
+    expect(ids.has(orgWideWorkspaceAuditEventId)).toBe(false);
+    expect(ids.has(normalEventId)).toBe(true);
+  });
+
+  it('signed-in non-member search_memory recall excludes workspace audit rows', async () => {
+    const ids = await recallIds(signedInOutsiderCtx());
+    expect(ids.has(orgWideWorkspaceAuditEventId)).toBe(false);
+    expect(ids.has(workspaceAuditEventId)).toBe(false);
   });
 
   it('anonymous content_ids exact-ID read excludes workspace audit but keeps ordinary events', async () => {

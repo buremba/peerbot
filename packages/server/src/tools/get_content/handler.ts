@@ -12,6 +12,7 @@ import {
   resolveActingPrincipal,
 } from '../../authz/entity-policy';
 import { hasRequiredMcpScope } from '../../auth/tool-access';
+import { isSystemContext } from '../../tools/access-control';
 import { createDbClientFromEnv, getDb, pgBigintArray } from '../../db/client';
 import { BEHAVIOR_RUN_SOURCE } from '../../gateway/behavior-run-session';
 import { parseBehaviorRunConversationId } from '../../gateway/permissions/behavior-run-intent';
@@ -156,6 +157,13 @@ async function getContentImpl(
   if (isMcpTokenCaller && !hasRequiredMcpScope('read', ctx.scopes)) {
     throw new ToolUserError('read_knowledge requires an MCP session with read access.', 403);
   }
+
+  // Workspace-identity audit events carry member emails / invitation details.
+  // Exclude them for every non-member caller (anonymous AND signed-in
+  // outsiders of a public workspace), but NOT for in-process system contexts
+  // (behavior runs: userId=null, isAuthenticated=true) which are trusted.
+  const excludeWorkspaceAudit =
+    ctx.memberRole === null && !isSystemContext(ctx);
 
   // Dual client: PG for auth, PG for data
   const pgSql = createDbClientFromEnv(env);
@@ -484,7 +492,7 @@ async function getContentImpl(
         sql,
         organizationId: ctx.organizationId,
         visibilityScope,
-        excludeWorkspaceAudit: ctx.isAuthenticated === false,
+        excludeWorkspaceAudit,
         limit,
         offset,
       }));
@@ -500,7 +508,7 @@ async function getContentImpl(
         untilDate,
         visibilityScope,
         mcpSessionIds,
-        excludeWorkspaceAudit: ctx.isAuthenticated === false,
+        excludeWorkspaceAudit,
         limit,
         offset,
       }));
@@ -533,7 +541,7 @@ async function getContentImpl(
         ...(args.classification_source && { classification_source: args.classification_source }),
         ...(args.semantic_type && { semantic_type: args.semantic_type }),
         ...(args.interaction_status && { interaction_status: args.interaction_status }),
-        ...(ctx.isAuthenticated === false && {
+        ...(excludeWorkspaceAudit && {
           exclude_workspace_audit: true,
         }),
         visibility_scope: visibilityScope,
@@ -582,7 +590,7 @@ async function getContentImpl(
         interaction_status: args.interaction_status,
         // Workspace-identity audit events carry member emails / invitation
         // details; anonymous public-workspace readers must never retrieve them.
-        ...(ctx.isAuthenticated === false && {
+        ...(excludeWorkspaceAudit && {
           exclude_workspace_audit: true,
         }),
         limit,

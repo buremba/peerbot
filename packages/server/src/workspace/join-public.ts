@@ -105,9 +105,10 @@ export async function joinPublicOrganization({
 
   invalidateMembershipRoleCache(organizationId, userId);
 
-  // The member row is committed; audit BEFORE the fallible projection so a
-  // drift failure cannot suppress the durable audit trail. `user` is the
-  // joining member — the actor of this self-service join.
+  // The member row is already committed above; the $member projection failure
+  // is caught and non-fatal, so emitting the audit trail here cannot be
+  // suppressed by it. `user` is the joining member — the actor of this
+  // self-service join.
   recordWorkspaceChangeEvent({
     organizationId,
     resourceKind: 'member',

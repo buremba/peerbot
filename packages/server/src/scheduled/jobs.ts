@@ -420,7 +420,8 @@ function registerMaintenanceTasks(
     if (
       result.matched > 0 ||
       result.depthLimited ||
-      result.causalBreadthLimited
+      result.causalBreadthLimited ||
+      result.fanoutLimited
     ) {
       logger.info(result, '[task] activate-workspace-event completed');
     }

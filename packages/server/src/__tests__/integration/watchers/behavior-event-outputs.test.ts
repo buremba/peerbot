@@ -1,8 +1,11 @@
 import { inferBehaviorGranularityFromSchedule } from '@lobu/connector-sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { activateWorkspaceEventTask } from '../../../behaviors/workspace-event';
-import type { WorkspaceEventActivationTaskPayload } from '../../../behaviors/workspace-event-contract';
-import type { DbClient } from '../../../db/client';
+import {
+  MAX_WORKSPACE_EVENT_FANOUT,
+  type WorkspaceEventActivationTaskPayload,
+} from '../../../behaviors/workspace-event-contract';
+import { type DbClient, pgBigintArray } from '../../../db/client';
 import { createWatcherRun } from '../../../runs/queue-service';
 import { ensureMemberEntityType } from '../../../utils/member-entity-type';
 import { persistBehaviorEventOutput } from '../../../utils/persist-behavior-event-output';
@@ -312,6 +315,45 @@ describe('Behavior event outputs', () => {
           AND watcher_id = ${consumerId}
       `
     ).toHaveLength(1);
+
+    const fanoutConsumerIds: number[] = [];
+    for (let index = 0; index <= MAX_WORKSPACE_EVENT_FANOUT; index++) {
+      const fanoutConsumer = (await api.behaviors.create({
+        slug: `fanout-observation-consumer-${index}`,
+        prompt: 'Handle the observation event.',
+        triggers: [
+          {
+            kind: 'event',
+            source: 'workspace',
+            event_types: ['observation'],
+            execution: 'window',
+            active_run: 'queue',
+          },
+        ],
+        agent_id: agent.agentId,
+      })) as { behavior_id: string };
+      fanoutConsumerIds.push(Number(fanoutConsumer.behavior_id));
+    }
+    expect(
+      await activateWorkspaceEventTask(
+        otherObservationTask.action_input.payload,
+        sql
+      )
+    ).toMatchObject({
+      matched: MAX_WORKSPACE_EVENT_FANOUT,
+      queued: MAX_WORKSPACE_EVENT_FANOUT,
+      fanoutLimited: true,
+    });
+    const fanoutRuns = await sql<{ watcher_id: number }>`
+      SELECT watcher_id
+      FROM runs
+      WHERE run_type = 'behavior'
+        AND watcher_id = ANY(${pgBigintArray(fanoutConsumerIds)}::bigint[])
+      ORDER BY watcher_id
+    `;
+    expect(fanoutRuns.map((row) => Number(row.watcher_id))).toEqual(
+      fanoutConsumerIds.slice(0, MAX_WORKSPACE_EVENT_FANOUT)
+    );
 
     // A source-derived idempotency key is intentionally stronger than the
     // Canvas-revision retry key: a later run that rediscovers the same post

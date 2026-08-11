@@ -1022,14 +1022,14 @@ export function buildDispatchMessage(params: {
 		params.behaviorInstructions.trim().length > 0
 			? params.behaviorInstructions
 			: undefined;
+	const signals =
+		params.payload.trigger_signals ??
+		(params.payload.trigger_signal ? [params.payload.trigger_signal] : []);
+	const workspaceSignals = signals.filter(isWorkspaceEventTriggerSignal);
 	if (
 		params.payload.dispatch_source === "event" &&
 		params.payload.trigger_execution !== "window"
 	) {
-		const signals =
-			params.payload.trigger_signals ??
-			(params.payload.trigger_signal ? [params.payload.trigger_signal] : []);
-		const workspaceSignals = signals.filter(isWorkspaceEventTriggerSignal);
 		if (workspaceSignals.length > 0) {
 			return [
 				"Run this Behavior for the durable workspace event below.",
@@ -1077,10 +1077,6 @@ export function buildDispatchMessage(params: {
 	)
 		.toISOString()
 		.split("T")[0];
-	const workspaceSignals = (
-		params.payload.trigger_signals ??
-		(params.payload.trigger_signal ? [params.payload.trigger_signal] : [])
-	).filter(isWorkspaceEventTriggerSignal);
 	const workspaceContentIds = workspaceSignals.map((signal) => signal.event_id);
 
 	return [

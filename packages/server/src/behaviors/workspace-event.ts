@@ -132,7 +132,10 @@ async function findMatchingWorkspaceEventActivations(
   signal: WorkspaceEventTriggerSignal,
   event: WorkspaceEventRecord,
   db: DbClient = getDb()
-): Promise<MatchingWorkspaceEventActivation[]> {
+): Promise<{
+  matches: MatchingWorkspaceEventActivation[];
+  fanoutLimited: boolean;
+}> {
   const needle = [
     {
       kind: 'event',
@@ -145,15 +148,16 @@ async function findMatchingWorkspaceEventActivations(
            w.device_worker_id::text AS device_worker_id,
            w.agent_kind, w.triggers
     FROM watchers w
-    JOIN watcher_versions v ON v.id = w.current_version_id
     WHERE w.organization_id = ${organizationId}
       AND w.status = 'active'
+      AND w.current_version_id IS NOT NULL
       AND (w.agent_id IS NOT NULL OR w.device_worker_id IS NOT NULL)
       AND w.triggers @> ${db.json(needle)}::jsonb
     ORDER BY w.id ASC
   `;
 
   const matches: MatchingWorkspaceEventActivation[] = [];
+  let fanoutLimited = false;
   for (const row of rows) {
     const behaviorId = Number(row.id);
     if (signal.causal_behavior_ids.includes(behaviorId)) continue;
@@ -181,6 +185,17 @@ async function findMatchingWorkspaceEventActivations(
       agentKind: typeof row.agent_kind === 'string' ? row.agent_kind : null,
     });
     if (!executor) continue;
+    if (matches.length >= MAX_WORKSPACE_EVENT_FANOUT) {
+      fanoutLimited = true;
+      logger.warn(
+        {
+          eventId: signal.event_id,
+          maxFanout: MAX_WORKSPACE_EVENT_FANOUT,
+        },
+        '[workspace-event] fan-out limit reached; remaining matching Behaviors skipped'
+      );
+      break;
+    }
     matches.push({
       behaviorId,
       organizationId: String(row.organization_id),
@@ -190,13 +205,8 @@ async function findMatchingWorkspaceEventActivations(
       agentKind: executor.kind === 'device' ? executor.agentKind : null,
       trigger,
     });
-    if (matches.length > MAX_WORKSPACE_EVENT_FANOUT) {
-      throw new Error(
-        `Workspace event ${signal.event_id} matches more than ${MAX_WORKSPACE_EVENT_FANOUT} Behaviors`
-      );
-    }
   }
-  return matches;
+  return { matches, fanoutLimited };
 }
 
 export async function activateWorkspaceEventTask(
@@ -207,6 +217,7 @@ export async function activateWorkspaceEventTask(
   queued: number;
   depthLimited: boolean;
   causalBreadthLimited: boolean;
+  fanoutLimited: boolean;
 }> {
   const causalBehaviorIds = payload.causalBehaviorIds.filter(
     (value) => Number.isSafeInteger(value) && value > 0
@@ -249,6 +260,7 @@ export async function activateWorkspaceEventTask(
       queued: 0,
       depthLimited: true,
       causalBreadthLimited: false,
+      fanoutLimited: false,
     };
   }
   if (causalBehaviorIds.length >= MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS) {
@@ -261,6 +273,7 @@ export async function activateWorkspaceEventTask(
       queued: 0,
       depthLimited: false,
       causalBreadthLimited: true,
+      fanoutLimited: false,
     };
   }
 
@@ -275,12 +288,13 @@ export async function activateWorkspaceEventTask(
     causal_behavior_ids: causalBehaviorIds,
     depth: payload.depth,
   };
-  const matches = await findMatchingWorkspaceEventActivations(
-    payload.organizationId,
-    signal,
-    event,
-    db
-  );
+  const { matches, fanoutLimited } =
+    await findMatchingWorkspaceEventActivations(
+      payload.organizationId,
+      signal,
+      event,
+      db
+    );
   const queued = [] as Array<{ runId: number; status: string }>;
   for (const match of matches) {
     const result = await createBehaviorEventRun({
@@ -300,5 +314,6 @@ export async function activateWorkspaceEventTask(
     queued: queued.length,
     depthLimited: false,
     causalBreadthLimited: false,
+    fanoutLimited,
   };
 }

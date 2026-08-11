@@ -1,5 +1,5 @@
 import type { GuardrailStage } from "@lobu/core";
-import { deriveBehaviorEventCatalogFromFeeds } from "../behaviors/connector-derived";
+import { resolveBehaviorEventCatalog } from "../behaviors/connector-derived";
 import { withPlatformBehaviorEvents } from "../behaviors/platform-event-catalog";
 import { getModelProviderModules } from "../gateway/modules/module-system";
 import type { Env } from "../index";
@@ -29,17 +29,16 @@ import type {
 function behaviorEventsForUi(
 	raw: Array<Record<string, unknown>> | null | undefined,
 	feedsSchema?: unknown,
+	bundled?: { behavior_events?: unknown; feeds_schema?: unknown },
 ): Array<Record<string, unknown>> | undefined {
-	const declared = Array.isArray(raw)
-		? raw.filter(
-				(event): event is Record<string, unknown> & { key: string } =>
-					typeof event?.key === "string" && event.key.length > 0,
-			)
-		: [];
-	// Default-on: when the connector declares no behavior events, its feed's
-	// eventKinds ARE the subscribable catalog (see connector-derived.ts).
-	const source =
-		declared.length > 0 ? declared : deriveBehaviorEventCatalogFromFeeds(feedsSchema);
+	// Same precedence as trigger validation (persisted > bundled legacy >
+	// derived from eventKinds) so the picker can never advertise a value
+	// Behavior creation rejects.
+	const source = resolveBehaviorEventCatalog({
+		persistedEvents: raw,
+		feedsSchema,
+		bundled,
+	});
 	const merged = withPlatformBehaviorEvents(source);
 	return merged.length > 0 ? (merged as Array<Record<string, unknown>>) : undefined;
 }
@@ -68,6 +67,14 @@ export async function listOrgInstalled(
 			organizationId,
 			rows.map((row) => row.key)
 		);
+		// Bundled immutable catalog, for the persisted > bundled > derived
+		// behavior-event precedence shared with trigger validation.
+		const bundledByKey = new Map(
+			(await listCatalogEntries(["connectors"])).connectors.map((entry) => [
+				entry.id,
+				entry.detail,
+			])
+		);
 		const installedItems = rows.map((row) => {
 			const operationsSummary = summaries.get(row.key) ?? {
 				...EMPTY_SUMMARY,
@@ -83,7 +90,11 @@ export async function listOrgInstalled(
 					auth_schema: row.auth_schema,
 					feeds_schema: row.feeds_schema,
 					actions_schema: row.actions_schema,
-					behavior_events: behaviorEventsForUi(row.behavior_events, row.feeds_schema),
+					behavior_events: behaviorEventsForUi(
+						row.behavior_events,
+						row.feeds_schema,
+						bundledByKey.get(row.key),
+					),
 					options_schema: row.options_schema,
 					favicon_domain: row.favicon_domain,
 					required_capability: row.required_capability,

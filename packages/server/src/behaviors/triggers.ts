@@ -12,7 +12,7 @@ import { listCatalogEntries } from "../catalog/load";
 import { validateSchedule, validateTimezone } from "../utils/cron";
 import { ToolUserError } from "../utils/errors";
 import { withPlatformBehaviorEvents } from "./platform-event-catalog";
-import { deriveBehaviorEventCatalogFromFeeds } from "./connector-derived";
+import { resolveBehaviorEventCatalog } from "./connector-derived";
 
 export interface BehaviorTriggerProjection {
 	triggers: BehaviorTrigger[];
@@ -49,18 +49,6 @@ function countDeclaredFeeds(value: unknown): number {
 	return Object.keys(value).length;
 }
 
-function parseBehaviorEventDefinitions(
-	value: unknown
-): BehaviorEventDefinition[] {
-	if (!Array.isArray(value)) return [];
-	return value.filter(
-		(item): item is BehaviorEventDefinition =>
-			typeof item === "object" &&
-			item !== null &&
-			typeof (item as { key?: unknown }).key === "string"
-	);
-}
-
 async function getConnectorBehaviorEventCatalog(
 	sql: DbClient,
 	organizationId: string,
@@ -81,51 +69,21 @@ async function getConnectorBehaviorEventCatalog(
 
 	// Precedence: persisted declaration > bundled immutable catalog (legacy
 	// installs predate the behavior_events column) > default-on derivation from
-	// eventKinds. A legacy GitHub row with NULL behavior_events must keep its
-	// curated bundled catalog (`pull_request.created` etc.), not collapse to
-	// derived kind slugs — otherwise live triggers stop matching.
-	const declared = parseBehaviorEventDefinitions(row?.behavior_events);
-	if (declared.length > 0) {
-		return {
-			name: row?.name ?? connectorKey,
-			events: withPlatformBehaviorEvents(
-				declared,
-			) as BehaviorEventDefinition[],
-			declaredCount: declared.length,
-			feedCount: countDeclaredFeeds(row?.feeds_schema),
-		};
-	}
-
-	// The immutable bundled catalog is the fallback for installations that
-	// predate the persisted column.
+	// eventKinds — shared with the UI picker so both surfaces agree.
 	const catalog = (await listCatalogEntries(["connectors"])).connectors.find(
 		(entry) => entry.id === connectorKey
 	);
-	const bundledDeclared = parseBehaviorEventDefinitions(
-		catalog?.detail.behavior_events,
-	);
-	if (bundledDeclared.length > 0) {
-		return {
-			name: row?.name ?? catalog?.name ?? connectorKey,
-			events: withPlatformBehaviorEvents(
-				bundledDeclared,
-			) as BehaviorEventDefinition[],
-			declaredCount: bundledDeclared.length,
-			feedCount: countDeclaredFeeds(
-				row?.feeds_schema ?? catalog?.detail.feeds_schema,
-			),
-		};
-	}
-
-	// Default-on: with no declaration anywhere, a connector's declared
-	// eventKinds are its subscribable trigger catalog.
-	const derived = deriveBehaviorEventCatalogFromFeeds(
-		row?.feeds_schema ?? catalog?.detail.feeds_schema,
-	);
+	const resolved = resolveBehaviorEventCatalog({
+		persistedEvents: row?.behavior_events,
+		feedsSchema: row?.feeds_schema,
+		bundled: catalog?.detail,
+	}) as BehaviorEventDefinition[];
 	return {
 		name: row?.name ?? catalog?.name ?? connectorKey,
-		events: withPlatformBehaviorEvents(derived) as BehaviorEventDefinition[],
-		declaredCount: derived.length,
+		events: withPlatformBehaviorEvents(
+			resolved,
+		) as BehaviorEventDefinition[],
+		declaredCount: resolved.length,
 		feedCount: countDeclaredFeeds(
 			row?.feeds_schema ?? catalog?.detail.feeds_schema,
 		),

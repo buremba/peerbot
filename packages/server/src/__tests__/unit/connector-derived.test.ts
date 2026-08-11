@@ -49,7 +49,6 @@ describe('deriveConnectorActivationSignals', () => {
     expect(signal.url).toBe(baseEvent.sourceUrl);
     expect(signal.occurred_at).toBe('2026-08-11T10:00:00.000Z');
     expect(signal.attributes).toEqual({
-      feed_key: 'home_feed',
       change: 'inserted',
       author_handle: 'someone',
       reply_count: 3,

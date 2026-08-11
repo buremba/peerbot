@@ -12,10 +12,13 @@ import { type DbClient, getDb } from "../db/client";
  *  - Only `change === 'inserted'` activates. A re-scraped row that supersedes
  *    the current head (e.g. an X tweet whose engagement metrics moved) is not
  *    a new source item and does not re-fire — that is what a listener wants.
- *  - Feed provenance is a `match` filter (`match: { feed_key: 'home_feed' }`),
- *    so the same kind in several feeds aggregates by default and scopes by
- *    match. The `change` attribute likewise distinguishes created vs updated
- *    when a trigger wants only one.
+ *
+ * Feed scoping is deliberately NOT exposed: events dedupe by
+ * (connection_id, origin_id), so an origin first observed by one feed (e.g. an
+ * X tweet seen by the `tweets` search feed) is `unchanged` when another feed
+ * (`home_feed`) later observes it — a `match: { feed_key }` subscription would
+ * silently miss it. A `feed_key` attribute belongs on the signal only once a
+ * durable per-feed first-seen record keyed by (feed_id, origin_id) exists.
  *
  * Safety bounds:
  *  - Ingestion only activates once the feed has a prior successful non-dry
@@ -146,11 +149,10 @@ export function deriveConnectorActivationSignals(
 	// scalar metadata so connectors get matchable fields for free. Non-scalar
 	// values (the TriggerAttributeValueSchema is scalar-only) are dropped.
 	// Reserved provenance keys win: connector metadata must not be able to
-	// rewrite feed_key/change and route activation to the wrong feed.
+	// rewrite the change attribute and route activation to the wrong kind.
 	const attributes: Record<string, string | number | boolean | null> = {};
 	for (const [key, value] of Object.entries(event.metadata ?? {})) {
 		if (
-			key === "feed_key" ||
 			key === "change" ||
 			value === null ||
 			value === undefined ||
@@ -162,7 +164,6 @@ export function deriveConnectorActivationSignals(
 		}
 		attributes[key] = value;
 	}
-	attributes.feed_key = ctx.feedKey;
 	attributes.change = change;
 
 	return [
@@ -188,8 +189,8 @@ export function deriveConnectorActivationSignals(
 /**
  * Under the default-on convention, every declared eventKind is a subscribable
  * Behavior trigger type. Same-kind slugs across feeds aggregate into one entry
- * (the runtime fires `event_type = kind` for any feed); feed scope is a match
- * filter. Returns `[]` when the connector declares no eventKinds.
+ * (the runtime fires `event_type = kind` for any feed). Returns `[]` when the
+ * connector declares no eventKinds.
  */
 export function deriveBehaviorEventCatalogFromFeeds(
 	feeds: unknown,
@@ -212,4 +213,55 @@ export function deriveBehaviorEventCatalogFromFeeds(
 			.map((part) => part[0]?.toUpperCase() + part.slice(1))
 			.join(" "),
 	}));
+}
+
+function parseDeclaredBehaviorEvents(
+	value: unknown,
+): Array<{ key: string; label?: string }> {
+	if (!Array.isArray(value)) return [];
+	const out: Array<{ key: string; label?: string }> = [];
+	for (const item of value) {
+		if (
+			typeof item === "object" &&
+			item !== null &&
+			typeof (item as { key?: unknown }).key === "string" &&
+			(item as { key: string }).key.length > 0
+		) {
+			const entry = item as Record<string, unknown>;
+			out.push({
+				key: String(entry.key),
+				...(typeof entry.label === "string" ? { label: entry.label } : {}),
+			});
+		}
+	}
+	return out;
+}
+
+/** Bundled immutable catalog shape consumed by {@link resolveBehaviorEventCatalog}. */
+export interface BundledBehaviorCatalogEntry {
+	behavior_events?: unknown;
+	feeds_schema?: unknown;
+}
+
+/**
+ * Single source of truth for a connector's subscribable Behavior event catalog,
+ * shared by trigger validation and the UI picker so the two can never disagree.
+ * Precedence: persisted declaration > bundled immutable catalog (legacy
+ * installs predate the persisted column) > default-on derivation from
+ * eventKinds. A legacy GitHub row with NULL behavior_events keeps its curated
+ * bundled catalog (`pull_request.created` etc.) rather than collapsing to
+ * derived kind slugs.
+ */
+export function resolveBehaviorEventCatalog(args: {
+	persistedEvents: unknown;
+	feedsSchema: unknown;
+	bundled?: BundledBehaviorCatalogEntry | null;
+}): Array<{ key: string; label?: string }> {
+	const declared = parseDeclaredBehaviorEvents(args.persistedEvents);
+	if (declared.length > 0) return declared;
+	const bundled = parseDeclaredBehaviorEvents(args.bundled?.behavior_events);
+	if (bundled.length > 0) return bundled;
+	return deriveBehaviorEventCatalogFromFeeds(
+		args.feedsSchema ?? args.bundled?.feeds_schema,
+	);
 }

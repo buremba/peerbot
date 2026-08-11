@@ -787,6 +787,11 @@ jobs:
         # guard that stops catching regressions fails here instead of going quiet.
         run: bun test scripts/__tests__/check-exposed-surface-naming.test.ts
 
+      - name: Daytona remote development lifecycle
+        # The command replaces a live remote checkout and controls its privacy
+        # boundary. Keep failure/retry and existing-sandbox reuse fail-closed.
+        run: bun test scripts/__tests__/dev-remote.test.ts
+
       - name: Gateway LLM client gate
         # packages/server speaks to model providers through ONE client
         # (gateway/inference/gateway-completion.ts). A new per-feature

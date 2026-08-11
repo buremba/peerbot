@@ -1,6 +1,6 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test clean dev dev-db dev-embedded build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean dev-recover clean-merged e2e-browser bump review review-fix ui-review pre-pr pre-pr-remote-fast pre-pr-remote owletto-mac owletto-mac-e2e
+.PHONY: help setup build test clean dev dev-db dev-embedded dev-remote dev-remote-pause dev-remote-status dev-remote-logs build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean dev-recover clean-merged e2e-browser bump review review-fix ui-review pre-pr pre-pr-remote-fast pre-pr-remote owletto-mac owletto-mac-e2e
 
 # Default target
 help:
@@ -8,6 +8,10 @@ help:
 	@echo "  make setup                                 - Setup development environment (run once)"
 	@echo "  make dev [NAME=<x>] [FROM=<db>] [OPEN=1]   - Local dev (brew Postgres@18); prints App URL; OPEN=1 opens it in the system browser after boot"
 	@echo "  make dev-embedded                          - Dev against the zero-dependency embedded per-worktree Postgres (the lobu run / CI runtime); == LOBU_EMBEDDED=1 make dev"
+	@echo "  make dev-remote [OPEN=1]                   - Sync committed code to private Daytona compute, resume/start Lobu, and print a signed preview URL"
+	@echo "  make dev-remote-pause                      - Stop/pause Daytona compute immediately while preserving the remote filesystem"
+	@echo "  make dev-remote-status                     - Show the Daytona state, resources, source SHA, and active preview URL"
+	@echo "  make dev-remote-logs                       - Print logs from the remote Lobu development server"
 	@echo "  make build-packages                        - Build all TypeScript packages"
 	@echo "  make test                                  - Run test bot"
 	@echo "  make test-unit                             - Run the CI unit suite (no Postgres needed)"
@@ -74,6 +78,22 @@ dev: ensure-submodule
 # Zero-dependency embedded per-worktree Postgres (the lobu run / CI runtime).
 dev-embedded: ensure-submodule
 	@./scripts/dev-native.sh
+
+# Persistent remote development on a private Daytona sandbox. Source sync is
+# committed-only by default; dependencies, build output, embedded data, and the
+# signed preview URL survive stop/resume. VM snapshots also preserve processes
+# and memory when Daytona makes them available. The signed URL expires after 24h.
+dev-remote: ensure-submodule
+	@bun scripts/dev-remote.ts up
+
+dev-remote-pause:
+	@bun scripts/dev-remote.ts pause
+
+dev-remote-status:
+	@bun scripts/dev-remote.ts status
+
+dev-remote-logs:
+	@bun scripts/dev-remote.ts logs
 
 # Explicit alias for the default `make dev` backend (shared brew Postgres@18, one
 # database per branch). NAME defaults to the current branch; FROM=<db> forks an
@@ -150,6 +170,7 @@ bump:
 # Unit suite — bun:test on the per-package units that don't need Postgres.
 test-unit:
 	@echo "🧪 Unit suite (no Postgres)…"
+	@bun test scripts/__tests__/dev-remote.test.ts
 	@bun test packages/core packages/plugin-api packages/plugin-host packages/plugin-toolkit packages/plugin-memory packages/plugin-conversations packages/plugin-media packages/plugin-mcp packages/cli
 	@bun test packages/agent-worker
 	@bun test packages/server/src/__tests__/unit

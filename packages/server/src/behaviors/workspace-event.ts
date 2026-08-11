@@ -38,8 +38,8 @@ interface MatchingWorkspaceEventActivation {
 export async function enqueueWorkspaceEventActivations(
   tx: DbClient,
   payloads: WorkspaceEventActivationTaskPayload[]
-): Promise<string[]> {
-  return enqueueTasksInTransaction(
+): Promise<void> {
+  await enqueueTasksInTransaction(
     tx,
     payloads.map((payload) => ({
       name: WORKSPACE_EVENT_ACTIVATION_TASK.name,

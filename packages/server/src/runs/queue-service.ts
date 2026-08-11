@@ -95,6 +95,7 @@ function behaviorEventTriggerKey(trigger: BehaviorActivationTrigger): string {
   if (trigger.source === 'workspace') {
     return stableJson({
       kind: trigger.kind,
+      source: trigger.source,
       entity_type: trigger.entity_type ?? null,
       event_types: [...trigger.event_types].sort(),
       match: trigger.match ?? null,

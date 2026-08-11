@@ -316,6 +316,7 @@ export async function handleCompleteWindow(
       i.entity_ids,
       i.organization_id,
       i.created_by,
+      i.triggers,
       wv.id as version_id,
       wv.outputs
     FROM watchers i
@@ -373,6 +374,23 @@ export async function handleCompleteWindow(
   // guaranteed-live user (same FK), so it's the correct attribution.
   const watcherOrgId = watcherRows[0].organization_id as string;
   const watcherCreatedBy = (watcherRows[0].created_by as string | null) ?? null;
+  const watcherTriggers = parseJson(watcherRows[0].triggers);
+  if (
+    watcherRunId == null &&
+    Array.isArray(watcherTriggers) &&
+    watcherTriggers.some(
+      (trigger) =>
+        trigger &&
+        typeof trigger === 'object' &&
+        (trigger as { kind?: unknown }).kind === 'event' &&
+        (trigger as { source?: unknown }).source === 'workspace'
+    )
+  ) {
+    logger.warn(
+      { watcherId },
+      '[complete_window] workspace-event Behavior completed without a run id; causal ancestry resets at this output'
+    );
+  }
   const workspaceEventCausality = deriveWorkspaceEventCausality(
     runTriggerSignals,
     Number(watcherId)

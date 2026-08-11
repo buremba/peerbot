@@ -396,11 +396,15 @@ function diffEntityType(
       },
       {
         // properties — prune-aware, like eventKinds (see `required` above).
+        // An already-cleared empty object is not a removal: flagging it would
+        // re-report an update on every apply instead of converging.
         name: "properties",
         changed: (d, r) =>
           d.properties !== undefined
             ? !deepEqual(d.properties, r.properties)
-            : prune && r.properties !== undefined,
+            : prune &&
+              r.properties !== undefined &&
+              Object.keys(r.properties).length > 0,
       },
       {
         // Derived types store metadata_schema verbatim (no inferred superset),

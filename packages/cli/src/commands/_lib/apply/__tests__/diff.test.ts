@@ -438,6 +438,64 @@ describe("apply diff — memory schema", () => {
     expect(row?.changedFields).toContain("required");
   });
 
+  test("under prune, an already-cleared empty schema is a noop (converges on repeat apply)", async () => {
+    const desired: DesiredState = {
+      agents: [],
+      memorySchema: {
+        entityTypes: [
+          {
+            slug: "person",
+            name: "Person",
+            resolutionPolicy: {
+              "x-lobu-resolution": {
+                rules: [
+                  {
+                    fields: ["email"],
+                    normalizer: "email",
+                    onMatch: "auto_merge",
+                  },
+                ],
+              },
+            },
+          },
+        ],
+        relationshipTypes: [],
+      },
+      watchers: [],
+      requiredSecrets: [],
+    };
+    // After the first prune apply cleared the live schema, a second apply sees
+    // `properties: {}` — that is not a removal, so it must be a noop.
+    const plan = computeDiff(
+      desired,
+      {
+        ...emptyRemote(),
+        entityTypes: [
+          {
+            slug: "person",
+            name: "Person",
+            properties: {},
+            schemaExtras: {
+              "x-lobu-resolution": {
+                rules: [
+                  {
+                    fields: ["email"],
+                    normalizer: "email",
+                    onMatch: "auto_merge",
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+      { prune: true }
+    );
+    const row = plan.rows.find((r) => r.id === "person");
+    expect(row?.verb).toBe("noop");
+    expect(plan.counts.update).toBe(0);
+  });
+
   test("relationship-type rules are a noop when remote rules match (idempotency)", () => {
     // Regression: the rel-type `list` action omits rules, so apply hydrates
     // them (listRelationshipTypeRules) into the snapshot. When the hydrated

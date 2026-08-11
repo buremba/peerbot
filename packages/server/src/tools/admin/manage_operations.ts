@@ -2431,15 +2431,16 @@ async function isPendingEntityRunOwner(
  * context runs with `userId=null` and NO client id, so it would slip past a
  * client-id-only guard AND past {@link isSystemContext}'s role bypass — letting
  * an automation approve a run it queued (sol review #3). We therefore require a
- * positive human identity: `userId` present, and no agent identity on the
- * context. Returns an error result (surfaced to the caller) or null when the
- * context is a genuine human. One gate, called by every approve/reject entry.
+ * positive human identity: `userId` present, and no agent, OAuth client, or MCP
+ * transport identity on the context. Returns an error result (surfaced to the
+ * caller) or null when the context is a genuine human. One gate, called by
+ * every approve/reject entry.
  */
 function requireHumanApprovalContext(
 	ctx: ToolContext,
 	verb: "approve" | "reject",
 ): { error: string } | null {
-	if (ctx.agentId || ctx.clientId) {
+	if (ctx.agentId || ctx.clientId || ctx.mcpSessionId) {
 		return {
 			error: `Operation ${verb === "approve" ? "approval" : "rejection"} requires a human web session. Agents cannot ${verb} operations.`,
 		};

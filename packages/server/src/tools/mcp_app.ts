@@ -633,6 +633,7 @@ const resolveLobuApprovalImpl = async (
     ...ctx,
     agentId: null,
     clientId: null,
+    mcpSessionId: null,
     mcpAppApprovalCapability: null,
     mcpAppSnapshotCapability: null,
   };

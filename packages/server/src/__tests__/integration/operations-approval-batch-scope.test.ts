@@ -23,14 +23,17 @@ import {
 	addUserToOrganization,
 	createTestConnection,
 	createTestConnectorDefinition,
+	createTestSession,
 	createTestUser,
 	seedOwnerContext,
 } from "../setup/test-fixtures";
+import { post } from "../setup/test-helpers";
 
 const APPROVAL_CONNECTOR = "demo.batch.approval";
 
 describe("manage_operations batch scope (connector-approval lane)", () => {
 	let orgId: string;
+	let orgSlug: string;
 	let ownerCtx: ToolContext;
 	let memberCtx: ToolContext;
 	let approvalConnectionId: number;
@@ -42,6 +45,7 @@ describe("manage_operations batch scope (connector-approval lane)", () => {
 			orgName: "Batch Scope Org",
 		});
 		orgId = org.id;
+		orgSlug = org.slug;
 		ownerCtx = ctx;
 		const member = await createTestUser({ name: "Batch Scope Member" });
 		await addUserToOrganization(member.id, org.id);
@@ -360,6 +364,63 @@ describe("manage_operations batch scope (connector-approval lane)", () => {
 		}
 
 		expect(await approvalStatusOf(pending)).toBe("pending");
+	});
+
+	it("rejects an otherwise-human caller whose request came through MCP", async () => {
+		const mcpCtx = {
+			...ownerCtx,
+			agentId: null,
+			clientId: null,
+			mcpSessionId: "unbound-human-session",
+			tokenType: "session",
+		} as ToolContext;
+		const attempts: Array<{ pending: number; result: { error?: string } }> = [];
+
+		for (const action of ["reject_batch", "approve_batch"] as const) {
+			const actionKey = `mcp_${action}`;
+			const pending = await seedPendingAction({
+				connectorKey: "github",
+				actionKey,
+			});
+			const result = (await manageOperations(
+				{
+					action,
+					scope: { connector_key: "github", action_key: actionKey },
+				},
+				{} as Env,
+				mcpCtx,
+			)) as { error?: string };
+			attempts.push({ pending, result });
+		}
+
+		for (const { pending } of attempts) {
+			expect(await approvalStatusOf(pending)).toBe("pending");
+		}
+		for (const { result } of attempts) {
+			expect(result.error).toContain("human web session");
+		}
+	});
+
+	it("keeps credentialed native REST approval working outside MCP", async () => {
+		const pending = await seedPendingAction({
+			connectionId: approvalConnectionId,
+			connectorKey: APPROVAL_CONNECTOR,
+			actionKey: "needs_approval",
+		});
+		const session = await createTestSession(ownerCtx.userId!);
+
+		const response = await post(`/api/${orgSlug}/manage_operations`, {
+			body: { action: "approve", run_id: pending },
+			cookie: session.cookieHeader,
+		});
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({
+			action: "approve",
+			approved: true,
+			run_id: pending,
+		});
+		expect(await approvalStatusOf(pending)).toBe("approved");
 	});
 
 	it("rejects a caller with no verified human identity", async () => {

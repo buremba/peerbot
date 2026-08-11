@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { deriveFeedHealthSemantics } from "../feed-health-semantics";
+import { deriveFeedHealthSemantics } from "../../connectors/feed-health-semantics";
 
 describe("executionMode", () => {
   test("virtual feed (kind='virtual' or virtual=true) is virtual", () => {
@@ -188,6 +188,22 @@ describe("attention state", () => {
         last_sync_at: null,
       }).attention
     ).toBe("never_run");
+  });
+
+  test("a recorded success is healthy even with a null timestamp (evidence of a run)", () => {
+    // A last_sync_status='success' is evidence the feed HAS run; never_run must
+    // not win just because last_sync_at is null in the fixture/row.
+    expect(
+      deriveFeedHealthSemantics({
+        kind: "collected",
+        schedule: "0 */6 * * *",
+        status: "active",
+        connection_status: "active",
+        last_sync_status: "success",
+        last_sync_at: null,
+        consecutive_failures: 0,
+      }).attention
+    ).toBe("healthy");
   });
 
   test("misconfigured when expectSchedule and feed is manual", () => {

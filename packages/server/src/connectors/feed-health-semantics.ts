@@ -184,7 +184,10 @@ export function deriveFeedHealthSemantics(
     attention = "device_offline";
   } else if (lastAttemptFailed(input)) {
     attention = "last_attempt_failed";
-  } else if (input.last_sync_at == null) {
+  } else if (
+    input.last_sync_at == null &&
+    input.last_sync_status !== "success"
+  ) {
     attention = "never_run";
   } else {
     attention = "healthy";

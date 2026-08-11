@@ -39,6 +39,19 @@ describe('notify > semantic_type (kind) payload', () => {
       name: 'Notify Kind Entity',
       organization_id: org.id,
     });
+    // A notification is validated against $member kinds even when entity-anchored.
+    await sql`
+      UPDATE entity_types
+      SET event_kinds = ${sql.json({
+        funnel_digest: {
+          description: 'Entity-scoped digest with an incompatible renderer',
+          jsonTemplate: { type: 'markdown', content: 'Wrong registry' },
+        },
+      })}
+      WHERE id = (
+        SELECT entity_type_id FROM entities WHERE id = ${entity.id}
+      )
+    `;
 
     const { client_id } = await createTestOAuthClient({
       client_name: 'notify-kind-test',

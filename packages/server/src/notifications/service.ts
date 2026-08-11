@@ -518,10 +518,6 @@ export async function createNotificationForUsers(
 					originId: randomUUID(),
 					title: params.title,
 					content: params.body ?? null,
-					// Notifications are events: route the render through the event's
-					// own payload columns. `semanticType` (the kind) drives the
-					// event-kind render tail; without one, the default keeps the
-					// notification's plain text body.
 					semanticType: params.semanticType ?? "notification",
 					payloadType: params.semanticType ? "empty" : "text",
 					payloadData: params.semanticType ? params.payloadData : undefined,

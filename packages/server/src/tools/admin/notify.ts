@@ -329,7 +329,6 @@ async function handleSend(
     type: ask ? 'action_approval_needed' : 'agent_message',
     title: args.title,
     body,
-    // `empty` lets the event-kind render tail synthesize the authored template.
     semanticType: kind ?? undefined,
     payloadData: kind ? args.data : undefined,
     resourceType: ask ? 'event' : null,

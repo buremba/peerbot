@@ -376,7 +376,7 @@ export async function buildContentItems(opts: {
       const kind = await resolveEventKindDefinition(
         item.semantic_type,
         organizationId,
-        item.entity_ids
+        isNotification ? undefined : item.entity_ids
       );
       if (!kind) return;
       const root = resolveEntityRender(kind.jsonTemplate, kind.metadataSchema);

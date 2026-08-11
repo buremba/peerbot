@@ -68,7 +68,7 @@ The **deployment manifest** (`buildDeploymentManifest` → `deployment.ts:118`, 
 7. **Adopt = minimal codegen.** Modified field → print the exact delta (e.g. `"x-lobu": { role: "workflowState" }` under `status`). New definition → print a generated `defineEntityType` skeleton plus the remote schema, flagged for review. Resolution is a normal git change to `lobu.config.ts`.
 8. **Agent autonomy split by reversibility.** Adopt is a config edit (reversible, git-visible) → the reconciler agent may do it autonomously. Delete/revert is destructive → the agent may *issue* the named delete, but it lands as `pending_approval` and a human approves the exact list via a link before it fires.
 9. **No "keep" verb.** Unresolved drift stays red until adopt or delete/revert. A documented ignore list is out of scope unless it nags.
-10. **Minimal DB/API footprint, surfaced for approval.** `DEPLOYMENT_STATUSES` widens with `blocked`; blocked applies POST a deployment carrying the candidates + token. New read `GET /deployments/latest` (latest `succeeded` deployment incl. manifest) — the mixed feed cannot answer it reliably. Optional additive partial index on `events` for that read if the deployment slice grows; no new columns, no new tables.
+10. **Minimal DB/API footprint, surfaced for approval.** `DEPLOYMENT_STATUSES` widens with `blocked`; blocked applies POST a deployment carrying the candidates + token. New read `GET /deployments/latest` (latest `succeeded` deployment incl. manifest) — the mixed feed cannot answer it reliably. **Mandatory additive partial index** on `events` for that read (see PR-1) — without it the lookup would scan unbounded append-only history. No new columns, no new tables.
 
 ## Narrowed contract — documented residual risks
 
@@ -207,7 +207,7 @@ PR-1 lands first; PR-2/PR-3 build on it. v2 (the agent loop) depends on v1's blo
 - ❌ Ignore list / "keep" verb.
 - ❌ Field-level attribution for settings/connections/providers.
 - ❌ **The full fail-closed contract** — org admission, two-phase baseline, per-write optimistic preconditions, crash/partial-failure recovery. Deferred to a separate plan if concurrent applies or adversarial races ever demand it; the narrowed contract's residual risks are documented above.
-- ❌ New DB tables or columns (the optional `/latest` partial index is the entire DB footprint).
+- ❌ New DB tables or columns (the **mandatory** `/latest` partial index is the entire DB footprint).
 - ❌ Bidirectional sync.
 
 If any of these turn out to be hard requirements during real use, they get their own plan and PR; v1 ships small.

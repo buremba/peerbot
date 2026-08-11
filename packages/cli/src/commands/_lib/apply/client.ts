@@ -721,7 +721,9 @@ export class ApplyClient {
     if (
       properties !== undefined ||
       required !== undefined ||
-      resolutionPolicy !== undefined
+      resolutionPolicy !== undefined ||
+      clearFacets?.has("properties") ||
+      clearFacets?.has("required")
     ) {
       // Strip config-owned keys from the extras bag so config always wins —
       // spread order alone would let a stale `required` survive, because the
@@ -737,11 +739,22 @@ export class ApplyClient {
           continue;
         extras[key] = value;
       }
-      // Declared properties/required win; when the config omits them but still
-      // writes metadata_schema (extension-only type), fall back to the live
-      // core so an apply never silently clears the server's schema.
-      const effectiveProperties = properties ?? remoteSchemaCore?.properties;
-      const effectiveRequired = required ?? remoteSchemaCore?.required;
+      // Declared properties/required win. When the config omits them:
+      //   - diff flagged a prune removal → send an empty core to clear them;
+      //   - otherwise → fall back to the live core so a fired update for an
+      //     unrelated field never silently clears the server's schema.
+      const pruneClearProperties = clearFacets?.has("properties");
+      const pruneClearRequired = clearFacets?.has("required");
+      const effectiveProperties = properties
+        ? properties
+        : pruneClearProperties
+          ? {}
+          : remoteSchemaCore?.properties;
+      const effectiveRequired = required
+        ? required
+        : pruneClearRequired
+          ? undefined
+          : remoteSchemaCore?.required;
       payload.metadata_schema = {
         ...extras,
         ...(resolutionPolicy ?? {}),

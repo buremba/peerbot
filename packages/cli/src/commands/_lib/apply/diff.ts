@@ -383,22 +383,24 @@ function diffEntityType(
         changed: (d, r) => stringChanged(d.description, r.description),
       },
       {
+        // required — prune-aware, like eventKinds. Declared: diff and set on
+        // change. Omitted + prune: a present remote set is a removal (apply
+        // clears it). Omitted + no prune: unmanaged, never churns — so an
+        // extension-only declaration (e.g. resolutionPolicy) is a noop on
+        // repeat apply instead of a perpetual update that wipes the live core.
         name: "required",
         changed: (d, r) =>
           d.required !== undefined
             ? !deepEqual(d.required, r.required ?? [])
-            : false,
+            : prune && (r.required ?? []).length > 0,
       },
       {
-        // Declared-only: a config that omits `properties` does not own them, so
-        // they must not churn — otherwise an extension-only declaration (e.g.
-        // resolutionPolicy) re-reports a properties update on every apply while
-        // the upsert just round-trips the live core.
+        // properties — prune-aware, like eventKinds (see `required` above).
         name: "properties",
         changed: (d, r) =>
           d.properties !== undefined
             ? !deepEqual(d.properties, r.properties)
-            : false,
+            : prune && r.properties !== undefined,
       },
       {
         // Derived types store metadata_schema verbatim (no inferred superset),

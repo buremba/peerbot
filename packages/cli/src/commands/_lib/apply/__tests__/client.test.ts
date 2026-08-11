@@ -634,6 +634,40 @@ describe("ApplyClient — prune", () => {
     expect("metrics_config" in body).toBe(false);
   });
 
+  test("a prune-flagged removal clears properties/required instead of preserving them", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    await client.upsertEntityType(
+      {
+        slug: "person",
+        resolutionPolicy: {
+          "x-lobu-resolution": {
+            rules: [
+              { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+            ],
+          },
+        },
+      },
+      undefined,
+      {
+        properties: { email: { type: "string" } },
+        required: ["email"],
+      },
+      new Set(["properties", "required"])
+    );
+
+    const body = JSON.parse(String(calls[0]?.init?.body));
+    expect(body.metadata_schema.properties).toEqual({});
+    expect("required" in body.metadata_schema).toBe(false);
+  });
+
   test("config-owned metadata_schema keys win over stale carried-forward ones", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new ApplyClient(

@@ -261,6 +261,11 @@ describe('isPersonRelevantSender', () => {
     expect(isPersonRelevantSender('john.smith@acme.example', null, false)).toBe(false);
   });
 
+  test('plural role local-parts are rejected too (newsletters, contacts)', () => {
+    expect(isPersonRelevantSender('newsletters@acme.example', 'Acme Newsletters', false)).toBe(false);
+    expect(isPersonRelevantSender('contacts@acme.example', 'Acme Contacts', false)).toBe(false);
+  });
+
   test('missing / unparseable addresses are never human', () => {
     expect(isPersonRelevantSender(null, 'John Smith', false)).toBe(false);
     expect(isPersonRelevantSender('not-an-email', 'John Smith', false)).toBe(false);

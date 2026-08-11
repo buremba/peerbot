@@ -378,6 +378,66 @@ describe("apply diff — memory schema", () => {
     expect(plan.counts.update).toBe(0);
   });
 
+  test("under prune, omitting properties/required flags a removal (declarative fields stay pruneable)", async () => {
+    const desired: DesiredState = {
+      agents: [],
+      memorySchema: {
+        entityTypes: [
+          {
+            slug: "person",
+            name: "Person",
+            resolutionPolicy: {
+              "x-lobu-resolution": {
+                rules: [
+                  {
+                    fields: ["email"],
+                    normalizer: "email",
+                    onMatch: "auto_merge",
+                  },
+                ],
+              },
+            },
+          },
+        ],
+        relationshipTypes: [],
+      },
+      watchers: [],
+      requiredSecrets: [],
+    };
+    // Prune treats the config as the source of truth: a live `required` schema
+    // the config no longer declares must be removed, not silently kept.
+    const plan = computeDiff(
+      desired,
+      {
+        ...emptyRemote(),
+        entityTypes: [
+          {
+            slug: "person",
+            name: "Person",
+            properties: { email: { type: "string" } },
+            required: ["email"],
+            schemaExtras: {
+              "x-lobu-resolution": {
+                rules: [
+                  {
+                    fields: ["email"],
+                    normalizer: "email",
+                    onMatch: "auto_merge",
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+      { prune: true }
+    );
+    const row = plan.rows.find((r) => r.id === "person");
+    expect(row?.verb).toBe("update");
+    expect(row?.changedFields).toContain("properties");
+    expect(row?.changedFields).toContain("required");
+  });
+
   test("relationship-type rules are a noop when remote rules match (idempotency)", () => {
     // Regression: the rel-type `list` action omits rules, so apply hydrates
     // them (listRelationshipTypeRules) into the snapshot. When the hydrated

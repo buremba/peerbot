@@ -1139,7 +1139,7 @@ const normalizeSelfEmail = (email: string | null | undefined): string => {
  * (info@, marketing@, support@, hello@, …). Matched against the lowercased
  * local part of the From address.
  */
-const AUTOMATED_LOCAL_PARTS = /^(?:no[._-]?reply|do[._-]?not[._-]?reply|donotreply|noreply|no\.reply|bounce|mailer[._-]?daemon|postmaster|abuse|notif(?:ications?)?|alert(?:s)?|support|team|info|news(?:letter)?|market(?:ing)?|contact|updates?|jobs|careers|press|media|events?|webmaster|automated|robot|hello|sales|billing|accounts|security|admin|root)$/;
+const AUTOMATED_LOCAL_PARTS = /^(?:no[._-]?reply|do[._-]?not[._-]?reply|donotreply|noreply|no\.reply|bounce|mailer[._-]?daemon|postmaster|abuse|notif(?:ications?|y)?|alert(?:s)?|support|team|info|news(?:letter)?s?|market(?:ing)?s?|contact(?:s)?|update(?:s)?|jobs|careers|press|media|event(?:s)?|webmaster|automated|robot|hello|sales|billing|accounts|security|admin|root)$/;
 
 /**
  * Consumer mail providers — a bare address here is overwhelmingly a personal

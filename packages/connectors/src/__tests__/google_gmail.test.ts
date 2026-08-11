@@ -6,12 +6,12 @@ mock.module('@lobu/connector-sdk', () => connectorSdkMock());
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let GmailConnector: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
-let isHumanSender: any;
+let isPersonRelevantSender: any;
 
 beforeAll(async () => {
   const mod = await import('../google_gmail');
   GmailConnector = mod.default;
-  isHumanSender = mod.isHumanSender;
+  isPersonRelevantSender = mod.isPersonRelevantSender;
 });
 
 interface FakeMessage {
@@ -19,6 +19,9 @@ interface FakeMessage {
   labelIds?: string[];
   from?: string;
   to?: string;
+  cc?: string;
+  listId?: string;
+  precedence?: string;
   date?: string;
 }
 
@@ -32,11 +35,11 @@ interface FakeThread {
  * lookups from the given fixtures. Header values come from the per-message
  * `from`/`date` fields; snippets are constant.
  */
-function fakeHttp(threads: FakeThread[], onRequest?: () => void) {
+function fakeHttp(threads: FakeThread[], onRequest?: (url: string) => void) {
   const byId = new Map(threads.map((t) => [t.id, t]));
   return {
     raw: async (url: string) => {
-      onRequest?.();
+      onRequest?.(url);
       const u = new URL(url);
       const threadMatch = u.pathname.match(/\/threads\/([^/]+)$/);
       const body = threadMatch
@@ -69,6 +72,9 @@ function toThreadResponse(thread: FakeThread | undefined) {
           { name: 'Subject', value: `subject ${thread.id}` },
           { name: 'From', value: m.from ?? 'Some One <someone@example.com>' },
           ...(m.to ? [{ name: 'To', value: m.to }] : []),
+          ...(m.cc ? [{ name: 'Cc', value: m.cc }] : []),
+          ...(m.listId ? [{ name: 'List-Id', value: m.listId }] : []),
+          ...(m.precedence ? [{ name: 'Precedence', value: m.precedence }] : []),
           { name: 'Date', value: m.date ?? '2026-07-01T10:00:00Z' },
         ],
       },
@@ -103,6 +109,35 @@ test('the checkpoint precedes sync requests so messages arriving during sync rem
 
   expect(firstRequestAt).toBeFinite();
   expect(new Date(result.checkpoint.last_sync_at).getTime()).toBeLessThanOrEqual(firstRequestAt);
+});
+
+test('person-building sync requests its label union and attribution headers', async () => {
+  const urls: string[] = [];
+  const connector = new GmailConnector();
+  connector.createClient = () =>
+    fakeHttp(
+      [
+        {
+          id: 't-human',
+          messages: [
+            { id: 'm1', labelIds: ['INBOX'], from: 'Jane Doe <jane@acme.example>' },
+          ],
+        },
+      ],
+      (url) => urls.push(url)
+    );
+
+  await connector.sync({
+    config: { labels: [' INBOX ', 'SENT'], human_senders_only: true },
+    credentials: { accessToken: 'tok' },
+    checkpoint: {},
+  });
+
+  expect(new URL(urls[0]).searchParams.get('q')).toContain('{label:INBOX label:SENT}');
+  const threadUrl = urls.find((url) => url.includes('/threads/t-human')) ?? '';
+  for (const header of ['To', 'Cc', 'List-Id', 'Precedence']) {
+    expect(threadUrl).toContain(`metadataHeaders=${header}`);
+  }
 });
 
 describe('Gmail replied signal (promote-on-interaction)', () => {
@@ -153,6 +188,10 @@ describe('Gmail replied signal (promote-on-interaction)', () => {
 });
 
 describe('Gmail person attribution rule', () => {
+  test('bumps the connector version for the changed sync contract', () => {
+    expect(new GmailConnector().definition.version).toBe('1.0.4');
+  });
+
   test('autoCreate is on but gated on metadata.person_relevant — promotion is interaction/human driven', () => {
     const connector = new GmailConnector();
     const rules = connector.definition.feeds.threads.eventKinds.thread.attributions;
@@ -168,16 +207,17 @@ describe('Gmail person attribution rule', () => {
   });
 });
 
-describe('isHumanSender', () => {
-  test('replied threads are always human regardless of address shape', () => {
-    expect(isHumanSender('promo@brand.example', 'Brand', true)).toBe(true);
-    expect(isHumanSender('noreply@brand.example', 'No Reply', true)).toBe(true);
+describe('isPersonRelevantSender', () => {
+  test('a reply makes a non-role sender relevant but never turns a role mailbox into a person', () => {
+    expect(isPersonRelevantSender('promo@brand.example', 'Brand', true)).toBe(true);
+    expect(isPersonRelevantSender('noreply@brand.example', 'No Reply', true)).toBe(false);
   });
 
   test('automated / shared local-parts never pass on receipt alone', () => {
     for (const email of [
       'noreply@brand.example',
       'no-reply@brand.example',
+      'noreply+receipt@brand.example',
       'donotreply@brand.example',
       'bounce@mailer.example',
       'mailer-daemon@example.com',
@@ -191,28 +231,28 @@ describe('isHumanSender', () => {
       'team@acme.example',
       'newsletter@acme.example',
     ]) {
-      expect(isHumanSender(email, 'Acme', false)).toBe(false);
+      expect(isPersonRelevantSender(email, 'Acme', false)).toBe(false);
     }
   });
 
   test('consumer-mail domains pass even without a display name', () => {
-    expect(isHumanSender('jane.doe@gmail.com', null, false)).toBe(true);
-    expect(isHumanSender('bob@proton.me', '', false)).toBe(true);
+    expect(isPersonRelevantSender('jane.doe@gmail.com', null, false)).toBe(true);
+    expect(isPersonRelevantSender('bob@proton.me', '', false)).toBe(true);
   });
 
   test('a human-looking name passes a corporate domain', () => {
-    expect(isHumanSender('john.smith@acme.example', 'John Smith', false)).toBe(true);
+    expect(isPersonRelevantSender('john.smith@acme.example', 'John Smith', false)).toBe(true);
   });
 
   test('single-word brands and unnamed corporate addresses fail', () => {
-    expect(isHumanSender('team@linkedin.example', 'LinkedIn', false)).toBe(false);
-    expect(isHumanSender('john.smith@acme.example', null, false)).toBe(false);
+    expect(isPersonRelevantSender('team@linkedin.example', 'LinkedIn', false)).toBe(false);
+    expect(isPersonRelevantSender('john.smith@acme.example', null, false)).toBe(false);
   });
 
   test('missing / unparseable addresses are never human', () => {
-    expect(isHumanSender(null, 'John Smith', false)).toBe(false);
-    expect(isHumanSender('not-an-email', 'John Smith', false)).toBe(false);
-    expect(isHumanSender('', 'John Smith', false)).toBe(false);
+    expect(isPersonRelevantSender(null, 'John Smith', false)).toBe(false);
+    expect(isPersonRelevantSender('not-an-email', 'John Smith', false)).toBe(false);
+    expect(isPersonRelevantSender('', 'John Smith', false)).toBe(false);
   });
 });
 
@@ -281,6 +321,134 @@ describe('Gmail human_senders_only sync mode', () => {
     expect(events[0].metadata.person_relevant).toBe(true);
     expect(events[0].metadata.from_email).toBe('bob@example.com');
     expect(events[0].metadata.from_name).toBe('Bob Smith');
+  });
+
+  test('skips a role recipient and attributes a human beside it', async () => {
+    const events = await syncThreads(
+      [
+        {
+          id: 't-mixed',
+          messages: [
+            {
+              id: 'm1',
+              labelIds: ['SENT'],
+              from: 'Me <me@example.com>',
+              to: 'support@vendor.example, Jane Doe <jane@acme.example>',
+            },
+          ],
+        },
+      ],
+      { human_senders_only: true }
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0].metadata.from_email).toBe('jane@acme.example');
+  });
+
+  test('attributes a human reply instead of the automated sender that opened the thread', async () => {
+    const events = await syncThreads(
+      [
+        {
+          id: 't-bot-first',
+          messages: [
+            {
+              id: 'm1',
+              labelIds: ['INBOX'],
+              from: 'Notifications <notifications@vendor.example>',
+            },
+            {
+              id: 'm2',
+              labelIds: ['INBOX'],
+              from: 'Jane Doe <jane@acme.example>',
+            },
+            {
+              id: 'm3',
+              labelIds: ['SENT'],
+              from: 'Me <me@example.com>',
+              to: 'Jane Doe <jane@acme.example>',
+            },
+          ],
+        },
+      ],
+      { human_senders_only: true }
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0].metadata.from_email).toBe('jane@acme.example');
+  });
+
+  test('does not count a case-varying copy of the mailbox owner as a reply', async () => {
+    const events = await syncThreads(
+      [
+        {
+          id: 't-self-copy',
+          messages: [
+            {
+              id: 'm1',
+              labelIds: ['SENT'],
+              from: 'Me <ME@example.com>',
+              to: 'Jane Doe <jane@acme.example>',
+            },
+            { id: 'm2', labelIds: ['INBOX'], from: 'me@EXAMPLE.com' },
+          ],
+        },
+      ],
+      { human_senders_only: true }
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0].metadata.replied).toBe(false);
+    expect(events[0].metadata.from_email).toBe('jane@acme.example');
+  });
+
+  test('fails closed on outbound attribution when the mailbox address is unknown', async () => {
+    const events = await syncThreads(
+      [
+        {
+          id: 't-no-self',
+          messages: [
+            {
+              id: 'm1',
+              labelIds: ['SENT'],
+              from: '',
+              to: 'Jane Doe <jane@acme.example>',
+            },
+          ],
+        },
+      ],
+      { human_senders_only: true }
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  test('drops list threads and unreplied wide broadcasts', async () => {
+    const events = await syncThreads(
+      [
+        {
+          id: 't-list',
+          messages: [
+            {
+              id: 'm1',
+              labelIds: ['SENT'],
+              from: 'Me <me@example.com>',
+              to: 'Jane Doe <jane@acme.example>',
+              listId: '<people.vendor.example>',
+            },
+          ],
+        },
+        {
+          id: 't-blast',
+          messages: [
+            {
+              id: 'm1',
+              labelIds: ['SENT'],
+              from: 'Me <me@example.com>',
+              to: 'Alice One <a@one.example>, Bob Two <b@two.example>',
+              cc: 'Carol Three <c@three.example>, David Four <d@four.example>',
+            },
+          ],
+        },
+      ],
+      { human_senders_only: true }
+    );
+    expect(events).toHaveLength(0);
   });
 
   test('default mode keeps replied semantics and stamps person_relevant = replied', async () => {

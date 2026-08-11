@@ -931,9 +931,8 @@ const midasConnection = defineConnection({
 // only person-relevant threads (human_senders_only) so the DB holds a small
 // high-signal set that drives person minting/merging — full email content stays
 // a live read via the connector's search/get_thread actions, never persisted.
-// Adopts the existing `gmail-buremba` slug so the OAuth grant already in place
-// is reused; the stale duplicate gmail connections/feeds in prod surface as
-// drift rows until cleaned up.
+// Adopts the existing `gmail-buremba` slug so the OAuth grant is reused; stale
+// duplicate gmail connections/feeds in prod surface as drift until cleaned up.
 const gmailConnection = defineConnection({
   slug: "gmail-buremba",
   connector: "google.gmail",

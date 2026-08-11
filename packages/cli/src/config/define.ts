@@ -113,8 +113,8 @@ export interface EntityType {
    * git-audited like the rest of the schema; `lobu apply` folds it into the
    * type's metadata_schema. A rule's `fields` are metadata keys or identity
    * namespaces (e.g. `email`), `normalizer` is `email` | `phone` | `exact`, and
-   * `onMatch` is `auto_merge` | `review`. When the key is absent the server
-   * falls back to defaults (email/phone → review).
+   * `onMatch` is `auto_merge` | `review`. When the key is absent, `person`
+   * falls back to email/phone review rules; other entity types have no rules.
    */
   resolutionPolicy?: {
     rules: Array<{

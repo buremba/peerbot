@@ -446,29 +446,31 @@ function mapEntityType(entity: EntityType): DesiredEntityType {
       );
     }
   }
-  // Fail loud on malformed resolution rules: the server silently ignores rules
-  // that fail its own shape check, which would silently downgrade the policy to
-  // the default (email/phone → review).
+  // Fail loud on malformed resolution rules: the server drops invalid rules,
+  // which can silently disable the intended matching policy.
   if (entity.resolutionPolicy) {
-    const ruleErrors = (entity.resolutionPolicy.rules ?? []).flatMap(
-      (rule, index) => {
-        const fields =
-          Array.isArray(rule.fields) &&
-          rule.fields.every((f) => typeof f === "string" && f.trim())
-            ? rule.fields
-            : null;
-        const normalizerOk =
-          rule.normalizer === "email" ||
-          rule.normalizer === "phone" ||
-          rule.normalizer === "exact";
-        const onMatchOk =
-          rule.onMatch === "auto_merge" || rule.onMatch === "review";
-        if (fields && fields.length > 0 && normalizerOk && onMatchOk) return [];
-        return [
-          `rule ${index}: expected { fields: string[], normalizer: "email"|"phone"|"exact", onMatch: "auto_merge"|"review" }`,
-        ];
-      }
-    );
+    if (!Array.isArray(entity.resolutionPolicy.rules)) {
+      throw new ValidationError(
+        `entity type "${entity.key}" has invalid resolutionPolicy: expected rules to be an array`
+      );
+    }
+    const ruleErrors = entity.resolutionPolicy.rules.flatMap((rule, index) => {
+      const fields =
+        Array.isArray(rule.fields) &&
+        rule.fields.every((f) => typeof f === "string" && f.trim())
+          ? rule.fields
+          : null;
+      const normalizerOk =
+        rule.normalizer === "email" ||
+        rule.normalizer === "phone" ||
+        rule.normalizer === "exact";
+      const onMatchOk =
+        rule.onMatch === "auto_merge" || rule.onMatch === "review";
+      if (fields && fields.length > 0 && normalizerOk && onMatchOk) return [];
+      return [
+        `rule ${index}: expected { fields: string[], normalizer: "email"|"phone"|"exact", onMatch: "auto_merge"|"review" }`,
+      ];
+    });
     if (ruleErrors.length > 0) {
       throw new ValidationError(
         `entity type "${entity.key}" has invalid resolutionPolicy: ${ruleErrors.join("; ")}`

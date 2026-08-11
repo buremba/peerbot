@@ -75,10 +75,9 @@ export interface RemoteEntityType {
   /** Declared metrics (mirrors {@link DesiredEntityType.metrics}); hoisted from the row's `metrics_config`. */
   metrics?: EntityMetrics;
   /**
-   * Top-level `metadata_schema` keys the config has NO way to express — today
-   * `x-lobu-resolution` (the entity-resolution rules the server reads to decide
-   * whether duplicate entities auto-merge), authored via `manage_entity_schema`
-   * / the UI / an agent rather than `lobu.config.ts`.
+   * Top-level `metadata_schema` extension keys not hoisted into dedicated remote
+   * fields. This includes `x-lobu-resolution`: apply compares it when config
+   * declares a policy and carries it forward untouched when config omits it.
    *
    * `upsertEntityType` REBUILDS `metadata_schema` from the config's flat
    * `properties`/`required` and the server stores what it is sent verbatim, so
@@ -251,11 +250,11 @@ function pickArray<T>(body: Record<string, unknown>, ...keys: string[]): T[] {
 }
 
 /**
- * The top-level `metadata_schema` keys `lobu.config.ts` owns. Anything else on
- * the stored schema is authored out-of-band and must survive an apply — see
- * {@link RemoteEntityType.schemaExtras}.
+ * Core JSON Schema keys hoisted to dedicated remote fields. Extension keys stay
+ * in {@link RemoteEntityType.schemaExtras} so apply can diff a declared owner or
+ * preserve an undeclared/out-of-band value.
  */
-const CONFIG_OWNED_SCHEMA_KEYS: ReadonlySet<string> = new Set([
+const HOISTED_SCHEMA_KEYS: ReadonlySet<string> = new Set([
   "type",
   "properties",
   "required",
@@ -268,10 +267,9 @@ const CONFIG_OWNED_SCHEMA_KEYS: ReadonlySet<string> = new Set([
  * `metadata_schema` to the row's top level. Mirrors `upsertEntityType`, which
  * folds the flat fields back into `metadata_schema` when writing.
  *
- * Every OTHER top-level key is collected into `schemaExtras` and handed back to
- * `upsertEntityType` so the rebuild preserves it. Narrowing the read without
- * that carry-forward is what made `lobu apply` silently drop out-of-band schema
- * keys such as `x-lobu-resolution`.
+ * Every other top-level key is collected into `schemaExtras`. The diff may own
+ * a declared extension such as `x-lobu-resolution`; otherwise upsert carries it
+ * forward so rebuilding the core schema cannot erase it silently.
  */
 function hoistEntityTypeSchema(
   row: RemoteEntityType & {
@@ -301,7 +299,7 @@ function hoistEntityTypeSchema(
     }
     const extras: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(schema)) {
-      if (CONFIG_OWNED_SCHEMA_KEYS.has(key)) continue;
+      if (HOISTED_SCHEMA_KEYS.has(key)) continue;
       extras[key] = value;
     }
     if (Object.keys(extras).length > 0) out.schemaExtras = extras;
@@ -674,14 +672,24 @@ export class ApplyClient {
     // DesiredEntityType); extra properties on the passed value are ignored.
     entity: Omit<DesiredEntityType, "metadata">,
     /**
-     * The live type's out-of-band `metadata_schema` keys
+     * The live type's `metadata_schema` extension keys
      * ({@link RemoteEntityType.schemaExtras}), from the remote snapshot this
-     * apply already fetched. Config-owned keys (`type`/`properties`/`required`)
-     * are stripped from this bag before merging, so config always wins on them
-     * while keys it cannot express (e.g. `x-lobu-resolution`) survive the
-     * rebuild.
+     * apply already fetched. Hoisted core keys are stripped before merging; a
+     * declared resolution policy overrides its live extension, while every
+     * undeclared extension survives the rebuild.
      */
-    schemaExtras?: Record<string, unknown>
+    schemaExtras?: Record<string, unknown>,
+    /**
+     * The live type's hoisted schema core (`properties`/`required`) when the
+     * config does not declare them itself. Required so a type that declares
+     * ONLY an extension (e.g. `resolutionPolicy`) does not wipe the server's
+     * complete metadata_schema by sending `properties: {}` — the config's
+     * declared value wins when present, the remote core round-trips otherwise.
+     */
+    remoteSchemaCore?: {
+      properties?: Record<string, unknown>;
+      required?: string[];
+    }
   ): Promise<UpsertEntityTypeResult> {
     // The server stores per-type fields as a single `metadata_schema` JSON
     // Schema (`{ type, properties, required }`) — it does NOT read top-level
@@ -714,19 +722,26 @@ export class ApplyClient {
       // all — the server then leaves the stored one alone, extras included.)
       const extras: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(schemaExtras ?? {})) {
-        if (CONFIG_OWNED_SCHEMA_KEYS.has(key)) continue;
+        if (HOISTED_SCHEMA_KEYS.has(key)) continue;
         // The resolution policy is now config-owned when declared — the declared
         // value wins over any out-of-band one.
         if (resolutionPolicy !== undefined && key === "x-lobu-resolution")
           continue;
         extras[key] = value;
       }
+      // Declared properties/required win; when the config omits them but still
+      // writes metadata_schema (extension-only type), fall back to the live
+      // core so an apply never silently clears the server's schema.
+      const effectiveProperties = properties ?? remoteSchemaCore?.properties;
+      const effectiveRequired = required ?? remoteSchemaCore?.required;
       payload.metadata_schema = {
         ...extras,
         ...(resolutionPolicy ?? {}),
         type: "object",
-        properties: properties ?? {},
-        ...(required && required.length > 0 ? { required } : {}),
+        properties: effectiveProperties ?? {},
+        ...(effectiveRequired && effectiveRequired.length > 0
+          ? { required: effectiveRequired }
+          : {}),
       };
     }
     // Event kinds sent on every upsert so it is deterministic: an object declares

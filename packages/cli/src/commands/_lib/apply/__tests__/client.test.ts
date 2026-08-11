@@ -393,13 +393,10 @@ describe("ApplyClient — prune", () => {
     expect(byKey.empty?.eventKinds).toBeUndefined();
   });
 
-  test("metadata_schema keys the config cannot express survive an apply round-trip", async () => {
-    // `x-lobu-resolution` is authored out-of-band (manage_entity_schema / UI /
-    // an agent) and read by the server's entity-resolution policy to decide
-    // whether duplicate entities auto-merge. `lobu.config.ts` has no way to
-    // declare it, and upsertEntityType rebuilds metadata_schema from the flat
-    // properties/required — so it must be carried forward or the next apply
-    // erases the dedupe rules with no diff row and no warning.
+  test("an undeclared metadata_schema extension survives an apply round-trip", async () => {
+    // A policy authored out-of-band is unmanaged when resolutionPolicy is
+    // omitted from config. Since upsert rebuilds metadata_schema from flat
+    // properties/required, the extension must ride along or apply erases it.
     const resolution = {
       rules: [
         {
@@ -440,7 +437,7 @@ describe("ApplyClient — prune", () => {
 
     const [person, company] = await client.listEntityTypes();
     expect(person?.schemaExtras).toEqual({ "x-lobu-resolution": resolution });
-    // A type with nothing but config-owned keys stays undefined (no churn).
+    // A type with nothing but hoisted core keys stays undefined (no churn).
     expect(company?.schemaExtras).toBeUndefined();
 
     // Re-apply a config that adds a field: properties come from config, the
@@ -526,12 +523,54 @@ describe("ApplyClient — prune", () => {
         },
       }
     );
-
     const body = JSON.parse(String(calls[0]?.init?.body));
     expect(body.metadata_schema["x-lobu-resolution"]).toEqual({
       rules: [
         { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
       ],
+    });
+  });
+
+  test("an extension-only type never wipes the live properties/required (remote core round-trips)", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    // Config declares ONLY the resolution policy — no properties/required. The
+    // live type has a full schema, which must survive the rebuild verbatim.
+    await client.upsertEntityType(
+      {
+        slug: "person",
+        resolutionPolicy: {
+          "x-lobu-resolution": {
+            rules: [
+              { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+            ],
+          },
+        },
+      },
+      undefined,
+      {
+        properties: { email: { type: "string" }, handle: { type: "string" } },
+        required: ["email"],
+      }
+    );
+
+    const body = JSON.parse(String(calls[0]?.init?.body));
+    expect(body.metadata_schema).toEqual({
+      type: "object",
+      properties: { email: { type: "string" }, handle: { type: "string" } },
+      required: ["email"],
+      "x-lobu-resolution": {
+        rules: [
+          { fields: ["email"], normalizer: "email", onMatch: "auto_merge" },
+        ],
+      },
     });
   });
 

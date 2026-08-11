@@ -784,13 +784,13 @@ describe('applyEventAttributions', () => {
 });
 
 /**
-  * End-to-end promote-on-interaction (#1626) against the REAL Gmail connector
-  * rule — not a hand-built test rule — so a regression in the connector's
-  * declared gate (e.g. flipping autoCreate back on ungated) fails here, at the
-  * pipeline level where the raw-sender person flood would actually re-appear.
-  * The gate is `metadata.person_relevant` (the connector stamps it = replied in
-  * default mode; a plausible-human heuristic under human_senders_only).
-  */
+ * End-to-end promote-on-interaction (#1626) against the REAL Gmail connector
+ * rule — not a hand-built test rule — so a regression in the connector's
+ * declared gate (e.g. flipping autoCreate back on ungated) fails here, at the
+ * pipeline level where the raw-sender person flood would actually re-appear.
+ * The gate is `metadata.person_relevant` (replied in default mode; stricter
+ * counterparty selection under human_senders_only).
+ */
 describe('gmail promote-on-interaction (real connector rule)', () => {
   const GMAIL_KEY = 'google.gmail';
   const GMAIL_FEED = 'threads';

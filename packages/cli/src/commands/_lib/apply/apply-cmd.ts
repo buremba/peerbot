@@ -807,7 +807,10 @@ export async function executePlan(
     // computeDiff already made against the ORG-OWNED types only; re-deriving it
     // from the raw snapshot would let a foreign public type of the same slug
     // shadow the owned one (see the ownership filter in computeDiff).
-    await ctx.client.upsertEntityType(row.desired, row.remote?.schemaExtras);
+    await ctx.client.upsertEntityType(row.desired, row.remote?.schemaExtras, {
+      properties: row.remote?.properties,
+      required: row.remote?.required,
+    });
     // View template is a separate, version-appending tool. Reconcile it only on
     // create (when declared) or a flagged change — never every run, so the
     // version history doesn't churn. Declared ⇒ set; omitted-under-prune ⇒ clear.

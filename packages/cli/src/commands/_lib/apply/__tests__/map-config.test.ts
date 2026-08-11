@@ -480,6 +480,17 @@ describe("mapProjectToDesiredState", () => {
     ).toThrow(/invalid resolutionPolicy/i);
   });
 
+  test("rejects a resolutionPolicy without a rules array", () => {
+    const bad = defineEntityType({
+      key: "person",
+      name: "Person",
+      resolutionPolicy: {} as never,
+    });
+    expect(() =>
+      mapProjectToDesiredState(defineConfig({ agents: [], entities: [bad] }))
+    ).toThrow(/expected rules to be an array/i);
+  });
+
   test("rejects invalid metrics at load time (measure naming a missing eventSet)", () => {
     const bad = defineEntityType({
       key: "company",

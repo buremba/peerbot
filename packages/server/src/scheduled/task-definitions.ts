@@ -8,14 +8,6 @@
  */
 export const WORKSPACE_EVENT_ACTIVATION_TASK = 'activate-workspace-event';
 
-const TRANSACTIONAL_TASK_DEFINITIONS = [
-  WORKSPACE_EVENT_ACTIVATION_TASK,
-] as const;
-
-const transactionalTaskNames = new Set<string>(
-  TRANSACTIONAL_TASK_DEFINITIONS
-);
-
 export function isTransactionalTaskName(name: string): boolean {
-  return transactionalTaskNames.has(name);
+  return name === WORKSPACE_EVENT_ACTIVATION_TASK;
 }

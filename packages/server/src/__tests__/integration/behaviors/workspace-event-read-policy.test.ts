@@ -157,4 +157,59 @@ describe('workspace-event exact-input read policy', () => {
       )
     ).rejects.toThrow(/Policy denies reading entities of type '\$member'/);
   });
+
+  it('applies entity-type policy to exact events linked from another workspace', async () => {
+    const producerOrg = await createTestOrganization({ name: 'Linked Event Producer Org' });
+    const consumerOrg = await createTestOrganization({ name: 'Linked Event Consumer Org' });
+    const owner = await createTestUser({ email: 'linked-event-consumer@test.example.com' });
+    await addUserToOrganization(owner.id, consumerOrg.id, 'owner');
+    const agent = await createTestAgent({
+      organizationId: consumerOrg.id,
+      ownerUserId: owner.id,
+      agentId: 'linked-event-consumer',
+    });
+    const secret = await createTestEntity({
+      name: 'Cross-workspace secret',
+      entity_type: 'secret',
+      organization_id: consumerOrg.id,
+      created_by: owner.id,
+    });
+    const event = await createTestEvent({
+      organization_id: producerOrg.id,
+      entity_id: secret.id,
+      semantic_type: 'risk_detected',
+      content: 'Cross-workspace confidential trigger payload',
+    });
+    await denyRead({
+      organizationId: consumerOrg.id,
+      agentId: agent.agentId,
+      entityType: 'secret',
+    });
+
+    const ctx: AuthContext = {
+      organizationId: consumerOrg.id,
+      tokenOrganizationId: consumerOrg.id,
+      userId: owner.id,
+      memberRole: 'owner',
+      agentId: agent.agentId,
+      requestedAgentId: null,
+      isAuthenticated: true,
+      clientId: null,
+      scopes: ['mcp:read'],
+      tokenType: 'oauth',
+      requestUrl: `http://localhost/api/${consumerOrg.id}`,
+      baseUrl: 'http://localhost',
+      scopedToOrg: true,
+      allowCrossOrg: false,
+    };
+
+    await expect(
+      executeTool(
+        'read_knowledge',
+        { content_ids: [event.id], limit: 1 },
+        TEST_ENV,
+        ctx
+      )
+    ).rejects.toThrow(/Policy denies reading entities of type 'secret'/);
+  });
 });

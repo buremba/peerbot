@@ -404,6 +404,16 @@ describe('Behavior event outputs', () => {
       Number(observationTask.action_input.payload.eventId),
     ]);
     expect(triggerRead.window_token).toBeTruthy();
+    const triggerBatchRead = (await api.knowledge.read({
+      behavior_id: consumerId,
+      content_ids: observations.map((item) => Number(item.id)),
+      since: pending.windowStart.toISOString(),
+      until: pending.windowEnd.toISOString(),
+      limit: 1,
+    })) as { content: Array<{ id: number }> };
+    expect(
+      triggerBatchRead.content.map((item) => Number(item.id)).sort((a, b) => a - b)
+    ).toEqual(observations.map((item) => Number(item.id)).sort((a, b) => a - b));
 
     const supersededOutput = await insertEvent({
       entityIds: [parent.id],

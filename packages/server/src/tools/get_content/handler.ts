@@ -226,13 +226,25 @@ async function getContentImpl(
           LEFT JOIN LATERAL unnest(ev.entity_ids) linked(entity_id) ON TRUE
           LEFT JOIN entities e
             ON e.id = linked.entity_id
-           AND e.organization_id = ev.organization_id
            AND e.deleted_at IS NULL
           LEFT JOIN entity_types et
             ON et.id = e.entity_type_id
            AND et.deleted_at IS NULL
-          WHERE ev.organization_id = ${ctx.organizationId}
-            AND ev.id = ANY(${pgBigintArray(args.content_ids)}::bigint[])
+          WHERE ev.id = ANY(${pgBigintArray(args.content_ids)}::bigint[])
+            AND (
+              ev.organization_id = ${ctx.organizationId}
+              OR ev.linked_org_ids @> ARRAY[${ctx.organizationId}]::text[]
+              OR EXISTS (
+                SELECT 1 FROM entities scoped_entity
+                WHERE scoped_entity.id = ANY(ev.entity_ids)
+                  AND scoped_entity.organization_id = ${ctx.organizationId}
+              )
+              OR EXISTS (
+                SELECT 1 FROM connections scoped_connection
+                WHERE scoped_connection.id = ev.connection_id
+                  AND scoped_connection.organization_id = ${ctx.organizationId}
+              )
+            )
         `;
         for (const row of eventTypeRows) {
           // Unbound events use the workspace-wide $member policy envelope.

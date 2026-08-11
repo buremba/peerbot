@@ -55,6 +55,7 @@ interface ContentQueryParams {
   userId: string | null;
   entityIds?: number[];
   query?: Record<string, string>;
+  minimumSourceLimits?: Record<string, number>;
   /**
    * The Behavior these sources belong to. Its own output is excluded from the
    * result — see `excludeProducedByBehaviorId` in execute-data-sources.
@@ -123,6 +124,10 @@ async function queryContentData(
       ? (scopedQuery, queryParams, sourceName) => {
           const isEventSource = eventSourceNames.has(sourceName);
           const isCursorSource = isEventSource && sourceName === page.sourceName;
+          const sourceLimit = Math.max(
+            page.limit,
+            params.minimumSourceLimits?.[sourceName] ?? 0
+          );
           const nextParams = [...queryParams];
 
           // Context sources do not share the event cursor contract (their id may
@@ -131,7 +136,7 @@ async function queryContentData(
           // explicitly when the payload was truncated. Fingerprinting does not
           // pass page, so skip_if_unchanged still sees the complete source state.
           if (!isEventSource) {
-            nextParams.push(page.limit + 1);
+            nextParams.push(sourceLimit + 1);
             const limitParam = `$${nextParams.length}`;
             return {
               // security-allowed: scopedQuery is an internally-built, already-scoped SQL fragment.
@@ -156,7 +161,7 @@ async function queryContentData(
                 `(_watcher_page.occurred_at = ${occurredAtParam}::timestamptz AND _watcher_page.id < ${idParam}::bigint))`
             );
           }
-          nextParams.push(page.limit + 1);
+          nextParams.push(sourceLimit + 1);
           const limitParam = `$${nextParams.length}`;
 
           return {
@@ -236,11 +241,15 @@ async function queryContentData(
     for (const sourceName of boundedSourceNames) {
       if (sourceName === page.sourceName && eventSourceNames.has(sourceName)) continue;
       const rows = results[sourceName] ?? [];
-      const hasMore = rows.length > page.limit;
-      if (hasMore) results[sourceName] = rows.slice(0, page.limit);
+      const sourceLimit = Math.max(
+        page.limit,
+        params.minimumSourceLimits?.[sourceName] ?? 0
+      );
+      const hasMore = rows.length > sourceLimit;
+      if (hasMore) results[sourceName] = rows.slice(0, sourceLimit);
       sourcesPage[sourceName] = {
         returned: (results[sourceName] ?? []).length,
-        limit: page.limit,
+        limit: sourceLimit,
         has_more: hasMore,
       };
     }
@@ -482,6 +491,7 @@ export async function handleBehaviorMode(
         .filter((id) => Number.isSafeInteger(id) && id > 0)
     ),
   ];
+  let triggerInputSourceName: string | null = null;
   if (triggerContentIds.length > MAX_COALESCED_BEHAVIOR_EVENT_INPUTS) {
     throw new ToolUserError(
       `Behavior event windows accept at most ${MAX_COALESCED_BEHAVIOR_EVENT_INPUTS} exact trigger inputs.`,
@@ -494,6 +504,7 @@ export async function handleBehaviorMode(
     for (let suffix = 2; occupiedNames.has(sourceName); suffix++) {
       sourceName = `__event_inputs_${suffix}`;
     }
+    triggerInputSourceName = sourceName;
     sources = [
       {
         name: sourceName,
@@ -582,6 +593,9 @@ export async function handleBehaviorMode(
       triggerContentIds.length > 0
         ? { eventContentIds: triggerContentIds.join(',') }
         : undefined,
+    minimumSourceLimits: triggerInputSourceName
+      ? { [triggerInputSourceName]: triggerContentIds.length }
+      : undefined,
     behaviorId: Number(watcher.id),
     page: {
       sourceName: 'content',

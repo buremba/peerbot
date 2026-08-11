@@ -280,7 +280,7 @@ describe('Behavior event outputs', () => {
         AND organization_id = ${workspace.org.id}
       ORDER BY id
     `;
-    expect(activationTasks).toHaveLength(3);
+    expect(activationTasks).toHaveLength(2);
     expect(
       activationTasks.every(
         (task) => task.status === 'pending' && Number(task.max_attempts) === 5
@@ -288,7 +288,7 @@ describe('Behavior event outputs', () => {
     ).toBe(true);
     expect(
       activationTasks.map((task) => Number(task.action_input.payload.eventId))
-    ).toEqual(rows.map((row) => Number(row.id)));
+    ).toEqual(observations.map((row) => Number(row.id)));
     expect(
       activationTasks.every(
         (task) =>
@@ -389,7 +389,6 @@ describe('Behavior event outputs', () => {
     ).resolves.toMatchObject({
       matched: 0,
       queued: 0,
-      superseded: true,
     });
 
     await expect(
@@ -405,6 +404,15 @@ describe('Behavior event outputs', () => {
       queued: 0,
       invalidCausalPath: true,
     });
+    await expect(
+      activateWorkspaceEventTask(
+        {
+          ...observationTask.action_input.payload,
+          causalBehaviorIds: [watcherId, watcherId + 1000],
+        },
+        sql
+      )
+    ).resolves.toMatchObject({ invalidCausalPath: false });
 
     const otherObservationTask = activationTasks.find(
       (task) =>

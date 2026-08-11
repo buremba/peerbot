@@ -1,6 +1,11 @@
 import type { BehaviorWorkspaceEventTrigger } from '@lobu/core/contracts/tools/manage-behaviors';
 import type { DbClient } from '../db/client';
-import { getDb, parsePgNumberArray, pgBigintArray } from '../db/client';
+import {
+  getDb,
+  parsePgNumberArray,
+  pgBigintArray,
+  pgTextArray,
+} from '../db/client';
 import { createBehaviorEventRun } from '../runs/queue-service';
 import { WORKSPACE_EVENT_ACTIVATION_TASK } from '../scheduled/task-definitions';
 import { enqueueTasksInTransaction } from '../scheduled/task-scheduler';
@@ -41,7 +46,6 @@ interface WorkspaceEventActivationResult {
   depthLimited: boolean;
   causalBreadthLimited: boolean;
   fanoutLimited: boolean;
-  superseded: boolean;
   invalidCausalPath: boolean;
 }
 
@@ -51,9 +55,39 @@ const EMPTY_WORKSPACE_EVENT_ACTIVATION_RESULT = {
   depthLimited: false,
   causalBreadthLimited: false,
   fanoutLimited: false,
-  superseded: false,
   invalidCausalPath: false,
 } as const satisfies WorkspaceEventActivationResult;
+
+export async function findSubscribedWorkspaceEventTypes(
+  organizationId: string,
+  eventTypes: readonly string[],
+  db: DbClient = getDb()
+): Promise<Set<string>> {
+  const candidates = [...new Set(eventTypes)];
+  if (candidates.length === 0) return new Set();
+  const rows = await db<{ event_type: string }>`
+    SELECT DISTINCT event_type.value AS event_type
+    FROM watchers w
+    CROSS JOIN LATERAL jsonb_array_elements(
+      COALESCE(w.triggers, '[]'::jsonb)
+    ) AS trigger(value)
+    CROSS JOIN LATERAL jsonb_array_elements_text(
+      CASE
+        WHEN jsonb_typeof(trigger.value->'event_types') = 'array'
+          THEN trigger.value->'event_types'
+        ELSE '[]'::jsonb
+      END
+    ) AS event_type(value)
+    WHERE w.organization_id = ${organizationId}
+      AND w.status = 'active'
+      AND w.current_version_id IS NOT NULL
+      AND (w.agent_id IS NOT NULL OR w.device_worker_id IS NOT NULL)
+      AND trigger.value->>'kind' = 'event'
+      AND trigger.value->>'source' = 'workspace'
+      AND event_type.value = ANY(${pgTextArray(candidates)}::text[])
+  `;
+  return new Set(rows.map((row) => String(row.event_type)));
+}
 
 export async function enqueueWorkspaceEventActivations(
   tx: DbClient,
@@ -273,12 +307,9 @@ export async function activateWorkspaceEventTask(
       { eventId: payload.eventId },
       '[workspace-event] output was superseded before activation; no downstream Behaviors queued'
     );
-    return {
-      ...EMPTY_WORKSPACE_EVENT_ACTIVATION_RESULT,
-      superseded: true,
-    };
+    return EMPTY_WORKSPACE_EVENT_ACTIVATION_RESULT;
   }
-  if (causalBehaviorIds.at(-1) !== event.producerBehaviorId) {
+  if (!causalBehaviorIds.includes(event.producerBehaviorId)) {
     logger.error(
       {
         eventId: payload.eventId,
@@ -351,7 +382,6 @@ export async function activateWorkspaceEventTask(
     depthLimited: false,
     causalBreadthLimited: false,
     fanoutLimited,
-    superseded: false,
     invalidCausalPath: false,
   };
 }

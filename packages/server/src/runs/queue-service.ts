@@ -792,7 +792,13 @@ export async function createBehaviorEventRun(
               THEN jsonb_array_length(approved_input->'delivery_ids')
             ELSE 0
           END < ${MAX_COALESCED_BEHAVIOR_EVENT_INPUTS}
-        ORDER BY created_at DESC
+        -- Connector events retain FIFO coalescing. Workspace events prefer the
+        -- newest overflow batch because an older run can have room for another
+        -- delivery while its bounded root/causal ancestry is already full.
+        ORDER BY
+          CASE WHEN ${params.trigger.source === 'workspace'} THEN created_at END DESC,
+          created_at ASC,
+          id ASC
         LIMIT 1
         FOR UPDATE
       `;

@@ -7,7 +7,10 @@
 
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
-import { enqueueWorkspaceEventActivations } from '../../../behaviors/workspace-event';
+import {
+  enqueueWorkspaceEventActivations,
+  findSubscribedWorkspaceEventTypes,
+} from '../../../behaviors/workspace-event';
 import {
   deriveWorkspaceEventCausality,
   type WorkspaceEventActivationTaskPayload,
@@ -803,6 +806,13 @@ export async function handleCompleteWindow(
       kind: 'created' | 'updated';
       applied: Record<string, unknown>;
     }>;
+    const subscribedWorkspaceEventTypes = await findSubscribedWorkspaceEventTypes(
+      watcherOrgId,
+      Object.values(outputs ?? {}).flatMap((output) =>
+        'event' in output ? [output.event] : []
+      ),
+      tx
+    );
     const workspaceEventActivations: WorkspaceEventActivationTaskPayload[] = [];
     for (const [outputName, output] of Object.entries(outputs ?? {})) {
       if ('entity' in output) {
@@ -838,7 +848,12 @@ export async function handleCompleteWindow(
           createdBy: watcherCreatedBy,
         });
         for (const event of persistedEvents) {
-          if (event.change === 'unchanged') continue;
+          if (
+            event.change === 'unchanged' ||
+            !subscribedWorkspaceEventTypes.has(output.event)
+          ) {
+            continue;
+          }
           workspaceEventActivations.push({
             organizationId: watcherOrgId,
             eventId: Number(event.id),

@@ -110,8 +110,7 @@ interface TransactionalTask<P = unknown> {
  * one transaction, so the whole batch takes one INSERT and one NOTIFY rather
  * than a database round-trip per row. Transactional handoffs deliberately have
  * no expiry: if every worker is unavailable, the durable row must remain until
- * it is claimed. Returned ids preserve input order, including duplicate
- * idempotency keys.
+ * it is claimed.
  */
 export async function enqueueTasksInTransaction<P>(
   tx: DbClient,

@@ -97,6 +97,7 @@ export async function loadConnectorDeriveFeedContext(
 		  AND f.feed_key = ${args.feedKey}
 		  AND f.deleted_at IS NULL
 		  AND c.connector_key = ${args.connectorKey}
+		  AND c.deleted_at IS NULL
 		LIMIT 1
 	`;
 	const row = rows[0];
@@ -135,7 +136,10 @@ export function deriveConnectorActivationSignals(
 	if (change !== "inserted") return [];
 	if (event.connectionId == null) return [];
 	if (!ctx.feedPreviouslySynced) return [];
-	if (ctx.eventKinds == null || ctx.eventKinds[event.kind] == null) return [];
+	if (ctx.eventKinds == null) return [];
+	const kind = normalizeEventKind(event.kind);
+	// An overlong kind has no activatable surface (same rule as the catalog).
+	if (kind.length === 0 || ctx.eventKinds[kind] == null) return [];
 
 	const occurred = new Date(event.occurredAt);
 	const occurredAt = Number.isFinite(occurred.getTime())
@@ -184,7 +188,6 @@ export function deriveConnectorActivationSignals(
 	}
 	attributes.change = change;
 
-	const kind = normalizeEventKind(event.kind);
 	// Omit resource_ref for an overlong origin_id rather than truncating it —
 	// truncation could collide two distinct source identities.
 	const resourceRef =
@@ -208,13 +211,15 @@ export function deriveConnectorActivationSignals(
 }
 
 /**
- * Event-kind identity, normalized identically in the catalog and at activation
- * so a trigger the picker advertises always matches what the signal emits.
- * Kinds are connector-declared; the 100-char schema bound is enforced the same
- * way on both surfaces.
+ * Event-kind identity, kept verbatim and applied identically in the catalog and
+ * at activation so a trigger the picker advertises always matches what the
+ * signal emits. Kinds longer than the 100-char Behavior-event bound are NOT
+ * truncatable (two distinct long kinds sharing a prefix would collide into one
+ * event_type) — they are skipped entirely on both surfaces: a connector that
+ * declares an overlong kind simply gets no activatable surface for it.
  */
 function normalizeEventKind(kind: string): string {
-	return kind.slice(0, 100);
+	return kind.length <= 100 ? kind : "";
 }
 
 /**

@@ -175,20 +175,20 @@ describe('resolveBehaviorEventCatalog', () => {
     expect(signals[0]?.label).toBe('x tweet');
   });
 
-  test('kind is normalized identically in catalog and signal', () => {
-    const longKind = 'a'.repeat(150);
+  test('overlong kinds are skipped, never truncated, in catalog and signal', () => {
+    const longKindA = 'a'.repeat(150);
+    const longKindB = 'a'.repeat(130) + 'b';
+    // Distinct long kinds sharing a prefix must NOT collapse into one type.
     const catalog = deriveBehaviorEventCatalogFromFeeds({
-      home_feed: { eventKinds: { [longKind]: {} } },
+      home_feed: { eventKinds: { [longKindA]: {}, [longKindB]: {} } },
     });
-    expect(catalog).toHaveLength(1);
-    expect(catalog[0].key).toBe('a'.repeat(100));
+    expect(catalog).toEqual([]);
     const signals = deriveConnectorActivationSignals(
-      { ...context, eventKinds: { [longKind]: {} } },
-      { ...baseEvent, kind: longKind },
+      { ...context, eventKinds: { [longKindA]: {}, [longKindB]: {} } },
+      { ...baseEvent, kind: longKindA },
       'inserted',
     );
-    expect(signals[0]?.event_type).toBe('a'.repeat(100));
-    expect(signals[0]?.resource_type).toBe('a'.repeat(100));
+    expect(signals).toEqual([]);
   });
 
   test('caps derived fields to the connector-signal schema limits', () => {

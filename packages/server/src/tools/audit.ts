@@ -139,9 +139,14 @@ function buildPayload(params: ToolInvocationAuditParams): Record<string, unknown
       side_effect_preview: Array.isArray(result.side_effect_preview)
         ? result.side_effect_preview
         : [],
-      side_effect_count: Array.isArray(result.side_effect_preview)
-        ? result.side_effect_preview.length
-        : 0,
+      // `skipped_calls` survives preview truncation; fall back to array length
+      // for older payloads.
+      side_effect_count:
+        typeof result.skipped_calls === 'number'
+          ? result.skipped_calls
+          : Array.isArray(result.side_effect_preview)
+            ? result.side_effect_preview.length
+            : 0,
       success: toolError ? false : result.success === true,
       error: toolError ?? resultError,
       duration_ms: params.durationMs,

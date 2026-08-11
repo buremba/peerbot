@@ -484,6 +484,7 @@ async function getContentImpl(
         sql,
         organizationId: ctx.organizationId,
         visibilityScope,
+        excludeWorkspaceAudit: ctx.isAuthenticated === false,
         limit,
         offset,
       }));
@@ -499,6 +500,7 @@ async function getContentImpl(
         untilDate,
         visibilityScope,
         mcpSessionIds,
+        excludeWorkspaceAudit: ctx.isAuthenticated === false,
         limit,
         offset,
       }));

@@ -608,7 +608,11 @@ export async function createAuth(
 							);
 						}
 					},
-					afterCancelInvitation: async ({ invitation, organization: org }) => {
+					afterCancelInvitation: async ({
+						invitation,
+						cancelledBy,
+						organization: org,
+					}) => {
 						// Cancellation is already committed. Audit first. Better Auth
 						// RETAINS the invitation row and flips its status to 'canceled'
 						// (it does not delete), so record that transition faithfully
@@ -626,6 +630,7 @@ export async function createAuth(
 							},
 							changedFields: ["status"],
 							actorSource: "ui",
+							createdBy: cancelledBy.id,
 						});
 						try {
 							await deleteMemberEntity(org.id, invitation.email);
@@ -636,7 +641,7 @@ export async function createAuth(
 							);
 						}
 					},
-					afterRejectInvitation: async ({ invitation, organization: org }) => {
+					afterRejectInvitation: async ({ invitation, user, organization: org }) => {
 						// Rejection is already committed. Audit first. Better Auth
 						// RETAINS the invitation row and flips its status to 'rejected'
 						// (it does not delete), so record that transition faithfully
@@ -654,6 +659,7 @@ export async function createAuth(
 							},
 							changedFields: ["status"],
 							actorSource: "ui",
+							createdBy: user.id,
 						});
 						try {
 							await deleteMemberEntity(org.id, invitation.email);

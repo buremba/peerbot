@@ -61,6 +61,15 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     return new Set(result.content.map((c) => c.id));
   }
 
+  async function readExactIds(ctx: ToolContext, ids: number[]): Promise<Set<number>> {
+    const result = await getContent(
+      { entity_id: entity.id, content_ids: ids, limit: 100 } as never,
+      {} as never,
+      ctx
+    );
+    return new Set(result.content.map((c) => c.id));
+  }
+
   beforeAll(async () => {
     await initWorkspaceProvider();
     await cleanupTestDatabase();
@@ -110,6 +119,15 @@ describe('workspace-identity audit events > public-read exclusion', () => {
 
   it('anonymous public-workspace reader does NOT see the workspace audit event', async () => {
     const ids = await listIds(unauthedCtx());
+    expect(ids.has(workspaceAuditEventId)).toBe(false);
+    expect(ids.has(normalEventId)).toBe(true);
+  });
+
+  it('anonymous content_ids exact-ID read excludes workspace audit but keeps ordinary events', async () => {
+    const ids = await readExactIds(unauthedCtx(), [
+      workspaceAuditEventId,
+      normalEventId,
+    ]);
     expect(ids.has(workspaceAuditEventId)).toBe(false);
     expect(ids.has(normalEventId)).toBe(true);
   });

@@ -14,6 +14,7 @@ cd "$REPO_ROOT"
 DEPOT_ORG_ID="${DEPOT_ORG_ID:-b9ffw2rv84}"
 REMOTE_CI_TIMEOUT_SECONDS="${REMOTE_CI_TIMEOUT_SECONDS:-2700}"
 REMOTE_CI_POLL_INTERVAL_SECONDS="${REMOTE_CI_POLL_INTERVAL_SECONDS:-5}"
+REMOTE_CI_MAX_RETRIES="${REMOTE_CI_MAX_RETRIES:-1}"
 WORKFLOW=".github/workflows/ci.yml"
 SOURCE_ACTION=".github/actions/setup-submodule/action.yml"
 DEPOT_ACTION=".depot/actions/setup-submodule/action.yml"
@@ -48,6 +49,10 @@ for value in "$REMOTE_CI_TIMEOUT_SECONDS" "$REMOTE_CI_POLL_INTERVAL_SECONDS"; do
     exit 2
   }
 done
+[[ "$REMOTE_CI_MAX_RETRIES" =~ ^[0-9]+$ ]] || {
+  echo "Remote CI max retries must be a non-negative integer." >&2
+  exit 2
+}
 
 if ! cmp -s "$SOURCE_ACTION" "$DEPOT_ACTION"; then
   echo "$DEPOT_ACTION has drifted from $SOURCE_ACTION." >&2
@@ -112,26 +117,45 @@ if [ -z "$run_id" ]; then
   exit 1
 fi
 
-deadline=$((SECONDS + REMOTE_CI_TIMEOUT_SECONDS))
-last_summary=""
+retry_count=0
 while :; do
-  status_json="$(depot ci status "$run_id" --org "$DEPOT_ORG_ID" --output json)" || {
-    echo "Could not read Depot status for run $run_id." >&2
-    exit 1
-  }
-  summary="$(remote_ci_status_summary <<<"$status_json")"
-  if [ "$summary" != "$last_summary" ]; then
-    echo ">> Depot run $run_id: ${summary:-waiting for jobs}"
-    last_summary="$summary"
-  fi
-  if remote_ci_status_terminal <<<"$status_json"; then
+  deadline=$((SECONDS + REMOTE_CI_TIMEOUT_SECONDS))
+  last_summary=""
+  while :; do
+    status_json="$(depot ci status "$run_id" --org "$DEPOT_ORG_ID" --output json)" || {
+      echo "Could not read Depot status for run $run_id." >&2
+      exit 1
+    }
+    summary="$(remote_ci_status_summary <<<"$status_json")"
+    if [ "$summary" != "$last_summary" ]; then
+      echo ">> Depot run $run_id: ${summary:-waiting for jobs}"
+      last_summary="$summary"
+    fi
+    if remote_ci_status_terminal <<<"$status_json"; then
+      break
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      echo "Depot run $run_id did not finish within ${REMOTE_CI_TIMEOUT_SECONDS}s; it is still running remotely." >&2
+      exit 1
+    fi
+    sleep "$REMOTE_CI_POLL_INTERVAL_SECONDS"
+  done
+
+  if remote_ci_status_succeeded <<<"$status_json"; then
     break
   fi
-  if [ "$SECONDS" -ge "$deadline" ]; then
-    echo "Depot run $run_id did not finish within ${REMOTE_CI_TIMEOUT_SECONDS}s; it is still running remotely." >&2
-    exit 1
+
+  if [ "$retry_count" -ge "$REMOTE_CI_MAX_RETRIES" ]; then
+    break
   fi
-  sleep "$REMOTE_CI_POLL_INTERVAL_SECONDS"
+  workflow_id="$(jq -r '.workflows[0].workflow_id // empty' <<<"$status_json")"
+  if [ -z "$workflow_id" ] || ! depot ci retry "$run_id" \
+      --failed --workflow "$workflow_id" --org "$DEPOT_ORG_ID"; then
+    echo "Depot could not retry the failed jobs in run $run_id." >&2
+    break
+  fi
+  retry_count=$((retry_count + 1))
+  echo ">> retrying failed Depot jobs (${retry_count}/${REMOTE_CI_MAX_RETRIES}); successful jobs are preserved"
 done
 
 if ! remote_ci_status_succeeded <<<"$status_json"; then

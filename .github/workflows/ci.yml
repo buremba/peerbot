@@ -259,6 +259,12 @@ jobs:
       - name: CLI command-coverage smoke (every command runs)
         id: cli
         continue-on-error: true
+        # Keep this isolated from sdk-e2e-error.sh. GitHub's image has lsof for
+        # that script's cleanup fallback; Depot's minimal image does not, so a
+        # just-finished gateway may otherwise still own the shared defaults.
+        env:
+          GW_PORT: "8797"
+          MOCK_PORT: "11438"
         run: bash scripts/cli-smoke.sh
 
       - name: Require every deep smoke

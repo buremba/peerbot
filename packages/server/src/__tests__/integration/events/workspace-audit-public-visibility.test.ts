@@ -358,6 +358,29 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     expect(sawCancelled).toBe(true);
   });
 
+  it('org-home bootstrap hides workspace audit rows from non-owner/admin', async () => {
+    const { resolvePath } = await import('../../../tools/resolve_path');
+    const slug = (org as unknown as { slug: string }).slug;
+
+    async function bootstrapRecent(ctx: ToolContext) {
+      const result = await resolvePath(
+        { path: `/${slug}`, include_bootstrap: true } as never,
+        {} as never,
+        ctx
+      );
+      return new Set(
+        ((result.bootstrap as { recent_content?: Array<{ id: number }> })
+          ?.recent_content ?? []).map((c) => c.id)
+      );
+    }
+
+    // Anonymous and ordinary members do not see the org-wide workspace audit row.
+    expect((await bootstrapRecent(unauthedCtx())).has(orgWideWorkspaceAuditEventId)).toBe(false);
+    expect((await bootstrapRecent(memberCtx())).has(orgWideWorkspaceAuditEventId)).toBe(false);
+    // Owner does.
+    expect((await bootstrapRecent(authedCtx())).has(orgWideWorkspaceAuditEventId)).toBe(true);
+  });
+
   it('anonymous content_ids exact-ID read excludes workspace audit but keeps ordinary events', async () => {
     const ids = await readExactIds(unauthedCtx(), [
       workspaceAuditEventId,

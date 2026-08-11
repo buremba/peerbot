@@ -31,7 +31,7 @@ import { buildDefaultEntityTemplate } from '../utils/default-entity-template';
 import { measureColumns as inferMeasureColumns } from '../utils/infer-measures';
 import { RESERVED_PATHS_SET } from '../utils/reserved';
 import { getWorkspaceProvider } from '../workspace';
-import { isAdminOrOwnerRole } from './access-control';
+import { isAdminOrOwnerRole, isSystemContext } from './access-control';
 import { MEMBER_ENTITY_TYPE_SLUG } from './constants';
 import type { ToolContext } from './registry';
 import { withValidatedArgs } from './validate-args';
@@ -974,8 +974,20 @@ async function fetchBootstrap(
 
   const [entityTypes, totalContent, recentContent, recentFeeds] = await Promise.all([
     listEntityTypes(sql, ctx),
-    fetchContentCount(sql, workspace.id, entity),
-    fetchRecentContent(sql, workspace.id, entity?.id ?? null),
+    fetchContentCount(
+      sql,
+      workspace.id,
+      entity,
+      // Workspace-identity audit rows carry member/invitation emails; only
+      // owner/admin and trusted in-process system callers may see them.
+      !isAdminOrOwnerRole(ctx.memberRole) && !isSystemContext(ctx)
+    ),
+    fetchRecentContent(
+      sql,
+      workspace.id,
+      entity?.id ?? null,
+      !isAdminOrOwnerRole(ctx.memberRole) && !isSystemContext(ctx)
+    ),
     fetchRecentFeeds(sql, workspace.id, entity?.id ?? null),
   ]);
   const connectorDefinitions = await listWorkspaceConnectorDefinitions(
@@ -1149,7 +1161,8 @@ async function fetchWorkspaceCounts(
 async function fetchContentCount(
   sql: DbClient,
   organizationId: string,
-  entity: ResolvedEntityDetails | null
+  entity: ResolvedEntityDetails | null,
+  excludeWorkspaceAudit: boolean
 ): Promise<number> {
   if (entity) return entity.total_content;
 
@@ -1159,6 +1172,9 @@ async function fetchContentCount(
     WHERE ev.organization_id = ${organizationId}
       -- Exclude null-shaped internal events (P1 corrections) from the org content count.
       AND ev.semantic_type <> 'correction'
+      -- Workspace-identity audit rows carry member/invitation emails; only
+      -- owner/admin and trusted system callers may see them.
+      ${excludeWorkspaceAudit ? sql`AND (ev.metadata->>'category') IS DISTINCT FROM 'workspace'` : sql``}
   `;
   return Number((row as { total_content?: number } | undefined)?.total_content) || 0;
 }
@@ -1166,7 +1182,8 @@ async function fetchContentCount(
 async function fetchRecentContent(
   sql: DbClient,
   organizationId: string,
-  entityId: number | null
+  entityId: number | null,
+  excludeWorkspaceAudit: boolean
 ): Promise<BootstrapContentItem[]> {
   // Inline the entity-link match as raw SQL — this whole query is built as a
   // single sql.unsafe() statement rather than mixing sql.unsafe() fragments
@@ -1207,6 +1224,9 @@ async function fetchRecentContent(
     WHERE ev.organization_id = $1
       -- Exclude null-shaped internal events (P1 corrections) from the recent-content list.
       AND ev.semantic_type <> 'correction'
+      -- Workspace-identity audit rows carry member/invitation emails; only
+      -- owner/admin and trusted system callers may see them in bootstrap.
+      ${excludeWorkspaceAudit ? `AND (ev.metadata->>'category') IS DISTINCT FROM 'workspace'` : ''}
       ${entityFilter}
     ORDER BY COALESCE(ev.occurred_at, ev.created_at) DESC
     LIMIT $2

@@ -80,7 +80,6 @@ describe("platform-derived connector activation", () => {
 		};
 		const event: ConnectorDeriveEventInput = {
 			connectionId: connection.id,
-			runId: 100,
 			originId: "2083959735481716957",
 			kind: "tweet",
 			title: "someone: hello",

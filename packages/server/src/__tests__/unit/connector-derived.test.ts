@@ -3,6 +3,7 @@ import type { ConnectorTriggerSignal } from '@lobu/connector-sdk';
 import {
   deriveBehaviorEventCatalogFromFeeds,
   deriveConnectorActivationSignals,
+  resolveBehaviorEventCatalog,
   type ConnectorDeriveEventInput,
   type ConnectorDeriveFeedContext,
 } from '../../behaviors/connector-derived';
@@ -111,5 +112,36 @@ describe('deriveBehaviorEventCatalogFromFeeds', () => {
     expect(deriveBehaviorEventCatalogFromFeeds(null)).toEqual([]);
     expect(deriveBehaviorEventCatalogFromFeeds({ home_feed: {} })).toEqual([]);
     expect(deriveBehaviorEventCatalogFromFeeds({})).toEqual([]);
+  });
+});
+
+describe('resolveBehaviorEventCatalog', () => {
+  test('preserves every declared event field the UI editor reads', () => {
+    const declared = [
+      {
+        key: 'message.created',
+        label: 'A message is sent',
+        description: 'Runs for messages in the selected scope.',
+        resourceType: 'channel',
+        filterSchema: { type: 'object', properties: { channel_id: { type: 'string' } } },
+        defaults: { execution: 'turn', activeRun: 'steer', output: 'reply_to_source' },
+        capabilities: { steering: true, replyToSource: true },
+      },
+    ];
+    const resolved = resolveBehaviorEventCatalog({
+      persistedEvents: declared,
+      feedsSchema: {},
+      bundled: null,
+    });
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]).toMatchObject({
+      key: 'message.created',
+      label: 'A message is sent',
+      description: 'Runs for messages in the selected scope.',
+      resourceType: 'channel',
+      filterSchema: { type: 'object' },
+      defaults: { execution: 'turn', activeRun: 'steer', output: 'reply_to_source' },
+      capabilities: { steering: true, replyToSource: true },
+    });
   });
 });

@@ -217,9 +217,9 @@ export function deriveBehaviorEventCatalogFromFeeds(
 
 function parseDeclaredBehaviorEvents(
 	value: unknown,
-): Array<{ key: string; label?: string; capabilities?: unknown }> {
+): Array<Record<string, unknown> & { key: string }> {
 	if (!Array.isArray(value)) return [];
-	const out: Array<{ key: string; label?: string; capabilities?: unknown }> = [];
+	const out: Array<Record<string, unknown> & { key: string }> = [];
 	for (const item of value) {
 		if (
 			typeof item === "object" &&
@@ -228,13 +228,10 @@ function parseDeclaredBehaviorEvents(
 			(item as { key: string }).key.length > 0
 		) {
 			const entry = item as Record<string, unknown>;
-			out.push({
-				key: String(entry.key),
-				...(typeof entry.label === "string" ? { label: entry.label } : {}),
-				// Preserve declared capabilities (steering / replyToSource) —
-				// trigger validation reads them off the catalog entry.
-				...(entry.capabilities ? { capabilities: entry.capabilities } : {}),
-			});
+			// Preserve every validated ConnectorBehaviorEvent field — the UI
+			// editor reads filterSchema/description/defaults/resourceType off
+			// the catalog, not just key/label/capabilities.
+			out.push({ ...entry, key: String(entry.key) });
 		}
 	}
 	return out;
@@ -280,7 +277,7 @@ export function resolveBehaviorEventCatalog(args: {
 	persistedEvents: unknown;
 	feedsSchema: unknown;
 	bundled?: BundledBehaviorCatalogEntry | null;
-}): Array<{ key: string; label?: string; capabilities?: unknown }> {
+}): Array<Record<string, unknown> & { key: string }> {
 	const declared = parseDeclaredBehaviorEvents(args.persistedEvents);
 	if (declared.length > 0) return declared;
 

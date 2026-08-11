@@ -11,6 +11,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import type { BehaviorTrigger } from "@lobu/core/contracts/tools/manage-behaviors";
 import { assertBehaviorTriggerConnections } from "../../behaviors/triggers";
+import { listCatalogEntries } from "../../catalog/load";
 import { ensureMemberEntityType } from "../../utils/member-entity-type";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import { createTestOrganization } from "../setup/test-fixtures";
@@ -181,20 +182,23 @@ describe("event-trigger connector eligibility", () => {
 		).rejects.toThrow(/does not declare workspace event 'undeclared_kind'/i);
 	});
 
-	it("keeps the bundled curated catalog for a legacy connector with NULL behavior_events", async () => {
-		// A legacy install predates the persisted behavior_events column: the
-		// row has NULL behavior_events and a populated feeds_schema. The bundled
-		// immutable catalog must win over the default-on derivation, so a live
-		// `pull_request.created` trigger keeps matching instead of being rejected
-		// against derived kind slugs.
+	it("keeps the bundled curated catalog for a legacy bundled connector with NULL behavior_events", async () => {
+		// A legacy bundled install predates the persisted behavior_events column:
+		// the row has NULL behavior_events and a feeds_schema matching the
+		// bundled artifact. Its curated catalog (`pull_request.created` etc.)
+		// must win over the default-on derivation, so a live trigger keeps
+		// matching instead of being rejected against derived kind slugs.
 		const sql = getTestDb();
+		const githubBundled = (await listCatalogEntries(["connectors"])).connectors.find(
+			(entry) => entry.id === "github",
+		);
 		await sql`
 			INSERT INTO connector_definitions
 				(organization_id, key, name, version, auth_schema, feeds_schema,
 				 behavior_events, status)
 			VALUES (${orgId}, 'github', 'GitHub', '3.11.0',
 				${sql.json({ methods: [{ type: "app_installation" }] })},
-				${sql.json({ pulls: { eventKinds: { pull_request: {} } } })},
+				${sql.json(githubBundled?.detail.feeds_schema ?? {})},
 				NULL,
 				'active')
 			ON CONFLICT DO NOTHING
@@ -207,5 +211,41 @@ describe("event-trigger connector eligibility", () => {
 				eventTrigger("github", "pull_request.created"),
 			),
 		).resolves.toBeUndefined();
+	});
+
+	it("derives from an org-scoped override's own eventKinds, not the bundled catalog", async () => {
+		// An org-scoped connector that shares the bundled 'slack' key but
+		// declares its OWN eventKinds must never be resolved against the bundled
+		// curated catalog (which would advertise events its code cannot emit).
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO connector_definitions
+				(organization_id, key, name, version, auth_schema, feeds_schema,
+				 behavior_events, status)
+			VALUES (${orgId}, 'slack', 'Custom Slack', '9.9.9',
+				${sql.json({ methods: [{ type: "app_installation" }] })},
+				${sql.json({ incidents: { eventKinds: { incident: {} } } })},
+				NULL,
+				'active')
+			ON CONFLICT DO NOTHING
+		`;
+
+		// The override's derived kind is authorable…
+		await expect(
+			assertBehaviorTriggerConnections(
+				sql,
+				orgId,
+				eventTrigger("slack", "incident"),
+			),
+		).resolves.toBeUndefined();
+
+		// …but a bundled curated type the override's code cannot emit is not.
+		await expect(
+			assertBehaviorTriggerConnections(
+				sql,
+				orgId,
+				eventTrigger("slack", "message.created"),
+			),
+		).rejects.toThrow(/does not support Behavior event/i);
 	});
 });

@@ -323,7 +323,7 @@ describe('GoogleCalendarConnector incremental sync', () => {
 describe('GoogleCalendarConnector virtual events feed', () => {
   test('events is virtual by default while changes remains collected', () => {
     const connector = new GoogleCalendarConnector();
-    expect(connector.definition.version).toBe('1.1.0');
+    expect(connector.definition.version).toBe('1.1.1');
     expect(connector.definition.feeds.events.virtual).toBe(true);
     expect(connector.definition.feeds.changes.virtual ?? false).toBe(false);
     expect(Object.keys(connector.definition.feeds.changes.eventKinds)).toContain('calendar_event');
@@ -389,7 +389,7 @@ describe('GoogleCalendarConnector virtual events feed', () => {
 
 
 describe('GoogleCalendarConnector durable changes feed', () => {
-  test('preserves cancellations and timestamps them at the provider change time', async () => {
+  test('initial traversal applies lookback, captures cursor, and preserves cancellations', async () => {
     const connector = new GoogleCalendarConnector();
     const changedAt = '2026-08-10T00:12:34.000Z';
     const cancelled = {
@@ -398,12 +398,12 @@ describe('GoogleCalendarConnector durable changes feed', () => {
       summary: undefined,
       updated: changedAt,
     };
-    const { client } = fakeHttp([{ items: [cancelled], nextSyncToken: 'NEXT' }]);
+    const { client, urls } = fakeHttp([{ items: [cancelled], nextSyncToken: 'NEXT' }]);
     connector.client = () => client;
 
     const result = await connector.sync({
       feedKey: 'changes',
-      config: { calendar_id: 'primary', max_results: 100 },
+      config: { calendar_id: 'primary', max_results: 100, lookback_days: 30 },
       credentials: { accessToken: 'tok' },
       checkpoint: null,
     });
@@ -414,5 +414,118 @@ describe('GoogleCalendarConnector durable changes feed', () => {
     expect(result.events[0]?.metadata?.status).toBe('cancelled');
     expect(result.events[0]?.metadata?.change_type).toBe('cancelled');
     expect(result.checkpoint.sync_token).toBe('NEXT');
+    expect(result.checkpoint.param_version).toBe(1);
+
+    const first = new URL(urls[0]);
+    expect(first.searchParams.get('singleEvents')).toBe('true');
+    expect(first.searchParams.get('showDeleted')).toBe('true');
+    expect(first.searchParams.get('orderBy')).toBeNull();
+    expect(first.searchParams.get('timeMin')).toBeTruthy();
+    expect(first.searchParams.get('timeMax')).toBeNull();
+    expect(first.searchParams.get('syncToken')).toBeNull();
+  });
+
+  test('incremental traversal keeps sync-compatible parameters and never drops changes before advancing the token', async () => {
+    const connector = new GoogleCalendarConnector();
+    const { client, urls } = fakeHttp([
+      {
+        items: [calEvent('changed-1', '2026-08-10T10:00:00Z')],
+        nextPageToken: 'p2',
+      },
+      {
+        items: [calEvent('changed-2', '2026-08-11T10:00:00Z')],
+        nextSyncToken: 'FRESH',
+      },
+    ]);
+    connector.client = () => client;
+
+    const result = await connector.sync({
+      feedKey: 'changes',
+      config: { calendar_id: 'primary', max_results: 1 },
+      credentials: { accessToken: 'tok' },
+      checkpoint: { sync_token: 'OLD', param_version: 1 },
+    });
+
+    expect(
+      result.events.map((event: { origin_id: string }) => event.origin_id).sort()
+    ).toEqual(['changed-1', 'changed-2']);
+    expect(result.checkpoint.sync_token).toBe('FRESH');
+    expect(result.checkpoint.param_version).toBe(1);
+    expect(urls).toHaveLength(2);
+
+    const first = new URL(urls[0]);
+    expect(first.searchParams.get('syncToken')).toBe('OLD');
+    expect(first.searchParams.get('singleEvents')).toBe('true');
+    expect(first.searchParams.get('showDeleted')).toBe('true');
+    expect(first.searchParams.get('orderBy')).toBeNull();
+    expect(first.searchParams.get('timeMin')).toBeNull();
+    expect(first.searchParams.get('timeMax')).toBeNull();
+    expect(first.searchParams.get('maxResults')).toBe('250');
+
+    const second = new URL(urls[1]);
+    expect(second.searchParams.get('syncToken')).toBe('OLD');
+    expect(second.searchParams.get('pageToken')).toBe('p2');
+    expect(second.searchParams.get('singleEvents')).toBe('true');
+    expect(second.searchParams.get('showDeleted')).toBe('true');
+  });
+
+  test('a legacy (unversioned) changes checkpoint rolls over with one full traversal instead of replaying its token', async () => {
+    const connector = new GoogleCalendarConnector();
+    const { client, urls } = fakeHttp([
+      { items: [calEvent('rolled-1', '2026-08-10T10:00:00Z')], nextSyncToken: 'V2' },
+    ]);
+    connector.client = () => client;
+
+    const result = await connector.sync({
+      feedKey: 'changes',
+      config: { calendar_id: 'primary', max_results: 100 },
+      credentials: { accessToken: 'tok' },
+      checkpoint: { sync_token: 'LEGACY' },
+    });
+
+    const first = new URL(urls[0]);
+    expect(first.searchParams.get('syncToken')).toBeNull();
+    expect(first.searchParams.get('singleEvents')).toBe('true');
+    expect(first.searchParams.get('showDeleted')).toBe('true');
+    expect(first.searchParams.get('orderBy')).toBeNull();
+    expect(first.searchParams.get('timeMin')).toBeTruthy();
+    expect(first.searchParams.get('timeMax')).toBeNull();
+    expect(urls).toHaveLength(1);
+
+    expect(result.events.map((event: { origin_id: string }) => event.origin_id)).toEqual([
+      'rolled-1',
+    ]);
+    expect(result.checkpoint.sync_token).toBe('V2');
+    expect(result.checkpoint.param_version).toBe(1);
+  });
+
+  test('fails closed when a changes traversal completes without a durable sync token', async () => {
+    const connector = new GoogleCalendarConnector();
+    const { client } = fakeHttp([{ items: [calEvent('a', '2026-08-10T10:00:00Z')] }]);
+    connector.client = () => client;
+
+    await expect(
+      connector.sync({
+        feedKey: 'changes',
+        config: { calendar_id: 'primary', max_results: 100 },
+        credentials: { accessToken: 'tok' },
+        checkpoint: null,
+      })
+    ).rejects.toThrow(/sync token/i);
+  });
+
+  test('fails closed when an incremental changes traversal omits its replacement token', async () => {
+    const connector = new GoogleCalendarConnector();
+    const { client } = fakeHttp([{ items: [calEvent('a', '2026-08-10T10:00:00Z')] }]);
+    connector.client = () => client;
+
+    await expect(
+      connector.sync({
+        feedKey: 'changes',
+        config: { calendar_id: 'primary', max_results: 100 },
+        credentials: { accessToken: 'tok' },
+        checkpoint: { sync_token: 'OLD', param_version: 1 },
+      })
+    ).rejects.toThrow(/sync token/i);
   });
 });

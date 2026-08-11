@@ -392,6 +392,20 @@ describe('Behavior event outputs', () => {
       superseded: true,
     });
 
+    await expect(
+      activateWorkspaceEventTask(
+        {
+          ...observationTask.action_input.payload,
+          causalBehaviorIds: [watcherId + 1],
+        },
+        sql
+      )
+    ).resolves.toMatchObject({
+      matched: 0,
+      queued: 0,
+      invalidCausalPath: true,
+    });
+
     const otherObservationTask = activationTasks.find(
       (task) =>
         Number(task.action_input.payload.eventId) !==

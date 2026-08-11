@@ -371,8 +371,8 @@ describe('behavior event trigger matching', () => {
     });
   });
 
-  test('rejects a producer that already appears in its inherited causal path', () => {
-    expect(() =>
+  test('preserves a producer already present in its inherited causal path', () => {
+    expect(
       deriveWorkspaceEventCausality(
         [
           {
@@ -389,7 +389,11 @@ describe('behavior event trigger matching', () => {
         ],
         9
       )
-    ).toThrow(/cannot re-enter Behavior 9/i);
+    ).toEqual({
+      rootEventIds: [40],
+      causalBehaviorIds: [7, 9],
+      depth: 3,
+    });
   });
 
   test('measures causal depth by hops when coalescing independent branches', () => {

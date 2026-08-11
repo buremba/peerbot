@@ -47,6 +47,7 @@ import { incrementCounter } from '../gateway/metrics/prometheus';
 import { notifyChannelFor } from '../gateway/infrastructure/queue/runs-queue';
 import type { IMessageQueue, QueueJob } from '../gateway/infrastructure/queue/types';
 import { nextRunAt } from '../utils/cron';
+import { isTransactionalTaskName } from './task-definitions';
 
 const logger = createLogger('task-scheduler');
 
@@ -117,6 +118,12 @@ export async function enqueueTasksInTransaction<P>(
   tasks: TransactionalTask<P>[],
 ): Promise<string[]> {
   if (tasks.length === 0) return [];
+  const unknownTask = tasks.find((task) => !isTransactionalTaskName(task.name));
+  if (unknownTask) {
+    throw new Error(
+      `Cannot enqueue unknown transactional task "${unknownTask.name}"`,
+    );
+  }
   const requested = tasks.map(({ name, payload, opts }) => ({
     name,
     data: { name, payload } satisfies TaskJobData,

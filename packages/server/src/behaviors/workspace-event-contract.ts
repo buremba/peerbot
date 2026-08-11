@@ -83,14 +83,13 @@ export function deriveWorkspaceEventCausality(
         causalBehaviorIds.push(behaviorId);
     }
   }
-  // The producer is the final causal element. activateWorkspaceEventTask uses
-  // that position to verify the persisted event's producer before dispatch.
-  if (causalBehaviorIds.includes(producerBehaviorId)) {
-    throw new Error(
-      `Workspace event causality cannot re-enter Behavior ${producerBehaviorId}`
-    );
+  // Matching already excludes a Behavior present in the inherited path. Keep
+  // this merge idempotent as a fail-safe for old or malformed queued signals:
+  // dropping a completed producer window would be worse than preserving the
+  // existing ancestry, which still prevents that Behavior from re-entering.
+  if (!causalBehaviorIds.includes(producerBehaviorId)) {
+    causalBehaviorIds.push(producerBehaviorId);
   }
-  causalBehaviorIds.push(producerBehaviorId);
   if (causalBehaviorIds.length > MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS) {
     throw new Error(
       `Workspace event causality exceeds ${MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS} distinct Behaviors`

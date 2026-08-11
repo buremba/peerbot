@@ -20,7 +20,11 @@ import type {
   QueueOptions,
   QueueStats,
 } from "../../gateway/infrastructure/queue/types";
-import { TaskScheduler } from "../task-scheduler";
+import type { DbClient } from "../../db/client";
+import {
+  enqueueTasksInTransaction,
+  TaskScheduler,
+} from "../task-scheduler";
 
 interface SentRecord {
   queueName: string;
@@ -117,6 +121,30 @@ describe("TaskScheduler.spawn", () => {
     const delayMs = queue.sent[0].options?.delayMs ?? 0;
     expect(delayMs).toBeGreaterThan(55_000);
     expect(delayMs).toBeLessThanOrEqual(60_000);
+  });
+});
+
+describe("enqueueTasksInTransaction", () => {
+  test("rejects task names outside the transactional manifest before SQL", async () => {
+    let queried = false;
+    const tx = Object.assign(
+      async () => {
+        queried = true;
+        return [];
+      },
+      { json: (value: unknown) => value },
+    ) as unknown as DbClient;
+
+    await expect(
+      enqueueTasksInTransaction(tx, [
+        {
+          name: "not-registered",
+          payload: {},
+          opts: { idempotencyKey: "not-registered:1" },
+        },
+      ]),
+    ).rejects.toThrow(/unknown transactional task/);
+    expect(queried).toBe(false);
   });
 });
 

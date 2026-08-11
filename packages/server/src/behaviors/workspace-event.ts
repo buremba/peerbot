@@ -2,6 +2,7 @@ import type { BehaviorWorkspaceEventTrigger } from '@lobu/core/contracts/tools/m
 import type { DbClient } from '../db/client';
 import { getDb, parsePgNumberArray, pgBigintArray } from '../db/client';
 import { createBehaviorEventRun } from '../runs/queue-service';
+import { WORKSPACE_EVENT_ACTIVATION_TASK } from '../scheduled/task-definitions';
 import { enqueueTasksInTransaction } from '../scheduled/task-scheduler';
 import { resolveBehaviorExecutor } from '../tools/admin/manage_behaviors/executors';
 import logger from '../utils/logger';
@@ -14,8 +15,6 @@ import {
   type WorkspaceEventActivationTaskPayload,
   type WorkspaceEventTriggerSignal,
 } from './workspace-event-contract';
-
-export const WORKSPACE_EVENT_ACTIVATION_TASK = 'activate-workspace-event';
 
 interface WorkspaceEventRecord {
   id: number;
@@ -43,7 +42,7 @@ export async function enqueueWorkspaceEventActivations(
   return enqueueTasksInTransaction(
     tx,
     payloads.map((payload) => ({
-      name: WORKSPACE_EVENT_ACTIVATION_TASK,
+      name: WORKSPACE_EVENT_ACTIVATION_TASK.name,
       payload,
       opts: {
         idempotencyKey: `workspace-event-activation:${payload.eventId}`,
@@ -229,6 +228,7 @@ export async function activateWorkspaceEventTask(
   causalBreadthLimited: boolean;
   fanoutLimited: boolean;
   superseded: boolean;
+  invalidCausalPath: boolean;
 }> {
   const causalBehaviorIds = payload.causalBehaviorIds.filter(
     (value) => Number.isSafeInteger(value) && value > 0
@@ -268,12 +268,27 @@ export async function activateWorkspaceEventTask(
       causalBreadthLimited: false,
       fanoutLimited: false,
       superseded: true,
+      invalidCausalPath: false,
     };
   }
   if (causalBehaviorIds.at(-1) !== event.producerBehaviorId) {
-    throw new Error(
-      `Workspace event ${payload.eventId} producer does not match its causal path`
+    logger.error(
+      {
+        eventId: payload.eventId,
+        producerBehaviorId: event.producerBehaviorId,
+        causalBehaviorIds,
+      },
+      '[workspace-event] producer does not match its causal path; activation terminated'
     );
+    return {
+      matched: 0,
+      queued: 0,
+      depthLimited: false,
+      causalBreadthLimited: false,
+      fanoutLimited: false,
+      superseded: false,
+      invalidCausalPath: true,
+    };
   }
   if (payload.depth >= MAX_WORKSPACE_EVENT_DEPTH) {
     logger.warn(
@@ -287,6 +302,7 @@ export async function activateWorkspaceEventTask(
       causalBreadthLimited: false,
       fanoutLimited: false,
       superseded: false,
+      invalidCausalPath: false,
     };
   }
   if (causalBehaviorIds.length >= MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS) {
@@ -301,6 +317,7 @@ export async function activateWorkspaceEventTask(
       causalBreadthLimited: true,
       fanoutLimited: false,
       superseded: false,
+      invalidCausalPath: false,
     };
   }
 
@@ -343,5 +360,6 @@ export async function activateWorkspaceEventTask(
     causalBreadthLimited: false,
     fanoutLimited,
     superseded: false,
+    invalidCausalPath: false,
   };
 }

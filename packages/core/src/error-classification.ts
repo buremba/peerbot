@@ -117,7 +117,11 @@ export function classifyRunError(input: {
 
   // Terminal human/policy decisions are never incidents and never retried.
   if (status === "cancelled" || status === "expired") {
-    return { category: "cancelled", retryable: false, operationalIncident: false };
+    return {
+      category: "cancelled",
+      retryable: false,
+      operationalIncident: false,
+    };
   }
 
   // Explicit timeout status (reaper / watcher sweep / device wait).
@@ -126,13 +130,18 @@ export function classifyRunError(input: {
     // one is a platform fault already surfaced. Both are infra incidents.
     return {
       category: "timeout",
-      retryable: message.includes("never claimed") || message.includes("not claimed"),
+      retryable:
+        message.includes("never claimed") || message.includes("not claimed"),
       operationalIncident: true,
     };
   }
 
   if (status === "completed") {
-    return { category: "internal", retryable: false, operationalIncident: false };
+    return {
+      category: "internal",
+      retryable: false,
+      operationalIncident: false,
+    };
   }
 
   // Failed / running / pending: classify from message + hints.

@@ -11,7 +11,12 @@ import { classifyRunError } from "../error-classification";
 
 describe("classifyRunError — status-driven verdicts", () => {
   test("cancelled is never an incident and never retried", () => {
-    expect(classifyRunError({ status: "cancelled", errorMessage: "rejected by user" })).toEqual({
+    expect(
+      classifyRunError({
+        status: "cancelled",
+        errorMessage: "rejected by user",
+      })
+    ).toEqual({
       category: "cancelled",
       retryable: false,
       operationalIncident: false,
@@ -20,14 +25,17 @@ describe("classifyRunError — status-driven verdicts", () => {
 
   test("timeout is an infra incident; never-claimed timeouts are retryable", () => {
     expect(
-      classifyRunError({ status: "timeout", errorMessage: "was never claimed within 60s" }),
+      classifyRunError({
+        status: "timeout",
+        errorMessage: "was never claimed within 60s",
+      })
     ).toEqual({
       category: "timeout",
       retryable: true,
       operationalIncident: true,
     });
     expect(
-      classifyRunError({ status: "timeout", errorMessage: "heartbeat lost" }),
+      classifyRunError({ status: "timeout", errorMessage: "heartbeat lost" })
     ).toEqual({
       category: "timeout",
       retryable: false,
@@ -36,7 +44,9 @@ describe("classifyRunError — status-driven verdicts", () => {
   });
 
   test("completed is not an incident", () => {
-    expect(classifyRunError({ status: "completed", errorMessage: null })).toEqual({
+    expect(
+      classifyRunError({ status: "completed", errorMessage: null })
+    ).toEqual({
       category: "internal",
       retryable: false,
       operationalIncident: false,
@@ -55,19 +65,22 @@ describe("classifyRunError — message classification", () => {
       "The connection is pending_auth",
     ];
     for (const message of cases) {
-      expect(classifyRunError({ status: "failed", errorMessage: message }).category).toBe(
-        "auth_required",
-      );
       expect(
-        classifyRunError({ status: "failed", errorMessage: message }).operationalIncident,
+        classifyRunError({ status: "failed", errorMessage: message }).category
+      ).toBe("auth_required");
+      expect(
+        classifyRunError({ status: "failed", errorMessage: message })
+          .operationalIncident
       ).toBe(false);
     }
   });
 
   test("permission denied → permission_required", () => {
     expect(
-      classifyRunError({ status: "failed", errorMessage: "permission denied: scope missing" })
-        .category,
+      classifyRunError({
+        status: "failed",
+        errorMessage: "permission denied: scope missing",
+      }).category
     ).toBe("permission_required");
   });
 
@@ -79,9 +92,9 @@ describe("classifyRunError — message classification", () => {
       "404 Not Found",
     ];
     for (const message of cases) {
-      expect(classifyRunError({ status: "failed", errorMessage: message }).category).toBe(
-        "target_gone",
-      );
+      expect(
+        classifyRunError({ status: "failed", errorMessage: message }).category
+      ).toBe("target_gone");
     }
   });
 
@@ -90,7 +103,7 @@ describe("classifyRunError — message classification", () => {
       classifyRunError({
         status: "failed",
         errorMessage: "validation failed: body must be non-empty",
-      }).category,
+      }).category
     ).toBe("invalid_input");
   });
 
@@ -133,7 +146,8 @@ describe("classifyRunError — message classification", () => {
   test("device offline → device_unavailable, retryable, incident only when scheduled", () => {
     const off = classifyRunError({
       status: "failed",
-      errorMessage: "No online paired Owletto Chrome extension in this organization",
+      errorMessage:
+        "No online paired Owletto Chrome extension in this organization",
       executionMode: "scheduled",
     });
     expect(off.category).toBe("device_unavailable");

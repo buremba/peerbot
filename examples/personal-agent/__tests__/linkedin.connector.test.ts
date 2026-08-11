@@ -19,6 +19,7 @@ let normalizeLinkedInSlug: any;
 let normalizeLinkedInMemberId: any;
 let LINKEDIN_IDENTITY: any;
 let normalizeLinkedInPostUrl: any;
+let isGenericLinkedInFeedUrl: any;
 let isLinkedInAuthWall: any;
 let pickCommentButtonRef: any;
 let pickCommentTextboxRef: any;
@@ -43,6 +44,7 @@ beforeAll(async () => {
   filterPostsSinceCheckpoint = mod.filterPostsSinceCheckpoint;
   parseCompanyUpdates = mod.parseCompanyUpdates;
   normalizeLinkedInPostUrl = mod.normalizeLinkedInPostUrl;
+  isGenericLinkedInFeedUrl = mod.isGenericLinkedInFeedUrl;
   isLinkedInAuthWall = mod.isLinkedInAuthWall;
   pickCommentButtonRef = mod.pickCommentButtonRef;
   pickCommentTextboxRef = mod.pickCommentTextboxRef;
@@ -199,7 +201,7 @@ describe("buildHomeFeedEvents", () => {
     );
   });
 
-  test("maps a token-id row to li_home_<token> with /feed/ source_url", () => {
+  test("maps a token-id row to li_home_<token> with no durable source_url", () => {
     const occurredAt = new Date("2026-05-29T12:00:00.000Z");
     const events = buildHomeFeedEvents(
       [
@@ -220,8 +222,12 @@ describe("buildHomeFeedEvents", () => {
     );
     expect(ev.author_name).toBe("Jane Doe");
     expect(ev.origin_type).toBe("post");
-    // Token id is NOT numeric → no urn:li:activity permalink, link to /feed/.
-    expect(ev.source_url).toBe("https://www.linkedin.com/feed/");
+    // Token id is NOT numeric and no post_url/post_identity is exposed → no
+    // durable post identity. The event must NOT emit the generic home-feed URL
+    // as source_url (it would look like a specific post id and get passed to
+    // prepare_comment as if it identified a post). Absent source_url is the
+    // explicit "no durable identity" signal.
+    expect(ev.source_url).toBeUndefined();
     expect(ev.occurred_at).toBe(occurredAt);
     expect(ev.metadata).toEqual({ author: "Jane Doe" });
   });
@@ -2384,5 +2390,199 @@ describe("prepare_comment helpers", () => {
     expect(result.success).toBe(true);
     expect(result.output?.verified).toBe(true);
     expect(result.output?.match?.author).toBe("Burak");
+  });
+
+  test("execute prepare_comment on a generic feed URL is not_actionable, NOT a failed run", async () => {
+    // A generic linkedin.com/feed/ URL addresses the whole feed, not a post.
+    // prepare_comment must refuse it WITHOUT dispatching any browser action and
+    // WITHOUT creating a failed operational run.
+    let dispatches = 0;
+    const connector = new LinkedInConnector();
+    const result = await connector.execute({
+      actionKey: "prepare_comment",
+      input: {
+        post_url: "https://www.linkedin.com/feed/",
+        body: "Nice post",
+        notify: false,
+      },
+      credentials: null,
+      config: {},
+      sessionState: {
+        chrome_dispatcher: {
+          dispatch: async () => {
+            dispatches += 1;
+            throw new Error("must not dispatch for a generic feed URL");
+          },
+        },
+      },
+    });
+    expect(result.success).toBe(true); // non-failing result
+    expect(result.output?.status).toBe("not_actionable");
+    expect(result.output?.reason).toBe("missing_durable_post_id");
+    expect(dispatches).toBe(0);
+  });
+
+  test("execute prepare_comment accepts an activity URN as a durable identity", async () => {
+    const connector = new LinkedInConnector();
+    const result = await connector.execute({
+      actionKey: "prepare_comment",
+      input: {
+        activity_id: "urn:li:activity:7312345678901234567",
+        body: "Nice post",
+        notify: false,
+        focus: false,
+        banner: false,
+      },
+      credentials: null,
+      config: {},
+      sessionState: {
+        chrome_dispatcher: {
+          dispatch: async (key: string) => {
+            if (key === "navigate") {
+              return {
+                tab_id: 9,
+                current_url:
+                  "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567",
+              };
+            }
+            if (key === "evaluate") {
+              return { value: { ok: true, preview: "Nice post" } };
+            }
+            return {};
+          },
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    expect(result.output?.prepared).toBe(true);
+    expect(result.output?.post_url).toBe(
+      "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567"
+    );
+  });
+
+  test("execute prepare_comment accepts a canonical post URL as a durable identity", async () => {
+    const connector = new LinkedInConnector();
+    const result = await connector.execute({
+      actionKey: "prepare_comment",
+      input: {
+        post_url:
+          "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567",
+        body: "Nice post",
+        notify: false,
+        focus: false,
+        banner: false,
+      },
+      credentials: null,
+      config: {},
+      sessionState: {
+        chrome_dispatcher: {
+          dispatch: async (key: string) => {
+            if (key === "navigate") {
+              return {
+                tab_id: 10,
+                current_url:
+                  "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567",
+              };
+            }
+            if (key === "evaluate") {
+              return { value: { ok: true, preview: "Nice post" } };
+            }
+            return {};
+          },
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    expect(result.output?.prepared).toBe(true);
+    expect(result.output?.post_url).toBe(
+      "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567"
+    );
+  });
+
+  test("execute verify_staged_comment on a generic feed URL is not_actionable, NOT a failed run", async () => {
+    let dispatches = 0;
+    const connector = new LinkedInConnector();
+    const result = await connector.execute({
+      actionKey: "verify_staged_comment",
+      input: {
+        post_url: "https://www.linkedin.com/feed",
+        body: "Nice post",
+      },
+      credentials: null,
+      config: {},
+      sessionState: {
+        chrome_dispatcher: {
+          dispatch: async () => {
+            dispatches += 1;
+            throw new Error("must not dispatch for a generic feed URL");
+          },
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    expect(result.output?.status).toBe("not_actionable");
+    expect(result.output?.reason).toBe("missing_durable_post_id");
+    expect(dispatches).toBe(0);
+  });
+
+  test("buildHomeFeedEvents persists durable post identity in metadata when available", () => {
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "opaque_component_key",
+          body: "Feed post Ada Lovelace • 1st A durable agents post with enough body text",
+          author: "Ada Lovelace",
+          post_url:
+            "/feed/update/urn:li:activity:7345678901234567890?utm_source=feed",
+          post_identity: "urn:li:activity:7345678901234567890",
+        },
+      ],
+      new Date("2026-08-01T12:00:00.000Z")
+    );
+    expect(ev.source_url).toBe(
+      "https://www.linkedin.com/feed/update/urn:li:activity:7345678901234567890"
+    );
+    expect(ev.metadata?.post_url).toBe(
+      "https://www.linkedin.com/feed/update/urn:li:activity:7345678901234567890"
+    );
+    expect(ev.metadata?.post_identity).toBe(
+      "urn:li:activity:7345678901234567890"
+    );
+  });
+
+  test("buildHomeFeedEvents does NOT emit the generic feed URL as a fake post identity", () => {
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "opaque_component_key",
+          body: "Feed post Ada Lovelace • 1st A durable agents post with enough body text",
+          author: "Ada Lovelace",
+        },
+      ],
+      new Date("2026-08-01T12:00:00.000Z")
+    );
+    // No post_url / post_identity → no source_url at all (not the /feed/ root).
+    expect(ev.source_url).toBeUndefined();
+    expect(ev.metadata?.post_url).toBeUndefined();
+    expect(ev.metadata?.post_identity).toBeUndefined();
+  });
+
+  test("isGenericLinkedInFeedUrl identifies home-feed URLs with no post id", () => {
+    expect(isGenericLinkedInFeedUrl("https://www.linkedin.com/feed/")).toBe(
+      true
+    );
+    expect(isGenericLinkedInFeedUrl("https://www.linkedin.com/feed")).toBe(
+      true
+    );
+    expect(
+      isGenericLinkedInFeedUrl("https://www.linkedin.com/feed/update")
+    ).toBe(true);
+    expect(
+      isGenericLinkedInFeedUrl(
+        "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567"
+      )
+    ).toBe(false);
+    expect(isGenericLinkedInFeedUrl("https://evil.example/x")).toBe(false);
+    expect(isGenericLinkedInFeedUrl("")).toBe(false);
   });
 });

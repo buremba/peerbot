@@ -200,6 +200,19 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     expect(ids.has(workspaceAuditEventId)).toBe(false);
   });
 
+  it('non-member behavior_id read is denied (no workspace audit surface)', async () => {
+    // Behavior read mode executes a Behavior's authored sources; a public
+    // non-member must not be able to run it and surface workspace-identity
+    // audit rows. The denial happens before any behavior lookup.
+    await expect(
+      getContent(
+        { behavior_id: 999999, limit: 100 } as never,
+        {} as never,
+        signedInOutsiderCtx()
+      )
+    ).rejects.toThrow(/workspace membership/);
+  });
+
   it('anonymous content_ids exact-ID read excludes workspace audit but keeps ordinary events', async () => {
     const ids = await readExactIds(unauthedCtx(), [
       workspaceAuditEventId,

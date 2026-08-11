@@ -307,6 +307,17 @@ async function getContentImpl(
   try {
     // If behavior_id is provided, use behavior mode: fetch content for all sources and generate window_token
     if (args.behavior_id) {
+      // Behavior mode executes the Behavior's authored SQL sources (which may
+      // include `events` reads). Non-members of a public workspace have no
+      // legitimate reason to run another Behavior's source read, and doing so
+      // could surface workspace-identity audit rows. Deny rather than filter —
+      // this is an agent-execution path, not a public browse surface.
+      if (excludeWorkspaceAudit) {
+        throw new ToolUserError(
+          'Behavior read mode requires workspace membership.',
+          403
+        );
+      }
       return await handleBehaviorMode(args, env, sql, {
         organizationId: ctx.organizationId,
         // Interactive reads keep the caller's private-connection scope.

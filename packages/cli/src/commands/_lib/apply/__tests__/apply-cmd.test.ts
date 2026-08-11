@@ -380,12 +380,22 @@ describe("fetchRemoteSnapshot — view-template fetch is org-scoped", () => {
       requiredSecrets: [],
     };
 
-    const remote = await fetchRemoteSnapshot(client, state, undefined, true, "org-acme");
+    const remote = await fetchRemoteSnapshot(
+      client,
+      state,
+      undefined,
+      true,
+      "org-acme"
+    );
     expect(templateCalls).toEqual(["task"]);
-    expect(remote.entityTypes.find((e) => e.slug === "task")?.viewTemplate).toBeDefined();
+    expect(
+      remote.entityTypes.find((e) => e.slug === "task")?.viewTemplate
+    ).toBeDefined();
     // The foreign type's slug is still surfaced for visibility, but its template
     // was never fetched (the org-local copy is absent/deleted and would 404).
-    expect(remote.entityTypes.find((e) => e.slug === "company")?.viewTemplate).toBeUndefined();
+    expect(
+      remote.entityTypes.find((e) => e.slug === "company")?.viewTemplate
+    ).toBeUndefined();
   });
 });
 

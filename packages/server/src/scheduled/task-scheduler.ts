@@ -154,7 +154,9 @@ export async function enqueueTasksInTransaction<P>(
     FROM public.runs r
     JOIN jsonb_array_elements_text(${tx.json(keys)}::jsonb) requested(key)
       ON requested.key = r.idempotency_key
-    WHERE r.status IN ('pending', 'claimed', 'running')
+    WHERE r.run_type = 'task'
+      AND r.queue_name = ${TASK_QUEUE_NAME}
+      AND r.status IN ('pending', 'claimed', 'running')
   `;
   const idByKey = new Map(
     resolved.map((row) => [row.idempotency_key, String(row.id)]),

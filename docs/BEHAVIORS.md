@@ -145,21 +145,24 @@ specific entities still only sees trigger inputs linked to those entities.
   for one Behavior, with at most 25 exact event pointers per run; overflow
   starts another durable run when the Behavior's cooldown permits it. A
   configured cooldown may intentionally suppress that new activation.
-- One output event may fan out to at most 32 matching Behaviors. Exceeding the
-  limit fails and retries the activation task instead of silently selecting a
-  subset.
+- One output event may fan out to at most 32 matching Behaviors, ordered by
+  Behavior ID. Those matches are considered for activation; cooldown can
+  reduce the number queued. Later matches are skipped and the limit is logged.
 - Causal depth is capped at eight, with the root producer output at depth one.
   A Behavior already in the causal path cannot be re-entered, which prevents
   direct and indirect loops. Coalescing also stops before its inherited causal
   set would exceed 256 distinct Behaviors or 25 root events, bounding the
   durable signal size.
-- Entity-scoped trigger inputs are checked against the downstream agent's read
-  policy. Unbound inputs use the workspace-wide `$member` policy envelope.
+- Entity-scoped trigger inputs are checked against the consumer Behavior's
+  effective read policy. Unbound inputs use the workspace-wide `$member`
+  policy envelope.
 - Connector delivery and workspace delivery share the public `event` primitive,
   but retain separate provenance values and internal activation paths because
   they cross different trust boundaries.
 - External actions retain their connector authorization, approval, and
   idempotency behavior. Chaining does not make a side effect exactly-once.
+- If an output is superseded before its activation task runs, the stale output
+  is skipped without activating subscribers or consuming retry attempts.
 
 ## What this composes well
 

@@ -1,12 +1,17 @@
 import { inferBehaviorGranularityFromSchedule } from '@lobu/connector-sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { activateWorkspaceEventTask } from '../../../behaviors/workspace-event';
+import {
+  activateWorkspaceEventTask,
+  enqueueWorkspaceEventActivations,
+} from '../../../behaviors/workspace-event';
 import {
   MAX_WORKSPACE_EVENT_FANOUT,
   type WorkspaceEventActivationTaskPayload,
 } from '../../../behaviors/workspace-event-contract';
 import { type DbClient, pgBigintArray } from '../../../db/client';
 import { createWatcherRun } from '../../../runs/queue-service';
+import { validateSaveContentSemanticType } from '../../../utils/event-kind-validation';
+import { insertEvent } from '../../../utils/insert-event';
 import { ensureMemberEntityType } from '../../../utils/member-entity-type';
 import { persistBehaviorEventOutput } from '../../../utils/persist-behavior-event-output';
 import {
@@ -22,6 +27,74 @@ import { TestApiClient, TestWorkspace } from '../../setup/test-mcp-client';
 describe('Behavior event outputs', () => {
   beforeEach(async () => {
     await cleanupTestDatabase();
+  });
+
+  it('fails closed when an active non-task run owns the activation idempotency key', async () => {
+    const sql = getTestDb();
+    const workspace = await TestWorkspace.create({ name: 'Task Idempotency Collision Org' });
+    const eventId = 424242;
+    const idempotencyKey = `workspace-event-activation:${eventId}`;
+    await sql`
+      INSERT INTO runs (
+        organization_id, run_type, status, idempotency_key
+      ) VALUES (
+        ${workspace.org.id}, 'internal', 'pending', ${idempotencyKey}
+      )
+    `;
+
+    await expect(
+      sql.begin((tx) =>
+        enqueueWorkspaceEventActivations(tx as unknown as DbClient, [
+          {
+            organizationId: workspace.org.id,
+            eventId,
+            rootEventIds: [eventId],
+            causalBehaviorIds: [1],
+            depth: 1,
+          },
+        ])
+      )
+    ).rejects.toThrow(/failed to enqueue transactional task/i);
+
+    const rows = await sql<{ run_type: string }>`
+      SELECT run_type
+      FROM runs
+      WHERE idempotency_key = ${idempotencyKey}
+    `;
+    expect(rows).toEqual([{ run_type: 'internal' }]);
+  });
+
+  it('accepts a custom output kind declared by any linked entity type', async () => {
+    const sql = getTestDb();
+    const workspace = await TestWorkspace.create({ name: 'Multi-Type Output Org' });
+    await ensureMemberEntityType(workspace.org.id);
+    const first = await createTestEntity({
+      name: 'First typed entity',
+      entity_type: 'first-output-type',
+      organization_id: workspace.org.id,
+      created_by: workspace.users.owner.id,
+    });
+    const second = await createTestEntity({
+      name: 'Second typed entity',
+      entity_type: 'second-output-type',
+      organization_id: workspace.org.id,
+      created_by: workspace.users.owner.id,
+    });
+    await sql`
+      UPDATE entity_types
+      SET event_kinds = ${sql.json({ second_type_signal: { description: 'Second type signal' } })}
+      WHERE organization_id = ${workspace.org.id}
+        AND slug = 'second-output-type'
+    `;
+
+    await expect(
+      validateSaveContentSemanticType(
+        'second_type_signal',
+        {},
+        workspace.org.id,
+        [first.id, second.id]
+      )
+    ).resolves.toMatchObject({ valid: true });
   });
 
   it('appends multiple run-linked events and deduplicates a completion retry', async () => {
@@ -284,6 +357,40 @@ describe('Behavior event outputs', () => {
       Number(observationTask.action_input.payload.eventId),
     ]);
     expect(triggerRead.window_token).toBeTruthy();
+
+    const supersededOutput = await insertEvent({
+      entityIds: [parent.id],
+      organizationId: workspace.org.id,
+      originId: 'superseded-workspace-output',
+      content: 'This output became stale before its activation task ran.',
+      semanticType: 'observation',
+      behaviorId: watcherId,
+    });
+    await insertEvent({
+      entityIds: [parent.id],
+      organizationId: workspace.org.id,
+      originId: 'replacement-workspace-output',
+      content: 'This is the current replacement output.',
+      semanticType: 'observation',
+      behaviorId: watcherId,
+      supersedesEventId: supersededOutput.id,
+    });
+    await expect(
+      activateWorkspaceEventTask(
+        {
+          organizationId: workspace.org.id,
+          eventId: supersededOutput.id,
+          rootEventIds: [supersededOutput.id],
+          causalBehaviorIds: [watcherId],
+          depth: 1,
+        },
+        sql
+      )
+    ).resolves.toMatchObject({
+      matched: 0,
+      queued: 0,
+      superseded: true,
+    });
 
     const otherObservationTask = activationTasks.find(
       (task) =>

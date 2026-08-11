@@ -77,7 +77,7 @@ async function loadWorkspaceEvent(
   organizationId: string,
   eventId: number,
   db: DbClient
-): Promise<WorkspaceEventRecord> {
+): Promise<WorkspaceEventRecord | null> {
   const rows = await db<{
     id: number;
     semantic_type: string;
@@ -89,13 +89,23 @@ async function loadWorkspaceEvent(
     SELECT id, semantic_type, metadata, entity_ids,
            COALESCE(occurred_at, created_at)::text AS occurred_at,
            behavior_id
-    FROM events
+    FROM public.current_event_records
     WHERE id = ${eventId}
       AND organization_id = ${organizationId}
     LIMIT 1
   `;
   const row = rows[0];
-  if (!row) throw new Error(`Workspace event ${eventId} was not found`);
+  if (!row) {
+    const lineage = await db<{ superseded_by: number | null }>`
+      SELECT superseded_by
+      FROM public.events
+      WHERE id = ${eventId}
+        AND organization_id = ${organizationId}
+      LIMIT 1
+    `;
+    if (lineage[0]?.superseded_by != null) return null;
+    throw new Error(`Workspace event ${eventId} was not found`);
+  }
   if (row.behavior_id == null) {
     throw new Error(
       `Workspace event ${eventId} is not a declared Behavior output`
@@ -218,6 +228,7 @@ export async function activateWorkspaceEventTask(
   depthLimited: boolean;
   causalBreadthLimited: boolean;
   fanoutLimited: boolean;
+  superseded: boolean;
 }> {
   const causalBehaviorIds = payload.causalBehaviorIds.filter(
     (value) => Number.isSafeInteger(value) && value > 0
@@ -245,6 +256,20 @@ export async function activateWorkspaceEventTask(
     payload.eventId,
     db
   );
+  if (!event) {
+    logger.info(
+      { eventId: payload.eventId },
+      '[workspace-event] output was superseded before activation; no downstream Behaviors queued'
+    );
+    return {
+      matched: 0,
+      queued: 0,
+      depthLimited: false,
+      causalBreadthLimited: false,
+      fanoutLimited: false,
+      superseded: true,
+    };
+  }
   if (causalBehaviorIds.at(-1) !== event.producerBehaviorId) {
     throw new Error(
       `Workspace event ${payload.eventId} producer does not match its causal path`
@@ -261,6 +286,7 @@ export async function activateWorkspaceEventTask(
       depthLimited: true,
       causalBreadthLimited: false,
       fanoutLimited: false,
+      superseded: false,
     };
   }
   if (causalBehaviorIds.length >= MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS) {
@@ -274,6 +300,7 @@ export async function activateWorkspaceEventTask(
       depthLimited: false,
       causalBreadthLimited: true,
       fanoutLimited: false,
+      superseded: false,
     };
   }
 
@@ -315,5 +342,6 @@ export async function activateWorkspaceEventTask(
     depthLimited: false,
     causalBreadthLimited: false,
     fanoutLimited,
+    superseded: false,
   };
 }

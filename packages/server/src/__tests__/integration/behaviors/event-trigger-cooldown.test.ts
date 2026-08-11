@@ -32,7 +32,6 @@ import {
 } from "../../../behaviors/cooldown";
 import {
 	MAX_COALESCED_BEHAVIOR_EVENT_INPUTS,
-	MAX_WORKSPACE_EVENT_ROOTS,
 } from "../../../behaviors/workspace-event-contract";
 import type { DbClient } from "../../../db/client";
 import type { Env } from "../../../index";
@@ -429,7 +428,7 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 				await queue(
 					"workspace-event:bounded-roots:1",
 					Array.from(
-						{ length: MAX_WORKSPACE_EVENT_ROOTS },
+						{ length: MAX_COALESCED_BEHAVIOR_EVENT_INPUTS },
 						(_, index) => index + 1,
 					),
 				)
@@ -462,7 +461,10 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 				rootCount: Number(row.root_count),
 			})),
 		).toEqual([
-			{ deliveryCount: 1, rootCount: MAX_WORKSPACE_EVENT_ROOTS },
+			{
+				deliveryCount: 1,
+				rootCount: MAX_COALESCED_BEHAVIOR_EVENT_INPUTS,
+			},
 			{ deliveryCount: 2, rootCount: 1 },
 		]);
 	});

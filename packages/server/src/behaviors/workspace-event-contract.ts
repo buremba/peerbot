@@ -7,7 +7,6 @@
 export const MAX_WORKSPACE_EVENT_DEPTH = 8;
 export const MAX_WORKSPACE_EVENT_FANOUT = 32;
 export const MAX_COALESCED_BEHAVIOR_EVENT_INPUTS = 25;
-export const MAX_WORKSPACE_EVENT_ROOTS = MAX_COALESCED_BEHAVIOR_EVENT_INPUTS;
 export const MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS = 256;
 
 /**
@@ -48,7 +47,7 @@ export function isWorkspaceEventTriggerSignal(
     typeof signal.delivery_id === 'string' &&
     Array.isArray(signal.root_event_ids) &&
     signal.root_event_ids.length > 0 &&
-    signal.root_event_ids.length <= MAX_WORKSPACE_EVENT_ROOTS &&
+    signal.root_event_ids.length <= MAX_COALESCED_BEHAVIOR_EVENT_INPUTS &&
     signal.root_event_ids.every(
       (eventId) => Number.isSafeInteger(eventId) && eventId > 0
     ) &&
@@ -95,9 +94,9 @@ export function deriveWorkspaceEventCausality(
       `Workspace event causality exceeds ${MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS} distinct Behaviors`
     );
   }
-  if (rootEventIds.length > MAX_WORKSPACE_EVENT_ROOTS) {
+  if (rootEventIds.length > MAX_COALESCED_BEHAVIOR_EVENT_INPUTS) {
     throw new Error(
-      `Workspace event causality exceeds ${MAX_WORKSPACE_EVENT_ROOTS} distinct roots`
+      `Workspace event causality exceeds ${MAX_COALESCED_BEHAVIOR_EVENT_INPUTS} distinct roots`
     );
   }
   return {

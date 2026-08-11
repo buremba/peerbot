@@ -116,8 +116,8 @@ interface TransactionalTask<P = unknown> {
 export async function enqueueTasksInTransaction<P>(
   tx: DbClient,
   tasks: TransactionalTask<P>[],
-): Promise<string[]> {
-  if (tasks.length === 0) return [];
+): Promise<void> {
+  if (tasks.length === 0) return;
   const unknownTask = tasks.find((task) => !isTransactionalTaskName(task.name));
   if (unknownTask) {
     throw new Error(
@@ -156,11 +156,8 @@ export async function enqueueTasksInTransaction<P>(
     DO NOTHING
   `;
   const keys = requested.map((task) => task.idempotency_key);
-  const resolved = await tx<{
-    id: number | string;
-    idempotency_key: string;
-  }>`
-    SELECT r.id, r.idempotency_key
+  const resolved = await tx<{ idempotency_key: string }>`
+    SELECT r.idempotency_key
     FROM public.runs r
     JOIN jsonb_array_elements_text(${tx.json(keys)}::jsonb) requested(key)
       ON requested.key = r.idempotency_key
@@ -168,18 +165,16 @@ export async function enqueueTasksInTransaction<P>(
       AND r.queue_name = ${TASK_QUEUE_NAME}
       AND r.status IN ('pending', 'claimed', 'running')
   `;
-  const idByKey = new Map(
-    resolved.map((row) => [row.idempotency_key, String(row.id)]),
+  const resolvedKeys = new Set(resolved.map((row) => row.idempotency_key));
+  const missingTask = requested.find(
+    (task) => !resolvedKeys.has(task.idempotency_key),
   );
-  const ids = keys.map((key) => idByKey.get(key) ?? '');
-  const missingTask = requested.find((_, index) => !ids[index]);
   if (missingTask) {
     throw new Error(
       `Failed to enqueue transactional task "${missingTask.name}"`,
     );
   }
   await tx`SELECT pg_notify(${notifyChannelFor(TASK_QUEUE_NAME)}, ${TASK_QUEUE_NAME})`;
-  return ids;
 }
 
 interface TaskRegistration {

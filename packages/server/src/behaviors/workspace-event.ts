@@ -11,7 +11,7 @@ import {
   MAX_WORKSPACE_EVENT_DEPTH,
   MAX_WORKSPACE_EVENT_FANOUT,
   MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS,
-  MAX_WORKSPACE_EVENT_ROOTS,
+  MAX_COALESCED_BEHAVIOR_EVENT_INPUTS,
   type WorkspaceEventActivationTaskPayload,
   type WorkspaceEventTriggerSignal,
 } from './workspace-event-contract';
@@ -34,6 +34,26 @@ interface MatchingWorkspaceEventActivation {
   agentKind: string | null;
   trigger: BehaviorWorkspaceEventTrigger;
 }
+
+interface WorkspaceEventActivationResult {
+  matched: number;
+  queued: number;
+  depthLimited: boolean;
+  causalBreadthLimited: boolean;
+  fanoutLimited: boolean;
+  superseded: boolean;
+  invalidCausalPath: boolean;
+}
+
+const EMPTY_WORKSPACE_EVENT_ACTIVATION_RESULT = {
+  matched: 0,
+  queued: 0,
+  depthLimited: false,
+  causalBreadthLimited: false,
+  fanoutLimited: false,
+  superseded: false,
+  invalidCausalPath: false,
+} as const satisfies WorkspaceEventActivationResult;
 
 export async function enqueueWorkspaceEventActivations(
   tx: DbClient,
@@ -221,15 +241,7 @@ async function findMatchingWorkspaceEventActivations(
 export async function activateWorkspaceEventTask(
   payload: WorkspaceEventActivationTaskPayload,
   db: DbClient = getDb()
-): Promise<{
-  matched: number;
-  queued: number;
-  depthLimited: boolean;
-  causalBreadthLimited: boolean;
-  fanoutLimited: boolean;
-  superseded: boolean;
-  invalidCausalPath: boolean;
-}> {
+): Promise<WorkspaceEventActivationResult> {
   const causalBehaviorIds = payload.causalBehaviorIds.filter(
     (value) => Number.isSafeInteger(value) && value > 0
   );
@@ -239,7 +251,7 @@ export async function activateWorkspaceEventTask(
     payload.eventId <= 0 ||
     !Array.isArray(payload.rootEventIds) ||
     payload.rootEventIds.length === 0 ||
-    payload.rootEventIds.length > MAX_WORKSPACE_EVENT_ROOTS ||
+    payload.rootEventIds.length > MAX_COALESCED_BEHAVIOR_EVENT_INPUTS ||
     payload.rootEventIds.some(
       (eventId) => !Number.isSafeInteger(eventId) || eventId <= 0
     ) ||
@@ -262,13 +274,8 @@ export async function activateWorkspaceEventTask(
       '[workspace-event] output was superseded before activation; no downstream Behaviors queued'
     );
     return {
-      matched: 0,
-      queued: 0,
-      depthLimited: false,
-      causalBreadthLimited: false,
-      fanoutLimited: false,
+      ...EMPTY_WORKSPACE_EVENT_ACTIVATION_RESULT,
       superseded: true,
-      invalidCausalPath: false,
     };
   }
   if (causalBehaviorIds.at(-1) !== event.producerBehaviorId) {
@@ -281,12 +288,7 @@ export async function activateWorkspaceEventTask(
       '[workspace-event] producer does not match its causal path; activation terminated'
     );
     return {
-      matched: 0,
-      queued: 0,
-      depthLimited: false,
-      causalBreadthLimited: false,
-      fanoutLimited: false,
-      superseded: false,
+      ...EMPTY_WORKSPACE_EVENT_ACTIVATION_RESULT,
       invalidCausalPath: true,
     };
   }
@@ -296,13 +298,8 @@ export async function activateWorkspaceEventTask(
       '[workspace-event] causal depth limit reached; no downstream Behaviors queued'
     );
     return {
-      matched: 0,
-      queued: 0,
+      ...EMPTY_WORKSPACE_EVENT_ACTIVATION_RESULT,
       depthLimited: true,
-      causalBreadthLimited: false,
-      fanoutLimited: false,
-      superseded: false,
-      invalidCausalPath: false,
     };
   }
   if (causalBehaviorIds.length >= MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS) {
@@ -311,13 +308,8 @@ export async function activateWorkspaceEventTask(
       '[workspace-event] causal breadth limit reached; no downstream Behaviors queued'
     );
     return {
-      matched: 0,
-      queued: 0,
-      depthLimited: false,
+      ...EMPTY_WORKSPACE_EVENT_ACTIVATION_RESULT,
       causalBreadthLimited: true,
-      fanoutLimited: false,
-      superseded: false,
-      invalidCausalPath: false,
     };
   }
 

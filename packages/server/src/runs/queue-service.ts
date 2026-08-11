@@ -21,7 +21,6 @@ import {
 import {
   MAX_COALESCED_BEHAVIOR_EVENT_INPUTS,
   MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS,
-  MAX_WORKSPACE_EVENT_ROOTS,
   isWorkspaceEventTriggerSignal,
   type WorkspaceEventTriggerSignal,
 } from '../behaviors/workspace-event-contract';
@@ -821,7 +820,7 @@ export async function createBehaviorEventRun(
         // producer's completed window for exceeding the same bounds.
         if (
           causalBehaviorIds.size <= MAX_WORKSPACE_EVENT_CAUSAL_BEHAVIORS &&
-          rootEventIds.size <= MAX_WORKSPACE_EVENT_ROOTS
+          rootEventIds.size <= MAX_COALESCED_BEHAVIOR_EVENT_INPUTS
         ) {
           const currentWindowStart = Date.parse(input.window_start);
           const currentWindowEnd = Date.parse(input.window_end);

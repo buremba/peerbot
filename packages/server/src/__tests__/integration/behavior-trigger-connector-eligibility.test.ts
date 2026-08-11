@@ -257,4 +257,36 @@ describe("event-trigger connector eligibility", () => {
 			),
 		).rejects.toThrow(/does not support Behavior event/i);
 	});
+
+	it("rejects feed.auto_paused for an org-scoped override with no feeds of its own", async () => {
+		// A bundled-key override with behavior_events=[] and a NULL feeds_schema
+		// must not inherit the bundled feeds for the eligibility count — it has
+		// no feed to pause, so feed.auto_paused cannot reach it.
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO connector_definitions
+				(organization_id, key, name, version, auth_schema, feeds_schema,
+				 behavior_events, status)
+			VALUES (${orgId}, 'linkedin', 'Empty LinkedIn Override', '8.8.8',
+				${sql.json({ methods: [{ type: "app_installation" }] })},
+				NULL,
+				${sql.json([])},
+				'active')
+			ON CONFLICT DO NOTHING
+		`;
+		await sql`
+			INSERT INTO connector_versions
+				(organization_id, connector_key, version, created_at)
+			VALUES (${orgId}, 'linkedin', '8.8.8', NOW())
+			ON CONFLICT DO NOTHING
+		`;
+
+		await expect(
+			assertBehaviorTriggerConnections(
+				sql,
+				orgId,
+				eventTrigger("linkedin", "feed.auto_paused"),
+			),
+		).rejects.toThrow(/cannot drive an event trigger/i);
+	});
 });

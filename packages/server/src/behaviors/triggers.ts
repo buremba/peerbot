@@ -86,25 +86,29 @@ async function getConnectorBehaviorEventCatalog(
 	// agree. The bundled fallback requires provenance: no installed row at all
 	// (pure catalog entry), or an active version resolved from the SHARED
 	// connector_versions row (organization_id NULL — a bundled install). An
-	// org-scoped override never falls back to the bundled curated catalog.
+	// org-scoped override never falls back to the bundled curated catalog, and
+	// its feed count counts only its OWN feeds_schema (an override with no feeds
+	// cannot pause a feed, so feed.auto_paused must not be accepted).
 	const catalog = (await listCatalogEntries(["connectors"])).connectors.find(
 		(entry) => entry.id === connectorKey
 	);
+	const useBundledFallback = row == null || row.version_org_id == null;
 	const resolved = resolveBehaviorEventCatalog({
 		persistedEvents: row?.behavior_events,
 		feedsSchema: row?.feeds_schema,
 		bundled: catalog?.detail,
-		useBundledFallback: row == null || row.version_org_id == null,
+		useBundledFallback,
 	}) as BehaviorEventDefinition[];
+	const feedsForCount = useBundledFallback
+		? row?.feeds_schema ?? catalog?.detail.feeds_schema
+		: row?.feeds_schema;
 	return {
 		name: row?.name ?? catalog?.name ?? connectorKey,
 		events: withPlatformBehaviorEvents(
 			resolved,
 		) as BehaviorEventDefinition[],
 		declaredCount: resolved.length,
-		feedCount: countDeclaredFeeds(
-			row?.feeds_schema ?? catalog?.detail.feeds_schema,
-		),
+		feedCount: countDeclaredFeeds(feedsForCount),
 	};
 }
 

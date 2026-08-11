@@ -165,11 +165,16 @@ export async function provisionConnectorFromSocialLogin(params: {
       // it to the resolved profile so the final
       // syncOAuthConnectionsForAuthProfile below actually covers it — otherwise
       // the older profile's connection stays stranded/pending while the sync
-      // targets the newer profile.
+      // targets the newer profile. A personal-credential (oauth_account)
+      // connection must be private, so floor visibility in the same UPDATE:
+      // a null-profile row may legally be org-visible, and the trigger rejects
+      // attaching an oauth_account profile without flooring it.
       if (existingConnection.auth_profile_id !== authProfile.id) {
         await sql`
           UPDATE connections
-          SET auth_profile_id = ${authProfile.id}, updated_at = NOW()
+          SET auth_profile_id = ${authProfile.id},
+              visibility = 'private',
+              updated_at = NOW()
           WHERE id = ${existingConnection.id} AND deleted_at IS NULL
         `;
       }

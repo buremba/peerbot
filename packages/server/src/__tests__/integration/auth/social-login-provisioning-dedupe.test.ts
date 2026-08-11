@@ -20,7 +20,7 @@
  * mints a second connection (provisionCalls === 1) and fails.
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Env } from '../../../index';
 import { createAuthProfile } from '../../../utils/auth-profiles';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -53,6 +53,14 @@ describe('social-login connection provisioning dedupes by account', () => {
         return { connectionId: null, error: null };
       },
     }));
+  });
+
+  afterEach(() => {
+    // The integration suite runs with isolate:false (shared module graph) —
+    // clear these mocks so they cannot leak into sibling test files.
+    vi.resetModules();
+    vi.doUnmock('../../../connect/oauth-providers');
+    vi.doUnmock('../../../utils/provisioned-connection');
   });
 
   /** Org + connector definition + app profile + account row shared by every case. */
@@ -104,7 +112,7 @@ describe('social-login connection provisioning dedupes by account', () => {
   }
 
   /** The historical duplication: two oauth_account profiles for the SAME Google account. */
-  async function seedDuplicateProfiles(sql: ReturnType<typeof getTestDb>, orgId: string) {
+  async function seedDuplicateProfiles(orgId: string) {
     const older = await createAuthProfile({
       organizationId: orgId,
       connectorKey: 'google.gmail',
@@ -159,7 +167,7 @@ describe('social-login connection provisioning dedupes by account', () => {
 
   it('reuses the connection of a duplicate older profile for the same account', async () => {
     const { org, sql } = await seedBase();
-    const older = await seedDuplicateProfiles(sql, org.id);
+    const older = await seedDuplicateProfiles(org.id);
 
     await sql`
       INSERT INTO connections (
@@ -212,7 +220,7 @@ describe('social-login connection provisioning dedupes by account', () => {
 
   it('reconciles a pending connection on the older profile instead of leaving it stranded', async () => {
     const { org, sql } = await seedBase();
-    const older = await seedDuplicateProfiles(sql, org.id);
+    const older = await seedDuplicateProfiles(org.id);
 
     await sql`
       INSERT INTO connections (
@@ -228,6 +236,45 @@ describe('social-login connection provisioning dedupes by account', () => {
     const rows = await connectionRows(sql, org.id);
     expect(rows).toHaveLength(1);
     // No duplicate, and the pending connection was reconciled to usable.
+    expect(rows[0].status).toBe('active');
+  });
+
+  it('floors an org-visible null-profile connection to private when rebinding a personal credential', async () => {
+    const { org, sql } = await seedBase();
+    await createAuthProfile({
+      organizationId: org.id,
+      connectorKey: 'google.gmail',
+      displayName: 'gmail-account',
+      slug: 'gmail-account',
+      profileKind: 'oauth_account',
+      accountId: 'google-sub-1',
+      provider: 'google',
+      status: 'active',
+    });
+
+    // A null-auth_profile connection may legally be org-visible; the
+    // personal-credential trigger rejects attaching an oauth_account profile
+    // at org visibility, so the rebind must floor visibility to private.
+    await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status, auth_profile_id, account_id, visibility, created_at, updated_at
+      ) VALUES (
+        ${org.id}, 'google.gmail', 'gmail-buremba', 'Gmail', 'active', NULL, 'google-sub-1', 'org', NOW(), NOW()
+      )
+    `;
+
+    await runProvision();
+
+    expect(provisionCalls).toBe(0);
+    const rows = await sql<{ id: number; auth_profile_id: number | null; status: string; visibility: string }[]>`
+      SELECT id, auth_profile_id, status, visibility FROM connections
+      WHERE organization_id = ${org.id}
+        AND connector_key = 'google.gmail'
+        AND deleted_at IS NULL
+    `;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].auth_profile_id).not.toBeNull();
+    expect(rows[0].visibility).toBe('private');
     expect(rows[0].status).toBe('active');
   });
 });

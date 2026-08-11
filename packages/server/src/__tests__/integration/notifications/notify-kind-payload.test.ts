@@ -13,6 +13,7 @@ import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
   createTestAccessToken,
+  createTestEntity,
   createTestOAuthClient,
   createTestOrganization,
   createTestUser,
@@ -22,6 +23,7 @@ import {
 describe('notify > semantic_type (kind) payload', () => {
   let org: Awaited<ReturnType<typeof createTestOrganization>>;
   let user: Awaited<ReturnType<typeof createTestUser>>;
+  let entity: Awaited<ReturnType<typeof createTestEntity>>;
   let ctx: ToolContext;
   const sql = getTestDb();
 
@@ -33,6 +35,10 @@ describe('notify > semantic_type (kind) payload', () => {
     org = await createTestOrganization({ name: 'Notify Kind Org' });
     user = await createTestUser({ email: 'notify-kind@example.com' });
     await addUserToOrganization(user.id, org.id, 'owner');
+    entity = await createTestEntity({
+      name: 'Notify Kind Entity',
+      organization_id: org.id,
+    });
 
     const { client_id } = await createTestOAuthClient({
       client_name: 'notify-kind-test',
@@ -154,10 +160,10 @@ describe('notify > semantic_type (kind) payload', () => {
 
   it('renders a chart template for a kind notification via get_content', async () => {
     await insertEvent({
-      entityIds: [],
       organizationId: org.id,
       originId: 'notify-kind-non-notification-control',
       title: 'only-nonnotification-control-94721',
+      entityIds: [entity.id],
       semanticType: 'funnel_digest',
       payloadType: 'empty',
       payloadData: { rows: [{ label: 'Wed', value: 7 }] },
@@ -168,6 +174,7 @@ describe('notify > semantic_type (kind) payload', () => {
       type: 'agent_message',
       title: 'Chart notification',
       body: 'Daily events',
+      entityIds: [entity.id],
       semanticType: 'funnel_digest',
       payloadData: {
         rows: [
@@ -250,6 +257,35 @@ describe('notify > semantic_type (kind) payload', () => {
     expect(mixedKinds.content?.some((item) => item.title === 'Summary control')).toBe(true);
     expect(
       mixedKinds.content?.some((item) => item.title === 'only-nonnotification-control-94721')
+    ).toBe(false);
+
+    const scoreSorted = await getContent(
+      {
+        limit: 20,
+        sort_by: 'score',
+        semantic_type: 'notification',
+      } as never,
+      {} as never,
+      ctx
+    );
+    expect(scoreSorted.content?.some((item) => item.title === 'Chart notification')).toBe(true);
+    expect(
+      scoreSorted.content?.some((item) => item.title === 'only-nonnotification-control-94721')
+    ).toBe(false);
+
+    const history = await getContent(
+      {
+        entity_id: entity.id,
+        limit: 20,
+        include_superseded: true,
+        semantic_type: 'notification',
+      } as never,
+      {} as never,
+      ctx
+    );
+    expect(history.content?.some((item) => item.title === 'Chart notification')).toBe(true);
+    expect(
+      history.content?.some((item) => item.title === 'only-nonnotification-control-94721')
     ).toBe(false);
   });
 

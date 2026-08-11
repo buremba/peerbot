@@ -143,14 +143,14 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     return sessionId!;
   }
 
-  it('serves the self-contained v9 interaction bundle over resources/read', async () => {
+  it('serves the self-contained v10 interaction bundle over resources/read', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const response = await post(`/mcp/${org.slug}`, {
       body: {
         jsonrpc: '2.0',
         id: 1,
         method: 'resources/read',
-        params: { uri: 'ui://lobu/interaction/v9.html' },
+        params: { uri: 'ui://lobu/interaction/v10.html' },
       },
       headers: { 'mcp-session-id': sessionId },
       token,
@@ -159,7 +159,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const content = body.result?.contents?.[0];
-    expect(content?.uri).toBe('ui://lobu/interaction/v9.html');
+    expect(content?.uri).toBe('ui://lobu/interaction/v10.html');
     expect(content?.mimeType).toBe('text/html;profile=mcp-app');
     expect(content?.text).toContain('mcp-app-embedded-stub');
     expect(content?.text).not.toContain('mcp-app-external-stub');
@@ -268,11 +268,12 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     }
   });
 
-  it('keeps the v7 and v8 aliases on the packed, network-free template', async () => {
+  it('keeps the v7 through v9 aliases on the packed, network-free template', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     for (const uri of [
       'ui://lobu/interaction/v7.html',
       'ui://lobu/interaction/v8.html',
+      'ui://lobu/interaction/v9.html',
     ]) {
       const response = await post(`/mcp/${org.slug}`, {
         body: {
@@ -307,7 +308,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const resource = body.result?.resources?.find(
-      (r: { uri: string }) => r.uri === 'ui://lobu/interaction/v9.html'
+      (r: { uri: string }) => r.uri === 'ui://lobu/interaction/v10.html'
     );
     expect(resource).toBeDefined();
     expect(
@@ -355,10 +356,10 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         _meta: expect.objectContaining({
           securitySchemes: [{ type: 'oauth2', scopes: ['mcp:read'] }],
           ui: expect.objectContaining({
-            resourceUri: 'ui://lobu/interaction/v9.html',
+            resourceUri: 'ui://lobu/interaction/v10.html',
             visibility: ['model', 'app'],
           }),
-          'openai/outputTemplate': 'ui://lobu/interaction/v9.html',
+          'openai/outputTemplate': 'ui://lobu/interaction/v10.html',
         }),
       })
     );
@@ -377,12 +378,12 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       );
       expect(richTool?._meta?.ui).toEqual(
         expect.objectContaining({
-          resourceUri: 'ui://lobu/interaction/v9.html',
+          resourceUri: 'ui://lobu/interaction/v10.html',
           visibility: ['model', 'app'],
         })
       );
       expect(richTool?._meta?.['openai/outputTemplate']).toBe(
-        'ui://lobu/interaction/v9.html'
+        'ui://lobu/interaction/v10.html'
       );
       expect(richTool?.outputSchema).toEqual(expect.objectContaining({ type: 'object' }));
     }
@@ -449,7 +450,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     );
     expect(tool?._meta?.ui).toEqual(
       expect.objectContaining({
-        resourceUri: 'ui://lobu/interaction/v9.html',
+        resourceUri: 'ui://lobu/interaction/v10.html',
         visibility: ['model', 'app'],
       })
     );
@@ -560,10 +561,10 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
               tool_call_id: toolCallId,
               tool_name: 'query_sql',
               view_state: viewState,
+              snapshot_capability: capability,
             },
             _meta: {
               'openai/session': conversationId,
-              'lobu/mcp-app-snapshot-capability': capability,
             },
           },
         },

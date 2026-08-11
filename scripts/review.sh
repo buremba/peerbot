@@ -51,6 +51,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/review-skip.sh"
 # shellcheck source=scripts/lib/review-cache.sh
 . "$SCRIPT_DIR/lib/review-cache.sh"
+# shellcheck source=scripts/lib/remote-ci.sh
+. "$SCRIPT_DIR/lib/remote-ci.sh"
 
 # --- preflight --------------------------------------------------------------
 
@@ -507,17 +509,24 @@ sed 's/^/>>   /' "$CI_CHECKS_FILE"
 
 # --- build ------------------------------------------------------------------
 # The reviewer's exploratory probes (targeted bun test runs, CLI invocations)
-# need workspace packages built. Worktree's `dist/` may be stale or missing —
-# always rebuild. Cheap if up-to-date.
+# need workspace packages built. Reuse a clean exact-HEAD full Depot preflight;
+# otherwise rebuild locally so a stale or missing dist cannot create noise.
 
 BUILD_LOG="$REVIEW_RUN_DIR/build.log"
-echo ">> make build-packages → $BUILD_LOG"
-set +e
-run_review_child make build-packages > "$BUILD_LOG" 2>&1
-BUILD_EXIT=$?
-set -e
-if [ $BUILD_EXIT -ne 0 ]; then
-  echo "!! build failed (exit $BUILD_EXIT) — proceeding so $REVIEWER_CLI_SELECTED can review the diff, but exploratory probes may fail" >&2
+REMOTE_PREFLIGHT_FILE="$(git rev-parse --git-path lobu-remote-preflight)"
+if [ -z "$(git status --porcelain)" ] && remote_ci_attestation_matches "$HEAD_SHA" "$REMOTE_PREFLIGHT_FILE"; then
+  echo ">> full Depot preflight already passed for $HEAD_SHA; skipping duplicate local package build"
+  printf 'Skipped: full Depot preflight passed for %s\n' "$HEAD_SHA" > "$BUILD_LOG"
+  BUILD_EXIT=0
+else
+  echo ">> make build-packages → $BUILD_LOG"
+  set +e
+  run_review_child make build-packages > "$BUILD_LOG" 2>&1
+  BUILD_EXIT=$?
+  set -e
+  if [ $BUILD_EXIT -ne 0 ]; then
+    echo "!! build failed (exit $BUILD_EXIT) — proceeding so $REVIEWER_CLI_SELECTED can review the diff, but exploratory probes may fail" >&2
+  fi
 fi
 
 # --- agent review -----------------------------------------------------------

@@ -809,6 +809,14 @@ jobs:
           bash scripts/lib/__tests__/review-skip.test.sh
           bash scripts/lib/__tests__/review-cache.test.sh
 
+      - name: Remote CI wrapper guards
+        # Depot rewrites .github/actions paths to .depot/actions for local runs.
+        # Pin the duplicate action and the fail-closed run-status parser so a
+        # failed remote job can never be reported as a successful preflight.
+        run: |
+          cmp -s .github/actions/setup-submodule/action.yml .depot/actions/setup-submodule/action.yml
+          bash scripts/lib/__tests__/remote-ci.test.sh
+
   typecheck:
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 20

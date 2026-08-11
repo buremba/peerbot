@@ -40,10 +40,8 @@ Prerequisites are Bun, the supported Node version, and Postgres with pgvector vi
 Run focused tests while iterating, then the settled-diff gates in this order:
 
 ```bash
-make build-packages                 # before checks that consume workspace dist
-bun test <path>                     # focused unit test
-make test-unit                      # or make test-integration with DATABASE_URL
-make pre-pr                         # build, typecheck, knip, lint, surface naming
+bun test <path>                     # focused local iteration
+make pre-pr-remote                  # full Linux graph on Depot; no local CPU
 make review-fix                     # unposted fixer pass; inspect its edits
 git add -- <paths>                  # explicit paths only, never -A
 git commit -m '<type>(<scope>): <summary>'
@@ -54,6 +52,8 @@ make review                         # once, on settled HEAD
 gh pr checks <number> --required
 gh pr merge <number> --squash --admin
 ```
+
+`make pre-pr-remote` uploads committed, uncommitted, and untracked work, so it does not require a push. It excludes the macOS-only app lane. Use the CPU-heavy local `make pre-pr` only as an explicit fallback when Depot is unavailable; reviewed CI workflow/action changes require `DEPOT_ALLOW_WORKFLOW_CHANGES=1 make pre-pr-remote`.
 
 Never bypass a check that has not reported. For a production-visible change, wait for deployment and prove the PR's squash merge commit is an ancestor of the deployed SHA before running the live check. Clean up the task worktree with `make task-clean` after merge.
 

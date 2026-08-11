@@ -120,7 +120,7 @@ describe("platform-derived connector activation", () => {
 		});
 	});
 
-	it("queues nothing while the feed has no prior successful sync (backfill)", async () => {
+	it("queues nothing on the first sync before any successful run (backfill)", async () => {
 		const { org, user, ctx } = await seedOwnerContext();
 		const agent = await createTestAgent({
 			organizationId: org.id,
@@ -132,7 +132,29 @@ describe("platform-derived connector activation", () => {
 			slug: "xconn-coldstart",
 			created_by: user.id,
 		});
-		await manageBehaviors(
+		const db = getTestDb();
+		await db`
+			INSERT INTO connector_definitions (organization_id, key, name, feeds_schema, status)
+			VALUES (${org.id}, 'x', 'X', ${db.json({
+				home_feed: { eventKinds: { tweet: {} } },
+			})}, 'active')
+		`;
+		const [feed] = await db`
+			INSERT INTO feeds (organization_id, connection_id, feed_key, status, created_at, updated_at)
+			VALUES (${org.id}, ${connection.id}, 'home_feed', 'active', NOW(), NOW())
+			RETURNING id
+		`;
+		const feedId = Number((feed as { id: number }).id);
+		// No prior completed sync — this is the cold-start backfill.
+		const [run] = await db`
+			INSERT INTO runs
+				(organization_id, run_type, feed_id, connection_id, connector_key, connector_version, status, approval_status, created_at)
+			VALUES
+				(${org.id}, 'sync', ${feedId}, ${connection.id}, 'x', '1.0.0', 'running', 'auto', current_timestamp)
+			RETURNING id
+		`;
+		const runId = Number((run as { id: number }).id);
+		const created = await manageBehaviors(
 			{
 				action: "create",
 				slug: "x-cold-listener",
@@ -156,30 +178,32 @@ describe("platform-derived connector activation", () => {
 			{} as Env,
 			ctx,
 		);
+		if (created.action !== "create" || !("behavior_id" in created)) {
+			throw new Error("Behavior creation did not complete");
+		}
+		const behaviorId = Number(created.behavior_id);
 
-		const coldStart: ConnectorDeriveFeedContext = {
-			connectorKey: "x",
-			feedKey: "home_feed",
-			feedPreviouslySynced: false,
-			eventKinds: { tweet: {} },
-		};
-		const event: ConnectorDeriveEventInput = {
-			connectionId: connection.id,
-			runId: 100,
-			originId: "1",
-			kind: "tweet",
-			title: null,
-			payloadText: "hello",
-			sourceUrl: null,
-			occurredAt: new Date(),
-			metadata: undefined,
-		};
-		const signals = deriveConnectorActivationSignals(
-			coldStart,
-			event,
-			"inserted",
-		);
-		expect(signals).toEqual([]);
+		const res = await post("/api/workers/stream", {
+			body: {
+				type: "batch",
+				run_id: runId,
+				items: [
+					{
+						id: "1",
+						origin_type: "tweet",
+						title: "someone: hello",
+						payload_text: "hello",
+						occurred_at: "2026-08-11T10:00:00.000Z",
+					},
+				],
+			},
+		});
+		expect(res.status).toBe(200);
+
+		const runs = await db`
+			SELECT id FROM runs WHERE watcher_id = ${behaviorId}
+		`;
+		expect(runs).toHaveLength(0);
 	});
 
 	it("queues a run through the real ingest seam (connector definition → feed → stream)", async () => {

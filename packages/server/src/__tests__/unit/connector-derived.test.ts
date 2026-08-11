@@ -16,7 +16,6 @@ const context: ConnectorDeriveFeedContext = {
 
 const baseEvent: ConnectorDeriveEventInput = {
   connectionId: 7,
-  runId: 100,
   originId: '2083959735481716957',
   kind: 'tweet',
   title: 'someone: hello',
@@ -62,18 +61,6 @@ describe('deriveConnectorActivationSignals', () => {
     expect(
       deriveConnectorActivationSignals(coldStart, baseEvent, 'inserted'),
     ).toEqual([]);
-  });
-
-  test('never suppresses webhook-STORE delivery, even without a prior sync', () => {
-    const coldStart = { ...context, feedPreviouslySynced: false };
-    const storeEvent = { ...baseEvent, runId: null };
-    const signals = deriveConnectorActivationSignals(
-      coldStart,
-      storeEvent,
-      'inserted',
-    );
-    expect(signals).toHaveLength(1);
-    expect(signals[0].delivery_id).toBe('derived:x:7:2083959735481716957');
   });
 
   test('does not fire on superseded or unchanged rows', () => {

@@ -473,7 +473,6 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 									deriveContext,
 									{
 										connectionId: run.connection_id,
-										runId: batch.run_id,
 										originId: item.id,
 										kind: itemOriginType ?? itemSemanticType,
 										title: item.title ?? null,

@@ -18,10 +18,11 @@ import { type DbClient, getDb } from "../db/client";
  *    when a trigger wants only one.
  *
  * Safety bounds:
- *  - Poll-driven ingestion only activates once the feed has a prior successful
- *    non-dry sync; a cold-start backfill would flood subscribers with every
- *    first-seen row. Webhook-STORE delivery is
- *    definitionally steady-state (a live push) and is never suppressed.
+ *  - Ingestion only activates once the feed has a prior successful non-dry
+ *    sync; a cold-start backfill would flood subscribers with every first-seen
+ *    row. (The webhook-STORE path is expected to derive without that gate when
+ *    it lands — a live push is definitionally steady-state — but no producer
+ *    uses it yet.)
  *  - Only kinds the feed declares are activatable, so a trigger a user could
  *    never author (the picker reads the same catalog) can never fire.
  */
@@ -37,8 +38,6 @@ export interface ConnectorDeriveFeedContext {
 
 export interface ConnectorDeriveEventInput {
 	connectionId: number | null;
-	/** null when the row was webhook-STORE'd (no poll run). */
-	runId: number | null;
 	originId: string;
 	kind: string;
 	title: string | null;
@@ -135,7 +134,7 @@ export function deriveConnectorActivationSignals(
 ): ConnectorTriggerSignal[] {
 	if (change !== "inserted") return [];
 	if (event.connectionId == null) return [];
-	if (event.runId != null && !ctx.feedPreviouslySynced) return [];
+	if (!ctx.feedPreviouslySynced) return [];
 	if (ctx.eventKinds == null || ctx.eventKinds[event.kind] == null) return [];
 
 	const occurred = new Date(event.occurredAt);

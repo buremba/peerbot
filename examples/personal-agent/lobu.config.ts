@@ -974,6 +974,30 @@ const mentions = defineRelationshipType({
   description: "Auto-discovered content reference",
 });
 
+// Graph edges created in the org (and populated with live relationships) that
+// the config must declare — otherwise prune flags them "removed from config"
+// and the apply aborts: the server refuses to delete a relationship type that
+// still has relationship rows.
+const connectedWith = defineRelationshipType({
+  key: "connected_with",
+  name: "Connected With",
+  description:
+    "Social connection observed on a platform (LinkedIn connection, mutual follow). Symmetric.",
+});
+
+const founderOf = defineRelationshipType({
+  key: "founder_of",
+  name: "Founder Of",
+  description: "A person founded or co-founded a company.",
+});
+
+const sameAs = defineRelationshipType({
+  key: "same_as",
+  name: "Same As",
+  description:
+    "Maps a private person profile to its canonical public identity. The mapping and private profile remain visible only to this workspace.",
+});
+
 const voiceProfile = defineEntityType({
   key: "voice-profile",
   name: "Voice profile",
@@ -1246,7 +1270,14 @@ export default defineConfig({
     voiceProfile,
     socialSignal,
   ],
-  relationships: [worksAt, memberOf, mentions],
+  relationships: [
+    worksAt,
+    memberOf,
+    mentions,
+    connectedWith,
+    founderOf,
+    sameAs,
+  ],
   behaviors: [
     hourlyTaskCollaborator,
     duplicateEntityResolution,

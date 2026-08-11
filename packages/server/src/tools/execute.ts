@@ -69,6 +69,8 @@ export interface AuthContext {
   mcpAppsSupported?: boolean | null;
   /** Host-only capability from an MCP App `tools/call` request. Never persisted. */
   mcpAppApprovalCapability?: string | null;
+  /** Host-only single-use result-binding capability. Raw values are never persisted. */
+  mcpAppSnapshotCapability?: string | null;
   /** Host conversation correlation, separate from the transport session. */
   mcpConversationId?: string | null;
   instructions?: string;
@@ -410,6 +412,7 @@ export function toToolContext(authCtx: AuthContext): ToolContext {
     mcpSessionId: authCtx.mcpSessionId ?? null,
     mcpAppsSupported: authCtx.mcpAppsSupported ?? false,
     mcpAppApprovalCapability: authCtx.mcpAppApprovalCapability ?? null,
+    mcpAppSnapshotCapability: authCtx.mcpAppSnapshotCapability ?? null,
     mcpConversationId: authCtx.mcpConversationId ?? null,
     executionMode: authCtx.executionMode ?? null,
   };

@@ -130,6 +130,8 @@ export interface ToolContext {
   mcpAppsSupported?: boolean | null;
   /** Host-only encrypted token supplied by the Lobu MCP App for one approval click. */
   mcpAppApprovalCapability?: string | null;
+  /** Host-only single-use token that binds a result snapshot to its rendered app card. */
+  mcpAppSnapshotCapability?: string | null;
   /**
    * Server-derived side-effect mode for the run driving these tool calls,
    * carried as a signed worker-token claim. `capture` marks an eval replay:

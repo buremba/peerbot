@@ -55,21 +55,38 @@ async function getConnectorBehaviorEventCatalog(
 	connectorKey: string
 ): Promise<ConnectorBehaviorEventCatalog> {
 	const rows = await sql`
-		SELECT name, behavior_events, feeds_schema
-		FROM connector_definitions
-		WHERE organization_id = ${organizationId}
-		  AND key = ${connectorKey}
-		  AND status = 'active'
-		ORDER BY updated_at DESC
+		SELECT d.name, d.behavior_events, d.feeds_schema,
+		       cv.organization_id AS version_org_id
+		FROM connector_definitions d
+		LEFT JOIN LATERAL (
+			SELECT organization_id
+			FROM connector_versions
+			WHERE connector_key = d.key AND version = d.version
+			  AND (organization_id = d.organization_id OR organization_id IS NULL)
+			ORDER BY organization_id NULLS LAST
+			LIMIT 1
+		) cv ON TRUE
+		WHERE d.organization_id = ${organizationId}
+		  AND d.key = ${connectorKey}
+		  AND d.status = 'active'
+		ORDER BY d.updated_at DESC
 		LIMIT 1
 	`;
 	const row = rows[0] as
-		| { name: string; behavior_events: unknown; feeds_schema: unknown }
+		| {
+				name: string;
+				behavior_events: unknown;
+				feeds_schema: unknown;
+				version_org_id: string | null;
+		  }
 		| undefined;
 
-	// Precedence: persisted declaration > bundled immutable catalog (legacy
-	// installs predate the behavior_events column) > default-on derivation from
-	// eventKinds — shared with the UI picker so both surfaces agree.
+	// Precedence: persisted declaration > bundled immutable catalog > default-on
+	// derivation from eventKinds — shared with the UI picker so both surfaces
+	// agree. The bundled fallback requires provenance: no installed row at all
+	// (pure catalog entry), or an active version resolved from the SHARED
+	// connector_versions row (organization_id NULL — a bundled install). An
+	// org-scoped override never falls back to the bundled curated catalog.
 	const catalog = (await listCatalogEntries(["connectors"])).connectors.find(
 		(entry) => entry.id === connectorKey
 	);
@@ -77,6 +94,7 @@ async function getConnectorBehaviorEventCatalog(
 		persistedEvents: row?.behavior_events,
 		feedsSchema: row?.feeds_schema,
 		bundled: catalog?.detail,
+		useBundledFallback: row == null || row.version_org_id == null,
 	}) as BehaviorEventDefinition[];
 	return {
 		name: row?.name ?? catalog?.name ?? connectorKey,

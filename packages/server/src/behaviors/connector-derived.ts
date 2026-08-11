@@ -243,63 +243,35 @@ export interface BundledBehaviorCatalogEntry {
 	feeds_schema?: unknown;
 }
 
-/** The eventKinds a feeds_schema declares, keyed by feed. */
-function declaredKindsByFeed(
-	feeds: unknown,
-): Record<string, string[]> {
-	if (!feeds || typeof feeds !== "object") return {};
-	const out: Record<string, string[]> = {};
-	for (const [feedKey, feed] of Object.entries(feeds as Record<string, unknown>)) {
-		if (!feed || typeof feed !== "object") continue;
-		const eventKinds = (feed as Record<string, unknown>).eventKinds;
-		if (!eventKinds || typeof eventKinds !== "object") continue;
-		out[feedKey] = Object.keys(eventKinds as Record<string, unknown>).filter(
-			Boolean,
-		);
-	}
-	return out;
-}
-
 /**
  * Single source of truth for a connector's subscribable Behavior event catalog,
  * shared by trigger validation and the UI picker so the two can never disagree.
  * Precedence: persisted declaration > bundled immutable catalog > default-on
  * derivation from eventKinds.
  *
- * The bundled catalog is used ONLY for a proven legacy bundled install: a
- * connector whose persisted feedsSchema declares the same eventKinds as the
- * bundled artifact (it was installed from it before the behavior_events column
- * existed). An org-scoped override that shares a bundled key but declares its
- * own eventKinds must be resolved against ITS OWN feedsSchema — the bundled
- * curated catalog would advertise events its code cannot emit.
+ * The bundled catalog is used ONLY when provenance proves it: the active
+ * definition resolves to the SHARED connector_versions row (organization_id
+ * NULL — a bundled install), or the connector is not installed in this org at
+ * all (pure catalog entry). An org-scoped override — even one that reuses the
+ * bundled key and feedsSchema but omits behaviorEvents — must never resolve to
+ * the bundled curated catalog, because its code emits kind slugs, not curated
+ * keys, and a catalog that advertises the latter would accept Behaviors that
+ * never fire.
  */
 export function resolveBehaviorEventCatalog(args: {
 	persistedEvents: unknown;
 	feedsSchema: unknown;
 	bundled?: BundledBehaviorCatalogEntry | null;
+	/** Provenance: the resolved version is the shared (bundled) row, or not installed. */
+	useBundledFallback: boolean;
 }): Array<Record<string, unknown> & { key: string }> {
 	const declared = parseDeclaredBehaviorEvents(args.persistedEvents);
 	if (declared.length > 0) return declared;
 
 	const bundledDeclared = parseDeclaredBehaviorEvents(args.bundled?.behavior_events);
-	const persistedKinds = declaredKindsByFeed(args.feedsSchema);
-	const bundledKinds = declaredKindsByFeed(args.bundled?.feeds_schema);
-	// jsonb round-trips reorder keys (stored sorted), so compare canonically.
-	// A feeds-less connector (Slack) has empty==empty kinds and is still a
-	// bundled install; an override that re-declares identical kinds to bundled
-	// is indistinguishable by surface and safely uses the curated catalog.
-	// No persisted feedsSchema at all (connector not installed in this org)
-	// is the pure bundled fallback.
-	const canonicalKinds = (kinds: Record<string, string[]>): string =>
-		JSON.stringify(
-			Object.keys(kinds)
-				.sort()
-				.map((feedKey) => [feedKey, [...kinds[feedKey]].sort()]),
-		);
-	const isBundledInstall =
-		args.feedsSchema == null ||
-		canonicalKinds(persistedKinds) === canonicalKinds(bundledKinds);
-	if (isBundledInstall && bundledDeclared.length > 0) return bundledDeclared;
+	if (args.useBundledFallback && bundledDeclared.length > 0) {
+		return bundledDeclared;
+	}
 
 	// An org-scoped override, or a bundled install with no curated events:
 	// derive from the persisted feedsSchema (the definition's own code).

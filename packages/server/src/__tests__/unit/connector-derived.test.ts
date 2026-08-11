@@ -132,6 +132,7 @@ describe('resolveBehaviorEventCatalog', () => {
       persistedEvents: declared,
       feedsSchema: {},
       bundled: null,
+      useBundledFallback: false,
     });
     expect(resolved).toHaveLength(1);
     expect(resolved[0]).toMatchObject({

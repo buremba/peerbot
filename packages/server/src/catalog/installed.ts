@@ -30,14 +30,16 @@ function behaviorEventsForUi(
 	raw: Array<Record<string, unknown>> | null | undefined,
 	feedsSchema?: unknown,
 	bundled?: { behavior_events?: unknown; feeds_schema?: unknown },
+	useBundledFallback = false,
 ): Array<Record<string, unknown>> | undefined {
 	// Same precedence as trigger validation (persisted > bundled legacy >
-	// derived from eventKinds) so the picker can never advertise a value
-	// Behavior creation rejects.
+	// derived from eventKinds, gated on shared-version provenance) so the
+	// picker can never advertise a value Behavior creation rejects.
 	const source = resolveBehaviorEventCatalog({
 		persistedEvents: raw,
 		feedsSchema,
 		bundled,
+		useBundledFallback,
 	});
 	const merged = withPlatformBehaviorEvents(source);
 	return merged.length > 0 ? (merged as Array<Record<string, unknown>>) : undefined;
@@ -94,6 +96,7 @@ export async function listOrgInstalled(
 						row.behavior_events,
 						row.feeds_schema,
 						bundledByKey.get(row.key),
+						row.source_org_id == null,
 					),
 					options_schema: row.options_schema,
 					favicon_domain: row.favicon_domain,

@@ -215,8 +215,11 @@ describe("event-trigger connector eligibility", () => {
 
 	it("derives from an org-scoped override's own eventKinds, not the bundled catalog", async () => {
 		// An org-scoped connector that shares the bundled 'slack' key but
-		// declares its OWN eventKinds must never be resolved against the bundled
-		// curated catalog (which would advertise events its code cannot emit).
+		// declares its OWN eventKinds (and omits behaviorEvents) must never be
+		// resolved against the bundled curated catalog — even when it reuses the
+		// bundled feedsSchema — because its code emits kind slugs, not curated
+		// keys, and a catalog advertising the latter accepts Behaviors that never
+		// fire. Provenance: the active version is org-scoped.
 		const sql = getTestDb();
 		await sql`
 			INSERT INTO connector_definitions
@@ -227,6 +230,12 @@ describe("event-trigger connector eligibility", () => {
 				${sql.json({ incidents: { eventKinds: { incident: {} } } })},
 				NULL,
 				'active')
+			ON CONFLICT DO NOTHING
+		`;
+		await sql`
+			INSERT INTO connector_versions
+				(organization_id, connector_key, version, created_at)
+			VALUES (${orgId}, 'slack', '9.9.9', NOW())
 			ON CONFLICT DO NOTHING
 		`;
 

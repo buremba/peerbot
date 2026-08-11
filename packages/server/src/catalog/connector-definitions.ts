@@ -54,6 +54,12 @@ export type ScopedConnectorDefinitionRow = {
 	openapi_config?: Record<string, unknown> | null;
 	favicon_domain?: string | null;
 	source_path?: string | null;
+	/**
+	 * The active version's connector_versions.organization_id. NULL means the
+	 * version resolved to the SHARED row (a bundled install) or none exists;
+	 * non-null means an org-scoped override is active.
+	 */
+	source_org_id?: string | null;
 	default_connection_config?: Record<string, unknown> | null;
 	status: string;
 	login_enabled?: boolean | null;
@@ -117,10 +123,11 @@ export async function listScopedConnectorDefinitions(params: {
       d.runtime,
       d.created_at,
       d.updated_at,
-      cv.source_path
+      cv.source_path,
+      cv.organization_id AS source_org_id
     FROM connector_definitions d
     LEFT JOIN LATERAL (
-      SELECT source_path
+      SELECT source_path, organization_id
       FROM connector_versions
       WHERE connector_key = d.key AND version = d.version
         AND (organization_id = d.organization_id OR organization_id IS NULL)

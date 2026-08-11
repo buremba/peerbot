@@ -142,6 +142,23 @@ export function deriveConnectorActivationSignals(
 		? occurred.toISOString()
 		: new Date().toISOString();
 
+	// Normalize to ConnectorBehaviorSignalDraftSchema limits — the signal rides
+	// the same persisted contract, and an oversized field (e.g. a huge
+	// payload_text) would produce an invalid run input. Capped at the draft
+	// schema maxima: input_text 32,000, label 300, url 2,000, resource_ref 500,
+	// resource_type 100, attribute keys 100, string attribute values 1,000.
+	const label = (event.title ?? `${ctx.connectorKey} ${event.kind}`).slice(
+		0,
+		300,
+	);
+	const inputText = (
+		event.payloadText && event.payloadText.trim().length > 0
+			? event.payloadText
+			: event.title && event.title.trim().length > 0
+				? event.title
+				: `${ctx.connectorKey} ${event.kind}: ${event.originId}`
+	).slice(0, 32_000);
+
 	// `match` runs exact-equality over signal attributes; surface the row's
 	// scalar metadata so connectors get matchable fields for free. null is a
 	// valid match value (TriggerAttributeValueSchema includes Null), so it is
@@ -150,7 +167,7 @@ export function deriveConnectorActivationSignals(
 	// rewrite the change attribute and route activation to the wrong kind.
 	const attributes: Record<string, string | number | boolean | null> = {};
 	for (const [key, value] of Object.entries(event.metadata ?? {})) {
-		if (key === "change" || value === undefined) continue;
+		if (key === "change" || key.length > 100 || value === undefined) continue;
 		if (value === null) {
 			attributes[key] = null;
 		} else if (
@@ -158,7 +175,10 @@ export function deriveConnectorActivationSignals(
 			typeof value === "number" ||
 			typeof value === "boolean"
 		) {
-			attributes[key] = value;
+			attributes[key] =
+				typeof value === "string" && value.length > 1_000
+					? value.slice(0, 1_000)
+					: value;
 		}
 	}
 	attributes.change = change;
@@ -167,20 +187,13 @@ export function deriveConnectorActivationSignals(
 		{
 			connector_key: ctx.connectorKey,
 			connection_id: event.connectionId,
-			resource_type: event.kind,
-			resource_ref: event.originId,
-			event_type: event.kind,
+			resource_type: event.kind.slice(0, 100),
+			resource_ref: event.originId.slice(0, 500),
+			event_type: event.kind.slice(0, 100),
 			delivery_id: `derived:${ctx.connectorKey}:${event.connectionId}:${event.originId}`,
-			label: event.title ?? `${ctx.connectorKey} ${event.kind}`,
-			// Blank payload/title strings count as absent: a title-only event
-			// (payload_text: "") must still feed the title to the run.
-			input_text:
-				event.payloadText && event.payloadText.trim().length > 0
-					? event.payloadText
-					: event.title && event.title.trim().length > 0
-						? event.title
-						: `${ctx.connectorKey} ${event.kind}: ${event.originId}`,
-			...(event.sourceUrl ? { url: event.sourceUrl } : {}),
+			label,
+			input_text: inputText,
+			...(event.sourceUrl ? { url: event.sourceUrl.slice(0, 2_000) } : {}),
 			occurred_at: occurredAt,
 			attributes,
 		},

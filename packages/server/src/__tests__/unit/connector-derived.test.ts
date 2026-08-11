@@ -166,6 +166,32 @@ describe('resolveBehaviorEventCatalog', () => {
     expect(signals[0]?.input_text).toBe('Ask HN: Show your tools');
   });
 
+  test('caps derived fields to the connector-signal schema limits', () => {
+    const signals = deriveConnectorActivationSignals(
+      context,
+      {
+        ...baseEvent,
+        payloadText: 'x'.repeat(33_000),
+        title: 't'.repeat(400),
+        sourceUrl: 'u'.repeat(2_500),
+        originId: 'o'.repeat(600),
+        metadata: {
+          [String('k').repeat(120)]: 'v',
+          long_value: String('v').repeat(1_200),
+        },
+      },
+      'inserted',
+    );
+    const signal = signals[0] as ConnectorTriggerSignal;
+    expect(signal.input_text.length).toBe(32_000);
+    expect(signal.label.length).toBe(300);
+    expect(signal.url?.length).toBe(2_000);
+    expect(signal.resource_ref?.length).toBe(500);
+    expect(signal.resource_type?.length).toBeLessThanOrEqual(100);
+    expect(signal.attributes?.long_value).toBe('v'.repeat(1_000));
+    expect(signal.attributes?.[String('k').repeat(120)]).toBeUndefined();
+  });
+
   test('an org override with a null feedsSchema never borrows the bundled feeds', () => {
     const resolved = resolveBehaviorEventCatalog({
       persistedEvents: null,

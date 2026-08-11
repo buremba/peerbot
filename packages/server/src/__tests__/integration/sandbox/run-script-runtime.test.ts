@@ -570,4 +570,131 @@ describe("sandbox output budgets", () => {
     // Interrupted at the first oversized payload, well under the 5s timeout.
     expect(Date.now() - started).toBeLessThan(3000);
   });
+
+  it("bounds the SDK call trace and keeps the tail", async () => {
+    const sdk = stubSDK({
+      entities: {
+        list: async () => [{ id: 1 }],
+      } as never,
+    });
+    const result = await runScript({
+      source: [
+        "export default async (_ctx, client) => {",
+        "  for (let i = 0; i < 50; i++) {",
+        "    await client.entities.list({ big: 'x'.repeat(4000) });",
+        "  }",
+        "  return 'done';",
+        "};",
+      ].join("\n"),
+      sdk,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.returnValue).toBe("done");
+    const serialized = Buffer.byteLength(
+      JSON.stringify(result.sdkCallTrace),
+      "utf8",
+    );
+    expect(serialized).toBeLessThanOrEqual(131_072);
+    expect(result.sdkCallTrace.at(-1)?.path).toBe("entities.list");
+    expect(result.traceDropped).toBeGreaterThan(0);
+  });
+
+  it("keeps the failing call in the tail of a bounded trace", async () => {
+    let calls = 0;
+    const sdk = stubSDK({
+      entities: {
+        list: async () => {
+          calls++;
+          if (calls === 50) throw new Error("boom");
+          return [{ id: 1 }];
+        },
+      } as never,
+    });
+    const result = await runScript({
+      source: [
+        "export default async (_ctx, client) => {",
+        "  for (let i = 0; i < 50; i++) {",
+        "    await client.entities.list({ big: 'x'.repeat(4000) });",
+        "  }",
+        "  return 'done';",
+        "};",
+      ].join("\n"),
+      sdk,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.name).toBe("ScriptError");
+    expect(result.error?.message).toContain("boom");
+    // The 50th (failing) call is the last trace entry and survives tail-keep.
+    expect(result.sdkCallTrace.at(-1)?.path).toBe("entities.list");
+    expect(result.traceDropped).toBeGreaterThan(0);
+  });
+
+  it("drops and counts a single trace entry over the cap", async () => {
+    const sdk = stubSDK({
+      entities: {
+        list: async () => [],
+      } as never,
+    });
+    const result = await runScript({
+      source: [
+        "export default async (_ctx, client) => {",
+        "  await client.entities.list({ small: 1 });",
+        "  await client.entities.list({ big: 'x'.repeat(4000) });",
+        "  return 'done';",
+        "};",
+      ].join("\n"),
+      sdk,
+      limits: { traceBytes: 1024 },
+    });
+
+    expect(result.success).toBe(true);
+    // The big-arg entry alone exceeds the 1 KB cap -> dropped and counted.
+    expect(result.traceDropped).toBeGreaterThan(0);
+    // The small entry is retained.
+    expect(result.sdkCallTrace.length).toBeGreaterThan(0);
+  });
+
+  it("reports the total skipped calls even when the preview truncates", async () => {
+    const sdk = stubSDK({
+      entities: {
+        manage: async () => ({}),
+      } as never,
+    });
+    const result = await runScript({
+      source: [
+        "export default async (_ctx, client) => {",
+        "  for (let i = 0; i < 30; i++) {",
+        "    await client.entities.manage({ big: 'x'.repeat(4000) });",
+        "  }",
+        "  return 'done';",
+        "};",
+      ].join("\n"),
+      sdk,
+      sdkMode: "full",
+      dryRun: true,
+      limits: { traceBytes: 4096 },
+    });
+
+    expect(result.success).toBe(true);
+    // All 30 are skipped; the counter is independent of preview retention.
+    expect(result.skippedCalls).toBe(30);
+    // The preview is bounded and truncated.
+    expect(result.sideEffectPreview.length).toBeLessThan(30);
+    expect(result.traceDropped).toBeGreaterThan(0);
+  });
+
+  it("omits the truncation marker on a normal run", async () => {
+    const result = await runScript({
+      source:
+        "export default async (_ctx, client) => { await client.entities.list(); return 'ok'; };",
+      sdk: stubSDK({
+        entities: { list: async () => [] } as never,
+      }),
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.traceDropped).toBe(0);
+  });
 });

@@ -29,6 +29,8 @@ export interface RunLimits {
 	outputBytes?: number;
 	/** Cap for captured console logs; messages past it are dropped. */
 	logBytes?: number;
+	/** Total serialized cap for `sdk_call_trace` and `side_effect_preview`; oldest entries are dropped past it. */
+	traceBytes?: number;
 	/** Single-message cap for host↔guest bridge traffic; a larger message terminates the run. */
 	messageBytes?: number;
 }
@@ -128,6 +130,10 @@ interface RunScriptResult {
 	returnValuePreview?: string;
 	/** Present with `returnValuePreview`: original JSON and preview-string byte sizes. */
 	returnTruncated?: ReturnPreviewInfo;
+	/** Total calls skipped under dry-run (independent of preview retention). */
+	skippedCalls: number;
+	/** Trace entries dropped because the `traceBytes` cap was exceeded. */
+	traceDropped: number;
 	logs: LogEntry[];
 	sdkCallTrace: SdkCallTraceEntry[];
 	sideEffectPreview: SdkCallTraceEntry[];
@@ -149,6 +155,7 @@ const DEFAULT_LIMITS: Required<RunLimits> = {
 	sdkCallQuota: 200,
 	outputBytes: 1_048_576,
 	logBytes: 65_536,
+	traceBytes: 131_072,
 	messageBytes: 4_194_304,
 };
 /** Device action waits allow 60s queue + 95s post-claim; sandbox must outlive that. */
@@ -158,6 +165,11 @@ const MAX_TRACE_ARGS_BYTES = 8192;
 const MAX_ERROR_DETAILS_BYTES = 16_384;
 const SENSITIVE_TRACE_KEY =
 	/(api[_-]?key|apikey|auth[_-]?data|auth[_-]?values|authorization|cookie|credential|password|private[_-]?key|secret|token)/i;
+
+function jsonBytes(value: unknown): number {
+	const json = JSON.stringify(value);
+	return json === undefined ? 0 : Buffer.byteLength(json, "utf8");
+}
 
 function redactTraceValue(
 	value: unknown,
@@ -360,6 +372,12 @@ function clampLimits(limits?: RunLimits): Required<RunLimits> {
 			DEFAULT_LIMITS.logBytes,
 			1024,
 			DEFAULT_LIMITS.logBytes,
+		),
+		traceBytes: clampNumber(
+			limits?.traceBytes,
+			DEFAULT_LIMITS.traceBytes,
+			1024,
+			DEFAULT_LIMITS.traceBytes,
 		),
 		messageBytes: clampNumber(
 			limits?.messageBytes,
@@ -706,6 +724,9 @@ export async function runScript(
 	const sdkCallTrace: SdkCallTraceEntry[] = [];
 	const sideEffectPreview: SdkCallTraceEntry[] = [];
 	let sdkCalls = 0;
+	// Total calls skipped under dry-run, independent of preview retention so a
+	// truncated preview never undercounts the dry-run surface.
+	let skippedCalls = 0;
 	// Captured console budget. Messages past it are dropped, never a failure.
 	let logBytesUsed = 0;
 	let logFull = false;
@@ -763,6 +784,36 @@ export async function runScript(
 		return false;
 	}
 
+	/**
+	 * Bounded trace appender: keeps a serialized-byte budget on a trace array by
+	 * dropping the OLDEST entries (failures are at the tail), and counts what it
+	 * drops. A single entry larger than the whole budget is dropped and counted.
+	 * Bound is on the sum of entry JSON bytes — array brackets/commas add at most
+	 * ~2 bytes per retained entry, negligible at this scale.
+	 */
+	function makeTraceAppender(budget: number) {
+		let used = 0;
+		let dropped = 0;
+		return {
+			dropped: () => dropped,
+			append(target: SdkCallTraceEntry[], entry: SdkCallTraceEntry): void {
+				const entryBytes = jsonBytes(entry);
+				if (entryBytes > budget) {
+					dropped++;
+					return;
+				}
+				target.push(entry);
+				used += entryBytes;
+				while (used > budget && target.length > 0) {
+					used -= jsonBytes(target.shift()!);
+					dropped++;
+				}
+			},
+		};
+	}
+	const appendTrace = makeTraceAppender(limits.traceBytes);
+	const appendPreview = makeTraceAppender(limits.traceBytes);
+
 	const ivm = await loadIsolatedVm();
 	if (!ivm) {
 		clearTimeout(abortTimer);
@@ -776,6 +827,8 @@ export async function runScript(
 			},
 			durationMs: Date.now() - started,
 			sdkCalls: 0,
+			skippedCalls: 0,
+			traceDropped: 0,
 			sdkCallTrace,
 			sideEffectPreview,
 		};
@@ -812,6 +865,8 @@ export async function runScript(
 			},
 			durationMs: Date.now() - started,
 			sdkCalls: 0,
+			skippedCalls: 0,
+			traceDropped: 0,
 			sdkCallTrace,
 			sideEffectPreview,
 		};
@@ -883,7 +938,7 @@ export async function runScript(
 							args[0] as string,
 							args[1] as Record<string, unknown> | undefined,
 						);
-						sdkCallTrace.push({
+						appendTrace.append(sdkCallTrace, {
 							path,
 							orgPath,
 							access: METHOD_METADATA[path]?.access ?? "unknown",
@@ -893,7 +948,7 @@ export async function runScript(
 						return undefined;
 					}
 					if (path === "query") {
-						sdkCallTrace.push({
+						appendTrace.append(sdkCallTrace, {
 							path,
 							orgPath,
 							access: METHOD_METADATA[path]?.access ?? "unknown",
@@ -946,11 +1001,14 @@ export async function runScript(
 							path,
 						}),
 					};
-					sdkCallTrace.push(trace);
+					// Skipped (dry-run) calls live only in `side_effect_preview`;
+					// dispatched calls only in `sdk_call_trace` — no double shipping.
 					if (trace.skipped) {
-						sideEffectPreview.push(trace);
+						skippedCalls++;
+						appendPreview.append(sideEffectPreview, trace);
 						return { dry_run: true, skipped_call: path, access };
 					}
+					appendTrace.append(sdkCallTrace, trace);
 					return namespace[method](...args);
 				})();
 
@@ -1083,6 +1141,8 @@ export async function runScript(
 					error: classifyRuntimeError(scriptError ?? {}),
 					durationMs: Date.now() - started,
 					sdkCalls,
+					skippedCalls,
+					traceDropped: appendTrace.dropped() + appendPreview.dropped(),
 					sdkCallTrace,
 					sideEffectPreview,
 				};
@@ -1122,6 +1182,8 @@ export async function runScript(
 			logs,
 			durationMs: Date.now() - started,
 			sdkCalls,
+			skippedCalls,
+			traceDropped: appendTrace.dropped() + appendPreview.dropped(),
 			sdkCallTrace,
 			sideEffectPreview,
 		};
@@ -1135,6 +1197,8 @@ export async function runScript(
 			error: classifyRuntimeError(e),
 			durationMs: Date.now() - started,
 			sdkCalls,
+			skippedCalls,
+			traceDropped: appendTrace.dropped() + appendPreview.dropped(),
 			sdkCallTrace,
 			sideEffectPreview,
 		};

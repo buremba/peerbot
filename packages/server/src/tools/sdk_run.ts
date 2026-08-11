@@ -133,14 +133,30 @@ export const SdkScriptResultSchema = Type.Object({
     ),
   ),
   duration_ms: Type.Number(),
-  sdk_calls: Type.Integer({ description: "Number of SDK calls the script made." }),
+  sdk_calls: Type.Integer({ description: "Number of SDK calls the script made (dispatched + skipped)." }),
+  skipped_calls: Type.Integer({
+    description: "Total calls skipped because dry_run=true — the full dry-run surface, even when side_effect_preview is truncated.",
+  }),
   sdk_call_trace: Type.Array(SdkCallTraceEntrySchema, {
-    description: "Every SDK call the script made, in order.",
+    description:
+      "Every dispatched SDK call, in order. Bounded (tail-kept): when the total exceeds the trace cap, the oldest entries are dropped and reported in sdk_call_trace_truncated — the last (usually failing) call is always kept.",
   }),
   side_effect_preview: Type.Array(SdkCallTraceEntrySchema, {
     description:
-      "Write/admin/external calls that were skipped because dry_run=true. This is a method-level side-effect preview, not proof that the skipped handler would accept the payload.",
+      "Write/admin/external calls that were skipped because dry_run=true (skipped: true). Bounded like sdk_call_trace; see skipped_calls for the total. Method-level side-effect preview, not proof the skipped handler would accept the payload.",
   }),
+  sdk_call_trace_truncated: Type.Optional(
+    Type.Object(
+      {
+        dropped_entries: Type.Integer({
+          description: "Trace/preview entries dropped because the trace cap was exceeded.",
+        }),
+      },
+      {
+        description: "Present when sdk_call_trace or side_effect_preview was truncated (oldest entries dropped).",
+      },
+    ),
+  ),
   dry_run: Type.Boolean(),
 });
 
@@ -229,8 +245,11 @@ async function runSandbox(
     error,
     duration_ms: result.durationMs,
     sdk_calls: result.sdkCalls,
+    skipped_calls: result.skippedCalls,
     sdk_call_trace: result.sdkCallTrace,
     side_effect_preview: result.sideEffectPreview,
+    sdk_call_trace_truncated:
+      result.traceDropped > 0 ? { dropped_entries: result.traceDropped } : undefined,
     dry_run: mode === "full" && "dry_run" in args && args.dry_run === true,
   };
 }

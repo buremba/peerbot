@@ -203,9 +203,11 @@ describe("run_sdk / query_sdk: script contract on the wire", () => {
 			logs: [{ level: "warn", message: "m", ts: 123 }],
 			duration_ms: 42,
 			sdk_calls: 2,
+			skipped_calls: 2,
 			sdk_call_trace: [
 				{ path: "entities.list", orgPath: [], access: "read", args: [{}], skipped: false },
 			],
+			sdk_call_trace_truncated: { dropped_entries: 3 },
 			side_effect_preview: [
 				{ path: "entities.create", orgPath: ["acme"], access: "write", args: [{}], skipped: true },
 				{ path: "connections.connect", orgPath: ["acme"], access: "admin", args: [{}], skipped: true },
@@ -220,6 +222,7 @@ describe("run_sdk / query_sdk: script contract on the wire", () => {
 			error: { name: "TypeError", message: "boom", stack: "s", line: 3, column: 7 },
 			duration_ms: 1,
 			sdk_calls: 0,
+			skipped_calls: 0,
 			sdk_call_trace: [],
 			side_effect_preview: [],
 			dry_run: false,

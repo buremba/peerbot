@@ -47,6 +47,47 @@ function behaviorEventsForUi(
 
 const configStore = createPostgresAgentConfigStore();
 
+/** Only MCP routing fields are public catalog metadata; credentials never are. */
+function publicMcpConfig(
+	raw: Record<string, unknown> | null | undefined,
+): Record<string, string> | null {
+	if (!raw) return null;
+	const upstreamUrl =
+		typeof raw.upstream_url === "string"
+			? raw.upstream_url
+			: typeof raw.upstreamUrl === "string"
+				? raw.upstreamUrl
+				: null;
+	if (!upstreamUrl) return null;
+	let parsed: URL;
+	try {
+		parsed = new URL(upstreamUrl);
+	} catch {
+		return null;
+	}
+	// A portable route is HTTPS metadata, never a credential container. Query,
+	// fragment, and userinfo values remain private to the credential-holding org.
+	if (
+		parsed.protocol !== "https:" ||
+		parsed.username ||
+		parsed.password ||
+		parsed.search ||
+		parsed.hash
+	) {
+		return null;
+	}
+	const toolPrefix =
+		typeof raw.tool_prefix === "string"
+			? raw.tool_prefix
+			: typeof raw.toolPrefix === "string"
+				? raw.toolPrefix
+				: null;
+	return {
+		upstream_url: parsed.toString(),
+		...(toolPrefix ? { tool_prefix: toolPrefix } : {}),
+	};
+}
+
 export type ListInstalledOptions = {
 	includeCatalog?: boolean;
 };
@@ -101,6 +142,9 @@ export async function listOrgInstalled(
 						row.source_org_id == null,
 					),
 					options_schema: row.options_schema,
+					// Non-secret transport metadata lets a managed local install
+					// reproduce an MCP definition without exporting OAuth credentials.
+					mcp_config: publicMcpConfig(row.mcp_config),
 					favicon_domain: row.favicon_domain,
 					required_capability: row.required_capability,
 					runtime: row.runtime,

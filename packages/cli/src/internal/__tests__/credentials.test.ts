@@ -13,6 +13,7 @@ import {
   type Credentials,
   clearCredentials,
   getAgentApiToken,
+  getContextToken,
   getToken,
   loadCredentials,
   refreshCredentials,
@@ -190,6 +191,74 @@ describe("credentials", () => {
 
     expect(token).toBe("env-token");
     expect(readFileSpy).not.toHaveBeenCalled();
+  });
+
+  test("getContextToken uses the named stored credential, never LOBU_API_TOKEN", async () => {
+    process.env.LOBU_API_TOKEN = "local-target-token";
+    readFileSpy.mockResolvedValue(
+      JSON.stringify({
+        version: 2,
+        contexts: {
+          [currentContextName]: buildCreds({ accessToken: "cloud-token" }),
+        },
+      })
+    );
+
+    expect(await getContextToken(currentContextName)).toBe("cloud-token");
+  });
+
+  test("getContextToken never mints a loopback credential when the named credential is absent", async () => {
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: currentContextName,
+      url: "http://localhost:8787/api/v1",
+      source: "config",
+    });
+    readFileSpy.mockRejectedValue(new Error("ENOENT"));
+    const fetchSpy = spyOn(globalThis, "fetch");
+
+    expect(await getContextToken(currentContextName)).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test("getContextToken refreshes an expired named credential", async () => {
+    const creds = buildCreds({
+      accessToken: "expired",
+      expiresAt: Date.now() - 60_000,
+    });
+    readFileSpy.mockResolvedValue(
+      JSON.stringify({
+        version: 2,
+        contexts: { [currentContextName]: creds },
+      })
+    );
+    spyOn(oauth, "refreshTokens").mockResolvedValue({
+      accessToken: "refreshed-cloud-token",
+      refreshToken: "rotated-refresh-token",
+      expiresIn: 3600,
+    });
+
+    expect(await getContextToken(currentContextName)).toBe(
+      "refreshed-cloud-token"
+    );
+    expect(writeFileSpy).toHaveBeenCalled();
+  });
+
+  test("getContextToken leaves an expired non-refreshable credential stored", async () => {
+    const creds = buildCreds({
+      accessToken: "expired",
+      refreshToken: undefined,
+      expiresAt: Date.now() - 60_000,
+    });
+    readFileSpy.mockResolvedValue(
+      JSON.stringify({
+        version: 2,
+        contexts: { [currentContextName]: creds },
+      })
+    );
+
+    expect(await getContextToken(currentContextName)).toBeNull();
+    expect(writeFileSpy).not.toHaveBeenCalled();
+    expect(rmSpy).not.toHaveBeenCalled();
   });
 
   test("getToken returns null when no creds exist", async () => {

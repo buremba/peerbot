@@ -4,7 +4,7 @@
  * resolver, so the v2 file format + refresh semantics must stay exact.
  */
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,20 +20,34 @@ import {
 } from "../credentials";
 
 const DEFAULT = "lobu";
-let dir: string;
-let file: string;
 
-beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "lobu-cred-"));
-  file = join(dir, "credentials.json");
-});
+// Bun lets a timed-out async test body keep running. Per-test paths keep that
+// straggler from reading or deleting another test's fixture, and cleanup is
+// deferred to `afterAll` so it cannot race one either.
+//
+// Do not collapse this back into one shared dir rebuilt by a `beforeEach`: with
+// that shape, clamping this file to `--timeout 1` failed FIVE tests and emitted
+// an unhandled `ENOENT: rename '.tmp-…' -> 'credentials.json'` between them.
+// Four victims were unrelated, including the pure synchronous predicate tests
+// that touch no filesystem — a file-scoped fixture hook runs for every test in
+// the file, so one slow test is contagious.
+const createdDirs: string[] = [];
 
-afterEach(async () => {
-  await rm(dir, { recursive: true, force: true });
+async function newStore(): Promise<{ dir: string; file: string }> {
+  const dir = await mkdtemp(join(tmpdir(), "lobu-cred-"));
+  createdDirs.push(dir);
+  return { dir, file: join(dir, "credentials.json") };
+}
+
+afterAll(async () => {
+  await Promise.all(
+    createdDirs.map((d) => rm(d, { recursive: true, force: true }))
+  );
 });
 
 describe("credential store I/O", () => {
   test("write → read round-trips and preserves extra (non-base) fields", async () => {
+    const { file } = await newStore();
     interface Rich extends BaseCredential {
       email?: string;
       localWorkerToken?: string;
@@ -56,6 +70,7 @@ describe("credential store I/O", () => {
   });
 
   test("writes are 0600 and a second context does not clobber the first", async () => {
+    const { file } = await newStore();
     await writeContextCredential(file, "lobu", DEFAULT, { accessToken: "a" });
     await writeContextCredential(file, "work", DEFAULT, { accessToken: "b" });
     const store = await readCredentialStore(file, DEFAULT);
@@ -68,6 +83,7 @@ describe("credential store I/O", () => {
   });
 
   test("a legacy single-context file migrates under the default context", async () => {
+    const { file } = await newStore();
     const { writeFile } = await import("node:fs/promises");
     await writeFile(
       file,
@@ -80,6 +96,7 @@ describe("credential store I/O", () => {
   });
 
   test("a missing or corrupt file reads as an empty store", async () => {
+    const { file } = await newStore();
     expect((await readCredentialStore(file, DEFAULT)).contexts).toEqual({});
     const { writeFile } = await import("node:fs/promises");
     await writeFile(file, "{not json");
@@ -87,6 +104,7 @@ describe("credential store I/O", () => {
   });
 
   test("entries without an accessToken (or an EMPTY-string one) are dropped on read", async () => {
+    const { file } = await newStore();
     const { writeFile } = await import("node:fs/promises");
     await writeFile(
       file,
@@ -115,6 +133,7 @@ describe("credential store I/O", () => {
     // we don't merge concurrent read-modify-writes — so not every context is
     // guaranteed to survive; the invariant being proven here is no CORRUPTION,
     // not no-lost-update.)
+    const { dir, file } = await newStore();
     const { readdir } = await import("node:fs/promises");
     await Promise.all(
       Array.from({ length: 25 }, (_, i) =>
@@ -141,9 +160,12 @@ describe("credential store I/O", () => {
     const entries = await readdir(dir);
     expect(entries.filter((n) => n.includes(".tmp-"))).toEqual([]);
     expect(entries).toContain("credentials.json");
-  });
+    // Bun 1.3.5 ignores bunfig's test timeout, so keep the larger budget local
+    // to this I/O stress test.
+  }, 30_000);
 
   test("delete removes one context; deletes the file when none remain", async () => {
+    const { file } = await newStore();
     await writeContextCredential(file, "lobu", DEFAULT, { accessToken: "a" });
     await writeContextCredential(file, "work", DEFAULT, { accessToken: "b" });
     await deleteContextCredential(file, "lobu", DEFAULT);

@@ -64,6 +64,12 @@ app:
     # Bounded wait for in-flight HTTP responses (incl. SSE/MCP streams) to drain
     # before process exit. Keep below the remaining grace-period budget.
     HTTP_CLOSE_TIMEOUT_MS: "10000"
+    # Extra public origins whose /mcp resources the OAuth authorize flow
+    # accepts (RFC 8707 resource indicators). The canonical public endpoint
+    # lobu.ai/mcp is edge-proxied to this gateway origin, so strict OAuth MCP
+    # clients discover resource=https://lobu.ai/mcp from the 401 challenge.
+    # Clear when the gateway is only served on its own origin.
+    MCP_PUBLIC_RESOURCE_ORIGINS: "https://lobu.ai"
 
   # Graceful-shutdown budget. Must comfortably exceed the sum of the readiness
   # drain + in-flight HTTP close + gateway/worker teardown, or the kubelet

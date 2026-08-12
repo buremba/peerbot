@@ -277,7 +277,9 @@ export function buildAttributionAndOwned(
       name: d.name,
       // Same as entity description: not cleared by omission.
       description: d.description !== undefined ? d.description : r?.description,
-      rules: d.rules ?? r?.rules,
+      // upsertRelationshipType treats omitted rules as [] (clears). Record the
+      // post-apply effective value, not the pre-apply remote.
+      rules: d.rules ?? [],
     };
   });
   const remoteWatcherBySlug = new Map(remote.watchers.map((w) => [w.slug, w]));

@@ -8,14 +8,64 @@
  * body → `[]` contract, checkpoint filtering, and event mapping.
  */
 
-import { describe, expect, test } from "bun:test";
-import {
-  filterTransactionsSinceCheckpoint,
-  minorToMajor,
-  parseTransactionsResponse,
-  type RevolutTransaction,
-  transactionToEvent,
-} from "../revolut-transactions.connector";
+import { beforeAll, describe, expect, mock, test } from "bun:test";
+import { connectorSdkMock } from "./connector-sdk.mock";
+
+mock.module("@lobu/connector-sdk", connectorSdkMock);
+
+type RevolutModule = typeof import("../revolut-transactions.connector");
+type RevolutTransaction =
+  import("../revolut-transactions.connector").RevolutTransaction;
+
+let RevolutTransactionsConnector: RevolutModule["default"];
+let filterTransactionsSinceCheckpoint: RevolutModule["filterTransactionsSinceCheckpoint"];
+let investmentSnapshotsToEvents: RevolutModule["investmentSnapshotsToEvents"];
+let minorToMajor: RevolutModule["minorToMajor"];
+let parseInvestmentDomSnapshot: RevolutModule["parseInvestmentDomSnapshot"];
+let parseTransactionsResponse: RevolutModule["parseTransactionsResponse"];
+let transactionToEvent: RevolutModule["transactionToEvent"];
+
+beforeAll(async () => {
+  const mod = await import("../revolut-transactions.connector");
+  RevolutTransactionsConnector = mod.default;
+  filterTransactionsSinceCheckpoint = mod.filterTransactionsSinceCheckpoint;
+  investmentSnapshotsToEvents = mod.investmentSnapshotsToEvents;
+  minorToMajor = mod.minorToMajor;
+  parseInvestmentDomSnapshot = mod.parseInvestmentDomSnapshot;
+  parseTransactionsResponse = mod.parseTransactionsResponse;
+  transactionToEvent = mod.transactionToEvent;
+});
+
+const INVESTMENT_ACCOUNTS = {
+  created: [{ id: "portfolio-gia", accountType: "GIA" }],
+  available: [],
+};
+
+const INVESTMENT_DOM_ACCOUNTS = [
+  {
+    accountType: "GIA",
+    totalValue: "£72,670.69",
+    cashValue: "£6,400.52",
+    positions: [
+      {
+        ref: "S:nvda",
+        instrumentType: "EQUITY",
+        quantity: "400 NVDA",
+        currentPrice: "US$223.93",
+        value: "£66,270.17",
+        allocation: "27.16%",
+      },
+    ],
+  },
+];
+
+const INVESTMENT_RESPONSES = [
+  {
+    url: "https://invest.revolut.com/api/retail/trading/accounts",
+    status: 200,
+    body: JSON.stringify(INVESTMENT_ACCOUNTS),
+  },
+];
 
 // A `transactions/last` array in the shape Revolut actually returns — verified
 // against a live authenticated capture (125-row response, conn 369): a JSON
@@ -102,7 +152,11 @@ describe("minorToMajor", () => {
 });
 
 describe("parseTransactionsResponse", () => {
-  const txns = parseTransactionsResponse(SAMPLE_RESPONSE);
+  let txns: RevolutTransaction[];
+
+  beforeAll(() => {
+    txns = parseTransactionsResponse(SAMPLE_RESPONSE);
+  });
 
   test("parses all well-formed rows (declines included)", () => {
     expect(txns).toHaveLength(5);
@@ -196,7 +250,11 @@ describe("parseTransactionsResponse", () => {
 });
 
 describe("filterTransactionsSinceCheckpoint", () => {
-  const txns = parseTransactionsResponse(SAMPLE_RESPONSE);
+  let txns: RevolutTransaction[];
+
+  beforeAll(() => {
+    txns = parseTransactionsResponse(SAMPLE_RESPONSE);
+  });
 
   test("no checkpoint → all (deduped)", () => {
     expect(filterTransactionsSinceCheckpoint(txns, null)).toHaveLength(5);
@@ -244,5 +302,228 @@ describe("transactionToEvent", () => {
       transaction_type: "CARD_PAYMENT",
       state: "COMPLETED",
     });
+  });
+});
+
+describe("Revolut Finance snapshots", () => {
+  test("joins stable account ids to structured investment table values", () => {
+    const snapshots = parseInvestmentDomSnapshot(
+      INVESTMENT_RESPONSES,
+      INVESTMENT_DOM_ACCOUNTS
+    );
+
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]).toMatchObject({
+      portfolioId: "portfolio-gia",
+      accountType: "GIA",
+      totalValue: 72670.69,
+      valueCurrency: "GBP",
+      cashValue: 6400.52,
+      positions: [
+        {
+          ref: "S:nvda",
+          ticker: "NVDA",
+          instrumentType: "EQUITY",
+          quantity: 400,
+          currentPrice: 223.93,
+          priceCurrency: "USD",
+          value: 66270.17,
+          valueCurrency: "GBP",
+          allocation: 0.2716,
+        },
+      ],
+    });
+  });
+
+  test("emits one stable portfolio total and stable position events", () => {
+    const [snapshot] = parseInvestmentDomSnapshot(
+      INVESTMENT_RESPONSES,
+      INVESTMENT_DOM_ACCOUNTS
+    );
+    const occurredAt = new Date("2026-08-12T17:25:00.000Z");
+    const events = investmentSnapshotsToEvents([snapshot], occurredAt);
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({
+      origin_id: "revolut-investment-portfolio-portfolio-gia",
+      semantic_type: "investment_balance",
+      occurred_at: occurredAt,
+      metadata: {
+        portfolio_id: "portfolio-gia",
+        account_type: "GIA",
+        balance: 72670.69,
+        currency: "GBP",
+        cash_balance: 6400.52,
+        position_count: 1,
+      },
+    });
+    expect(events[1]).toMatchObject({
+      origin_id: "revolut-investment-position-portfolio-gia-S:nvda",
+      semantic_type: "investment_position",
+      occurred_at: occurredAt,
+      metadata: {
+        portfolio_id: "portfolio-gia",
+        ticker: "NVDA",
+        quantity: 400,
+        current_price: 223.93,
+        value: 66270.17,
+      },
+    });
+  });
+
+  test("rejects a partial response set when an active account is missing", () => {
+    const partial = INVESTMENT_RESPONSES.map((response) =>
+      response.url.endsWith("/trading/accounts")
+        ? {
+            ...response,
+            body: JSON.stringify({
+              created: [
+                { id: "portfolio-gia", accountType: "GIA" },
+                { id: "portfolio-isa", accountType: "TAX_ADVANTAGED" },
+              ],
+            }),
+          }
+        : response
+    );
+
+    expect(
+      parseInvestmentDomSnapshot(partial, INVESTMENT_DOM_ACCOUNTS)
+    ).toEqual([]);
+  });
+
+  test("accepts repeated identical account responses from one reload", () => {
+    const repeated = [...INVESTMENT_RESPONSES, ...INVESTMENT_RESPONSES];
+
+    expect(
+      parseInvestmentDomSnapshot(repeated, INVESTMENT_DOM_ACCOUNTS)
+    ).toHaveLength(1);
+  });
+
+  test("rejects a half-rendered position table", () => {
+    const partial = [
+      {
+        ...INVESTMENT_DOM_ACCOUNTS[0],
+        totalValue: "£140,000.00",
+      },
+    ];
+
+    expect(parseInvestmentDomSnapshot(INVESTMENT_RESPONSES, partial)).toEqual(
+      []
+    );
+  });
+
+  test("sync targets the real Invest app and never stores the raw response", async () => {
+    const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
+    const dispatcher = {
+      async dispatch(action: string, input: Record<string, unknown>) {
+        calls.push({ action, input });
+        if (action === "navigate") return { tab_id: 42 };
+        if (action === "network_intercept_start") {
+          return { session_id: "invest-session" };
+        }
+        if (action === "network_intercept_drain") {
+          return { responses: INVESTMENT_RESPONSES };
+        }
+        if (action === "evaluate") {
+          return {
+            value: {
+              authed: true,
+              ready: true,
+              host: "invest.revolut.com",
+              path: "/home",
+              accounts: INVESTMENT_DOM_ACCOUNTS,
+            },
+          };
+        }
+        return {};
+      },
+    };
+    const connector = new RevolutTransactionsConnector();
+
+    const result = await connector.sync({
+      feedKey: "balances",
+      sessionState: { chrome_dispatcher: dispatcher },
+    } as never);
+
+    expect(
+      calls.some(
+        (call) =>
+          call.action === "navigate" &&
+          call.input.url === "https://invest.revolut.com/home"
+      )
+    ).toBe(true);
+    expect(result.events.map((event) => event.semantic_type)).toEqual([
+      "investment_balance",
+      "investment_position",
+    ]);
+    expect(JSON.stringify(result.events)).not.toContain("created");
+  });
+
+  test("fails visibly instead of storing an empty snapshot", async () => {
+    const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
+    let evaluateCount = 0;
+    const dispatcher = {
+      async dispatch(action: string, input: Record<string, unknown>) {
+        calls.push({ action, input });
+        if (action === "navigate") return { tab_id: 42 };
+        if (action === "network_intercept_start") {
+          return { session_id: "invest-session" };
+        }
+        if (action === "network_intercept_drain") return { responses: [] };
+        if (action === "evaluate") {
+          evaluateCount += 1;
+          return {
+            value: {
+              authed: true,
+              ready: evaluateCount === 1,
+              href: "https://invest.revolut.com/home",
+            },
+          };
+        }
+        return {};
+      },
+    };
+    const connector = new RevolutTransactionsConnector();
+
+    await expect(
+      connector.sync({
+        feedKey: "balances",
+        sessionState: { chrome_dispatcher: dispatcher },
+      } as never)
+    ).rejects.toThrow(/No balance was stored/);
+    expect(calls.some((call) => call.action === "network_intercept_stop")).toBe(
+      true
+    );
+  });
+
+  test("focuses the Invest passcode wall and requests login", async () => {
+    const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
+    const dispatcher = {
+      async dispatch(action: string, input: Record<string, unknown>) {
+        calls.push({ action, input });
+        if (action === "navigate") return { tab_id: 42 };
+        if (action === "evaluate") {
+          return {
+            value: {
+              authed: false,
+              href: "https://sso.revolut.com/passcode",
+            },
+          };
+        }
+        return {};
+      },
+    };
+    const connector = new RevolutTransactionsConnector();
+
+    await expect(
+      connector.sync({
+        feedKey: "balances",
+        sessionState: { chrome_dispatcher: dispatcher },
+      } as never)
+    ).rejects.toThrow(/needs sign-in/);
+    expect(calls.some((call) => call.action === "focus_tab")).toBe(true);
+    expect(calls.some((call) => call.action === "show_notification")).toBe(
+      true
+    );
   });
 });

@@ -667,10 +667,10 @@ function compareEntityTypeThreeWay(
   // — eventKinds/viewTemplate/properties round-trip untouched). Only under
   // prune does omission mean "remove". Without this, an unchanged omitted facet
   // would be misclassified as config-moved and executePlan would clear it.
-  // description is unmanaged under BOTH prune and non-prune: upsert never
-  // clears it when omitted, so a configMoved classification would perpetual-
-  // update without effect.
-  const alwaysUnmanaged = new Set(["description"]);
+  // name/description are unmanaged under BOTH prune and non-prune: upsert
+  // never clears them when omitted, so a configMoved classification would
+  // perpetual-update without effect.
+  const alwaysUnmanaged = new Set(["name", "description"]);
   const omittableOutsidePrune = new Set([
     "required",
     "backing",
@@ -701,7 +701,8 @@ function compareRelationshipTypeThreeWay(
   remote: RemoteRelationshipType,
   attribution: RemoteRelationshipType | undefined
 ): ThreeWayResult {
-  return classifyThreeWay([
+  // name/description are unmanaged when omitted (upsert never clears them).
+  const triples = [
     {
       field: "name",
       desired: desired.name,
@@ -720,7 +721,14 @@ function compareRelationshipTypeThreeWay(
       remote: remote.rules ?? [],
       attribution: attribution?.rules ?? [],
     },
-  ]);
+  ];
+  return classifyThreeWay(
+    triples.filter(
+      (t) =>
+        t.desired !== undefined ||
+        (t.field !== "name" && t.field !== "description")
+    )
+  );
 }
 
 /**

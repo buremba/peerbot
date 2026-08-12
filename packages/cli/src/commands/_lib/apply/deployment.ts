@@ -257,7 +257,8 @@ export function buildAttributionAndOwned(
     return {
       id: r?.id,
       slug: d.slug,
-      name: d.name,
+      // name is not cleared by omission — preserve remote when config omits.
+      name: d.name !== undefined ? d.name : r?.name,
       description,
       required,
       properties,
@@ -274,8 +275,8 @@ export function buildAttributionAndOwned(
     return {
       id: r?.id,
       slug: d.slug,
-      name: d.name,
-      // Same as entity description: not cleared by omission.
+      // name/description are not cleared by omission.
+      name: d.name !== undefined ? d.name : r?.name,
       description: d.description !== undefined ? d.description : r?.description,
       // upsertRelationshipType treats omitted rules as [] (clears). Record the
       // post-apply effective value, not the pre-apply remote.

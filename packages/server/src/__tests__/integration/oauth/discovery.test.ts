@@ -44,20 +44,26 @@ describe('OAuth Discovery Endpoints', () => {
       expect(body.resource_name).toBeDefined();
     });
 
-    it('should have consistent base URL in resource and authorization_servers', async () => {
+    it('should advertise a valid authorization server independently of the resource origin', async () => {
       const response = await get('/.well-known/oauth-protected-resource');
       const body = await response.json();
 
-      const resourceOrigin = new URL(body.resource).origin;
-      const authServerOrigin = new URL(body.authorization_servers[0]).origin;
+      const resource = new URL(body.resource);
+      const authServer = new URL(body.authorization_servers[0]);
 
-      expect(resourceOrigin).toBe(authServerOrigin);
+      expect(resource.pathname).toBe('/mcp');
+      expect(authServer.pathname).toBe('/');
+      // RFC 9728 explicitly permits the protected resource and authorization
+      // server to use different origins (prod does: lobu.ai vs app.lobu.ai).
+      expect(['http:', 'https:']).toContain(authServer.protocol);
     });
 
     it('keeps the configured MCP resource origin when OAuth is served on a workspace host', async () => {
       const originalPublicGatewayUrl = process.env.PUBLIC_GATEWAY_URL;
+      const originalAuthCookieDomain = process.env.AUTH_COOKIE_DOMAIN;
       try {
         process.env.PUBLIC_GATEWAY_URL = 'https://app.lobu.ai/lobu';
+        process.env.AUTH_COOKIE_DOMAIN = '.lobu.ai';
         __resetPublicOriginCachesForTests();
 
         const response = await get('/.well-known/oauth-protected-resource/mcp/acme', {
@@ -69,13 +75,18 @@ describe('OAuth Discovery Endpoints', () => {
         const body = await response.json();
 
         expect(response.status).toBe(200);
-        expect(body.resource).toBe('https://app.lobu.ai/mcp/acme');
-        expect(body.authorization_servers).toEqual(['https://acme.lobu.ai']);
+        expect(body.resource).toBe('https://acme.lobu.ai/mcp/acme');
+        expect(body.authorization_servers).toEqual(['https://app.lobu.ai']);
       } finally {
         if (originalPublicGatewayUrl === undefined) {
           delete process.env.PUBLIC_GATEWAY_URL;
         } else {
           process.env.PUBLIC_GATEWAY_URL = originalPublicGatewayUrl;
+        }
+        if (originalAuthCookieDomain === undefined) {
+          delete process.env.AUTH_COOKIE_DOMAIN;
+        } else {
+          process.env.AUTH_COOKIE_DOMAIN = originalAuthCookieDomain;
         }
         __resetPublicOriginCachesForTests();
       }

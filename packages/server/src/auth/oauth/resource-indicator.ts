@@ -6,25 +6,58 @@
  * and advertises the matching RFC 9728 metadata URL in `WWW-Authenticate`.
  */
 
-import { resolvePublicOrigin } from '../../utils/public-origin';
+import {
+  getConfiguredPublicOrigin,
+  getConfiguredSubdomainZone,
+} from '../../utils/public-origin';
 import { resolveBaseUrl } from '../base-url';
 import { DEFAULT_SCOPES_STRING } from './scopes';
 
 /**
- * The request URL as the client sees it: the configured public origin, else the
- * reverse proxy's forwarded origin, plus the request path with any trailing
- * slash removed.
+ * The request URL as the client sees it: the serving/forwarded origin when it
+ * belongs to the configured public host set, else the configured public origin,
+ * plus the request path with any trailing slash removed.
  *
- * Every site in this module — the `WWW-Authenticate` challenge, the
- * authorize/consent/device/token canonicalization, and the per-request audience
- * check — starts here, so all four agree on one string. Resolving the origin
- * differently at any one of them would reject a correctly-bound token behind a
- * TLS-terminating proxy.
+ * Every site in this module — the `WWW-Authenticate` challenge, OAuth resource
+ * canonicalization, and the per-request audience check — starts here. The OAuth
+ * routes may then accept a resource on another host in the configured zone.
+ * Resolving the request origin differently at any site would reject a correctly
+ * bound token behind a TLS-terminating proxy.
  */
 export function publicMcpRequestUrl(request: Request): string {
-  const origin = resolveBaseUrl({ request });
+  // The MCP protected-resource identifier belongs to the resource server, not
+  // the authorization server / general web gateway. In production those are
+  // intentionally different (`lobu.ai/mcp` vs `app.lobu.ai`). Prefer the
+  // actual serving/forwarded host for the MCP request so RFC 9728 metadata and
+  // WWW-Authenticate stay bound to the URL the client called.
+  const servingOrigin = resolveBaseUrl({ request, skipEnvOverride: true });
+  const configuredOrigin = getConfiguredPublicOrigin();
+  const origin = isTrustedPublicOrigin(servingOrigin, configuredOrigin)
+    ? servingOrigin
+    : (configuredOrigin ?? new URL(request.url).origin);
   const pathname = new URL(request.url).pathname.replace(/\/+$/, '') || '/';
   return `${origin}${pathname}`;
+}
+
+function isTrustedPublicOrigin(
+  candidateOrigin: string,
+  configuredOrigin = getConfiguredPublicOrigin()
+): boolean {
+  const candidate = new URL(candidateOrigin);
+  const zone = getConfiguredSubdomainZone();
+  if (!configuredOrigin) {
+    return !zone || candidate.hostname === zone || candidate.hostname.endsWith(`.${zone}`);
+  }
+  if (candidateOrigin === configuredOrigin) return true;
+
+  const configured = new URL(configuredOrigin);
+  if (!zone || candidate.protocol !== configured.protocol || candidate.port !== configured.port) {
+    return false;
+  }
+  return (
+    (candidate.hostname === zone || candidate.hostname.endsWith(`.${zone}`)) &&
+    (configured.hostname === zone || configured.hostname.endsWith(`.${zone}`))
+  );
 }
 
 /** Canonical MCP protected-resource URI accepted for OAuth audience binding. */
@@ -39,25 +72,56 @@ export function canonicalizeMcpResource(
   } catch {
     return null;
   }
-  const publicOrigin = resolvePublicOrigin(requestUrl);
-  if (parsed.origin !== publicOrigin || parsed.search || parsed.hash) return null;
+  // The resource server may intentionally use a sibling/parent host from the
+  // authorization server (prod: lobu.ai/mcp vs app.lobu.ai/oauth/*). Accept the
+  // exact request origin, plus hosts inside the explicitly configured cookie /
+  // workspace zone. Never infer a parent domain from hostname text: without an
+  // explicit AUTH_COOKIE_DOMAIN, cross-origin resources stay fail-closed.
+  const request = new URL(requestUrl);
+  const resourceHost = parsed.hostname;
+  const requestHost = request.hostname;
+  const zone = getConfiguredSubdomainZone();
+  const sameOrigin = parsed.origin === request.origin;
+  const sameTransport = parsed.protocol === request.protocol && parsed.port === request.port;
+  const requestInConfiguredZone = Boolean(
+    zone && requestHost && (requestHost === zone || requestHost.endsWith(`.${zone}`))
+  );
+  const inConfiguredZone = Boolean(
+    sameTransport &&
+      requestInConfiguredZone &&
+      zone &&
+      resourceHost &&
+      (resourceHost === zone || resourceHost.endsWith(`.${zone}`))
+  );
+  if (
+    !isTrustedPublicOrigin(request.origin) ||
+    (!sameOrigin && !inConfiguredZone) ||
+    !resourceHost ||
+    !requestHost ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    return null;
+  }
   const path = parsed.pathname.replace(/\/+$/, '') || '/';
   if (path !== '/mcp' && !/^\/mcp\/[^/]+$/.test(path)) return null;
-  return `${publicOrigin}${path}`;
+  return `${parsed.origin}${path}`;
 }
 
 /** The resource URI the incoming request is addressing, if it is an MCP route. */
 export function getMcpResourceForRequest(requestUrl: string): string | null {
   const request = new URL(requestUrl);
   return canonicalizeMcpResource(
-    `${resolvePublicOrigin(requestUrl)}${request.pathname}`,
+    `${request.origin}${request.pathname}`,
     requestUrl
   );
 }
 
 /** RFC 9728 metadata URL for the resource the request addresses. */
 export function getProtectedResourceMetadataUrl(requestUrl: string): string {
-  const publicOrigin = resolvePublicOrigin(requestUrl);
+  const publicOrigin = new URL(requestUrl).origin;
   const resource = getMcpResourceForRequest(requestUrl);
   if (!resource) return `${publicOrigin}/.well-known/oauth-protected-resource`;
   return `${publicOrigin}/.well-known/oauth-protected-resource${new URL(resource).pathname}`;

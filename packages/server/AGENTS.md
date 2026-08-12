@@ -65,5 +65,5 @@ Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
 - Slackbot is an MCP client. A Slack app exposes tools/resources only with `mcp:connect` bot scope plus an `mcp_servers` manifest block; after scope changes, reinstall the app.
 - Manifest template: `config/slack-app-manifest.self-install.json`. Manage it with `scripts/slack-manifest.ts` (`print|validate|update`) and Slack config credentials.
 - `/mcp` is mounted at app root, not under `/lobu`. Manifest MCP URL is `<origin>/mcp`; webhook/slash/OAuth URLs keep the `/lobu` base. Do not change this to `/lobu/mcp`.
-- OAuth/redirect/`WWW-Authenticate` URLs come from `PUBLIC_GATEWAY_URL` cached at boot. For Slack cloud flows this must be a public HTTPS origin; update env and restart when switching origins.
+- `PUBLIC_GATEWAY_URL` is the canonical web/OAuth origin advertised in protected-resource metadata. MCP `WWW-Authenticate` resource metadata uses the request host when it is the configured origin or belongs to `AUTH_COOKIE_DOMAIN`; otherwise it falls back to `PUBLIC_GATEWAY_URL`. For Slack cloud flows these must resolve to public HTTPS origins; update env and restart when switching origins.
 - Local public dev endpoint is Tailscale Funnel to gateway `:8787`; verify `/mcp` returns auth challenge, not 404.

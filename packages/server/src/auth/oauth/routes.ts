@@ -303,6 +303,12 @@ oauthRoutes.get('/.well-known/oauth-protected-resource/:path{.+}', (c) => {
   setOAuthDiscoveryNoCache(c);
   if (!resource) return c.json({ error: 'Not Found' }, 404);
   metadata.resource = resource;
+  // The protected resource and OAuth authorization server are intentionally
+  // separate in Lobu Cloud: MCP is canonical on lobu.ai, while OAuth is issued
+  // by app.lobu.ai. RFC 9728 permits this and clients discover the issuer from
+  // authorization_servers. PUBLIC_GATEWAY_URL is the stable OAuth/web origin.
+  const authorizationServer = getConfiguredPublicOrigin();
+  if (authorizationServer) metadata.authorization_servers = [authorizationServer];
   return c.json(metadata);
 });
 
@@ -313,6 +319,8 @@ oauthRoutes.get('/.well-known/oauth-protected-resource', (c) => {
   setOAuthDiscoveryNoCache(c);
   if (!resource) return c.json({ error: 'Not Found' }, 404);
   metadata.resource = resource;
+  const authorizationServer = getConfiguredPublicOrigin();
+  if (authorizationServer) metadata.authorization_servers = [authorizationServer];
   return c.json(metadata);
 });
 
@@ -495,7 +503,7 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
     const resource = canonicalizeMcpResource(params.resource, publicMcpRequestUrl(c.req.raw));
     if (!resource) {
       return c.json(
-        createOAuthError('invalid_request', 'A valid same-origin MCP resource is required'),
+        createOAuthError('invalid_request', 'A valid trusted MCP resource is required'),
         400
       );
     }
@@ -639,7 +647,7 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
     const resource = canonicalizeMcpResource(body.resource, publicMcpRequestUrl(c.req.raw));
     if (!resource) {
       return c.json(
-        createOAuthError('invalid_request', 'A valid same-origin MCP resource is required'),
+        createOAuthError('invalid_request', 'A valid trusted MCP resource is required'),
         400
       );
     }
@@ -782,7 +790,7 @@ oauthRoutes.post('/oauth/device_authorization', async (c) => {
     const resource = canonicalizeMcpResource(body.resource, publicMcpRequestUrl(c.req.raw));
     if (!resource) {
       return c.json(
-        createOAuthError('invalid_request', 'The MCP resource must be a valid same-origin URI'),
+        createOAuthError('invalid_request', 'The MCP resource must be a valid trusted URI'),
         400
       );
     }
@@ -1142,7 +1150,7 @@ oauthRoutes.post('/oauth/token', async (c) => {
     const resource = canonicalizeMcpResource(params.resource, publicMcpRequestUrl(c.req.raw));
     if (!resource) {
       return c.json(
-        createOAuthError('invalid_request', 'The MCP resource must be a valid same-origin URI'),
+        createOAuthError('invalid_request', 'The MCP resource must be a valid trusted URI'),
         400
       );
     }

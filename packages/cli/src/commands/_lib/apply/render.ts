@@ -243,9 +243,7 @@ export function renderBlockedReport(
     chalk.dim("  Resolve each item, then re-run:"),
     chalk.dim("    adopt  → fold it into lobu.config.ts (a normal git change)"),
     chalk.dim("    delete → remove it in the UI, or via the API"),
-    chalk.dim(
-      "  apply refuses to auto-delete or overwrite un-declared state."
-    )
+    chalk.dim("  apply refuses to auto-delete or overwrite un-declared state.")
   );
   return lines.join("\n");
 }

@@ -761,8 +761,11 @@ export async function executePlan(
 ): Promise<{ connectorVersions: Record<string, string> }> {
   const rowsByKind = <K extends DiffRow["kind"]>(kind: K) =>
     ctx.plan.rows.filter(
-      (row): row is Extract<DiffRow, { kind: K }> & { verb: "create" | "update" | "delete" } =>
-        row.kind === kind && row.verb !== "noop" && row.verb !== "drift"
+      (
+        row
+      ): row is Extract<DiffRow, { kind: K }> & {
+        verb: "create" | "update" | "delete";
+      } => row.kind === kind && row.verb !== "noop" && row.verb !== "drift"
     );
 
   let connectorVersions: Record<string, string> = {};
@@ -1514,19 +1517,21 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   // snapshot + owned identities. A legacy/missing manifest resolves to an empty
   // baseline: remote mismatches and remote-only definitions block (no-baseline,
   // fail-closed) and nothing is auto-deleted.
-  const latestDeployment = await client
-    .getLatestDeployment()
-    .catch(() => null);
+  const latestDeployment = await client.getLatestDeployment().catch(() => null);
   const baselineRecord =
-    latestDeployment?.manifest === null || latestDeployment?.manifest === undefined
+    latestDeployment?.manifest === null ||
+    latestDeployment?.manifest === undefined
       ? null
       : loadBaselineFromManifest(latestDeployment.manifest);
   const baseline: Baseline = baselineRecord
     ? {
         attribution: {
-          entityTypes: baselineRecord.attribution.entityTypes as Baseline["attribution"]["entityTypes"],
-          relationshipTypes: baselineRecord.attribution.relationshipTypes as Baseline["attribution"]["relationshipTypes"],
-          watchers: baselineRecord.attribution.watchers as Baseline["attribution"]["watchers"],
+          entityTypes: baselineRecord.attribution
+            .entityTypes as Baseline["attribution"]["entityTypes"],
+          relationshipTypes: baselineRecord.attribution
+            .relationshipTypes as Baseline["attribution"]["relationshipTypes"],
+          watchers: baselineRecord.attribution
+            .watchers as Baseline["attribution"]["watchers"],
         },
         owned: new Set(baselineRecord.owned),
       }
@@ -1559,9 +1564,7 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     printText(renderBlockedReport(blockingDrift));
     if (opts.dryRun) {
       printText(
-        chalk.dim(
-          "\nDry run — apply would exit 1 here. Nothing was changed."
-        )
+        chalk.dim("\nDry run — apply would exit 1 here. Nothing was changed.")
       );
       return;
     }

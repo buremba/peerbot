@@ -54,7 +54,10 @@ export interface RemoteDeployment {
     owned?: string[];
   } | null;
   /** Blocking-drift candidates + confirm token, present on `blocked` runs. */
-  candidates?: { token?: string; items?: Array<Record<string, unknown>> } | null;
+  candidates?: {
+    token?: string;
+    items?: Array<Record<string, unknown>>;
+  } | null;
 }
 
 export interface DeploymentPauseState {

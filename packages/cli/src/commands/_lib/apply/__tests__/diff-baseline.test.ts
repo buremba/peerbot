@@ -37,7 +37,9 @@ function emptyRemote(): RemoteSnapshot {
   };
 }
 
-function taskType(overrides: Partial<DesiredEntityType> = {}): DesiredEntityType {
+function taskType(
+  overrides: Partial<DesiredEntityType> = {}
+): DesiredEntityType {
   return {
     slug: "task",
     name: "Task",
@@ -149,7 +151,10 @@ describe("three-way attribution (baseline present)", () => {
     const desired = buildState([
       taskType({
         properties: {
-          status: { type: "string", enum: ["backlog", "active", "done", "blocked"] },
+          status: {
+            type: "string",
+            enum: ["backlog", "active", "done", "blocked"],
+          },
         },
       }),
     ]);

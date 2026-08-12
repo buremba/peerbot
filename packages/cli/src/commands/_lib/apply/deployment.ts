@@ -135,10 +135,12 @@ export interface BaselineRecord {
 }
 
 /** Parse the stored baseline; null for a legacy manifest (→ no-baseline block). */
-export function loadBaselineFromManifest(manifest: {
-  attribution?: DeploymentManifest["attribution"];
-  owned?: DeploymentManifest["owned"];
-} | null): BaselineRecord | null {
+export function loadBaselineFromManifest(
+  manifest: {
+    attribution?: DeploymentManifest["attribution"];
+    owned?: DeploymentManifest["owned"];
+  } | null
+): BaselineRecord | null {
   if (!manifest?.attribution || !manifest.owned) return null;
   return {
     attribution: {
@@ -164,7 +166,9 @@ export function buildAttributionAndOwned(
   state: DesiredState,
   remote: RemoteSnapshot
 ): BaselineRecord {
-  const remoteEntityBySlug = new Map(remote.entityTypes.map((e) => [e.slug, e]));
+  const remoteEntityBySlug = new Map(
+    remote.entityTypes.map((e) => [e.slug, e])
+  );
   const entityTypes = state.memorySchema.entityTypes.map((d) => {
     const r = remoteEntityBySlug.get(d.slug);
     return {
@@ -270,7 +274,9 @@ export function buildDeploymentManifest(
       },
     },
     connector_versions: connectorVersions,
-    ...(baseline ? { attribution: baseline.attribution, owned: baseline.owned } : {}),
+    ...(baseline
+      ? { attribution: baseline.attribution, owned: baseline.owned }
+      : {}),
   };
 }
 

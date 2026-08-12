@@ -1,8 +1,8 @@
-# Lobu — Open-source backend for AI teammates
+# Lobu — Open-source context and control plane for AI agents
 
-**Lobu** is open-source infrastructure for autonomous agents that **watch**, **remember**, and **act** where your team already works. Connect company tools, build living memory, and let agents run on schedules, in Slack threads, or over MCP — with sandboxed execution per user or channel and credentials agents never see.
+**Lobu** is open-source AI teammate infrastructure for **shared company context and governed actions**. Connect company tools once, then let ChatGPT, Claude, Codex, and custom agents work from the same durable organizational memory — with scoped identities, approvals, auditable actions, and isolated execution when agents need to run code.
 
-Under the hood, workers run Lobu's Pi-based agent loop (bash, files, MCP tools, skills) inside an isolated sandbox per conversation. One Node process serves many agents and channels; shared memory and connectors live in Postgres (pgvector). Embed agents in your product, or give your team their own without running a separate instance per person.
+Lobu's data layer combines connectors, an append-only event log, typed entities, shared memory, and behaviors. Its control/runtime layer adds per-user or channel isolation, credential brokering, policies, approvals, and audit. External agents can use the same org-scoped graph over MCP without adopting Lobu's agent harness.
 
 https://github.com/user-attachments/assets/d72a9286-0325-4b8b-afc0-c1efe9c96f4e
 
@@ -45,7 +45,9 @@ Complete the OAuth flow when prompted, then enable the connector. Pair it with a
 **Claude Desktop** and **ChatGPT**. It accepts a Lobu Cloud, local, or custom
 MCP endpoint. Setup guides:
 [Claude](https://lobu.ai/connect-from/claude/) ·
-[ChatGPT](https://lobu.ai/connect-from/chatgpt/).
+[ChatGPT](https://lobu.ai/connect-from/chatgpt/) ·
+[Codex](https://lobu.ai/connect-from/codex/) ·
+[Grok](https://lobu.ai/connect-from/grok/).
 
 ### 3. Your own code — CLI and TypeScript SDK
 
@@ -112,13 +114,13 @@ Lobu runs a **data pipeline** instead. Connectors poll and webhooks push into on
 
 ### Memory — ingest, entities, behaviors
 
-**Ingest.** [Connectors](https://lobu.ai/sdks/connectors/) pull on a schedule; webhooks and the [REST API](https://lobu.ai/sdks/rest-api/) push. Stripe charges, GitHub PRs, form submissions, and connector polls all land as rows in the same log — a stable record of what happened in the world, not something the agent has to re-fetch through MCP every turn.
+**Ingest.** [Connectors](https://lobu.ai/getting-started/author-a-connector/) pull on a schedule; webhooks and the [REST API](https://lobu.ai/reference/api-reference/) push. Stripe charges, GitHub PRs, form submissions, and connector polls all land as rows in the same log — a stable record of what happened in the world, not something the agent has to re-fetch through MCP every turn.
 
 **Entities.** You define the schema (`Company`, `Project`, `Incident`, …) in `lobu.config.ts`. Events attach to entity instances (`Company:Acme`) and build a live knowledge graph the whole org shares. Corrections supersede old facts; nothing is deleted, so provenance and time-travel stay intact.
 
-**Behaviors.** Versioned jobs activated manually, on a schedule, by a declared connector event, or by a durable event output from another Behavior. They read governed sources, persist structured entities and append-only events, and may run a [reaction](https://lobu.ai/sdks/reactions/) to notify Slack, open a ticket, or kick off agent work — while nobody is in chat. See the [activation and chaining model](docs/BEHAVIORS.md).
+**Behaviors.** Versioned jobs activated manually, on a schedule, by a declared connector event, or by a durable event output from another Behavior. They read governed sources, persist structured entities and append-only events, and may run a [reaction](https://lobu.ai/getting-started/author-a-connector/#reactions) to notify Slack, open a ticket, or kick off agent work — while nobody is in chat. See the [activation and chaining model](docs/BEHAVIORS.md).
 
-Docs: [Memory](https://lobu.ai/getting-started/memory/) · [Connectors](https://lobu.ai/sdks/connectors/) · [Reactions](https://lobu.ai/sdks/reactions/)
+Docs: [Memory](https://lobu.ai/getting-started/memory/) · [Connectors](https://lobu.ai/getting-started/author-a-connector/) · [Reactions](https://lobu.ai/getting-started/author-a-connector/#reactions)
 
 ### Agents — read the graph, branch to act
 
@@ -149,7 +151,7 @@ Lobu is the **infrastructure layer** for autonomous agents. Frameworks like Lang
 
 ## Agent configuration
 
-Runtime configuration is managed through the web app or the same org-scoped REST API used by the CLI. See the [CLI reference](https://lobu.ai/reference/cli/) and [`lobu apply`](https://lobu.ai/reference/lobu-apply/).
+Runtime configuration is managed through the web app or the same org-scoped REST API used by the CLI. See the [CLI reference](https://lobu.ai/reference/cli/) and [`lobu apply`](https://lobu.ai/reference/cli/#apply).
 
 ```bash
 npx @lobu/cli@latest login

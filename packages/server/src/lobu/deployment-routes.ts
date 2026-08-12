@@ -57,7 +57,9 @@ const MANIFEST_MAX_BYTES = 1_000_000;
 
 function clampLimit(raw: string | undefined, fallback: number, max: number) {
 	const parsed = Number.parseInt(raw ?? String(fallback), 10);
-	return Number.isFinite(parsed) ? Math.min(Math.max(parsed, 1), max) : fallback;
+	return Number.isFinite(parsed)
+		? Math.min(Math.max(parsed, 1), max)
+		: fallback;
 }
 
 // ── Ingest a deployment summary (posted by `lobu apply`) ─────────────────────
@@ -83,7 +85,9 @@ routes.post("/", async (c) => {
 	const status = typeof body.status === "string" ? body.status : "";
 	if (!DEPLOYMENT_STATUSES.has(status)) {
 		return c.json(
-			{ error: "status must be 'succeeded' or 'partial_failure'" },
+			{
+				error: "status must be 'succeeded', 'partial_failure', or 'blocked'",
+			},
 			400,
 		);
 	}

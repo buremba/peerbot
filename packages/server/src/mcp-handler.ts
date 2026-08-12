@@ -470,6 +470,30 @@ function createServerForContext(
       mcpAppApprovalCapability: approvalCapabilityFromMeta(request.params._meta),
       mcpAppSnapshotCapability: snapshotCapabilityFromMeta(request.params._meta),
     };
+    const tool = getTool(name);
+    // Every result the MCP Apps surface renders carries the viewer's org
+    // role, because the app gates its Debug (raw JSON) disclosure on
+    // owner/admin — and the views it gates are the GENERIC ones produced by
+    // the data tools (query_sql, search_memory, restore_lobu_app_result, …),
+    // not the server-authored card `render_lobu_view` returns. Attaching it
+    // per tool would therefore miss exactly the results that need it, so it
+    // is emitted here for every tool that declares app UI metadata.
+    //
+    // The key must be PRESENT on every such result, carrying an explicit null
+    // for a non-member reading a public workspace: the app falls back to the
+    // alternate `call_tool_result` envelope only when the key is ABSENT, and
+    // that envelope can carry a stale role. The annotation keeps that
+    // guarantee typechecked — an `undefined` role would serialize the key
+    // away, so widening `memberRole` to optional must fail the build rather
+    // than silently drop the downgrade. `memberRole` is resolved server-side
+    // from the membership row and returned only to the caller it describes,
+    // so it can be neither forged nor read cross-tenant. Computed once here,
+    // outside the try, so a thrown error carries the same viewer role as a
+    // successful result and the app can never hold onto a stale role after a
+    // downgrade.
+    const uiMemberRoleMeta: { 'lobu/member-role': string | null } | undefined = tool?.mcpMeta?.ui
+      ? { 'lobu/member-role': callAuthCtx.memberRole }
+      : undefined;
 
     // Regular tool execution
     try {
@@ -501,8 +525,10 @@ function createServerForContext(
       // also renders the error explicitly because its formatter would otherwise
       // turn `{ rows: [], error }` into a clean empty CSV result.
       const softError = isSoftErrorResult(result);
-      const tool = getTool(name);
-      const resultMeta = getMcpResultMeta(result);
+      const attachedMeta = getMcpResultMeta(result);
+      const resultMeta = uiMemberRoleMeta
+        ? { ...attachedMeta, ...uiMemberRoleMeta }
+        : attachedMeta;
       if (tool?.outputSchema && result && typeof result === 'object') {
         const structured = validateToolResult(tool.outputSchema, result);
         if (structured !== null) {
@@ -548,7 +574,6 @@ function createServerForContext(
         ...(softError ? { isError: true } : {}),
       };
     } catch (error: any) {
-      const tool = getTool(name);
       const requiredAccess = tool
         ? getRequiredAccessLevel(name, args ?? {}, isAuthorizationReadOnly(tool))
         : null;
@@ -583,6 +608,9 @@ function createServerForContext(
               ...(error.callId ? { call_id: error.callId as string } : {}),
             }
           : undefined;
+      const errorMeta = scopeChallenge
+        ? { 'mcp/www_authenticate': [scopeChallenge] }
+        : undefined;
       return {
         content: [
           {
@@ -592,7 +620,9 @@ function createServerForContext(
         ],
         isError: true,
         ...(structuredError ? { structuredContent: { error: structuredError } } : {}),
-        ...(scopeChallenge ? { _meta: { 'mcp/www_authenticate': [scopeChallenge] } } : {}),
+        ...(uiMemberRoleMeta || errorMeta
+          ? { _meta: { ...(errorMeta ?? {}), ...(uiMemberRoleMeta ?? {}) } }
+          : {}),
       };
     }
   });

@@ -157,9 +157,9 @@ export interface InferenceProviderDiffRow
 }
 
 /**
- * A field-level blocking drift item: the remote moved a field the config
- * doesn't declare, or both config and remote moved it (fail-closed). Apply
- * must not converge over it — the whole run blocks and reports this.
+ * A blocking drift item: either a field moved remotely or a remote-only
+ * definition is not safe to delete. Apply must not converge over it — the
+ * whole run blocks and reports this.
  */
 export interface BlockingDriftRow extends BaseRow {
   verb: "drift";
@@ -167,9 +167,9 @@ export interface BlockingDriftRow extends BaseRow {
   blocking: true;
   kind: "entity-type" | "relationship-type" | "watcher";
   id: string;
-  /** The moved field (entity/rel: `name`, `description`, `properties.<key>`, …). */
+  /** The moved field; absent for a whole remote-only definition. */
   field?: string;
-  /** The remote-side value that moved — shown in the blocked report. */
+  /** The remote value, or display metadata for a remote-only definition. */
   remoteChange?: unknown;
   /** What the config declares for that field — what apply would have written. */
   desiredChange?: unknown;
@@ -1085,7 +1085,12 @@ export const effectiveRelationshipTypeAfterApply = (
 /** Classify a remote-only definition without deleting unproven ownership. */
 function remoteOnlyDefinitionRow(
   kind: "entity-type" | "relationship-type" | "watcher",
-  remote: { slug: string; id?: number | string },
+  remote: {
+    slug: string;
+    id?: number | string;
+    name?: string | null;
+    description?: string | null;
+  },
   baseline: Baseline | undefined,
   prune: boolean,
   unchangedSinceBaseline: (slug: string) => boolean
@@ -1112,6 +1117,12 @@ function remoteOnlyDefinitionRow(
     blocking: true,
     id: remote.slug,
     remote,
+    // Restrict terminal output to display metadata; schema bodies and Behavior
+    // prompts can contain sensitive values.
+    remoteChange: {
+      name: remote.name,
+      description: remote.description,
+    },
   } as DiffRow;
 }
 
@@ -1988,6 +1999,8 @@ export function computeDiff(
             {
               slug: remoteWatcher.slug,
               id: remoteWatcher.behavior_id,
+              name: remoteWatcher.name,
+              description: remoteWatcher.description,
             },
             baseline,
             prune,

@@ -127,6 +127,25 @@ describe("blocked report shows both sides of the disagreement", () => {
     expect(out).toContain('"type": "string"');
   });
 
+  test("a whole-definition block identifies the definition", () => {
+    const out = renderBlockedReport([
+      {
+        kind: "watcher",
+        verb: "drift",
+        blocking: true,
+        id: "chat-slack-97",
+        remoteChange: {
+          name: "Messages in slack:D095U1QV667",
+          description: "Chat subscription",
+        },
+      },
+    ]);
+    expect(out).toContain("chat-slack-97");
+    expect(out).toContain('"name": "Messages in slack:D095U1QV667"');
+    expect(out).toContain('"description": "Chat subscription"');
+    expect(out).toContain("config: (not declared)");
+  });
+
   test("a field the config does not declare still renders", () => {
     const out = renderBlockedReport([
       {

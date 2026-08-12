@@ -4,6 +4,7 @@ import { buildAttributionAndOwned, toBaseline } from "../deployment.js";
 import type { DesiredEntityType, DesiredState } from "../desired-state.js";
 import {
   type Baseline,
+  type BlockingDriftRow,
   computeDiff,
   ownedKey,
   type RemoteSnapshot,
@@ -275,6 +276,83 @@ describe("owned-based delete classification (baseline present)", () => {
     expect(row?.verb).toBe("drift");
     expect((row as any).blocking).toBe(true);
     expect(plan.counts.delete).toBe(0);
+  });
+
+  test("remote-only blocks expose only display metadata for every definition kind", () => {
+    const desired = buildState([]);
+    const remote = emptyRemote();
+    remote.entityTypes = [
+      remoteTask(9, {
+        slug: "ui_made",
+        name: "UI Made",
+        description: "Created from the dashboard",
+        properties: { token: { default: "DO_NOT_RENDER" } },
+      }),
+    ];
+    remote.relationshipTypes = [
+      {
+        id: 10,
+        slug: "linked_to",
+        name: "Linked to",
+        description: "Dashboard relationship",
+        rules: [{ source: "DO_NOT_RENDER", target: "task" }],
+        organization_id: "org-1",
+      },
+    ];
+    remote.watchers = [
+      {
+        behavior_id: "b-11",
+        slug: "chat-slack-97",
+        name: "Messages in slack:D095U1QV667",
+        description: "Chat subscription",
+        prompt: "DO_NOT_RENDER",
+      },
+    ];
+
+    const plan = computeDiff(desired, remote, {
+      orgId: "org-1",
+      baseline: baselineFor([], []),
+      prune: true,
+    });
+    const blocked = plan.rows.filter(
+      (row): row is BlockingDriftRow =>
+        row.verb === "drift" && "blocking" in row && row.blocking === true
+    );
+    expect(
+      blocked.map(({ kind, id, remoteChange }) => ({
+        kind,
+        id,
+        remoteChange,
+      }))
+    ).toEqual([
+      {
+        kind: "entity-type",
+        id: "ui_made",
+        remoteChange: {
+          name: "UI Made",
+          description: "Created from the dashboard",
+        },
+      },
+      {
+        kind: "relationship-type",
+        id: "linked_to",
+        remoteChange: {
+          name: "Linked to",
+          description: "Dashboard relationship",
+        },
+      },
+      {
+        kind: "watcher",
+        id: "chat-slack-97",
+        remoteChange: {
+          name: "Messages in slack:D095U1QV667",
+          description: "Chat subscription",
+        },
+      },
+    ]);
+    expect(
+      JSON.stringify(blocked.map((row) => row.remoteChange))
+    ).not.toContain("DO_NOT_RENDER");
   });
 
   test("remote-only definition IN owned but edited after baseline → blocking drift (never delete)", () => {

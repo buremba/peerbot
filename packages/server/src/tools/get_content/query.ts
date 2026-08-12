@@ -209,10 +209,11 @@ export async function fetchByContentIds(opts: {
   sql: DbClient;
   organizationId: string;
   visibilityScope: VisibilityScope;
+  excludeWorkspaceAudit?: boolean;
   limit: number;
   offset: number;
 }): Promise<ListPageResult> {
-  const { args, sql, organizationId, visibilityScope, limit, offset } = opts;
+  const { args, sql, organizationId, visibilityScope, excludeWorkspaceAudit, limit, offset } = opts;
 
   // typebox validates content_ids as number[] at the tool boundary; the
   // caller only dispatches here when it is non-empty.
@@ -256,7 +257,11 @@ export async function fetchByContentIds(opts: {
   });
   queryParams.push(...visibility.params);
 
-  const where = `${idFilter} ${orgScope}${entityFilter} ${visibility.sql}`;
+  const where = `${idFilter} ${orgScope}${entityFilter} ${visibility.sql}${
+    excludeWorkspaceAudit
+      ? ` AND NOT (f.metadata ? '_lobu_workspace_audit')`
+      : ''
+  }`;
 
   // Read the full chain from `events` (not the masked view — superseded rows are
   // what we're here for). The list query JOINs resolved_ids so it can order by
@@ -331,6 +336,7 @@ export async function fetchIncludeSuperseded(opts: {
   untilDate: Date | null;
   visibilityScope: VisibilityScope;
   mcpSessionIds: string[] | undefined;
+  excludeWorkspaceAudit?: boolean;
   limit: number;
   offset: number;
 }): Promise<ListPageResult> {
@@ -345,6 +351,7 @@ export async function fetchIncludeSuperseded(opts: {
     untilDate,
     visibilityScope,
     mcpSessionIds,
+    excludeWorkspaceAudit,
     limit,
     offset,
   } = opts;
@@ -478,6 +485,9 @@ export async function fetchIncludeSuperseded(opts: {
     queryParams.push(args.interaction_status);
     paramIndex += 1;
   }
+  if (excludeWorkspaceAudit) {
+    conditions.push(`NOT (e.metadata ? '_lobu_workspace_audit')`);
+  }
 
   // Visibility: events from connections the caller can't see drop out.
   // The clause is appended as an `AND (…)` fragment so it folds cleanly
@@ -552,6 +562,7 @@ export async function fetchClassificationStats(opts: {
   untilDate: Date | null;
   visibilityScope: VisibilityScope;
   mcpSessionIds: string[] | undefined;
+  excludeWorkspaceAudit?: boolean;
 }): Promise<NonNullable<GetContentResult['classification_stats']>> {
   const {
     args,
@@ -562,12 +573,17 @@ export async function fetchClassificationStats(opts: {
     untilDate,
     visibilityScope,
     mcpSessionIds,
+    excludeWorkspaceAudit,
   } = opts;
 
   // Build dynamic WHERE conditions using inline SQL
   const conditions: string[] = ['1=1'];
   const params: Array<string | number | null> = [];
   let paramIndex = 1;
+
+  if (excludeWorkspaceAudit) {
+    conditions.push(`NOT (f.metadata ? '_lobu_workspace_audit')`);
+  }
 
   if (args.entity_id) {
     // Use the trimmed UNION here too so the stats CTE doesn't pay for

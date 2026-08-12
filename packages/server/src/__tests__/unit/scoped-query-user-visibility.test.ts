@@ -126,4 +126,32 @@ describe('buildScopedQuery org scope — denormalized linked_org_ids seam', () =
       delete process.env.LOBU_LINKED_ORG_SCOPE;
     }
   });
+
+  it('excludeWorkspaceAudit filters events CTE for ordinary members', () => {
+    const { sql } = buildScopedQuery('SELECT * FROM events', ['events'], {
+      organizationId: 'org_test',
+      userId: 'user_a',
+    }, {
+      excludeWorkspaceAudit: true,
+    });
+    expect(sql).toContain("NOT (ev.metadata ? '_lobu_workspace_audit')");
+  });
+
+  it('excludeWorkspaceAudit filters event_classifications CTE', () => {
+    const { sql } = buildScopedQuery(
+      'SELECT excerpts FROM event_classifications',
+      ['event_classifications'],
+      { organizationId: 'org_test', userId: 'user_a' },
+      { excludeWorkspaceAudit: true }
+    );
+    expect(sql).toContain("NOT (ev.metadata ? '_lobu_workspace_audit')");
+  });
+
+  it('omits the workspace filter when the flag is absent (admin / system callers)', () => {
+    const { sql } = buildScopedQuery('SELECT * FROM events', ['events'], {
+      organizationId: 'org_test',
+      userId: 'user_a',
+    });
+    expect(sql).not.toContain("_lobu_workspace_audit");
+  });
 });

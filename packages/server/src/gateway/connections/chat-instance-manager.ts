@@ -97,7 +97,8 @@ function recentDisplayTitle(
   return "(untitled)";
 }
 
-async function resolveSlackHomeContext(
+/** Exported for workspace-audit visibility tests (Slack Home has no member role). */
+export async function resolveSlackHomeContext(
   organizationId: string,
 ): Promise<SlackHomeContext | null> {
   try {
@@ -111,11 +112,17 @@ async function resolveSlackHomeContext(
             AS entities_tracked,
           (SELECT count(*) FROM events
              WHERE organization_id = ${organizationId}
-               AND created_at >= date_trunc('day', now()))
+               AND created_at >= date_trunc('day', now())
+               -- Owner/admin-only workspace-identity audit rows (member /
+               -- invitation lifecycle). Slack App Home is shown to any
+               -- workspace-linked Slack user, so never count them here.
+               AND NOT (metadata ? '_lobu_workspace_audit'))
             AS captured_today
       `,
       // Mirrors the web "recent" feed (resolve_path.ts fetchRecentContent):
       // supersession-masked, internal corrections excluded, newest first.
+      // Also excludes server-owned workspace audit rows — same boundary as
+      // ordinary-member resolve_path bootstrap (not owner/admin).
       db`
         SELECT
           ev.title,
@@ -126,6 +133,7 @@ async function resolveSlackHomeContext(
         LEFT JOIN connections cn ON cn.id = ev.connection_id
         WHERE ev.organization_id = ${organizationId}
           AND ev.semantic_type <> 'correction'
+          AND NOT (ev.metadata ? '_lobu_workspace_audit')
         ORDER BY COALESCE(ev.occurred_at, ev.created_at) DESC
         LIMIT ${SLACK_HOME_RECENT_LIMIT}
       `,

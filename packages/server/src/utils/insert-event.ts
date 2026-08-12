@@ -7,12 +7,18 @@
 
 import { retryWithBackoff } from '@lobu/core';
 import { type DbClient, getDb } from '../db/client';
-import { type ConfigResourceKind, redactConfigState } from './config-redaction';
+import {
+  type AuditResourceKind,
+  type ConfigResourceKind,
+  redactConfigState,
+  type WorkspaceAuditResourceKind,
+} from './config-redaction';
 import {
   lookupGeoEnrichment,
   mergeEnrichedMetadata,
 } from './geo-enrichment';
 import logger from './logger';
+import { isUniqueViolation } from './pg-errors';
 
 /**
  * Single bounded retry for the fire-and-forget audit writers below
@@ -581,14 +587,75 @@ interface ChangeEventParams {
   clientId?: string | null;
 }
 
+const AUDIT_IDEMPOTENCY_INDEX = 'idx_events_org_idempotency_key';
+
+/**
+ * Persist a connectionless audit/change event with DB-enforced idempotency.
+ *
+ * Fire-and-forget writers retry with the same originId after a transient
+ * failure. Connector-sourced rows use a unique (connection_id, origin_id)
+ * path; connectionless audit rows do not. Stamp the reserved
+ * `_lobu_idempotency_key` (unique per org via `idx_events_org_idempotency_key`)
+ * so a concurrent or retry insert after an ambiguous success resolves to the
+ * winner instead of appending a duplicate.
+ */
+export async function insertConnectionlessAuditEvent(
+  params: InsertEventParams
+): Promise<InsertedEvent> {
+  const idempotencyKey = `audit:${params.originId}`;
+  const metadata: Record<string, unknown> = {
+    ...(params.metadata ?? {}),
+    _lobu_idempotency_key: idempotencyKey,
+  };
+
+  try {
+    return await insertEvent({
+      ...params,
+      connectionId: null,
+      metadata,
+    });
+  } catch (error) {
+    if (!isUniqueViolation(error, AUDIT_IDEMPOTENCY_INDEX)) throw error;
+    const sql = getDb();
+    const existing = await sql`
+      SELECT id, entity_ids, origin_id, title, semantic_type, created_at
+      FROM events
+      WHERE organization_id = ${params.organizationId}
+        AND metadata ? '_lobu_idempotency_key'
+        AND metadata->>'_lobu_idempotency_key' = ${idempotencyKey}
+      ORDER BY id ASC
+      LIMIT 1
+    `;
+    if (!existing[0]) throw error;
+    const row = existing[0] as {
+      id: number | string;
+      entity_ids: number[] | null;
+      origin_id: string;
+      title: string | null;
+      semantic_type: string;
+      created_at: string;
+    };
+    return {
+      id: Number(row.id),
+      entity_ids: row.entity_ids,
+      origin_id: row.origin_id,
+      title: row.title,
+      semantic_type: row.semantic_type,
+      created_at: row.created_at,
+      change: 'unchanged',
+    };
+  }
+}
+
 /**
  * Record a change event for audit purposes.
  *
- * Fire-and-forget — never throws. Retries once after a short delay (the same
- * originId, so a retry can't double-write past a unique origin constraint);
- * if both attempts fail the dropped audit row is logged at ERROR with full
- * event context so it's visible in alerting rather than silently lost.
- * Used for entity updates, watcher archival, connection/feed deletion, etc.
+ * Fire-and-forget — never throws. Retries once after a short delay; the same
+ * originId is reconciled before re-insert so an ambiguous success cannot
+ * append a duplicate. If both attempts fail the dropped audit row is logged
+ * at ERROR with full event context so it's visible in alerting rather than
+ * silently lost. Used for entity updates, watcher archival, connection/feed
+ * deletion, etc.
  */
 export function recordChangeEvent(params: ChangeEventParams): void {
   if (params.entityIds.length === 0) return;
@@ -597,7 +664,7 @@ export function recordChangeEvent(params: ChangeEventParams): void {
 
   retryWithBackoff(
     () =>
-      insertEvent({
+      insertConnectionlessAuditEvent({
         entityIds: params.entityIds,
         organizationId: params.organizationId,
         originId: externalId,
@@ -669,10 +736,9 @@ interface LifecycleEventParams {
 type ConfigOp = 'created' | 'updated' | 'deleted';
 type ConfigActorSource = 'cli' | 'ui' | 'api' | 'agent';
 
-interface ConfigChangeEventParams {
+interface StateChangeEventParams<ResourceKind extends AuditResourceKind> {
   organizationId: string;
-  /** DiffRow-kind slug (`agent`, `agent-settings`, `connection`, ...). */
-  resourceKind: ConfigResourceKind;
+  resourceKind: ResourceKind;
   resourceId: string | number;
   op: ConfigOp;
   /** Human-readable summary (e.g. "Agent 'Marketing' settings updated"). */
@@ -691,32 +757,50 @@ interface ConfigChangeEventParams {
   clientId?: string | null;
 }
 
+interface ConfigChangeEventParams extends StateChangeEventParams<ConfigResourceKind> {}
+
+interface WorkspaceChangeEventParams
+  extends StateChangeEventParams<WorkspaceAuditResourceKind> {}
+
 /**
- * Record a config mutation as a `semantic_type='change'` event with
- * `metadata.category='config'` and the full (redacted) post-change state in
- * `payload_data.state`. This is the settings audit trail behind the
+ * Record a state mutation as a `semantic_type='change'` event with the full
+ * redacted post-change state in `payload_data.state`. Config mutations use
+ * `metadata.category='config'`, the settings audit trail behind the
  * Deployments feed; distinct from `category='lifecycle'` rows, which carry no
  * state and feed dashboard metric_series — handlers that emit lifecycle
  * events dual-write this one. Fire-and-forget, same retry/ERROR contract as
  * the writers above.
+ *
+ * Workspace identity mutations use `metadata.category='workspace'`, keeping
+ * them out of the Deployments feed while still showing them in All activity.
  */
-export function recordConfigChangeEvent(params: ConfigChangeEventParams): void {
-  const externalId = `config_${params.resourceKind}_${params.op}_${params.resourceId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+function recordStateChangeEvent(
+  params: StateChangeEventParams<AuditResourceKind>,
+  category: 'config' | 'workspace'
+): void {
+  const externalId = `${category}_${params.resourceKind}_${params.op}_${params.resourceId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const state = redactConfigState(params.resourceKind, params.state);
 
   retryWithBackoff(
     () =>
-      insertEvent({
+      insertConnectionlessAuditEvent({
         entityIds: [],
         organizationId: params.organizationId,
         originId: externalId,
         title: params.summary,
         semanticType: 'change',
-        originType: `config_${params.resourceKind}_${params.op}`,
+        originType: `${category}_${params.resourceKind}_${params.op}`,
         payloadType: 'empty',
         payloadData: { state },
         metadata: {
-          category: 'config',
+          category,
+          // Server-owned discriminator for workspace-identity audit rows.
+          // `category` alone is NOT a safe gate: save_memory accepts caller
+          // metadata, so a member could stamp category='workspace' on a
+          // legitimate event and lose read access. `_lobu_` is the reserved
+          // server namespace callers cannot spoof — all exclusion predicates
+          // gate on this key, not the human-readable category.
+          ...(category === 'workspace' ? { _lobu_workspace_audit: true } : {}),
           resource_kind: params.resourceKind,
           resource_id: String(params.resourceId),
           op: params.op,
@@ -739,21 +823,31 @@ export function recordConfigChangeEvent(params: ConfigChangeEventParams): void {
         resourceId: String(params.resourceId),
         summary: params.summary,
       },
-      '[insert-event] config audit event DROPPED after retry — audit trail is missing this row'
+      `[insert-event] ${category} audit event DROPPED after retry — audit trail is missing this row`
     );
   });
 }
 
-export function recordLifecycleEvent(params: LifecycleEventParams): void {
-  const externalId = `lifecycle_${params.entityType}_${params.op}_${params.entityId}_${Date.now()}`;
+export function recordConfigChangeEvent(params: ConfigChangeEventParams): void {
+  recordStateChangeEvent(params, 'config');
+}
 
-  // Fire-and-forget with one bounded retry (same originId, so the retry is
-  // safe against duplicate writes). A doubly-failed write is an ERROR — these
-  // rows feed the dashboard metric_series, and a silent drop skews the
-  // cumulative counts forever.
+export function recordWorkspaceChangeEvent(params: WorkspaceChangeEventParams): void {
+  recordStateChangeEvent(params, 'workspace');
+}
+
+export function recordLifecycleEvent(params: LifecycleEventParams): void {
+  // Include a random suffix so two same-entity/op lifecycle writes in the same
+  // millisecond get distinct originIds (and distinct audit: idempotency keys).
+  const externalId = `lifecycle_${params.entityType}_${params.op}_${params.entityId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+  // Fire-and-forget with one bounded retry. Same originId + connectionless
+  // reconcile so an ambiguous success cannot double-count. A doubly-failed
+  // write is an ERROR — these rows feed the dashboard metric_series, and a
+  // silent drop skews the cumulative counts forever.
   retryWithBackoff(
     () =>
-      insertEvent({
+      insertConnectionlessAuditEvent({
         entityIds: [],
         organizationId: params.organizationId,
         originId: externalId,

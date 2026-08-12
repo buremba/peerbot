@@ -334,6 +334,13 @@ export function validateAndScopeQuery(
      * yields org-visible-only (fail-closed for private data).
      */
     userId?: string | null;
+    /**
+     * Exclude workspace-identity audit events (metadata.category='workspace')
+     * from the events and event_classifications CTEs. These rows record
+     * member/invitation lifecycle and are owner/admin-only; ordinary members
+     * running query_sql / client.query must not surface them.
+     */
+    excludeWorkspaceAudit?: boolean;
   }
 ): { sql: string; params: unknown[]; tableRefs: string[] } {
   const trimmed = rawSql.trim();
@@ -400,7 +407,10 @@ export function buildScopedQuery(
   userQuery: string,
   tableRefs: string[],
   context: DataSourceContext,
-  options?: { safeColumns?: Map<string, ColumnDef[]> }
+  options?: {
+    safeColumns?: Map<string, ColumnDef[]>;
+    excludeWorkspaceAudit?: boolean;
+  }
 ): { sql: string; params: unknown[] } {
   const params: unknown[] = [];
   let idx = 0;
@@ -590,6 +600,12 @@ export function buildScopedQuery(
         `"${safeName}" AS (SELECT ${sel(table, 'ev')} FROM public.current_event_records ev ` +
         `WHERE ${eventOrgScope('ev')}`;
 
+      // Workspace-identity audit rows are owner/admin-only; ordinary members
+      // running raw SQL must not surface them.
+      if (options?.excludeWorkspaceAudit) {
+        eventsCte += ` AND NOT (ev.metadata ? '_lobu_workspace_audit')`;
+      }
+
       // Entity scoping: filter events to the watcher's entities
       if (context.entityIds && context.entityIds.length > 0) {
         const placeholders = context.entityIds.map((id) => {
@@ -685,6 +701,9 @@ export function buildScopedQuery(
         `"${safeName}" AS (SELECT ${sel(table, 'ec')} FROM public.event_classifications ec WHERE EXISTS (` +
           'SELECT 1 FROM public.current_event_records ev ' +
           `WHERE ev.id = ec.event_id AND ${eventOrgScope('ev')}` +
+          (options?.excludeWorkspaceAudit
+            ? ` AND NOT (ev.metadata ? '_lobu_workspace_audit')`
+            : '') +
           eventConnVisibility('ev') +
           eventResourceVisibility('ev') +
           '))'
@@ -941,6 +960,8 @@ export async function executeDataSources(
     throwOnError?: boolean;
     /** At save time, require unknown table refs to resolve to local or public entity types. */
     validateEntitySlugs?: boolean;
+    /** Exclude workspace-identity audit rows from the events/event_classifications CTEs. */
+    excludeWorkspaceAudit?: boolean;
   }
 ): Promise<Record<string, unknown[]>> {
   const results: Record<string, unknown[]> = {};
@@ -1018,6 +1039,7 @@ export async function executeDataSources(
         // their SELECT * — entity data is the template's intended payload.
         let { sql: scopedQuery, params } = buildScopedQuery(query, tableRefs, context, {
           safeColumns: SAFE_COLUMN_DEFS,
+          excludeWorkspaceAudit: options?.excludeWorkspaceAudit,
         });
 
         // Validate param count matches placeholders in scoped query

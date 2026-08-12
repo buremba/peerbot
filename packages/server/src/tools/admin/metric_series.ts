@@ -31,7 +31,7 @@ import { ToolUserError } from '../../utils/errors';
 import logger from '../../utils/logger';
 import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
-import { isAdminOrOwnerRole } from '../access-control';
+import { isAdminOrOwnerRole, isInProcessSystemCall } from '../access-control';
 
 export const MetricSeriesSchema = Type.Object({
   sql: Type.String({
@@ -177,6 +177,9 @@ async function metricSeriesImpl(
     // Charts are filtered to the requesting user's connection visibility, so a
     // member can't sparkline another user's private-connection events.
     userId: ctx.userId,
+    // Workspace-identity audit rows are owner/admin/system-only; ordinary
+    // members must not chart member/invitation lifecycle data via raw SQL.
+    excludeWorkspaceAudit: !isInProcessSystemCall(ctx) && !isAdmin,
   });
   const db = getDb();
 

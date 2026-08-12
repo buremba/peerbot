@@ -22,7 +22,7 @@ import {
 import { WelcomeEmail, welcomeSubject } from "../email/templates/welcome";
 import type { Env } from "../index";
 import { notifyInvitationReceived } from "../notifications/triggers";
-import { recordLifecycleEvent } from "../utils/insert-event";
+import { recordLifecycleEvent, recordWorkspaceChangeEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
 import {
 	deleteMemberEntity,
@@ -311,6 +311,25 @@ export async function createAuth(
 					// in the device-worker auth middleware (index.ts:602-607), so
 					// their Lobu bridge gets a 403 on every poll.
 					afterCreateOrganization: async ({ organization: org, user }) => {
+						// The org row is already committed when this hook fires. Audit
+						// first so the creation trail survives a personal-org marker
+						// failure below. `user` IS the acting session user (creator).
+						recordWorkspaceChangeEvent({
+							organizationId: org.id,
+							resourceKind: "organization",
+							resourceId: org.id,
+							op: "created",
+							summary: `Organization "${org.name}" created`,
+							state: {
+								id: org.id,
+								name: org.name,
+								slug: org.slug,
+								visibility: org.visibility ?? null,
+							},
+							changedFields: ["id", "name", "slug", "visibility"],
+							actorSource: "ui",
+							createdBy: user.id,
+						});
 						try {
 							if (org.visibility !== "private") return;
 							const sql = getDb();
@@ -333,6 +352,26 @@ export async function createAuth(
 						}
 					},
 					afterAddMember: async ({ member, user, organization: org }) => {
+						// The member row is already committed when this hook fires.
+						// Emit the audit trail BEFORE the fallible $member projection so
+						// a projection failure cannot suppress the durable audit row.
+						// Better Auth does not expose the acting session user here —
+						// `user` is the added member (the subject), not the actor — so
+						// createdBy stays null rather than misattributing.
+						recordWorkspaceChangeEvent({
+							organizationId: org.id,
+							resourceKind: "member",
+							resourceId: member.id,
+							op: "created",
+							summary: `Member "${user.name || 'a member'}" added`,
+							state: {
+								id: member.id,
+								user_id: user.id,
+								role: member.role,
+							},
+							changedFields: ["user_id", "role"],
+							actorSource: "ui",
+						});
 						try {
 							await ensureMemberEntity({
 								organizationId: org.id,
@@ -351,7 +390,7 @@ export async function createAuth(
 								entityType: "member",
 								op: "created",
 								entityId: member.id,
-								summary: `Member "${user.name || user.email}" added`,
+								summary: `Member "${user.name || 'a member'}" added`,
 								extra: { user_id: user.id, role: member.role },
 							});
 						} catch (err) {
@@ -374,10 +413,46 @@ export async function createAuth(
 						}
 					},
 					afterAcceptInvitation: async ({
+						invitation,
 						member,
 						user,
 						organization: org,
 					}) => {
+						// The accepted member row is already committed. Audit first so
+						// the acceptance is never lost to a projection failure. `user`
+						// IS the actor here — the invitee accepting their own invite.
+						// Better Auth retains the invitation and updates its status to
+						// 'accepted', so record that transition faithfully.
+						recordWorkspaceChangeEvent({
+							organizationId: org.id,
+							resourceKind: "invitation",
+							resourceId: invitation.id,
+							op: "updated",
+							summary: "Invitation accepted",
+							state: {
+								id: invitation.id,
+								role: invitation.role,
+								status: invitation.status ?? "accepted",
+							},
+							changedFields: ["status"],
+							actorSource: "ui",
+							createdBy: user.id,
+						});
+						recordWorkspaceChangeEvent({
+							organizationId: org.id,
+							resourceKind: "member",
+							resourceId: member.id,
+							op: "created",
+							summary: `Member "${user.name || 'a member'}" joined`,
+							state: {
+								id: member.id,
+								user_id: user.id,
+								role: member.role,
+							},
+							changedFields: ["user_id", "role"],
+							actorSource: "ui",
+							createdBy: user.id,
+						});
 						try {
 							// Update existing invited entity to active, or create if missing
 							await updateMemberEntityStatus(org.id, user.email, "active");
@@ -410,7 +485,19 @@ export async function createAuth(
 							);
 						}
 					},
-					afterRemoveMember: async ({ user, organization: org }) => {
+					afterRemoveMember: async ({ member, user, organization: org }) => {
+						// The member row is already deleted when this hook fires. Audit
+						// first so the removal survives projection drift. `user` is the
+						// removed member (subject), not the acting session user.
+						recordWorkspaceChangeEvent({
+							organizationId: org.id,
+							resourceKind: "member",
+							resourceId: member.id,
+							op: "deleted",
+							summary: `Member "${user.name || 'a member'}" removed`,
+							state: null,
+							actorSource: "ui",
+						});
 						try {
 							await deleteMemberEntity(org.id, user.email);
 							recordLifecycleEvent({
@@ -418,7 +505,7 @@ export async function createAuth(
 								entityType: "member",
 								op: "deleted",
 								entityId: user.id,
-								summary: `Member "${user.name || user.email}" removed`,
+								summary: `Member "${user.name || 'a member'}" removed`,
 							});
 							const { invalidateMembershipRoleCache } = await import(
 								"../workspace/multi-tenant"
@@ -436,6 +523,22 @@ export async function createAuth(
 						user,
 						organization: org,
 					}) => {
+						// The role change is already committed. Audit first; `user` is
+						// the affected member (subject), not the acting session user.
+						recordWorkspaceChangeEvent({
+							organizationId: org.id,
+							resourceKind: "member",
+							resourceId: member.id,
+							op: "updated",
+							summary: `Member "${user.name || 'a member'}" role set to ${member.role}`,
+							state: {
+								id: member.id,
+								user_id: user.id,
+								role: member.role,
+							},
+							changedFields: ["role"],
+							actorSource: "ui",
+						});
 						try {
 							await updateMemberEntityAccess(org.id, user.email, {
 								role: member.role,
@@ -457,6 +560,24 @@ export async function createAuth(
 						inviter,
 						organization: org,
 					}) => {
+						// The invitation row is already committed. Audit first so an
+						// invitee-placeholder projection failure cannot lose the trail.
+						// `inviter` IS the acting session user.
+						recordWorkspaceChangeEvent({
+							organizationId: org.id,
+							resourceKind: "invitation",
+							resourceId: invitation.id,
+							op: "created",
+							summary: "Invitation sent",
+							state: {
+								id: invitation.id,
+								role: invitation.role,
+								status: invitation.status ?? "pending",
+							},
+							changedFields: ["role", "status"],
+							actorSource: "ui",
+							createdBy: inviter.id,
+						});
 						try {
 							// Create the invitee's placeholder $member keyed on the
 							// INVITED email. Attribute authorship to the inviter via
@@ -483,7 +604,29 @@ export async function createAuth(
 							);
 						}
 					},
-					afterCancelInvitation: async ({ invitation, organization: org }) => {
+					afterCancelInvitation: async ({
+						invitation,
+						cancelledBy,
+						organization: org,
+					}) => {
+						// Cancellation is already committed. Audit first. Better Auth
+						// RETAINS the invitation row and flips its status to 'canceled'
+						// (it does not delete), so record that transition faithfully
+						// instead of a phantom delete.
+						recordWorkspaceChangeEvent({
+							organizationId: org.id,
+							resourceKind: "invitation",
+							resourceId: invitation.id,
+							op: "updated",
+							summary: "Invitation cancelled",
+							state: {
+								id: invitation.id,
+								status: invitation.status ?? "canceled",
+							},
+							changedFields: ["status"],
+							actorSource: "ui",
+							createdBy: cancelledBy.id,
+						});
 						try {
 							await deleteMemberEntity(org.id, invitation.email);
 						} catch (err) {
@@ -493,7 +636,25 @@ export async function createAuth(
 							);
 						}
 					},
-					afterRejectInvitation: async ({ invitation, organization: org }) => {
+					afterRejectInvitation: async ({ invitation, user, organization: org }) => {
+						// Rejection is already committed. Audit first. Better Auth
+						// RETAINS the invitation row and flips its status to 'rejected'
+						// (it does not delete), so record that transition faithfully
+						// instead of a phantom delete.
+						recordWorkspaceChangeEvent({
+							organizationId: org.id,
+							resourceKind: "invitation",
+							resourceId: invitation.id,
+							op: "updated",
+							summary: "Invitation rejected",
+							state: {
+								id: invitation.id,
+								status: invitation.status ?? "rejected",
+							},
+							changedFields: ["status"],
+							actorSource: "ui",
+							createdBy: user.id,
+						});
 						try {
 							await deleteMemberEntity(org.id, invitation.email);
 						} catch (err) {

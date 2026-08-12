@@ -193,4 +193,79 @@ describe('Behavior private-connection visibility', () => {
       [ownerPrivate.id, orgVisible.id].sort((a, b) => a - b)
     );
   });
+
+  it('ordinary-member behavior reads exclude workspace-audit rows from content AND total_count', async () => {
+    const sql = getTestDb();
+    const dbClient = sql as unknown as DbClient;
+    const workspace = await TestWorkspace.create({
+      name: 'Behavior Audit Exclusion Org',
+    });
+    const entity = await createTestEntity({
+      name: 'Behavior Audit Exclusion Entity',
+      organization_id: workspace.org.id,
+      created_by: workspace.users.owner.id,
+    });
+    const agent = await createTestAgent({
+      organizationId: workspace.org.id,
+      ownerUserId: workspace.users.admin.id,
+      name: 'Behavior Audit Exclusion Agent',
+    });
+    const created = (await workspace.owner.behaviors.create({
+      entity_id: entity.id,
+      slug: 'behavior-audit-exclusion',
+      name: 'Behavior Audit Exclusion',
+      prompt: 'Summarize the visible content.',
+      agent_id: agent.agentId,
+      sources: [{ name: 'content', query: 'SELECT * FROM events' }],
+    })) as { behavior_id: string };
+    const behaviorId = Number(created.behavior_id);
+
+    // A genuine workspace-audit row (server-owned discriminator) and an
+    // ordinary org-visible event.
+    const auditEvent = await createTestEvent({
+      entity_id: entity.id,
+      organization_id: workspace.org.id,
+      connector_key: 'slack',
+      content: 'workspace audit lifecycle row',
+      occurred_at: occurredAt,
+      semantic_type: 'change',
+      metadata: { category: 'workspace', _lobu_workspace_audit: true },
+    });
+    const orgConnection = await createTestConnection({
+      organization_id: workspace.org.id,
+      connector_key: 'slack',
+      visibility: 'org',
+    });
+    const orgVisible = await createTestEvent({
+      entity_id: entity.id,
+      organization_id: workspace.org.id,
+      connection_id: orgConnection.id,
+      connector_key: 'slack',
+      content: 'Organization-visible content',
+      occurred_at: occurredAt,
+    });
+
+    // Ordinary member: behavior read content excludes the audit row.
+    const memberRead = await getContent(
+      { behavior_id: behaviorId, since, until },
+      env,
+      {
+        ...ownerToolContext(workspace.org.id, workspace.users.member.id),
+        memberRole: 'member',
+      }
+    );
+    expect(contentIds(memberRead)).toEqual([orgVisible.id]);
+
+    // Owner: sees both.
+    const ownerRead = await getContent(
+      { behavior_id: behaviorId, since, until },
+      env,
+      ownerToolContext(workspace.org.id, workspace.users.owner.id)
+    );
+    expect(contentIds(ownerRead)).toEqual([orgVisible.id, auditEvent.id].sort((a, b) => a - b));
+
+    // total_count agrees with content for the ordinary member (no audit leak).
+    const memberTotal = (memberRead as { total_count?: number }).total_count;
+    expect(memberTotal).toBe(1);
+  });
 });

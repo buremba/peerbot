@@ -25,6 +25,13 @@ export interface ContentSearchOptions {
    * Events with `connection_id IS NULL` are always visible.
    */
   visibility_scope?: { organizationId: string; userId: string | null };
+  /**
+   * Exclude workspace-identity audit events (`metadata.category='workspace'`).
+   * These carry member emails / invitation details and are emitted for
+   * authenticated workspace activity; anonymous public-workspace readers must
+   * never retrieve them through the public read path.
+   */
+  exclude_workspace_audit?: boolean;
   window_id?: number; // Filter by watcher window ID
   /** Events linked in any window for this watcher (`watcher_window_events`). */
   analyzed_by_watcher_id?: number;

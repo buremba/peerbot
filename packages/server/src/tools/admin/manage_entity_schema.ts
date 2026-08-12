@@ -27,6 +27,7 @@ import {
   type DataSourceInput,
   executeDataSources,
 } from '../../utils/execute-data-sources';
+import { isAdminOrOwnerRole, isInProcessSystemCall } from '../access-control';
 import { measureColumns } from '../../utils/infer-measures';
 import type { Env } from '../../index';
 import logger from '../../utils/logger';
@@ -317,7 +318,9 @@ async function fetchTypeViewTemplates(
   // fetchTabs('entity_type', entityRow.entity_type)), NOT the numeric id.
   entityTypeSlug: string,
   organizationId: string,
-  userId: string | null
+  userId: string | null,
+  /** Exclude workspace-identity audit rows for ordinary-member / public reads. */
+  excludeWorkspaceAudit: boolean
 ): Promise<ViewTemplateTab[]> {
   const rows = await sql`
     SELECT
@@ -346,7 +349,9 @@ async function fetchTypeViewTemplates(
         const { data_sources: _dropped, ...rest } = jsonTemplate;
         cleanTemplate = rest;
         try {
-          templateData = await executeDataSources(dataSources, context, sql);
+          templateData = await executeDataSources(dataSources, context, sql, {
+            excludeWorkspaceAudit,
+          });
         } catch (err) {
           logger.warn(
             { err, tab: String(row.tab_name), entityTypeSlug },
@@ -422,11 +427,14 @@ async function etHandleGet(
   // Classify the view's measure columns on read (never persisted).
   if (mapped.backing_sql) mapped.measure_columns = measureColumns(mapped.backing_sql);
   // Authored type-level list-view templates, with their data_sources run live.
+  // Workspace-identity audit rows are owner/admin/system-only; type templates
+  // are org-scoped (no entityIds) so an events SELECT would otherwise leak them.
   mapped.view_templates = await fetchTypeViewTemplates(
     sql,
     mapped.slug,
     ctx.organizationId,
-    ctx.userId
+    ctx.userId,
+    !isInProcessSystemCall(ctx) && !isAdminOrOwnerRole(ctx.memberRole)
   );
 
   return { schema_type: 'entity_type', action: 'get', entity_type: mapped };

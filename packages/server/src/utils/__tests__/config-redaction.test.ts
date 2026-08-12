@@ -75,6 +75,49 @@ describe('redactConfigState', () => {
     expect(out?.apiKey).toBe(REDACTED_SENTINEL);
     expect(out?.baseUrl).toBe('https://api.z.ai');
   });
+
+  it('passes workspace identity state through the denylist deep-walk', () => {
+    const org = redactConfigState('organization', {
+      id: 'org_abc',
+      name: 'Acme',
+      slug: 'acme',
+      visibility: 'private',
+      metadata: { api_key: 'must-not-persist' },
+    });
+    expect(org).toEqual({
+      id: 'org_abc',
+      name: 'Acme',
+      slug: 'acme',
+      visibility: 'private',
+      metadata: { api_key: REDACTED_SENTINEL },
+    });
+
+    const member = redactConfigState('member', {
+      id: 'member_abc',
+      user_id: 'user_abc',
+      role: 'owner',
+      email: 'owner@acme.test',
+    });
+    expect(member).toEqual({
+      id: 'member_abc',
+      user_id: 'user_abc',
+      role: 'owner',
+      email: 'owner@acme.test',
+    });
+
+    const invitation = redactConfigState('invitation', {
+      id: 'inv_abc',
+      email: 'invitee@acme.test',
+      role: 'member',
+      status: 'pending',
+    });
+    expect(invitation).toEqual({
+      id: 'inv_abc',
+      email: 'invitee@acme.test',
+      role: 'member',
+      status: 'pending',
+    });
+  });
 });
 
 /**

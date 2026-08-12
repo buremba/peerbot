@@ -62,6 +62,8 @@ interface ContentQueryParams {
    */
   behaviorId: number;
 	throwOnSourceError?: boolean;
+  /** Exclude workspace-identity audit rows for ordinary-member reads. */
+  excludeWorkspaceAudit?: boolean;
   page?: {
     sourceName: string;
     limit: number;
@@ -120,6 +122,7 @@ async function queryContentData(
 
   const results = await executeDataSources(sqlSources, queryContext, sql, {
     throwOnError: params.throwOnSourceError,
+    excludeWorkspaceAudit: params.excludeWorkspaceAudit,
     wrapQuery: page
       ? (scopedQuery, queryParams, sourceName) => {
           const isEventSource = eventSourceNames.has(sourceName);
@@ -184,6 +187,7 @@ async function queryContentData(
           entityType: source.ref.entityType,
           measure: source.ref.measure,
           userId: params.userId,
+          excludeWorkspaceAudit: params.excludeWorkspaceAudit,
         });
       } catch (err) {
 		if (params.throwOnSourceError) throw err;
@@ -221,7 +225,11 @@ async function queryContentData(
         query: `SELECT COUNT(*)::int AS c, COALESCE(SUM(LENGTH(to_jsonb(${alias})->>'payload_text')), 0)::bigint AS ch FROM (${source.query}) AS ${alias}`,
       };
     });
-    const statsResults = await executeDataSources(statsSources, queryContext, sql, {});
+    const statsResults = await executeDataSources(statsSources, queryContext, sql, {
+      // Totals must respect the same workspace-audit boundary as the returned
+      // rows, else an ordinary member infers audit rows from the count.
+      excludeWorkspaceAudit: params.excludeWorkspaceAudit,
+    });
     for (const rows of Object.values(statsResults)) {
       const row = rows[0] as { c?: number; ch?: string | number } | undefined;
       if (row) {
@@ -414,6 +422,8 @@ export async function handleBehaviorMode(
     organizationId: string;
     /** Verified caller, or null when the read is a headless Behavior run. */
     userId: string | null;
+    /** Exclude workspace-identity audit rows for ordinary-member reads. */
+    excludeWorkspaceAudit?: boolean;
   }
 ): Promise<GetContentResult> {
   const { generateWindowToken } = await import('../../utils/jwt');
@@ -597,6 +607,7 @@ export async function handleBehaviorMode(
       ? { [triggerInputSourceName]: triggerContentIds.length }
       : undefined,
     behaviorId: Number(watcher.id),
+    excludeWorkspaceAudit: context.excludeWorkspaceAudit,
     page: {
       sourceName: 'content',
       limit: contentLimit,

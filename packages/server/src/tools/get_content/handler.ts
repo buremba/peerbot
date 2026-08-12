@@ -12,6 +12,7 @@ import {
   resolveActingPrincipal,
 } from '../../authz/entity-policy';
 import { hasRequiredMcpScope } from '../../auth/tool-access';
+import { isInProcessSystemCall } from '../../tools/access-control';
 import { createDbClientFromEnv, getDb, pgBigintArray } from '../../db/client';
 import { BEHAVIOR_RUN_SOURCE } from '../../gateway/behavior-run-session';
 import { parseBehaviorRunConversationId } from '../../gateway/permissions/behavior-run-intent';
@@ -157,6 +158,16 @@ async function getContentImpl(
     throw new ToolUserError('read_knowledge requires an MCP session with read access.', 403);
   }
 
+  // Workspace-identity audit events record member/invitation lifecycle
+  // (titles, member names, invitation status). Exclude them for everyone
+  // EXCEPT owners/admins and trusted in-process system contexts (behavior
+  // runs: userId=null, isAuthenticated=true) — the $member read policy
+  // reserves that lifecycle data for owner/admin.
+  const excludeWorkspaceAudit =
+    ctx.memberRole !== 'owner' &&
+    ctx.memberRole !== 'admin' &&
+    !isInProcessSystemCall(ctx);
+
   // Dual client: PG for auth, PG for data
   const pgSql = createDbClientFromEnv(env);
   const sql = getDb();
@@ -299,6 +310,17 @@ async function getContentImpl(
   try {
     // If behavior_id is provided, use behavior mode: fetch content for all sources and generate window_token
     if (args.behavior_id) {
+      // Behavior mode executes the Behavior's authored SQL sources (which may
+      // include `events` reads). Callers with NO membership in this workspace
+      // have no legitimate reason to run another Behavior's source read —
+      // deny them outright. Ordinary members may read, but must not receive
+      // workspace-audit rows (handled inside behavior mode).
+      if (ctx.memberRole === null && !isInProcessSystemCall(ctx)) {
+        throw new ToolUserError(
+          'Behavior read mode requires workspace membership.',
+          403
+        );
+      }
       return await handleBehaviorMode(args, env, sql, {
         organizationId: ctx.organizationId,
         // Interactive reads keep the caller's private-connection scope.
@@ -307,6 +329,7 @@ async function getContentImpl(
         // otherwise a same-org worker could pass another Behavior's id and
         // inherit that author's private feeds.
         userId: resolveBehaviorVisibilityUserId(ctx, args.behavior_id),
+        excludeWorkspaceAudit,
       });
     }
 
@@ -484,6 +507,7 @@ async function getContentImpl(
         sql,
         organizationId: ctx.organizationId,
         visibilityScope,
+        excludeWorkspaceAudit,
         limit,
         offset,
       }));
@@ -499,6 +523,7 @@ async function getContentImpl(
         untilDate,
         visibilityScope,
         mcpSessionIds,
+        excludeWorkspaceAudit,
         limit,
         offset,
       }));
@@ -531,6 +556,9 @@ async function getContentImpl(
         ...(args.classification_source && { classification_source: args.classification_source }),
         ...(args.semantic_type && { semantic_type: args.semantic_type }),
         ...(args.interaction_status && { interaction_status: args.interaction_status }),
+        ...(excludeWorkspaceAudit && {
+          exclude_workspace_audit: true,
+        }),
         visibility_scope: visibilityScope,
       };
 
@@ -575,6 +603,11 @@ async function getContentImpl(
         semantic_type: args.semantic_type,
         entity_types: args.entity_types,
         interaction_status: args.interaction_status,
+        // Workspace-identity audit events carry member emails / invitation
+        // details; anonymous public-workspace readers must never retrieve them.
+        ...(excludeWorkspaceAudit && {
+          exclude_workspace_audit: true,
+        }),
         limit,
         offset,
         // When a query is provided and no explicit sort_by, rank by combined_score
@@ -670,6 +703,7 @@ async function getContentImpl(
         untilDate,
         visibilityScope,
         mcpSessionIds,
+        excludeWorkspaceAudit,
       });
     }
 

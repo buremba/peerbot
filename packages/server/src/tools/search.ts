@@ -9,6 +9,7 @@
 
 import { type Static, Type } from '@sinclair/typebox';
 import { hasRequiredMcpScope } from '../auth/tool-access';
+import { isInProcessSystemCall } from './access-control';
 import { evaluateEntityMutation, resolveActingPrincipal } from '../authz/entity-policy';
 import { type AuthzScope, authzScopeFromToolContext } from '../authz/scope';
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
@@ -447,12 +448,14 @@ async function fetchContentSnippets(
   env: Env,
   queryEmbedding?: number[],
   agentId?: string,
-  minSimilarity?: number
+  minSimilarity?: number,
+  excludeWorkspaceAudit?: boolean
 ): Promise<ContentSnippet[]> {
   const result = await searchContentByText(
     query,
     {
       organization_id: gate.organizationId,
+      ...(excludeWorkspaceAudit && { exclude_workspace_audit: true }),
       // Enforce the org/private-connection visibility boundary on the recall
       // path, exactly as get_content does. Without visibility_scope the
       // connection-visibility clause is skipped entirely, so search_memory
@@ -669,6 +672,9 @@ export interface RecallContext {
   /** Caller-supplied similarity floor for recalled content (schema 0.0-1.0,
    * default 0.3). Undefined means "use the documented default". */
   minSimilarity?: number;
+  /** Exclude workspace-identity audit events (metadata.category='workspace')
+   * for non-member readers of public workspaces. */
+  excludeWorkspaceAudit?: boolean;
 }
 
 /**
@@ -735,7 +741,8 @@ const knowledgeSource: RecallSource = {
       ctx.env,
       ctx.queryEmbedding,
       ctx.contentAgentId,
-      ctx.minSimilarity
+      ctx.minSimilarity,
+      ctx.excludeWorkspaceAudit
     );
     // ALWAYS emit the facet, even empty. An ABSENT `content` key and an empty
     // one are indistinguishable to an agent reading raw JSON, so omitting it on
@@ -1014,6 +1021,15 @@ async function searchImpl(
             env,
             queryEmbedding: args.query_embedding,
             minSimilarity: args.min_similarity,
+            // Workspace-identity audit events record member/invitation
+            // lifecycle; only owners/admins and in-process system contexts may
+            // recall them (ordinary members do not see another member's
+            // invitation lifecycle — the $member read policy reserves that for
+            // owner/admin).
+            excludeWorkspaceAudit:
+              ctx.memberRole !== 'owner' &&
+              ctx.memberRole !== 'admin' &&
+              !isInProcessSystemCall(ctx),
           }
         )
       : Promise.resolve({});

@@ -13,6 +13,7 @@ import type { Env } from '../index';
 import { getDb } from '../db/client';
 import { resolveMemberSchemaFields } from './member-entity';
 import { getConfiguredPublicOrigin } from './public-origin';
+import { recordWorkspaceChangeEvent } from './insert-event';
 import type { CreatedEntity, EntityData } from './entity-management';
 import logger from './logger';
 
@@ -61,7 +62,7 @@ registerEntityHooks('$member', {
     if (email) {
       // Insert a Better Auth invitation (skip if one already pending)
       const sql = getDb();
-      await sql`
+      const inserted = (await sql`
         INSERT INTO invitation (id, "organizationId", email, role, status, "expiresAt", "inviterId", "createdAt")
         SELECT
           gen_random_uuid()::text,
@@ -78,7 +79,25 @@ registerEntityHooks('$member', {
             AND email = ${email}
             AND status = 'pending'
         )
-      `;
+        RETURNING id
+      `) as unknown as Array<{ id: string }>;
+      if (inserted.length > 0) {
+        recordWorkspaceChangeEvent({
+          organizationId: ctx.organizationId,
+          resourceKind: 'invitation',
+          resourceId: inserted[0].id,
+          op: 'created',
+          summary: 'Invitation sent',
+          state: {
+            id: inserted[0].id,
+            role: 'member',
+            status: 'pending',
+          },
+          changedFields: ['role', 'status'],
+          actorSource: 'ui',
+          createdBy: ctx.userId ?? null,
+        });
+      }
       meta.status = 'invited';
     } else {
       meta.status = meta.status ?? 'active';
@@ -135,12 +154,37 @@ registerEntityHooks('$member', {
 
     // Cancel any pending invitation for this email
     const sql = getDb();
-    await sql`
+    const cancelled = (await sql`
       UPDATE invitation
       SET status = 'canceled'
       WHERE "organizationId" = ${ctx.organizationId}
         AND email = ${email}
         AND status = 'pending'
-    `;
+      RETURNING id, role, status
+    `) as unknown as Array<{
+      id: string;
+      role: string | null;
+      status: string | null;
+    }>;
+    // The $member delete cancels every pending invite; record each
+    // cancellation so the invitation lifecycle audit (send → canceled) stays
+    // complete. Fire-and-forget — the update already committed.
+    for (const inv of cancelled) {
+      recordWorkspaceChangeEvent({
+        organizationId: ctx.organizationId,
+        resourceKind: 'invitation',
+        resourceId: inv.id,
+        op: 'updated',
+        summary: 'Invitation cancelled',
+        state: {
+          id: inv.id,
+          role: inv.role ?? 'member',
+          status: inv.status ?? 'canceled',
+        },
+        changedFields: ['status'],
+        actorSource: 'ui',
+        createdBy: ctx.userId ?? null,
+      });
+    }
   },
 });

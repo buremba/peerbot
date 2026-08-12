@@ -13,6 +13,7 @@
 import { type Static, Type } from '@sinclair/typebox';
 import type { Env } from '../../index';
 import { runMetric } from '../../metrics/run-metric';
+import { isAdminOrOwnerRole, isInProcessSystemCall } from '../access-control';
 import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
 
@@ -52,6 +53,9 @@ async function queryMetricImpl(
     segment: args.segment,
     entityId: args.entity_id,
     userId: ctx.userId,
+    // Workspace-identity audit rows are owner/admin/system-only; ordinary
+    // members must not move a declared metric by counting lifecycle events.
+    excludeWorkspaceAudit: !isInProcessSystemCall(ctx) && !isAdminOrOwnerRole(ctx.memberRole),
   });
   return { rows, row_count: rows.length };
 }

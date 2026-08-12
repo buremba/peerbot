@@ -156,24 +156,24 @@ describe("list_feeds health filter and true total", () => {
 		).rejects.toThrow();
 	});
 
-	it("surfaces derived execution_mode / attention / incident_eligible per feed", async () => {
+	it("surfaces derived execution_mode / attention without incident_eligible", async () => {
 		const res = await list({ limit: 10 });
 		const byKey = new Map(
 			res.feeds.map((f) => [f.feed_key, f as Record<string, unknown>]),
 		);
-		// h3 (never synced) has no schedule → manual, never_run, not incident-eligible.
+		// h3 (never synced) carries no cron → no_schedule, never_run.
 		const h3 = byKey.get("h3");
-		expect(h3?.execution_mode).toBe("manual");
+		expect(h3?.execution_mode).toBe("no_schedule");
 		expect(h3?.attention).toBe("never_run");
-		expect(h3?.incident_eligible).toBe(false);
-		// bad1 is active-but-failing with no schedule → manual, last_attempt_failed,
-		// and still not incident-eligible (a manual feed is never an unattended incident).
+		// bad1 is active-but-failing with no cron → no_schedule, last_attempt_failed.
 		const bad1 = byKey.get("bad1");
-		expect(bad1?.execution_mode).toBe("manual");
+		expect(bad1?.execution_mode).toBe("no_schedule");
 		expect(bad1?.attention).toBe("last_attempt_failed");
-		expect(bad1?.incident_eligible).toBe(false);
 		// h1/h2 succeeded → healthy.
 		expect(byKey.get("h1")?.attention).toBe("healthy");
 		expect(byKey.get("h2")?.attention).toBe("healthy");
+		for (const f of res.feeds) {
+			expect(f).not.toHaveProperty("incident_eligible");
+		}
 	});
 });

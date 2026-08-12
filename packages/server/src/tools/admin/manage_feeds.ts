@@ -290,8 +290,8 @@ async function handleListFeeds(
   // Strip the window-count helper column from each feed row — it is metadata
   // about the result set, not a feed field — then sanitize the row itself
   // (checkpoint out, config redacted). Attach the derived health semantics
-  // (execution mode / attention / incident eligibility) computed from the
-  // joined row fields at read time — never stored.
+  // (execution mode / attention) computed from the joined row fields at read
+  // time — never stored.
   const feeds = await toPublicFeeds(
     organizationId,
     rows.map(({ filtered_total: _filtered_total, ...feed }) => feed)
@@ -314,7 +314,6 @@ async function handleListFeeds(
       ...feed,
       execution_mode: semantics.executionMode,
       attention: semantics.attention,
-      incident_eligible: semantics.incidentEligible,
     };
   });
   return {

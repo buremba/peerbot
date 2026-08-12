@@ -1,7 +1,6 @@
 /**
- * Tests that `applyCommand` with `dryRun: true` performs ZERO mutating API
- * calls, and that org-resolution edge-cases (0 orgs / 1 org / many orgs /
- * org-not-found) surface the correct error messages.
+ * Tests `applyCommand` orchestration around dry-run mutation safety, scoped
+ * baseline recording, and org-resolution errors.
  *
  * All HTTP is stubbed via `fetchImpl` — no real network.
  */
@@ -89,7 +88,7 @@ function makeAuthFetch(
    * MUTATING calls (POST that creates/patches, PATCH) are tracked in
    * `mutateCalls` so tests can assert no writes happen in dry-run mode.
    */
-  const mutateCalls: Array<{ url: string; method: string }> = [];
+  const mutateCalls: Array<{ url: string; method: string; body?: string }> = [];
 
   const fetchStub = async (
     url: string | URL | Request,
@@ -107,7 +106,11 @@ function makeAuthFetch(
 
     // Track mutations
     if (method !== "GET") {
-      mutateCalls.push({ url: urlStr, method });
+      mutateCalls.push({
+        url: urlStr,
+        method,
+        ...(typeof init?.body === "string" ? { body: init.body } : {}),
+      });
     }
 
     // Default: return empty lists for GET, success for everything else.
@@ -137,9 +140,9 @@ function makeAuthFetch(
   return { fetchStub: fetchStub as typeof fetch, mutateCalls };
 }
 
-// ── Test: dry-run performs no mutating calls ─────────────────────────────────
+// ── Apply orchestration ──────────────────────────────────────────────────────
 
-describe("applyCommand --dry-run", () => {
+describe("applyCommand orchestration", () => {
   beforeEach(() => {
     silenceOutput();
     spyOn(context, "resolveContext").mockResolvedValue({
@@ -246,6 +249,32 @@ export default defineConfig({
     expect(
       mutateCalls.some((call) => call.url.includes("/manage_auth_profiles"))
     ).toBe(false);
+  });
+
+  test("a first --only agents apply leaves the unexecuted baseline absent", async () => {
+    const dir = mkProject(`import { defineConfig } from "@lobu/cli/config";
+export default defineConfig({ agents: [] });
+`);
+    const { fetchStub, mutateCalls } = makeAuthFetch([
+      { id: "org_1", slug: "acme", name: "Acme" },
+    ]);
+
+    await applyCommand({
+      cwd: dir,
+      only: "agents",
+      yes: true,
+      url: "https://app.lobu.ai",
+      org: "acme",
+      fetchImpl: fetchStub,
+    });
+
+    const summary = mutateCalls.find((call) =>
+      call.url.endsWith("/api/acme/deployments")
+    );
+    expect(summary?.body).toBeDefined();
+    const manifest = JSON.parse(summary?.body ?? "{}").manifest;
+    expect(manifest.attribution).toBeUndefined();
+    expect(manifest.owned).toBeUndefined();
   });
 });
 

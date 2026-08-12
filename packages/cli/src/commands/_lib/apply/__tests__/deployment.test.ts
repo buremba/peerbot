@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { ApplyClient } from "../client.js";
 import {
+  buildDeploymentManifest,
   buildCountsByKind,
   collectGitInfo,
   computeManifestHash,
+  loadBaselineFromManifest,
   mintApplyId,
+  toBaseline,
 } from "../deployment.js";
 import type { DesiredState } from "../desired-state.js";
 import type { DiffRow } from "../diff.js";
@@ -88,6 +91,23 @@ describe("computeManifestHash", () => {
     ).not.toBe(
       computeManifestHash(baseState({ agents: [agentWith("pypi.org")] }))
     );
+  });
+});
+
+describe("deployment baseline encoding", () => {
+  test("distinguishes absent attribution from a recorded empty baseline", () => {
+    const absent = buildDeploymentManifest(baseState(), {});
+    expect(toBaseline(loadBaselineFromManifest(absent)).recorded).toBe(false);
+
+    const recorded = buildDeploymentManifest(
+      baseState(),
+      {},
+      {
+        attribution: { entityTypes: [], relationshipTypes: [], watchers: [] },
+        owned: [],
+      }
+    );
+    expect(toBaseline(loadBaselineFromManifest(recorded)).recorded).toBe(true);
   });
 });
 

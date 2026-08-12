@@ -167,6 +167,12 @@ export interface AttributionSnapshot {
 }
 
 export interface Baseline {
+  /**
+   * Whether the manifest contained attribution and ownership. An absent
+   * baseline permits two-way convergence for declared definitions but never
+   * provenance-dependent deletion.
+   */
+  recorded: boolean;
   attribution: AttributionSnapshot;
   /** `${kind}:${id}` — delete-eligible definition incarnation identities. */
   owned: Set<string>;
@@ -746,7 +752,7 @@ function diffEntityTypeWithBaseline(
   if (!remote) {
     return { row: diffEntityType(desired, remote, prune), blocking: [] };
   }
-  if (!baseline) {
+  if (!baseline?.recorded) {
     return { row: diffEntityType(desired, remote, prune), blocking: [] };
   }
   const attr = baseline.attribution.entityTypes.find(
@@ -826,7 +832,7 @@ function diffRelationshipTypeWithBaseline(
   if (!remote) {
     return { row: diffRelationshipType(desired, remote), blocking: [] };
   }
-  if (!baseline) {
+  if (!baseline?.recorded) {
     return { row: diffRelationshipType(desired, remote), blocking: [] };
   }
   const attr = baseline.attribution.relationshipTypes.find(
@@ -1027,27 +1033,32 @@ export const effectiveRelationshipTypeAfterApply = (
   rules: d.rules ?? [],
 });
 
-/** Remote-only definition classification: owned+unchanged → delete, else block. */
+/** Classify a remote-only definition without deleting unproven ownership. */
 function remoteOnlyDefinitionRow(
   kind: "entity-type" | "relationship-type" | "watcher",
   remote: { slug: string; id?: number | string },
   baseline: Baseline | undefined,
-  legacyDelete: boolean,
+  prune: boolean,
   unchangedSinceBaseline: (slug: string) => boolean
 ): DiffRow {
-  if (!baseline) {
-    return {
-      kind,
-      verb: legacyDelete ? "delete" : "drift",
-      id: remote.slug,
-      remote,
-    } as DiffRow;
+  // Without recorded provenance, prune must block instead of guessing whether
+  // the definition was created by apply. Non-prune drift remains informational.
+  if (!baseline?.recorded) {
+    return prune
+      ? ({
+          kind,
+          verb: "drift",
+          blocking: true,
+          id: remote.slug,
+          remote,
+        } as DiffRow)
+      : ({ kind, verb: "drift", id: remote.slug, remote } as DiffRow);
   }
   const owned =
     remote.id !== undefined && baseline.owned.has(ownedKey(kind, remote.id));
   // Config-expressed deletes require BOTH the config's owned incarnation AND
   // prune (the config opts into deletions). A prune-off org never deletes.
-  if (owned && unchangedSinceBaseline(remote.slug) && legacyDelete) {
+  if (owned && unchangedSinceBaseline(remote.slug) && prune) {
     return { kind, verb: "delete", id: remote.slug, remote } as DiffRow;
   }
   return {
@@ -1172,7 +1183,7 @@ function diffWatcherWithBaseline(
   if (!remote) {
     return { row: diffWatcher(desired, remote), blocking: [] };
   }
-  if (!baseline) {
+  if (!baseline?.recorded) {
     return { row: diffWatcher(desired, remote), blocking: [] };
   }
   const attr = baseline.attribution.watchers.find(
@@ -1715,12 +1726,12 @@ interface ComputeDiffOptions {
   orgId?: string;
   /**
    * Attribution baseline (the last succeeded deployment's effective-remote
-   * snapshot + owned incarnation identities). When present, entity/rel types
+   * snapshot + owned incarnation identities). When recorded, entity/rel types
    * and Behaviors get the three-way compare: block when the remote moved
    * (`remote ≠ attribution` AND `desired ≠ remote`), converge only when the
-   * config moved (`remote == attribution`). When absent (legacy deployment /
-   * first apply), remote mismatches and remote-only definitions block
-   * (no-baseline) and nothing is auto-deleted.
+   * config moved (`remote == attribution`). Without a recorded baseline,
+   * declared definitions use the ordinary two-way diff; remote-only prune
+   * candidates block because ownership cannot be proven.
    */
   baseline?: Baseline;
 }
@@ -2047,7 +2058,9 @@ export function computeDiff(
             versionAtBaseline !== undefined &&
             def.version !== undefined &&
             versionAtBaseline !== def.version;
-          if (baseline === undefined || (owned && !editedAfterBaseline)) {
+          // Uninstall only when a recorded baseline proves this incarnation is
+          // owned; otherwise the blocking row preserves it.
+          if (baseline?.recorded && owned && !editedAfterBaseline) {
             rows.push({
               kind: "connector-definition",
               verb: "delete",

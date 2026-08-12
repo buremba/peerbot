@@ -460,7 +460,9 @@ jobs:
           # the easier source from CI.
           set -x
           SPARKLE_VERSION="2.9.1"
-          curl -fsSL -o "$RUNNER_TEMP/sparkle.tar.xz" \
+          # Retry transient GitHub release failures such as HTTP 503.
+          curl -fsSL --retry 5 --retry-delay 2 \
+            -o "$RUNNER_TEMP/sparkle.tar.xz" \
             "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
           mkdir -p "$RUNNER_TEMP/sparkle" && tar -xJf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle"
           SIGN_UPDATE="$RUNNER_TEMP/sparkle/bin/sign_update"

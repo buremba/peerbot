@@ -41,7 +41,7 @@
 
 import { intervals } from "../config/intervals";
 import { getDb, pgTextArray } from "../db/client";
-import { supersedeActionEvent } from "../tools/admin/manage_operations";
+import { supersedeActionEvent } from "../tools/admin/approval-events";
 import logger from "../utils/logger";
 import { APPROVAL_RUN_TYPES } from "../utils/run-statuses";
 
@@ -165,7 +165,11 @@ export async function expirePendingApprovals(
 					// `events` stays append-only. interaction_status has no 'expired'
 					// member, so the card uses 'rejected' as its non-actionable UI state
 					// while run status and metadata retain the precise expiry reason.
-					await supersedeActionEvent(
+					// A pending approval always HAS a card (written at queue time), so a
+					// missing one means corruption — fail closed: roll the expiry back and
+					// leave the run pending for the next sweep rather than committing a
+					// terminal run with no card.
+					const eventId = await supersedeActionEvent(
 						Number(row.id),
 						row.organization_id,
 						"rejected",
@@ -175,6 +179,11 @@ export async function expirePendingApprovals(
 						null,
 						tx,
 					);
+					if (eventId === undefined) {
+						throw new Error(
+							`Cannot expire approval run ${Number(row.id)}: its approval card is missing`,
+						);
+					}
 					return true;
 				});
 				if (didExpire) expiredCount += 1;

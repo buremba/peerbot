@@ -45,6 +45,10 @@ import { feedBackoff } from '../connectors/feed-backoff';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { classifyRunOutcome } from '../runs/run-outcome';
+import {
+  supersedeActionEvent,
+  terminalizeApprovalRunCompleted,
+} from '../tools/admin/approval-events';
 import { expireStaleConnectTokens } from '../utils/connect-tokens';
 import logger from '../utils/logger';
 import { reconcileWatcherRuns, sweepStaleWatcherRuns } from '../watchers/automation';
@@ -111,6 +115,110 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
       const backoffBaseMs = feedBackoff.baseMs;
       const backoffMaxMs = feedBackoff.maxMs;
       const pauseThreshold = feedBackoff.pauseThreshold;
+
+      // Approval-gated action runs have a durable card, so their timeout must
+      // supersede that card in the SAME transaction as the runs write. Process
+      // this rare lane separately from the bulk connector CTE below: one
+      // corrupt/missing card then rolls back only its own run and cannot block
+      // sync retries or other stale actions. The UPDATE reasserts the complete
+      // staleness predicate, so a worker heartbeat/completion that wins after
+      // the candidate read makes this a no-op rather than being overwritten.
+      const approvedActionCandidates = (await reserved`
+        SELECT id, organization_id, action_key, action_output
+        FROM public.runs
+        WHERE ${reserved.unsafe(staleWhereSql)}
+          AND run_type = 'action'
+          AND approval_status = 'approved'
+        ORDER BY id
+      `) as unknown as Array<{
+        id: number | string;
+        organization_id: string;
+        action_key: string | null;
+        action_output: Record<string, unknown> | null;
+      }>;
+      let approvalActionsReaped = 0;
+      for (const candidate of approvedActionCandidates) {
+        const runId = Number(candidate.id);
+        try {
+          // A claimed action run with a DURABLE action_output already persisted
+          // is a terminalization-PENDING row: the external mutation succeeded
+          // and only the 'completed' card write failed. Complete it from the
+          // durable output — reporting a FALSE timeout here would mislabel an
+          // already-successful mutation as a failure. The completion is guarded
+          // (status='running' AND approval_status='approved') and shares its tx
+          // with the card, so a concurrent human retry or another pod's reaper
+          // tick cannot double-finalize, and a card failure rolls it back for
+          // the next tick to retry.
+          if (candidate.action_output != null) {
+            const actionKey = candidate.action_key ?? 'Action';
+            const eventId = await terminalizeApprovalRunCompleted(
+              runId,
+              candidate.organization_id,
+              candidate.action_output,
+              {
+                title: `${actionKey} — completed`,
+                content: `Operation completed: ${actionKey}`,
+              },
+              null,
+              sql
+            );
+            if (eventId !== null) approvalActionsReaped += 1;
+            continue;
+          }
+
+          const didReap = await sql.begin(async (tx) => {
+            const rows = await tx.unsafe<{
+              organization_id: string;
+              action_key: string | null;
+            }>(
+              `UPDATE public.runs
+               SET status = 'timeout',
+                   outcome = $2,
+                   completed_at = current_timestamp,
+                   error_message = $3
+               WHERE id = $1
+                 AND run_type = 'action'
+                 AND approval_status = 'approved'
+                 AND ${staleWhereSql}
+               RETURNING organization_id, action_key`,
+              [
+                runId,
+                classifyRunOutcome({ status: 'timeout' }),
+                heartbeatErrorMessage,
+              ]
+            );
+            if (rows.length === 0) return false;
+
+            const actionKey = rows[0].action_key ?? 'Action';
+            const eventId = await supersedeActionEvent(
+              runId,
+              rows[0].organization_id,
+              'failed',
+              `${actionKey} — timed out`,
+              `Action timed out: ${actionKey} — ${heartbeatErrorMessage}`,
+              {
+                error_message: heartbeatErrorMessage,
+                run_status: 'timeout',
+              },
+              null,
+              tx
+            );
+            if (eventId === undefined) {
+              throw new Error(
+                `Cannot time out approval run ${runId}: its approval card is missing`
+              );
+            }
+            return true;
+          });
+          if (didReap) approvalActionsReaped += 1;
+        } catch (error) {
+          logger.error(
+            { run_id: runId, error: String(error) },
+            '[reaper] Failed to atomically time out approved action run'
+          );
+        }
+      }
+
       // Reap + recover in a single statement using CTEs. Claimed/running sync
       // rows get one fresh retry; never-claimed rows are finalized on the feed
       // without a retry because another pending row would only repeat the same
@@ -141,6 +249,7 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
           SELECT id, status AS stale_status
           FROM public.runs
           WHERE ${reserved.unsafe(staleWhereSql)}
+            AND NOT (run_type = 'action' AND approval_status = 'approved')
           FOR UPDATE SKIP LOCKED
         ),
         timed_out AS (
@@ -260,7 +369,8 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
       }>;
 
       const reapedRow = reaped[0];
-      const reapedCount = reapedRow?.reaped ?? 0;
+      const reapedCount =
+        approvalActionsReaped + (reapedRow?.reaped ?? 0);
       const retriesCreated = reapedRow?.retries_created ?? 0;
       const syncEligible = reapedRow?.sync_eligible ?? 0;
 
@@ -293,7 +403,12 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
       }
 
       logger.warn(
-        { reaped: reapedCount, retriesCreated, thresholdSeconds },
+        {
+          reaped: reapedCount,
+          approvalActionsReaped,
+          retriesCreated,
+          thresholdSeconds,
+        },
         '[reaper] Marked stale connector runs as timeout'
       );
 

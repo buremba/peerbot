@@ -111,7 +111,21 @@ describe("manage_operations batch scope (connector-approval lane)", () => {
       )
       RETURNING id
     `;
-		return Number(rows[0].id);
+		const runId = Number(rows[0].id);
+		// Production queued approvals always carry their pending card (the #2033
+		// queue path writes run + card in one transaction), so a decided run must
+		// have one here too — the transition supersedes it.
+		const cardTitle = `${opts.actionKey} — pending approval`;
+		await sql`
+      INSERT INTO events (
+        organization_id, origin_id, title, payload_text, run_id,
+        semantic_type, interaction_type, interaction_status
+      ) VALUES (
+        ${orgId}, ${`run_${runId}_pending`}, ${cardTitle},
+        'Awaiting review', ${runId}, 'operation', 'approval', 'pending'
+      )
+    `;
+		return runId;
 	}
 
 	async function approvalStatusOf(runId: number): Promise<string> {

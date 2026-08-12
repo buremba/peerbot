@@ -64,55 +64,66 @@ export async function queueAgentAsk(params: {
 	};
 	const initiator = resolveRunInitiator(params.ctx);
 
-	const inserted = await sql`
-    INSERT INTO runs (
-      organization_id, run_type, action_key, action_input,
-      watcher_id, window_id,
-      created_by_user_id, initiator_kind, initiator_ref,
-      approval_status, status, created_at
-    ) VALUES (
-      ${params.ctx.organizationId}, 'internal', ${AGENT_ASK_ACTION_KEY},
-      ${sql.json(proposal as unknown as Record<string, unknown>)},
-      ${params.ctx.actingWatcherId ?? null},
-      ${params.ctx.actingWindowId ?? null},
-      ${initiator.createdByUserId},
-      ${initiator.initiatorKind},
-      ${sql.json(initiator.initiatorRef)},
-      'pending', 'pending', current_timestamp
-    )
-    RETURNING id
-  `;
-	const runId = Number((inserted[0] as { id: unknown }).id);
+	// Atomic: the pending run and its approval card commit together. If the card
+	// INSERT fails, the run must not exist — otherwise the ask is durably
+	// pending but the events-only approval surface shows nothing (the #2033
+	// divergence, same as the connector queue path).
+	return sql.begin(async (tx) => {
+		const inserted = await tx`
+			INSERT INTO runs (
+				organization_id, run_type, action_key, action_input,
+				watcher_id, window_id,
+				created_by_user_id, initiator_kind, initiator_ref,
+				approval_status, status, created_at
+			) VALUES (
+				${params.ctx.organizationId}, 'internal', ${AGENT_ASK_ACTION_KEY},
+				${tx.json(proposal as unknown as Record<string, unknown>)},
+				${params.ctx.actingWatcherId ?? null},
+				${params.ctx.actingWindowId ?? null},
+				${initiator.createdByUserId},
+				${initiator.initiatorKind},
+				${tx.json(initiator.initiatorRef)},
+				'pending', 'pending', current_timestamp
+			)
+			RETURNING id
+		`;
+		const runId = Number((inserted[0] as { id: unknown }).id);
 
-	const event = await insertEvent({
-		entityIds: [],
-		organizationId: params.ctx.organizationId,
-		originId: `run_${runId}_pending`,
-		title: params.question,
-		content: params.body,
-		semanticType: "operation",
-		runId,
-		interactionType: "approval",
-		interactionStatus: "pending",
-		interactionInputSchema: params.inputSchema,
-		metadata: {
-			tool: "notify",
-			action_key: AGENT_ASK_ACTION_KEY,
-			question: params.question,
-			status: "pending_approval",
-			run_id: runId,
-			initiator: {
-				kind: initiator.initiatorKind,
-				...initiator.initiatorRef,
+		const event = await insertEvent(
+			{
+				entityIds: [],
+				organizationId: params.ctx.organizationId,
+				originId: `run_${runId}_pending`,
+				title: params.question,
+				content: params.body,
+				semanticType: "operation",
+				runId,
+				interactionType: "approval",
+				interactionStatus: "pending",
+				interactionInputSchema: params.inputSchema,
+				metadata: {
+					tool: "notify",
+					action_key: AGENT_ASK_ACTION_KEY,
+					question: params.question,
+					status: "pending_approval",
+					run_id: runId,
+					initiator: {
+						kind: initiator.initiatorKind,
+						...initiator.initiatorRef,
+					},
+					...currentMcpActivityEventMetadata(params.ctx),
+				},
+				authorName: params.ctx.clientId ?? "agent",
+				// Interaction events are deliberately not connection-scoped. Authorization
+				// treats them as reviewable workflow records, not connector-synced content.
+				clientId:
+					params.ctx.tokenType === "oauth"
+						? (params.ctx.clientId ?? null)
+						: null,
 			},
-			...currentMcpActivityEventMetadata(params.ctx),
-		},
-		authorName: params.ctx.clientId ?? "agent",
-		// Interaction events are deliberately not connection-scoped. Authorization
-		// treats them as reviewable workflow records, not connector-synced content.
-		clientId:
-			params.ctx.tokenType === "oauth" ? (params.ctx.clientId ?? null) : null,
-	});
+			{ sql: tx },
+		);
 
-	return { runId, interactionEventId: Number(event.id) };
+		return { runId, interactionEventId: Number(event.id) };
+	});
 }

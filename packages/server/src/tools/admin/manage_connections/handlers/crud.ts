@@ -118,6 +118,7 @@ import {
 	oauthAppSetupContinuation,
 } from "../../helpers/connect-setup-continuation";
 import { createConnectionSetupBundle } from "../../helpers/interactive-connection-setup";
+import { supersedeActionEvent } from "../../approval-events";
 
 // ============================================
 // handleListConnectorGroups
@@ -2050,55 +2051,130 @@ export async function handleDelete(
 		credential_mode: string | null;
 	};
 
-  // Tear down any provider webhook subscription BEFORE the soft-delete, while
-  // the connection row (with its stored externalId + credentials) is still
-  // readable. Best-effort: the helper logs + swallows failures so a provider
-  // hiccup never blocks the delete.
-	let deleted: Array<Record<string, unknown>>;
-	if (target.credential_mode !== null) {
-		try {
-			await deleteChatConnection(organizationId, args.connection_id);
-		} catch (error) {
-			return { error: getErrorMessage(error) };
-		}
-		deleted = [target];
-	} else {
-  await unregisterConnectorWebhook({
-    organizationId,
-    connectionId: args.connection_id,
-  });
-		deleted = await sql`
-    UPDATE connections
-    SET deleted_at = NOW(), status = 'paused', updated_at = NOW()
-    WHERE id = ${args.connection_id} AND organization_id = ${organizationId} AND deleted_at IS NULL
-    RETURNING id, slug, display_name, connector_key
-  `;
-  }
-
-  // Cancel any pending runs for this connection's feeds
-  await sql`
-    UPDATE runs SET status = 'cancelled', completed_at = NOW()
-    WHERE feed_id IN (SELECT id FROM feeds WHERE connection_id = ${args.connection_id})
-      AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-  `;
-
   // Expire any undecided approval runs for this connection. Deleting a
   // connection makes its pending approvals unreviewable — the card disappears
   // from every content read (connection-visibility predicate), so approve/reject
   // would be blind. Same terminal state as the pending-approval TTL sweep
   // (scheduled/expire-pending-approvals): approval_status='expired',
   // status='cancelled'.
-  await sql`
-    UPDATE runs
-    SET approval_status = 'expired',
-        status = 'cancelled',
-        error_message = 'Connection deleted before approval; approval expired.',
-        completed_at = NOW()
-    WHERE organization_id = ${organizationId}
-      AND connection_id = ${args.connection_id}
-      AND approval_status = 'pending'
-      AND run_type = ANY(${pgTextArray([...APPROVAL_RUN_TYPES])}::text[])
-  `;
+  const approvalExpiryReason =
+    'Connection deleted before approval; approval expired.';
+  const expirePendingApprovalsBeforeDelete = async (
+    db: DbClient
+  ): Promise<void> => {
+    // The whole batch shares one transaction. If any append-only card cannot
+    // advance, every run stays pending and the caller must leave the connection
+    // visible so a reviewer can still act on those cards.
+    const pendingApprovals = await db<{
+      id: number;
+      action_key: string | null;
+    }>`
+      SELECT id, action_key
+      FROM runs
+      WHERE organization_id = ${organizationId}
+        AND connection_id = ${args.connection_id}
+        AND approval_status = 'pending'
+        AND run_type = ANY(${pgTextArray([...APPROVAL_RUN_TYPES])}::text[])
+      ORDER BY id
+      FOR UPDATE
+    `;
+    for (const pendingApproval of pendingApprovals) {
+      const expired = await db<{ action_key: string | null }>`
+          UPDATE runs
+          SET approval_status = 'expired',
+              status = 'cancelled',
+              error_message = ${approvalExpiryReason},
+              completed_at = NOW()
+          WHERE id = ${pendingApproval.id}
+            AND organization_id = ${organizationId}
+            AND connection_id = ${args.connection_id}
+            AND approval_status = 'pending'
+            AND run_type = ANY(${pgTextArray([...APPROVAL_RUN_TYPES])}::text[])
+          RETURNING action_key
+        `;
+      if (expired.length === 0) continue;
+
+      const actionKey = expired[0].action_key ?? 'Action';
+      const eventId = await supersedeActionEvent(
+        pendingApproval.id,
+        organizationId,
+        'rejected',
+        `${actionKey} — expired`,
+        approvalExpiryReason,
+        {
+          expiry_reason: approvalExpiryReason,
+          approval_status: 'expired',
+        },
+        null,
+        db
+      );
+      if (eventId === undefined) {
+        throw new Error(
+          `Cannot expire approval run ${pendingApproval.id}: its approval card is missing`
+        );
+      }
+    }
+
+  };
+
+  // Phase 1: fallible EXTERNAL teardown runs FIRST, while the connection is
+  // still visible with its approvals pending. A teardown failure (e.g. the chat
+  // platform rejects the removal) returns an error BEFORE any approval is
+  // expired — the connection stays live and its approvals stay reviewable, so a
+  // reviewer can still decide or the user can retry the delete. The chat
+  // teardown is told NOT to tombstone the `connections` row: it only purges the
+  // external/platform artifacts (install, secrets, history, claims). The
+  // durable tombstone lands in Phase 2 with every pending run/card transition,
+  // so a teardown success followed by a DB failure leaves the connection
+  // visible and its approvals pending (a safe retry re-runs the idempotent
+  // teardown, then the atomic phase).
+  if (target.credential_mode !== null) {
+    try {
+      await deleteChatConnection(organizationId, args.connection_id, {
+        skipConnectionTombstone: true,
+      });
+    } catch (error) {
+      return { error: getErrorMessage(error) };
+    }
+  } else {
+    await unregisterConnectorWebhook({
+      organizationId,
+      connectionId: args.connection_id,
+    });
+  }
+
+  // Phase 2 (atomic): the durable connection tombstone, every pending run/card
+  // transition, and the active-run cancellation commit together. The tombstone
+  // UPDATE below takes FOR UPDATE on the connection row, which serializes
+  // against approval QUEUEING: the execute path takes FOR SHARE on the same row,
+  // so no pending approval can be inserted between this expiry scan and the
+  // tombstone commit.
+  const deleted = await sql.begin(async (tx) => {
+    const tombstoned = await tx`
+      UPDATE connections
+      SET deleted_at = NOW(), status = 'paused', updated_at = NOW()
+      WHERE id = ${args.connection_id}
+        AND organization_id = ${organizationId}
+        AND deleted_at IS NULL
+      RETURNING id, slug, display_name, connector_key
+    `;
+    if (tombstoned.length === 0) return null; // concurrently deleted
+
+    await expirePendingApprovalsBeforeDelete(tx);
+
+    // Preserve the existing lifecycle: feed work is cancelled as part of the
+    // same atomic commit, so a deleted connection never leaves active runs.
+    await tx`
+      UPDATE runs SET status = 'cancelled', completed_at = NOW()
+      WHERE feed_id IN (SELECT id FROM feeds WHERE connection_id = ${args.connection_id})
+        AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
+    `;
+
+    return tombstoned;
+  });
+  if (deleted === null) {
+    return { error: "Connection not found or already deleted" };
+  }
 
   // Record change event in knowledge for audit trail
   const conn = deleted[0];

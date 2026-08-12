@@ -11,7 +11,7 @@ export type HttpOperationExecutionResult =
 			output: Record<string, unknown>;
 			metadata?: Record<string, unknown>;
 	  }
-	| { status: "failed"; error_message: string };
+	| { status: "failed"; error_message: string; output?: Record<string, unknown> };
 
 export interface HttpOperationConnection {
 	id: number;
@@ -72,8 +72,11 @@ async function failRun(
 	runId: number,
 	organizationId: string,
 	errorMessage: string,
+	deferTerminalWrite = false,
 ): Promise<HttpOperationExecutionResult> {
-	await getDb()`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMessage} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+	if (!deferTerminalWrite) {
+		await getDb()`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMessage} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+	}
 	return { status: "failed", error_message: errorMessage };
 }
 
@@ -120,6 +123,7 @@ export async function executeHttpOperation(
 	operation: OperationDescriptor,
 	actionInput: Record<string, unknown>,
 	abortSignal?: AbortSignal,
+	deferTerminalWrite = false,
 ): Promise<HttpOperationExecutionResult> {
 	const sql = getDb();
 	if (operation.backend_config.backend !== "http_operation") {
@@ -127,6 +131,7 @@ export async function executeHttpOperation(
 			runId,
 			organizationId,
 			"Invalid HTTP operation backend config",
+			deferTerminalWrite,
 		);
 	}
 
@@ -140,6 +145,7 @@ export async function executeHttpOperation(
 				runId,
 				organizationId,
 				`No active OAuth credentials found for '${connection.connector_key}'.`,
+				deferTerminalWrite,
 			);
 		}
 
@@ -227,13 +233,22 @@ export async function executeHttpOperation(
 		if (!response.ok) {
 			const errorText =
 				typeof parsedBody === "string" ? parsedBody : `HTTP ${response.status}`;
-			await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), action_output = ${sql.json(output)}, error_message = ${errorText} WHERE id = ${runId} AND organization_id = ${organizationId}`;
-			return { status: "failed", error_message: errorText };
+			if (!deferTerminalWrite) {
+				await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), action_output = ${sql.json(output)}, error_message = ${errorText} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+			}
+			return { status: "failed", error_message: errorText, output };
 		}
 
-		await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(output)} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+		if (!deferTerminalWrite) {
+			await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(output)} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+		}
 		return { status: "completed", output, metadata };
 	} catch (error) {
-		return failRun(runId, organizationId, getErrorMessage(error));
+		return failRun(
+			runId,
+			organizationId,
+			getErrorMessage(error),
+			deferTerminalWrite,
+		);
 	}
 }

@@ -706,63 +706,72 @@ async function queueWatcherWriteForApproval(
 
   const sql = getDb();
   const initiatorColumns = resolveRunInitiator(ctx);
-  const inserted = await sql`
-    INSERT INTO runs (
-      organization_id, run_type, action_key, action_input,
-      created_by_user_id, initiator_kind, initiator_ref,
-      approval_status, status, created_at
-    ) VALUES (
-      ${ctx.organizationId}, 'internal', ${MANAGE_BEHAVIORS_ACTION_KEY},
-      ${sql.json(proposal as unknown as Record<string, unknown>)},
-      ${initiatorColumns.createdByUserId},
-      ${initiatorColumns.initiatorKind},
-      ${sql.json(initiatorColumns.initiatorRef)},
-      'pending', 'pending', current_timestamp
-    )
-    RETURNING id
-  `;
-  const runId = Number((inserted[0] as { id: unknown }).id);
-
   const label = watcherActionLabel(args);
   // Flat display fields for the events-tab fallback card (ActionApprovalCard
   // only renders input when interactionInputSchema is present). Keep the
   // nested proposal in metadata for the apply path / history replay.
   const displayInput = pickWatcherApprovalDisplayFields(args);
   const inputSchema = buildWatcherApprovalInputSchema(displayInput);
-  const event = await insertEvent({
-    entityIds: args.entity_id != null ? [args.entity_id] : [],
-    organizationId: ctx.organizationId,
-    originId: `run_${runId}_pending`,
-    title: `${label} — pending approval`,
-    content: `Builder requested: ${label}`,
-    semanticType: 'operation',
-    runId,
-    interactionType: 'approval',
-    interactionStatus: 'pending',
-    interactionInputSchema: inputSchema,
-    interactionInput: displayInput,
-    metadata: {
-      tool: 'manage_behaviors',
-      action_key: MANAGE_BEHAVIORS_ACTION_KEY,
-      action: args.action,
-      resourceKind: InteractionResourceKind.Behavior,
-      watcher_id: args.behavior_id ?? null,
-      proposal,
-      current: current ?? null,
-      initiator: {
-        kind: initiatorColumns.initiatorKind,
-        ...initiatorColumns.initiatorRef,
+  // Atomic: the pending run and its approval card commit together. If the card
+  // INSERT fails, the run must not exist — otherwise the proposal is durably
+  // pending but the events-only approval surface shows nothing (the #2033
+  // divergence, same as the connector queue path).
+  const { runId, eventId } = await sql.begin(async (tx) => {
+    const inserted = await tx`
+      INSERT INTO runs (
+        organization_id, run_type, action_key, action_input,
+        created_by_user_id, initiator_kind, initiator_ref,
+        approval_status, status, created_at
+      ) VALUES (
+        ${ctx.organizationId}, 'internal', ${MANAGE_BEHAVIORS_ACTION_KEY},
+        ${tx.json(proposal as unknown as Record<string, unknown>)},
+        ${initiatorColumns.createdByUserId},
+        ${initiatorColumns.initiatorKind},
+        ${tx.json(initiatorColumns.initiatorRef)},
+        'pending', 'pending', current_timestamp
+      )
+      RETURNING id
+    `;
+    const runId = Number((inserted[0] as { id: unknown }).id);
+
+    const event = await insertEvent(
+      {
+        entityIds: args.entity_id != null ? [args.entity_id] : [],
+        organizationId: ctx.organizationId,
+        originId: `run_${runId}_pending`,
+        title: `${label} — pending approval`,
+        content: `Builder requested: ${label}`,
+        semanticType: 'operation',
+        runId,
+        interactionType: 'approval',
+        interactionStatus: 'pending',
+        interactionInputSchema: inputSchema,
+        interactionInput: displayInput,
+        metadata: {
+          tool: 'manage_behaviors',
+          action_key: MANAGE_BEHAVIORS_ACTION_KEY,
+          action: args.action,
+          resourceKind: InteractionResourceKind.Behavior,
+          watcher_id: args.behavior_id ?? null,
+          proposal,
+          current: current ?? null,
+          initiator: {
+            kind: initiatorColumns.initiatorKind,
+            ...initiatorColumns.initiatorRef,
+          },
+          status: 'pending_approval',
+          run_id: runId,
+          input_schema: inputSchema,
+          action_input: displayInput,
+          ...currentMcpActivityEventMetadata(ctx),
+        },
+        authorName: ctx.clientId ?? 'agent',
+        clientId: ctx.tokenType === 'oauth' ? (ctx.clientId ?? null) : null,
       },
-      status: 'pending_approval',
-      run_id: runId,
-      input_schema: inputSchema,
-      action_input: displayInput,
-      ...currentMcpActivityEventMetadata(ctx),
-    },
-    authorName: ctx.clientId ?? 'agent',
-    clientId: ctx.tokenType === 'oauth' ? (ctx.clientId ?? null) : null,
+      { sql: tx },
+    );
+    return { runId, eventId: Number(event.id) };
   });
-  const eventId = Number(event.id);
 
   const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
   // An `update` is config-shaped, so its review surface is the watcher edit form

@@ -680,54 +680,63 @@ async function queueWriteForApproval(
   }
 
   const initiatorColumns = resolveRunInitiator(ctx);
-  const inserted = await sql`
-    INSERT INTO runs (
-      organization_id, run_type, action_key, action_input,
-      created_by_user_id, initiator_kind, initiator_ref,
-      approval_status, status, created_at
-    ) VALUES (
-      ${ctx.organizationId}, 'internal', ${MANAGE_AGENTS_ACTION_KEY},
-      ${sql.json(proposal as unknown as Record<string, unknown>)},
-      ${initiatorColumns.createdByUserId},
-      ${initiatorColumns.initiatorKind},
-      ${sql.json(initiatorColumns.initiatorRef)},
-      'pending', 'pending', current_timestamp
-    )
-    RETURNING id
-  `;
-  const runId = Number((inserted[0] as { id: unknown }).id);
-
   const label = actionLabel(proposal.action, proposal.agent_id);
-  const event = await insertEvent({
-    entityIds: [],
-    organizationId: ctx.organizationId,
-    originId: `run_${runId}_pending`,
-    title: `${label} — pending approval`,
-    content: `Builder requested: ${label}`,
-    semanticType: 'operation',
-    runId,
-    interactionType: 'approval',
-    interactionStatus: 'pending',
-    interactionInput: proposal as unknown as Record<string, unknown>,
-    metadata: {
-      tool: 'manage_agents',
-      action_key: MANAGE_AGENTS_ACTION_KEY,
-      action: proposal.action,
-      agent_id: proposal.agent_id,
-      proposal,
-      current: current ?? null,
-      initiator: {
-        kind: initiatorColumns.initiatorKind,
-        ...initiatorColumns.initiatorRef,
+  // Atomic: the pending run and its approval card commit together. If the card
+  // INSERT fails, the run must not exist — otherwise the proposal is durably
+  // pending but the events-only approval surface shows nothing (the #2033
+  // divergence, same as the connector queue path).
+  const { runId, eventId } = await sql.begin(async (tx) => {
+    const inserted = await tx`
+      INSERT INTO runs (
+        organization_id, run_type, action_key, action_input,
+        created_by_user_id, initiator_kind, initiator_ref,
+        approval_status, status, created_at
+      ) VALUES (
+        ${ctx.organizationId}, 'internal', ${MANAGE_AGENTS_ACTION_KEY},
+        ${tx.json(proposal as unknown as Record<string, unknown>)},
+        ${initiatorColumns.createdByUserId},
+        ${initiatorColumns.initiatorKind},
+        ${tx.json(initiatorColumns.initiatorRef)},
+        'pending', 'pending', current_timestamp
+      )
+      RETURNING id
+    `;
+    const runId = Number((inserted[0] as { id: unknown }).id);
+
+    const event = await insertEvent(
+      {
+        entityIds: [],
+        organizationId: ctx.organizationId,
+        originId: `run_${runId}_pending`,
+        title: `${label} — pending approval`,
+        content: `Builder requested: ${label}`,
+        semanticType: 'operation',
+        runId,
+        interactionType: 'approval',
+        interactionStatus: 'pending',
+        interactionInput: proposal as unknown as Record<string, unknown>,
+        metadata: {
+          tool: 'manage_agents',
+          action_key: MANAGE_AGENTS_ACTION_KEY,
+          action: proposal.action,
+          agent_id: proposal.agent_id,
+          proposal,
+          current: current ?? null,
+          initiator: {
+            kind: initiatorColumns.initiatorKind,
+            ...initiatorColumns.initiatorRef,
+          },
+          status: 'pending_approval',
+          run_id: runId,
+          ...currentMcpActivityEventMetadata(ctx),
+        },
+        authorName: ctx.clientId ?? 'agent',
+        clientId: ctx.tokenType === 'oauth' ? (ctx.clientId ?? null) : null,
       },
-      status: 'pending_approval',
-      run_id: runId,
-      ...currentMcpActivityEventMetadata(ctx),
-    },
-    authorName: ctx.clientId ?? 'agent',
-    clientId: ctx.tokenType === 'oauth' ? (ctx.clientId ?? null) : null,
+      { sql: tx },
+    );
+    return { runId, eventId: Number(event.id) };
   });
-  const eventId = Number(event.id);
 
   const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
   // An `update` proposal is config-shaped (name/description/identity), so its

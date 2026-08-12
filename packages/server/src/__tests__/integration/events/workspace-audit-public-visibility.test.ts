@@ -467,6 +467,39 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     expect((await bootstrapRecent(authedCtx())).has(orgWideWorkspaceAuditEventId)).toBe(true);
   });
 
+  it('owner of another org does not see this org workspace audit via bootstrap', async () => {
+    // memberRole is scoped to ctx.organizationId. An owner of org A resolving
+    // public org B must not inherit owner visibility on B's audit rows.
+    const otherOrg = await createTestOrganization({
+      visibility: 'private',
+      name: 'Other owner org',
+    });
+    await addUserToOrganization(alice.id, otherOrg.id, 'owner');
+
+    const { resolvePath } = await import('../../../tools/resolve_path');
+    const slug = (org as unknown as { slug: string }).slug;
+    const result = await resolvePath(
+      { path: `/${slug}`, include_bootstrap: true } as never,
+      {} as never,
+      {
+        organizationId: otherOrg.id,
+        userId: alice.id,
+        memberRole: 'owner',
+        isAuthenticated: true,
+        tokenType: 'oauth',
+        scopedToOrg: false,
+        allowCrossOrg: true,
+        scopes: ['mcp:read'],
+      } as ToolContext
+    );
+    const recentIds = new Set(
+      ((result.bootstrap as { recent_content?: Array<{ id: number }> })
+        ?.recent_content ?? []).map((c) => c.id)
+    );
+    expect(recentIds.has(orgWideWorkspaceAuditEventId)).toBe(false);
+    expect(recentIds.has(normalEventId)).toBe(true);
+  });
+
   it('anonymous content_ids exact-ID read excludes workspace audit but keeps ordinary events', async () => {
     const ids = await readExactIds(unauthedCtx(), [
       workspaceAuditEventId,

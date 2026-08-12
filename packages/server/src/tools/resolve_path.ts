@@ -972,22 +972,17 @@ async function fetchBootstrap(
     };
   }
 
+  // memberRole is for ctx.organizationId. resolve_path can target a different
+  // public workspace, so only honor owner/admin for the *resolved* org.
+  // System contexts (userId=null, authenticated) keep the trusted bypass.
+  const excludeWorkspaceAudit =
+    !isSystemContext(ctx) &&
+    !(ctx.organizationId === workspace.id && isAdminOrOwnerRole(ctx.memberRole));
+
   const [entityTypes, totalContent, recentContent, recentFeeds] = await Promise.all([
     listEntityTypes(sql, ctx),
-    fetchContentCount(
-      sql,
-      workspace.id,
-      entity,
-      // Workspace-identity audit rows record member/invitation lifecycle; only
-      // owner/admin and trusted in-process system callers may see them.
-      !isAdminOrOwnerRole(ctx.memberRole) && !isSystemContext(ctx)
-    ),
-    fetchRecentContent(
-      sql,
-      workspace.id,
-      entity?.id ?? null,
-      !isAdminOrOwnerRole(ctx.memberRole) && !isSystemContext(ctx)
-    ),
+    fetchContentCount(sql, workspace.id, entity, excludeWorkspaceAudit),
+    fetchRecentContent(sql, workspace.id, entity?.id ?? null, excludeWorkspaceAudit),
     fetchRecentFeeds(sql, workspace.id, entity?.id ?? null),
   ]);
   const connectorDefinitions = await listWorkspaceConnectorDefinitions(

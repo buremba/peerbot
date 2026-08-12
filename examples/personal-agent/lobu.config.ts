@@ -1,6 +1,7 @@
 import {
   connectorFromFile,
   defineAgent,
+  defineAuthProfile,
   defineBehavior,
   defineConfig,
   defineSkill,
@@ -792,31 +793,50 @@ const learning = defineEntityType({
   },
 });
 
-// Revolut auth is implicit: the connector reads the rendered web app through
-// the paired Owletto Chrome extension's signed-in session — there's no stored
-// secret and no browser-auth profile to grant.
+// Revolut auth is implicit: through the paired Owletto Chrome extension, the
+// connector captures request headers from a signed-in tab and pages the retail
+// API in that browser context. No secret or browser-auth profile is stored.
 //
-// Not device-pinned: the connector's sync() runs on a cloud Node worker and
-// dispatches its DOM-scrape actions down to whichever online paired Owletto
-// extension claims them (same model as LinkedIn). This is what makes Revolut
-// "extension-only" from the user's side — no Owletto Mac app required, just the
-// Chrome extension signed in to app.revolut.com. max_scrolls is capped so a
-// single run fits inside the extension's 90s per-run cap (≈150s at 100 scrolls
-// always timed out); 20 scrolls (~55s) reliably completes, and scheduled
-// incremental syncs keep history current from the top each run.
+// The connection is not device-pinned; Chrome dispatch selects an online paired
+// extension. `max_scrolls` is the compatibility name for its paging-batch cap.
 const revolutConnection = defineConnection({
   slug: "revolut-buremba",
   connector: "revolut",
   name: "Revolut",
   feeds: [
-    { feed: "transactions", config: { max_scrolls: 20 } },
+    // Apply replaces feed config wholesale. Preserve checkpointed syncs and the
+    // 60s passcode grace period within the device worker's ~95s run budget.
+    {
+      feed: "transactions",
+      config: { max_scrolls: 20, backfill: false, wait_for_data_seconds: 60 },
+    },
     { feed: "balances", config: {} },
   ],
 });
 
-const localTakeoutRoot = process.env.LOCAL_TAKEOUT_ROOT ?? "./takeout";
-const localTakeoutDir = (envName: string, fallback: string): string =>
-  process.env[envName] ?? `${localTakeoutRoot}/${fallback}`;
+// Takeout dirs are absolute machine-local paths, so they can only come from the
+// environment. Resolve them strictly: a relative fallback like `./takeout/x` is
+// a valid-looking string that apply happily writes over a correct absolute path,
+// silently pointing prod at a directory that does not exist. That is not
+// hypothetical — an apply run without these vars is what set every prod
+// `takeout_dir` to `./takeout/...`, and every takeout feed read nothing until it
+// was repaired by hand. Fail closed instead: a bare `lobu apply` must abort, not
+// quietly revert. `LOCAL_TAKEOUT_ROOT` still supplies a shared parent.
+//
+// The same reasoning already guards LinkedIn below; this generalizes it. Note
+// these must resolve to a STRING, never null — prune is on, so dropping a path
+// would remove the feed from the plan and DELETE it from prod.
+const localTakeoutRoot = process.env.LOCAL_TAKEOUT_ROOT;
+const localTakeoutDir = (envName: string, fallback: string): string => {
+  const explicit = process.env[envName];
+  if (explicit) return explicit;
+  if (localTakeoutRoot) return `${localTakeoutRoot}/${fallback}`;
+  throw new Error(
+    `${envName} is not set (and no LOCAL_TAKEOUT_ROOT fallback). ` +
+      `Set it to the absolute path of the extracted archive before applying — ` +
+      `applying without it would overwrite the stored takeout_dir in prod.`
+  );
+};
 
 const googleYoutubeTakeoutDir = localTakeoutDir(
   "GOOGLE_YOUTUBE_TAKEOUT_DIR",
@@ -933,10 +953,29 @@ const midasConnection = defineConnection({
 // a live read via the connector's search/get_thread actions, never persisted.
 // Adopts the existing `gmail-buremba` slug so the OAuth grant is reused; stale
 // duplicate gmail connections/feeds in prod surface as drift until cleaned up.
+// Apply requires referenced auth profiles to be declared. Omitting credentials
+// preserves the existing OAuth grant and app secret.
+const gmailAccountAuth = defineAuthProfile({
+  slug: "personal",
+  connector: "google.gmail",
+  authKind: "oauth_account",
+  name: "personal",
+});
+
+const gmailAppAuth = defineAuthProfile({
+  slug: "google-gmail-google-app",
+  connector: "google.gmail",
+  authKind: "oauth_app",
+  name: "Google Gmail Google App",
+});
+
 const gmailConnection = defineConnection({
   slug: "gmail-buremba",
   connector: "google.gmail",
   name: "Gmail",
+  // Apply treats omitted bindings as null, so both must remain explicit.
+  authProfile: gmailAccountAuth,
+  appAuthProfile: gmailAppAuth,
   feeds: [
     {
       feed: "threads",
@@ -1284,6 +1323,7 @@ export default defineConfig({
     voiceProfileSynthesis,
     socialInterestRadar,
   ],
+  authProfiles: [gmailAccountAuth, gmailAppAuth],
   connections: [
     midasConnection,
     revolutConnection,

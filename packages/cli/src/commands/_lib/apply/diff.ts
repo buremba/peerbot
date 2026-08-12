@@ -46,12 +46,28 @@ interface BaseRow {
 
 /**
  * The desired/remote/changed-fields triple shared by every per-resource row
- * kind. `changedFields` carries field-level changes when verb === "update".
+ * kind. `changedFields` carries field-level changes when verb === "update" and
+ * remains the sole input to apply-cmd routing and the audit `changed_fields`.
  */
 interface ResourceRow<D, R> extends BaseRow {
   desired?: D;
   remote?: R;
   changedFields?: string[];
+}
+
+/**
+ * Before/after pairs are restricted to the baseline-aware memory-schema rows.
+ * The other resource rows include provider keys, BYO connection config, and
+ * auth profiles whose values must never be printed in a plan, so they have no
+ * field to populate and the unsafe version does not typecheck.
+ *
+ * Behaviors are deliberately excluded too, though they are not secret-bearing:
+ * their values reach the plan only through the two-way `diffWatcher` row, whose
+ * field identifiers differ from the projection's (`agent` vs `agent_id`), and
+ * the name-mapping table that reconciled them was not worth its weight.
+ */
+interface ValuePreviewRow {
+  changedValues?: Array<{ field: string; from: unknown; to: unknown }>;
 }
 
 export interface AgentDiffRow
@@ -66,12 +82,14 @@ export interface SettingsDiffRow extends BaseRow {
 }
 
 export interface EntityTypeDiffRow
-  extends ResourceRow<DesiredEntityType, RemoteEntityType> {
+  extends ResourceRow<DesiredEntityType, RemoteEntityType>,
+    ValuePreviewRow {
   kind: "entity-type";
 }
 
 export interface RelationshipTypeDiffRow
-  extends ResourceRow<DesiredRelationshipType, RemoteRelationshipType> {
+  extends ResourceRow<DesiredRelationshipType, RemoteRelationshipType>,
+    ValuePreviewRow {
   kind: "relationship-type";
 }
 
@@ -153,6 +171,8 @@ export interface BlockingDriftRow extends BaseRow {
   field?: string;
   /** The remote-side value that moved — shown in the blocked report. */
   remoteChange?: unknown;
+  /** What the config declares for that field — what apply would have written. */
+  desiredChange?: unknown;
 }
 
 /**
@@ -563,30 +583,51 @@ function classifyField(
   return "remoteMoved";
 }
 
-interface ThreeWayResult {
-  changedFields: string[];
-  blockingFields: Array<{ field: string; remoteChange: unknown }>;
+interface ThreeWayResult<Field extends string = string> {
+  changedFields: Field[];
+  /**
+   * The same changes as `changedFields`, carrying the values the plan is
+   * about to move `from` → `to`. Derived from the very triples the classifier
+   * compared, so the rendered pair is exactly what the decision was made on —
+   * a renderer that re-read the values off `desired`/`remote` would have to
+   * re-encode per-kind quirks (`resolutionPolicy` lives under
+   * `schemaExtras["x-lobu-resolution"]`, `required` normalizes to `[]` under
+   * prune) and would drift from the classifier the first time one changed.
+   */
+  changedValues: Array<{ field: Field; from: unknown; to: unknown }>;
+  blockingFields: Array<{
+    field: Field;
+    remoteChange: unknown;
+    desiredChange: unknown;
+  }>;
 }
 
 /** Three-way per-field classification over a list of (name, desired, remote, attribution) triples. */
-function classifyThreeWay(
+function classifyThreeWay<Field extends string>(
   triples: Array<{
-    field: string;
+    field: Field;
     desired: unknown;
     remote: unknown;
     attribution: unknown | undefined;
   }>
-): ThreeWayResult {
-  const changedFields: string[] = [];
-  const blockingFields: Array<{ field: string; remoteChange: unknown }> = [];
+): ThreeWayResult<Field> {
+  const changedFields: Field[] = [];
+  const changedValues: ThreeWayResult<Field>["changedValues"] = [];
+  const blockingFields: ThreeWayResult<Field>["blockingFields"] = [];
   for (const t of triples) {
     const outcome = classifyField(t.desired, t.remote, t.attribution);
-    if (outcome === "configMoved") changedFields.push(t.field);
-    else if (outcome === "remoteMoved") {
-      blockingFields.push({ field: t.field, remoteChange: t.remote });
+    if (outcome === "configMoved") {
+      changedFields.push(t.field);
+      changedValues.push({ field: t.field, from: t.remote, to: t.desired });
+    } else if (outcome === "remoteMoved") {
+      blockingFields.push({
+        field: t.field,
+        remoteChange: t.remote,
+        desiredChange: t.desired,
+      });
     }
   }
-  return { changedFields, blockingFields };
+  return { changedFields, changedValues, blockingFields };
 }
 
 /** Entity-type fields compared per-property-key, three-way, with the baseline. */
@@ -810,7 +851,10 @@ function diffEntityTypeWithBaseline(
       desired,
       remote,
       ...(threeWay.changedFields.length > 0
-        ? { changedFields: threeWay.changedFields }
+        ? {
+            changedFields: threeWay.changedFields,
+            changedValues: threeWay.changedValues,
+          }
         : {}),
     },
     blocking: threeWay.blockingFields.map((b) => ({
@@ -820,6 +864,7 @@ function diffEntityTypeWithBaseline(
       id: desired.slug,
       field: b.field,
       remoteChange: b.remoteChange,
+      desiredChange: b.desiredChange,
     })),
   };
 }
@@ -886,7 +931,10 @@ function diffRelationshipTypeWithBaseline(
       desired,
       remote,
       ...(threeWay.changedFields.length > 0
-        ? { changedFields: threeWay.changedFields }
+        ? {
+            changedFields: threeWay.changedFields,
+            changedValues: threeWay.changedValues,
+          }
         : {}),
     },
     blocking: threeWay.blockingFields.map((b) => ({
@@ -896,6 +944,7 @@ function diffRelationshipTypeWithBaseline(
       id: desired.slug,
       field: b.field,
       remoteChange: b.remoteChange,
+      desiredChange: b.desiredChange,
     })),
   };
 }
@@ -1248,6 +1297,7 @@ function diffWatcherWithBaseline(
         id: desired.slug,
         field: b.field,
         remoteChange: b.remoteChange,
+        desiredChange: b.desiredChange,
       })),
     };
   }

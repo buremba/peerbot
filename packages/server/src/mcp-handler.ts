@@ -470,6 +470,19 @@ function createServerForContext(
       mcpAppApprovalCapability: approvalCapabilityFromMeta(request.params._meta),
       mcpAppSnapshotCapability: snapshotCapabilityFromMeta(request.params._meta),
     };
+    // The caller's role rides EVERY result _meta — success, soft error, or
+    // thrown error — so MCP apps (e.g. the interaction app's Debug gate) can
+    // render caller-appropriate controls and, crucially, CLEAR prior owner/admin
+    // state on a downgrade: the app only does so when the key is present. The
+    // key is always emitted, with explicit null on no-membership/absent roles.
+    // Capped to the reader's contract (owletto memberRoleFromMeta rejects >40).
+    const callerMemberRole =
+      typeof callAuthCtx.memberRole === 'string' &&
+      callAuthCtx.memberRole.length > 0 &&
+      callAuthCtx.memberRole.length <= 40
+        ? callAuthCtx.memberRole
+        : null;
+    const memberRoleMeta = { 'lobu/member-role': callerMemberRole };
 
     // Regular tool execution
     try {
@@ -503,19 +516,6 @@ function createServerForContext(
       const softError = isSoftErrorResult(result);
       const tool = getTool(name);
       const resultMeta = getMcpResultMeta(result);
-      // The caller's role rides EVERY result _meta so MCP apps (e.g. the
-      // interaction app's Debug gate) can render caller-appropriate controls.
-      // The key is always present, with explicit null on no-membership/absent
-      // roles: the app only clears prior owner/admin state when the key exists,
-      // so omitting it on a downgrade would retain stale Debug access. Capped
-      // to the reader's contract (owletto memberRoleFromMeta rejects >40 chars).
-      const callerMemberRole =
-        typeof callAuthCtx.memberRole === 'string' &&
-        callAuthCtx.memberRole.length > 0 &&
-        callAuthCtx.memberRole.length <= 40
-          ? callAuthCtx.memberRole
-          : null;
-      const memberRoleMeta = { 'lobu/member-role': callerMemberRole };
       if (tool?.outputSchema && result && typeof result === 'object') {
         const structured = validateToolResult(tool.outputSchema, result);
         if (structured !== null) {
@@ -605,7 +605,10 @@ function createServerForContext(
         ],
         isError: true,
         ...(structuredError ? { structuredContent: { error: structuredError } } : {}),
-        ...(scopeChallenge ? { _meta: { 'mcp/www_authenticate': [scopeChallenge] } } : {}),
+        _meta: {
+          ...memberRoleMeta,
+          ...(scopeChallenge ? { 'mcp/www_authenticate': [scopeChallenge] } : {}),
+        },
       };
     }
   });

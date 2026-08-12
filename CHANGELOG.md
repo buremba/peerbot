@@ -1,5 +1,66 @@
 # Changelog
 
+## [14.21.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.20.0...lobu-v14.21.0) (2026-08-12)
+
+
+### Features
+
+* **apply:** drift gate blocks un-declared remote changes ([#2663](https://github.com/lobu-ai/lobu/issues/2663)) ([05adcd1](https://github.com/lobu-ai/lobu/commit/05adcd18a8e00f995b7c05d8a17bbb8762fe94ca))
+* **behaviors:** chain durable workspace events ([#2660](https://github.com/lobu-ai/lobu/issues/2660)) ([c8c5eea](https://github.com/lobu-ai/lobu/commit/c8c5eeaaf8af9f573dddc40edccf49c024e224a4))
+* **cli:** show before → after values in the apply plan ([#2692](https://github.com/lobu-ai/lobu/issues/2692)) ([1b8eeab](https://github.com/lobu-ai/lobu/commit/1b8eeab41ac1c16ac425b028094354d616b57408))
+* **connector-worker:** run os.files device connectors on a local worker ([#2687](https://github.com/lobu-ai/lobu/issues/2687)) ([caf3e99](https://github.com/lobu-ai/lobu/commit/caf3e9916ef89f6595c55a5fc5c3e842deccb09d))
+* **connectors:** gmail person-relevant sync + declarative resolution policy ([#2646](https://github.com/lobu-ai/lobu/issues/2646)) ([32fc86b](https://github.com/lobu-ai/lobu/commit/32fc86b2648bc1c82537f8ee442aed66eb7663a5))
+* **dev:** add private Daytona remote development ([#2659](https://github.com/lobu-ai/lobu/issues/2659)) ([9bb8021](https://github.com/lobu-ai/lobu/commit/9bb80218b27966e806f8507a5cf8879b4c11fbd3))
+* **example:** add a Maps feed to the Google Takeout connector ([#2697](https://github.com/lobu-ai/lobu/issues/2697)) ([a4c5ee4](https://github.com/lobu-ai/lobu/commit/a4c5ee465922f29be07f3744c3fccf5a9cb978ff))
+* **mcp:** consolidate result tooling and connector branding ([#2667](https://github.com/lobu-ai/lobu/issues/2667)) ([c67bda3](https://github.com/lobu-ai/lobu/commit/c67bda31f5103c63c96e3e35b7a3ebaa5bde7e13))
+* **mcp:** drop the undeclared-result guesswork tier ([#2690](https://github.com/lobu-ai/lobu/issues/2690)) ([e6282cc](https://github.com/lobu-ai/lobu/commit/e6282cc3f4076d6ce4612265ca88facdb2f9dcd1))
+* **mcp:** render and restore rich app results ([#2643](https://github.com/lobu-ai/lobu/issues/2643)) ([c91edd7](https://github.com/lobu-ai/lobu/commit/c91edd74515b87fcc53c0e89e56b448762e4bcf3))
+* **personal-agent:** add live Midas net worth snapshots ([#2702](https://github.com/lobu-ai/lobu/issues/2702)) ([39809f8](https://github.com/lobu-ai/lobu/commit/39809f886df4158d92a0b5f06cc6a60c2e5cedb2))
+* **server:** derive Behavior activation from collected feed events ([#2664](https://github.com/lobu-ai/lobu/issues/2664)) ([77e15b0](https://github.com/lobu-ai/lobu/commit/77e15b0ce8c2c1d3b398ba7ab297cfbe178fa04d))
+* **server:** install OAuth-protected MCP connectors ([#2695](https://github.com/lobu-ai/lobu/issues/2695)) ([56e9520](https://github.com/lobu-ai/lobu/commit/56e95208f302c4b2478e3ab8d5361419f0e39009))
+* **server:** record workspace-identity audit events for org/member/invitation lifecycle ([#2662](https://github.com/lobu-ai/lobu/issues/2662)) ([1cfd8c2](https://github.com/lobu-ai/lobu/commit/1cfd8c2f0cefd6bf1dc16e0212bc895514b46a54))
+* **server:** render rich notifications through event kinds ([#2648](https://github.com/lobu-ai/lobu/issues/2648)) ([cb5a1b0](https://github.com/lobu-ai/lobu/commit/cb5a1b08a30fc70c777c6db9b5a0d59f8fb6e535))
+* **server:** send production activity digests ([#2700](https://github.com/lobu-ai/lobu/issues/2700)) ([54fd729](https://github.com/lobu-ai/lobu/commit/54fd729f202afd9e3d2b2f2be83c32848070fcd6))
+
+
+### Bug Fixes
+
+* **calendar:** persist durable sync cursor ([#2628](https://github.com/lobu-ai/lobu/issues/2628)) ([9abe1af](https://github.com/lobu-ai/lobu/commit/9abe1af5a1f6f4a46dd062d9f1176690ac355177))
+* **ci:** give local Depot dispatches their own concurrency group ([#2707](https://github.com/lobu-ai/lobu/issues/2707)) ([9c2fba7](https://github.com/lobu-ai/lobu/commit/9c2fba7e6f2cb75493138f25265eb0e9909cacd2))
+* **ci:** pin bun in images and retry GitHub release downloads ([#2704](https://github.com/lobu-ai/lobu/issues/2704)) ([b813df1](https://github.com/lobu-ai/lobu/commit/b813df166b27cf50c6c36b7a4526d6509eef5075))
+* **cli:** distinguish an unrecorded apply baseline from an empty one ([#2686](https://github.com/lobu-ai/lobu/issues/2686)) ([9411ee0](https://github.com/lobu-ai/lobu/commit/9411ee0c55e60b947a880a048c88372727c7bc41))
+* **cli:** identify remote-only definitions in the apply block report ([#2698](https://github.com/lobu-ai/lobu/issues/2698)) ([8ea9ede](https://github.com/lobu-ai/lobu/commit/8ea9ede8f7a6a39ed679fc3a0f2a60c7fa5ab681))
+* **cli:** scope apply's definition-delete block to prune ([#2689](https://github.com/lobu-ai/lobu/issues/2689)) ([2d10451](https://github.com/lobu-ai/lobu/commit/2d10451fe78b17f85af3136c6c28976b8e6924f8))
+* **cli:** scope the apply view-template fetch to org-owned types ([#2658](https://github.com/lobu-ai/lobu/issues/2658)) ([0865d7c](https://github.com/lobu-ai/lobu/commit/0865d7c2b37bfa87d83e5e79d08d72ca79601965))
+* **connectors:** declare os.files + macos runtime on the takeout connectors ([#2685](https://github.com/lobu-ai/lobu/issues/2685)) ([a96bc45](https://github.com/lobu-ai/lobu/commit/a96bc452253404c416b396b4603331e85cba7746))
+* **example:** resolve takeout dirs strictly and declare gmail auth profiles ([#2688](https://github.com/lobu-ai/lobu/issues/2688)) ([714a24b](https://github.com/lobu-ai/lobu/commit/714a24b43fb751d4f49cd8765608b39f6524662a))
+* **example:** stop takeout connectors naming people by URL or reserved route ([#2694](https://github.com/lobu-ai/lobu/issues/2694)) ([ee53448](https://github.com/lobu-ai/lobu/commit/ee534485162d64ac3651006050affb0fc08df884))
+* **mcp-app:** restore results without host tool info ([#2665](https://github.com/lobu-ai/lobu/issues/2665)) ([36a1c54](https://github.com/lobu-ai/lobu/commit/36a1c540add41ec3fe0c43a882bb5d5ad25089ad))
+* **mcp:** deliver app snapshot capability through host arguments ([#2652](https://github.com/lobu-ai/lobu/issues/2652)) ([633a2bb](https://github.com/lobu-ai/lobu/commit/633a2bb3a265e99654efaa467212783a09d33889))
+* **mcp:** emit viewer role on app-rendered results ([#2671](https://github.com/lobu-ai/lobu/issues/2671)) ([04deeb6](https://github.com/lobu-ai/lobu/commit/04deeb68ab019fc35280d032b5ea66c48e11ae08))
+* **mcp:** harden ChatGPT review contract ([#2670](https://github.com/lobu-ai/lobu/issues/2670)) ([bcce57e](https://github.com/lobu-ai/lobu/commit/bcce57eee0e6a2d9d1790ba92e3799205553b323))
+* **mcp:** resolve exact memory ids in search ([#2669](https://github.com/lobu-ai/lobu/issues/2669)) ([7c51e7d](https://github.com/lobu-ai/lobu/commit/7c51e7d67943ca871c544a49729754bba90acc0c))
+* **mcp:** restore app cards by host identity ([#2647](https://github.com/lobu-ai/lobu/issues/2647)) ([d2b0e51](https://github.com/lobu-ai/lobu/commit/d2b0e518279c11a466f0a60721dcaf0fc4d013ce))
+* **mcp:** serve self-contained v7 app resource ([#2642](https://github.com/lobu-ai/lobu/issues/2642)) ([8368ba5](https://github.com/lobu-ai/lobu/commit/8368ba57e30fc4430fb5370627622853fc08fdf9))
+* **mcp:** ship reload-safe v6 app bundle ([#2640](https://github.com/lobu-ai/lobu/issues/2640)) ([be3a91b](https://github.com/lobu-ai/lobu/commit/be3a91b6baf8ee902d78f00013d001c20cc4e206))
+* **personal-agent:** persist net worth as summary ([#2710](https://github.com/lobu-ai/lobu/issues/2710)) ([de158af](https://github.com/lobu-ai/lobu/commit/de158afda62e1fcbf6369ef3bb8a7cbeb94fd796))
+* **server,example,chrome:** review-fix — reason schema, dead maxDelay, duplicate test, redundant post metadata, run-scoped tab retry ([#2680](https://github.com/lobu-ai/lobu/issues/2680)) ([12b1aa9](https://github.com/lobu-ai/lobu/commit/12b1aa997197e82cb0e4e53a22b9aa4d5795e03a))
+* **server,example:** production-hardening — run expiry, feed health, gateway retry, LinkedIn durable post identity ([#2676](https://github.com/lobu-ai/lobu/issues/2676)) ([779b93a](https://github.com/lobu-ai/lobu/commit/779b93a2c741376eb83f93f90c9b1dea6a938845))
+* **server:** bind remote MCP operations to connections ([#2706](https://github.com/lobu-ai/lobu/issues/2706)) ([61791c3](https://github.com/lobu-ai/lobu/commit/61791c3d11b054818bf47cd87ce556e3d7e57b17))
+* **server:** block MCP sessions from approving operations ([#2651](https://github.com/lobu-ai/lobu/issues/2651)) ([f989300](https://github.com/lobu-ai/lobu/commit/f989300b92ac27b8ce654a52f5f76590d261039f))
+* **server:** bound the SDK call trace so the model never gets a multi-MB trace ([#2655](https://github.com/lobu-ai/lobu/issues/2655)) ([fa892ba](https://github.com/lobu-ai/lobu/commit/fa892ba104651654130300895745216dcd74cc1a))
+* **server:** consolidate sandbox output budgets into preview + per-message caps ([#2654](https://github.com/lobu-ai/lobu/issues/2654)) ([995adc3](https://github.com/lobu-ai/lobu/commit/995adc3209362c9f3b342ab140d7ded9a7edd486))
+* **server:** decouple sandbox output budgets and truncate oversized returns ([#2645](https://github.com/lobu-ai/lobu/issues/2645)) ([7680b83](https://github.com/lobu-ai/lobu/commit/7680b8373e127e796fc831836ae16408bb4eef25))
+* **server:** dedupe auto-provisioned connections by OAuth account ([#2656](https://github.com/lobu-ai/lobu/issues/2656)) ([1c47e21](https://github.com/lobu-ai/lobu/commit/1c47e21c01bcf4a08ecdd253de1a588dd5454d5a))
+* **server:** deliver production digest to private Slack ([#2709](https://github.com/lobu-ai/lobu/issues/2709)) ([7e95d12](https://github.com/lobu-ai/lobu/commit/7e95d12cf085ab53d4452f3259ffca2af9478225))
+* **server:** expose interactive notifications in ClientSDK ([#2635](https://github.com/lobu-ai/lobu/issues/2635)) ([b9a3dcc](https://github.com/lobu-ai/lobu/commit/b9a3dccbb07f835a4cfcd6c7fafc4e206788eba6))
+* **server:** let behaviors use creator private connections ([#2701](https://github.com/lobu-ai/lobu/issues/2701)) ([dd8f07d](https://github.com/lobu-ai/lobu/commit/dd8f07d1e65df58fe1156ca26fa3b117463fe47c))
+* **server:** make approval transitions atomic ([#2668](https://github.com/lobu-ai/lobu/issues/2668)) ([f2c0823](https://github.com/lobu-ai/lobu/commit/f2c08233e712bb5c06877f0b7e35753ae6b4f050))
+* **server:** member execution of connector operations; principal-aware readiness ([#2644](https://github.com/lobu-ai/lobu/issues/2644)) ([9ace61a](https://github.com/lobu-ai/lobu/commit/9ace61a20ca4ca42040afdf5be6dcc295bc91bcf))
+* **server:** raise the gateway test ceiling via CLI, not bunfig ([#2691](https://github.com/lobu-ai/lobu/issues/2691)) ([4873ecf](https://github.com/lobu-ai/lobu/commit/4873ecf9c416af64ada6eea6842fbafa31acf311))
+* **server:** scope connector-health alerting to feeds that can actually sync ([#2683](https://github.com/lobu-ai/lobu/issues/2683)) ([deb351f](https://github.com/lobu-ai/lobu/commit/deb351f767f951a9e83436d9204cf8fa1c9bef3f))
+* **server:** stub tooling fold in fake-based MessageConsumer tests ([#2674](https://github.com/lobu-ai/lobu/issues/2674)) ([72cf989](https://github.com/lobu-ai/lobu/commit/72cf989745863096ea6c2b4aea8d77d1f6019231))
+
 ## [14.20.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.19.0...lobu-v14.20.0) (2026-08-10)
 
 

@@ -101,14 +101,24 @@ jobs:
       # bunfig.toml routes every `bun test --coverage` run to ./coverage/lcov.info
       # (bun 1.3.x ignores --coverage-dir when bunfig sets coverageDir), so each
       # step moves its report to a unique name before the next step overwrites it.
+      #
+      # Every `bun test` in this file passes `--timeout 30000`, matching the value
+      # the gateway lanes already use. bun's default is 5000ms and it IGNORES a
+      # `timeout` key in bunfig.toml — the CLI flag is the only thing that works,
+      # so this cannot be hoisted into config. Runners here have been measured
+      # ~100x slower than a dev machine (a suite that takes 45ms locally has
+      # exceeded 5000ms in CI), and a test that trips the ceiling does not fail
+      # alone: bun does not abort the timed-out body, so it keeps running and can
+      # take unrelated tests in the same file down with it. Keep the flag on new
+      # `bun test` steps.
       - name: core / cli (bun:test)
         run: |
-          bun test packages/core packages/cli --coverage
+          bun test packages/core packages/cli --coverage --timeout 30000
           mv coverage/lcov.info coverage/core-cli.lcov.info
 
       - name: native plugin packages (bun:test)
         run: |
-          bun test packages/plugin-api packages/plugin-host packages/plugin-toolkit packages/plugin-memory packages/plugin-conversations packages/plugin-media packages/plugin-mcp --coverage
+          bun test packages/plugin-api packages/plugin-host packages/plugin-toolkit packages/plugin-memory packages/plugin-conversations packages/plugin-media packages/plugin-mcp --coverage --timeout 30000
           mv coverage/lcov.info coverage/plugin-runtime.lcov.info
 
       - name: worker (bun:test, full suite)
@@ -125,7 +135,7 @@ jobs:
         env:
           LOBU_REQUIRE_EXEC_SANDBOX: "1"
         run: |
-          bun test packages/agent-worker --coverage
+          bun test packages/agent-worker --coverage --timeout 30000
           mv coverage/lcov.info coverage/agent-worker.lcov.info
 
       - name: server (bun:test units)
@@ -135,25 +145,25 @@ jobs:
         # is intentionally NOT repeated here — see #1238). Here we only run the
         # pure-unit subdirectories that don't touch Postgres.
         run: |
-          bun test packages/server/src/__tests__/unit --coverage
+          bun test packages/server/src/__tests__/unit --coverage --timeout 30000
           mv coverage/lcov.info coverage/server-units.lcov.info
-          bun test packages/server/src/auth/__tests__/system-provider-resolution.test.ts --coverage
+          bun test packages/server/src/auth/__tests__/system-provider-resolution.test.ts --coverage --timeout 30000
           mv coverage/lcov.info coverage/server-units-auth.lcov.info
           # Pure-unit bun:test files that live outside src/__tests__/unit: the
           # device-pin tombstone helpers and the activity-feed collapse logic.
           # No Postgres needed (DB imports in the module graph are lazy), so they
           # run here rather than in the integration job.
-          bun test packages/server/src/utils/__tests__/device-pin-tombstones.test.ts packages/server/src/tools/admin/manage_operations/__tests__/activity-feed-collapse.test.ts --coverage
+          bun test packages/server/src/utils/__tests__/device-pin-tombstones.test.ts packages/server/src/tools/admin/manage_operations/__tests__/activity-feed-collapse.test.ts --coverage --timeout 30000
           mv coverage/lcov.info coverage/server-units-activity.lcov.info
           # Connector-compiler bun:test suites (#2042/#2043): pure source-text
           # and AST-level compilation checks (esbuild only, no Postgres in the
           # module graph), so they run in the pure-unit job rather than integration.
-          bun test packages/server/src/utils/__tests__/catalog-connectors-compile.test.ts packages/server/src/utils/__tests__/compiler-core.test.ts --coverage
+          bun test packages/server/src/utils/__tests__/catalog-connectors-compile.test.ts packages/server/src/utils/__tests__/compiler-core.test.ts --coverage --timeout 30000
           mv coverage/lcov.info coverage/server-units-compiler.lcov.info
 
       - name: connector-worker (bun:test)
         run: |
-          bun test packages/connector-worker --coverage
+          bun test packages/connector-worker --coverage --timeout 30000
           mv coverage/lcov.info coverage/connector-worker.lcov.info
 
       - name: client / promptfoo-provider (bun:test)
@@ -161,18 +171,18 @@ jobs:
         # promptfoo-provider tests (which had no `test` script wired anywhere).
         # Neither needs Postgres.
         run: |
-          bun test packages/client packages/promptfoo-provider --coverage
+          bun test packages/client packages/promptfoo-provider --coverage --timeout 30000
           mv coverage/lcov.info coverage/client-promptfoo.lcov.info
 
       - name: connector-sdk (bun:test)
         # Checkpoint/watermark + url-guards moved here from bundled scraper-utils.
         run: |
-          bun test packages/connector-sdk --coverage
+          bun test packages/connector-sdk --coverage --timeout 30000
           mv coverage/lcov.info coverage/connector-sdk.lcov.info
 
       - name: connectors (bun:test)
         run: |
-          bun test packages/connectors --coverage
+          bun test packages/connectors --coverage --timeout 30000
           mv coverage/lcov.info coverage/connectors.lcov.info
 
       - name: embeddings (bun:test)
@@ -183,15 +193,15 @@ jobs:
         # symptom is this step hanging on an open child handle.
         timeout-minutes: 5
         run: |
-          bun test packages/embeddings --coverage
+          bun test packages/embeddings --coverage --timeout 30000
           mv coverage/lcov.info coverage/embeddings.lcov.info
 
       - name: example connectors (bun:test)
         # Unbundled connectors live under examples/; mock @lobu/connector-sdk
         # so Playwright/Baileys never load in CI.
         run: |
-          bun test examples/personal-agent
-          bun test examples/brand-intelligence
+          bun test examples/personal-agent --timeout 30000
+          bun test examples/brand-intelligence --timeout 30000
 
       - name: Upload coverage
         if: always()
@@ -713,7 +723,7 @@ jobs:
         # src/lobu/__tests__ specifically rather than the whole src/lobu tree.
         working-directory: packages/server
         run: |
-          bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__ src/tools/admin/__tests__ src/auth/oauth/__tests__ --coverage
+          bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__ src/tools/admin/__tests__ src/auth/oauth/__tests__ --coverage --timeout 30000
           mv coverage/lcov.info coverage/server-postgres-other.lcov.info
 
       - name: Upload server Bun/Postgres coverage
@@ -799,12 +809,12 @@ jobs:
         # revisions PASSED CLEAN on violations they were written to catch. These
         # fixtures mutate the real scanned files and assert the exit code, so a
         # guard that stops catching regressions fails here instead of going quiet.
-        run: bun test scripts/__tests__/check-exposed-surface-naming.test.ts
+        run: bun test scripts/__tests__/check-exposed-surface-naming.test.ts --timeout 30000
 
       - name: Daytona remote development lifecycle
         # The command replaces a live remote checkout and controls its privacy
         # boundary. Keep failure/retry and existing-sandbox reuse fail-closed.
-        run: bun test scripts/__tests__/dev-remote.test.ts
+        run: bun test scripts/__tests__/dev-remote.test.ts --timeout 30000
 
       - name: Gateway LLM client gate
         # packages/server speaks to model providers through ONE client
@@ -818,20 +828,20 @@ jobs:
         # Same reasoning as the naming-gate fixtures above: a guard that stops
         # catching its violations is worse than no guard, because it reads as
         # proof. These seed real violations and assert the exit code.
-        run: bun test scripts/__tests__/check-gateway-llm-calls.test.ts
+        run: bun test scripts/__tests__/check-gateway-llm-calls.test.ts --timeout 30000
 
       - name: Publish manifest gate fixtures
         # @lobu/worker@14.3.0 shipped five private workspace dependencies at
         # their `0.0.0` placeholder versions, so external installs failed
         # (#2186). These fixtures exercise the publish transform's guard.
-        run: bun test scripts/__tests__/publish-packages-guard.test.ts
+        run: bun test scripts/__tests__/publish-packages-guard.test.ts --timeout 30000
 
       - name: Image tag derivation
         # Decides which docker tags a build publishes. `latest` used to follow
         # every main commit (#2184); the logic that stopped that lives in a
         # script precisely so it is testable — as embedded workflow shell it
         # could only be exercised by cutting a real release.
-        run: bun test scripts/__tests__/derive-image-tags.test.ts
+        run: bun test scripts/__tests__/derive-image-tags.test.ts --timeout 30000
 
       - name: Release publish ordering
         # 14.9.0 and 14.10.0 never reached npm: release-please dispatched
@@ -841,14 +851,14 @@ jobs:
         # Workflow YAML is not covered by any other suite, so a re-introduced
         # dispatch in release-please.yml would otherwise only surface at the
         # next release.
-        run: bun test scripts/__tests__/release-publish-order.test.ts
+        run: bun test scripts/__tests__/release-publish-order.test.ts --timeout 30000
 
       - name: Release image audit decision table
         # The scheduled audit (release-image-audit.yml) is the only thing that
         # notices a release which published no image — a run evicted from its
         # concurrency queue fails nothing. A wrong decision table here silently
         # disables that alarm, so it is pinned by tests like the tag logic above.
-        run: bun test scripts/__tests__/audit-release-images.test.ts
+        run: bun test scripts/__tests__/audit-release-images.test.ts --timeout 30000
 
       - name: Merge integrity decision table
         # #2273 was based on another feature branch; squashing that base away
@@ -856,7 +866,7 @@ jobs:
         # #2279 stayed open describing that exact bug. Every required check was
         # green. Same reasoning as the gates above — the guard is pinned here so
         # it cannot quietly stop catching the thing it exists for.
-        run: bun test scripts/__tests__/check-merge-integrity.test.ts
+        run: bun test scripts/__tests__/check-merge-integrity.test.ts --timeout 30000
 
       - name: Review-prompt blocker rule
         # `pi-review` is required and enforce_admins is on, so `blockers>0` is
@@ -864,7 +874,7 @@ jobs:
         # OWN inability to run tests as a blocker, which red-flagged #2306 twice
         # under codex's read-only sandbox and then passed on an identical re-run.
         # Three other sections say the opposite; this pins the one direction.
-        run: bun test scripts/__tests__/review-prompt-env-blockers.test.ts
+        run: bun test scripts/__tests__/review-prompt-env-blockers.test.ts --timeout 30000
 
       - name: Review output schema dialect
         # prompts/review-output-schema.json is handed to BOTH reviewer CLIs —
@@ -874,7 +884,7 @@ jobs:
         # ("no schema with key or ref …"), which surfaced only under a codex
         # quota outage and read as a dead reviewer, not a bad key. Pins the
         # schema to the reference-free shape both CLIs load.
-        run: bun test scripts/__tests__/review-output-schema.test.ts
+        run: bun test scripts/__tests__/review-output-schema.test.ts --timeout 30000
 
       - name: Migration runner guards
         # migrate-up.mjs --check-pending exit status 3 is the ONLY status that
@@ -884,8 +894,8 @@ jobs:
         # migration version must never read as "nothing pending", or an
         # incompatible migration applies while the old pods are still serving.
         run: |
-          bun test scripts/__tests__/migrate-up-check-pending.test.ts
-          bun test scripts/__tests__/migrate-up-duplicate-version.test.ts
+          bun test scripts/__tests__/migrate-up-check-pending.test.ts --timeout 30000
+          bun test scripts/__tests__/migrate-up-duplicate-version.test.ts --timeout 30000
 
       - name: Raw-array SQL-param gate
         # packages/server's postgres.js client runs fetch_types:false, where a raw

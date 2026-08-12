@@ -72,7 +72,12 @@ describe("personal org workspace audit events", () => {
 		const all = rows as unknown as Array<{
 			title: string;
 			semantic_type: string;
-			metadata: { resource_kind: string; op: string; category: string };
+			metadata: {
+				resource_kind: string;
+				op: string;
+				category: string;
+				_lobu_workspace_audit?: boolean;
+			};
 			payload_data: { state: Record<string, unknown> | null };
 			created_by: string;
 		}>;
@@ -85,6 +90,10 @@ describe("personal org workspace audit events", () => {
 
 		expect(orgRow!.semantic_type).toBe("change");
 		expect(orgRow!.metadata.category).toBe("workspace");
+		// Server-owned discriminator — exclusion predicates gate on this, not
+		// category alone. Emission must stamp it or visibility tests pass while
+		// real rows stay readable to ordinary members.
+		expect(orgRow!.metadata._lobu_workspace_audit).toBe(true);
 		expect(orgRow!.metadata.resource_kind).toBe("organization");
 		expect(orgRow!.metadata.op).toBe("created");
 		expect(orgRow!.title).toContain("Organization");
@@ -97,6 +106,7 @@ describe("personal org workspace audit events", () => {
 		expect(orgRow!.created_by).toBe(id);
 
 		expect(memberRow!.metadata.resource_kind).toBe("member");
+		expect(memberRow!.metadata._lobu_workspace_audit).toBe(true);
 		expect(memberRow!.metadata.op).toBe("created");
 		expect(memberRow!.title).toContain("joined as owner");
 		expect(

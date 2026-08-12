@@ -23,13 +23,27 @@ describe('workspace-identity audit events > Slack App Home', () => {
     const org = await createTestOrganization({ name: 'Slack Home Audit Org' });
     organizationId = org.id;
     normalTitle = `normal-home-event-${Date.now()}`;
+  });
+
+  it('excludes workspace audit rows from recent and capturedToday', async () => {
+    const empty = await resolveSlackHomeContext(organizationId);
+    expect(empty).not.toBeNull();
+    expect(empty!.capturedToday).toBe(0);
+    expect(empty!.recent).toHaveLength(0);
 
     await createTestEvent({
       organization_id: organizationId,
       content: normalTitle,
       title: normalTitle,
     });
+    const withNormal = await resolveSlackHomeContext(organizationId);
+    expect(withNormal!.capturedToday).toBe(1);
+    expect(
+      withNormal!.recent.some((r) => r.title.includes(normalTitle.slice(0, 20)))
+    ).toBe(true);
 
+    // Inserting a genuine workspace-audit row must NOT move the count or
+    // appear in recent — this fails closed if the exclusion predicate is dropped.
     await createTestEvent({
       organization_id: organizationId,
       content: 'workspace audit lifecycle row',
@@ -42,19 +56,11 @@ describe('workspace-identity audit events > Slack App Home', () => {
         op: 'created',
       },
     });
-  });
-
-  it('excludes workspace audit rows from recent and capturedToday', async () => {
-    const ctx = await resolveSlackHomeContext(organizationId);
-    expect(ctx).not.toBeNull();
-    expect(ctx!.recent.some((r) => r.title.includes('secret'))).toBe(false);
-    expect(ctx!.recent.some((r) => r.title.includes(normalTitle.slice(0, 20)))).toBe(
-      true
-    );
-    // At least the normal event from today; audit must not inflate the count.
-    expect(ctx!.capturedToday).toBeGreaterThanOrEqual(1);
-    // If only our two inserts exist for this org today, capturedToday is 1.
-    // Bound loosely so concurrent test noise cannot false-fail.
-    expect(ctx!.capturedToday).toBeLessThanOrEqual(50);
+    const withAudit = await resolveSlackHomeContext(organizationId);
+    expect(withAudit!.capturedToday).toBe(1);
+    expect(withAudit!.recent.some((r) => r.title.includes('secret'))).toBe(false);
+    expect(
+      withAudit!.recent.some((r) => r.title.includes(normalTitle.slice(0, 20)))
+    ).toBe(true);
   });
 });

@@ -558,7 +558,9 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         method: 'tools/call',
         params: {
           name: 'query_sql',
-          arguments: { sql: 'SELECT definitely_not_a_column FROM' },
+          // Missing required `sql` throws a ToolUserError -> the catch branch,
+          // which is the path that must carry the role meta.
+          arguments: {},
         },
       },
       headers: { 'mcp-session-id': sessionId },

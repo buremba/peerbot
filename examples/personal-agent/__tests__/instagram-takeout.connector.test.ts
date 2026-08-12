@@ -169,6 +169,37 @@ describe("InstagramTakeoutConnector emits metadata the attributions resolve", ()
     expect(new Set(usernames)).toEqual(new Set(["aykut.gk"]));
   });
 
+  test("a following row whose visible text is a URL is named by handle", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ig-takeout-url-text-"));
+    const root = path.join(dir, "connections", "followers_and_following");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(
+      path.join(root, "following.html"),
+      `<html><body><main>
+        <a href="https://www.instagram.com/_u/rampue">https://www.instagram.com/_u/rampue</a>
+      </main></body></html>`
+    );
+    const connector = new InstagramTakeoutConnector();
+    const events = (connector as any).readConnectionEvents(dir);
+    const row = events.find((e: any) => e.origin_type === "following");
+    expect(row).toBeDefined();
+    expect(row.author_name).toBe("rampue");
+    expect(row.author_name).not.toMatch(/^https?:\/\//);
+    expect(row.payload_text).toBe("following: rampue");
+    expect(resolvePath(row, "metadata.username")).toBe("rampue");
+    expect(resolvePath(row, "metadata.profile_url")).toBe(
+      "https://www.instagram.com/_u/rampue"
+    );
+  });
+
+  test("a real display name in the anchor text is preserved verbatim", () => {
+    const dir = writeConnectionsFixture();
+    const connector = new InstagramTakeoutConnector();
+    const events = (connector as any).readConnectionEvents(dir);
+    const follower = events.find((e: any) => e.origin_type === "follower");
+    expect(follower.author_name).toBe("Aykut Gedik");
+  });
+
   test("a non-profile link (shared post) emits no username -> mint-gated off", () => {
     const dir = writeConnectionsFixture();
     const connector = new InstagramTakeoutConnector();

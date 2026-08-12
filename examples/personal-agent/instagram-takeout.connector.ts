@@ -407,13 +407,21 @@ export default class InstagramTakeoutConnector extends ConnectorRuntime<
         // when the link is not a resolvable profile, so `createWhen exists`
         // gates minting a person on a real handle being present.
         const username = usernameFromProfileUrl(url) ?? undefined;
+        // `following.html` can repeat the profile URL as its anchor text. Use
+        // the resolved handle for display in that case, while preserving real
+        // display names from the other connection files.
+        const displayName = /^https?:\/\//i.test(name)
+          ? (username ?? name)
+          : name;
         return [
           {
+            // Keep source identity based on the original export fields; display
+            // normalization must not cause existing rows to be minted again.
             origin_id: stableId("ig_connection", [kind, url, name]),
             origin_type: kind.startsWith("follower") ? "follower" : kind,
             occurred_at: snapshotDate(),
-            payload_text: `${kind}: ${name}`,
-            author_name: name,
+            payload_text: `${kind}: ${displayName}`,
+            author_name: displayName,
             source_url: url,
             metadata: {
               platform: "instagram",

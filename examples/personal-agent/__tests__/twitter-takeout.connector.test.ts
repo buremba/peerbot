@@ -43,6 +43,33 @@ describe("x-identity normalization", () => {
     expect(normalizeXHandle("")).toBe(null);
   });
 
+  test("handleFromUserLink rejects nested non-profile routes", () => {
+    expect(
+      handleFromUserLink(
+        "https://twitter.com/intent/user?user_id=1703117072769683456"
+      )
+    ).toBe(null);
+    expect(handleFromUserLink("https://x.com/i/lists/123")).toBe(null);
+    expect(handleFromUserLink("https://example.com/twitter.com/jack")).toBe(
+      null
+    );
+    // URL routing must not make the normalizer discard a real handle supplied
+    // by tweet metadata.
+    expect(normalizeXHandle("@Intent")).toBe("intent");
+  });
+
+  test("handleFromUserLink rejects BARE reserved routes too", () => {
+    // These are single-segment and therefore indistinguishable from a profile
+    // link by shape alone — the anchored pattern matches them happily, so the
+    // reserved list is what stops `twitter.com/home` minting a person "home".
+    expect(handleFromUserLink("https://twitter.com/home")).toBe(null);
+    expect(handleFromUserLink("https://twitter.com/search?q=x")).toBe(null);
+    expect(handleFromUserLink("https://x.com/notifications")).toBe(null);
+    // The guard lives in the URL reader, not the normalizer: a real @home
+    // handle arriving from tweet metadata still survives.
+    expect(normalizeXHandle("@home")).toBe("home");
+  });
+
   test("handleFromUserLink recovers the normalized handle from a profile link", () => {
     expect(handleFromUserLink("https://twitter.com/Jack")).toBe("jack");
     expect(handleFromUserLink("https://x.com/elonmusk?ref=1")).toBe("elonmusk");
@@ -161,6 +188,34 @@ describe("TwitterTakeoutConnector identity attributions", () => {
 });
 
 describe("TwitterTakeoutConnector emits metadata the attributions resolve", () => {
+  test("an intent userLink does not emit a bogus handle", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "x-takeout-"));
+    const dataDir = path.join(dir, "data");
+    mkdirSync(dataDir);
+    writeFileSync(
+      path.join(dataDir, "follower.js"),
+      `window.YTD.follower.part0 = ${JSON.stringify([
+        {
+          follower: {
+            accountId: "1703117072769683456",
+            userLink:
+              "https://twitter.com/intent/user?user_id=1703117072769683456",
+          },
+        },
+      ])}`
+    );
+
+    const connector = new TwitterTakeoutConnector();
+    const events = (connector as any).readFollowEvents(dataDir, "follower");
+    expect(events).toHaveLength(1);
+    const [event] = events;
+    expect(resolvePath(event, "metadata.account_id")).toBe(
+      "1703117072769683456"
+    );
+    expect(resolvePath(event, "metadata.handle")).toBeNull();
+    expect(event.payload_text).toBe("Follower: 1703117072769683456");
+  });
+
   test("a reply row emits normalized handle + numeric id the identity keys on", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "x-takeout-"));
     const dataDir = path.join(dir, "data");

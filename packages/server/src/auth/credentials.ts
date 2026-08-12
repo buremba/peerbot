@@ -52,6 +52,7 @@ export class CredentialService {
       clientId: string;
       clientSecret?: string;
       authMethod?: 'client_secret_post' | 'client_secret_basic' | 'none';
+      resource?: string;
     }
   ): Promise<CredentialTokens | null> {
     const result = await this.sql`
@@ -100,6 +101,7 @@ export class CredentialService {
     clientSecret?: string;
     refreshToken: string;
     authMethod?: 'client_secret_post' | 'client_secret_basic' | 'none';
+    resource?: string;
     accountId: string;
   }): Promise<{ accessToken: string; expiresAt: Date; refreshToken?: string } | null> {
     return this.refreshAccountUnderLock(config.accountId, {
@@ -107,6 +109,7 @@ export class CredentialService {
       clientId: config.clientId,
       clientSecret: config.clientSecret,
       authMethod: config.authMethod,
+      resource: config.resource,
     });
   }
 
@@ -125,6 +128,7 @@ export class CredentialService {
       clientId: string;
       clientSecret?: string;
       authMethod?: 'client_secret_post' | 'client_secret_basic' | 'none';
+      resource?: string;
     }
   ): Promise<{ accessToken: string; expiresAt: Date; refreshToken?: string } | null> {
     return this.sql.begin(async (tx) => {
@@ -192,6 +196,7 @@ export class CredentialService {
     clientSecret?: string;
     refreshToken: string;
     authMethod?: 'client_secret_post' | 'client_secret_basic' | 'none';
+    resource?: string;
   }): Promise<{ accessToken: string; expiresAt: Date; refreshToken?: string } | null> {
     const { headers, body } = buildRefreshRequest({
       profile: 'account-credential',
@@ -199,6 +204,7 @@ export class CredentialService {
       clientSecret: params.clientSecret,
       refreshToken: params.refreshToken,
       authMethod: params.authMethod,
+      resource: params.resource,
     });
 
     try {

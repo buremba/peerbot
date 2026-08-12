@@ -30,6 +30,8 @@ import { buildConnectionsUrl } from '../../../utils/url-builder';
 import type { ToolContext } from '../../registry';
 import { getOrgUrlContext } from '../../view-urls';
 import { isAdminOrOwnerRole } from '../../access-control';
+import { registerMcpOAuthClient } from '../../../mcp-proxy/client';
+import type { McpOAuthMetadata } from '../../../mcp-proxy/types';
 
 // ============================================
 // Auth Schema Types
@@ -40,6 +42,7 @@ type OAuthAuthMethod = {
   provider: string;
   requiredScopes?: string[];
   optionalScopes?: string[];
+  resource?: string;
   loginScopes?: string[];
   authorizationUrl?: string;
   tokenUrl?: string;
@@ -297,6 +300,7 @@ export function buildOAuthConnectConfig(
       ? { tokenEndpointAuthMethod: method.tokenEndpointAuthMethod }
       : {}),
     ...(typeof method.usePkce === 'boolean' ? { usePkce: method.usePkce } : {}),
+    ...(typeof method.resource === 'string' ? { resource: method.resource } : {}),
   };
 }
 
@@ -846,7 +850,12 @@ export function serializeAuthProfile(authProfile: AuthProfileRow): Record<string
 // ============================================
 
 export async function maybeUpsertAuthAfterInstall(
-  installed: { connectorKey: string; name: string; authSchema: AuthSchema },
+  installed: {
+    connectorKey: string;
+    name: string;
+    authSchema: AuthSchema;
+    mcpOAuth?: McpOAuthMetadata;
+  },
   authValues: Record<string, string> | undefined,
   ctx: ToolContext
 ): Promise<void> {
@@ -861,4 +870,76 @@ export async function maybeUpsertAuthAfterInstall(
       createdBy: ctx.userId ?? 'api',
     });
   }
+
+  const oauthMetadata = installed.mcpOAuth;
+  if (!oauthMetadata?.registrationUrl) return;
+
+  const oauthMethod = getOAuthMethods(installed.authSchema)[0];
+  if (!oauthMethod) {
+    throw new Error('OAuth-protected MCP connector is missing its OAuth auth method');
+  }
+
+  const callbackBase = getConnectBaseUrl(ctx);
+  if (!callbackBase) {
+    throw new Error('A public Lobu callback URL is required to register the MCP OAuth client');
+  }
+  const redirectUri = `${callbackBase}/connect/oauth/callback`;
+  const { clientIdKey, clientSecretKey } = getOAuthCredentialKeys(oauthMethod);
+  const provider = oauthMethod.provider.toLowerCase();
+  const sql = getDb();
+
+  // The connector-definition row is the existing durable install chokepoint.
+  // Lock it while checking/creating the one org-scoped dynamic client so two
+  // replicas cannot both register separate provider clients for one connector.
+  await sql.begin(async (tx) => {
+    const connectorRows = await tx`
+      SELECT id
+      FROM connector_definitions
+      WHERE organization_id = ${ctx.organizationId}
+        AND key = ${installed.connectorKey}
+        AND status = 'active'
+      FOR UPDATE
+    `;
+    if (connectorRows.length === 0) {
+      throw new Error(`Installed connector '${installed.connectorKey}' was not found`);
+    }
+
+    const existingRows = await tx`
+      SELECT id
+      FROM auth_profiles
+      WHERE organization_id = ${ctx.organizationId}
+        AND connector_key = ${installed.connectorKey}
+        AND profile_kind = 'oauth_app'
+        AND status = 'active'
+        AND lower(provider) = ${provider}
+      LIMIT 1
+    `;
+    if (existingRows.length > 0) return;
+
+    const registration = await registerMcpOAuthClient({
+      metadata: oauthMetadata,
+      redirectUris: [redirectUri],
+      clientName: `Lobu - ${installed.name}`,
+    });
+    if (!registration) return;
+
+    await createAuthProfile(
+      {
+        organizationId: ctx.organizationId,
+        connectorKey: installed.connectorKey,
+        displayName: `${installed.name} OAuth App`,
+        slug: normalizeAuthProfileSlug(`${installed.connectorKey}-${provider}-app`),
+        profileKind: 'oauth_app',
+        authData: {
+          [clientIdKey]: registration.clientId,
+          ...(registration.clientSecret
+            ? { [clientSecretKey]: registration.clientSecret }
+            : {}),
+        },
+        provider,
+        createdBy: ctx.userId ?? 'api',
+      },
+      tx
+    );
+  });
 }

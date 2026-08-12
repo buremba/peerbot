@@ -114,6 +114,7 @@ export function buildAuthorizationUrl(params: {
   authorizationUrl?: string;
   authParams?: Record<string, string>;
   codeChallenge?: string;
+  resource?: string;
 }): string | null {
   const config = resolveProviderConfig({
     provider: params.provider,
@@ -129,6 +130,9 @@ export function buildAuthorizationUrl(params: {
   url.searchParams.set('state', params.state);
 
   url.searchParams.set('scope', params.scopes.join(' '));
+  if (params.resource) {
+    url.searchParams.set('resource', params.resource);
+  }
 
   // Add provider-specific or connector-specific extra params
   if (config.authParams) {
@@ -165,6 +169,7 @@ export async function exchangeCodeForTokens(params: {
   tokenUrl?: string;
   tokenEndpointAuthMethod?: OAuthTokenEndpointAuthMethod;
   codeVerifier?: string;
+  resource?: string;
 }): Promise<OAuthTokens | null> {
   const config = resolveProviderConfig({
     provider: params.provider,
@@ -183,6 +188,9 @@ export async function exchangeCodeForTokens(params: {
 
   if (params.codeVerifier) {
     bodyParams.code_verifier = params.codeVerifier;
+  }
+  if (params.resource) {
+    bodyParams.resource = params.resource;
   }
 
   if (authMethod === 'client_secret_post') {

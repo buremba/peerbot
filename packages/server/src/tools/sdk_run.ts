@@ -44,33 +44,30 @@ export const QuerySchema = Type.Object(SCRIPT_FIELDS);
 type RunArgs = Static<typeof RunSchema>;
 type QueryArgs = Static<typeof QuerySchema>;
 
-const SdkCallTraceEntrySchema = Type.Object({
-  path: Type.String({ description: "Dotted SDK method path (e.g. entities.list)." }),
-  orgPath: Type.Array(Type.String(), {
-    description: "Org slugs traversed via client.org(...) before the call, if any.",
-  }),
+const PublicSideEffectPreviewEntrySchema = Type.Object({
+  path: Type.String({ description: "Dotted SDK method path for the proposed action." }),
   access: Type.Union(
     [
-      Type.Literal("read"),
       Type.Literal("write"),
       Type.Literal("external"),
       Type.Literal("admin"),
       Type.Literal("unknown"),
     ],
-    { description: "Access class of the method." },
+    { description: "Access class of the proposed action." },
   ),
-  args: Type.Array(Type.Unknown(), { description: "Call arguments (redacted + truncated)." }),
-  skipped: Type.Boolean({
-    description: "true when dry_run skipped this write/external call.",
+  args: Type.Array(Type.Unknown(), {
+    description: "Redacted, bounded arguments for the proposed action.",
   }),
 });
 
 /**
- * Result of `run_sdk` / `query_sdk` — mirrors the object assembled in
- * `runSandbox` from `RunScriptResult` (run-script.ts). Advertised as the
- * tools' `outputSchema` so clients know where the script's return value and
- * the dry-run preview land; a runtime mismatch degrades to text-only
- * (`validateToolResult`), never a failed call.
+ * Public MCP result for `run_sdk` / `query_sdk`.
+ *
+ * The sandbox internally captures logs, timings, stack traces, org traversal,
+ * and a bounded SDK-call trace. The execution and audit pipeline consumes that
+ * richer result before the MCP boundary. ChatGPT receives only the requested
+ * return value, a concise script error, and (for dry-run) the actions the user
+ * is being asked to review.
  */
 export const SdkScriptResultSchema = Type.Object({
   title: Type.Optional(
@@ -83,95 +80,133 @@ export const SdkScriptResultSchema = Type.Object({
   return_value: Type.Optional(
     Type.Unknown({
       description:
-        "The script's default-export return value. Omitted when the return exceeded the output cap (see return_value_preview).",
+        "The script's default-export return value. Omitted when it exceeded the output cap.",
     }),
   ),
   return_value_preview: Type.Optional(
     Type.String({
       description:
-        "UTF-8-safe head of the serialized return value when it exceeded the output cap; return_value is then omitted. This is a preview, not the value — rerun with filtering / LIMIT / OFFSET, or pull slices with client.query / query_sql. Don't re-return the whole set.",
+        "UTF-8-safe head of an oversized serialized return value. Rerun with filtering or pagination for the rest.",
     }),
   ),
   return_truncated: Type.Optional(
     Type.Object(
       {
-        total_bytes: Type.Integer({
-          description: "Serialized size of the original return value.",
-        }),
-        kept_bytes: Type.Integer({
-          description: "UTF-8 size of the preview string.",
-        }),
+        total_bytes: Type.Integer(),
+        kept_bytes: Type.Integer(),
       },
-      {
-        description: "Present with return_value_preview: the original and preview byte sizes.",
-      },
+      { description: "Present when return_value_preview is only a partial result." },
     ),
-  ),
-  logs: Type.Array(
-    Type.Object({
-      level: Type.Union([Type.Literal("log"), Type.Literal("warn"), Type.Literal("error")]),
-      message: Type.String(),
-      ts: Type.Number(),
-    }),
-    { description: "console.log/warn/error output captured from the script." },
   ),
   error: Type.Optional(
     Type.Object(
       {
         name: Type.String(),
         message: Type.String(),
-        details: Type.Optional(
-          Type.Unknown({
-            description:
-              "Redacted structured business-error details returned by the SDK action.",
-          }),
-        ),
-        stack: Type.Optional(Type.String()),
-        line: Type.Optional(Type.Number()),
-        column: Type.Optional(Type.Number()),
-        code: Type.Optional(
-          Type.String({
-            description:
-              "Structured error code (lobu#2051 Item 2), e.g. UPSTREAM_TIMEOUT / RATE_LIMITED / VALIDATION.",
-          }),
-        ),
-        retryable: Type.Optional(
-          Type.Boolean({
-            description:
-              "Whether re-running the identical script may succeed. Advisory — run_sdk is never auto-retried (may have side effects).",
-          }),
-        ),
+        code: Type.Optional(Type.String()),
+        retryable: Type.Optional(Type.Boolean()),
       },
-      { description: "Present when success=false: the thrown error, with script position." },
+      { description: "Concise script failure information, without stack traces or internal diagnostics." },
     ),
   ),
-  duration_ms: Type.Number(),
-  sdk_calls: Type.Integer({ description: "Number of SDK calls the script made (dispatched + skipped)." }),
   skipped_calls: Type.Integer({
-    description: "Total calls skipped because dry_run=true — the full dry-run surface, even when side_effect_preview is truncated.",
+    description: "Number of write/admin/external calls skipped by dry-run.",
   }),
-  sdk_call_trace: Type.Array(SdkCallTraceEntrySchema, {
-    description:
-      "Every dispatched SDK call, in order. Bounded (tail-kept): when the total exceeds the trace cap the oldest entries are dropped and reported in sdk_call_trace_truncated; a single entry larger than the cap is dropped and counted too.",
+  side_effect_preview: Type.Array(PublicSideEffectPreviewEntrySchema, {
+    description: "Proposed write/admin/external calls skipped because dry_run=true.",
   }),
-  side_effect_preview: Type.Array(SdkCallTraceEntrySchema, {
-    description:
-      "Write/admin/external calls that were skipped because dry_run=true (skipped: true). Bounded like sdk_call_trace; see skipped_calls for the total. Method-level side-effect preview, not proof the skipped handler would accept the payload.",
-  }),
-  sdk_call_trace_truncated: Type.Optional(
-    Type.Object(
-      {
-        dropped_entries: Type.Integer({
-          description: "Trace/preview entries dropped because the trace cap was exceeded.",
-        }),
-      },
-      {
-        description: "Present when sdk_call_trace or side_effect_preview was truncated (oldest entries dropped).",
-      },
-    ),
+  side_effect_preview_truncated: Type.Optional(
+    Type.Object({
+      dropped_entries: Type.Integer({ minimum: 1 }),
+    }),
   ),
   dry_run: Type.Boolean(),
 });
+
+type PublicSideEffectPreviewEntry = Static<typeof PublicSideEffectPreviewEntrySchema>;
+
+function asPublicPreviewEntry(value: unknown): PublicSideEffectPreviewEntry | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.path !== "string" || !Array.isArray(row.args)) return null;
+  const access =
+    row.access === "write" ||
+    row.access === "external" ||
+    row.access === "admin" ||
+    row.access === "unknown"
+      ? row.access
+      : "unknown";
+  return { path: row.path, access, args: row.args };
+}
+
+/**
+ * Minimize a rich internal SDK result for the MCP/model boundary. The raw
+ * object remains available to executeTool's audit seam before this function is
+ * called, so removing diagnostics here does not weaken Lobu's audit trail.
+ */
+export function toMcpPublicSdkScriptResult(result: unknown): unknown {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return result;
+  const row = result as Record<string, unknown>;
+  const preview = Array.isArray(row.side_effect_preview)
+    ? row.side_effect_preview
+        .map(asPublicPreviewEntry)
+        .filter((entry): entry is PublicSideEffectPreviewEntry => entry !== null)
+    : [];
+  const skippedCalls =
+    typeof row.skipped_calls === "number" && Number.isSafeInteger(row.skipped_calls)
+      ? Math.max(0, row.skipped_calls)
+      : preview.length;
+
+  const out: Record<string, unknown> = {
+    success: row.success === true,
+    skipped_calls: skippedCalls,
+    side_effect_preview: preview,
+    dry_run: row.dry_run === true,
+  };
+
+  // Echo the caller-supplied heading so MCP App / ChatGPT result cards can
+  // render it above status. Documented on the input schema and on
+  // SdkScriptResultSchema — dropping it here breaks that contract.
+  if (typeof row.title === "string" && row.title.trim()) {
+    out.title = row.title.trim();
+  }
+
+  if (Object.hasOwn(row, "return_value") && row.return_value !== undefined) {
+    out.return_value = row.return_value;
+  }
+  if (typeof row.return_value_preview === "string") {
+    out.return_value_preview = row.return_value_preview;
+  }
+  if (row.return_truncated && typeof row.return_truncated === "object") {
+    const truncated = row.return_truncated as Record<string, unknown>;
+    if (
+      typeof truncated.total_bytes === "number" &&
+      typeof truncated.kept_bytes === "number"
+    ) {
+      out.return_truncated = {
+        total_bytes: truncated.total_bytes,
+        kept_bytes: truncated.kept_bytes,
+      };
+    }
+  }
+
+  if (row.error && typeof row.error === "object" && !Array.isArray(row.error)) {
+    const error = row.error as Record<string, unknown>;
+    if (typeof error.message === "string") {
+      out.error = {
+        name: typeof error.name === "string" ? error.name : "Error",
+        message: error.message,
+        ...(typeof error.code === "string" ? { code: error.code } : {}),
+        ...(typeof error.retryable === "boolean" ? { retryable: error.retryable } : {}),
+      };
+    }
+  }
+
+  if (skippedCalls > preview.length) {
+    out.side_effect_preview_truncated = { dropped_entries: skippedCalls - preview.length };
+  }
+  return out;
+}
 
 /**
  * Whether the sandbox runs in its skip-and-record path for this call.
@@ -219,17 +254,19 @@ async function runSandbox(
   ctx: ToolContext,
 ): Promise<unknown> {
   const allowCrossOrg = ctx.allowCrossOrg;
+  const agentDryRun = "dry_run" in args ? args.dry_run === true : false;
+  const dryRun = resolveSandboxDryRun({
+    executionMode: ctx.executionMode,
+    sdkMode: mode,
+    agentDryRun,
+  });
   const result = await runScript({
     source: args.script,
     sdk: (abortSignal) => buildClientSDK(ctx, env, { mode, allowCrossOrg, abortSignal }),
     sdkMode: mode,
     allowCrossOrg,
     maxAccessLevel: resolveMaxAccessLevel(ctx.memberRole, ctx.scopes),
-    dryRun: resolveSandboxDryRun({
-      executionMode: ctx.executionMode,
-      sdkMode: mode,
-      agentDryRun: "dry_run" in args ? args.dry_run === true : false,
-    }),
+    dryRun,
     dryRunDispatchPaths:
       ctx.executionMode === "capture" ? CAPTURE_DISPATCH_PATHS : undefined,
     context: {
@@ -265,7 +302,10 @@ async function runSandbox(
     side_effect_preview: result.sideEffectPreview,
     sdk_call_trace_truncated:
       result.traceDropped > 0 ? { dropped_entries: result.traceDropped } : undefined,
-    dry_run: mode === "full" && "dry_run" in args && args.dry_run === true,
+    // Effective sandbox dry-run, including capture-mode enforcement. Must match
+    // the dryRun flag passed to runScript so skipped_calls / side_effect_preview
+    // never appear under dry_run:false.
+    dry_run: dryRun,
   };
 }
 

@@ -188,10 +188,9 @@ describe("run_sdk / query_sdk: script contract on the wire", () => {
 		}
 	});
 
-	it("a representative runSandbox result validates against SdkScriptResultSchema", () => {
-		// Mirrors the object assembled in sdk_run.ts runSandbox(). If this
-		// drifts (renamed field, changed type), structuredContent silently
-		// degrades to text-only — catch it here instead.
+	it("representative public SDK results validate against SdkScriptResultSchema", () => {
+		// Public MCP schema: return value + concise error + dry-run proposal only.
+		// Internal diagnostics (logs, stacks, call traces, timings) are audit-only.
 		const preview = '{"anything":[1,"two",nul… [truncated]';
 		const sample = {
 			success: true,
@@ -200,30 +199,20 @@ describe("run_sdk / query_sdk: script contract on the wire", () => {
 				total_bytes: 2_000_000,
 				kept_bytes: Buffer.byteLength(preview, "utf8"),
 			},
-			logs: [{ level: "warn", message: "m", ts: 123 }],
-			duration_ms: 42,
-			sdk_calls: 2,
 			skipped_calls: 2,
-			sdk_call_trace: [
-				{ path: "entities.list", orgPath: [], access: "read", args: [{}], skipped: false },
-			],
-			sdk_call_trace_truncated: { dropped_entries: 3 },
 			side_effect_preview: [
-				{ path: "entities.create", orgPath: ["acme"], access: "write", args: [{}], skipped: true },
-				{ path: "connections.connect", orgPath: ["acme"], access: "admin", args: [{}], skipped: true },
+				{ path: "entities.create", access: "write", args: [{}] },
+				{ path: "connections.connect", access: "admin", args: [{}] },
 			],
+			side_effect_preview_truncated: { dropped_entries: 3 },
 			dry_run: true,
 		};
 		expect(validateToolResult(SdkScriptResultSchema, sample)).not.toBeNull();
 		// Failure path: optional return fields absent (undefined is dropped on the wire).
 		const minimal = {
 			success: false,
-			logs: [],
-			error: { name: "TypeError", message: "boom", stack: "s", line: 3, column: 7 },
-			duration_ms: 1,
-			sdk_calls: 0,
+			error: { name: "TypeError", message: "boom", code: "VALIDATION", retryable: false },
 			skipped_calls: 0,
-			sdk_call_trace: [],
 			side_effect_preview: [],
 			dry_run: false,
 		};

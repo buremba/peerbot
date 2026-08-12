@@ -650,7 +650,12 @@ describe("connections.connect — setup_required continuation", () => {
 
 		const failed = await client.runSdk<{
 			success: boolean;
-			error?: { name: string; message: string; details?: unknown };
+			error?: {
+				name: string;
+				message: string;
+				code?: string;
+				retryable?: boolean;
+			};
 		}>(
 			`export default async (_ctx, client) => client.connections.connect({ connector_key: "missing-continuation-connector" });`,
 		);
@@ -658,10 +663,9 @@ describe("connections.connect — setup_required continuation", () => {
 		expect(failed.error).toMatchObject({
 			name: "ClientSdkActionError",
 			message: expect.stringMatching(/connector.*not found/i),
-			details: {
-				error: expect.stringMatching(/connector.*not found/i),
-			},
 		});
+		expect(failed.error).not.toHaveProperty("details");
+		expect(failed.error).not.toHaveProperty("stack");
 		expect(failed.error?.message).not.toContain('{"');
 	});
 });

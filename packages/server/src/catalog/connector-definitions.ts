@@ -98,6 +98,7 @@ export async function listScopedConnectorDefinitions(params: {
 
 	const rows = await sql`
     SELECT
+      d.id,
       d.key,
       d.name,
       d.description,

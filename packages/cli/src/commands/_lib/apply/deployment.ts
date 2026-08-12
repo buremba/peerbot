@@ -164,10 +164,26 @@ export function loadBaselineFromManifest(
  */
 export function buildAttributionAndOwned(
   state: DesiredState,
-  remote: RemoteSnapshot
+  remote: RemoteSnapshot,
+  orgId?: string
 ): BaselineRecord {
+  // The list endpoints also return PUBLIC definitions from OTHER orgs — a
+  // foreign same-slug row must never populate the baseline (it would replace
+  // the target org's incarnation id and facets). Filter to the target org.
+  const ownedEntityTypes =
+    orgId === undefined
+      ? remote.entityTypes
+      : remote.entityTypes.filter(
+          (e) => e.organization_id === orgId || e.organization_id === undefined
+        );
+  const ownedRelTypes =
+    orgId === undefined
+      ? remote.relationshipTypes
+      : remote.relationshipTypes.filter(
+          (r) => r.organization_id === orgId || r.organization_id === undefined
+        );
   const remoteEntityBySlug = new Map(
-    remote.entityTypes.map((e) => [e.slug, e])
+    ownedEntityTypes.map((e) => [e.slug, e])
   );
   const entityTypes = state.memorySchema.entityTypes.map((d) => {
     const r = remoteEntityBySlug.get(d.slug);
@@ -191,7 +207,7 @@ export function buildAttributionAndOwned(
     };
   });
   const remoteRelBySlug = new Map(
-    remote.relationshipTypes.map((r) => [r.slug, r])
+    ownedRelTypes.map((r) => [r.slug, r])
   );
   const relationshipTypes = state.memorySchema.relationshipTypes.map((d) => {
     const r = remoteRelBySlug.get(d.slug);
@@ -250,7 +266,7 @@ export function buildAttributionAndOwned(
     ...state.connectors.connections.map((c) => c.connector),
   ]);
   for (const def of remote.connectorDefinitions) {
-    if (def.installed && appliedConnectorKeys.has(def.key)) {
+    if (def.installed && def.id !== undefined && appliedConnectorKeys.has(def.key)) {
       owned.push(`connector-definition:${def.id}`);
     }
   }

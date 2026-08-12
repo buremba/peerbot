@@ -345,16 +345,19 @@ export async function fetchRemoteSnapshot(
 
   const entityTypes = only === "agents" ? [] : await client.listEntityTypes();
   // View templates are fetched per-type, NOT streamed in the entity-type list
-  // (the UI/bootstrap calls that endpoint). Fetch only for types the config
-  // declares a template for — plus, under prune, every config type so an omitted
-  // template can be detected as a removal. Bounded to config-present types.
+  // (the UI/bootstrap calls that endpoint). Fetch for config-declared types
+  // (a declared template, or under prune so an omitted one is a removal) AND,
+  // under prune, for remote-only candidates whose owned/unchanged delete
+  // classification must see the real template — otherwise an unhydrated
+  // `undefined` compares equal to a stale baseline and a UI-authored template
+  // edit is misclassified as unchanged and auto-deleted. Bounded to the org's
+  // own entity-type set.
   if (entityTypes.length > 0) {
     const desiredBySlug = new Map(
       state.memorySchema.entityTypes.map((e) => [e.slug, e])
     );
     for (const remote of entityTypes) {
       const desired = desiredBySlug.get(remote.slug);
-      if (!desired) continue;
       // The list also surfaces public types owned by OTHER orgs. Fetch a
       // template only for types this org owns: the fetch resolves by slug in
       // THIS org, so a foreign public type whose local slug is absent (or
@@ -366,7 +369,11 @@ export async function fetchRemoteSnapshot(
       ) {
         continue;
       }
-      if (desired.viewTemplate === undefined && !prune) continue;
+      const declaredTemplate = desired?.viewTemplate !== undefined;
+      const remoteOnlyUnderPrune = prune && !desired;
+      if (!declaredTemplate && !(remoteOnlyUnderPrune || (prune && desired))) {
+        continue;
+      }
       const tpl = await client.getEntityTypeViewTemplate(remote.slug);
       if (tpl) remote.viewTemplate = tpl;
     }
@@ -383,7 +390,10 @@ export async function fetchRemoteSnapshot(
       state.memorySchema.relationshipTypes.map((r) => r.slug)
     );
     for (const remote of relationshipTypes) {
-      if (!desiredRelSlugs.has(remote.slug)) continue;
+      // Hydrate rules for config-declared types AND (under prune) remote-only
+      // candidates, so the owned/unchanged delete classification sees the real
+      // rule set instead of an unhydrated undefined.
+      if (!desiredRelSlugs.has(remote.slug) && !prune) continue;
       const rules = await client.listRelationshipTypeRules(remote.slug);
       remote.rules = rules.map((r) => ({ source: r.source, target: r.target }));
     }
@@ -1535,7 +1545,20 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
           attribution: { entityTypes: [], relationshipTypes: [], watchers: [] },
           owned: [],
         })
-      : buildAttributionAndOwned(state, remote);
+      : (() => {
+          const built = buildAttributionAndOwned(state, remote, resolvedOrg?.id);
+          // `--only memory` never touches connectors — carry forward prior
+          // connector ownership so a later prune still recognizes them.
+          if (opts.only === "memory" && baselineRecord) {
+            built.owned = [
+              ...built.owned,
+              ...baselineRecord.owned.filter((k) =>
+                k.startsWith("connector-definition:")
+              ),
+            ];
+          }
+          return built;
+        })();
   const baseline: Baseline = baselineRecord
     ? {
         attribution: {

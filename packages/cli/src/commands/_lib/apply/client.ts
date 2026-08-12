@@ -1631,6 +1631,9 @@ function mapConnectorDefinitionItem(item: {
   const installed = detail.installed !== false;
   return {
     key: item.id,
+    ...(typeof detail.connector_definition_id === "number"
+      ? { id: detail.connector_definition_id }
+      : {}),
     name: item.name,
     version: typeof detail.version === "string" ? detail.version : undefined,
     options_schema:

@@ -15,6 +15,7 @@ import { compileConnectionRowVisibility } from '../authz/connection-visibility';
 import { getDb } from '../db/client';
 import { callerIsAdmin } from './admin/helpers/db-helpers';
 import type { Env } from '../index';
+import type { ContentItem } from '@lobu/connector-sdk';
 import type { FeedReader, SourceKind } from '../lib/feed-reader';
 import { readVirtualFeed } from '../lib/connector-pushdown';
 import {
@@ -31,6 +32,7 @@ import logger from '../utils/logger';
 import { expandSearchQueries } from '../utils/query-expansion';
 import { buildEntityUrl, getPublicWebUrl } from '../utils/url-builder';
 import { getWorkspaceProvider } from '../workspace';
+import { getContent } from './get_content';
 import type { ToolContext } from './registry';
 import { markAcceptedInternalFields, withValidatedArgs } from './validate-args';
 import { getErrorMessage } from '@lobu/core';
@@ -372,6 +374,66 @@ function withRecall<T extends UnifiedSearchResult>(
   // Each recall source already omits its facet when empty, so a plain merge is
   // enough — no per-facet guards, no type-switch.
   return Object.assign(result, recall);
+}
+
+function parseExactContentId(query: string | undefined): number | null {
+  if (!query) return null;
+  const trimmed = query.trim();
+  const match =
+    trimmed.match(/^#?(\d+)$/) ??
+    trimmed.match(
+      /\b(?:memory|content(?:\s+id)?|event(?:\s+id)?)\s*(?:#|:)?\s*(\d+)\b/i
+    );
+  if (!match) return null;
+  const id = Number(match[1]);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+function toExactContentSnippet(item: ContentItem): ContentSnippet | null {
+  const id = Number(item.id);
+  if (!Number.isSafeInteger(id) || id <= 0) return null;
+  return {
+    id,
+    title: typeof item.title === 'string' ? item.title : null,
+    text_content:
+      typeof item.text_content === 'string'
+        ? item.text_content
+        : typeof item.payload_text === 'string'
+          ? item.payload_text
+          : '',
+    author_name: typeof item.author_name === 'string' ? item.author_name : null,
+    source_url: typeof item.source_url === 'string' ? item.source_url : null,
+    platform:
+      typeof item.platform === 'string' && item.platform.length > 0 ? item.platform : 'lobu',
+    occurred_at: typeof item.occurred_at === 'string' ? item.occurred_at : null,
+    similarity: 1,
+    entity_ids: Array.isArray(item.entity_ids)
+      ? item.entity_ids.map(Number).filter((value) => Number.isSafeInteger(value) && value > 0)
+      : [],
+  };
+}
+
+async function recallExactContentId(
+  query: string | undefined,
+  env: Env,
+  ctx: ToolContext
+): Promise<UnifiedSearchResult | null> {
+  const contentId = parseExactContentId(query);
+  if (contentId === null) return null;
+
+  const exact = await getContent({ content_ids: [contentId], limit: 50 }, env, ctx);
+  const exactItems = (Array.isArray(exact.content) ? exact.content : []) as ContentItem[];
+  const content = exactItems
+    .filter((item) => Number(item.id) === contentId)
+    .map(toExactContentSnippet)
+    .filter((item): item is ContentSnippet => item !== null);
+  if (content.length === 0) return null;
+
+  return emptyResult({
+    content,
+    discovery_status: 'complete',
+    metadata: { total_matches: content.length, page_size: content.length },
+  });
 }
 
 // ============================================
@@ -908,6 +970,16 @@ async function searchImpl(
       );
     }
   }
+
+  // Preserve compatibility with reviewer prompts and user language such as
+  // "open memory 4939822". The public schema already accepts a query string,
+  // so this server-side exact-read fast path fixes existing clients without a
+  // metadata rescan. The canonical knowledge reader enforces tenant, connector,
+  // entity-policy, and supersede-chain visibility before anything is returned.
+  const exactContent = includeContent
+    ? await recallExactContentId(args.query, env, ctx)
+    : null;
+  if (exactContent) return exactContent;
 
   // Helper to run content search in parallel. Runs when we have either a text
   // query or a pre-computed embedding — forwarding the embedding lets the

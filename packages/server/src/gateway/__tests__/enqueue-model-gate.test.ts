@@ -21,6 +21,7 @@ import type {
 import { enforceModelAllowList } from "../auth/settings/model-selection.js";
 import { generateDeploymentName } from "../orchestration/deployment-manager.js";
 import { MessageConsumer } from "../orchestration/message-consumer.js";
+import { TestMessageConsumer } from "./helpers/test-message-consumer.js";
 
 // The deployment name the consumer derives for makePayload()'s routing keys.
 // Returning a deployment with THIS name from listDeployments makes
@@ -221,7 +222,7 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
   test("a disallowed model on the WARM path is gated BEFORE the payload is persisted", async () => {
     const { queue, sends } = makeCapturingQueue();
     // agent.models = ["openai/gpt-5"]; the request asks for openai/gpt-4o.
-    const consumer = new MessageConsumer(
+    const consumer = new TestMessageConsumer(
       makeConfig(),
       makeWarmDeploymentManager(["openai/gpt-5"]),
       queue,
@@ -238,7 +239,7 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
 
   test("an in-list model passes through unchanged", async () => {
     const { queue, sends } = makeCapturingQueue();
-    const consumer = new MessageConsumer(
+    const consumer = new TestMessageConsumer(
       makeConfig(),
       makeWarmDeploymentManager(["openai/gpt-5", "claude/claude-sonnet-5"]),
       queue,
@@ -252,7 +253,7 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
 
   test("allow-all (null policy) leaves the requested model unchanged", async () => {
     const { queue, sends } = makeCapturingQueue();
-    const consumer = new MessageConsumer(
+    const consumer = new TestMessageConsumer(
       makeConfig(),
       makeWarmDeploymentManager(null),
       queue,
@@ -266,7 +267,7 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
 
   test("a sentinel-only policy drops the model (fails closed) before persistence", async () => {
     const { queue, sends } = makeCapturingQueue();
-    const consumer = new MessageConsumer(
+    const consumer = new TestMessageConsumer(
       makeConfig(),
       makeWarmDeploymentManager(["chatgpt/__unresolved__"]),
       queue,
@@ -284,7 +285,7 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
     const { queue, sends } = makeCapturingQueue();
     // resolveDispatchModel throws "db down". The disallowed model MUST NOT
     // survive on the persisted payload — the warm path won't re-gate later.
-    const consumer = new MessageConsumer(
+    const consumer = new TestMessageConsumer(
       makeConfig(),
       makeThrowingDeploymentManager(),
       queue,
@@ -299,7 +300,7 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
 
   test("#2 CROSS-TENANT GUARD: a payload with NO organizationId is rejected before enqueue", async () => {
     const { queue, sends } = makeCapturingQueue();
-    const consumer = new MessageConsumer(
+    const consumer = new TestMessageConsumer(
       makeConfig(),
       makeWarmDeploymentManager(["openai/gpt-5"]),
       queue,
@@ -324,7 +325,7 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
 
   test("a payload with no agentId is rejected before enqueue", async () => {
     const { queue, sends } = makeCapturingQueue();
-    const consumer = new MessageConsumer(
+    const consumer = new TestMessageConsumer(
       makeConfig(),
       makeWarmDeploymentManager(["openai/gpt-5"]),
       queue,
@@ -345,7 +346,7 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
 
   test("the same channel thread routes different agents to different worker queues", async () => {
     const { queue, sends } = makeCapturingQueue();
-    const consumer = new MessageConsumer(
+    const consumer = new TestMessageConsumer(
       makeConfig(),
       makeWarmDeploymentManager(null),
       queue,
@@ -373,7 +374,7 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
     // allow=["xai/grok-4","openai/gpt-5"]; xai UNCREDENTIALED, openai routable.
     // A disallowed request must replace onto openai/gpt-5 (routable), NOT the
     // first non-sentinel xai/grok-4 (which would fail at run).
-    const consumer = new MessageConsumer(
+    const consumer = new TestMessageConsumer(
       makeConfig(),
       makeRoutableDeploymentManager(
         ["xai/grok-4", "openai/gpt-5"],
@@ -393,7 +394,7 @@ describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", 
     const { queue, sends } = makeCapturingQueue();
     // The catalog isn't injected yet (startup / a persisted job drained before
     // wiring). The unvalidated model MUST NOT survive to the warm worker.
-    const consumer = new MessageConsumer(
+    const consumer = new TestMessageConsumer(
       makeConfig(),
       makeUnwiredCatalogDeploymentManager(),
       queue,

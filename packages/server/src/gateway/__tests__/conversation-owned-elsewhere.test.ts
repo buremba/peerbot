@@ -36,6 +36,7 @@ import type {
 } from "../orchestration/deployment-manager.js";
 import { MessageConsumer } from "../orchestration/message-consumer.js";
 import { ensureEncryptionKey } from "./helpers/db-setup.js";
+import { TestMessageConsumer } from "./helpers/test-message-consumer.js";
 
 // This suite drives `handleMessage`, which mints a run-job token via
 // buildRunJobToken() → encrypt(). That lazily reads ENCRYPTION_KEY, and a
@@ -155,7 +156,7 @@ async function runTurn(
 
 describe("multi-replica: conversation owned by another pod", () => {
   test("owned-elsewhere → drops silently, no user-facing failure", async () => {
-    const consumer = new MessageConsumer(
+    const consumer = new TestMessageConsumer(
       makeConfig(),
       makeDeploymentManager(
         new ConversationOwnedElsewhereError("owned by another replica"),
@@ -189,7 +190,7 @@ describe("multi-replica: conversation owned by another pod", () => {
   });
 
   test("genuine startup failure → still surfaces a user-facing error", async () => {
-    const consumer = new MessageConsumer(
+    const consumer = new TestMessageConsumer(
       makeConfig(),
       makeDeploymentManager(new Error("worker spawn failed: OOM")),
       makeFakeQueue(),
@@ -215,7 +216,7 @@ describe("multi-replica: conversation owned by another pod", () => {
     const dm = makeDeploymentManager(
       new ConversationOwnedElsewhereError("owned by another replica"),
     );
-    const consumer = new MessageConsumer(
+    const consumer = new TestMessageConsumer(
       makeConfig(),
       dm,
       makeFakeQueue(),

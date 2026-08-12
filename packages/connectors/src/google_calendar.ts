@@ -57,14 +57,8 @@ interface CalendarEventListResponse {
 // Checkpoint
 // ---------------------------------------------------------------------------
 
-// Google binds allowed query parameters to a changes sync token. Unversioned
-// v1.1.0 checkpoints predate `showDeleted`, so roll them over without replaying
-// their tokens under the current query shape.
-const CHANGES_CURSOR_VERSION = 1;
-
 interface CalendarCheckpoint {
   sync_token?: string;
-  param_version?: number;
   last_sync_at?: string;
 }
 
@@ -472,11 +466,14 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     const events: EventEnvelope[] = [];
     const durableChanges = ctx.feedKey === 'changes';
 
-    // Durable changes tokens are reusable only under the query shape that
-    // minted them. The legacy events feed retains its existing token behavior.
-    const tokenMintsCurrentShape =
-      !durableChanges || checkpoint.param_version === CHANGES_CURSOR_VERSION;
-    if (checkpoint.sync_token && tokenMintsCurrentShape) {
+    // No cursor-version guard: v1.1.0 changes tokens (minted without
+    // showDeleted) were retired by a one-time migration that cleared any
+    // unversioned changes checkpoint. Hosted prod carried exactly one such feed
+    // and it was already versioned, so the migration was a no-op. Self-hosted
+    // installs upgrading from that release with a v1.1.0 changes token are out
+    // of migration reach and may see Google reject the token under the current
+    // query shape; their recovery is to clear the feed checkpoint.
+    if (checkpoint.sync_token) {
       const result = await this.syncWithToken(
         http,
         calendarId,
@@ -485,7 +482,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
         durableChanges
       );
       if (result) {
-        return this.buildResult(result.events, result.nextSyncToken, durableChanges);
+        return this.buildResult(result.events, result.nextSyncToken);
       }
       // The stored token was rejected (see isSyncTokenRejection). Fall through
       // to a full sync exactly once — no retry loop. The full sync below either
@@ -568,7 +565,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
       );
     }
 
-    return this.buildResult(events, nextSyncToken, durableChanges);
+    return this.buildResult(events, nextSyncToken);
   }
 
   // -------------------------------------------------------------------------
@@ -958,8 +955,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
 
   private buildResult(
     events: EventEnvelope[],
-    syncToken: string | undefined,
-    durableChanges: boolean
+    syncToken: string | undefined
   ): SyncResult {
     // Sort events by occurred_at descending
     events.sort((a, b) => b.occurred_at.getTime() - a.occurred_at.getTime());
@@ -970,7 +966,6 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     // the key is absent, and the next run correctly starts from a full sync.
     const newCheckpoint: CalendarCheckpoint = {
       ...(syncToken ? { sync_token: syncToken } : {}),
-      ...(durableChanges && syncToken ? { param_version: CHANGES_CURSOR_VERSION } : {}),
       last_sync_at: new Date().toISOString(),
     };
 

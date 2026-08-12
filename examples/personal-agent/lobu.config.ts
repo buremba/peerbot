@@ -13,11 +13,13 @@ import {
 import type GoogleTakeoutConnector from "./google-takeout.connector.ts";
 import type InstagramTakeoutConnector from "./instagram-takeout.connector.ts";
 import type LinkedInConnector from "./linkedin.connector.ts";
+import type MarketQuotesConnector from "./market-quotes.connector.ts";
 import type RevolutTransactionsConnector from "./revolut-transactions.connector.ts";
 import type SpotifyConnector from "./spotify.connector.ts";
 import type TwitterTakeoutConnector from "./twitter-takeout.connector.ts";
 import type WhatsAppCloudConnector from "./whatsapp.cloud.connector.ts";
 import type MidasConnector from "./midas.connector.ts";
+import type NetWorthReaction from "./net-worth.reaction.ts";
 import type SocialInterestRadarReaction from "./social-interest-radar.reaction.ts";
 import { takeoutConfig } from "./takeout-dirs.ts";
 
@@ -957,6 +959,16 @@ const midasConnection = defineConnection({
   feeds: [{ feed: "assets", config: {} }],
 });
 
+// A same-workspace execution target for market marks. It has no credentials or
+// feeds: the weekly reaction receives quotes directly from its read-only action
+// without persisting raw quote events.
+const marketQuotesConnection = defineConnection({
+  slug: "market-quotes",
+  connector: "market.quotes",
+  name: "Market Quotes",
+  feeds: [],
+});
+
 // Gmail person-building, not mailbox mirroring. One narrow collected feed syncs
 // only person-relevant threads (human_senders_only) so the DB holds a small
 // high-signal set that drives person minting/merging — full email content stays
@@ -1205,6 +1217,33 @@ const socialInterestRadar = defineBehavior({
   ),
 });
 
+const midasNetWorth = defineBehavior({
+  agent: personalAgent,
+  slug: "midas-net-worth",
+  name: "Midas net worth",
+  description:
+    "Values the latest Midas holdings cohort with available market marks and saves one derived snapshot.",
+  triggers: [
+    {
+      kind: "schedule",
+      cron: "0 9 * * 1",
+      timezone: "Europe/London",
+      // Prices change even when the latest broker sync cohort does not.
+      skip_if_unchanged: false,
+    },
+  ],
+  notification: { channel: "canvas", priority: "low" },
+  minCooldownSeconds: 300,
+  tags: ["finance", "midas", "net-worth"],
+  prompt:
+    'The deterministic reaction performs this scheduled Midas valuation. Return only {"summary":"Run the deterministic Midas valuation."}; do not calculate values, create entities, or call connector operations yourself.',
+  reactionsGuidance:
+    "The reaction owns quote execution, cohort selection, derived snapshot persistence, and the notification. It fails if the local quote execution path is missing and labels per-symbol broker fallbacks explicitly.",
+  reaction: reactionFromFile<typeof NetWorthReaction>(
+    "./net-worth.reaction.ts"
+  ),
+});
+
 const hourlyTaskCollaborator = defineBehavior({
   agent: personalAgent,
   slug: "hourly-task-collaborator",
@@ -1283,6 +1322,9 @@ export default defineConfig({
   prune: true,
   connectors: [
     connectorFromFile<typeof MidasConnector>("./midas.connector.ts"),
+    connectorFromFile<typeof MarketQuotesConnector>(
+      "./market-quotes.connector.ts"
+    ),
     connectorFromFile<typeof RevolutTransactionsConnector>(
       "./revolut-transactions.connector.ts"
     ),
@@ -1332,10 +1374,12 @@ export default defineConfig({
     duplicateEntityResolution,
     voiceProfileSynthesis,
     socialInterestRadar,
+    midasNetWorth,
   ],
   authProfiles: [gmailAccountAuth, gmailAppAuth],
   connections: [
     midasConnection,
+    marketQuotesConnection,
     revolutConnection,
     takeoutConnection,
     twitterTakeoutConnection,

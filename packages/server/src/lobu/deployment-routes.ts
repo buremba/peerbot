@@ -68,6 +68,14 @@ routes.post("/", async (c) => {
 	const denied = requireSessionOrAdminPat(c);
 	if (denied) return denied;
 	const organizationId = c.get("organizationId") as string;
+	// Succeeded manifests now authorize prune deletes (owned + attribution).
+	// A plain member must not forge a succeeded baseline that marks UI-created
+	// definitions as delete-eligible for a later admin apply. Session members
+	// may still post `blocked` reports (non-authorizing). PAT/oauth callers
+	// already required mcp:admin via requireSessionOrAdminPat.
+	const memberRole = c.get("memberRole") as string | null | undefined;
+	const authSource = c.get("authSource") as "session" | "pat" | "oauth" | null;
+	const isOrgAdmin = memberRole === "owner" || memberRole === "admin";
 
 	let body: Record<string, unknown>;
 	try {
@@ -89,6 +97,19 @@ routes.post("/", async (c) => {
 				error: "status must be 'succeeded', 'partial_failure', or 'blocked'",
 			},
 			400,
+		);
+	}
+	if (
+		(status === "succeeded" || status === "partial_failure") &&
+		authSource === "session" &&
+		!isOrgAdmin
+	) {
+		return c.json(
+			{
+				error:
+					"Posting a succeeded deployment (prune authorization baseline) requires an owner or admin.",
+			},
+			403,
 		);
 	}
 	const manifestHash =

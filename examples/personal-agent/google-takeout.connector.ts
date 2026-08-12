@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import {
   type ConnectorDefinition,
@@ -13,6 +13,8 @@ import {
   decodeHtml,
   type LocalTakeoutConfig,
   maxEventCursor,
+  parseCsv,
+  parseDate,
   readJsonFile,
   stableId,
   stripHtml,
@@ -22,6 +24,24 @@ import {
 interface GoogleTakeoutCheckpoint {
   last_youtube_timestamp?: string;
   last_keep_timestamp?: string;
+  last_maps_timestamp?: string;
+}
+
+interface MapsFeature {
+  geometry?: { coordinates?: number[] };
+  properties?: {
+    date?: string;
+    google_maps_url?: string;
+    five_star_rating_published?: number;
+    location?: { address?: string; country_code?: string; name?: string };
+    questions?: Array<{
+      question?: string;
+      rating?: number;
+      selected_option?: string;
+      selected_options?: string[];
+    }>;
+    review_text_published?: string;
+  };
 }
 
 interface KeepNote {
@@ -42,9 +62,14 @@ export default class GoogleTakeoutConnector extends ConnectorRuntime<
   readonly definition: ConnectorDefinition = {
     key: "google.takeout",
     name: "Google Takeout",
-    version: "1.0.0",
+    // Minor bump for the added `maps` feed. Connector source is retained per
+    // version, so shipping new behaviour under 1.0.0 would overwrite the
+    // existing artifact and leave version-pinned runs and rollback pointing at
+    // code that no longer matches.
+    version: "1.1.0",
     description:
-      "Ingests local Google Takeout exports for YouTube history and Keep notes.",
+      "Ingests local Google Takeout exports for YouTube history, Keep notes, " +
+      "and Maps saved places, lists, and reviews.",
     authSchema: { methods: [{ type: "none" }] },
     // Local-filesystem connector: it reads an absolute path on the user's own
     // machine, so it must not be routed to the cloud fleet. See the longer note
@@ -60,6 +85,11 @@ export default class GoogleTakeoutConnector extends ConnectorRuntime<
       keep: {
         key: "keep",
         name: "Google Keep Notes",
+        configSchema: localTakeoutSchema("Path to a Google Takeout folder."),
+      },
+      maps: {
+        key: "maps",
+        name: "Maps Saved Places and Reviews",
         configSchema: localTakeoutSchema("Path to a Google Takeout folder."),
       },
     },
@@ -100,6 +130,24 @@ export default class GoogleTakeoutConnector extends ConnectorRuntime<
           last_keep_timestamp: maxEventCursor(
             events,
             ctx.checkpoint?.last_keep_timestamp
+          ),
+        },
+      };
+    }
+
+    if (ctx.feedKey === "maps") {
+      const events = takeBatch(
+        this.readMapsEvents(takeoutDir),
+        ctx.checkpoint?.last_maps_timestamp,
+        batchSize(ctx.config)
+      );
+      return {
+        events,
+        checkpoint: {
+          ...ctx.checkpoint,
+          last_maps_timestamp: maxEventCursor(
+            events,
+            ctx.checkpoint?.last_maps_timestamp
           ),
         },
       };
@@ -225,6 +273,136 @@ export default class GoogleTakeoutConnector extends ConnectorRuntime<
             },
           },
         ];
+      });
+  }
+
+  private readMapsEvents(takeoutDir: string): EventEnvelope[] {
+    return [
+      ...this.readMapsPlaceFile(takeoutDir, "Saved Places.json", "saved_place"),
+      ...this.readMapsPlaceFile(takeoutDir, "Reviews.json", "place_review"),
+      ...this.readMapsListEvents(takeoutDir),
+    ];
+  }
+
+  private readMapsPlaceFile(
+    takeoutDir: string,
+    fileName: string,
+    originType: "saved_place" | "place_review"
+  ): EventEnvelope[] {
+    const filePath = path.join(takeoutDir, "Maps (your places)", fileName);
+    if (!existsSync(filePath)) return [];
+    const parsed = readJsonFile<{ features?: MapsFeature[] }>(filePath);
+    const features = parsed?.features;
+    if (!Array.isArray(features)) return [];
+
+    return features.flatMap((feature) => {
+      const props = feature.properties;
+      const name = props?.location?.name?.trim();
+      // No name means no usable place — a bare coordinate is not worth an event.
+      if (!name) return [];
+      const occurredAt = parseDate(props?.date);
+      if (!occurredAt) return [];
+
+      const address = props?.location?.address?.trim();
+      const mapsUrl = props?.google_maps_url?.trim();
+      const rating = props?.five_star_rating_published;
+      const reviewText = props?.review_text_published?.trim();
+      const answers = (props?.questions ?? []).flatMap((question) => {
+        const prompt = question.question?.trim();
+        const selectedOptions = question.selected_options
+          ?.map((option) => option.trim())
+          .filter(Boolean)
+          .join(", ");
+        const answer =
+          question.selected_option?.trim() ||
+          selectedOptions ||
+          (typeof question.rating === "number" ? `${question.rating}/5` : "");
+        return prompt && answer ? [`${prompt}: ${answer}`] : [];
+      });
+      // Coordinates are GeoJSON order — [longitude, latitude], NOT lat/lng.
+      const [longitude, latitude] = feature.geometry?.coordinates ?? [];
+      const placeIdentity =
+        mapsUrl ??
+        (longitude === undefined || latitude === undefined
+          ? `${name}\0${address ?? ""}`
+          : `${longitude},${latitude}`);
+
+      return [
+        {
+          origin_id: stableId("google_maps_place", [originType, placeIdentity]),
+          origin_type: originType,
+          occurred_at: occurredAt,
+          title: name,
+          payload_text: [
+            originType === "place_review"
+              ? `Reviewed ${name}${
+                  rating === undefined ? "" : ` — ${rating}/5`
+                }`
+              : `Saved ${name}`,
+            reviewText,
+            address,
+            ...answers,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          source_url: mapsUrl,
+          metadata: {
+            platform: "google_maps",
+            place_name: name,
+            address,
+            country_code: props?.location?.country_code,
+            latitude,
+            longitude,
+            ...(rating === undefined ? {} : { rating }),
+          },
+        },
+      ];
+    });
+  }
+
+  private readMapsListEvents(takeoutDir: string): EventEnvelope[] {
+    const savedDir = path.join(takeoutDir, "Saved");
+    if (!existsSync(savedDir)) return [];
+
+    return readdirSync(savedDir)
+      .filter((file) => file.endsWith(".csv"))
+      .flatMap((file) => {
+        const filePath = path.join(savedDir, file);
+        const listName = path.basename(file, ".csv");
+        // List rows have no timestamp. The file mtime lets a later export
+        // supersede URL-backed rows while still advancing the feed checkpoint.
+        const occurredAt = statSync(filePath).mtime;
+
+        return parseCsv(readFileSync(filePath, "utf8")).flatMap((row) => {
+          const title = row.Title?.trim();
+          if (!title) return [];
+          const note = row.Note?.trim();
+          const comment = row.Comment?.trim();
+          const mapsUrl = row.URL || undefined;
+
+          return [
+            {
+              origin_id: stableId("google_maps_list_place", [
+                listName,
+                mapsUrl ?? title,
+              ]),
+              origin_type: "saved_list_place",
+              occurred_at: occurredAt,
+              title,
+              payload_text: [`${listName}: ${title}`, note, comment]
+                .filter(Boolean)
+                .join("\n"),
+              source_url: mapsUrl,
+              metadata: {
+                platform: "google_maps",
+                place_name: title,
+                list: listName,
+                note: note || undefined,
+                tags: row.Tags || undefined,
+              },
+            },
+          ];
+        });
       });
   }
 }

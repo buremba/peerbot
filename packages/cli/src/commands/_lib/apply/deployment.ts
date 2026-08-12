@@ -243,7 +243,9 @@ export function buildAttributionAndOwned(
   // Connector definitions this config declared (or references through an
   // auth-profile/connection) and has installed — delete-eligible under prune.
   const appliedConnectorKeys = new Set<string>([
-    ...(state.connectors.definitions.map((d) => d.key).filter(Boolean) as string[]),
+    ...(state.connectors.definitions
+      .map((d) => d.key)
+      .filter(Boolean) as string[]),
     ...state.connectors.authProfiles.map((p) => p.connector),
     ...state.connectors.connections.map((c) => c.connector),
   ]);

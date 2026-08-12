@@ -14,6 +14,7 @@ export type ConnectorAuthOAuthMethod = ConnectorAuthOAuth & {
   usePkce?: boolean;
   loginScopes?: string[];
   optionalScopes?: string[];
+  resource?: string;
   loginProvisioning?: {
     autoCreateConnection?: boolean;
   };
@@ -248,4 +249,3 @@ export function isPrimaryAuthMethodAppInstallation(
   const primary = authSchema.methods.find((method) => method.type !== 'none');
   return primary?.type === 'app_installation';
 }
-

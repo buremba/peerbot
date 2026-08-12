@@ -3,14 +3,19 @@
 # ===========================================
 # Self-hosted worker for Lobu connectors and embedding generation.
 
+# Keep container builds on the same Bun version as the workflow lanes instead
+# of resolving a different `latest` release when a layer must be rebuilt.
+ARG BUN_VERSION=1.3.5
+
 FROM node:22-bookworm AS builder
+ARG BUN_VERSION
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git ca-certificates curl unzip \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash \
+    && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s -- "bun-v${BUN_VERSION}" \
     && chmod +x /usr/local/bin/bun
 
 ENV PATH="/usr/local/bin:${PATH}"
@@ -59,6 +64,7 @@ RUN cd packages/core && bunx tsc \
 # Runtime
 # ===========================================
 FROM node:22-bookworm-slim AS runtime
+ARG BUN_VERSION
 
 WORKDIR /app
 
@@ -69,7 +75,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libpango-1.0-0 \
       libcairo2 libasound2 libxshmfence1 libxfixes3 libglib2.0-0 fonts-liberation \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash \
+    && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s -- "bun-v${BUN_VERSION}" \
     && chmod +x /usr/local/bin/bun
 
 ENV PATH="/usr/local/bin:${PATH}"

@@ -13,6 +13,29 @@ export interface McpProxyConfig {
   tool_prefix: string;
 }
 
+/** OAuth metadata discovered from an RFC 9728 protected-resource challenge. */
+export interface McpOAuthMetadata {
+  resource: string;
+  resourceMetadataUrl: string;
+  resourceDocumentation?: string;
+  authorizationServer: string;
+  authorizationUrl: string;
+  tokenUrl: string;
+  registrationUrl?: string;
+  /** Scopes requested by the initial WWW-Authenticate challenge, when present. */
+  challengeScopes?: string[];
+  scopesSupported: string[];
+  tokenEndpointAuthMethodsSupported: string[];
+  codeChallengeMethodsSupported: string[];
+}
+
+/** Dynamic client credentials returned by RFC 7591 registration. */
+export interface McpOAuthClientRegistration {
+  clientId: string;
+  clientSecret?: string;
+  tokenEndpointAuthMethod: 'none' | 'client_secret_post' | 'client_secret_basic';
+}
+
 /**
  * An MCP tool discovered from an upstream server, with its prefix applied.
  */

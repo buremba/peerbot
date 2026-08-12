@@ -18,6 +18,7 @@ import {
   validateConnectorMetadata,
 } from './connector-compiler';
 import { isInternalUrl } from '../gateway/proxy/ssrf-guard';
+import type { McpOAuthMetadata } from '../mcp-proxy/types';
 
 type SqlClient = ReturnType<typeof getDb>;
 
@@ -29,6 +30,7 @@ export type ConnectorInstallResult = {
   updated: boolean;
   authSchema: Record<string, unknown> | null;
   mcpConfig?: Record<string, unknown> | null;
+  mcpOAuth?: McpOAuthMetadata;
   openapiConfig?: Record<string, unknown> | null;
 };
 

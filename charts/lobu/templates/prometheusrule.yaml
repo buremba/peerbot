@@ -68,7 +68,7 @@ spec:
         # A critical scheduled job erroring repeatedly (e.g. the stale-run reaper).
         - alert: LobuScheduledJobFailing
           expr: |
-            sum(increase(lobu_scheduled_job_runs_total{task=~"watcher-automation|check-stalled-executions",outcome="error"}[15m])) by (task) > 0
+            sum(increase(lobu_scheduled_job_runs_total{task=~"watcher-automation|check-stalled-executions|product-ops-digest",outcome="error"}[15m])) by (task) > 0
           for: 15m
           labels:
             severity: warning

@@ -30,6 +30,7 @@ import {
 	readRequestedScopesFromAuthData,
 } from "../../auth/oauth/scopes";
 import { resolveMaxAccessLevel, type ToolAccessLevel } from "../../auth/tool-access";
+import { resolveBehaviorConnectionVisibilityUserId } from "../../authz/behavior-connection-visibility";
 import { compileConnectionRowVisibility } from "../../authz/connection-visibility";
 import {
 	agentExistsInOrg,
@@ -364,7 +365,7 @@ async function executeLocalActionInline(
 						// Browser affinity: data connection pin to a chrome-extension
 						// selects which Owletto browser receives scrapes.
 						parentConnectionId: connection.id,
-						requesterUserId,
+						visibilityUserId: requesterUserId,
 						abortSignal,
 					});
 
@@ -959,14 +960,20 @@ async function loadVisibleOperationTargets(
 	args: Static<typeof ListAvailableAction>,
 	ctx: ToolContext,
 ): Promise<OperationTargetRow[]> {
+	const sql = getDb();
+	const visibilityUserId = await resolveBehaviorConnectionVisibilityUserId(
+		ctx,
+		sql,
+	);
 	const visibility = compileConnectionRowVisibility(
 		{
 			...authzScopeFromToolContext(ctx),
-			principalIsAdmin: await callerIsAdmin(getDb(), ctx),
+			principal: visibilityUserId,
+			principalIsAdmin: await callerIsAdmin(sql, ctx),
 		},
 		"c",
 	);
-	return (await getDb().unsafe(
+	return (await sql.unsafe(
 		`SELECT c.id,
 		        c.connector_key,
 		        c.slug,
@@ -1080,6 +1087,7 @@ async function handleListAvailable(
   const full = await listOperations({
     organizationId: ctx.organizationId,
 		connectorKey: catalogConnectorKey,
+		connectionId: args.connection_id,
     entityId: args.entity_id,
     kind: args.kind,
     backend: args.backend,
@@ -1087,6 +1095,7 @@ async function handleListAvailable(
 		// descriptor copy from the public response.
 		includeInputSchema: true,
     includeOutputSchema: args.include_output_schema ?? false,
+		includeDisabled: true,
     // Fetch the WHOLE filtered set — listOperations defaults to limit 100, which
     // would silently drop ops past index 100 and make them unreachable at any
     // caller offset. We must filter per-op-disabled across the full set BEFORE
@@ -1261,9 +1270,14 @@ async function handleExecute(
 			422,
 		);
 	}
+	const visibilityUserId = await resolveBehaviorConnectionVisibilityUserId(
+		ctx,
+		sql,
+	);
 	const visibility = compileConnectionRowVisibility(
 		{
 			...authzScopeFromToolContext(ctx),
+			principal: visibilityUserId,
 			principalIsAdmin: await callerIsAdmin(sql, ctx),
 		},
 		"c",
@@ -1631,7 +1645,7 @@ async function handleExecute(
 		connection,
 		operation,
 		input,
-		ctx.userId,
+		visibilityUserId,
 		env,
 		ctx.abortSignal,
 	);

@@ -2,14 +2,19 @@
 # Embeddings Service (embeddings)
 # ===========================================
 
+# Keep container builds on the same Bun version as the workflow lanes instead
+# of resolving a different `latest` release when a layer must be rebuilt.
+ARG BUN_VERSION=1.3.5
+
 FROM node:22-slim AS builder
+ARG BUN_VERSION
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git ca-certificates curl unzip \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash \
+    && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s -- "bun-v${BUN_VERSION}" \
     && chmod +x /usr/local/bin/bun
 
 ENV PATH="/usr/local/bin:${PATH}"
@@ -40,13 +45,14 @@ RUN cd packages/embeddings && bunx tsc --noEmit
 # Runtime
 # ===========================================
 FROM node:22-slim AS runtime
+ARG BUN_VERSION
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl unzip \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash \
+    && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s -- "bun-v${BUN_VERSION}" \
     && chmod +x /usr/local/bin/bun
 
 ENV PATH="/usr/local/bin:${PATH}"

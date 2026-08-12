@@ -13,10 +13,16 @@ import logger from '../utils/logger';
 import { TtlCache } from '../utils/ttl-cache';
 import {
   type ResolvedCredentials,
-  resolveCredentials,
   resolveCredentialsByConnectionId,
 } from './credential-resolver';
-import type { DiscoveredTool, JsonRpcResponse, McpProxyConfig } from './types';
+import { parseJsonRpcResponse } from './http-response';
+import type {
+  DiscoveredTool,
+  JsonRpcResponse,
+  McpOAuthClientRegistration,
+  McpOAuthMetadata,
+  McpProxyConfig,
+} from './types';
 
 const FETCH_TIMEOUT_INIT_MS = 10_000;
 const FETCH_TIMEOUT_TOOL_MS = 30_000;
@@ -30,9 +36,10 @@ function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Pr
 }
 
 /**
- * In-memory session store. Execution sessions include connectionId so two
- * accounts on the same connector never reuse each other's authenticated MCP
- * session. Discovery sessions use the connector-wide key.
+ * In-memory session store. Sessions include connectionId whenever the caller
+ * targets a specific connection so two accounts on the same connector never
+ * reuse each other's authenticated MCP session; only connection-less
+ * (unauthenticated) discovery uses the connector-wide key.
  */
 type McpSessionState = { sessionId: string; protocolVersion: string };
 const sessions = new TtlCache<McpSessionState>(SESSION_TTL_MS);
@@ -44,6 +51,13 @@ const sessions = new TtlCache<McpSessionState>(SESSION_TTL_MS);
  * double-execute an action — unlike a timeout or a 5xx, which stay fatal.
  */
 class McpSessionExpiredError extends Error {}
+
+class McpOAuthRequiredError extends Error {
+  constructor(readonly metadata: McpOAuthMetadata) {
+    super('MCP server requires OAuth authorization');
+    this.name = 'McpOAuthRequiredError';
+  }
+}
 
 function sessionKey(orgId: string, connectorKey: string, connectionId?: number): string {
   return connectionId === undefined
@@ -67,7 +81,7 @@ function buildHeaders(
 ): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    Accept: 'application/json',
+    Accept: 'application/json, text/event-stream',
   };
 
   if (session) {
@@ -126,7 +140,9 @@ async function sendRequest(
     throw new Error(`Upstream MCP returned ${response.status}: ${text}`);
   }
 
-  return (await response.json()) as JsonRpcResponse;
+  const request = JSON.parse(body) as { id?: unknown };
+  const expectedId = Object.hasOwn(request, 'id') ? request.id : undefined;
+  return (await parseJsonRpcResponse(response, expectedId)) as JsonRpcResponse;
 }
 
 /**
@@ -205,24 +221,21 @@ async function initializeSession(
 export async function discoverTools(
   connectorKey: string,
   config: McpProxyConfig,
-  orgId: string
+  orgId: string,
+  connectionId?: number
 ): Promise<DiscoveredTool[]> {
-  // Key the cache by org too — two orgs can each define a connector with the
-  // same key but different upstream URLs / tool sets; sharing the cache leaks
-  // org A's tool catalog to org B.
-  const cacheKey = `${orgId}:${connectorKey}`;
+  // Key the cache by org AND connection — two orgs can each define a connector
+  // with the same key but different upstream URLs / tool sets, and two
+  // connections in one org can hold different accounts whose upstream exposes
+  // different tools; sharing either cache leaks one catalog to the other.
+  const cacheKey = sessionKey(orgId, connectorKey, connectionId);
   const cached = toolCache.get(cacheKey) ?? null;
   if (cached) return cached;
 
-  let credentials: ResolvedCredentials | null = null;
-  try {
-    credentials = await resolveCredentials(orgId, connectorKey);
-  } catch (error) {
-    logger.warn(
-      { connectorKey, error: errorMessage(error) },
-      '[McpProxy] Failed to resolve credentials for tool discovery, trying unauthenticated'
-    );
-  }
+  const credentials =
+    connectionId === undefined
+      ? null
+      : await resolveCredentialsByConnectionId(connectionId, orgId);
 
   try {
     // Initialize session first
@@ -230,7 +243,8 @@ export async function discoverTools(
       config.upstream_url,
       credentials,
       orgId,
-      connectorKey
+      connectorKey,
+      connectionId
     );
 
     // A server that does not advertise tools is legitimately toolless. Once it
@@ -254,7 +268,8 @@ export async function discoverTools(
         params: {},
         id: 1,
       }),
-      FETCH_TIMEOUT_TOOL_MS
+      FETCH_TIMEOUT_TOOL_MS,
+      connectionId
     );
 
     if (response.error) {
@@ -433,6 +448,256 @@ export function assertSafeUrl(url: string): void {
   }
 }
 
+function normalizeUrlForComparison(value: string): string {
+  const url = new URL(value);
+  url.hash = '';
+  return url.toString();
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
+}
+
+function readResourceMetadataUrl(header: string | null): string | null {
+  if (!header) return null;
+  const match = /(?:^|[,\s])resource_metadata\s*=\s*"([^"]+)"/i.exec(header);
+  return match?.[1] ?? null;
+}
+
+function readChallengeScopes(header: string | null): string[] {
+  if (!header) return [];
+  const match = /\bscope\s*=\s*"([^"]*)"/i.exec(header);
+  if (!match?.[1]) return [];
+  return match[1].split(/\s+/).filter(Boolean);
+}
+
+function authorizationMetadataUrls(authorizationServer: string): string[] {
+  const issuer = new URL(authorizationServer);
+  const issuerPath = issuer.pathname.replace(/\/+$/, '');
+  const candidates = [
+    `${issuer.origin}/.well-known/oauth-authorization-server${issuerPath}`,
+    `${issuer.origin}/.well-known/openid-configuration${issuerPath}`,
+    `${authorizationServer.replace(/\/+$/, '')}/.well-known/oauth-authorization-server`,
+    `${authorizationServer.replace(/\/+$/, '')}/.well-known/openid-configuration`,
+  ];
+  return candidates.filter((value, index) => candidates.indexOf(value) === index);
+}
+
+function assertSafeOAuthEndpoint(url: string): void {
+  assertSafeUrl(url);
+  if (new URL(url).protocol !== 'https:') {
+    throw new Error('MCP OAuth metadata and authorization endpoints must use HTTPS');
+  }
+}
+
+async function fetchJsonObject(url: string): Promise<Record<string, unknown> | null> {
+  assertSafeOAuthEndpoint(url);
+  const response = await fetchWithTimeout(
+    url,
+    { headers: { Accept: 'application/json' } },
+    FETCH_TIMEOUT_INIT_MS
+  );
+  if (!response.ok) return null;
+  const value = (await response.json()) as unknown;
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+async function discoverMcpOAuthMetadata(
+  upstreamUrl: string,
+  authenticateHeader: string | null
+): Promise<McpOAuthMetadata | null> {
+  const resourceMetadataUrl = readResourceMetadataUrl(authenticateHeader);
+  if (!resourceMetadataUrl) return null;
+
+  const resourceMetadata = await fetchJsonObject(resourceMetadataUrl);
+  if (!resourceMetadata) {
+    throw new Error(`MCP OAuth resource metadata was unavailable: ${resourceMetadataUrl}`);
+  }
+
+  const resource =
+    typeof resourceMetadata.resource === 'string' ? resourceMetadata.resource : null;
+  if (!resource) throw new Error('MCP OAuth resource metadata omitted resource');
+  if (normalizeUrlForComparison(resource) !== normalizeUrlForComparison(upstreamUrl)) {
+    throw new Error('MCP OAuth resource metadata does not match the requested server URL');
+  }
+
+  const authorizationServers = readStringArray(resourceMetadata.authorization_servers);
+  if (authorizationServers.length === 0) {
+    throw new Error('MCP OAuth resource metadata omitted authorization_servers');
+  }
+
+  const authorizationServer = authorizationServers[0];
+  assertSafeOAuthEndpoint(authorizationServer);
+  let authorizationMetadata: Record<string, unknown> | null = null;
+  for (const metadataUrl of authorizationMetadataUrls(authorizationServer)) {
+    const candidate = await fetchJsonObject(metadataUrl);
+    if (!candidate) continue;
+    const issuer = typeof candidate.issuer === 'string' ? candidate.issuer : null;
+    if (
+      issuer &&
+      normalizeUrlForComparison(issuer) !== normalizeUrlForComparison(authorizationServer)
+    ) {
+      continue;
+    }
+    authorizationMetadata = candidate;
+    break;
+  }
+  if (!authorizationMetadata) {
+    throw new Error(`MCP OAuth authorization metadata was unavailable: ${authorizationServer}`);
+  }
+
+  const authorizationUrl =
+    typeof authorizationMetadata.authorization_endpoint === 'string'
+      ? authorizationMetadata.authorization_endpoint
+      : null;
+  const tokenUrl =
+    typeof authorizationMetadata.token_endpoint === 'string'
+      ? authorizationMetadata.token_endpoint
+      : null;
+  if (!authorizationUrl || !tokenUrl) {
+    throw new Error('MCP OAuth authorization metadata omitted required endpoints');
+  }
+  assertSafeOAuthEndpoint(authorizationUrl);
+  assertSafeOAuthEndpoint(tokenUrl);
+
+  const registrationUrl =
+    typeof authorizationMetadata.registration_endpoint === 'string'
+      ? authorizationMetadata.registration_endpoint
+      : undefined;
+  if (registrationUrl) assertSafeOAuthEndpoint(registrationUrl);
+  const challengeScopes = readChallengeScopes(authenticateHeader);
+
+  return {
+    resource,
+    resourceMetadataUrl,
+    ...(typeof resourceMetadata.resource_documentation === 'string'
+      ? { resourceDocumentation: resourceMetadata.resource_documentation }
+      : {}),
+    authorizationServer,
+    authorizationUrl,
+    tokenUrl,
+    ...(registrationUrl ? { registrationUrl } : {}),
+    ...(challengeScopes.length > 0
+      ? { challengeScopes }
+      : {}),
+    scopesSupported: readStringArray(resourceMetadata.scopes_supported),
+    tokenEndpointAuthMethodsSupported: readStringArray(
+      authorizationMetadata.token_endpoint_auth_methods_supported
+    ),
+    codeChallengeMethodsSupported: readStringArray(
+      authorizationMetadata.code_challenge_methods_supported
+    ),
+  };
+}
+
+export function getMcpOAuthRequestedScopes(metadata: McpOAuthMetadata): string[] {
+  return metadata.challengeScopes && metadata.challengeScopes.length > 0
+    ? metadata.challengeScopes
+    : metadata.scopesSupported;
+}
+
+export function selectMcpOAuthClientAuthMethod(
+  metadata: McpOAuthMetadata
+): McpOAuthClientRegistration['tokenEndpointAuthMethod'] {
+  const methods = metadata.tokenEndpointAuthMethodsSupported;
+  if (methods.includes('none') && metadata.codeChallengeMethodsSupported.includes('S256')) {
+    return 'none';
+  }
+  if (methods.includes('client_secret_basic')) return 'client_secret_basic';
+  if (methods.includes('client_secret_post')) return 'client_secret_post';
+  // RFC 8414 defaults an omitted token_endpoint_auth_methods_supported to
+  // client_secret_basic.
+  if (methods.length === 0) return 'client_secret_basic';
+  throw new Error('MCP OAuth server has no supported dynamic-client authentication method');
+}
+
+function assertSafeOAuthRedirectUri(value: string): void {
+  let redirectUri: URL;
+  try {
+    redirectUri = new URL(value);
+  } catch {
+    throw new Error(`Invalid OAuth callback URL: ${value}`);
+  }
+
+  if (redirectUri.protocol === 'https:') return;
+
+  const hostname = stripIpv6Brackets(redirectUri.hostname.toLowerCase());
+  const isLoopback =
+    hostname === 'localhost' ||
+    hostname.endsWith('.localhost') ||
+    hostname === '::1' ||
+    /^127(?:\.\d{1,3}){3}$/.test(hostname);
+  if (redirectUri.protocol !== 'http:' || !isLoopback) {
+    throw new Error('OAuth callback URL must use HTTPS or HTTP on a loopback host');
+  }
+}
+
+export async function registerMcpOAuthClient(params: {
+  metadata: McpOAuthMetadata;
+  redirectUris: string[];
+  clientName: string;
+}): Promise<McpOAuthClientRegistration | null> {
+  const registrationUrl = params.metadata.registrationUrl;
+  if (!registrationUrl) return null;
+  const redirectUris = params.redirectUris.filter(
+    (value, index, values) => value.length > 0 && values.indexOf(value) === index
+  );
+  if (redirectUris.length === 0) {
+    throw new Error('MCP OAuth dynamic registration requires a callback URL');
+  }
+  for (const redirectUri of redirectUris) assertSafeOAuthRedirectUri(redirectUri);
+
+  const requestedMethod = selectMcpOAuthClientAuthMethod(params.metadata);
+  const response = await fetchWithTimeout(
+    registrationUrl,
+    {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_name: params.clientName,
+        redirect_uris: redirectUris,
+        grant_types: ['authorization_code', 'refresh_token'],
+        response_types: ['code'],
+        token_endpoint_auth_method: requestedMethod,
+        ...(getMcpOAuthRequestedScopes(params.metadata).length > 0
+          ? { scope: getMcpOAuthRequestedScopes(params.metadata).join(' ') }
+          : {}),
+      }),
+    },
+    FETCH_TIMEOUT_INIT_MS
+  );
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`MCP OAuth dynamic registration returned ${response.status}: ${text}`);
+  }
+
+  const body = (await response.json()) as Record<string, unknown>;
+  const clientId = typeof body.client_id === 'string' ? body.client_id : null;
+  if (!clientId) throw new Error('MCP OAuth dynamic registration omitted client_id');
+  const returnedMethod =
+    body.token_endpoint_auth_method === 'none' ||
+    body.token_endpoint_auth_method === 'client_secret_post' ||
+    body.token_endpoint_auth_method === 'client_secret_basic'
+      ? body.token_endpoint_auth_method
+      : requestedMethod;
+  const clientSecret = typeof body.client_secret === 'string' ? body.client_secret : undefined;
+  if (returnedMethod !== requestedMethod) {
+    throw new Error('MCP OAuth dynamic registration changed the requested client auth method');
+  }
+  if (returnedMethod !== 'none' && !clientSecret) {
+    throw new Error('MCP OAuth confidential client registration omitted client_secret');
+  }
+
+  return {
+    clientId,
+    ...(clientSecret ? { clientSecret } : {}),
+    tokenEndpointAuthMethod: returnedMethod,
+  };
+}
+
 /**
  * Probe a remote MCP server to extract server info and available tools.
  * Uses a temporary session (no stored session or credentials).
@@ -441,6 +706,7 @@ export async function probeMcpServer(upstreamUrl: string): Promise<{
   serverInfo: { name: string; version: string };
   instructions?: string;
   tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
+  oauth?: McpOAuthMetadata;
 }> {
   assertSafeUrl(upstreamUrl);
   let mcpSessionId: string | null = null;
@@ -449,7 +715,7 @@ export async function probeMcpServer(upstreamUrl: string): Promise<{
   const send = async (body: unknown): Promise<JsonRpcResponse> => {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      Accept: 'application/json',
+      Accept: 'application/json, text/event-stream',
     };
     if (mcpSessionId) {
       headers['Mcp-Session-Id'] = mcpSessionId;
@@ -466,24 +732,46 @@ export async function probeMcpServer(upstreamUrl: string): Promise<{
     if (newSessionId) mcpSessionId = newSessionId;
 
     if (!response.ok) {
+      if (response.status === 401) {
+        const metadata = await discoverMcpOAuthMetadata(
+          upstreamUrl,
+          response.headers.get('WWW-Authenticate')
+        );
+        if (metadata) throw new McpOAuthRequiredError(metadata);
+      }
       const text = await response.text();
       throw new Error(`MCP server returned ${response.status}: ${text}`);
     }
 
-    return (await response.json()) as JsonRpcResponse;
+    const request = body as { id?: unknown };
+    const expectedId = Object.hasOwn(request, 'id') ? request.id : undefined;
+    return (await parseJsonRpcResponse(response, expectedId)) as JsonRpcResponse;
   };
 
   // Initialize
-  const initResponse = await send({
-    jsonrpc: '2.0',
-    method: 'initialize',
-    params: {
-      protocolVersion: MCP_PROTOCOL_VERSION,
-      capabilities: {},
-      clientInfo: { name: 'lobu-mcp-proxy', version: '1.0.0' },
-    },
-    id: 0,
-  });
+  let initResponse: JsonRpcResponse;
+  try {
+    initResponse = await send({
+      jsonrpc: '2.0',
+      method: 'initialize',
+      params: {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: 'lobu-mcp-proxy', version: '1.0.0' },
+      },
+      id: 0,
+    });
+  } catch (error) {
+    if (!(error instanceof McpOAuthRequiredError)) throw error;
+    return {
+      serverInfo: { name: new URL(upstreamUrl).hostname, version: '0.0.0' },
+      ...(error.metadata.resourceDocumentation
+        ? { instructions: `OAuth-protected remote MCP server. ${error.metadata.resourceDocumentation}` }
+        : { instructions: 'OAuth-protected remote MCP server.' }),
+      tools: [],
+      oauth: error.metadata,
+    };
+  }
 
   if (initResponse.error) {
     throw new Error(`MCP initialize failed: ${initResponse.error.message}`);

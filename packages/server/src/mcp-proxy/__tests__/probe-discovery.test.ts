@@ -1,12 +1,17 @@
 import { MCP_PROTOCOL_VERSION } from '@lobu/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  createTestConnection,
+  createTestConnectorDefinition,
+  createTestOrganization,
+} from '../../__tests__/setup/test-fixtures';
 
-vi.mock('../credential-resolver', () => ({
-  resolveCredentials: vi.fn(async () => null),
-  resolveCredentialsByConnectionId: vi.fn(async () => null),
-}));
-
-import { callTool, discoverTools, probeMcpServer } from '../client';
+import {
+  callTool,
+  discoverTools,
+  probeMcpServer,
+  registerMcpOAuthClient,
+} from '../client';
 
 const jsonResponse = (body: unknown, sessionId?: string) =>
   new Response(JSON.stringify(body), {
@@ -23,7 +28,150 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+async function createMcpTestConnection(connectorKey: string): Promise<{
+  connectionId: number;
+  organizationId: string;
+}> {
+  const organization = await createTestOrganization();
+  await createTestConnectorDefinition({
+    key: connectorKey,
+    name: `MCP test ${connectorKey}`,
+    organization_id: organization.id,
+  });
+  const connection = await createTestConnection({
+    organization_id: organization.id,
+    connector_key: connectorKey,
+    createDefaultFeed: false,
+  });
+  return { connectionId: connection.id, organizationId: organization.id };
+}
+
 describe('probeMcpServer capability discovery', () => {
+  it('discovers OAuth metadata when initialize returns a protected-resource challenge', async () => {
+    const upstreamUrl = 'https://mcp.example.com/rpc';
+    const resourceMetadataUrl =
+      'https://mcp.example.com/.well-known/oauth-protected-resource/rpc';
+    const authorizationServer = 'https://auth.example.com/tenant';
+    const authorizationMetadataUrl =
+      'https://auth.example.com/.well-known/oauth-authorization-server/tenant';
+
+    globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href === upstreamUrl) {
+        return new Response(
+          JSON.stringify({ error: 'invalid_token' }),
+          {
+            status: 401,
+            headers: {
+              'Content-Type': 'application/json',
+              'WWW-Authenticate': `Bearer resource_metadata="${resourceMetadataUrl}", scope="read:issues write:issues", error="invalid_token"`,
+            },
+          }
+        );
+      }
+      if (href === resourceMetadataUrl) {
+        return jsonResponse({
+          resource: upstreamUrl,
+          authorization_servers: [authorizationServer],
+          scopes_supported: ['read:issues', 'write:issues', 'offline_access'],
+        });
+      }
+      if (href === authorizationMetadataUrl) {
+        return jsonResponse({
+          issuer: authorizationServer,
+          authorization_endpoint: 'https://auth.example.com/authorize',
+          token_endpoint: 'https://auth.example.com/token',
+          registration_endpoint: 'https://auth.example.com/register',
+          token_endpoint_auth_methods_supported: ['none'],
+          code_challenge_methods_supported: ['S256'],
+        });
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    }) as typeof fetch;
+
+    const result = await probeMcpServer(upstreamUrl);
+    expect(result).toMatchObject({
+      serverInfo: { name: 'mcp.example.com', version: '0.0.0' },
+      tools: [],
+      oauth: {
+        resource: upstreamUrl,
+        resourceMetadataUrl,
+        authorizationServer,
+        authorizationUrl: 'https://auth.example.com/authorize',
+        tokenUrl: 'https://auth.example.com/token',
+        registrationUrl: 'https://auth.example.com/register',
+        challengeScopes: ['read:issues', 'write:issues'],
+        scopesSupported: ['read:issues', 'write:issues', 'offline_access'],
+        tokenEndpointAuthMethodsSupported: ['none'],
+        codeChallengeMethodsSupported: ['S256'],
+      },
+    });
+  });
+
+  it('accepts SSE JSON-RPC responses and an empty 202 initialized notification', async () => {
+    const requests: Array<{ accept: string | null; method: unknown }> = [];
+    globalThis.fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requests.push({
+        accept: new Headers(init?.headers).get('accept'),
+        method: body.method,
+      });
+      if (body.method === 'initialize') {
+        return new Response(
+          [
+            'event: message',
+            'data: {"jsonrpc":"2.0","method":"notifications/progress","params":{}}',
+            '',
+            'event: message',
+            `data: ${JSON.stringify({
+              jsonrpc: '2.0',
+              id: 0,
+              result: {
+                protocolVersion: MCP_PROTOCOL_VERSION,
+                capabilities: { tools: {} },
+                serverInfo: { name: 'sse-server', version: '1.0.0' },
+              },
+            })}`,
+            '',
+          ].join('\n'),
+          {
+            status: 200,
+            headers: {
+              'Content-Type': 'text/event-stream',
+              'Mcp-Session-Id': 'sse-session',
+            },
+          }
+        );
+      }
+      if (body.method === 'notifications/initialized') {
+        return new Response(null, { status: 202 });
+      }
+      if (body.method === 'tools/list') {
+        return new Response(
+          `data: ${JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            result: { tools: [{ name: 'read_issue', inputSchema: { type: 'object' } }] },
+          })}\n\n`,
+          { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
+        );
+      }
+      throw new Error(`Unexpected method: ${String(body.method)}`);
+    }) as typeof fetch;
+
+    const result = await probeMcpServer('https://mcp.example.com/rpc');
+
+    expect(result.tools.map((tool) => tool.name)).toEqual(['read_issue']);
+    expect(requests.map((request) => request.method)).toEqual([
+      'initialize',
+      'notifications/initialized',
+      'tools/list',
+    ]);
+    expect(requests.every((request) => request.accept === 'application/json, text/event-stream')).toBe(
+      true
+    );
+  });
+
   it('accepts a truly toolless server without calling tools/list', async () => {
     const requests: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
     globalThis.fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
@@ -109,6 +257,82 @@ describe('probeMcpServer capability discovery', () => {
   });
 });
 
+describe('MCP OAuth dynamic client registration', () => {
+  const metadata = {
+    resource: 'https://mcp.example.com/rpc',
+    resourceMetadataUrl: 'https://mcp.example.com/.well-known/oauth-protected-resource/rpc',
+    authorizationServer: 'https://auth.example.com/tenant',
+    authorizationUrl: 'https://auth.example.com/authorize',
+    tokenUrl: 'https://auth.example.com/token',
+    registrationUrl: 'https://auth.example.com/register',
+    scopesSupported: ['read:issues', 'write:issues', 'offline_access'],
+    tokenEndpointAuthMethodsSupported: ['none'],
+    codeChallengeMethodsSupported: ['S256'],
+  };
+
+  it('registers a public PKCE client with the Lobu callback', async () => {
+    let registrationBody: Record<string, unknown> | null = null;
+    globalThis.fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      registrationBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return jsonResponse({
+        client_id: 'registered-client',
+        token_endpoint_auth_method: 'none',
+      });
+    }) as typeof fetch;
+
+    await expect(
+      registerMcpOAuthClient({
+        metadata,
+        redirectUris: ['http://127.0.0.1:8787/connect/oauth/callback'],
+        clientName: 'Lobu',
+      })
+    ).resolves.toEqual({
+      clientId: 'registered-client',
+      tokenEndpointAuthMethod: 'none',
+    });
+    expect(registrationBody).toEqual({
+      client_name: 'Lobu',
+      redirect_uris: ['http://127.0.0.1:8787/connect/oauth/callback'],
+      grant_types: ['authorization_code', 'refresh_token'],
+      response_types: ['code'],
+      token_endpoint_auth_method: 'none',
+      scope: 'read:issues write:issues offline_access',
+    });
+  });
+
+  it('prefers the authorization challenge scope over the server-wide catalog', async () => {
+    let registrationBody: Record<string, unknown> | null = null;
+    globalThis.fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      registrationBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return jsonResponse({
+        client_id: 'least-privilege-client',
+        token_endpoint_auth_method: 'none',
+      });
+    }) as typeof fetch;
+
+    await registerMcpOAuthClient({
+      metadata: { ...metadata, challengeScopes: ['read:issues'] },
+      redirectUris: ['https://lobu.example.com/connect/oauth/callback'],
+      clientName: 'Lobu',
+    });
+
+    expect(registrationBody).toMatchObject({ scope: 'read:issues' });
+  });
+
+  it('rejects a non-HTTPS callback that is not loopback before registration', async () => {
+    globalThis.fetch = vi.fn();
+
+    await expect(
+      registerMcpOAuthClient({
+        metadata,
+        redirectUris: ['http://lobu.example.com/connect/oauth/callback'],
+        clientName: 'Lobu',
+      })
+    ).rejects.toThrow(/HTTPS or HTTP on a loopback host/);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+});
+
 describe('discoverTools capability discovery', () => {
   it('fails closed when an installed connector omits the negotiated tools array', async () => {
     globalThis.fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
@@ -143,6 +367,76 @@ describe('discoverTools capability discovery', () => {
       )
     ).rejects.toThrow(/MCP tools\/list response omitted tools/);
   });
+
+  it('isolates discovery sessions and caches by connection', async () => {
+    const organization = await createTestOrganization();
+    await createTestConnectorDefinition({
+      key: 'account-scoped',
+      name: 'Account-scoped MCP test',
+      organization_id: organization.id,
+    });
+    const firstConnection = await createTestConnection({
+      organization_id: organization.id,
+      connector_key: 'account-scoped',
+      createDefaultFeed: false,
+    });
+    const secondConnection = await createTestConnection({
+      organization_id: organization.id,
+      connector_key: 'account-scoped',
+      createDefaultFeed: false,
+    });
+    let issuedSessions = 0;
+    globalThis.fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const headers = new Headers(init?.headers);
+      if (body.method === 'initialize') {
+        issuedSessions += 1;
+        return jsonResponse(
+          {
+            jsonrpc: '2.0',
+            id: 0,
+            result: {
+              protocolVersion: MCP_PROTOCOL_VERSION,
+              capabilities: { tools: {} },
+            },
+          },
+          `account-session-${issuedSessions}`
+        );
+      }
+      if (body.method === 'tools/list') {
+        const sessionId = headers.get('mcp-session-id') ?? 'missing-session';
+        return jsonResponse({
+          jsonrpc: '2.0',
+          id: 1,
+          result: {
+            tools: [{ name: sessionId.replace(/\W+/g, '_'), inputSchema: { type: 'object' } }],
+          },
+        });
+      }
+      return new Response(null, { status: 202 });
+    }) as typeof fetch;
+
+    const config = {
+      upstream_url: 'https://mcp.example.com/account-scoped',
+      tool_prefix: 'account',
+    };
+    const first = await discoverTools(
+      'account-scoped',
+      config,
+      organization.id,
+      firstConnection.id
+    );
+    const second = await discoverTools(
+      'account-scoped',
+      config,
+      organization.id,
+      secondConnection.id
+    );
+
+    expect(first.map((tool) => tool.originalName)).toEqual(['account_session_1']);
+    expect(second.map((tool) => tool.originalName)).toEqual(['account_session_2']);
+    expect(issuedSessions).toBe(2);
+  });
 });
 
 describe('callTool session recovery', () => {
@@ -166,6 +460,7 @@ describe('callTool session recovery', () => {
     );
 
   it('rehandshakes when the upstream rejects a cached session id', async () => {
+    const { connectionId, organizationId } = await createMcpTestConnection('recovery-connector');
     const sent: Array<{ method: unknown; sessionId: string | null }> = [];
     const expired = new Set<string>();
     let issued = 0;
@@ -198,10 +493,10 @@ describe('callTool session recovery', () => {
     const first = await callTool(
       'recovery-connector',
       config,
-      'test-org-recovery',
+      organizationId,
       'do_thing',
       {},
-      991
+      connectionId
     );
     expect(first.isError).toBe(false);
 
@@ -209,10 +504,10 @@ describe('callTool session recovery', () => {
     const second = await callTool(
       'recovery-connector',
       config,
-      'test-org-recovery',
+      organizationId,
       'do_thing',
       {},
-      991
+      connectionId
     );
     expect(second.content).toEqual([{ type: 'text', text: 'ok' }]);
     expect(sent.filter((entry) => entry.method === 'initialize')).toHaveLength(2);
@@ -221,6 +516,7 @@ describe('callTool session recovery', () => {
   });
 
   it('never replays a tools/call after an ambiguous transport failure', async () => {
+    const { connectionId, organizationId } = await createMcpTestConnection('ambiguous-connector');
     let toolCalls = 0;
     globalThis.fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -235,7 +531,7 @@ describe('callTool session recovery', () => {
     }) as typeof fetch;
 
     await expect(
-      callTool('ambiguous-connector', config, 'test-org-ambiguous', 'charge_card', {}, 992)
+      callTool('ambiguous-connector', config, organizationId, 'charge_card', {}, connectionId)
     ).rejects.toThrow(/Upstream MCP returned 504/);
     expect(toolCalls).toBe(1);
   });

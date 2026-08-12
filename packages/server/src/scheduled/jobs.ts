@@ -45,6 +45,15 @@ import {
 } from '../gateway/services/agent-threads';
 import { buildMessagePayload } from '../gateway/services/platform-helpers';
 import { migrateLegacyPlaintextAuthData } from '../utils/auth-credential-secrets';
+import {
+  PRODUCT_OPS_DIGEST_TASK,
+  productOpsDigestConfigFromEnv,
+  runProductOpsDigest,
+} from './product-ops-digest';
+import {
+  createProductOpsSlackDelivery,
+  createProductOpsSlackDeliveryStore,
+} from './product-ops-slack-delivery';
 
 function asDeliveryContext(value: unknown): ScheduledDeliveryContext | null {
   if (!value || typeof value !== 'object') return null;
@@ -108,6 +117,40 @@ function registerMaintenanceTasks(
   env: Env,
   coreServices: CoreServices,
 ): void {
+  const productOpsDigestConfig = productOpsDigestConfigFromEnv(env);
+  if (productOpsDigestConfig) {
+    const deliverProductOpsDigest = createProductOpsSlackDelivery({
+      store: createProductOpsSlackDeliveryStore(coreServices.getSecretStore()),
+    });
+    scheduler.register(
+      PRODUCT_OPS_DIGEST_TASK,
+      async ({ taskRunId }) => {
+        const result = await runProductOpsDigest({
+          taskRunId,
+          config: productOpsDigestConfig,
+          deliverDigest: deliverProductOpsDigest,
+        });
+        logger.info(
+          {
+            posted: result.posted,
+            window_start: result.window.start.toISOString(),
+            window_end: result.window.end.toISOString(),
+            signups: result.activity.signups.length,
+            logins: result.activity.logins.length,
+            connections: result.activity.connections.length,
+            mcp_conversations: result.activity.mcpConversations.length,
+            log_errors: result.logs.errors,
+            log_warnings: result.logs.warnings,
+          },
+          '[task] product-ops-digest completed',
+        );
+      },
+      // Run two minutes after each aligned 20-minute window so Promtail has
+      // time to deliver the closing Kubernetes log entries to Loki.
+      { cron: '2,22,42 * * * *' },
+    );
+  }
+
   // OAuth token refresh — periodic safety-net at 30min intervals. The hot path
   // is at-use-time lazy refresh in AuthProfilesManager.ensureFreshCredential,
   // which spawns `refresh-token-for-user-agent` per-user when a soon-expiring

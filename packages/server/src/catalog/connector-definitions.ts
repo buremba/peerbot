@@ -4,7 +4,11 @@ import { getErrorMessage } from "@lobu/core";
 import { getLoginProviderScopes } from "../auth/config";
 import { type DbClient, type DbQuery, getDb } from "../db/client";
 import { getLocalActionKind } from "../operations/connector-operations";
-import { probeMcpServer } from "../mcp-proxy/client";
+import {
+	getMcpOAuthRequestedScopes,
+	probeMcpServer,
+	selectMcpOAuthClientAuthMethod,
+} from "../mcp-proxy/client";
 import { computeCodeHash } from "../utils/compiler-core";
 import {
 	getCatalogConnectorInstallability,
@@ -251,13 +255,39 @@ export async function installConnectorFromMcpUrl(params: {
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, "_")
 		.replace(/^_+|_+$/g, "");
+	const authSchema = probed.oauth
+		? {
+				methods: [
+					{
+						type: "oauth",
+						provider: connectorKey,
+						required: true,
+						requiredScopes: getMcpOAuthRequestedScopes(probed.oauth),
+						authorizationUrl: probed.oauth.authorizationUrl,
+						tokenUrl: probed.oauth.tokenUrl,
+						tokenEndpointAuthMethod:
+							selectMcpOAuthClientAuthMethod(probed.oauth),
+						usePkce:
+							probed.oauth.codeChallengeMethodsSupported.includes("S256"),
+						clientIdKey: "MCP_CLIENT_ID",
+						clientSecretKey: "MCP_CLIENT_SECRET",
+						resource: probed.oauth.resource,
+						description:
+							"Authorize Lobu to use this remote MCP server on your behalf.",
+						setupInstructions: probed.oauth.registrationUrl
+							? "Lobu registers the OAuth client automatically; connect an account to continue."
+							: "Configure an OAuth client for this MCP server, then connect an account.",
+					},
+				],
+			}
+		: null;
 
 	const metadata = {
 		key: connectorKey,
 		name: serverName,
 		description: probed.instructions,
 		version: probed.serverInfo.version || "0.0.0",
-		authSchema: null,
+		authSchema,
 		webhook: null,
 		feeds: null,
 		actions: null,
@@ -318,8 +348,9 @@ export async function installConnectorFromMcpUrl(params: {
 			.digest("hex")
 			.slice(0, 16),
 		updated,
-		authSchema: null,
+		authSchema,
 		mcpConfig: metadata.mcpConfig,
+		...(probed.oauth ? { mcpOAuth: probed.oauth } : {}),
 	};
 }
 

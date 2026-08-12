@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, spyOn, test } from "bun:test";
 import { ApiError } from "../../../memory/_lib/errors.js";
 import {
   executePlan,
@@ -260,6 +260,130 @@ describe("executePlan — BYO chat connection dependencies", () => {
         output: "reply_to_source",
       },
     ]);
+  });
+});
+
+describe("executePlan — managed MCP connector install", () => {
+  test("installs the hydrated Cloud manifest before creating the managed connection", async () => {
+    const connection: DesiredConnection = {
+      slug: "atlassian-burak",
+      connector: "mcp.atlassian",
+      config: {
+        managedBy: {
+          org: "lobu-managed",
+          connectionSlug: "atlassian-burak",
+        },
+      },
+      feeds: [],
+      sourceFile: "lobu.config.ts",
+    };
+    const state = stateWith({
+      definitions: [],
+      authProfiles: [],
+      connections: [connection],
+    });
+    const installable: RemoteConnectorDefinition = {
+      key: "mcp.atlassian",
+      installed: false,
+      installable: true,
+      mcp_config: {
+        upstream_url: "https://mcp.atlassian.com/v1/mcp/authv2",
+        tool_prefix: "atlassian",
+      },
+      managed_mcp_source: "export default class ManagedAtlassian {}",
+    };
+    const installed: RemoteConnectorDefinition = {
+      ...installable,
+      id: 92,
+      installed: true,
+      installable: false,
+      version: "1.0.0",
+      managed_mcp_source: undefined,
+    };
+    const remote: RemoteSnapshot = {
+      agents: [],
+      agentSettings: new Map(),
+      entityTypes: [],
+      relationshipTypes: [],
+      watchers: [],
+      connectorDefinitions: [installable],
+      authProfiles: [],
+      connections: [],
+      feedsByConnectionId: new Map(),
+      inferenceProviders: [],
+    };
+    const plan: DiffPlan = {
+      rows: [
+        {
+          kind: "connector-definition",
+          verb: "create",
+          id: "mcp.atlassian",
+        },
+        {
+          kind: "connection",
+          verb: "create",
+          id: connection.slug,
+          desired: connection,
+        },
+      ],
+      counts: { create: 2, update: 0, noop: 0, drift: 0, delete: 0 },
+      notes: [],
+    };
+    const calls: string[] = [];
+    const stdout: string[] = [];
+    const stdoutSpy = spyOn(process.stdout, "write").mockImplementation(
+      (chunk) => {
+        stdout.push(String(chunk));
+        return true;
+      }
+    );
+    const installConnector = mock(async (payload: { sourceCode?: string }) => {
+      calls.push(`install:${payload.sourceCode}`);
+      return {
+        connectorKey: "mcp.atlassian",
+        updated: false,
+        version: "1.0.0",
+      };
+    });
+    const listConnectors = mock(async () => [installed]);
+    const createConnection = mock(async () => {
+      calls.push("connection");
+      return { id: 93 };
+    });
+    const client = {
+      installConnector,
+      listConnectors,
+      createConnection,
+    } as unknown as ApplyClient;
+
+    try {
+      await executePlan({ client, state, plan, remote }, []);
+    } finally {
+      stdoutSpy.mockRestore();
+    }
+
+    expect(installConnector).toHaveBeenCalledWith({
+      sourceCode: "export default class ManagedAtlassian {}",
+    });
+    expect(calls).toEqual([
+      "install:export default class ManagedAtlassian {}",
+      "connection",
+    ]);
+    expect(stdout.join("")).toContain("mcp.atlassian");
+    expect(stdout.join("")).toContain("installed managed");
+    expect(createConnection).toHaveBeenCalledWith({
+      slug: "atlassian-burak",
+      connector: "mcp.atlassian",
+      name: undefined,
+      authProfileSlug: undefined,
+      appAuthProfileSlug: undefined,
+      config: {
+        managedBy: {
+          org: "lobu-managed",
+          connectionSlug: "atlassian-burak",
+        },
+      },
+    });
   });
 });
 

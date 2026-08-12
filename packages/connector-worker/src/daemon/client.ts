@@ -101,6 +101,8 @@ export class WorkerClient implements ExecutorClient {
   private capabilities: WorkerCapabilities;
   private authToken?: string;
   private version: string;
+  private platform?: string;
+  private label?: string;
 
   constructor(config: {
     apiUrl: string;
@@ -108,12 +110,18 @@ export class WorkerClient implements ExecutorClient {
     authToken?: string;
     capabilities: WorkerCapabilities;
     version?: string;
+    /** Host platform for server-side device registration and capability authorization. */
+    platform?: string;
+    /** Human-readable device name for the Devices page. */
+    label?: string;
   }) {
     this.apiUrl = trimTrailingSlashes(config.apiUrl);
     this.workerId = config.workerId;
     this.capabilities = config.capabilities;
     this.authToken = config.authToken?.trim() || undefined;
     this.version = config.version ?? '1.0.0';
+    this.platform = config.platform?.trim() || undefined;
+    this.label = config.label?.trim() || undefined;
   }
 
   private authHeaders(): Record<string, string> {
@@ -153,6 +161,10 @@ export class WorkerClient implements ExecutorClient {
       worker_id: this.workerId,
       capabilities: this.capabilities,
       version: this.version,
+      // app_version belongs to the device registration fields, so omit both for
+      // fleet workers rather than sending empty values.
+      ...(this.platform ? { platform: this.platform, app_version: this.version } : {}),
+      ...(this.label ? { label: this.label } : {}),
     });
   }
 

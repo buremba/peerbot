@@ -19,7 +19,11 @@
  * can only fetch tokens for connections they own.
  *
  * Endpoint (bearer with `connections:token` scope):
- *   - POST /oauth/connection-token  { org, connector_key }
+ *   - POST /oauth/connection-token  { org, connector_key, connection_slug? }
+ *
+ * `connection_slug` selects the exact caller-owned grant. It is optional only
+ * for compatibility with older generated configs; an unpinned request fails
+ * with 409 when more than one matching grant exists.
  */
 
 import type { Env } from "@lobu/connector-sdk";
@@ -118,13 +122,14 @@ connectionTokenRoutes.use("/oauth/connection-token", async (c, next) => {
 const TokenBody = Type.Object({
 	org: Type.String({ minLength: 1 }),
 	connector_key: Type.String({ minLength: 1 }),
+	connection_slug: Type.Optional(Type.String({ minLength: 1 })),
 });
 const tokenValidator = TypeCompiler.Compile(TokenBody);
 
 /**
  * POST /oauth/connection-token
  * Return a fresh access token for the authed user's OWN active connection to
- * `connector_key` in `org`.
+ * `connector_key` in `org`, selected exactly by `connection_slug` when sent.
  *
  * The cloud owns the managed grant: it resolves the connection's
  * `oauth_account` (token store) + managed `oauth_app` (client_id/secret) and
@@ -214,19 +219,23 @@ connectionTokenRoutes.post("/oauth/connection-token", async (c) => {
 	//     (`config.consent_only = true`).
 	// Any connection that isn't all three → 404 (same not-found shape; we don't
 	// leak which condition failed).
+	// LIMIT 2 exists only to detect ambiguity on an unpinned request; a pinned
+	// slug matches at most one row (slug is unique per org).
 	const rows = (await sql`
-    SELECT c.id, c.auth_profile_id, c.app_auth_profile_id
-    FROM connections c
-    JOIN "organization" o ON o.id = c.organization_id
-    WHERE c.organization_id = ${organizationId}
-      AND c.connector_key = ${raw.connector_key}
-      AND c.created_by = ${authedUserId}
-      AND c.deleted_at IS NULL
-      AND c.status = 'active'
-      AND o.visibility = 'public'
-      AND c.config->>'consent_only' = 'true'
-    LIMIT 1
-  `) as unknown as Array<{
+		SELECT c.id, c.auth_profile_id, c.app_auth_profile_id
+		FROM connections c
+		JOIN "organization" o ON o.id = c.organization_id
+		WHERE c.organization_id = ${organizationId}
+			AND c.connector_key = ${raw.connector_key}
+			${raw.connection_slug ? sql`AND c.slug = ${raw.connection_slug}` : sql``}
+			AND c.created_by = ${authedUserId}
+			AND c.deleted_at IS NULL
+			AND c.status = 'active'
+			AND o.visibility = 'public'
+			AND c.config->>'consent_only' = 'true'
+		ORDER BY c.id
+		LIMIT 2
+	`) as unknown as Array<{
 		id: number;
 		auth_profile_id: number | null;
 		app_auth_profile_id: number | null;
@@ -238,6 +247,16 @@ connectionTokenRoutes.post("/oauth/connection-token", async (c) => {
 				error_description: "No active managed connection found for this connector",
 			},
 			404,
+		);
+	}
+	if (!raw.connection_slug && rows.length > 1) {
+		return c.json(
+			{
+				error: "ambiguous_connection",
+				error_description:
+					"Multiple active managed connections found; regenerate the local config or select a connection_slug",
+			},
+			409,
 		);
 	}
 

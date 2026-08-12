@@ -344,6 +344,15 @@ describe("expirePendingApprovals", () => {
  * drained and no other org's approvals were ever reached.
  */
 describe("expirePendingApprovals — draining and cross-org fairness", () => {
+	// Each of these seeds hundreds of rows and then drives real batched DB
+	// work, so they are the only tests in this file that genuinely approach a
+	// multi-second runtime. Two of them (the 620-row drain and the single-tenant
+	// backlog) timed out at 5088ms and 6275ms on a loaded CI runner against bun's
+	// 5000ms default, taking the lane red. The budget has to be set per test: bun
+	// ignores `timeout` in bunfig and honours only the --timeout CLI flag, which
+	// no lane passes.
+	const DRAIN_TIMEOUT_MS = 30_000;
+
 	/** Seed `count` stale pending approvals for an org in one statement. */
 	async function seedManyStale(
 		organizationId: string,
@@ -413,7 +422,7 @@ describe("expirePendingApprovals — draining and cross-org fairness", () => {
 		expect(result.expired).toBe(620);
 		expect(await pendingCount(ORG_ID)).toBe(0);
 		expect(await expiredCount(ORG_ID)).toBe(620);
-	});
+	}, DRAIN_TIMEOUT_MS);
 
 	test("a huge single-tenant backlog does NOT starve other orgs", async () => {
 		// The starvation reproducer. ORG_ID's rows are all OLDER than the other
@@ -438,7 +447,7 @@ describe("expirePendingApprovals — draining and cross-org fairness", () => {
 		}
 		expect(await expiredCount(hogOrg)).toBe(hogRows);
 		expect(result.expired).toBe(hogRows + smallOrgs.length * 5);
-	});
+	}, DRAIN_TIMEOUT_MS);
 
 	test("the per-org cap bounds how much one tenant takes from a single batch", async () => {
 		// Fairness is a per-BATCH property, not only an end-state one. Seed a hog
@@ -466,7 +475,7 @@ describe("expirePendingApprovals — draining and cross-org fairness", () => {
 		// The hog cannot take the whole batch: the per-org cap bounds its share,
 		// leaving room for other orgs even though its rows are the oldest.
 		expect(await expiredCount(hogOrg)).toBeLessThan(batchCeiling);
-	});
+	}, DRAIN_TIMEOUT_MS);
 
 	test("more backlogged orgs than the batch can cover: a newer org still gets rows in the FIRST batch", async () => {
 		// The per-org cap alone does NOT give fairness. With batch=500 and
@@ -499,7 +508,7 @@ describe("expirePendingApprovals — draining and cross-org fairness", () => {
 		// The newcomer must be represented in that first batch. Under global age
 		// ordering it gets 0: all 14 older orgs rank ahead of it.
 		expect(await expiredCount("starve-newcomer")).toBeGreaterThan(0);
-	});
+	}, DRAIN_TIMEOUT_MS);
 
 	test("respects the per-invocation ceiling on a pathological backlog", async () => {
 		// A backlog larger than the ceiling must stop AT the ceiling rather than
@@ -518,5 +527,5 @@ describe("expirePendingApprovals — draining and cross-org fairness", () => {
 		const second = await expirePendingApprovals(TTL_DAYS, ceiling);
 		expect(second.expired).toBe(30);
 		expect(await pendingCount(ORG_ID)).toBe(0);
-	});
+	}, DRAIN_TIMEOUT_MS);
 });

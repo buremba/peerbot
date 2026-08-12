@@ -189,6 +189,10 @@ export interface RemoteConnectorDefinition {
   catalog_origin?: string;
   /** `file://` URI of the bundled source on the server host (catalog entries). */
   source_uri?: string | null;
+  /** Non-secret remote MCP transport metadata exposed by the connector catalog. */
+  mcp_config?: Record<string, unknown> | null;
+  /** Trusted in-memory connector artifact synthesized from a managed Cloud catalog. */
+  managed_mcp_source?: string;
 }
 
 export interface RemoteAuthProfile {
@@ -1691,6 +1695,12 @@ function mapConnectorDefinitionItem(item: {
           : "catalog",
     source_uri:
       typeof detail.source_uri === "string" ? detail.source_uri : null,
+    mcp_config:
+      detail.mcp_config &&
+      typeof detail.mcp_config === "object" &&
+      !Array.isArray(detail.mcp_config)
+        ? (detail.mcp_config as Record<string, unknown>)
+        : null,
   };
 }
 

@@ -47,6 +47,11 @@ import {
   confirmPlan,
 } from "./prompt.js";
 import {
+  hydrateManagedConnectorCatalog,
+  isManagedCloudTarget,
+  loadManagedCloudConnectorCatalog,
+} from "./managed-connector-catalog.js";
+import {
   renderBlockedReport,
   renderMissingSecrets,
   renderPlan,
@@ -458,10 +463,10 @@ export async function fetchRemoteSnapshot(
 // ── Connector definition install (runs INSIDE executePlan, after confirm) ──
 
 /**
- * Install/update the project's custom connector definitions, then any *bundled*
- * connectors referenced by an auth-profile / connection (the server only
- * resolves *installed* defs in `create_auth_profile` / `create_feed`, not the
- * catalog). Returns the fresh connector-definition catalog.
+ * Install/update the project's custom connector definitions, then any bundled
+ * or managed connectors referenced by an auth-profile / connection (the server
+ * resolves only installed defs in create_auth_profile/create_feed, not raw
+ * catalog entries). Returns the fresh connector-definition catalog.
  */
 async function installConnectorDefinitions(
   client: ApplyClient,
@@ -547,23 +552,32 @@ async function installConnectorDefinitions(
   // or just installed from local source above). A locally-supplied key is never
   // overwritten by the bundled `source_uri`.
   const catalogByKey = new Map(
-    catalog.filter((d) => d.installable && d.source_uri).map((d) => [d.key, d])
+    catalog
+      .filter((d) => d.installable && (d.source_uri || d.managed_mcp_source))
+      .map((d) => [d.key, d])
   );
   const referenced = referencedConnectorKeys(state.connectors);
   for (const key of [...referenced].sort()) {
-    if (installedKeys.has(key) || locallySuppliedKeys.has(key)) continue;
+    if (locallySuppliedKeys.has(key)) continue;
     const entry = catalogByKey.get(key);
-    if (!entry?.source_uri) continue; // custom local-only — handled above
-    const result = await client.installConnector({
-      sourceUri: entry.source_uri,
-    });
+    if (installedKeys.has(key) && !entry?.managed_mcp_source) continue;
+    if (!entry?.source_uri && !entry?.managed_mcp_source) continue;
+    const wasInstalled = installedKeys.has(key);
+    const installPayload = entry.managed_mcp_source
+      ? { sourceCode: entry.managed_mcp_source }
+      : entry.source_uri
+        ? { sourceUri: entry.source_uri }
+        : null;
+    if (!installPayload) continue;
+    const result = await client.installConnector(installPayload);
     mutated = true;
+    const origin = entry.managed_mcp_source ? "managed" : "bundled";
     printText(
       renderProgress(
-        "create",
+        wasInstalled ? "update" : "create",
         "connector-definition",
         result.connectorKey || key,
-        result.updated ? "(installed bundled)" : "(bundled — unchanged)"
+        `(${wasInstalled ? "synced" : "installed"} ${origin})`
       )
     );
   }
@@ -1522,6 +1536,13 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     prune,
     resolvedOrg?.id
   );
+  if (!opts.only && !(await isManagedCloudTarget(apiBaseUrl))) {
+    remote.connectorDefinitions = await hydrateManagedConnectorCatalog(
+      state,
+      remote.connectorDefinitions,
+      (managedOrg) => loadManagedCloudConnectorCatalog(managedOrg, fetchImpl)
+    );
+  }
   resolveBehaviorConnectionRefs(
     state.watchers,
     new Map(

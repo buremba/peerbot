@@ -46,12 +46,28 @@ interface BaseRow {
 
 /**
  * The desired/remote/changed-fields triple shared by every per-resource row
- * kind. `changedFields` carries field-level changes when verb === "update".
+ * kind. `changedFields` carries field-level changes when verb === "update" and
+ * remains the sole input to apply-cmd routing and the audit `changed_fields`.
  */
 interface ResourceRow<D, R> extends BaseRow {
   desired?: D;
   remote?: R;
   changedFields?: string[];
+}
+
+/**
+ * Before/after pairs are restricted to the baseline-aware memory-schema rows.
+ * The other resource rows include provider keys, BYO connection config, and
+ * auth profiles whose values must never be printed in a plan, so they have no
+ * field to populate and the unsafe version does not typecheck.
+ *
+ * Behaviors are deliberately excluded too, though they are not secret-bearing:
+ * their values reach the plan only through the two-way `diffWatcher` row, whose
+ * field identifiers differ from the projection's (`agent` vs `agent_id`), and
+ * the name-mapping table that reconciled them was not worth its weight.
+ */
+interface ValuePreviewRow {
+  changedValues?: Array<{ field: string; from: unknown; to: unknown }>;
 }
 
 export interface AgentDiffRow
@@ -66,12 +82,14 @@ export interface SettingsDiffRow extends BaseRow {
 }
 
 export interface EntityTypeDiffRow
-  extends ResourceRow<DesiredEntityType, RemoteEntityType> {
+  extends ResourceRow<DesiredEntityType, RemoteEntityType>,
+    ValuePreviewRow {
   kind: "entity-type";
 }
 
 export interface RelationshipTypeDiffRow
-  extends ResourceRow<DesiredRelationshipType, RemoteRelationshipType> {
+  extends ResourceRow<DesiredRelationshipType, RemoteRelationshipType>,
+    ValuePreviewRow {
   kind: "relationship-type";
 }
 
@@ -139,9 +157,9 @@ export interface InferenceProviderDiffRow
 }
 
 /**
- * A field-level blocking drift item: the remote moved a field the config
- * doesn't declare, or both config and remote moved it (fail-closed). Apply
- * must not converge over it — the whole run blocks and reports this.
+ * A blocking drift item: either a field moved remotely or a remote-only
+ * definition is not safe to delete. Apply must not converge over it — the
+ * whole run blocks and reports this.
  */
 export interface BlockingDriftRow extends BaseRow {
   verb: "drift";
@@ -149,10 +167,12 @@ export interface BlockingDriftRow extends BaseRow {
   blocking: true;
   kind: "entity-type" | "relationship-type" | "watcher";
   id: string;
-  /** The moved field (entity/rel: `name`, `description`, `properties.<key>`, …). */
+  /** The moved field; absent for a whole remote-only definition. */
   field?: string;
-  /** The remote-side value that moved — shown in the blocked report. */
+  /** The remote value, or display metadata for a remote-only definition. */
   remoteChange?: unknown;
+  /** What the config declares for that field — what apply would have written. */
+  desiredChange?: unknown;
 }
 
 /**
@@ -563,30 +583,51 @@ function classifyField(
   return "remoteMoved";
 }
 
-interface ThreeWayResult {
-  changedFields: string[];
-  blockingFields: Array<{ field: string; remoteChange: unknown }>;
+interface ThreeWayResult<Field extends string = string> {
+  changedFields: Field[];
+  /**
+   * The same changes as `changedFields`, carrying the values the plan is
+   * about to move `from` → `to`. Derived from the very triples the classifier
+   * compared, so the rendered pair is exactly what the decision was made on —
+   * a renderer that re-read the values off `desired`/`remote` would have to
+   * re-encode per-kind quirks (`resolutionPolicy` lives under
+   * `schemaExtras["x-lobu-resolution"]`, `required` normalizes to `[]` under
+   * prune) and would drift from the classifier the first time one changed.
+   */
+  changedValues: Array<{ field: Field; from: unknown; to: unknown }>;
+  blockingFields: Array<{
+    field: Field;
+    remoteChange: unknown;
+    desiredChange: unknown;
+  }>;
 }
 
 /** Three-way per-field classification over a list of (name, desired, remote, attribution) triples. */
-function classifyThreeWay(
+function classifyThreeWay<Field extends string>(
   triples: Array<{
-    field: string;
+    field: Field;
     desired: unknown;
     remote: unknown;
     attribution: unknown | undefined;
   }>
-): ThreeWayResult {
-  const changedFields: string[] = [];
-  const blockingFields: Array<{ field: string; remoteChange: unknown }> = [];
+): ThreeWayResult<Field> {
+  const changedFields: Field[] = [];
+  const changedValues: ThreeWayResult<Field>["changedValues"] = [];
+  const blockingFields: ThreeWayResult<Field>["blockingFields"] = [];
   for (const t of triples) {
     const outcome = classifyField(t.desired, t.remote, t.attribution);
-    if (outcome === "configMoved") changedFields.push(t.field);
-    else if (outcome === "remoteMoved") {
-      blockingFields.push({ field: t.field, remoteChange: t.remote });
+    if (outcome === "configMoved") {
+      changedFields.push(t.field);
+      changedValues.push({ field: t.field, from: t.remote, to: t.desired });
+    } else if (outcome === "remoteMoved") {
+      blockingFields.push({
+        field: t.field,
+        remoteChange: t.remote,
+        desiredChange: t.desired,
+      });
     }
   }
-  return { changedFields, blockingFields };
+  return { changedFields, changedValues, blockingFields };
 }
 
 /** Entity-type fields compared per-property-key, three-way, with the baseline. */
@@ -810,7 +851,10 @@ function diffEntityTypeWithBaseline(
       desired,
       remote,
       ...(threeWay.changedFields.length > 0
-        ? { changedFields: threeWay.changedFields }
+        ? {
+            changedFields: threeWay.changedFields,
+            changedValues: threeWay.changedValues,
+          }
         : {}),
     },
     blocking: threeWay.blockingFields.map((b) => ({
@@ -820,6 +864,7 @@ function diffEntityTypeWithBaseline(
       id: desired.slug,
       field: b.field,
       remoteChange: b.remoteChange,
+      desiredChange: b.desiredChange,
     })),
   };
 }
@@ -886,7 +931,10 @@ function diffRelationshipTypeWithBaseline(
       desired,
       remote,
       ...(threeWay.changedFields.length > 0
-        ? { changedFields: threeWay.changedFields }
+        ? {
+            changedFields: threeWay.changedFields,
+            changedValues: threeWay.changedValues,
+          }
         : {}),
     },
     blocking: threeWay.blockingFields.map((b) => ({
@@ -896,6 +944,7 @@ function diffRelationshipTypeWithBaseline(
       id: desired.slug,
       field: b.field,
       remoteChange: b.remoteChange,
+      desiredChange: b.desiredChange,
     })),
   };
 }
@@ -1036,7 +1085,12 @@ export const effectiveRelationshipTypeAfterApply = (
 /** Classify a remote-only definition without deleting unproven ownership. */
 function remoteOnlyDefinitionRow(
   kind: "entity-type" | "relationship-type" | "watcher",
-  remote: { slug: string; id?: number | string },
+  remote: {
+    slug: string;
+    id?: number | string;
+    name?: string | null;
+    description?: string | null;
+  },
   baseline: Baseline | undefined,
   prune: boolean,
   unchangedSinceBaseline: (slug: string) => boolean
@@ -1063,6 +1117,12 @@ function remoteOnlyDefinitionRow(
     blocking: true,
     id: remote.slug,
     remote,
+    // Restrict terminal output to display metadata; schema bodies and Behavior
+    // prompts can contain sensitive values.
+    remoteChange: {
+      name: remote.name,
+      description: remote.description,
+    },
   } as DiffRow;
 }
 
@@ -1248,6 +1308,7 @@ function diffWatcherWithBaseline(
         id: desired.slug,
         field: b.field,
         remoteChange: b.remoteChange,
+        desiredChange: b.desiredChange,
       })),
     };
   }
@@ -1938,6 +1999,8 @@ export function computeDiff(
             {
               slug: remoteWatcher.slug,
               id: remoteWatcher.behavior_id,
+              name: remoteWatcher.name,
+              description: remoteWatcher.description,
             },
             baseline,
             prune,
@@ -2006,14 +2069,23 @@ export function computeDiff(
     // a locally-supplied connector declares the same key — that one wins.)
     const installableByKey = new Map(
       remoteConnectorDefinitions
-        .filter((d) => d.installable && d.source_uri)
+        .filter((d) => d.installable && (d.source_uri || d.managed_mcp_source))
         .map((d) => [d.key, d])
     );
     for (const key of [...referencedKeys].sort()) {
-      if (installedKeys.has(key)) continue;
       if (declaredKeys.has(key)) continue; // a local def supplies this key
       const entry = installableByKey.get(key);
-      if (!entry?.source_uri) continue;
+      if (installedKeys.has(key)) {
+        if (entry?.managed_mcp_source) {
+          rows.push({
+            kind: "connector-definition",
+            verb: "update",
+            id: key,
+          });
+        }
+        continue;
+      }
+      if (!entry?.source_uri && !entry?.managed_mcp_source) continue;
       rows.push({
         kind: "connector-definition",
         verb: "create",

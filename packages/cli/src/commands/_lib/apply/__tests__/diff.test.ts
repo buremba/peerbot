@@ -1440,6 +1440,78 @@ describe("apply diff — connectors", () => {
     ).toBe(true);
   });
 
+  test("referenced managed MCP connector becomes an install row without project source", () => {
+    const state = buildState([]);
+    state.connectors.connections.push({
+      slug: "atlassian",
+      connector: "mcp.atlassian",
+      config: {
+        managedBy: {
+          org: "lobu-managed",
+          connectionSlug: "atlassian-burak",
+        },
+      },
+      feeds: [],
+      sourceFile: "lobu.config.ts",
+    });
+    const plan = computeDiff(state, {
+      ...emptyRemote(),
+      connectorDefinitions: [
+        {
+          key: "mcp.atlassian",
+          installed: false,
+          installable: true,
+          mcp_config: {
+            upstream_url: "https://mcp.atlassian.com/v1/mcp/authv2",
+            tool_prefix: "atlassian",
+          },
+          managed_mcp_source: "export default class ManagedAtlassian {}",
+        },
+      ],
+    });
+
+    expect(
+      plan.rows.find(
+        (row) =>
+          row.kind === "connector-definition" && row.id === "mcp.atlassian"
+      )?.verb
+    ).toBe("create");
+  });
+
+  test("installed managed MCP connector becomes a refresh row", () => {
+    const state = buildState([]);
+    state.connectors.connections.push({
+      slug: "atlassian",
+      connector: "mcp.atlassian",
+      config: {
+        managedBy: {
+          org: "lobu-managed",
+          connectionSlug: "atlassian-burak",
+        },
+      },
+      feeds: [],
+      sourceFile: "lobu.config.ts",
+    });
+    const plan = computeDiff(state, {
+      ...emptyRemote(),
+      connectorDefinitions: [
+        {
+          key: "mcp.atlassian",
+          installed: true,
+          installable: true,
+          managed_mcp_source: "export default class ManagedAtlassian {}",
+        },
+      ],
+    });
+
+    expect(
+      plan.rows.find(
+        (row) =>
+          row.kind === "connector-definition" && row.id === "mcp.atlassian"
+      )?.verb
+    ).toBe("update");
+  });
+
   test("a locally-supplied connector key is NOT also a bundled-install row (no double mutation)", () => {
     // Pretend "acme" is *also* in the bundled catalog with a source_uri; the
     // local .connector.ts should win — no bundled row for "acme".

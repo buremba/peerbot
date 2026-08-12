@@ -32,7 +32,13 @@ export function buildConnectorWorkerEnv(): Env {
     REDDIT_CLIENT_ID: process.env.REDDIT_CLIENT_ID,
     REDDIT_CLIENT_SECRET: process.env.REDDIT_CLIENT_SECRET,
     REDDIT_USER_AGENT: process.env.REDDIT_USER_AGENT,
-    WORKER_API_TOKEN: process.env.WORKER_API_TOKEN,
+    // WORKER_API_TOKEN is deliberately absent. Everything returned here reaches
+    // connector code — `subprocess.ts` spreads `job.env` into the child process
+    // environment and `buildConnectorConfig()` merges it into the connector's
+    // config — and a request bearing this token authenticates as a TRUSTED
+    // FLEET worker, which can claim and complete runs across tenants. The
+    // daemon authenticates via `DaemonConfig.workerApiToken` instead, which
+    // never enters this Env.
     // WORKER-DERIVED DEFAULT egress policy. The gateway ships its OWN
     // cloud-mode decision on the poll response (`db_egress_policy`); the daemon's
     // resolveEffectiveEnv() folds it in and takes the STRICTER of the two, so a

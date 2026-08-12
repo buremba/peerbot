@@ -21,6 +21,7 @@
 
 import type { DispatchChromeActionRequest } from '@lobu/core/contracts/worker/protocol';
 import type { Context } from 'hono';
+import { resolveBehaviorConnectionVisibilityUserId } from '../authz/behavior-connection-visibility';
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
 import { getDb, pgTextArray } from '../db/client';
 import type { Env } from '../index';
@@ -528,7 +529,7 @@ export const TARGET_BROWSER_CONNECTION_INPUT_KEY = 'target_browser_connection_id
  */
 async function resolveTargetBrowserWorker(
   organizationId: string,
-  requesterUserId: string | null,
+  visibilityUserId: string | null,
   rawTarget: unknown,
   sql: ReturnType<typeof getDb>
 ): Promise<{ deviceWorkerId: string } | { error: string }> {
@@ -544,7 +545,7 @@ async function resolveTargetBrowserWorker(
   // only; a user may additionally target their own private browser.
   const visibility = sql`${sql.unsafe(
     compileConnectionRowVisibility(
-      { organizationId, principal: requesterUserId },
+      { organizationId, principal: visibilityUserId },
       'con'
     )
   )}`;
@@ -612,8 +613,8 @@ export async function dispatchChromeActionToExtension(params: {
    * a chrome-extension, scrapes target that browser.
    */
   parentConnectionId?: number | null;
-  /** Trusted requesting user. Null means headless and permits org-visible targets only. */
-  requesterUserId?: string | null;
+  /** User principal used only to resolve private browser visibility. */
+  visibilityUserId?: string | null;
   /** Abort the wait early (e.g. the calling reaction hit its budget). */
   abortSignal?: AbortSignal;
 }): Promise<ChromeActionDispatchResult> {
@@ -623,10 +624,38 @@ export async function dispatchChromeActionToExtension(params: {
     actionInput,
     parentRunId,
     parentConnectionId,
-    requesterUserId = null,
+    visibilityUserId = null,
     abortSignal,
   } = params;
   const sql = getDb();
+
+  let createdByUserId = visibilityUserId;
+  let watcherId: number | null = null;
+  let windowId: number | null = null;
+  if (parentRunId != null) {
+    const parentRows = (await sql`
+      SELECT created_by_user_id, watcher_id, window_id
+      FROM runs
+      WHERE id = ${parentRunId}
+        AND organization_id = ${organizationId}
+      LIMIT 1
+    `) as Array<{
+      created_by_user_id: string | null;
+      watcher_id: number | null;
+      window_id: number | null;
+    }>;
+    if (parentRows.length === 0) {
+      return {
+        status: 'failed',
+        error_message: `Parent run ${parentRunId} was not found in this organization.`,
+      };
+    }
+    createdByUserId = parentRows[0].created_by_user_id;
+    watcherId =
+      parentRows[0].watcher_id == null ? null : Number(parentRows[0].watcher_id);
+    windowId =
+      parentRows[0].window_id == null ? null : Number(parentRows[0].window_id);
+  }
 
   // An interactive action may name the browser it wants to be seen in. That
   // beats the parent connection's scrape pin, which points at whichever machine
@@ -637,7 +666,7 @@ export async function dispatchChromeActionToExtension(params: {
   if (rawTarget != null) {
     const resolved = await resolveTargetBrowserWorker(
       organizationId,
-      requesterUserId,
+      visibilityUserId,
       rawTarget,
       sql
     );
@@ -692,7 +721,9 @@ export async function dispatchChromeActionToExtension(params: {
       operationInput,
       approvalMode: 'device',
       requireCompiledCode: false,
-      createdByUserId: requesterUserId,
+      createdByUserId,
+      watcherId,
+      windowId,
     });
     runId = claim.runId;
   } catch (err) {
@@ -753,7 +784,7 @@ export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {
   // overrides it.
   const parentRows = (await sql`
     SELECT r.organization_id, r.status, r.claimed_by, r.run_type, r.connection_id,
-           r.created_by_user_id
+           r.created_by_user_id, r.watcher_id
     FROM runs r
     WHERE r.id = ${body.parent_run_id}
     LIMIT 1
@@ -764,6 +795,7 @@ export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {
     run_type: string;
     connection_id: number | null;
     created_by_user_id: string | null;
+    watcher_id: number | null;
   }>;
   if (parentRows.length === 0) {
     return c.json({ error: 'parent_run not found' }, 404);
@@ -785,13 +817,21 @@ export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {
     );
   }
 
+  const visibilityUserId = await resolveBehaviorConnectionVisibilityUserId(
+    {
+      organizationId: parentRun.organization_id,
+      userId: parentRun.created_by_user_id,
+      actingWatcherId: parentRun.watcher_id,
+    },
+    sql
+  );
   const result = await dispatchChromeActionToExtension({
     organizationId: parentRun.organization_id,
     actionKey: body.action_key,
     actionInput: body.action_input ?? {},
     parentRunId: body.parent_run_id,
     parentConnectionId: parentRun.connection_id,
-    requesterUserId: parentRun.created_by_user_id,
+    visibilityUserId,
   });
   return c.json(result);
 }

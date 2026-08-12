@@ -43,35 +43,6 @@ export const INITIALIZED_NOTIFICATION_BODY = JSON.stringify({
 	method: "notifications/initialized",
 });
 
-/**
- * Parse a JSON-RPC response body that may be either a plain JSON object
- * (Content-Type: application/json) or a single-event SSE stream
- * (Content-Type: text/event-stream). Streamable-HTTP MCP servers may return
- * either form per the MCP spec.
- */
-export async function parseJsonRpcResponse(
-	response: Response,
-): Promise<unknown> {
-	const contentType = response.headers.get("content-type") || "";
-	if (contentType.includes("text/event-stream")) {
-		const text = await response.text();
-		// SSE frames: sequence of `event:`/`data:` lines separated by blank lines.
-		// For request/response JSON-RPC we expect the last `data:` payload to be
-		// the JSON-RPC response object.
-		let payload = "";
-		for (const line of text.split(/\r?\n/)) {
-			if (line.startsWith("data:")) {
-				payload = line.slice(5).trimStart();
-			}
-		}
-		if (!payload) {
-			throw new Error("SSE response contained no data payload");
-		}
-		return JSON.parse(payload);
-	}
-	return response.json();
-}
-
 export interface JsonRpcResponse {
 	jsonrpc: string;
 	id: unknown;

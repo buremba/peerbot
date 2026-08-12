@@ -42,6 +42,7 @@ import {
 } from "vitest";
 import { connectionTokenRoutes } from "../../../connect/connection-token-route";
 import type { Env } from "../../../index";
+import { resolveCredentialsByConnectionId } from "../../../mcp-proxy/credential-resolver";
 import { createAuthProfile } from "../../../utils/auth-profiles";
 import { resolveExecutionAuth } from "../../../utils/execution-context";
 import { initWorkspaceProvider } from "../../../workspace";
@@ -160,6 +161,7 @@ interface SeededManagedConnection {
 	ownerPatNoScope: string;
 	connectorKey: string;
 	connectionId: number;
+	connectionSlug: string;
 }
 
 /**
@@ -264,8 +266,8 @@ async function seedManagedConnection(
       ${consentOnly ? sql.json({ consent_only: true }) : null},
       'private', NOW(), NOW()
     )
-    RETURNING id
-  `) as unknown as Array<{ id: number }>;
+    RETURNING id, slug
+  `) as unknown as Array<{ id: number; slug: string }>;
 
 	// Happy-path PAT carries the least-privilege `connections:token` scope; a
 	// sibling PAT for the same owner/org WITHOUT it proves the scope gate.
@@ -283,6 +285,7 @@ async function seedManagedConnection(
 		ownerPatNoScope: ownerPatNoScope.token,
 		connectorKey,
 		connectionId: Number(connRows[0].id),
+		connectionSlug: connRows[0].slug,
 	};
 }
 
@@ -373,6 +376,59 @@ describe("managed connector — POST /oauth/connection-token", () => {
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as Record<string, unknown>;
 		expect(body.access_token).toBe(REFRESHED.access_token);
+	});
+
+	it("requires an exact connection slug when an owner has multiple grants for a connector", async () => {
+		const seeded = await seedManagedConnection("Public Org Multiple Grants");
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO connections (
+				organization_id, connector_key, slug, display_name, status,
+				auth_profile_id, app_auth_profile_id, created_by, config,
+				visibility, created_at, updated_at
+			)
+			SELECT
+				organization_id, connector_key, ${`${seeded.connectionSlug}-second`},
+				'Demo Connection Second', status,
+				auth_profile_id, app_auth_profile_id, created_by, config,
+				visibility, NOW(), NOW()
+			FROM connections
+			WHERE id = ${seeded.connectionId}
+		`;
+
+		const app = buildCloudApp();
+		const ambiguous = await tokenRequest(app, {
+			pat: seeded.ownerPat,
+			body: { org: seeded.orgId, connector_key: seeded.connectorKey },
+		});
+		expect(ambiguous.status).toBe(409);
+		expect((await ambiguous.json()) as Record<string, unknown>).toMatchObject({
+			error: "ambiguous_connection",
+		});
+		expect(lastRefreshBody).toEqual({});
+
+		const exact = await tokenRequest(app, {
+			pat: seeded.ownerPat,
+			body: {
+				org: seeded.orgId,
+				connector_key: seeded.connectorKey,
+				connection_slug: seeded.connectionSlug,
+			},
+		});
+		expect(exact.status).toBe(200);
+		expect((await exact.json()) as Record<string, unknown>).toMatchObject({
+			access_token: REFRESHED.access_token,
+		});
+
+		const missing = await tokenRequest(app, {
+			pat: seeded.ownerPat,
+			body: {
+				org: seeded.orgId,
+				connector_key: seeded.connectorKey,
+				connection_slug: "does-not-exist",
+			},
+		});
+		expect(missing.status).toBe(404);
 	});
 
 	it("rejects a DIFFERENT member's PAT for the SAME org (404 — owner-scoped)", async () => {
@@ -563,7 +619,7 @@ describe("managed connector — local resolver (env LOBU_CLOUD_PAT fallback)", (
         config, created_at, updated_at
       ) VALUES (
         ${localOrg.id}, 'demo.oauth', 'demo-local', 'Local Demo', 'active',
-        ${sql.json({ managedBy: { org: cloud.orgId } })}, NOW(), NOW()
+        ${sql.json({ managedBy: { org: cloud.orgId, connectionSlug: cloud.connectionSlug } })}, NOW(), NOW()
       )
       RETURNING id
     `) as unknown as Array<{ id: number }>;
@@ -582,6 +638,16 @@ describe("managed connector — local resolver (env LOBU_CLOUD_PAT fallback)", (
 		// No local refresh token / secret ever materialized.
 		expect(resolved.credentials?.refreshToken).toBeNull();
 		expect(resolved.connectionCredentials).toEqual({});
+
+		// The MCP proxy must use the same execution-auth seam. A managedBy
+		// connection deliberately has no local oauth_account profile, so the old
+		// direct auth_profiles join returned null here.
+		await expect(
+			resolveCredentialsByConnectionId(Number(localConnRows[0].id), localOrg.id),
+		).resolves.toEqual({
+			accessToken: REFRESHED.access_token,
+			tokenType: "Bearer",
+		});
 	});
 
 	it("ignores a connection-supplied `managedBy.url` — the PAT always goes to LOBU_CLOUD_URL", async () => {

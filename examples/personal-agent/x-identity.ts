@@ -49,13 +49,50 @@ export function normalizeXHandle(
   return trimmed;
 }
 
-/** Pull a normalized @handle out of a `twitter.com/<handle>` profile link. */
+// Single-segment routes that are shaped exactly like a profile link but are
+// not one. The anchored pattern below cannot separate `twitter.com/home` from
+// `twitter.com/jack` structurally — only a list can.
+//
+// Deliberately checked HERE and not in `normalizeXHandle`: a real @home or
+// @intent account exists, and a handle that arrives from tweet metadata rather
+// than from URL parsing must survive. Only the URL reading is ambiguous.
+const RESERVED_X_ROUTES = new Set([
+  "home",
+  "explore",
+  "notifications",
+  "messages",
+  "settings",
+  "compose",
+  "search",
+  "login",
+  "logout",
+  "signup",
+  "privacy",
+  "tos",
+]);
+
+/**
+ * Pull a normalized @handle out of a direct `twitter.com/<handle>` profile
+ * link.
+ *
+ * Returns null for the `/intent/user?user_id=<id>` form the takeout actually
+ * emits — the archive carries no handle for a follow, and the caller already
+ * holds the immutable `accountId`, which is the better identity anyway. Reading
+ * the first path segment instead named 824 prod entities `intent`.
+ *
+ * The pattern is anchored to the whole URL so a nested route cannot match and
+ * an unrelated host cannot smuggle one in (`example.com/twitter.com/jack`).
+ */
 export function handleFromUserLink(
   userLink: string | null | undefined
 ): string | null {
   if (typeof userLink !== "string") return null;
-  const match = userLink.match(/(?:twitter|x)\.com\/([^/?#]+)/i);
-  return match ? normalizeXHandle(match[1]) : null;
+  const match = userLink.match(
+    /^https?:\/\/(?:www\.)?(?:twitter|x)\.com\/([^/?#]+)\/?(?:[?#].*)?$/i
+  );
+  if (!match) return null;
+  const handle = normalizeXHandle(match[1]);
+  return handle && RESERVED_X_ROUTES.has(handle) ? null : handle;
 }
 
 /**

@@ -14,6 +14,7 @@ import {
   resolveAgentGuardrails,
 } from "../../guardrails/aggregator.js";
 import { recordGuardrailTrip } from "../../guardrails/audit.js";
+import { parseJsonRpcResponse } from "../../../mcp-proxy/http-response.js";
 import { requiresToolApproval } from "../../permissions/approval-policy.js";
 import type { GrantStore } from "../../permissions/grant-store.js";
 import type { AgentSettingsStore } from "../settings/agent-settings-store.js";
@@ -33,7 +34,6 @@ import {
 	computeScopeKey,
 	type JsonRpcResponse,
 	type McpConfigSource,
-	parseJsonRpcResponse,
 	runWithOrganizationContext,
 } from "./proxy-shared.js";
 import { McpUpstreamClient } from "./proxy-upstream.js";

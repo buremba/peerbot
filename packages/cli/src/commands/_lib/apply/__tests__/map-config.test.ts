@@ -825,12 +825,12 @@ describe("mapProjectToDesiredState", () => {
     expect(dc?.feeds).toEqual([{ feedKey: "stars", schedule: "0 */6 * * *" }]);
   });
 
-  test("folds `managedBy` (org only — no url) into the connection config", () => {
+  test("folds `managedBy` (exact grant — no url) into the connection config", () => {
     const conn = defineConnection({
       slug: "gh-managed",
       connector: "github",
       config: { existing: true },
-      managedBy: { org: "lobu-managed" },
+      managedBy: { org: "lobu-managed", connectionSlug: "github-burak" },
     });
     const state = mapProjectToDesiredState(
       defineConfig({ agents: [], connections: [conn] })
@@ -840,7 +840,7 @@ describe("mapProjectToDesiredState", () => {
     // cloud PAT is sent (it always targets the instance's LOBU_CLOUD_URL).
     expect(dc?.config).toEqual({
       existing: true,
-      managedBy: { org: "lobu-managed" },
+      managedBy: { org: "lobu-managed", connectionSlug: "github-burak" },
     });
   });
 

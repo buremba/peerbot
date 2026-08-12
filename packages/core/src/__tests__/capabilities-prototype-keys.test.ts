@@ -1,0 +1,50 @@
+/**
+ * Platform names arrive from a worker's poll body, so `PLATFORM_ALLOWLIST`
+ * lookups must never resolve up the prototype chain.
+ *
+ * `"toString" in PLATFORM_ALLOWLIST` is `true`, so a bare `in` check made
+ * `isKnownPlatform("toString")` pass. The connector-worker CLI validates
+ * `--platform` with exactly that call, so the daemon would start and register,
+ * and the server would then throw inside `authorizeCapabilities` — where the
+ * inherited value is a function and `new Set(fn)` is not iterable.
+ */
+
+import { describe, expect, test } from "bun:test";
+import { authorizeCapabilities, isKnownPlatform } from "../capabilities.js";
+
+// Inherited keys present on every object literal.
+const INHERITED_KEYS = [
+  "toString",
+  "constructor",
+  "valueOf",
+  "hasOwnProperty",
+  "__proto__",
+];
+
+describe("platform allowlist lookups ignore inherited keys", () => {
+  test.each(INHERITED_KEYS)("isKnownPlatform(%p) is false", (key) => {
+    expect(isKnownPlatform(key)).toBe(false);
+  });
+
+  test.each(
+    INHERITED_KEYS
+  )("authorizeCapabilities(%p) drops everything", (key) => {
+    // Must return the empty/dropped shape rather than throwing: the server
+    // calls this on every user-scoped poll, so a throw is a 500 on a request
+    // whose input is entirely attacker-chosen.
+    expect(() => authorizeCapabilities(key, ["os.files"])).not.toThrow();
+    expect(authorizeCapabilities(key, ["os.files"])).toEqual({
+      authorized: [],
+      dropped: ["os.files"],
+    });
+  });
+
+  test("a real platform still authorizes its own capabilities", () => {
+    // Pins the fix as targeted — a blanket `return false` would satisfy every
+    // assertion above while disabling device workers entirely.
+    expect(isKnownPlatform("macos")).toBe(true);
+    expect(authorizeCapabilities("macos", ["os.files"]).authorized).toContain(
+      "os.files"
+    );
+  });
+});

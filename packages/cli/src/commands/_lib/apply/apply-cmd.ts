@@ -1549,7 +1549,11 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   // snapshot + owned identities. A legacy/missing manifest resolves to an empty
   // baseline: remote mismatches and remote-only definitions block (no-baseline,
   // fail-closed) and nothing is auto-deleted.
-  const latestDeployment = await client.getLatestDeployment().catch(() => null);
+  // Fail closed on transport/server errors: /deployments/latest returns
+  // deployment:null when none exists, so a thrown error is a real failure —
+  // never treat it as "no baseline" (which would let a scoped apply overwrite
+  // unexecuted-family ownership).
+  const latestDeployment = await client.getLatestDeployment();
   const baselineRecord =
     latestDeployment?.manifest === null ||
     latestDeployment?.manifest === undefined
@@ -1828,7 +1832,8 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
           client,
           state,
           opts.only,
-          prune
+          prune,
+          resolvedOrg?.id
         );
         if (opts.only === "agents") {
           // Agents-only: keep the empty/prior memory ownership untouched.

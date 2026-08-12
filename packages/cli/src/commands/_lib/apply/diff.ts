@@ -756,8 +756,28 @@ function diffEntityTypeWithBaseline(
     // No baseline entry — ambiguous only when there's an actual mismatch. A
     // definition already in sync (desired == remote) is a noop, so existing
     // orgs can establish their first baseline without blocking.
+    // Inherit unmanaged omitted facets from remote (name/description/UI
+    // properties) so a server-defaulted name does not false-block.
     const inSync = deepEqual(
-      projectEntityForSync(desired),
+      projectEntityForSync({
+        name: desired.name ?? remote.name,
+        description: desired.description ?? remote.description,
+        required: desired.required,
+        properties: {
+          ...Object.fromEntries(
+            Object.entries(remote.properties ?? {}).filter(
+              ([k]) => !(k in (desired.properties ?? {}))
+            )
+          ),
+          ...(desired.properties ?? {}),
+        },
+        backing: desired.backing ?? remote.backing,
+        metrics: desired.metrics ?? remote.metrics,
+        eventKinds: desired.eventKinds ?? remote.eventKinds,
+        viewTemplate: desired.viewTemplate ?? remote.viewTemplate,
+        resolutionPolicy: desired.resolutionPolicy,
+        schemaExtras: remote.schemaExtras,
+      }),
       projectEntityForSync(remote)
     );
     if (inSync) {

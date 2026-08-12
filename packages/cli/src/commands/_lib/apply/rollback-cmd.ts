@@ -315,13 +315,27 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
     // (attribution + owned). A succeeded rollback without attribution becomes
     // GET /deployments/latest and the next `lobu apply --resume` would treat
     // every config change as unattributed drift and block forever.
+    // Re-fetch remote after successful mutation so newly allocated incarnation
+    // ids enter `owned` (pre-rollback remote lacks creates/recreates).
     const orgs = await client.listOrgs().catch(() => null);
     const orgId = orgs?.find((o) => o.slug === orgSlug)?.id;
-    // Rollback force-converges (config-wins); record as if prune was off so
-    // unmanaged remote facets that executePlan did not touch survive.
+    let remoteForBaseline = remote;
+    if (!rollbackErr) {
+      try {
+        remoteForBaseline = await fetchRemoteSnapshot(
+          client,
+          sanitized.state,
+          undefined,
+          false,
+          orgId
+        );
+      } catch {
+        // Fall back to pre-rollback remote (over-blocks next prune, fail-closed).
+      }
+    }
     const baselineRecord = buildAttributionAndOwned(
       sanitized.state,
-      remote,
+      remoteForBaseline,
       orgId,
       false
     );

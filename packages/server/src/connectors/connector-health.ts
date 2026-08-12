@@ -21,11 +21,58 @@
  * by an atomic conditional UPDATE, so the alert fires exactly once on the
  * transition into unhealthy (re-armed by a NULL reset on recovery). No per-pod
  * in-memory state is read or mutated across replicas.
+ *
+ * ## Relationship to `feed-health-semantics`
+ *
+ * Per-feed `execution_mode` / `attention` / `incident_eligible` are DERIVED by
+ * `deriveFeedHealthSemantics` at read time and surfaced by `list_feeds`. This
+ * alerter consumes that module for the two classifications that are ground
+ * truth on the row — which feeds can run a collector sync at all, and whether
+ * the connection is waiting on human sign-in:
+ *
+ * - **Expected feeds** (the denominator every rule is measured against) are the
+ *   feeds that CAN sync: `execution_mode` is neither `virtual` (evaluated live
+ *   at request time) nor `streaming` (chat channels pushed into
+ *   `channel_messages`) — minus operator-paused-clean feeds and feeds whose
+ *   connection is waiting on auth. A virtual or streaming feed never syncs, so
+ *   counting it as a live capability dilutes the degraded ratio and can distort
+ *   `no_recent_sync` for connections that mix kinds.
+ * - **`needs_auth` feeds are excluded**: the user must sign in, which is not an
+ *   infra incident, and the user-facing notification for that transition
+ *   already fires from `worker-api/run-lifecycle` when the browser session goes
+ *   unusable. The `isBrowserAuthExpiredError` fallback below still covers the
+ *   other shape — a connector that fails with a session-expired error while its
+ *   auth profile is still marked active.
+ * - **Device liveness** is a new failing signal: a connection pinned to a device
+ *   worker that has not polled for `deviceOfflineHours` is collecting nothing,
+ *   which this scan previously could not see until the 7-day `no_recent_sync`
+ *   rule (and only if the feed had ever succeeded).
+ * - Rule C (`no_recent_sync`) measures the newest successful sync across
+ *   EXPECTED feeds only, so a feed that cannot sync can no longer mask a dead
+ *   capability.
+ *
+ * ## Why `execution_mode === 'scheduled'` is NOT the expected predicate
+ *
+ * `deriveFeedHealthSemantics` calls a non-virtual feed without a cron in
+ * `feeds.schedule` `manual`, and `incident_eligible` is false for it. That
+ * holds for Midas (a failed manual attempt is user-visible, never an unattended
+ * incident) but it does not generalise: measured on prod 2026-08-12, 196 of 215
+ * active collected feeds have NO `schedule`, yet many run unattended through
+ * other dispatch paths (github `issue_comments`: 4551 sync runs in 14 days with
+ * `schedule` and `next_run_at` both NULL; linkedin `home_feed` ~hourly; gmail
+ * `threads` ~every 2.6h). Replaying both predicates over that snapshot, gating
+ * this scan on `execution_mode === 'scheduled'` drops its coverage from 43
+ * connections to 14 and silences the exact shape it exists for (connection 412,
+ * 10 of 11 feeds failing) — so `schedule` is deliberately not read here.
+ * Nothing stored today distinguishes an unattended event-driven feed from a
+ * human-triggered one; until something does, `incident_eligible` cannot be this
+ * scan's predicate.
  */
 
-import { type DbClient, getDb } from '../db/client';
+import { type DbClient, getDb, tsTimeOrNull } from '../db/client';
 import { notifyBrowserAuthExpired } from '../notifications/triggers';
 import logger from '../utils/logger';
+import { deriveFeedHealthSemantics } from './feed-health-semantics';
 
 /**
  * Does this feed error look like an expired/invalid site session (the user must
@@ -111,6 +158,22 @@ const DEGRADED_FAILING_RATIO = 0.5;
  */
 const DEGRADED_MIN_EXPECTED_FEEDS = 3;
 
+/**
+ * How long a connection's pinned device worker must have been silent before
+ * its feeds count as failing here.
+ *
+ * This is deliberately NOT `DEVICE_ONLINE_WINDOW_SECONDS` (120s). That window
+ * answers "can a dispatch right now be claimed" — the right question for a UI
+ * chip or a dispatch guard, and the one `deriveFeedHealthSemantics` answers
+ * with `attention='device_offline'`. It is the wrong question for a pager: this
+ * scan runs every 15 minutes, so a 120s window would flag every device-pinned
+ * connection whose owner closed their laptop, then re-flag on the next sleep.
+ * Two days of silence is not a sleeping laptop — it is a device that stopped
+ * collecting — and it still detects the outage days before the 7-day
+ * `no_recent_sync` rule (which needs a past successful sync to fire at all).
+ */
+const DEVICE_OFFLINE_HOURS = 48;
+
 export interface ConnectorHealthConfig {
   failureThreshold: number;
   minConnectionAgeHours: number;
@@ -118,6 +181,7 @@ export interface ConnectorHealthConfig {
   noSyncDays: number;
   degradedFailingRatio: number;
   degradedMinExpectedFeeds: number;
+  deviceOfflineHours: number;
 }
 
 export const DEFAULT_CONNECTOR_HEALTH_CONFIG: ConnectorHealthConfig = {
@@ -127,6 +191,7 @@ export const DEFAULT_CONNECTOR_HEALTH_CONFIG: ConnectorHealthConfig = {
   noSyncDays: NO_SYNC_DAYS,
   degradedFailingRatio: DEGRADED_FAILING_RATIO,
   degradedMinExpectedFeeds: DEGRADED_MIN_EXPECTED_FEEDS,
+  deviceOfflineHours: DEVICE_OFFLINE_HOURS,
 };
 
 export type UnhealthyReason =
@@ -168,173 +233,262 @@ interface HealthDeps {
   notifyAuthExpired?: typeof notifyBrowserAuthExpired;
 }
 
-interface UnhealthyRow {
-  id: string;
+/**
+ * One non-deleted feed of an active connection, joined with every field
+ * `deriveFeedHealthSemantics` needs plus the connection-level identifiers. A
+ * connection with zero feeds still yields one row (all feed columns NULL) so
+ * the `zero_feeds` rule can fire; every connection is otherwise represented by
+ * one row per feed.
+ */
+interface FeedHealthRow {
+  connection_id: string;
   organization_id: string;
   connector_key: string;
   display_name: string | null;
-  feed_count: string;
-  failing_feed_count: string;
-  active_feed_count: string;
-  operator_paused_feed_count: string;
-  persistently_failing_feed_count: string;
-  failing_expected_feed_count: string;
-  newest_sync_at: Date | null;
+  connection_status: string | null;
+  credential_mode: string | null;
+  auth_profile_status: string | null;
+  /** Device pinned but silent for longer than `cfg.deviceOfflineHours`, or its
+   *  worker row is gone entirely. */
+  device_stale: boolean | null;
+  feed_id: string | null;
+  kind: string | null;
+  virtual: boolean | null;
+  feed_status: string | null;
+  schedule: string | null;
+  last_sync_status: string | null;
+  last_sync_at: Date | string | null;
+  consecutive_failures: string;
   last_error: string | null;
 }
 
 /**
- * The detection query. Read-only. Returns one row per active, non-deleted
- * connection that is past the min-age grace window, with aggregates over its
- * non-deleted feeds, so the JS classifier can decide healthy vs. unhealthy
- * (and which rule tripped). NOTE: post-`connections`-unify, chat connections
- * (slack/telegram) share this SAME `connections` table with connector
- * connections — they no longer live in a separate table. The query below has
- * NO connector_key filter, and chat connections own zero feeds, so they would
- * trip the `zero_feeds` rule and false-positive as unhealthy. Verify whether a
- * chat-platform exclusion is needed before relying on this scan's output.
+ * The detection query. Read-only. Returns per-feed rows for every active,
+ * non-deleted connection past the min-age grace window (one row per feed, or a
+ * single null-feed row for a zero-feed connection), so the JS classifier can
+ * run `deriveFeedHealthSemantics` per feed and aggregate per connection.
+ *
+ * Chat connections share the table with collector connections. Their streaming
+ * channel feeds are never expected, and a chat connection with no feeds is not
+ * a zero-feed collector incident (`credential_mode` is the chat-row marker).
  */
 async function loadConnectionHealthRows(
   sql: DbClient,
   cfg: ConnectorHealthConfig
-): Promise<UnhealthyRow[]> {
+): Promise<FeedHealthRow[]> {
   return (await sql`
     SELECT
-      c.id,
+      c.id AS connection_id,
       c.organization_id,
       c.connector_key,
       c.display_name,
-      COUNT(f.id) AS feed_count,
-      COUNT(f.id) FILTER (
-        WHERE f.last_sync_status = 'failed'
-           OR f.consecutive_failures >= ${cfg.failureThreshold}
-      ) AS failing_feed_count,
-      -- A feed counts toward "healthy collector" if it is NOT a deliberately
-      -- paused, never-failing feed. Paused feeds with consecutive_failures = 0
-      -- are operator-intended pauses — they must not make the connection look
-      -- unhealthy.
-      COUNT(f.id) FILTER (
-        WHERE NOT (f.status = 'paused' AND f.consecutive_failures = 0)
-      ) AS active_feed_count,
-      -- Feeds an OPERATOR deliberately switched off: paused with a clean
-      -- failure counter. These are intent, so they are excluded from the
-      -- degraded-ratio denominator entirely — pausing 9 of 10 feeds on purpose
-      -- must never read as a dying connection. Distinct from a feed the system
-      -- AUTO-paused after repeated failures (paused with consecutive_failures
-      -- > 0), which is a symptom and stays in the denominator.
-      COUNT(f.id) FILTER (
-        WHERE f.status = 'paused' AND f.consecutive_failures = 0
-      ) AS operator_paused_feed_count,
-      -- Feeds failing PERSISTENTLY (past the failure threshold), as opposed to
-      -- failing_feed_count which also counts a single most-recent-run blip.
-      -- Only persistent failures feed the degraded ratio, so one transiently
-      -- failing feed on a small connection is not an alert.
-      COUNT(f.id) FILTER (
-        WHERE f.consecutive_failures >= ${cfg.failureThreshold}
-      ) AS persistently_failing_feed_count,
-      -- Rule A's numerator: the SAME "failing" predicate as
-      -- failing_feed_count (a single most-recent-run failure counts), but over
-      -- expected feeds only. Rule A must stay sensitive to one bad run —
-      -- narrowing it to persistent failures would let a connection whose every
-      -- expected feed just failed report healthy until the counters climb.
-      COUNT(f.id) FILTER (
-        WHERE NOT (f.status = 'paused' AND f.consecutive_failures = 0)
-          AND (
-            f.last_sync_status = 'failed'
-            OR f.consecutive_failures >= ${cfg.failureThreshold}
-          )
-      ) AS failing_expected_feed_count,
-      MAX(f.last_sync_at) FILTER (WHERE f.last_sync_status = 'success') AS newest_sync_at,
-      (ARRAY_AGG(f.last_error) FILTER (WHERE f.last_error IS NOT NULL))[1] AS last_error
+      c.status AS connection_status,
+      c.credential_mode,
+      ap.status AS auth_profile_status,
+      -- Fails CLOSED on a missing/blank worker row: a connection pinned to a
+      -- worker that is no longer there is collecting nothing either. (The FK is
+      -- ON DELETE SET NULL and the reaper refuses to delete a worker a live
+      -- connection references, so this is a guard, not a live path.)
+      (
+        c.device_worker_id IS NOT NULL
+        AND (
+          dw.id IS NULL
+          OR dw.last_seen_at IS NULL
+          OR dw.last_seen_at < now() - make_interval(hours => ${cfg.deviceOfflineHours})
+        )
+      ) AS device_stale,
+      f.id AS feed_id,
+      f.kind,
+      f.virtual,
+      f.status AS feed_status,
+      f.schedule,
+      f.last_sync_status,
+      f.last_sync_at,
+      f.consecutive_failures,
+      f.last_error
     FROM connections c
     LEFT JOIN feeds f
       ON f.connection_id = c.id
      AND f.deleted_at IS NULL
+    LEFT JOIN auth_profiles ap ON ap.id = c.auth_profile_id
+    LEFT JOIN device_workers dw ON dw.id = c.device_worker_id
     WHERE c.status = 'active'
       AND c.deleted_at IS NULL
       AND c.created_at <= now() - make_interval(hours => ${cfg.minConnectionAgeHours})
-    GROUP BY c.id, c.organization_id, c.connector_key, c.display_name
-  `) as unknown as UnhealthyRow[];
+    ORDER BY c.id, f.id
+  `) as unknown as FeedHealthRow[];
 }
 
 /**
- * Classify a single connection row. Returns the tripped rule, or null if
- * healthy. Order matters: zero-feeds is checked before all-feeds-failing
- * (which is vacuously true with zero feeds).
+ * Per-feed classification consumed by the connection-level rules. WHICH feeds
+ * count comes from the shared semantics module — a feed that cannot run a
+ * collector sync (`virtual`/`streaming`) or whose connection is waiting on
+ * sign-in (`needs_auth`) is not a live capability, so it cannot be part of any
+ * numerator or denominator here.
+ *
+ * The numeric failing/persistent thresholds stay alerter-owned. The semantics
+ * module collapses operator-pause and auto-pause into a single `paused`
+ * attention state, but an auto-paused feed (paused BECAUSE it kept failing) is
+ * the SYMPTOM the degraded rule exists to catch, so pause intent is read from
+ * the row here rather than from `attention`.
+ */
+interface ClassifiedFeed {
+  /** A live capability: a feed that can actually sync (not virtual, not
+   *  streaming), is not operator-paused-clean, and is not waiting on human
+   *  sign-in. Only these count toward the expected denominator and Rules A/C. */
+  expected: boolean;
+  /** Expected feed that is currently failing: last attempt failed, a failure
+   *  episode is underway, OR its pinned device has been silent past
+   *  `cfg.deviceOfflineHours`. */
+  failing: boolean;
+  /** Expected feed failing PERSISTENTLY (past the failure threshold) or on a
+   *  long-silent device — the only signal that feeds the degraded ratio, so one
+   *  transiently failing feed on a small connection stays quiet. */
+  persistent: boolean;
+}
+
+function classifyFeed(row: FeedHealthRow, cfg: ConnectorHealthConfig): ClassifiedFeed {
+  const cf = Number(row.consecutive_failures ?? 0);
+  const semantics = deriveFeedHealthSemantics({
+    kind: row.kind,
+    virtual: row.virtual,
+    status: row.feed_status,
+    schedule: row.schedule,
+    last_sync_status: row.last_sync_status,
+    last_sync_at: row.last_sync_at,
+    consecutive_failures: cf,
+    connection_status: row.connection_status,
+    auth_profile_status: row.auth_profile_status,
+  });
+
+  const operatorPausedClean = row.feed_status === 'paused' && cf === 0;
+  const syncable =
+    semantics.executionMode !== 'virtual' && semantics.executionMode !== 'streaming';
+  const expected =
+    syncable && semantics.attention !== 'needs_auth' && !operatorPausedClean;
+
+  // A connection pinned to a device worker that has been silent for days is
+  // collecting nothing, however healthy its stored sync columns look. See
+  // `DEVICE_OFFLINE_HOURS` for why this is not the semantics module's
+  // dispatch-grade 120s `attention='device_offline'`.
+  const deviceStale = row.device_stale === true;
+
+  // Failing: a single most-recent-run failure counts (Rule A must stay
+  // sensitive to one bad run), past the persistent threshold, OR the pinned
+  // device went silent. Auto-paused feeds with cf > 0 are symptoms and count.
+  const failing =
+    expected &&
+    (row.last_sync_status === 'failed' || cf >= cfg.failureThreshold || deviceStale);
+
+  const persistent = expected && (cf >= cfg.failureThreshold || deviceStale);
+
+  return { expected, failing, persistent };
+}
+
+/**
+ * Per-connection aggregation over the classified feeds. Returns the tripped
+ * rule plus the aggregate detail an alert carries, or null if healthy. Order
+ * matters: zero-feeds is checked before all-feeds-failing (which is vacuously
+ * true with zero feeds).
  */
 function classify(
-  row: UnhealthyRow,
+  rows: FeedHealthRow[],
   cfg: ConnectorHealthConfig,
   nowMs: number
-): UnhealthyReason | null {
-  const feedCount = Number(row.feed_count);
-  const activeCount = Number(row.active_feed_count);
-  const operatorPausedCount = Number(row.operator_paused_feed_count);
-  const persistentlyFailingCount = Number(row.persistently_failing_feed_count);
-  const failingExpectedCount = Number(row.failing_expected_feed_count);
+): {
+  reason: UnhealthyReason;
+  feedCount: number;
+  failingFeedCount: number;
+  newestSyncAt: string | null;
+  lastError: string | null;
+} | null {
+  const feeds = rows.filter((r) => r.feed_id != null);
+  const feedCount = feeds.length;
 
   // Rule B: active connection, zero non-deleted feeds. (Grace handled by the
   // query's min-age window — a connection that has existed > min age and still
   // has no feeds is collecting nothing.)
-  if (feedCount === 0) return 'zero_feeds';
-
-  // A connection whose only feeds are deliberately paused (cf=0) is NOT
-  // unhealthy — operator intent. activeCount === 0 means every feed is a
-  // paused-clean feed.
-  if (activeCount === 0) return null;
-
-  // Rule A: every feed the operator still EXPECTS to run is failing.
-  //
-  // The denominator is expected feeds, not all feeds — the same one Rule D
-  // uses. Comparing against `feedCount` instead left a hole exactly where the
-  // two rules meet: a connection with 8 deliberately-paused-clean feeds and 2
-  // persistently failing ones satisfies neither `2 === 10` nor Rule D's
-  // three-expected-feed floor, so it reported healthy while 100% of what it was
-  // still expected to collect was dead. Deliberately switching feeds off must
-  // never make the remaining failures harder to see.
-  //
-  // The PREDICATE is unchanged from the original rule — a feed counts as
-  // failing if its latest sync failed OR it is past the failure threshold.
-  // Only the denominator narrowed. Reusing the degraded rule's stricter
-  // persistent-failure count here would have been a second regression: a
-  // connection whose every expected feed just failed once would report healthy
-  // until the counters climbed to the threshold.
-  const expectedCount = feedCount - operatorPausedCount;
-  if (expectedCount > 0 && failingExpectedCount === expectedCount) {
-    return 'all_feeds_failing';
+  if (feedCount === 0) {
+    // Chat rows are transports, not collectors. A channel-less chat connection
+    // must not trip the collector-only zero-feed rule.
+    if (rows[0]?.credential_mode != null) return null;
+    return {
+      reason: 'zero_feeds',
+      feedCount: 0,
+      failingFeedCount: 0,
+      newestSyncAt: null,
+      lastError: null,
+    };
   }
 
-  // Rule D: a substantial proportion of the feeds the operator still expects to
-  // run are failing, but at least one survivor keeps Rule A from firing. That
-  // survivor also refreshes newest_sync_at, so Rule C cannot catch this either
-  // — without this rule the connection reports fully healthy while most of it
-  // is dark (prod LinkedIn 412: 10 of 11 feeds auto-paused for eleven days).
-  //
-  // The denominator excludes operator-paused-clean feeds so that deliberately
-  // switching feeds off never trips the rule; only feeds that are running or
-  // were auto-paused BY failure are counted. The numerator counts only
-  // PERSISTENT failures, so a single bad run on a small connection stays quiet.
-  //
-  // The min-expected-feeds floor is load-bearing, not belt-and-braces: at 2
-  // expected feeds one persistent failure is exactly the ratio and would fire.
-  // Small connections that are WHOLLY failing are still caught by Rule A above.
-  if (
+  let expectedCount = 0;
+  let failingExpectedCount = 0;
+  let persistentCount = 0;
+  let newestSyncAtMs: number | null = null;
+  let failingError: string | null = null;
+  let expectedError: string | null = null;
+
+  for (const row of feeds) {
+    const feed = classifyFeed(row, cfg);
+    if (!feed.expected) continue;
+
+    expectedCount += 1;
+    if (!expectedError && row.last_error) expectedError = row.last_error;
+    if (feed.failing) {
+      failingExpectedCount += 1;
+      if (!failingError && row.last_error) failingError = row.last_error;
+    }
+    if (feed.persistent) persistentCount += 1;
+
+    if (row.last_sync_status === 'success' && row.last_sync_at) {
+      const syncMs = tsTimeOrNull(row.last_sync_at);
+      if (syncMs !== undefined && (newestSyncAtMs === null || syncMs > newestSyncAtMs)) {
+        newestSyncAtMs = syncMs;
+      }
+    }
+  }
+
+  const lastError = failingError ?? expectedError;
+
+  // A connection whose only feeds are deliberately paused (cf=0), virtual,
+  // streaming, or auth-waiting is NOT unhealthy — operator intent, on-demand
+  // evaluation, or a sign-in the user must complete, none of which is a dead
+  // collector.
+  if (expectedCount === 0) return null;
+
+  // Rule A: every feed the operator still EXPECTS to run is failing. The
+  // numerator counts a single bad run so a connection whose every expected feed
+  // just failed is not silent until the counters climb.
+  let reason: UnhealthyReason;
+  if (failingExpectedCount === expectedCount) {
+    reason = 'all_feeds_failing';
+  } else if (
     expectedCount >= cfg.degradedMinExpectedFeeds &&
-    persistentlyFailingCount / expectedCount >= cfg.degradedFailingRatio
+    persistentCount / expectedCount >= cfg.degradedFailingRatio
   ) {
-    return 'feeds_degraded';
+    // Rule D: a substantial proportion of expected feeds are failing
+    // PERSISTENTLY, but at least one survivor keeps Rule A from firing (prod
+    // LinkedIn 412 shape).
+    reason = 'feeds_degraded';
+  } else if (
+    newestSyncAtMs !== null &&
+    nowMs - newestSyncAtMs > cfg.noSyncDays * 24 * 60 * 60 * 1000
+  ) {
+    // Rule C: was collecting but stopped — newest successful sync across
+    // EXPECTED feeds is older than NO_SYNC_DAYS. Scoped to expected feeds so a
+    // feed that can never sync cannot keep the timestamp fresh forever.
+    reason = 'no_recent_sync';
+  } else {
+    return null;
   }
 
-  // Rule C: was collecting but stopped. Only applies when at least one feed
-  // once succeeded (newest_sync_at not null) — a connection that never synced
-  // is covered by the failing/zero rules, not this one (avoids false-flagging
-  // brand-new feeds that simply haven't had a successful run yet).
-  if (row.newest_sync_at) {
-    const ageMs = nowMs - new Date(row.newest_sync_at).getTime();
-    if (ageMs > cfg.noSyncDays * 24 * 60 * 60 * 1000) return 'no_recent_sync';
-  }
-
-  return null;
+  return {
+    reason,
+    feedCount,
+    failingFeedCount: failingExpectedCount,
+    newestSyncAt: newestSyncAtMs === null ? null : new Date(newestSyncAtMs).toISOString(),
+    lastError,
+  };
 }
 
 /**
@@ -354,7 +508,7 @@ export async function runConnectorHealthCheck(
   const rows = await loadConnectionHealthRows(sql, cfg);
 
   const result: ConnectorHealthResult = {
-    scanned: rows.length,
+    scanned: new Set(rows.map((r) => r.connection_id)).size,
     unhealthy: 0,
     newlyAlerted: 0,
     recovered: 0,
@@ -362,13 +516,22 @@ export async function runConnectorHealthCheck(
     details: [],
   };
 
-  const unhealthyIds: number[] = [];
-
+  // The query returns one row per feed (or a single null-feed row for a
+  // zero-feed connection). Group by connection so the classifier sees the whole
+  // feed set before deciding.
+  const byConnection = new Map<string, FeedHealthRow[]>();
   for (const row of rows) {
-    const reason = classify(row, cfg, nowMs);
-    const connectionId = Number(row.id);
+    const group = byConnection.get(row.connection_id);
+    if (group) group.push(row);
+    else byConnection.set(row.connection_id, [row]);
+  }
 
-    if (!reason) {
+  for (const [connectionIdStr, connectionRows] of byConnection) {
+    const first = connectionRows[0];
+    const connectionId = Number(connectionIdStr);
+    const classified = classify(connectionRows, cfg, nowMs);
+
+    if (!classified) {
       // Healthy: re-arm the alert if it was previously flagged. The conditional
       // WHERE makes this a no-op for connections that were already healthy, and
       // counts a real recovery exactly once across replicas.
@@ -383,19 +546,19 @@ export async function runConnectorHealthCheck(
       continue;
     }
 
+    const { reason } = classified;
     result.unhealthy += 1;
-    unhealthyIds.push(connectionId);
 
     const detail: UnhealthyConnection = {
       connectionId,
-      organizationId: row.organization_id,
-      connectorKey: row.connector_key,
-      displayName: row.display_name,
+      organizationId: first.organization_id,
+      connectorKey: first.connector_key,
+      displayName: first.display_name,
       reason,
-      feedCount: Number(row.feed_count),
-      failingFeedCount: Number(row.failing_feed_count),
-      lastSyncAt: row.newest_sync_at ? new Date(row.newest_sync_at).toISOString() : null,
-      lastError: row.last_error,
+      feedCount: classified.feedCount,
+      failingFeedCount: classified.failingFeedCount,
+      lastSyncAt: classified.newestSyncAt,
+      lastError: classified.lastError,
     };
     result.details.push(detail);
 
@@ -420,16 +583,16 @@ export async function runConnectorHealthCheck(
     logger.error(
       {
         connection_id: connectionId,
-        organization_id: row.organization_id,
-        connector_key: row.connector_key,
-        connection_display_name: row.display_name,
+        organization_id: first.organization_id,
+        connector_key: first.connector_key,
+        connection_display_name: first.display_name,
         reason,
         feed_count: detail.feedCount,
         failing_feed_count: detail.failingFeedCount,
         last_successful_sync_at: detail.lastSyncAt,
         last_error: detail.lastError,
       },
-      `[connector-health] connector unhealthy (${reason}): ${row.connector_key}`
+      `[connector-health] connector unhealthy (${reason}): ${first.connector_key}`
     );
 
     // On the unhealthy transition, if the failure is an expired site session
@@ -437,12 +600,12 @@ export async function runConnectorHealthCheck(
     // to re-login — the operator alert above can't reach the person who has to
     // sign in. Deduped by the same unhealthy_alerted_at claim, so it fires once
     // per episode. Best-effort: a notification failure must not break the scan.
-    if (isBrowserAuthExpiredError(row.last_error)) {
+    if (isBrowserAuthExpiredError(detail.lastError)) {
       try {
         await notifyAuthExpired({
-          orgId: row.organization_id,
+          orgId: first.organization_id,
           connectionId,
-          connectorKey: row.connector_key,
+          connectorKey: first.connector_key,
         });
         result.authNotified += 1;
       } catch (err) {

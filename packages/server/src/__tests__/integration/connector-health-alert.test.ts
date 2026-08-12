@@ -41,20 +41,62 @@ async function seedConnection(opts: {
   connectorKey: string;
   slug: string;
   createdAt: Date;
+  deviceWorkerId?: string | null;
+  authProfileId?: number | null;
+  credentialMode?: 'managed' | 'byo' | null;
 }): Promise<SeededConn> {
   const sql = getTestDb();
   const [row] = await sql`
     INSERT INTO connections (
       organization_id, connector_key, slug, display_name, status,
-      created_by, visibility, created_at, updated_at
+      created_by, visibility, created_at, updated_at,
+      device_worker_id, auth_profile_id, credential_mode
     ) VALUES (
       ${opts.orgId}, ${opts.connectorKey}, ${opts.slug},
       ${`Conn ${opts.slug}`}, 'active', ${opts.userId}, 'org',
-      ${opts.createdAt}, ${opts.createdAt}
+      ${opts.createdAt}, ${opts.createdAt},
+      ${opts.deviceWorkerId ?? null}, ${opts.authProfileId ?? null},
+      ${opts.credentialMode ?? null}
     )
     RETURNING id
   `;
   return { id: Number(row.id) };
+}
+
+/** A paired device worker whose last poll was `lastSeenAt`. */
+async function seedDeviceWorker(opts: {
+  orgId: string;
+  userId: string;
+  workerId: string;
+  lastSeenAt: Date;
+}): Promise<string> {
+  const sql = getTestDb();
+  const [row] = await sql`
+    INSERT INTO device_workers (
+      user_id, worker_id, platform, organization_id, last_seen_at
+    ) VALUES (
+      ${opts.userId}, ${opts.workerId}, 'macos', ${opts.orgId}, ${opts.lastSeenAt}
+    )
+    RETURNING id
+  `;
+  return String(row.id);
+}
+
+async function seedAuthProfile(opts: {
+  orgId: string;
+  slug: string;
+  status: string;
+}): Promise<number> {
+  const sql = getTestDb();
+  const [row] = await sql`
+    INSERT INTO auth_profiles (
+      organization_id, slug, display_name, profile_kind, status
+    ) VALUES (
+      ${opts.orgId}, ${opts.slug}, ${opts.slug}, 'browser_session', ${opts.status}
+    )
+    RETURNING id
+  `;
+  return Number(row.id);
 }
 
 async function seedFeed(opts: {
@@ -62,6 +104,8 @@ async function seedFeed(opts: {
   connectionId: number;
   feedKey: string;
   status?: string;
+  /** 'collected' (default) | 'streaming' | 'virtual'. */
+  kind?: string;
   lastSyncStatus?: string | null;
   lastSyncAt?: Date | null;
   consecutiveFailures?: number;
@@ -69,14 +113,15 @@ async function seedFeed(opts: {
   deletedAt?: Date | null;
 }): Promise<void> {
   const sql = getTestDb();
+  const kind = opts.kind ?? 'collected';
   await sql`
     INSERT INTO feeds (
-      organization_id, connection_id, feed_key, status,
+      organization_id, connection_id, feed_key, status, kind, virtual,
       last_sync_status, last_sync_at, consecutive_failures, last_error,
       deleted_at, created_at, updated_at
     ) VALUES (
       ${opts.orgId}, ${opts.connectionId}, ${opts.feedKey},
-      ${opts.status ?? 'active'},
+      ${opts.status ?? 'active'}, ${kind}, ${kind === 'virtual'},
       ${opts.lastSyncStatus ?? null}, ${opts.lastSyncAt ?? null},
       ${opts.consecutiveFailures ?? 0}, ${opts.lastError ?? null},
       ${opts.deletedAt ?? null}, NOW(), NOW()
@@ -627,6 +672,225 @@ describe('connector-health alerter', () => {
 
     const res = await runConnectorHealthCheck();
     expect(reasonFor(res.details, threeFeed.id)).toBe('feeds_degraded');
+  });
+
+  // Feeds that can never run a collector sync (chat channels pushed into
+  // channel_messages) used to sit in the denominator, so a connection whose
+  // ONLY syncing feed was dead reported healthy: 1 failing of 3 is neither
+  // "all feeds" nor past the degraded ratio. The channels are not capabilities
+  // that can fail — they must not dilute the ones that can.
+  it('excludes streaming feeds from the expected set', async () => {
+    const mixed = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'slack',
+      slug: 'streaming-plus-dead-collector',
+      createdAt: OLD,
+    });
+    for (const key of ['#general', '#random']) {
+      await seedFeed({
+        orgId,
+        connectionId: mixed.id,
+        feedKey: key,
+        kind: 'streaming',
+        lastSyncStatus: null,
+        lastSyncAt: null,
+        consecutiveFailures: 0,
+        lastError: 'Authentication failed — cookies may be expired',
+      });
+    }
+    await seedFeed({
+      orgId,
+      connectionId: mixed.id,
+      feedKey: 'files',
+      kind: 'collected',
+      lastSyncStatus: 'failed',
+      lastSyncAt: new Date(),
+      consecutiveFailures: cfg.failureThreshold,
+      lastError: 'worker_claim_timeout',
+    });
+
+    const res = await runConnectorHealthCheck();
+    // 1 of 3 counted feeds is below degradedFailingRatio, so with the channels
+    // in the denominator no rule can fire at all.
+    expect(1 / 3).toBeLessThan(cfg.degradedFailingRatio);
+    expect(reasonFor(res.details, mixed.id)).toBe('all_feeds_failing');
+    const detail = res.details.find((d) => d.connectionId === mixed.id);
+    // Only the live collector contributes health counts or alert metadata.
+    expect(detail?.failingFeedCount).toBe(1);
+    expect(detail?.lastError).toBe('worker_claim_timeout');
+  });
+
+  // The mirror: a virtual feed is evaluated live at request time and never
+  // syncs, so its ancient `last_sync_at` is not evidence that anything stopped
+  // collecting. Rule C used to read it and flag the connection.
+  it('does not flag a connection whose only feed is virtual', async () => {
+    const sql = getTestDb();
+    const virtualOnly = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'postgres',
+      slug: 'virtual-only',
+      createdAt: OLD,
+    });
+    await seedFeed({
+      orgId,
+      connectionId: virtualOnly.id,
+      feedKey: 'live_query',
+      kind: 'virtual',
+      lastSyncStatus: 'success',
+      lastSyncAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+      consecutiveFailures: 0,
+    });
+
+    const res = await runConnectorHealthCheck();
+    expect(res.details.some((d) => d.connectionId === virtualOnly.id)).toBe(false);
+
+    const [row] = (await sql`
+      SELECT unhealthy_alerted_at FROM connections WHERE id = ${virtualOnly.id}
+    `) as unknown as Array<{ unhealthy_alerted_at: Date | null }>;
+    expect(row.unhealthy_alerted_at).toBeNull();
+  });
+
+  it('does not apply the zero-feed collector rule to a chat connection', async () => {
+    const sql = getTestDb();
+    const chat = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'slack',
+      slug: 'chat-without-channels',
+      createdAt: OLD,
+      credentialMode: 'managed',
+    });
+    await sql`
+      UPDATE connections SET unhealthy_alerted_at = NOW() WHERE id = ${chat.id}
+    `;
+
+    const res = await runConnectorHealthCheck();
+    expect(res.details.some((d) => d.connectionId === chat.id)).toBe(false);
+
+    const [row] = (await sql`
+      SELECT unhealthy_alerted_at FROM connections WHERE id = ${chat.id}
+    `) as unknown as Array<{ unhealthy_alerted_at: Date | null }>;
+    expect(row.unhealthy_alerted_at).toBeNull();
+  });
+
+  // A connection waiting on human sign-in is not an operational incident: the
+  // user must act, and the "please sign in" notification already fired from the
+  // auth-profile transition in worker-api/run-lifecycle. Paging an operator for
+  // it is noise they cannot fix.
+  it('does not flag a connection whose auth profile is waiting on sign-in', async () => {
+    const sql = getTestDb();
+    const profileId = await seedAuthProfile({
+      orgId,
+      slug: 'needs-signin',
+      status: 'pending_auth',
+    });
+    const needsAuth = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'revolut',
+      slug: 'needs-auth',
+      createdAt: OLD,
+      authProfileId: profileId,
+    });
+    for (const key of ['a', 'b']) {
+      await seedFeed({
+        orgId,
+        connectionId: needsAuth.id,
+        feedKey: key,
+        lastSyncStatus: 'failed',
+        lastSyncAt: new Date(),
+        consecutiveFailures: cfg.failureThreshold,
+        lastError: 'Authentication failed — cookies may be expired',
+      });
+    }
+
+    const res = await runConnectorHealthCheck();
+    expect(res.details.some((d) => d.connectionId === needsAuth.id)).toBe(false);
+
+    const [row] = (await sql`
+      SELECT unhealthy_alerted_at FROM connections WHERE id = ${needsAuth.id}
+    `) as unknown as Array<{ unhealthy_alerted_at: Date | null }>;
+    expect(row.unhealthy_alerted_at).toBeNull();
+  });
+
+  // A connection pinned to a device that stopped polling collects nothing, but
+  // its stored sync columns keep whatever they had when the device was last
+  // alive. Without device liveness this scan stays blind until the 7-day
+  // no_recent_sync rule — and only if the feed ever succeeded.
+  it('flags a connection whose pinned device has been silent for days', async () => {
+    const day = 24 * 60 * 60 * 1000;
+    const deadDevice = await seedDeviceWorker({
+      orgId,
+      userId,
+      workerId: 'worker-gone',
+      lastSeenAt: new Date(Date.now() - 5 * day),
+    });
+    const offline = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'apple.reminders',
+      slug: 'device-silent',
+      createdAt: OLD,
+      deviceWorkerId: deadDevice,
+    });
+    // Clean sync state: succeeded 3 days ago, no failures. Only the device's
+    // silence says this connection is dark.
+    await seedFeed({
+      orgId,
+      connectionId: offline.id,
+      feedKey: 'reminders',
+      lastSyncStatus: 'success',
+      lastSyncAt: new Date(Date.now() - 3 * day),
+      consecutiveFailures: 0,
+    });
+
+    const res = await runConnectorHealthCheck();
+    // Rule C cannot be what fires: the last success is well inside noSyncDays.
+    expect(3).toBeLessThan(cfg.noSyncDays);
+    expect(reasonFor(res.details, offline.id)).toBe('all_feeds_failing');
+  });
+
+  // The guard on the above: this scan runs every 15 minutes, so a device that
+  // is briefly unreachable (a closed laptop, a rolling restart) must NOT page
+  // an operator. Only silence past `deviceOfflineHours` counts — which is why
+  // the dispatch-grade 120s liveness window is deliberately not used here.
+  it('does not flag a connection whose device is only briefly offline', async () => {
+    const sql = getTestDb();
+    const nappingDevice = await seedDeviceWorker({
+      orgId,
+      userId,
+      workerId: 'worker-napping',
+      // Well past DEVICE_ONLINE_WINDOW_SECONDS (120s), far short of the alert
+      // threshold: the exact window a laptop lid spends closed.
+      lastSeenAt: new Date(Date.now() - 30 * 60 * 1000),
+    });
+    const napping = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'apple.photos',
+      slug: 'device-napping',
+      createdAt: OLD,
+      deviceWorkerId: nappingDevice,
+    });
+    await seedFeed({
+      orgId,
+      connectionId: napping.id,
+      feedKey: 'photos',
+      lastSyncStatus: 'success',
+      lastSyncAt: new Date(Date.now() - 60 * 60 * 1000),
+      consecutiveFailures: 0,
+    });
+
+    const res = await runConnectorHealthCheck();
+    expect(0.5).toBeLessThan(cfg.deviceOfflineHours);
+    expect(res.details.some((d) => d.connectionId === napping.id)).toBe(false);
+
+    const [row] = (await sql`
+      SELECT unhealthy_alerted_at FROM connections WHERE id = ${napping.id}
+    `) as unknown as Array<{ unhealthy_alerted_at: Date | null }>;
+    expect(row.unhealthy_alerted_at).toBeNull();
   });
 
   // DEFECT B control: a connection that is genuinely stale (Rule C) must KEEP

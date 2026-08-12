@@ -9,7 +9,7 @@
 
 import { type Static, Type } from '@sinclair/typebox';
 import { hasRequiredMcpScope } from '../auth/tool-access';
-import { isSystemContext } from './access-control';
+import { isInProcessSystemCall } from './access-control';
 import { evaluateEntityMutation, resolveActingPrincipal } from '../authz/entity-policy';
 import { type AuthzScope, authzScopeFromToolContext } from '../authz/scope';
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
@@ -937,7 +937,7 @@ async function searchImpl(
             excludeWorkspaceAudit:
               ctx.memberRole !== 'owner' &&
               ctx.memberRole !== 'admin' &&
-              !isSystemContext(ctx),
+              !isInProcessSystemCall(ctx),
           }
         )
       : Promise.resolve({});

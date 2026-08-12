@@ -13,15 +13,32 @@ interface AccessControlContext {
   isAuthenticated: boolean;
   userId: string | null;
   memberRole: string | null;
+  /** Present on ToolContext; used to distinguish in-process system calls from tokens. */
+  tokenType?: string | null;
 }
 
 /**
  * Watcher reactions and other in-process system calls run with
  * `userId=null + isAuthenticated=true` and no member role. They bypass
  * role/scope policy checks at the handler boundary.
+ *
+ * Do NOT use this alone as a data-exposure boundary for owner/admin-only
+ * rows — see {@link isInProcessSystemCall}.
  */
 export function isSystemContext(ctx: AccessControlContext): boolean {
   return ctx.isAuthenticated === true && ctx.userId === null && ctx.memberRole === null;
+}
+
+/**
+ * True for a trusted in-process system call (watcher reaction and friends),
+ * which run with `userId: null` + `isAuthenticated: true` + `tokenType: 'session'`.
+ *
+ * `isSystemContext` alone also matches a userless OAuth/PAT token admitted to a
+ * public org (memberRole null). Requiring `tokenType === 'session'` excludes
+ * token callers while keeping reaction/system sessions.
+ */
+export function isInProcessSystemCall(ctx: AccessControlContext): boolean {
+  return isSystemContext(ctx) && ctx.tokenType === 'session';
 }
 
 /** True when the role grants admin-tier access (owner or admin). */

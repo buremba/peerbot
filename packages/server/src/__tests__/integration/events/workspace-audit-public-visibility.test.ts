@@ -104,6 +104,22 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     } as ToolContext;
   }
 
+  function userlessOAuthCtx(): ToolContext {
+    // Authenticated, no user id, no membership — matches isSystemContext() but
+    // NOT isInProcessSystemCall() (tokenType is oauth, not session). Must not
+    // see workspace audit rows.
+    return {
+      organizationId: org.id,
+      userId: null,
+      memberRole: null,
+      isAuthenticated: true,
+      tokenType: 'oauth',
+      scopedToOrg: true,
+      allowCrossOrg: false,
+      scopes: ['mcp:read'],
+    } as ToolContext;
+  }
+
   async function listIds(ctx: ToolContext): Promise<Set<number>> {
     const result = await getContent(
       { entity_id: entity.id, limit: 100, sort_by: 'date', sort_order: 'desc' } as never,
@@ -267,6 +283,13 @@ describe('workspace-identity audit events > public-read exclusion', () => {
   it('anonymous public-workspace reader does NOT see the workspace audit event', async () => {
     const ids = await listIds(unauthedCtx());
     expect(ids.has(workspaceAuditEventId)).toBe(false);
+    expect(ids.has(normalEventId)).toBe(true);
+  });
+
+  it('userless OAuth token does NOT see workspace audit (not in-process system)', async () => {
+    const ids = await listOrgWideIds(userlessOAuthCtx());
+    expect(ids.has(workspaceAuditEventId)).toBe(false);
+    expect(ids.has(orgWideWorkspaceAuditEventId)).toBe(false);
     expect(ids.has(normalEventId)).toBe(true);
   });
 

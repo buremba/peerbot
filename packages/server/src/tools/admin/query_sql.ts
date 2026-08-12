@@ -19,7 +19,7 @@ import { getCachedMembershipRole, getCachedOrgBySlug } from '../../workspace/mul
 import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
 import { SortOrderField } from './schemas/common-fields';
-import { isAdminOrOwnerRole, isSystemContext } from '../access-control';
+import { isAdminOrOwnerRole, isInProcessSystemCall } from '../access-control';
 import { classifyToolError, getErrorMessage, isRetryable, type ToolErrorCode } from "@lobu/core";
 import { ToolUserError } from '../../utils/errors';
 
@@ -561,7 +561,7 @@ export async function querySqlImpl(
       userId: ctx.userId,
       // Workspace-identity audit rows are owner/admin/system-only; ordinary
       // members must not select their member/invitation lifecycle data via raw SQL.
-      excludeWorkspaceAudit: !isSystemContext(ctx) && !callerIsAdmin,
+      excludeWorkspaceAudit: !isInProcessSystemCall(ctx) && !callerIsAdmin,
     });
     scopedSql = scoped.sql;
     params = scoped.params;

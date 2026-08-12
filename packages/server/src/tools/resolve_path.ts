@@ -31,7 +31,7 @@ import { buildDefaultEntityTemplate } from '../utils/default-entity-template';
 import { measureColumns as inferMeasureColumns } from '../utils/infer-measures';
 import { RESERVED_PATHS_SET } from '../utils/reserved';
 import { getWorkspaceProvider } from '../workspace';
-import { isAdminOrOwnerRole, isSystemContext } from './access-control';
+import { isAdminOrOwnerRole, isInProcessSystemCall } from './access-control';
 import { MEMBER_ENTITY_TYPE_SLUG } from './constants';
 import type { ToolContext } from './registry';
 import { withValidatedArgs } from './validate-args';
@@ -418,7 +418,7 @@ async function _resolvePath(
   // Workspace-identity audit + template events: owner/admin of THIS workspace
   // (or trusted system) only.
   const excludeWorkspaceAudit =
-    !isSystemContext(ctx) && !isAdminOrOwnerRole(roleInResolvedWorkspace);
+    !isInProcessSystemCall(ctx) && !isAdminOrOwnerRole(roleInResolvedWorkspace);
 
   const remaining = segments.slice(1);
   let entitySegments: string[];

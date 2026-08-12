@@ -12,7 +12,7 @@ import {
   resolveActingPrincipal,
 } from '../../authz/entity-policy';
 import { hasRequiredMcpScope } from '../../auth/tool-access';
-import { isSystemContext } from '../../tools/access-control';
+import { isInProcessSystemCall } from '../../tools/access-control';
 import { createDbClientFromEnv, getDb, pgBigintArray } from '../../db/client';
 import { BEHAVIOR_RUN_SOURCE } from '../../gateway/behavior-run-session';
 import { parseBehaviorRunConversationId } from '../../gateway/permissions/behavior-run-intent';
@@ -166,7 +166,7 @@ async function getContentImpl(
   const excludeWorkspaceAudit =
     ctx.memberRole !== 'owner' &&
     ctx.memberRole !== 'admin' &&
-    !isSystemContext(ctx);
+    !isInProcessSystemCall(ctx);
 
   // Dual client: PG for auth, PG for data
   const pgSql = createDbClientFromEnv(env);
@@ -315,7 +315,7 @@ async function getContentImpl(
       // have no legitimate reason to run another Behavior's source read —
       // deny them outright. Ordinary members may read, but must not receive
       // workspace-audit rows (handled inside behavior mode).
-      if (ctx.memberRole === null && !isSystemContext(ctx)) {
+      if (ctx.memberRole === null && !isInProcessSystemCall(ctx)) {
         throw new ToolUserError(
           'Behavior read mode requires workspace membership.',
           403

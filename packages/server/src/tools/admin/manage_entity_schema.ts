@@ -27,7 +27,7 @@ import {
   type DataSourceInput,
   executeDataSources,
 } from '../../utils/execute-data-sources';
-import { isAdminOrOwnerRole, isSystemContext } from '../access-control';
+import { isAdminOrOwnerRole, isInProcessSystemCall } from '../access-control';
 import { measureColumns } from '../../utils/infer-measures';
 import type { Env } from '../../index';
 import logger from '../../utils/logger';
@@ -434,7 +434,7 @@ async function etHandleGet(
     mapped.slug,
     ctx.organizationId,
     ctx.userId,
-    !isSystemContext(ctx) && !isAdminOrOwnerRole(ctx.memberRole)
+    !isInProcessSystemCall(ctx) && !isAdminOrOwnerRole(ctx.memberRole)
   );
 
   return { schema_type: 'entity_type', action: 'get', entity_type: mapped };

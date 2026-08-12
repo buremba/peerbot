@@ -64,10 +64,10 @@ const PublicSideEffectPreviewEntrySchema = Type.Object({
  * Public MCP result for `run_sdk` / `query_sdk`.
  *
  * The sandbox internally captures logs, timings, stack traces, org traversal,
- * and a complete bounded SDK-call trace for Lobu's audit trail. Those are
- * deliberately NOT part of this model-visible contract. ChatGPT receives only
- * the caller-requested return value, a concise script error, and (for dry-run)
- * the actions the user is being asked to review.
+ * and a bounded SDK-call trace. The execution and audit pipeline consumes that
+ * richer result before the MCP boundary. ChatGPT receives only the requested
+ * return value, a concise script error, and (for dry-run) the actions the user
+ * is being asked to review.
  */
 export const SdkScriptResultSchema = Type.Object({
   title: Type.Optional(

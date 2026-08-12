@@ -60,8 +60,10 @@ describe('OAuth Discovery Endpoints', () => {
 
     it('keeps the configured MCP resource origin when OAuth is served on a workspace host', async () => {
       const originalPublicGatewayUrl = process.env.PUBLIC_GATEWAY_URL;
+      const originalAuthCookieDomain = process.env.AUTH_COOKIE_DOMAIN;
       try {
         process.env.PUBLIC_GATEWAY_URL = 'https://app.lobu.ai/lobu';
+        process.env.AUTH_COOKIE_DOMAIN = '.lobu.ai';
         __resetPublicOriginCachesForTests();
 
         const response = await get('/.well-known/oauth-protected-resource/mcp/acme', {
@@ -80,6 +82,11 @@ describe('OAuth Discovery Endpoints', () => {
           delete process.env.PUBLIC_GATEWAY_URL;
         } else {
           process.env.PUBLIC_GATEWAY_URL = originalPublicGatewayUrl;
+        }
+        if (originalAuthCookieDomain === undefined) {
+          delete process.env.AUTH_COOKIE_DOMAIN;
+        } else {
+          process.env.AUTH_COOKIE_DOMAIN = originalAuthCookieDomain;
         }
         __resetPublicOriginCachesForTests();
       }

@@ -98,8 +98,8 @@ export interface AuthContext {
  *
  * Deliberately NOT a script failure. `run_sdk` / `query_sdk` execute arbitrary
  * caller code and report the outcome as DATA: `SdkScriptResultSchema` makes
- * `success` a required field and documents `error` as "the thrown error, with
- * script position" (name/message/line/column). When a script throws, the tool
+ * `success` a required field and documents `error` as concise script-failure
+ * information (name/message/code/retryable). When a script throws, the tool
  * itself ran perfectly — it executed the code and returned a faithful report.
  * Marking that `isError` conflates "the sandbox failed to run your code" with
  * "your code ran and threw", which callers must distinguish: `mcpToolsCall`

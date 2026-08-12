@@ -504,8 +504,9 @@ function createServerForContext(
         await touchAgentLastUsed(authCtx.organizationId, authCtx.agentId);
       }
 
-      // Keep rich SDK diagnostics in Lobu's internal audit result, but never
-      // expose logs/timestamps/stacks/org traversal/call traces to MCP clients.
+      // executeTool has already passed the rich SDK result through the internal
+      // audit seam. Do not expose logs, stacks, org traversal, or call traces to
+      // MCP clients.
       const publicResult =
         name === 'run_sdk' || name === 'query_sdk'
           ? toMcpPublicSdkScriptResult(result)

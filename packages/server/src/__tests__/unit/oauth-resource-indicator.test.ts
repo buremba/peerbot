@@ -90,6 +90,9 @@ describe('MCP OAuth resource indicators', () => {
     expect(
       canonicalizeMcpResource('https://evil.example/mcp', 'https://app.lobu.ai/oauth/authorize')
     ).toBeNull();
+    expect(
+      canonicalizeMcpResource('https://evil.example/mcp', 'https://evil.example/oauth/authorize')
+    ).toBeNull();
   });
 
   test('rejects port, credential, and scheme changes even inside the configured zone', () => {
@@ -104,6 +107,7 @@ describe('MCP OAuth resource indicators', () => {
 
   test('uses the canonical origin embedded in an already-public request URL', () => {
     process.env.PUBLIC_GATEWAY_URL = 'https://app.lobu.ai/lobu';
+    process.env.AUTH_COOKIE_DOMAIN = '.lobu.ai';
     __resetPublicOriginCachesForTests();
 
     expect(
@@ -114,8 +118,18 @@ describe('MCP OAuth resource indicators', () => {
     );
   });
 
+  test('accepts same-origin IPv6 resources without treating the port separator as a host delimiter', () => {
+    delete process.env.PUBLIC_GATEWAY_URL;
+    __resetPublicOriginCachesForTests();
+
+    expect(
+      canonicalizeMcpResource('http://[::1]:8787/mcp', 'http://[::1]:8787/oauth/authorize')
+    ).toBe('http://[::1]:8787/mcp');
+  });
+
   test('publicMcpRequestUrl prefers the MCP request host over PUBLIC_GATEWAY_URL', () => {
     process.env.PUBLIC_GATEWAY_URL = 'https://app.lobu.ai/lobu';
+    process.env.AUTH_COOKIE_DOMAIN = '.lobu.ai';
     __resetPublicOriginCachesForTests();
 
     const request = new Request('https://lobu.ai/mcp', {
@@ -129,5 +143,35 @@ describe('MCP OAuth resource indicators', () => {
     expect(buildMcpBearerChallenge(publicMcpRequestUrl(request))).toContain(
       'resource_metadata="https://lobu.ai/.well-known/oauth-protected-resource/mcp"'
     );
+  });
+
+  test('publicMcpRequestUrl rejects an unconfigured forwarded host', () => {
+    process.env.PUBLIC_GATEWAY_URL = 'https://app.lobu.ai/lobu';
+    process.env.AUTH_COOKIE_DOMAIN = '.lobu.ai';
+    __resetPublicOriginCachesForTests();
+
+    const request = new Request('https://app.lobu.ai/oauth/authorize', {
+      headers: {
+        host: 'app.lobu.ai',
+        'x-forwarded-host': 'evil.example',
+        'x-forwarded-proto': 'https',
+      },
+    });
+    expect(publicMcpRequestUrl(request)).toBe('https://app.lobu.ai/oauth/authorize');
+  });
+
+  test('publicMcpRequestUrl uses the request origin when only the configured zone is trusted', () => {
+    delete process.env.PUBLIC_GATEWAY_URL;
+    process.env.AUTH_COOKIE_DOMAIN = '.lobu.ai';
+    __resetPublicOriginCachesForTests();
+
+    const request = new Request('https://lobu.ai/mcp', {
+      headers: {
+        host: 'lobu.ai',
+        'x-forwarded-host': 'evil.example',
+        'x-forwarded-proto': 'https',
+      },
+    });
+    expect(publicMcpRequestUrl(request)).toBe('https://lobu.ai/mcp');
   });
 });

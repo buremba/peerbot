@@ -6,6 +6,7 @@ import { generateSecureToken } from '../../auth/oauth/utils';
 import type { Env } from '../../index';
 import { materializeDueFeeds } from '../../scheduled/check-due-feeds';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
+import { createTestConnection, createTestConnectorDefinition } from '../setup/test-fixtures';
 import { post } from '../setup/test-helpers';
 
 const CONNECTOR_KEY = 'apple.test_device_manifest';
@@ -214,6 +215,47 @@ describe('device connector manifests', () => {
     `) as unknown as Array<{ compiled_code: string | null; source_path: string | null }>;
     expect(versionRows[0]?.compiled_code).toBeNull();
     expect(versionRows[0]?.source_path).toBe(`device-manifest://macos/${CONNECTOR_KEY}@0.1.0`);
+  });
+
+  it('ships compiled code for a TypeScript connector claimed by a local-files device worker', async () => {
+    const connectorKey = 'test.local_files';
+    const compiledCode = 'module.exports = { sync: async () => ({ items: [] }) }';
+    const { orgId, userId, workerId } = await seedDeviceOwner();
+    const sql = getTestDb();
+
+    await createTestConnectorDefinition({
+      key: connectorKey,
+      name: 'Local Files Test',
+      organization_id: orgId,
+    });
+    await sql`
+      UPDATE connector_definitions
+      SET required_capability = 'os.files', runtime = ${sql.json({ platforms: ['macos'] })}
+      WHERE organization_id = ${orgId} AND key = ${connectorKey}
+    `;
+    const connection = await createTestConnection({
+      organization_id: orgId,
+      connector_key: connectorKey,
+      created_by: userId,
+    });
+    const [run] = (await sql`
+      INSERT INTO runs (
+        organization_id, run_type, connection_id, connector_key, connector_version,
+        approval_status, status, created_at
+      ) VALUES (
+        ${orgId}, 'sync', ${connection.id}, ${connectorKey}, '1.0.0',
+        'auto', 'pending', NOW()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+
+    const response = await poll(workerId, [], 'macos', { 'os.files': true });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.run_id).toBe(Number(run.id));
+    expect(body.connector_key).toBe(connectorKey);
+    expect(body.compiled_code).toBe(compiledCode);
   });
 
   it('re-syncs connector_definitions when a later poll ships a changed manifest (new action)', async () => {

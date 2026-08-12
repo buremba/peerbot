@@ -894,9 +894,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   //     from ~13 MB to ~kB and stops the gateway-side cache from being
   //     the dominant heap occupant (lobu#771 postmortem trail; 29 cached
   //     bundles totalled ~384 MB).
-  //   - Device workers (Lobu Mac Bridge) and DB-only user-uploaded
-  //     connectors don't have the source on disk; they still get
-  //     `compiled_code` shipped inline. We check the gateway-local
+  //   - Device workers and DB-only user-uploaded connectors don't have the
+  //     source on disk. When their version has stored TypeScript code, the
+  //     gateway ships `compiled_code` inline. Metadata-only device manifests
+  //     are implemented natively by the device bridge and need no bundle.
+  //     We check the gateway-local
   //     `findBundledConnectorFile` (different filesystem layout from the
   //     worker image — see worker-side resolver in
   //     connector-worker/src/compile-connector.ts) to decide whether the
@@ -936,14 +938,20 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // compiled_code on the version row. Fleet workers normally compile bundled
   // sources locally, but an explicit override must still ship inline so prod
   // picks up connector code before the next image deploy.
-  const hasOrgCompiledOverride = Boolean(row.compiled_code);
+  const hasStoredCompiledCode = Boolean(row.compiled_code);
   const workerWillResolveLocally =
-    !isUserScopedWorker && gatewayHasLocalSource && !hasOrgCompiledOverride;
-  const deviceWillExecuteBridgeOnlyConnector =
+    !isUserScopedWorker && gatewayHasLocalSource && !hasStoredCompiledCode;
+  // Metadata-only device manifests describe connectors implemented natively by
+  // the device bridge, so there is no TypeScript bundle to deliver. A device
+  // connector that does have compiled code (for example an `os.files` takeout
+  // connector installed from source) runs in connector-worker and needs that
+  // code inline because it is not part of the worker's bundled catalog.
+  const deviceWillExecuteNativeConnector =
     isUserScopedWorker &&
+    !hasStoredCompiledCode &&
     row.connector_required_capability != null &&
     authorizedCapabilities.includes(row.connector_required_capability);
-  if (row.connector_key && !workerWillResolveLocally && !deviceWillExecuteBridgeOnlyConnector) {
+  if (row.connector_key && !workerWillResolveLocally && !deviceWillExecuteNativeConnector) {
     try {
       compiledCode = await resolveConnectorCode(row.connector_key, {
         id: row.connector_version_row_id,

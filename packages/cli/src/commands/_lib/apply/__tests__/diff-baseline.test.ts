@@ -110,9 +110,23 @@ describe("three-way attribution (baseline present)", () => {
     });
     const row = plan.rows.find((r) => r.kind === "entity-type");
     expect(row?.verb).toBe("update");
-    expect("changedFields" in row! ? row.changedFields : []).toEqual(
+    expect(row?.changedFields).toEqual(
       expect.arrayContaining(["name", "properties.status"])
     );
+    expect(row?.changedValues).toEqual([
+      { field: "name", from: "Task", to: "Task v2" },
+      {
+        field: "properties.status",
+        from: {
+          type: "string",
+          enum: ["backlog", "active", "done"],
+        },
+        to: {
+          type: "string",
+          enum: ["backlog", "active", "done", "archived"],
+        },
+      },
+    ]);
     expect(plan.counts.drift).toBe(0);
   });
 
@@ -561,6 +575,48 @@ describe("three-way edge cases", () => {
       rules?: unknown;
     };
     expect(attr.rules).toEqual([]);
+
+    const nextDesired = buildState([]);
+    nextDesired.memorySchema.relationshipTypes = [
+      {
+        slug: "owns",
+        name: "Owns",
+        rules: [{ source: "a", target: "c" }],
+      },
+    ];
+    const afterRemote = emptyRemote();
+    afterRemote.relationshipTypes = [
+      {
+        id: 3,
+        slug: "owns",
+        name: "Owns",
+        rules: [],
+        organization_id: "org-1",
+      },
+    ];
+    const baseline: Baseline = {
+      recorded: true,
+      attribution: {
+        entityTypes: [],
+        relationshipTypes: recorded.attribution
+          .relationshipTypes as Baseline["attribution"]["relationshipTypes"],
+        watchers: [],
+      },
+      owned: new Set(recorded.owned),
+    };
+    const plan = computeDiff(nextDesired, afterRemote, {
+      orgId: "org-1",
+      baseline,
+    });
+    const row = plan.rows.find((r) => r.kind === "relationship-type");
+    expect(row?.verb).toBe("update");
+    expect(row?.changedValues).toEqual([
+      {
+        field: "rules",
+        from: [],
+        to: [{ source: "a", target: "c" }],
+      },
+    ]);
   });
 
   test("outside prune, omitted description is preserved so a later owned delete stays eligible", () => {
@@ -737,10 +793,18 @@ describe("Behavior three-way attribution", () => {
       baseline,
     });
     const drift = plan.rows.filter((r) => r.verb === "drift");
-    const row = drift.find((r) => (r as any).blocking && r.id === "digest");
-    expect(row).toBeTruthy();
-    // Per-field: only the remote-moved agent blocks (not the whole definition).
-    expect((row as any).field).toBe("agent");
+    const row = drift.find(
+      (r) =>
+        r.kind === "watcher" &&
+        "blocking" in r &&
+        r.blocking &&
+        r.id === "digest"
+    );
+    expect(row).toMatchObject({
+      field: "agent",
+      remoteChange: "agent-b",
+      desiredChange: "agent-a",
+    });
   });
 
   test("unnamed Behavior inherits remote name (server slug default) — second apply is noop", () => {
@@ -773,9 +837,11 @@ describe("Behavior three-way attribution", () => {
     ).toBe("noop");
   });
 
-  test("declared Behavior rename is an update (not a silent noop)", () => {
+  test("declared Behavior changes carry field names but deliberately no values", () => {
     const desired = buildState([]);
-    desired.watchers = [desiredWatcher({ name: "Daily Digest" }) as any];
+    desired.watchers = [
+      desiredWatcher({ agent: "agent-b", name: "Daily Digest" }) as any,
+    ];
     const remote = emptyRemote();
     remote.watchers = [remoteWatcher({ name: "Digest" }) as any];
     const baseline = {
@@ -792,9 +858,14 @@ describe("Behavior three-way attribution", () => {
       (r) => r.kind === "watcher" && r.id === "digest"
     );
     expect(row?.verb).toBe("update");
-    expect(row && "changedFields" in row ? row.changedFields : []).toContain(
-      "name"
+    expect(row?.changedFields).toEqual(
+      expect.arrayContaining(["agent_id", "name"])
     );
+    // Behaviors reach the plan through the two-way `diffWatcher` row, whose
+    // field identifiers differ from the projection's (`agent` vs `agent_id`).
+    // Rendering values there needed a name-mapping table that was not worth
+    // its weight, so Behaviors keep the bare field-name list on purpose.
+    expect(row).not.toHaveProperty("changedValues");
   });
 
   test("adopted remote agent + config prompt change converges (no whole-object false block)", () => {

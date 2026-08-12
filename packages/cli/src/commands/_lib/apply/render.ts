@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import type { DiffPlan, DiffRow } from "./diff.js";
+import type { BlockingDriftRow, DiffPlan, DiffRow } from "./diff.js";
 
 const VERB_PREFIX = {
   create: chalk.green("+"),
@@ -38,6 +38,36 @@ const KIND_HEADING: Record<DiffRow["kind"], string> = {
 function fieldsList(fields: string[] | undefined): string {
   if (!fields?.length) return "";
   return chalk.dim(` (${fields.join(", ")})`);
+}
+
+/**
+ * One-line preview of a value for the plan. Objects and arrays are the common
+ * case (a property schema, an eventKinds list), so they are compacted rather
+ * than pretty-printed — the plan is a scannable summary, and an operator who
+ * needs the full body has the config and the dashboard.
+ */
+const VALUE_PREVIEW_MAX = 72;
+function valuePreview(value: unknown): string {
+  if (value === undefined) return chalk.dim("(unset)");
+  const text = JSON.stringify(value) ?? String(value);
+  return text.length > VALUE_PREVIEW_MAX
+    ? `${text.slice(0, VALUE_PREVIEW_MAX - 1)}…`
+    : text;
+}
+
+/**
+ * `field: <remote> → <config>` lines under an update row, so the operator can
+ * see what the apply overwrites instead of only which field names move. Absent
+ * on rows from the two-way paths, which never computed the pair.
+ */
+function changedValueLines(
+  changed: Array<{ field: string; from: unknown; to: unknown }> | undefined
+): string[] {
+  if (!changed?.length) return [];
+  return changed.map(
+    (c) =>
+      `      ${chalk.cyan(c.field)}: ${chalk.dim(valuePreview(c.from))} → ${valuePreview(c.to)}`
+  );
 }
 
 function rowId(row: DiffRow): string {
@@ -80,16 +110,25 @@ function renderRow(row: DiffRow): string[] {
         );
       }
       break;
-    case "update":
-      lines.push(
-        `  ${prefix} ${label} ${id}${fieldsList("changedFields" in row ? row.changedFields : undefined)}`
+    case "update": {
+      const changedValues =
+        "changedValues" in row ? row.changedValues : undefined;
+      const previewedFields = new Set(
+        changedValues?.map((change) => change.field) ?? []
       );
+      const unpreviewedFields =
+        "changedFields" in row
+          ? row.changedFields?.filter((field) => !previewedFields.has(field))
+          : undefined;
+      lines.push(`  ${prefix} ${label} ${id}${fieldsList(unpreviewedFields)}`);
+      lines.push(...changedValueLines(changedValues));
       if (row.kind === "auth-profile" && row.needsAuth) {
         lines.push(
           `      ${chalk.yellow("⚠")} interactive auth — complete it via the connect URL printed after apply`
         );
       }
       break;
+    }
     case "noop":
       lines.push(`  ${prefix} ${label} ${id}`);
       if (row.kind === "auth-profile" && row.needsAuth) {
@@ -205,19 +244,21 @@ export function renderProgress(
 }
 
 /**
+ * Blocked-report value. Unlike the plan's one-liner this stays pretty-printed —
+ * the report is the artifact an operator reads carefully to resolve the drift,
+ * so a truncated schema body would be the wrong trade there.
+ */
+function blockedValue(value: unknown, absentLabel: string): string {
+  if (value === undefined) return chalk.dim(absentLabel);
+  const text = JSON.stringify(value, null, 2) ?? String(value);
+  return text.split("\n").join("\n    ");
+}
+
+/**
  * The blocking-drift report shown when apply halts (exit 1, nothing mutated).
  * Names each remote-moved field / remote-only definition and the resolution.
  */
-export function renderBlockedReport(
-  blocking: Array<
-    Extract<DiffRow, { blocking: true }> & {
-      id: string;
-      kind: string;
-      field?: string;
-      remoteChange?: unknown;
-    }
-  >
-): string {
+export function renderBlockedReport(blocking: BlockingDriftRow[]): string {
   const lines = [
     "",
     chalk.red(
@@ -228,13 +269,16 @@ export function renderBlockedReport(
     ),
   ];
   for (const item of blocking) {
-    const label = chalk.bold(KIND_LABEL[item.kind as keyof typeof KIND_LABEL]);
+    const label = chalk.bold(KIND_LABEL[item.kind]);
     const field = item.field ? chalk.cyan(` · ${item.field}`) : "";
     lines.push("");
     lines.push(`  ${label} ${item.id}${field}`);
-    if (item.remoteChange !== undefined) {
+    // Checking only `remoteChange` would hide both sides when the remote value
+    // is absent but the config still declares one.
+    if (item.remoteChange !== undefined || item.desiredChange !== undefined) {
+      lines.push(`    remote: ${blockedValue(item.remoteChange, "(absent)")}`);
       lines.push(
-        `    remote: ${JSON.stringify(item.remoteChange, null, 2).split("\n").join("\n    ")}`
+        `    config: ${blockedValue(item.desiredChange, "(not declared)")}`
       );
     }
   }

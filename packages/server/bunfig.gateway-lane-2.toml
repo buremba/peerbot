@@ -1,5 +1,5 @@
 [test]
 preload = ["./src/__tests__/setup/bun-test-teardown.ts"]
-timeout = 10000
+# Bun 1.3.5 ignores `[test].timeout`; the lane runner passes `--timeout`.
 coverageDir = "coverage/gateway-lane-2"
 coverageReporter = ["lcov"]

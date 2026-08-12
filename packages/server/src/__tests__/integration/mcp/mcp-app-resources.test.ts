@@ -501,6 +501,169 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(JSON.stringify(body.result)).not.toContain('must-not-render');
   });
 
+  it('returns the viewer member role on every app-rendered result and nowhere else', async () => {
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const call = async (
+      name: string,
+      args: Record<string, unknown>,
+      callToken = token,
+      session = sessionId
+    ) => {
+      const response = await post(`/mcp/${org.slug}`, {
+        body: {
+          jsonrpc: '2.0',
+          id: `member-role-${name}`,
+          method: 'tools/call',
+          params: { name, arguments: args },
+        },
+        headers: { 'mcp-session-id': session },
+        token: callToken,
+      });
+      return (await response.json()).result;
+    };
+
+    // The app gates its Debug (raw JSON) disclosure on owner/admin, and the
+    // views it gates are the GENERIC ones — a `query_sql` table, a restored
+    // snapshot — not the server-authored card `render_lobu_view` returns. These
+    // are the results whose role actually decides whether the toggle appears.
+    const sqlResult = await call('query_sql', { sql: 'SELECT 1 AS row_number' });
+    expect(sqlResult?.isError).not.toBe(true);
+    expect(sqlResult?._meta?.['lobu/member-role']).toBe('owner');
+
+    const restoreResult = await call('restore_lobu_app_result', {
+      tool_call_id: 'member-role-unknown-card',
+      tool_name: 'query_sql',
+    });
+    expect(restoreResult?.structuredContent?.found).toBe(false);
+    expect(restoreResult?._meta?.['lobu/member-role']).toBe('owner');
+
+    // A tool with no app UI has no such view to gate, so it stays clean.
+    const adminResult = await call('manage_agents', { action: 'list' });
+    expect(adminResult?.isError).not.toBe(true);
+    expect(adminResult?._meta?.['lobu/member-role']).toBeUndefined();
+
+    // The role is the caller's own membership row, not a constant: a plain
+    // member gets 'member' and the app hides the toggle for them.
+    const memberUser = await createTestUser({
+      email: 'mcp-app-member-role@test.example.com',
+    });
+    await addUserToOrganization(memberUser.id, org.id, 'member');
+    const memberToken = (
+      await createTestAccessToken(memberUser.id, org.id, client.client_id, {
+        scope: 'mcp:read',
+      })
+    ).token;
+    const memberSession = await initSession(`/mcp/${org.slug}`, {
+      sessionToken: memberToken,
+    });
+    const memberResult = await call(
+      'query_sql',
+      { sql: 'SELECT 1 AS row_number' },
+      memberToken,
+      memberSession
+    );
+    expect(memberResult?.isError).not.toBe(true);
+    expect(memberResult?._meta?.['lobu/member-role']).toBe('member');
+  });
+
+  it('emits canonical null member role for a public-workspace reader with no membership', async () => {
+    // An authenticated caller with NO membership row, reading a PUBLIC org over
+    // `/mcp/{slug}`, is admitted by `allowPublicOrgWithoutMembership` with a
+    // null role. The app's Debug (raw JSON) disclosure must stay closed for
+    // them, so the key must be PRESENT with canonical null — never omitted.
+    const publicOrg = await createTestOrganization({
+      name: 'MCP App Public Org',
+      slug: 'mcp-app-public-org',
+      visibility: 'public',
+    });
+    const visitor = await createTestUser({
+      email: 'mcp-app-public-reader@test.example.com',
+    });
+    // Token bound to the public org, but the user is deliberately NOT a member.
+    const visitorToken = (
+      await createTestAccessToken(visitor.id, publicOrg.id, client.client_id, {
+        scope: 'mcp:read',
+      })
+    ).token;
+
+    const sessionId = await initSession(`/mcp/${publicOrg.slug}`, {
+      sessionToken: visitorToken,
+    });
+    const response = await post(`/mcp/${publicOrg.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'public-reader-search-sdk',
+        method: 'tools/call',
+        params: {
+          name: 'search_sdk',
+          // A bare namespace keeps the search org-independent (method docs),
+          // so no connector inventory lookup reaches org-private data.
+          arguments: { query: 'behaviors', mode: 'read' },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token: visitorToken,
+    });
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    // Canonical null: the key is present and its value is null, so the app
+    // resolves the explicit downgrade instead of falling back to an alternate
+    // envelope that could carry a stale role.
+    expect('lobu/member-role' in (body.result?._meta ?? {})).toBe(true);
+    expect(body.result?._meta?.['lobu/member-role']).toBeNull();
+    expect(typeof body.result?.structuredContent?.match_count).toBe('number');
+  });
+
+  it('carries canonical null member role on a thrown app-UI error for a public reader', async () => {
+    // Same public non-member caller, but the UI tool THROWS instead of
+    // returning a result. The app keeps its previous member role whenever the
+    // `lobu/member-role` key is ABSENT — so a thrown error after a downgrade
+    // would otherwise leave stale owner/admin UI state. The catch path must
+    // still emit the key with canonical null.
+    const publicOrg = await createTestOrganization({
+      name: 'MCP App Public Throws Org',
+      slug: 'mcp-app-public-throws-org',
+      visibility: 'public',
+    });
+    const visitor = await createTestUser({
+      email: 'mcp-app-public-throws@test.example.com',
+    });
+    // Token bound to the public org, but the user is deliberately NOT a member.
+    const visitorToken = (
+      await createTestAccessToken(visitor.id, publicOrg.id, client.client_id, {
+        scope: 'mcp:read',
+      })
+    ).token;
+
+    const sessionId = await initSession(`/mcp/${publicOrg.slug}`, {
+      sessionToken: visitorToken,
+    });
+    const response = await post(`/mcp/${publicOrg.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'public-reader-thrown-error',
+        method: 'tools/call',
+        params: {
+          name: 'render_lobu_view',
+          // A genuinely thrown error, never a soft result: the approval row
+          // cannot exist, so findApprovalRow throws a ToolUserError that
+          // reaches the tools/call catch path.
+          arguments: { action: 'review_approval', run_id: 999_999_999 },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token: visitorToken,
+    });
+    const body = await response.json();
+    expect(body.result?.isError).toBe(true);
+    expect(body.result?.structuredContent).toBeUndefined();
+    expect(body.result?.content?.[0]?.text).toContain('was not found');
+    // The key must be PRESENT with canonical null on the thrown error too.
+    expect('lobu/member-role' in (body.result?._meta ?? {})).toBe(true);
+    expect(body.result?._meta?.['lobu/member-role']).toBeNull();
+    expect(body.result?._meta?.['mcp/www_authenticate']).toBeUndefined();
+  });
+
   it('binds reused backend request ids to distinct host cards and restores exact state', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const conversationId = 'chatgpt-conversation-restore-test';
@@ -812,6 +975,9 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     const renderBody = await renderResponse.json();
     expect(renderBody.result?.isError).not.toBe(true);
     expect(renderBody.result?._meta?.['lobu/approval-capability']).toBeUndefined();
+    // The viewer role rides on every app-rendered result, independent of the
+    // app-only approval capability this non-App client does not receive.
+    expect(renderBody.result?._meta?.['lobu/member-role']).toBe('owner');
     expect(renderBody.result?.structuredContent?.actions).toEqual([
       expect.objectContaining({ id: 'review', href: expect.stringMatching(/^https?:\/\//) }),
     ]);
@@ -901,6 +1067,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     const capability = renderBody.result?._meta?.['lobu/approval-capability'];
     expect(typeof capability).toBe('string');
     expect(capability.length).toBeGreaterThan(40);
+    expect(renderBody.result?._meta?.['lobu/member-role']).toBe('owner');
     expect(JSON.stringify(view)).not.toContain(capability);
     expect(renderBody.result?.content?.[0]?.text).not.toContain(capability);
 
@@ -938,6 +1105,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     });
     const rejectBody = await rejectResponse.json();
     expect(rejectBody.result?.isError).not.toBe(true);
+    expect(rejectBody.result?._meta?.['lobu/member-role']).toBe('owner');
     expect(rejectBody.result?.structuredContent).toEqual(
       expect.objectContaining({
         title: expect.stringMatching(/rejected/i),
@@ -1231,6 +1399,43 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(challenge).toContain('error="insufficient_scope"');
     expect(challenge).toContain('scope="mcp:read"');
     expect(challenge).not.toContain('internal.service');
+  });
+
+  it('keeps the member role alongside the OAuth scope challenge on a thrown UI-tool error', async () => {
+    // A scope-less OAuth token throws at the access check, and the catch path
+    // emits the `mcp/www_authenticate` challenge. The viewer role must ride
+    // along in the SAME `_meta`, merged rather than overwritten, so the app
+    // never sees a role-less error result and falls back to a stale role.
+    const readlessToken = (
+      await createTestAccessToken(owner.id, org.id, client.client_id, {
+        scope: 'profile:read',
+      })
+    ).token;
+    const sessionId = await initSession(`/mcp/${org.slug}`, {
+      sessionToken: readlessToken,
+    });
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'scope-challenge-member-role',
+        method: 'tools/call',
+        params: {
+          name: 'render_lobu_view',
+          arguments: {
+            action: 'render',
+            blocks: [{ type: 'text', value: 'scope probe' }],
+          },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token: readlessToken,
+    });
+    const body = await response.json();
+    const challenge = body.result?._meta?.['mcp/www_authenticate']?.[0];
+    expect(body.result?.isError).toBe(true);
+    expect(challenge).toContain('error="insufficient_scope"');
+    expect(challenge).toContain('scope="mcp:read"');
+    expect(body.result?._meta?.['lobu/member-role']).toBe('owner');
   });
 
   it('emits structuredContent for a tool that declares an outputSchema', async () => {

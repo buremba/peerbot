@@ -470,6 +470,30 @@ function createServerForContext(
       mcpAppApprovalCapability: approvalCapabilityFromMeta(request.params._meta),
       mcpAppSnapshotCapability: snapshotCapabilityFromMeta(request.params._meta),
     };
+    const tool = getTool(name);
+    // Every result the MCP Apps surface renders carries the viewer's org
+    // role, because the app gates its Debug (raw JSON) disclosure on
+    // owner/admin — and the views it gates are the GENERIC ones produced by
+    // the data tools (query_sql, search_memory, restore_lobu_app_result, …),
+    // not the server-authored card `render_lobu_view` returns. Attaching it
+    // per tool would therefore miss exactly the results that need it, so it
+    // is emitted here for every tool that declares app UI metadata.
+    //
+    // The key must be PRESENT on every such result, carrying an explicit null
+    // for a non-member reading a public workspace: the app falls back to the
+    // alternate `call_tool_result` envelope only when the key is ABSENT, and
+    // that envelope can carry a stale role. The annotation keeps that
+    // guarantee typechecked — an `undefined` role would serialize the key
+    // away, so widening `memberRole` to optional must fail the build rather
+    // than silently drop the downgrade. `memberRole` is resolved server-side
+    // from the membership row and returned only to the caller it describes,
+    // so it can be neither forged nor read cross-tenant. Computed once here,
+    // outside the try, so a thrown error carries the same viewer role as a
+    // successful result and the app can never hold onto a stale role after a
+    // downgrade.
+    const uiMemberRoleMeta: { 'lobu/member-role': string | null } | undefined = tool?.mcpMeta?.ui
+      ? { 'lobu/member-role': callAuthCtx.memberRole }
+      : undefined;
 
     // Regular tool execution
     try {
@@ -502,15 +526,10 @@ function createServerForContext(
       // turn `{ rows: [], error }` into a clean empty CSV result.
       const softError = isSoftErrorResult(result);
       const tool = getTool(name);
-      const resultMeta = getMcpResultMeta(result);
-      // Viewer role rides the same host-only `_meta` channel as the approval
-      // capability: the MCP Apps host forwards it into the rendered bundle so
-      // the UI can gate admin-only surfaces (e.g. the Debug toggle) —
-      // including on restore and ChatGPT rehydration.
-      const responseMeta = {
-        ...(resultMeta ?? {}),
-        'lobu/member-role': authCtx.memberRole ?? null,
-      };
+      const attachedMeta = getMcpResultMeta(result);
+      const resultMeta = uiMemberRoleMeta
+        ? { ...attachedMeta, ...uiMemberRoleMeta }
+        : attachedMeta;
       if (tool?.outputSchema && result && typeof result === 'object') {
         const structured = validateToolResult(tool.outputSchema, result);
         if (structured !== null) {
@@ -537,7 +556,7 @@ function createServerForContext(
             content: [{ type: 'text' as const, text }],
             structuredContent: structured as Record<string, unknown>,
             _meta: {
-              ...responseMeta,
+              ...resultMeta,
               ...(snapshotCapability
                 ? { 'lobu/mcp-app-snapshot-capability': snapshotCapability }
                 : {}),
@@ -548,11 +567,10 @@ function createServerForContext(
       }
       return {
         content: [{ type: 'text' as const, text }],
-        _meta: responseMeta,
+        _meta: resultMeta,
         ...(softError ? { isError: true } : {}),
       };
     } catch (error: any) {
-      const tool = getTool(name);
       const requiredAccess = tool
         ? getRequiredAccessLevel(name, args ?? {}, isAuthorizationReadOnly(tool))
         : null;
@@ -587,6 +605,9 @@ function createServerForContext(
               ...(error.callId ? { call_id: error.callId as string } : {}),
             }
           : undefined;
+      const errorMeta = scopeChallenge
+        ? { 'mcp/www_authenticate': [scopeChallenge] }
+        : undefined;
       return {
         content: [
           {
@@ -596,10 +617,9 @@ function createServerForContext(
         ],
         isError: true,
         ...(structuredError ? { structuredContent: { error: structuredError } } : {}),
-        _meta: {
-          'lobu/member-role': authCtx.memberRole ?? null,
-          ...(scopeChallenge ? { 'mcp/www_authenticate': [scopeChallenge] } : {}),
-        },
+        ...(uiMemberRoleMeta || errorMeta
+          ? { _meta: { ...(errorMeta ?? {}), ...(uiMemberRoleMeta ?? {}) } }
+          : {}),
       };
     }
   });

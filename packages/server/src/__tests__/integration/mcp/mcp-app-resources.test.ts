@@ -547,6 +547,30 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(body.result?._meta?.['lobu/member-role']).toBe('member');
   });
 
+  it('keeps lobu/member-role on a thrown tool-call error', async () => {
+    // An erroring tool must still emit the key so the app can clear stale
+    // owner/admin Debug state even when the call fails.
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 14,
+        method: 'tools/call',
+        params: {
+          name: 'query_sql',
+          arguments: { sql: 'SELECT definitely_not_a_column FROM' },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.result?.isError).toBe(true);
+    expect(body.result?._meta).toHaveProperty('lobu/member-role');
+    expect(body.result?._meta?.['lobu/member-role']).toBe('owner');
+  });
+
   it('binds reused backend request ids to distinct host cards and restores exact state', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const conversationId = 'chatgpt-conversation-restore-test';

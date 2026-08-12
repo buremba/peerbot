@@ -257,7 +257,7 @@ async function buildFilterConditionsAndJoins(
 
   if (filters?.exclude_workspace_audit) {
     filterConditions.push(
-      `(f.metadata->>'category') IS DISTINCT FROM 'workspace'`
+      `NOT (f.metadata ? '_lobu_workspace_audit')`
     );
   }
 

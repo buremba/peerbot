@@ -259,7 +259,7 @@ export async function fetchByContentIds(opts: {
 
   const where = `${idFilter} ${orgScope}${entityFilter} ${visibility.sql}${
     excludeWorkspaceAudit
-      ? ` AND (f.metadata->>'category') IS DISTINCT FROM 'workspace'`
+      ? ` AND NOT (f.metadata ? '_lobu_workspace_audit')`
       : ''
   }`;
 
@@ -486,7 +486,7 @@ export async function fetchIncludeSuperseded(opts: {
     paramIndex += 1;
   }
   if (excludeWorkspaceAudit) {
-    conditions.push(`(e.metadata->>'category') IS DISTINCT FROM 'workspace'`);
+    conditions.push(`NOT (e.metadata ? '_lobu_workspace_audit')`);
   }
 
   // Visibility: events from connections the caller can't see drop out.
@@ -582,7 +582,7 @@ export async function fetchClassificationStats(opts: {
   let paramIndex = 1;
 
   if (excludeWorkspaceAudit) {
-    conditions.push(`(f.metadata->>'category') IS DISTINCT FROM 'workspace'`);
+    conditions.push(`NOT (f.metadata ? '_lobu_workspace_audit')`);
   }
 
   if (args.entity_id) {

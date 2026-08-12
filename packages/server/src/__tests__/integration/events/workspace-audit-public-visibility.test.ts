@@ -29,6 +29,7 @@ describe('workspace-identity audit events > public-read exclusion', () => {
   let workspaceAuditEventId: number;
   let normalEventId: number;
   let orgWideWorkspaceAuditEventId: number;
+  let spoofedCategoryEventId: number;
 
   function authedCtx(): ToolContext {
     return {
@@ -178,6 +179,7 @@ describe('workspace-identity audit events > public-read exclusion', () => {
         semantic_type: 'change',
         metadata: {
           category: 'workspace',
+          _lobu_workspace_audit: true,
           resource_kind: 'invitation',
           resource_id: 'inv_abc',
           op: 'created',
@@ -196,6 +198,7 @@ describe('workspace-identity audit events > public-read exclusion', () => {
         semantic_type: 'change',
         metadata: {
           category: 'workspace',
+          _lobu_workspace_audit: true,
           resource_kind: 'invitation',
           resource_id: 'inv_xyz',
           op: 'created',
@@ -222,6 +225,20 @@ describe('workspace-identity audit events > public-read exclusion', () => {
       VALUES (${orgWideWorkspaceAuditEventId}, ${facetId}, NULL, NULL, ${'{sensitive}'}::text[],
               ${sql.json({ sensitive: 1 })}, 'user', true)
     `;
+
+    // A NON-audit event whose caller supplied category='workspace' in metadata
+    // (save_memory accepts arbitrary metadata). The exclusion must gate on the
+    // server-owned _lobu_workspace_audit discriminator, NOT the category, so
+    // ordinary members retain access to this legitimate event.
+    spoofedCategoryEventId = (
+      await createTestEvent({
+        organization_id: org.id,
+        entity_id: entity.id,
+        title: 'A normal note with spoofed category',
+        content: 'ordinary member should keep reading this',
+        metadata: { category: 'workspace' },
+      })
+    ).id;
   });
 
   it('authenticated member sees the workspace audit event in the feed', async () => {
@@ -257,6 +274,21 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     const recall = await recallIds(memberCtx());
     expect(recall.has(orgWideWorkspaceAuditEventId)).toBe(false);
     expect(recall.has(workspaceAuditEventId)).toBe(false);
+  });
+
+  it('ordinary member retains access to a NON-audit event that spoofs the workspace category', async () => {
+    // save_memory accepts caller metadata, so a member could legitimately save
+    // an event with category='workspace'. The exclusion gates on the
+    // server-owned _lobu_workspace_audit discriminator, NOT the category, so
+    // this event stays readable by everyone.
+    const listed = await listIds(memberCtx());
+    expect(listed.has(spoofedCategoryEventId)).toBe(true);
+
+    const exact = await readExactIds(memberCtx(), [spoofedCategoryEventId]);
+    expect(exact.has(spoofedCategoryEventId)).toBe(true);
+
+    const anon = await listOrgWideIds(unauthedCtx());
+    expect(anon.has(spoofedCategoryEventId)).toBe(true);
   });
 
   it('anonymous org-wide read excludes unbound workspace audit rows', async () => {

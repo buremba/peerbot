@@ -603,7 +603,7 @@ export function buildScopedQuery(
       // Workspace-identity audit rows are owner/admin-only; ordinary members
       // running raw SQL must not surface them.
       if (options?.excludeWorkspaceAudit) {
-        eventsCte += ` AND (ev.metadata->>'category') IS DISTINCT FROM 'workspace'`;
+        eventsCte += ` AND NOT (ev.metadata ? '_lobu_workspace_audit')`;
       }
 
       // Entity scoping: filter events to the watcher's entities
@@ -702,7 +702,7 @@ export function buildScopedQuery(
           'SELECT 1 FROM public.current_event_records ev ' +
           `WHERE ev.id = ec.event_id AND ${eventOrgScope('ev')}` +
           (options?.excludeWorkspaceAudit
-            ? ` AND (ev.metadata->>'category') IS DISTINCT FROM 'workspace'`
+            ? ` AND NOT (ev.metadata ? '_lobu_workspace_audit')`
             : '') +
           eventConnVisibility('ev') +
           eventResourceVisibility('ev') +

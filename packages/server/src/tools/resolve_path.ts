@@ -1174,7 +1174,7 @@ async function fetchContentCount(
       AND ev.semantic_type <> 'correction'
       -- Workspace-identity audit rows record member/invitation lifecycle; only
       -- owner/admin and trusted system callers may see them.
-      ${excludeWorkspaceAudit ? sql`AND (ev.metadata->>'category') IS DISTINCT FROM 'workspace'` : sql``}
+      ${excludeWorkspaceAudit ? sql`AND NOT (ev.metadata ? '_lobu_workspace_audit')` : sql``}
   `;
   return Number((row as { total_content?: number } | undefined)?.total_content) || 0;
 }
@@ -1226,7 +1226,7 @@ async function fetchRecentContent(
       AND ev.semantic_type <> 'correction'
       -- Workspace-identity audit rows record member/invitation lifecycle; only
       -- owner/admin and trusted system callers may see them in bootstrap.
-      ${excludeWorkspaceAudit ? `AND (ev.metadata->>'category') IS DISTINCT FROM 'workspace'` : ''}
+      ${excludeWorkspaceAudit ? `AND NOT (ev.metadata ? '_lobu_workspace_audit')` : ''}
       ${entityFilter}
     ORDER BY COALESCE(ev.occurred_at, ev.created_at) DESC
     LIMIT $2

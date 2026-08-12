@@ -732,6 +732,13 @@ function recordStateChangeEvent(
         payloadData: { state },
         metadata: {
           category,
+          // Server-owned discriminator for workspace-identity audit rows.
+          // `category` alone is NOT a safe gate: save_memory accepts caller
+          // metadata, so a member could stamp category='workspace' on a
+          // legitimate event and lose read access. `_lobu_` is the reserved
+          // server namespace callers cannot spoof — all exclusion predicates
+          // gate on this key, not the human-readable category.
+          ...(category === 'workspace' ? { _lobu_workspace_audit: true } : {}),
           resource_kind: params.resourceKind,
           resource_id: String(params.resourceId),
           op: params.op,

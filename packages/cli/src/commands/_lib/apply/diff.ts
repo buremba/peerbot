@@ -1041,24 +1041,20 @@ function remoteOnlyDefinitionRow(
   prune: boolean,
   unchangedSinceBaseline: (slug: string) => boolean
 ): DiffRow {
-  // Without recorded provenance, prune must block instead of guessing whether
-  // the definition was created by apply. Non-prune drift remains informational.
-  if (!baseline?.recorded) {
-    return prune
-      ? ({
-          kind,
-          verb: "drift",
-          blocking: true,
-          id: remote.slug,
-          remote,
-        } as DiffRow)
-      : ({ kind, verb: "drift", id: remote.slug, remote } as DiffRow);
+  // Off prune this apply cannot delete the definition, so blocking on it
+  // protects nothing and only stalls the rest of the plan. Connector
+  // definitions already scope their delete/block pair this way.
+  if (!prune) {
+    return { kind, verb: "drift", id: remote.slug, remote } as DiffRow;
   }
+  // Prune may delete only a recorded, owned incarnation that is unchanged;
+  // unowned, edited, and unrecorded all block, since deleting the wrong
+  // definition is unrecoverable.
   const owned =
-    remote.id !== undefined && baseline.owned.has(ownedKey(kind, remote.id));
-  // Config-expressed deletes require BOTH the config's owned incarnation AND
-  // prune (the config opts into deletions). A prune-off org never deletes.
-  if (owned && unchangedSinceBaseline(remote.slug) && prune) {
+    baseline?.recorded === true &&
+    remote.id !== undefined &&
+    baseline.owned.has(ownedKey(kind, remote.id));
+  if (owned && unchangedSinceBaseline(remote.slug)) {
     return { kind, verb: "delete", id: remote.slug, remote } as DiffRow;
   }
   return {

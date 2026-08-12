@@ -226,7 +226,27 @@ describe("owned-based delete classification (baseline present)", () => {
     expect(plan.counts.delete).toBe(0);
   });
 
-  test("remote-only definition NOT in owned (UI-created) → blocking drift, never delete", () => {
+  test("unowned + prune=false → informational drift without blocking other updates", () => {
+    const desired = buildState([taskType({ name: "Task Renamed" })]);
+    const remote = emptyRemote();
+    remote.entityTypes = [
+      remoteTask(1),
+      remoteTask(9, { slug: "ui_made", name: "UI Made" }),
+    ];
+    const baseline = baselineFor([remoteTask(1)], [1]);
+
+    const plan = computeDiff(desired, remote, {
+      orgId: "org-1",
+      baseline,
+      prune: false,
+    });
+    const row = plan.rows.find((r) => r.id === "ui_made");
+    expect(row?.verb).toBe("drift");
+    expect((row as { blocking?: boolean }).blocking).toBeUndefined();
+    expect(plan.rows.find((r) => r.id === "task")?.verb).toBe("update");
+  });
+
+  test("unowned + prune=true → blocking drift, never delete", () => {
     const desired = buildState([]);
     const remote = emptyRemote();
     remote.entityTypes = [remoteTask(9)]; // id 9 never applied by this config
@@ -235,6 +255,7 @@ describe("owned-based delete classification (baseline present)", () => {
     const plan = computeDiff(desired, remote, {
       orgId: "org-1",
       baseline,
+      prune: true,
     });
     const row = plan.rows.find((r) => r.kind === "entity-type");
     expect(row?.verb).toBe("drift");

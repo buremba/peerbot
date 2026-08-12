@@ -136,7 +136,16 @@ export function buildStaleRunWhereSql(spec: StaleRunSweepSpec): string {
          -- claim-timeout must never reap it (#2044). Only 'auto'/'approved'
          -- pending rows are genuinely waiting for a worker.
          AND approval_status <> 'pending'
-         AND created_at < current_timestamp - ${intervalSql(spec.coarseStaleInterval)})
+         AND (
+           created_at < current_timestamp - ${intervalSql(spec.coarseStaleInterval)}
+           -- An ephemeral run whose explicit claim horizon lapsed must never
+           -- execute later — terminalize it even if it is younger than the
+           -- coarse interval (device action runs carry expires_at; see
+           -- runs/queue-service.ts).
+           OR (run_type = 'action'
+               AND expires_at IS NOT NULL
+               AND expires_at <= current_timestamp)
+         ))
         OR ${inProgressPredicate})`
 		: inProgressPredicate;
 

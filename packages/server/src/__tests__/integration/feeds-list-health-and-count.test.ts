@@ -155,4 +155,25 @@ describe("list_feeds health filter and true total", () => {
 			),
 		).rejects.toThrow();
 	});
+
+	it("surfaces derived execution_mode / attention / incident_eligible per feed", async () => {
+		const res = await list({ limit: 10 });
+		const byKey = new Map(
+			res.feeds.map((f) => [f.feed_key, f as Record<string, unknown>]),
+		);
+		// h3 (never synced) has no schedule → manual, never_run, not incident-eligible.
+		const h3 = byKey.get("h3");
+		expect(h3?.execution_mode).toBe("manual");
+		expect(h3?.attention).toBe("never_run");
+		expect(h3?.incident_eligible).toBe(false);
+		// bad1 is active-but-failing with no schedule → manual, last_attempt_failed,
+		// and still not incident-eligible (a manual feed is never an unattended incident).
+		const bad1 = byKey.get("bad1");
+		expect(bad1?.execution_mode).toBe("manual");
+		expect(bad1?.attention).toBe("last_attempt_failed");
+		expect(bad1?.incident_eligible).toBe(false);
+		// h1/h2 succeeded → healthy.
+		expect(byKey.get("h1")?.attention).toBe("healthy");
+		expect(byKey.get("h2")?.attention).toBe("healthy");
+	});
 });

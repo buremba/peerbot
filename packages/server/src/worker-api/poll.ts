@@ -430,6 +430,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           LIMIT 1
         ) cd ON true
         WHERE r.status = 'pending'
+          AND (
+            r.run_type <> 'action'
+            OR r.expires_at IS NULL
+            OR r.expires_at > now()
+          )
           AND (r.approval_status = 'auto' OR r.approval_status = 'approved')
           AND (
             -- (1) Connector-worker lanes: sync / action / embed_backfill / auth.
@@ -562,6 +567,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
               claimed_by = ${worker_id}
           WHERE id = ${runId}
             AND status = 'pending'
+            AND (
+              run_type <> 'action'
+              OR expires_at IS NULL
+              OR expires_at > now()
+            )
           RETURNING id
         `;
         if (claimed.length === 0) return null;

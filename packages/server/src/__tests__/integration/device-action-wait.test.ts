@@ -8,7 +8,7 @@
  *      { status: 'completed', output }
  *   2. worker-failed: worker posts 'failed' → returns
  *      { status: 'failed', error_message }
- *   3. timeout-pre-claim: run never claimed before QUEUE_BUDGET_MS →
+ *   3. timeout-pre-claim: run never claimed before the queue budget →
  *      gateway marks the row 'timeout', returns timeout
  *   4. race: worker posts completion AFTER our timeout decision but
  *      BEFORE we re-read. The atomic UPDATE in completeActionRun
@@ -17,16 +17,15 @@
  *
  * The test stubs `setTimeout` to keep poll loops fast.
  *
- * NOTE: waitForDeviceActionRun is not exported. We re-implement the
- * same shape here against the real DB to keep the import surface
- * stable. The production helper is small enough that a focused
- * behavioral test is the right contract — we're testing the SQL
- * transitions, not the function body. Update both together if the
- * shape changes.
+ * The abort path calls the production helper directly. The longer phase and
+ * race tests use a budget-parameterized mirror so they complete in
+ * milliseconds while exercising the same SQL transitions.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { waitForDeviceActionRun } from '../../tools/admin/manage_operations';
+import { DEVICE_ACTION_QUEUE_BUDGET_MS } from '../../config/intervals';
+import { createConnectorOperationRun } from '../../runs/queue-service';
+import { waitForDeviceActionRun } from '../../tools/admin/device-action-wait';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import { createTestOrganization } from '../setup/test-fixtures';
 
@@ -260,7 +259,7 @@ describe('waitForDeviceActionRun', () => {
     expect(out.error_message).toBe('worker-failed');
   });
 
-  it('times out + marks row when no worker claims within QUEUE_BUDGET_MS', async () => {
+  it('times out + marks row when no worker claims within the queue budget', async () => {
     const org = await createTestOrganization();
     await insertChromeConnector(org.id);
     const connId = await insertChromeConnection(org.id);
@@ -353,5 +352,128 @@ describe('waitForDeviceActionRun', () => {
       SELECT status FROM runs WHERE id = ${runId}
     `) as Array<{ status: string }>;
     expect(rows[0].status).toBe('timeout');
+  });
+});
+
+describe('createConnectorOperationRun — ephemeral expires_at semantics', () => {
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+  });
+
+  async function expiresAtOf(runId: number): Promise<Date | null> {
+    const sql = getTestDb();
+    const rows = (await sql`
+      SELECT expires_at FROM runs WHERE id = ${runId}
+    `) as Array<{ expires_at: Date | null }>;
+    return rows[0]?.expires_at ?? null;
+  }
+
+  it('device-mode (ephemeral browser/device) runs get a bounded expires_at', async () => {
+    const org = await createTestOrganization();
+    await insertChromeConnector(org.id);
+    const connId = await insertChromeConnection(org.id);
+
+    const createdBefore = Date.now();
+    const claim = await createConnectorOperationRun({
+      organizationId: org.id,
+      connectionId: connId,
+      connectorKey: 'chrome',
+      operationKey: 'open_tab',
+      operationInput: { url: 'about:blank' },
+      approvalMode: 'device',
+      requireCompiledCode: false,
+    });
+    expect(claim.status).toBe('pending');
+    expect(claim.approvalStatus).toBe('auto');
+
+    const expiresAt = await expiresAtOf(claim.runId);
+    expect(expiresAt).not.toBeNull();
+    const expiresInMs = (expiresAt as Date).getTime() - createdBefore;
+    expect(expiresInMs).toBeGreaterThan(DEVICE_ACTION_QUEUE_BUDGET_MS - 5_000);
+    expect(expiresInMs).toBeLessThan(DEVICE_ACTION_QUEUE_BUDGET_MS + 5_000);
+  });
+
+  it('queued (durable human-decision) runs get NO expires_at', async () => {
+    const org = await createTestOrganization();
+    await insertChromeConnector(org.id);
+    const connId = await insertChromeConnection(org.id);
+
+    const claim = await createConnectorOperationRun({
+      organizationId: org.id,
+      connectionId: connId,
+      connectorKey: 'chrome',
+      operationKey: 'open_tab',
+      operationInput: { url: 'about:blank' },
+      approvalMode: 'queued',
+      requireCompiledCode: false,
+      idempotencyKey: `durable-${Date.now()}`,
+    });
+    expect(claim.approvalStatus).toBe('pending');
+    expect(await expiresAtOf(claim.runId)).toBeNull();
+  });
+
+  it('inline (immediate gateway-executed) runs get NO expires_at', async () => {
+    const org = await createTestOrganization();
+    await insertChromeConnector(org.id);
+    const connId = await insertChromeConnection(org.id);
+
+    const claim = await createConnectorOperationRun({
+      organizationId: org.id,
+      connectionId: connId,
+      connectorKey: 'chrome',
+      operationKey: 'open_tab',
+      operationInput: { url: 'about:blank' },
+      approvalMode: 'inline',
+      requireCompiledCode: false,
+      idempotencyKey: `inline-${Date.now()}`,
+    });
+    expect(claim.status).toBe('running');
+    expect(await expiresAtOf(claim.runId)).toBeNull();
+  });
+
+  it('an idempotent replay of an expired device run returns the prior terminal row', async () => {
+    const org = await createTestOrganization();
+    await insertChromeConnector(org.id);
+    const connId = await insertChromeConnection(org.id);
+    const key = `replay-${Date.now()}`;
+
+    const first = await createConnectorOperationRun({
+      organizationId: org.id,
+      connectionId: connId,
+      connectorKey: 'chrome',
+      operationKey: 'open_tab',
+      operationInput: { url: 'about:blank' },
+      approvalMode: 'device',
+      requireCompiledCode: false,
+      idempotencyKey: key,
+    });
+    expect(first.created).toBe(true);
+
+    // Age the run to terminal timeout with a lapsed expiry (as the reaper or
+    // waitForDeviceActionRun would after the claim horizon).
+    const sql = getTestDb();
+    await sql`
+      UPDATE runs
+      SET status = 'timeout',
+          completed_at = current_timestamp,
+          expires_at = now() - interval '1 second'
+      WHERE id = ${first.runId}
+    `;
+
+    // The same idempotency key must not mint a second run, and must return the
+    // prior (now terminal) run rather than resurrecting it.
+    const replay = await createConnectorOperationRun({
+      organizationId: org.id,
+      connectionId: connId,
+      connectorKey: 'chrome',
+      operationKey: 'open_tab',
+      operationInput: { url: 'about:blank' },
+      approvalMode: 'device',
+      requireCompiledCode: false,
+      idempotencyKey: key,
+    });
+    expect(replay.created).toBe(false);
+    expect(replay.runId).toBe(first.runId);
+    expect(replay.status).toBe('timeout');
   });
 });

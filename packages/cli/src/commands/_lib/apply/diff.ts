@@ -2069,14 +2069,23 @@ export function computeDiff(
     // a locally-supplied connector declares the same key — that one wins.)
     const installableByKey = new Map(
       remoteConnectorDefinitions
-        .filter((d) => d.installable && d.source_uri)
+        .filter((d) => d.installable && (d.source_uri || d.managed_mcp_source))
         .map((d) => [d.key, d])
     );
     for (const key of [...referencedKeys].sort()) {
-      if (installedKeys.has(key)) continue;
       if (declaredKeys.has(key)) continue; // a local def supplies this key
       const entry = installableByKey.get(key);
-      if (!entry?.source_uri) continue;
+      if (installedKeys.has(key)) {
+        if (entry?.managed_mcp_source) {
+          rows.push({
+            kind: "connector-definition",
+            verb: "update",
+            id: key,
+          });
+        }
+        continue;
+      }
+      if (!entry?.source_uri && !entry?.managed_mcp_source) continue;
       rows.push({
         kind: "connector-definition",
         verb: "create",

@@ -3,6 +3,7 @@ import { MCP_PROTOCOL_VERSION } from '@lobu/core';
 import type { Env } from '../../../index';
 import { connectRoutes } from '../../../connect/routes';
 import { manageConnections } from '../../../tools/admin/manage_connections';
+import { manageCatalog } from '../../../tools/admin/manage_catalog';
 import { manageOperations } from '../../../tools/admin/manage_operations';
 import { __resetPublicOriginCachesForTests } from '../../../utils/public-origin';
 import { initWorkspaceProvider } from '../../../workspace';
@@ -208,6 +209,26 @@ describe('OAuth-protected MCP connector installation', () => {
       resource: upstreamUrl,
     });
 
+    const catalog = await manageCatalog(
+      { action: 'list_installed', kinds: ['connectors'] },
+      TEST_ENV,
+      ctx
+    );
+    const catalogItems = (
+      catalog as {
+        installed?: { connectors?: { items?: Array<Record<string, unknown>> } };
+      }
+    ).installed?.connectors?.items;
+    const catalogDefinition = catalogItems?.find(
+      (item) => item.id === 'mcp.mcp-example-com'
+    );
+    expect(catalogDefinition?.detail).toMatchObject({
+      mcp_config: {
+        upstream_url: upstreamUrl,
+        tool_prefix: 'mcp_example_com',
+      },
+    });
+
     const appProfiles = (await sql`
       SELECT id, provider, status, auth_data
       FROM auth_profiles
@@ -323,5 +344,110 @@ describe('OAuth-protected MCP connector installation', () => {
         }),
       ])
     );
+  });
+
+  it('installs a managed MCP manifest from trusted source without registering a local OAuth client', async () => {
+    const { org, ctx } = await seedOwnerContext({
+      orgName: 'Managed MCP Clone Org',
+      userName: 'Managed MCP Clone Owner',
+    });
+    const sourceCode = `
+      import { defineConnector } from "@lobu/connector-sdk";
+      export default defineConnector({
+        key: "mcp.managed-clone",
+        name: "Managed Clone",
+        version: "1.0.0",
+        authSchema: {
+          methods: [{
+            type: "oauth",
+            provider: "mcp.managed-clone",
+            clientIdKey: "MCP_CLIENT_ID",
+            clientSecretKey: "MCP_CLIENT_SECRET",
+          }],
+        },
+        mcpConfig: {
+          upstream_url: "https://mcp.example.com/rpc",
+          tool_prefix: "managed_clone",
+        },
+      } as never);
+    `;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    const installed = await manageConnections(
+      { action: 'install_connector', source_code: sourceCode },
+      TEST_ENV,
+      ctx
+    );
+    expect(installed).toMatchObject({
+      action: 'install_connector',
+      installed: true,
+      connector_key: 'mcp.managed-clone',
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    const sql = getTestDb();
+    const [definition] = (await sql`
+      SELECT mcp_config
+      FROM connector_definitions
+      WHERE organization_id = ${org.id}
+        AND key = 'mcp.managed-clone'
+        AND status = 'active'
+    `) as Array<{ mcp_config: Record<string, unknown> }>;
+    expect(definition.mcp_config).toEqual({
+      upstream_url: 'https://mcp.example.com/rpc',
+      tool_prefix: 'managed_clone',
+    });
+    const catalog = await manageCatalog(
+      { action: 'list_installed', kinds: ['connectors'] },
+      TEST_ENV,
+      ctx
+    );
+    const catalogItems = (
+      catalog as {
+        installed?: { connectors?: { items?: Array<Record<string, unknown>> } };
+      }
+    ).installed?.connectors?.items;
+    const catalogDefinition = catalogItems?.find(
+      (item) => item.id === 'mcp.managed-clone'
+    );
+    expect(catalogDefinition?.detail).toMatchObject({
+      source_uri: null,
+      mcp_config: {
+        upstream_url: 'https://mcp.example.com/rpc',
+        tool_prefix: 'managed_clone',
+      },
+    });
+
+    await sql`
+      UPDATE connector_definitions
+      SET mcp_config = ${sql.json({
+        upstream_url: 'https://mcp.example.com/rpc?access_token=secret',
+        tool_prefix: 'managed_clone',
+      })}
+      WHERE organization_id = ${org.id}
+        AND key = 'mcp.managed-clone'
+        AND status = 'active'
+    `;
+    const secretBearingCatalog = await manageCatalog(
+      { action: 'list_installed', kinds: ['connectors'] },
+      TEST_ENV,
+      ctx
+    );
+    const secretBearingItems = (
+      secretBearingCatalog as {
+        installed?: { connectors?: { items?: Array<Record<string, unknown>> } };
+      }
+    ).installed?.connectors?.items;
+    expect(
+      secretBearingItems?.find((item) => item.id === 'mcp.managed-clone')?.detail
+    ).toMatchObject({ mcp_config: null });
+
+    const [profileCount] = (await sql`
+      SELECT COUNT(*)::int AS count
+      FROM auth_profiles
+      WHERE organization_id = ${org.id}
+        AND connector_key = 'mcp.managed-clone'
+    `) as Array<{ count: number }>;
+    expect(profileCount.count).toBe(0);
   });
 });

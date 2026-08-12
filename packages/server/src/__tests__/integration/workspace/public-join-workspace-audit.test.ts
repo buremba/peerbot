@@ -109,4 +109,70 @@ describe("public workspace join audit events", () => {
 		expect(state?.user_id).toBe(joiner.id);
 		expect(state?.role).toBe("member");
 	});
+
+	it("already_member path still repairs $member projection and clears role cache", async () => {
+		// Simulates the post-insert repair path that concurrent ON CONFLICT
+		// losers also take: membership exists, but $member / role cache may
+		// not. A second join must repair without emitting another audit row.
+		const owner = await seedUser("Owner2");
+		const org = await ensurePersonalOrganization({
+			id: owner.id,
+			email: owner.email,
+			name: "Owner2",
+			username: null,
+		});
+		const sql = getTestDb();
+		await sql`
+      UPDATE "organization" SET visibility = 'public' WHERE id = ${org.organizationId}
+    `;
+
+		const joiner = await seedUser("Joiner2");
+		// Pre-insert the member row as if a concurrent winner already committed.
+		const memberId = `member_${generateSecureToken(6)}`;
+		await sql`
+      INSERT INTO "member" (id, "organizationId", "userId", role, "createdAt")
+      VALUES (${memberId}, ${org.organizationId}, ${joiner.id}, 'member', NOW())
+    `;
+
+		const result = await joinPublicOrganization({
+			userId: joiner.id,
+			orgSlug: org.slug,
+		});
+		expect(result.status).toBe("already_member");
+		expect(result.role).toBe("member");
+
+		// $member entity + auth_user_id claim should exist after repair.
+		const claims = await waitFor(async () => {
+			const rows = await sql`
+        SELECT e.id
+        FROM entities e
+        JOIN entity_types et
+          ON et.id = e.entity_type_id AND et.organization_id = e.organization_id
+        JOIN entity_identities ei ON ei.entity_id = e.id
+        WHERE e.organization_id = ${org.organizationId}
+          AND et.slug = '$member'
+          AND e.deleted_at IS NULL
+          AND ei.namespace = 'auth_user_id'
+          AND ei.identifier = ${joiner.id}
+      `;
+			return rows as unknown[];
+		});
+		expect(claims.length).toBeGreaterThanOrEqual(1);
+
+		// No member-created audit for a path that did not insert. Brief wait so
+		// a fire-and-forget phantom write would have landed if mis-emitted.
+		await new Promise((r) => setTimeout(r, 200));
+		const auditAfter = await readWorkspaceEvents(org.organizationId).then((all) =>
+			all.filter(
+				(r) =>
+					(r.metadata as { resource_kind?: string }).resource_kind === "member" &&
+					(r.metadata as { op?: string }).op === "created" &&
+					(
+						(r as { payload_data?: { state?: Record<string, unknown> } })
+							.payload_data?.state as Record<string, unknown> | undefined
+					)?.user_id === joiner.id,
+			),
+		);
+		expect(auditAfter).toHaveLength(0);
+	});
 });

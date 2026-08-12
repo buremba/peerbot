@@ -1148,7 +1148,9 @@ jobs:
 
       - name: Install dbmate
         run: |
-          curl -fsSL -o /usr/local/bin/dbmate \
+          # Retry transient GitHub release failures such as HTTP 503.
+          curl -fsSL --retry 5 --retry-delay 2 \
+            -o /usr/local/bin/dbmate \
             https://github.com/amacneil/dbmate/releases/download/v2.21.0/dbmate-linux-amd64
           chmod +x /usr/local/bin/dbmate
 

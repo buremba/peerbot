@@ -16,7 +16,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { deepRedactSecrets, REDACTED_SENTINEL } from "@lobu/core";
 import type { DesiredState } from "./desired-state.js";
 import type { DiffPlan, DiffRow, RemoteSnapshot } from "./diff.js";
-import { canonical } from "./diff.js";
+import {
+  canonical,
+  effectiveEntityTypeAfterApply,
+  effectiveRelationshipTypeAfterApply,
+  projectDesiredWatcher,
+} from "./diff.js";
 
 export function mintApplyId(): string {
   return `apl_${randomUUID()}`;
@@ -195,78 +200,16 @@ export function buildAttributionAndOwned(
       : remote.relationshipTypes.filter(
           (r) => r.organization_id === orgId || r.organization_id === undefined
         );
+  // The effective post-apply facets come from the SAME projections the drift
+  // gate compares against (`diff.ts`) — a second copy here is what let the
+  // baseline and the gate disagree about prune-managed facets.
   const remoteEntityBySlug = new Map(ownedEntityTypes.map((e) => [e.slug, e]));
   const entityTypes = state.memorySchema.entityTypes.map((d) => {
     const r = remoteEntityBySlug.get(d.slug);
-    // Under prune, omitted clearable facets are removed by apply — record the
-    // cleared post-apply value. Outside prune they stay unmanaged and survive
-    // from the pre-apply remote.
-    const eventKinds =
-      d.eventKinds !== undefined
-        ? d.eventKinds
-        : prune
-          ? undefined
-          : r?.eventKinds;
-    const viewTemplate =
-      d.viewTemplate !== undefined
-        ? d.viewTemplate
-        : prune
-          ? undefined
-          : r?.viewTemplate;
-    const required =
-      d.required !== undefined ? d.required : prune ? [] : r?.required;
-    // Match upsertEntityType: outside prune, declared properties merge with
-    // remote-only keys so the baseline equals the effective post-apply schema.
-    const properties = (() => {
-      if (d.properties === undefined) return prune ? {} : r?.properties;
-      if (prune) return d.properties;
-      const remoteOnly = Object.fromEntries(
-        Object.entries(r?.properties ?? {}).filter(
-          ([key]) => !(key in (d.properties ?? {}))
-        )
-      );
-      return { ...remoteOnly, ...d.properties };
-    })();
-    // Outside prune: preserve out-of-band extras, then overlay declared policy.
-    // Under prune: omit extras the apply clears (x-lobu-resolution when policy
-    // is omitted); keep other unknown extras only if still remote-managed
-    // (there is no prune clear for arbitrary extras — carry them).
-    const extras: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(r?.schemaExtras ?? {})) {
-      if (
-        prune &&
-        key === "x-lobu-resolution" &&
-        d.resolutionPolicy === undefined
-      ) {
-        continue;
-      }
-      extras[key] = value;
-    }
-    if (d.resolutionPolicy) Object.assign(extras, d.resolutionPolicy);
-    // description is not cleared by omission (upsert only sets it when
-    // declared) — always preserve remote when config omits it so a later
-    // owned delete is not blocked as post-baseline drift.
-    const description =
-      d.description !== undefined ? d.description : r?.description;
-    // backing/metrics are prune-clearable via clearFacets; outside prune they
-    // are unmanaged and survive from remote.
-    const backing =
-      d.backing !== undefined ? d.backing : prune ? undefined : r?.backing;
-    const metrics =
-      d.metrics !== undefined ? d.metrics : prune ? undefined : r?.metrics;
     return {
       id: r?.id,
       slug: d.slug,
-      // name is not cleared by omission — preserve remote when config omits.
-      name: d.name !== undefined ? d.name : r?.name,
-      description,
-      required,
-      properties,
-      backing,
-      metrics,
-      eventKinds,
-      viewTemplate,
-      schemaExtras: extras,
+      ...effectiveEntityTypeAfterApply(d, r, prune),
     };
   });
   const remoteRelBySlug = new Map(ownedRelTypes.map((r) => [r.slug, r]));
@@ -275,12 +218,7 @@ export function buildAttributionAndOwned(
     return {
       id: r?.id,
       slug: d.slug,
-      // name/description are not cleared by omission.
-      name: d.name !== undefined ? d.name : r?.name,
-      description: d.description !== undefined ? d.description : r?.description,
-      // upsertRelationshipType treats omitted rules as [] (clears). Record the
-      // post-apply effective value, not the pre-apply remote.
-      rules: d.rules ?? [],
+      ...effectiveRelationshipTypeAfterApply(d, r),
     };
   });
   const remoteWatcherBySlug = new Map(remote.watchers.map((w) => [w.slug, w]));
@@ -291,48 +229,28 @@ export function buildAttributionAndOwned(
   // apply permanently block as "remote moved".
   const watchers = state.watchers.map((d) => {
     const r = remoteWatcherBySlug.get(d.slug);
+    // Same projection the gate compares against; only the wire key names differ
+    // (the stored attribution is remote-shaped, `projectDesiredWatcher` is not).
+    const p = projectDesiredWatcher(d, r);
     return {
       slug: d.slug,
       behavior_id: r?.behavior_id,
-      agent_id: d.agent ?? null,
-      // Inherit remote name/description when omitted (server defaults name=slug).
-      name: d.name !== undefined ? d.name : (r?.name ?? null),
-      description:
-        d.description !== undefined
-          ? (d.description ?? null)
-          : (r?.description ?? null),
-      prompt: d.prompt ?? "",
-      triggers: d.triggers ?? [],
-      skills:
-        d.skillSnapshots !== undefined ? d.skillSnapshots : (r?.skills ?? []),
-      sources: d.sources !== undefined ? d.sources : (r?.sources ?? []),
-      reactions_guidance:
-        d.reactionsGuidance !== undefined
-          ? d.reactionsGuidance
-          : (r?.reactions_guidance ?? null),
-      device_worker_id:
-        d.deviceWorkerId !== undefined
-          ? d.deviceWorkerId
-          : (r?.device_worker_id ?? null),
-      notification_channel:
-        d.notificationChannel !== undefined
-          ? d.notificationChannel
-          : (r?.notification_channel ?? null),
-      notification_priority:
-        d.notificationPriority !== undefined
-          ? d.notificationPriority
-          : (r?.notification_priority ?? null),
-      min_cooldown_seconds:
-        d.minCooldownSeconds !== undefined
-          ? d.minCooldownSeconds
-          : (r?.min_cooldown_seconds ?? null),
-      tags: d.tags !== undefined ? d.tags : (r?.tags ?? []),
-      agent_kind:
-        d.agentKind !== undefined ? d.agentKind : (r?.agent_kind ?? null),
-      // outputs is always managed (omission clears).
-      outputs: d.outputs ?? null,
-      classifiers:
-        d.classifiers !== undefined ? d.classifiers : (r?.classifiers ?? []),
+      agent_id: p.agent,
+      name: p.name,
+      description: p.description,
+      prompt: p.prompt,
+      triggers: p.triggers,
+      skills: p.skills,
+      sources: p.sources,
+      reactions_guidance: p.reactionsGuidance,
+      device_worker_id: p.deviceWorkerId,
+      notification_channel: p.notificationChannel,
+      notification_priority: p.notificationPriority,
+      min_cooldown_seconds: p.minCooldownSeconds,
+      tags: p.tags,
+      agent_kind: p.agentKind,
+      outputs: p.outputs,
+      classifiers: p.classifiers,
     };
   });
   const owned: string[] = [];

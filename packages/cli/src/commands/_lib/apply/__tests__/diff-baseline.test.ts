@@ -411,6 +411,113 @@ describe("three-way edge cases", () => {
     expect(plan.counts.update).toBe(0);
   });
 
+  test("first baseline: in-sync relationship with an omitted name → noop, never blocked", () => {
+    // The server defaults/keeps a display name the config never declared.
+    // Comparing the omitted name against it blocked `lobu apply` forever on a
+    // valid shape — omission is not an operator opinion (upsert never clears).
+    const desired = buildState([]);
+    desired.memorySchema.relationshipTypes = [
+      { slug: "owns", rules: [{ source: "a", target: "b" }] } as any,
+    ];
+    const remote = emptyRemote();
+    remote.relationshipTypes = [
+      {
+        id: 3,
+        slug: "owns",
+        name: "Owns",
+        description: "server-side blurb",
+        rules: [{ source: "a", target: "b" }],
+        organization_id: "org-1",
+      } as any,
+    ];
+    // Baseline exists but carries no entry for `owns` (first baseline).
+    const plan = computeDiff(desired, remote, {
+      orgId: "org-1",
+      baseline: baselineFor([], []),
+    });
+    expect(plan.rows.find((r) => r.kind === "relationship-type")?.verb).toBe(
+      "noop"
+    );
+    expect(plan.counts.drift).toBe(0);
+  });
+
+  test("first baseline: a declared relationship rule change still blocks", () => {
+    const desired = buildState([]);
+    desired.memorySchema.relationshipTypes = [
+      { slug: "owns", rules: [{ source: "a", target: "c" }] } as any,
+    ];
+    const remote = emptyRemote();
+    remote.relationshipTypes = [
+      {
+        id: 3,
+        slug: "owns",
+        name: "Owns",
+        rules: [{ source: "a", target: "b" }],
+        organization_id: "org-1",
+      } as any,
+    ];
+    const plan = computeDiff(desired, remote, {
+      orgId: "org-1",
+      baseline: baselineFor([], []),
+    });
+    expect(plan.counts.drift).toBe(1);
+  });
+
+  test("first baseline under prune: remote-only eventKinds/viewTemplate block instead of recording a phantom noop", () => {
+    // Under prune an omitted facet is a REMOVAL. Inheriting it made the gate
+    // report noop while the apply would have wiped UI-authored kinds.
+    const desired = buildState([taskType()]); // declares no eventKinds
+    const remote = emptyRemote();
+    remote.entityTypes = [
+      remoteTask(1, {
+        eventKinds: { note: { description: "ui-authored" } },
+        viewTemplate: { type: "stack" },
+      }),
+    ];
+    const plan = computeDiff(desired, remote, {
+      orgId: "org-1",
+      baseline: baselineFor([], []),
+      prune: true,
+    });
+    expect(plan.counts.drift).toBe(1);
+    expect(
+      plan.rows.find((r) => r.kind === "entity-type" && r.verb === "drift")
+    ).toBeDefined();
+  });
+
+  test("first baseline outside prune: remote-only eventKinds stay unmanaged → noop", () => {
+    const desired = buildState([taskType()]);
+    const remote = emptyRemote();
+    remote.entityTypes = [
+      remoteTask(1, { eventKinds: { note: { description: "ui-authored" } } }),
+    ];
+    const plan = computeDiff(desired, remote, {
+      orgId: "org-1",
+      baseline: baselineFor([], []),
+    });
+    expect(plan.rows.find((r) => r.kind === "entity-type")?.verb).toBe("noop");
+    expect(plan.counts.drift).toBe(0);
+  });
+
+  test("first baseline under prune: a UI-added property blocks (the rebuild would drop it)", () => {
+    const desired = buildState([taskType()]);
+    const remote = emptyRemote();
+    remote.entityTypes = [
+      remoteTask(1, {
+        properties: {
+          status: { type: "string", enum: ["backlog", "active", "done"] },
+          notes: { type: "string" },
+        },
+      }),
+    ];
+    const plan = computeDiff(desired, remote, {
+      orgId: "org-1",
+      baseline: baselineFor([], []),
+      prune: true,
+    });
+    expect(plan.counts.drift).toBe(1);
+  });
+
   test("relationship rules omission records [] so a later config rule change converges", () => {
     // Config omits rules; apply clears them to []. Baseline must not keep the
     // pre-apply remote rules or the next rule edit looks like remote drift.

@@ -753,32 +753,15 @@ function diffEntityTypeWithBaseline(
     (a) => a.slug === desired.slug
   );
   if (!attr) {
-    // No baseline entry — ambiguous only when there's an actual mismatch. A
-    // definition already in sync (desired == remote) is a noop, so existing
-    // orgs can establish their first baseline without blocking.
-    // Inherit unmanaged omitted facets from remote (name/description/UI
-    // properties) so a server-defaulted name does not false-block.
+    // No baseline entry — ambiguous only when this apply would actually CHANGE
+    // the remote. A definition the apply leaves untouched is a noop, so an
+    // existing org can establish its first baseline without blocking. The test
+    // is prune-aware because the projection is: under prune an omitted
+    // eventKinds/viewTemplate/backing is a removal, so it does not compare
+    // equal and the ambiguity blocks instead of recording a phantom baseline.
     const inSync = deepEqual(
-      projectEntityForSync({
-        name: desired.name ?? remote.name,
-        description: desired.description ?? remote.description,
-        required: desired.required,
-        properties: {
-          ...Object.fromEntries(
-            Object.entries(remote.properties ?? {}).filter(
-              ([k]) => !(k in (desired.properties ?? {}))
-            )
-          ),
-          ...(desired.properties ?? {}),
-        },
-        backing: desired.backing ?? remote.backing,
-        metrics: desired.metrics ?? remote.metrics,
-        eventKinds: desired.eventKinds ?? remote.eventKinds,
-        viewTemplate: desired.viewTemplate ?? remote.viewTemplate,
-        resolutionPolicy: desired.resolutionPolicy,
-        schemaExtras: remote.schemaExtras,
-      }),
-      projectEntityForSync(remote)
+      effectiveEntityTypeAfterApply(desired, remote, prune),
+      remoteEntityTypeFacets(remote)
     );
     if (inSync) {
       return {
@@ -850,10 +833,13 @@ function diffRelationshipTypeWithBaseline(
     (a) => a.slug === desired.slug
   );
   if (!attr) {
-    const inSync =
-      deepEqual(desired.name, remote.name) &&
-      deepEqual(desired.description, remote.description) &&
-      deepEqual(desired.rules ?? [], remote.rules ?? []);
+    // Same first-baseline test as entity types: block only when the apply would
+    // change the remote. An omitted optional name/description is not an
+    // operator opinion (upsert never clears them), so it must not block.
+    const inSync = deepEqual(
+      effectiveRelationshipTypeAfterApply(desired, remote),
+      remoteRelationshipTypeFacets(remote)
+    );
     if (inSync) {
       return {
         row: {
@@ -937,8 +923,23 @@ const projectEntityForDelete = (e: {
   schemaExtras: e.schemaExtras ?? {},
 });
 
-/** Full-field in-sync comparison between desired and remote entity shapes. */
-const projectEntityForSync = (e: {
+/**
+ * The entity-type facets a comparison cares about, normalized so an absent
+ * collection and an empty one compare equal.
+ */
+export interface EntityTypeFacets {
+  name: string | undefined;
+  description: string | undefined;
+  required: string[];
+  properties: Record<string, unknown>;
+  backing: unknown;
+  metrics: unknown;
+  eventKinds: unknown;
+  viewTemplate: unknown;
+  schemaExtras: Record<string, unknown>;
+}
+
+const normalizeEntityFacets = (e: {
   name?: string;
   description?: string;
   required?: string[];
@@ -947,9 +948,8 @@ const projectEntityForSync = (e: {
   metrics?: unknown;
   eventKinds?: unknown;
   viewTemplate?: unknown;
-  resolutionPolicy?: Record<string, unknown> | undefined;
   schemaExtras?: Record<string, unknown>;
-}) => ({
+}): EntityTypeFacets => ({
   name: e.name,
   description: e.description,
   required: e.required ?? [],
@@ -958,10 +958,102 @@ const projectEntityForSync = (e: {
   metrics: e.metrics,
   eventKinds: e.eventKinds,
   viewTemplate: e.viewTemplate,
-  resolutionPolicy:
-    "resolutionPolicy" in e && e.resolutionPolicy
-      ? e.resolutionPolicy["x-lobu-resolution"]
-      : e.schemaExtras?.["x-lobu-resolution"],
+  schemaExtras: e.schemaExtras ?? {},
+});
+
+/** The live remote entity type, in the comparable facet shape. */
+const remoteEntityTypeFacets = (r: RemoteEntityType): EntityTypeFacets =>
+  normalizeEntityFacets(r);
+
+/**
+ * What the remote entity type BECOMES after this apply: declared values, plus
+ * the facets the write provably leaves alone — name/description (upsert never
+ * clears them), and, outside prune, every omitted facet including remote-only
+ * property keys (`upsertEntityType` merges them back). Under prune an omitted
+ * clearable facet is removed, so it projects to its cleared value.
+ *
+ * Single source for BOTH the recorded attribution baseline and the
+ * "already in sync?" test that lets an existing org establish its first
+ * baseline: a second, prune-blind projection is what made prune-managed
+ * eventKinds/viewTemplate/backing look inherited and recorded a phantom noop.
+ */
+export const effectiveEntityTypeAfterApply = (
+  d: DesiredEntityType,
+  r: RemoteEntityType | undefined,
+  prune: boolean
+): EntityTypeFacets => {
+  // Outside prune, extras authored out-of-band survive; under prune the apply
+  // clears x-lobu-resolution when the config omits resolutionPolicy. Declared
+  // policy always overlays (config wins).
+  const schemaExtras: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(r?.schemaExtras ?? {})) {
+    if (
+      prune &&
+      key === "x-lobu-resolution" &&
+      d.resolutionPolicy === undefined
+    )
+      continue;
+    schemaExtras[key] = value;
+  }
+  if (d.resolutionPolicy) Object.assign(schemaExtras, d.resolutionPolicy);
+  const inherit = <T>(declared: T | undefined, live: T | undefined) =>
+    declared !== undefined ? declared : prune ? undefined : live;
+  // Declared keys win; outside prune the remote-only keys survive the rebuild.
+  const declaredProperties = d.properties;
+  const properties =
+    declaredProperties === undefined
+      ? inherit(undefined, r?.properties)
+      : prune
+        ? declaredProperties
+        : {
+            ...Object.fromEntries(
+              Object.entries(r?.properties ?? {}).filter(
+                ([key]) => !(key in declaredProperties)
+              )
+            ),
+            ...declaredProperties,
+          };
+  return normalizeEntityFacets({
+    // Never cleared by omission, under prune or not.
+    name: d.name !== undefined ? d.name : r?.name,
+    description: d.description !== undefined ? d.description : r?.description,
+    required: d.required !== undefined ? d.required : prune ? [] : r?.required,
+    properties,
+    backing: inherit(d.backing, r?.backing),
+    metrics: inherit(d.metrics, r?.metrics),
+    eventKinds: inherit(d.eventKinds, r?.eventKinds),
+    viewTemplate: inherit(d.viewTemplate, r?.viewTemplate),
+    schemaExtras,
+  });
+};
+
+export interface RelationshipTypeFacets {
+  name: string | undefined;
+  description: string | undefined;
+  rules: unknown[];
+}
+
+/** The live remote relationship type, in the comparable facet shape. */
+const remoteRelationshipTypeFacets = (
+  r: RemoteRelationshipType
+): RelationshipTypeFacets => ({
+  name: r.name,
+  description: r.description,
+  rules: r.rules ?? [],
+});
+
+/**
+ * What the remote relationship type BECOMES after this apply. name/description
+ * are never cleared by omission (upsert only sets what is declared); omitted
+ * `rules` ARE cleared — `upsertRelationshipType` writes `[]`.
+ */
+export const effectiveRelationshipTypeAfterApply = (
+  d: DesiredRelationshipType,
+  r: RemoteRelationshipType | undefined
+): RelationshipTypeFacets => ({
+  name: d.name !== undefined ? d.name : r?.name,
+  description: d.description !== undefined ? d.description : r?.description,
+  rules: d.rules ?? [],
 });
 
 const projectRelForDelete = (r: {
@@ -1044,7 +1136,7 @@ interface WatcherProjection {
  * Always-managed fields (`triggers`, `prompt`, `outputs`, `agent`, `name`)
  * use the same defaults as `diffWatcher`.
  */
-const projectDesiredWatcher = (
+export const projectDesiredWatcher = (
   d: DesiredWatcher,
   remote?: RemoteBehavior
 ): WatcherProjection => ({
@@ -1983,8 +2075,8 @@ export function computeDiff(
           // a post-baseline edit (new version on the same row id) is both-moved
           // and blocks. A UI-created/unowned connector is never auto-deleted.
           const owned =
-            baseline !== undefined &&
-            baseline.owned.has(ownedKey("connector-definition", def.id));
+            baseline?.owned.has(ownedKey("connector-definition", def.id)) ??
+            false;
           const versionAtBaseline = baseline?.connectorVersions?.[def.key];
           const editedAfterBaseline =
             owned &&

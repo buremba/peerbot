@@ -547,11 +547,22 @@ export class ApplyClient {
 
   /** Latest `succeeded` deployment — the attribution baseline (null when none). */
   async getLatestDeployment(): Promise<RemoteDeployment | null> {
-    const { body } = await this.request<{ deployment?: RemoteDeployment }>(
-      "GET",
-      `/api/${this.orgSlug}/deployments/latest`
-    );
-    return body.deployment ?? null;
+    try {
+      const { body } = await this.request<{ deployment?: RemoteDeployment }>(
+        "GET",
+        `/api/${this.orgSlug}/deployments/latest`
+      );
+      return body.deployment ?? null;
+    } catch (err) {
+      // The route always answers 200 (`{deployment: null}` when there is none),
+      // so a 404 means the server predates it — a self-hosted deployment older
+      // than this CLI. That is the legacy-manifest case, not a transport
+      // failure: resolve to "no baseline", which is the most conservative
+      // reading (every remote mismatch blocks, nothing is auto-deleted).
+      // Every other error still propagates and fails the apply closed.
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
   }
 
   /** Promotions-pause state (set by `lobu rollback`). */

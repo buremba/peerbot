@@ -1,6 +1,6 @@
 # `lobu apply` drift gate & reconcile — Plan
 
-Status: **planning** · Owner: @buremba · Builds on `lobu-apply.md` (v1 merged) · Related to `lobu-pull.md` (shares the attribution record) · Reviewed against pi second-opinion: 7 rounds hardened an earlier, stronger fail-closed contract; **revised to a narrowed contract** (coordination-design-brake); rounds 8–12 on the narrowed contract each closed 1–2 blockers (baseline evolution, `--only` scope, mixed-plan confirm, token→full-plan binding, write-only `reaction_script`, mandatory index) — re-review pending
+Status: **v1 shipped in PR #2663** (token + `--bootstrap` + adopt codegen deferred — see "What actually shipped") · Owner: @buremba · Builds on `lobu-apply.md` (v1 merged) · Related to `lobu-pull.md` (shares the attribution record) · Reviewed against pi second-opinion: 7 rounds hardened an earlier, stronger fail-closed contract; **revised to a narrowed contract** (coordination-design-brake); rounds 8–12 on the narrowed contract each closed 1–2 blockers (baseline evolution, `--only` scope, mixed-plan confirm, token→full-plan binding, write-only `reaction_script`, mandatory index) — re-review pending
 
 ## Goal
 
@@ -12,7 +12,7 @@ Make `lobu apply` stop silently destroying **un-declared** remote state, while k
 The contract, **narrowed**:
 
 1. **Config-declared state converges, config wins** (Terraform semantics) — including a UI edit that lands in the plan-to-execute window. This is the declared owner's behavior, not an accident.
-2. **Un-declared remote state is never clobbered or auto-deleted.** A remote-only change or remote-only definition blocks the apply (exit 1, no mutation) and is reported with an **adopt** snippet or a **named delete** (`--confirm-deletes`).
+2. **Un-declared remote state is never clobbered or auto-deleted.** A remote-only change or remote-only definition blocks the apply (non-zero exit, no mutation) and is reported with an **adopt** snippet or a **named delete** (`--confirm-deletes`).
 3. **Never auto-delete a UI-created definition.** Delete eligibility is config-expressed only.
 4. The **reconciler agent** gets clean, safe options: adopt (autonomous, git-visible) or delete/revert (approval-gated, named).
 
@@ -63,7 +63,7 @@ Real applies populate all three; bootstrap populates `attribution` and an **empt
 
 ## Locked decisions
 
-1. **Fail-closed drift gate on un-declared state.** If the plan contains blocking drift (a remote-only change to a declared definition, or a remote-only definition), apply prints the report, exits 1, and mutates nothing — including under `--yes`. `--yes` never destroys un-declared state.
+1. **Fail-closed drift gate on un-declared state.** If the plan contains blocking drift (a remote-only change to a declared definition, or a remote-only definition), apply prints the report, exits non-zero (`2`, the CLI's `ValidationError` code), and mutates nothing — including under `--yes`. `--yes` never destroys un-declared state.
 2. **Three-way attribution via the baseline.** `noop` when desired == remote; **converge only when `remote == attribution`**; **block whenever `remote ≠ attribution AND desired ≠ remote`** (remote-move or both-moved). The compare uses the **`attribution` snapshot (effective remote after the apply)**, never the `desired` state — unmanaged facets (`eventKinds`/`viewTemplate`) live remotely but not in `desired`, so `desired`-based attribution would permanently block config-expressed deletes.    **No-baseline blocks** (creates converge; remote mismatches and remote-only definitions block) — a missing baseline is ambiguous (never applied vs. lost summary) and a config-wins default would silently overwrite UI state. The **baseline advances only on a fully-succeeded run, including all-noop runs** (apply must POST the summary on noops, `apply-cmd.ts:1535`). **Scope-preserving:** a **`--only agents|memory`** run advances the baseline **only for its executed family**, carrying forward the unexecuted families from the prior baseline (a per-family composite). The baseline separates **`attribution`** from **`owned`**: real applies populate both; bootstrap populates attribution with an empty `owned` set. **`lobu rollback` bypasses the drift gate** — it is an explicit operator restore of a recorded `desired` state and force-converges to it (config-wins), then re-records the baseline; rollback must never be blocked as "remote moved" by the no-baseline gate.
 3. **Field-level scope: memory schema + Behaviors.** Entity types (properties, required, name, description, backing, metrics, eventKinds, viewTemplate, resolutionPolicy), relationship types, and Behaviors get per-field attribution; a remote-moved field is a blocking item. **Write-only Behavior `reaction_script` is exempt** — the server never returns it, `diffWatcher` always re-pushes it (idempotent), so it is never attributed or blocked. **Connector definitions are excluded from field-level attribution** (their source is re-pushed idempotently — never field-blocked) **but included in the owned-based delete classification** (decision #4), so a UI-created connector is never auto-deleted. Everything else (agents, settings, connections, feeds, auth profiles, providers) keeps today's behavior — converge what's declared, non-blocking drift notes. Rationale: the idempotent/declared paths there emit perpetual "update" rows by design (connector-definition re-push `diff.ts:608`, BYO connection `config` always-changed `diff.ts:736`, write-only provider keys).
 4. **Two delete tiers.**
@@ -90,8 +90,8 @@ These are the deliberate limits of the narrowed contract, written down so nobody
 
 ### v1 (this plan) — deterministic core
 
-- Field-level attribution + drift gate: block + exit 1 on blocking drift; blocked report with adopt snippets and the named-delete token.
-- `--confirm-deletes <token|slug...>`; config-expressed deletes ride `--yes`.
+- Field-level attribution + drift gate: block + non-zero exit on blocking drift; blocked report with adopt snippets and the named-delete token.
+- `--confirm-deletes <token|slug...>`; config-expressed deletes ride `--yes`. **(deferred — see "What actually shipped")**
 - Baseline advances on every fully-succeeded run including noop.
 - Blocked applies POST a `blocked` deployment with the candidates + token.
 - No agent loop: the event is emitted and a human (or existing agent tooling) resolves it.
@@ -104,6 +104,18 @@ These are the deliberate limits of the narrowed contract, written down so nobody
 ## v1 work breakdown — 3 PRs
 
 **Dependency order**: PR-1 (server) lands first; PR-2 and PR-3 build on it.
+
+### What actually shipped (PR #2663 — PR-1 + PR-2 + PR-3 combined)
+
+The three PRs landed as one branch. **Shipped**: `blocked` deployment status + `candidates` payload, `GET /deployments/latest` + its partial index, the connector incarnation id in the catalog, the `{ attribution, owned }` baseline in the manifest, three-way field attribution for entity/relationship types and Behaviors, the owned-based two-tier delete classification (including connectors), the fail-closed drift gate (exit `2`, nothing mutated, blocked deployment POSTed), the `✖ BLOCKED` report, baseline advance on all-noop and `--only`-scoped runs, and the rollback bypass + baseline re-record.
+
+**Deferred to a follow-up** (the gate is complete without them; resolution today is adopt-into-config or delete in the UI/API):
+
+- `--confirm-deletes <token|slug…>` and the mint/verify token (`mintConfirmToken`, `verifyConfirmToken`, `computeBlockingHash`). Blocked deployments record `candidates.items` with no token; the wire type already carries the optional `token` field.
+- `--bootstrap` (snapshot current remote as attribution with an empty `owned` set). Existing orgs establish their first baseline the same way this PR does everywhere else: a definition the apply would not change is a noop and enters the baseline; anything else blocks.
+- Adopt-snippet codegen. The blocked report names `kind · slug · field` and prints the remote value; it does not generate the `defineEntityType` skeleton.
+
+The token/flag bullets in PR-2 and PR-3 below therefore describe the follow-up, not this branch.
 
 ### PR-1 — server: blocked deployments + latest read
 
@@ -123,7 +135,7 @@ These are the deliberate limits of the narrowed contract, written down so nobody
 - `deployment.ts`: `loadLastAppliedState()` (parse the baseline), token mint/verify (`mintConfirmToken`, `verifyConfirmToken`), `computeBlockingHash`; rollback path force-converges to `desired` and bypasses the drift gate (decision #2).
 - `diff.ts`: replace whole-`properties` deepEqual in `diffEntityType` with per-field comparison (including `resolutionPolicy`); add the three-way attribution pass against the **`attribution` snapshot** (converge only when `remote == attribution`; block when `remote ≠ attribution AND desired ≠ remote`; no-baseline blocks). Blocking-drift row: `{ kind, id, field?, verb: "drift", blocking: true, adoptSnippet, remoteChange }`. Delete rows only for definitions whose **incarnation ID is in the baseline's `owned` set** and whose remote still matches `attribution`; remote-only-absent-from-owned and edited-after-baseline become blocking drift. Preserve org-ownership and `$`-system guards.
 - `rollback-cmd.ts`: rollback supplies or bypasses attribution (explicit restore, force-converge to `desired`, re-record the baseline) — never blocked as no-baseline drift.
-- `apply-cmd.ts`: after `computeDiff`, if blocking drift exists or un-gated deletes exist → render blocked report, POST the blocked deployment, exit 1. `--confirm-deletes <token>`: recompute, **verify the hash against the entire executable plan** (any mismatch — including an ordinary config update introduced after mint — rejects the entire token), print the destructive subset, then **execute the complete recomputed plan**. Config-expressed deletes proceed under `--yes` as today. **POST the summary on every fully-succeeded run including all-noop** — a **`--only` run advances the baseline per its executed family only** (decision #2). `lobu apply --bootstrap` snapshots current remote into `attribution` with an **empty `owned` set**.
+- `apply-cmd.ts`: after `computeDiff`, if blocking drift exists or un-gated deletes exist → render blocked report, POST the blocked deployment, exit non-zero. `--confirm-deletes <token>`: recompute, **verify the hash against the entire executable plan** (any mismatch — including an ordinary config update introduced after mint — rejects the entire token), print the destructive subset, then **execute the complete recomputed plan**. Config-expressed deletes proceed under `--yes` as today. **POST the summary on every fully-succeeded run including all-noop** — a **`--only` run advances the baseline per its executed family only** (decision #2). `lobu apply --bootstrap` snapshots current remote into `attribution` with an **empty `owned` set**.
 - Command surface: `--confirm-deletes <token|slug...>` (single flag), `--bootstrap` (new flag — surfaced for approval).
 - Tests: three-way attribution table, token mint/verify, staleness refusal, no-baseline block, edited-after-baseline delete block, prune-narrowing regressions.
 
@@ -167,12 +179,12 @@ These are the deliberate limits of the narrowed contract, written down so nobody
 Boot local cloud (bootstrap path per `lobu-apply.md` E2E). Reference project: `examples/personal-agent` (org `buremba`, `prune: true`).
 
 1. `lobu apply --yes` from a clean tree → all noops; assert a `succeeded` deployment was POSTed (baseline advanced on the noop run) and `GET /deployments/latest` returns it.
-2. Add the board annotation in the UI (`manage_entity_schema` on `task.status`) → `lobu apply` → `✖ BLOCKED`, exact transcript, token printed, exit 1.
+2. Add the board annotation in the UI (`manage_entity_schema` on `task.status`) → `lobu apply` → `✖ BLOCKED`, exact transcript, non-zero exit.
 3. `lobu apply --confirm-deletes <token>` → decode line, revert of the annotation, exit 0.
 4. Re-add annotation → apply blocked → apply the printed adopt snippet to `lobu.config.ts` → `lobu apply` → green.
 5. Create `contact` in the UI → apply → blocked (never a delete row) → `--confirm-deletes <token>` → gone.
 6. Remove a previously-applied type from `lobu.config.ts` (no UI edits since baseline) → `lobu apply --yes` → config-expressed delete proceeds. Repeat with a UI edit after baseline → blocks as both-moved.
-7. `--yes` with blocking drift → exits 1, nothing mutated.
+7. `--yes` with blocking drift → exits non-zero, nothing mutated.
 8. Blocked → confirm with a stale token (make a second UI edit first) → whole token rejected, nothing mutated.
 9. **Mixed plan**: a blocked plan containing both a blocking drift item AND an ordinary config update → `--confirm-deletes <token>` executes the full recomputed plan (destructive item authorized by the token, config update converged), and the finalized baseline matches what ran; the next apply does not misclassify the config update as drift.
 10. No-baseline org: `--bootstrap` snapshots current remote (explicit confirm); immediately after, `lobu apply --yes` must NOT prune the pre-existing remote-only definitions (attribution ≠ ownership).

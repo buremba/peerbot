@@ -19,33 +19,33 @@ import type { DiffPlan, DiffRow, RemoteSnapshot } from "./diff.js";
 import { canonical } from "./diff.js";
 
 export function mintApplyId(): string {
-	return `apl_${randomUUID()}`;
+  return `apl_${randomUUID()}`;
 }
 
 export interface GitInfo {
-	sha: string | null;
-	dirty: boolean | null;
+  sha: string | null;
+  dirty: boolean | null;
 }
 
 /** HEAD SHA + dirty flag of the config repo; nulls outside a git work tree. */
 export function collectGitInfo(cwd: string): GitInfo {
-	try {
-		const sha = execFileSync("git", ["rev-parse", "HEAD"], {
-			cwd,
-			stdio: ["ignore", "pipe", "ignore"],
-		})
-			.toString()
-			.trim();
-		const porcelain = execFileSync("git", ["status", "--porcelain"], {
-			cwd,
-			stdio: ["ignore", "pipe", "ignore"],
-		})
-			.toString()
-			.trim();
-		return { sha: sha || null, dirty: porcelain.length > 0 };
-	} catch {
-		return { sha: null, dirty: null };
-	}
+  try {
+    const sha = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+    const porcelain = execFileSync("git", ["status", "--porcelain"], {
+      cwd,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+    return { sha: sha || null, dirty: porcelain.length > 0 };
+  } catch {
+    return { sha: null, dirty: null };
+  }
 }
 
 /**
@@ -57,29 +57,29 @@ export function collectGitInfo(cwd: string): GitInfo {
  * structurally cannot re-apply one.
  */
 export function redactDesiredState(
-	state: DesiredState,
+  state: DesiredState
 ): Record<string, unknown> {
-	return deepRedactSecrets({
-		...state,
-		agents: state.agents.map((agent) => ({
-			...agent,
-			providerKeys: agent.providerKeys.map((k) => ({
-				providerId: k.providerId,
-				value: REDACTED_SENTINEL,
-			})),
-		})),
-		providers: (state.providers ?? []).map((p) => ({
-			...p,
-			apiKey: REDACTED_SENTINEL,
-		})),
-		connectors: {
-			...state.connectors,
-			authProfiles: state.connectors.authProfiles.map((profile) => ({
-				...(profile as unknown as Record<string, unknown>),
-				credentials: REDACTED_SENTINEL,
-			})),
-		},
-	}) as Record<string, unknown>;
+  return deepRedactSecrets({
+    ...state,
+    agents: state.agents.map((agent) => ({
+      ...agent,
+      providerKeys: agent.providerKeys.map((k) => ({
+        providerId: k.providerId,
+        value: REDACTED_SENTINEL,
+      })),
+    })),
+    providers: (state.providers ?? []).map((p) => ({
+      ...p,
+      apiKey: REDACTED_SENTINEL,
+    })),
+    connectors: {
+      ...state.connectors,
+      authProfiles: state.connectors.authProfiles.map((profile) => ({
+        ...(profile as unknown as Record<string, unknown>),
+        credentials: REDACTED_SENTINEL,
+      })),
+    },
+  }) as Record<string, unknown>;
 }
 
 /**
@@ -88,68 +88,68 @@ export function redactDesiredState(
  * identically because secret VALUES never participate.
  */
 export function computeManifestHash(state: DesiredState): string {
-	return `sha256:${createHash("sha256")
-		.update(canonical(redactDesiredState(state)))
-		.digest("hex")}`;
+  return `sha256:${createHash("sha256")
+    .update(canonical(redactDesiredState(state)))
+    .digest("hex")}`;
 }
 
 export const SNAPSHOT_VERSION = 1;
 
 export interface DeploymentManifest {
-	version: typeof SNAPSHOT_VERSION;
-	/**
-	 * The redacted desired state, minus connector source bytes: connector
-	 * definitions are stripped to declaration metadata, and the artifacts they
-	 * resolved to ride `connector_versions` below as retained
-	 * (org, key, version) pins — a deployment is self-contained without ever
-	 * embedding code or secrets.
-	 */
-	state: Record<string, unknown>;
-	/** Active connector version per declared key, recorded post-install. */
-	connector_versions: Record<string, string>;
-	/**
-	 * The attribution baseline for the three-way drift compare: the effective
-	 * entity/rel-type and Behavior state AFTER this apply (declared config
-	 * values + preserved unmanaged facets). Absent on legacy manifests — treated
-	 * as "no baseline" (block on remote mismatches, never auto-delete).
-	 */
-	attribution?: {
-		entityTypes: unknown[];
-		relationshipTypes: unknown[];
-		watchers: unknown[];
-	};
-	/**
-	 * Kind-qualified definition incarnation identities (`entity-type:12`,
-	 * `behavior:b7-…`) this config actually applied — the delete-eligible set.
-	 */
-	owned?: string[];
+  version: typeof SNAPSHOT_VERSION;
+  /**
+   * The redacted desired state, minus connector source bytes: connector
+   * definitions are stripped to declaration metadata, and the artifacts they
+   * resolved to ride `connector_versions` below as retained
+   * (org, key, version) pins — a deployment is self-contained without ever
+   * embedding code or secrets.
+   */
+  state: Record<string, unknown>;
+  /** Active connector version per declared key, recorded post-install. */
+  connector_versions: Record<string, string>;
+  /**
+   * The attribution baseline for the three-way drift compare: the effective
+   * entity/rel-type and Behavior state AFTER this apply (declared config
+   * values + preserved unmanaged facets). Absent on legacy manifests — treated
+   * as "no baseline" (block on remote mismatches, never auto-delete).
+   */
+  attribution?: {
+    entityTypes: unknown[];
+    relationshipTypes: unknown[];
+    watchers: unknown[];
+  };
+  /**
+   * Kind-qualified definition incarnation identities (`entity-type:12`,
+   * `behavior:b7-…`) this config actually applied — the delete-eligible set.
+   */
+  owned?: string[];
 }
 
 export interface BaselineRecord {
-	attribution: {
-		entityTypes: unknown[];
-		relationshipTypes: unknown[];
-		watchers: unknown[];
-	};
-	owned: string[];
+  attribution: {
+    entityTypes: unknown[];
+    relationshipTypes: unknown[];
+    watchers: unknown[];
+  };
+  owned: string[];
 }
 
 /** Parse the stored baseline; null for a legacy manifest (→ no-baseline block). */
 export function loadBaselineFromManifest(
-	manifest: {
-		attribution?: DeploymentManifest["attribution"];
-		owned?: DeploymentManifest["owned"];
-	} | null,
+  manifest: {
+    attribution?: DeploymentManifest["attribution"];
+    owned?: DeploymentManifest["owned"];
+  } | null
 ): BaselineRecord | null {
-	if (!manifest?.attribution || !manifest.owned) return null;
-	return {
-		attribution: {
-			entityTypes: manifest.attribution.entityTypes ?? [],
-			relationshipTypes: manifest.attribution.relationshipTypes ?? [],
-			watchers: manifest.attribution.watchers ?? [],
-		},
-		owned: manifest.owned,
-	};
+  if (!manifest?.attribution || !manifest.owned) return null;
+  return {
+    attribution: {
+      entityTypes: manifest.attribution.entityTypes ?? [],
+      relationshipTypes: manifest.attribution.relationshipTypes ?? [],
+      watchers: manifest.attribution.watchers ?? [],
+    },
+    owned: manifest.owned,
+  };
 }
 
 /**
@@ -163,141 +163,141 @@ export function loadBaselineFromManifest(
  * (they block as drift instead of auto-deleting — fail-closed).
  */
 export function buildAttributionAndOwned(
-	state: DesiredState,
-	remote: RemoteSnapshot,
-	orgId?: string,
+  state: DesiredState,
+  remote: RemoteSnapshot,
+  orgId?: string
 ): BaselineRecord {
-	// The list endpoints also return PUBLIC definitions from OTHER orgs — a
-	// foreign same-slug row must never populate the baseline (it would replace
-	// the target org's incarnation id and facets). Filter to the target org.
-	const ownedEntityTypes =
-		orgId === undefined
-			? remote.entityTypes
-			: remote.entityTypes.filter(
-					(e) => e.organization_id === orgId || e.organization_id === undefined,
-				);
-	const ownedRelTypes =
-		orgId === undefined
-			? remote.relationshipTypes
-			: remote.relationshipTypes.filter(
-					(r) => r.organization_id === orgId || r.organization_id === undefined,
-				);
-	const remoteEntityBySlug = new Map(ownedEntityTypes.map((e) => [e.slug, e]));
-	const entityTypes = state.memorySchema.entityTypes.map((d) => {
-		const r = remoteEntityBySlug.get(d.slug);
-		return {
-			id: r?.id,
-			slug: d.slug,
-			name: d.name,
-			description: d.description,
-			required: d.required,
-			properties: d.properties,
-			backing: d.backing,
-			metrics: d.metrics,
-			eventKinds: d.eventKinds ?? r?.eventKinds,
-			viewTemplate: d.viewTemplate ?? r?.viewTemplate,
-			// `resolutionPolicy` is already the `{ "x-lobu-resolution": … }` wrapper —
-			// spread it so the schema-extra key is set exactly once.
-			schemaExtras: {
-				...(r?.schemaExtras ?? {}),
-				...(d.resolutionPolicy ?? {}),
-			},
-		};
-	});
-	const remoteRelBySlug = new Map(ownedRelTypes.map((r) => [r.slug, r]));
-	const relationshipTypes = state.memorySchema.relationshipTypes.map((d) => {
-		const r = remoteRelBySlug.get(d.slug);
-		return {
-			id: r?.id,
-			slug: d.slug,
-			name: d.name,
-			description: d.description,
-			rules: d.rules,
-		};
-	});
-	const remoteWatcherBySlug = new Map(remote.watchers.map((w) => [w.slug, w]));
-	// Effective remote after apply: declared fields from config, undeclared
-	// optional fields preserved from the pre-apply remote (two-way apply only
-	// writes declared Behavior fields — see `diffWatcher`). Recording the
-	// config-only shape left sources/skills/tags as undefined and made the next
-	// apply permanently block as "remote moved".
-	const watchers = state.watchers.map((d) => {
-		const r = remoteWatcherBySlug.get(d.slug);
-		return {
-			slug: d.slug,
-			behavior_id: r?.behavior_id,
-			agent_id: d.agent ?? null,
-			name: d.name,
-			description: d.description ?? null,
-			prompt: d.prompt ?? "",
-			triggers: d.triggers ?? [],
-			skills:
-				d.skillSnapshots !== undefined ? d.skillSnapshots : (r?.skills ?? []),
-			sources: d.sources !== undefined ? d.sources : (r?.sources ?? []),
-			reactions_guidance:
-				d.reactionsGuidance !== undefined
-					? d.reactionsGuidance
-					: (r?.reactions_guidance ?? null),
-			device_worker_id:
-				d.deviceWorkerId !== undefined
-					? d.deviceWorkerId
-					: (r?.device_worker_id ?? null),
-			notification_channel:
-				d.notificationChannel !== undefined
-					? d.notificationChannel
-					: (r?.notification_channel ?? null),
-			notification_priority:
-				d.notificationPriority !== undefined
-					? d.notificationPriority
-					: (r?.notification_priority ?? null),
-			min_cooldown_seconds:
-				d.minCooldownSeconds !== undefined
-					? d.minCooldownSeconds
-					: (r?.min_cooldown_seconds ?? null),
-			tags: d.tags !== undefined ? d.tags : (r?.tags ?? []),
-			agent_kind:
-				d.agentKind !== undefined ? d.agentKind : (r?.agent_kind ?? null),
-			// outputs is always managed (omission clears).
-			outputs: d.outputs ?? null,
-			classifiers:
-				d.classifiers !== undefined ? d.classifiers : (r?.classifiers ?? []),
-		};
-	});
-	const owned: string[] = [];
-	for (const e of state.memorySchema.entityTypes) {
-		const id = remoteEntityBySlug.get(e.slug)?.id;
-		if (id !== undefined) owned.push(`entity-type:${id}`);
-	}
-	for (const r of state.memorySchema.relationshipTypes) {
-		const id = remoteRelBySlug.get(r.slug)?.id;
-		if (id !== undefined) owned.push(`relationship-type:${id}`);
-	}
-	for (const w of state.watchers) {
-		const id = remoteWatcherBySlug.get(w.slug)?.behavior_id;
-		if (id !== undefined) owned.push(`watcher:${id}`);
-	}
-	// Connector definitions this config declared (or references through an
-	// auth-profile/connection) and has installed — delete-eligible under prune.
-	const appliedConnectorKeys = new Set<string>([
-		...(state.connectors.definitions
-			.map((d) => d.key)
-			.filter(Boolean) as string[]),
-		...state.connectors.authProfiles.map((p) => p.connector),
-		...state.connectors.connections.map((c) => c.connector),
-	]);
-	for (const def of remote.connectorDefinitions) {
-		if (
-			def.installed &&
-			def.id !== undefined &&
-			appliedConnectorKeys.has(def.key)
-		) {
-			owned.push(`connector-definition:${def.id}`);
-		}
-	}
-	return {
-		attribution: { entityTypes, relationshipTypes, watchers },
-		owned,
-	};
+  // The list endpoints also return PUBLIC definitions from OTHER orgs — a
+  // foreign same-slug row must never populate the baseline (it would replace
+  // the target org's incarnation id and facets). Filter to the target org.
+  const ownedEntityTypes =
+    orgId === undefined
+      ? remote.entityTypes
+      : remote.entityTypes.filter(
+          (e) => e.organization_id === orgId || e.organization_id === undefined
+        );
+  const ownedRelTypes =
+    orgId === undefined
+      ? remote.relationshipTypes
+      : remote.relationshipTypes.filter(
+          (r) => r.organization_id === orgId || r.organization_id === undefined
+        );
+  const remoteEntityBySlug = new Map(ownedEntityTypes.map((e) => [e.slug, e]));
+  const entityTypes = state.memorySchema.entityTypes.map((d) => {
+    const r = remoteEntityBySlug.get(d.slug);
+    return {
+      id: r?.id,
+      slug: d.slug,
+      name: d.name,
+      description: d.description,
+      required: d.required,
+      properties: d.properties,
+      backing: d.backing,
+      metrics: d.metrics,
+      eventKinds: d.eventKinds ?? r?.eventKinds,
+      viewTemplate: d.viewTemplate ?? r?.viewTemplate,
+      // `resolutionPolicy` is already the `{ "x-lobu-resolution": … }` wrapper —
+      // spread it so the schema-extra key is set exactly once.
+      schemaExtras: {
+        ...(r?.schemaExtras ?? {}),
+        ...(d.resolutionPolicy ?? {}),
+      },
+    };
+  });
+  const remoteRelBySlug = new Map(ownedRelTypes.map((r) => [r.slug, r]));
+  const relationshipTypes = state.memorySchema.relationshipTypes.map((d) => {
+    const r = remoteRelBySlug.get(d.slug);
+    return {
+      id: r?.id,
+      slug: d.slug,
+      name: d.name,
+      description: d.description,
+      rules: d.rules,
+    };
+  });
+  const remoteWatcherBySlug = new Map(remote.watchers.map((w) => [w.slug, w]));
+  // Effective remote after apply: declared fields from config, undeclared
+  // optional fields preserved from the pre-apply remote (two-way apply only
+  // writes declared Behavior fields — see `diffWatcher`). Recording the
+  // config-only shape left sources/skills/tags as undefined and made the next
+  // apply permanently block as "remote moved".
+  const watchers = state.watchers.map((d) => {
+    const r = remoteWatcherBySlug.get(d.slug);
+    return {
+      slug: d.slug,
+      behavior_id: r?.behavior_id,
+      agent_id: d.agent ?? null,
+      name: d.name,
+      description: d.description ?? null,
+      prompt: d.prompt ?? "",
+      triggers: d.triggers ?? [],
+      skills:
+        d.skillSnapshots !== undefined ? d.skillSnapshots : (r?.skills ?? []),
+      sources: d.sources !== undefined ? d.sources : (r?.sources ?? []),
+      reactions_guidance:
+        d.reactionsGuidance !== undefined
+          ? d.reactionsGuidance
+          : (r?.reactions_guidance ?? null),
+      device_worker_id:
+        d.deviceWorkerId !== undefined
+          ? d.deviceWorkerId
+          : (r?.device_worker_id ?? null),
+      notification_channel:
+        d.notificationChannel !== undefined
+          ? d.notificationChannel
+          : (r?.notification_channel ?? null),
+      notification_priority:
+        d.notificationPriority !== undefined
+          ? d.notificationPriority
+          : (r?.notification_priority ?? null),
+      min_cooldown_seconds:
+        d.minCooldownSeconds !== undefined
+          ? d.minCooldownSeconds
+          : (r?.min_cooldown_seconds ?? null),
+      tags: d.tags !== undefined ? d.tags : (r?.tags ?? []),
+      agent_kind:
+        d.agentKind !== undefined ? d.agentKind : (r?.agent_kind ?? null),
+      // outputs is always managed (omission clears).
+      outputs: d.outputs ?? null,
+      classifiers:
+        d.classifiers !== undefined ? d.classifiers : (r?.classifiers ?? []),
+    };
+  });
+  const owned: string[] = [];
+  for (const e of state.memorySchema.entityTypes) {
+    const id = remoteEntityBySlug.get(e.slug)?.id;
+    if (id !== undefined) owned.push(`entity-type:${id}`);
+  }
+  for (const r of state.memorySchema.relationshipTypes) {
+    const id = remoteRelBySlug.get(r.slug)?.id;
+    if (id !== undefined) owned.push(`relationship-type:${id}`);
+  }
+  for (const w of state.watchers) {
+    const id = remoteWatcherBySlug.get(w.slug)?.behavior_id;
+    if (id !== undefined) owned.push(`watcher:${id}`);
+  }
+  // Connector definitions this config declared (or references through an
+  // auth-profile/connection) and has installed — delete-eligible under prune.
+  const appliedConnectorKeys = new Set<string>([
+    ...(state.connectors.definitions
+      .map((d) => d.key)
+      .filter(Boolean) as string[]),
+    ...state.connectors.authProfiles.map((p) => p.connector),
+    ...state.connectors.connections.map((c) => c.connector),
+  ]);
+  for (const def of remote.connectorDefinitions) {
+    if (
+      def.installed &&
+      def.id !== undefined &&
+      appliedConnectorKeys.has(def.key)
+    ) {
+      owned.push(`connector-definition:${def.id}`);
+    }
+  }
+  return {
+    attribution: { entityTypes, relationshipTypes, watchers },
+    owned,
+  };
 }
 
 /**
@@ -307,74 +307,74 @@ export function buildAttributionAndOwned(
  * `lobu rollback` repoints to via `rollback_connector_version`.
  */
 export function buildDeploymentManifest(
-	state: DesiredState,
-	connectorVersions: Record<string, string>,
-	baseline?: BaselineRecord,
+  state: DesiredState,
+  connectorVersions: Record<string, string>,
+  baseline?: BaselineRecord
 ): DeploymentManifest {
-	const redacted = redactDesiredState(state);
-	const connectors = (redacted.connectors ?? {}) as Record<string, unknown>;
-	const definitions = Array.isArray(connectors.definitions)
-		? (connectors.definitions as Array<Record<string, unknown>>)
-		: [];
-	return {
-		version: SNAPSHOT_VERSION,
-		state: {
-			...redacted,
-			connectors: {
-				...connectors,
-				// Keep the declaration shape for display/diff labels; drop the bytes.
-				definitions: definitions.map(
-					({ sourceCode: _sourceCode, ...def }) => def,
-				),
-			},
-		},
-		connector_versions: connectorVersions,
-		...(baseline
-			? { attribution: baseline.attribution, owned: baseline.owned }
-			: {}),
-	};
+  const redacted = redactDesiredState(state);
+  const connectors = (redacted.connectors ?? {}) as Record<string, unknown>;
+  const definitions = Array.isArray(connectors.definitions)
+    ? (connectors.definitions as Array<Record<string, unknown>>)
+    : [];
+  return {
+    version: SNAPSHOT_VERSION,
+    state: {
+      ...redacted,
+      connectors: {
+        ...connectors,
+        // Keep the declaration shape for display/diff labels; drop the bytes.
+        definitions: definitions.map(
+          ({ sourceCode: _sourceCode, ...def }) => def
+        ),
+      },
+    },
+    connector_versions: connectorVersions,
+    ...(baseline
+      ? { attribution: baseline.attribution, owned: baseline.owned }
+      : {}),
+  };
 }
 
 export type CountsByKind = Record<
-	string,
-	{ create?: number; update?: number; delete?: number }
+  string,
+  { create?: number; update?: number; delete?: number }
 >;
 
 /** Per-resource-kind create/update/delete tallies for the summary payload. */
 export function buildCountsByKind(rows: DiffRow[]): CountsByKind {
-	const out: CountsByKind = {};
-	for (const row of rows) {
-		if (row.verb !== "create" && row.verb !== "update" && row.verb !== "delete")
-			continue;
-		const key = row.kind === "watcher" ? "behavior" : row.kind;
-		const bucket = out[key] ?? {};
-		out[key] = bucket;
-		bucket[row.verb] = (bucket[row.verb] ?? 0) + 1;
-	}
-	return out;
+  const out: CountsByKind = {};
+  for (const row of rows) {
+    if (row.verb !== "create" && row.verb !== "update" && row.verb !== "delete")
+      continue;
+    const key = row.kind === "watcher" ? "behavior" : row.kind;
+    const bucket = out[key] ?? {};
+    out[key] = bucket;
+    bucket[row.verb] = (bucket[row.verb] ?? 0) + 1;
+  }
+  return out;
 }
 
 export interface DeploymentSummary {
-	apply_id: string;
-	status: "succeeded" | "partial_failure" | "blocked";
-	counts: DiffPlan["counts"];
-	counts_by_kind: CountsByKind;
-	manifest_hash: string;
-	git_sha: string | null;
-	git_dirty: boolean | null;
-	cli_version: string | null;
-	error?: string;
-	/** Self-contained snapshot for `lobu rollback` (absent on legacy CLIs). */
-	manifest?: DeploymentManifest;
-	/** Blocking-drift candidates — present on `blocked` runs. */
-	candidates?: {
-		items: Array<{
-			kind: string;
-			slug: string;
-			field?: string;
-			action: "delete" | "revert";
-		}>;
-	};
-	/** Set on rollback deployments: the deployment this one restored. */
-	rollback_of?: string;
+  apply_id: string;
+  status: "succeeded" | "partial_failure" | "blocked";
+  counts: DiffPlan["counts"];
+  counts_by_kind: CountsByKind;
+  manifest_hash: string;
+  git_sha: string | null;
+  git_dirty: boolean | null;
+  cli_version: string | null;
+  error?: string;
+  /** Self-contained snapshot for `lobu rollback` (absent on legacy CLIs). */
+  manifest?: DeploymentManifest;
+  /** Blocking-drift candidates — present on `blocked` runs. */
+  candidates?: {
+    items: Array<{
+      kind: string;
+      slug: string;
+      field?: string;
+      action: "delete" | "revert";
+    }>;
+  };
+  /** Set on rollback deployments: the deployment this one restored. */
+  rollback_of?: string;
 }

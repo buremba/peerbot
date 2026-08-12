@@ -565,7 +565,7 @@ export default async function runNetWorthSnapshot(
   const digest = snapshotDigest(snapshot);
   const saved = await client.knowledge.save({
     content: digest,
-    semantic_type: "net_worth_snapshot",
+    semantic_type: "summary",
     title: "Midas net worth snapshot",
     payload_type: "markdown",
     metadata: snapshot as unknown as Record<string, unknown>,

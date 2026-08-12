@@ -245,7 +245,7 @@ describe("weekly net-worth reaction", () => {
     ]);
     expect(saved).toHaveLength(1);
     expect(saved[0]).toMatchObject({
-      semantic_type: "net_worth_snapshot",
+      semantic_type: "summary",
       title: "Midas net worth snapshot",
       idempotency_key: "midas-net-worth:snapshot:window:91",
       behavior_source: { behavior_id: 45, window_id: 91 },

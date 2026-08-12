@@ -35,6 +35,7 @@ describe("operations.execute backend lifecycle", () => {
 	let behaviorId: number;
 	let windowId: number;
 	let failedTransportCallCount = 0;
+	let failDiscoveryConnectionId: number | null = null;
 
 	beforeAll(async () => {
 		await cleanupTestDatabase();
@@ -149,12 +150,14 @@ describe("operations.execute backend lifecycle", () => {
 			connector_key: MCP,
 			created_by: userId,
 			visibility: "private",
+			config: { action_modes: { remote_echo: "auto" } },
 		});
 		const secondMcp = await createTestConnection({
 			organization_id: orgId,
 			connector_key: MCP,
 			created_by: userId,
 			visibility: "private",
+			config: { action_modes: { remote_echo: "auto" } },
 		});
 		const http = await createTestConnection({
 			organization_id: orgId,
@@ -271,6 +274,14 @@ describe("operations.execute backend lifecycle", () => {
 						);
 					}
 					if (request.method === "tools/list") {
+						const authorization = new Headers(init?.headers).get("authorization");
+						if (
+							failDiscoveryConnectionId != null &&
+							authorization ===
+								`Bearer backend-test-token-${failDiscoveryConnectionId}`
+						) {
+							return new Response("discovery unavailable", { status: 503 });
+						}
 						expect(new Headers(init?.headers).get("mcp-protocol-version")).toBe(
 							MCP_PROTOCOL_VERSION,
 						);
@@ -561,6 +572,21 @@ describe("operations.execute backend lifecycle", () => {
 			status: "pending_approval",
 		});
 		expect(result).toHaveProperty("approval_url");
+	});
+
+	it("surfaces MCP discovery failure for an explicit connection", async () => {
+		failDiscoveryConnectionId = mcpConnectionId;
+		try {
+			await expect(
+				manageOperations(
+					{ action: "list_available", connection_id: mcpConnectionId },
+					{} as Env,
+					ctx,
+				),
+			).rejects.toThrow(/503.*discovery unavailable/);
+		} finally {
+			failDiscoveryConnectionId = null;
+		}
 	});
 
 	it("executes an upstream MCP tool with the selected connection's credentials and session", async () => {

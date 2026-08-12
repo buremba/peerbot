@@ -1,12 +1,12 @@
 import { createLogger } from "@lobu/core";
 import type { Context } from "hono";
+import { parseJsonRpcResponse } from "../../../mcp-proxy/http-response.js";
 import type { McpProxy } from "./proxy.js";
 import {
 	authenticateRequest,
 	computeScopeKey,
 	type JsonRpcResponse,
 	MAX_BODY_SIZE,
-	parseJsonRpcResponse,
 	runWithWorkerOrgContext,
 } from "./proxy-shared.js";
 import { ssrfBlockResponse } from "./proxy-upstream.js";

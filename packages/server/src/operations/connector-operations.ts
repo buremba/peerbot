@@ -1,6 +1,8 @@
 import { getDb } from "../db/client";
 import { discoverTools } from "../mcp-proxy/client";
 import type { DiscoveredTool, McpProxyConfig } from "../mcp-proxy/types";
+import { errorMessage } from "../utils/errors";
+import logger from "../utils/logger";
 import { filterOperationsByActionModes } from "./action-modes";
 import type {
 	AvailableOperation,
@@ -370,16 +372,9 @@ async function getOpenApiOperations(
 }
 
 function getMcpToolKind(tool: DiscoveredTool): "read" | "write" {
-	// MCP ToolAnnotations: readOnlyHint ⇒ safe for side-effect-free calls.
+	// Preserve the upstream classification for display and policy targeting.
+	// Authorization does not trust it: remote reads are approval-gated below.
 	return tool.annotations?.readOnlyHint ? "read" : "write";
-}
-
-function getMcpToolRequiresApproval(tool: DiscoveredTool): boolean {
-	// MCP ToolAnnotations are pessimistic: when destructiveHint is omitted on a
-	// write tool, clients treat it as potentially destructive (spec default true).
-	// Only an explicit destructiveHint: false keeps the connection default auto.
-	if (getMcpToolKind(tool) === "read") return false;
-	return tool.annotations?.destructiveHint !== false;
 }
 
 async function getMcpOperations(
@@ -387,10 +382,16 @@ async function getMcpOperations(
 	connectorName: string,
 	rawConfig: Record<string, unknown> | null,
 	organizationId: string,
+	connectionId?: number,
 ): Promise<OperationDescriptor[]> {
 	const config = normalizeMcpConfig(rawConfig);
 	if (!config) return [];
-	const tools = await discoverTools(connectorKey, config, organizationId);
+	const tools = await discoverTools(
+		connectorKey,
+		config,
+		organizationId,
+		connectionId,
+	);
 	return tools.map((tool) => ({
 		connector_key: connectorKey,
 		connector_name: connectorName,
@@ -399,7 +400,11 @@ async function getMcpOperations(
 		description: tool.description || undefined,
 		kind: getMcpToolKind(tool),
 		backend: "mcp_tool",
-		requires_approval: getMcpToolRequiresApproval(tool),
+		// Upstream annotations describe a tool but are not an authorization
+		// boundary. Default every dynamically discovered operation to approval;
+		// a human may explicitly configure a narrower action mode on this
+		// connection.
+		requires_approval: true,
 		annotations:
 			tool.annotations ??
 			(getMcpToolKind(tool) === "read"
@@ -476,7 +481,15 @@ function dedupeOperations(
 async function buildConnectorOperations(
 	connector: ConnectorRow,
 	organizationId: string,
+	options: { connectionId?: number; tolerateMcpFailure?: boolean } = {},
 ): Promise<OperationDescriptor[]> {
+	const mcpOperations = getMcpOperations(
+		connector.key,
+		connector.name,
+		connector.mcp_config,
+		organizationId,
+		options.connectionId,
+	);
 	const [localActions, mcpTools, openApiOps] = await Promise.all([
 		Promise.resolve(
 			getLocalActionOperations(
@@ -486,12 +499,18 @@ async function buildConnectorOperations(
 				connector.supports_execute,
 			),
 		),
-		getMcpOperations(
-			connector.key,
-			connector.name,
-			connector.mcp_config,
-			organizationId,
-		).catch(() => []),
+		options.tolerateMcpFailure
+			? mcpOperations.catch((error) => {
+					logger.warn(
+						{
+							connectorKey: connector.key,
+							error: errorMessage(error),
+						},
+						"Skipping unavailable MCP operations in broad connector catalog",
+					);
+					return [];
+				})
+			: mcpOperations,
 		getOpenApiOperations(
 			connector.key,
 			connector.name,
@@ -572,6 +591,8 @@ export async function listOperations(params: {
 	backend?: "local_action" | "mcp_tool" | "http_operation";
 	includeInputSchema?: boolean;
 	includeOutputSchema?: boolean;
+	/** Keep disabled operations visible so callers can render enablement help. */
+	includeDisabled?: boolean;
 	limit?: number;
 	offset?: number;
 }): Promise<{
@@ -584,16 +605,20 @@ export async function listOperations(params: {
 	let operations = (
 		await Promise.all(
 			connectors.map((connector) =>
-				buildConnectorOperations(connector, params.organizationId),
+				buildConnectorOperations(connector, params.organizationId, {
+					connectionId: params.connectionId,
+					tolerateMcpFailure: params.connectionId === undefined,
+				}),
 			),
 		)
 	).flat();
 
 	// When listing for a specific connection, hide ops the user has marked
-	// 'disabled' in connection.config.action_modes. This is the surface the
-	// worker sees via manage_operations.list_available; disabled actions must
-	// never reach the agent.
-	if (params.connectionId) {
+	// 'disabled' in connection.config.action_modes so they never reach the
+	// agent (e.g. Behavior reaction context). manage_operations.list_available
+	// opts out via includeDisabled to surface them with readiness 'disabled'
+	// and enablement help instead; execution still refuses disabled ops.
+	if (params.connectionId && !params.includeDisabled) {
 		const sql = getDb();
 		const configRows = await sql`
       SELECT config FROM connections
@@ -696,6 +721,7 @@ export async function getOperationForConnection(
 			openapi_config: row.openapi_config,
 		},
 		organizationId,
+		{ connectionId },
 	);
 	const operation = operations.find(
 		(entry) => entry.operation_key === operationKey,
@@ -780,6 +806,7 @@ export async function getOperationsSummaryBatch(
 			const operations = await buildConnectorOperations(
 				connector,
 				organizationId,
+				{ tolerateMcpFailure: true },
 			);
 			return [connector.key, summarizeOperations(operations)] as const;
 		}),

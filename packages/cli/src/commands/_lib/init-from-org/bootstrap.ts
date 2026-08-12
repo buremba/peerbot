@@ -695,7 +695,7 @@ function emitConnection(
   imports: ImportTracker,
   secrets: SecretCollector,
   minter: IdentMinter,
-  managedByOrg?: string
+  managedBy?: { org: string; connectionSlug: string }
 ): Handle {
   imports.use("defineConnection");
   // A BYO chat connection (credential_mode 'byo') keeps its token in `config`,
@@ -711,19 +711,21 @@ function emitConnection(
   ];
   if (isByoChat) fields.push(`credentialMode: "byo"`);
   if (c.display_name) fields.push(`name: ${str(c.display_name)}`);
-  if (managedByOrg) {
-    fields.push(`managedBy: { org: ${str(managedByOrg)} }`);
+  if (managedBy) {
+    fields.push(
+      `managedBy: { org: ${str(managedBy.org)}, connectionSlug: ${str(managedBy.connectionSlug)} }`
+    );
   } else if (c.auth_profile_slug) {
     const ref =
       authHandles.get(c.auth_profile_slug) ?? str(c.auth_profile_slug);
     fields.push(`authProfile: ${ref}`);
   }
-  if (!managedByOrg && c.app_auth_profile_slug) {
+  if (!managedBy && c.app_auth_profile_slug) {
     const ref =
       authHandles.get(c.app_auth_profile_slug) ?? str(c.app_auth_profile_slug);
     fields.push(`appAuthProfile: ${ref}`);
   }
-  const config = managedByOrg ? stripManagedGrantConfig(c.config) : c.config;
+  const config = managedBy ? stripManagedGrantConfig(c.config) : c.config;
   if (config && Object.keys(config).length > 0) {
     if (isByoChat) {
       // Replace each stored `secret://` config value with a secret() placeholder
@@ -1071,8 +1073,8 @@ function generateProject(
   const connDecls: string[] = [];
   const connHandles: string[] = [];
   for (const { connection, feeds } of state.connections) {
-    const managedByOrg = isManagedGrantHolderConnection(connection)
-      ? orgSlug
+    const managedBy = isManagedGrantHolderConnection(connection)
+      ? { org: orgSlug, connectionSlug: connection.slug }
       : undefined;
     const h = emitConnection(
       connection,
@@ -1082,7 +1084,7 @@ function generateProject(
       imports,
       secrets,
       minter,
-      managedByOrg
+      managedBy
     );
     connDecls.push(h.decl);
     connHandles.push(h.name);

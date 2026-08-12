@@ -13,9 +13,9 @@ import logger from '../utils/logger';
 import { TtlCache } from '../utils/ttl-cache';
 import {
   type ResolvedCredentials,
-  resolveCredentials,
   resolveCredentialsByConnectionId,
 } from './credential-resolver';
+import { parseJsonRpcResponse } from './http-response';
 import type {
   DiscoveredTool,
   JsonRpcResponse,
@@ -36,9 +36,10 @@ function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Pr
 }
 
 /**
- * In-memory session store. Execution sessions include connectionId so two
- * accounts on the same connector never reuse each other's authenticated MCP
- * session. Discovery sessions use the connector-wide key.
+ * In-memory session store. Sessions include connectionId whenever the caller
+ * targets a specific connection so two accounts on the same connector never
+ * reuse each other's authenticated MCP session; only connection-less
+ * (unauthenticated) discovery uses the connector-wide key.
  */
 type McpSessionState = { sessionId: string; protocolVersion: string };
 const sessions = new TtlCache<McpSessionState>(SESSION_TTL_MS);
@@ -80,7 +81,7 @@ function buildHeaders(
 ): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    Accept: 'application/json',
+    Accept: 'application/json, text/event-stream',
   };
 
   if (session) {
@@ -139,7 +140,9 @@ async function sendRequest(
     throw new Error(`Upstream MCP returned ${response.status}: ${text}`);
   }
 
-  return (await response.json()) as JsonRpcResponse;
+  const request = JSON.parse(body) as { id?: unknown };
+  const expectedId = Object.hasOwn(request, 'id') ? request.id : undefined;
+  return (await parseJsonRpcResponse(response, expectedId)) as JsonRpcResponse;
 }
 
 /**
@@ -218,24 +221,21 @@ async function initializeSession(
 export async function discoverTools(
   connectorKey: string,
   config: McpProxyConfig,
-  orgId: string
+  orgId: string,
+  connectionId?: number
 ): Promise<DiscoveredTool[]> {
-  // Key the cache by org too — two orgs can each define a connector with the
-  // same key but different upstream URLs / tool sets; sharing the cache leaks
-  // org A's tool catalog to org B.
-  const cacheKey = `${orgId}:${connectorKey}`;
+  // Key the cache by org AND connection — two orgs can each define a connector
+  // with the same key but different upstream URLs / tool sets, and two
+  // connections in one org can hold different accounts whose upstream exposes
+  // different tools; sharing either cache leaks one catalog to the other.
+  const cacheKey = sessionKey(orgId, connectorKey, connectionId);
   const cached = toolCache.get(cacheKey) ?? null;
   if (cached) return cached;
 
-  let credentials: ResolvedCredentials | null = null;
-  try {
-    credentials = await resolveCredentials(orgId, connectorKey);
-  } catch (error) {
-    logger.warn(
-      { connectorKey, error: errorMessage(error) },
-      '[McpProxy] Failed to resolve credentials for tool discovery, trying unauthenticated'
-    );
-  }
+  const credentials =
+    connectionId === undefined
+      ? null
+      : await resolveCredentialsByConnectionId(connectionId, orgId);
 
   try {
     // Initialize session first
@@ -243,7 +243,8 @@ export async function discoverTools(
       config.upstream_url,
       credentials,
       orgId,
-      connectorKey
+      connectorKey,
+      connectionId
     );
 
     // A server that does not advertise tools is legitimately toolless. Once it
@@ -267,7 +268,8 @@ export async function discoverTools(
         params: {},
         id: 1,
       }),
-      FETCH_TIMEOUT_TOOL_MS
+      FETCH_TIMEOUT_TOOL_MS,
+      connectionId
     );
 
     if (response.error) {
@@ -463,6 +465,13 @@ function readResourceMetadataUrl(header: string | null): string | null {
   return match?.[1] ?? null;
 }
 
+function readChallengeScopes(header: string | null): string[] {
+  if (!header) return [];
+  const match = /\bscope\s*=\s*"([^"]*)"/i.exec(header);
+  if (!match?.[1]) return [];
+  return match[1].split(/\s+/).filter(Boolean);
+}
+
 function authorizationMetadataUrls(authorizationServer: string): string[] {
   const issuer = new URL(authorizationServer);
   const issuerPath = issuer.pathname.replace(/\/+$/, '');
@@ -559,6 +568,7 @@ async function discoverMcpOAuthMetadata(
       ? authorizationMetadata.registration_endpoint
       : undefined;
   if (registrationUrl) assertSafeOAuthEndpoint(registrationUrl);
+  const challengeScopes = readChallengeScopes(authenticateHeader);
 
   return {
     resource,
@@ -570,6 +580,9 @@ async function discoverMcpOAuthMetadata(
     authorizationUrl,
     tokenUrl,
     ...(registrationUrl ? { registrationUrl } : {}),
+    ...(challengeScopes.length > 0
+      ? { challengeScopes }
+      : {}),
     scopesSupported: readStringArray(resourceMetadata.scopes_supported),
     tokenEndpointAuthMethodsSupported: readStringArray(
       authorizationMetadata.token_endpoint_auth_methods_supported
@@ -578,6 +591,12 @@ async function discoverMcpOAuthMetadata(
       authorizationMetadata.code_challenge_methods_supported
     ),
   };
+}
+
+export function getMcpOAuthRequestedScopes(metadata: McpOAuthMetadata): string[] {
+  return metadata.challengeScopes && metadata.challengeScopes.length > 0
+    ? metadata.challengeScopes
+    : metadata.scopesSupported;
 }
 
 export function selectMcpOAuthClientAuthMethod(
@@ -643,8 +662,8 @@ export async function registerMcpOAuthClient(params: {
         grant_types: ['authorization_code', 'refresh_token'],
         response_types: ['code'],
         token_endpoint_auth_method: requestedMethod,
-        ...(params.metadata.scopesSupported.length > 0
-          ? { scope: params.metadata.scopesSupported.join(' ') }
+        ...(getMcpOAuthRequestedScopes(params.metadata).length > 0
+          ? { scope: getMcpOAuthRequestedScopes(params.metadata).join(' ') }
           : {}),
       }),
     },
@@ -696,7 +715,7 @@ export async function probeMcpServer(upstreamUrl: string): Promise<{
   const send = async (body: unknown): Promise<JsonRpcResponse> => {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      Accept: 'application/json',
+      Accept: 'application/json, text/event-stream',
     };
     if (mcpSessionId) {
       headers['Mcp-Session-Id'] = mcpSessionId;
@@ -724,7 +743,9 @@ export async function probeMcpServer(upstreamUrl: string): Promise<{
       throw new Error(`MCP server returned ${response.status}: ${text}`);
     }
 
-    return (await response.json()) as JsonRpcResponse;
+    const request = body as { id?: unknown };
+    const expectedId = Object.hasOwn(request, 'id') ? request.id : undefined;
+    return (await parseJsonRpcResponse(response, expectedId)) as JsonRpcResponse;
   };
 
   // Initialize

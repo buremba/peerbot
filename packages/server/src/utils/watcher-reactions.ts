@@ -53,14 +53,25 @@ export async function getAvailableOperations(
   for (const row of rows as Array<{ connection_id: number; organization_id?: string }>) {
     const orgId = organizationId ?? row.organization_id;
     if (!orgId) continue;
-    const { operations } = await listOperations({
-      organizationId: orgId,
-      connectionId: Number(row.connection_id),
-      includeInputSchema: false,
-      includeOutputSchema: false,
-      limit: 1000,
-      offset: 0,
-    });
+    let operations: Awaited<ReturnType<typeof listOperations>>['operations'];
+    try {
+      ({ operations } = await listOperations({
+        organizationId: orgId,
+        connectionId: Number(row.connection_id),
+        includeInputSchema: false,
+        includeOutputSchema: false,
+        limit: 1000,
+        offset: 0,
+      }));
+    } catch (err) {
+      // Reaction context is best-effort: one connection's unreachable MCP
+      // upstream must not hide every other connection's operations.
+      logger.warn(
+        { err, connectionId: row.connection_id },
+        'Skipping unavailable operations for reaction context'
+      );
+      continue;
+    }
     for (const operation of operations) {
       result.push({
         connection_id: Number(row.connection_id),

@@ -1,6 +1,7 @@
 import {
   connectorFromFile,
   defineAgent,
+  defineAuthProfile,
   defineBehavior,
   defineConfig,
   defineSkill,
@@ -18,6 +19,7 @@ import type TwitterTakeoutConnector from "./twitter-takeout.connector.ts";
 import type WhatsAppCloudConnector from "./whatsapp.cloud.connector.ts";
 import type MidasConnector from "./midas.connector.ts";
 import type SocialInterestRadarReaction from "./social-interest-radar.reaction.ts";
+import { takeoutConfig } from "./takeout-dirs.ts";
 
 const hourlyTaskCollaboratorSkill = defineSkill({
   name: "hourly-task-collaborator",
@@ -792,45 +794,27 @@ const learning = defineEntityType({
   },
 });
 
-// Revolut auth is implicit: the connector reads the rendered web app through
-// the paired Owletto Chrome extension's signed-in session — there's no stored
-// secret and no browser-auth profile to grant.
+// Revolut auth is implicit: through the paired Owletto Chrome extension, the
+// connector captures request headers from a signed-in tab and pages the retail
+// API in that browser context. No secret or browser-auth profile is stored.
 //
-// Not device-pinned: the connector's sync() runs on a cloud Node worker and
-// dispatches its DOM-scrape actions down to whichever online paired Owletto
-// extension claims them (same model as LinkedIn). This is what makes Revolut
-// "extension-only" from the user's side — no Owletto Mac app required, just the
-// Chrome extension signed in to app.revolut.com. max_scrolls is capped so a
-// single run fits inside the extension's 90s per-run cap (≈150s at 100 scrolls
-// always timed out); 20 scrolls (~55s) reliably completes, and scheduled
-// incremental syncs keep history current from the top each run.
+// The connection is not device-pinned; Chrome dispatch selects an online paired
+// extension. `max_scrolls` is the compatibility name for its paging-batch cap.
 const revolutConnection = defineConnection({
   slug: "revolut-buremba",
   connector: "revolut",
   name: "Revolut",
   feeds: [
-    { feed: "transactions", config: { max_scrolls: 20 } },
+    // Apply replaces feed config wholesale. Preserve checkpointed syncs and the
+    // 60s passcode grace period within the device worker's ~95s run budget.
+    {
+      feed: "transactions",
+      config: { max_scrolls: 20, backfill: false, wait_for_data_seconds: 60 },
+    },
     { feed: "balances", config: {} },
   ],
 });
 
-const localTakeoutRoot = process.env.LOCAL_TAKEOUT_ROOT ?? "./takeout";
-const localTakeoutDir = (envName: string, fallback: string): string =>
-  process.env[envName] ?? `${localTakeoutRoot}/${fallback}`;
-
-const googleYoutubeTakeoutDir = localTakeoutDir(
-  "GOOGLE_YOUTUBE_TAKEOUT_DIR",
-  "google-youtube"
-);
-const googleKeepTakeoutDir = localTakeoutDir(
-  "GOOGLE_KEEP_TAKEOUT_DIR",
-  "google-keep"
-);
-const twitterTakeoutDir = localTakeoutDir("TWITTER_TAKEOUT_DIR", "twitter");
-const instagramTakeoutDir = localTakeoutDir(
-  "INSTAGRAM_TAKEOUT_DIR",
-  "instagram"
-);
 // LinkedIn is also a browser connector. Unlike takeout-only connections, never
 // synthesize a local path for it: a browser-only deployment must not provision
 // CSV feeds that can only fail forever. Opt in with either an explicit LinkedIn
@@ -846,8 +830,14 @@ const takeoutConnection = defineConnection({
   connector: "google.takeout",
   name: "Google Takeout Local",
   feeds: [
-    { feed: "youtube", config: { takeout_dir: googleYoutubeTakeoutDir } },
-    { feed: "keep", config: { takeout_dir: googleKeepTakeoutDir } },
+    {
+      feed: "youtube",
+      config: takeoutConfig("GOOGLE_YOUTUBE_TAKEOUT_DIR", "google-youtube"),
+    },
+    {
+      feed: "keep",
+      config: takeoutConfig("GOOGLE_KEEP_TAKEOUT_DIR", "google-keep"),
+    },
   ],
 });
 
@@ -856,11 +846,20 @@ const twitterTakeoutConnection = defineConnection({
   connector: "twitter.takeout",
   name: "X/Twitter Takeout Local",
   feeds: [
-    { feed: "tweets", config: { takeout_dir: twitterTakeoutDir } },
-    { feed: "messages", config: { takeout_dir: twitterTakeoutDir } },
-    { feed: "likes", config: { takeout_dir: twitterTakeoutDir } },
-    { feed: "followers", config: { takeout_dir: twitterTakeoutDir } },
-    { feed: "following", config: { takeout_dir: twitterTakeoutDir } },
+    { feed: "tweets", config: takeoutConfig("TWITTER_TAKEOUT_DIR", "twitter") },
+    {
+      feed: "messages",
+      config: takeoutConfig("TWITTER_TAKEOUT_DIR", "twitter"),
+    },
+    { feed: "likes", config: takeoutConfig("TWITTER_TAKEOUT_DIR", "twitter") },
+    {
+      feed: "followers",
+      config: takeoutConfig("TWITTER_TAKEOUT_DIR", "twitter"),
+    },
+    {
+      feed: "following",
+      config: takeoutConfig("TWITTER_TAKEOUT_DIR", "twitter"),
+    },
   ],
 });
 
@@ -869,19 +868,46 @@ const instagramTakeoutConnection = defineConnection({
   connector: "instagram.takeout",
   name: "Instagram Takeout Local",
   feeds: [
-    { feed: "messages", config: { takeout_dir: instagramTakeoutDir } },
-    { feed: "connections", config: { takeout_dir: instagramTakeoutDir } },
-    { feed: "saved", config: { takeout_dir: instagramTakeoutDir } },
-    { feed: "comments", config: { takeout_dir: instagramTakeoutDir } },
-    { feed: "likes", config: { takeout_dir: instagramTakeoutDir } },
-    { feed: "media", config: { takeout_dir: instagramTakeoutDir } },
+    {
+      feed: "messages",
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
+    },
+    {
+      feed: "connections",
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
+    },
+    {
+      feed: "saved",
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
+    },
+    {
+      feed: "comments",
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
+    },
+    {
+      feed: "likes",
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
+    },
+    {
+      feed: "media",
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
+    },
     {
       feed: "story_interactions",
-      config: { takeout_dir: instagramTakeoutDir },
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
     },
-    { feed: "searches", config: { takeout_dir: instagramTakeoutDir } },
-    { feed: "link_history", config: { takeout_dir: instagramTakeoutDir } },
-    { feed: "ads", config: { takeout_dir: instagramTakeoutDir } },
+    {
+      feed: "searches",
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
+    },
+    {
+      feed: "link_history",
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
+    },
+    {
+      feed: "ads",
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
+    },
   ],
 });
 
@@ -933,10 +959,29 @@ const midasConnection = defineConnection({
 // a live read via the connector's search/get_thread actions, never persisted.
 // Adopts the existing `gmail-buremba` slug so the OAuth grant is reused; stale
 // duplicate gmail connections/feeds in prod surface as drift until cleaned up.
+// Apply requires referenced auth profiles to be declared. Omitting credentials
+// preserves the existing OAuth grant and app secret.
+const gmailAccountAuth = defineAuthProfile({
+  slug: "personal",
+  connector: "google.gmail",
+  authKind: "oauth_account",
+  name: "personal",
+});
+
+const gmailAppAuth = defineAuthProfile({
+  slug: "google-gmail-google-app",
+  connector: "google.gmail",
+  authKind: "oauth_app",
+  name: "Google Gmail Google App",
+});
+
 const gmailConnection = defineConnection({
   slug: "gmail-buremba",
   connector: "google.gmail",
   name: "Gmail",
+  // Apply treats omitted bindings as null, so both must remain explicit.
+  authProfile: gmailAccountAuth,
+  appAuthProfile: gmailAppAuth,
   feeds: [
     {
       feed: "threads",
@@ -1284,6 +1329,7 @@ export default defineConfig({
     voiceProfileSynthesis,
     socialInterestRadar,
   ],
+  authProfiles: [gmailAccountAuth, gmailAppAuth],
   connections: [
     midasConnection,
     revolutConnection,

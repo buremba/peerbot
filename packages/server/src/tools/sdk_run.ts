@@ -22,6 +22,13 @@ const SCRIPT_FIELDS = {
       maximum: MAX_SCRIPT_TIMEOUT_MS,
     }),
   ),
+  title: Type.Optional(
+    Type.String({
+      description:
+        'Optional human-friendly heading for this result (e.g. "Company pipeline"). When set, the UI renders it above the execution status.',
+      maxLength: 200,
+    }),
+  ),
 };
 
 export const RunSchema = Type.Object({
@@ -66,6 +73,12 @@ const SdkCallTraceEntrySchema = Type.Object({
  * (`validateToolResult`), never a failed call.
  */
 export const SdkScriptResultSchema = Type.Object({
+  title: Type.Optional(
+    Type.String({
+      description: "The caller-supplied human-friendly heading for this result, echoed back for the UI.",
+      maxLength: 200,
+    }),
+  ),
   success: Type.Boolean({ description: "Whether the script ran to completion." }),
   return_value: Type.Optional(
     Type.Unknown({
@@ -236,7 +249,9 @@ async function runSandbox(
         return { ...result.error, code, retryable: isRetryable(code) };
       })()
     : result.error;
+  const title = args.title?.trim() || undefined;
   return {
+    ...(title ? { title } : {}),
     success: result.success,
     return_value: result.returnValue,
     return_value_preview: result.returnValuePreview,

@@ -16,9 +16,10 @@ import {
   createTestUser,
   seedSystemEntityTypes,
 } from '../../setup/test-fixtures';
-import { get, mcpListTools, mcpToolsCall, post } from '../../setup/test-helpers';
+import { get, mcpListTools, mcpRequest, mcpToolsCall, post } from '../../setup/test-helpers';
 
 interface QuerySqlResult {
+  title?: string;
   rows: Array<Record<string, unknown>>;
   columns: Array<{ name: string; type: string }>;
   total_count: number;
@@ -159,6 +160,7 @@ describe('MCP query_sdk / run_sdk tool surface', () => {
     const result = await mcpToolsCall<QuerySqlResult>(
       'query_sql',
       {
+        title: '  Recent rows  ',
         sql: 'SELECT generate_series(1, 25) AS row_number',
         sort_by: 'row_number',
         sort_order: 'desc',
@@ -172,6 +174,42 @@ describe('MCP query_sdk / run_sdk tool surface', () => {
     expect(result.columns).toEqual([{ name: 'row_number', type: 'integer' }]);
     expect(result.total_count).toBe(25);
     expect(result.has_more).toBe(true);
+    expect(result.title).toBe('Recent rows');
+  });
+
+  it('preserves query_sql titles and viewer metadata on structured errors', async () => {
+    const response = await mcpRequest<any>(
+      'tools/call',
+      {
+        name: 'query_sql',
+        arguments: {
+          title: '  Invalid query  ',
+          sql: 'SELECT 1 AS row_number',
+          sort_by: 'not-valid',
+        },
+      },
+      { token, orgSlug: ownerSlug }
+    );
+
+    expect(response.result?.isError).toBe(true);
+    expect(response.result?.structuredContent?.title).toBe('Invalid query');
+    expect(response.result?._meta?.['lobu/member-role']).toBe('owner');
+  });
+
+  it('preserves search_memory titles when no entity is found', async () => {
+    const response = await mcpRequest<any>(
+      'tools/call',
+      {
+        name: 'search_memory',
+        arguments: {
+          title: '  Missing company  ',
+          entity_id: 2_147_483_647,
+        },
+      },
+      { token, orgSlug: ownerSlug }
+    );
+
+    expect(response.result?.structuredContent?.title).toBe('Missing company');
   });
 
   it('executes searched tableless CTEs without shifting parameter indexes', async () => {

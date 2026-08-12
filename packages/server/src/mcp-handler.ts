@@ -525,6 +525,7 @@ function createServerForContext(
       // also renders the error explicitly because its formatter would otherwise
       // turn `{ rows: [], error }` into a clean empty CSV result.
       const softError = isSoftErrorResult(result);
+      const tool = getTool(name);
       const attachedMeta = getMcpResultMeta(result);
       const resultMeta = uiMemberRoleMeta
         ? { ...attachedMeta, ...uiMemberRoleMeta }
@@ -554,23 +555,19 @@ function createServerForContext(
           return {
             content: [{ type: 'text' as const, text }],
             structuredContent: structured as Record<string, unknown>,
-            ...(resultMeta || snapshotCapability
-              ? {
-                  _meta: {
-                    ...(resultMeta ?? {}),
-                    ...(snapshotCapability
-                      ? { 'lobu/mcp-app-snapshot-capability': snapshotCapability }
-                      : {}),
-                  },
-                }
-              : {}),
+            _meta: {
+              ...resultMeta,
+              ...(snapshotCapability
+                ? { 'lobu/mcp-app-snapshot-capability': snapshotCapability }
+                : {}),
+            },
             ...(softError ? { isError: true } : {}),
           };
         }
       }
       return {
         content: [{ type: 'text' as const, text }],
-        ...(resultMeta ? { _meta: resultMeta } : {}),
+        _meta: resultMeta,
         ...(softError ? { isError: true } : {}),
       };
     } catch (error: any) {

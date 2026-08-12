@@ -7,6 +7,10 @@ export type ClientOptions = {
 export type SearchMemoryData = {
   body: {
     /**
+     * Optional human-friendly heading for this result (e.g. "What we know about Acme"). When set, the UI renders it above the search result.
+     */
+    title?: string;
+    /**
      * Search query (entity name). Required unless entity_id is provided.
      */
     query?: string;
@@ -97,6 +101,10 @@ export type SearchMemoryResponses = {
    * Successful response
    */
   200: {
+    /**
+     * The caller-supplied human-friendly heading for this result, echoed back for the UI.
+     */
+    title?: string;
     entity_type: string | null;
     entity: {
       id: number;
@@ -432,6 +440,10 @@ export type QuerySdkData = {
      * Wall-clock budget. Default 60000 (max 180000 — device-bound operations may wait ~155s).
      */
     timeout_ms?: number;
+    /**
+     * Optional human-friendly heading for this result (e.g. "Company pipeline"). When set, the UI renders it above the execution status.
+     */
+    title?: string;
   };
   path: {
     /**
@@ -465,6 +477,10 @@ export type QuerySdkResponses = {
    * Successful response
    */
   200: {
+    /**
+     * The caller-supplied human-friendly heading for this result, echoed back for the UI.
+     */
+    title?: string;
     /**
      * Whether the script ran to completion.
      */
@@ -597,6 +613,10 @@ export type QuerySdkResponse = QuerySdkResponses[keyof QuerySdkResponses];
 export type QuerySqlData = {
   body: {
     /**
+     * Optional human-friendly heading for this result (e.g. "Recent support tickets"). When set, the UI renders it in the query result summary.
+     */
+    title?: string;
+    /**
      * Base SELECT query. Required unless `feed` is set. Table references are auto-scoped to your organization. `SELECT FROM events` reads persisted/synced content only; virtual feeds are live-only and are not included. It is wrapped as a subquery, so ORDER BY / LIMIT / window functions inside it are fine; pagination + sort are added on the outside via sort_by/limit/offset.
      */
     sql?: string;
@@ -670,6 +690,10 @@ export type QuerySqlResponses = {
    */
   200: {
     /**
+     * The caller-supplied human-friendly heading for this result, echoed back for the UI.
+     */
+    title?: string;
+    /**
      * The original caller-supplied SQL statement. This is never the tenant-scoped SQL rewritten by Lobu and is absent for stored virtual-feed queries.
      */
     sql?: string;
@@ -702,6 +726,10 @@ export type RunSdkData = {
      * Wall-clock budget. Default 60000 (max 180000 — device-bound operations may wait ~155s).
      */
     timeout_ms?: number;
+    /**
+     * Optional human-friendly heading for this result (e.g. "Company pipeline"). When set, the UI renders it above the execution status.
+     */
+    title?: string;
     /**
      * Preview mode. Read SDK calls still execute, but write/admin/external SDK calls are skipped and returned in side_effect_preview. Dry-run validates the SDK method path and access tier, but it does not execute the skipped handler or fully validate that handler's payload shape.
      */
@@ -739,6 +767,10 @@ export type RunSdkResponses = {
    * Successful response
    */
   200: {
+    /**
+     * The caller-supplied human-friendly heading for this result, echoed back for the UI.
+     */
+    title?: string;
     /**
      * Whether the script ran to completion.
      */

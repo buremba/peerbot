@@ -24,6 +24,13 @@ import { classifyToolError, getErrorMessage, isRetryable, type ToolErrorCode } f
 import { ToolUserError } from '../../utils/errors';
 
 export const QuerySqlSchema = Type.Object({
+  title: Type.Optional(
+    Type.String({
+      description:
+        'Optional human-friendly heading for this result (e.g. "Recent support tickets"). When set, the UI renders it in the query result summary.',
+      maxLength: 200,
+    })
+  ),
   sql: Type.Optional(
     Type.String({
       description:
@@ -113,6 +120,12 @@ function oidToTypeName(oid: number): string {
 }
 
 export const QuerySqlResultSchema = Type.Object({
+  title: Type.Optional(
+    Type.String({
+      description: 'The caller-supplied human-friendly heading for this result, echoed back for the UI.',
+      maxLength: 200,
+    })
+  ),
   sql: Type.Optional(
     Type.String({
       description:
@@ -136,6 +149,7 @@ export const QuerySqlResultSchema = Type.Object({
 });
 
 interface QuerySqlResult {
+  title?: string;
   sql?: string;
   rows: Record<string, unknown>[];
   columns: { name: string; type: string }[];
@@ -366,6 +380,11 @@ export async function querySqlImpl(
   ctx: ToolContext
 ): Promise<QuerySqlResult> {
   const startTime = Date.now();
+  const title = args.title?.trim() || undefined;
+  const fail = (message: string, code?: ToolErrorCode): QuerySqlResult => ({
+    ...(title ? { title } : {}),
+    ...errorResult(message, startTime, code),
+  });
 
   const baseSql = (args.sql ?? '').trim();
   // `feed` runs a STORED query, so caller `sql` is optional there; every other
@@ -383,16 +402,15 @@ export async function querySqlImpl(
 
   // sort_by is optional: omit it for a view whose columns aren't known upfront.
   if (args.sort_by !== undefined && !COLUMN_NAME_RE.test(args.sort_by)) {
-    return errorResult(`Invalid sort_by column name: ${args.sort_by}`, startTime);
+    return fail(`Invalid sort_by column name: ${args.sort_by}`);
   }
 
   // search_columns only filters in concert with search_term — passing it alone
   // is a silent no-op on both the internal and external paths, which reads as
   // "a filter was applied" when none was. Reject it so the caller notices.
   if (args.search_columns?.length && !args.search_term) {
-    return errorResult(
-      'search_columns has no effect without search_term — set search_term to filter, or drop search_columns.',
-      startTime
+    return fail(
+      'search_columns has no effect without search_term — set search_term to filter, or drop search_columns.'
     );
   }
 
@@ -407,29 +425,24 @@ export async function querySqlImpl(
   if (args.org_slug) {
     if (!ctx.allowCrossOrg) {
       if (ctx.scopedToOrg) {
-        return errorResult(
-          '`org_slug` is not allowed on /mcp/{slug} connections. Reconnect to /mcp to query a different workspace, or omit `org_slug`.',
-          startTime
+        return fail(
+          '`org_slug` is not allowed on /mcp/{slug} connections. Reconnect to /mcp to query a different workspace, or omit `org_slug`.'
         );
       }
-      return errorResult(
-        '`org_slug` requires an OAuth session on /mcp. PAT and session auth pin to a single org.',
-        startTime
+      return fail(
+        '`org_slug` requires an OAuth session on /mcp. PAT and session auth pin to a single org.'
       );
     }
     if (!ctx.userId) {
-      return errorResult('`org_slug` requires an authenticated user context.', startTime);
+      return fail('`org_slug` requires an authenticated user context.');
     }
     const targetOrg = await getCachedOrgBySlug(args.org_slug);
     if (!targetOrg) {
-      return errorResult(`Organization '${args.org_slug}' not found.`, startTime);
+      return fail(`Organization '${args.org_slug}' not found.`);
     }
     const role = await getCachedMembershipRole(targetOrg.id, ctx.userId);
     if (role === null) {
-      return errorResult(
-        `Not a member of organization '${args.org_slug}'.`,
-        startTime
-      );
+      return fail(`Not a member of organization '${args.org_slug}'.`);
     }
     targetOrgId = targetOrg.id;
     // Reaching into ANOTHER workspace stays owner/admin-only. Passing your OWN
@@ -438,9 +451,8 @@ export async function querySqlImpl(
     // role is re-validated against the *target* org, not the bound-org role.
     if (targetOrg.id !== ctx.organizationId) {
       if (role !== 'owner' && role !== 'admin') {
-        return errorResult(
-          `Cross-org query_sql requires owner or admin access in '${args.org_slug}'.`,
-          startTime
+        return fail(
+          `Cross-org query_sql requires owner or admin access in '${args.org_slug}'.`
         );
       }
       callerIsAdmin = true; // cross-org already required owner/admin in the target
@@ -450,7 +462,7 @@ export async function querySqlImpl(
   }
 
   if (args.feed && args.connection) {
-    return errorResult('Pass either `feed` or `connection`, not both.', startTime);
+    return fail('Pass either `feed` or `connection`, not both.');
   }
 
   // Virtual-feed pushdown: `feed` names a virtual feed whose STORED query runs
@@ -461,7 +473,7 @@ export async function querySqlImpl(
   // `connection` pushdown — no arbitrary caller SQL.
   if (args.feed) {
     const bounds = coercePageBounds(args);
-    if ('error' in bounds) return errorResult(bounds.error, startTime);
+    if ('error' in bounds) return fail(bounds.error);
     const { limit, offset } = bounds;
     const scope = authzScopeFromToolContext({ organizationId: targetOrgId, userId: ctx.userId });
     let feedId: number;
@@ -482,6 +494,7 @@ export async function querySqlImpl(
           : undefined,
       });
       return {
+        ...(title ? { title } : {}),
         rows: r.rows,
         columns: r.columns,
         total_count: r.total ?? r.rows.length,
@@ -507,13 +520,12 @@ export async function querySqlImpl(
   // runConnectorQuery; access is bounded by the connection's read-only DB role.
   if (args.connection) {
     if (args.search_term) {
-      return errorResult(
-        'search_term is not supported with an external connection — use search_memory.',
-        startTime
+      return fail(
+        'search_term is not supported with an external connection — use search_memory.'
       );
     }
     const bounds = coercePageBounds(args);
-    if ('error' in bounds) return errorResult(bounds.error, startTime);
+    if ('error' in bounds) return fail(bounds.error);
     const { limit, offset } = bounds;
     try {
       const r = await runConnectorQuery({
@@ -528,6 +540,7 @@ export async function querySqlImpl(
           : undefined,
       });
       return {
+        ...(title ? { title } : {}),
         sql: baseSql,
         rows: r.rows,
         columns: r.columns,
@@ -564,18 +577,18 @@ export async function querySqlImpl(
     params = scoped.params;
     tableRefs = scoped.tableRefs;
   } catch (err) {
-    return errorResult(getErrorMessage(err), startTime);
+    return fail(getErrorMessage(err));
   }
 
   // Build search WHERE clause
   let searchWhere = '';
   if (args.search_term) {
     if (!args.search_columns?.length) {
-      return errorResult('search_columns is required when search_term is set.', startTime);
+      return fail('search_columns is required when search_term is set.');
     }
     for (const col of args.search_columns) {
       if (!COLUMN_NAME_RE.test(col)) {
-        return errorResult(`Invalid search column name: ${col}`, startTime);
+        return fail(`Invalid search column name: ${col}`);
       }
     }
     const searchParamRef = `$${params.length + 1}`;
@@ -586,7 +599,7 @@ export async function querySqlImpl(
 
   const sortOrder = args.sort_order === 'desc' ? 'DESC' : 'ASC';
   const bounds = coercePageBounds(args);
-  if ('error' in bounds) return errorResult(bounds.error, startTime);
+  if ('error' in bounds) return fail(bounds.error);
   const { limit, offset } = bounds;
 
   const orderBy = args.sort_by ? `ORDER BY "${args.sort_by}" ${sortOrder}` : '';
@@ -680,6 +693,7 @@ export async function querySqlImpl(
       );
     }
     return {
+      ...(title ? { title } : {}),
       sql: baseSql,
       rows,
       columns,
@@ -700,15 +714,11 @@ export async function querySqlImpl(
     // distinguish a transient timeout (worth retrying) from a permanent SQL fault.
     const pgCode = (error as { code?: string } | null)?.code;
     if (pgCode === '57014' || msg.includes('timeout') || msg.includes('statement timeout')) {
-      return errorResult('Query exceeded the 5 second timeout.', startTime, 'UPSTREAM_TIMEOUT');
+      return fail('Query exceeded the 5 second timeout.', 'UPSTREAM_TIMEOUT');
     }
     if (msg.includes('read-only')) {
-      return errorResult('Only read-only queries are allowed.', startTime, 'VALIDATION');
+      return fail('Only read-only queries are allowed.', 'VALIDATION');
     }
-    return errorResult(
-      msg,
-      startTime,
-      classifyToolError({ pgCode: pgCode ?? undefined, message: msg })
-    );
+    return fail(msg, classifyToolError({ pgCode: pgCode ?? undefined, message: msg }));
   }
 }

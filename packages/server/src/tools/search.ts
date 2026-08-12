@@ -42,6 +42,13 @@ import { getErrorMessage } from '@lobu/core';
 // ============================================
 
 export const SearchSchema = Type.Object({
+  title: Type.Optional(
+    Type.String({
+      description:
+        'Optional human-friendly heading for this result (e.g. "What we know about Acme"). When set, the UI renders it above the search result.',
+      maxLength: 200,
+    })
+  ),
   query: Type.Optional(
     Type.String({
       description: 'Search query (entity name). Required unless entity_id is provided.',
@@ -295,6 +302,12 @@ type VirtualFeedRows = Static<typeof VirtualFeedRowsSchema>;
  * schema-derived, so there is no hand-written interface that can drift.
  */
 export const UnifiedSearchResultSchema = Type.Object({
+  title: Type.Optional(
+    Type.String({
+      description: "The caller-supplied human-friendly heading for this result, echoed back for the UI.",
+      maxLength: 200,
+    })
+  ),
   entity_type: Type.Union([Type.String(), Type.Null()]),
   entity: Type.Union([EntitySchema, Type.Null()]),
   matches: Type.Array(EntitySchema),
@@ -930,11 +943,14 @@ async function searchImpl(
     throw new ToolUserError('search_memory requires an MCP session with read access.', 403);
   }
 
+  const title = args.title?.trim() || undefined;
+
   const includeContent = args.include_content ?? true;
   const contentLimit = Math.min(args.content_limit ?? 5, 50);
 
   if (!ctx.organizationId) {
     return emptyResult({
+      ...(title ? { title } : {}),
       suggestion: 'No accessible entities found in this workspace scope',
     });
   }
@@ -963,7 +979,11 @@ async function searchImpl(
   const exactContent = includeContent
     ? await recallExactContentId(args.query, env, ctx)
     : null;
-  if (exactContent) return exactContent;
+  if (exactContent) {
+    return title && !exactContent.title
+      ? { ...exactContent, title }
+      : exactContent;
+  }
 
   // Helper to run content search in parallel. Runs when we have either a text
   // query or a pre-computed embedding — forwarding the embedding lets the
@@ -1020,6 +1040,7 @@ async function searchImpl(
       if (readable.length === 0) {
         return withRecall(
           emptyResult({
+            ...(title ? { title } : {}),
             entity_type: entity.entity_type,
             suggestion: `Entity with ID ${args.entity_id} is not readable under this agent's entity read policy`,
           }),
@@ -1030,6 +1051,7 @@ async function searchImpl(
     }
     return withRecall(
       emptyResult({
+        ...(title ? { title } : {}),
         entity_type: args.entity_type || null,
         suggestion: `Entity with ID ${args.entity_id} not found`,
       }),
@@ -1115,7 +1137,14 @@ async function searchImpl(
     }));
   }
 
-  return withRecall(emptyResult({ suggestion: suggestionText, existing_entities }), recall);
+  return withRecall(
+    emptyResult({
+      ...(title ? { title } : {}),
+      suggestion: suggestionText,
+      existing_entities,
+    }),
+    recall
+  );
 }
 
 // ============================================
@@ -1413,6 +1442,7 @@ async function formatEntityResult(
   ctx: ToolContext,
   connectionScope: AuthzScope
 ): Promise<UnifiedSearchResult> {
+  const title = args.title?.trim() || undefined;
   // Map rows to unified Entity format (all fields, nulls where not applicable)
   const matches: Entity[] = entityRows.map((row) => ({
     id: Number(row.id),
@@ -1525,6 +1555,7 @@ async function formatEntityResult(
   }
 
   return {
+    ...(title ? { title } : {}),
     entity_type: entityType,
     entity: primaryEntity,
     matches,

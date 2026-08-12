@@ -182,11 +182,11 @@ export function buildAttributionAndOwned(
       metrics: d.metrics,
       eventKinds: d.eventKinds ?? r?.eventKinds,
       viewTemplate: d.viewTemplate ?? r?.viewTemplate,
+      // `resolutionPolicy` is already the `{ "x-lobu-resolution": … }` wrapper —
+      // spread it so the schema-extra key is set exactly once.
       schemaExtras: {
         ...(r?.schemaExtras ?? {}),
-        ...(d.resolutionPolicy
-          ? { "x-lobu-resolution": d.resolutionPolicy }
-          : {}),
+        ...(d.resolutionPolicy ?? {}),
       },
     };
   });

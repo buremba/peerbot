@@ -579,7 +579,8 @@ function classifyThreeWay(
 function compareEntityTypeThreeWay(
   desired: DesiredEntityType,
   remote: RemoteEntityType,
-  attribution: RemoteEntityType | undefined
+  attribution: RemoteEntityType | undefined,
+  prune: boolean
 ): ThreeWayResult {
   const triples: Array<{
     field: string;
@@ -601,7 +602,7 @@ function compareEntityTypeThreeWay(
     },
     {
       field: "required",
-      desired: desired.required ?? [],
+      desired: desired.required,
       remote: remote.required ?? [],
       attribution: attribution?.required ?? [],
     },
@@ -631,7 +632,7 @@ function compareEntityTypeThreeWay(
     },
     {
       field: "resolutionPolicy",
-      desired: desired.resolutionPolicy,
+      desired: desired.resolutionPolicy?.["x-lobu-resolution"],
       remote: remote.schemaExtras?.["x-lobu-resolution"],
       attribution: attribution?.schemaExtras?.["x-lobu-resolution"],
     },
@@ -647,7 +648,29 @@ function compareEntityTypeThreeWay(
       attribution: attribution?.properties?.[key],
     });
   }
-  return classifyThreeWay(triples);
+  // Facets the config omits are UNMANAGED outside prune (the server keeps them
+  // — eventKinds/viewTemplate/properties round-trip untouched). Only under
+  // prune does omission mean "remove". Without this, an unchanged omitted facet
+  // would be misclassified as config-moved and executePlan would clear it.
+  const omittable = new Set([
+    "description",
+    "required",
+    "backing",
+    "metrics",
+    "eventKinds",
+    "viewTemplate",
+    "resolutionPolicy",
+  ]);
+  return classifyThreeWay(
+    triples.filter(
+      (t) =>
+        !(
+          !prune &&
+          t.desired === undefined &&
+          (omittable.has(t.field) || t.field.startsWith("properties."))
+        )
+    )
+  );
 }
 
 /** Relationship-type fields, three-way with the baseline. */
@@ -700,6 +723,25 @@ function diffEntityTypeWithBaseline(
     (a) => a.slug === desired.slug
   );
   if (!attr) {
+    // No baseline entry — ambiguous only when there's an actual mismatch. A
+    // definition already in sync (desired == remote) is a noop, so existing
+    // orgs can establish their first baseline without blocking.
+    const inSync = deepEqual(desired.name, remote.name) &&
+      deepEqual(desired.description, remote.description) &&
+      deepEqual(desired.required ?? [], remote.required ?? []) &&
+      deepEqual(desired.properties ?? {}, remote.properties ?? {});
+    if (inSync) {
+      return {
+        row: {
+          kind: "entity-type",
+          verb: "noop",
+          id: desired.slug,
+          desired,
+          remote,
+        },
+        blocking: [],
+      };
+    }
     return {
       row: {
         kind: "entity-type",
@@ -718,7 +760,7 @@ function diffEntityTypeWithBaseline(
       ],
     };
   }
-  const threeWay = compareEntityTypeThreeWay(desired, remote, attr);
+  const threeWay = compareEntityTypeThreeWay(desired, remote, attr, prune);
   return {
     row: {
       kind: "entity-type",
@@ -756,6 +798,21 @@ function diffRelationshipTypeWithBaseline(
     (a) => a.slug === desired.slug
   );
   if (!attr) {
+    const inSync = deepEqual(desired.name, remote.name) &&
+      deepEqual(desired.description, remote.description) &&
+      deepEqual(desired.rules ?? [], remote.rules ?? []);
+    if (inSync) {
+      return {
+        row: {
+          kind: "relationship-type",
+          verb: "noop",
+          id: desired.slug,
+          desired,
+          remote,
+        },
+        blocking: [],
+      };
+    }
     return {
       row: {
         kind: "relationship-type",
@@ -797,6 +854,47 @@ function diffRelationshipTypeWithBaseline(
   };
 }
 
+/**
+ * Normalized projection for "unchanged since baseline" delete checks — omits
+ * transport fields (`organization_id`) and normalizes optional facets, so a
+ * raw remote row compares equal to the stored attribution snapshot.
+ */
+const projectEntityForDelete = (e: {
+  slug: string;
+  name?: string;
+  description?: string;
+  required?: string[];
+  properties?: Record<string, unknown>;
+  backing?: unknown;
+  metrics?: unknown;
+  eventKinds?: unknown;
+  viewTemplate?: unknown;
+  schemaExtras?: Record<string, unknown>;
+}) => ({
+  slug: e.slug,
+  name: e.name,
+  description: e.description,
+  required: e.required ?? [],
+  properties: e.properties ?? {},
+  backing: e.backing,
+  metrics: e.metrics,
+  eventKinds: e.eventKinds,
+  viewTemplate: e.viewTemplate,
+  schemaExtras: e.schemaExtras ?? {},
+});
+
+const projectRelForDelete = (r: {
+  slug: string;
+  name?: string;
+  description?: string;
+  rules?: unknown[];
+}) => ({
+  slug: r.slug,
+  name: r.name,
+  description: r.description,
+  rules: r.rules ?? [],
+});
+
 /** Remote-only definition classification: owned+unchanged → delete, else block. */
 function remoteOnlyDefinitionRow(
   kind: "entity-type" | "relationship-type" | "watcher",
@@ -832,6 +930,7 @@ function remoteOnlyDefinitionRow(
 // (`reactionScript`) are excluded (always-repush, never attributed).
 
 interface WatcherProjection {
+  agent?: string | null;
   name?: string;
   description?: string | null;
   triggers?: DesiredBehaviorTrigger[];
@@ -850,6 +949,7 @@ interface WatcherProjection {
 }
 
 const projectDesiredWatcher = (d: DesiredWatcher): WatcherProjection => ({
+  agent: d.agent,
   name: d.name,
   description: d.description,
   triggers: d.triggers,
@@ -868,6 +968,7 @@ const projectDesiredWatcher = (d: DesiredWatcher): WatcherProjection => ({
 });
 
 const projectRemoteWatcher = (w: RemoteBehavior): WatcherProjection => ({
+  agent: w.agent_id,
   name: w.name,
   description: w.description,
   triggers: w.triggers,
@@ -900,6 +1001,22 @@ function diffWatcherWithBaseline(
     (a) => a.slug === desired.slug
   );
   if (!attr) {
+    const inSync = deepEqual(
+      projectDesiredWatcher(desired),
+      projectRemoteWatcher(remote)
+    );
+    if (inSync) {
+      return {
+        row: {
+          kind: "watcher",
+          verb: "noop",
+          id: desired.slug,
+          desired,
+          remote,
+        },
+        blocking: [],
+      };
+    }
     return {
       row: { kind: "watcher", verb: "noop", id: desired.slug, desired, remote },
       blocking: [
@@ -1502,7 +1619,9 @@ export function computeDiff(
               const a = baseline?.attribution.entityTypes.find(
                 (x) => x.slug === slug
               );
-              return !!a && deepEqual(remoteEntity, a);
+              return (
+                !!a && deepEqual(projectEntityForDelete(remoteEntity), projectEntityForDelete(a))
+              );
             }
           )
         );
@@ -1546,7 +1665,9 @@ export function computeDiff(
               const a = baseline?.attribution.relationshipTypes.find(
                 (x) => x.slug === slug
               );
-              return !!a && deepEqual(remoteRel, a);
+              return (
+                !!a && deepEqual(projectRelForDelete(remoteRel), projectRelForDelete(a))
+              );
             }
           )
         );

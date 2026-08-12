@@ -1523,6 +1523,13 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     latestDeployment?.manifest === undefined
       ? null
       : loadBaselineFromManifest(latestDeployment.manifest);
+  // For `--only agents` the memory/Behavior families are NOT executed — the
+  // recorded baseline must carry forward the prior attribution/ownership for
+  // those families, never rebuild them from an unexecuted snapshot.
+  const baselineRecordForRecording =
+    opts.only === "agents" && baselineRecord
+      ? baselineRecord
+      : buildAttributionAndOwned(state, remote);
   const baseline: Baseline = baselineRecord
     ? {
         attribution: {
@@ -1643,7 +1650,7 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
       manifest: buildDeploymentManifest(
         state,
         connectorVersionPins(state, remote.connectorDefinitions),
-        buildAttributionAndOwned(state, remote)
+        baselineRecordForRecording
       ),
     });
     printText(chalk.green("\nNothing to apply."));
@@ -1735,7 +1742,7 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
       manifest: buildDeploymentManifest(
         state,
         pins,
-        applyErr ? undefined : buildAttributionAndOwned(state, remote)
+        applyErr ? undefined : baselineRecordForRecording
       ),
       ...(applyErr
         ? {

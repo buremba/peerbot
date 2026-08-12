@@ -261,3 +261,116 @@ describe("owned-based delete classification (baseline present)", () => {
     expect(plan.counts.delete).toBe(0);
   });
 });
+
+describe("three-way edge cases", () => {
+  test("in-sync definition missing from baseline → noop (first baseline can be established)", () => {
+    const desired = buildState([taskType()]);
+    const remote = emptyRemote();
+    remote.entityTypes = [remoteTask()];
+    // Baseline exists but has no entry for `task` — and desired == remote.
+    const baseline = baselineFor([], []);
+
+    const plan = computeDiff(desired, remote, {
+      orgId: "org-1",
+      baseline,
+    });
+    const row = plan.rows.find((r) => r.kind === "entity-type");
+    expect(row?.verb).toBe("noop");
+    expect(plan.counts.drift).toBe(0);
+  });
+
+  test("config-omitted unmanaged facet (eventKinds) with remote untouched → noop, never cleared", () => {
+    const desired = buildState([
+      taskType(), // config does NOT declare eventKinds
+    ]);
+    const remote = emptyRemote();
+    remote.entityTypes = [
+      remoteTask(1, { eventKinds: { note: { description: "ui-authored" } } }),
+    ];
+    const baseline = baselineFor(
+      [remoteTask(1, { eventKinds: { note: { description: "ui-authored" } } })],
+      [1]
+    );
+
+    const plan = computeDiff(desired, remote, {
+      orgId: "org-1",
+      baseline,
+    });
+    const row = plan.rows.find((r) => r.kind === "entity-type");
+    expect(row?.verb).toBe("noop");
+    expect(plan.counts.update).toBe(0);
+    expect(plan.counts.drift).toBe(0);
+  });
+
+  test("unchanged declared resolutionPolicy round-trips as noop", () => {
+    const desired = buildState([
+      taskType({
+        resolutionPolicy: { "x-lobu-resolution": { rules: [{ kind: "email" }] } },
+      }),
+    ]);
+    const remote = emptyRemote();
+    remote.entityTypes = [
+      remoteTask(1, {
+        schemaExtras: { "x-lobu-resolution": { rules: [{ kind: "email" }] } },
+      }),
+    ];
+    const baseline = baselineFor(
+      [
+        remoteTask(1, {
+          schemaExtras: { "x-lobu-resolution": { rules: [{ kind: "email" }] } },
+        }),
+      ],
+      [1]
+    );
+
+    const plan = computeDiff(desired, remote, {
+      orgId: "org-1",
+      baseline,
+    });
+    const row = plan.rows.find((r) => r.kind === "entity-type");
+    expect(row?.verb).toBe("noop");
+    expect(plan.counts.drift).toBe(0);
+  });
+});
+
+describe("Behavior three-way attribution", () => {
+  function desiredWatcher(overrides: Record<string, unknown> = {}) {
+    return {
+      slug: "digest",
+      agent: "agent-a",
+      name: "Digest",
+      prompt: "Summarize",
+      ...overrides,
+    };
+  }
+  function remoteWatcher(overrides: Record<string, unknown> = {}) {
+    return {
+      slug: "digest",
+      behavior_id: "b-1",
+      agent_id: "agent-a",
+      name: "Digest",
+      prompt: "Summarize",
+      ...overrides,
+    };
+  }
+
+  test("remote agent reassignment → blocking drift (never silently overwritten)", () => {
+    const desired = buildState([]);
+    desired.watchers = [desiredWatcher() as any];
+    const remote = emptyRemote();
+    remote.watchers = [remoteWatcher({ agent_id: "agent-b" }) as any];
+    const baseline = {
+      attribution: { entityTypes: [], relationshipTypes: [], watchers: [remoteWatcher()] },
+      owned: new Set<string>(["watcher:b-1"]),
+    };
+
+    const plan = computeDiff(desired, remote, {
+      orgId: "org-1",
+      baseline,
+    });
+    const drift = plan.rows.filter((r) => r.verb === "drift");
+    expect(drift.some((r) => (r as any).blocking && r.id === "digest")).toBe(
+      true
+    );
+  });
+});

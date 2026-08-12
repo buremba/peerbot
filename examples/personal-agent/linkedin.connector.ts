@@ -664,8 +664,8 @@ export function isHomeFeedNoise(body: string): boolean {
  * recovered from LinkedIn's Copy-link action or a stable activity id embedded
  * in the card DOM; when no durable identity is recoverable, source_url is
  * OMITTED (never a generic /feed/ URL — that would look like a specific post
- * id). The durable identity is also persisted on metadata.post_url /
- * metadata.post_identity so downstream actions can address the post.
+ * id). source_url is the single durable post identifier; action callers
+ * (prepare_comment) resolve it directly.
  * Home-feed posts expose no reliable timestamp, so the caller stamps
  * occurred_at with the sync time.
  */
@@ -753,21 +753,6 @@ export function buildHomeFeedEvents(
       row.post_url ??
         (embeddedId ? `urn:li:${embeddedNamespace}:${embeddedId}` : "")
     );
-    const canonicalUrn = postUrl?.match(
-      /urn:li:(activity|share|ugcPost):(\d{6,})/i
-    );
-    const postIdentity = canonicalUrn
-      ? `urn:li:${linkedInUrnNamespace(canonicalUrn[1] ?? "")}:${canonicalUrn[2]}`
-      : null;
-
-    // Persist the durable post identity (canonical URL + URN) so downstream
-    // action callers (prepare_comment) can address the post with a supported
-    // durable identifier. When no durable identity is recoverable the event
-    // carries NONE — never substitute the generic linkedin.com/feed/ root,
-    // which looks like a specific post identity but resolves to the whole
-    // feed.
-    if (postUrl) metadata.post_url = postUrl;
-    if (postIdentity) metadata.post_identity = postIdentity;
 
     events.push({
       origin_id: `li_home_${row.id}`,
@@ -778,7 +763,8 @@ export function buildHomeFeedEvents(
       origin_type: "post",
       // Omitted when no durable identity was recoverable — a missing
       // source_url is the explicit "this event has no canonical post URL"
-      // signal, not a bug.
+      // signal, not a bug. source_url is the durable identifier; action
+      // callers (prepare_comment) resolve it directly.
       ...(postUrl ? { source_url: postUrl } : {}),
       metadata,
     });
@@ -2620,7 +2606,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
             reason: {
               type: "string",
               description:
-                "Present with status=not_actionable: why the input was not actionable (e.g. missing_durable_post_id).",
+                "Present whenever verification did not succeed: why (e.g. missing_durable_post_id, no_matching_comment, no_comments_visible, scrape_exception).",
             },
             post_url: { type: "string" },
             body: { type: "string" },

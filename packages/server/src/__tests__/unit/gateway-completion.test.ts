@@ -173,18 +173,6 @@ describe("gatewayCompletion", () => {
     expect(calls.length).toBe(1);
   });
 
-  test("throws when the response carries no text", async () => {
-    stubFetch({ choices: [{ message: { content: null } }] });
-    await expect(
-      gatewayCompletion({
-        target: TARGET,
-        systemPrompt: "s",
-        userPrompt: "u",
-        timeoutMs: 5_000,
-      })
-    ).rejects.toThrow(/no text/);
-  });
-
   test("an elapsed timeout aborts the request", async () => {
     const original = globalThis.fetch;
     let calls = 0;

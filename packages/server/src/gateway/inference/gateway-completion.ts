@@ -253,7 +253,6 @@ export async function gatewayCompletion(
         // upcoming delay fits inside the caller's shared deadline.
         maxRetries: 2,
         baseDelay,
-        maxDelay: 2000,
         jitter: "full",
         shouldRetry: (error, attempt) => {
           if (

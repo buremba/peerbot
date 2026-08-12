@@ -2529,7 +2529,7 @@ describe("prepare_comment helpers", () => {
     expect(dispatches).toBe(0);
   });
 
-  test("buildHomeFeedEvents persists durable post identity in metadata when available", () => {
+  test("buildHomeFeedEvents persists the canonical post URL as source_url", () => {
     const [ev] = buildHomeFeedEvents(
       [
         {
@@ -2546,15 +2546,9 @@ describe("prepare_comment helpers", () => {
     expect(ev.source_url).toBe(
       "https://www.linkedin.com/feed/update/urn:li:activity:7345678901234567890"
     );
-    expect(ev.metadata?.post_url).toBe(
-      "https://www.linkedin.com/feed/update/urn:li:activity:7345678901234567890"
-    );
-    expect(ev.metadata?.post_identity).toBe(
-      "urn:li:activity:7345678901234567890"
-    );
   });
 
-  test("buildHomeFeedEvents derives post identity from the canonical URL", () => {
+  test("buildHomeFeedEvents derives the canonical URL for share/ugcPost ids", () => {
     const [ev] = buildHomeFeedEvents(
       [
         {
@@ -2567,7 +2561,9 @@ describe("prepare_comment helpers", () => {
       ],
       new Date("2026-08-01T12:00:00.000Z")
     );
-    expect(ev.metadata?.post_identity).toBe("urn:li:share:7345678901234567890");
+    expect(ev.source_url).toBe(
+      "https://www.linkedin.com/feed/update/urn:li:share:7345678901234567890"
+    );
   });
 
   test("buildHomeFeedEvents does NOT emit the generic feed URL as a fake post identity", () => {
@@ -2583,8 +2579,6 @@ describe("prepare_comment helpers", () => {
     );
     // No post_url / post_identity → no source_url at all (not the /feed/ root).
     expect(ev.source_url).toBeUndefined();
-    expect(ev.metadata?.post_url).toBeUndefined();
-    expect(ev.metadata?.post_identity).toBeUndefined();
   });
 
   test("isGenericLinkedInFeedUrl identifies home-feed URLs with no post id", () => {

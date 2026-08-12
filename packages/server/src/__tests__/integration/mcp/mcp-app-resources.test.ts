@@ -499,6 +499,9 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(body.result?.content?.[0]?.text).toContain('Release readiness');
     expect(body.result?.content?.[0]?.text).toContain('Ready for review\\.');
     expect(JSON.stringify(body.result)).not.toContain('must-not-render');
+    // The caller's role rides the result _meta so the interaction app can gate
+    // Debug for owner/admin without trusting stale unrelated-card metadata.
+    expect(body.result?._meta?.['lobu/member-role']).toBe('owner');
   });
 
   it('binds reused backend request ids to distinct host cards and restores exact state', async () => {

@@ -503,6 +503,22 @@ function createServerForContext(
       const softError = isSoftErrorResult(result);
       const tool = getTool(name);
       const resultMeta = getMcpResultMeta(result);
+      // The caller's role rides the result _meta so MCP apps (e.g. the
+      // interaction app's Debug gate) can render caller-appropriate controls.
+      // Emitted fresh per request from the current auth context, so a stale
+      // owner/admin role from an uncorrelated card can never escalate a
+      // non-admin result — it is exactly the correlation the owletto gate
+      // relies on. Capped to the reader's contract (owletto
+      // memberRoleFromMeta rejects values over 40 chars).
+      const callerMemberRole =
+        typeof callAuthCtx.memberRole === 'string' &&
+        callAuthCtx.memberRole.length > 0
+          ? callAuthCtx.memberRole
+          : null;
+      const memberRoleMeta =
+        callerMemberRole && callerMemberRole.length <= 40
+          ? { 'lobu/member-role': callerMemberRole }
+          : undefined;
       if (tool?.outputSchema && result && typeof result === 'object') {
         const structured = validateToolResult(tool.outputSchema, result);
         if (structured !== null) {
@@ -525,13 +541,17 @@ function createServerForContext(
               );
             }
           }
+          const appMeta = {
+            ...(resultMeta ?? {}),
+            ...(memberRoleMeta ?? {}),
+          };
           return {
             content: [{ type: 'text' as const, text }],
             structuredContent: structured as Record<string, unknown>,
-            ...(resultMeta || snapshotCapability
+            ...(appMeta || snapshotCapability
               ? {
                   _meta: {
-                    ...(resultMeta ?? {}),
+                    ...appMeta,
                     ...(snapshotCapability
                       ? { 'lobu/mcp-app-snapshot-capability': snapshotCapability }
                       : {}),
@@ -542,9 +562,13 @@ function createServerForContext(
           };
         }
       }
+      const textMeta = {
+        ...(resultMeta ?? {}),
+        ...(memberRoleMeta ?? {}),
+      };
       return {
         content: [{ type: 'text' as const, text }],
-        ...(resultMeta ? { _meta: resultMeta } : {}),
+        ...(textMeta ? { _meta: textMeta } : {}),
         ...(softError ? { isError: true } : {}),
       };
     } catch (error: any) {

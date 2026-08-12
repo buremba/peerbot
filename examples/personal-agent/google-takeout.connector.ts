@@ -46,6 +46,11 @@ export default class GoogleTakeoutConnector extends ConnectorRuntime<
     description:
       "Ingests local Google Takeout exports for YouTube history and Keep notes.",
     authSchema: { methods: [{ type: "none" }] },
+    // Local-filesystem connector: it reads an absolute path on the user's own
+    // machine, so it must not be routed to the cloud fleet. See the longer note
+    // on the same two fields in twitter-takeout.connector.ts.
+    requiredCapability: "os.files",
+    runtime: { platforms: ["macos"] },
     feeds: {
       youtube: {
         key: "youtube",

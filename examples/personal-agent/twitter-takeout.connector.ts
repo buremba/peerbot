@@ -213,6 +213,20 @@ export default class TwitterTakeoutConnector extends ConnectorRuntime<
     version: "1.0.0",
     description: "Ingests local X/Twitter archive exports.",
     authSchema: { methods: [{ type: "none" }] },
+    // sync() reads an absolute path on the user's own machine. Per the SDK
+    // contract, omitting `runtime` means "runs on the cloud worker fleet" and
+    // omitting `requiredCapability` means "any worker" — so declaring neither
+    // is what let `worker-api/poll.ts` hand these runs to a Kubernetes pod with
+    // no ~/Downloads (unpinned connections), or to the Swift Mac bridge, which
+    // cannot execute a TypeScript connector at all (pinned connections). Two
+    // error strings, one missing declaration.
+    //
+    // `os.files` is already in OS_CAPABILITIES and allowlisted for macos, so no
+    // core change is needed. NOTE: no worker advertises `os.files` today, so
+    // this does not make takeout ingest work — it makes the failure honest
+    // ("no worker serves this") instead of a silent misroute.
+    requiredCapability: "os.files",
+    runtime: { platforms: ["macos"] },
     feeds: {
       tweets: {
         key: "tweets",

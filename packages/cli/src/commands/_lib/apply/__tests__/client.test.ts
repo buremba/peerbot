@@ -3,6 +3,51 @@ import { ApiError } from "../../../memory/_lib/errors.js";
 import { ApplyClient, isDuplicateError } from "../client.js";
 
 describe("ApplyClient", () => {
+  test("maps non-secret managed MCP catalog metadata", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        if (body.action === "list_installed") {
+          return new Response(
+            JSON.stringify({
+              installed: {
+                connectors: {
+                  items: [
+                    {
+                      id: "mcp.atlassian",
+                      name: "Atlassian",
+                      detail: {
+                        installed: true,
+                        mcp_config: {
+                          upstream_url:
+                            "https://mcp.atlassian.com/v1/mcp/authv2",
+                          tool_prefix: "atlassian",
+                        },
+                      },
+                    },
+                  ],
+                },
+              },
+            }),
+            { status: 200 }
+          );
+        }
+        throw new Error(`Unexpected action: ${String(body.action)}`);
+      }) as typeof fetch
+    );
+
+    const [definition] = await client.listConnectors(true);
+    expect(definition?.mcp_config).toEqual({
+      upstream_url: "https://mcp.atlassian.com/v1/mcp/authv2",
+      tool_prefix: "atlassian",
+    });
+
+    expect(calls).toHaveLength(1);
+  });
+
   test("applyChatConnection returns the persisted connection id", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new ApplyClient(

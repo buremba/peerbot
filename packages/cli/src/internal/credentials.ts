@@ -100,6 +100,22 @@ export async function getToken(contextName?: string): Promise<string | null> {
 }
 
 /**
+ * Resolve one named context's own credential without the process-wide
+ * `LOBU_API_TOKEN` override. Cross-context callers use this so a token meant
+ * for the active local runtime is never forwarded to a Cloud context.
+ */
+export async function getContextToken(
+  contextName?: string
+): Promise<string | null> {
+  const creds = await loadCredentials(contextName);
+  if (!creds) return null;
+  if (!credentialNeedsRefresh(creds)) return creds.accessToken;
+  if (!credentialCanRefresh(creds)) return null;
+  const refreshed = await refreshCredentials(creds, contextName);
+  return refreshed?.accessToken ?? null;
+}
+
+/**
  * Token for the gateway agent API (`/lobu/api/v1/agents/*`). Local embedded
  * installs need the worker PAT from /api/local-init for that surface, while
  * admin REST + MCP need the Better Auth session token returned by getToken().

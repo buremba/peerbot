@@ -1,6 +1,7 @@
 import { createLogger } from "@lobu/core";
 
 const logger = createLogger("slack-web");
+const SLACK_REQUEST_TIMEOUT_MS = 15_000;
 
 /**
  * Minimal Slack Web API surface used by the connected-apps onboarding flow:
@@ -15,8 +16,17 @@ const logger = createLogger("slack-web");
 export interface SlackWebApi {
   /** `conversations.open` with a single user → the IM channel id (`D…`). */
   openDm(botToken: string, slackUserId: string): Promise<string>;
-  /** `chat.postMessage` of a plain-text body. Throws on a Slack-level error. */
-  postMessage(botToken: string, channel: string, text: string): Promise<void>;
+  /**
+   * `chat.postMessage` of a plain-text body. Throws on a Slack-level error.
+   * `clientMessageId` is forwarded as `client_msg_id`; Slack returns the same
+   * message timestamp when the same UUID is retried in the same channel.
+   */
+  postMessage(
+    botToken: string,
+    channel: string,
+    text: string,
+    clientMessageId?: string,
+  ): Promise<void>;
   /**
    * `conversations.members` for one channel — the bare `U…` ids of every member,
    * following `response_metadata.next_cursor` to completion. Throws on a
@@ -122,6 +132,7 @@ async function slackPost(
       "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
     },
     body: form.toString(),
+    signal: AbortSignal.timeout(SLACK_REQUEST_TIMEOUT_MS),
   });
   const json = (await res.json()) as Record<string, unknown>;
   if (json.ok !== true) {
@@ -143,11 +154,16 @@ export function createSlackWebApi(): SlackWebApi {
       }
       return channelId;
     },
-    async postMessage(botToken, channel, text) {
+    async postMessage(botToken, channel, text, clientMessageId) {
       try {
-        await slackPost(botToken, "chat.postMessage", { channel, text });
+        await slackPost(botToken, "chat.postMessage", {
+          channel,
+          text,
+          client_msg_id: clientMessageId,
+        });
       } catch (error) {
-        // The welcome message is best-effort; the binding is the contract.
+        // Callers own the failure policy (the welcome DM is best-effort, the
+        // ops digest fails closed); log the Slack-level detail either way.
         logger.warn(
           { channel, error: String(error) },
           "Slack chat.postMessage failed"

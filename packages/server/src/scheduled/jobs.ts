@@ -50,6 +50,10 @@ import {
   productOpsDigestConfigFromEnv,
   runProductOpsDigest,
 } from './product-ops-digest';
+import {
+  createProductOpsSlackDelivery,
+  createProductOpsSlackDeliveryStore,
+} from './product-ops-slack-delivery';
 
 function asDeliveryContext(value: unknown): ScheduledDeliveryContext | null {
   if (!value || typeof value !== 'object') return null;
@@ -115,12 +119,16 @@ function registerMaintenanceTasks(
 ): void {
   const productOpsDigestConfig = productOpsDigestConfigFromEnv(env);
   if (productOpsDigestConfig) {
+    const deliverProductOpsDigest = createProductOpsSlackDelivery({
+      store: createProductOpsSlackDeliveryStore(coreServices.getSecretStore()),
+    });
     scheduler.register(
       PRODUCT_OPS_DIGEST_TASK,
       async ({ taskRunId }) => {
         const result = await runProductOpsDigest({
           taskRunId,
           config: productOpsDigestConfig,
+          deliverDigest: deliverProductOpsDigest,
         });
         logger.info(
           {

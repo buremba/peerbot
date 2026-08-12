@@ -526,7 +526,10 @@ export class ChatInstanceManager {
     return connection;
   }
 
-  async removeConnection(id: string): Promise<void> {
+  async removeConnection(
+    id: string,
+    opts?: { skipTombstone?: boolean },
+  ): Promise<void> {
     const instance = await this.stopInstance(id);
 
     const conversationState =
@@ -541,7 +544,12 @@ export class ChatInstanceManager {
       this.services.getSecretStore(),
 			`connections/${id}/`,
     );
-    await this.connectionStore.deleteConnection(id);
+    // The delete path passes skipTombstone so the unified `connections` row is
+    // NOT hidden here: the tombstone must commit atomically with the pending
+    // run/card expiry in `handleDelete`, never in a separate earlier commit.
+    if (!opts?.skipTombstone) {
+      await this.connectionStore.deleteConnection(id);
+    }
 
     // Drop any lease row for this connection. `connection_claims` has no FK
     // cascade onto connections, so without this an exclusive connection's
@@ -565,6 +573,7 @@ export class ChatInstanceManager {
    */
   async revokeManagedConnection(
 		connectionId: number,
+    opts?: { skipTombstone?: boolean },
   ): Promise<{ revoked: true }> {
     const sql = getDb();
     const rows = await sql`
@@ -589,6 +598,7 @@ export class ChatInstanceManager {
         this.services.getAppInstallationStore(),
         this.services.getSecretStore(),
 				row.slug,
+        { skipConnectionTombstone: opts?.skipTombstone },
       );
     } else {
       throw new Error(
@@ -598,10 +608,15 @@ export class ChatInstanceManager {
 
     // Soft-delete the unified projection so the UI stops listing it. Past
     // events stay (append-only); only the connection record is tombstoned.
-    await sql`
-      UPDATE connections SET deleted_at = now(), updated_at = now()
-      WHERE id = ${connectionId} AND organization_id = ${row.organization_id}
-    `;
+    // The delete path passes skipTombstone so the row stays VISIBLE here: the
+    // tombstone must commit atomically with the pending run/card expiry in
+    // `handleDelete`, never in a separate earlier commit.
+    if (!opts?.skipTombstone) {
+      await sql`
+        UPDATE connections SET deleted_at = now(), updated_at = now()
+        WHERE id = ${connectionId} AND organization_id = ${row.organization_id}
+      `;
+    }
     logger.info(
       { connectionId, connectorKey: row.connector_key },
 			"Revoked managed connection",

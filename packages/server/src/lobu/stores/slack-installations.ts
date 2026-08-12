@@ -702,11 +702,19 @@ export async function revokeSlackInstallsForUninstall(
   return [...toStop.keys()];
 }
 
-/** Delete a Slack install and purge its bot-token secret. */
+/** Delete a Slack install and purge its bot-token secret.
+ *
+ * @param opts.skipConnectionTombstone When true, skip soft-deleting the
+ *   unified `connections` projection. The delete path calls this from a
+ *   fallible pre-transaction phase and must leave the row visible so the
+ *   connection tombstone commits ATOMICALLY with the pending-approval expiry
+ *   in `handleDelete` — never in a separate earlier commit.
+ */
 export async function deleteSlackInstall(
   store: AppInstallationStore,
   secretStore: WritableSecretStore,
-  id: string
+  id: string,
+  opts?: { skipConnectionTombstone?: boolean }
 ): Promise<void> {
   // Resolve the org first: the token was stored under the install org's bucket,
   // so the prefix delete must run under that org context.
@@ -716,10 +724,12 @@ export async function deleteSlackInstall(
   // Soft-delete the connections projection so the runtime stops reading it (a
   // connections HIT would otherwise shadow the now-deleted install — the
   // read-fallback only covers a MISS). Slug-scoped: slackinst- ids are unique.
-  await getDb()`
-    UPDATE connections SET deleted_at = now(), updated_at = now()
-    WHERE slug = ${id} AND deleted_at IS NULL AND credential_mode = 'managed'
-  `;
+  if (!opts?.skipConnectionTombstone) {
+    await getDb()`
+      UPDATE connections SET deleted_at = now(), updated_at = now()
+      WHERE slug = ${id} AND deleted_at IS NULL AND credential_mode = 'managed'
+    `;
+  }
   const purge = () =>
     deleteSecretsByPrefix(secretStore, `installations/${id}/`);
   if (orgId) {

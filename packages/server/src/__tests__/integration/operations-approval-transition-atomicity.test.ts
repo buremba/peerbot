@@ -12,6 +12,7 @@
  * reads the event; they diverge).
  */
 
+import postgres from "postgres";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Context } from "hono";
 import type { Env } from "../../index";
@@ -31,6 +32,10 @@ import {
 	ownerToolContext,
 	seedOwnerContext,
 } from "../setup/test-fixtures";
+
+// Counts how many times the external POST /items mutation actually ran, so a
+// retry that re-executes the mutation is detectable (it must run exactly once).
+let postItemsCalls = 0;
 
 const CONNECTOR = "demo.ops.transition.atomic";
 
@@ -277,6 +282,7 @@ describe("approval-run transition atomicity", () => {
 						);
 					}
 					if (url === "https://api.example.test/items") {
+						postItemsCalls += 1;
 						return new Response(JSON.stringify({ created: true }), {
 							status: 200,
 							headers: { "content-type": "application/json" },
@@ -390,11 +396,112 @@ describe("approval-run transition atomicity", () => {
 		expect(run.status).not.toBe("completed");
 		expect(run.status).toBe("running");
 		expect(run.approval_status).toBe("approved");
-		expect(run.action_output).toBeNull();
+		// The successful apply result (the human's ANSWER) is the entire outcome
+		// of an agent_ask — it must have been persisted DURABLY before the
+		// terminalization attempt, so a failed card write cannot lose it.
+		// (RED today: it rolls back with the completed write and reads null.)
+		expect(run.action_output).toEqual({ answer: { decision: "ship it" } });
 
 		// Card is still the 'confirmed' claim — no completed card, no failed card.
 		expect((await currentApprovalCard(runId, orgId))?.interaction_status).toBe(
 			"approved",
+		);
+	});
+
+	it("agent_ask: a retry after a card-write failure completes the run without losing the answer", async () => {
+		const sql = getTestDb();
+		const runId = await seedAgentAskRun(orgId, userId);
+
+		await sql.unsafe(FAIL_COMPLETED_TRIGGER);
+		await expect(
+			manageOperations(
+				{ action: "approve", run_id: runId, input: { decision: "ship it" } },
+				{} as Env,
+				humanCtx,
+			),
+		).rejects.toThrow(/terminal approval-event write failure/);
+
+		// The run is stuck in the claimed state with the answer durably retained.
+		const [stuck] = await sql`
+			SELECT status, action_output FROM runs WHERE id = ${runId}
+		`;
+		expect(stuck.status).toBe("running");
+		expect(stuck.action_output).toEqual({ answer: { decision: "ship it" } });
+
+		// Drop the failure trigger; a re-approve must RECONCILE the stuck run —
+		// terminalize it from the durable output — instead of reporting "not
+		// pending approval" (RED today: the run can never be approved again).
+		await sql.unsafe(DROP_FAIL_TRIGGER);
+		const retried = (await manageOperations(
+			{ action: "approve", run_id: runId },
+			{} as Env,
+			humanCtx,
+		)) as { approved?: boolean; error?: string };
+		expect(retried.error).toBeUndefined();
+		expect(retried.approved).toBe(true);
+
+		const [run] = await sql`
+			SELECT status, action_output FROM runs WHERE id = ${runId}
+		`;
+		expect(run.status).toBe("completed");
+		expect(run.action_output).toEqual({ answer: { decision: "ship it" } });
+		expect((await currentApprovalCard(runId, orgId))?.interaction_status).toBe(
+			"completed",
+		);
+	});
+
+	it("inline action: a card-write failure retains the output and a retry completes WITHOUT re-executing the mutation", async () => {
+		const sql = getTestDb();
+		const postItemsBefore = postItemsCalls;
+		const queued = (await manageOperations(
+			{
+				action: "execute",
+				connection_id: connectionId,
+				operation_key: "create_item",
+				input: { body: { value: "retry-no-rexec" } },
+			},
+			{} as Env,
+			humanCtx,
+		)) as { run_id: number };
+		expect(queued.status).toBe("pending_approval");
+
+		await sql.unsafe(FAIL_COMPLETED_TRIGGER);
+		await expect(
+			manageOperations(
+				{ action: "approve", run_id: queued.run_id },
+				{} as Env,
+				humanCtx,
+			),
+		).rejects.toThrow(/terminal approval-event write failure/);
+
+		// The external POST ran exactly once and its result was retained.
+		expect(postItemsCalls).toBe(postItemsBefore + 1);
+		const [stuck] = await sql`
+			SELECT status, approval_status, action_output FROM runs WHERE id = ${queued.run_id}
+		`;
+		expect(stuck.status).toBe("running");
+		expect(stuck.approval_status).toBe("approved");
+		expect(stuck.action_output).toEqual({ body: { created: true } });
+
+		// Re-approve after the trigger is gone: the run completes from the
+		// durable output — the external mutation is NOT repeated.
+		await sql.unsafe(DROP_FAIL_TRIGGER);
+		const retried = (await manageOperations(
+			{ action: "approve", run_id: queued.run_id },
+			{} as Env,
+			humanCtx,
+		)) as { approved?: boolean; error?: string };
+		expect(retried.error).toBeUndefined();
+		expect(retried.approved).toBe(true);
+
+		expect(postItemsCalls).toBe(postItemsBefore + 1);
+		const [run] = await sql`
+			SELECT status, action_output FROM runs WHERE id = ${queued.run_id}
+		`;
+		expect(run.status).toBe("completed");
+		expect(run.action_output).toEqual({ body: { created: true } });
+		expect((await currentApprovalCard(queued.run_id, orgId))?.interaction_status).toBe(
+			"completed",
 		);
 	});
 
@@ -461,6 +568,84 @@ describe("approval-run transition atomicity", () => {
 		`;
 		expect(row.approval_status).toBe("pending");
 		expect(row.status).toBe("pending");
+	});
+
+	it("approval queueing is serialized against connection deletion (no approval lands in the gap)", async () => {
+		// A delete holds the exclusive connection-row lock across its tombstone +
+		// approval-expiry transaction. The queue path must take a SHARE lock on
+		// the same row before inserting a pending approval run, so an approval
+		// cannot commit into the gap between the delete's expiry scan and its
+		// tombstone. (RED today: the queue's run INSERT only serializes via the
+		// runs.connection_id FK, which lets the insert commit AFTER the tombstone
+		// — a pending approval hidden behind a deleted connection, never expired.)
+		const lockConn = await createTestConnection({
+			organization_id: orgId,
+			connector_key: CONNECTOR,
+			created_by: userId,
+			visibility: "private",
+			config: { action_modes: { create_item: "approval" } },
+		});
+
+		const locker = postgres(process.env.DATABASE_URL as string, { max: 1 });
+		let executePromise: Promise<Record<string, unknown>> | undefined;
+		let outcome: Record<string, unknown> | undefined;
+		try {
+			await locker.begin(async (tx) => {
+				// Simulate an in-flight delete holding the exclusive lock.
+				await tx`
+					SELECT 1 FROM connections
+					WHERE id = ${lockConn.id} AND organization_id = ${orgId}
+						AND deleted_at IS NULL
+					FOR UPDATE
+				`;
+
+				// A queue request races the delete. It is NOT awaited inside the
+				// delete transaction: its connection-row lock (or the FK's
+				// key-share lock) blocks until the delete commits, and the delete
+				// must not wait on it or the pair deadlocks.
+				executePromise = manageOperations(
+					{
+						action: "execute",
+						connection_id: lockConn.id,
+						operation_key: "create_item",
+						input: { body: { value: "lock-gap" } },
+					},
+					{} as Env,
+					humanCtx,
+				).then(
+					(result) => ({ ok: result as Record<string, unknown> }),
+					(error) => ({ rejected: String((error as Error).message) }),
+				);
+
+				// Let the queue attempt to land while the delete holds its lock.
+				await new Promise((resolve) => setTimeout(resolve, 200));
+
+				// The delete commits its tombstone; only then may the queue
+				// proceed — and it must be refused because the connection is gone.
+				await tx`
+					UPDATE connections
+					SET deleted_at = NOW(), status = 'paused', updated_at = NOW()
+					WHERE id = ${lockConn.id}
+				`;
+			});
+			// locker.begin committed here: the FOR UPDATE is released and the
+			// queue either completed (RED) or was refused (GREEN).
+			outcome = await executePromise;
+		} finally {
+			await locker.end();
+		}
+		// The queue did NOT create a pending approval on the deleted connection:
+		// either an error result or a rejection is the accepted outcome.
+		const record = (outcome ?? {}) as Record<string, unknown>;
+		expect("rejected" in record || "error" in record).toBe(true);
+
+		const runs = await getTestDb()`
+			SELECT count(*)::int AS n FROM runs
+			WHERE connection_id = ${lockConn.id}
+				AND run_type = 'action'
+				AND approval_status = 'pending'
+		`;
+		expect(runs[0].n).toBe(0);
 	});
 });
 

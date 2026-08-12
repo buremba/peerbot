@@ -97,10 +97,13 @@ import { getOrgUrlContext } from "../view-urls";
 import { action, defineActionTool } from "./action-tool";
 import {
 	type ApprovalReviewer,
+	requireApprovalCard,
 	supersedeActionEvent,
+	terminalizeApprovalRunCompleted,
 } from "./approval-events";
 export {
 	type ApprovalReviewer,
+	requireApprovalCard,
 	supersedeActionEvent,
 } from "./approval-events";
 // Lives in its own module so dispatch-chrome-action does not import this file
@@ -1434,6 +1437,26 @@ async function handleExecute(
 		// createConnectorOperationRun via its db param (which also carries its
 		// connector-version read into the same tx — safe, it is a read).
 		const { claim, eventId } = await sql.begin(async (tx) => {
+			// Serialize approval queueing against connection deletion: take a SHARE
+			// lock on the connection row and re-verify it is still live. A delete's
+			// tombstone+expiry tx holds FOR UPDATE on the same row, so an in-flight
+			// delete blocks this tx until it commits, then this predicate sees the
+			// tombstone and refuses — an approval can never commit into the gap
+			// between a delete's expiry scan and its tombstone. (The runs
+			// FK key-share lock alone would only serialize, not refuse.)
+			const liveConnection = await tx`
+				SELECT 1 FROM connections
+				WHERE id = ${connection.id}
+					AND organization_id = ${ctx.organizationId}
+					AND deleted_at IS NULL
+				FOR SHARE
+			`;
+			if (liveConnection.length === 0) {
+				throw new ToolUserError(
+					`Connection ${args.connection_id} was deleted while this operation was being queued.`,
+					409,
+				);
+			}
 			const createdRun = await createConnectorOperationRun({
 				organizationId: ctx.organizationId,
 				connectionId: connection.id,
@@ -1836,25 +1859,104 @@ async function handleGetRun(
 }
 
 /**
- * Fail-closed guard for managed approval transitions. {@link
- * supersedeActionEvent} returns `undefined` when the run has NO approval card
- * (`current_event_records` has no matching `interaction_type='approval'` row) —
- * which is legitimate only for auto/no-approval worker actions that never had a
- * card. A managed approval DECISION (approve/reject/expire) must never commit
- * its runs write without the card, or the run goes terminal while the timeline
- * stays stuck at the prior card. Callers throw on `undefined` so the enclosing
- * transaction rolls the runs write back.
+ * Durably persist a claimed run's apply/execution output in its OWN
+ * transaction, BEFORE the terminalization attempt. If the terminal card write
+ * then fails, only the terminal status rolls back — the only durable copy of a
+ * successful external result (for agent_ask, the human's answer) survives, and
+ * a retry can complete the run without re-running the mutation or losing the
+ * output. Idempotent: re-writing the same value on a retry is a no-op.
+ *
+ * The guard (status='running' AND approval_status='approved') scopes the write
+ * to the claimed state; a run reaped/terminalized concurrently is left alone.
  */
-function requireApprovalCard(
+async function persistDurableApplyOutput(
 	runId: number,
-	eventId: number | undefined,
-	transition: string,
-): asserts eventId is number {
-	if (eventId === undefined) {
-		throw new Error(
-			`Cannot transition approval run ${runId} to '${transition}': its approval card is missing`,
+	organizationId: string,
+	output: Record<string, unknown>,
+): Promise<void> {
+	const sql = getDb();
+	await sql`
+		UPDATE runs SET action_output = ${sql.json(output)}
+		WHERE id = ${runId}
+			AND organization_id = ${organizationId}
+			AND status = 'running'
+			AND approval_status = 'approved'
+	`;
+}
+
+/**
+ * Re-attempt terminalization of a run whose apply/execution already succeeded
+ * durably but whose 'completed' card write failed and rolled back. Detected by
+ * the durable claim state: approval_status='approved' + status='running' +
+ * action_output NOT NULL — only {@link persistDurableApplyOutput} sets
+ * action_output on a non-terminal run, so the signal is unambiguous.
+ *
+ * Returns a result when the run was reconciled (terminalized from its durable
+ * output, no apply re-run); null when the run is not in that state so the
+ * caller falls through to the normal pending paths.
+ */
+async function tryReconcileTerminalization(
+	args: Static<typeof ApproveAction>,
+	ctx: ToolContext,
+	reviewer: ApprovalReviewer | null,
+): Promise<ManageOperationsResult | null> {
+	const sql = getDb();
+	const rows = await sql`
+		SELECT run_type, action_key, action_input, action_output
+		FROM runs
+		WHERE id = ${args.run_id}
+			AND organization_id = ${ctx.organizationId}
+			AND approval_status = 'approved'
+			AND status = 'running'
+			AND action_output IS NOT NULL
+			AND run_type = ANY(${pgTextArray(["internal", "action"])}::text[])
+		LIMIT 1
+	`;
+	if (rows.length === 0) return null;
+	const row = rows[0] as {
+		run_type: string;
+		action_key: string;
+		action_input: unknown;
+		action_output: Record<string, unknown>;
+	};
+	const output = row.action_output;
+	let title: string;
+	let content: string;
+	let message: string;
+	if (row.run_type === "internal") {
+		const handler = getBuilderApprovalHandlers().find(
+			(candidate) => candidate.actionKey === row.action_key,
 		);
+		if (!handler) return null;
+		const desc = handler.describe(row.action_input);
+		title = `${handler.nounLabel}: ${desc} — completed`;
+		content = `Builder action completed: ${desc}`;
+		message = `${handler.nounLabel} ${desc} approved and applied.`;
+	} else {
+		title = `${row.action_key} — completed`;
+		content = `Operation completed: ${row.action_key}`;
+		message = "Operation approved and executed.";
 	}
+	const eventId = await terminalizeApprovalRunCompleted(
+		args.run_id,
+		ctx.organizationId,
+		output,
+		{ title, content },
+		reviewer,
+	);
+	if (eventId === null) {
+		return {
+			error:
+				"The approval was already decided while this request was in flight. Refresh before acting.",
+		};
+	}
+	return {
+		action: "approve",
+		approved: true,
+		run_id: args.run_id,
+		event_id: eventId,
+		message,
+	};
 }
 
 /**
@@ -2242,31 +2344,38 @@ async function tryApproveBuilderRun(
 		);
 	}
 
-	// Phase 2 (atomic): the terminal completed runs write + the 'completed'
-	// card supersede commit together. OUTSIDE the apply catch: if the card
-	// INSERT fails (or the card is missing — the guard runs INSIDE the tx, so
-	// the completed runs write rolls back too), the run is NOT left completed
-	// or marked 'failed' — it stays in its claimed approved/running state and
-	// the persistence failure propagates to the caller.
-	const eventId = await getDb().begin(async (tx) => {
-		await tx`
-			UPDATE runs SET status = 'completed', completed_at = NOW(),
-				action_output = ${tx.json(output as unknown as Record<string, unknown>)}
-			WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
-		`;
-		const cardId = await supersedeActionEvent(
-			args.run_id,
-			ctx.organizationId,
-			"completed",
-			`${handler.nounLabel}: ${desc} — completed`,
-			`Builder action completed: ${desc}`,
-			{ output: output as unknown as Record<string, unknown> },
-			reviewer,
-			tx,
-		);
-		requireApprovalCard(args.run_id, cardId, "completed");
-		return cardId;
-	});
+	// Phase 2a (durable): persist the successful apply result BEFORE the
+	// terminalization attempt, in its own transaction. If the terminal card
+	// INSERT fails, only the completed status rolls back — the output (for
+	// agent_ask, the human's answer) is already durable, so a retry can complete
+	// the run without re-applying or losing the answer.
+	await persistDurableApplyOutput(
+		args.run_id,
+		ctx.organizationId,
+		output as unknown as Record<string, unknown>,
+	);
+
+	// Phase 2b (atomic): the terminal completed runs write + the 'completed'
+	// card supersede commit together. The card guard runs INSIDE the tx, so a
+	// missing card rolls the completed write back too. A failure here (the
+	// persistence failure propagated to the caller) leaves the run claimed with
+	// its output durable — the stale-run reaper or a re-approve reconciles it.
+	const eventId = await terminalizeApprovalRunCompleted(
+		args.run_id,
+		ctx.organizationId,
+		output as unknown as Record<string, unknown>,
+		{
+			title: `${handler.nounLabel}: ${desc} — completed`,
+			content: `Builder action completed: ${desc}`,
+		},
+		reviewer,
+	);
+	if (eventId === null) {
+		return {
+			error:
+				"The approval was already decided while this request was in flight. Refresh before acting.",
+		};
+	}
 	return {
 		action: "approve",
 		approved: true,
@@ -2916,6 +3025,15 @@ async function handleApprove(
 
 	const sql = getDb();
 
+	// A run whose apply already succeeded durably but whose terminal card write
+	// failed is stuck in the claimed state (approved/running + action_output).
+	// Re-approving reconciles it — completes the run from the durable output
+	// WITHOUT re-running the external mutation — instead of reporting "not
+	// pending approval" (which would strand the run until a reaper misfires).
+	const reviewer = await resolveReviewer(ctx);
+	const reconciled = await tryReconcileTerminalization(args, ctx, reviewer);
+	if (reconciled) return reconciled;
+
 	// Builder-gate runs (manage_agents / manage_behaviors create/update/delete)
 	// reuse this same durable approval path but have run_type='internal' + no
 	// connection. One generic path applies them via their registered handler
@@ -3087,8 +3205,6 @@ async function handleApprove(
 		};
 	}
 
-	const reviewer = await resolveReviewer(ctx);
-
 	// Phase 1 (atomic): claim the run (approval_status → approved) AND write the
 	// 'confirmed' card in ONE transaction. If the card INSERT fails (or the card
 	// is missing), the claim rolls back and the run stays pending — never an
@@ -3166,28 +3282,30 @@ async function handleApprove(
 	);
 
 	if (result.status === "completed") {
-		// Phase 2 (atomic): terminal completed runs write + 'completed' card.
+		// Phase 2a (durable): persist the execution output BEFORE the
+		// terminalization attempt so a failed completed-card write cannot lose
+		// the only durable record of an already-successful external mutation.
+		await persistDurableApplyOutput(args.run_id, ctx.organizationId, result.output);
+
+		// Phase 2b (atomic): terminal completed runs write + 'completed' card.
 		// The card guard runs INSIDE the tx so a missing card rolls the
 		// completed runs write back.
-		await sql.begin(async (tx) => {
-			await tx`
-				UPDATE runs SET status = 'completed', completed_at = NOW(),
-					action_output = ${tx.json(result.output)}
-				WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
-			`;
-			const cardId = await supersedeActionEvent(
-				args.run_id,
-				ctx.organizationId,
-				"completed",
-				`${run.action_key} — completed`,
-				`Operation completed: ${run.action_key}`,
-				{ output: result.output },
-				reviewer,
-				tx,
-			);
-			requireApprovalCard(args.run_id, cardId, "completed");
-			return cardId;
-		});
+		const terminalCardId = await terminalizeApprovalRunCompleted(
+			args.run_id,
+			ctx.organizationId,
+			result.output,
+			{
+				title: `${run.action_key} — completed`,
+				content: `Operation completed: ${run.action_key}`,
+			},
+			reviewer,
+		);
+		if (terminalCardId === null) {
+			return {
+				error:
+					"The approval was already decided while this request was in flight. Refresh before acting.",
+			};
+		}
 		return {
 			action: "approve",
 			approved: true,

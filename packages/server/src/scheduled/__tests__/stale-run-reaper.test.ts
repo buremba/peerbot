@@ -450,6 +450,81 @@ describe("reapStaleRuns — connector lanes", () => {
 		}
 	});
 
+	// A claimed run whose APPLY already succeeded durably (action_output is
+	// persisted on a running/approved run) is a "terminalization pending" row: the
+	// external mutation already happened and only the completed card write failed.
+	// The reaper must COMPLETE it from the durable output, never report a FALSE
+	// timeout that would mislabel an already-successful external mutation.
+	test("an approved action run with durable output is completed, not timed out", async () => {
+		const runId = await seedRun({
+			status: "running",
+			lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+			claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+			runType: "action",
+			approvalStatus: "approved",
+		});
+		await seedApprovedActionCard(runId);
+		await getDb()`
+			UPDATE runs SET action_output = ${getDb().json({ body: { created: true } })}
+			WHERE id = ${runId}
+		`;
+
+		const result = await reapStaleRuns();
+
+		expect(result.reaped).toBe(1);
+		// (RED today: the reaper marks it 'timeout' + the card 'failed'.)
+		expect(await statusOf(runId)).toBe("completed");
+		expect(await currentApprovalCardStatus(runId)).toBe("completed");
+		const [run] = (await getDb()`
+			SELECT action_output FROM runs WHERE id = ${runId}
+		`) as unknown as Array<{ action_output: Record<string, unknown> }>;
+		expect(run.action_output).toEqual({ body: { created: true } });
+	});
+
+	test("approved action output completion rolls back when the completed card write fails", async () => {
+		const runId = await seedRun({
+			status: "running",
+			lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+			claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+			runType: "action",
+			approvalStatus: "approved",
+		});
+		await seedApprovedActionCard(runId);
+		await getDb()`
+			UPDATE runs SET action_output = ${getDb().json({ body: { created: true } })}
+			WHERE id = ${runId}
+		`;
+		await getDb().unsafe(`
+      CREATE OR REPLACE FUNCTION test_fail_stale_completed_event()
+        RETURNS trigger AS $fn$
+      BEGIN
+        IF NEW.interaction_type = 'approval' AND NEW.interaction_status = 'completed' THEN
+          RAISE EXCEPTION 'simulated stale completed-event write failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $fn$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_fail_stale_completed_event_trg
+        BEFORE INSERT ON events
+        FOR EACH ROW EXECUTE FUNCTION test_fail_stale_completed_event();
+    `);
+
+		try {
+			const result = await reapStaleRuns();
+
+			// The failed completed-card write rolls the completion back; the run
+			// stays running (its durable output intact) for the next tick.
+			expect(result.reaped).toBe(0);
+			expect(await statusOf(runId)).toBe("running");
+			expect(await currentApprovalCardStatus(runId)).toBe("approved");
+		} finally {
+			await getDb().unsafe(`
+				DROP TRIGGER IF EXISTS test_fail_stale_completed_event_trg ON events;
+				DROP FUNCTION IF EXISTS test_fail_stale_completed_event();
+			`);
+		}
+	});
+
 	test("claimed rows that never sent any heartbeat are reaped via claimed_at", async () => {
 		const id = await seedRun({
 			status: "claimed",

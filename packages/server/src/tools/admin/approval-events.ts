@@ -13,6 +13,75 @@ export interface ApprovalReviewer {
 }
 
 /**
+ * Fail-closed guard for a managed approval DECISION's card. {@link
+ * supersedeActionEvent} returns `undefined` when the run has NO approval card
+ * (`current_event_records` has no matching `interaction_type='approval'` row) —
+ * which is legitimate only for auto/no-approval worker actions that never had a
+ * card. A managed approval DECISION (approve/reject/expire) must never commit
+ * its runs write without the card, or the run goes terminal while the timeline
+ * stays stuck at the prior card. Callers throw on `undefined` so the enclosing
+ * transaction rolls the runs write back.
+ */
+export function requireApprovalCard(
+	runId: number,
+	eventId: number | undefined,
+	transition: string,
+): asserts eventId is number {
+	if (eventId === undefined) {
+		throw new Error(
+			`Cannot transition approval run ${runId} to '${transition}': its approval card is missing`,
+		);
+	}
+}
+
+/**
+ * Atomically persist a claimed run's terminal 'completed' state AND its
+ * 'completed' card. The runs write is guarded (status='running' AND
+ * approval_status='approved'), so concurrent terminalizations — a human retry
+ * and the stale-run reaper — cannot double-finalize: exactly one UPDATE wins,
+ * the loser matches zero rows and writes no card. The card guard runs INSIDE
+ * the tx, so a missing card rolls the completed write back (fail-closed).
+ *
+ * Returns the completed card event id, or null when the run was no longer in
+ * the claimed state (already terminalized concurrently) — the caller returns a
+ * "decided concurrently" outcome instead of writing anything.
+ */
+export async function terminalizeApprovalRunCompleted(
+	runId: number,
+	organizationId: string,
+	output: Record<string, unknown>,
+	card: { title: string; content: string },
+	reviewer: ApprovalReviewer | null,
+	db: DbClient = getDb(),
+): Promise<number | null> {
+	return db.begin(async (tx) => {
+		const rows = await tx`
+			UPDATE runs
+			SET status = 'completed', completed_at = NOW(),
+				action_output = ${tx.json(output)}
+			WHERE id = ${runId}
+				AND organization_id = ${organizationId}
+				AND status = 'running'
+				AND approval_status = 'approved'
+			RETURNING id
+		`;
+		if (rows.length === 0) return null;
+		const cardId = await supersedeActionEvent(
+			runId,
+			organizationId,
+			"completed",
+			card.title,
+			card.content,
+			{ output },
+			reviewer,
+			tx,
+		);
+		requireApprovalCard(runId, cardId, "completed");
+		return cardId;
+	});
+}
+
+/**
  * Append the next durable state of an approval card, optionally on the
  * caller's transaction handle. Returns undefined when the run has no current
  * approval card so managed transitions can fail closed before committing the

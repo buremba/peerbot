@@ -45,7 +45,10 @@ import { feedBackoff } from '../connectors/feed-backoff';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { classifyRunOutcome } from '../runs/run-outcome';
-import { supersedeActionEvent } from '../tools/admin/approval-events';
+import {
+  supersedeActionEvent,
+  terminalizeApprovalRunCompleted,
+} from '../tools/admin/approval-events';
 import { expireStaleConnectTokens } from '../utils/connect-tokens';
 import logger from '../utils/logger';
 import { reconcileWatcherRuns, sweepStaleWatcherRuns } from '../watchers/automation';
@@ -121,17 +124,48 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
       // staleness predicate, so a worker heartbeat/completion that wins after
       // the candidate read makes this a no-op rather than being overwritten.
       const approvedActionCandidates = (await reserved`
-        SELECT id
+        SELECT id, organization_id, action_key, action_output
         FROM public.runs
         WHERE ${reserved.unsafe(staleWhereSql)}
           AND run_type = 'action'
           AND approval_status = 'approved'
         ORDER BY id
-      `) as unknown as Array<{ id: number | string }>;
+      `) as unknown as Array<{
+        id: number | string;
+        organization_id: string;
+        action_key: string | null;
+        action_output: Record<string, unknown> | null;
+      }>;
       let approvalActionsReaped = 0;
       for (const candidate of approvedActionCandidates) {
         const runId = Number(candidate.id);
         try {
+          // A claimed action run with a DURABLE action_output already persisted
+          // is a terminalization-PENDING row: the external mutation succeeded
+          // and only the 'completed' card write failed. Complete it from the
+          // durable output — reporting a FALSE timeout here would mislabel an
+          // already-successful mutation as a failure. The completion is guarded
+          // (status='running' AND approval_status='approved') and shares its tx
+          // with the card, so a concurrent human retry or another pod's reaper
+          // tick cannot double-finalize, and a card failure rolls it back for
+          // the next tick to retry.
+          if (candidate.action_output != null) {
+            const actionKey = candidate.action_key ?? 'Action';
+            const eventId = await terminalizeApprovalRunCompleted(
+              runId,
+              candidate.organization_id,
+              candidate.action_output,
+              {
+                title: `${actionKey} — completed`,
+                content: `Operation completed: ${actionKey}`,
+              },
+              null,
+              sql
+            );
+            if (eventId !== null) approvalActionsReaped += 1;
+            continue;
+          }
+
           const didReap = await sql.begin(async (tx) => {
             const rows = await tx.unsafe<{
               organization_id: string;

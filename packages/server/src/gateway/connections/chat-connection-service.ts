@@ -469,15 +469,20 @@ export async function updateChatConnection(input: {
 export async function deleteChatConnection(
 	organizationId: string,
 	connectionId: number,
+	opts?: { skipConnectionTombstone?: boolean },
 ): Promise<void> {
 	const row = await getChatConnectionRow(organizationId, connectionId);
 	if (!row) throw new Error("Chat connection not found");
 	const manager = requireManager();
 	if (row.credential_mode === "managed") {
-		await manager.revokeManagedConnection(connectionId);
+		await manager.revokeManagedConnection(connectionId, {
+			skipTombstone: opts?.skipConnectionTombstone,
+		});
 		return;
 	}
 	await orgContext.run({ organizationId }, () =>
-		manager.removeConnection(slugToRuntimeConnectionId(row.slug)),
+		manager.removeConnection(slugToRuntimeConnectionId(row.slug), {
+			skipTombstone: opts?.skipConnectionTombstone,
+		}),
 	);
 }

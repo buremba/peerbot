@@ -1,18 +1,21 @@
 import type { Env } from "@lobu/connector-sdk";
+import { createHash } from "node:crypto";
 import { type DbClient, getDb } from "../db/client";
 
 export const PRODUCT_OPS_DIGEST_TASK = "product-ops-digest";
 const DEFAULT_WINDOW_MS = 20 * 60 * 1000;
 const LOG_INGESTION_LAG_MS = 2 * 60 * 1000;
-const ACTIVE_ALERT_MS = 15 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 15_000;
 const DETAIL_LIMIT = 10;
 
 export interface ProductOpsDigestConfig {
   lokiUrl: string;
-  alertmanagerUrl: string;
   namespace: string;
   grafanaUrl?: string;
+  slackOrganizationId: string;
+  slackConnectionSlug: string;
+  slackTeamId: string;
+  slackChannelId: string;
 }
 
 export interface ProductOpsDigestWindow {
@@ -60,8 +63,15 @@ interface RunProductOpsDigestParams {
   config: ProductOpsDigestConfig;
   store?: ProductOpsDigestStore;
   fetchImpl?: typeof fetch;
-  now?: () => Date;
+  deliverDigest: ProductOpsDigestDelivery;
 }
+
+export type ProductOpsDigestDelivery = (params: {
+  config: ProductOpsDigestConfig;
+  window: ProductOpsDigestWindow;
+  message: string;
+  clientMessageId: string;
+}) => Promise<void>;
 
 export interface ProductOpsDigestResult {
   posted: boolean;
@@ -76,20 +86,37 @@ export function productOpsDigestConfigFromEnv(
   if (env.LOBU_PRODUCT_OPS_DIGEST_ENABLED !== "1") return null;
 
   const lokiUrl = env.LOBU_PRODUCT_OPS_LOKI_URL?.trim();
-  const alertmanagerUrl = env.LOBU_PRODUCT_OPS_ALERTMANAGER_URL?.trim();
   const namespace = env.LOBU_PRODUCT_OPS_NAMESPACE?.trim();
-  if (!lokiUrl || !alertmanagerUrl || !namespace) {
+  const slackOrganizationId =
+    env.LOBU_PRODUCT_OPS_SLACK_ORGANIZATION_ID?.trim();
+  const slackConnectionSlug =
+    env.LOBU_PRODUCT_OPS_SLACK_CONNECTION_SLUG?.trim();
+  const slackTeamId = env.LOBU_PRODUCT_OPS_SLACK_TEAM_ID?.trim();
+  const slackChannelId = env.LOBU_PRODUCT_OPS_SLACK_CHANNEL_ID?.trim();
+  if (
+    !lokiUrl ||
+    !namespace ||
+    !slackOrganizationId ||
+    !slackConnectionSlug ||
+    !slackTeamId ||
+    !slackChannelId
+  ) {
     throw new Error(
       "LOBU_PRODUCT_OPS_DIGEST_ENABLED requires LOBU_PRODUCT_OPS_LOKI_URL, " +
-        "LOBU_PRODUCT_OPS_ALERTMANAGER_URL, and LOBU_PRODUCT_OPS_NAMESPACE",
+        "LOBU_PRODUCT_OPS_NAMESPACE, LOBU_PRODUCT_OPS_SLACK_ORGANIZATION_ID, " +
+        "LOBU_PRODUCT_OPS_SLACK_CONNECTION_SLUG, LOBU_PRODUCT_OPS_SLACK_TEAM_ID, " +
+        "and LOBU_PRODUCT_OPS_SLACK_CHANNEL_ID",
     );
   }
 
   const grafanaUrl = env.LOBU_PRODUCT_OPS_GRAFANA_URL?.trim();
   return {
     lokiUrl: trimTrailingSlash(lokiUrl),
-    alertmanagerUrl: trimTrailingSlash(alertmanagerUrl),
     namespace,
+    slackOrganizationId,
+    slackConnectionSlug,
+    slackTeamId,
+    slackChannelId,
     ...(grafanaUrl ? { grafanaUrl } : {}),
   };
 }
@@ -193,7 +220,7 @@ export async function runProductOpsDigest({
   config,
   store = createProductOpsDigestStore(),
   fetchImpl = fetch,
-  now = () => new Date(),
+  deliverDigest,
 }: RunProductOpsDigestParams): Promise<ProductOpsDigestResult> {
   const window = await store.resolveWindow(taskRunId);
   const activity: ProductOpsActivity = {
@@ -206,9 +233,9 @@ export async function runProductOpsDigest({
   let posted = false;
 
   // A later tick may be claimed by another replica while an older tick is
-  // retrying. Catch up one exact interval at a time: the interval end is the
-  // Alertmanager fingerprint, so concurrent/retried sends dedupe without a
-  // second lock while every missed interval remains recoverable.
+  // retrying. Catch up one exact interval at a time: the interval end derives
+  // Slack's deterministic client_msg_id, so concurrent/retried sends resolve
+  // to the same message while every missed interval remains recoverable.
   for (const interval of splitDigestWindows(window)) {
     const [intervalActivity, intervalLogs] = await Promise.all([
       store.collectActivity(interval),
@@ -222,53 +249,23 @@ export async function runProductOpsDigest({
     logs.warnings += intervalLogs.warnings;
 
     if (!hasDigestActivity(intervalActivity, intervalLogs)) continue;
-    await deliverDigestAlert(
+    await deliverDigest({
       config,
-      interval,
-      intervalActivity,
-      intervalLogs,
-      fetchImpl,
-      now(),
-    );
+      window: interval,
+      message:
+        `*Lobu production activity digest*\n` +
+        formatDigestDescription(
+          config,
+          interval,
+          intervalActivity,
+          intervalLogs,
+        ),
+      clientMessageId: digestClientMessageId(interval.end),
+    });
     posted = true;
   }
 
   return { posted, window, activity, logs };
-}
-
-async function deliverDigestAlert(
-  config: ProductOpsDigestConfig,
-  window: ProductOpsDigestWindow,
-  activity: ProductOpsActivity,
-  logs: ProductOpsLogCounts,
-  fetchImpl: typeof fetch,
-  deliveryTime: Date,
-): Promise<void> {
-  const description = formatDigestDescription(config, window, activity, logs);
-  const alert = {
-    labels: {
-      alertname: "LobuProductOpsDigest",
-      severity: "info",
-      namespace: config.namespace,
-      digest_window_end: window.end.toISOString().replace(/[.:]/g, "_"),
-    },
-    annotations: {
-      summary: "Lobu production activity digest",
-      description,
-    },
-    startsAt: deliveryTime.toISOString(),
-    endsAt: new Date(deliveryTime.getTime() + ACTIVE_ALERT_MS).toISOString(),
-    ...(config.grafanaUrl ? { generatorURL: config.grafanaUrl } : {}),
-  };
-  const response = await fetchImpl(`${config.alertmanagerUrl}/api/v2/alerts`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify([alert]),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-  if (!response.ok) {
-    throw new Error(`Alertmanager delivery failed with ${response.status}`);
-  }
 }
 
 function splitDigestWindows(
@@ -480,4 +477,16 @@ function escapeLogQlString(value: string): string {
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+function digestClientMessageId(windowEnd: Date): string {
+  const bytes = createHash("sha256")
+    .update(`lobu-product-ops-digest:${windowEnd.toISOString()}`)
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-` +
+    `${hex.slice(16, 20)}-${hex.slice(20)}`;
 }

@@ -86,6 +86,9 @@ export async function listOrgInstalled(
 				detail: {
 					version: row.version,
 					description: row.description,
+					// Persistent incarnation id (`connector_definitions.id`) — the
+					// `owned` identity `lobu apply` uses for delete eligibility.
+					connector_definition_id: row.id ?? null,
 					status: row.status,
 					login_enabled: Boolean(row.login_enabled),
 					auth_schema: row.auth_schema,

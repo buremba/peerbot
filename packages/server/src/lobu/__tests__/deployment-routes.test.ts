@@ -493,3 +493,146 @@ describe('deployment snapshots + promotions pause (lobu rollback)', () => {
     expect(after.paused).toBe(false);
   });
 });
+
+describe('blocked deployments + GET /deployments/latest', () => {
+  test('POST accepts status=blocked with candidates', async () => {
+    const app = await importDeploymentRoutes();
+    const res = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(
+        summaryBody({
+          apply_id: 'apl_22222222-2222-2222-2222-222222222222',
+          status: 'blocked',
+          counts: { create: 0, update: 0, noop: 0, drift: 2, delete: 0 },
+          candidates: {
+            token: 'lobu1:tkn_abc',
+            items: [{ kind: 'entity-type', slug: 'contact', action: 'delete' }],
+          },
+        })
+      ),
+    });
+    expect(res.status).toBe(201);
+
+    const detail = await app.request('/apl_22222222-2222-2222-2222-222222222222');
+    expect(detail.status).toBe(200);
+    const body = (await detail.json()) as any;
+    expect(body.deployment.status).toBe('blocked');
+    expect(body.deployment.candidates.token).toBe('lobu1:tkn_abc');
+    expect(body.deployment.candidates.items[0].slug).toBe('contact');
+  });
+
+  test('POST still rejects an unknown status', async () => {
+    const app = await importDeploymentRoutes();
+    const res = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(summaryBody({ status: 'exploded' })),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test('POST succeeded rejects a non-admin session member (forge baseline)', async () => {
+    const prev = authStash.memberRole;
+    authStash.memberRole = 'member';
+    try {
+      const app = await importDeploymentRoutes();
+      const res = await app.request('/', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(
+          summaryBody({
+            apply_id: 'apl_44444444-4444-4444-4444-444444444444',
+            status: 'succeeded',
+          })
+        ),
+      });
+      expect(res.status).toBe(403);
+    } finally {
+      authStash.memberRole = prev;
+    }
+  });
+
+  test('POST blocked still allows a non-admin session member', async () => {
+    const prev = authStash.memberRole;
+    authStash.memberRole = 'member';
+    try {
+      const app = await importDeploymentRoutes();
+      const res = await app.request('/', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(
+          summaryBody({
+            apply_id: 'apl_55555555-5555-5555-5555-555555555555',
+            status: 'blocked',
+            candidates: { items: [{ kind: 'entity-type', slug: 'x' }] },
+          })
+        ),
+      });
+      expect(res.status).toBe(201);
+    } finally {
+      authStash.memberRole = prev;
+    }
+  });
+
+  test('GET /latest returns the newest succeeded deployment, ignoring blocked/standalone rows', async () => {
+    const app = await importDeploymentRoutes();
+
+    // First succeeded run.
+    await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(
+        summaryBody({
+          apply_id: 'apl_33333333-3333-3333-3333-333333333333',
+          manifest_hash: 'sha256:first',
+        })
+      ),
+    });
+    // A blocked run + a standalone UI edit land after it — must not shadow it.
+    await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(
+        summaryBody({
+          apply_id: 'apl_44444444-4444-4444-4444-444444444444',
+          status: 'blocked',
+          counts: { drift: 1 },
+        })
+      ),
+    });
+    await insertConfigEvent({
+      organizationId: ORG,
+      resourceKind: 'behavior',
+      resourceId: 'w-late',
+      op: 'created',
+      state: {},
+      actorSource: 'ui',
+    });
+    // A second succeeded run is the true baseline.
+    await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(
+        summaryBody({
+          apply_id: 'apl_55555555-5555-5555-5555-555555555555',
+          manifest_hash: 'sha256:second',
+        })
+      ),
+    });
+
+    const res = await app.request('/latest');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { deployment: any };
+    expect(body.deployment.applyId).toBe('apl_55555555-5555-5555-5555-555555555555');
+    expect(body.deployment.status).toBe('succeeded');
+    expect(body.deployment.manifestHash).toBe('sha256:second');
+  });
+
+  test('GET /latest returns deployment:null when no succeeded run exists', async () => {
+    const app = await importDeploymentRoutes();
+    const res = await app.request('/latest');
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).deployment).toBeNull();
+  });
+});

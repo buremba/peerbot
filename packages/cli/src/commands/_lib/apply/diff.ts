@@ -18,6 +18,7 @@ import type {
 import type {
   DesiredAgent,
   DesiredAuthProfile,
+  DesiredBehaviorTrigger,
   DesiredConnection,
   DesiredConnectorDefinition,
   DesiredEntityType,
@@ -27,7 +28,11 @@ import type {
   DesiredState,
   DesiredWatcher,
 } from "./desired-state.js";
-import { declaredConnectorKeys, referencedConnectorKeys } from "./shared.js";
+import {
+  type BehaviorSource,
+  declaredConnectorKeys,
+  referencedConnectorKeys,
+} from "./shared.js";
 
 // ── Diff verbs ──────────────────────────────────────────────────────────────
 
@@ -133,6 +138,49 @@ export interface InferenceProviderDiffRow
   capabilityModalities?: InferenceModality[];
 }
 
+/**
+ * A field-level blocking drift item: the remote moved a field the config
+ * doesn't declare, or both config and remote moved it (fail-closed). Apply
+ * must not converge over it — the whole run blocks and reports this.
+ */
+export interface BlockingDriftRow extends BaseRow {
+  verb: "drift";
+  /** Always true — distinguishes blocking drift from legacy non-blocking drift. */
+  blocking: true;
+  kind: "entity-type" | "relationship-type" | "watcher";
+  id: string;
+  /** The moved field (entity/rel: `name`, `description`, `properties.<key>`, …). */
+  field?: string;
+  /** The remote-side value that moved — shown in the blocked report. */
+  remoteChange?: unknown;
+}
+
+/**
+ * The attribution baseline: what the remote looked like after the last
+ * succeeded apply, plus the set of definition incarnation identities
+ * (`${kind}:${id}`) this config actually applied. Drives "who moved".
+ */
+export interface AttributionSnapshot {
+  entityTypes: RemoteEntityType[];
+  relationshipTypes: RemoteRelationshipType[];
+  watchers: RemoteBehavior[];
+}
+
+export interface Baseline {
+  attribution: AttributionSnapshot;
+  /** `${kind}:${id}` — delete-eligible definition incarnation identities. */
+  owned: Set<string>;
+  /**
+   * Connector key → version recorded after the last succeeded apply (from the
+   * deployment manifest's `connector_versions`). Used to refuse config-expressed
+   * connector deletes when the remote incarnation was edited post-baseline.
+   */
+  connectorVersions?: Record<string, string>;
+}
+
+export const ownedKey = (kind: string, id: number | string | undefined) =>
+  id === undefined ? "" : `${kind}:${id}`;
+
 export type DiffRow =
   | AgentDiffRow
   | SettingsDiffRow
@@ -143,7 +191,8 @@ export type DiffRow =
   | AuthProfileDiffRow
   | ConnectionDiffRow
   | FeedDiffRow
-  | InferenceProviderDiffRow;
+  | InferenceProviderDiffRow
+  | BlockingDriftRow;
 
 export interface DiffPlan {
   rows: DiffRow[];
@@ -486,6 +535,719 @@ function diffRelationshipType(
   }) as RelationshipTypeDiffRow;
 }
 
+// ── Three-way attribution (baseline-aware) ───────────────────────────────────
+//
+// With a baseline, a declared definition's fields are compared three ways
+// (desired / remote / attribution). `configMoved` fields converge (config
+// wins); `remoteMoved` fields block (the remote changed and the config didn't,
+// or both moved — never guess). Without a baseline entry, any mismatch blocks.
+
+type FieldOutcome = "noop" | "configMoved" | "remoteMoved";
+
+function classifyField(
+  desired: unknown,
+  remote: unknown,
+  attribution: unknown | undefined
+): FieldOutcome {
+  if (deepEqual(desired, remote)) return "noop";
+  // `undefined` is a VALID prior field value (e.g. a property the config is
+  // adding that neither the remote nor the baseline had) — presence in the
+  // baseline is the callers' concern, not a field-value sentinel here.
+  if (deepEqual(remote, attribution)) return "configMoved";
+  return "remoteMoved";
+}
+
+interface ThreeWayResult {
+  changedFields: string[];
+  blockingFields: Array<{ field: string; remoteChange: unknown }>;
+}
+
+/** Three-way per-field classification over a list of (name, desired, remote, attribution) triples. */
+function classifyThreeWay(
+  triples: Array<{
+    field: string;
+    desired: unknown;
+    remote: unknown;
+    attribution: unknown | undefined;
+  }>
+): ThreeWayResult {
+  const changedFields: string[] = [];
+  const blockingFields: Array<{ field: string; remoteChange: unknown }> = [];
+  for (const t of triples) {
+    const outcome = classifyField(t.desired, t.remote, t.attribution);
+    if (outcome === "configMoved") changedFields.push(t.field);
+    else if (outcome === "remoteMoved") {
+      blockingFields.push({ field: t.field, remoteChange: t.remote });
+    }
+  }
+  return { changedFields, blockingFields };
+}
+
+/** Entity-type fields compared per-property-key, three-way, with the baseline. */
+function compareEntityTypeThreeWay(
+  desired: DesiredEntityType,
+  remote: RemoteEntityType,
+  attribution: RemoteEntityType | undefined,
+  prune: boolean
+): ThreeWayResult {
+  const triples: Array<{
+    field: string;
+    desired: unknown;
+    remote: unknown;
+    attribution: unknown | undefined;
+  }> = [
+    {
+      field: "name",
+      desired: desired.name,
+      remote: remote.name,
+      attribution: attribution?.name,
+    },
+    {
+      field: "description",
+      desired: desired.description,
+      remote: remote.description,
+      attribution: attribution?.description,
+    },
+    {
+      // Under prune, omitting required means "clear to []" — normalize so an
+      // already-empty remote does not perpetual-update (undefined ≠ []).
+      field: "required",
+      desired:
+        desired.required !== undefined
+          ? desired.required
+          : prune
+            ? []
+            : undefined,
+      remote: remote.required ?? [],
+      attribution: attribution?.required ?? [],
+    },
+    {
+      field: "backing",
+      desired: desired.backing,
+      remote: remote.backing,
+      attribution: attribution?.backing,
+    },
+    {
+      field: "metrics",
+      desired: desired.metrics,
+      remote: remote.metrics,
+      attribution: attribution?.metrics,
+    },
+    {
+      field: "eventKinds",
+      desired: desired.eventKinds,
+      remote: remote.eventKinds,
+      attribution: attribution?.eventKinds,
+    },
+    {
+      field: "viewTemplate",
+      desired: desired.viewTemplate,
+      remote: remote.viewTemplate,
+      attribution: attribution?.viewTemplate,
+    },
+    {
+      field: "resolutionPolicy",
+      desired: desired.resolutionPolicy?.["x-lobu-resolution"],
+      remote: remote.schemaExtras?.["x-lobu-resolution"],
+      attribution: attribution?.schemaExtras?.["x-lobu-resolution"],
+    },
+  ];
+  const propKeys = new Set<string>();
+  for (const p of Object.keys(desired.properties ?? {})) propKeys.add(p);
+  for (const p of Object.keys(remote.properties ?? {})) propKeys.add(p);
+  for (const key of [...propKeys].sort()) {
+    triples.push({
+      field: `properties.${key}`,
+      desired: desired.properties?.[key],
+      remote: remote.properties?.[key],
+      attribution: attribution?.properties?.[key],
+    });
+  }
+  // Facets the config omits are UNMANAGED outside prune (the server keeps them
+  // — eventKinds/viewTemplate/properties round-trip untouched). Only under
+  // prune does omission mean "remove". Without this, an unchanged omitted facet
+  // would be misclassified as config-moved and executePlan would clear it.
+  // name/description are unmanaged under BOTH prune and non-prune: upsert
+  // never clears them when omitted, so a configMoved classification would
+  // perpetual-update without effect.
+  const alwaysUnmanaged = new Set(["name", "description"]);
+  const omittableOutsidePrune = new Set([
+    "required",
+    "backing",
+    "metrics",
+    "eventKinds",
+    "viewTemplate",
+    "resolutionPolicy",
+  ]);
+  return classifyThreeWay(
+    triples.filter((t) => {
+      if (t.desired !== undefined) return true;
+      if (alwaysUnmanaged.has(t.field)) return false;
+      if (
+        !prune &&
+        (omittableOutsidePrune.has(t.field) ||
+          t.field.startsWith("properties."))
+      ) {
+        return false;
+      }
+      return true;
+    })
+  );
+}
+
+/** Relationship-type fields, three-way with the baseline. */
+function compareRelationshipTypeThreeWay(
+  desired: DesiredRelationshipType,
+  remote: RemoteRelationshipType,
+  attribution: RemoteRelationshipType | undefined
+): ThreeWayResult {
+  // name/description are unmanaged when omitted (upsert never clears them).
+  const triples = [
+    {
+      field: "name",
+      desired: desired.name,
+      remote: remote.name,
+      attribution: attribution?.name,
+    },
+    {
+      field: "description",
+      desired: desired.description,
+      remote: remote.description,
+      attribution: attribution?.description,
+    },
+    {
+      field: "rules",
+      desired: desired.rules ?? [],
+      remote: remote.rules ?? [],
+      attribution: attribution?.rules ?? [],
+    },
+  ];
+  return classifyThreeWay(
+    triples.filter(
+      (t) =>
+        t.desired !== undefined ||
+        (t.field !== "name" && t.field !== "description")
+    )
+  );
+}
+
+/**
+ * A declared definition against a baseline: the three-way compare. Emits the
+ * converging update row (config-moved fields) plus blocking-drift rows
+ * (remote-moved fields). A declared-but-absent-from-baseline definition is
+ * ambiguous and blocks as a whole.
+ */
+function diffEntityTypeWithBaseline(
+  desired: DesiredEntityType,
+  remote: RemoteEntityType | undefined,
+  baseline: Baseline | undefined,
+  prune: boolean
+): { row: EntityTypeDiffRow; blocking: BlockingDriftRow[] } {
+  if (!remote) {
+    return { row: diffEntityType(desired, remote, prune), blocking: [] };
+  }
+  if (!baseline) {
+    return { row: diffEntityType(desired, remote, prune), blocking: [] };
+  }
+  const attr = baseline.attribution.entityTypes.find(
+    (a) => a.slug === desired.slug
+  );
+  if (!attr) {
+    // No baseline entry — ambiguous only when this apply would actually CHANGE
+    // the remote. A definition the apply leaves untouched is a noop, so an
+    // existing org can establish its first baseline without blocking. The test
+    // is prune-aware because the projection is: under prune an omitted
+    // eventKinds/viewTemplate/backing is a removal, so it does not compare
+    // equal and the ambiguity blocks instead of recording a phantom baseline.
+    const inSync = deepEqual(
+      effectiveEntityTypeAfterApply(desired, remote, prune),
+      remoteEntityTypeFacets(remote)
+    );
+    if (inSync) {
+      return {
+        row: {
+          kind: "entity-type",
+          verb: "noop",
+          id: desired.slug,
+          desired,
+          remote,
+        },
+        blocking: [],
+      };
+    }
+    return {
+      row: {
+        kind: "entity-type",
+        verb: "noop",
+        id: desired.slug,
+        desired,
+        remote,
+      },
+      blocking: [
+        {
+          kind: "entity-type",
+          verb: "drift",
+          blocking: true,
+          id: desired.slug,
+          // Field-qualified so blocked candidates use action=revert, not delete.
+          field: "definition",
+        },
+      ],
+    };
+  }
+  const threeWay = compareEntityTypeThreeWay(desired, remote, attr, prune);
+  return {
+    row: {
+      kind: "entity-type",
+      verb: threeWay.changedFields.length > 0 ? "update" : "noop",
+      id: desired.slug,
+      desired,
+      remote,
+      ...(threeWay.changedFields.length > 0
+        ? { changedFields: threeWay.changedFields }
+        : {}),
+    },
+    blocking: threeWay.blockingFields.map((b) => ({
+      kind: "entity-type",
+      verb: "drift",
+      blocking: true,
+      id: desired.slug,
+      field: b.field,
+      remoteChange: b.remoteChange,
+    })),
+  };
+}
+
+function diffRelationshipTypeWithBaseline(
+  desired: DesiredRelationshipType,
+  remote: RemoteRelationshipType | undefined,
+  baseline: Baseline | undefined
+): { row: RelationshipTypeDiffRow; blocking: BlockingDriftRow[] } {
+  if (!remote) {
+    return { row: diffRelationshipType(desired, remote), blocking: [] };
+  }
+  if (!baseline) {
+    return { row: diffRelationshipType(desired, remote), blocking: [] };
+  }
+  const attr = baseline.attribution.relationshipTypes.find(
+    (a) => a.slug === desired.slug
+  );
+  if (!attr) {
+    // Same first-baseline test as entity types: block only when the apply would
+    // change the remote. An omitted optional name/description is not an
+    // operator opinion (upsert never clears them), so it must not block.
+    const inSync = deepEqual(
+      effectiveRelationshipTypeAfterApply(desired, remote),
+      remoteRelationshipTypeFacets(remote)
+    );
+    if (inSync) {
+      return {
+        row: {
+          kind: "relationship-type",
+          verb: "noop",
+          id: desired.slug,
+          desired,
+          remote,
+        },
+        blocking: [],
+      };
+    }
+    return {
+      row: {
+        kind: "relationship-type",
+        verb: "noop",
+        id: desired.slug,
+        desired,
+        remote,
+      },
+      blocking: [
+        {
+          kind: "relationship-type",
+          verb: "drift",
+          blocking: true,
+          field: "definition",
+          id: desired.slug,
+        },
+      ],
+    };
+  }
+  const threeWay = compareRelationshipTypeThreeWay(desired, remote, attr);
+  return {
+    row: {
+      kind: "relationship-type",
+      verb: threeWay.changedFields.length > 0 ? "update" : "noop",
+      id: desired.slug,
+      desired,
+      remote,
+      ...(threeWay.changedFields.length > 0
+        ? { changedFields: threeWay.changedFields }
+        : {}),
+    },
+    blocking: threeWay.blockingFields.map((b) => ({
+      kind: "relationship-type",
+      verb: "drift",
+      blocking: true,
+      id: desired.slug,
+      field: b.field,
+      remoteChange: b.remoteChange,
+    })),
+  };
+}
+
+/**
+ * The entity-type facets a comparison cares about, normalized so an absent
+ * collection and an empty one compare equal.
+ */
+export interface EntityTypeFacets {
+  name: string | undefined;
+  description: string | undefined;
+  required: string[];
+  properties: Record<string, unknown>;
+  backing: unknown;
+  metrics: unknown;
+  eventKinds: unknown;
+  viewTemplate: unknown;
+  schemaExtras: Record<string, unknown>;
+}
+
+const normalizeEntityFacets = (e: {
+  name?: string;
+  description?: string;
+  required?: string[];
+  properties?: Record<string, unknown>;
+  backing?: unknown;
+  metrics?: unknown;
+  eventKinds?: unknown;
+  viewTemplate?: unknown;
+  schemaExtras?: Record<string, unknown>;
+}): EntityTypeFacets => ({
+  name: e.name,
+  description: e.description,
+  required: e.required ?? [],
+  properties: e.properties ?? {},
+  backing: e.backing,
+  metrics: e.metrics,
+  eventKinds: e.eventKinds,
+  viewTemplate: e.viewTemplate,
+  schemaExtras: e.schemaExtras ?? {},
+});
+
+/** The live remote entity type, in the comparable facet shape. */
+const remoteEntityTypeFacets = (r: RemoteEntityType): EntityTypeFacets =>
+  normalizeEntityFacets(r);
+
+/**
+ * What the remote entity type BECOMES after this apply: declared values, plus
+ * the facets the write provably leaves alone — name/description (upsert never
+ * clears them), and, outside prune, every omitted facet including remote-only
+ * property keys (`upsertEntityType` merges them back). Under prune an omitted
+ * clearable facet is removed, so it projects to its cleared value.
+ *
+ * Single source for BOTH the recorded attribution baseline and the
+ * "already in sync?" test that lets an existing org establish its first
+ * baseline: a second, prune-blind projection is what made prune-managed
+ * eventKinds/viewTemplate/backing look inherited and recorded a phantom noop.
+ */
+export const effectiveEntityTypeAfterApply = (
+  d: DesiredEntityType,
+  r: RemoteEntityType | undefined,
+  prune: boolean
+): EntityTypeFacets => {
+  // Outside prune, extras authored out-of-band survive; under prune the apply
+  // clears x-lobu-resolution when the config omits resolutionPolicy. Declared
+  // policy always overlays (config wins).
+  const schemaExtras: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(r?.schemaExtras ?? {})) {
+    if (
+      prune &&
+      key === "x-lobu-resolution" &&
+      d.resolutionPolicy === undefined
+    )
+      continue;
+    schemaExtras[key] = value;
+  }
+  if (d.resolutionPolicy) Object.assign(schemaExtras, d.resolutionPolicy);
+  const inherit = <T>(declared: T | undefined, live: T | undefined) =>
+    declared !== undefined ? declared : prune ? undefined : live;
+  // Declared keys win; outside prune the remote-only keys survive the rebuild.
+  const declaredProperties = d.properties;
+  const properties =
+    declaredProperties === undefined
+      ? inherit(undefined, r?.properties)
+      : prune
+        ? declaredProperties
+        : {
+            ...Object.fromEntries(
+              Object.entries(r?.properties ?? {}).filter(
+                ([key]) => !(key in declaredProperties)
+              )
+            ),
+            ...declaredProperties,
+          };
+  return normalizeEntityFacets({
+    // Never cleared by omission, under prune or not.
+    name: d.name !== undefined ? d.name : r?.name,
+    description: d.description !== undefined ? d.description : r?.description,
+    required: d.required !== undefined ? d.required : prune ? [] : r?.required,
+    properties,
+    backing: inherit(d.backing, r?.backing),
+    metrics: inherit(d.metrics, r?.metrics),
+    eventKinds: inherit(d.eventKinds, r?.eventKinds),
+    viewTemplate: inherit(d.viewTemplate, r?.viewTemplate),
+    schemaExtras,
+  });
+};
+
+export interface RelationshipTypeFacets {
+  name: string | undefined;
+  description: string | undefined;
+  rules: unknown[];
+}
+
+/** The live remote relationship type, in the comparable facet shape. */
+const remoteRelationshipTypeFacets = (
+  r: RemoteRelationshipType
+): RelationshipTypeFacets => ({
+  name: r.name,
+  description: r.description,
+  rules: r.rules ?? [],
+});
+
+/**
+ * What the remote relationship type BECOMES after this apply. name/description
+ * are never cleared by omission (upsert only sets what is declared); omitted
+ * `rules` ARE cleared — `upsertRelationshipType` writes `[]`.
+ */
+export const effectiveRelationshipTypeAfterApply = (
+  d: DesiredRelationshipType,
+  r: RemoteRelationshipType | undefined
+): RelationshipTypeFacets => ({
+  name: d.name !== undefined ? d.name : r?.name,
+  description: d.description !== undefined ? d.description : r?.description,
+  rules: d.rules ?? [],
+});
+
+/** Remote-only definition classification: owned+unchanged → delete, else block. */
+function remoteOnlyDefinitionRow(
+  kind: "entity-type" | "relationship-type" | "watcher",
+  remote: { slug: string; id?: number | string },
+  baseline: Baseline | undefined,
+  legacyDelete: boolean,
+  unchangedSinceBaseline: (slug: string) => boolean
+): DiffRow {
+  if (!baseline) {
+    return {
+      kind,
+      verb: legacyDelete ? "delete" : "drift",
+      id: remote.slug,
+      remote,
+    } as DiffRow;
+  }
+  const owned =
+    remote.id !== undefined && baseline.owned.has(ownedKey(kind, remote.id));
+  // Config-expressed deletes require BOTH the config's owned incarnation AND
+  // prune (the config opts into deletions). A prune-off org never deletes.
+  if (owned && unchangedSinceBaseline(remote.slug) && legacyDelete) {
+    return { kind, verb: "delete", id: remote.slug, remote } as DiffRow;
+  }
+  return {
+    kind,
+    verb: "drift",
+    blocking: true,
+    id: remote.slug,
+    remote,
+  } as DiffRow;
+}
+
+// Watcher (Behavior) three-way — whole-definition, over a normalized
+// camelCase projection of the fields the diff cares about. Write-only fields
+// (`reactionScript`) are excluded (always-repush, never attributed).
+//
+// Optional fields the config omits are UNMANAGED — same contract as the
+// two-way `diffWatcher` (only declared fields converge) and as entity-type
+// omittable facets. Projecting an omitted field as `[]`/`null` would make
+// every apply that leaves remote-only sources/skills/tags intact look like
+// remote-moved drift and permanently block re-apply.
+
+interface WatcherProjection {
+  agent?: string | null;
+  name?: string | null;
+  description?: string | null;
+  triggers?: DesiredBehaviorTrigger[];
+  prompt?: string | null;
+  skills?: Array<{ name: string; content: string }> | null;
+  sources?: BehaviorSource[] | null;
+  reactionsGuidance?: string | null;
+  deviceWorkerId?: string | null;
+  notificationChannel?: string | null;
+  notificationPriority?: string | null;
+  minCooldownSeconds?: number | null;
+  tags?: string[] | null;
+  agentKind?: string | null;
+  outputs?: Record<string, unknown> | null;
+  classifiers?: unknown[] | null;
+}
+
+/**
+ * Desired Behavior → projection. For fields the two-way diff only compares
+ * when declared, an omitted value inherits the live remote (unmanaged) so
+ * three-way attribution never false-blocks on preserved remote state.
+ * Always-managed fields (`triggers`, `prompt`, `outputs`, `agent`, `name`)
+ * use the same defaults as `diffWatcher`.
+ */
+export const projectDesiredWatcher = (
+  d: DesiredWatcher,
+  remote?: RemoteBehavior
+): WatcherProjection => ({
+  agent: d.agent ?? null,
+  // Name/description are optional in config; the server defaults name to the
+  // slug. Inherit live remote when omitted so a second apply does not
+  // false-block against the server default.
+  name: d.name !== undefined ? d.name : (remote?.name ?? null),
+  description:
+    d.description !== undefined
+      ? (d.description ?? null)
+      : (remote?.description ?? null),
+  triggers: d.triggers ?? [],
+  prompt: d.prompt ?? "",
+  skills:
+    d.skillSnapshots !== undefined ? d.skillSnapshots : (remote?.skills ?? []),
+  sources: d.sources !== undefined ? d.sources : (remote?.sources ?? []),
+  reactionsGuidance:
+    d.reactionsGuidance !== undefined
+      ? d.reactionsGuidance
+      : (remote?.reactions_guidance ?? null),
+  deviceWorkerId:
+    d.deviceWorkerId !== undefined
+      ? d.deviceWorkerId
+      : (remote?.device_worker_id ?? null),
+  notificationChannel:
+    d.notificationChannel !== undefined
+      ? d.notificationChannel
+      : (remote?.notification_channel ?? null),
+  notificationPriority:
+    d.notificationPriority !== undefined
+      ? d.notificationPriority
+      : (remote?.notification_priority ?? null),
+  minCooldownSeconds:
+    d.minCooldownSeconds !== undefined
+      ? d.minCooldownSeconds
+      : (remote?.min_cooldown_seconds ?? null),
+  tags: d.tags !== undefined ? d.tags : (remote?.tags ?? []),
+  agentKind:
+    d.agentKind !== undefined ? d.agentKind : (remote?.agent_kind ?? null),
+  // Config is declarative for outputs: omitting means "no durable outputs".
+  outputs: d.outputs ?? null,
+  classifiers:
+    d.classifiers !== undefined ? d.classifiers : (remote?.classifiers ?? []),
+});
+
+const projectRemoteWatcher = (w: RemoteBehavior): WatcherProjection => ({
+  agent: w.agent_id ?? null,
+  // `?? null` mirrors projectDesiredWatcher: an unnamed remote Behavior must
+  // compare EQUAL to the desired side that inherited it, or deepEqual(null,
+  // undefined) false-blocks the first baseline.
+  name: w.name ?? null,
+  description: w.description ?? null,
+  triggers: w.triggers ?? [],
+  prompt: w.prompt ?? "",
+  skills: w.skills ?? [],
+  sources: w.sources ?? [],
+  reactionsGuidance: w.reactions_guidance ?? null,
+  deviceWorkerId: w.device_worker_id ?? null,
+  notificationChannel: w.notification_channel ?? null,
+  notificationPriority: w.notification_priority ?? null,
+  minCooldownSeconds: w.min_cooldown_seconds ?? null,
+  tags: w.tags ?? [],
+  agentKind: w.agent_kind ?? null,
+  outputs: w.outputs ?? null,
+  classifiers: w.classifiers ?? [],
+});
+
+function diffWatcherWithBaseline(
+  desired: DesiredWatcher,
+  remote: RemoteBehavior | undefined,
+  baseline: Baseline | undefined
+): { row: WatcherDiffRow; blocking: BlockingDriftRow[] } {
+  if (!remote) {
+    return { row: diffWatcher(desired, remote), blocking: [] };
+  }
+  if (!baseline) {
+    return { row: diffWatcher(desired, remote), blocking: [] };
+  }
+  const attr = baseline.attribution.watchers.find(
+    (a) => a.slug === desired.slug
+  );
+  if (!attr) {
+    const inSync = deepEqual(
+      projectDesiredWatcher(desired, remote),
+      projectRemoteWatcher(remote)
+    );
+    if (inSync) {
+      return {
+        row: {
+          kind: "watcher",
+          verb: "noop",
+          id: desired.slug,
+          desired,
+          remote,
+        },
+        blocking: [],
+      };
+    }
+    return {
+      row: { kind: "watcher", verb: "noop", id: desired.slug, desired, remote },
+      blocking: [
+        {
+          kind: "watcher",
+          verb: "drift",
+          blocking: true,
+          id: desired.slug,
+          // Field-qualified so blocked candidates record action=revert (not
+          // delete) — this is a declared Behavior whose remote moved.
+          field: "definition",
+        },
+      ],
+    };
+  }
+  // Per-field three-way: a remote-moved agent must not block a concurrent
+  // config prompt change once the agent is adopted (desired==remote for that
+  // field). Whole-object compare treated any residual mismatch as one block.
+  const dProj = projectDesiredWatcher(desired, remote);
+  const rProj = projectRemoteWatcher(remote);
+  const aProj = projectRemoteWatcher(attr);
+  const fieldNames = Object.keys(dProj) as Array<keyof WatcherProjection>;
+  const threeWay = classifyThreeWay(
+    fieldNames.map((field) => ({
+      field,
+      desired: dProj[field],
+      remote: rProj[field],
+      attribution: aProj[field],
+    }))
+  );
+  if (threeWay.blockingFields.length > 0) {
+    return {
+      row: {
+        kind: "watcher",
+        verb: "noop",
+        id: desired.slug,
+        desired,
+        remote,
+      },
+      blocking: threeWay.blockingFields.map((b) => ({
+        kind: "watcher" as const,
+        verb: "drift" as const,
+        blocking: true as const,
+        id: desired.slug,
+        field: b.field,
+        remoteChange: b.remoteChange,
+      })),
+    };
+  }
+  // No remote-moved fields — converge config-moved (or noop) via two-way.
+  return { row: diffWatcher(desired, remote), blocking: [] };
+}
+
 /**
  * Watcher drift fields split into two routing categories:
  *   - **scalar** lives on the `watchers` row → `manage_behaviors update`.
@@ -557,6 +1319,18 @@ function diffWatcher(
   }
 
   const versionBound: string[] = [];
+  // name/description are version-owned (manage_behaviors create_version only;
+  // update rejects them). Only compare when declared so an omitted name
+  // inherits the server slug default without perpetual churn.
+  if (desired.name !== undefined && desired.name !== (remote.name ?? "")) {
+    versionBound.push("name");
+  }
+  if (
+    desired.description !== undefined &&
+    (desired.description ?? null) !== (remote.description ?? null)
+  ) {
+    versionBound.push("description");
+  }
   if (desired.prompt !== (remote.prompt ?? "")) {
     versionBound.push("prompt");
   }
@@ -939,6 +1713,16 @@ interface ComputeDiffOptions {
    * excluded from drift/delete entirely. Omit to disable the filter (tests).
    */
   orgId?: string;
+  /**
+   * Attribution baseline (the last succeeded deployment's effective-remote
+   * snapshot + owned incarnation identities). When present, entity/rel types
+   * and Behaviors get the three-way compare: block when the remote moved
+   * (`remote ≠ attribution` AND `desired ≠ remote`), converge only when the
+   * config moved (`remote == attribution`). When absent (legacy deployment /
+   * first apply), remote mismatches and remote-only definitions block
+   * (no-baseline) and nothing is auto-deleted.
+   */
+  baseline?: Baseline;
 }
 
 export function computeDiff(
@@ -949,6 +1733,7 @@ export function computeDiff(
   const rows: DiffRow[] = [];
   const only = opts.only;
   const prune = opts.prune ?? false;
+  const baseline = opts.baseline;
   // A remote entity/relationship type is this org's to manage (drift/prune)
   // only when it's org-owned. The list endpoints also surface public types
   // from other orgs (`organization_id` differs) — never drift or delete those.
@@ -1018,21 +1803,50 @@ export function computeDiff(
       desired.memorySchema.entityTypes.map((e) => e.slug)
     );
     for (const entity of desired.memorySchema.entityTypes) {
-      rows.push(
-        diffEntityType(entity, remoteEntityBySlug.get(entity.slug), prune)
+      const { row, blocking } = diffEntityTypeWithBaseline(
+        entity,
+        remoteEntityBySlug.get(entity.slug),
+        baseline,
+        prune
       );
+      rows.push(row);
+      rows.push(...blocking);
     }
     for (const remoteEntity of ownedEntityTypes) {
       if (!desiredEntitySlugs.has(remoteEntity.slug)) {
         // Code-managed: delete. The server refuses an entity-type delete while
         // instances exist (the data is exempt), surfacing a clear error.
-        // `$…` system types are never pruned.
-        rows.push({
-          kind: "entity-type",
-          verb: prune && !isSystemEntityType(remoteEntity) ? "delete" : "drift",
-          id: remoteEntity.slug,
-          remote: remoteEntity,
-        });
+        // `$…` system types are never pruned or owned-deleted.
+        if (isSystemEntityType(remoteEntity)) {
+          rows.push({
+            kind: "entity-type",
+            verb: "drift",
+            id: remoteEntity.slug,
+            remote: remoteEntity,
+          });
+          continue;
+        }
+        rows.push(
+          remoteOnlyDefinitionRow(
+            "entity-type",
+            remoteEntity,
+            baseline,
+            prune,
+            (slug) => {
+              // Looked up BY slug, so only the facets can differ.
+              const a = baseline?.attribution.entityTypes.find(
+                (x) => x.slug === slug
+              );
+              return (
+                !!a &&
+                deepEqual(
+                  remoteEntityTypeFacets(remoteEntity),
+                  remoteEntityTypeFacets(a)
+                )
+              );
+            }
+          )
+        );
       }
     }
 
@@ -1044,16 +1858,46 @@ export function computeDiff(
       desired.memorySchema.relationshipTypes.map((r) => r.slug)
     );
     for (const rel of desired.memorySchema.relationshipTypes) {
-      rows.push(diffRelationshipType(rel, remoteRelBySlug.get(rel.slug)));
+      const { row, blocking } = diffRelationshipTypeWithBaseline(
+        rel,
+        remoteRelBySlug.get(rel.slug),
+        baseline
+      );
+      rows.push(row);
+      rows.push(...blocking);
     }
     for (const remoteRel of ownedRelTypes) {
       if (!desiredRelSlugs.has(remoteRel.slug)) {
-        rows.push({
-          kind: "relationship-type",
-          verb: prune && !isSystemSlug(remoteRel.slug) ? "delete" : "drift",
-          id: remoteRel.slug,
-          remote: remoteRel,
-        });
+        if (isSystemSlug(remoteRel.slug)) {
+          rows.push({
+            kind: "relationship-type",
+            verb: "drift",
+            id: remoteRel.slug,
+            remote: remoteRel,
+          });
+          continue;
+        }
+        rows.push(
+          remoteOnlyDefinitionRow(
+            "relationship-type",
+            remoteRel,
+            baseline,
+            prune,
+            (slug) => {
+              // Looked up BY slug, so only the facets can differ.
+              const a = baseline?.attribution.relationshipTypes.find(
+                (x) => x.slug === slug
+              );
+              return (
+                !!a &&
+                deepEqual(
+                  remoteRelationshipTypeFacets(remoteRel),
+                  remoteRelationshipTypeFacets(a)
+                )
+              );
+            }
+          )
+        );
       }
     }
 
@@ -1062,16 +1906,48 @@ export function computeDiff(
     );
     const desiredWatcherSlugs = new Set(desired.watchers.map((w) => w.slug));
     for (const watcher of desired.watchers) {
-      rows.push(diffWatcher(watcher, remoteWatcherBySlug.get(watcher.slug)));
+      const { row, blocking } = diffWatcherWithBaseline(
+        watcher,
+        remoteWatcherBySlug.get(watcher.slug),
+        baseline
+      );
+      rows.push(row);
+      rows.push(...blocking);
     }
     for (const remoteWatcher of remote.watchers) {
       if (!desiredWatcherSlugs.has(remoteWatcher.slug)) {
-        rows.push({
-          kind: "watcher",
-          verb: prune && !isSystemSlug(remoteWatcher.slug) ? "delete" : "drift",
-          id: remoteWatcher.slug,
-          remote: remoteWatcher,
-        });
+        if (isSystemSlug(remoteWatcher.slug)) {
+          rows.push({
+            kind: "watcher",
+            verb: "drift",
+            id: remoteWatcher.slug,
+            remote: remoteWatcher,
+          });
+          continue;
+        }
+        rows.push(
+          remoteOnlyDefinitionRow(
+            "watcher",
+            {
+              slug: remoteWatcher.slug,
+              id: remoteWatcher.behavior_id,
+            },
+            baseline,
+            prune,
+            (slug) => {
+              const a = baseline?.attribution.watchers.find(
+                (x) => x.slug === slug
+              );
+              return (
+                !!a &&
+                deepEqual(
+                  projectRemoteWatcher(remoteWatcher),
+                  projectRemoteWatcher(a)
+                )
+              );
+            }
+          )
+        );
       }
     }
   }
@@ -1158,11 +2034,34 @@ export function computeDiff(
           continue;
         }
         if (prune && !liveConnectorKeys.has(def.key)) {
-          rows.push({
-            kind: "connector-definition",
-            verb: "delete",
-            id: def.key,
-          });
+          // With a baseline, only delete connectors THIS config applied
+          // (owned incarnation) whose version is still the one we recorded —
+          // a post-baseline edit (new version on the same row id) is both-moved
+          // and blocks. A UI-created/unowned connector is never auto-deleted.
+          const owned =
+            baseline?.owned.has(ownedKey("connector-definition", def.id)) ??
+            false;
+          const versionAtBaseline = baseline?.connectorVersions?.[def.key];
+          const editedAfterBaseline =
+            owned &&
+            versionAtBaseline !== undefined &&
+            def.version !== undefined &&
+            versionAtBaseline !== def.version;
+          if (baseline === undefined || (owned && !editedAfterBaseline)) {
+            rows.push({
+              kind: "connector-definition",
+              verb: "delete",
+              id: def.key,
+            });
+          } else {
+            rows.push({
+              kind: "connector-definition",
+              verb: "drift",
+              blocking: true,
+              id: def.key,
+              remote: def,
+            } as DiffRow);
+          }
         } else {
           notes.push(
             `connector "${def.key}" is installed remotely but not declared in connectors/ — uninstall it manually if it's no longer wanted (lobu apply never auto-uninstalls connectors).`

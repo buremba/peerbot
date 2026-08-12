@@ -44,6 +44,19 @@ export interface RemoteDeployment {
     version: number;
     state: Record<string, unknown>;
     connector_versions: Record<string, string>;
+    /** Attribution baseline (effective remote after apply); absent on legacy. */
+    attribution?: {
+      entityTypes: unknown[];
+      relationshipTypes: unknown[];
+      watchers: unknown[];
+    };
+    /** Kind-qualified incarnation identities this config applied. */
+    owned?: string[];
+  } | null;
+  /** Blocking-drift candidates + confirm token, present on `blocked` runs. */
+  candidates?: {
+    token?: string;
+    items?: Array<Record<string, unknown>>;
   } | null;
 }
 
@@ -56,6 +69,8 @@ export interface DeploymentPauseState {
 }
 
 export interface RemoteEntityType {
+  /** Persistent incarnation id (`entity_types.id`) — the `owned` identity for deletes. */
+  id?: number;
   slug: string;
   name?: string;
   description?: string;
@@ -95,6 +110,8 @@ export interface RemoteEntityType {
 }
 
 export interface RemoteRelationshipType {
+  /** Persistent incarnation id (`entity_relationship_types.id`) — the `owned` identity for deletes. */
+  id?: number;
   slug: string;
   name?: string;
   description?: string;
@@ -159,6 +176,8 @@ interface UpsertEntityTypeResult {
 // ── Connectors / auth profiles / connections wire types ────────────────────
 
 export interface RemoteConnectorDefinition {
+  /** Persistent incarnation id (`connector_definitions.id`) — the `owned` identity for deletes. */
+  id?: number;
   key: string;
   name?: string;
   version?: string;
@@ -282,6 +301,7 @@ function hoistEntityTypeSchema(
 ): RemoteEntityType {
   const schema = row.metadata_schema;
   const out: RemoteEntityType = {
+    ...(row.id !== undefined ? { id: row.id } : {}),
     slug: row.slug,
     ...(row.name !== undefined ? { name: row.name } : {}),
     ...(row.description !== undefined ? { description: row.description } : {}),
@@ -525,6 +545,26 @@ export class ApplyClient {
     }
   }
 
+  /** Latest `succeeded` deployment — the attribution baseline (null when none). */
+  async getLatestDeployment(): Promise<RemoteDeployment | null> {
+    try {
+      const { body } = await this.request<{ deployment?: RemoteDeployment }>(
+        "GET",
+        `/api/${this.orgSlug}/deployments/latest`
+      );
+      return body.deployment ?? null;
+    } catch (err) {
+      // The route always answers 200 (`{deployment: null}` when there is none),
+      // so a 404 means the server predates it — a self-hosted deployment older
+      // than this CLI. That is the legacy-manifest case, not a transport
+      // failure: resolve to "no baseline", which is the most conservative
+      // reading (every remote mismatch blocks, nothing is auto-deleted).
+      // Every other error still propagates and fails the apply closed.
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
   /** Promotions-pause state (set by `lobu rollback`). */
   async getDeploymentPause(): Promise<DeploymentPauseState> {
     const { body } = await this.request<DeploymentPauseState>(
@@ -697,7 +737,14 @@ export class ApplyClient {
      * field must never wipe live values the config does not own, and the server
      * clears a facet only when its key is present in the payload.
      */
-    clearFacets?: ReadonlySet<string>
+    clearFacets?: ReadonlySet<string>,
+    /**
+     * When true (prune off), remote-only property keys the config never
+     * declared are merged into the write so an unrelated config update cannot
+     * silently erase a UI-added property. When false (prune on), declared
+     * properties alone are the full schema.
+     */
+    preserveRemoteOnlyProperties = true
   ): Promise<UpsertEntityTypeResult> {
     // The server stores per-type fields as a single `metadata_schema` JSON
     // Schema (`{ type, properties, required }`) — it does NOT read top-level
@@ -748,13 +795,21 @@ export class ApplyClient {
       //   - diff flagged a prune removal → send an empty core to clear them;
       //   - otherwise → fall back to the live core so a fired update for an
       //     unrelated field never silently clears the server's schema.
+      // When the config declares a partial properties object and prune is off,
+      // merge remote-only keys so UI-authored properties survive.
       const pruneClearProperties = clearFacets?.has("properties");
       const pruneClearRequired = clearFacets?.has("required");
-      const effectiveProperties = properties
-        ? properties
-        : pruneClearProperties
-          ? {}
-          : remoteSchemaCore?.properties;
+      const effectiveProperties = (() => {
+        if (pruneClearProperties) return {};
+        if (!properties) return remoteSchemaCore?.properties;
+        if (!preserveRemoteOnlyProperties) return properties;
+        const remoteOnly = Object.fromEntries(
+          Object.entries(remoteSchemaCore?.properties ?? {}).filter(
+            ([key]) => !(key in properties)
+          )
+        );
+        return { ...remoteOnly, ...properties };
+      })();
       const effectiveRequired = required
         ? required
         : pruneClearRequired
@@ -1111,9 +1166,12 @@ export class ApplyClient {
    * Create a new watcher_versions row carrying the version-bound fields, then
    * upgrade the watcher's `current_version_id` to that new version. Server
    * inherits unset fields from the previous version row.
+   * name/description/prompt/sources are version-owned (update rejects them).
    */
   async createBehaviorVersion(payload: {
     behavior_id: string;
+    name?: string;
+    description?: string | null;
     prompt?: string;
     skills?: Array<{ name: string; content: string }>;
     sources?: BehaviorSource[];
@@ -1131,6 +1189,10 @@ export class ApplyClient {
         action: "create_version",
         behavior_id: payload.behavior_id,
         set_as_current: true,
+        ...(payload.name !== undefined ? { name: payload.name } : {}),
+        ...(payload.description !== undefined
+          ? { description: payload.description }
+          : {}),
         ...(payload.prompt !== undefined ? { prompt: payload.prompt } : {}),
         ...(payload.skills !== undefined ? { skills: payload.skills } : {}),
         ...(payload.sources !== undefined ? { sources: payload.sources } : {}),
@@ -1602,6 +1664,9 @@ function mapConnectorDefinitionItem(item: {
   const installed = detail.installed !== false;
   return {
     key: item.id,
+    ...(typeof detail.connector_definition_id === "number"
+      ? { id: detail.connector_definition_id }
+      : {}),
     name: item.name,
     version: typeof detail.version === "string" ? detail.version : undefined,
     options_schema:

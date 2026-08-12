@@ -15,8 +15,13 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { deepRedactSecrets, REDACTED_SENTINEL } from "@lobu/core";
 import type { DesiredState } from "./desired-state.js";
-import type { DiffPlan, DiffRow } from "./diff.js";
-import { canonical } from "./diff.js";
+import type { Baseline, DiffPlan, DiffRow, RemoteSnapshot } from "./diff.js";
+import {
+  canonical,
+  effectiveEntityTypeAfterApply,
+  effectiveRelationshipTypeAfterApply,
+  projectDesiredWatcher,
+} from "./diff.js";
 
 export function mintApplyId(): string {
   return `apl_${randomUUID()}`;
@@ -107,6 +112,203 @@ export interface DeploymentManifest {
   state: Record<string, unknown>;
   /** Active connector version per declared key, recorded post-install. */
   connector_versions: Record<string, string>;
+  /**
+   * The attribution baseline for the three-way drift compare: the effective
+   * entity/rel-type and Behavior state AFTER this apply (declared config
+   * values + preserved unmanaged facets). Absent on legacy manifests — treated
+   * as "no baseline" (block on remote mismatches, never auto-delete).
+   */
+  attribution?: {
+    entityTypes: unknown[];
+    relationshipTypes: unknown[];
+    watchers: unknown[];
+  };
+  /**
+   * Kind-qualified definition incarnation identities (`entity-type:12`,
+   * `behavior:b7-…`) this config actually applied — the delete-eligible set.
+   */
+  owned?: string[];
+}
+
+export interface BaselineRecord {
+  attribution: {
+    entityTypes: unknown[];
+    relationshipTypes: unknown[];
+    watchers: unknown[];
+  };
+  owned: string[];
+  /** Connector key → version from the deployment's post-apply pins. */
+  connectorVersions?: Record<string, string>;
+}
+
+/** Parse the stored baseline; null for a legacy manifest (→ no-baseline block). */
+export function loadBaselineFromManifest(
+  manifest: {
+    attribution?: DeploymentManifest["attribution"];
+    owned?: DeploymentManifest["owned"];
+    connector_versions?: Record<string, string>;
+  } | null
+): BaselineRecord | null {
+  if (!manifest?.attribution || !manifest.owned) return null;
+  return {
+    attribution: {
+      entityTypes: manifest.attribution.entityTypes ?? [],
+      relationshipTypes: manifest.attribution.relationshipTypes ?? [],
+      watchers: manifest.attribution.watchers ?? [],
+    },
+    owned: manifest.owned,
+    ...(manifest.connector_versions
+      ? { connectorVersions: manifest.connector_versions }
+      : {}),
+  };
+}
+
+/**
+ * The stored record → the shape `computeDiff` compares against. A null record
+ * (legacy manifest, or an org that never applied) becomes the EMPTY baseline,
+ * not "no baseline": the gate stays on and every remote mismatch blocks.
+ */
+export function toBaseline(record: BaselineRecord | null): Baseline {
+  if (!record) {
+    return {
+      attribution: { entityTypes: [], relationshipTypes: [], watchers: [] },
+      owned: new Set<string>(),
+    };
+  }
+  return {
+    attribution: record.attribution as unknown as Baseline["attribution"],
+    owned: new Set(record.owned),
+    ...(record.connectorVersions
+      ? { connectorVersions: record.connectorVersions }
+      : {}),
+  };
+}
+
+/**
+ * The post-apply attribution snapshot + owned identities. Attribution records
+ * the effective entity/rel/Behavior state AFTER a successful apply — config's
+ * declared values merged with preserved unmanaged facets (eventKinds /
+ * viewTemplate / schemaExtras the config never declared) from the pre-apply
+ * remote — so `remote == attribution` means "unchanged since last apply".
+ *
+ * Under `prune`, omitted clearable facets are cleared by executePlan, so the
+ * baseline must record the cleared value (not the pre-apply remote). Recording
+ * the pre-apply remote left the next config-expressed delete blocked as
+ * "post-baseline edit" forever.
+ *
+ * `owned` records the incarnation ids of definitions this config applied
+ * (delete-eligible); creates with no known id are conservatively omitted
+ * (they block as drift instead of auto-deleting — fail-closed).
+ */
+export function buildAttributionAndOwned(
+  state: DesiredState,
+  remote: RemoteSnapshot,
+  orgId?: string,
+  prune = false
+): BaselineRecord {
+  // The list endpoints also return PUBLIC definitions from OTHER orgs — a
+  // foreign same-slug row must never populate the baseline (it would replace
+  // the target org's incarnation id and facets). Filter to the target org.
+  const ownedEntityTypes =
+    orgId === undefined
+      ? remote.entityTypes
+      : remote.entityTypes.filter(
+          (e) => e.organization_id === orgId || e.organization_id === undefined
+        );
+  const ownedRelTypes =
+    orgId === undefined
+      ? remote.relationshipTypes
+      : remote.relationshipTypes.filter(
+          (r) => r.organization_id === orgId || r.organization_id === undefined
+        );
+  // The effective post-apply facets come from the SAME projections the drift
+  // gate compares against (`diff.ts`) — a second copy here is what let the
+  // baseline and the gate disagree about prune-managed facets.
+  const remoteEntityBySlug = new Map(ownedEntityTypes.map((e) => [e.slug, e]));
+  const entityTypes = state.memorySchema.entityTypes.map((d) => {
+    const r = remoteEntityBySlug.get(d.slug);
+    return {
+      id: r?.id,
+      slug: d.slug,
+      ...effectiveEntityTypeAfterApply(d, r, prune),
+    };
+  });
+  const remoteRelBySlug = new Map(ownedRelTypes.map((r) => [r.slug, r]));
+  const relationshipTypes = state.memorySchema.relationshipTypes.map((d) => {
+    const r = remoteRelBySlug.get(d.slug);
+    return {
+      id: r?.id,
+      slug: d.slug,
+      ...effectiveRelationshipTypeAfterApply(d, r),
+    };
+  });
+  const remoteWatcherBySlug = new Map(remote.watchers.map((w) => [w.slug, w]));
+  // Effective remote after apply: declared fields from config, undeclared
+  // optional fields preserved from the pre-apply remote (two-way apply only
+  // writes declared Behavior fields — see `diffWatcher`). Recording the
+  // config-only shape left sources/skills/tags as undefined and made the next
+  // apply permanently block as "remote moved".
+  const watchers = state.watchers.map((d) => {
+    const r = remoteWatcherBySlug.get(d.slug);
+    // Same projection the gate compares against; only the wire key names differ
+    // (the stored attribution is remote-shaped, `projectDesiredWatcher` is not).
+    const p = projectDesiredWatcher(d, r);
+    return {
+      slug: d.slug,
+      behavior_id: r?.behavior_id,
+      agent_id: p.agent,
+      name: p.name,
+      description: p.description,
+      prompt: p.prompt,
+      triggers: p.triggers,
+      skills: p.skills,
+      sources: p.sources,
+      reactions_guidance: p.reactionsGuidance,
+      device_worker_id: p.deviceWorkerId,
+      notification_channel: p.notificationChannel,
+      notification_priority: p.notificationPriority,
+      min_cooldown_seconds: p.minCooldownSeconds,
+      tags: p.tags,
+      agent_kind: p.agentKind,
+      outputs: p.outputs,
+      classifiers: p.classifiers,
+    };
+  });
+  const owned: string[] = [];
+  for (const e of state.memorySchema.entityTypes) {
+    const id = remoteEntityBySlug.get(e.slug)?.id;
+    if (id !== undefined) owned.push(`entity-type:${id}`);
+  }
+  for (const r of state.memorySchema.relationshipTypes) {
+    const id = remoteRelBySlug.get(r.slug)?.id;
+    if (id !== undefined) owned.push(`relationship-type:${id}`);
+  }
+  for (const w of state.watchers) {
+    const id = remoteWatcherBySlug.get(w.slug)?.behavior_id;
+    if (id !== undefined) owned.push(`watcher:${id}`);
+  }
+  // Connector definitions this config declared (or references through an
+  // auth-profile/connection) and has installed — delete-eligible under prune.
+  const appliedConnectorKeys = new Set<string>([
+    ...(state.connectors.definitions
+      .map((d) => d.key)
+      .filter(Boolean) as string[]),
+    ...state.connectors.authProfiles.map((p) => p.connector),
+    ...state.connectors.connections.map((c) => c.connector),
+  ]);
+  for (const def of remote.connectorDefinitions) {
+    if (
+      def.installed &&
+      def.id !== undefined &&
+      appliedConnectorKeys.has(def.key)
+    ) {
+      owned.push(`connector-definition:${def.id}`);
+    }
+  }
+  return {
+    attribution: { entityTypes, relationshipTypes, watchers },
+    owned,
+  };
 }
 
 /**
@@ -117,7 +319,8 @@ export interface DeploymentManifest {
  */
 export function buildDeploymentManifest(
   state: DesiredState,
-  connectorVersions: Record<string, string>
+  connectorVersions: Record<string, string>,
+  baseline?: BaselineRecord
 ): DeploymentManifest {
   const redacted = redactDesiredState(state);
   const connectors = (redacted.connectors ?? {}) as Record<string, unknown>;
@@ -137,6 +340,9 @@ export function buildDeploymentManifest(
       },
     },
     connector_versions: connectorVersions,
+    ...(baseline
+      ? { attribution: baseline.attribution, owned: baseline.owned }
+      : {}),
   };
 }
 
@@ -161,7 +367,7 @@ export function buildCountsByKind(rows: DiffRow[]): CountsByKind {
 
 export interface DeploymentSummary {
   apply_id: string;
-  status: "succeeded" | "partial_failure";
+  status: "succeeded" | "partial_failure" | "blocked";
   counts: DiffPlan["counts"];
   counts_by_kind: CountsByKind;
   manifest_hash: string;
@@ -171,6 +377,15 @@ export interface DeploymentSummary {
   error?: string;
   /** Self-contained snapshot for `lobu rollback` (absent on legacy CLIs). */
   manifest?: DeploymentManifest;
+  /** Blocking-drift candidates — present on `blocked` runs. */
+  candidates?: {
+    items: Array<{
+      kind: string;
+      slug: string;
+      field?: string;
+      action: "delete" | "revert";
+    }>;
+  };
   /** Set on rollback deployments: the deployment this one restored. */
   rollback_of?: string;
 }

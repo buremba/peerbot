@@ -100,7 +100,9 @@ function renderRow(row: DiffRow): string[] {
       break;
     case "drift":
       lines.push(
-        `  ${prefix} ${label} ${id} ${chalk.cyan("(drift — ignored in v1, not deleted)")}`
+        "blocking" in row && row.blocking
+          ? `  ${prefix} ${label} ${id} ${chalk.red("(remote change not in config — blocks this apply)")}`
+          : `  ${prefix} ${label} ${id} ${chalk.cyan("(drift — ignored, not deleted)")}`
       );
       break;
     case "delete":
@@ -200,6 +202,50 @@ export function renderProgress(
   const label = chalk.bold(KIND_LABEL[kind]);
   const tail = detail ? chalk.dim(` ${detail}`) : "";
   return `  ${prefix} ${label} ${id}${tail}`;
+}
+
+/**
+ * The blocking-drift report shown when apply halts (exit 1, nothing mutated).
+ * Names each remote-moved field / remote-only definition and the resolution.
+ */
+export function renderBlockedReport(
+  blocking: Array<
+    Extract<DiffRow, { blocking: true }> & {
+      id: string;
+      kind: string;
+      field?: string;
+      remoteChange?: unknown;
+    }
+  >
+): string {
+  const lines = [
+    "",
+    chalk.red(
+      `✖ BLOCKED — ${blocking.length} remote change${blocking.length === 1 ? "" : "s"} not declared in this config`
+    ),
+    chalk.dim(
+      "  apply would clobber or delete un-declared remote state. Nothing was changed."
+    ),
+  ];
+  for (const item of blocking) {
+    const label = chalk.bold(KIND_LABEL[item.kind as keyof typeof KIND_LABEL]);
+    const field = item.field ? chalk.cyan(` · ${item.field}`) : "";
+    lines.push("");
+    lines.push(`  ${label} ${item.id}${field}`);
+    if (item.remoteChange !== undefined) {
+      lines.push(
+        `    remote: ${JSON.stringify(item.remoteChange, null, 2).split("\n").join("\n    ")}`
+      );
+    }
+  }
+  lines.push(
+    "",
+    chalk.dim("  Resolve each item, then re-run:"),
+    chalk.dim("    adopt  → fold it into lobu.config.ts (a normal git change)"),
+    chalk.dim("    delete → remove it in the UI, or via the API"),
+    chalk.dim("  apply refuses to auto-delete or overwrite un-declared state.")
+  );
+  return lines.join("\n");
 }
 
 /** Required-secrets-missing block. */

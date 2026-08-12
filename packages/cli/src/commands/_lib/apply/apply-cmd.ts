@@ -14,12 +14,16 @@ import {
   resolveApplyClient,
 } from "./client.js";
 import {
+  type BaselineRecord,
+  buildAttributionAndOwned,
   buildCountsByKind,
   buildDeploymentManifest,
   collectGitInfo,
   computeManifestHash,
   type DeploymentSummary,
+  loadBaselineFromManifest,
   mintApplyId,
+  toBaseline,
 } from "./deployment.js";
 import {
   type DesiredConnectorDefinition,
@@ -43,6 +47,7 @@ import {
   confirmPlan,
 } from "./prompt.js";
 import {
+  renderBlockedReport,
   renderMissingSecrets,
   renderPlan,
   renderPostApplyPunchList,
@@ -341,16 +346,19 @@ export async function fetchRemoteSnapshot(
 
   const entityTypes = only === "agents" ? [] : await client.listEntityTypes();
   // View templates are fetched per-type, NOT streamed in the entity-type list
-  // (the UI/bootstrap calls that endpoint). Fetch only for types the config
-  // declares a template for — plus, under prune, every config type so an omitted
-  // template can be detected as a removal. Bounded to config-present types.
+  // (the UI/bootstrap calls that endpoint). Fetch for config-declared types
+  // (a declared template, or under prune so an omitted one is a removal) AND,
+  // under prune, for remote-only candidates whose owned/unchanged delete
+  // classification must see the real template — otherwise an unhydrated
+  // `undefined` compares equal to a stale baseline and a UI-authored template
+  // edit is misclassified as unchanged and auto-deleted. Bounded to the org's
+  // own entity-type set.
   if (entityTypes.length > 0) {
     const desiredBySlug = new Map(
       state.memorySchema.entityTypes.map((e) => [e.slug, e])
     );
     for (const remote of entityTypes) {
       const desired = desiredBySlug.get(remote.slug);
-      if (!desired) continue;
       // The list also surfaces public types owned by OTHER orgs. Fetch a
       // template only for types this org owns: the fetch resolves by slug in
       // THIS org, so a foreign public type whose local slug is absent (or
@@ -362,7 +370,11 @@ export async function fetchRemoteSnapshot(
       ) {
         continue;
       }
-      if (desired.viewTemplate === undefined && !prune) continue;
+      // Declared template → always. Otherwise only under prune, where an
+      // omitted template is a removal (declared types) and an unhydrated
+      // `undefined` would make a UI-authored template look unchanged since the
+      // baseline (remote-only delete candidates).
+      if (desired?.viewTemplate === undefined && !prune) continue;
       const tpl = await client.getEntityTypeViewTemplate(remote.slug);
       if (tpl) remote.viewTemplate = tpl;
     }
@@ -379,7 +391,10 @@ export async function fetchRemoteSnapshot(
       state.memorySchema.relationshipTypes.map((r) => r.slug)
     );
     for (const remote of relationshipTypes) {
-      if (!desiredRelSlugs.has(remote.slug)) continue;
+      // Hydrate rules for config-declared types AND (under prune) remote-only
+      // candidates, so the owned/unchanged delete classification sees the real
+      // rule set instead of an unhydrated undefined.
+      if (!desiredRelSlugs.has(remote.slug) && !prune) continue;
       const rules = await client.listRelationshipTypeRules(remote.slug);
       remote.rules = rules.map((r) => ({ source: r.source, target: r.target }));
     }
@@ -755,9 +770,13 @@ export async function executePlan(
   ctx: ApplyContext,
   pendingAuth: PendingAuthEntry[]
 ): Promise<{ connectorVersions: Record<string, string> }> {
-  const rowsByKind = (kind: DiffRow["kind"]) =>
+  const rowsByKind = <K extends DiffRow["kind"]>(kind: K) =>
     ctx.plan.rows.filter(
-      (row) => row.kind === kind && row.verb !== "noop" && row.verb !== "drift"
+      (
+        row
+      ): row is Extract<DiffRow, { kind: K }> & {
+        verb: "create" | "update" | "delete";
+      } => row.kind === kind && row.verb !== "noop" && row.verb !== "drift"
     );
 
   let connectorVersions: Record<string, string> = {};
@@ -827,6 +846,18 @@ export async function executePlan(
     // computeDiff already made against the ORG-OWNED types only; re-deriving it
     // from the raw snapshot would let a foreign public type of the same slug
     // shadow the owned one (see the ownership filter in computeDiff).
+    // Three-way attribution reports per-key property clears as
+    // `properties.<key>`. upsertEntityType only honors a whole-facet
+    // `properties` clearFacet (when the config omits the object entirely under
+    // prune). When the config still declares a properties object, the declared
+    // keys win via full schema rebuild and no clearFacet is needed.
+    const clearFacets = new Set(row.changedFields ?? []);
+    if (
+      row.desired.properties === undefined &&
+      [...clearFacets].some((f) => f.startsWith("properties."))
+    ) {
+      clearFacets.add("properties");
+    }
     await ctx.client.upsertEntityType(
       row.desired,
       row.remote?.schemaExtras,
@@ -834,7 +865,9 @@ export async function executePlan(
         properties: row.remote?.properties,
         required: row.remote?.required,
       },
-      new Set(row.changedFields ?? [])
+      clearFacets,
+      // Outside prune, keep UI-added property keys when rebuilding the schema.
+      !(ctx.state.prune ?? false)
     );
     // View template is a separate, version-appending tool. Reconcile it only on
     // create (when declared) or a flagged change — never every run, so the
@@ -960,10 +993,17 @@ export async function executePlan(
         }
         // b) Version-bound fields → manage_behaviors create_version (server
         //    inherits unset fields from the previous version row, but we always
-        //    send the desired-side values for the changed keys).
+        //    send the desired-side values for the changed keys). name/description
+        //    are version-owned (update rejects them).
         if (row.versionBoundFields && row.versionBoundFields.length > 0) {
           await ctx.client.createBehaviorVersion({
             behavior_id: watcherId,
+            ...(versionBound.has("name") && w.name !== undefined
+              ? { name: w.name }
+              : {}),
+            ...(versionBound.has("description")
+              ? { description: w.description ?? null }
+              : {}),
             ...(versionBound.has("prompt") ? { prompt: w.prompt } : {}),
             ...(versionBound.has("skills")
               ? { skills: w.skillSnapshots ?? [] }
@@ -1144,7 +1184,6 @@ export async function executePlan(
   //      dropping an org credential is destructive, so it's UI/API-only.
   for (const row of rowsByKind("inference-provider")) {
     if (row.kind !== "inference-provider") continue;
-    if (row.verb === "drift") continue;
     const provider = row.desired;
     if (!provider) continue;
 
@@ -1444,15 +1483,16 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   }
 
   // Prune is config-declared (`defineConfig({ prune: true })`): when on, apply
-  // deletes any org-owned definition (entity/relationship type, Behavior,
-  // connector definition) that's absent from the config — INCLUDING ones added
-  // via the dashboard/API. Data, connections, auth profiles, and agents are
-  // never pruned. The blast-radius confirm below is the safety net.
+  // deletes previously-applied definitions that this config removed AND that
+  // are unchanged since the last succeeded apply. UI-created / unowned
+  // definitions never auto-delete — they block as drift. Data, connections,
+  // auth profiles, and agents are never pruned. The blast-radius confirm
+  // below is the safety net for large owned-delete sets.
   const prune = state.prune;
   if (prune) {
     printText(
       chalk.yellow(
-        "Prune is on: apply will DELETE any org-owned definition (entity/relationship type, Behavior, connector) that is not in this config — including ones created in the UI."
+        "Prune is on: apply will DELETE previously-applied definitions removed from this config (and unchanged since last apply). UI-created definitions block instead of deleting."
       )
     );
   }
@@ -1506,12 +1546,120 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     printText(chalk.yellow(`Warning: ${warning}`));
   }
 
+  // Attribution baseline — the latest succeeded deployment's effective-remote
+  // snapshot + owned identities. A legacy/missing manifest resolves to an empty
+  // baseline: remote mismatches and remote-only definitions block (no-baseline,
+  // fail-closed) and nothing is auto-deleted.
+  // Fail closed on transport/server errors: /deployments/latest returns
+  // deployment:null when none exists, so a thrown error is a real failure —
+  // never treat it as "no baseline" (which would let a scoped apply overwrite
+  // unexecuted-family ownership).
+  const latestDeployment = await client.getLatestDeployment();
+  const baselineRecord =
+    latestDeployment?.manifest === null ||
+    latestDeployment?.manifest === undefined
+      ? null
+      : loadBaselineFromManifest(latestDeployment.manifest);
+  /**
+   * The baseline this run should RECORD, from a given remote snapshot. A
+   * `--only` run executes one family, so the families it never touched must be
+   * carried forward, never rebuilt from an unexecuted snapshot:
+   *   - `--only agents` touches neither memory nor connectors → carry the prior
+   *     baseline verbatim (EMPTY when there is none: never synthesize ownership
+   *     of definitions this run didn't execute, or a later prune would treat
+   *     UI-created definitions as delete-eligible);
+   *   - `--only memory` rebuilds memory but carries prior connector ownership.
+   */
+  const recordableBaseline = (snapshot: RemoteSnapshot): BaselineRecord => {
+    if (opts.only === "agents") {
+      return (
+        baselineRecord ?? {
+          attribution: { entityTypes: [], relationshipTypes: [], watchers: [] },
+          owned: [],
+        }
+      );
+    }
+    const built = buildAttributionAndOwned(
+      state,
+      snapshot,
+      resolvedOrg?.id,
+      prune
+    );
+    if (opts.only === "memory" && baselineRecord) {
+      built.owned = [
+        ...built.owned,
+        ...baselineRecord.owned.filter((k) =>
+          k.startsWith("connector-definition:")
+        ),
+      ];
+    }
+    return built;
+  };
+  // Pre-apply snapshot first (noop path / partial failure). A fully-succeeded
+  // run that created resources re-records from a post-apply snapshot below, so
+  // newly allocated incarnation ids enter `owned` (otherwise the next prune
+  // cannot config-expressed-delete them).
+  let baselineRecordForRecording = recordableBaseline(remote);
+  const baseline = toBaseline(baselineRecord);
+
   const plan = computeDiff(state, remote, {
     only: opts.only,
     prune,
+    baseline,
     ...(resolvedOrg?.id ? { orgId: resolvedOrg.id } : {}),
   });
   printText(renderPlan(plan));
+
+  // Drift gate: any blocking drift (remote-moved field or remote-only
+  // definition the config doesn't own) halts the whole apply — `--yes` never
+  // destroys un-declared state. The report names each item; resolution is
+  // adopt (fold into config) or a manual delete.
+  const blockingDrift = plan.rows.filter(
+    (r): r is Extract<DiffRow, { blocking: true }> =>
+      r.verb === "drift" && "blocking" in r && r.blocking === true
+  );
+  if (blockingDrift.length > 0) {
+    printText(renderBlockedReport(blockingDrift));
+    if (opts.dryRun) {
+      printText(
+        chalk.dim("\nDry run — apply would exit 1 here. Nothing was changed.")
+      );
+      return;
+    }
+    const gitInfo = collectGitInfo(cwd);
+    await postDeploymentSummarySafe(client, {
+      apply_id: applyId,
+      status: "blocked",
+      counts: plan.counts,
+      counts_by_kind: buildCountsByKind(plan.rows),
+      manifest_hash: computeManifestHash(state),
+      git_sha: gitInfo.sha,
+      git_dirty: gitInfo.dirty,
+      cli_version: opts.cliVersion ?? null,
+      manifest: buildDeploymentManifest(
+        state,
+        connectorVersionPins(state, remote.connectorDefinitions)
+      ),
+      candidates: {
+        items: blockingDrift.map((b) => {
+          // Public surface says Behavior (not watcher). Field-level drift is a
+          // revert of the remote edit; a whole remote-only definition is a
+          // named delete (UI-created / unowned).
+          const kind = b.kind === "watcher" ? "behavior" : b.kind;
+          const action = b.field ? ("revert" as const) : ("delete" as const);
+          return {
+            kind,
+            slug: b.id,
+            ...(b.field ? { field: b.field } : {}),
+            action,
+          };
+        }),
+      },
+    });
+    throw new ValidationError(
+      `blocked by ${blockingDrift.length} drift item${blockingDrift.length === 1 ? "" : "s"} — adopt them into lobu.config.ts or delete them manually, then re-run`
+    );
+  }
 
   if (opts.dryRun) {
     printText(
@@ -1538,36 +1686,48 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     plan.counts.delete === 0 &&
     !hasPendingAuth
   ) {
-    // Nothing in the resource diff — but a declared provider key still needs to
-    // be pushed (idempotent PUT). This is the key-only `.env` change path.
+    // Provider keys live outside the resource diff (idempotent PUT) — push
+    // them on a key-only `.env` change.
     if (hasProviderKeys) {
       printText(chalk.bold("\nApplying provider keys:"));
       await pushProviderApiKeys(client, state.agents);
-      printText(chalk.green("\nProvider keys applied; nothing else to apply."));
-      const gitInfo = collectGitInfo(cwd);
-      await postDeploymentSummarySafe(client, {
-        apply_id: applyId,
-        status: "succeeded",
-        counts: plan.counts,
-        counts_by_kind: {
-          "provider-key": {
-            update: state.agents.reduce((n, a) => n + a.providerKeys.length, 0),
-          },
-        },
-        manifest_hash: computeManifestHash(state),
-        git_sha: gitInfo.sha,
-        git_dirty: gitInfo.dirty,
-        cli_version: opts.cliVersion ?? null,
-        // All-noop plan: the installed catalog IS this config's connector
-        // state — pin from the remote snapshot.
-        manifest: buildDeploymentManifest(
-          state,
-          connectorVersionPins(state, remote.connectorDefinitions)
-        ),
-      });
-    } else {
-      printText(chalk.green("\nNothing to apply."));
     }
+    // Baseline advances on every fully-succeeded run, INCLUDING all-noop runs:
+    // the manifest records the effective remote + owned identities so the next
+    // apply can attribute "who moved".
+    const gitInfo = collectGitInfo(cwd);
+    await postDeploymentSummarySafe(client, {
+      apply_id: applyId,
+      status: "succeeded",
+      counts: plan.counts,
+      counts_by_kind: {
+        ...buildCountsByKind(plan.rows),
+        ...(hasProviderKeys
+          ? {
+              "provider-key": {
+                update: state.agents.reduce(
+                  (n, a) => n + a.providerKeys.length,
+                  0
+                ),
+              },
+            }
+          : {}),
+      },
+      manifest_hash: computeManifestHash(state),
+      git_sha: gitInfo.sha,
+      git_dirty: gitInfo.dirty,
+      cli_version: opts.cliVersion ?? null,
+      manifest: buildDeploymentManifest(
+        state,
+        // Scoped applies never touch connectors — carry prior pins so a later
+        // prune still sees the version fingerprint for post-baseline edits.
+        opts.only
+          ? (baselineRecord?.connectorVersions ?? {})
+          : connectorVersionPins(state, remote.connectorDefinitions),
+        baselineRecordForRecording
+      ),
+    });
+    printText(chalk.green("\nNothing to apply."));
     return;
   }
 
@@ -1635,15 +1795,39 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   // x-lobu-apply-id header; this summary row is what groups them in the UI.
   {
     const gitInfo = collectGitInfo(cwd);
-    // A partial failure's snapshot could pin connectors that never installed
-    // this run — fall back to the CURRENT remote pins for any missing key so
-    // rollback restores what was actually live, never a phantom.
-    const pins = hasResourceWork
-      ? {
+    // Start from the CURRENT remote pins so a partial failure never records a
+    // phantom pin for a connector that did not install, then overlay what this
+    // run actually installed (empty unless executePlan ran). Scoped applies
+    // never reconcile connectors: carry the prior pins instead.
+    let pins = opts.only
+      ? (baselineRecord?.connectorVersions ?? {})
+      : {
           ...connectorVersionPins(state, remote.connectorDefinitions),
           ...connectorVersions,
+        };
+    // Post-apply ownership: if this run created definitions, re-fetch remote
+    // so owned gets real incarnation ids (pre-apply remote has none for creates).
+    if (!applyErr && hasResourceWork && plan.counts.create > 0) {
+      try {
+        const postRemote = await fetchRemoteSnapshot(
+          client,
+          state,
+          opts.only,
+          prune,
+          resolvedOrg?.id
+        );
+        baselineRecordForRecording = recordableBaseline(postRemote);
+        if (!opts.only) {
+          pins = {
+            ...connectorVersionPins(state, postRemote.connectorDefinitions),
+            ...connectorVersions,
+          };
         }
-      : connectorVersionPins(state, remote.connectorDefinitions);
+      } catch {
+        // Fall back to pre-apply baseline — over-blocks next prune, never
+        // under-blocks (fail-closed residual).
+      }
+    }
     await postDeploymentSummarySafe(client, {
       apply_id: applyId,
       status: applyErr ? "partial_failure" : "succeeded",
@@ -1653,7 +1837,11 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
       git_sha: gitInfo.sha,
       git_dirty: gitInfo.dirty,
       cli_version: opts.cliVersion ?? null,
-      manifest: buildDeploymentManifest(state, pins),
+      manifest: buildDeploymentManifest(
+        state,
+        pins,
+        applyErr ? undefined : baselineRecordForRecording
+      ),
       ...(applyErr
         ? {
             error:

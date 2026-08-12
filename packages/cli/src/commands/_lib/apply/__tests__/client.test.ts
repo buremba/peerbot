@@ -921,3 +921,32 @@ describe("ApplyClient — upsert create/update flow", () => {
     expect(calls).toHaveLength(1);
   });
 });
+
+describe("ApplyClient — deployment baseline read", () => {
+  test("getLatestDeployment resolves a pre-route server's 404 to no baseline", async () => {
+    // `/deployments/latest` always answers 200 ({deployment: null} when there
+    // is none), so a 404 means the server predates the route. That must read as
+    // "no baseline" (the conservative gate), not fail the whole apply.
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async () =>
+        new Response(JSON.stringify({ error: "Not found" }), {
+          status: 404,
+        })) as typeof fetch
+    );
+
+    await expect(client.getLatestDeployment()).resolves.toBeNull();
+  });
+
+  test("getLatestDeployment propagates a non-404 failure (never a silent baseline reset)", async () => {
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async () =>
+        new Response(JSON.stringify({ error: "boom" }), {
+          status: 500,
+        })) as typeof fetch
+    );
+
+    await expect(client.getLatestDeployment()).rejects.toThrow(/boom/);
+  });
+});

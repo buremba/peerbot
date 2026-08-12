@@ -34,6 +34,7 @@ import {
 } from "./apply-cmd.js";
 import { resolveApplyClient } from "./client.js";
 import {
+  buildAttributionAndOwned,
   buildCountsByKind,
   buildDeploymentManifest,
   collectGitInfo,
@@ -154,6 +155,15 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
   if (!deployment) {
     throw new ValidationError(
       `Deployment ${opts.applyId} not found in org "${orgSlug}".`
+    );
+  }
+  if (deployment.status === "blocked") {
+    throw new ValidationError(
+      [
+        `Deployment ${opts.applyId} is a blocked (never-applied) drift report — it has no live state to restore.`,
+        "Resolve the drift (adopt into lobu.config.ts or delete manually), then re-run `lobu apply`.",
+        "To restore a prior live config, pick a succeeded deployment id from `lobu apply` history.",
+      ].join("\n")
     );
   }
   if (!deployment.manifest) {
@@ -296,6 +306,39 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
   // ── Record as a deployment + pause promotions ─────────────────────────────
   const gitInfo = collectGitInfo(cwd);
   try {
+    const connectorPins = {
+      ...connectorVersionPins(targetState, catalog),
+      ...Object.fromEntries(repoints.map((r) => [r.key, r.to])),
+      ...manifest.connector_versions,
+    };
+    // Rollback force-converges and must re-record the drift-gate baseline
+    // (attribution + owned). A succeeded rollback without attribution becomes
+    // GET /deployments/latest and the next `lobu apply --resume` would treat
+    // every config change as unattributed drift and block forever.
+    // Re-fetch remote after successful mutation so newly allocated incarnation
+    // ids enter `owned` (pre-rollback remote lacks creates/recreates).
+    const orgs = await client.listOrgs().catch(() => null);
+    const orgId = orgs?.find((o) => o.slug === orgSlug)?.id;
+    let remoteForBaseline = remote;
+    if (!rollbackErr) {
+      try {
+        remoteForBaseline = await fetchRemoteSnapshot(
+          client,
+          sanitized.state,
+          undefined,
+          false,
+          orgId
+        );
+      } catch {
+        // Fall back to pre-rollback remote (over-blocks next prune, fail-closed).
+      }
+    }
+    const baselineRecord = buildAttributionAndOwned(
+      sanitized.state,
+      remoteForBaseline,
+      orgId,
+      false
+    );
     await client.postDeploymentSummary({
       apply_id: newApplyId,
       status: rollbackErr ? "partial_failure" : "succeeded",
@@ -313,11 +356,11 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
       rollback_of: opts.applyId,
       // Re-post the restored snapshot so rolling FORWARD to this deployment
       // works the same way. Pins reflect what the rollback set.
-      manifest: buildDeploymentManifest(targetState, {
-        ...connectorVersionPins(targetState, catalog),
-        ...Object.fromEntries(repoints.map((r) => [r.key, r.to])),
-        ...manifest.connector_versions,
-      }),
+      manifest: buildDeploymentManifest(
+        targetState,
+        connectorPins,
+        baselineRecord
+      ),
     });
   } catch (err) {
     printText(

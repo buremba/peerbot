@@ -9,7 +9,6 @@ import {
   validateConnectorState,
 } from "../apply-cmd.js";
 import type { ApplyClient, RemoteConnectorDefinition } from "../client.js";
-import type { DiffPlan, RemoteSnapshot } from "../diff.js";
 import type {
   DesiredAgent,
   DesiredConnection,
@@ -20,6 +19,7 @@ import {
   normalizeConnectionConfigScope,
   validateConnectionAgainstConnector,
 } from "../desired-state.js";
+import type { DiffPlan, RemoteSnapshot } from "../diff.js";
 
 // Minimal DesiredState with just the connectors slice populated.
 function stateWith(connectors: DesiredState["connectors"]): DesiredState {
@@ -338,6 +338,63 @@ describe("executePlan — entity-type schema fidelity", () => {
 
     expect(upsertEntityType).toHaveBeenCalledTimes(1);
     expect(upsertEntityType.mock.calls[0]?.[1]).toEqual(schemaExtras);
+  });
+
+  test("maps three-way properties.<key> clears to a whole-properties clearFacet when config omits properties", async () => {
+    // Config under prune drops the entire properties object; three-way
+    // reports per-key clears as properties.<key>. upsertEntityType only
+    // honors the whole-facet "properties" clearFacet for that case.
+    const desired = {
+      slug: "task",
+      name: "Task",
+      // properties intentionally omitted
+    };
+    const state = stateWith({
+      definitions: [],
+      authProfiles: [],
+      connections: [],
+    });
+    state.memorySchema.entityTypes = [desired as any];
+    const remoteType = {
+      slug: "task",
+      organization_id: "org_acme",
+      properties: { status: { type: "string" }, assignee: { type: "string" } },
+      required: ["status"],
+    };
+    const plan: DiffPlan = {
+      rows: [
+        {
+          kind: "entity-type",
+          verb: "update",
+          id: "task",
+          desired: desired as any,
+          remote: remoteType as any,
+          changedFields: ["properties.status", "properties.assignee"],
+        },
+      ],
+      counts: { create: 0, update: 1, noop: 0, drift: 0, delete: 0 },
+      notes: [],
+    };
+    const remote: RemoteSnapshot = {
+      agents: [],
+      agentSettings: new Map(),
+      entityTypes: [remoteType as any],
+      relationshipTypes: [],
+      watchers: [],
+      connectorDefinitions: [],
+      authProfiles: [],
+      connections: [],
+      feedsByConnectionId: new Map(),
+      inferenceProviders: [],
+    };
+    const upsertEntityType = mock(async () => ({ updated: true }));
+    const client = { upsertEntityType } as unknown as ApplyClient;
+
+    await executePlan({ client, state, plan, remote }, []);
+
+    expect(upsertEntityType).toHaveBeenCalledTimes(1);
+    const clearFacets = upsertEntityType.mock.calls[0]?.[3] as Set<string>;
+    expect(clearFacets.has("properties")).toBe(true);
   });
 });
 

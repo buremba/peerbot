@@ -305,7 +305,9 @@ describe("three-way edge cases", () => {
   test("unchanged declared resolutionPolicy round-trips as noop", () => {
     const desired = buildState([
       taskType({
-        resolutionPolicy: { "x-lobu-resolution": { rules: [{ kind: "email" }] } },
+        resolutionPolicy: {
+          "x-lobu-resolution": { rules: [{ kind: "email" }] },
+        },
       }),
     ]);
     const remote = emptyRemote();
@@ -360,7 +362,11 @@ describe("Behavior three-way attribution", () => {
     const remote = emptyRemote();
     remote.watchers = [remoteWatcher({ agent_id: "agent-b" }) as any];
     const baseline = {
-      attribution: { entityTypes: [], relationshipTypes: [], watchers: [remoteWatcher()] },
+      attribution: {
+        entityTypes: [],
+        relationshipTypes: [],
+        watchers: [remoteWatcher()],
+      },
       owned: new Set<string>(["watcher:b-1"]),
     };
 

@@ -726,7 +726,8 @@ function diffEntityTypeWithBaseline(
     // No baseline entry — ambiguous only when there's an actual mismatch. A
     // definition already in sync (desired == remote) is a noop, so existing
     // orgs can establish their first baseline without blocking.
-    const inSync = deepEqual(desired.name, remote.name) &&
+    const inSync =
+      deepEqual(desired.name, remote.name) &&
       deepEqual(desired.description, remote.description) &&
       deepEqual(desired.required ?? [], remote.required ?? []) &&
       deepEqual(desired.properties ?? {}, remote.properties ?? {});
@@ -798,7 +799,8 @@ function diffRelationshipTypeWithBaseline(
     (a) => a.slug === desired.slug
   );
   if (!attr) {
-    const inSync = deepEqual(desired.name, remote.name) &&
+    const inSync =
+      deepEqual(desired.name, remote.name) &&
       deepEqual(desired.description, remote.description) &&
       deepEqual(desired.rules ?? [], remote.rules ?? []);
     if (inSync) {
@@ -1620,7 +1622,11 @@ export function computeDiff(
                 (x) => x.slug === slug
               );
               return (
-                !!a && deepEqual(projectEntityForDelete(remoteEntity), projectEntityForDelete(a))
+                !!a &&
+                deepEqual(
+                  projectEntityForDelete(remoteEntity),
+                  projectEntityForDelete(a)
+                )
               );
             }
           )
@@ -1666,7 +1672,11 @@ export function computeDiff(
                 (x) => x.slug === slug
               );
               return (
-                !!a && deepEqual(projectRelForDelete(remoteRel), projectRelForDelete(a))
+                !!a &&
+                deepEqual(
+                  projectRelForDelete(remoteRel),
+                  projectRelForDelete(a)
+                )
               );
             }
           )

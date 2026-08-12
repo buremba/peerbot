@@ -157,6 +157,7 @@ describe('search_memory > recall contract', () => {
   it('opens an exact content id from reviewer-style "memory <id>" language', async () => {
     const result = await search(
       {
+        title: '  Exact memory heading  ',
         query: 'memory ' + exactMemoryId,
         include_content: true,
       },
@@ -165,6 +166,7 @@ describe('search_memory > recall contract', () => {
     );
 
     expect(result.discovery_status).toBe('complete');
+    expect(result.title).toBe('Exact memory heading');
     expect(result.content?.map((item) => item.id)).toContain(exactMemoryId);
     expect(result.content?.find((item) => item.id === exactMemoryId)?.text_content).toBe(
       'Exact reviewer checklist memory'

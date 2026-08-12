@@ -979,7 +979,11 @@ async function searchImpl(
   const exactContent = includeContent
     ? await recallExactContentId(args.query, env, ctx)
     : null;
-  if (exactContent) return exactContent;
+  if (exactContent) {
+    return title && !exactContent.title
+      ? { ...exactContent, title }
+      : exactContent;
+  }
 
   // Helper to run content search in parallel. Runs when we have either a text
   // query or a pre-computed embedding — forwarding the embedding lets the

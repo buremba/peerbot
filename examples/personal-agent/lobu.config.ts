@@ -838,19 +838,18 @@ const localTakeoutDir = (envName: string, fallback: string): string => {
   );
 };
 
-const googleYoutubeTakeoutDir = localTakeoutDir(
-  "GOOGLE_YOUTUBE_TAKEOUT_DIR",
-  "google-youtube"
-);
-const googleKeepTakeoutDir = localTakeoutDir(
-  "GOOGLE_KEEP_TAKEOUT_DIR",
-  "google-keep"
-);
-const twitterTakeoutDir = localTakeoutDir("TWITTER_TAKEOUT_DIR", "twitter");
-const instagramTakeoutDir = localTakeoutDir(
-  "INSTAGRAM_TAKEOUT_DIR",
-  "instagram"
-);
+// Resolve lazily, on read. Throwing at module scope would break scoped applies
+// that never touch connections — `lobu apply --only agents` exits at import
+// even though it would skip every feed here. The getter defers the check to
+// connection mapping, so a full apply still fails closed.
+const takeoutConfig = (
+  envName: string,
+  fallback: string
+): { takeout_dir: string } => ({
+  get takeout_dir(): string {
+    return localTakeoutDir(envName, fallback);
+  },
+});
 // LinkedIn is also a browser connector. Unlike takeout-only connections, never
 // synthesize a local path for it: a browser-only deployment must not provision
 // CSV feeds that can only fail forever. Opt in with either an explicit LinkedIn
@@ -866,8 +865,14 @@ const takeoutConnection = defineConnection({
   connector: "google.takeout",
   name: "Google Takeout Local",
   feeds: [
-    { feed: "youtube", config: { takeout_dir: googleYoutubeTakeoutDir } },
-    { feed: "keep", config: { takeout_dir: googleKeepTakeoutDir } },
+    {
+      feed: "youtube",
+      config: takeoutConfig("GOOGLE_YOUTUBE_TAKEOUT_DIR", "google-youtube"),
+    },
+    {
+      feed: "keep",
+      config: takeoutConfig("GOOGLE_KEEP_TAKEOUT_DIR", "google-keep"),
+    },
   ],
 });
 
@@ -876,11 +881,20 @@ const twitterTakeoutConnection = defineConnection({
   connector: "twitter.takeout",
   name: "X/Twitter Takeout Local",
   feeds: [
-    { feed: "tweets", config: { takeout_dir: twitterTakeoutDir } },
-    { feed: "messages", config: { takeout_dir: twitterTakeoutDir } },
-    { feed: "likes", config: { takeout_dir: twitterTakeoutDir } },
-    { feed: "followers", config: { takeout_dir: twitterTakeoutDir } },
-    { feed: "following", config: { takeout_dir: twitterTakeoutDir } },
+    { feed: "tweets", config: takeoutConfig("TWITTER_TAKEOUT_DIR", "twitter") },
+    {
+      feed: "messages",
+      config: takeoutConfig("TWITTER_TAKEOUT_DIR", "twitter"),
+    },
+    { feed: "likes", config: takeoutConfig("TWITTER_TAKEOUT_DIR", "twitter") },
+    {
+      feed: "followers",
+      config: takeoutConfig("TWITTER_TAKEOUT_DIR", "twitter"),
+    },
+    {
+      feed: "following",
+      config: takeoutConfig("TWITTER_TAKEOUT_DIR", "twitter"),
+    },
   ],
 });
 
@@ -889,19 +903,46 @@ const instagramTakeoutConnection = defineConnection({
   connector: "instagram.takeout",
   name: "Instagram Takeout Local",
   feeds: [
-    { feed: "messages", config: { takeout_dir: instagramTakeoutDir } },
-    { feed: "connections", config: { takeout_dir: instagramTakeoutDir } },
-    { feed: "saved", config: { takeout_dir: instagramTakeoutDir } },
-    { feed: "comments", config: { takeout_dir: instagramTakeoutDir } },
-    { feed: "likes", config: { takeout_dir: instagramTakeoutDir } },
-    { feed: "media", config: { takeout_dir: instagramTakeoutDir } },
+    {
+      feed: "messages",
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
+    },
+    {
+      feed: "connections",
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
+    },
+    {
+      feed: "saved",
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
+    },
+    {
+      feed: "comments",
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
+    },
+    {
+      feed: "likes",
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
+    },
+    {
+      feed: "media",
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
+    },
     {
       feed: "story_interactions",
-      config: { takeout_dir: instagramTakeoutDir },
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
     },
-    { feed: "searches", config: { takeout_dir: instagramTakeoutDir } },
-    { feed: "link_history", config: { takeout_dir: instagramTakeoutDir } },
-    { feed: "ads", config: { takeout_dir: instagramTakeoutDir } },
+    {
+      feed: "searches",
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
+    },
+    {
+      feed: "link_history",
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
+    },
+    {
+      feed: "ads",
+      config: takeoutConfig("INSTAGRAM_TAKEOUT_DIR", "instagram"),
+    },
   ],
 });
 

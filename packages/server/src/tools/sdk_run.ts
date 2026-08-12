@@ -164,6 +164,13 @@ export function toMcpPublicSdkScriptResult(result: unknown): unknown {
     dry_run: row.dry_run === true,
   };
 
+  // Echo the caller-supplied heading so MCP App / ChatGPT result cards can
+  // render it above status. Documented on the input schema and on
+  // SdkScriptResultSchema — dropping it here breaks that contract.
+  if (typeof row.title === "string" && row.title.trim()) {
+    out.title = row.title.trim();
+  }
+
   if (Object.hasOwn(row, "return_value") && row.return_value !== undefined) {
     out.return_value = row.return_value;
   }
@@ -247,17 +254,19 @@ async function runSandbox(
   ctx: ToolContext,
 ): Promise<unknown> {
   const allowCrossOrg = ctx.allowCrossOrg;
+  const agentDryRun = "dry_run" in args ? args.dry_run === true : false;
+  const dryRun = resolveSandboxDryRun({
+    executionMode: ctx.executionMode,
+    sdkMode: mode,
+    agentDryRun,
+  });
   const result = await runScript({
     source: args.script,
     sdk: (abortSignal) => buildClientSDK(ctx, env, { mode, allowCrossOrg, abortSignal }),
     sdkMode: mode,
     allowCrossOrg,
     maxAccessLevel: resolveMaxAccessLevel(ctx.memberRole, ctx.scopes),
-    dryRun: resolveSandboxDryRun({
-      executionMode: ctx.executionMode,
-      sdkMode: mode,
-      agentDryRun: "dry_run" in args ? args.dry_run === true : false,
-    }),
+    dryRun,
     dryRunDispatchPaths:
       ctx.executionMode === "capture" ? CAPTURE_DISPATCH_PATHS : undefined,
     context: {
@@ -293,7 +302,10 @@ async function runSandbox(
     side_effect_preview: result.sideEffectPreview,
     sdk_call_trace_truncated:
       result.traceDropped > 0 ? { dropped_entries: result.traceDropped } : undefined,
-    dry_run: mode === "full" && "dry_run" in args && args.dry_run === true,
+    // Effective sandbox dry-run, including capture-mode enforcement. Must match
+    // the dryRun flag passed to runScript so skipped_calls / side_effect_preview
+    // never appear under dry_run:false.
+    dry_run: dryRun,
   };
 }
 

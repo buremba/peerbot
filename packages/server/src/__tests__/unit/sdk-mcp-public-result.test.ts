@@ -5,6 +5,7 @@ import { validateToolResult } from "../../tools/validate-args";
 describe("SDK MCP public result", () => {
 	test("strips internal diagnostics while preserving the requested result and dry-run proposal", () => {
 		const richInternal = {
+			title: "  Company pipeline  ",
 			success: false,
 			return_value: { answer: 42 },
 			logs: [{ level: "warn", message: "private diagnostic", ts: 123 }],
@@ -45,6 +46,10 @@ describe("SDK MCP public result", () => {
 		const publicResult = toMcpPublicSdkScriptResult(richInternal) as Record<string, unknown>;
 
 		expect(validateToolResult(SdkScriptResultSchema, publicResult)).not.toBeNull();
+		expect(publicResult.title).toBe("Company pipeline");
+		expect(publicResult.success).toBe(false);
+		expect(publicResult.dry_run).toBe(true);
+		expect(publicResult.skipped_calls).toBe(1);
 		expect(publicResult.return_value).toEqual({ answer: 42 });
 		expect(publicResult.side_effect_preview).toEqual([
 			{ path: "entities.create", access: "write", args: [{ name: "A" }] },
@@ -105,5 +110,30 @@ describe("SDK MCP public result", () => {
 		expect(publicResult.side_effect_preview_truncated).toEqual({ dropped_entries: 2 });
 		expect(publicResult.return_value_preview).toBe("head");
 		expect(publicResult.return_truncated).toEqual({ total_bytes: 10, kept_bytes: 4 });
+	});
+
+	test("preserves a caller-supplied title and drops blank titles", () => {
+		expect(
+			(
+				toMcpPublicSdkScriptResult({
+					title: "Pipeline",
+					success: true,
+					skipped_calls: 0,
+					side_effect_preview: [],
+					dry_run: false,
+				}) as Record<string, unknown>
+			).title,
+		).toBe("Pipeline");
+		expect(
+			(
+				toMcpPublicSdkScriptResult({
+					title: "   ",
+					success: true,
+					skipped_calls: 0,
+					side_effect_preview: [],
+					dry_run: false,
+				}) as Record<string, unknown>
+			).title,
+		).toBeUndefined();
 	});
 });

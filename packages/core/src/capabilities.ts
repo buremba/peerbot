@@ -68,6 +68,20 @@ export interface CapabilityAuthorizationResult {
   dropped: string[];
 }
 
+// The set of real platform keys, captured once.
+//
+// Membership must be tested against this rather than `key in PLATFORM_ALLOWLIST`
+// or a bare index: `in` and property access both walk the prototype chain, so
+// `"toString"` reads as a known platform and then yields a FUNCTION as its
+// allowlist — which throws in `new Set(allowed)` below. Platform strings come
+// straight off a worker's poll body, so that is attacker-chosen input reaching
+// a 500.
+//
+// `Object.keys` rather than `Object.hasOwn`: this package targets ES2020 and
+// `Object.hasOwn` is ES2022, and biome's `useObjectHasOwn` rewrites a
+// `hasOwnProperty.call` guard back into the ES2022 form on every `check:fix`.
+const KNOWN_PLATFORMS = new Set(Object.keys(PLATFORM_ALLOWLIST));
+
 // Returns the subset of `declared` that the platform is allowed to advertise,
 // plus the dropped tail for logging. `platform` of null/undefined/unknown is
 // treated as "untrusted, unknown" and returns an empty authorized set —
@@ -77,7 +91,13 @@ export function authorizeCapabilities(
   platform: string | null | undefined,
   declared: readonly string[]
 ): CapabilityAuthorizationResult {
-  const allowed = platform ? PLATFORM_ALLOWLIST[platform] : undefined;
+  // Gate the index on KNOWN_PLATFORMS (see above): a bare
+  // `PLATFORM_ALLOWLIST[platform]` returns an inherited function for keys like
+  // `toString`, which is truthy and then throws in `new Set(allowed)` below.
+  const allowed =
+    platform && KNOWN_PLATFORMS.has(platform)
+      ? PLATFORM_ALLOWLIST[platform]
+      : undefined;
   if (!allowed) {
     return { authorized: [], dropped: [...declared] };
   }
@@ -95,5 +115,9 @@ export function authorizeCapabilities(
 }
 
 export function isKnownPlatform(platform: string | null | undefined): boolean {
-  return !!platform && platform in PLATFORM_ALLOWLIST;
+  // Same reason as above: `in` walks the prototype chain, so `toString` and
+  // `constructor` would pass this check. The connector-worker CLI validates
+  // `--platform` with it, so a bare `in` lets an operator start a daemon that
+  // the server then rejects while authorizing capabilities.
+  return !!platform && KNOWN_PLATFORMS.has(platform);
 }

@@ -17,6 +17,10 @@ export interface DaemonConfig {
   maxConcurrentJobs?: number;
   executor?: Partial<ExecutorConfig>;
   version?: string;
+  /** Set only for a device worker; cloud-fleet daemons leave this undefined. */
+  platform?: string;
+  /** Human-readable device name for the Devices page. */
+  label?: string;
 }
 
 const DEFAULT_CAPABILITIES: WorkerCapabilities = {};
@@ -42,9 +46,11 @@ export class WorkerDaemon {
     this.client = new WorkerClient({
       apiUrl: daemonConfig.apiUrl,
       workerId: daemonConfig.workerId,
-      authToken: daemonConfig.workerApiToken ?? env.WORKER_API_TOKEN,
+      authToken: daemonConfig.workerApiToken,
       capabilities: daemonConfig.capabilities ?? DEFAULT_CAPABILITIES,
       version: daemonConfig.version,
+      platform: daemonConfig.platform,
+      label: daemonConfig.label,
     });
 
     this.env = env;

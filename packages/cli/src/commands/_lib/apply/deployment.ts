@@ -182,9 +182,7 @@ export function buildAttributionAndOwned(
       : remote.relationshipTypes.filter(
           (r) => r.organization_id === orgId || r.organization_id === undefined
         );
-  const remoteEntityBySlug = new Map(
-    ownedEntityTypes.map((e) => [e.slug, e])
-  );
+  const remoteEntityBySlug = new Map(ownedEntityTypes.map((e) => [e.slug, e]));
   const entityTypes = state.memorySchema.entityTypes.map((d) => {
     const r = remoteEntityBySlug.get(d.slug);
     return {
@@ -206,9 +204,7 @@ export function buildAttributionAndOwned(
       },
     };
   });
-  const remoteRelBySlug = new Map(
-    ownedRelTypes.map((r) => [r.slug, r])
-  );
+  const remoteRelBySlug = new Map(ownedRelTypes.map((r) => [r.slug, r]));
   const relationshipTypes = state.memorySchema.relationshipTypes.map((d) => {
     const r = remoteRelBySlug.get(d.slug);
     return {
@@ -266,7 +262,11 @@ export function buildAttributionAndOwned(
     ...state.connectors.connections.map((c) => c.connector),
   ]);
   for (const def of remote.connectorDefinitions) {
-    if (def.installed && def.id !== undefined && appliedConnectorKeys.has(def.key)) {
+    if (
+      def.installed &&
+      def.id !== undefined &&
+      appliedConnectorKeys.has(def.key)
+    ) {
       owned.push(`connector-definition:${def.id}`);
     }
   }

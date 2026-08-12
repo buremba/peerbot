@@ -1546,7 +1546,11 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
           owned: [],
         })
       : (() => {
-          const built = buildAttributionAndOwned(state, remote, resolvedOrg?.id);
+          const built = buildAttributionAndOwned(
+            state,
+            remote,
+            resolvedOrg?.id
+          );
           // `--only memory` never touches connectors — carry forward prior
           // connector ownership so a later prune still recognizes them.
           if (opts.only === "memory" && baselineRecord) {

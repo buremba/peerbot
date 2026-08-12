@@ -22,6 +22,8 @@ export interface McpOAuthMetadata {
   authorizationUrl: string;
   tokenUrl: string;
   registrationUrl?: string;
+  /** Scopes requested by the initial WWW-Authenticate challenge, when present. */
+  challengeScopes?: string[];
   scopesSupported: string[];
   tokenEndpointAuthMethodsSupported: string[];
   codeChallengeMethodsSupported: string[];

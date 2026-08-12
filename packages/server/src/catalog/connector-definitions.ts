@@ -5,6 +5,7 @@ import { getLoginProviderScopes } from "../auth/config";
 import { type DbClient, type DbQuery, getDb } from "../db/client";
 import { getLocalActionKind } from "../operations/connector-operations";
 import {
+	getMcpOAuthRequestedScopes,
 	probeMcpServer,
 	selectMcpOAuthClientAuthMethod,
 } from "../mcp-proxy/client";
@@ -261,7 +262,7 @@ export async function installConnectorFromMcpUrl(params: {
 						type: "oauth",
 						provider: connectorKey,
 						required: true,
-						requiredScopes: probed.oauth.scopesSupported,
+						requiredScopes: getMcpOAuthRequestedScopes(probed.oauth),
 						authorizationUrl: probed.oauth.authorizationUrl,
 						tokenUrl: probed.oauth.tokenUrl,
 						tokenEndpointAuthMethod:

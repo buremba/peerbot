@@ -783,7 +783,9 @@ describe("lobu init --from-org", () => {
     });
 
     const source = readFileSync(join(dir, "lobu.config.ts"), "utf-8");
-    expect(source).toContain('managedBy: { org: "lobu-team" }');
+    expect(source).toContain(
+      'managedBy: { org: "lobu-team", connectionSlug: "gmail" }'
+    );
     expect(source).not.toContain("defineAuthProfile");
     expect(source).not.toContain("gmailApp");
     expect(source).not.toContain("gmailAccount");
@@ -795,7 +797,9 @@ describe("lobu init --from-org", () => {
     expect(conn?.slug).toBe("gmail");
     expect(conn?.authProfileSlug).toBeUndefined();
     expect(conn?.appAuthProfileSlug).toBeUndefined();
-    expect(conn?.config).toEqual({ managedBy: { org: "lobu-team" } });
+    expect(conn?.config).toEqual({
+      managedBy: { org: "lobu-team", connectionSlug: "gmail" },
+    });
     expect(state.connectors.authProfiles).toEqual([]);
   });
 

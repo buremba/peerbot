@@ -1,4 +1,5 @@
 import { createLogger, MCP_PROTOCOL_VERSION } from "@lobu/core";
+import { parseJsonRpcResponse } from "../../../mcp-proxy/http-response.js";
 import { isInternalUrl } from "../../proxy/ssrf-guard.js";
 import {
 	buildSessionKey,
@@ -6,7 +7,6 @@ import {
 	type HttpMcpServerConfig,
 	INITIALIZE_BODY,
 	INITIALIZED_NOTIFICATION_BODY,
-	parseJsonRpcResponse,
 	upstreamTimeoutSignal,
 } from "./proxy-shared.js";
 

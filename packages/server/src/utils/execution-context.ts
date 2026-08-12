@@ -205,6 +205,8 @@ export async function resolveExecutionAuth(
 interface ManagedByDescriptor {
   /** The cloud org slug/id the managed connector lives under. */
   org: string;
+  /** Stable slug of the exact caller-owned cloud connection grant. */
+  connectionSlug?: string;
   /** The connector key to fetch the user's connection token for. */
   connectorKey: string;
   /** Cloud base URL (no trailing `/oauth/connection-token`). */
@@ -222,7 +224,8 @@ interface ManagedByDescriptor {
  * connection is NOT managed (i.e. it uses the local/unchanged credential path).
  *
  * A connection opts into the managed path by carrying `config.managedBy = {
- * org }` (set via `defineConnection({ connector, managedBy })`). The cloud
+ * org, connectionSlug }` (set via `defineConnection({ connector, managedBy })`).
+ * `connectionSlug` is optional only for legacy single-grant configs. The cloud
  * bearer credential AND the cloud base URL are sourced ONLY from the local
  * instance's own login (`resolveCloudCredential`: the stored `lobu login`
  * device credential, falling back to `LOBU_CLOUD_PAT`/`LOBU_CLOUD_URL` for
@@ -258,6 +261,10 @@ async function resolveManagedByForConnection(
   const managedBy = managedByRaw as Record<string, unknown>;
   const org = typeof managedBy.org === 'string' ? managedBy.org.trim() : '';
   if (!org) return null;
+  const connectionSlug =
+    typeof managedBy.connectionSlug === 'string' && managedBy.connectionSlug.trim()
+      ? managedBy.connectionSlug.trim()
+      : undefined;
 
   // The credential + base URL come from the local instance's OWN login (or the
   // env fallback), never from the connection config — so a malicious config
@@ -265,7 +272,13 @@ async function resolveManagedByForConnection(
   const cloud = await resolveCloudCredential();
   if (!cloud) return null;
 
-  return { org, connectorKey: rows[0].connector_key, baseUrl: cloud.baseUrl, token: cloud.token };
+  return {
+    org,
+    connectionSlug,
+    connectorKey: rows[0].connector_key,
+    baseUrl: cloud.baseUrl,
+    token: cloud.token,
+  };
 }
 
 /**
@@ -298,7 +311,11 @@ async function fetchManagedConnectionToken(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${managed.token}`,
       },
-      body: JSON.stringify({ org: managed.org, connector_key: managed.connectorKey }),
+      body: JSON.stringify({
+        org: managed.org,
+        connector_key: managed.connectorKey,
+        ...(managed.connectionSlug ? { connection_slug: managed.connectionSlug } : {}),
+      }),
     });
     if (!response.ok) {
       logger.warn(

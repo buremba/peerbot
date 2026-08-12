@@ -36,8 +36,9 @@ export function getActionModes(
 
 /**
  * Default mode when the user never set this op on the connection.
- * - reads → auto (never approval-gated by default)
- * - writes with requires_approval / destructiveHint → approval
+ * - explicitly approval-gated operations → approval (including remote reads)
+ * - other reads → auto
+ * - writes with destructiveHint → approval
  * - other writes → auto
  * `disabled` requires an explicit user opt-in.
  */
@@ -46,8 +47,8 @@ export function defaultActionModeForOperation(operation: {
   kind?: 'read' | 'write';
   annotations?: { destructiveHint?: boolean };
 }): ActionMode {
-  if (operation.kind === 'read') return 'auto';
   if (operation.requires_approval) return 'approval';
+  if (operation.kind === 'read') return 'auto';
   if (operation.annotations?.destructiveHint === true) return 'approval';
   return 'auto';
 }
@@ -67,8 +68,9 @@ export function resolveActionMode(
 
 /**
  * Filter a list of operations against a connection's action_modes,
- * dropping anything in 'disabled' mode. Used by list_available and the
- * tool-registration path so disabled actions never surface to the worker.
+ * dropping anything in 'disabled' mode. listOperations applies this to
+ * connection-scoped listings unless the caller opts into includeDisabled
+ * to render enablement help.
  */
 export function filterOperationsByActionModes<T extends OperationDescriptor>(
   operations: T[],

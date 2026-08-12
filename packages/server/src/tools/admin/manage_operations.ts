@@ -1087,6 +1087,7 @@ async function handleListAvailable(
   const full = await listOperations({
     organizationId: ctx.organizationId,
 		connectorKey: catalogConnectorKey,
+		connectionId: args.connection_id,
     entityId: args.entity_id,
     kind: args.kind,
     backend: args.backend,
@@ -1094,6 +1095,7 @@ async function handleListAvailable(
 		// descriptor copy from the public response.
 		includeInputSchema: true,
     includeOutputSchema: args.include_output_schema ?? false,
+		includeDisabled: true,
     // Fetch the WHOLE filtered set — listOperations defaults to limit 100, which
     // would silently drop ops past index 100 and make them unreachable at any
     // caller offset. We must filter per-op-disabled across the full set BEFORE

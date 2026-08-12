@@ -177,6 +177,9 @@ async function metricSeriesImpl(
     // Charts are filtered to the requesting user's connection visibility, so a
     // member can't sparkline another user's private-connection events.
     userId: ctx.userId,
+    // Workspace-identity audit rows are owner/admin-only; ordinary members
+    // must not chart member/invitation lifecycle data via raw SQL.
+    excludeWorkspaceAudit: !isAdmin,
   });
   const db = getDb();
 

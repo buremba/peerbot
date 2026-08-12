@@ -251,6 +251,9 @@ export function buildClientSDK(
 					isSystemContext(ctx) || isAdmin
 						? undefined
 						: ADMIN_ONLY_QUERYABLE_TABLES,
+				// Workspace-identity audit rows are owner/admin-only; ordinary
+				// members running client.query must not surface them.
+				excludeWorkspaceAudit: !isSystemContext(ctx) && !isAdmin,
 			});
 			// Outer LIMIT caps rows at the source so a broad SELECT can't
 			// materialize an unbounded result set host-side.

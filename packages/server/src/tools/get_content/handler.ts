@@ -158,11 +158,11 @@ async function getContentImpl(
     throw new ToolUserError('read_knowledge requires an MCP session with read access.', 403);
   }
 
-  // Workspace-identity audit events carry member emails / invitation details.
-  // Exclude them for everyone EXCEPT owners/admins and trusted in-process
-  // system contexts (behavior runs: userId=null, isAuthenticated=true).
-  // Ordinary members do not see another member's invitation PII — the $member
-  // read policy reserves that for owner/admin.
+  // Workspace-identity audit events record member/invitation lifecycle
+  // (titles, member names, invitation status). Exclude them for everyone
+  // EXCEPT owners/admins and trusted in-process system contexts (behavior
+  // runs: userId=null, isAuthenticated=true) — the $member read policy
+  // reserves that lifecycle data for owner/admin.
   const excludeWorkspaceAudit =
     ctx.memberRole !== 'owner' &&
     ctx.memberRole !== 'admin' &&

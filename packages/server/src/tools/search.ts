@@ -929,10 +929,10 @@ async function searchImpl(
             env,
             queryEmbedding: args.query_embedding,
             minSimilarity: args.min_similarity,
-            // Workspace-identity audit events carry member emails / invitation
-            // details; only owners/admins and in-process system contexts may
+            // Workspace-identity audit events record member/invitation
+            // lifecycle; only owners/admins and in-process system contexts may
             // recall them (ordinary members do not see another member's
-            // invitation PII — the $member read policy reserves that for
+            // invitation lifecycle — the $member read policy reserves that for
             // owner/admin).
             excludeWorkspaceAudit:
               ctx.memberRole !== 'owner' &&

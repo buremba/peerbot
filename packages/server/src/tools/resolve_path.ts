@@ -978,7 +978,7 @@ async function fetchBootstrap(
       sql,
       workspace.id,
       entity,
-      // Workspace-identity audit rows carry member/invitation emails; only
+      // Workspace-identity audit rows record member/invitation lifecycle; only
       // owner/admin and trusted in-process system callers may see them.
       !isAdminOrOwnerRole(ctx.memberRole) && !isSystemContext(ctx)
     ),
@@ -1172,7 +1172,7 @@ async function fetchContentCount(
     WHERE ev.organization_id = ${organizationId}
       -- Exclude null-shaped internal events (P1 corrections) from the org content count.
       AND ev.semantic_type <> 'correction'
-      -- Workspace-identity audit rows carry member/invitation emails; only
+      -- Workspace-identity audit rows record member/invitation lifecycle; only
       -- owner/admin and trusted system callers may see them.
       ${excludeWorkspaceAudit ? sql`AND (ev.metadata->>'category') IS DISTINCT FROM 'workspace'` : sql``}
   `;
@@ -1224,7 +1224,7 @@ async function fetchRecentContent(
     WHERE ev.organization_id = $1
       -- Exclude null-shaped internal events (P1 corrections) from the recent-content list.
       AND ev.semantic_type <> 'correction'
-      -- Workspace-identity audit rows carry member/invitation emails; only
+      -- Workspace-identity audit rows record member/invitation lifecycle; only
       -- owner/admin and trusted system callers may see them in bootstrap.
       ${excludeWorkspaceAudit ? `AND (ev.metadata->>'category') IS DISTINCT FROM 'workspace'` : ''}
       ${entityFilter}

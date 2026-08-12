@@ -14,15 +14,9 @@ const gmailTxSkill = defineSkill({
     'You are a private financial accountant scanning the user\'s forwarded Gmail messages for events that matter to a UK Self Assessment return.\n\nThe emails to scan arrive in the payload\'s `gmail_messages` source (an empty source means no new messages this window). The active tax year, when one is bound, appears in the payload\'s `entities` array.\n\nIdentify and extract financial events. Each email may yield zero, one, or many events. Be conservative: skip noise (marketing, password resets, etc.).\n\nCategories to extract:\n- **transactions** — deposits, debits, transfers, salary credits, dividend payments hitting an account\n- **cgt_events** — broker contract notes for sells/disposals, gifts, transfers out of a GIA\n- **dividends** — UK or foreign dividend notifications (gross + currency)\n- **documents** — P60/P45/P11D/SA302/contract notes/mortgage statements arriving as attachments or linked PDFs\n\nFor each item, set `gmail_message_id` to the `id` value of the `gmail_messages` row it came from — that column is the provider message ID. Never invent or omit it; if you cannot attribute an item to a specific row, drop the item. Prefer GBP unless the message clearly states a different currency.\n\nSkip transactions inside ISAs and SIPPs unless they are dividends or contributions (which are still reportable). Mark `tax_relevance="none"` for ISA-internal transactions; mark `tax_relevance="cgt"` for non-wrapper disposals.\n',
 });
 
-const netWorthSkill = defineSkill({
-  name: "net-worth",
-  content:
-    "You are a wealth manager tracking the user's global net worth.\n\nAccount activity arrives in the payload's `revolut_events` and `midas_events` sources; either may be empty when a provider has no new data.\n\nExtract the latest known balance for each unique account or asset. For Revolut, create/update `account` entities (setting `provider` to \"Revolut\" and updating `current_amount`). For Midas, create/update `holding` entities (setting `ticker`, `quantity`, and `avg_cost` based on the price).",
-});
-
 const personal_finance = defineAgent({
   id: "personal-finance",
-  skills: [gmailTxSkill, netWorthSkill],
+  skills: [gmailTxSkill],
   dir: ".",
   name: "personal-finance",
   description:
@@ -1144,25 +1138,6 @@ const gmailTxBehavior = defineBehavior({
   skills: ["gmail-tx"],
 });
 
-const netWorthBehavior = defineBehavior({
-  agent: personal_finance,
-  slug: "net-worth",
-  name: "Net Worth Aggregator",
-  triggers: [{ kind: "schedule", cron: "*/15 * * * *" }],
-  notification: { priority: "low" },
-  minCooldownSeconds: 60,
-  tags: ["net-worth", "assets", "revolut", "midas"],
-  reactionsGuidance:
-    "1. Parse the most recent balance for each distinct currency pocket from `revolut_events`.\n2. Parse the investment asset holdings from `midas_events`.\n3. Create or update `account` entities for Revolut balances and `holding` entities for Midas assets so the user's dashboard has a live, unified view of their net worth.\n",
-  sources: {
-    revolut_events:
-      "SELECT feed_id, payload_text, metadata::json->>'amount' as amount, metadata::json->>'balance' as balance, metadata::json->>'currency' as currency, metadata::json->>'description' as description, occurred_at FROM events WHERE connector_key = 'revolut' AND (metadata::json->>'balance' IS NOT NULL OR semantic_type = 'balance_raw') ORDER BY occurred_at DESC LIMIT 100\n",
-    midas_events:
-      "SELECT metadata, occurred_at FROM events WHERE connector_key = 'midas' ORDER BY occurred_at DESC LIMIT 50\n",
-  },
-  skills: ["net-worth"],
-});
-
 export default defineConfig({
   org: "personal-finance",
   orgName: "Personal Finance",
@@ -1212,5 +1187,5 @@ export default defineConfig({
     spouse_of,
     transfer_pair,
   ],
-  behaviors: [gmailTxBehavior, netWorthBehavior],
+  behaviors: [gmailTxBehavior],
 });

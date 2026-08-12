@@ -311,11 +311,11 @@ async function getContentImpl(
     // If behavior_id is provided, use behavior mode: fetch content for all sources and generate window_token
     if (args.behavior_id) {
       // Behavior mode executes the Behavior's authored SQL sources (which may
-      // include `events` reads). Non-members of a public workspace have no
-      // legitimate reason to run another Behavior's source read, and doing so
-      // could surface workspace-identity audit rows. Deny rather than filter —
-      // this is an agent-execution path, not a public browse surface.
-      if (excludeWorkspaceAudit) {
+      // include `events` reads). Callers with NO membership in this workspace
+      // have no legitimate reason to run another Behavior's source read —
+      // deny them outright. Ordinary members may read, but must not receive
+      // workspace-audit rows (handled inside behavior mode).
+      if (ctx.memberRole === null && !isSystemContext(ctx)) {
         throw new ToolUserError(
           'Behavior read mode requires workspace membership.',
           403
@@ -329,6 +329,7 @@ async function getContentImpl(
         // otherwise a same-org worker could pass another Behavior's id and
         // inherit that author's private feeds.
         userId: resolveBehaviorVisibilityUserId(ctx, args.behavior_id),
+        excludeWorkspaceAudit,
       });
     }
 

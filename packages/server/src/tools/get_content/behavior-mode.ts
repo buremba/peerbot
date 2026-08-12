@@ -62,6 +62,8 @@ interface ContentQueryParams {
    */
   behaviorId: number;
 	throwOnSourceError?: boolean;
+  /** Exclude workspace-identity audit rows for ordinary-member reads. */
+  excludeWorkspaceAudit?: boolean;
   page?: {
     sourceName: string;
     limit: number;
@@ -120,6 +122,7 @@ async function queryContentData(
 
   const results = await executeDataSources(sqlSources, queryContext, sql, {
     throwOnError: params.throwOnSourceError,
+    excludeWorkspaceAudit: params.excludeWorkspaceAudit,
     wrapQuery: page
       ? (scopedQuery, queryParams, sourceName) => {
           const isEventSource = eventSourceNames.has(sourceName);
@@ -414,6 +417,8 @@ export async function handleBehaviorMode(
     organizationId: string;
     /** Verified caller, or null when the read is a headless Behavior run. */
     userId: string | null;
+    /** Exclude workspace-identity audit rows for ordinary-member reads. */
+    excludeWorkspaceAudit?: boolean;
   }
 ): Promise<GetContentResult> {
   const { generateWindowToken } = await import('../../utils/jwt');
@@ -597,6 +602,7 @@ export async function handleBehaviorMode(
       ? { [triggerInputSourceName]: triggerContentIds.length }
       : undefined,
     behaviorId: Number(watcher.id),
+    excludeWorkspaceAudit: context.excludeWorkspaceAudit,
     page: {
       sourceName: 'content',
       limit: contentLimit,

@@ -86,6 +86,20 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     } as ToolContext;
   }
 
+  function memberWriteCtx(): ToolContext {
+    // An ordinary member with write access (save_memory requires it).
+    return {
+      organizationId: org.id,
+      userId: alice.id,
+      memberRole: 'member',
+      isAuthenticated: true,
+      tokenType: 'oauth',
+      scopedToOrg: false,
+      allowCrossOrg: true,
+      scopes: ['mcp:read', 'mcp:write'],
+    } as ToolContext;
+  }
+
   async function listIds(ctx: ToolContext): Promise<Set<number>> {
     const result = await getContent(
       { entity_id: entity.id, limit: 100, sort_by: 'date', sort_order: 'desc' } as never,
@@ -291,6 +305,33 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     expect(anon.has(spoofedCategoryEventId)).toBe(true);
   });
 
+  it('save_memory strips the server-owned _lobu_workspace_audit key from caller metadata', async () => {
+    const { saveContent } = await import('../../../tools/save_content');
+    const { getDb } = await import('../../../db/client');
+    const sql = getDb();
+
+    // A member tries to forge the audit discriminator via save_memory metadata.
+    await saveContent(
+      {
+        entity_ids: [entity.id],
+        content: 'forged-audit-attempt',
+        semantic_type: 'note',
+        metadata: { _lobu_workspace_audit: true, category: 'workspace' },
+      } as never,
+      {} as never,
+      memberWriteCtx()
+    );
+
+    const row = (await sql`
+      SELECT metadata FROM events
+      WHERE organization_id = ${org.id}
+        AND payload_text = 'forged-audit-attempt'
+      ORDER BY id DESC LIMIT 1
+    `) as unknown as Array<{ metadata: Record<string, unknown> }>;
+    expect(row).toHaveLength(1);
+    expect(row[0].metadata._lobu_workspace_audit).toBeUndefined();
+  });
+
   it('anonymous org-wide read excludes unbound workspace audit rows', async () => {
     const ids = await listOrgWideIds(unauthedCtx());
     expect(ids.has(orgWideWorkspaceAuditEventId)).toBe(false);
@@ -314,6 +355,19 @@ describe('workspace-identity audit events > public-read exclusion', () => {
         signedInOutsiderCtx()
       )
     ).rejects.toThrow(/workspace membership/);
+  });
+
+  it('ordinary member behavior_id read is NOT denied (membership gate only)', async () => {
+    // The membership gate must deny only NON-members. An ordinary member gets
+    // past the gate and fails on the (nonexistent) behavior lookup instead of
+    // a 403 — proving the gate no longer misapplies to members.
+    await expect(
+      getContent(
+        { behavior_id: 999999, limit: 100 } as never,
+        {} as never,
+        memberCtx()
+      )
+    ).rejects.toThrow(/Behavior/);
   });
 
   it('classification stats exclude workspace audit rows for non-members', async () => {

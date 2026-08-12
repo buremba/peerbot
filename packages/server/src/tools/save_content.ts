@@ -513,7 +513,12 @@ async function saveContentImpl(
   // going through the preflight read or the unique-violation reconciliation,
   // surfacing a raw Postgres conflict on collision.
   const callerMetadata: Record<string, unknown> = { ...(args.metadata ?? {}) };
-  delete callerMetadata._lobu_idempotency_key;
+  // The `_lobu_` metadata namespace is server-owned: strip every reserved key
+  // from caller input so a member cannot forge audit discriminators
+  // (_lobu_workspace_audit) or idempotency keys by supplying them as metadata.
+  for (const key of Object.keys(callerMetadata)) {
+    if (key.startsWith('_lobu_')) delete callerMetadata[key];
+  }
   const eventMetadata: Record<string, unknown> = {
     ...callerMetadata,
     ...(args.idempotency_key ? { _lobu_idempotency_key: args.idempotency_key } : {}),

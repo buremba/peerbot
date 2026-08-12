@@ -960,6 +960,8 @@ export async function executeDataSources(
     throwOnError?: boolean;
     /** At save time, require unknown table refs to resolve to local or public entity types. */
     validateEntitySlugs?: boolean;
+    /** Exclude workspace-identity audit rows from the events/event_classifications CTEs. */
+    excludeWorkspaceAudit?: boolean;
   }
 ): Promise<Record<string, unknown[]>> {
   const results: Record<string, unknown[]> = {};
@@ -1037,6 +1039,7 @@ export async function executeDataSources(
         // their SELECT * — entity data is the template's intended payload.
         let { sql: scopedQuery, params } = buildScopedQuery(query, tableRefs, context, {
           safeColumns: SAFE_COLUMN_DEFS,
+          excludeWorkspaceAudit: options?.excludeWorkspaceAudit,
         });
 
         // Validate param count matches placeholders in scoped query

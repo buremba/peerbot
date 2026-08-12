@@ -298,7 +298,8 @@ const BOOTSTRAP_RECENT_LIMIT = 8;
 async function processTemplateDataSources(
   jsonTemplate: Record<string, any> | null,
   context: DataSourceContext,
-  sql: DbClient
+  sql: DbClient,
+  options?: { excludeWorkspaceAudit?: boolean }
 ): Promise<{
   cleanTemplate: Record<string, any> | null;
   templateData: Record<string, unknown[]> | null;
@@ -309,7 +310,9 @@ async function processTemplateDataSources(
 
   const dataSources = jsonTemplate.data_sources as DataSourceInput;
   const { data_sources: _, ...cleanTemplate } = jsonTemplate;
-  const templateData = await executeDataSources(dataSources, context, sql);
+  const templateData = await executeDataSources(dataSources, context, sql, {
+    excludeWorkspaceAudit: options?.excludeWorkspaceAudit,
+  });
   return { cleanTemplate, templateData };
 }
 
@@ -319,14 +322,16 @@ async function processTemplateDataSources(
 async function processTabsDataSources(
   tabs: ViewTemplateTab[],
   context: DataSourceContext,
-  sql: DbClient
+  sql: DbClient,
+  options?: { excludeWorkspaceAudit?: boolean }
 ): Promise<ViewTemplateTab[]> {
   return Promise.all(
     tabs.map(async (tab) => {
       const { cleanTemplate, templateData } = await processTemplateDataSources(
         tab.json_template,
         context,
-        sql
+        sql,
+        options
       );
       return {
         ...tab,
@@ -405,12 +410,24 @@ async function _resolvePath(
     name: resolved.name,
   };
 
+  // memberRole is for ctx.organizationId only. resolve_path can target a
+  // different public workspace (e.g. owner of A browsing public B) — treat
+  // foreign-org roles as non-member so owner/admin privileges never cross.
+  const roleInResolvedWorkspace =
+    ctx.organizationId === workspace.id ? ctx.memberRole : null;
+  // Workspace-identity audit + template events: owner/admin of THIS workspace
+  // (or trusted system) only.
+  const excludeWorkspaceAudit =
+    !isSystemContext(ctx) && !isAdminOrOwnerRole(roleInResolvedWorkspace);
+
   const remaining = segments.slice(1);
   let entitySegments: string[];
 
   if (remaining.length === 0) {
     const [bootstrap, counts] = await Promise.all([
-      args.include_bootstrap ? fetchBootstrap(sql, ctx, workspace, null) : null,
+      args.include_bootstrap
+        ? fetchBootstrap(sql, ctx, workspace, null, excludeWorkspaceAudit)
+        : null,
       resolveWorkspaceCounts(sql, workspace, ctx.userId),
     ]);
     return emptyResult(workspace, bootstrap, counts);
@@ -610,13 +627,17 @@ async function _resolvePath(
                 AND i.status = 'active'`,
         fetchTabs(sql, 'entity', String(entityRow.id), workspace.id),
         fetchTabs(sql, 'entity_type', entityRow.entity_type, workspace.id),
-        processTemplateDataSources(entityRow.json_template, entityDataCtx, sql),
+        processTemplateDataSources(entityRow.json_template, entityDataCtx, sql, {
+          excludeWorkspaceAudit,
+        }),
       ])
     );
     const mergedTabs = mergeTabs(entityTabs, entityTypeTabs);
-    let processedEntityTabs = await processTabsDataSources(mergedTabs, entityDataCtx, sql);
+    let processedEntityTabs = await processTabsDataSources(mergedTabs, entityDataCtx, sql, {
+      excludeWorkspaceAudit,
+    });
     let redactedTemplateData = entityTemplateData;
-    if (entityRow.entity_type === MEMBER_ENTITY_TYPE_SLUG && !ctx.memberRole) {
+    if (entityRow.entity_type === MEMBER_ENTITY_TYPE_SLUG && !roleInResolvedWorkspace) {
       throw new ToolUserError(
         'Member details are only visible to members of this workspace. Join the workspace to see members.',
         403
@@ -624,7 +645,7 @@ async function _resolvePath(
     }
     const rawEntityMetadata = entityRow.metadata ?? {};
     let safeEntityMetadata = rawEntityMetadata;
-    const canSeeEmail = isAdminOrOwnerRole(ctx.memberRole);
+    const canSeeEmail = isAdminOrOwnerRole(roleInResolvedWorkspace);
     if (!canSeeEmail) {
       const schemaRow = await sql`
         SELECT metadata_schema FROM entity_types
@@ -682,7 +703,7 @@ async function _resolvePath(
   if (
     resolvedEntity &&
     !resolvedEntity.is_derived &&
-    isAdminOrOwnerRole(ctx.memberRole)
+    isAdminOrOwnerRole(roleInResolvedWorkspace)
   ) {
     const mergedRows = await sql<{
       id: number;
@@ -770,7 +791,9 @@ async function _resolvePath(
   }
 
   const [bootstrap, counts] = await Promise.all([
-    args.include_bootstrap ? fetchBootstrap(sql, ctx, workspace, resolvedEntity) : null,
+    args.include_bootstrap
+      ? fetchBootstrap(sql, ctx, workspace, resolvedEntity, excludeWorkspaceAudit)
+      : null,
     resolveWorkspaceCounts(sql, workspace, ctx.userId),
   ]);
 
@@ -960,7 +983,8 @@ async function fetchBootstrap(
   sql: DbClient,
   ctx: ToolContext,
   workspace: ResolvedWorkspace,
-  entity: ResolvedEntityDetails | null
+  entity: ResolvedEntityDetails | null,
+  excludeWorkspaceAudit: boolean
 ): Promise<ResolvePathBootstrap> {
   if (workspace.type !== 'organization') {
     return {
@@ -971,13 +995,6 @@ async function fetchBootstrap(
       connector_definitions: [],
     };
   }
-
-  // memberRole is for ctx.organizationId. resolve_path can target a different
-  // public workspace, so only honor owner/admin for the *resolved* org.
-  // System contexts (userId=null, authenticated) keep the trusted bypass.
-  const excludeWorkspaceAudit =
-    !isSystemContext(ctx) &&
-    !(ctx.organizationId === workspace.id && isAdminOrOwnerRole(ctx.memberRole));
 
   const [entityTypes, totalContent, recentContent, recentFeeds] = await Promise.all([
     listEntityTypes(sql, ctx),

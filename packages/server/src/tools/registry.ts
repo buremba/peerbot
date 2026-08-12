@@ -284,7 +284,10 @@ const AGENT_TOOLS: ToolDefinition[] = [
     annotations: { ...AUDITED_READ, title: 'Search SDK docs' },
     authorizationReadOnly: true,
     securityScopes: ['mcp:read'],
-    mcpMeta: RICH_RESULT_MCP_META,
+    // Deliberately no UI resource. This is a model-facing doc lookup on the way
+    // to query_sdk/run_sdk — the reader has nothing to verify, act on, or keep,
+    // and declaring a template makes the host instantiate a widget iframe for
+    // every lookup mid-reasoning. A UI belongs on results a human acts on.
     handler: sdkSearch,
   },
   // ─── Power tools — TS scripting + raw SQL ─────────────────────────────────

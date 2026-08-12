@@ -143,14 +143,14 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     return sessionId!;
   }
 
-  it('serves the self-contained v11 interaction bundle over resources/read', async () => {
+  it('serves the self-contained v12 interaction bundle over resources/read', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const response = await post(`/mcp/${org.slug}`, {
       body: {
         jsonrpc: '2.0',
         id: 1,
         method: 'resources/read',
-        params: { uri: 'ui://lobu/interaction/v11.html' },
+        params: { uri: 'ui://lobu/interaction/v12.html' },
       },
       headers: { 'mcp-session-id': sessionId },
       token,
@@ -159,7 +159,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const content = body.result?.contents?.[0];
-    expect(content?.uri).toBe('ui://lobu/interaction/v11.html');
+    expect(content?.uri).toBe('ui://lobu/interaction/v12.html');
     expect(content?.mimeType).toBe('text/html;profile=mcp-app');
     expect(content?.text).toContain('mcp-app-embedded-stub');
     expect(content?.text).not.toContain('mcp-app-external-stub');
@@ -268,13 +268,14 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     }
   });
 
-  it('keeps the v7 through v10 aliases on the packed, network-free template', async () => {
+  it('keeps the v7 through v11 aliases on the packed, network-free template', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     for (const uri of [
       'ui://lobu/interaction/v7.html',
       'ui://lobu/interaction/v8.html',
       'ui://lobu/interaction/v9.html',
       'ui://lobu/interaction/v10.html',
+      'ui://lobu/interaction/v11.html',
     ]) {
       const response = await post(`/mcp/${org.slug}`, {
         body: {
@@ -309,7 +310,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const resource = body.result?.resources?.find(
-      (r: { uri: string }) => r.uri === 'ui://lobu/interaction/v11.html'
+      (r: { uri: string }) => r.uri === 'ui://lobu/interaction/v12.html'
     );
     expect(resource).toBeDefined();
     expect(
@@ -357,18 +358,27 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         _meta: expect.objectContaining({
           securitySchemes: [{ type: 'oauth2', scopes: ['mcp:read'] }],
           ui: expect.objectContaining({
-            resourceUri: 'ui://lobu/interaction/v11.html',
+            resourceUri: 'ui://lobu/interaction/v12.html',
             visibility: ['model', 'app'],
           }),
-          'openai/outputTemplate': 'ui://lobu/interaction/v11.html',
+          'openai/outputTemplate': 'ui://lobu/interaction/v12.html',
         }),
       })
     );
 
+    // `search_sdk` is deliberately unlinked from the app resource: a model-facing
+    // doc lookup on the way to query_sdk/run_sdk gives the reader nothing to
+    // verify or act on, and a declared template instantiates a widget per lookup.
+    const sdkSearchTool = body.result?.tools?.find(
+      (entry: { name?: string }) => entry.name === 'search_sdk'
+    );
+    expect(sdkSearchTool).toBeDefined();
+    expect(sdkSearchTool?._meta?.ui).toBeUndefined();
+    expect(sdkSearchTool?._meta?.['openai/outputTemplate']).toBeUndefined();
+
     for (const name of [
       'search_memory',
       'save_memory',
-      'search_sdk',
       'query_sdk',
       'query_sql',
       'run_sdk',
@@ -379,12 +389,12 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       );
       expect(richTool?._meta?.ui).toEqual(
         expect.objectContaining({
-          resourceUri: 'ui://lobu/interaction/v11.html',
+          resourceUri: 'ui://lobu/interaction/v12.html',
           visibility: ['model', 'app'],
         })
       );
       expect(richTool?._meta?.['openai/outputTemplate']).toBe(
-        'ui://lobu/interaction/v11.html'
+        'ui://lobu/interaction/v12.html'
       );
       expect(richTool?.outputSchema).toEqual(expect.objectContaining({ type: 'object' }));
     }
@@ -451,7 +461,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     );
     expect(tool?._meta?.ui).toEqual(
       expect.objectContaining({
-        resourceUri: 'ui://lobu/interaction/v11.html',
+        resourceUri: 'ui://lobu/interaction/v12.html',
         visibility: ['model', 'app'],
       })
     );
@@ -592,13 +602,19 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     const response = await post(`/mcp/${publicOrg.slug}`, {
       body: {
         jsonrpc: '2.0',
-        id: 'public-reader-search-sdk',
+        id: 'public-reader-app-render',
         method: 'tools/call',
         params: {
-          name: 'search_sdk',
-          // A bare namespace keeps the search org-independent (method docs),
-          // so no connector inventory lookup reaches org-private data.
-          arguments: { query: 'behaviors', mode: 'read' },
+          // `render_lobu_view`, not `search_sdk`: the member role rides on
+          // `mcpMeta.ui` (mcp-handler.ts), and search_sdk no longer declares a
+          // UI resource — a model-facing doc lookup has no app to inform of a
+          // role. This tool renders host-authored blocks without reading
+          // org-private data, so it keeps the caller org-independent.
+          name: 'render_lobu_view',
+          arguments: {
+            action: 'render',
+            blocks: [{ type: 'text', value: 'public reader' }],
+          },
         },
       },
       headers: { 'mcp-session-id': sessionId },
@@ -611,7 +627,30 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     // envelope that could carry a stale role.
     expect('lobu/member-role' in (body.result?._meta ?? {})).toBe(true);
     expect(body.result?._meta?.['lobu/member-role']).toBeNull();
-    expect(typeof body.result?.structuredContent?.match_count).toBe('number');
+    expect(body.result?.structuredContent?.version).toBe(1);
+  });
+
+  it('emits no member role for a tool that declares no UI resource', async () => {
+    // The role exists to tell the APP who is looking. `search_sdk` stopped
+    // declaring a UI resource, so there is no app to tell and the key must be
+    // absent — not null. Absent and null mean different things to the host:
+    // null is an explicit downgrade, absent means "unchanged".
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'no-ui-tool-role',
+        method: 'tools/call',
+        params: {
+          name: 'search_sdk',
+          arguments: { query: 'behaviors', mode: 'read' },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+    });
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    expect('lobu/member-role' in (body.result?._meta ?? {})).toBe(false);
   });
 
   it('carries canonical null member role on a thrown app-UI error for a public reader', async () => {

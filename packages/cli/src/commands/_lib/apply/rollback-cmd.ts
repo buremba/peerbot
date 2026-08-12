@@ -312,9 +312,8 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
       ...manifest.connector_versions,
     };
     // Rollback force-converges and must re-record the drift-gate baseline
-    // (attribution + owned). A succeeded rollback without attribution becomes
-    // GET /deployments/latest and the next `lobu apply --resume` would treat
-    // every config change as unattributed drift and block forever.
+    // (attribution + owned), preserving three-way attribution and delete
+    // ownership for the next `lobu apply --resume`.
     // Re-fetch remote after successful mutation so newly allocated incarnation
     // ids enter `owned` (pre-rollback remote lacks creates/recreates).
     const orgs = await client.listOrgs().catch(() => null);

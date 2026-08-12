@@ -3,7 +3,13 @@ import { defineAgent, defineBehavior, defineConfig } from "@lobu/cli/config";
 import type { AgentSettings } from "@lobu/core";
 import chalk from "chalk";
 import type { DesiredAgent, DesiredState } from "../desired-state.js";
-import { computeDiff, type DiffPlan, type RemoteSnapshot } from "../diff.js";
+import {
+  type Baseline,
+  computeDiff,
+  type DiffPlan,
+  ownedKey,
+  type RemoteSnapshot,
+} from "../diff.js";
 import { mapProjectToDesiredState } from "../map-config.js";
 import { renderPlan, renderProgress, renderSummary } from "../render.js";
 
@@ -1566,8 +1572,11 @@ describe("apply diff — prune", () => {
   function remoteWithExtras(): RemoteSnapshot {
     return {
       ...emptyRemote(),
-      entityTypes: [{ slug: "lead", properties: {} }, { slug: "stale-entity" }],
-      relationshipTypes: [{ slug: "stale-rel" }],
+      entityTypes: [
+        { id: 1, slug: "lead", properties: {} },
+        { id: 2, slug: "stale-entity" },
+      ],
+      relationshipTypes: [{ id: 3, slug: "stale-rel" }],
       watchers: [{ slug: "stale-watcher", behavior_id: "42" }],
       // stale-conn is dropped from config but exempt (drift); the connector "x"
       // it still uses must therefore be spared from prune.
@@ -1575,10 +1584,40 @@ describe("apply diff — prune", () => {
         { id: 7, slug: "stale-conn", connector_key: "x", status: "ok" },
       ],
       connectorDefinitions: [
-        { key: "x", installed: true },
-        { key: "orphan-connector", installed: true },
+        { id: 10, key: "x", installed: true },
+        { id: 11, key: "orphan-connector", installed: true },
       ],
     };
+  }
+
+  // A prune-on apply only deletes definitions a previous apply recorded as its
+  // own. Without a recorded baseline the gate blocks, so every prune
+  // delete assertion below runs against a baseline that owns the fixture.
+  function baselineForRemote(
+    remote: RemoteSnapshot,
+    owned: string[]
+  ): Baseline {
+    return {
+      recorded: true,
+      attribution: {
+        entityTypes:
+          remote.entityTypes as Baseline["attribution"]["entityTypes"],
+        relationshipTypes:
+          remote.relationshipTypes as Baseline["attribution"]["relationshipTypes"],
+        watchers: remote.watchers as Baseline["attribution"]["watchers"],
+      },
+      owned: new Set(owned),
+    };
+  }
+
+  function baselineOwningExtras(): Baseline {
+    return baselineForRemote(remoteWithExtras(), [
+      ownedKey("entity-type", 1),
+      ownedKey("entity-type", 2),
+      ownedKey("relationship-type", 3),
+      ownedKey("watcher", "42"),
+      ownedKey("connector-definition", 11),
+    ]);
   }
 
   function desiredKeepingLead(): DesiredState {
@@ -1603,6 +1642,7 @@ describe("apply diff — prune", () => {
   test("prune deletes removed entity/relationship/watcher/connector definitions", () => {
     const plan = computeDiff(desiredKeepingLead(), remoteWithExtras(), {
       prune: true,
+      baseline: baselineOwningExtras(),
     });
     const deletes = plan.rows.filter((r) => r.verb === "delete");
     const deletedIds = deletes.map((r) => `${r.kind}:${r.id}`).sort();
@@ -1654,18 +1694,22 @@ describe("apply diff — prune", () => {
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
       entityTypes: [
-        { slug: "lead", properties: {}, organization_id: "org_self" },
-        { slug: "stale-mine", organization_id: "org_self" },
-        { slug: "public-other", organization_id: "org_other" },
+        { id: 1, slug: "lead", properties: {}, organization_id: "org_self" },
+        { id: 2, slug: "stale-mine", organization_id: "org_self" },
+        { id: 3, slug: "public-other", organization_id: "org_other" },
       ],
       relationshipTypes: [
-        { slug: "stale-rel-mine", organization_id: "org_self" },
-        { slug: "public-rel-other", organization_id: "org_other" },
+        { id: 4, slug: "stale-rel-mine", organization_id: "org_self" },
+        { id: 5, slug: "public-rel-other", organization_id: "org_other" },
       ],
     };
     const plan = computeDiff(desiredKeepingLead(), remote, {
       prune: true,
       orgId: "org_self",
+      baseline: baselineForRemote(remote, [
+        ownedKey("entity-type", 2),
+        ownedKey("relationship-type", 4),
+      ]),
     });
     const deletedIds = plan.rows
       .filter((r) => r.verb === "delete")
@@ -1684,19 +1728,25 @@ describe("apply diff — prune", () => {
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
       entityTypes: [
-        { slug: "lead", properties: {}, organization_id: "org_self" },
-        { slug: "$member", organization_id: "org_self" },
-        { slug: "$resource", organization_id: "org_self" },
-        { slug: "goal", organization_id: "org_self" },
+        { id: 1, slug: "lead", properties: {}, organization_id: "org_self" },
+        { id: 2, slug: "$member", organization_id: "org_self" },
+        { id: 3, slug: "$resource", organization_id: "org_self" },
+        { id: 4, slug: "goal", organization_id: "org_self" },
         // bare channel/repo are not system (legacy names; pruneable)
-        { slug: "channel", organization_id: "org_self" },
+        { id: 5, slug: "channel", organization_id: "org_self" },
       ],
-      relationshipTypes: [{ slug: "$system-rel", organization_id: "org_self" }],
-      watchers: [{ slug: "$system-watcher" }],
+      relationshipTypes: [
+        { id: 6, slug: "$system-rel", organization_id: "org_self" },
+      ],
+      watchers: [{ slug: "$system-watcher", behavior_id: "b-sys" }],
     };
     const plan = computeDiff(desiredKeepingLead(), remote, {
       prune: true,
       orgId: "org_self",
+      baseline: baselineForRemote(remote, [
+        ownedKey("entity-type", 4),
+        ownedKey("entity-type", 5),
+      ]),
     });
     const verbOf = (kind: string, id: string) =>
       plan.rows.find((r) => r.kind === kind && r.id === id)?.verb;
@@ -1764,6 +1814,7 @@ describe("apply diff — prune", () => {
   test("delete rows render with a removed-from-config note + summary count", () => {
     const plan = computeDiff(desiredKeepingLead(), remoteWithExtras(), {
       prune: true,
+      baseline: baselineOwningExtras(),
     });
     expect(renderPlan(plan)).toContain("will be deleted");
     expect(renderSummary(plan)).toContain("4 delete");

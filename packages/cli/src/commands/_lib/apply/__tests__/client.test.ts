@@ -926,7 +926,7 @@ describe("ApplyClient — deployment baseline read", () => {
   test("getLatestDeployment resolves a pre-route server's 404 to no baseline", async () => {
     // `/deployments/latest` always answers 200 ({deployment: null} when there
     // is none), so a 404 means the server predates the route. That must read as
-    // "no baseline" (the conservative gate), not fail the whole apply.
+    // "no recorded baseline", not fail the whole apply.
     const client = new ApplyClient(
       { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
       (async () =>

@@ -115,8 +115,9 @@ export interface DeploymentManifest {
   /**
    * The attribution baseline for the three-way drift compare: the effective
    * entity/rel-type and Behavior state AFTER this apply (declared config
-   * values + preserved unmanaged facets). Absent on legacy manifests — treated
-   * as "no baseline" (block on remote mismatches, never auto-delete).
+   * values + preserved unmanaged facets). When absent, declared definitions
+   * use the ordinary two-way diff while provenance-dependent deletes fail
+   * closed.
    */
   attribution?: {
     entityTypes: unknown[];
@@ -141,7 +142,7 @@ export interface BaselineRecord {
   connectorVersions?: Record<string, string>;
 }
 
-/** Parse the stored baseline; null for a legacy manifest (→ no-baseline block). */
+/** Parse the stored baseline; null when attribution was never recorded. */
 export function loadBaselineFromManifest(
   manifest: {
     attribution?: DeploymentManifest["attribution"];
@@ -164,18 +165,19 @@ export function loadBaselineFromManifest(
 }
 
 /**
- * The stored record → the shape `computeDiff` compares against. A null record
- * (legacy manifest, or an org that never applied) becomes the EMPTY baseline,
- * not "no baseline": the gate stays on and every remote mismatch blocks.
+ * Preserve whether attribution was absent or recorded as empty. The former
+ * cannot prove ownership and must not enable three-way comparisons.
  */
 export function toBaseline(record: BaselineRecord | null): Baseline {
   if (!record) {
     return {
+      recorded: false,
       attribution: { entityTypes: [], relationshipTypes: [], watchers: [] },
       owned: new Set<string>(),
     };
   }
   return {
+    recorded: true,
     attribution: record.attribution as unknown as Baseline["attribution"],
     owned: new Set(record.owned),
     ...(record.connectorVersions

@@ -557,8 +557,8 @@ export class ApplyClient {
       // The route always answers 200 (`{deployment: null}` when there is none),
       // so a 404 means the server predates it — a self-hosted deployment older
       // than this CLI. That is the legacy-manifest case, not a transport
-      // failure: resolve to "no baseline", which is the most conservative
-      // reading (every remote mismatch blocks, nothing is auto-deleted).
+      // failure: resolve to "no baseline" so declared definitions can use the
+      // two-way diff while provenance-dependent deletes remain blocked.
       // Every other error still propagates and fails the apply closed.
       if (err instanceof ApiError && err.status === 404) return null;
       throw err;

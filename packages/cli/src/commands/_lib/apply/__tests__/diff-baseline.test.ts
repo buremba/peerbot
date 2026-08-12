@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import chalk from "chalk";
-import { buildAttributionAndOwned } from "../deployment.js";
+import { buildAttributionAndOwned, toBaseline } from "../deployment.js";
 import type { DesiredEntityType, DesiredState } from "../desired-state.js";
 import {
   type Baseline,
@@ -77,6 +77,7 @@ function baselineFor(
   ownedIds: number[]
 ): Baseline {
   return {
+    recorded: true,
     attribution: {
       entityTypes: attribution,
       relationshipTypes: [],
@@ -177,12 +178,11 @@ describe("three-way attribution (baseline present)", () => {
     expect(drift.some((r) => r.blocking && r.id === "task")).toBe(true);
   });
 
-  test("no-baseline (empty attribution) blocks a remote mismatch instead of converging", () => {
+  test("recorded empty attribution blocks an un-attributed remote mismatch", () => {
     const desired = buildState([taskType({ name: "Task v2" })]);
     const remote = emptyRemote();
     remote.entityTypes = [remoteTask()];
-    // Baseline exists but holds NO attribution/owned — treats the org as
-    // never-attributed: remote mismatches block, nothing auto-deletes.
+    // A recorded baseline exists but has no entry for this definition.
     const baseline = baselineFor([], []);
 
     const plan = computeDiff(desired, remote, {
@@ -343,7 +343,7 @@ describe("owned-based delete classification (baseline present)", () => {
 });
 
 describe("three-way edge cases", () => {
-  test("in-sync definition missing from baseline → noop (first baseline can be established)", () => {
+  test("in-sync definition missing from a recorded baseline → noop", () => {
     const desired = buildState([taskType()]);
     const remote = emptyRemote();
     remote.entityTypes = [remoteTask()];
@@ -411,7 +411,7 @@ describe("three-way edge cases", () => {
     expect(plan.counts.update).toBe(0);
   });
 
-  test("first baseline: in-sync relationship with an omitted name → noop, never blocked", () => {
+  test("recorded baseline missing an in-sync relationship → noop", () => {
     // The server defaults/keeps a display name the config never declared.
     // Comparing the omitted name against it blocked `lobu apply` forever on a
     // valid shape — omission is not an operator opinion (upsert never clears).
@@ -430,7 +430,7 @@ describe("three-way edge cases", () => {
         organization_id: "org-1",
       } as any,
     ];
-    // Baseline exists but carries no entry for `owns` (first baseline).
+    // The recorded baseline has no entry for `owns`.
     const plan = computeDiff(desired, remote, {
       orgId: "org-1",
       baseline: baselineFor([], []),
@@ -441,7 +441,7 @@ describe("three-way edge cases", () => {
     expect(plan.counts.drift).toBe(0);
   });
 
-  test("first baseline: a declared relationship rule change still blocks", () => {
+  test("recorded baseline missing a changed relationship → block", () => {
     const desired = buildState([]);
     desired.memorySchema.relationshipTypes = [
       { slug: "owns", rules: [{ source: "a", target: "c" }] } as any,
@@ -463,7 +463,7 @@ describe("three-way edge cases", () => {
     expect(plan.counts.drift).toBe(1);
   });
 
-  test("first baseline under prune: remote-only eventKinds/viewTemplate block instead of recording a phantom noop", () => {
+  test("recorded baseline missing an entity blocks prune-cleared facets", () => {
     // Under prune an omitted facet is a REMOVAL. Inheriting it made the gate
     // report noop while the apply would have wiped UI-authored kinds.
     const desired = buildState([taskType()]); // declares no eventKinds
@@ -485,7 +485,7 @@ describe("three-way edge cases", () => {
     ).toBeDefined();
   });
 
-  test("first baseline outside prune: remote-only eventKinds stay unmanaged → noop", () => {
+  test("recorded baseline missing an entity keeps unmanaged facets outside prune", () => {
     const desired = buildState([taskType()]);
     const remote = emptyRemote();
     remote.entityTypes = [
@@ -499,7 +499,7 @@ describe("three-way edge cases", () => {
     expect(plan.counts.drift).toBe(0);
   });
 
-  test("first baseline under prune: a UI-added property blocks (the rebuild would drop it)", () => {
+  test("recorded baseline missing an entity blocks a prune-dropped property", () => {
     const desired = buildState([taskType()]);
     const remote = emptyRemote();
     remote.entityTypes = [
@@ -557,6 +557,7 @@ describe("three-way edge cases", () => {
       remoteTask(1, { description: "ui-authored blurb" }),
     ];
     const baseline: Baseline = {
+      recorded: true,
       attribution: {
         entityTypes: recorded.attribution
           .entityTypes as Baseline["attribution"]["entityTypes"],
@@ -594,6 +595,7 @@ describe("three-way edge cases", () => {
     const afterRemote = emptyRemote();
     afterRemote.entityTypes = [remoteTask(1)]; // no eventKinds
     const baseline: Baseline = {
+      recorded: true,
       attribution: {
         entityTypes: recorded.attribution
           .entityTypes as Baseline["attribution"]["entityTypes"],
@@ -667,7 +669,7 @@ describe("Behavior three-way attribution", () => {
     };
   }
 
-  test("first baseline: a nameless remote Behavior with an omitted config name → noop", () => {
+  test("recorded baseline missing an in-sync nameless Behavior → noop", () => {
     // projectDesiredWatcher inherits the remote name as `?? null`; the remote
     // projection must normalize the same way, or deepEqual(null, undefined)
     // false-blocks a Behavior the server never named.
@@ -685,7 +687,7 @@ describe("Behavior three-way attribution", () => {
         // name intentionally absent
       } as any,
     ];
-    // Baseline exists but carries no entry for `digest` (first baseline).
+    // The recorded baseline has no entry for `digest`.
     const plan = computeDiff(desired, remote, {
       orgId: "org-1",
       baseline: baselineFor([], []),
@@ -700,6 +702,7 @@ describe("Behavior three-way attribution", () => {
     const remote = emptyRemote();
     remote.watchers = [remoteWatcher({ agent_id: "agent-b" }) as any];
     const baseline = {
+      recorded: true,
       attribution: {
         entityTypes: [],
         relationshipTypes: [],
@@ -734,6 +737,7 @@ describe("Behavior three-way attribution", () => {
       remoteWatcher({ name: "digest", prompt: "Summarize" }) as any,
     ];
     const baseline = {
+      recorded: true,
       attribution: {
         entityTypes: [],
         relationshipTypes: [],
@@ -754,6 +758,7 @@ describe("Behavior three-way attribution", () => {
     const remote = emptyRemote();
     remote.watchers = [remoteWatcher({ name: "Digest" }) as any];
     const baseline = {
+      recorded: true,
       attribution: {
         entityTypes: [],
         relationshipTypes: [],
@@ -786,6 +791,7 @@ describe("Behavior three-way attribution", () => {
       }) as any,
     ];
     const baseline = {
+      recorded: true,
       attribution: {
         entityTypes: [],
         relationshipTypes: [],
@@ -821,6 +827,7 @@ describe("Behavior three-way attribution", () => {
       remoteWatcher({ prompt: "old summary", sources }) as any,
     ];
     const baseline = {
+      recorded: true,
       attribution: {
         entityTypes: [],
         relationshipTypes: [],
@@ -851,6 +858,7 @@ describe("Behavior three-way attribution", () => {
     const second = computeDiff(desired, afterRemote, {
       orgId: "org-1",
       baseline: {
+        recorded: true,
         attribution: recorded.attribution as Baseline["attribution"],
         owned: new Set(recorded.owned),
       },
@@ -861,5 +869,69 @@ describe("Behavior three-way attribution", () => {
     expect(
       second.rows.find((r) => r.kind === "watcher" && r.id === "digest")?.verb
     ).toBe("noop");
+  });
+});
+
+// A legacy manifest has no attribution/owned. Its next apply may converge
+// declared definitions, but cannot delete definitions of unknown provenance.
+describe("legacy org — no baseline was ever recorded", () => {
+  test("prune off: a UI-created definition the config never mentions is informational drift, not a block", () => {
+    const remote = emptyRemote();
+    remote.entityTypes = [
+      { id: 7, slug: "ui_made", name: "UI Made", organization_id: "org1" },
+    ] as RemoteSnapshot["entityTypes"];
+    const plan = computeDiff(buildState([]), remote, {
+      prune: false,
+      baseline: toBaseline(null),
+      orgId: "org1",
+    });
+    const row = plan.rows.find((r) => r.id === "ui_made");
+    expect(row?.verb).toBe("drift");
+    expect((row as { blocking?: boolean }).blocking).toBeUndefined();
+  });
+
+  test("prune off: an ordinary declared config change still applies", () => {
+    const remote = emptyRemote();
+    remote.entityTypes = [remoteTask(1, { name: "Task" })];
+    const plan = computeDiff(
+      buildState([taskType({ name: "Task Renamed" })]),
+      remote,
+      { prune: false, baseline: toBaseline(null), orgId: "org-1" }
+    );
+    const blocking = plan.rows.filter(
+      (r) => r.verb === "drift" && (r as { blocking?: boolean }).blocking
+    );
+    expect(blocking).toEqual([]);
+    expect(plan.rows.find((r) => r.id === "task")?.verb).toBe("update");
+  });
+
+  test("prune ON: an un-provable definition BLOCKS rather than being deleted", () => {
+    const remote = emptyRemote();
+    remote.entityTypes = [
+      { id: 7, slug: "ui_made", name: "UI Made", organization_id: "org1" },
+    ] as RemoteSnapshot["entityTypes"];
+    const plan = computeDiff(buildState([]), remote, {
+      prune: true,
+      baseline: toBaseline(null),
+      orgId: "org1",
+    });
+    const row = plan.rows.find((r) => r.id === "ui_made");
+    expect(row?.verb).toBe("drift");
+    expect((row as { blocking?: boolean }).blocking).toBe(true);
+    expect(plan.rows.some((r) => r.verb === "delete")).toBe(false);
+  });
+
+  test("prune ON: an un-provable connector BLOCKS rather than being uninstalled", () => {
+    const remote = emptyRemote();
+    remote.connectorDefinitions = [{ id: 8, key: "github", installed: true }];
+    const plan = computeDiff(buildState([]), remote, {
+      prune: true,
+      baseline: toBaseline(null),
+      orgId: "org1",
+    });
+    const row = plan.rows.find((r) => r.kind === "connector-definition");
+    expect(row?.verb).toBe("drift");
+    expect((row as { blocking?: boolean }).blocking).toBe(true);
+    expect(plan.rows.some((r) => r.verb === "delete")).toBe(false);
   });
 });

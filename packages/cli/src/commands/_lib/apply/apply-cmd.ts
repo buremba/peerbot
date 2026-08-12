@@ -1547,13 +1547,12 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   }
 
   // Attribution baseline — the latest succeeded deployment's effective-remote
-  // snapshot + owned identities. A legacy/missing manifest resolves to an empty
-  // baseline: remote mismatches and remote-only definitions block (no-baseline,
-  // fail-closed) and nothing is auto-deleted.
+  // snapshot + owned identities. A legacy/missing manifest remains explicitly
+  // unrecorded: declared definitions use two-way convergence, while prune
+  // candidates that need ownership proof block instead of being deleted.
   // Fail closed on transport/server errors: /deployments/latest returns
   // deployment:null when none exists, so a thrown error is a real failure —
-  // never treat it as "no baseline" (which would let a scoped apply overwrite
-  // unexecuted-family ownership).
+  // never treat it as "no baseline" and discard known ownership.
   const latestDeployment = await client.getLatestDeployment();
   const baselineRecord =
     latestDeployment?.manifest === null ||
@@ -1565,19 +1564,14 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
    * `--only` run executes one family, so the families it never touched must be
    * carried forward, never rebuilt from an unexecuted snapshot:
    *   - `--only agents` touches neither memory nor connectors → carry the prior
-   *     baseline verbatim (EMPTY when there is none: never synthesize ownership
-   *     of definitions this run didn't execute, or a later prune would treat
-   *     UI-created definitions as delete-eligible);
+   *     baseline verbatim, leaving it absent when none was recorded;
    *   - `--only memory` rebuilds memory but carries prior connector ownership.
    */
-  const recordableBaseline = (snapshot: RemoteSnapshot): BaselineRecord => {
+  const recordableBaseline = (
+    snapshot: RemoteSnapshot
+  ): BaselineRecord | undefined => {
     if (opts.only === "agents") {
-      return (
-        baselineRecord ?? {
-          attribution: { entityTypes: [], relationshipTypes: [], watchers: [] },
-          owned: [],
-        }
-      );
+      return baselineRecord ?? undefined;
     }
     const built = buildAttributionAndOwned(
       state,
@@ -1692,9 +1686,8 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
       printText(chalk.bold("\nApplying provider keys:"));
       await pushProviderApiKeys(client, state.agents);
     }
-    // Baseline advances on every fully-succeeded run, INCLUDING all-noop runs:
-    // the manifest records the effective remote + owned identities so the next
-    // apply can attribute "who moved".
+    // Record every executed family even on an all-noop run. A first
+    // `--only agents` run leaves the unexecuted memory baseline absent.
     const gitInfo = collectGitInfo(cwd);
     await postDeploymentSummarySafe(client, {
       apply_id: applyId,

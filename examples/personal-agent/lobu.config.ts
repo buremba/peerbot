@@ -19,6 +19,7 @@ import type TwitterTakeoutConnector from "./twitter-takeout.connector.ts";
 import type WhatsAppCloudConnector from "./whatsapp.cloud.connector.ts";
 import type MidasConnector from "./midas.connector.ts";
 import type SocialInterestRadarReaction from "./social-interest-radar.reaction.ts";
+import { takeoutConfig } from "./takeout-dirs.ts";
 
 const hourlyTaskCollaboratorSkill = defineSkill({
   name: "hourly-task-collaborator",
@@ -814,42 +815,6 @@ const revolutConnection = defineConnection({
   ],
 });
 
-// Takeout dirs are absolute machine-local paths, so they can only come from the
-// environment. Resolve them strictly: a relative fallback like `./takeout/x` is
-// a valid-looking string that apply happily writes over a correct absolute path,
-// silently pointing prod at a directory that does not exist. That is not
-// hypothetical — an apply run without these vars is what set every prod
-// `takeout_dir` to `./takeout/...`, and every takeout feed read nothing until it
-// was repaired by hand. Fail closed instead: a bare `lobu apply` must abort, not
-// quietly revert. `LOCAL_TAKEOUT_ROOT` still supplies a shared parent.
-//
-// The same reasoning already guards LinkedIn below; this generalizes it. Note
-// these must resolve to a STRING, never null — prune is on, so dropping a path
-// would remove the feed from the plan and DELETE it from prod.
-const localTakeoutRoot = process.env.LOCAL_TAKEOUT_ROOT;
-const localTakeoutDir = (envName: string, fallback: string): string => {
-  const explicit = process.env[envName];
-  if (explicit) return explicit;
-  if (localTakeoutRoot) return `${localTakeoutRoot}/${fallback}`;
-  throw new Error(
-    `${envName} is not set (and no LOCAL_TAKEOUT_ROOT fallback). ` +
-      `Set it to the absolute path of the extracted archive before applying — ` +
-      `applying without it would overwrite the stored takeout_dir in prod.`
-  );
-};
-
-// Resolve lazily, on read. Throwing at module scope would break scoped applies
-// that never touch connections — `lobu apply --only agents` exits at import
-// even though it would skip every feed here. The getter defers the check to
-// connection mapping, so a full apply still fails closed.
-const takeoutConfig = (
-  envName: string,
-  fallback: string
-): { takeout_dir: string } => ({
-  get takeout_dir(): string {
-    return localTakeoutDir(envName, fallback);
-  },
-});
 // LinkedIn is also a browser connector. Unlike takeout-only connections, never
 // synthesize a local path for it: a browser-only deployment must not provision
 // CSV feeds that can only fail forever. Opt in with either an explicit LinkedIn

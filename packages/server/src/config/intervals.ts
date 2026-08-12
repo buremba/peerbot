@@ -32,6 +32,9 @@ function parseEnvInterval(name: string, fallback: string): string {
   return raw && PG_INTERVAL_PATTERN.test(raw) ? raw : fallback;
 }
 
+/** How long an unclaimed device action remains eligible for worker pickup. */
+export const DEVICE_ACTION_QUEUE_BUDGET_MS = 60_000;
+
 export const intervals = {
   /** Stale threshold (seconds) for the connector-lane run reaper.
    *  120s leaves room for the 30s worker heartbeat to miss ~3 ticks before

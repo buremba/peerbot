@@ -51,6 +51,7 @@ import logger from '../../utils/logger';
 import { syncOAuthConnectionsForAuthProfile } from '../../utils/oauth-connection-state';
 import { createSyncRun, describeSyncRunSkip } from '../../runs/queue-service';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../../utils/run-statuses';
+import { deriveFeedHealthSemantics } from '../../connectors/feed-health-semantics';
 import type { ToolContext } from '../registry';
 import { action, defineActionTool } from './action-tool';
 import { assertEntityIdsInOrg, callerIsAdmin } from './helpers/db-helpers';
@@ -288,14 +289,37 @@ async function handleListFeeds(
   }
   // Strip the window-count helper column from each feed row — it is metadata
   // about the result set, not a feed field — then sanitize the row itself
-  // (checkpoint out, config redacted).
+  // (checkpoint out, config redacted). Attach the derived health semantics
+  // (execution mode / attention / incident eligibility) computed from the
+  // joined row fields at read time — never stored.
   const feeds = await toPublicFeeds(
     organizationId,
     rows.map(({ filtered_total: _filtered_total, ...feed }) => feed)
   );
+  const feedsWithHealth = feeds.map((feed) => {
+    const semantics = deriveFeedHealthSemantics({
+      kind: feed.kind as string | null,
+      virtual: feed.virtual as boolean | null,
+      status: feed.status as string | null,
+      schedule: feed.schedule as string | null,
+      last_sync_status: feed.last_sync_status as string | null,
+      last_sync_at: feed.last_sync_at as Date | string | null,
+      consecutive_failures: feed.consecutive_failures as number | null,
+      connection_status: feed.connection_status as string | null,
+      auth_profile_status: feed.auth_profile_status as string | null,
+      device_worker_id: feed.device_worker_id as string | null,
+      device_online: feed.device_online as boolean | null,
+    });
+    return {
+      ...feed,
+      execution_mode: semantics.executionMode,
+      attention: semantics.attention,
+      incident_eligible: semantics.incidentEligible,
+    };
+  });
   return {
     action: 'list_feeds',
-    feeds,
+    feeds: feedsWithHealth,
     total,
     has_more: offset + feeds.length < total,
     limit,

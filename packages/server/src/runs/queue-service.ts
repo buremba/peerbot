@@ -26,6 +26,7 @@ import {
   type WorkspaceEventTriggerSignal,
 } from '../behaviors/workspace-event-contract';
 import { getDb } from '../db/client';
+import { DEVICE_ACTION_QUEUE_BUDGET_MS } from '../config/intervals';
 import type { Env } from '../index';
 import { isCloudMode } from '../utils/cloud-mode';
 import { findBundledConnectorFile } from '../utils/connector-catalog';
@@ -1092,6 +1093,18 @@ export async function createConnectorOperationRun(params: {
   const approvalStatus = params.approvalMode === 'queued' ? 'pending' : 'auto';
   const status = params.approvalMode === 'inline' ? 'running' : 'pending';
 
+  // Ephemeral device/browser/shell action runs get a bounded claim horizon:
+  // a `device` run waits for a device worker to claim it via /poll, and an
+  // unclaimed one must not sit pending forever — nor must a stale run be
+  // claimable by a device that polls back after the operator already gave up.
+  // The horizon matches the gateway's pre-claim wait budget: polling stops
+  // claiming the run when the caller gives up, and the reaper terminalizes it
+  // on its next tick. Durable human-gated runs (`queued`) get NO expiry here —
+  // the long-horizon approval reaper owns their lifecycle. `inline` runs
+  // execute immediately on the gateway and are already claimed.
+  const expiresAtSeconds =
+    params.approvalMode === 'device' ? DEVICE_ACTION_QUEUE_BUDGET_MS / 1000 : null;
+
   // Resolve connector version, verifying it is runnable only when the caller
   // requires compiled code (device/inline executors that load the bundle).
   const resolved = await resolveActiveConnectorVersion(sql, {
@@ -1126,7 +1139,7 @@ export async function createConnectorOperationRun(params: {
       action_key, action_input, approval_status, status,
       watcher_id, window_id,
       policy_principal_kind, policy_principal_id, created_by_user_id,
-      action_idempotency_key, created_at
+      action_idempotency_key, expires_at, created_at
     ) VALUES (
       ${params.organizationId}, 'action', ${params.connectionId},
       ${params.connectorKey}, ${connectorVersion},
@@ -1136,6 +1149,9 @@ export async function createConnectorOperationRun(params: {
       ${params.policyPrincipalKind ?? null}, ${params.policyPrincipalId ?? null},
       ${params.createdByUserId ?? null},
       ${params.idempotencyKey ?? null},
+      ${expiresAtSeconds == null
+        ? null
+        : sql`current_timestamp + (${expiresAtSeconds}::int * interval '1 second')`},
       current_timestamp
     )
     ON CONFLICT (organization_id, action_idempotency_key)

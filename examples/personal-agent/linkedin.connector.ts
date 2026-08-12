@@ -662,7 +662,10 @@ export function isHomeFeedNoise(body: string): boolean {
 /**
  * Map cs_scrape home-feed rows to event envelopes. Prefer the permalink
  * recovered from LinkedIn's Copy-link action or a stable activity id embedded
- * in the card DOM; otherwise source_url falls back to /feed/.
+ * in the card DOM; when no durable identity is recoverable, source_url is
+ * OMITTED (never a generic /feed/ URL — that would look like a specific post
+ * id). The durable identity is also persisted on metadata.post_url /
+ * metadata.post_identity so downstream actions can address the post.
  * Home-feed posts expose no reliable timestamp, so the caller stamps
  * occurred_at with the sync time.
  */
@@ -750,6 +753,21 @@ export function buildHomeFeedEvents(
       row.post_url ??
         (embeddedId ? `urn:li:${embeddedNamespace}:${embeddedId}` : "")
     );
+    const canonicalUrn = postUrl?.match(
+      /urn:li:(activity|share|ugcPost):(\d{6,})/i
+    );
+    const postIdentity = canonicalUrn
+      ? `urn:li:${linkedInUrnNamespace(canonicalUrn[1] ?? "")}:${canonicalUrn[2]}`
+      : null;
+
+    // Persist the durable post identity (canonical URL + URN) so downstream
+    // action callers (prepare_comment) can address the post with a supported
+    // durable identifier. When no durable identity is recoverable the event
+    // carries NONE — never substitute the generic linkedin.com/feed/ root,
+    // which looks like a specific post identity but resolves to the whole
+    // feed.
+    if (postUrl) metadata.post_url = postUrl;
+    if (postIdentity) metadata.post_identity = postIdentity;
 
     events.push({
       origin_id: `li_home_${row.id}`,
@@ -758,7 +776,10 @@ export function buildHomeFeedEvents(
       // Feed posts expose no reliable timestamp; use the sync time.
       occurred_at: occurredAt,
       origin_type: "post",
-      source_url: postUrl ?? "https://www.linkedin.com/feed/",
+      // Omitted when no durable identity was recoverable — a missing
+      // source_url is the explicit "this event has no canonical post URL"
+      // signal, not a bug.
+      ...(postUrl ? { source_url: postUrl } : {}),
       metadata,
     });
   }
@@ -2173,6 +2194,65 @@ function localTakeoutSchema(description: string): Record<string, unknown> {
 
 // ── Connector ─────────────────────────────────────────────────
 
+/**
+ * True when a raw post reference is a LinkedIn HOME-FEED surface with no
+ * specific post identity (e.g. `https://www.linkedin.com/feed/`, the feed
+ * root, `/feed/hashtag/…`, or a bare `/feed/update` with no id). Such a URL
+ * addresses the whole feed, not a post — prepare_comment must never treat it
+ * as a durable post id (it would enqueue a doomed navigate and fail). Only
+ * consulted after normalizeLinkedInPostUrl returned null, so any input that
+ * resolves to a durable post URL is already handled.
+ */
+export function isGenericLinkedInFeedUrl(raw: string): boolean {
+  try {
+    const withScheme = raw.startsWith("//")
+      ? `https:${raw}`
+      : raw.startsWith("/")
+        ? `https://www.linkedin.com${raw}`
+        : raw.includes("://")
+          ? raw
+          : `https://${raw}`;
+    const u = new URL(withScheme);
+    const host = u.hostname.toLowerCase().replace(/^www\./, "");
+    if (host !== "linkedin.com" && !host.endsWith(".linkedin.com")) {
+      return false;
+    }
+    const path = u.pathname.replace(/\/+$/, "");
+    // A URL that carries a durable post identity (urn:li:…) is not the bare
+    // feed surface, even though it lives under /feed/ — it resolves to a real
+    // post. Only paths with NO embedded identity are "generic feed".
+    if (/urn(?::|%3A)li(?::|%3A)(?:activity|share|ugcPost)/i.test(path)) {
+      return false;
+    }
+    // Any other /feed/ path is a feed surface once no durable post id
+    // resolved — the feed root, /feed/hashtag/<tag>, /feed/trending, and a
+    // bare /feed/update (no urn). Nothing that normalizes to a real post URL
+    // reaches here, so a prefix match is safe and complete.
+    return path === "/feed" || path.startsWith("/feed/");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Non-failing result for a post reference that is not a supported durable
+ * identifier. `success: true` so the action completes WITHOUT a failed
+ * operational run — a not_actionable input is not a Lobu infrastructure
+ * incident. `output.status` lets callers distinguish this from a real stage.
+ */
+function notActionableMissingPostId(postUrlRaw: string): ActionResult {
+  return {
+    success: true,
+    output: {
+      status: "not_actionable",
+      reason: "missing_durable_post_id",
+      post_url: postUrlRaw,
+      message:
+        "A durable LinkedIn post identifier is required (e.g. urn:li:activity:…, a /feed/update/urn:li:… URL, or the canonical post URL from a synced post event). The provided reference addresses the LinkedIn home feed, not a specific post.",
+    },
+  };
+}
+
 export default class LinkedInConnector extends ConnectorRuntime<
   LinkedInCheckpoint,
   LinkedInConfig
@@ -2230,6 +2310,16 @@ export default class LinkedInConnector extends ConnectorRuntime<
                 },
                 social_actor_slug: { type: "string" },
                 social_actor_profile_url: { type: "string" },
+                post_url: {
+                  type: "string",
+                  description:
+                    "Canonical durable post URL (feed/update/urn:li:…), recovered from LinkedIn's Copy link or an embedded share/ugcPost/activity id. Absent when the post exposes no durable identity.",
+                },
+                post_identity: {
+                  type: "string",
+                  description:
+                    "Durable post URN (urn:li:activity|share|ugcPost:<id>) recovered from the card. Absent when no durable identity is exposed.",
+                },
               },
             },
           },
@@ -2446,6 +2536,17 @@ export default class LinkedInConnector extends ConnectorRuntime<
           type: "object",
           properties: {
             prepared: { type: "boolean" },
+            status: {
+              type: "string",
+              enum: ["not_actionable", "prepared"],
+              description:
+                "prepared after the draft is staged; not_actionable when the input did not carry a durable post id (no browser action was taken).",
+            },
+            reason: {
+              type: "string",
+              description:
+                "Present with status=not_actionable: why the input was not actionable (e.g. missing_durable_post_id).",
+            },
             tab_id: { type: "integer" },
             post_url: { type: "string" },
             body: { type: "string" },
@@ -2510,6 +2611,17 @@ export default class LinkedInConnector extends ConnectorRuntime<
           type: "object",
           properties: {
             verified: { type: "boolean" },
+            status: {
+              type: "string",
+              enum: ["not_actionable", "verified"],
+              description:
+                "verified after a matching comment is found; not_actionable when the input did not carry a durable post id (no browser action was taken).",
+            },
+            reason: {
+              type: "string",
+              description:
+                "Present with status=not_actionable: why the input was not actionable (e.g. missing_durable_post_id).",
+            },
             post_url: { type: "string" },
             body: { type: "string" },
             tab_id: { type: "integer" },
@@ -2525,7 +2637,6 @@ export default class LinkedInConnector extends ConnectorRuntime<
                 },
               },
             },
-            reason: { type: "string" },
             message: { type: "string" },
           },
         },
@@ -2557,6 +2668,22 @@ export default class LinkedInConnector extends ConnectorRuntime<
           error: "post_url or activity_id is required",
         };
       }
+
+      // Require a supported DURABLE post identifier BEFORE any browser
+      // dispatch. A generic home-feed URL must not enqueue a doomed navigate:
+      // return a non-failing not_actionable result instead (no failed run, no
+      // computer-use action, not an infrastructure incident).
+      const normalizedPostUrl = normalizeLinkedInPostUrl(postUrlRaw);
+      if (!normalizedPostUrl) {
+        if (isGenericLinkedInFeedUrl(postUrlRaw)) {
+          return notActionableMissingPostId(postUrlRaw);
+        }
+        return {
+          success: false,
+          error: `post_url or activity_id must reference a specific LinkedIn post (got ${JSON.stringify(postUrlRaw)})`,
+        };
+      }
+
       const dispatcher = requireExtensionDispatcher(ctx);
 
       if (ctx.actionKey === "verify_staged_comment") {
@@ -2565,12 +2692,18 @@ export default class LinkedInConnector extends ConnectorRuntime<
             ? ctx.input.author_hint.trim()
             : "";
         const output = await verifyLinkedInStagedComment(dispatcher, {
-          postUrl: postUrlRaw,
+          postUrl: normalizedPostUrl,
           body,
           author_hint: authorHint || undefined,
           focus: ctx.input.focus !== false,
         });
-        return { success: true, output };
+        return {
+          success: true,
+          output: {
+            ...output,
+            ...(output.verified ? { status: "verified" } : {}),
+          },
+        };
       }
 
       const reason =
@@ -2586,7 +2719,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
           ? ctx.input.message_id.trim()
           : "";
       const output = await prepareLinkedInComment(dispatcher, {
-        postUrl: postUrlRaw,
+        postUrl: normalizedPostUrl,
         body,
         reason: reason || undefined,
         focus: ctx.input.focus !== false,
@@ -2597,7 +2730,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
         messageId: messageId || undefined,
         targetBrowserConnectionId: resolveTargetBrowserConnectionId(ctx.input),
       });
-      return { success: true, output };
+      return { success: true, output: { ...output, status: "prepared" } };
     } catch (error) {
       return {
         success: false,

@@ -56,6 +56,8 @@ interface SeedRunOpts {
 	createdAtAgoDays?: number;
 	/** runs.dry_run — the connector executes for real, the server persists nothing. */
 	dryRun?: boolean;
+	/** runs.expires_at — explicit claim horizon. NULL when omitted. */
+	expiresAtAgoSeconds?: number | null;
 }
 
 async function seedRun(opts: SeedRunOpts): Promise<number> {
@@ -73,13 +75,17 @@ async function seedRun(opts: SeedRunOpts): Promise<number> {
 		opts.createdAtAgoDays !== undefined
 			? `current_timestamp - interval '${opts.createdAtAgoDays} days'`
 			: `current_timestamp - interval '${opts.createdAtAgoSeconds ?? 0} seconds'`;
+	const expiresAt =
+		opts.expiresAtAgoSeconds !== undefined && opts.expiresAtAgoSeconds !== null
+			? `current_timestamp - interval '${opts.expiresAtAgoSeconds} seconds'`
+			: "NULL";
 	const rows = (await sql.unsafe(
 		`INSERT INTO runs (
        organization_id, run_type, feed_id, status, approval_status,
-       claimed_at, last_heartbeat_at, claimed_by, created_at, dry_run
+       claimed_at, last_heartbeat_at, claimed_by, created_at, dry_run, expires_at
      ) VALUES (
        $1, $2, $3, $4, $5,
-       ${claimInterval}, ${hbInterval}, 'test-worker', ${createdAt}, $6
+       ${claimInterval}, ${hbInterval}, 'test-worker', ${createdAt}, $6, ${expiresAt}
      )
      RETURNING id`,
 		[
@@ -432,6 +438,126 @@ describe("reapStaleRuns — connector lanes", () => {
 		expect(await statusOf(actionId)).toBe("timeout");
 		expect(await statusOf(embedId)).toBe("timeout");
 		expect(await statusOf(authId)).toBe("timeout");
+	});
+
+	describe("expires_at — ephemeral device action runs", () => {
+		test("a pending run whose expires_at lapsed is terminalized as timeout even when younger than the coarse interval", async () => {
+			// Ephemeral device/browser action runs carry an explicit claim horizon
+			// (queue-service sets expires_at for approvalMode='device'). A lapsed
+			// horizon must never be claimable later — the reaper terminalizes it
+			// even though created_at is still inside the coarse window.
+			const lapsedId = await seedRun({
+				status: "pending",
+				lastHeartbeatAgoSeconds: null,
+				runType: "action",
+				createdAtAgoSeconds: 5,
+				expiresAtAgoSeconds: 1,
+			});
+
+			const result = await reapStaleRuns();
+			expect(result.reaped).toBe(1);
+			expect(await statusOf(lapsedId)).toBe("timeout");
+		});
+
+		test("a pending run with a future expires_at is untouched", async () => {
+			const liveId = await seedRun({
+				status: "pending",
+				lastHeartbeatAgoSeconds: null,
+				runType: "action",
+				createdAtAgoSeconds: 5,
+				expiresAtAgoSeconds: -60,
+			});
+
+			const result = await reapStaleRuns();
+			expect(result.reaped).toBe(0);
+			expect(await statusOf(liveId)).toBe("pending");
+		});
+
+		test("expires_at does not shorten the coarse horizon for non-action runs", async () => {
+			const syncId = await seedRun({
+				status: "pending",
+				lastHeartbeatAgoSeconds: null,
+				runType: "sync",
+				createdAtAgoSeconds: 5,
+				expiresAtAgoSeconds: 1,
+			});
+
+			const result = await reapStaleRuns();
+			expect(result.reaped).toBe(0);
+			expect(await statusOf(syncId)).toBe("pending");
+		});
+
+		test("a lapsed-expiry action run is never retried as a sync", async () => {
+			const feedId = 7771;
+			await seedFeed(feedId);
+			const lapsedActionId = await seedRun({
+				status: "pending",
+				lastHeartbeatAgoSeconds: null,
+				runType: "action",
+				feedId,
+				createdAtAgoSeconds: 5,
+				expiresAtAgoSeconds: 1,
+			});
+
+			const result = await reapStaleRuns();
+			expect(result.reaped).toBe(1);
+			expect(result.retriesCreated).toBe(0);
+			expect(await statusOf(lapsedActionId)).toBe("timeout");
+		});
+
+		test("terminalization is idempotent — a lapsed-expiry run is not re-reaped", async () => {
+			const lapsedId = await seedRun({
+				status: "pending",
+				lastHeartbeatAgoSeconds: null,
+				runType: "action",
+				createdAtAgoSeconds: 5,
+				expiresAtAgoSeconds: 1,
+			});
+
+			const first = await reapStaleRuns();
+			expect(first.reaped).toBe(1);
+			expect(await statusOf(lapsedId)).toBe("timeout");
+
+			const second = await reapStaleRuns();
+			expect(second.reaped).toBe(0);
+			expect(await statusOf(lapsedId)).toBe("timeout");
+		});
+
+		test("#2044 × expires_at: an approval-pending run with a lapsed horizon is NOT reaped", async () => {
+			// A queued action awaiting HUMAN approval sits at approval_status=
+			// 'pending' — no worker will ever claim it, so the claim-timeout must
+			// never reap it even if it carries an expires_at that lapsed (the
+			// expiry is an ephemeral-device horizon; a human decision outlives it).
+			const approvalId = await seedRun({
+				status: "pending",
+				approvalStatus: "pending",
+				lastHeartbeatAgoSeconds: null,
+				runType: "action",
+				createdAtAgoSeconds: 5,
+				expiresAtAgoSeconds: 1,
+			});
+
+			const result = await reapStaleRuns();
+			expect(result.reaped).toBe(0);
+			expect(await statusOf(approvalId)).toBe("pending");
+		});
+
+		test("a lapsed-expiry RUNNING row is not reaped (expires_at only governs pending claims)", async () => {
+			// The expires_at term lives in the pending branch. A claimed/running
+			// run is judged on heartbeat staleness, never on its claim horizon —
+			// otherwise a long-but-live device action would be killed mid-flight.
+			const runningId = await seedRun({
+				status: "running",
+				lastHeartbeatAgoSeconds: 5,
+				claimedAtAgoSeconds: 5,
+				runType: "action",
+				expiresAtAgoSeconds: 1,
+			});
+
+			const result = await reapStaleRuns();
+			expect(result.reaped).toBe(0);
+			expect(await statusOf(runningId)).toBe("running");
+		});
 	});
 });
 

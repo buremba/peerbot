@@ -26,8 +26,7 @@
  *   - `needs_auth` — the connection/auth profile is not usable (pending_auth,
  *     revoked, auth profile not active).
  *   - `paused` — operator- or auto-paused; not running until resumed.
- *   - `misconfigured` — the connection is in an error state, or (when the
- *     caller opts in) a feed expected to carry a schedule does not.
+ *   - `misconfigured` — the connection is in an error state.
  *   - `device_offline` — the feed is pinned to a device that has not polled
  *     within the liveness window.
  *   - `last_attempt_failed` — the most recent attempt failed (failing state,

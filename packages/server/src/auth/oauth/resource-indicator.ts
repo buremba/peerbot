@@ -27,6 +27,21 @@ export function publicMcpRequestUrl(request: Request): string {
   return `${origin}${pathname}`;
 }
 
+/**
+ * Extra public origins that may address the MCP endpoints (RFC 8707
+ * resource indicators). The gateway canonicalizes any allowed origin to its
+ * own public origin, so audience checks stay a single string compare. Set
+ * `MCP_PUBLIC_RESOURCE_ORIGINS` to a comma-separated list of origins, e.g.
+ * `https://lobu.ai` when the edge proxies the same gateway under another
+ * domain.
+ */
+function extraMcpResourceOrigins(): string[] {
+  return (process.env.MCP_PUBLIC_RESOURCE_ORIGINS ?? '')
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
+}
+
 /** Canonical MCP protected-resource URI accepted for OAuth audience binding. */
 export function canonicalizeMcpResource(
   rawResource: string | null | undefined,
@@ -40,7 +55,8 @@ export function canonicalizeMcpResource(
     return null;
   }
   const publicOrigin = resolvePublicOrigin(requestUrl);
-  if (parsed.origin !== publicOrigin || parsed.search || parsed.hash) return null;
+  const allowedOrigins = new Set([publicOrigin, ...extraMcpResourceOrigins()]);
+  if (!allowedOrigins.has(parsed.origin) || parsed.search || parsed.hash) return null;
   const path = parsed.pathname.replace(/\/+$/, '') || '/';
   if (path !== '/mcp' && !/^\/mcp\/[^/]+$/.test(path)) return null;
   return `${publicOrigin}${path}`;

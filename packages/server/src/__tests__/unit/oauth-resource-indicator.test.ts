@@ -68,4 +68,27 @@ describe('MCP OAuth resource indicators', () => {
       'https://lobu.example/.well-known/oauth-protected-resource/mcp/acme'
     );
   });
+
+  test('accepts extra configured public origins and canonicalizes to the gateway origin', () => {
+    process.env.MCP_PUBLIC_RESOURCE_ORIGINS = 'https://lobu.ai, https://mcp.example/';
+    __resetPublicOriginCachesForTests();
+
+    expect(
+      canonicalizeMcpResource('https://lobu.ai/mcp', 'https://app.lobu.ai/mcp')
+    ).toBe('https://app.lobu.ai/mcp');
+    expect(
+      canonicalizeMcpResource('https://lobu.ai/mcp/acme', 'https://app.lobu.ai/mcp')
+    ).toBe('https://app.lobu.ai/mcp/acme');
+    expect(
+      canonicalizeMcpResource('https://mcp.example/mcp', 'https://app.lobu.ai/mcp')
+    ).toBe('https://app.lobu.ai/mcp');
+  });
+
+  test('still rejects origins outside the public origin allowlist', () => {
+    process.env.MCP_PUBLIC_RESOURCE_ORIGINS = 'https://lobu.ai';
+    __resetPublicOriginCachesForTests();
+
+    expect(canonicalizeMcpResource('https://evil.example/mcp', 'https://app.lobu.ai/mcp')).toBeNull();
+    expect(canonicalizeMcpResource('https://lobu.ai/mcp/../../admin', 'https://app.lobu.ai/mcp')).toBeNull();
+  });
 });

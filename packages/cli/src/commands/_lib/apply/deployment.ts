@@ -209,6 +209,7 @@ export function buildAttributionAndOwned(
     return {
       slug: d.slug,
       behavior_id: r?.behavior_id,
+      agent_id: d.agent,
       name: d.name,
       description: d.description,
       prompt: d.prompt,
@@ -238,6 +239,18 @@ export function buildAttributionAndOwned(
   for (const w of state.watchers) {
     const id = remoteWatcherBySlug.get(w.slug)?.behavior_id;
     if (id !== undefined) owned.push(`watcher:${id}`);
+  }
+  // Connector definitions this config declared (or references through an
+  // auth-profile/connection) and has installed — delete-eligible under prune.
+  const appliedConnectorKeys = new Set<string>([
+    ...(state.connectors.definitions.map((d) => d.key).filter(Boolean) as string[]),
+    ...state.connectors.authProfiles.map((p) => p.connector),
+    ...state.connectors.connections.map((c) => c.connector),
+  ]);
+  for (const def of remote.connectorDefinitions) {
+    if (def.installed && appliedConnectorKeys.has(def.key)) {
+      owned.push(`connector-definition:${def.id}`);
+    }
   }
   return {
     attribution: { entityTypes, relationshipTypes, watchers },

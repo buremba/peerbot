@@ -1525,10 +1525,16 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
       : loadBaselineFromManifest(latestDeployment.manifest);
   // For `--only agents` the memory/Behavior families are NOT executed — the
   // recorded baseline must carry forward the prior attribution/ownership for
-  // those families, never rebuild them from an unexecuted snapshot.
+  // those families, never rebuild them from an unexecuted snapshot. When no
+  // prior baseline exists, record EMPTY attribution/ownership (never synthesize
+  // ownership of definitions this run didn't execute — a later prune must not
+  // treat UI-created definitions as delete-eligible).
   const baselineRecordForRecording =
-    opts.only === "agents" && baselineRecord
-      ? baselineRecord
+    opts.only === "agents"
+      ? (baselineRecord ?? {
+          attribution: { entityTypes: [], relationshipTypes: [], watchers: [] },
+          owned: [],
+        })
       : buildAttributionAndOwned(state, remote);
   const baseline: Baseline = baselineRecord
     ? {
@@ -1642,7 +1648,19 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
       apply_id: applyId,
       status: "succeeded",
       counts: plan.counts,
-      counts_by_kind: buildCountsByKind(plan.rows),
+      counts_by_kind: {
+        ...buildCountsByKind(plan.rows),
+        ...(hasProviderKeys
+          ? {
+              "provider-key": {
+                update: state.agents.reduce(
+                  (n, a) => n + a.providerKeys.length,
+                  0
+                ),
+              },
+            }
+          : {}),
+      },
       manifest_hash: computeManifestHash(state),
       git_sha: gitInfo.sha,
       git_dirty: gitInfo.dirty,

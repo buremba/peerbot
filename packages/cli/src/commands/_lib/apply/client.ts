@@ -176,6 +176,8 @@ interface UpsertEntityTypeResult {
 // ── Connectors / auth profiles / connections wire types ────────────────────
 
 export interface RemoteConnectorDefinition {
+  /** Persistent incarnation id (`connector_definitions.id`) — the `owned` identity for deletes. */
+  id?: number;
   key: string;
   name?: string;
   version?: string;

@@ -194,7 +194,7 @@ describe("three-way attribution (baseline present)", () => {
 });
 
 describe("owned-based delete classification (baseline present)", () => {
-  test("remote-only definition IN owned → config-expressed delete", () => {
+  test("remote-only definition IN owned + unchanged + prune → config-expressed delete", () => {
     const desired = buildState([]);
     const remote = emptyRemote();
     remote.entityTypes = [remoteTask(7)];
@@ -203,9 +203,26 @@ describe("owned-based delete classification (baseline present)", () => {
     const plan = computeDiff(desired, remote, {
       orgId: "org-1",
       baseline,
+      prune: true,
     });
     const row = plan.rows.find((r) => r.kind === "entity-type");
     expect(row?.verb).toBe("delete");
+  });
+
+  test("owned + unchanged but prune=false → drift, never delete (default is non-destructive)", () => {
+    const desired = buildState([]);
+    const remote = emptyRemote();
+    remote.entityTypes = [remoteTask(7)];
+    const baseline = baselineFor([remoteTask(7)], [7]);
+
+    const plan = computeDiff(desired, remote, {
+      orgId: "org-1",
+      baseline,
+      prune: false,
+    });
+    const row = plan.rows.find((r) => r.kind === "entity-type");
+    expect(row?.verb).toBe("drift");
+    expect(plan.counts.delete).toBe(0);
   });
 
   test("remote-only definition NOT in owned (UI-created) → blocking drift, never delete", () => {
@@ -235,11 +252,49 @@ describe("owned-based delete classification (baseline present)", () => {
     const plan = computeDiff(desired, remote, {
       orgId: "org-1",
       baseline,
+      prune: true,
     });
     const row = plan.rows.find((r) => r.kind === "entity-type");
     expect(row?.verb).toBe("drift");
     expect((row as any).blocking).toBe(true);
     expect(plan.counts.delete).toBe(0);
+  });
+
+  test("UI-created connector (unowned) with a baseline → blocking drift, never deleted under prune", () => {
+    const desired = buildState([]);
+    const remote = emptyRemote();
+    remote.connectorDefinitions = [
+      { key: "github", id: 42, installed: true } as any,
+    ];
+    const baseline = baselineFor([], []);
+
+    const plan = computeDiff(desired, remote, {
+      orgId: "org-1",
+      baseline,
+      prune: true,
+    });
+    const row = plan.rows.find((r) => r.kind === "connector-definition");
+    expect(row?.verb).toBe("drift");
+    expect((row as any).blocking).toBe(true);
+    expect(plan.counts.delete).toBe(0);
+  });
+
+  test("config-applied connector (owned) + prune → delete", () => {
+    const desired = buildState([]);
+    const remote = emptyRemote();
+    remote.connectorDefinitions = [
+      { key: "github", id: 7, installed: true } as any,
+    ];
+    const baseline = baselineFor([], [7]);
+    baseline.owned.add("connector-definition:7");
+
+    const plan = computeDiff(desired, remote, {
+      orgId: "org-1",
+      baseline,
+      prune: true,
+    });
+    const row = plan.rows.find((r) => r.kind === "connector-definition");
+    expect(row?.verb).toBe("delete");
   });
 
   test("same-slug recreation (new id) after a delete-with-lost-summary → blocking drift", () => {
@@ -254,6 +309,7 @@ describe("owned-based delete classification (baseline present)", () => {
     const plan = computeDiff(desired, remote, {
       orgId: "org-1",
       baseline,
+      prune: true,
     });
     const row = plan.rows.find((r) => r.kind === "entity-type");
     expect(row?.verb).toBe("drift");

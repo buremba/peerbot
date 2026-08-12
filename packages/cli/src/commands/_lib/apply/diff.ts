@@ -544,7 +544,9 @@ function classifyField(
   attribution: unknown | undefined
 ): FieldOutcome {
   if (deepEqual(desired, remote)) return "noop";
-  if (attribution === undefined) return "remoteMoved";
+  // `undefined` is a VALID prior field value (e.g. a property the config is
+  // adding that neither the remote nor the baseline had) — presence in the
+  // baseline is the callers' concern, not a field-value sentinel here.
   if (deepEqual(remote, attribution)) return "configMoved";
   return "remoteMoved";
 }
@@ -726,11 +728,10 @@ function diffEntityTypeWithBaseline(
     // No baseline entry — ambiguous only when there's an actual mismatch. A
     // definition already in sync (desired == remote) is a noop, so existing
     // orgs can establish their first baseline without blocking.
-    const inSync =
-      deepEqual(desired.name, remote.name) &&
-      deepEqual(desired.description, remote.description) &&
-      deepEqual(desired.required ?? [], remote.required ?? []) &&
-      deepEqual(desired.properties ?? {}, remote.properties ?? {});
+    const inSync = deepEqual(
+      projectEntityForSync(desired),
+      projectEntityForSync(remote)
+    );
     if (inSync) {
       return {
         row: {
@@ -885,6 +886,33 @@ const projectEntityForDelete = (e: {
   schemaExtras: e.schemaExtras ?? {},
 });
 
+/** Full-field in-sync comparison between desired and remote entity shapes. */
+const projectEntityForSync = (e: {
+  name?: string;
+  description?: string;
+  required?: string[];
+  properties?: Record<string, unknown>;
+  backing?: unknown;
+  metrics?: unknown;
+  eventKinds?: unknown;
+  viewTemplate?: unknown;
+  resolutionPolicy?: Record<string, unknown> | undefined;
+  schemaExtras?: Record<string, unknown>;
+}) => ({
+  name: e.name,
+  description: e.description,
+  required: e.required ?? [],
+  properties: e.properties ?? {},
+  backing: e.backing,
+  metrics: e.metrics,
+  eventKinds: e.eventKinds,
+  viewTemplate: e.viewTemplate,
+  resolutionPolicy:
+    "resolutionPolicy" in e && e.resolutionPolicy
+      ? e.resolutionPolicy["x-lobu-resolution"]
+      : e.schemaExtras?.["x-lobu-resolution"],
+});
+
 const projectRelForDelete = (r: {
   slug: string;
   name?: string;
@@ -915,7 +943,9 @@ function remoteOnlyDefinitionRow(
   }
   const owned =
     remote.id !== undefined && baseline.owned.has(ownedKey(kind, remote.id));
-  if (owned && unchangedSinceBaseline(remote.slug)) {
+  // Config-expressed deletes require BOTH the config's owned incarnation AND
+  // prune (the config opts into deletions). A prune-off org never deletes.
+  if (owned && unchangedSinceBaseline(remote.slug) && legacyDelete) {
     return { kind, verb: "delete", id: remote.slug, remote } as DiffRow;
   }
   return {
@@ -1817,11 +1847,27 @@ export function computeDiff(
           continue;
         }
         if (prune && !liveConnectorKeys.has(def.key)) {
-          rows.push({
-            kind: "connector-definition",
-            verb: "delete",
-            id: def.key,
-          });
+          // With a baseline, only delete connectors THIS config applied
+          // (owned incarnation). A UI-created connector is never auto-deleted —
+          // it becomes blocking drift instead.
+          const owned =
+            baseline !== undefined &&
+            baseline.owned.has(ownedKey("connector-definition", def.id));
+          if (baseline === undefined || owned) {
+            rows.push({
+              kind: "connector-definition",
+              verb: "delete",
+              id: def.key,
+            });
+          } else {
+            rows.push({
+              kind: "connector-definition",
+              verb: "drift",
+              blocking: true,
+              id: def.key,
+              remote: def,
+            } as DiffRow);
+          }
         } else {
           notes.push(
             `connector "${def.key}" is installed remotely but not declared in connectors/ — uninstall it manually if it's no longer wanted (lobu apply never auto-uninstalls connectors).`

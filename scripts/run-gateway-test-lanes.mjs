@@ -6,6 +6,27 @@ import { dirname, join, relative } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
+/**
+ * Per-test/per-hook ceiling for the gateway lanes. Must be a CLI flag: bun
+ * 1.3.5 silently ignores `[test].timeout` in bunfig — these lanes carried
+ * `timeout = 10000` for a long time and still died at exactly 5000ms, which is
+ * why the flake survived every previous encounter looking already-handled.
+ *
+ * The number is derived, not guessed. Profiled 2026-08-12 on
+ * `oauth-state-store.test.ts`: the once-per-lane `beforeAll`
+ * (`ensureDbForGatewayTests`) costs ~1.43s — 659ms to spawn embedded Postgres
+ * plus 768ms to run every migration — and bun charges it to the FIRST test in
+ * the lane, which is why failures always surfaced as `OAuthStateStore >
+ * (unnamed)`. The `beforeEach` `resetTestDatabase()` TRUNCATE of all 76 tables
+ * is only ~150ms, so it was never the driver.
+ *
+ * Nothing here is pathologically slow; 1.43s of legitimate setup simply needs
+ * more than 5s of headroom once several CI graphs share the machine. 30s keeps
+ * ~20x margin over the measured cost while still failing a genuine hang far
+ * inside the job's 15-minute limit.
+ */
+const GATEWAY_TEST_TIMEOUT_MS = 30_000;
+
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const serverRoot = join(repoRoot, "packages/server");
 const gatewayRoot = join(serverRoot, "src/gateway/__tests__");
@@ -80,6 +101,8 @@ async function runLane(index, files, databaseUrl) {
       "test",
       ...relativeFiles,
       "--coverage",
+      "--timeout",
+      String(GATEWAY_TEST_TIMEOUT_MS),
     ],
     {
       cwd: serverRoot,

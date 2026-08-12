@@ -682,7 +682,9 @@ jobs:
           rc=0
           for d in $dirs; do
             echo "::group::bun test $d"
-            bun test "$d" --coverage || rc=1
+            # Database setup hooks can exceed Bun's 5s default under CI load;
+            # Bun 1.3.5 ignores `[test].timeout`, so use the CLI flag.
+            bun test "$d" --coverage --timeout 30000 || rc=1
             if [ -f coverage/lcov.info ]; then
               safe=$(printf '%s' "$d" | tr '/' '-')
               mv coverage/lcov.info "coverage/gateway-${safe}.lcov.info"

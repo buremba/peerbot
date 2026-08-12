@@ -616,12 +616,13 @@ async function resolveExecutionOAuthConfig(
       clientId: string;
       clientSecret?: string;
       authMethod?: 'client_secret_post' | 'client_secret_basic' | 'none';
+      resource?: string;
     }
   | undefined
 > {
   const sql = getDb();
   const rows = await sql`
-    SELECT c.connector_key, cd.auth_schema
+    SELECT c.connector_key, cd.auth_schema, cd.mcp_config
     FROM connections c
     JOIN connector_definitions cd
       ON cd.key = c.connector_key
@@ -634,7 +635,11 @@ async function resolveExecutionOAuthConfig(
 
   if (rows.length === 0) return undefined;
 
-  const row = rows[0] as { connector_key: string; auth_schema: unknown };
+  const row = rows[0] as {
+    connector_key: string;
+    auth_schema: unknown;
+    mcp_config: unknown;
+  };
   const authSchema = normalizeConnectorAuthSchema(row.auth_schema);
   const oauthMethod = getOAuthAuthMethods(authSchema)[0];
   if (!oauthMethod) return undefined;
@@ -651,11 +656,18 @@ async function resolveExecutionOAuthConfig(
 
   const clientSecret = appAuthValues[clientSecretKey];
   const authMethod = oauthMethod.tokenEndpointAuthMethod ?? builtin?.tokenEndpointAuthMethod;
+  const mcpConfig =
+    row.mcp_config && typeof row.mcp_config === 'object'
+      ? (row.mcp_config as Record<string, unknown>)
+      : null;
   return {
     tokenUrl,
     clientId,
     ...(clientSecret ? { clientSecret } : {}),
     ...(authMethod ? { authMethod } : {}),
+    ...(typeof mcpConfig?.upstream_url === 'string'
+      ? { resource: mcpConfig.upstream_url }
+      : {}),
   };
 }
 

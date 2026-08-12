@@ -118,6 +118,7 @@ async function resolveCredentialsForConnection(
         clientId: string;
         clientSecret?: string;
         authMethod?: 'client_secret_post' | 'client_secret_basic' | 'none';
+        resource?: string;
       }
     | undefined;
 
@@ -147,6 +148,7 @@ async function resolveCredentialsForConnection(
           clientId,
           clientSecret,
           authMethod: oauthMethod.tokenEndpointAuthMethod,
+          resource: oauthMethod.resource,
         };
       }
     }
@@ -180,7 +182,7 @@ async function getOAuthMethodForConnector(
 ): Promise<ConnectorAuthOAuthMethod | null> {
   const sql = getDb();
   const rows = await sql`
-    SELECT auth_schema
+    SELECT auth_schema, mcp_config
     FROM connector_definitions
     WHERE key = ${connectorKey}
       AND status = 'active'
@@ -190,7 +192,19 @@ async function getOAuthMethodForConnector(
 
   if (rows.length === 0 || !rows[0].auth_schema) return null;
 
-  const authSchema = normalizeConnectorAuthSchema(rows[0].auth_schema);
+  const row = rows[0] as { auth_schema: unknown; mcp_config: unknown };
+  const authSchema = normalizeConnectorAuthSchema(row.auth_schema);
   const oauthMethods = getOAuthAuthMethods(authSchema);
-  return oauthMethods.length > 0 ? oauthMethods[0] : null;
+  const oauthMethod = oauthMethods[0];
+  if (!oauthMethod) return null;
+  const mcpConfig =
+    row.mcp_config && typeof row.mcp_config === 'object'
+      ? (row.mcp_config as Record<string, unknown>)
+      : null;
+  return {
+    ...oauthMethod,
+    ...(typeof mcpConfig?.upstream_url === 'string'
+      ? { resource: mcpConfig.upstream_url }
+      : {}),
+  };
 }

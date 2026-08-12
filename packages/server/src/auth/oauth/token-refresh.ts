@@ -101,6 +101,9 @@ export function buildRefreshRequest(options: RefreshRequestOptions): RefreshHttp
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
   });
+  if (resource) {
+    body.set('resource', resource);
+  }
   const headers: Record<string, string> = {
     'Content-Type': 'application/x-www-form-urlencoded',
   };

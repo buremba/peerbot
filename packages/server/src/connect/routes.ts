@@ -71,6 +71,7 @@ interface OAuthAuthConfig {
   pkceCodeVerifier?: string;
   redirectUri?: string;
   requestedScopes?: string[];
+  resource?: string;
 }
 
 type ConnectTokenEnv = { Bindings: Env; Variables: { tokenRow: ConnectTokenRow } };
@@ -626,6 +627,7 @@ connectRoutes.get('/:token/oauth/start', requireConnectToken, async (c) => {
     authorizationUrl: authConfig.authorizationUrl,
     authParams: authConfig.authParams,
     codeChallenge: pkceCodeVerifier ? buildPkceChallenge(pkceCodeVerifier) : undefined,
+    resource: authConfig.resource,
   });
 
   if (!authUrl) {
@@ -720,6 +722,7 @@ async function handleOAuthCallback(
     tokenUrl: authConfig.tokenUrl,
     tokenEndpointAuthMethod: authConfig.tokenEndpointAuthMethod,
     codeVerifier: authConfig.pkceCodeVerifier,
+    resource: authConfig.resource,
   });
 
   if (!tokens) {

@@ -837,7 +837,9 @@ export function recordWorkspaceChangeEvent(params: WorkspaceChangeEventParams): 
 }
 
 export function recordLifecycleEvent(params: LifecycleEventParams): void {
-  const externalId = `lifecycle_${params.entityType}_${params.op}_${params.entityId}_${Date.now()}`;
+  // Include a random suffix so two same-entity/op lifecycle writes in the same
+  // millisecond get distinct originIds (and distinct audit: idempotency keys).
+  const externalId = `lifecycle_${params.entityType}_${params.op}_${params.entityId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
   // Fire-and-forget with one bounded retry. Same originId + connectionless
   // reconcile so an ambiguous success cannot double-count. A doubly-failed

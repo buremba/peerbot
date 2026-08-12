@@ -1,9 +1,9 @@
 /**
  * Derived feed-health semantics — pure classification tests.
  *
- * Guards the executionMode / attention / incidentEligible derivation. No DB —
- * the module is a pure function over the joined row fields, so every state is
- * testable with plain objects.
+ * Guards the executionMode / attention derivation. No DB — the module is a pure
+ * function over the joined row fields, so every state is testable with plain
+ * objects.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -31,17 +31,21 @@ describe("executionMode", () => {
     ).toBe("scheduled");
   });
 
-  test("non-virtual feed without a schedule is manual", () => {
+  test("non-virtual feed without a schedule is no_schedule", () => {
     expect(
       deriveFeedHealthSemantics({
         kind: "collected",
         schedule: null,
         status: "active",
       }).executionMode
-    ).toBe("manual");
+    ).toBe("no_schedule");
   });
 
-  test("streaming feed is streaming, not a never-run manual collector", () => {
+  test("streaming feed is streaming, not a never-run collector", () => {
+    // Exact-shape assertion: the derivation returns EXACTLY these two outputs.
+    // An `incidentEligible` (or any other) third field reappearing here fails
+    // this test — see the header of feed-health-semantics.ts for why one must
+    // not come back.
     expect(
       deriveFeedHealthSemantics({
         kind: "streaming",
@@ -51,18 +55,17 @@ describe("executionMode", () => {
     ).toEqual({
       executionMode: "streaming",
       attention: "healthy",
-      incidentEligible: false,
     });
   });
 
-  test("empty-string schedule is manual (treated as absent)", () => {
+  test("empty-string schedule is no_schedule (treated as absent)", () => {
     expect(
       deriveFeedHealthSemantics({
         kind: "collected",
         schedule: "",
         status: "active",
       }).executionMode
-    ).toBe("manual");
+    ).toBe("no_schedule");
   });
 });
 
@@ -280,15 +283,11 @@ describe("attention state", () => {
   });
 });
 
-describe("incidentEligible", () => {
-  test("false for virtual feeds", () => {
-    expect(
-      deriveFeedHealthSemantics({ kind: "virtual", status: "active" })
-        .incidentEligible
-    ).toBe(false);
-  });
-
-  test("false for manual feeds even when the last attempt failed (Midas)", () => {
+describe("output shape", () => {
+  test("a collected feed derives exactly executionMode + attention", () => {
+    // The collector path's counterpart to the streaming exact-shape assertion
+    // above. "Is this failure worth paging someone about" is decided in
+    // connectors/connector-health.ts, not derived here.
     expect(
       deriveFeedHealthSemantics({
         kind: "collected",
@@ -297,97 +296,10 @@ describe("incidentEligible", () => {
         connection_status: "active",
         last_sync_status: "failed",
         consecutive_failures: 5,
-      }).incidentEligible
-    ).toBe(false);
-  });
-
-  test("false for paused feeds", () => {
-    expect(
-      deriveFeedHealthSemantics({
-        kind: "collected",
-        schedule: "0 */6 * * *",
-        status: "paused",
-        connection_status: "active",
-        last_sync_status: "failed",
-        consecutive_failures: 21,
-      }).incidentEligible
-    ).toBe(false);
-  });
-
-  test("false for scheduled feed awaiting auth", () => {
-    expect(
-      deriveFeedHealthSemantics({
-        kind: "collected",
-        schedule: "0 */6 * * *",
-        status: "active",
-        connection_status: "pending_auth",
-        last_sync_status: "failed",
-        consecutive_failures: 2,
-      }).incidentEligible
-    ).toBe(false);
-  });
-
-  test("true for a failing active scheduled feed on an active connection", () => {
-    expect(
-      deriveFeedHealthSemantics({
-        kind: "collected",
-        schedule: "0 */6 * * *",
-        status: "active",
-        connection_status: "active",
-        last_sync_status: "failed",
-        consecutive_failures: 2,
-      }).incidentEligible
-    ).toBe(true);
-  });
-
-  test("true when a scheduled feed's pinned device is offline", () => {
-    expect(
-      deriveFeedHealthSemantics({
-        kind: "collected",
-        schedule: "0 */6 * * *",
-        status: "active",
-        connection_status: "active",
-        device_worker_id: "dw-1",
-        device_online: false,
-      }).incidentEligible
-    ).toBe(true);
-  });
-
-  test("false for a healthy scheduled feed", () => {
-    expect(
-      deriveFeedHealthSemantics({
-        kind: "collected",
-        schedule: "0 */6 * * *",
-        status: "active",
-        connection_status: "active",
-        last_sync_status: "success",
-        consecutive_failures: 0,
-      }).incidentEligible
-    ).toBe(false);
-  });
-
-  test("false for a never-run scheduled feed", () => {
-    expect(
-      deriveFeedHealthSemantics({
-        kind: "collected",
-        schedule: "0 */6 * * *",
-        status: "active",
-        connection_status: "active",
-        last_sync_at: null,
-      }).incidentEligible
-    ).toBe(false);
-  });
-
-  test("false when the connection is not active", () => {
-    expect(
-      deriveFeedHealthSemantics({
-        kind: "collected",
-        schedule: "0 */6 * * *",
-        status: "active",
-        connection_status: "error",
-        last_sync_status: "failed",
-        consecutive_failures: 2,
-      }).incidentEligible
-    ).toBe(false);
+      })
+    ).toEqual({
+      executionMode: "no_schedule",
+      attention: "last_attempt_failed",
+    });
   });
 });

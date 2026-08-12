@@ -24,7 +24,7 @@
  *
  * ## Relationship to `feed-health-semantics`
  *
- * Per-feed `execution_mode` / `attention` / `incident_eligible` are DERIVED by
+ * Per-feed `execution_mode` / `attention` are DERIVED by
  * `deriveFeedHealthSemantics` at read time and surfaced by `list_feeds`. This
  * alerter consumes that module for the two classifications that are ground
  * truth on the row — which feeds can run a collector sync at all, and whether
@@ -54,9 +54,10 @@
  * ## Why `execution_mode === 'scheduled'` is NOT the expected predicate
  *
  * `deriveFeedHealthSemantics` calls a non-virtual feed without a cron in
- * `feeds.schedule` `manual`, and `incident_eligible` is false for it. That
- * holds for Midas (a failed manual attempt is user-visible, never an unattended
- * incident) but it does not generalise: measured on prod 2026-08-12, 196 of 215
+ * `feeds.schedule` `no_schedule`, and that label carries no dispatch meaning.
+ * It is tempting to read "no cron" as "human-triggered, so a failure is
+ * user-visible and never an unattended incident" — which holds for Midas but
+ * does not generalise: measured on prod 2026-08-12, 196 of 215
  * active collected feeds have NO `schedule`, yet many run unattended through
  * other dispatch paths (github `issue_comments`: 4551 sync runs in 14 days with
  * `schedule` and `next_run_at` both NULL; linkedin `home_feed` ~hourly; gmail
@@ -65,8 +66,11 @@
  * connections to 14 and silences the exact shape it exists for (connection 412,
  * 10 of 11 feeds failing) — so `schedule` is deliberately not read here.
  * Nothing stored today distinguishes an unattended event-driven feed from a
- * human-triggered one; until something does, `incident_eligible` cannot be this
- * scan's predicate.
+ * human-triggered one; until something does, `schedule` cannot be this scan's
+ * predicate. (`deriveFeedHealthSemantics` used to publish an `incidentEligible`
+ * flag built on that same inference. Nothing consumed it and it disagreed with
+ * this scan, so it was deleted — the paging decision lives here, in the one
+ * place that acts on it.)
  */
 
 import { type DbClient, getDb, tsTimeOrNull } from '../db/client';

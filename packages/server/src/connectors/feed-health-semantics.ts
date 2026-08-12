@@ -1,26 +1,32 @@
 /**
  * Derived feed-health semantics.
  *
- * Execution mode, attention state, and incident eligibility are DERIVED from
- * existing feed/connection/device columns at read time — never stored. The
- * stored columns keep their historical meaning; this module only classifies.
+ * Execution mode and attention state are DERIVED from existing
+ * feed/connection/device columns at read time — never stored. The stored
+ * columns keep their historical meaning; this module only classifies.
  *
  * ## Why derive instead of store
  *
  * A feed's execution nature (`virtual` vs `streaming` vs `scheduled` vs
- * `manual`) is a pure function of `kind`/`virtual`/`schedule`. Its attention
- * state is a pure function of lifecycle/sync state, auth-profile status, and
- * device liveness. Storing these would duplicate state that already lives on
- * the row and drift when the source columns move (auto-pause, backoff, resume).
- * Read-time derivation is O(1) per feed and cannot diverge.
+ * `no_schedule`) is a pure function of `kind`/`virtual`/`schedule`. Its
+ * attention state is a pure function of lifecycle/sync state, auth-profile
+ * status, and device liveness. Storing these would duplicate state that already
+ * lives on the row and drift when the source columns move (auto-pause, backoff,
+ * resume). Read-time derivation is O(1) per feed and cannot diverge.
  *
- * ## The three outputs
+ * ## The two outputs
  *
- * - `executionMode` — how this feed is *supposed* to run:
+ * - `executionMode` — what the row says about how this feed runs:
  *   - `virtual` — a virtual (live-pushdown) feed evaluated on demand.
  *   - `streaming` — a chat channel populated by incoming messages.
- *   - `scheduled` — a non-virtual feed with an active schedule.
- *   - `manual` — a non-virtual feed without a schedule.
+ *   - `scheduled` — a non-virtual feed with a cron in `feeds.schedule`.
+ *   - `no_schedule` — a non-virtual feed with no cron. This says the feed has
+ *     no cron and NOTHING MORE. It was called `manual` until 2026-08-12, which
+ *     read an intent into it that the column does not carry: measured on prod
+ *     that day, 196 of 215 active collected feeds have no cron, and many are
+ *     driven unattended through other dispatch paths (github `issue_comments` =
+ *     4551 sync runs in 14 days with `schedule` and `next_run_at` both NULL).
+ *     Do not reintroduce the intent reading under a new name.
  * - `attention` — what a human/UI should be told about the feed right now,
  *   ordered so the most actionable state wins:
  *   - `needs_auth` — the connection/auth profile is not usable (pending_auth,
@@ -33,19 +39,21 @@
  *     including backoff episodes).
  *   - `never_run` — never synced.
  *   - `healthy` — everything else.
- * - `incidentEligible` — whether this feed, if failing, should count as an
- *   UNATTENDED INCIDENT. True only for an active SCHEDULED feed that is
- *   expected to run unattended and is currently failing for a platform-relevant
- *   reason. Always false for:
- *   - manual feeds (e.g. Midas — a failed manual attempt is user-visible but
- *     not a scheduled-feed incident)
- *   - paused feeds
- *   - virtual feeds (evaluated on demand)
- *   - known `needs_auth` / manual-login conditions (the user must act; not an
- *     infra incident)
+ *
+ * ## There is deliberately no `incidentEligible` here
+ *
+ * An earlier version derived one, defined as "an active SCHEDULED feed failing
+ * for a platform-relevant reason". It rested on the cron inference above, and
+ * nothing consumed it — `list_feeds` copied it into its output and no caller
+ * ever read it, while the alerter that actually pages disagreed with it. "Is
+ * this failure worth paging someone about" is a decision, not a property of a
+ * row; it lives in `connectors/connector-health.ts`, the one place that acts on
+ * it, alongside the prod measurements justifying its predicate. Do not
+ * reintroduce a second copy here without a stored signal that distinguishes an
+ * unattended event-driven feed from a human-triggered one.
  */
 
-type FeedExecutionMode = "virtual" | "streaming" | "scheduled" | "manual";
+type FeedExecutionMode = "virtual" | "streaming" | "scheduled" | "no_schedule";
 
 type FeedAttentionState =
   | "healthy"
@@ -63,7 +71,8 @@ interface FeedHealthSemanticsInput {
   virtual?: boolean | null;
   /** `feeds.status` — 'active' | 'paused' | 'error'. */
   status?: string | null;
-  /** `feeds.schedule` — cron; NULL means manual-only. */
+  /** `feeds.schedule` — cron; NULL means no cron is configured, which does NOT
+   *  imply the feed is human-triggered (see the header). */
   schedule?: string | null;
   /** `feeds.last_sync_status` — 'success' | 'failed' | 'pending' | NULL. */
   last_sync_status?: string | null;
@@ -85,7 +94,6 @@ interface FeedHealthSemanticsInput {
 interface FeedHealthSemantics {
   executionMode: FeedExecutionMode;
   attention: FeedAttentionState;
-  incidentEligible: boolean;
 }
 
 const isVirtual = (input: FeedHealthSemanticsInput): boolean =>
@@ -98,8 +106,6 @@ const isScheduled = (input: FeedHealthSemanticsInput): boolean =>
   !isVirtual(input) &&
   typeof input.schedule === "string" &&
   input.schedule.length > 0;
-
-const isActive = (status?: string | null): boolean => status === "active";
 
 /** The connection or auth profile is not usable without human action. */
 function needsAuth(input: FeedHealthSemanticsInput): boolean {
@@ -152,10 +158,10 @@ function nonCollectorAttention(
 }
 
 /**
- * Derive execution mode + attention state + incident eligibility from the
- * stored feed/connection/device columns. Pure: the caller feeds the joined row
- * fields and gets back the classification. Order of checks fixes the
- * precedence (the most actionable state wins).
+ * Derive execution mode + attention state from the stored feed/connection/device
+ * columns. Pure: the caller feeds the joined row fields and gets back the
+ * classification. Order of checks fixes the precedence (the most actionable
+ * state wins).
  */
 export function deriveFeedHealthSemantics(
   input: FeedHealthSemanticsInput
@@ -165,7 +171,6 @@ export function deriveFeedHealthSemantics(
     return {
       executionMode: "virtual",
       attention: nonCollectorAttention(input),
-      incidentEligible: false,
     };
   }
 
@@ -175,20 +180,12 @@ export function deriveFeedHealthSemantics(
     return {
       executionMode: "streaming",
       attention: nonCollectorAttention(input),
-      incidentEligible: false,
     };
   }
 
   const executionMode: FeedExecutionMode = isScheduled(input)
     ? "scheduled"
-    : "manual";
-
-  // A feed counts as unattended only when it is an active scheduled capability
-  // on an active connection — never manual, paused, virtual, or broken.
-  const unattended =
-    executionMode === "scheduled" &&
-    isActive(input.status) &&
-    isActive(input.connection_status);
+    : "no_schedule";
 
   let attention: FeedAttentionState;
   if (needsAuth(input)) {
@@ -210,15 +207,5 @@ export function deriveFeedHealthSemantics(
     attention = "healthy";
   }
 
-  // Unattended scheduled feeds are incident-eligible when currently failing
-  // for a platform-relevant reason: a failed attempt, a failure episode, or a
-  // pinned device that has gone offline (the unattended capability is down).
-  // Auth-waiting feeds are excluded — the user must act, it is not an infra
-  // incident.
-  const incidentEligible =
-    unattended &&
-    !needsAuth(input) &&
-    (lastAttemptFailed(input) || deviceOffline(input));
-
-  return { executionMode, attention, incidentEligible };
+  return { executionMode, attention };
 }

@@ -14,6 +14,7 @@ import {
   resolveApplyClient,
 } from "./client.js";
 import {
+  type BaselineRecord,
   buildAttributionAndOwned,
   buildCountsByKind,
   buildDeploymentManifest,
@@ -22,6 +23,7 @@ import {
   type DeploymentSummary,
   loadBaselineFromManifest,
   mintApplyId,
+  toBaseline,
 } from "./deployment.js";
 import {
   type DesiredConnectorDefinition,
@@ -34,7 +36,6 @@ import {
   validateConnectionAgainstConnector,
 } from "./desired-state.js";
 import {
-  type Baseline,
   computeDiff,
   type DiffPlan,
   type DiffRow,
@@ -369,11 +370,11 @@ export async function fetchRemoteSnapshot(
       ) {
         continue;
       }
-      const declaredTemplate = desired?.viewTemplate !== undefined;
-      const remoteOnlyUnderPrune = prune && !desired;
-      if (!declaredTemplate && !(remoteOnlyUnderPrune || (prune && desired))) {
-        continue;
-      }
+      // Declared template → always. Otherwise only under prune, where an
+      // omitted template is a removal (declared types) and an unhydrated
+      // `undefined` would make a UI-authored template look unchanged since the
+      // baseline (remote-only delete candidates).
+      if (desired?.viewTemplate === undefined && !prune) continue;
       const tpl = await client.getEntityTypeViewTemplate(remote.slug);
       if (tpl) remote.viewTemplate = tpl;
     }
@@ -1559,65 +1560,47 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     latestDeployment?.manifest === undefined
       ? null
       : loadBaselineFromManifest(latestDeployment.manifest);
-  // For `--only agents` the memory/Behavior families are NOT executed — the
-  // recorded baseline must carry forward the prior attribution/ownership for
-  // those families, never rebuild them from an unexecuted snapshot. When no
-  // prior baseline exists, record EMPTY attribution/ownership (never synthesize
-  // ownership of definitions this run didn't execute — a later prune must not
-  // treat UI-created definitions as delete-eligible).
-  //
-  // Built from the pre-apply snapshot first (noop path / partial failure). On
-  // a fully-succeeded run that created resources, we rebuild from a post-apply
-  // snapshot so newly allocated incarnation ids enter `owned` (otherwise the
-  // next prune cannot config-expressed-delete them).
-  let baselineRecordForRecording =
-    opts.only === "agents"
-      ? (baselineRecord ?? {
+  /**
+   * The baseline this run should RECORD, from a given remote snapshot. A
+   * `--only` run executes one family, so the families it never touched must be
+   * carried forward, never rebuilt from an unexecuted snapshot:
+   *   - `--only agents` touches neither memory nor connectors → carry the prior
+   *     baseline verbatim (EMPTY when there is none: never synthesize ownership
+   *     of definitions this run didn't execute, or a later prune would treat
+   *     UI-created definitions as delete-eligible);
+   *   - `--only memory` rebuilds memory but carries prior connector ownership.
+   */
+  const recordableBaseline = (snapshot: RemoteSnapshot): BaselineRecord => {
+    if (opts.only === "agents") {
+      return (
+        baselineRecord ?? {
           attribution: { entityTypes: [], relationshipTypes: [], watchers: [] },
           owned: [],
-        })
-      : (() => {
-          const built = buildAttributionAndOwned(
-            state,
-            remote,
-            resolvedOrg?.id,
-            prune
-          );
-          // `--only memory` never touches connectors — carry forward prior
-          // connector ownership so a later prune still recognizes them.
-          if (opts.only === "memory" && baselineRecord) {
-            built.owned = [
-              ...built.owned,
-              ...baselineRecord.owned.filter((k) =>
-                k.startsWith("connector-definition:")
-              ),
-            ];
-          }
-          return built;
-        })();
-  const baseline: Baseline = baselineRecord
-    ? {
-        attribution: {
-          entityTypes: baselineRecord.attribution
-            .entityTypes as Baseline["attribution"]["entityTypes"],
-          relationshipTypes: baselineRecord.attribution
-            .relationshipTypes as Baseline["attribution"]["relationshipTypes"],
-          watchers: baselineRecord.attribution
-            .watchers as Baseline["attribution"]["watchers"],
-        },
-        owned: new Set(baselineRecord.owned),
-        ...(baselineRecord.connectorVersions
-          ? { connectorVersions: baselineRecord.connectorVersions }
-          : {}),
-      }
-    : {
-        attribution: {
-          entityTypes: [],
-          relationshipTypes: [],
-          watchers: [],
-        },
-        owned: new Set<string>(),
-      };
+        }
+      );
+    }
+    const built = buildAttributionAndOwned(
+      state,
+      snapshot,
+      resolvedOrg?.id,
+      prune
+    );
+    if (opts.only === "memory" && baselineRecord) {
+      built.owned = [
+        ...built.owned,
+        ...baselineRecord.owned.filter((k) =>
+          k.startsWith("connector-definition:")
+        ),
+      ];
+    }
+    return built;
+  };
+  // Pre-apply snapshot first (noop path / partial failure). A fully-succeeded
+  // run that created resources re-records from a post-apply snapshot below, so
+  // newly allocated incarnation ids enter `owned` (otherwise the next prune
+  // cannot config-expressed-delete them).
+  let baselineRecordForRecording = recordableBaseline(remote);
+  const baseline = toBaseline(baselineRecord);
 
   const plan = computeDiff(state, remote, {
     only: opts.only,
@@ -1812,18 +1795,16 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   // x-lobu-apply-id header; this summary row is what groups them in the UI.
   {
     const gitInfo = collectGitInfo(cwd);
-    // A partial failure's snapshot could pin connectors that never installed
-    // this run — fall back to the CURRENT remote pins for any missing key so
-    // rollback restores what was actually live, never a phantom.
-    // Scoped applies never reconcile connectors: always carry prior pins.
+    // Start from the CURRENT remote pins so a partial failure never records a
+    // phantom pin for a connector that did not install, then overlay what this
+    // run actually installed (empty unless executePlan ran). Scoped applies
+    // never reconcile connectors: carry the prior pins instead.
     let pins = opts.only
       ? (baselineRecord?.connectorVersions ?? {})
-      : hasResourceWork
-        ? {
-            ...connectorVersionPins(state, remote.connectorDefinitions),
-            ...connectorVersions,
-          }
-        : connectorVersionPins(state, remote.connectorDefinitions);
+      : {
+          ...connectorVersionPins(state, remote.connectorDefinitions),
+          ...connectorVersions,
+        };
     // Post-apply ownership: if this run created definitions, re-fetch remote
     // so owned gets real incarnation ids (pre-apply remote has none for creates).
     if (!applyErr && hasResourceWork && plan.counts.create > 0) {
@@ -1835,25 +1816,7 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
           prune,
           resolvedOrg?.id
         );
-        if (opts.only === "agents") {
-          // Agents-only: keep the empty/prior memory ownership untouched.
-        } else {
-          const rebuilt = buildAttributionAndOwned(
-            state,
-            postRemote,
-            resolvedOrg?.id,
-            prune
-          );
-          if (opts.only === "memory" && baselineRecord) {
-            rebuilt.owned = [
-              ...rebuilt.owned,
-              ...baselineRecord.owned.filter((k) =>
-                k.startsWith("connector-definition:")
-              ),
-            ];
-          }
-          baselineRecordForRecording = rebuilt;
-        }
+        baselineRecordForRecording = recordableBaseline(postRemote);
         if (!opts.only) {
           pins = {
             ...connectorVersionPins(state, postRemote.connectorDefinitions),

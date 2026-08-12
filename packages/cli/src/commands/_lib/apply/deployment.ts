@@ -15,7 +15,7 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { deepRedactSecrets, REDACTED_SENTINEL } from "@lobu/core";
 import type { DesiredState } from "./desired-state.js";
-import type { DiffPlan, DiffRow, RemoteSnapshot } from "./diff.js";
+import type { Baseline, DiffPlan, DiffRow, RemoteSnapshot } from "./diff.js";
 import {
   canonical,
   effectiveEntityTypeAfterApply,
@@ -159,6 +159,27 @@ export function loadBaselineFromManifest(
     owned: manifest.owned,
     ...(manifest.connector_versions
       ? { connectorVersions: manifest.connector_versions }
+      : {}),
+  };
+}
+
+/**
+ * The stored record → the shape `computeDiff` compares against. A null record
+ * (legacy manifest, or an org that never applied) becomes the EMPTY baseline,
+ * not "no baseline": the gate stays on and every remote mismatch blocks.
+ */
+export function toBaseline(record: BaselineRecord | null): Baseline {
+  if (!record) {
+    return {
+      attribution: { entityTypes: [], relationshipTypes: [], watchers: [] },
+      owned: new Set<string>(),
+    };
+  }
+  return {
+    attribution: record.attribution as unknown as Baseline["attribution"],
+    owned: new Set(record.owned),
+    ...(record.connectorVersions
+      ? { connectorVersions: record.connectorVersions }
       : {}),
   };
 }

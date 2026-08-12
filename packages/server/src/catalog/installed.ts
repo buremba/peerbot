@@ -1,4 +1,5 @@
 import type { GuardrailStage } from "@lobu/core";
+import { resolveBehaviorEventCatalog } from "../behaviors/connector-derived";
 import { withPlatformBehaviorEvents } from "../behaviors/platform-event-catalog";
 import { getModelProviderModules } from "../gateway/modules/module-system";
 import type { Env } from "../index";
@@ -27,14 +28,20 @@ import type {
 /** Installed UI metadata: merge platform Behavior events into each connector. */
 function behaviorEventsForUi(
 	raw: Array<Record<string, unknown>> | null | undefined,
+	feedsSchema?: unknown,
+	bundled?: { behavior_events?: unknown; feeds_schema?: unknown },
+	useBundledFallback = false,
 ): Array<Record<string, unknown>> | undefined {
-	const declared = Array.isArray(raw)
-		? raw.filter(
-				(event): event is Record<string, unknown> & { key: string } =>
-					typeof event?.key === "string" && event.key.length > 0,
-			)
-		: [];
-	const merged = withPlatformBehaviorEvents(declared);
+	// Same precedence as trigger validation (persisted > bundled legacy >
+	// derived from eventKinds, gated on shared-version provenance) so the
+	// picker can never advertise a value Behavior creation rejects.
+	const source = resolveBehaviorEventCatalog({
+		persistedEvents: raw,
+		feedsSchema,
+		bundled,
+		useBundledFallback,
+	});
+	const merged = withPlatformBehaviorEvents(source);
 	return merged.length > 0 ? (merged as Array<Record<string, unknown>>) : undefined;
 }
 
@@ -62,6 +69,13 @@ export async function listOrgInstalled(
 			organizationId,
 			rows.map((row) => row.key)
 		);
+		// Bundled immutable catalog, for the persisted > bundled > derived
+		// behavior-event precedence shared with trigger validation. Loaded once
+		// and reused by the merge below.
+		const bundledConnectors = (await listCatalogEntries(["connectors"])).connectors;
+		const bundledByKey = new Map(
+			bundledConnectors.map((entry) => [entry.id, entry.detail])
+		);
 		const installedItems = rows.map((row) => {
 			const operationsSummary = summaries.get(row.key) ?? {
 				...EMPTY_SUMMARY,
@@ -77,7 +91,12 @@ export async function listOrgInstalled(
 					auth_schema: row.auth_schema,
 					feeds_schema: row.feeds_schema,
 					actions_schema: row.actions_schema,
-					behavior_events: behaviorEventsForUi(row.behavior_events),
+					behavior_events: behaviorEventsForUi(
+						row.behavior_events,
+						row.feeds_schema,
+						bundledByKey.get(row.key),
+						row.source_org_id == null,
+					),
 					options_schema: row.options_schema,
 					favicon_domain: row.favicon_domain,
 					required_capability: row.required_capability,
@@ -92,10 +111,7 @@ export async function listOrgInstalled(
 		result.connectors = {
 			kind: "connectors",
 			items: options.includeCatalog
-				? mergeConnectorInstalledWithCatalog(
-						installedItems,
-						(await listCatalogEntries(["connectors"])).connectors
-					)
+				? mergeConnectorInstalledWithCatalog(installedItems, bundledConnectors)
 				: installedItems,
 		};
 	}

@@ -12,6 +12,7 @@ import { listCatalogEntries } from "../catalog/load";
 import { validateSchedule, validateTimezone } from "../utils/cron";
 import { ToolUserError } from "../utils/errors";
 import { withPlatformBehaviorEvents } from "./platform-event-catalog";
+import { resolveBehaviorEventCatalog } from "./connector-derived";
 
 export interface BehaviorTriggerProjection {
 	triggers: BehaviorTrigger[];
@@ -21,6 +22,7 @@ export interface BehaviorTriggerProjection {
 
 interface BehaviorEventDefinition {
 	key: string;
+	label?: string;
 	capabilities?: {
 		steering?: boolean;
 		replyToSource?: boolean;
@@ -47,63 +49,66 @@ function countDeclaredFeeds(value: unknown): number {
 	return Object.keys(value).length;
 }
 
-function parseBehaviorEventDefinitions(
-	value: unknown
-): BehaviorEventDefinition[] {
-	if (!Array.isArray(value)) return [];
-	return value.filter(
-		(item): item is BehaviorEventDefinition =>
-			typeof item === "object" &&
-			item !== null &&
-			typeof (item as { key?: unknown }).key === "string"
-	);
-}
-
 async function getConnectorBehaviorEventCatalog(
 	sql: DbClient,
 	organizationId: string,
 	connectorKey: string
 ): Promise<ConnectorBehaviorEventCatalog> {
 	const rows = await sql`
-		SELECT name, behavior_events, feeds_schema
-		FROM connector_definitions
-		WHERE organization_id = ${organizationId}
-		  AND key = ${connectorKey}
-		  AND status = 'active'
-		ORDER BY updated_at DESC
+		SELECT d.name, d.behavior_events, d.feeds_schema,
+		       cv.organization_id AS version_org_id
+		FROM connector_definitions d
+		LEFT JOIN LATERAL (
+			SELECT organization_id
+			FROM connector_versions
+			WHERE connector_key = d.key AND version = d.version
+			  AND (organization_id = d.organization_id OR organization_id IS NULL)
+			ORDER BY organization_id NULLS LAST
+			LIMIT 1
+		) cv ON TRUE
+		WHERE d.organization_id = ${organizationId}
+		  AND d.key = ${connectorKey}
+		  AND d.status = 'active'
+		ORDER BY d.updated_at DESC
 		LIMIT 1
 	`;
 	const row = rows[0] as
-		| { name: string; behavior_events: unknown; feeds_schema: unknown }
+		| {
+				name: string;
+				behavior_events: unknown;
+				feeds_schema: unknown;
+				version_org_id: string | null;
+		  }
 		| undefined;
-	if (Array.isArray(row?.behavior_events)) {
-		const declared = parseBehaviorEventDefinitions(row.behavior_events);
-		return {
-			name: row.name,
-			events: withPlatformBehaviorEvents(declared) as BehaviorEventDefinition[],
-			declaredCount: declared.length,
-			feedCount: countDeclaredFeeds(row.feeds_schema),
-		};
-	}
 
-	// Existing bundled installations predate the persisted event-catalog
-	// column. The immutable bundled catalog is a safe rolling-migration fallback;
-	// new and custom installs persist their own metadata above.
+	// Precedence: persisted declaration > bundled immutable catalog > default-on
+	// derivation from eventKinds — shared with the UI picker so both surfaces
+	// agree. The bundled fallback requires provenance: no installed row at all
+	// (pure catalog entry), or an active version resolved from the SHARED
+	// connector_versions row (organization_id NULL — a bundled install). An
+	// org-scoped override never falls back to the bundled curated catalog, and
+	// its feed count counts only its OWN feeds_schema (an override with no feeds
+	// cannot pause a feed, so feed.auto_paused must not be accepted).
 	const catalog = (await listCatalogEntries(["connectors"])).connectors.find(
 		(entry) => entry.id === connectorKey
 	);
-	const declaredFallback = parseBehaviorEventDefinitions(
-		catalog?.detail.behavior_events,
-	);
+	const useBundledFallback = row == null || row.version_org_id == null;
+	const resolved = resolveBehaviorEventCatalog({
+		persistedEvents: row?.behavior_events,
+		feedsSchema: row?.feeds_schema,
+		bundled: catalog?.detail,
+		useBundledFallback,
+	}) as BehaviorEventDefinition[];
+	const feedsForCount = useBundledFallback
+		? row?.feeds_schema ?? catalog?.detail.feeds_schema
+		: row?.feeds_schema;
 	return {
 		name: row?.name ?? catalog?.name ?? connectorKey,
 		events: withPlatformBehaviorEvents(
-			declaredFallback,
+			resolved,
 		) as BehaviorEventDefinition[],
-		declaredCount: declaredFallback.length,
-		feedCount: countDeclaredFeeds(
-			row?.feeds_schema ?? catalog?.detail.feeds_schema,
-		),
+		declaredCount: resolved.length,
+		feedCount: countDeclaredFeeds(feedsForCount),
 	};
 }
 

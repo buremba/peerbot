@@ -11,6 +11,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import type { BehaviorTrigger } from "@lobu/core/contracts/tools/manage-behaviors";
 import { assertBehaviorTriggerConnections } from "../../behaviors/triggers";
+import { listCatalogEntries } from "../../catalog/load";
 import { ensureMemberEntityType } from "../../utils/member-entity-type";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import { createTestOrganization } from "../setup/test-fixtures";
@@ -179,5 +180,113 @@ describe("event-trigger connector eligibility", () => {
 				},
 			]),
 		).rejects.toThrow(/does not declare workspace event 'undeclared_kind'/i);
+	});
+
+	it("keeps the bundled curated catalog for a legacy bundled connector with NULL behavior_events", async () => {
+		// A legacy bundled install predates the persisted behavior_events column:
+		// the row has NULL behavior_events and a feeds_schema matching the
+		// bundled artifact. Its curated catalog (`pull_request.created` etc.)
+		// must win over the default-on derivation, so a live trigger keeps
+		// matching instead of being rejected against derived kind slugs.
+		const sql = getTestDb();
+		const githubBundled = (await listCatalogEntries(["connectors"])).connectors.find(
+			(entry) => entry.id === "github",
+		);
+		await sql`
+			INSERT INTO connector_definitions
+				(organization_id, key, name, version, auth_schema, feeds_schema,
+				 behavior_events, status)
+			VALUES (${orgId}, 'github', 'GitHub', '3.11.0',
+				${sql.json({ methods: [{ type: "app_installation" }] })},
+				${sql.json(githubBundled?.detail.feeds_schema ?? {})},
+				NULL,
+				'active')
+			ON CONFLICT DO NOTHING
+		`;
+
+		await expect(
+			assertBehaviorTriggerConnections(
+				sql,
+				orgId,
+				eventTrigger("github", "pull_request.created"),
+			),
+		).resolves.toBeUndefined();
+	});
+
+	it("derives from an org-scoped override's own eventKinds, not the bundled catalog", async () => {
+		// An org-scoped connector that shares the bundled 'slack' key but
+		// declares its OWN eventKinds (and omits behaviorEvents) must never be
+		// resolved against the bundled curated catalog — even when it reuses the
+		// bundled feedsSchema — because its code emits kind slugs, not curated
+		// keys, and a catalog advertising the latter accepts Behaviors that never
+		// fire. Provenance: the active version is org-scoped.
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO connector_definitions
+				(organization_id, key, name, version, auth_schema, feeds_schema,
+				 behavior_events, status)
+			VALUES (${orgId}, 'slack', 'Custom Slack', '9.9.9',
+				${sql.json({ methods: [{ type: "app_installation" }] })},
+				${sql.json({ incidents: { eventKinds: { incident: {} } } })},
+				NULL,
+				'active')
+			ON CONFLICT DO NOTHING
+		`;
+		await sql`
+			INSERT INTO connector_versions
+				(organization_id, connector_key, version, created_at)
+			VALUES (${orgId}, 'slack', '9.9.9', NOW())
+			ON CONFLICT DO NOTHING
+		`;
+
+		// The override's derived kind is authorable…
+		await expect(
+			assertBehaviorTriggerConnections(
+				sql,
+				orgId,
+				eventTrigger("slack", "incident"),
+			),
+		).resolves.toBeUndefined();
+
+		// …but a bundled curated type the override's code cannot emit is not.
+		await expect(
+			assertBehaviorTriggerConnections(
+				sql,
+				orgId,
+				eventTrigger("slack", "message.created"),
+			),
+		).rejects.toThrow(/does not support Behavior event/i);
+	});
+
+	it("rejects feed.auto_paused for an org-scoped override with no feeds of its own", async () => {
+		// A bundled-key override with behavior_events=[] and a NULL feeds_schema
+		// must not inherit the bundled feeds for the eligibility count — it has
+		// no feed to pause, so feed.auto_paused cannot reach it.
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO connector_definitions
+				(organization_id, key, name, version, auth_schema, feeds_schema,
+				 behavior_events, status)
+			VALUES (${orgId}, 'linkedin', 'Empty LinkedIn Override', '8.8.8',
+				${sql.json({ methods: [{ type: "app_installation" }] })},
+				NULL,
+				${sql.json([])},
+				'active')
+			ON CONFLICT DO NOTHING
+		`;
+		await sql`
+			INSERT INTO connector_versions
+				(organization_id, connector_key, version, created_at)
+			VALUES (${orgId}, 'linkedin', '8.8.8', NOW())
+			ON CONFLICT DO NOTHING
+		`;
+
+		await expect(
+			assertBehaviorTriggerConnections(
+				sql,
+				orgId,
+				eventTrigger("linkedin", "feed.auto_paused"),
+			),
+		).rejects.toThrow(/cannot drive an event trigger/i);
 	});
 });

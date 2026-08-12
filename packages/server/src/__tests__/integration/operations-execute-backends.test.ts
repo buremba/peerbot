@@ -7,9 +7,11 @@ import { createAuthProfile } from "../../utils/auth-profiles";
 import { initWorkspaceProvider } from "../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import {
+	addUserToOrganization,
 	createTestAgent,
 	createTestConnection,
 	createTestConnectorDefinition,
+	createTestUser,
 	seedOwnerContext,
 } from "../setup/test-fixtures";
 
@@ -108,6 +110,15 @@ describe("operations.execute backend lifecycle", () => {
 					kind: "write",
 					requiresApproval: true,
 				},
+				stage_browser: {
+					name: "Stage browser",
+					kind: "write",
+					input_schema: {
+						type: "object",
+						properties: { browser_connection_id: { type: "integer" } },
+						required: ["browser_connection_id"],
+					},
+				},
 			})}
 			WHERE organization_id = ${orgId} AND key = ${LOCAL}
 		`;
@@ -117,6 +128,12 @@ describe("operations.execute backend lifecycle", () => {
 				class ConnectorRuntime {
 					async sync() { return { items: [] }; }
 					async execute(ctx) {
+						if (ctx.actionKey === 'stage_browser') {
+							await ctx.sessionState.chrome_dispatcher.dispatch('navigate', {
+								url: 'https://example.test/',
+								target_browser_connection_id: ctx.input.browser_connection_id,
+							});
+						}
 						return { success: true, output: { backend: 'local_action', value: ctx.input.value ?? null } };
 					}
 				}
@@ -400,6 +417,212 @@ describe("operations.execute backend lifecycle", () => {
 		`;
 		expect(reactions).toHaveLength(1);
 		expect(Number(reactions[0]?.run_id)).toBe(result.run_id);
+	});
+
+	it("lets a headless Behavior execute through its author's private connection", async () => {
+		const result = (await manageOperations(
+			{
+				action: "execute",
+				connection_id: localConnectionId,
+				operation_key: "echo",
+				input: { value: "behavior-private-connection" },
+				idempotency_key: "operation-backend-test:behavior-private-connection",
+			},
+			{} as Env,
+			{
+				...ctx,
+				userId: null,
+				memberRole: null,
+				actingWatcherId: behaviorId,
+				actingWindowId: windowId,
+				sourceContext: { source: "watcher-run" },
+			},
+		)) as { run_id: number; status: string };
+
+		expect(result.status).toBe("completed");
+		const [run] = await getTestDb()`
+			SELECT created_by_user_id, watcher_id, window_id
+			FROM runs
+			WHERE id = ${result.run_id}
+		`;
+		expect(run.created_by_user_id).toBeNull();
+		expect(Number(run.watcher_id)).toBe(behaviorId);
+		expect(Number(run.window_id)).toBe(windowId);
+	});
+
+	it("lets a headless Behavior discover its author's private operation target", async () => {
+		const otherUser = await createTestUser();
+		await addUserToOrganization(otherUser.id, orgId);
+		const otherPrivate = await createTestConnection({
+			organization_id: orgId,
+			connector_key: LOCAL,
+			created_by: otherUser.id,
+			visibility: "private",
+		});
+		const result = (await manageOperations(
+			{
+				action: "list_available",
+				connector_key: LOCAL,
+			},
+			{} as Env,
+			{
+				...ctx,
+				userId: null,
+				memberRole: null,
+				actingWatcherId: behaviorId,
+				actingWindowId: windowId,
+				sourceContext: { source: "watcher-run" },
+			},
+		)) as {
+			operations: Array<{
+				operation_key: string;
+				execution_targets: Array<{ connection_id: number }>;
+			}>;
+		};
+
+		const echo = result.operations.find(
+			(operation) => operation.operation_key === "echo",
+		);
+		expect(echo?.execution_targets.map((target) => target.connection_id)).toContain(
+			localConnectionId,
+		);
+		expect(echo?.execution_targets.map((target) => target.connection_id)).not.toContain(
+			otherPrivate.id,
+		);
+	});
+
+	it("carries the Behavior author through private browser target authorization", async () => {
+		const sql = getTestDb();
+		const [worker] = await sql`
+			INSERT INTO device_workers (
+				user_id, worker_id, platform, capabilities, label,
+				organization_id, last_seen_at
+			) VALUES (
+				${userId}, 'behavior-private-browser', 'chrome-extension',
+				${sql.json(["browser.tabs", "browser.debugger"])}, 'Behavior Browser',
+				${orgId}, NOW() - INTERVAL '1 day'
+			)
+			RETURNING id
+		`;
+		const [browserConnection] = await sql`
+			INSERT INTO connections (
+				organization_id, connector_key, slug, display_name, status,
+				created_by, visibility, device_worker_id, created_at, updated_at
+			) VALUES (
+				${orgId}, 'chrome', 'behavior-private-browser', 'Behavior Browser', 'active',
+				${userId}, 'private', ${worker.id}::uuid, NOW(), NOW()
+			)
+			RETURNING id
+		`;
+
+		const result = await manageOperations(
+			{
+				action: "execute",
+				connection_id: localConnectionId,
+				operation_key: "stage_browser",
+				input: { browser_connection_id: Number(browserConnection.id) },
+			},
+			{} as Env,
+			{
+				...ctx,
+				userId: null,
+				memberRole: null,
+				actingWatcherId: behaviorId,
+				actingWindowId: windowId,
+				sourceContext: { source: "watcher-run" },
+			},
+		);
+
+		expect(result).toMatchObject({
+			status: "failed",
+			error_message: expect.stringContaining(
+				"The browser this action is set to open in is offline",
+			),
+		});
+	});
+
+	it("does not let a Behavior use another member's private connection", async () => {
+		const otherUser = await createTestUser();
+		await addUserToOrganization(otherUser.id, orgId);
+		const otherPrivate = await createTestConnection({
+			organization_id: orgId,
+			connector_key: LOCAL,
+			created_by: otherUser.id,
+			visibility: "private",
+		});
+
+		const result = await manageOperations(
+			{
+				action: "execute",
+				connection_id: otherPrivate.id,
+				operation_key: "echo",
+				input: { value: "must-not-run" },
+			},
+			{} as Env,
+			{
+				...ctx,
+				userId: null,
+				memberRole: null,
+				actingWatcherId: behaviorId,
+				actingWindowId: windowId,
+				sourceContext: { source: "watcher-run" },
+			},
+		);
+
+		expect(result).toEqual({ error: "Connection not found or not visible." });
+	});
+
+	it("keeps organization-visible operations available to a headless Behavior", async () => {
+		const orgConnection = await createTestConnection({
+			organization_id: orgId,
+			connector_key: LOCAL,
+			visibility: "org",
+		});
+
+		const result = await manageOperations(
+			{
+				action: "execute",
+				connection_id: orgConnection.id,
+				operation_key: "echo",
+				input: { value: "behavior-org-connection" },
+			},
+			{} as Env,
+			{
+				...ctx,
+				userId: null,
+				memberRole: null,
+				actingWatcherId: behaviorId,
+				actingWindowId: windowId,
+				sourceContext: { source: "watcher-run" },
+			},
+		);
+
+		expect(result).toMatchObject({
+			status: "completed",
+			output: { backend: "local_action", value: "behavior-org-connection" },
+		});
+	});
+
+	it("fails closed when the stamped Behavior no longer exists", async () => {
+		const result = await manageOperations(
+			{
+				action: "execute",
+				connection_id: localConnectionId,
+				operation_key: "echo",
+				input: { value: "must-not-run" },
+			},
+			{} as Env,
+			{
+				...ctx,
+				userId: null,
+				memberRole: null,
+				actingWatcherId: 2_147_483_647,
+				actingWindowId: windowId,
+				sourceContext: { source: "watcher-run" },
+			},
+		);
+
+		expect(result).toEqual({ error: "Connection not found or not visible." });
 	});
 
 	it("repairs a failed feedback link without stranding or repeating an inline action", async () => {

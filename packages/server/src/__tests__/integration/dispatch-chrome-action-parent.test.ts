@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Env } from '../../index';
 import {
   dispatchChromeAction,
@@ -8,6 +8,8 @@ import {
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import {
   addUserToOrganization,
+  createTestAgent,
+  createTestConnectorDefinition,
   createTestOrganization,
   createTestUser,
 } from '../setup/test-fixtures';
@@ -74,15 +76,17 @@ describe('dispatchChromeAction target browser routing', () => {
 
   async function seedParentRun(
     orgId: string,
-    createdByUserId?: string
+    createdByUserId?: string,
+    watcherId?: number,
+    windowId?: number
   ): Promise<number> {
     const [run] = (await sql`
       INSERT INTO runs (
         organization_id, run_type, action_key, status, claimed_by, claimed_at,
-        created_by_user_id
+        created_by_user_id, watcher_id, window_id
       ) VALUES (
         ${orgId}, 'action', 'prepare_reply', 'running', 'connector-worker-1', NOW(),
-        ${createdByUserId ?? null}
+        ${createdByUserId ?? null}, ${watcherId ?? null}, ${windowId ?? null}
       )
       RETURNING id
     `) as unknown as Array<{ id: number }>;
@@ -227,6 +231,107 @@ describe('dispatchChromeAction target browser routing', () => {
     expect(body.error_message).toContain(
       'The browser this action is set to open in is offline'
     );
+  });
+
+  it("accepts a Behavior creator's private chrome connection", async () => {
+    const org = await createTestOrganization({ name: 'Behavior private browser' });
+    await createTestConnectorDefinition({
+      key: 'chrome',
+      name: 'Chrome',
+      organization_id: org.id,
+    });
+    const creator = await createTestUser({ email: 'behavior-browser@test.com' });
+    await addUserToOrganization(creator.id, org.id);
+    const agent = await createTestAgent({
+      organizationId: org.id,
+      ownerUserId: creator.id,
+    });
+    const [behavior] = await sql`
+      WITH next_id AS (SELECT nextval('watchers_id_seq')::integer AS id)
+      INSERT INTO watchers (
+        id, watcher_group_id, organization_id, agent_id, created_by, name, slug
+      )
+      SELECT id, id, ${org.id}, ${agent.agentId}, ${creator.id},
+        'Private browser behavior', 'private-browser-behavior'
+      FROM next_id
+      RETURNING id
+    `;
+    const [window] = await sql`
+      INSERT INTO events (
+        organization_id, semantic_type, payload_type, payload_data,
+        metadata, occurred_at, created_at, created_by
+      ) VALUES (
+        ${org.id}, 'canvas_state', 'json_template', '{}'::jsonb,
+        ${sql.json({ watcher_id: Number(behavior.id) })}, NOW(), NOW(), ${creator.id}
+      )
+      RETURNING id
+    `;
+    const [worker] = await sql`
+      INSERT INTO device_workers (
+        user_id, worker_id, platform, capabilities, label, organization_id, last_seen_at
+      ) VALUES (
+        ${creator.id}, 'ext-behavior-browser', 'chrome-extension',
+        ${sql.json(['browser.tabs', 'browser.debugger'])}, 'Behavior Browser',
+        ${org.id}, NOW()
+      )
+      RETURNING id
+    `;
+    const [conn] = await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status,
+        created_by, visibility, device_worker_id, created_at, updated_at
+      ) VALUES (
+        ${org.id}, 'chrome', 'chrome-behavior-private', 'Chrome', 'active',
+        ${creator.id}, 'private', ${worker.id}::uuid, NOW(), NOW()
+      )
+      RETURNING id
+    `;
+    const runId = await seedParentRun(
+      org.id,
+      undefined,
+      Number(behavior.id),
+      Number(window.id)
+    );
+
+    const responsePromise = app.request('/dispatch', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        parent_run_id: runId,
+        worker_id: 'connector-worker-1',
+        action_key: 'navigate',
+        action_input: {
+          url: 'https://x.com/i/web/status/2083959735481716957',
+          [TARGET_BROWSER_CONNECTION_INPUT_KEY]: Number(conn.id),
+        },
+      }),
+    });
+
+    await vi.waitFor(async () => {
+      const childRows = await sql`
+        SELECT id, created_by_user_id, watcher_id, window_id
+        FROM runs
+        WHERE organization_id = ${org.id}
+          AND connector_key = 'chrome'
+          AND id <> ${runId}
+        ORDER BY id DESC
+        LIMIT 1
+      `;
+      expect(childRows).toHaveLength(1);
+      const child = childRows[0];
+      expect(child.created_by_user_id).toBeNull();
+      expect(Number(child.watcher_id)).toBe(Number(behavior.id));
+      expect(Number(child.window_id)).toBe(Number(window.id));
+      await sql`
+        UPDATE runs
+        SET status = 'completed', action_output = '{}'::jsonb, completed_at = NOW()
+        WHERE id = ${child.id}
+      `;
+    });
+
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ status: 'completed' });
   });
 
   it("refuses the requester's connection when pinned to another member's browser", async () => {

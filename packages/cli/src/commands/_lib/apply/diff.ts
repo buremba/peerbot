@@ -895,35 +895,6 @@ function diffRelationshipTypeWithBaseline(
 }
 
 /**
- * Normalized projection for "unchanged since baseline" delete checks — omits
- * transport fields (`organization_id`) and normalizes optional facets, so a
- * raw remote row compares equal to the stored attribution snapshot.
- */
-const projectEntityForDelete = (e: {
-  slug: string;
-  name?: string;
-  description?: string;
-  required?: string[];
-  properties?: Record<string, unknown>;
-  backing?: unknown;
-  metrics?: unknown;
-  eventKinds?: unknown;
-  viewTemplate?: unknown;
-  schemaExtras?: Record<string, unknown>;
-}) => ({
-  slug: e.slug,
-  name: e.name,
-  description: e.description,
-  required: e.required ?? [],
-  properties: e.properties ?? {},
-  backing: e.backing,
-  metrics: e.metrics,
-  eventKinds: e.eventKinds,
-  viewTemplate: e.viewTemplate,
-  schemaExtras: e.schemaExtras ?? {},
-});
-
-/**
  * The entity-type facets a comparison cares about, normalized so an absent
  * collection and an empty one compare equal.
  */
@@ -1056,18 +1027,6 @@ export const effectiveRelationshipTypeAfterApply = (
   rules: d.rules ?? [],
 });
 
-const projectRelForDelete = (r: {
-  slug: string;
-  name?: string;
-  description?: string;
-  rules?: unknown[];
-}) => ({
-  slug: r.slug,
-  name: r.name,
-  description: r.description,
-  rules: r.rules ?? [],
-});
-
 /** Remote-only definition classification: owned+unchanged → delete, else block. */
 function remoteOnlyDefinitionRow(
   kind: "entity-type" | "relationship-type" | "watcher",
@@ -1185,7 +1144,10 @@ export const projectDesiredWatcher = (
 
 const projectRemoteWatcher = (w: RemoteBehavior): WatcherProjection => ({
   agent: w.agent_id ?? null,
-  name: w.name,
+  // `?? null` mirrors projectDesiredWatcher: an unnamed remote Behavior must
+  // compare EQUAL to the desired side that inherited it, or deepEqual(null,
+  // undefined) false-blocks the first baseline.
+  name: w.name ?? null,
   description: w.description ?? null,
   triggers: w.triggers ?? [],
   prompt: w.prompt ?? "",
@@ -1871,14 +1833,15 @@ export function computeDiff(
             baseline,
             prune,
             (slug) => {
+              // Looked up BY slug, so only the facets can differ.
               const a = baseline?.attribution.entityTypes.find(
                 (x) => x.slug === slug
               );
               return (
                 !!a &&
                 deepEqual(
-                  projectEntityForDelete(remoteEntity),
-                  projectEntityForDelete(a)
+                  remoteEntityTypeFacets(remoteEntity),
+                  remoteEntityTypeFacets(a)
                 )
               );
             }
@@ -1921,14 +1884,15 @@ export function computeDiff(
             baseline,
             prune,
             (slug) => {
+              // Looked up BY slug, so only the facets can differ.
               const a = baseline?.attribution.relationshipTypes.find(
                 (x) => x.slug === slug
               );
               return (
                 !!a &&
                 deepEqual(
-                  projectRelForDelete(remoteRel),
-                  projectRelForDelete(a)
+                  remoteRelationshipTypeFacets(remoteRel),
+                  remoteRelationshipTypeFacets(a)
                 )
               );
             }

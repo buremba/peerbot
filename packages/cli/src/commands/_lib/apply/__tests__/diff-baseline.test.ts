@@ -667,6 +667,33 @@ describe("Behavior three-way attribution", () => {
     };
   }
 
+  test("first baseline: a nameless remote Behavior with an omitted config name → noop", () => {
+    // projectDesiredWatcher inherits the remote name as `?? null`; the remote
+    // projection must normalize the same way, or deepEqual(null, undefined)
+    // false-blocks a Behavior the server never named.
+    const desired = buildState([]);
+    desired.watchers = [
+      { slug: "digest", agent: "agent-a", prompt: "Summarize" } as any,
+    ];
+    const remote = emptyRemote();
+    remote.watchers = [
+      {
+        slug: "digest",
+        behavior_id: "b-1",
+        agent_id: "agent-a",
+        prompt: "Summarize",
+        // name intentionally absent
+      } as any,
+    ];
+    // Baseline exists but carries no entry for `digest` (first baseline).
+    const plan = computeDiff(desired, remote, {
+      orgId: "org-1",
+      baseline: baselineFor([], []),
+    });
+    expect(plan.rows.find((r) => r.kind === "watcher")?.verb).toBe("noop");
+    expect(plan.counts.drift).toBe(0);
+  });
+
   test("remote agent reassignment → blocking drift (never silently overwritten)", () => {
     const desired = buildState([]);
     desired.watchers = [desiredWatcher() as any];

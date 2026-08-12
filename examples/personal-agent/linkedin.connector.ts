@@ -2296,16 +2296,6 @@ export default class LinkedInConnector extends ConnectorRuntime<
                 },
                 social_actor_slug: { type: "string" },
                 social_actor_profile_url: { type: "string" },
-                post_url: {
-                  type: "string",
-                  description:
-                    "Canonical durable post URL (feed/update/urn:li:…), recovered from LinkedIn's Copy link or an embedded share/ugcPost/activity id. Absent when the post exposes no durable identity.",
-                },
-                post_identity: {
-                  type: "string",
-                  description:
-                    "Durable post URN (urn:li:activity|share|ugcPost:<id>) recovered from the card. Absent when no durable identity is exposed.",
-                },
               },
             },
           },

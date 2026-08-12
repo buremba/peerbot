@@ -838,6 +838,10 @@ const takeoutConnection = defineConnection({
       feed: "keep",
       config: takeoutConfig("GOOGLE_KEEP_TAKEOUT_DIR", "google-keep"),
     },
+    {
+      feed: "maps",
+      config: takeoutConfig("GOOGLE_MAPS_TAKEOUT_DIR", "google-maps"),
+    },
   ],
 });
 

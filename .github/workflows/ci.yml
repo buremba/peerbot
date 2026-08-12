@@ -22,8 +22,20 @@ permissions:
 # CI_LINUX_RUNNER is an optional repository variable used for runner A/B tests.
 # Leaving it unset preserves GitHub-hosted execution; setting it changes only
 # the machine behind these jobs, not their names, events, secrets, or checks.
+#
+# The `github.run_id` fallback exists for `depot ci run`, which `make
+# pre-pr-remote` uses to execute this same file against a local staged tree.
+# That path supplies no ref, so `github.ref` expanded empty and every local
+# dispatch in the org collapsed into one group literally named `ci-`. Combined
+# with cancel-in-progress, the newest gate anywhere killed whatever was running
+# — a different branch, a different worktree, a different person — and the
+# victim saw only "Cancelled due to the workflow concurrency policy", which
+# names this block rather than any Depot-side limit. Two dispatchers that each
+# retry on cancellation then deadlock, neither ever attesting. Falling back to
+# the run id gives each local dispatch its own group. GitHub keeps the per-ref
+# behaviour unchanged: `github.ref` is always set for push and pull_request.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:

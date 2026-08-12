@@ -504,6 +504,49 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(body.result?._meta?.['lobu/member-role']).toBe('owner');
   });
 
+  it('emits the caller authoritatively, not a stale role from another card', async () => {
+    // The key is always present with the CURRENT caller's role. A plain member
+    // must receive 'member' — never an owner/admin value a different card's
+    // metadata might have carried — so the interaction app's Debug gate can
+    // trust the value it renders.
+    const member = await createTestUser({
+      email: `mcp-app-member-${Date.now()}@test.example.com`,
+    });
+    await addUserToOrganization(member.id, org.id, 'member');
+    const { token: memberToken } = await createTestAccessToken(
+      member.id,
+      org.id,
+      client.client_id,
+      { scope: 'mcp:admin mcp:write mcp:read profile:read' }
+    );
+    const sessionId = await initSession(`/mcp/${org.slug}`, {
+      sessionToken: memberToken,
+    });
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 13,
+        method: 'tools/call',
+        params: {
+          name: 'render_lobu_view',
+          arguments: {
+            action: 'render',
+            title: 'Member probe',
+            tone: 'default',
+            blocks: [{ type: 'text', label: 'Status', value: 'ok' }],
+          },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token: memberToken,
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    expect(body.result?._meta).toHaveProperty('lobu/member-role');
+    expect(body.result?._meta?.['lobu/member-role']).toBe('member');
+  });
+
   it('binds reused backend request ids to distinct host cards and restores exact state', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const conversationId = 'chatgpt-conversation-restore-test';

@@ -587,13 +587,59 @@ interface ChangeEventParams {
 }
 
 /**
+ * Persist a connectionless audit/change event, reconciling first by
+ * `(organization_id, origin_id)` where `connection_id IS NULL`.
+ *
+ * Fire-and-forget writers retry with the same originId after a transient
+ * failure. Connector-sourced rows are protected by a unique (connection_id,
+ * origin_id) path; connectionless audit rows are not, so an ambiguous success
+ * (insert committed, client saw timeout) would append a duplicate on retry.
+ * Reconcile before insert so the second attempt is a no-op.
+ */
+export async function insertConnectionlessAuditEvent(
+  params: InsertEventParams
+): Promise<InsertedEvent> {
+  const sql = getDb();
+  const existing = await sql`
+    SELECT id, entity_ids, origin_id, title, semantic_type, created_at
+    FROM events
+    WHERE organization_id = ${params.organizationId}
+      AND origin_id = ${params.originId}
+      AND connection_id IS NULL
+    ORDER BY id ASC
+    LIMIT 1
+  `;
+  if (existing[0]) {
+    const row = existing[0] as {
+      id: number | string;
+      entity_ids: number[] | null;
+      origin_id: string;
+      title: string | null;
+      semantic_type: string;
+      created_at: string;
+    };
+    return {
+      id: Number(row.id),
+      entity_ids: row.entity_ids,
+      origin_id: row.origin_id,
+      title: row.title,
+      semantic_type: row.semantic_type,
+      created_at: row.created_at,
+      change: 'unchanged',
+    };
+  }
+  return insertEvent({ ...params, connectionId: null });
+}
+
+/**
  * Record a change event for audit purposes.
  *
- * Fire-and-forget — never throws. Retries once after a short delay (the same
- * originId, so a retry can't double-write past a unique origin constraint);
- * if both attempts fail the dropped audit row is logged at ERROR with full
- * event context so it's visible in alerting rather than silently lost.
- * Used for entity updates, watcher archival, connection/feed deletion, etc.
+ * Fire-and-forget — never throws. Retries once after a short delay; the same
+ * originId is reconciled before re-insert so an ambiguous success cannot
+ * append a duplicate. If both attempts fail the dropped audit row is logged
+ * at ERROR with full event context so it's visible in alerting rather than
+ * silently lost. Used for entity updates, watcher archival, connection/feed
+ * deletion, etc.
  */
 export function recordChangeEvent(params: ChangeEventParams): void {
   if (params.entityIds.length === 0) return;
@@ -602,7 +648,7 @@ export function recordChangeEvent(params: ChangeEventParams): void {
 
   retryWithBackoff(
     () =>
-      insertEvent({
+      insertConnectionlessAuditEvent({
         entityIds: params.entityIds,
         organizationId: params.organizationId,
         originId: externalId,
@@ -721,7 +767,7 @@ function recordStateChangeEvent(
 
   retryWithBackoff(
     () =>
-      insertEvent({
+      insertConnectionlessAuditEvent({
         entityIds: [],
         organizationId: params.organizationId,
         originId: externalId,
@@ -777,13 +823,13 @@ export function recordWorkspaceChangeEvent(params: WorkspaceChangeEventParams): 
 export function recordLifecycleEvent(params: LifecycleEventParams): void {
   const externalId = `lifecycle_${params.entityType}_${params.op}_${params.entityId}_${Date.now()}`;
 
-  // Fire-and-forget with one bounded retry (same originId, so the retry is
-  // safe against duplicate writes). A doubly-failed write is an ERROR — these
-  // rows feed the dashboard metric_series, and a silent drop skews the
-  // cumulative counts forever.
+  // Fire-and-forget with one bounded retry. Same originId + connectionless
+  // reconcile so an ambiguous success cannot double-count. A doubly-failed
+  // write is an ERROR — these rows feed the dashboard metric_series, and a
+  // silent drop skews the cumulative counts forever.
   retryWithBackoff(
     () =>
-      insertEvent({
+      insertConnectionlessAuditEvent({
         entityIds: [],
         organizationId: params.organizationId,
         originId: externalId,

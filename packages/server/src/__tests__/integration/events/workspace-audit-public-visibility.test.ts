@@ -7,9 +7,13 @@
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
+import { getDb } from '../../../db/client';
 import { getContent } from '../../../tools/get_content';
+import { resolvePath } from '../../../tools/resolve_path';
+import { saveContent } from '../../../tools/save_content';
 import { search } from '../../../tools/search';
 import type { ToolContext } from '../../../tools/registry';
+import { getEntityHooks } from '../../../utils/entity-hooks';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
@@ -223,7 +227,6 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     // Classify the workspace audit row so classification STATS (which are
     // aggregated across all matching content) could leak its presence to
     // non-members even when the row itself is filtered out.
-    const { getDb } = await import('../../../db/client');
     const sql = getDb();
     const facet = await sql`
       INSERT INTO classify_facet (organization_id, slug, name, attribute_key, status,
@@ -306,8 +309,6 @@ describe('workspace-identity audit events > public-read exclusion', () => {
   });
 
   it('save_memory strips the server-owned _lobu_workspace_audit key from caller metadata', async () => {
-    const { saveContent } = await import('../../../tools/save_content');
-    const { getDb } = await import('../../../db/client');
     const sql = getDb();
 
     // A member tries to forge the audit discriminator via save_memory metadata.
@@ -382,8 +383,6 @@ describe('workspace-identity audit events > public-read exclusion', () => {
   });
 
   it('deleting an invited member emits an invitation-cancelled audit event', async () => {
-    const { getEntityHooks } = await import('../../../utils/entity-hooks');
-    const { getDb } = await import('../../../db/client');
     const sql = getDb();
 
     // Insert a pending invitation directly (the $member beforeCreate hook
@@ -445,7 +444,6 @@ describe('workspace-identity audit events > public-read exclusion', () => {
   });
 
   it('org-home bootstrap hides workspace audit rows from non-owner/admin', async () => {
-    const { resolvePath } = await import('../../../tools/resolve_path');
     const slug = (org as unknown as { slug: string }).slug;
 
     async function bootstrapRecent(ctx: ToolContext) {
@@ -476,7 +474,6 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     });
     await addUserToOrganization(alice.id, otherOrg.id, 'owner');
 
-    const { resolvePath } = await import('../../../tools/resolve_path');
     const slug = (org as unknown as { slug: string }).slug;
     const result = await resolvePath(
       { path: `/${slug}`, include_bootstrap: true } as never,

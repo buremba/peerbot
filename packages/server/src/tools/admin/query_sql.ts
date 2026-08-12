@@ -19,7 +19,7 @@ import { getCachedMembershipRole, getCachedOrgBySlug } from '../../workspace/mul
 import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
 import { SortOrderField } from './schemas/common-fields';
-import { isAdminOrOwnerRole } from '../access-control';
+import { isAdminOrOwnerRole, isSystemContext } from '../access-control';
 import { classifyToolError, getErrorMessage, isRetryable, type ToolErrorCode } from "@lobu/core";
 import { ToolUserError } from '../../utils/errors';
 
@@ -559,9 +559,9 @@ export async function querySqlImpl(
       // PRIVATE-connection events only when org-visible. Cross-org reuses the
       // same global user id, re-validated against the target org above.
       userId: ctx.userId,
-      // Workspace-identity audit rows are owner/admin-only; ordinary members
-      // must not select their member/invitation lifecycle data via raw SQL.
-      excludeWorkspaceAudit: !callerIsAdmin,
+      // Workspace-identity audit rows are owner/admin/system-only; ordinary
+      // members must not select their member/invitation lifecycle data via raw SQL.
+      excludeWorkspaceAudit: !isSystemContext(ctx) && !callerIsAdmin,
     });
     scopedSql = scoped.sql;
     params = scoped.params;

@@ -2,242 +2,242 @@ import type { EntityMetrics } from "@lobu/connector-sdk";
 import type { AgentSettings } from "@lobu/core";
 import type { InstallConnectorInput } from "@lobu/core/contracts/tools/manage-connections";
 import type {
-	InferenceCapabilityBlock,
-	InferenceModality,
+  InferenceCapabilityBlock,
+  InferenceModality,
 } from "../../../config/define.js";
 import { ApiClient, type HttpMethod } from "../../../internal/api-client.js";
 import { resolveApiClient } from "../../../internal/index.js";
 import { ApiError } from "../../memory/_lib/errors.js";
 import type { DeploymentSummary } from "./deployment.js";
 import type {
-	DesiredAgentMetadata,
-	DesiredEntityType,
-	DesiredRelationshipType,
+  DesiredAgentMetadata,
+  DesiredEntityType,
+  DesiredRelationshipType,
 } from "./desired-state.js";
 import {
-	type BehaviorSource,
-	type EntityBacking,
-	isRecord,
-	type RelationshipRule,
+  type BehaviorSource,
+  type EntityBacking,
+  isRecord,
+  type RelationshipRule,
 } from "./shared.js";
 
 // ── Wire types ─────────────────────────────────────────────────────────────
 
 export interface RemoteAgent {
-	agentId: string;
-	name: string;
-	description?: string;
+  agentId: string;
+  name: string;
+  description?: string;
 }
 
 export interface RemoteDeployment {
-	id: number;
-	applyId: string;
-	createdAt: string;
-	title: string | null;
-	status: string | null;
-	gitSha: string | null;
-	gitDirty: boolean | null;
-	manifestHash: string | null;
-	rollbackOf: string | null;
-	/** Stored snapshot ({version, state, connector_versions}); null on legacy deployments. */
-	manifest: {
-		version: number;
-		state: Record<string, unknown>;
-		connector_versions: Record<string, string>;
-		/** Attribution baseline (effective remote after apply); absent on legacy. */
-		attribution?: {
-			entityTypes: unknown[];
-			relationshipTypes: unknown[];
-			watchers: unknown[];
-		};
-		/** Kind-qualified incarnation identities this config applied. */
-		owned?: string[];
-	} | null;
-	/** Blocking-drift candidates + confirm token, present on `blocked` runs. */
-	candidates?: {
-		token?: string;
-		items?: Array<Record<string, unknown>>;
-	} | null;
+  id: number;
+  applyId: string;
+  createdAt: string;
+  title: string | null;
+  status: string | null;
+  gitSha: string | null;
+  gitDirty: boolean | null;
+  manifestHash: string | null;
+  rollbackOf: string | null;
+  /** Stored snapshot ({version, state, connector_versions}); null on legacy deployments. */
+  manifest: {
+    version: number;
+    state: Record<string, unknown>;
+    connector_versions: Record<string, string>;
+    /** Attribution baseline (effective remote after apply); absent on legacy. */
+    attribution?: {
+      entityTypes: unknown[];
+      relationshipTypes: unknown[];
+      watchers: unknown[];
+    };
+    /** Kind-qualified incarnation identities this config applied. */
+    owned?: string[];
+  } | null;
+  /** Blocking-drift candidates + confirm token, present on `blocked` runs. */
+  candidates?: {
+    token?: string;
+    items?: Array<Record<string, unknown>>;
+  } | null;
 }
 
 export interface DeploymentPauseState {
-	paused: boolean;
-	pausedAt?: string;
-	applyId?: string | null;
-	rollbackOf?: string | null;
-	pausedBy?: string | null;
+  paused: boolean;
+  pausedAt?: string;
+  applyId?: string | null;
+  rollbackOf?: string | null;
+  pausedBy?: string | null;
 }
 
 export interface RemoteEntityType {
-	/** Persistent incarnation id (`entity_types.id`) — the `owned` identity for deletes. */
-	id?: number;
-	slug: string;
-	name?: string;
-	description?: string;
-	required?: string[];
-	properties?: Record<string, unknown>;
-	/** Event kinds keyed by semantic_type (mirrors {@link DesiredEntityType.eventKinds}); hoisted from the row's `event_kinds`. */
-	eventKinds?: Record<string, unknown>;
-	/**
-	 * Current default view template (mirrors {@link DesiredEntityType.viewTemplate}).
-	 * NOT returned by the entity-type list (kept off that hot path); apply-cmd
-	 * fetches it per relevant type via {@link ApplyClient.getEntityTypeViewTemplate}
-	 * and attaches it before diffing.
-	 */
-	viewTemplate?: Record<string, unknown>;
-	/** Present only for derived types (mirrors {@link DesiredEntityType.backing}). */
-	backing?: EntityBacking;
-	/** Declared metrics (mirrors {@link DesiredEntityType.metrics}); hoisted from the row's `metrics_config`. */
-	metrics?: EntityMetrics;
-	/**
-	 * Top-level `metadata_schema` extension keys not hoisted into dedicated remote
-	 * fields. This includes `x-lobu-resolution`: apply compares it when config
-	 * declares a policy and carries it forward untouched when config omits it.
-	 *
-	 * `upsertEntityType` REBUILDS `metadata_schema` from the config's flat
-	 * `properties`/`required` and the server stores what it is sent verbatim, so
-	 * without carrying these forward every apply would silently erase them. Set
-	 * only when the stored schema has at least one such key, so a plain type
-	 * stays `undefined`.
-	 */
-	schemaExtras?: Record<string, unknown>;
-	/**
-	 * Owning org id. The list endpoint also returns *public* types from OTHER
-	 * orgs (`o.visibility = 'public'`), so prune must compare this against the
-	 * target org and never delete a type this org doesn't own.
-	 */
-	organization_id?: string;
+  /** Persistent incarnation id (`entity_types.id`) — the `owned` identity for deletes. */
+  id?: number;
+  slug: string;
+  name?: string;
+  description?: string;
+  required?: string[];
+  properties?: Record<string, unknown>;
+  /** Event kinds keyed by semantic_type (mirrors {@link DesiredEntityType.eventKinds}); hoisted from the row's `event_kinds`. */
+  eventKinds?: Record<string, unknown>;
+  /**
+   * Current default view template (mirrors {@link DesiredEntityType.viewTemplate}).
+   * NOT returned by the entity-type list (kept off that hot path); apply-cmd
+   * fetches it per relevant type via {@link ApplyClient.getEntityTypeViewTemplate}
+   * and attaches it before diffing.
+   */
+  viewTemplate?: Record<string, unknown>;
+  /** Present only for derived types (mirrors {@link DesiredEntityType.backing}). */
+  backing?: EntityBacking;
+  /** Declared metrics (mirrors {@link DesiredEntityType.metrics}); hoisted from the row's `metrics_config`. */
+  metrics?: EntityMetrics;
+  /**
+   * Top-level `metadata_schema` extension keys not hoisted into dedicated remote
+   * fields. This includes `x-lobu-resolution`: apply compares it when config
+   * declares a policy and carries it forward untouched when config omits it.
+   *
+   * `upsertEntityType` REBUILDS `metadata_schema` from the config's flat
+   * `properties`/`required` and the server stores what it is sent verbatim, so
+   * without carrying these forward every apply would silently erase them. Set
+   * only when the stored schema has at least one such key, so a plain type
+   * stays `undefined`.
+   */
+  schemaExtras?: Record<string, unknown>;
+  /**
+   * Owning org id. The list endpoint also returns *public* types from OTHER
+   * orgs (`o.visibility = 'public'`), so prune must compare this against the
+   * target org and never delete a type this org doesn't own.
+   */
+  organization_id?: string;
 }
 
 export interface RemoteRelationshipType {
-	/** Persistent incarnation id (`entity_relationship_types.id`) — the `owned` identity for deletes. */
-	id?: number;
-	slug: string;
-	name?: string;
-	description?: string;
-	rules?: RelationshipRule[];
-	/** Owning org id — see RemoteEntityType.organization_id (public-type guard). */
-	organization_id?: string;
+  /** Persistent incarnation id (`entity_relationship_types.id`) — the `owned` identity for deletes. */
+  id?: number;
+  slug: string;
+  name?: string;
+  description?: string;
+  rules?: RelationshipRule[];
+  /** Owning org id — see RemoteEntityType.organization_id (public-type guard). */
+  organization_id?: string;
 }
 
 interface RemoteOrg {
-	id: string;
-	slug: string;
-	name?: string;
+  id: string;
+  slug: string;
+  name?: string;
 }
 
 /** One org-owned inference provider as returned by `GET /inference-providers`. */
 export interface RemoteInferenceProvider {
-	id: number;
-	slug: string;
-	kind: string;
-	displayName: string | null;
-	capabilities: Record<string, Record<string, string>>;
-	hasCustomUpstream: boolean;
-	status: string;
-	createdAt: string;
+  id: number;
+  slug: string;
+  kind: string;
+  displayName: string | null;
+  capabilities: Record<string, Record<string, string>>;
+  hasCustomUpstream: boolean;
+  status: string;
+  createdAt: string;
 }
 
 export interface RemoteBehavior {
-	slug: string;
-	name?: string;
-	behavior_id?: string;
-	agent_id?: string | null;
-	triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
-	device_worker_id?: string | null;
-	goal_id?: number | null;
-	agent_kind?: string | null;
-	notification_channel?: string | null;
-	notification_priority?: string | null;
-	min_cooldown_seconds?: number | null;
-	tags?: string[] | null;
-	sources?: BehaviorSource[] | null;
-	// include_details=true → version-bound fields
-	description?: string | null;
-	prompt?: string | null;
-	/**
-	 * Pinned skill snapshots on the current version. NULL/absent on Behaviors
-	 * created before the column existed, which the diff treats as "no skills" —
-	 * so the first re-apply of a config that references skills pins them.
-	 */
-	skills?: Array<{ name: string; content: string }> | null;
-	classifiers?: unknown[] | null;
-	outputs?: Record<string, unknown> | null;
-	reactions_guidance?: string | null;
-	// NB: reaction_script is not included in Behavior lists — push always (idempotent).
+  slug: string;
+  name?: string;
+  behavior_id?: string;
+  agent_id?: string | null;
+  triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
+  device_worker_id?: string | null;
+  goal_id?: number | null;
+  agent_kind?: string | null;
+  notification_channel?: string | null;
+  notification_priority?: string | null;
+  min_cooldown_seconds?: number | null;
+  tags?: string[] | null;
+  sources?: BehaviorSource[] | null;
+  // include_details=true → version-bound fields
+  description?: string | null;
+  prompt?: string | null;
+  /**
+   * Pinned skill snapshots on the current version. NULL/absent on Behaviors
+   * created before the column existed, which the diff treats as "no skills" —
+   * so the first re-apply of a config that references skills pins them.
+   */
+  skills?: Array<{ name: string; content: string }> | null;
+  classifiers?: unknown[] | null;
+  outputs?: Record<string, unknown> | null;
+  reactions_guidance?: string | null;
+  // NB: reaction_script is not included in Behavior lists — push always (idempotent).
 }
 
 interface UpsertEntityTypeResult {
-	created?: boolean;
-	updated?: boolean;
-	noop?: boolean;
+  created?: boolean;
+  updated?: boolean;
+  noop?: boolean;
 }
 
 // ── Connectors / auth profiles / connections wire types ────────────────────
 
 export interface RemoteConnectorDefinition {
-	/** Persistent incarnation id (`connector_definitions.id`) — the `owned` identity for deletes. */
-	id?: number;
-	key: string;
-	name?: string;
-	version?: string;
-	options_schema?: Record<string, unknown> | null;
-	feeds_schema?: Record<string, unknown> | null;
-	auth_schema?: Record<string, unknown> | null;
-	installed?: boolean;
-	installable?: boolean;
-	catalog_origin?: string;
-	/** `file://` URI of the bundled source on the server host (catalog entries). */
-	source_uri?: string | null;
+  /** Persistent incarnation id (`connector_definitions.id`) — the `owned` identity for deletes. */
+  id?: number;
+  key: string;
+  name?: string;
+  version?: string;
+  options_schema?: Record<string, unknown> | null;
+  feeds_schema?: Record<string, unknown> | null;
+  auth_schema?: Record<string, unknown> | null;
+  installed?: boolean;
+  installable?: boolean;
+  catalog_origin?: string;
+  /** `file://` URI of the bundled source on the server host (catalog entries). */
+  source_uri?: string | null;
 }
 
 export interface RemoteAuthProfile {
-	id?: number;
-	slug: string;
-	display_name?: string;
-	connector_key: string;
-	profile_kind: string;
-	status: string;
+  id?: number;
+  slug: string;
+  display_name?: string;
+  connector_key: string;
+  profile_kind: string;
+  status: string;
 }
 
 export interface RemoteConnection {
-	id: number;
-	slug: string;
-	connector_key: string;
-	display_name?: string;
-	status: string;
-	auth_profile_slug?: string | null;
-	app_auth_profile_slug?: string | null;
-	config?: Record<string, unknown> | null;
-	device_worker_id?: string | null;
-	agent_id?: string | null;
-	credential_mode?: "managed" | "byo" | null;
-	effective_credential_mode?: "managed" | "byo" | null;
+  id: number;
+  slug: string;
+  connector_key: string;
+  display_name?: string;
+  status: string;
+  auth_profile_slug?: string | null;
+  app_auth_profile_slug?: string | null;
+  config?: Record<string, unknown> | null;
+  device_worker_id?: string | null;
+  agent_id?: string | null;
+  credential_mode?: "managed" | "byo" | null;
+  effective_credential_mode?: "managed" | "byo" | null;
 }
 
 export interface RemoteFeed {
-	id: number;
-	connection_id: number;
-	feed_key: string;
-	display_name?: string;
-	status: string;
-	schedule?: string | null;
-	config?: Record<string, unknown> | null;
-	virtual?: boolean;
+  id: number;
+  connection_id: number;
+  feed_key: string;
+  display_name?: string;
+  status: string;
+  schedule?: string | null;
+  config?: Record<string, unknown> | null;
+  virtual?: boolean;
 }
 
 interface InstallConnectorResult {
-	connectorKey: string;
-	updated: boolean;
-	version?: string;
+  connectorKey: string;
+  updated: boolean;
+  version?: string;
 }
 
 type CliInstallConnectorPayload = {
-	connectorId?: InstallConnectorInput["connector_id"];
-	sourceCode?: InstallConnectorInput["source_code"];
-	sourceUrl?: InstallConnectorInput["source_url"];
-	sourceUri?: InstallConnectorInput["source_uri"];
-	compiled?: InstallConnectorInput["compiled"];
+  connectorId?: InstallConnectorInput["connector_id"];
+  sourceCode?: InstallConnectorInput["source_code"];
+  sourceUrl?: InstallConnectorInput["source_url"];
+  sourceUri?: InstallConnectorInput["source_uri"];
+  compiled?: InstallConnectorInput["compiled"];
 };
 
 /**
@@ -247,10 +247,10 @@ type CliInstallConnectorPayload = {
  * reports (`pending_auth` until auth completes).
  */
 interface EnsureAuthProfileResult {
-	created: boolean;
-	updated: boolean;
-	status?: string;
-	connectUrl?: string;
+  created: boolean;
+  updated: boolean;
+  status?: string;
+  connectUrl?: string;
 }
 
 // ── Shape predicates ───────────────────────────────────────────────────────
@@ -261,11 +261,11 @@ interface EnsureAuthProfileResult {
  * `body.snake ?? body.camel ?? []` triple isn't repeated at every call site.
  */
 function pickArray<T>(body: Record<string, unknown>, ...keys: string[]): T[] {
-	for (const key of keys) {
-		const value = body[key];
-		if (Array.isArray(value)) return value as T[];
-	}
-	return [];
+  for (const key of keys) {
+    const value = body[key];
+    if (Array.isArray(value)) return value as T[];
+  }
+  return [];
 }
 
 /**
@@ -274,9 +274,9 @@ function pickArray<T>(body: Record<string, unknown>, ...keys: string[]): T[] {
  * preserve an undeclared/out-of-band value.
  */
 const HOISTED_SCHEMA_KEYS: ReadonlySet<string> = new Set([
-	"type",
-	"properties",
-	"required",
+  "type",
+  "properties",
+  "required",
 ]);
 
 /**
@@ -291,76 +291,76 @@ const HOISTED_SCHEMA_KEYS: ReadonlySet<string> = new Set([
  * forward so rebuilding the core schema cannot erase it silently.
  */
 function hoistEntityTypeSchema(
-	row: RemoteEntityType & {
-		metadata_schema?: unknown;
-		event_kinds?: unknown;
-		backing_sql?: string | null;
-		backing_source?: string | null;
-		metrics_config?: unknown;
-	},
+  row: RemoteEntityType & {
+    metadata_schema?: unknown;
+    event_kinds?: unknown;
+    backing_sql?: string | null;
+    backing_source?: string | null;
+    metrics_config?: unknown;
+  }
 ): RemoteEntityType {
-	const schema = row.metadata_schema;
-	const out: RemoteEntityType = {
-		...(row.id !== undefined ? { id: row.id } : {}),
-		slug: row.slug,
-		...(row.name !== undefined ? { name: row.name } : {}),
-		...(row.description !== undefined ? { description: row.description } : {}),
-		// Preserve owning org so prune can skip public types from other orgs.
-		...(row.organization_id !== undefined
-			? { organization_id: row.organization_id }
-			: {}),
-	};
-	if (isRecord(schema)) {
-		if (isRecord(schema.properties)) out.properties = schema.properties;
-		if (Array.isArray(schema.required)) {
-			out.required = schema.required.filter(
-				(v): v is string => typeof v === "string",
-			);
-		}
-		const extras: Record<string, unknown> = {};
-		for (const [key, value] of Object.entries(schema)) {
-			if (HOISTED_SCHEMA_KEYS.has(key)) continue;
-			extras[key] = value;
-		}
-		if (Object.keys(extras).length > 0) out.schemaExtras = extras;
-	}
-	// A type is derived iff it has view SQL; stored types carry no backing, so it
-	// compares equal to the desired side without churn. `backing_source` (a
-	// connection slug) is hoisted to `backing.connection` only when set, so an
-	// internal-backed view stays `{ sql }` and never churns.
-	if (typeof row.backing_sql === "string") {
-		out.backing = {
-			sql: row.backing_sql,
-			...(typeof row.backing_source === "string" && row.backing_source
-				? { connection: row.backing_source }
-				: {}),
-		};
-	}
-	// Hoist metrics_config → `metrics` only when the column holds a non-empty
-	// object, so a type with no declared metrics stays `undefined` on both sides
-	// and never churns the diff (mirrors `backing`).
-	if (
-		isRecord(row.metrics_config) &&
-		Object.keys(row.metrics_config).length > 0
-	) {
-		out.metrics = row.metrics_config as EntityMetrics;
-	}
-	// Hoist event_kinds only when non-empty, so a type with no declared kinds
-	// stays `undefined` on both sides and never churns the diff (mirrors metrics).
-	if (isRecord(row.event_kinds) && Object.keys(row.event_kinds).length > 0) {
-		out.eventKinds = row.event_kinds as Record<string, unknown>;
-	}
-	return out;
+  const schema = row.metadata_schema;
+  const out: RemoteEntityType = {
+    ...(row.id !== undefined ? { id: row.id } : {}),
+    slug: row.slug,
+    ...(row.name !== undefined ? { name: row.name } : {}),
+    ...(row.description !== undefined ? { description: row.description } : {}),
+    // Preserve owning org so prune can skip public types from other orgs.
+    ...(row.organization_id !== undefined
+      ? { organization_id: row.organization_id }
+      : {}),
+  };
+  if (isRecord(schema)) {
+    if (isRecord(schema.properties)) out.properties = schema.properties;
+    if (Array.isArray(schema.required)) {
+      out.required = schema.required.filter(
+        (v): v is string => typeof v === "string"
+      );
+    }
+    const extras: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(schema)) {
+      if (HOISTED_SCHEMA_KEYS.has(key)) continue;
+      extras[key] = value;
+    }
+    if (Object.keys(extras).length > 0) out.schemaExtras = extras;
+  }
+  // A type is derived iff it has view SQL; stored types carry no backing, so it
+  // compares equal to the desired side without churn. `backing_source` (a
+  // connection slug) is hoisted to `backing.connection` only when set, so an
+  // internal-backed view stays `{ sql }` and never churns.
+  if (typeof row.backing_sql === "string") {
+    out.backing = {
+      sql: row.backing_sql,
+      ...(typeof row.backing_source === "string" && row.backing_source
+        ? { connection: row.backing_source }
+        : {}),
+    };
+  }
+  // Hoist metrics_config → `metrics` only when the column holds a non-empty
+  // object, so a type with no declared metrics stays `undefined` on both sides
+  // and never churns the diff (mirrors `backing`).
+  if (
+    isRecord(row.metrics_config) &&
+    Object.keys(row.metrics_config).length > 0
+  ) {
+    out.metrics = row.metrics_config as EntityMetrics;
+  }
+  // Hoist event_kinds only when non-empty, so a type with no declared kinds
+  // stays `undefined` on both sides and never churns the diff (mirrors metrics).
+  if (isRecord(row.event_kinds) && Object.keys(row.event_kinds).length > 0) {
+    out.eventKinds = row.event_kinds as Record<string, unknown>;
+  }
+  return out;
 }
 
 // ── Client ─────────────────────────────────────────────────────────────────
 
 interface ApplyClientConfig {
-	apiBaseUrl: string;
-	orgSlug: string;
-	token: string;
-	/** Sent as `x-lobu-apply-id` on every request so the server can group this run's config-audit events into one deployment. */
-	applyId?: string;
+  apiBaseUrl: string;
+  orgSlug: string;
+  token: string;
+  /** Sent as `x-lobu-apply-id` on every request so the server can group this run's config-audit events into one deployment. */
+  applyId?: string;
 }
 
 /**
@@ -371,1318 +371,1316 @@ interface ApplyClientConfig {
  * unset and pick up `globalThis.fetch`.
  */
 export class ApplyClient {
-	private readonly orgSlug: string;
-	private readonly http: ApiClient;
-
-	constructor(cfg: ApplyClientConfig, fetchImpl: typeof fetch = fetch) {
-		this.orgSlug = cfg.orgSlug;
-		this.http = new ApiClient(
-			cfg.apiBaseUrl,
-			cfg.token,
-			fetchImpl,
-			cfg.applyId ? { "x-lobu-apply-id": cfg.applyId } : {},
-		);
-	}
-
-	/**
-	 * Delegates the fetch/parse/non-ok-error pipeline to the shared
-	 * {@link ApiClient}, then layers on the apply-specific shape:
-	 *   - the body is coerced to a record (`undefined`→`{}`, non-record→`{value}`)
-	 *   - a body-level `error` string is treated as a failure even on a 2xx
-	 *
-	 * Apply endpoints only ever return the listed `okStatuses` (200/201/204) on
-	 * success or a 4xx/5xx on failure, so `ApiClient`'s status gate produces the
-	 * same outcome the local pipeline did. `Content-Type: application/json` is
-	 * sent on every request (no `Accept`) to mirror the previous wire shape.
-	 */
-	private async request<T>(
-		method: HttpMethod,
-		path: string,
-		body?: unknown,
-		okStatuses: number[] = [200, 201, 204],
-	): Promise<{ status: number; body: T }> {
-		const { status, body: raw } = await this.http.requestWithStatus<unknown>(
-			method,
-			path,
-			body,
-			{ okStatuses, sendAccept: false, alwaysJsonContentType: true },
-		);
-
-		let parsed: Record<string, unknown>;
-		if (raw === undefined) {
-			parsed = {};
-		} else if (isRecord(raw)) {
-			parsed = raw;
-		} else {
-			parsed = { value: raw };
-		}
-
-		if (typeof parsed.error === "string" && parsed.error.length > 0) {
-			throw new ApiError(
-				`${method} ${path} returned error: ${parsed.error}`,
-				status,
-			);
-		}
-
-		return { status, body: parsed as T };
-	}
-
-	// ── Organization ──────────────────────────────────────────────────────────
-
-	/**
-	 * Orgs the authenticated user belongs to, read from the OAuth userinfo
-	 * endpoint — the same source `lobu org list` uses. Used to check whether the
-	 * `[memory].org` slug already resolves to one of the operator's orgs. Does
-	 * not depend on `this.orgSlug`. (`lobu apply` can't create an org headlessly
-	 * — that needs a logged-in browser session — so there is no `createOrg`.)
-	 */
-	async listOrgs(): Promise<RemoteOrg[]> {
-		const { body } = await this.request<{ organizations?: unknown }>(
-			"GET",
-			`/oauth/userinfo`,
-		);
-		const orgs = Array.isArray(body.organizations) ? body.organizations : [];
-		const out: RemoteOrg[] = [];
-		for (const entry of orgs) {
-			if (!isRecord(entry)) continue;
-			const id = typeof entry.id === "string" ? entry.id : "";
-			const slug = typeof entry.slug === "string" ? entry.slug : "";
-			if (!id || !slug) continue;
-			out.push({
-				id,
-				slug,
-				...(typeof entry.name === "string" ? { name: entry.name } : {}),
-			});
-		}
-		return out;
-	}
-
-	// ── Agents ────────────────────────────────────────────────────────────────
-
-	async listAgents(): Promise<RemoteAgent[]> {
-		const { body } = await this.request<{ agents?: RemoteAgent[] }>(
-			"GET",
-			`/api/${this.orgSlug}/agents`,
-		);
-		return body.agents ?? [];
-	}
-
-	/**
-	 * Idempotent create: PR-2 makes `POST /` return 200 with the existing
-	 * payload when an agent of the same ID already exists in the same org.
-	 * Cross-org collision still surfaces as 409 with a clear `error.code` —
-	 * we re-throw verbatim so `lobu apply` can show the operator the link
-	 * to the org-scoped IDs issue.
-	 */
-	async upsertAgent(agent: DesiredAgentMetadata): Promise<RemoteAgent> {
-		const { body } = await this.request<RemoteAgent>(
-			"POST",
-			// No trailing slash — Hono matches `routes.post('/', ...)` mounted at
-			// `/api/:orgSlug/agents` against `/api/dev/agents`, not `/api/dev/agents/`.
-			`/api/${this.orgSlug}/agents`,
-			agent,
-			[200, 201],
-		);
-		return body;
-	}
-
-	async patchAgentMetadata(
-		agentId: string,
-		agent: { name?: string; description?: string },
-	): Promise<void> {
-		await this.request(
-			"PATCH",
-			`/api/${this.orgSlug}/agents/${encodeURIComponent(agentId)}`,
-			agent,
-		);
-	}
-
-	async getAgentSettings(agentId: string): Promise<AgentSettings | null> {
-		try {
-			const { body } = await this.request<AgentSettings>(
-				"GET",
-				`/api/${this.orgSlug}/agents/${encodeURIComponent(agentId)}/config`,
-			);
-			return body;
-		} catch (err) {
-			if (err instanceof ApiError && err.status === 404) return null;
-			throw err;
-		}
-	}
-
-	async patchAgentSettings(
-		agentId: string,
-		settings: Partial<AgentSettings>,
-	): Promise<void> {
-		await this.request(
-			"PATCH",
-			`/api/${this.orgSlug}/agents/${encodeURIComponent(agentId)}/config`,
-			settings,
-		);
-	}
-
-	/**
-	 * Record this apply run as a deployment (`POST /api/<org>/deployments`).
-	 * The server dedupes on apply_id, so a retried post is safe. Callers treat
-	 * failure as a warning — the apply itself already succeeded (or already
-	 * failed) independently of the audit record.
-	 */
-	async postDeploymentSummary(summary: DeploymentSummary): Promise<void> {
-		await this.request("POST", `/api/${this.orgSlug}/deployments`, summary);
-	}
-
-	/** Fetch one deployment's record, including its stored manifest snapshot. */
-	async getDeployment(applyId: string): Promise<RemoteDeployment | null> {
-		try {
-			const { body } = await this.request<{ deployment?: RemoteDeployment }>(
-				"GET",
-				`/api/${this.orgSlug}/deployments/${encodeURIComponent(applyId)}`,
-			);
-			return body.deployment ?? null;
-		} catch (err) {
-			if (err instanceof ApiError && err.status === 404) return null;
-			throw err;
-		}
-	}
-
-	/** Latest `succeeded` deployment — the attribution baseline (null when none). */
-	async getLatestDeployment(): Promise<RemoteDeployment | null> {
-		const { body } = await this.request<{ deployment?: RemoteDeployment }>(
-			"GET",
-			`/api/${this.orgSlug}/deployments/latest`,
-		);
-		return body.deployment ?? null;
-	}
-
-	/** Promotions-pause state (set by `lobu rollback`). */
-	async getDeploymentPause(): Promise<DeploymentPauseState> {
-		const { body } = await this.request<DeploymentPauseState>(
-			"GET",
-			`/api/${this.orgSlug}/deployments/pause`,
-		);
-		return body;
-	}
-
-	async setDeploymentPause(params: {
-		applyId: string;
-		rollbackOf: string;
-	}): Promise<void> {
-		await this.request("PUT", `/api/${this.orgSlug}/deployments/pause`, {
-			apply_id: params.applyId,
-			rollback_of: params.rollbackOf,
-		});
-	}
-
-	async clearDeploymentPause(): Promise<void> {
-		await this.request("DELETE", `/api/${this.orgSlug}/deployments/pause`);
-	}
-
-	// ── Org inference providers ────────────────────────────────────────────────
-	// Org-scoped, mounted UNDER the agents router (`/api/:orgSlug/agents`), so the
-	// full path is `/api/<org>/agents/inference-providers…` — verified against
-	// `app.route("/api/:orgSlug/agents", agentRoutes)` in packages/server/src/index.ts.
-
-	/** List the org's inference providers (never returns the api key). */
-	async listInferenceProviders(): Promise<RemoteInferenceProvider[]> {
-		const { body } = await this.request<{
-			providers?: RemoteInferenceProvider[];
-		}>("GET", `/api/${this.orgSlug}/agents/inference-providers`);
-		return body.providers ?? [];
-	}
-
-	/** Create an org inference provider. 409 (surfaced as ApiError) on slug conflict. */
-	async createInferenceProvider(body: {
-		slug: string;
-		kind: string;
-		displayName?: string;
-		apiKey: string;
-		capabilities?: Partial<Record<InferenceModality, InferenceCapabilityBlock>>;
-	}): Promise<RemoteInferenceProvider> {
-		const { body: res } = await this.request<{
-			provider: RemoteInferenceProvider;
-		}>("POST", `/api/${this.orgSlug}/agents/inference-providers`, body);
-		return res.provider;
-	}
-
-	/** Upsert one modality's capability block (`{ base_url?, model?, models_endpoint? }`). */
-	async updateInferenceProviderCapabilities(
-		slug: string,
-		modality: InferenceModality,
-		block: InferenceCapabilityBlock,
-	): Promise<void> {
-		await this.request(
-			"PUT",
-			`/api/${this.orgSlug}/agents/inference-providers/${encodeURIComponent(slug)}/capabilities/${encodeURIComponent(modality)}`,
-			{ block },
-		);
-	}
-
-	/**
-	 * Rotate an org provider's API key. Idempotent — the current key can't be read
-	 * back, so apply re-pushes the declared value on every run; a matching value
-	 * is a harmless no-op server-side, a changed one rotates.
-	 */
-	async rotateInferenceProviderKey(slug: string, value: string): Promise<void> {
-		await this.request(
-			"PUT",
-			`/api/${this.orgSlug}/agents/inference-providers/${encodeURIComponent(slug)}/key`,
-			{ value },
-		);
-	}
-
-	/** Soft-delete an org inference provider. */
-	async deleteInferenceProvider(slug: string): Promise<void> {
-		await this.request(
-			"DELETE",
-			`/api/${this.orgSlug}/agents/inference-providers/${encodeURIComponent(slug)}`,
-		);
-	}
-
-	// ── Memory schema ─────────────────────────────────────────────────────────
-
-	async listEntityTypes(): Promise<RemoteEntityType[]> {
-		type RawEntityTypeRow = RemoteEntityType & {
-			metadata_schema?: unknown;
-			event_kinds?: unknown;
-			backing_sql?: string | null;
-		};
-		const { body } = await this.request<{
-			entity_types?: RawEntityTypeRow[];
-			entityTypes?: RawEntityTypeRow[];
-		}>("POST", `/api/${this.orgSlug}/manage_entity_schema`, {
-			schema_type: "entity_type",
-			action: "list",
-		});
-		// The server returns the type's fields inside a single `metadata_schema`
-		// JSON Schema (+ typed backing_* columns). Surface `properties`/`required`
-		// and normalize `backing` at top level so the diff compares them against the
-		// desired config (which carries them flat).
-		return pickArray<RawEntityTypeRow>(body, "entity_types", "entityTypes").map(
-			hoistEntityTypeSchema,
-		);
-	}
-
-	/**
-	 * The `manage_entity_schema` admin tool exposes separate `create` / `update`
-	 * actions and surfaces duplicates as a coded 409 (`[entity_type_exists]` /
-	 * `[relationship_type_exists]`). Probe with `create`; on that explicit
-	 * duplicate signal retry with `update`. Any other error (e.g. a 422
-	 * `[invalid_schema]` validation failure) propagates verbatim — retrying it
-	 * as an update used to mask the real message behind "Entity type not
-	 * found" (issue #1177).
-	 */
-	private async upsertSchemaResource(
-		schemaType: "entity_type" | "relationship_type",
-		payload: Record<string, unknown>,
-	): Promise<UpsertEntityTypeResult> {
-		const url = `/api/${this.orgSlug}/manage_entity_schema`;
-		try {
-			await this.request("POST", url, {
-				schema_type: schemaType,
-				action: "create",
-				...payload,
-			});
-			return { created: true };
-		} catch (err) {
-			if (err instanceof ApiError && isDuplicateError(err)) {
-				await this.request("POST", url, {
-					schema_type: schemaType,
-					action: "update",
-					...payload,
-				});
-				return { updated: true };
-			}
-			throw err;
-		}
-	}
-
-	async upsertEntityType(
-		// `metadata` is authoring-only — never sent to the server (see
-		// DesiredEntityType); extra properties on the passed value are ignored.
-		entity: Omit<DesiredEntityType, "metadata">,
-		/**
-		 * The live type's `metadata_schema` extension keys
-		 * ({@link RemoteEntityType.schemaExtras}), from the remote snapshot this
-		 * apply already fetched. Hoisted core keys are stripped before merging; a
-		 * declared resolution policy overrides its live extension, while every
-		 * undeclared extension survives the rebuild.
-		 */
-		schemaExtras?: Record<string, unknown>,
-		/**
-		 * The live type's hoisted schema core (`properties`/`required`) when the
-		 * config does not declare them itself. Required so a type that declares
-		 * ONLY an extension (e.g. `resolutionPolicy`) does not wipe the server's
-		 * complete metadata_schema by sending `properties: {}` — the config's
-		 * declared value wins when present, the remote core round-trips otherwise.
-		 */
-		remoteSchemaCore?: {
-			properties?: Record<string, unknown>;
-			required?: string[];
-		},
-		/**
-		 * Facet names the apply diff flagged for CLEARING (prune removal of
-		 * out-of-band eventKinds, derived→stored backing revert, metric removal).
-		 * Facets are declared-only otherwise: an update fired for an unrelated
-		 * field must never wipe live values the config does not own, and the server
-		 * clears a facet only when its key is present in the payload.
-		 */
-		clearFacets?: ReadonlySet<string>,
-		/**
-		 * When true (prune off), remote-only property keys the config never
-		 * declared are merged into the write so an unrelated config update cannot
-		 * silently erase a UI-added property. When false (prune on), declared
-		 * properties alone are the full schema.
-		 */
-		preserveRemoteOnlyProperties = true,
-	): Promise<UpsertEntityTypeResult> {
-		// The server stores per-type fields as a single `metadata_schema` JSON
-		// Schema (`{ type, properties, required }`) — it does NOT read top-level
-		// `properties`/`required`. Fold them into `metadata_schema` so the schema
-		// actually persists (otherwise every apply re-reports a `properties`
-		// update because the stored schema stays empty).
-		const {
-			slug,
-			name,
-			description,
-			required,
-			properties,
-			eventKinds,
-			backing,
-			metrics,
-			resolutionPolicy,
-		} = entity;
-		const payload: Record<string, unknown> = { slug };
-		if (name !== undefined) payload.name = name;
-		if (description !== undefined) payload.description = description;
-		if (
-			properties !== undefined ||
-			required !== undefined ||
-			resolutionPolicy !== undefined ||
-			clearFacets?.has("properties") ||
-			clearFacets?.has("required") ||
-			clearFacets?.has("resolutionPolicy")
-		) {
-			// Strip config-owned keys from the extras bag so config always wins —
-			// spread order alone would let a stale `required` survive, because the
-			// config's `required` is only spread when non-empty. (When the config
-			// declares neither properties nor required we send no metadata_schema at
-			// all — the server then leaves the stored one alone, extras included.)
-			const extras: Record<string, unknown> = {};
-			for (const [key, value] of Object.entries(schemaExtras ?? {})) {
-				if (HOISTED_SCHEMA_KEYS.has(key)) continue;
-				// The resolution policy is config-owned when declared, and removed under
-				// prune — either way the declared/cleared value wins over out-of-band.
-				if (
-					(resolutionPolicy !== undefined ||
-						clearFacets?.has("resolutionPolicy")) &&
-					key === "x-lobu-resolution"
-				)
-					continue;
-				extras[key] = value;
-			}
-			// Declared properties/required win. When the config omits them:
-			//   - diff flagged a prune removal → send an empty core to clear them;
-			//   - otherwise → fall back to the live core so a fired update for an
-			//     unrelated field never silently clears the server's schema.
-			// When the config declares a partial properties object and prune is off,
-			// merge remote-only keys so UI-authored properties survive.
-			const pruneClearProperties = clearFacets?.has("properties");
-			const pruneClearRequired = clearFacets?.has("required");
-			const effectiveProperties = (() => {
-				if (pruneClearProperties) return {};
-				if (!properties) return remoteSchemaCore?.properties;
-				if (!preserveRemoteOnlyProperties) return properties;
-				const remoteOnly = Object.fromEntries(
-					Object.entries(remoteSchemaCore?.properties ?? {}).filter(
-						([key]) => !(key in properties),
-					),
-				);
-				return { ...remoteOnly, ...properties };
-			})();
-			const effectiveRequired = required
-				? required
-				: pruneClearRequired
-					? undefined
-					: remoteSchemaCore?.required;
-			payload.metadata_schema = {
-				...extras,
-				...(resolutionPolicy ?? {}),
-				type: "object",
-				properties: effectiveProperties ?? {},
-				...(effectiveRequired && effectiveRequired.length > 0
-					? { required: effectiveRequired }
-					: {}),
-			};
-		}
-		// Facets are declared-only, with an explicit clear when the diff flagged
-		// them (prune removal / derived-revert / metric removal). Sending `null`
-		// unconditionally — the old behavior — wiped out-of-band values whenever
-		// ANY field changed; the server clears a facet only when its key is present.
-		if (eventKinds !== undefined || clearFacets?.has("eventKinds")) {
-			payload.event_kinds = eventKinds ?? null;
-		}
-		if (backing !== undefined || clearFacets?.has("backing")) {
-			payload.backing = backing
-				? {
-						sql: backing.sql,
-						...(backing.connection ? { connection: backing.connection } : {}),
-					}
-				: null;
-		}
-		if (metrics !== undefined || clearFacets?.has("metrics")) {
-			payload.metrics_config = metrics ?? null;
-		}
-		return this.upsertSchemaResource("entity_type", payload);
-	}
-
-	/**
-	 * Fetch an entity type's current default view template (`null` if none).
-	 * Apply uses this to diff ONLY the types it needs (declared templates, plus
-	 * every config type under prune) — the template is deliberately NOT returned
-	 * by the entity-type list, which the UI/bootstrap also calls.
-	 */
-	async getEntityTypeViewTemplate(
-		slug: string,
-	): Promise<Record<string, unknown> | null> {
-		const { body } = await this.request<{
-			default_tab?: {
-				current?: { json_template?: Record<string, unknown> } | null;
-			};
-		}>("POST", `/api/${this.orgSlug}/manage_view_templates`, {
-			action: "get",
-			resource_type: "entity_type",
-			resource_id: slug,
-		});
-		return body.default_tab?.current?.json_template ?? null;
-	}
-
-	/**
-	 * Set the entity type's default view template. A separate, version-appending
-	 * tool from the schema upsert, so apply calls this ONLY on create or a changed
-	 * template (see apply-cmd) — never every run, which would churn the history.
-	 */
-	async setEntityTypeViewTemplate(
-		slug: string,
-		jsonTemplate: Record<string, unknown>,
-	): Promise<void> {
-		await this.request("POST", `/api/${this.orgSlug}/manage_view_templates`, {
-			action: "set",
-			resource_type: "entity_type",
-			resource_id: slug,
-			json_template: jsonTemplate,
-			change_notes: "lobu apply",
-		});
-	}
-
-	/**
-	 * Clear the entity type's default view template (prune-gated removal). Nulls
-	 * the current-version pointer server-side; history rows stay for rollback.
-	 */
-	async clearEntityTypeViewTemplate(slug: string): Promise<void> {
-		await this.request("POST", `/api/${this.orgSlug}/manage_view_templates`, {
-			action: "clear",
-			resource_type: "entity_type",
-			resource_id: slug,
-		});
-	}
-
-	async listRelationshipTypes(): Promise<RemoteRelationshipType[]> {
-		const { body } = await this.request<{
-			relationship_types?: RemoteRelationshipType[];
-			relationshipTypes?: RemoteRelationshipType[];
-		}>("POST", `/api/${this.orgSlug}/manage_entity_schema`, {
-			schema_type: "relationship_type",
-			action: "list",
-		});
-		return pickArray(body, "relationship_types", "relationshipTypes");
-	}
-
-	/**
-	 * Fetch a relationship type's rules (the `list` action omits them, so the
-	 * apply diff can't otherwise see remote rules and would churn a perpetual
-	 * "rules changed" update). Maps the server's `*_entity_type_slug` columns to
-	 * `{ source, target }`; `id` is carried for reconcile (remove_rule by id).
-	 */
-	async listRelationshipTypeRules(
-		slug: string,
-	): Promise<Array<RelationshipRule & { id: number }>> {
-		const { body } = await this.request<{
-			rules?: Array<{
-				id?: number;
-				source_entity_type_slug?: string;
-				target_entity_type_slug?: string;
-			}>;
-		}>("POST", `/api/${this.orgSlug}/manage_entity_schema`, {
-			schema_type: "relationship_type",
-			action: "list_rules",
-			slug,
-		});
-		return (body.rules ?? [])
-			.filter(
-				(r) =>
-					r.id != null &&
-					r.source_entity_type_slug &&
-					r.target_entity_type_slug,
-			)
-			.map((r) => ({
-				id: r.id as number,
-				source: r.source_entity_type_slug as string,
-				target: r.target_entity_type_slug as string,
-			}));
-	}
-
-	async upsertRelationshipType(
-		// `metadata` is authoring-only — never sent (see DesiredRelationshipType).
-		rel: Omit<DesiredRelationshipType, "metadata">,
-	): Promise<UpsertEntityTypeResult> {
-		const { rules, ...payload } = rel;
-		const result = await this.upsertSchemaResource(
-			"relationship_type",
-			payload,
-		);
-
-		// Reconcile rules to exactly the desired set so config is the source of
-		// truth (declarative). Without removing extras, dropping a rule from config
-		// would never take effect AND would churn a perpetual "rules changed"
-		// update on every apply. add_rule is idempotent; remove_rule takes a id.
-		const desired = rules ?? [];
-		const ruleKey = (r: RelationshipRule) => `${r.source}	${r.target}`;
-		const desiredKeys = new Set(desired.map(ruleKey));
-		const remote = await this.listRelationshipTypeRules(rel.slug);
-		const remoteKeys = new Set(remote.map(ruleKey));
-
-		for (const rule of desired) {
-			if (remoteKeys.has(ruleKey(rule))) continue;
-			try {
-				await this.request(
-					"POST",
-					`/api/${this.orgSlug}/manage_entity_schema`,
-					{
-						schema_type: "relationship_type",
-						action: "add_rule",
-						slug: rel.slug,
-						source_entity_type_slug: rule.source,
-						target_entity_type_slug: rule.target,
-					},
-				);
-			} catch (err) {
-				if (err instanceof ApiError && isDuplicateError(err)) continue;
-				throw err;
-			}
-		}
-		for (const rule of remote) {
-			if (desiredKeys.has(ruleKey(rule))) continue;
-			await this.request("POST", `/api/${this.orgSlug}/manage_entity_schema`, {
-				schema_type: "relationship_type",
-				action: "remove_rule",
-				slug: rel.slug,
-				rule_id: rule.id,
-			});
-		}
-		return result;
-	}
-
-	/**
-	 * Delete an entity type (code-managed prune). The server soft-deletes and
-	 * REFUSES if instances of the type still exist — the data is exempt from
-	 * prune, so that surfaces as a clear error rather than cascading.
-	 */
-	async deleteEntityType(slug: string): Promise<void> {
-		await this.request("POST", `/api/${this.orgSlug}/manage_entity_schema`, {
-			schema_type: "entity_type",
-			action: "delete",
-			slug,
-		});
-	}
-
-	/** Delete a relationship type (code-managed prune). */
-	async deleteRelationshipType(slug: string): Promise<void> {
-		await this.request("POST", `/api/${this.orgSlug}/manage_entity_schema`, {
-			schema_type: "relationship_type",
-			action: "delete",
-			slug,
-		});
-	}
-
-	// ── Behaviors ─────────────────────────────────────────────────────────────
-
-	/**
-	 * Fetch a single Behavior's full payload, including the reaction script
-	 * (not in the list response). Used by `lobu init --from-org` to round-trip
-	 * reaction scripts back to sibling `.ts` files.
-	 */
-	async getBehaviorDetail(watcherId: string): Promise<{
-		reaction_script?: string | null;
-		description?: string | null;
-	} | null> {
-		try {
-			const { body } = await this.request<{
-				behavior?: {
-					reaction_script?: string | null;
-					description?: string | null;
-				};
-			}>(
-				"GET",
-				`/api/${this.orgSlug}/behaviors?behavior_id=${encodeURIComponent(watcherId)}`,
-			);
-			return body.behavior ?? null;
-		} catch (err) {
-			if (err instanceof ApiError && err.status === 404) return null;
-			throw err;
-		}
-	}
-
-	async listBehaviors(): Promise<RemoteBehavior[]> {
-		// `include_details=true` pulls the version-bound fields (prompt,
-		// classifiers, outputs, reactions_guidance) too.
-		// Apply diffs against these to detect drift on prompt / sources / etc.
-		const { body } = await this.request<{ behaviors?: RemoteBehavior[] }>(
-			"GET",
-			`/api/${this.orgSlug}/behaviors?include_details=true`,
-		);
-		return body.behaviors ?? [];
-	}
-
-	/**
-	 * Create a Behavior owned by `agentId`. Duplicate-slug surfaces as a
-	 * structured error the caller swallows for idempotency.
-	 */
-	async createBehavior(payload: {
-		slug: string;
-		agentId: string;
-		name?: string;
-		description?: string;
-		prompt: string;
-		skills?: Array<{ name: string; content: string }>;
-		triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
-		sources?: BehaviorSource[];
-		reactions_guidance?: string;
-		device_worker_id?: string;
-		notification_channel?: "canvas" | "notification" | "both";
-		notification_priority?: "low" | "normal" | "high";
-		min_cooldown_seconds?: number;
-		tags?: string[];
-		agent_kind?: string;
-		outputs?: Record<string, unknown> | null;
-		classifiers?: unknown[];
-	}): Promise<{ behavior_id?: string }> {
-		const { body } = await this.request<{ behavior_id?: string }>(
-			"POST",
-			`/api/${this.orgSlug}/manage_behaviors`,
-			{
-				action: "create",
-				slug: payload.slug,
-				agent_id: payload.agentId,
-				...(payload.name ? { name: payload.name } : {}),
-				...(payload.description ? { description: payload.description } : {}),
-				prompt: payload.prompt,
-				...(payload.skills?.length ? { skills: payload.skills } : {}),
-				...(payload.triggers !== undefined
-					? { triggers: payload.triggers }
-					: {}),
-				...(payload.sources?.length ? { sources: payload.sources } : {}),
-				...(payload.reactions_guidance !== undefined
-					? { reactions_guidance: payload.reactions_guidance }
-					: {}),
-				...(payload.device_worker_id !== undefined
-					? { device_worker_id: payload.device_worker_id }
-					: {}),
-				...(payload.notification_channel !== undefined
-					? { notification_channel: payload.notification_channel }
-					: {}),
-				...(payload.notification_priority !== undefined
-					? { notification_priority: payload.notification_priority }
-					: {}),
-				...(payload.min_cooldown_seconds !== undefined
-					? { min_cooldown_seconds: payload.min_cooldown_seconds }
-					: {}),
-				...(payload.tags?.length ? { tags: payload.tags } : {}),
-				...(payload.agent_kind !== undefined
-					? { agent_kind: payload.agent_kind }
-					: {}),
-				...(payload.outputs !== undefined ? { outputs: payload.outputs } : {}),
-				...(payload.classifiers !== undefined
-					? { classifiers: payload.classifiers }
-					: {}),
-			},
-		);
-		return { ...(body.behavior_id ? { behavior_id: body.behavior_id } : {}) };
-	}
-
-	/**
-	 * Update the **scalar** fields on the `watchers` row — these don't require
-	 * a new version. Version-bound fields (prompt / sources / reactions_guidance /
-	 * outputs / classifiers) require `createBehaviorVersion`
-	 * instead.
-	 *
-	 * `null` clears nullable fields (device_worker_id, agent_kind) per the
-	 * server contract.
-	 */
-	async updateBehavior(payload: {
-		behavior_id: string;
-		triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
-		agent_id?: string;
-		device_worker_id?: string | null;
-		notification_channel?: "canvas" | "notification" | "both";
-		notification_priority?: "low" | "normal" | "high";
-		min_cooldown_seconds?: number;
-		tags?: string[];
-		agent_kind?: string | null;
-	}): Promise<void> {
-		await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
-			action: "update",
-			behavior_id: payload.behavior_id,
-			...(payload.triggers !== undefined ? { triggers: payload.triggers } : {}),
-			...(payload.agent_id !== undefined ? { agent_id: payload.agent_id } : {}),
-			...(payload.device_worker_id !== undefined
-				? { device_worker_id: payload.device_worker_id }
-				: {}),
-			...(payload.notification_channel !== undefined
-				? { notification_channel: payload.notification_channel }
-				: {}),
-			...(payload.notification_priority !== undefined
-				? { notification_priority: payload.notification_priority }
-				: {}),
-			...(payload.min_cooldown_seconds !== undefined
-				? { min_cooldown_seconds: payload.min_cooldown_seconds }
-				: {}),
-			...(payload.tags !== undefined ? { tags: payload.tags } : {}),
-			...(payload.agent_kind !== undefined
-				? { agent_kind: payload.agent_kind }
-				: {}),
-		});
-	}
-
-	/**
-	 * Create a new watcher_versions row carrying the version-bound fields, then
-	 * upgrade the watcher's `current_version_id` to that new version. Server
-	 * inherits unset fields from the previous version row.
-	 * name/description/prompt/sources are version-owned (update rejects them).
-	 */
-	async createBehaviorVersion(payload: {
-		behavior_id: string;
-		name?: string;
-		description?: string | null;
-		prompt?: string;
-		skills?: Array<{ name: string; content: string }>;
-		sources?: BehaviorSource[];
-		outputs?: Record<string, unknown> | null;
-		classifiers?: unknown[];
-		reactions_guidance?: string;
-		change_notes?: string;
-		/** When set, written atomically with the new version (set_as_current). */
-		triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
-	}): Promise<{ version?: number }> {
-		const { body } = await this.request<{ version?: number }>(
-			"POST",
-			`/api/${this.orgSlug}/manage_behaviors`,
-			{
-				action: "create_version",
-				behavior_id: payload.behavior_id,
-				set_as_current: true,
-				...(payload.name !== undefined ? { name: payload.name } : {}),
-				...(payload.description !== undefined
-					? { description: payload.description }
-					: {}),
-				...(payload.prompt !== undefined ? { prompt: payload.prompt } : {}),
-				...(payload.skills !== undefined ? { skills: payload.skills } : {}),
-				...(payload.sources !== undefined ? { sources: payload.sources } : {}),
-				...(payload.outputs !== undefined ? { outputs: payload.outputs } : {}),
-				...(payload.classifiers !== undefined
-					? { classifiers: payload.classifiers }
-					: {}),
-				...(payload.reactions_guidance !== undefined
-					? { reactions_guidance: payload.reactions_guidance }
-					: {}),
-				...(payload.triggers !== undefined
-					? { triggers: payload.triggers }
-					: {}),
-				...(payload.change_notes
-					? { change_notes: payload.change_notes }
-					: { change_notes: "lobu apply" }),
-			},
-		);
-		return body.version !== undefined ? { version: body.version } : {};
-	}
-
-	/**
-	 * Attach (or clear) a reaction script. Pass an empty string to remove it —
-	 * matches the admin tool contract.
-	 */
-	async setReactionScript(
-		watcherId: string,
-		reactionScript: string,
-	): Promise<void> {
-		await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
-			action: "set_reaction_script",
-			behavior_id: watcherId,
-			reaction_script: reactionScript,
-		});
-	}
-
-	/**
-	 * Delete a Behavior by its numeric `behavior_id` (code-managed prune). The
-	 * admin tool takes an array; we delete one slug's Behavior at a time so a
-	 * failure is attributable.
-	 */
-	async deleteBehavior(watcherId: string): Promise<void> {
-		await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
-			action: "delete",
-			behavior_ids: [watcherId],
-		});
-	}
-
-	// ── Connector definitions ─────────────────────────────────────────────────
-
-	private async connectionsTool<T>(body: Record<string, unknown>): Promise<T> {
-		const { body: parsed } = await this.request<T>(
-			"POST",
-			`/api/${this.orgSlug}/manage_connections`,
-			body,
-		);
-		return parsed;
-	}
-
-	private async feedsTool<T>(body: Record<string, unknown>): Promise<T> {
-		const { body: parsed } = await this.request<T>(
-			"POST",
-			`/api/${this.orgSlug}/manage_feeds`,
-			body,
-		);
-		return parsed;
-	}
-
-	private async authProfilesTool<T>(body: Record<string, unknown>): Promise<T> {
-		const { body: parsed } = await this.request<T>(
-			"POST",
-			`/api/${this.orgSlug}/manage_auth_profiles`,
-			body,
-		);
-		return parsed;
-	}
-
-	private async catalogTool<T>(body: Record<string, unknown>): Promise<T> {
-		const { body: parsed } = await this.request<T>(
-			"POST",
-			`/api/${this.orgSlug}/manage_catalog`,
-			body,
-		);
-		return parsed;
-	}
-
-	/** Installed org connectors + (with `includeInstallable`) the bundled catalog. */
-	async listConnectors(
-		includeInstallable = true,
-	): Promise<RemoteConnectorDefinition[]> {
-		const body = await this.catalogTool<{
-			installed?: {
-				connectors?: {
-					items?: Array<{
-						id: string;
-						name: string;
-						detail?: Record<string, unknown>;
-					}>;
-				};
-			};
-		}>({
-			action: "list_installed",
-			kinds: ["connectors"],
-			include_catalog: includeInstallable,
-		});
-		const items = body.installed?.connectors?.items ?? [];
-		return items.map((item) => mapConnectorDefinitionItem(item));
-	}
-
-	/**
-	 * Idempotent connector install. The CLI can enable a reviewed catalog
-	 * connector by id or pass connector source; server returns the resolved
-	 * connectorKey plus updated.
-	 */
-	async installConnector(
-		payload: CliInstallConnectorPayload,
-	): Promise<InstallConnectorResult> {
-		const body = await this.connectionsTool<{
-			installed?: boolean;
-			connector_key?: string;
-			version?: string;
-			updated?: boolean;
-		}>({
-			action: "install_connector",
-			...(payload.connectorId ? { connector_id: payload.connectorId } : {}),
-			...(payload.sourceCode !== undefined
-				? {
-						source_code: payload.sourceCode,
-						compiled: payload.compiled ?? false,
-					}
-				: {}),
-			...(payload.sourceUrl ? { source_url: payload.sourceUrl } : {}),
-			...(payload.sourceUri ? { source_uri: payload.sourceUri } : {}),
-		});
-		return {
-			connectorKey: body.connector_key ?? "",
-			updated: body.updated ?? false,
-			...(body.version ? { version: body.version } : {}),
-		};
-	}
-
-	async uninstallConnector(connectorKey: string): Promise<void> {
-		await this.connectionsTool({
-			action: "uninstall_connector",
-			connector_key: connectorKey,
-		});
-	}
-
-	/**
-	 * Re-activate a retained connector version (org-local pointer flip — the
-	 * bytes already live in the org's `connector_versions` rows). The engine
-	 * behind `lobu rollback`'s connector pins.
-	 */
-	async rollbackConnectorVersion(
-		connectorKey: string,
-		version: string,
-	): Promise<void> {
-		await this.connectionsTool({
-			action: "rollback_connector_version",
-			connector_key: connectorKey,
-			version,
-		});
-	}
-
-	// ── Auth profiles ─────────────────────────────────────────────────────────
-
-	async listAuthProfiles(): Promise<RemoteAuthProfile[]> {
-		const body = await this.authProfilesTool<{
-			auth_profiles?: RemoteAuthProfile[];
-		}>({ action: "list_auth_profiles" });
-		return body.auth_profiles ?? [];
-	}
-
-	async getAuthProfileBySlug(slug: string): Promise<RemoteAuthProfile | null> {
-		try {
-			const body = await this.authProfilesTool<{
-				auth_profile?: RemoteAuthProfile;
-			}>({ action: "get_auth_profile", auth_profile_slug: slug });
-			return body.auth_profile ?? null;
-		} catch (err) {
-			if (err instanceof ApiError && err.status === 404) return null;
-			throw err;
-		}
-	}
-
-	async createAuthProfile(payload: {
-		slug: string;
-		connector: string;
-		kind: string;
-		name?: string;
-		credentials?: Record<string, string>;
-	}): Promise<EnsureAuthProfileResult> {
-		const body = await this.authProfilesTool<{
-			auth_profile?: { status?: string };
-			connect_url?: string;
-		}>({
-			action: "create_auth_profile",
-			connector_key: payload.connector,
-			profile_kind: payload.kind,
-			display_name: payload.name ?? payload.slug,
-			slug: payload.slug,
-			...(payload.credentials && Object.keys(payload.credentials).length > 0
-				? { credentials: payload.credentials }
-				: {}),
-		});
-		return {
-			created: true,
-			updated: false,
-			...(body.auth_profile?.status
-				? { status: body.auth_profile.status }
-				: {}),
-			...(body.connect_url ? { connectUrl: body.connect_url } : {}),
-		};
-	}
-
-	async updateAuthProfile(payload: {
-		slug: string;
-		name?: string;
-		credentials?: Record<string, string>;
-	}): Promise<EnsureAuthProfileResult> {
-		const body = await this.authProfilesTool<{
-			auth_profile?: { status?: string };
-			connect_url?: string;
-		}>({
-			action: "update_auth_profile",
-			auth_profile_slug: payload.slug,
-			...(payload.name ? { display_name: payload.name } : {}),
-			...(payload.credentials && Object.keys(payload.credentials).length > 0
-				? { credentials: payload.credentials }
-				: {}),
-		});
-		return {
-			created: false,
-			updated: true,
-			...(body.auth_profile?.status
-				? { status: body.auth_profile.status }
-				: {}),
-			...(body.connect_url ? { connectUrl: body.connect_url } : {}),
-		};
-	}
-
-	/** Re-issue a connect token for an existing interactive-auth profile. */
-	async reconnectAuthProfile(slug: string): Promise<string | undefined> {
-		const body = await this.authProfilesTool<{ connect_url?: string }>({
-			action: "update_auth_profile",
-			auth_profile_slug: slug,
-			reconnect: true,
-		});
-		return body.connect_url;
-	}
-
-	// ── Connections ───────────────────────────────────────────────────────────
-
-	async listConnections(): Promise<RemoteConnection[]> {
-		const body = await this.connectionsTool<{
-			connections?: RemoteConnection[];
-		}>({ action: "list", limit: 500 });
-		return (body.connections ?? [])
-			.filter(
-				// Data connectors (credential_mode NULL) and BYO chat connections
-				// (credential_mode 'byo') both round-trip through `connections`. Managed
-				// chat installs ('managed') are owned by the OAuth/claim flow, never the
-				// declarative config, so they are excluded from the diff.
-				(connection) =>
-					connection.credential_mode == null ||
-					connection.credential_mode === "byo",
-			)
-			.map((connection) => {
-				if (connection.credential_mode !== "byo") return connection;
-				// The chat runtime folds its own adapter discriminator, settings, and
-				// metadata into `config`. They are storage details, not declarative
-				// connector options, so do not expose them to diff/bootstrap callers.
-				const config = { ...(connection.config ?? {}) };
-				delete config.platform;
-				delete config.settings;
-				delete config.chatMetadata;
-				return {
-					...connection,
-					// BYO chat rows use the `agentconn-` storage namespace. Restore the
-					// authored slug so desired and remote state match.
-					slug: connection.slug.startsWith("agentconn-")
-						? connection.slug.slice("agentconn-".length)
-						: connection.slug,
-					config,
-				};
-			});
-	}
-
-	/**
-	 * Apply a BYO chat connection (a chat connector with a credential in `config`)
-	 * through the secret-aware `apply_chat_connection` path. Keyed by the
-	 * declared connection `slug` as the stable id (server stores it as
-	 * `agentconn-<slug>`); no owning agent — chat routing is a Behavior created
-	 * when a channel is linked. The server compares resolved credentials under a
-	 * PG advisory lock, so an unchanged declaration is a true no-op.
-	 */
-	async applyChatConnection(payload: {
-		slug: string;
-		connector: string;
-		/** Omitted means preserve the server-derived/stored display name. */
-		name?: string;
-		config: Record<string, unknown>;
-	}): Promise<{ id: number; created: boolean; changed: boolean }> {
-		const body = await this.connectionsTool<{
-			connection?: RemoteConnection;
-			created?: boolean;
-			changed?: boolean;
-			error?: string;
-		}>({
-			action: "apply_chat_connection",
-			stable_id: payload.slug,
-			connector_key: payload.connector,
-			...(payload.name ? { display_name: payload.name } : {}),
-			config: payload.config,
-		});
-		if (body.error) throw new ApiError(body.error);
-		if (!body.connection) {
-			throw new ApiError(
-				`apply chat connection "${payload.slug}" returned no connection payload`,
-			);
-		}
-		return {
-			id: body.connection.id,
-			created: body.created === true,
-			changed: body.changed === true,
-		};
-	}
-
-	async createConnection(payload: {
-		slug: string;
-		connector: string;
-		name?: string;
-		authProfileSlug?: string;
-		appAuthProfileSlug?: string;
-		config?: Record<string, unknown>;
-		deviceWorkerId?: string;
-	}): Promise<RemoteConnection> {
-		const body = await this.connectionsTool<{ connection?: RemoteConnection }>({
-			action: "create",
-			connector_key: payload.connector,
-			slug: payload.slug,
-			...(payload.name ? { display_name: payload.name } : {}),
-			...(payload.authProfileSlug
-				? { auth_profile_slug: payload.authProfileSlug }
-				: {}),
-			...(payload.appAuthProfileSlug
-				? { app_auth_profile_slug: payload.appAuthProfileSlug }
-				: {}),
-			...(payload.config ? { config: payload.config } : {}),
-			...(payload.deviceWorkerId
-				? { device_worker_id: payload.deviceWorkerId }
-				: {}),
-		});
-		if (!body.connection) {
-			throw new ApiError(
-				`create connection "${payload.slug}" returned no connection payload`,
-			);
-		}
-		return body.connection;
-	}
-
-	async updateConnection(
-		connectionId: number,
-		payload: {
-			name?: string;
-			authProfileSlug?: string | null;
-			appAuthProfileSlug?: string | null;
-			config?: Record<string, unknown>;
-			deviceWorkerId?: string | null;
-		},
-	): Promise<RemoteConnection> {
-		const body = await this.connectionsTool<{ connection?: RemoteConnection }>({
-			action: "update",
-			connection_id: connectionId,
-			...(payload.name !== undefined ? { display_name: payload.name } : {}),
-			...(payload.authProfileSlug !== undefined
-				? { auth_profile_slug: payload.authProfileSlug }
-				: {}),
-			...(payload.appAuthProfileSlug !== undefined
-				? { app_auth_profile_slug: payload.appAuthProfileSlug }
-				: {}),
-			// `lobu apply` is declarative — replace, don't merge, so removed
-			// manifest keys disappear remotely (server defaults to merge).
-			...(payload.config !== undefined
-				? { config: payload.config, replace_config: true }
-				: {}),
-			...(payload.deviceWorkerId !== undefined
-				? { device_worker_id: payload.deviceWorkerId }
-				: {}),
-		});
-		if (!body.connection) {
-			throw new ApiError(
-				`update connection #${connectionId} returned no connection payload`,
-			);
-		}
-		return body.connection;
-	}
-
-	// ── Feeds (managed per-connection) ────────────────────────────────────────
-
-	async listFeeds(connectionId: number): Promise<RemoteFeed[]> {
-		const body = await this.feedsTool<{ feeds?: RemoteFeed[] }>({
-			action: "list_feeds",
-			connection_id: connectionId,
-			limit: 500,
-		});
-		return body.feeds ?? [];
-	}
-
-	async createFeed(payload: {
-		connectionId: number;
-		feedKey: string;
-		name?: string;
-		/** Cron string, or null for manual-only. */
-		schedule?: string | null;
-		config?: Record<string, unknown>;
-		virtual?: boolean;
-	}): Promise<RemoteFeed> {
-		const body = await this.feedsTool<{ feed?: RemoteFeed }>({
-			action: "create_feed",
-			connection_id: payload.connectionId,
-			feed_key: payload.feedKey,
-			...(payload.name ? { display_name: payload.name } : {}),
-			// Always send schedule when provided (including null) so the server does
-			// not have to invent a default.
-			...(payload.schedule !== undefined ? { schedule: payload.schedule } : {}),
-			...(payload.config ? { config: payload.config } : {}),
-			...(payload.virtual ? { virtual: true } : {}),
-		});
-		if (!body.feed) {
-			throw new ApiError(
-				`create feed "${payload.feedKey}" returned no feed payload`,
-			);
-		}
-		return body.feed;
-	}
-
-	async updateFeed(
-		feedId: number,
-		payload: {
-			name?: string;
-			/** Cron string, or null to clear (manual-only). */
-			schedule?: string | null;
-			config?: Record<string, unknown>;
-		},
-	): Promise<RemoteFeed> {
-		const body = await this.feedsTool<{ feed?: RemoteFeed }>({
-			action: "update_feed",
-			feed_id: feedId,
-			...(payload.name !== undefined ? { display_name: payload.name } : {}),
-			...(payload.schedule !== undefined ? { schedule: payload.schedule } : {}),
-			...(payload.config !== undefined
-				? { config: payload.config, replace_config: true }
-				: {}),
-		});
-		if (!body.feed) {
-			throw new ApiError(`update feed #${feedId} returned no feed payload`);
-		}
-		return body.feed;
-	}
+  private readonly orgSlug: string;
+  private readonly http: ApiClient;
+
+  constructor(cfg: ApplyClientConfig, fetchImpl: typeof fetch = fetch) {
+    this.orgSlug = cfg.orgSlug;
+    this.http = new ApiClient(
+      cfg.apiBaseUrl,
+      cfg.token,
+      fetchImpl,
+      cfg.applyId ? { "x-lobu-apply-id": cfg.applyId } : {}
+    );
+  }
+
+  /**
+   * Delegates the fetch/parse/non-ok-error pipeline to the shared
+   * {@link ApiClient}, then layers on the apply-specific shape:
+   *   - the body is coerced to a record (`undefined`→`{}`, non-record→`{value}`)
+   *   - a body-level `error` string is treated as a failure even on a 2xx
+   *
+   * Apply endpoints only ever return the listed `okStatuses` (200/201/204) on
+   * success or a 4xx/5xx on failure, so `ApiClient`'s status gate produces the
+   * same outcome the local pipeline did. `Content-Type: application/json` is
+   * sent on every request (no `Accept`) to mirror the previous wire shape.
+   */
+  private async request<T>(
+    method: HttpMethod,
+    path: string,
+    body?: unknown,
+    okStatuses: number[] = [200, 201, 204]
+  ): Promise<{ status: number; body: T }> {
+    const { status, body: raw } = await this.http.requestWithStatus<unknown>(
+      method,
+      path,
+      body,
+      { okStatuses, sendAccept: false, alwaysJsonContentType: true }
+    );
+
+    let parsed: Record<string, unknown>;
+    if (raw === undefined) {
+      parsed = {};
+    } else if (isRecord(raw)) {
+      parsed = raw;
+    } else {
+      parsed = { value: raw };
+    }
+
+    if (typeof parsed.error === "string" && parsed.error.length > 0) {
+      throw new ApiError(
+        `${method} ${path} returned error: ${parsed.error}`,
+        status
+      );
+    }
+
+    return { status, body: parsed as T };
+  }
+
+  // ── Organization ──────────────────────────────────────────────────────────
+
+  /**
+   * Orgs the authenticated user belongs to, read from the OAuth userinfo
+   * endpoint — the same source `lobu org list` uses. Used to check whether the
+   * `[memory].org` slug already resolves to one of the operator's orgs. Does
+   * not depend on `this.orgSlug`. (`lobu apply` can't create an org headlessly
+   * — that needs a logged-in browser session — so there is no `createOrg`.)
+   */
+  async listOrgs(): Promise<RemoteOrg[]> {
+    const { body } = await this.request<{ organizations?: unknown }>(
+      "GET",
+      `/oauth/userinfo`
+    );
+    const orgs = Array.isArray(body.organizations) ? body.organizations : [];
+    const out: RemoteOrg[] = [];
+    for (const entry of orgs) {
+      if (!isRecord(entry)) continue;
+      const id = typeof entry.id === "string" ? entry.id : "";
+      const slug = typeof entry.slug === "string" ? entry.slug : "";
+      if (!id || !slug) continue;
+      out.push({
+        id,
+        slug,
+        ...(typeof entry.name === "string" ? { name: entry.name } : {}),
+      });
+    }
+    return out;
+  }
+
+  // ── Agents ────────────────────────────────────────────────────────────────
+
+  async listAgents(): Promise<RemoteAgent[]> {
+    const { body } = await this.request<{ agents?: RemoteAgent[] }>(
+      "GET",
+      `/api/${this.orgSlug}/agents`
+    );
+    return body.agents ?? [];
+  }
+
+  /**
+   * Idempotent create: PR-2 makes `POST /` return 200 with the existing
+   * payload when an agent of the same ID already exists in the same org.
+   * Cross-org collision still surfaces as 409 with a clear `error.code` —
+   * we re-throw verbatim so `lobu apply` can show the operator the link
+   * to the org-scoped IDs issue.
+   */
+  async upsertAgent(agent: DesiredAgentMetadata): Promise<RemoteAgent> {
+    const { body } = await this.request<RemoteAgent>(
+      "POST",
+      // No trailing slash — Hono matches `routes.post('/', ...)` mounted at
+      // `/api/:orgSlug/agents` against `/api/dev/agents`, not `/api/dev/agents/`.
+      `/api/${this.orgSlug}/agents`,
+      agent,
+      [200, 201]
+    );
+    return body;
+  }
+
+  async patchAgentMetadata(
+    agentId: string,
+    agent: { name?: string; description?: string }
+  ): Promise<void> {
+    await this.request(
+      "PATCH",
+      `/api/${this.orgSlug}/agents/${encodeURIComponent(agentId)}`,
+      agent
+    );
+  }
+
+  async getAgentSettings(agentId: string): Promise<AgentSettings | null> {
+    try {
+      const { body } = await this.request<AgentSettings>(
+        "GET",
+        `/api/${this.orgSlug}/agents/${encodeURIComponent(agentId)}/config`
+      );
+      return body;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
+  async patchAgentSettings(
+    agentId: string,
+    settings: Partial<AgentSettings>
+  ): Promise<void> {
+    await this.request(
+      "PATCH",
+      `/api/${this.orgSlug}/agents/${encodeURIComponent(agentId)}/config`,
+      settings
+    );
+  }
+
+  /**
+   * Record this apply run as a deployment (`POST /api/<org>/deployments`).
+   * The server dedupes on apply_id, so a retried post is safe. Callers treat
+   * failure as a warning — the apply itself already succeeded (or already
+   * failed) independently of the audit record.
+   */
+  async postDeploymentSummary(summary: DeploymentSummary): Promise<void> {
+    await this.request("POST", `/api/${this.orgSlug}/deployments`, summary);
+  }
+
+  /** Fetch one deployment's record, including its stored manifest snapshot. */
+  async getDeployment(applyId: string): Promise<RemoteDeployment | null> {
+    try {
+      const { body } = await this.request<{ deployment?: RemoteDeployment }>(
+        "GET",
+        `/api/${this.orgSlug}/deployments/${encodeURIComponent(applyId)}`
+      );
+      return body.deployment ?? null;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
+  /** Latest `succeeded` deployment — the attribution baseline (null when none). */
+  async getLatestDeployment(): Promise<RemoteDeployment | null> {
+    const { body } = await this.request<{ deployment?: RemoteDeployment }>(
+      "GET",
+      `/api/${this.orgSlug}/deployments/latest`
+    );
+    return body.deployment ?? null;
+  }
+
+  /** Promotions-pause state (set by `lobu rollback`). */
+  async getDeploymentPause(): Promise<DeploymentPauseState> {
+    const { body } = await this.request<DeploymentPauseState>(
+      "GET",
+      `/api/${this.orgSlug}/deployments/pause`
+    );
+    return body;
+  }
+
+  async setDeploymentPause(params: {
+    applyId: string;
+    rollbackOf: string;
+  }): Promise<void> {
+    await this.request("PUT", `/api/${this.orgSlug}/deployments/pause`, {
+      apply_id: params.applyId,
+      rollback_of: params.rollbackOf,
+    });
+  }
+
+  async clearDeploymentPause(): Promise<void> {
+    await this.request("DELETE", `/api/${this.orgSlug}/deployments/pause`);
+  }
+
+  // ── Org inference providers ────────────────────────────────────────────────
+  // Org-scoped, mounted UNDER the agents router (`/api/:orgSlug/agents`), so the
+  // full path is `/api/<org>/agents/inference-providers…` — verified against
+  // `app.route("/api/:orgSlug/agents", agentRoutes)` in packages/server/src/index.ts.
+
+  /** List the org's inference providers (never returns the api key). */
+  async listInferenceProviders(): Promise<RemoteInferenceProvider[]> {
+    const { body } = await this.request<{
+      providers?: RemoteInferenceProvider[];
+    }>("GET", `/api/${this.orgSlug}/agents/inference-providers`);
+    return body.providers ?? [];
+  }
+
+  /** Create an org inference provider. 409 (surfaced as ApiError) on slug conflict. */
+  async createInferenceProvider(body: {
+    slug: string;
+    kind: string;
+    displayName?: string;
+    apiKey: string;
+    capabilities?: Partial<Record<InferenceModality, InferenceCapabilityBlock>>;
+  }): Promise<RemoteInferenceProvider> {
+    const { body: res } = await this.request<{
+      provider: RemoteInferenceProvider;
+    }>("POST", `/api/${this.orgSlug}/agents/inference-providers`, body);
+    return res.provider;
+  }
+
+  /** Upsert one modality's capability block (`{ base_url?, model?, models_endpoint? }`). */
+  async updateInferenceProviderCapabilities(
+    slug: string,
+    modality: InferenceModality,
+    block: InferenceCapabilityBlock
+  ): Promise<void> {
+    await this.request(
+      "PUT",
+      `/api/${this.orgSlug}/agents/inference-providers/${encodeURIComponent(slug)}/capabilities/${encodeURIComponent(modality)}`,
+      { block }
+    );
+  }
+
+  /**
+   * Rotate an org provider's API key. Idempotent — the current key can't be read
+   * back, so apply re-pushes the declared value on every run; a matching value
+   * is a harmless no-op server-side, a changed one rotates.
+   */
+  async rotateInferenceProviderKey(slug: string, value: string): Promise<void> {
+    await this.request(
+      "PUT",
+      `/api/${this.orgSlug}/agents/inference-providers/${encodeURIComponent(slug)}/key`,
+      { value }
+    );
+  }
+
+  /** Soft-delete an org inference provider. */
+  async deleteInferenceProvider(slug: string): Promise<void> {
+    await this.request(
+      "DELETE",
+      `/api/${this.orgSlug}/agents/inference-providers/${encodeURIComponent(slug)}`
+    );
+  }
+
+  // ── Memory schema ─────────────────────────────────────────────────────────
+
+  async listEntityTypes(): Promise<RemoteEntityType[]> {
+    type RawEntityTypeRow = RemoteEntityType & {
+      metadata_schema?: unknown;
+      event_kinds?: unknown;
+      backing_sql?: string | null;
+    };
+    const { body } = await this.request<{
+      entity_types?: RawEntityTypeRow[];
+      entityTypes?: RawEntityTypeRow[];
+    }>("POST", `/api/${this.orgSlug}/manage_entity_schema`, {
+      schema_type: "entity_type",
+      action: "list",
+    });
+    // The server returns the type's fields inside a single `metadata_schema`
+    // JSON Schema (+ typed backing_* columns). Surface `properties`/`required`
+    // and normalize `backing` at top level so the diff compares them against the
+    // desired config (which carries them flat).
+    return pickArray<RawEntityTypeRow>(body, "entity_types", "entityTypes").map(
+      hoistEntityTypeSchema
+    );
+  }
+
+  /**
+   * The `manage_entity_schema` admin tool exposes separate `create` / `update`
+   * actions and surfaces duplicates as a coded 409 (`[entity_type_exists]` /
+   * `[relationship_type_exists]`). Probe with `create`; on that explicit
+   * duplicate signal retry with `update`. Any other error (e.g. a 422
+   * `[invalid_schema]` validation failure) propagates verbatim — retrying it
+   * as an update used to mask the real message behind "Entity type not
+   * found" (issue #1177).
+   */
+  private async upsertSchemaResource(
+    schemaType: "entity_type" | "relationship_type",
+    payload: Record<string, unknown>
+  ): Promise<UpsertEntityTypeResult> {
+    const url = `/api/${this.orgSlug}/manage_entity_schema`;
+    try {
+      await this.request("POST", url, {
+        schema_type: schemaType,
+        action: "create",
+        ...payload,
+      });
+      return { created: true };
+    } catch (err) {
+      if (err instanceof ApiError && isDuplicateError(err)) {
+        await this.request("POST", url, {
+          schema_type: schemaType,
+          action: "update",
+          ...payload,
+        });
+        return { updated: true };
+      }
+      throw err;
+    }
+  }
+
+  async upsertEntityType(
+    // `metadata` is authoring-only — never sent to the server (see
+    // DesiredEntityType); extra properties on the passed value are ignored.
+    entity: Omit<DesiredEntityType, "metadata">,
+    /**
+     * The live type's `metadata_schema` extension keys
+     * ({@link RemoteEntityType.schemaExtras}), from the remote snapshot this
+     * apply already fetched. Hoisted core keys are stripped before merging; a
+     * declared resolution policy overrides its live extension, while every
+     * undeclared extension survives the rebuild.
+     */
+    schemaExtras?: Record<string, unknown>,
+    /**
+     * The live type's hoisted schema core (`properties`/`required`) when the
+     * config does not declare them itself. Required so a type that declares
+     * ONLY an extension (e.g. `resolutionPolicy`) does not wipe the server's
+     * complete metadata_schema by sending `properties: {}` — the config's
+     * declared value wins when present, the remote core round-trips otherwise.
+     */
+    remoteSchemaCore?: {
+      properties?: Record<string, unknown>;
+      required?: string[];
+    },
+    /**
+     * Facet names the apply diff flagged for CLEARING (prune removal of
+     * out-of-band eventKinds, derived→stored backing revert, metric removal).
+     * Facets are declared-only otherwise: an update fired for an unrelated
+     * field must never wipe live values the config does not own, and the server
+     * clears a facet only when its key is present in the payload.
+     */
+    clearFacets?: ReadonlySet<string>,
+    /**
+     * When true (prune off), remote-only property keys the config never
+     * declared are merged into the write so an unrelated config update cannot
+     * silently erase a UI-added property. When false (prune on), declared
+     * properties alone are the full schema.
+     */
+    preserveRemoteOnlyProperties = true
+  ): Promise<UpsertEntityTypeResult> {
+    // The server stores per-type fields as a single `metadata_schema` JSON
+    // Schema (`{ type, properties, required }`) — it does NOT read top-level
+    // `properties`/`required`. Fold them into `metadata_schema` so the schema
+    // actually persists (otherwise every apply re-reports a `properties`
+    // update because the stored schema stays empty).
+    const {
+      slug,
+      name,
+      description,
+      required,
+      properties,
+      eventKinds,
+      backing,
+      metrics,
+      resolutionPolicy,
+    } = entity;
+    const payload: Record<string, unknown> = { slug };
+    if (name !== undefined) payload.name = name;
+    if (description !== undefined) payload.description = description;
+    if (
+      properties !== undefined ||
+      required !== undefined ||
+      resolutionPolicy !== undefined ||
+      clearFacets?.has("properties") ||
+      clearFacets?.has("required") ||
+      clearFacets?.has("resolutionPolicy")
+    ) {
+      // Strip config-owned keys from the extras bag so config always wins —
+      // spread order alone would let a stale `required` survive, because the
+      // config's `required` is only spread when non-empty. (When the config
+      // declares neither properties nor required we send no metadata_schema at
+      // all — the server then leaves the stored one alone, extras included.)
+      const extras: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(schemaExtras ?? {})) {
+        if (HOISTED_SCHEMA_KEYS.has(key)) continue;
+        // The resolution policy is config-owned when declared, and removed under
+        // prune — either way the declared/cleared value wins over out-of-band.
+        if (
+          (resolutionPolicy !== undefined ||
+            clearFacets?.has("resolutionPolicy")) &&
+          key === "x-lobu-resolution"
+        )
+          continue;
+        extras[key] = value;
+      }
+      // Declared properties/required win. When the config omits them:
+      //   - diff flagged a prune removal → send an empty core to clear them;
+      //   - otherwise → fall back to the live core so a fired update for an
+      //     unrelated field never silently clears the server's schema.
+      // When the config declares a partial properties object and prune is off,
+      // merge remote-only keys so UI-authored properties survive.
+      const pruneClearProperties = clearFacets?.has("properties");
+      const pruneClearRequired = clearFacets?.has("required");
+      const effectiveProperties = (() => {
+        if (pruneClearProperties) return {};
+        if (!properties) return remoteSchemaCore?.properties;
+        if (!preserveRemoteOnlyProperties) return properties;
+        const remoteOnly = Object.fromEntries(
+          Object.entries(remoteSchemaCore?.properties ?? {}).filter(
+            ([key]) => !(key in properties)
+          )
+        );
+        return { ...remoteOnly, ...properties };
+      })();
+      const effectiveRequired = required
+        ? required
+        : pruneClearRequired
+          ? undefined
+          : remoteSchemaCore?.required;
+      payload.metadata_schema = {
+        ...extras,
+        ...(resolutionPolicy ?? {}),
+        type: "object",
+        properties: effectiveProperties ?? {},
+        ...(effectiveRequired && effectiveRequired.length > 0
+          ? { required: effectiveRequired }
+          : {}),
+      };
+    }
+    // Facets are declared-only, with an explicit clear when the diff flagged
+    // them (prune removal / derived-revert / metric removal). Sending `null`
+    // unconditionally — the old behavior — wiped out-of-band values whenever
+    // ANY field changed; the server clears a facet only when its key is present.
+    if (eventKinds !== undefined || clearFacets?.has("eventKinds")) {
+      payload.event_kinds = eventKinds ?? null;
+    }
+    if (backing !== undefined || clearFacets?.has("backing")) {
+      payload.backing = backing
+        ? {
+            sql: backing.sql,
+            ...(backing.connection ? { connection: backing.connection } : {}),
+          }
+        : null;
+    }
+    if (metrics !== undefined || clearFacets?.has("metrics")) {
+      payload.metrics_config = metrics ?? null;
+    }
+    return this.upsertSchemaResource("entity_type", payload);
+  }
+
+  /**
+   * Fetch an entity type's current default view template (`null` if none).
+   * Apply uses this to diff ONLY the types it needs (declared templates, plus
+   * every config type under prune) — the template is deliberately NOT returned
+   * by the entity-type list, which the UI/bootstrap also calls.
+   */
+  async getEntityTypeViewTemplate(
+    slug: string
+  ): Promise<Record<string, unknown> | null> {
+    const { body } = await this.request<{
+      default_tab?: {
+        current?: { json_template?: Record<string, unknown> } | null;
+      };
+    }>("POST", `/api/${this.orgSlug}/manage_view_templates`, {
+      action: "get",
+      resource_type: "entity_type",
+      resource_id: slug,
+    });
+    return body.default_tab?.current?.json_template ?? null;
+  }
+
+  /**
+   * Set the entity type's default view template. A separate, version-appending
+   * tool from the schema upsert, so apply calls this ONLY on create or a changed
+   * template (see apply-cmd) — never every run, which would churn the history.
+   */
+  async setEntityTypeViewTemplate(
+    slug: string,
+    jsonTemplate: Record<string, unknown>
+  ): Promise<void> {
+    await this.request("POST", `/api/${this.orgSlug}/manage_view_templates`, {
+      action: "set",
+      resource_type: "entity_type",
+      resource_id: slug,
+      json_template: jsonTemplate,
+      change_notes: "lobu apply",
+    });
+  }
+
+  /**
+   * Clear the entity type's default view template (prune-gated removal). Nulls
+   * the current-version pointer server-side; history rows stay for rollback.
+   */
+  async clearEntityTypeViewTemplate(slug: string): Promise<void> {
+    await this.request("POST", `/api/${this.orgSlug}/manage_view_templates`, {
+      action: "clear",
+      resource_type: "entity_type",
+      resource_id: slug,
+    });
+  }
+
+  async listRelationshipTypes(): Promise<RemoteRelationshipType[]> {
+    const { body } = await this.request<{
+      relationship_types?: RemoteRelationshipType[];
+      relationshipTypes?: RemoteRelationshipType[];
+    }>("POST", `/api/${this.orgSlug}/manage_entity_schema`, {
+      schema_type: "relationship_type",
+      action: "list",
+    });
+    return pickArray(body, "relationship_types", "relationshipTypes");
+  }
+
+  /**
+   * Fetch a relationship type's rules (the `list` action omits them, so the
+   * apply diff can't otherwise see remote rules and would churn a perpetual
+   * "rules changed" update). Maps the server's `*_entity_type_slug` columns to
+   * `{ source, target }`; `id` is carried for reconcile (remove_rule by id).
+   */
+  async listRelationshipTypeRules(
+    slug: string
+  ): Promise<Array<RelationshipRule & { id: number }>> {
+    const { body } = await this.request<{
+      rules?: Array<{
+        id?: number;
+        source_entity_type_slug?: string;
+        target_entity_type_slug?: string;
+      }>;
+    }>("POST", `/api/${this.orgSlug}/manage_entity_schema`, {
+      schema_type: "relationship_type",
+      action: "list_rules",
+      slug,
+    });
+    return (body.rules ?? [])
+      .filter(
+        (r) =>
+          r.id != null && r.source_entity_type_slug && r.target_entity_type_slug
+      )
+      .map((r) => ({
+        id: r.id as number,
+        source: r.source_entity_type_slug as string,
+        target: r.target_entity_type_slug as string,
+      }));
+  }
+
+  async upsertRelationshipType(
+    // `metadata` is authoring-only — never sent (see DesiredRelationshipType).
+    rel: Omit<DesiredRelationshipType, "metadata">
+  ): Promise<UpsertEntityTypeResult> {
+    const { rules, ...payload } = rel;
+    const result = await this.upsertSchemaResource(
+      "relationship_type",
+      payload
+    );
+
+    // Reconcile rules to exactly the desired set so config is the source of
+    // truth (declarative). Without removing extras, dropping a rule from config
+    // would never take effect AND would churn a perpetual "rules changed"
+    // update on every apply. add_rule is idempotent; remove_rule takes a id.
+    const desired = rules ?? [];
+    const ruleKey = (r: RelationshipRule) => `${r.source}	${r.target}`;
+    const desiredKeys = new Set(desired.map(ruleKey));
+    const remote = await this.listRelationshipTypeRules(rel.slug);
+    const remoteKeys = new Set(remote.map(ruleKey));
+
+    for (const rule of desired) {
+      if (remoteKeys.has(ruleKey(rule))) continue;
+      try {
+        await this.request(
+          "POST",
+          `/api/${this.orgSlug}/manage_entity_schema`,
+          {
+            schema_type: "relationship_type",
+            action: "add_rule",
+            slug: rel.slug,
+            source_entity_type_slug: rule.source,
+            target_entity_type_slug: rule.target,
+          }
+        );
+      } catch (err) {
+        if (err instanceof ApiError && isDuplicateError(err)) continue;
+        throw err;
+      }
+    }
+    for (const rule of remote) {
+      if (desiredKeys.has(ruleKey(rule))) continue;
+      await this.request("POST", `/api/${this.orgSlug}/manage_entity_schema`, {
+        schema_type: "relationship_type",
+        action: "remove_rule",
+        slug: rel.slug,
+        rule_id: rule.id,
+      });
+    }
+    return result;
+  }
+
+  /**
+   * Delete an entity type (code-managed prune). The server soft-deletes and
+   * REFUSES if instances of the type still exist — the data is exempt from
+   * prune, so that surfaces as a clear error rather than cascading.
+   */
+  async deleteEntityType(slug: string): Promise<void> {
+    await this.request("POST", `/api/${this.orgSlug}/manage_entity_schema`, {
+      schema_type: "entity_type",
+      action: "delete",
+      slug,
+    });
+  }
+
+  /** Delete a relationship type (code-managed prune). */
+  async deleteRelationshipType(slug: string): Promise<void> {
+    await this.request("POST", `/api/${this.orgSlug}/manage_entity_schema`, {
+      schema_type: "relationship_type",
+      action: "delete",
+      slug,
+    });
+  }
+
+  // ── Behaviors ─────────────────────────────────────────────────────────────
+
+  /**
+   * Fetch a single Behavior's full payload, including the reaction script
+   * (not in the list response). Used by `lobu init --from-org` to round-trip
+   * reaction scripts back to sibling `.ts` files.
+   */
+  async getBehaviorDetail(watcherId: string): Promise<{
+    reaction_script?: string | null;
+    description?: string | null;
+  } | null> {
+    try {
+      const { body } = await this.request<{
+        behavior?: {
+          reaction_script?: string | null;
+          description?: string | null;
+        };
+      }>(
+        "GET",
+        `/api/${this.orgSlug}/behaviors?behavior_id=${encodeURIComponent(watcherId)}`
+      );
+      return body.behavior ?? null;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
+  async listBehaviors(): Promise<RemoteBehavior[]> {
+    // `include_details=true` pulls the version-bound fields (prompt,
+    // classifiers, outputs, reactions_guidance) too.
+    // Apply diffs against these to detect drift on prompt / sources / etc.
+    const { body } = await this.request<{ behaviors?: RemoteBehavior[] }>(
+      "GET",
+      `/api/${this.orgSlug}/behaviors?include_details=true`
+    );
+    return body.behaviors ?? [];
+  }
+
+  /**
+   * Create a Behavior owned by `agentId`. Duplicate-slug surfaces as a
+   * structured error the caller swallows for idempotency.
+   */
+  async createBehavior(payload: {
+    slug: string;
+    agentId: string;
+    name?: string;
+    description?: string;
+    prompt: string;
+    skills?: Array<{ name: string; content: string }>;
+    triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
+    sources?: BehaviorSource[];
+    reactions_guidance?: string;
+    device_worker_id?: string;
+    notification_channel?: "canvas" | "notification" | "both";
+    notification_priority?: "low" | "normal" | "high";
+    min_cooldown_seconds?: number;
+    tags?: string[];
+    agent_kind?: string;
+    outputs?: Record<string, unknown> | null;
+    classifiers?: unknown[];
+  }): Promise<{ behavior_id?: string }> {
+    const { body } = await this.request<{ behavior_id?: string }>(
+      "POST",
+      `/api/${this.orgSlug}/manage_behaviors`,
+      {
+        action: "create",
+        slug: payload.slug,
+        agent_id: payload.agentId,
+        ...(payload.name ? { name: payload.name } : {}),
+        ...(payload.description ? { description: payload.description } : {}),
+        prompt: payload.prompt,
+        ...(payload.skills?.length ? { skills: payload.skills } : {}),
+        ...(payload.triggers !== undefined
+          ? { triggers: payload.triggers }
+          : {}),
+        ...(payload.sources?.length ? { sources: payload.sources } : {}),
+        ...(payload.reactions_guidance !== undefined
+          ? { reactions_guidance: payload.reactions_guidance }
+          : {}),
+        ...(payload.device_worker_id !== undefined
+          ? { device_worker_id: payload.device_worker_id }
+          : {}),
+        ...(payload.notification_channel !== undefined
+          ? { notification_channel: payload.notification_channel }
+          : {}),
+        ...(payload.notification_priority !== undefined
+          ? { notification_priority: payload.notification_priority }
+          : {}),
+        ...(payload.min_cooldown_seconds !== undefined
+          ? { min_cooldown_seconds: payload.min_cooldown_seconds }
+          : {}),
+        ...(payload.tags?.length ? { tags: payload.tags } : {}),
+        ...(payload.agent_kind !== undefined
+          ? { agent_kind: payload.agent_kind }
+          : {}),
+        ...(payload.outputs !== undefined ? { outputs: payload.outputs } : {}),
+        ...(payload.classifiers !== undefined
+          ? { classifiers: payload.classifiers }
+          : {}),
+      }
+    );
+    return { ...(body.behavior_id ? { behavior_id: body.behavior_id } : {}) };
+  }
+
+  /**
+   * Update the **scalar** fields on the `watchers` row — these don't require
+   * a new version. Version-bound fields (prompt / sources / reactions_guidance /
+   * outputs / classifiers) require `createBehaviorVersion`
+   * instead.
+   *
+   * `null` clears nullable fields (device_worker_id, agent_kind) per the
+   * server contract.
+   */
+  async updateBehavior(payload: {
+    behavior_id: string;
+    triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
+    agent_id?: string;
+    device_worker_id?: string | null;
+    notification_channel?: "canvas" | "notification" | "both";
+    notification_priority?: "low" | "normal" | "high";
+    min_cooldown_seconds?: number;
+    tags?: string[];
+    agent_kind?: string | null;
+  }): Promise<void> {
+    await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
+      action: "update",
+      behavior_id: payload.behavior_id,
+      ...(payload.triggers !== undefined ? { triggers: payload.triggers } : {}),
+      ...(payload.agent_id !== undefined ? { agent_id: payload.agent_id } : {}),
+      ...(payload.device_worker_id !== undefined
+        ? { device_worker_id: payload.device_worker_id }
+        : {}),
+      ...(payload.notification_channel !== undefined
+        ? { notification_channel: payload.notification_channel }
+        : {}),
+      ...(payload.notification_priority !== undefined
+        ? { notification_priority: payload.notification_priority }
+        : {}),
+      ...(payload.min_cooldown_seconds !== undefined
+        ? { min_cooldown_seconds: payload.min_cooldown_seconds }
+        : {}),
+      ...(payload.tags !== undefined ? { tags: payload.tags } : {}),
+      ...(payload.agent_kind !== undefined
+        ? { agent_kind: payload.agent_kind }
+        : {}),
+    });
+  }
+
+  /**
+   * Create a new watcher_versions row carrying the version-bound fields, then
+   * upgrade the watcher's `current_version_id` to that new version. Server
+   * inherits unset fields from the previous version row.
+   * name/description/prompt/sources are version-owned (update rejects them).
+   */
+  async createBehaviorVersion(payload: {
+    behavior_id: string;
+    name?: string;
+    description?: string | null;
+    prompt?: string;
+    skills?: Array<{ name: string; content: string }>;
+    sources?: BehaviorSource[];
+    outputs?: Record<string, unknown> | null;
+    classifiers?: unknown[];
+    reactions_guidance?: string;
+    change_notes?: string;
+    /** When set, written atomically with the new version (set_as_current). */
+    triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
+  }): Promise<{ version?: number }> {
+    const { body } = await this.request<{ version?: number }>(
+      "POST",
+      `/api/${this.orgSlug}/manage_behaviors`,
+      {
+        action: "create_version",
+        behavior_id: payload.behavior_id,
+        set_as_current: true,
+        ...(payload.name !== undefined ? { name: payload.name } : {}),
+        ...(payload.description !== undefined
+          ? { description: payload.description }
+          : {}),
+        ...(payload.prompt !== undefined ? { prompt: payload.prompt } : {}),
+        ...(payload.skills !== undefined ? { skills: payload.skills } : {}),
+        ...(payload.sources !== undefined ? { sources: payload.sources } : {}),
+        ...(payload.outputs !== undefined ? { outputs: payload.outputs } : {}),
+        ...(payload.classifiers !== undefined
+          ? { classifiers: payload.classifiers }
+          : {}),
+        ...(payload.reactions_guidance !== undefined
+          ? { reactions_guidance: payload.reactions_guidance }
+          : {}),
+        ...(payload.triggers !== undefined
+          ? { triggers: payload.triggers }
+          : {}),
+        ...(payload.change_notes
+          ? { change_notes: payload.change_notes }
+          : { change_notes: "lobu apply" }),
+      }
+    );
+    return body.version !== undefined ? { version: body.version } : {};
+  }
+
+  /**
+   * Attach (or clear) a reaction script. Pass an empty string to remove it —
+   * matches the admin tool contract.
+   */
+  async setReactionScript(
+    watcherId: string,
+    reactionScript: string
+  ): Promise<void> {
+    await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
+      action: "set_reaction_script",
+      behavior_id: watcherId,
+      reaction_script: reactionScript,
+    });
+  }
+
+  /**
+   * Delete a Behavior by its numeric `behavior_id` (code-managed prune). The
+   * admin tool takes an array; we delete one slug's Behavior at a time so a
+   * failure is attributable.
+   */
+  async deleteBehavior(watcherId: string): Promise<void> {
+    await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
+      action: "delete",
+      behavior_ids: [watcherId],
+    });
+  }
+
+  // ── Connector definitions ─────────────────────────────────────────────────
+
+  private async connectionsTool<T>(body: Record<string, unknown>): Promise<T> {
+    const { body: parsed } = await this.request<T>(
+      "POST",
+      `/api/${this.orgSlug}/manage_connections`,
+      body
+    );
+    return parsed;
+  }
+
+  private async feedsTool<T>(body: Record<string, unknown>): Promise<T> {
+    const { body: parsed } = await this.request<T>(
+      "POST",
+      `/api/${this.orgSlug}/manage_feeds`,
+      body
+    );
+    return parsed;
+  }
+
+  private async authProfilesTool<T>(body: Record<string, unknown>): Promise<T> {
+    const { body: parsed } = await this.request<T>(
+      "POST",
+      `/api/${this.orgSlug}/manage_auth_profiles`,
+      body
+    );
+    return parsed;
+  }
+
+  private async catalogTool<T>(body: Record<string, unknown>): Promise<T> {
+    const { body: parsed } = await this.request<T>(
+      "POST",
+      `/api/${this.orgSlug}/manage_catalog`,
+      body
+    );
+    return parsed;
+  }
+
+  /** Installed org connectors + (with `includeInstallable`) the bundled catalog. */
+  async listConnectors(
+    includeInstallable = true
+  ): Promise<RemoteConnectorDefinition[]> {
+    const body = await this.catalogTool<{
+      installed?: {
+        connectors?: {
+          items?: Array<{
+            id: string;
+            name: string;
+            detail?: Record<string, unknown>;
+          }>;
+        };
+      };
+    }>({
+      action: "list_installed",
+      kinds: ["connectors"],
+      include_catalog: includeInstallable,
+    });
+    const items = body.installed?.connectors?.items ?? [];
+    return items.map((item) => mapConnectorDefinitionItem(item));
+  }
+
+  /**
+   * Idempotent connector install. The CLI can enable a reviewed catalog
+   * connector by id or pass connector source; server returns the resolved
+   * connectorKey plus updated.
+   */
+  async installConnector(
+    payload: CliInstallConnectorPayload
+  ): Promise<InstallConnectorResult> {
+    const body = await this.connectionsTool<{
+      installed?: boolean;
+      connector_key?: string;
+      version?: string;
+      updated?: boolean;
+    }>({
+      action: "install_connector",
+      ...(payload.connectorId ? { connector_id: payload.connectorId } : {}),
+      ...(payload.sourceCode !== undefined
+        ? {
+            source_code: payload.sourceCode,
+            compiled: payload.compiled ?? false,
+          }
+        : {}),
+      ...(payload.sourceUrl ? { source_url: payload.sourceUrl } : {}),
+      ...(payload.sourceUri ? { source_uri: payload.sourceUri } : {}),
+    });
+    return {
+      connectorKey: body.connector_key ?? "",
+      updated: body.updated ?? false,
+      ...(body.version ? { version: body.version } : {}),
+    };
+  }
+
+  async uninstallConnector(connectorKey: string): Promise<void> {
+    await this.connectionsTool({
+      action: "uninstall_connector",
+      connector_key: connectorKey,
+    });
+  }
+
+  /**
+   * Re-activate a retained connector version (org-local pointer flip — the
+   * bytes already live in the org's `connector_versions` rows). The engine
+   * behind `lobu rollback`'s connector pins.
+   */
+  async rollbackConnectorVersion(
+    connectorKey: string,
+    version: string
+  ): Promise<void> {
+    await this.connectionsTool({
+      action: "rollback_connector_version",
+      connector_key: connectorKey,
+      version,
+    });
+  }
+
+  // ── Auth profiles ─────────────────────────────────────────────────────────
+
+  async listAuthProfiles(): Promise<RemoteAuthProfile[]> {
+    const body = await this.authProfilesTool<{
+      auth_profiles?: RemoteAuthProfile[];
+    }>({ action: "list_auth_profiles" });
+    return body.auth_profiles ?? [];
+  }
+
+  async getAuthProfileBySlug(slug: string): Promise<RemoteAuthProfile | null> {
+    try {
+      const body = await this.authProfilesTool<{
+        auth_profile?: RemoteAuthProfile;
+      }>({ action: "get_auth_profile", auth_profile_slug: slug });
+      return body.auth_profile ?? null;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
+  async createAuthProfile(payload: {
+    slug: string;
+    connector: string;
+    kind: string;
+    name?: string;
+    credentials?: Record<string, string>;
+  }): Promise<EnsureAuthProfileResult> {
+    const body = await this.authProfilesTool<{
+      auth_profile?: { status?: string };
+      connect_url?: string;
+    }>({
+      action: "create_auth_profile",
+      connector_key: payload.connector,
+      profile_kind: payload.kind,
+      display_name: payload.name ?? payload.slug,
+      slug: payload.slug,
+      ...(payload.credentials && Object.keys(payload.credentials).length > 0
+        ? { credentials: payload.credentials }
+        : {}),
+    });
+    return {
+      created: true,
+      updated: false,
+      ...(body.auth_profile?.status
+        ? { status: body.auth_profile.status }
+        : {}),
+      ...(body.connect_url ? { connectUrl: body.connect_url } : {}),
+    };
+  }
+
+  async updateAuthProfile(payload: {
+    slug: string;
+    name?: string;
+    credentials?: Record<string, string>;
+  }): Promise<EnsureAuthProfileResult> {
+    const body = await this.authProfilesTool<{
+      auth_profile?: { status?: string };
+      connect_url?: string;
+    }>({
+      action: "update_auth_profile",
+      auth_profile_slug: payload.slug,
+      ...(payload.name ? { display_name: payload.name } : {}),
+      ...(payload.credentials && Object.keys(payload.credentials).length > 0
+        ? { credentials: payload.credentials }
+        : {}),
+    });
+    return {
+      created: false,
+      updated: true,
+      ...(body.auth_profile?.status
+        ? { status: body.auth_profile.status }
+        : {}),
+      ...(body.connect_url ? { connectUrl: body.connect_url } : {}),
+    };
+  }
+
+  /** Re-issue a connect token for an existing interactive-auth profile. */
+  async reconnectAuthProfile(slug: string): Promise<string | undefined> {
+    const body = await this.authProfilesTool<{ connect_url?: string }>({
+      action: "update_auth_profile",
+      auth_profile_slug: slug,
+      reconnect: true,
+    });
+    return body.connect_url;
+  }
+
+  // ── Connections ───────────────────────────────────────────────────────────
+
+  async listConnections(): Promise<RemoteConnection[]> {
+    const body = await this.connectionsTool<{
+      connections?: RemoteConnection[];
+    }>({ action: "list", limit: 500 });
+    return (body.connections ?? [])
+      .filter(
+        // Data connectors (credential_mode NULL) and BYO chat connections
+        // (credential_mode 'byo') both round-trip through `connections`. Managed
+        // chat installs ('managed') are owned by the OAuth/claim flow, never the
+        // declarative config, so they are excluded from the diff.
+        (connection) =>
+          connection.credential_mode == null ||
+          connection.credential_mode === "byo"
+      )
+      .map((connection) => {
+        if (connection.credential_mode !== "byo") return connection;
+        // The chat runtime folds its own adapter discriminator, settings, and
+        // metadata into `config`. They are storage details, not declarative
+        // connector options, so do not expose them to diff/bootstrap callers.
+        const config = { ...(connection.config ?? {}) };
+        delete config.platform;
+        delete config.settings;
+        delete config.chatMetadata;
+        return {
+          ...connection,
+          // BYO chat rows use the `agentconn-` storage namespace. Restore the
+          // authored slug so desired and remote state match.
+          slug: connection.slug.startsWith("agentconn-")
+            ? connection.slug.slice("agentconn-".length)
+            : connection.slug,
+          config,
+        };
+      });
+  }
+
+  /**
+   * Apply a BYO chat connection (a chat connector with a credential in `config`)
+   * through the secret-aware `apply_chat_connection` path. Keyed by the
+   * declared connection `slug` as the stable id (server stores it as
+   * `agentconn-<slug>`); no owning agent — chat routing is a Behavior created
+   * when a channel is linked. The server compares resolved credentials under a
+   * PG advisory lock, so an unchanged declaration is a true no-op.
+   */
+  async applyChatConnection(payload: {
+    slug: string;
+    connector: string;
+    /** Omitted means preserve the server-derived/stored display name. */
+    name?: string;
+    config: Record<string, unknown>;
+  }): Promise<{ id: number; created: boolean; changed: boolean }> {
+    const body = await this.connectionsTool<{
+      connection?: RemoteConnection;
+      created?: boolean;
+      changed?: boolean;
+      error?: string;
+    }>({
+      action: "apply_chat_connection",
+      stable_id: payload.slug,
+      connector_key: payload.connector,
+      ...(payload.name ? { display_name: payload.name } : {}),
+      config: payload.config,
+    });
+    if (body.error) throw new ApiError(body.error);
+    if (!body.connection) {
+      throw new ApiError(
+        `apply chat connection "${payload.slug}" returned no connection payload`
+      );
+    }
+    return {
+      id: body.connection.id,
+      created: body.created === true,
+      changed: body.changed === true,
+    };
+  }
+
+  async createConnection(payload: {
+    slug: string;
+    connector: string;
+    name?: string;
+    authProfileSlug?: string;
+    appAuthProfileSlug?: string;
+    config?: Record<string, unknown>;
+    deviceWorkerId?: string;
+  }): Promise<RemoteConnection> {
+    const body = await this.connectionsTool<{ connection?: RemoteConnection }>({
+      action: "create",
+      connector_key: payload.connector,
+      slug: payload.slug,
+      ...(payload.name ? { display_name: payload.name } : {}),
+      ...(payload.authProfileSlug
+        ? { auth_profile_slug: payload.authProfileSlug }
+        : {}),
+      ...(payload.appAuthProfileSlug
+        ? { app_auth_profile_slug: payload.appAuthProfileSlug }
+        : {}),
+      ...(payload.config ? { config: payload.config } : {}),
+      ...(payload.deviceWorkerId
+        ? { device_worker_id: payload.deviceWorkerId }
+        : {}),
+    });
+    if (!body.connection) {
+      throw new ApiError(
+        `create connection "${payload.slug}" returned no connection payload`
+      );
+    }
+    return body.connection;
+  }
+
+  async updateConnection(
+    connectionId: number,
+    payload: {
+      name?: string;
+      authProfileSlug?: string | null;
+      appAuthProfileSlug?: string | null;
+      config?: Record<string, unknown>;
+      deviceWorkerId?: string | null;
+    }
+  ): Promise<RemoteConnection> {
+    const body = await this.connectionsTool<{ connection?: RemoteConnection }>({
+      action: "update",
+      connection_id: connectionId,
+      ...(payload.name !== undefined ? { display_name: payload.name } : {}),
+      ...(payload.authProfileSlug !== undefined
+        ? { auth_profile_slug: payload.authProfileSlug }
+        : {}),
+      ...(payload.appAuthProfileSlug !== undefined
+        ? { app_auth_profile_slug: payload.appAuthProfileSlug }
+        : {}),
+      // `lobu apply` is declarative — replace, don't merge, so removed
+      // manifest keys disappear remotely (server defaults to merge).
+      ...(payload.config !== undefined
+        ? { config: payload.config, replace_config: true }
+        : {}),
+      ...(payload.deviceWorkerId !== undefined
+        ? { device_worker_id: payload.deviceWorkerId }
+        : {}),
+    });
+    if (!body.connection) {
+      throw new ApiError(
+        `update connection #${connectionId} returned no connection payload`
+      );
+    }
+    return body.connection;
+  }
+
+  // ── Feeds (managed per-connection) ────────────────────────────────────────
+
+  async listFeeds(connectionId: number): Promise<RemoteFeed[]> {
+    const body = await this.feedsTool<{ feeds?: RemoteFeed[] }>({
+      action: "list_feeds",
+      connection_id: connectionId,
+      limit: 500,
+    });
+    return body.feeds ?? [];
+  }
+
+  async createFeed(payload: {
+    connectionId: number;
+    feedKey: string;
+    name?: string;
+    /** Cron string, or null for manual-only. */
+    schedule?: string | null;
+    config?: Record<string, unknown>;
+    virtual?: boolean;
+  }): Promise<RemoteFeed> {
+    const body = await this.feedsTool<{ feed?: RemoteFeed }>({
+      action: "create_feed",
+      connection_id: payload.connectionId,
+      feed_key: payload.feedKey,
+      ...(payload.name ? { display_name: payload.name } : {}),
+      // Always send schedule when provided (including null) so the server does
+      // not have to invent a default.
+      ...(payload.schedule !== undefined ? { schedule: payload.schedule } : {}),
+      ...(payload.config ? { config: payload.config } : {}),
+      ...(payload.virtual ? { virtual: true } : {}),
+    });
+    if (!body.feed) {
+      throw new ApiError(
+        `create feed "${payload.feedKey}" returned no feed payload`
+      );
+    }
+    return body.feed;
+  }
+
+  async updateFeed(
+    feedId: number,
+    payload: {
+      name?: string;
+      /** Cron string, or null to clear (manual-only). */
+      schedule?: string | null;
+      config?: Record<string, unknown>;
+    }
+  ): Promise<RemoteFeed> {
+    const body = await this.feedsTool<{ feed?: RemoteFeed }>({
+      action: "update_feed",
+      feed_id: feedId,
+      ...(payload.name !== undefined ? { display_name: payload.name } : {}),
+      ...(payload.schedule !== undefined ? { schedule: payload.schedule } : {}),
+      ...(payload.config !== undefined
+        ? { config: payload.config, replace_config: true }
+        : {}),
+    });
+    if (!body.feed) {
+      throw new ApiError(`update feed #${feedId} returned no feed payload`);
+    }
+    return body.feed;
+  }
 }
 
 function mapConnectorDefinitionItem(item: {
-	id: string;
-	name: string;
-	detail?: Record<string, unknown>;
+  id: string;
+  name: string;
+  detail?: Record<string, unknown>;
 }): RemoteConnectorDefinition {
-	const detail = item.detail ?? {};
-	const installed = detail.installed !== false;
-	return {
-		key: item.id,
-		...(typeof detail.connector_definition_id === "number"
-			? { id: detail.connector_definition_id }
-			: {}),
-		name: item.name,
-		version: typeof detail.version === "string" ? detail.version : undefined,
-		options_schema:
-			detail.options_schema && typeof detail.options_schema === "object"
-				? (detail.options_schema as Record<string, unknown>)
-				: null,
-		feeds_schema:
-			detail.feeds_schema && typeof detail.feeds_schema === "object"
-				? (detail.feeds_schema as Record<string, unknown>)
-				: null,
-		auth_schema:
-			detail.auth_schema && typeof detail.auth_schema === "object"
-				? (detail.auth_schema as Record<string, unknown>)
-				: null,
-		installed,
-		installable: Boolean(detail.installable ?? !installed),
-		catalog_origin:
-			detail.catalog_origin === "catalog" || detail.catalog_origin === "org"
-				? detail.catalog_origin
-				: installed
-					? "org"
-					: "catalog",
-		source_uri:
-			typeof detail.source_uri === "string" ? detail.source_uri : null,
-	};
+  const detail = item.detail ?? {};
+  const installed = detail.installed !== false;
+  return {
+    key: item.id,
+    ...(typeof detail.connector_definition_id === "number"
+      ? { id: detail.connector_definition_id }
+      : {}),
+    name: item.name,
+    version: typeof detail.version === "string" ? detail.version : undefined,
+    options_schema:
+      detail.options_schema && typeof detail.options_schema === "object"
+        ? (detail.options_schema as Record<string, unknown>)
+        : null,
+    feeds_schema:
+      detail.feeds_schema && typeof detail.feeds_schema === "object"
+        ? (detail.feeds_schema as Record<string, unknown>)
+        : null,
+    auth_schema:
+      detail.auth_schema && typeof detail.auth_schema === "object"
+        ? (detail.auth_schema as Record<string, unknown>)
+        : null,
+    installed,
+    installable: Boolean(detail.installable ?? !installed),
+    catalog_origin:
+      detail.catalog_origin === "catalog" || detail.catalog_origin === "org"
+        ? detail.catalog_origin
+        : installed
+          ? "org"
+          : "catalog",
+    source_uri:
+      typeof detail.source_uri === "string" ? detail.source_uri : null,
+  };
 }
 
 /**
@@ -1700,40 +1698,40 @@ function mapConnectorDefinitionItem(item: {
  * as a belt-and-braces signal for duplicate paths that predate the codes.
  */
 export function isDuplicateError(err: ApiError): boolean {
-	if (typeof err.status !== "number") return false;
-	const message = err.message.toLowerCase();
-	if (
-		message.includes("[entity_type_exists]") ||
-		message.includes("[relationship_type_exists]") ||
-		message.includes("[already_exists]")
-	) {
-		return true;
-	}
-	return err.status === 409;
+  if (typeof err.status !== "number") return false;
+  const message = err.message.toLowerCase();
+  if (
+    message.includes("[entity_type_exists]") ||
+    message.includes("[relationship_type_exists]") ||
+    message.includes("[already_exists]")
+  ) {
+    return true;
+  }
+  return err.status === 409;
 }
 
 // ── Top-level resolver ─────────────────────────────────────────────────────
 
 interface ResolvedClient {
-	client: ApplyClient;
-	apiBaseUrl: string;
-	orgSlug: string;
+  client: ApplyClient;
+  apiBaseUrl: string;
+  orgSlug: string;
 }
 
 export async function resolveApplyClient(opts: {
-	url?: string;
-	org?: string;
-	applyId?: string;
-	fetchImpl?: typeof fetch;
+  url?: string;
+  org?: string;
+  applyId?: string;
+  fetchImpl?: typeof fetch;
 }): Promise<ResolvedClient> {
-	const { token, apiBaseUrl, orgSlug } = await resolveApiClient({
-		org: opts.org,
-		apiUrl: opts.url,
-		fetchImpl: opts.fetchImpl,
-	});
-	const client = new ApplyClient(
-		{ apiBaseUrl, orgSlug, token, applyId: opts.applyId },
-		opts.fetchImpl,
-	);
-	return { client, apiBaseUrl, orgSlug };
+  const { token, apiBaseUrl, orgSlug } = await resolveApiClient({
+    org: opts.org,
+    apiUrl: opts.url,
+    fetchImpl: opts.fetchImpl,
+  });
+  const client = new ApplyClient(
+    { apiBaseUrl, orgSlug, token, applyId: opts.applyId },
+    opts.fetchImpl
+  );
+  return { client, apiBaseUrl, orgSlug };
 }

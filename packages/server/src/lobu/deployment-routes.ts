@@ -41,7 +41,13 @@ routes.use("*", async (c, next) => {
 	return orgContext.run({ organizationId: orgId }, next);
 });
 
-const DEPLOYMENT_STATUSES = new Set(["succeeded", "partial_failure"]);
+const DEPLOYMENT_STATUSES = new Set([
+	"succeeded",
+	"partial_failure",
+	// A run that was blocked by drift — it never mutated state. Carries the
+	// blocking candidates so the reconciler/Deployments tab can act on them.
+	"blocked",
+]);
 
 // Stored manifest ceiling. The manifest is the REDACTED desired-state
 // snapshot minus connector source bytes (those live in connector_versions and
@@ -114,6 +120,21 @@ routes.post("/", async (c) => {
 		}
 		manifest = body.manifest as Record<string, unknown>;
 	}
+	// Blocking-drift candidates (blocking-item list + the confirm token) for a
+	// `blocked` run — what the reconciler and the Deployments tab render.
+	let candidates: unknown = null;
+	if (body.candidates !== undefined && body.candidates !== null) {
+		if (typeof body.candidates !== "object" || Array.isArray(body.candidates)) {
+			return c.json({ error: "candidates must be an object" }, 400);
+		}
+		if (JSON.stringify(body.candidates).length > MANIFEST_MAX_BYTES) {
+			return c.json(
+				{ error: `candidates exceeds ${MANIFEST_MAX_BYTES} bytes` },
+				400,
+			);
+		}
+		candidates = body.candidates;
+	}
 
 	const sql = getDb();
 	// Retried POSTs (CLI network blip) must not create a second deployment row.
@@ -147,6 +168,7 @@ routes.post("/", async (c) => {
 			counts_by_kind: countsByKind,
 			...(errorText ? { error: errorText } : {}),
 			...(manifest ? { manifest } : {}),
+			...(candidates !== null ? { candidates } : {}),
 		},
 		metadata: {
 			category: "deployment",
@@ -377,6 +399,47 @@ routes.delete("/pause", async (c) => {
 	return c.json({ paused: false });
 });
 
+// ── Latest succeeded deployment (attribution baseline for `lobu apply`) ──────
+// Registered before `/:applyId` so the literal segment wins the match. Bounded
+// single-row read on the events_succeeded_deployments_idx partial index; the
+// mixed feed cannot answer this reliably (it interleaves standalone config
+// changes and blocked applies).
+
+routes.get("/latest", async (c) => {
+	const organizationId = c.get("organizationId") as string;
+	const sql = getDb();
+	const rows = await sql`
+		SELECT id, created_at, title, metadata, payload_data, created_by
+		FROM events
+		WHERE organization_id = ${organizationId}
+		  AND semantic_type = 'change'
+		  AND metadata->>'category' = 'deployment'
+		  AND metadata->>'status' = 'succeeded'
+		ORDER BY id DESC
+		LIMIT 1
+	`;
+	if (rows.length === 0) return c.json({ deployment: null });
+	const summary = rows[0];
+	const summaryMeta = (summary.metadata ?? {}) as Record<string, unknown>;
+	const summaryPayload = (summary.payload_data ?? {}) as Record<
+		string,
+		unknown
+	>;
+	return c.json({
+		deployment: {
+			id: summary.id,
+			applyId: summaryMeta.apply_id ?? null,
+			createdAt: summary.created_at,
+			title: summary.title,
+			status: summaryMeta.status ?? null,
+			manifestHash: summaryMeta.manifest_hash ?? null,
+			gitSha: summaryMeta.git_sha ?? null,
+			manifest: summaryPayload.manifest ?? null,
+			createdBy: summary.created_by ?? null,
+		},
+	});
+});
+
 // ── Deployment detail ────────────────────────────────────────────────────────
 
 routes.get("/:applyId", async (c) => {
@@ -422,6 +485,7 @@ routes.get("/:applyId", async (c) => {
 			cliVersion: summaryMeta.cli_version ?? null,
 			rollbackOf: summaryMeta.rollback_of ?? null,
 			manifest: summaryPayload.manifest ?? null,
+			candidates: summaryPayload.candidates ?? null,
 			createdBy: summary.created_by ?? null,
 		},
 		changes: changeRows.map(toChangeDetail),

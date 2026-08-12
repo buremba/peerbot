@@ -15,7 +15,7 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { deepRedactSecrets, REDACTED_SENTINEL } from "@lobu/core";
 import type { DesiredState } from "./desired-state.js";
-import type { DiffPlan, DiffRow } from "./diff.js";
+import type { DiffPlan, DiffRow, RemoteSnapshot } from "./diff.js";
 import { canonical } from "./diff.js";
 
 export function mintApplyId(): string {
@@ -107,6 +107,138 @@ export interface DeploymentManifest {
   state: Record<string, unknown>;
   /** Active connector version per declared key, recorded post-install. */
   connector_versions: Record<string, string>;
+  /**
+   * The attribution baseline for the three-way drift compare: the effective
+   * entity/rel-type and Behavior state AFTER this apply (declared config
+   * values + preserved unmanaged facets). Absent on legacy manifests — treated
+   * as "no baseline" (block on remote mismatches, never auto-delete).
+   */
+  attribution?: {
+    entityTypes: unknown[];
+    relationshipTypes: unknown[];
+    watchers: unknown[];
+  };
+  /**
+   * Kind-qualified definition incarnation identities (`entity-type:12`,
+   * `behavior:b7-…`) this config actually applied — the delete-eligible set.
+   */
+  owned?: string[];
+}
+
+export interface BaselineRecord {
+  attribution: {
+    entityTypes: unknown[];
+    relationshipTypes: unknown[];
+    watchers: unknown[];
+  };
+  owned: string[];
+}
+
+/** Parse the stored baseline; null for a legacy manifest (→ no-baseline block). */
+export function loadBaselineFromManifest(manifest: {
+  attribution?: DeploymentManifest["attribution"];
+  owned?: DeploymentManifest["owned"];
+} | null): BaselineRecord | null {
+  if (!manifest?.attribution || !manifest.owned) return null;
+  return {
+    attribution: {
+      entityTypes: manifest.attribution.entityTypes ?? [],
+      relationshipTypes: manifest.attribution.relationshipTypes ?? [],
+      watchers: manifest.attribution.watchers ?? [],
+    },
+    owned: manifest.owned,
+  };
+}
+
+/**
+ * The post-apply attribution snapshot + owned identities. Attribution records
+ * the effective entity/rel/Behavior state AFTER a successful apply — config's
+ * declared values merged with preserved unmanaged facets (eventKinds /
+ * viewTemplate / schemaExtras the config never declared) from the pre-apply
+ * remote — so `remote == attribution` means "unchanged since last apply".
+ * `owned` records the incarnation ids of definitions this config applied
+ * (delete-eligible); creates with no known id are conservatively omitted
+ * (they block as drift instead of auto-deleting — fail-closed).
+ */
+export function buildAttributionAndOwned(
+  state: DesiredState,
+  remote: RemoteSnapshot
+): BaselineRecord {
+  const remoteEntityBySlug = new Map(remote.entityTypes.map((e) => [e.slug, e]));
+  const entityTypes = state.memorySchema.entityTypes.map((d) => {
+    const r = remoteEntityBySlug.get(d.slug);
+    return {
+      id: r?.id,
+      slug: d.slug,
+      name: d.name,
+      description: d.description,
+      required: d.required,
+      properties: d.properties,
+      backing: d.backing,
+      metrics: d.metrics,
+      eventKinds: d.eventKinds ?? r?.eventKinds,
+      viewTemplate: d.viewTemplate ?? r?.viewTemplate,
+      schemaExtras: {
+        ...(r?.schemaExtras ?? {}),
+        ...(d.resolutionPolicy
+          ? { "x-lobu-resolution": d.resolutionPolicy }
+          : {}),
+      },
+    };
+  });
+  const remoteRelBySlug = new Map(
+    remote.relationshipTypes.map((r) => [r.slug, r])
+  );
+  const relationshipTypes = state.memorySchema.relationshipTypes.map((d) => {
+    const r = remoteRelBySlug.get(d.slug);
+    return {
+      id: r?.id,
+      slug: d.slug,
+      name: d.name,
+      description: d.description,
+      rules: d.rules,
+    };
+  });
+  const remoteWatcherBySlug = new Map(remote.watchers.map((w) => [w.slug, w]));
+  const watchers = state.watchers.map((d) => {
+    const r = remoteWatcherBySlug.get(d.slug);
+    return {
+      slug: d.slug,
+      behavior_id: r?.behavior_id,
+      name: d.name,
+      description: d.description,
+      prompt: d.prompt,
+      triggers: d.triggers,
+      skills: d.skillSnapshots ?? r?.skills,
+      sources: d.sources,
+      reactions_guidance: d.reactionsGuidance,
+      device_worker_id: d.deviceWorkerId,
+      notification_channel: d.notificationChannel,
+      notification_priority: d.notificationPriority,
+      min_cooldown_seconds: d.minCooldownSeconds,
+      tags: d.tags,
+      agent_kind: d.agentKind,
+      outputs: d.outputs,
+      classifiers: d.classifiers,
+    };
+  });
+  const owned: string[] = [];
+  for (const e of state.memorySchema.entityTypes) {
+    const id = remoteEntityBySlug.get(e.slug)?.id;
+    if (id !== undefined) owned.push(`entity-type:${id}`);
+  }
+  for (const r of state.memorySchema.relationshipTypes) {
+    const id = remoteRelBySlug.get(r.slug)?.id;
+    if (id !== undefined) owned.push(`relationship-type:${id}`);
+  }
+  for (const w of state.watchers) {
+    const id = remoteWatcherBySlug.get(w.slug)?.behavior_id;
+    if (id !== undefined) owned.push(`watcher:${id}`);
+  }
+  return {
+    attribution: { entityTypes, relationshipTypes, watchers },
+    owned,
+  };
 }
 
 /**
@@ -117,7 +249,8 @@ export interface DeploymentManifest {
  */
 export function buildDeploymentManifest(
   state: DesiredState,
-  connectorVersions: Record<string, string>
+  connectorVersions: Record<string, string>,
+  baseline?: BaselineRecord
 ): DeploymentManifest {
   const redacted = redactDesiredState(state);
   const connectors = (redacted.connectors ?? {}) as Record<string, unknown>;
@@ -137,6 +270,7 @@ export function buildDeploymentManifest(
       },
     },
     connector_versions: connectorVersions,
+    ...(baseline ? { attribution: baseline.attribution, owned: baseline.owned } : {}),
   };
 }
 
@@ -161,7 +295,7 @@ export function buildCountsByKind(rows: DiffRow[]): CountsByKind {
 
 export interface DeploymentSummary {
   apply_id: string;
-  status: "succeeded" | "partial_failure";
+  status: "succeeded" | "partial_failure" | "blocked";
   counts: DiffPlan["counts"];
   counts_by_kind: CountsByKind;
   manifest_hash: string;
@@ -171,6 +305,15 @@ export interface DeploymentSummary {
   error?: string;
   /** Self-contained snapshot for `lobu rollback` (absent on legacy CLIs). */
   manifest?: DeploymentManifest;
+  /** Blocking-drift candidates — present on `blocked` runs. */
+  candidates?: {
+    items: Array<{
+      kind: string;
+      slug: string;
+      field?: string;
+      action: "delete" | "revert";
+    }>;
+  };
   /** Set on rollback deployments: the deployment this one restored. */
   rollback_of?: string;
 }

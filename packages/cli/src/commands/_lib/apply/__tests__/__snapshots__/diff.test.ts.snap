@@ -44,7 +44,7 @@ exports[`apply diff — agents drift when remote has agent not in desired 1`] = 
 Plan:
 
   agents:
-  ? agent stale (drift — ignored in v1, not deleted)
+  ? agent stale (drift — ignored, not deleted)
 
 Summary: 0 create, 0 update, 0 noop, 1 drift"
 `;
@@ -84,7 +84,7 @@ Plan:
   behaviors:
   ~ behavior weekly-digest
   + behavior new-digest
-  ? behavior orphaned-digest (drift — ignored in v1, not deleted)
+  ? behavior orphaned-digest (drift — ignored, not deleted)
 
 Summary: 1 create, 1 update, 0 noop, 1 drift"
 `;

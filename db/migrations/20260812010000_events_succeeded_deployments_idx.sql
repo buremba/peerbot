@@ -1,0 +1,13 @@
+-- migrate:up
+-- Bounded indexed read for GET /api/<org>/deployments/latest: the mixed
+-- config-changes feed cannot answer "latest succeeded deployment" without
+-- scanning unbounded append-only history through the general (org, id) index.
+-- Additive only — no columns or tables change.
+CREATE INDEX IF NOT EXISTS events_succeeded_deployments_idx
+  ON events (organization_id, id DESC)
+  WHERE semantic_type = 'change'
+    AND metadata->>'category' = 'deployment'
+    AND metadata->>'status' = 'succeeded';
+
+-- migrate:down
+DROP INDEX IF EXISTS events_succeeded_deployments_idx;

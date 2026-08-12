@@ -14,11 +14,13 @@ import {
   resolveApplyClient,
 } from "./client.js";
 import {
+  buildAttributionAndOwned,
   buildCountsByKind,
   buildDeploymentManifest,
   collectGitInfo,
   computeManifestHash,
   type DeploymentSummary,
+  loadBaselineFromManifest,
   mintApplyId,
 } from "./deployment.js";
 import {
@@ -32,6 +34,7 @@ import {
   validateConnectionAgainstConnector,
 } from "./desired-state.js";
 import {
+  type Baseline,
   computeDiff,
   type DiffPlan,
   type DiffRow,
@@ -43,6 +46,7 @@ import {
   confirmPlan,
 } from "./prompt.js";
 import {
+  renderBlockedReport,
   renderMissingSecrets,
   renderPlan,
   renderPostApplyPunchList,
@@ -755,9 +759,10 @@ export async function executePlan(
   ctx: ApplyContext,
   pendingAuth: PendingAuthEntry[]
 ): Promise<{ connectorVersions: Record<string, string> }> {
-  const rowsByKind = (kind: DiffRow["kind"]) =>
+  const rowsByKind = <K extends DiffRow["kind"]>(kind: K) =>
     ctx.plan.rows.filter(
-      (row) => row.kind === kind && row.verb !== "noop" && row.verb !== "drift"
+      (row): row is Extract<DiffRow, { kind: K }> & { verb: "create" | "update" | "delete" } =>
+        row.kind === kind && row.verb !== "noop" && row.verb !== "drift"
     );
 
   let connectorVersions: Record<string, string> = {};
@@ -1144,7 +1149,6 @@ export async function executePlan(
   //      dropping an org credential is destructive, so it's UI/API-only.
   for (const row of rowsByKind("inference-provider")) {
     if (row.kind !== "inference-provider") continue;
-    if (row.verb === "drift") continue;
     const provider = row.desired;
     if (!provider) continue;
 
@@ -1506,12 +1510,88 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     printText(chalk.yellow(`Warning: ${warning}`));
   }
 
+  // Attribution baseline — the latest succeeded deployment's effective-remote
+  // snapshot + owned identities. A legacy/missing manifest resolves to an empty
+  // baseline: remote mismatches and remote-only definitions block (no-baseline,
+  // fail-closed) and nothing is auto-deleted.
+  const latestDeployment = await client
+    .getLatestDeployment()
+    .catch(() => null);
+  const baselineRecord =
+    latestDeployment?.manifest === null || latestDeployment?.manifest === undefined
+      ? null
+      : loadBaselineFromManifest(latestDeployment.manifest);
+  const baseline: Baseline = baselineRecord
+    ? {
+        attribution: {
+          entityTypes: baselineRecord.attribution.entityTypes as Baseline["attribution"]["entityTypes"],
+          relationshipTypes: baselineRecord.attribution.relationshipTypes as Baseline["attribution"]["relationshipTypes"],
+          watchers: baselineRecord.attribution.watchers as Baseline["attribution"]["watchers"],
+        },
+        owned: new Set(baselineRecord.owned),
+      }
+    : {
+        attribution: {
+          entityTypes: [],
+          relationshipTypes: [],
+          watchers: [],
+        },
+        owned: new Set<string>(),
+      };
+
   const plan = computeDiff(state, remote, {
     only: opts.only,
     prune,
+    baseline,
     ...(resolvedOrg?.id ? { orgId: resolvedOrg.id } : {}),
   });
   printText(renderPlan(plan));
+
+  // Drift gate: any blocking drift (remote-moved field or remote-only
+  // definition the config doesn't own) halts the whole apply — `--yes` never
+  // destroys un-declared state. The report names each item; resolution is
+  // adopt (fold into config) or a manual delete.
+  const blockingDrift = plan.rows.filter(
+    (r): r is Extract<DiffRow, { blocking: true }> =>
+      r.verb === "drift" && "blocking" in r && r.blocking === true
+  );
+  if (blockingDrift.length > 0) {
+    printText(renderBlockedReport(blockingDrift));
+    if (opts.dryRun) {
+      printText(
+        chalk.dim(
+          "\nDry run — apply would exit 1 here. Nothing was changed."
+        )
+      );
+      return;
+    }
+    const gitInfo = collectGitInfo(cwd);
+    await postDeploymentSummarySafe(client, {
+      apply_id: applyId,
+      status: "blocked",
+      counts: plan.counts,
+      counts_by_kind: buildCountsByKind(plan.rows),
+      manifest_hash: computeManifestHash(state),
+      git_sha: gitInfo.sha,
+      git_dirty: gitInfo.dirty,
+      cli_version: opts.cliVersion ?? null,
+      manifest: buildDeploymentManifest(
+        state,
+        connectorVersionPins(state, remote.connectorDefinitions)
+      ),
+      candidates: {
+        items: blockingDrift.map((b) => ({
+          kind: b.kind,
+          slug: b.id,
+          ...(b.field ? { field: b.field } : {}),
+          action: "revert" as const,
+        })),
+      },
+    });
+    throw new ValidationError(
+      `blocked by ${blockingDrift.length} drift item${blockingDrift.length === 1 ? "" : "s"} — adopt them into lobu.config.ts or delete them manually, then re-run`
+    );
+  }
 
   if (opts.dryRun) {
     printText(
@@ -1538,36 +1618,32 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     plan.counts.delete === 0 &&
     !hasPendingAuth
   ) {
-    // Nothing in the resource diff — but a declared provider key still needs to
-    // be pushed (idempotent PUT). This is the key-only `.env` change path.
+    // Provider keys live outside the resource diff (idempotent PUT) — push
+    // them on a key-only `.env` change.
     if (hasProviderKeys) {
       printText(chalk.bold("\nApplying provider keys:"));
       await pushProviderApiKeys(client, state.agents);
-      printText(chalk.green("\nProvider keys applied; nothing else to apply."));
-      const gitInfo = collectGitInfo(cwd);
-      await postDeploymentSummarySafe(client, {
-        apply_id: applyId,
-        status: "succeeded",
-        counts: plan.counts,
-        counts_by_kind: {
-          "provider-key": {
-            update: state.agents.reduce((n, a) => n + a.providerKeys.length, 0),
-          },
-        },
-        manifest_hash: computeManifestHash(state),
-        git_sha: gitInfo.sha,
-        git_dirty: gitInfo.dirty,
-        cli_version: opts.cliVersion ?? null,
-        // All-noop plan: the installed catalog IS this config's connector
-        // state — pin from the remote snapshot.
-        manifest: buildDeploymentManifest(
-          state,
-          connectorVersionPins(state, remote.connectorDefinitions)
-        ),
-      });
-    } else {
-      printText(chalk.green("\nNothing to apply."));
     }
+    // Baseline advances on every fully-succeeded run, INCLUDING all-noop runs:
+    // the manifest records the effective remote + owned identities so the next
+    // apply can attribute "who moved".
+    const gitInfo = collectGitInfo(cwd);
+    await postDeploymentSummarySafe(client, {
+      apply_id: applyId,
+      status: "succeeded",
+      counts: plan.counts,
+      counts_by_kind: buildCountsByKind(plan.rows),
+      manifest_hash: computeManifestHash(state),
+      git_sha: gitInfo.sha,
+      git_dirty: gitInfo.dirty,
+      cli_version: opts.cliVersion ?? null,
+      manifest: buildDeploymentManifest(
+        state,
+        connectorVersionPins(state, remote.connectorDefinitions),
+        buildAttributionAndOwned(state, remote)
+      ),
+    });
+    printText(chalk.green("\nNothing to apply."));
     return;
   }
 
@@ -1653,7 +1729,11 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
       git_sha: gitInfo.sha,
       git_dirty: gitInfo.dirty,
       cli_version: opts.cliVersion ?? null,
-      manifest: buildDeploymentManifest(state, pins),
+      manifest: buildDeploymentManifest(
+        state,
+        pins,
+        applyErr ? undefined : buildAttributionAndOwned(state, remote)
+      ),
       ...(applyErr
         ? {
             error:

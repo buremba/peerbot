@@ -18,6 +18,7 @@ import type {
 import type {
   DesiredAgent,
   DesiredAuthProfile,
+  DesiredBehaviorTrigger,
   DesiredConnection,
   DesiredConnectorDefinition,
   DesiredEntityType,
@@ -27,7 +28,11 @@ import type {
   DesiredState,
   DesiredWatcher,
 } from "./desired-state.js";
-import { declaredConnectorKeys, referencedConnectorKeys } from "./shared.js";
+import {
+  declaredConnectorKeys,
+  referencedConnectorKeys,
+  type BehaviorSource,
+} from "./shared.js";
 
 // ── Diff verbs ──────────────────────────────────────────────────────────────
 
@@ -133,6 +138,43 @@ export interface InferenceProviderDiffRow
   capabilityModalities?: InferenceModality[];
 }
 
+/**
+ * A field-level blocking drift item: the remote moved a field the config
+ * doesn't declare, or both config and remote moved it (fail-closed). Apply
+ * must not converge over it — the whole run blocks and reports this.
+ */
+export interface BlockingDriftRow extends BaseRow {
+  verb: "drift";
+  /** Always true — distinguishes blocking drift from legacy non-blocking drift. */
+  blocking: true;
+  kind: "entity-type" | "relationship-type" | "watcher";
+  id: string;
+  /** The moved field (entity/rel: `name`, `description`, `properties.<key>`, …). */
+  field?: string;
+  /** The remote-side value that moved — shown in the blocked report. */
+  remoteChange?: unknown;
+}
+
+/**
+ * The attribution baseline: what the remote looked like after the last
+ * succeeded apply, plus the set of definition incarnation identities
+ * (`${kind}:${id}`) this config actually applied. Drives "who moved".
+ */
+export interface AttributionSnapshot {
+  entityTypes: RemoteEntityType[];
+  relationshipTypes: RemoteRelationshipType[];
+  watchers: RemoteBehavior[];
+}
+
+export interface Baseline {
+  attribution: AttributionSnapshot;
+  /** `${kind}:${id}` — delete-eligible definition incarnation identities. */
+  owned: Set<string>;
+}
+
+export const ownedKey = (kind: string, id: number | string | undefined) =>
+  id === undefined ? "" : `${kind}:${id}`;
+
 export type DiffRow =
   | AgentDiffRow
   | SettingsDiffRow
@@ -143,7 +185,8 @@ export type DiffRow =
   | AuthProfileDiffRow
   | ConnectionDiffRow
   | FeedDiffRow
-  | InferenceProviderDiffRow;
+  | InferenceProviderDiffRow
+  | BlockingDriftRow;
 
 export interface DiffPlan {
   rows: DiffRow[];
@@ -484,6 +527,403 @@ function diffRelationshipType(
       },
     ],
   }) as RelationshipTypeDiffRow;
+}
+
+// ── Three-way attribution (baseline-aware) ───────────────────────────────────
+//
+// With a baseline, a declared definition's fields are compared three ways
+// (desired / remote / attribution). `configMoved` fields converge (config
+// wins); `remoteMoved` fields block (the remote changed and the config didn't,
+// or both moved — never guess). Without a baseline entry, any mismatch blocks.
+
+type FieldOutcome = "noop" | "configMoved" | "remoteMoved";
+
+function classifyField(
+  desired: unknown,
+  remote: unknown,
+  attribution: unknown | undefined
+): FieldOutcome {
+  if (deepEqual(desired, remote)) return "noop";
+  if (attribution === undefined) return "remoteMoved";
+  if (deepEqual(remote, attribution)) return "configMoved";
+  return "remoteMoved";
+}
+
+interface ThreeWayResult {
+  changedFields: string[];
+  blockingFields: Array<{ field: string; remoteChange: unknown }>;
+}
+
+/** Three-way per-field classification over a list of (name, desired, remote, attribution) triples. */
+function classifyThreeWay(
+  triples: Array<{
+    field: string;
+    desired: unknown;
+    remote: unknown;
+    attribution: unknown | undefined;
+  }>
+): ThreeWayResult {
+  const changedFields: string[] = [];
+  const blockingFields: Array<{ field: string; remoteChange: unknown }> = [];
+  for (const t of triples) {
+    const outcome = classifyField(t.desired, t.remote, t.attribution);
+    if (outcome === "configMoved") changedFields.push(t.field);
+    else if (outcome === "remoteMoved") {
+      blockingFields.push({ field: t.field, remoteChange: t.remote });
+    }
+  }
+  return { changedFields, blockingFields };
+}
+
+/** Entity-type fields compared per-property-key, three-way, with the baseline. */
+function compareEntityTypeThreeWay(
+  desired: DesiredEntityType,
+  remote: RemoteEntityType,
+  attribution: RemoteEntityType | undefined
+): ThreeWayResult {
+  const triples: Array<{
+    field: string;
+    desired: unknown;
+    remote: unknown;
+    attribution: unknown | undefined;
+  }> = [
+    {
+      field: "name",
+      desired: desired.name,
+      remote: remote.name,
+      attribution: attribution?.name,
+    },
+    {
+      field: "description",
+      desired: desired.description,
+      remote: remote.description,
+      attribution: attribution?.description,
+    },
+    {
+      field: "required",
+      desired: desired.required ?? [],
+      remote: remote.required ?? [],
+      attribution: attribution?.required ?? [],
+    },
+    {
+      field: "backing",
+      desired: desired.backing,
+      remote: remote.backing,
+      attribution: attribution?.backing,
+    },
+    {
+      field: "metrics",
+      desired: desired.metrics,
+      remote: remote.metrics,
+      attribution: attribution?.metrics,
+    },
+    {
+      field: "eventKinds",
+      desired: desired.eventKinds,
+      remote: remote.eventKinds,
+      attribution: attribution?.eventKinds,
+    },
+    {
+      field: "viewTemplate",
+      desired: desired.viewTemplate,
+      remote: remote.viewTemplate,
+      attribution: attribution?.viewTemplate,
+    },
+    {
+      field: "resolutionPolicy",
+      desired: desired.resolutionPolicy,
+      remote: remote.schemaExtras?.["x-lobu-resolution"],
+      attribution: attribution?.schemaExtras?.["x-lobu-resolution"],
+    },
+  ];
+  const propKeys = new Set<string>();
+  for (const p of Object.keys(desired.properties ?? {})) propKeys.add(p);
+  for (const p of Object.keys(remote.properties ?? {})) propKeys.add(p);
+  for (const key of [...propKeys].sort()) {
+    triples.push({
+      field: `properties.${key}`,
+      desired: desired.properties?.[key],
+      remote: remote.properties?.[key],
+      attribution: attribution?.properties?.[key],
+    });
+  }
+  return classifyThreeWay(triples);
+}
+
+/** Relationship-type fields, three-way with the baseline. */
+function compareRelationshipTypeThreeWay(
+  desired: DesiredRelationshipType,
+  remote: RemoteRelationshipType,
+  attribution: RemoteRelationshipType | undefined
+): ThreeWayResult {
+  return classifyThreeWay([
+    {
+      field: "name",
+      desired: desired.name,
+      remote: remote.name,
+      attribution: attribution?.name,
+    },
+    {
+      field: "description",
+      desired: desired.description,
+      remote: remote.description,
+      attribution: attribution?.description,
+    },
+    {
+      field: "rules",
+      desired: desired.rules ?? [],
+      remote: remote.rules ?? [],
+      attribution: attribution?.rules ?? [],
+    },
+  ]);
+}
+
+/**
+ * A declared definition against a baseline: the three-way compare. Emits the
+ * converging update row (config-moved fields) plus blocking-drift rows
+ * (remote-moved fields). A declared-but-absent-from-baseline definition is
+ * ambiguous and blocks as a whole.
+ */
+function diffEntityTypeWithBaseline(
+  desired: DesiredEntityType,
+  remote: RemoteEntityType | undefined,
+  baseline: Baseline | undefined,
+  prune: boolean
+): { row: EntityTypeDiffRow; blocking: BlockingDriftRow[] } {
+  if (!remote) {
+    return { row: diffEntityType(desired, remote, prune), blocking: [] };
+  }
+  if (!baseline) {
+    return { row: diffEntityType(desired, remote, prune), blocking: [] };
+  }
+  const attr = baseline.attribution.entityTypes.find(
+    (a) => a.slug === desired.slug
+  );
+  if (!attr) {
+    return {
+      row: {
+        kind: "entity-type",
+        verb: "noop",
+        id: desired.slug,
+        desired,
+        remote,
+      },
+      blocking: [
+        {
+          kind: "entity-type",
+          verb: "drift",
+          blocking: true,
+          id: desired.slug,
+        },
+      ],
+    };
+  }
+  const threeWay = compareEntityTypeThreeWay(desired, remote, attr);
+  return {
+    row: {
+      kind: "entity-type",
+      verb: threeWay.changedFields.length > 0 ? "update" : "noop",
+      id: desired.slug,
+      desired,
+      remote,
+      ...(threeWay.changedFields.length > 0
+        ? { changedFields: threeWay.changedFields }
+        : {}),
+    },
+    blocking: threeWay.blockingFields.map((b) => ({
+      kind: "entity-type",
+      verb: "drift",
+      blocking: true,
+      id: desired.slug,
+      field: b.field,
+      remoteChange: b.remoteChange,
+    })),
+  };
+}
+
+function diffRelationshipTypeWithBaseline(
+  desired: DesiredRelationshipType,
+  remote: RemoteRelationshipType | undefined,
+  baseline: Baseline | undefined
+): { row: RelationshipTypeDiffRow; blocking: BlockingDriftRow[] } {
+  if (!remote) {
+    return { row: diffRelationshipType(desired, remote), blocking: [] };
+  }
+  if (!baseline) {
+    return { row: diffRelationshipType(desired, remote), blocking: [] };
+  }
+  const attr = baseline.attribution.relationshipTypes.find(
+    (a) => a.slug === desired.slug
+  );
+  if (!attr) {
+    return {
+      row: {
+        kind: "relationship-type",
+        verb: "noop",
+        id: desired.slug,
+        desired,
+        remote,
+      },
+      blocking: [
+        {
+          kind: "relationship-type",
+          verb: "drift",
+          blocking: true,
+          id: desired.slug,
+        },
+      ],
+    };
+  }
+  const threeWay = compareRelationshipTypeThreeWay(desired, remote, attr);
+  return {
+    row: {
+      kind: "relationship-type",
+      verb: threeWay.changedFields.length > 0 ? "update" : "noop",
+      id: desired.slug,
+      desired,
+      remote,
+      ...(threeWay.changedFields.length > 0
+        ? { changedFields: threeWay.changedFields }
+        : {}),
+    },
+    blocking: threeWay.blockingFields.map((b) => ({
+      kind: "relationship-type",
+      verb: "drift",
+      blocking: true,
+      id: desired.slug,
+      field: b.field,
+      remoteChange: b.remoteChange,
+    })),
+  };
+}
+
+/** Remote-only definition classification: owned+unchanged → delete, else block. */
+function remoteOnlyDefinitionRow(
+  kind: "entity-type" | "relationship-type" | "watcher",
+  remote: { slug: string; id?: number | string },
+  baseline: Baseline | undefined,
+  legacyDelete: boolean,
+  unchangedSinceBaseline: (slug: string) => boolean
+): DiffRow {
+  if (!baseline) {
+    return {
+      kind,
+      verb: legacyDelete ? "delete" : "drift",
+      id: remote.slug,
+      remote,
+    } as DiffRow;
+  }
+  const owned =
+    remote.id !== undefined && baseline.owned.has(ownedKey(kind, remote.id));
+  if (owned && unchangedSinceBaseline(remote.slug)) {
+    return { kind, verb: "delete", id: remote.slug, remote } as DiffRow;
+  }
+  return {
+    kind,
+    verb: "drift",
+    blocking: true,
+    id: remote.slug,
+    remote,
+  } as DiffRow;
+}
+
+// Watcher (Behavior) three-way — whole-definition, over a normalized
+// camelCase projection of the fields the diff cares about. Write-only fields
+// (`reactionScript`) are excluded (always-repush, never attributed).
+
+interface WatcherProjection {
+  name?: string;
+  description?: string | null;
+  triggers?: DesiredBehaviorTrigger[];
+  prompt?: string | null;
+  skills?: Array<{ name: string; content: string }> | null;
+  sources?: BehaviorSource[] | null;
+  reactionsGuidance?: string | null;
+  deviceWorkerId?: string | null;
+  notificationChannel?: string | null;
+  notificationPriority?: string | null;
+  minCooldownSeconds?: number | null;
+  tags?: string[] | null;
+  agentKind?: string | null;
+  outputs?: Record<string, unknown> | null;
+  classifiers?: unknown[] | null;
+}
+
+const projectDesiredWatcher = (d: DesiredWatcher): WatcherProjection => ({
+  name: d.name,
+  description: d.description,
+  triggers: d.triggers,
+  prompt: d.prompt,
+  skills: d.skillSnapshots,
+  sources: d.sources,
+  reactionsGuidance: d.reactionsGuidance,
+  deviceWorkerId: d.deviceWorkerId,
+  notificationChannel: d.notificationChannel,
+  notificationPriority: d.notificationPriority,
+  minCooldownSeconds: d.minCooldownSeconds,
+  tags: d.tags,
+  agentKind: d.agentKind,
+  outputs: d.outputs ?? null,
+  classifiers: d.classifiers,
+});
+
+const projectRemoteWatcher = (w: RemoteBehavior): WatcherProjection => ({
+  name: w.name,
+  description: w.description,
+  triggers: w.triggers,
+  prompt: w.prompt,
+  skills: w.skills,
+  sources: w.sources,
+  reactionsGuidance: w.reactions_guidance,
+  deviceWorkerId: w.device_worker_id,
+  notificationChannel: w.notification_channel,
+  notificationPriority: w.notification_priority,
+  minCooldownSeconds: w.min_cooldown_seconds,
+  tags: w.tags,
+  agentKind: w.agent_kind,
+  outputs: w.outputs ?? null,
+  classifiers: w.classifiers,
+});
+
+function diffWatcherWithBaseline(
+  desired: DesiredWatcher,
+  remote: RemoteBehavior | undefined,
+  baseline: Baseline | undefined
+): { row: WatcherDiffRow; blocking: BlockingDriftRow[] } {
+  if (!remote) {
+    return { row: diffWatcher(desired, remote), blocking: [] };
+  }
+  if (!baseline) {
+    return { row: diffWatcher(desired, remote), blocking: [] };
+  }
+  const attr = baseline.attribution.watchers.find(
+    (a) => a.slug === desired.slug
+  );
+  if (!attr) {
+    return {
+      row: { kind: "watcher", verb: "noop", id: desired.slug, desired, remote },
+      blocking: [
+        { kind: "watcher", verb: "drift", blocking: true, id: desired.slug },
+      ],
+    };
+  }
+  const outcome = classifyField(
+    projectDesiredWatcher(desired),
+    projectRemoteWatcher(remote),
+    projectRemoteWatcher(attr)
+  );
+  if (outcome === "noop") {
+    return { row: diffWatcher(desired, remote), blocking: [] };
+  }
+  if (outcome === "configMoved") {
+    return { row: diffWatcher(desired, remote), blocking: [] };
+  }
+  return {
+    row: { kind: "watcher", verb: "noop", id: desired.slug, desired, remote },
+    blocking: [
+      { kind: "watcher", verb: "drift", blocking: true, id: desired.slug },
+    ],
+  };
 }
 
 /**
@@ -939,6 +1379,16 @@ interface ComputeDiffOptions {
    * excluded from drift/delete entirely. Omit to disable the filter (tests).
    */
   orgId?: string;
+  /**
+   * Attribution baseline (the last succeeded deployment's effective-remote
+   * snapshot + owned incarnation identities). When present, entity/rel types
+   * and Behaviors get the three-way compare: block when the remote moved
+   * (`remote ≠ attribution` AND `desired ≠ remote`), converge only when the
+   * config moved (`remote == attribution`). When absent (legacy deployment /
+   * first apply), remote mismatches and remote-only definitions block
+   * (no-baseline) and nothing is auto-deleted.
+   */
+  baseline?: Baseline;
 }
 
 export function computeDiff(
@@ -949,6 +1399,7 @@ export function computeDiff(
   const rows: DiffRow[] = [];
   const only = opts.only;
   const prune = opts.prune ?? false;
+  const baseline = opts.baseline;
   // A remote entity/relationship type is this org's to manage (drift/prune)
   // only when it's org-owned. The list endpoints also surface public types
   // from other orgs (`organization_id` differs) — never drift or delete those.
@@ -1018,21 +1469,43 @@ export function computeDiff(
       desired.memorySchema.entityTypes.map((e) => e.slug)
     );
     for (const entity of desired.memorySchema.entityTypes) {
-      rows.push(
-        diffEntityType(entity, remoteEntityBySlug.get(entity.slug), prune)
+      const { row, blocking } = diffEntityTypeWithBaseline(
+        entity,
+        remoteEntityBySlug.get(entity.slug),
+        baseline,
+        prune
       );
+      rows.push(row);
+      rows.push(...blocking);
     }
     for (const remoteEntity of ownedEntityTypes) {
       if (!desiredEntitySlugs.has(remoteEntity.slug)) {
         // Code-managed: delete. The server refuses an entity-type delete while
         // instances exist (the data is exempt), surfacing a clear error.
-        // `$…` system types are never pruned.
-        rows.push({
-          kind: "entity-type",
-          verb: prune && !isSystemEntityType(remoteEntity) ? "delete" : "drift",
-          id: remoteEntity.slug,
-          remote: remoteEntity,
-        });
+        // `$…` system types are never pruned or owned-deleted.
+        if (isSystemEntityType(remoteEntity)) {
+          rows.push({
+            kind: "entity-type",
+            verb: "drift",
+            id: remoteEntity.slug,
+            remote: remoteEntity,
+          });
+          continue;
+        }
+        rows.push(
+          remoteOnlyDefinitionRow(
+            "entity-type",
+            remoteEntity,
+            baseline,
+            prune,
+            (slug) => {
+              const a = baseline?.attribution.entityTypes.find(
+                (x) => x.slug === slug
+              );
+              return !!a && deepEqual(remoteEntity, a);
+            }
+          )
+        );
       }
     }
 
@@ -1044,16 +1517,39 @@ export function computeDiff(
       desired.memorySchema.relationshipTypes.map((r) => r.slug)
     );
     for (const rel of desired.memorySchema.relationshipTypes) {
-      rows.push(diffRelationshipType(rel, remoteRelBySlug.get(rel.slug)));
+      const { row, blocking } = diffRelationshipTypeWithBaseline(
+        rel,
+        remoteRelBySlug.get(rel.slug),
+        baseline
+      );
+      rows.push(row);
+      rows.push(...blocking);
     }
     for (const remoteRel of ownedRelTypes) {
       if (!desiredRelSlugs.has(remoteRel.slug)) {
-        rows.push({
-          kind: "relationship-type",
-          verb: prune && !isSystemSlug(remoteRel.slug) ? "delete" : "drift",
-          id: remoteRel.slug,
-          remote: remoteRel,
-        });
+        if (isSystemSlug(remoteRel.slug)) {
+          rows.push({
+            kind: "relationship-type",
+            verb: "drift",
+            id: remoteRel.slug,
+            remote: remoteRel,
+          });
+          continue;
+        }
+        rows.push(
+          remoteOnlyDefinitionRow(
+            "relationship-type",
+            remoteRel,
+            baseline,
+            prune,
+            (slug) => {
+              const a = baseline?.attribution.relationshipTypes.find(
+                (x) => x.slug === slug
+              );
+              return !!a && deepEqual(remoteRel, a);
+            }
+          )
+        );
       }
     }
 
@@ -1062,16 +1558,48 @@ export function computeDiff(
     );
     const desiredWatcherSlugs = new Set(desired.watchers.map((w) => w.slug));
     for (const watcher of desired.watchers) {
-      rows.push(diffWatcher(watcher, remoteWatcherBySlug.get(watcher.slug)));
+      const { row, blocking } = diffWatcherWithBaseline(
+        watcher,
+        remoteWatcherBySlug.get(watcher.slug),
+        baseline
+      );
+      rows.push(row);
+      rows.push(...blocking);
     }
     for (const remoteWatcher of remote.watchers) {
       if (!desiredWatcherSlugs.has(remoteWatcher.slug)) {
-        rows.push({
-          kind: "watcher",
-          verb: prune && !isSystemSlug(remoteWatcher.slug) ? "delete" : "drift",
-          id: remoteWatcher.slug,
-          remote: remoteWatcher,
-        });
+        if (isSystemSlug(remoteWatcher.slug)) {
+          rows.push({
+            kind: "watcher",
+            verb: "drift",
+            id: remoteWatcher.slug,
+            remote: remoteWatcher,
+          });
+          continue;
+        }
+        rows.push(
+          remoteOnlyDefinitionRow(
+            "watcher",
+            {
+              slug: remoteWatcher.slug,
+              id: remoteWatcher.behavior_id,
+            },
+            baseline,
+            prune,
+            (slug) => {
+              const a = baseline?.attribution.watchers.find(
+                (x) => x.slug === slug
+              );
+              return (
+                !!a &&
+                deepEqual(
+                  projectRemoteWatcher(remoteWatcher),
+                  projectRemoteWatcher(a)
+                )
+              );
+            }
+          )
+        );
       }
     }
   }

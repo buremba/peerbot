@@ -44,7 +44,17 @@ export interface RemoteDeployment {
     version: number;
     state: Record<string, unknown>;
     connector_versions: Record<string, string>;
+    /** Attribution baseline (effective remote after apply); absent on legacy. */
+    attribution?: {
+      entityTypes: unknown[];
+      relationshipTypes: unknown[];
+      watchers: unknown[];
+    };
+    /** Kind-qualified incarnation identities this config applied. */
+    owned?: string[];
   } | null;
+  /** Blocking-drift candidates + confirm token, present on `blocked` runs. */
+  candidates?: { token?: string; items?: Array<Record<string, unknown>> } | null;
 }
 
 export interface DeploymentPauseState {
@@ -56,6 +66,8 @@ export interface DeploymentPauseState {
 }
 
 export interface RemoteEntityType {
+  /** Persistent incarnation id (`entity_types.id`) — the `owned` identity for deletes. */
+  id?: number;
   slug: string;
   name?: string;
   description?: string;
@@ -95,6 +107,8 @@ export interface RemoteEntityType {
 }
 
 export interface RemoteRelationshipType {
+  /** Persistent incarnation id (`entity_relationship_types.id`) — the `owned` identity for deletes. */
+  id?: number;
   slug: string;
   name?: string;
   description?: string;
@@ -282,6 +296,7 @@ function hoistEntityTypeSchema(
 ): RemoteEntityType {
   const schema = row.metadata_schema;
   const out: RemoteEntityType = {
+    ...(row.id !== undefined ? { id: row.id } : {}),
     slug: row.slug,
     ...(row.name !== undefined ? { name: row.name } : {}),
     ...(row.description !== undefined ? { description: row.description } : {}),
@@ -523,6 +538,15 @@ export class ApplyClient {
       if (err instanceof ApiError && err.status === 404) return null;
       throw err;
     }
+  }
+
+  /** Latest `succeeded` deployment — the attribution baseline (null when none). */
+  async getLatestDeployment(): Promise<RemoteDeployment | null> {
+    const { body } = await this.request<{ deployment?: RemoteDeployment }>(
+      "GET",
+      `/api/${this.orgSlug}/deployments/latest`
+    );
+    return body.deployment ?? null;
   }
 
   /** Promotions-pause state (set by `lobu rollback`). */

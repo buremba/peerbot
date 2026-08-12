@@ -187,6 +187,7 @@ async function queryContentData(
           entityType: source.ref.entityType,
           measure: source.ref.measure,
           userId: params.userId,
+          excludeWorkspaceAudit: params.excludeWorkspaceAudit,
         });
       } catch (err) {
 		if (params.throwOnSourceError) throw err;

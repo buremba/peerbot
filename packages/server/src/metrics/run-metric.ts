@@ -32,6 +32,12 @@ interface RunMetricInput {
    * jobs) — yields org-visible-only, fail-closed for private-connection data.
    */
   userId?: string | null;
+  /**
+   * Exclude workspace-identity audit events from the events CTE. Owner/admin
+   * and trusted system callers leave this false; ordinary members / public
+   * readers must set true so member/invitation lifecycle cannot move metrics.
+   */
+  excludeWorkspaceAudit?: boolean;
 }
 
 export async function runMetric(input: RunMetricInput): Promise<Record<string, unknown>[]> {
@@ -60,6 +66,7 @@ export async function runMetric(input: RunMetricInput): Promise<Record<string, u
   });
   const scoped = validateAndScopeQuery(rawSql, input.organizationId, {
     userId: input.userId ?? null,
+    excludeWorkspaceAudit: input.excludeWorkspaceAudit,
   });
 
   const rows = await sql.begin(async (tx: typeof sql) => {

@@ -50,8 +50,44 @@ describe('insertConnectionlessAuditEvent idempotency', () => {
     const rows = await sql`
       SELECT id FROM events
       WHERE organization_id = ${organizationId}
-        AND origin_id = ${originId}
-        AND connection_id IS NULL
+        AND metadata->>'_lobu_idempotency_key' = ${`audit:${originId}`}
+    `;
+    expect(rows).toHaveLength(1);
+  });
+
+  it('concurrent same-origin inserts resolve to a single row', async () => {
+    const originId = `workspace_member_created_test_${Date.now()}_race`;
+    const params = {
+      entityIds: [] as number[],
+      organizationId,
+      originId,
+      title: 'Member "racer" added',
+      semanticType: 'change',
+      originType: 'workspace_member_created',
+      payloadType: 'empty' as const,
+      payloadData: { state: { id: 'member_race', role: 'member' } },
+      metadata: {
+        category: 'workspace',
+        _lobu_workspace_audit: true,
+        resource_kind: 'member',
+        resource_id: 'member_race',
+        op: 'created',
+      },
+    };
+
+    const results = await Promise.all([
+      insertConnectionlessAuditEvent(params),
+      insertConnectionlessAuditEvent(params),
+      insertConnectionlessAuditEvent(params),
+    ]);
+    const ids = new Set(results.map((r) => r.id));
+    expect(ids.size).toBe(1);
+
+    const sql = getDb();
+    const rows = await sql`
+      SELECT id FROM events
+      WHERE organization_id = ${organizationId}
+        AND metadata->>'_lobu_idempotency_key' = ${`audit:${originId}`}
     `;
     expect(rows).toHaveLength(1);
   });

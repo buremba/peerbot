@@ -18,6 +18,7 @@ import {
   mergeEnrichedMetadata,
 } from './geo-enrichment';
 import logger from './logger';
+import { isUniqueViolation } from './pg-errors';
 
 /**
  * Single bounded retry for the fire-and-forget audit writers below
@@ -586,30 +587,46 @@ interface ChangeEventParams {
   clientId?: string | null;
 }
 
+const AUDIT_IDEMPOTENCY_INDEX = 'idx_events_org_idempotency_key';
+
 /**
- * Persist a connectionless audit/change event, reconciling first by
- * `(organization_id, origin_id)` where `connection_id IS NULL`.
+ * Persist a connectionless audit/change event with DB-enforced idempotency.
  *
  * Fire-and-forget writers retry with the same originId after a transient
- * failure. Connector-sourced rows are protected by a unique (connection_id,
- * origin_id) path; connectionless audit rows are not, so an ambiguous success
- * (insert committed, client saw timeout) would append a duplicate on retry.
- * Reconcile before insert so the second attempt is a no-op.
+ * failure. Connector-sourced rows use a unique (connection_id, origin_id)
+ * path; connectionless audit rows do not. Stamp the reserved
+ * `_lobu_idempotency_key` (unique per org via `idx_events_org_idempotency_key`)
+ * so a concurrent or retry insert after an ambiguous success resolves to the
+ * winner instead of appending a duplicate.
  */
 export async function insertConnectionlessAuditEvent(
   params: InsertEventParams
 ): Promise<InsertedEvent> {
-  const sql = getDb();
-  const existing = await sql`
-    SELECT id, entity_ids, origin_id, title, semantic_type, created_at
-    FROM events
-    WHERE organization_id = ${params.organizationId}
-      AND origin_id = ${params.originId}
-      AND connection_id IS NULL
-    ORDER BY id ASC
-    LIMIT 1
-  `;
-  if (existing[0]) {
+  const idempotencyKey = `audit:${params.originId}`;
+  const metadata: Record<string, unknown> = {
+    ...(params.metadata ?? {}),
+    _lobu_idempotency_key: idempotencyKey,
+  };
+
+  try {
+    return await insertEvent({
+      ...params,
+      connectionId: null,
+      metadata,
+    });
+  } catch (error) {
+    if (!isUniqueViolation(error, AUDIT_IDEMPOTENCY_INDEX)) throw error;
+    const sql = getDb();
+    const existing = await sql`
+      SELECT id, entity_ids, origin_id, title, semantic_type, created_at
+      FROM events
+      WHERE organization_id = ${params.organizationId}
+        AND metadata ? '_lobu_idempotency_key'
+        AND metadata->>'_lobu_idempotency_key' = ${idempotencyKey}
+      ORDER BY id ASC
+      LIMIT 1
+    `;
+    if (!existing[0]) throw error;
     const row = existing[0] as {
       id: number | string;
       entity_ids: number[] | null;
@@ -628,7 +645,6 @@ export async function insertConnectionlessAuditEvent(
       change: 'unchanged',
     };
   }
-  return insertEvent({ ...params, connectionId: null });
 }
 
 /**

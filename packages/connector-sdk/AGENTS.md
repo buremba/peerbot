@@ -17,4 +17,4 @@ Read root `AGENTS.md` first. This package is the contract every connector compil
 - A new workspace package that imports this SDK must appear after connector-sdk in all three build lists — see `docs/GOTCHAS.md`, "Build & typecheck".
 
 ## Validation
-- Validation: the root gates (`make pre-pr` + `make review`, see root `AGENTS.md`) plus targeted SDK tests. Browser changes need a real connector run, not just a unit test — a green mock proves nothing about Chromium launch.
+- Validation: the root gates (see root `AGENTS.md`) plus targeted SDK tests. Browser changes need a real connector run, not just a unit test — a green mock proves nothing about Chromium launch.

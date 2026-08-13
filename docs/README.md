@@ -19,6 +19,8 @@ docs below for shipped behavior.
 
 ## Operate the repo
 
+- **`AGENT_PLAYBOOK.md`** — supporting rationale, incident history, and exact
+  flags for the root and package agent rules.
 - **`GOTCHAS.md`** — symptom-indexed traps by surface (build, SQL, testing,
   submodule, browser).
 - **`BROWSER_TESTING.md`** — authenticated browser verification runbook.

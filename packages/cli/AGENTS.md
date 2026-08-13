@@ -15,4 +15,4 @@ Read root `AGENTS.md` first. This package is the `lobu` binary users install fro
 - `packages/cli` builds last in every build list because it bundles the others; a new workspace package it depends on must be added *before* it. See `docs/GOTCHAS.md`, "Build & typecheck".
 
 ## Validation
-- Validation: the root gates (`make pre-pr` + `make review`, see root `AGENTS.md`) plus targeted CLI tests. Changing command output or the version gate needs a real invocation — run the built binary, not just the unit test.
+- Validation: the root gates (see root `AGENTS.md`) plus targeted CLI tests. Changing command output or the version gate needs a real invocation — run the built binary, not just the unit test.

@@ -13,4 +13,4 @@ Read root `AGENTS.md` first. This package holds the shared contracts many other 
 - Unlike `server` and `connector-sdk`, this package **is** biome-formatted — use `bun run check:fix` from the repo root.
 
 ## Validation
-- Validation: the root gates (`make pre-pr` + `make review`, see root `AGENTS.md`). For a contract change, also typecheck the consumers — a green build here says nothing about downstream packages.
+- Validation: the root gates (see root `AGENTS.md`). For a contract change, also typecheck the consumers — a green build here says nothing about downstream packages.

@@ -50,5 +50,5 @@ pipeline also used by `@lobu/cli` and `@lobu/server`.
 
 ## Validation
 
-- Validation: targeted `@lobu/connector-worker` tests plus the root gates
-  (normally `make pre-pr-remote`, then `make review`; see root `AGENTS.md`).
+- Validation: targeted `@lobu/connector-worker` tests plus the root gates (see
+  root `AGENTS.md`).

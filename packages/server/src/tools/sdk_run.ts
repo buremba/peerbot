@@ -145,12 +145,6 @@ export const SdkScriptResultSchema = Type.Object({
         "Change-capable calls dispatched before a live script failed, grouped by method path. Present only when success=false and dry_run=false. Dispatch is not confirmation — a call listed here may or may not have completed.",
     }),
   ),
-  started_side_effects_truncated: Type.Optional(
-    Type.Boolean({
-      description:
-        "The internal call trace was byte-capped, so started_side_effects undercounts the run.",
-    }),
-  ),
   dry_run: Type.Boolean(),
 });
 
@@ -182,7 +176,7 @@ type StartedSideEffect = Static<typeof StartedSideEffectSchema>;
  */
 function summarizeStartedSideEffects(
   row: Record<string, unknown>,
-): { entries: StartedSideEffect[]; truncated: boolean } | null {
+): StartedSideEffect[] | null {
   if (row.success !== false) return null;
   if (row.dry_run === true) return null;
   // The sandbox tallies these at dispatch time. Deriving them from
@@ -208,14 +202,9 @@ function summarizeStartedSideEffects(
   if (entries.length === 0) return null;
 
   entries.sort((a, b) => b.count - a.count || a.path.localeCompare(b.path));
-  return {
-    entries,
-    // The tally itself is complete; the flag only tells the reader that the
-    // diagnostic trace behind it was capped.
-    truncated:
-      Boolean(row.sdk_call_trace_truncated) &&
-      typeof row.sdk_call_trace_truncated === "object",
-  };
+  // No hedge: the sandbox counts every dispatch, so this is exact regardless of
+  // how much of the diagnostic trace was evicted.
+  return entries;
 }
 
 /**
@@ -291,10 +280,7 @@ export function toMcpPublicSdkScriptResult(result: unknown): unknown {
   // only — so the result card can warn without the diagnostic trace crossing
   // the boundary. Skipped calls never ran, and reads change nothing.
   const started = summarizeStartedSideEffects(row);
-  if (started) {
-    out.started_side_effects = started.entries;
-    if (started.truncated) out.started_side_effects_truncated = true;
-  }
+  if (started) out.started_side_effects = started;
   return out;
 }
 

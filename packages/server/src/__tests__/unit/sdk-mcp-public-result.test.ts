@@ -162,7 +162,6 @@ describe("SDK MCP public result", () => {
 			{ path: "entities.update", access: "write", count: 2 },
 			{ path: "slack.postMessage", access: "external", count: 1 },
 		]);
-		expect(result.started_side_effects_truncated).toBeUndefined();
 		// The diagnostic trace itself still never crosses, args included.
 		expect(result.sdk_call_trace).toBeUndefined();
 		expect(JSON.stringify(result)).not.toContain("secret");
@@ -190,20 +189,9 @@ describe("SDK MCP public result", () => {
 		expect(result.started_side_effects).toEqual([
 			{ path: "entities.update", access: "write", count: 412 },
 		]);
-		expect(result.started_side_effects_truncated).toBe(true);
-	});
-
-	test("flags an undercount when the internal trace was byte-capped", () => {
-		const result = toMcpPublicSdkScriptResult({
-			success: false,
-			skipped_calls: 0,
-			side_effect_preview: [],
-			dry_run: false,
-			started_side_effects: [{ path: "events.create", access: "write", count: 1 }],
-			sdk_call_trace_truncated: { dropped_entries: 412 },
-		}) as Record<string, unknown>;
-
-		expect(result.started_side_effects_truncated).toBe(true);
+		// The tally is complete by construction, so trace eviction must NOT hedge
+		// it — an "at least" count here would understate a real write volume.
+		expect(result.started_side_effects_truncated).toBeUndefined();
 	});
 
 	test("omits the summary for successful, dry-run, and read-only failures", () => {

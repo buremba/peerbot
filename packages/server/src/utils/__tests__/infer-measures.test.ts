@@ -63,6 +63,20 @@ describe('inferColumns', () => {
     expect(role.amt).toBe('dimension');
   });
 
+  it('sees through a window wrapper to the underlying aggregate', () => {
+    const role = Object.fromEntries(
+      inferColumns(
+        `SELECT week,
+                SUM(net_worth_gbp) OVER () AS net_worth_gbp,
+                first_value(label) OVER (ORDER BY week) AS first_label
+         FROM snapshots`
+      ).map((c) => [c.name, c.role])
+    );
+    expect(role.week).toBe('dimension');
+    expect(role.net_worth_gbp).toBe('measure');
+    expect(role.first_label).toBe('dimension');
+  });
+
   it('returns [] for non-SELECT roots and genuinely unparseable SQL', () => {
     // SELECT * → handled (star projection, no named columns)
     expect(inferColumns('SELECT * FROM events')).toEqual([]);

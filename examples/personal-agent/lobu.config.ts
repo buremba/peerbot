@@ -4,23 +4,23 @@ import {
   defineAuthProfile,
   defineBehavior,
   defineConfig,
-  defineSkill,
   defineConnection,
   defineEntityType,
   defineRelationshipType,
+  defineSkill,
   reactionFromFile,
 } from "@lobu/cli/config";
 import type GoogleTakeoutConnector from "./google-takeout.connector.ts";
 import type InstagramTakeoutConnector from "./instagram-takeout.connector.ts";
 import type LinkedInConnector from "./linkedin.connector.ts";
-import type RevolutTransactionsConnector from "./revolut-transactions.connector.ts";
-import type SpotifyConnector from "./spotify.connector.ts";
-import type TwitterTakeoutConnector from "./twitter-takeout.connector.ts";
-import type WhatsAppCloudConnector from "./whatsapp.cloud.connector.ts";
 import type MidasConnector from "./midas.connector.ts";
 import type NetWorthReaction from "./net-worth.reaction.ts";
+import type RevolutTransactionsConnector from "./revolut-transactions.connector.ts";
 import type SocialInterestRadarReaction from "./social-interest-radar.reaction.ts";
+import type SpotifyConnector from "./spotify.connector.ts";
 import { takeoutConfig } from "./takeout-dirs.ts";
+import type TwitterTakeoutConnector from "./twitter-takeout.connector.ts";
+import type WhatsAppCloudConnector from "./whatsapp.cloud.connector.ts";
 
 const hourlyTaskCollaboratorSkill = defineSkill({
   name: "hourly-task-collaborator",
@@ -432,48 +432,78 @@ const completedCardSpendWhere = `semantic_type = 'transaction'
     AND metadata->>'transaction_type' = 'CARD_PAYMENT'
     AND metadata->>'direction' = 'out'`;
 
-const asset = defineEntityType({
-  key: "asset",
-  name: "Asset",
+// One bounded, immutable weekly row is the financial read model. The inner
+// top-1 uses the live-event index; the outer SUM window runs over that one row
+// only and lets the existing derived-column classifier expose net_worth_gbp as
+// the first-class measure without a separate metrics DSL.
+const netWorthSnapshot = defineEntityType({
+  key: "net-worth-snapshot",
+  name: "Net Worth Snapshot",
   description:
-    "Things you own with monetary value - bank accounts, property, investments, vehicles, devices",
-  metadata: { icon: "💰", color: "#10B981" },
-  required: ["category"],
+    "Latest household balance-sheet valuation from connector positions and current observations, with weekly FX, valuation range, and deterministic attribution.",
+  metadata: { icon: "wallet-cards", color: "#10B981" },
+  backing: {
+    sql: `SELECT
+      latest.id,
+      latest.week,
+      latest.snapshot_at,
+      SUM(latest.net_worth_gbp) OVER () AS net_worth_gbp,
+      SUM(latest.net_worth_low_gbp) OVER () AS net_worth_low_gbp,
+      SUM(latest.net_worth_high_gbp) OVER () AS net_worth_high_gbp,
+      latest.scope,
+      latest.sources,
+      latest.positions,
+      latest.breakdowns,
+      latest.previous,
+      latest.attribution
+    FROM (
+      SELECT
+        id,
+        metadata->>'week' AS week,
+        occurred_at AS snapshot_at,
+        (metadata->>'net_worth_gbp')::numeric AS net_worth_gbp,
+        (metadata->'net_worth_range_gbp'->>'low')::numeric AS net_worth_low_gbp,
+        (metadata->'net_worth_range_gbp'->>'high')::numeric AS net_worth_high_gbp,
+        metadata->>'scope' AS scope,
+        metadata->'sources' AS sources,
+        metadata->'positions' AS positions,
+        metadata->'breakdowns' AS breakdowns,
+        metadata->'previous' AS previous,
+        metadata->'attribution' AS attribution
+      FROM events
+      WHERE semantic_type = 'summary'
+        AND metadata->>'schema' = 'net-worth-snapshot/v4'
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    ) latest`,
+  },
+});
+
+const account = defineEntityType({
+  key: "account",
+  name: "Financial Account",
+  description:
+    "A financial account used as the stable grain for account-level transaction metrics.",
+  metadata: { icon: "landmark", color: "#10B981" },
   properties: {
-    value: { type: "number", description: "Current value or balance" },
     is_active: {
       type: "boolean",
-      description: "Whether you currently own this asset",
+      description: "Whether this account is active",
       "x-table-column": true,
       "x-table-label": "Active",
     },
-    category: {
-      type: "string",
-      enum: [
-        "financial-account",
-        "property",
-        "investment",
-        "vehicle",
-        "device",
-      ],
-      description: "Type of asset",
-    },
-    currency: { type: "string", description: "Currency code (GBP, USD, etc)" },
-    acquired_date: {
-      type: "string",
-      format: "date",
-      description: "When acquired",
-    },
+    institution: { type: "string", description: "Financial institution" },
+    account_type: { type: "string", description: "Account classification" },
   },
   // Governed spend metrics over the Revolut transaction stream. The eventSet
   // resolves a transaction to an account by matching its `currency` against the
-  // account asset's aliases. This example assumes a single consolidated Revolut
-  // account, so that one asset is aliased with EVERY currency it transacts in
+  // account's aliases. This example assumes a single consolidated Revolut
+  // account, so that one account is aliased with EVERY currency it transacts in
   // (GBP, USD, EUR, …) and owns all transactions; `currency` is then a
   // dimension, not a separate entity per pocket. Because the measure is
   // GBP-normalised, the per-account roll-up is a valid single GBP total. Aliases
   // are entity data, not schema — seed them with
-  // examples/personal-agent/seed-asset-aliases.sql.
+  // examples/personal-agent/seed-account-aliases.sql.
   eventSets: {
     transactions: {
       by: "alias",
@@ -755,7 +785,7 @@ const goal = defineEntityType({
     metric: {
       type: "string",
       description:
-        "How progress is measured — ideally a declared metric (e.g. asset.spend) the agent can query",
+        "How progress is measured — ideally a declared metric (e.g. account.spend) the agent can query",
     },
     description: { type: "string" },
   },
@@ -1218,10 +1248,12 @@ const socialInterestRadar = defineBehavior({
 
 const midasNetWorth = defineBehavior({
   agent: personalAgent,
+  // Keep the existing slug: it is the Behavior's durable identity. Renaming it
+  // would delete/recreate the Behavior and discard its cooldown/history.
   slug: "midas-net-worth",
-  name: "Midas net worth",
+  name: "Weekly net worth",
   description:
-    "Values current active Midas holdings with available market marks and saves one derived snapshot.",
+    "Consolidates connector positions and current balance-sheet observations into one immutable weekly GBP snapshot with exact change attribution.",
   triggers: [
     {
       kind: "schedule",
@@ -1233,11 +1265,11 @@ const midasNetWorth = defineBehavior({
   ],
   notification: { channel: "canvas", priority: "low" },
   minCooldownSeconds: 300,
-  tags: ["finance", "midas", "net-worth"],
+  tags: ["finance", "net-worth", "balance-sheet"],
   prompt:
-    'The deterministic reaction performs this scheduled Midas valuation. Return only {"summary":"Run the deterministic Midas valuation."}; do not calculate values, create entities, or call connector operations yourself.',
+    'The deterministic reaction performs this scheduled consolidated valuation. Return only {"summary":"Run the deterministic weekly net-worth snapshot."}; do not calculate values, create entities, or call connector operations yourself.',
   reactionsGuidance:
-    "The reaction owns quote execution, current active-position selection, derived snapshot persistence, and the notification. It fails if the local quote execution path is missing and labels per-symbol broker fallbacks explicitly.",
+    "The reaction owns active-connection deduplication, current observation heads, security and weekly FX marks, penny-exact attribution, immutable snapshot persistence, and the notification. Missing FX fails closed.",
   reaction: reactionFromFile<typeof NetWorthReaction>(
     "./net-worth.reaction.ts"
   ),
@@ -1349,7 +1381,8 @@ export default defineConfig({
     company,
     task,
     channel,
-    asset,
+    account,
+    netWorthSnapshot,
     subscription,
     trip,
     goal,

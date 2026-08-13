@@ -435,14 +435,15 @@ const INTERNAL_DISPATCH_TOOLS: ToolDefinition[] = [
   {
     name: 'list_metrics',
     description:
-      'List declared governed metrics per entity type. SDK alternative: client.metrics.list.',
+      'List governed declared and SQL-derived metrics per entity type, including business KPIs such as spend and net worth. SDK alternative: client.metrics.list.',
     inputSchema: ListMetricsSchema,
     annotations: { ...READ_ONLY, title: 'List metrics' },
     handler: listMetrics,
   },
   {
     name: 'query_metric',
-    description: 'Run a declared metric. SDK alternative: client.metrics.query.',
+    description:
+      'Run a governed declared or SQL-derived measure, such as spend or net worth. SDK alternative: client.metrics.query.',
     inputSchema: QueryMetricSchema,
     annotations: { ...READ_ONLY, title: 'Query metric' },
     handler: queryMetric,

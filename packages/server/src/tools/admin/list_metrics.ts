@@ -1,15 +1,14 @@
 /**
- * list_metrics — the metric catalog. Lists the DECLARED measures / dimensions /
- * segments per entity type (with their descriptions), so the agent can discover
- * what governed metrics exist and call `query_metric` instead of hand-writing
- * SQL. This is the "semantic-first" discovery step: search here, then
- * query_metric; only fall back to query_sql when nothing covers the ask.
+ * list_metrics — the metric catalog. Lists declared metrics plus measures and
+ * dimensions exposed by derived entity SQL, so the agent can discover reusable
+ * governed calculations before hand-writing SQL.
  */
 
 import { type Static, Type } from '@sinclair/typebox';
 import type { EntityMetrics } from '@lobu/connector-sdk';
 import { getDb } from '../../db/client';
 import type { Env } from '../../index';
+import { inferColumns } from '../../utils/infer-measures';
 import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
 
@@ -19,7 +18,7 @@ export const ListMetricsSchema = Type.Object({
   ),
   q: Type.Optional(
     Type.String({
-      description: 'Keyword filter (case-insensitive) over measure/dimension/segment names + descriptions.',
+      description: 'Keyword filter over available measure, dimension, and segment names and descriptions.',
     }),
   ),
 });
@@ -49,23 +48,29 @@ async function listMetricsImpl(
   }
   const sql = getDb();
   const rows = (await sql`
-    SELECT slug, name, metrics_config
+    SELECT slug, name, metrics_config, backing_sql
     FROM entity_types
     WHERE organization_id = ${ctx.organizationId}
       AND deleted_at IS NULL
-      AND metrics_config IS NOT NULL
+      AND (metrics_config IS NOT NULL OR backing_sql IS NOT NULL)
       ${args.entity_type ? sql`AND slug = ${args.entity_type}` : sql``}
     ORDER BY slug
-  `) as unknown as Array<{ slug: string; name: string | null; metrics_config: unknown }>;
+  `) as unknown as Array<{
+    slug: string;
+    name: string | null;
+    metrics_config: unknown;
+    backing_sql: string | null;
+  }>;
 
-  const needle = args.q?.toLowerCase();
+  const searchable = (value: string) => value.toLowerCase().replace(/[_-]+/g, ' ');
+  const needle = args.q ? searchable(args.q) : undefined;
   const matches = (...vals: (string | undefined)[]) =>
-    !needle || vals.some((v) => v?.toLowerCase().includes(needle));
+    !needle || vals.some((v) => v && searchable(v).includes(needle));
 
   const entity_types: MetricCatalogEntry[] = [];
   for (const row of rows) {
     const m = (row.metrics_config ?? {}) as EntityMetrics;
-    const measures = Object.entries(m.measures ?? {})
+    const declaredMeasures = Object.entries(m.measures ?? {})
       .filter(([name, def]) => matches(name, def.description))
       .map(([name, def]) => ({
         name,
@@ -75,9 +80,44 @@ async function listMetricsImpl(
         ...(def.tier ? { tier: def.tier } : {}),
         ...(def.owner ? { owner: def.owner } : {}),
       }));
-    const dimensions = Object.entries(m.dimensions ?? {})
+    const declaredDimensions = Object.entries(m.dimensions ?? {})
       .filter(([name, def]) => matches(name, def.description))
       .map(([name, def]) => ({ name, description: def.description }));
+    const inferred = row.backing_sql ? inferColumns(row.backing_sql) : [];
+    const declaredMeasureNames = new Set(declaredMeasures.map((measure) => measure.name));
+    const measures = [
+      ...declaredMeasures,
+      ...inferred
+        .filter(
+          (column) =>
+            column.role === 'measure' &&
+            !declaredMeasureNames.has(column.name) &&
+            matches(column.name, 'Precomputed by the derived entity SQL.'),
+        )
+        .map((column) => ({
+          name: column.name,
+          agg: 'derived',
+          eventSet: 'backing_sql',
+          description: 'Precomputed by the derived entity SQL.',
+        })),
+    ];
+    const declaredDimensionNames = new Set(
+      declaredDimensions.map((dimension) => dimension.name),
+    );
+    const dimensions = [
+      ...declaredDimensions,
+      ...inferred
+        .filter(
+          (column) =>
+            column.role === 'dimension' &&
+            !declaredDimensionNames.has(column.name) &&
+            matches(column.name, 'Column exposed by the derived entity SQL.'),
+        )
+        .map((column) => ({
+          name: column.name,
+          description: 'Column exposed by the derived entity SQL.',
+        })),
+    ];
     const segments = Object.entries(m.segments ?? {})
       .filter(([name, def]) => matches(name, def.description))
       .map(([name, def]) => ({ name, description: def.description }));

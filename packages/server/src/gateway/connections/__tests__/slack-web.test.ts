@@ -41,6 +41,7 @@ describe("createSlackWebApi wire format", () => {
     const headers = init.headers as Record<string, string>;
     expect(headers["Content-Type"]).toMatch(/application\/x-www-form-urlencoded/);
     expect(headers.Authorization).toBe("Bearer xoxb-token");
+    expect(init.signal).toBeInstanceOf(AbortSignal);
     // Body is form-encoded, so it parses as URLSearchParams (a JSON body would not).
     const body = new URLSearchParams(init.body as string);
     expect(body.get("channel")).toBe("C123");

@@ -1,6 +1,7 @@
 import { createLogger } from "@lobu/core";
 
 const logger = createLogger("slack-web");
+const SLACK_REQUEST_TIMEOUT_MS = 15_000;
 
 /**
  * Minimal Slack Web API surface used by the connected-apps onboarding flow:
@@ -122,6 +123,7 @@ async function slackPost(
       "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
     },
     body: form.toString(),
+    signal: AbortSignal.timeout(SLACK_REQUEST_TIMEOUT_MS),
   });
   const json = (await res.json()) as Record<string, unknown>;
   if (json.ok !== true) {

@@ -71,7 +71,7 @@ async function resolveJiraMcpFeedTarget(params: {
 		  AND f.feed_key = ${ATLASSIAN_JIRA_ISSUES_FEED_KEY}
 		  AND f.status = 'active'
 		  AND f.deleted_at IS NULL
-		  AND c.status = 'active'
+		  AND c.status NOT IN ('paused', 'revoked')
 		  AND c.deleted_at IS NULL
 	`) as Array<{
 		feed_id: number;
@@ -106,6 +106,60 @@ async function resolveJiraMcpFeedTarget(params: {
 		);
 	}
 	return matches[0] ?? null;
+}
+
+async function resolveJiraMcpFeedTargetByConnection(params: {
+	sql: DbClient;
+	organizationId: string;
+	connectionId: number;
+}): Promise<JiraMcpFeedTarget | null> {
+	const rows = (await params.sql`
+		SELECT f.id AS feed_id, f.connection_id, f.config AS feed_config,
+		       c.connector_key, c.config AS connection_config, cd.mcp_config
+		FROM feeds f
+		JOIN connections c ON c.id = f.connection_id
+		JOIN LATERAL (
+			SELECT mcp_config
+			FROM connector_definitions
+			WHERE organization_id = c.organization_id
+			  AND key = c.connector_key
+			  AND status = 'active'
+			ORDER BY updated_at DESC
+			LIMIT 1
+		) cd ON TRUE
+		WHERE f.organization_id = ${params.organizationId}
+		  AND f.connection_id = ${params.connectionId}
+		  AND f.feed_key = ${ATLASSIAN_JIRA_ISSUES_FEED_KEY}
+		  AND f.status = 'active'
+		  AND f.deleted_at IS NULL
+		  AND c.status NOT IN ('paused', 'revoked')
+		  AND c.deleted_at IS NULL
+	`) as Array<{
+		feed_id: number;
+		connection_id: number;
+		feed_config: Record<string, unknown> | null;
+		connector_key: string;
+		connection_config: Record<string, unknown> | null;
+		mcp_config: Record<string, unknown> | null;
+	}>;
+	const row = rows[0];
+	if (!row || rows.length !== 1 || !isAtlassianMcpConfig(row.mcp_config)) {
+		return null;
+	}
+	const config = {
+		...(row.connection_config ?? {}),
+		...(row.feed_config ?? {}),
+	};
+	const configuredUrl =
+		typeof config.site_url === "string" ? config.site_url : undefined;
+	if (!configuredUrl || !siteHost(configuredUrl)) return null;
+	return {
+		connectionId: Number(row.connection_id),
+		feedId: Number(row.feed_id),
+		connectorKey: row.connector_key,
+		config,
+		siteUrl: configuredUrl,
+	};
 }
 
 function issueUrl(target: JiraMcpFeedTarget, issueKey?: string): string {
@@ -169,11 +223,17 @@ async function landJiraMcpWebhookEvent(params: {
 					? issueRow.url
 					: issueUrl(params.target, issueKey),
 			occurredAt:
-				typeof issueRow.created_at === "string"
-					? issueRow.created_at
-					: typeof issueRow.updated_at === "string"
+				eventType === "jira:issue_updated"
+					? typeof issueRow.updated_at === "string"
 						? issueRow.updated_at
-						: null,
+						: typeof issueRow.created_at === "string"
+							? issueRow.created_at
+							: null
+					: typeof issueRow.created_at === "string"
+						? issueRow.created_at
+						: typeof issueRow.updated_at === "string"
+							? issueRow.updated_at
+							: null,
 			metadata: {
 				key: issueKey ?? null,
 				status: issueRow.status ?? null,
@@ -317,4 +377,31 @@ export function createJiraWebhookDelivery(): NonNullable<
 			? { triggered: true }
 			: { triggered: false, handled: false };
 	};
+}
+
+/**
+ * Land a per-connection Jira dynamic-webhook delivery on the exact Atlassian
+ * MCP connection whose callback URL received it. Authentication and raw-body
+ * verification happen in the shared connector webhook ingest pipeline before
+ * this function runs.
+ */
+export async function deliverJiraMcpConnectionWebhook(params: {
+	sql: DbClient;
+	organizationId: string;
+	connectionId: number;
+	rawBody: Uint8Array;
+}): Promise<{ handled: boolean; triggered: boolean }> {
+	const payload = parseJson(params.rawBody);
+	if (!payload || typeof payload !== "object") {
+		return { handled: false, triggered: false };
+	}
+	const target = await resolveJiraMcpFeedTargetByConnection(params);
+	if (!target) return { handled: false, triggered: false };
+	const triggered = await landJiraMcpWebhookEvent({
+		sql: params.sql,
+		organizationId: params.organizationId,
+		target,
+		payload: payload as Record<string, unknown>,
+	});
+	return { handled: true, triggered };
 }

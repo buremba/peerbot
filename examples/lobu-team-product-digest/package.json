@@ -1,0 +1,10 @@
+{
+  "name": "@lobu/example-lobu-team-product-digest",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@lobu/cli": "^13.3.0",
+    "@lobu/connector-sdk": "^13.3.0"
+  }
+}

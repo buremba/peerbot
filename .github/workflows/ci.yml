@@ -202,6 +202,7 @@ jobs:
         run: |
           bun test examples/personal-agent --timeout 30000
           bun test examples/brand-intelligence --timeout 30000
+          bun test examples/lobu-team-product-digest --timeout 30000
 
       - name: Upload coverage
         if: always()

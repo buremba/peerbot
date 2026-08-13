@@ -15,6 +15,7 @@ import { join } from "node:path";
 import {
   assertOwlettoInManifest,
   assertReusableSandbox,
+  buildSourceManifest,
   canReusePreview,
   checkoutCleanupCommand,
   daytonaConfigPath,
@@ -144,6 +145,21 @@ describe("dev-remote helpers", () => {
     expect(shellQuote("hello $(touch /tmp/nope) ' world")).toBe(
       "'hello $(touch /tmp/nope) '\"'\"' world'"
     );
+  });
+
+  test("source manifest includes patch additions and omits patch deletions", () => {
+    const existing = new Set([
+      "tracked.ts",
+      "added.ts",
+      "packages/owletto/src/main.ts",
+    ]);
+    expect(
+      buildSourceManifest(
+        "tracked.ts\0deleted.ts\0packages/owletto/src/main.ts\0",
+        "added.ts\0tracked.ts\0",
+        (path) => existing.has(path)
+      )
+    ).toBe("tracked.ts\0packages/owletto/src/main.ts\0added.ts\0");
   });
 
   test("pins the requested Bun ahead of a conflicting base PATH", () => {

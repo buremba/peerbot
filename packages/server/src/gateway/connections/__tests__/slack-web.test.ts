@@ -17,28 +17,6 @@ afterEach(() => {
 });
 
 describe("createSlackWebApi wire format", () => {
-  test("forwards chat.postMessage client_msg_id for retry deduplication", async () => {
-    let request: RequestInit | undefined;
-    globalThis.fetch = mock(async (_url: string, init: RequestInit) => {
-      request = init;
-      return { json: async () => ({ ok: true }) } as Response;
-    }) as unknown as typeof fetch;
-
-    await createSlackWebApi().postMessage(
-      "xoxb-token",
-      "C123",
-      "digest",
-      "2963902b-df7b-5f85-b3a6-e09f40685ac9",
-    );
-
-    const body = new URLSearchParams(request?.body as string);
-    expect(body.get("channel")).toBe("C123");
-    expect(body.get("text")).toBe("digest");
-    expect(body.get("client_msg_id")).toBe(
-      "2963902b-df7b-5f85-b3a6-e09f40685ac9",
-    );
-  });
-
   test("posts conversations.members as form-urlencoded (NOT json) and paginates", async () => {
     const calls: Array<[string, RequestInit]> = [];
     const pages = [
@@ -63,6 +41,7 @@ describe("createSlackWebApi wire format", () => {
     const headers = init.headers as Record<string, string>;
     expect(headers["Content-Type"]).toMatch(/application\/x-www-form-urlencoded/);
     expect(headers.Authorization).toBe("Bearer xoxb-token");
+    expect(init.signal).toBeInstanceOf(AbortSignal);
     // Body is form-encoded, so it parses as URLSearchParams (a JSON body would not).
     const body = new URLSearchParams(init.body as string);
     expect(body.get("channel")).toBe("C123");

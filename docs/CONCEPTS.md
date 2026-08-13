@@ -50,7 +50,8 @@ flowchart LR
    event ingestion dedupes by `(connection_id, origin_id)`; a row whose current
    head is unchanged is not a new source item.
 2. **Match.** The platform checks active Behavior triggers. Connector triggers
-   use the connector's resolved event catalog (declared `behavior_events`, else
+   use the connector's resolved event catalog (declared `behaviorEvents` in the
+   connector definition — persisted in the catalog as `behavior_events` — else
    its feed `eventKinds`). For feed-derived triggers, the first successful
    non-dry sync establishes a baseline; only later inserted items activate.
    Workspace triggers fire only on **newly persisted declared event outputs**
@@ -98,7 +99,8 @@ source.
   partial unique index on `(organization_id, connector_key, origin_id)`.
 - **Read back:** scheduled or manual Behavior SQL sources select
   `WHERE connector_key = 'webhook:<connectionId>'` and read the verbatim
-  payload from `payload_data`.
+  payload from `payload_data`. Object-root JSON is stored directly; array or
+  primitive roots are wrapped as `{"payload": ...}`.
 
 ## Reading and writing data (agent-facing)
 

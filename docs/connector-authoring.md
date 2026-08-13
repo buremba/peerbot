@@ -65,7 +65,7 @@ export default class MyConnector extends ConnectorRuntime {
   `eventKinds` are also the default Behavior trigger catalog: each kind becomes
   a subscribable event type. The first successful non-dry sync establishes the
   feed's baseline without activation; later inserts activate subscribers. A
-  connector that declares explicit `behavior_events` overrides that derivation.
+  connector that declares explicit `behaviorEvents` overrides that derivation.
 - **No real credentials in code.** Secrets flow through `ctx.credentials` /
   `ctx.config`; workers never receive durable stored credentials.
 

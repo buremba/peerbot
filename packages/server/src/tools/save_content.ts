@@ -399,9 +399,9 @@ async function saveContentImpl(
     // member, so it IS that trusted tier. save_content historically wrote the
     // claim with source 'save_content', which — because the live-unique index
     // is on (org, namespace, identifier) — permanently blocks the correct
-    // insert and poisons the member for the authz gate. The upsert re-sources
-    // any existing wrong-source row, so a pre-fix poison heals on the next save
-    // instead of requiring manual backfill.
+    // insert and poisons the member for the authz gate. Only that legacy source
+    // is eligible for promotion: upgrading an arbitrary conflicting source
+    // would defeat the gate's anti-hijack boundary.
     if (memberRows.length > 0 && authId) {
       const memberId = Number(memberRows[0].id);
       await sql`
@@ -414,6 +414,8 @@ async function saveContentImpl(
         DO UPDATE SET
           source_connector = 'auth:signup',
           entity_id = EXCLUDED.entity_id
+        WHERE entity_identities.source_connector = 'save_content'
+          AND entity_identities.entity_id = EXCLUDED.entity_id
       `;
     }
 

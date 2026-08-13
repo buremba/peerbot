@@ -63,8 +63,13 @@ const CAPTURE_PREVIEW_CONTENT_CAP = 200;
  */
 export function reactionErrorIsNonTransient(error: string | undefined): boolean {
   if (!error) return false;
-  return /^(TimeoutError|CompileError|QuotaExceeded|OutputSizeExceeded|AbortError|InvalidSleepDuration|NamespaceNotAvailable|CrossOrgAccessDenied|InvalidSDKDispatchEnvelope|ScriptExport):/.test(
-    error
+  return (
+    /^(TimeoutError|CompileError|QuotaExceeded|OutputSizeExceeded|InvalidSleepDuration|SleepLimitExceeded|OutOfMemory|ValidationError|ClientSdkActionError):/.test(
+      error
+    ) ||
+    /^ScriptError: (?:Script must `export default` an async function|NamespaceNotAvailable:|CrossOrgAccessDenied:|InvalidSDKDispatchEnvelope|Unknown SDK method:)/.test(
+      error
+    )
   );
 }
 
@@ -168,15 +173,17 @@ export async function handleCompleteWindow(
         ? [args.window_token]
         : [];
   if (windowTokens.length === 0) {
-    throw new Error(
+    throw new ToolUserError(
       'window_token or window_tokens is required for complete_window action. ' +
-        'Get tokens from read_knowledge({ behavior_id: ... }) responses.'
+        'Get tokens from read_knowledge({ behavior_id: ... }) responses.',
+      400
     );
   }
   if (!args.extracted_data) {
-    throw new Error(
+    throw new ToolUserError(
       'extracted_data is required for complete_window action. ' +
-        'This should contain the LLM analysis results (e.g., { sentiment: "positive", themes: [...] }).'
+        'This should contain the LLM analysis results (e.g., { sentiment: "positive", themes: [...] }).',
+      400
     );
   }
   const extractedData = normalizeExtractedData(args.extracted_data);
@@ -207,7 +214,7 @@ export async function handleCompleteWindow(
       token.window_end !== window_end ||
       token.granularity !== granularity
     ) {
-      throw new Error('All window_tokens must belong to the same Behavior window.');
+      throw new ToolUserError('All window_tokens must belong to the same Behavior window.', 400);
     }
   }
 
@@ -344,9 +351,10 @@ export async function handleCompleteWindow(
   `;
 
   if (watcherRows.length === 0) {
-    throw new Error(
+    throw new ToolUserError(
       `Behavior ${watcherId} not found. ` +
-        'It may have been deleted. Use client.behaviors.list() via query_sdk to see available Behaviors.'
+        'It may have been deleted. Use client.behaviors.list() via query_sdk to see available Behaviors.',
+      404
     );
   }
 
@@ -441,14 +449,15 @@ export async function handleCompleteWindow(
         return `  - ${path}: ${e.message}`;
       });
 
-      throw new Error(
+      throw new ToolUserError(
         `extracted_data does not match the Behavior\'s extraction contract (derived from its entity type or reaction \`input\` schema).\n\n` +
           `Validation errors:\n${errorMessages.join('\n')}\n\n` +
           'Expected schema requires:\n' +
           `  - Required fields: ${JSON.stringify(extractionSchema.required || [])}\n` +
           `  - Top-level properties: ${Object.keys(extractionSchema.properties || {}).join(', ')}\n\n` +
           `Received top-level keys: ${Object.keys(extractedData).join(', ')}\n\n` +
-          'Please ensure your LLM output matches the template schema exactly.'
+          'Please ensure your LLM output matches the template schema exactly.',
+        400
       );
     }
 
@@ -1164,7 +1173,7 @@ export async function handleCompleteWindow(
         // or quota-exhausted reaction re-burns the same 60s budget 3x and
         // stalls complete_window by ~3 minutes for zero chance of recovery
         // (run-script's error names are stable — TimeoutError, CompileError,
-        // QuotaExceeded, OutputSizeExceeded, AbortError, …). Only the transient
+        // QuotaExceeded, OutputSizeExceeded, ValidationError, …). Only the transient
         // remainder (provider/network 5xx and similar) gets the retry loop.
         const isNonTransient = reactionErrorIsNonTransient(execResult.error);
         if (isNonTransient || attempt === MAX_ATTEMPTS) {

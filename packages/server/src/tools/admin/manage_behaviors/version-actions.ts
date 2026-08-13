@@ -555,8 +555,9 @@ export async function handleGetVersionDetails(
   }
 
   if (rows.length === 0) {
-    throw new Error(
-      `Version ${args.version ?? 'current'} not found for Behavior ${args.behavior_id}`
+    throw new ToolUserError(
+      `Version ${args.version ?? 'current'} not found for Behavior ${args.behavior_id}`,
+      404
     );
   }
 

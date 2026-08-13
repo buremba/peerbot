@@ -73,7 +73,7 @@ export async function ensureInstallOperator(): Promise<{
     SELECT id, email FROM "user"
      WHERE principal_kind = ${INSTALL_OPERATOR_KIND}
      LIMIT 1
-  `) as unknown as Array<{ id: string; email: string | null }>;
+  `) as unknown as Array<{ id: string; email: string }>;
 
   let userId: string;
   let userEmail: string;
@@ -88,8 +88,7 @@ export async function ensureInstallOperator(): Promise<{
     // provisionMemberAndCoreIdentities refuse ("user does not own the member
     // email") on every boot forever. The stored value is the address the
     // account was born with.
-    userEmail =
-      existing[0]!.email?.trim().toLowerCase() || installOperatorEmail();
+    userEmail = existing[0]!.email.trim().toLowerCase();
   } else {
     userId = `user_install_${generateSecureToken(8)}`;
     userEmail = installOperatorEmail();

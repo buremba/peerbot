@@ -19,13 +19,14 @@ export interface ResolvedCredentials {
  * Resolve OAuth credentials for a specific connection by ID.
  * Used for multi-account support when the caller specifies which connection to use.
  *
- * `forceRefresh` triggers a token refresh even when the stored expiry looks
- * valid — set when the upstream rejected the current token with a 401.
+ * `rejectedAccessToken` triggers a refresh when that exact stored token was
+ * rejected with a 401. Passing the value, rather than a boolean, lets the
+ * account lock reuse a token another replica already rotated.
  */
 export async function resolveCredentialsByConnectionId(
   connectionId: number,
   organizationId: string,
-  opts?: { forceRefresh?: boolean }
+  opts?: { rejectedAccessToken?: string }
 ): Promise<ResolvedCredentials | null> {
   const sql = getDb();
 
@@ -61,7 +62,7 @@ export async function resolveCredentialsByConnectionId(
     credentialDb: sql,
     logContext: { connection_id: connectionId },
     logMessage: 'Failed to resolve MCP execution credentials',
-    forceRefresh: opts?.forceRefresh,
+    rejectedAccessToken: opts?.rejectedAccessToken,
   });
   if (resolved.credentials?.accessToken) {
     return {

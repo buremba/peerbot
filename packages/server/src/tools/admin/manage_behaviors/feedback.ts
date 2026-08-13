@@ -171,26 +171,29 @@ export async function handleSubmitFeedback(
   args: ManageBehaviorsArgs,
   ctx: ToolContext
 ): Promise<ManageBehaviorsResult> {
-  if (!args.behavior_id) throw new Error('behavior_id is required');
-  if (!args.window_id) throw new Error('window_id is required');
+  if (!args.behavior_id) throw new ToolUserError('behavior_id is required', 400);
+  if (!args.window_id) throw new ToolUserError('window_id is required', 400);
   if (!ctx.userId) {
-    throw new Error('Authentication required to submit feedback');
+    throw new ToolUserError('Authentication required to submit feedback', 403);
   }
   const corrections = args.corrections as CorrectionInput[] | undefined;
   if (!Array.isArray(corrections) || corrections.length === 0) {
-    throw new Error('corrections must be a non-empty array of {field_path, ...} entries');
+    throw new ToolUserError(
+      'corrections must be a non-empty array of {field_path, ...} entries',
+      400
+    );
   }
 
   for (const c of corrections) {
     if (!c.field_path || typeof c.field_path !== 'string') {
-      throw new Error('each correction requires a string field_path');
+      throw new ToolUserError('each correction requires a string field_path', 400);
     }
     const m = c.mutation ?? 'set';
     if (m !== 'set' && m !== 'remove' && m !== 'add') {
-      throw new Error(`unsupported mutation "${m}" for ${c.field_path}`);
+      throw new ToolUserError(`unsupported mutation "${m}" for ${c.field_path}`, 400);
     }
     if ((m === 'set' || m === 'add') && c.value === undefined) {
-      throw new Error(`${m} correction for ${c.field_path} requires a value`);
+      throw new ToolUserError(`${m} correction for ${c.field_path} requires a value`, 400);
     }
   }
 
@@ -210,7 +213,10 @@ export async function handleSubmitFeedback(
       AND w.organization_id = ${ctx.organizationId}
   `;
   if (windowCheck.length === 0) {
-    throw new Error(`Window ${args.window_id} not found for Behavior ${watcherId}`);
+    throw new ToolUserError(
+      `Window ${args.window_id} not found for Behavior ${watcherId}`,
+      404
+    );
   }
   const organizationId = windowCheck[0].organization_id as string;
   const windowGranularity = windowCheck[0].granularity as string;
@@ -362,7 +368,7 @@ export async function handleGetFeedback(
   args: ManageBehaviorsArgs,
   ctx: ToolContext
 ): Promise<ManageBehaviorsResult> {
-  if (!args.behavior_id) throw new Error('behavior_id is required');
+  if (!args.behavior_id) throw new ToolUserError('behavior_id is required', 400);
 
   const sql = getDb();
   const watcherId = Number(args.behavior_id);
@@ -447,7 +453,7 @@ export async function handleListPromoted(
   args: ManageBehaviorsArgs,
   ctx: ToolContext
 ): Promise<ManageBehaviorsResult> {
-  if (!args.behavior_id) throw new Error('behavior_id is required');
+  if (!args.behavior_id) throw new ToolUserError('behavior_id is required', 400);
 
   const sql = getDb();
   const watcherId = String(Number(args.behavior_id));

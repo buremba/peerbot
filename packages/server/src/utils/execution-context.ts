@@ -45,12 +45,11 @@ interface ResolveExecutionAuthParams {
   logContext?: Record<string, unknown>;
   logMessage?: string;
   /**
-   * Force an OAuth refresh even when the stored access token is not yet
-   * expiring. Set when the upstream rejected the token (401 invalid_token) —
-   * a token can be revoked upstream before its timer expires, and serving the
-   * dead token forever is the failure the MCP proxy's refresh-on-401 fixes.
+   * The exact OAuth access token rejected upstream with a 401. Supplying the
+   * value refreshes it even when its expiry looks valid, while allowing the
+   * credential lock to reuse a token another replica already rotated.
    */
-  forceRefresh?: boolean;
+  rejectedAccessToken?: string;
 }
 
 export async function resolveExecutionAuth(
@@ -131,7 +130,7 @@ export async function resolveExecutionAuth(
         params.connectionId,
         authProfile.account_id,
         oauthConfig,
-        { forceRefresh: params.forceRefresh }
+        { rejectedAccessToken: params.rejectedAccessToken }
       );
       if (tokens?.provider && tokens.accessToken) {
         credentials = {

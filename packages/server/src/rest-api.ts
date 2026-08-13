@@ -60,9 +60,23 @@ function safeParseInt(
 	value: string | undefined,
 	options?: { min?: number; max?: number }
 ): number | undefined {
-	if (!value) return undefined;
-	const parsed = parseInt(value, 10);
-	return Number.isNaN(parsed) ? undefined : clamp(parsed, options);
+	if (value === undefined) return undefined;
+	const normalized = value.trim();
+	if (!/^[+-]?\d+$/.test(normalized)) return undefined;
+	const parsed = Number(normalized);
+	return Number.isSafeInteger(parsed) ? clamp(parsed, options) : undefined;
+}
+
+function parseBehaviorId(value: string | undefined): number | undefined {
+	if (value === undefined) return undefined;
+	if (!/^[1-9]\d*$/.test(value)) {
+		throw new ToolUserError("behavior_id must be a positive integer", 400);
+	}
+	const parsed = Number(value);
+	if (!Number.isSafeInteger(parsed)) {
+		throw new ToolUserError("behavior_id must be a positive integer", 400);
+	}
+	return parsed;
 }
 
 function safeParseFloat(
@@ -166,7 +180,7 @@ function restErrorResponse(
  */
 export async function restGetBehaviors(c: Context<{ Bindings: Env }>) {
 	try {
-		const behaviorId = safeParseInt(c.req.query("behavior_id"), { min: 1 });
+		const behaviorId = parseBehaviorId(c.req.query("behavior_id"));
 		const entityId = safeParseInt(c.req.query("entity_id"), { min: 1 });
 
 		if (!behaviorId) {
@@ -185,7 +199,7 @@ export async function restGetBehaviors(c: Context<{ Bindings: Env }>) {
 		}
 
 		const params = {
-			behavior_id: behaviorId,
+			behavior_id: String(behaviorId),
 			entity_id: entityId,
 			content_since: c.req.query("content_since"),
 			content_until: c.req.query("content_until"),
@@ -211,7 +225,7 @@ export async function restGetBehaviors(c: Context<{ Bindings: Env }>) {
 
 export async function publicRestGetBehaviors(c: Context<{ Bindings: Env }>) {
 	return withPublicOrg(c, async (organizationId) => {
-		const behaviorId = safeParseInt(c.req.query("behavior_id"), { min: 1 });
+		const behaviorId = parseBehaviorId(c.req.query("behavior_id"));
 		const entityId = safeParseInt(c.req.query("entity_id"), { min: 1 });
 		const ctx = publicToolContext(c.req.url, organizationId);
 		const detailRequested =
@@ -242,7 +256,7 @@ export async function publicRestGetBehaviors(c: Context<{ Bindings: Env }>) {
 		}
 
 		const params = {
-			behavior_id: behaviorId,
+			behavior_id: behaviorId === undefined ? undefined : String(behaviorId),
 			entity_id: entityId,
 			content_since: c.req.query("content_since"),
 			content_until: c.req.query("content_until"),

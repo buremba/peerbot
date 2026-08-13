@@ -280,7 +280,7 @@ async function handleCreate(
 			const errorMessages =
 				validation.errors?.map((e) => e.message).join("; ") ??
 				"Invalid metadata";
-			throw new Error(`Metadata validation failed: ${errorMessages}`);
+			throw new ToolUserError(`Metadata validation failed: ${errorMessages}`, 400);
 		}
 	}
 
@@ -440,7 +440,7 @@ async function handleUpdate(
 			const errorMessages =
 				validation.errors?.map((e) => e.message).join("; ") ??
 				"Invalid metadata";
-			throw new Error(`Metadata validation failed: ${errorMessages}`);
+			throw new ToolUserError(`Metadata validation failed: ${errorMessages}`, 400);
 		}
 	}
 
@@ -996,8 +996,9 @@ async function handleList(
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
 	if (args.entity_type === MEMBER_ENTITY_TYPE_SLUG && !canSeeMemberList(ctx)) {
-		throw new Error(
+		throw new ToolUserError(
 			"The member list is only visible to members of this workspace. Join the workspace to see members.",
+			403,
 		);
 	}
 
@@ -1281,8 +1282,9 @@ async function handleGet(
 		entity.entity_type === MEMBER_ENTITY_TYPE_SLUG &&
 		!canSeeMemberList(ctx)
 	) {
-		throw new Error(
+		throw new ToolUserError(
 			"Member details are only visible to members of this workspace. Join the workspace to see members.",
+			403,
 		);
 	}
 
@@ -1494,8 +1496,9 @@ async function handleLink(
     LIMIT 1
   `;
   if (typeRows.length === 0) {
-		throw new Error(
+		throw new ToolUserError(
 			`Relationship type "${args.relationship_type_slug}" not found`,
+			404,
 		);
   }
   const typeId = Number(typeRows[0].id);
@@ -1586,8 +1589,9 @@ async function handleUnlink(
 		throw new ToolUserError(`Relationship ${args.relationship_id} not found`, 404);
 	}
 	if (String(existing[0].organization_id) !== ctx.organizationId) {
-		throw new Error(
+		throw new ToolUserError(
 			"Access denied: relationship belongs to another organization",
+			403,
 		);
 	}
 
@@ -1622,8 +1626,9 @@ async function handleUpdateLink(
 		throw new ToolUserError(`Relationship ${args.relationship_id} not found`, 404);
 	}
 	if (String(existing[0].organization_id) !== ctx.organizationId) {
-		throw new Error(
+		throw new ToolUserError(
 			"Access denied: relationship belongs to another organization",
+			403,
 		);
 	}
 

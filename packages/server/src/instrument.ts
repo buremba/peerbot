@@ -22,36 +22,32 @@ dotenv.config();
 
 const dsn = process.env.SENTRY_DSN;
 
-// A dev runtime never legitimately reports as production. The worktree/dev
-// stacks that carry a prod .env copy (SENTRY_DSN + an exported ENVIRONMENT)
-// were shipping local errors into the prod Sentry project as `production`
-// events — e.g. LOBU-BACKEND-36 with a /Users/.../.claude/worktrees path.
-// NODE_ENV=development with ENVIRONMENT=production is that exact misconfig,
-// so force the environment down so the prod filter stays trustworthy.
-if (
-  dsn &&
-  process.env.ENVIRONMENT === 'production' &&
-  process.env.NODE_ENV === 'development'
-) {
+// A dev runtime never legitimately reports as production. A worktree/dev
+// stack can carry a prod .env copy with ENVIRONMENT=production, so use
+// NODE_ENV=development to keep those events out of the production stream.
+// Override only Sentry's tag: mutating process.env here would also change
+// logger mode and the environment inherited by workers later in the boot.
+const devTaggedAsProduction =
+  process.env.NODE_ENV === 'development' && process.env.ENVIRONMENT === 'production';
+const sentryEnvironment = devTaggedAsProduction
+  ? 'development'
+  : process.env.ENVIRONMENT || 'development';
+if (dsn && devTaggedAsProduction) {
   console.error(
     '[instrument] ENVIRONMENT=production with NODE_ENV=development — tagging local Sentry events as development instead of polluting prod'
   );
-  process.env.ENVIRONMENT = 'development';
 }
 
 if (dsn) {
-  const isDev = process.env.NODE_ENV === 'development' || process.env.ENVIRONMENT === 'development';
+  const isDev = process.env.NODE_ENV === 'development' || sentryEnvironment === 'development';
 
   Sentry.init({
     dsn,
     // Default to 'development', NOT 'production'. Prod deployments set ENVIRONMENT
     // explicitly (charts/lobu), so the only stacks that hit this fallback are
-    // local/dev/example ones that happen to carry a SENTRY_DSN. Defaulting to
-    // 'production' made those mislabel as prod and pollute the prod Sentry view
-    // (e.g. a docker-compose stack dialing the dev-default `lobu-postgres` host
-    // surfaced as the #1 "production" error). A non-prod default keeps the prod
-    // environment filter trustworthy.
-    environment: process.env.ENVIRONMENT || 'development',
+    // local/dev/example ones that happen to carry a SENTRY_DSN. A non-prod
+    // default keeps the production environment filter trustworthy.
+    environment: sentryEnvironment,
     release: process.env.SENTRY_RELEASE || process.env.APP_GIT_SHA || undefined,
     // 0.1 produced ~250k spans/day (~7.5M/mo) and exhausted the plan's 5M span
     // quota by day ~20 of the usage period. 0.02 keeps ~50k/day (~1.5M/mo) —

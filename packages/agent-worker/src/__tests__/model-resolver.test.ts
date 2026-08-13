@@ -114,11 +114,6 @@ describe("resolveModelRef", () => {
   });
 
   test("an agent-level ref routes to its own provider, not the deployment default", () => {
-    // Prod 2026-08-06 (org `buremba`): the agent was pinned to
-    // `gemini/gemini-2.5-pro` with no per-Behavior override, yet the gateway
-    // published an uninstalled provider as `defaultProvider` from its
-    // credentialed fallback scan — and 79 runs in three days died on a
-    // 429 for an org that has no such provider, secret or key of its own.
     // `defaultProvider` is a deployment-level fact; the ref is a run-level one.
     // The ref wins whenever its prefix names an installed provider.
     const result = resolveModelRef("gemini/gemini-2.5-pro", {

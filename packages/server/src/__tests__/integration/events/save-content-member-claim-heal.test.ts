@@ -1,6 +1,6 @@
 /**
- * Integration test: save_content's $member auth_user_id claim write heals a
- * pre-existing poison row.
+ * Integration test: save_content's $member auth_user_id claim write heals its
+ * pre-existing legacy wrong-source row.
  *
  * The authz channel-visibility gate resolves a user to their $member via an
  * entity_identities row with namespace `auth_user_id` AND
@@ -8,14 +8,14 @@
  * `source_connector='save_content'`; because idx_entity_identities_live_unique
  * is on (org, namespace, identifier), the wrong-source row BLOCKED the correct
  * auth:signup insert forever — a permanent poison the member-claim-drift
- * detector reports but cannot repair. The fix writes `auth:signup` and
- * heals existing poison rows on conflict.
+ * detector reports but cannot repair. The fix writes `auth:signup` and heals
+ * that legacy source on conflict without promoting other identity sources.
  *
  * DB-backed (save_content writes events + entity_identities), so it runs
  * against the pgvector DB via DATABASE_URL.
  */
 
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { ToolContext } from '../../../tools/registry';
 import { saveContent } from '../../../tools/save_content';
 import { runMemberClaimDriftCheck } from '../../../scheduled/member-claim-drift';
@@ -36,6 +36,9 @@ describe('saveContent > $member auth_user_id claim heals poison source', () => {
 
   beforeAll(async () => {
     await initWorkspaceProvider();
+  });
+
+  beforeEach(async () => {
     await cleanupTestDatabase();
     await seedSystemEntityTypes();
     org = await createTestOrganization({ name: 'Member Claim Heal Org' });
@@ -119,5 +122,38 @@ describe('saveContent > $member auth_user_id claim heals poison source', () => {
       missingClaim: 0,
       poisonClaim: 0,
     });
+  });
+
+  it('does not promote a claim written by an untrusted source', async () => {
+    const sql = getTestDb();
+    await sql`
+      UPDATE entity_identities
+      SET source_connector = 'user:provided'
+      WHERE organization_id = ${org.id}
+        AND namespace = 'auth_user_id'
+        AND identifier = ${user.id}
+        AND deleted_at IS NULL
+    `;
+
+    await saveContent(
+      {
+        content: 'An untrusted identity claim must stay untrusted.',
+        semantic_type: 'note',
+        title: 'claim trust boundary',
+        metadata: {},
+      } as never,
+      {} as never,
+      ctx()
+    );
+
+    const rows = await sql<{ source_connector: string }>`
+      SELECT source_connector
+      FROM entity_identities
+      WHERE organization_id = ${org.id}
+        AND namespace = 'auth_user_id'
+        AND identifier = ${user.id}
+        AND deleted_at IS NULL
+    `;
+    expect(rows).toEqual([{ source_connector: 'user:provided' }]);
   });
 });

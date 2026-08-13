@@ -791,8 +791,9 @@ export async function handleCreateFromVersion(
   const version = versionRows[0];
   const organizationId = version.organization_id as string;
   if (!organizationId || organizationId !== ctx.organizationId) {
-    throw new Error(
-      `Access denied: Behavior version ${args.version_id} does not belong to your organization`
+    throw new ToolUserError(
+      `Access denied: Behavior version ${args.version_id} does not belong to your organization`,
+      403
     );
   }
   // The clone strips chat-link steer/reply triggers (a second agent turn for

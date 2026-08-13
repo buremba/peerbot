@@ -70,7 +70,7 @@ import { withValidatedArgs } from './validate-args';
 // ============================================
 
 export const GetBehaviorSchema = Type.Object({
-  behavior_id: Type.Number({ description: 'Behavior ID to query' }),
+  behavior_id: Type.String({ description: 'Behavior ID to query' }),
   entity_id: Type.Optional(
     Type.Number({
       description: 'Optional entity ID for access validation and URL context',
@@ -266,7 +266,7 @@ function parseWatcherSources(value: unknown): WatcherSource[] {
 
 async function requireWatcherReadAccess(
   sql: DbClient,
-  watcherId: string | number,
+  watcherId: string,
   ctx: ToolContext
 ): Promise<void> {
   const rows = await sql`
@@ -337,9 +337,13 @@ async function getBehaviorImpl(
   // ============================================
 
   if (!args.behavior_id) {
-    throw new Error(
-      "behavior_id is required. Use client.behaviors.list() via query_sdk to discover Behaviors."
+    throw new ToolUserError(
+      "behavior_id is required. Use client.behaviors.list() via query_sdk to discover Behaviors.",
+      400
     );
+  }
+  if (!/^[1-9]\d*$/.test(args.behavior_id) || !Number.isSafeInteger(Number(args.behavior_id))) {
+    throw new ToolUserError('behavior_id must be a positive integer', 400);
   }
 
   await requireWatcherReadAccess(pgSql, args.behavior_id, ctx);

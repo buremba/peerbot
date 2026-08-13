@@ -10,7 +10,7 @@ import {
 } from '../../__tests__/setup/test-fixtures';
 import { cleanupTestDatabase, getTestDb } from '../../__tests__/setup/test-db';
 import { createAuthProfile } from '../../utils/auth-profiles';
-import { initWorkspaceProvider } from '../../workspace';
+import { resolveCredentialsByConnectionId } from '../credential-resolver';
 
 import {
   callTool,
@@ -543,7 +543,7 @@ describe('callTool session recovery', () => {
   });
 });
 
-describe('callTool refresh-on-401 (dead access token)', () => {
+describe('MCP refresh-on-401 (dead access token)', () => {
   const config = {
     upstream_url: 'https://mcp.example.com/rpc',
     tool_prefix: 'refresh',
@@ -552,7 +552,6 @@ describe('callTool refresh-on-401 (dead access token)', () => {
   async function seedOAuthMcpConnection(): Promise<{
     connectionId: number;
     organizationId: string;
-    ownerId: string;
   }> {
     await cleanupTestDatabase();
     await seedSystemEntityTypes();
@@ -707,6 +706,158 @@ describe('callTool refresh-on-401 (dead access token)', () => {
     expect(result.isError).toBe(false);
     expect(refreshHits).toBe(1);
     expect(toolCalls).toBe(2); // one rejected + one replayed after refresh
+  });
+
+  it('refreshes when the stale token is rejected during initialize', async () => {
+    const { connectionId, organizationId } = await seedOAuthMcpConnection();
+    let refreshHits = 0;
+
+    globalThis.fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const href = String(url);
+      if (href === 'https://demo.example/oauth/token') {
+        refreshHits += 1;
+        return jsonResponse({ access_token: 'fresh-access-token', expires_in: 3600 });
+      }
+      if (href === config.upstream_url) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        const headers = new Headers(init?.headers);
+        if (headers.get('authorization') === 'Bearer stale-access-token') {
+          return new Response(JSON.stringify({ error: 'invalid_token' }), { status: 401 });
+        }
+        if (body.method === 'initialize') {
+          return jsonResponse(
+            {
+              jsonrpc: '2.0',
+              id: 0,
+              result: {
+                protocolVersion: MCP_PROTOCOL_VERSION,
+                capabilities: { tools: {} },
+              },
+            },
+            'session-initialize-refresh'
+          );
+        }
+        if (body.method === 'tools/call') {
+          return jsonResponse({
+            jsonrpc: '2.0',
+            id: 1,
+            result: { content: [{ type: 'text', text: 'ok' }], isError: false },
+          });
+        }
+        return jsonResponse({ jsonrpc: '2.0', id: null, result: {} });
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    }) as typeof fetch;
+
+    await expect(
+      callTool('mcp.refresh-demo', config, organizationId, 'do_thing', {}, connectionId)
+    ).resolves.toMatchObject({ isError: false });
+    expect(refreshHits).toBe(1);
+  });
+
+  it('does not rotate twice when the refreshed token passes initialize but the tool rejects it', async () => {
+    const { connectionId, organizationId } = await seedOAuthMcpConnection();
+    let refreshHits = 0;
+
+    globalThis.fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const href = String(url);
+      if (href === 'https://demo.example/oauth/token') {
+        refreshHits += 1;
+        return jsonResponse({ access_token: 'fresh-access-token', expires_in: 3600 });
+      }
+      if (href === config.upstream_url) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        const headers = new Headers(init?.headers);
+        if (headers.get('authorization') === 'Bearer stale-access-token') {
+          return new Response(JSON.stringify({ error: 'invalid_token' }), { status: 401 });
+        }
+        if (body.method === 'initialize') {
+          return jsonResponse(
+            {
+              jsonrpc: '2.0',
+              id: 0,
+              result: {
+                protocolVersion: MCP_PROTOCOL_VERSION,
+                capabilities: { tools: {} },
+              },
+            },
+            'session-single-initialize-refresh'
+          );
+        }
+        if (body.method === 'tools/call') {
+          return new Response(JSON.stringify({ error: 'invalid_token' }), { status: 401 });
+        }
+        return jsonResponse({ jsonrpc: '2.0', id: null, result: {} });
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    }) as typeof fetch;
+
+    await expect(
+      callTool('mcp.refresh-demo', config, organizationId, 'do_thing', {}, connectionId)
+    ).rejects.toThrow(/Upstream MCP returned 401/);
+    expect(refreshHits).toBe(1);
+  });
+
+  it('does not rotate again when another replica already replaced the rejected token', async () => {
+    const { connectionId, organizationId } = await seedOAuthMcpConnection();
+    let refreshHits = 0;
+
+    globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+      if (String(url) !== 'https://demo.example/oauth/token') {
+        throw new Error(`Unexpected fetch: ${String(url)}`);
+      }
+      refreshHits += 1;
+      return jsonResponse({
+        access_token: `fresh-access-token-${refreshHits}`,
+        refresh_token: `refresh-token-${refreshHits}`,
+        expires_in: 3600,
+      });
+    }) as typeof fetch;
+
+    const [first, second] = await Promise.all([
+      resolveCredentialsByConnectionId(connectionId, organizationId, {
+        rejectedAccessToken: 'stale-access-token',
+      }),
+      resolveCredentialsByConnectionId(connectionId, organizationId, {
+        rejectedAccessToken: 'stale-access-token',
+      }),
+    ]);
+
+    expect(refreshHits).toBe(1);
+    expect(first?.accessToken).toBe('fresh-access-token-1');
+    expect(second?.accessToken).toBe('fresh-access-token-1');
+  });
+
+  it('retries discovery only once when the refreshed token is also rejected', async () => {
+    const { connectionId, organizationId } = await seedOAuthMcpConnection();
+    let refreshHits = 0;
+    let initializeHits = 0;
+
+    globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href === 'https://demo.example/oauth/token') {
+        refreshHits += 1;
+        return jsonResponse({
+          access_token: `still-rejected-${refreshHits}`,
+          refresh_token: `refresh-token-${refreshHits}`,
+          expires_in: 3600,
+        });
+      }
+      if (href === config.upstream_url) {
+        initializeHits += 1;
+        if (initializeHits > 2) {
+          return new Response('unexpected extra retry', { status: 503 });
+        }
+        return new Response(JSON.stringify({ error: 'invalid_token' }), { status: 401 });
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    }) as typeof fetch;
+
+    await expect(
+      discoverTools('mcp.refresh-demo', config, organizationId, connectionId)
+    ).rejects.toThrow(/Upstream MCP returned 401/);
+    expect(refreshHits).toBe(1);
+    expect(initializeHits).toBe(2);
   });
 
   it('surfaces a 401 when the refresh token is also dead (no infinite retry)', async () => {

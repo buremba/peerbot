@@ -53,11 +53,11 @@ If the error still isn't actionable, open an issue with the full output.
 
 ## LLM provider support
 
-Lobu is provider-agnostic. The bundled `config/providers.json` ships 16 providers including:
+Lobu is provider-agnostic. The bundled `config/providers.json` ships 17 providers including:
 
 - Anthropic Claude
 - OpenAI (GPT-4, GPT-4o, etc.)
-- OpenAI-compatible: Groq, Together AI, Fireworks, OpenRouter, Cerebras, NVIDIA, xAI, DeepSeek, Mistral, Cohere, Perplexity, Z-AI, Gemini
+- OpenAI-compatible: Groq, Together AI, Fireworks, OpenRouter, Cerebras, NVIDIA, xAI, DeepSeek, Mistral, Cohere, Perplexity, Gemini
 - Specialized: OpenCode Zen
 
 Add API keys via the admin UI (Settings → Providers) at runtime. No env-var required. Per-agent model selection picks among configured providers.

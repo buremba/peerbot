@@ -41,9 +41,7 @@
  */
 
 import { createLogger } from '@lobu/core';
-import * as Sentry from '@sentry/node';
 import type { DbClient } from '../db/client';
-import { getDb, pgTextArray } from '../db/client';
 import { incrementCounter } from '../gateway/metrics/prometheus';
 import { notifyChannelFor } from '../gateway/infrastructure/queue/runs-queue';
 import type { IMessageQueue, QueueJob } from '../gateway/infrastructure/queue/types';
@@ -258,15 +256,6 @@ export class TaskScheduler {
       }
     }
 
-    try {
-      await this.reconcileOrphanedTasks();
-    } catch (err) {
-      logger.warn(
-        { err },
-        '[task-scheduler] Orphaned-task reconcile failed; skipping (retried on next boot)',
-      );
-    }
-
     await this.queue.work<TaskJobData>(TASK_QUEUE_NAME, (job) => this.dispatch(job));
 
     const periodic = [...this.handlers.values()].filter((r) => r.cron).length;
@@ -274,46 +263,6 @@ export class TaskScheduler {
       { total: this.handlers.size, periodic },
       '[task-scheduler] Started',
     );
-  }
-
-  /**
-   * Prune queued rows for tasks whose handlers no longer exist.
-   *
-   * A cron task is a self-seeding stream of rows in `public.runs`
-   * (run_type='task', queue_name='task'); when the handler is removed from
-   * `scheduled/jobs.ts` without deleting the last-seeded row (see the
-   * `product-ops-digest` revert #2717), the row stays pending and every
-   * dispatch throws `No handler registered`, firing Sentry noise for a
-   * task that no longer exists. Marking the orphan FAILED (not deleting —
-   * runs is the append-only history) stops the dispatch error; the existing
-   * failed-run sweep cleans the row up after retention.
-   *
-   * Multi-replica safe: a pending row can only be claimed once, and the
-   * UPDATE only touches rows in the non-terminal pending state. Registered
-   * task names (including transactional ones) are never touched.
-   */
-  async reconcileOrphanedTasks(): Promise<number> {
-    const sql = getDb();
-    const registered = [...this.handlers.keys()];
-
-    const result = await sql`
-      UPDATE public.runs r
-      SET status = 'failed',
-          completed_at = COALESCE(r.completed_at, NOW())
-      WHERE r.run_type = 'task'
-        AND r.queue_name = ${TASK_QUEUE_NAME}
-        AND r.status = 'pending'
-        AND NOT (r.action_key = ANY(${pgTextArray(registered)}::text[]))
-      RETURNING r.id
-    `;
-    const count = result.length;
-    if (count > 0) {
-      logger.info(
-        { orphaned: count },
-        '[task-scheduler] Marked orphaned task rows failed (no registered handler)',
-      );
-    }
-    return count;
   }
 
   private retrySeedInBackground(reg: TaskRegistration): void {
@@ -360,10 +309,6 @@ export class TaskScheduler {
       logger.error(
         { taskName: data.name, runId: job.id },
         '[task-scheduler] No handler registered for task; failing run',
-      );
-      Sentry.captureMessage(
-        `[task-scheduler] No handler for task "${data.name}" (run ${job.id})`,
-        'error' as any,
       );
       throw new Error(`No handler registered for task "${data.name}"`);
     }

@@ -41,9 +41,9 @@ const foodOrdering = defineAgent({
   ],
   providers: [
     {
-      id: "z-ai",
-      model: "z-ai/glm-4.7",
-      key: secret("Z_AI_API_KEY"),
+      id: "anthropic",
+      model: "claude/sonnet-4-5",
+      key: secret("ANTHROPIC_API_KEY"),
     },
   ],
   network: {
@@ -52,8 +52,6 @@ const foodOrdering = defineAgent({
     // the deliveroo-order skill's script has no checkout/payment path, so the
     // per-request judge was defense-in-depth we opt out of here.
     allowed: [
-      "api.z.ai",
-      ".z.ai",
       "registry.npmjs.org",
       ".npmjs.org",
       "playwright.azureedge.net",

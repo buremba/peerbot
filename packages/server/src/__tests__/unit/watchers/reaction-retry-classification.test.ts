@@ -7,8 +7,9 @@ describe('reactionErrorIsNonTransient', () => {
     expect(reactionErrorIsNonTransient('CompileError: failed to bundle')).toBe(true);
     expect(reactionErrorIsNonTransient('QuotaExceeded: SDK call quota reached')).toBe(true);
     expect(reactionErrorIsNonTransient('OutputSizeExceeded: bridge message exceeded bytes')).toBe(true);
-    expect(reactionErrorIsNonTransient('AbortError: signal aborted')).toBe(true);
-    expect(reactionErrorIsNonTransient('ScriptExport: Script must `export default` an async function')).toBe(true);
+    expect(reactionErrorIsNonTransient('ValidationError: invalid SDK arguments')).toBe(true);
+    expect(reactionErrorIsNonTransient('ScriptError: Script must `export default` an async function')).toBe(true);
+    expect(reactionErrorIsNonTransient('ScriptError: CrossOrgAccessDenied: unavailable')).toBe(true);
   });
 
   it('leaves transient errors retryable', () => {

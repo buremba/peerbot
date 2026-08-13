@@ -1,11 +1,3 @@
-/**
- * Tool: manage_operations
- *
- * Unified execution and discovery surface for connector-backed operations.
- * Operations can be backed by local connector actions, upstream MCP tools,
- * or OpenAPI-derived HTTP operations.
- */
-
 import {
 	GetRunAction,
 	LIST_RUNS_DEFAULT_EXCLUDED_RUN_TYPES,

@@ -159,4 +159,3 @@ export function isSecretEnvVar(
     upper.includes("_PASSWORD")
   );
 }
-

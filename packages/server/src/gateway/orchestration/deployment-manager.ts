@@ -91,6 +91,7 @@ export {
 
 const logger = createLogger("orchestrator");
 
+/** One-shot guard so the "running unsandboxed" notice logs once per process. */
 let warnedUnsandboxedWorkers = false;
 
 interface EmbeddedWorkerEntry {

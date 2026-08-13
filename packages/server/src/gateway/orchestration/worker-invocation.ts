@@ -18,19 +18,19 @@ export function buildEmbeddedWorkerPath(
   return segments.length > 0 ? segments.join(":") : existingPath;
 }
 
-export function getBunExecutable(): string {
+function getBunExecutable(): string {
   return path.basename(process.execPath).startsWith("bun")
     ? process.execPath
     : "bun";
 }
 
-export function getNodeExecutable(): string {
+function getNodeExecutable(): string {
   return path.basename(process.execPath).startsWith("node")
     ? process.execPath
     : "node";
 }
 
-export function shellQuote(value: string): string {
+function shellQuote(value: string): string {
   if (/^[A-Za-z0-9_/:=.,+@%-]+$/.test(value)) return value;
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
@@ -89,4 +89,3 @@ export function nixPackageAttrRef(pkg: string): string {
       new OrchestratorError(ErrorCode.DEPLOYMENT_CREATE_FAILED, message)
   );
 }
-

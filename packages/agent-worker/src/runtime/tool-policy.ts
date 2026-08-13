@@ -143,12 +143,12 @@ const DIRECT_PACKAGE_INSTALL_PATTERNS = [
  * uncertain case falls back to the base detector and flags, and only a word
  * whose operand provably cannot be a command narrows it.
  *
- * Those misses are not holes on the local backend: the manager is never a
- * runnable command there. `UNSANDBOXED_INTERPRETERS` in
- * `just-bash-bootstrap.ts` keeps it out of the just-bash registry, and that
- * lookup is on the RESOLVED binary name, which quoting and paths cannot
- * change — so the spellings above end in "command not found" regardless.
- * Declared `nixPackages` is the sanctioned way to get tooling.
+ * Those misses are not holes on the default local backend: the manager is not
+ * a runnable command there. `UNSANDBOXED_INTERPRETERS` in
+ * `embedded/just-bash-bootstrap.ts` keeps it out of the just-bash registry,
+ * and that lookup is on the RESOLVED binary name, which quoting and paths
+ * cannot change — so the spellings above end in "command not found"
+ * regardless. Declared `nixPackages` is the sanctioned way to get tooling.
  *
  * Remote runtime providers (opt-in, e.g. `vercel`) have no discovery filter,
  * but the shared preflight runs before dispatch, so these deny prefixes apply

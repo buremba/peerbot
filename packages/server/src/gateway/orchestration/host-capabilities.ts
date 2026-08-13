@@ -30,7 +30,6 @@ export function workerSandboxRequired(): boolean {
   return process.env.LOBU_REQUIRE_WORKER_SANDBOX === "1";
 }
 
-/** One-shot guard so the "running unsandboxed" notice logs once per process. */
 // The SIGTERM→SIGKILL grace window lives in config/intervals.ts
 // (`workerKillTimeoutMs`), env-overridable.
 

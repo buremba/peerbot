@@ -20,7 +20,7 @@ const POOL_HEADROOM = 5;
  *  cap, defeating the cap's whole purpose. Operators can still raise the
  *  cap with `LOBU_MAX_RESERVED_LOCKS` if they've bumped DB_POOL_MAX
  *  accordingly. Codex round 2 P1#2 on PR #870. */
-export function getDefaultMaxReservedLocks(): number {
+function getDefaultMaxReservedLocks(): number {
   const poolMax = Number.parseInt(process.env.DB_POOL_MAX || "20", 10);
   if (!Number.isFinite(poolMax) || poolMax <= 0) {
     return Math.max(1, 20 - POOL_HEADROOM);
@@ -91,9 +91,10 @@ export function setReservedLockCountForTests(value: number): void {
  *
  * The local embedded backend takes this same real path now that it runs on a
  * real multi-connection Postgres (no single-connection pin). In a single
- * process the lock is uncontended and the in-process `workers` Map (see
- * `spawnDeployment` above) is the primary per-conversation gate; the advisory
- * lock is the cross-pod gate that matters in clustered deployments.
+ * process the lock is uncontended and the in-process `workers` Map in
+ * `DeploymentManager.spawnDeployment` is the primary per-conversation gate;
+ * the advisory lock is the cross-pod gate that matters in clustered
+ * deployments.
  */
 export async function acquireConversationLock(
   organizationId: string,
@@ -228,7 +229,7 @@ export async function acquireConversationLock(
  * worker-api/device-reconcile.ts but computed in Node so we don't pay a
  * round-trip just to feed the lock.
  */
-export function hashConvKey2(
+function hashConvKey2(
   organizationId: string,
   agentId: string,
   conversationId: string
@@ -244,4 +245,3 @@ export function hashConvKey2(
   // that range. Return as-is.
   return hash;
 }
-

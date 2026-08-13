@@ -40,10 +40,12 @@ execution and busy policy wins.
 `event` is one public trigger primitive; `source` records its provenance.
 Existing connector triggers that omit `source` remain readable and normalize to
 `source: "connector"` on write. A connector's declared `behaviorEvents` are the
-allowed catalog for connector-sourced events.
-Connector feed `eventKinds` describe stored feed data and are not trigger
-subscriptions. Entity-type `eventKinds` describe durable workspace semantics
-and are the catalog for workspace-sourced events.
+allowed catalog for connector-sourced events; when a connector declares none,
+the platform derives the catalog from its feed `eventKinds` (default-on). Each
+declared kind becomes a subscribable event type. A feed's first successful
+non-dry sync establishes its baseline without activation; later inserts of a
+matching kind activate subscribers. Entity-type `eventKinds` describe durable
+workspace semantics and are the catalog for workspace-sourced events.
 
 Sources never activate a Behavior. A subscription is the trigger declaration
 that gives an event immediate activation semantics; it is not a second mutable
@@ -60,10 +62,12 @@ share the same source, filters, and run options.
 ## Behavior-to-Behavior chaining
 
 Only newly persisted events from a declared Behavior output activate
-triggers with `source: "workspace"`. Ordinary `save_memory` calls, connector ingestion,
-and arbitrary rows already in `events` remain data. This explicit producer
-boundary prevents every knowledge write from accidentally becoming a workflow
-command.
+triggers with `source: "workspace"`. Ordinary `save_memory` calls, connector
+ingestion, and arbitrary rows already in `events` do not activate those
+workspace-source triggers. Connector ingestion can separately activate matching
+`source: "connector"` triggers through its resolved catalog. This explicit
+producer boundary prevents every knowledge write from accidentally becoming a
+workflow command.
 
 ```mermaid
 flowchart LR

@@ -13,11 +13,11 @@ Read root `AGENTS.md` first. This package owns agent execution and Lobu integrat
 - If the selected provider changes for a persisted session, preserve a system note and reset incompatible provider state rather than mixing provider histories.
 - Workers discover MCP tools at startup and call them through the gateway proxy using JWT.
 - MCP auth tools (`auth login|check|logout`) route through the gateway/device-auth flow; worker code should refresh MCP context after auth changes.
-- Built-in Lobu tools are registered in `src/runtime/custom-tools.ts` and use snake_case names.
+- Built-in Lobu tools are registered in `src/runtime/tools.ts` and use snake_case names.
 - Past channel conversation is read through `search_memory`, which also scans `channel_messages`.
 
 ## Network and runtime
-- Worker subprocesses reach the network through the gateway proxy on `127.0.0.1` (loopback is required by the Linux `IPAddressDeny` scope), port from `WORKER_PROXY_PORT` (default 8118). Consume the injected `HTTP_PROXY` URL rather than rebuilding it from a hardcoded port.
+- Worker subprocesses reach the network through the gateway proxy on `127.0.0.1`, port from `WORKER_PROXY_PORT` (default 8118); consume the injected `HTTP_PROXY` URL rather than rebuilding it. The loopback/policy rationale lives in `packages/server/AGENTS.md` ("Guardrails, network, and runtime").
 - `WORKER_ALLOWED_DOMAINS`: empty = no network by default; exact domains or `.wildcard`; `*` means allow all and is not for prod; combine with `WORKER_DISALLOWED_DOMAINS` for blocklist mode.
 - Linux prod adds kernel network denial except loopback; risky domains may route through the LLM egress judge.
 - SDK sandbox loads the per-Node-major `isolated-vm` optional native build dynamically in `sandbox/run-script.ts`; keep that exception unless there is a static equivalent.

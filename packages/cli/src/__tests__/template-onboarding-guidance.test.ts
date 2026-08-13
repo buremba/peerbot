@@ -31,11 +31,13 @@ describe("generated AGENTS.md onboarding guidance", () => {
     expect(template).toContain("`.env.example` when present");
   });
 
-  test("keeps feed event kinds distinct from Behavior events", () => {
+  test("derives Behavior event triggers from feed eventKinds with explicit behavior_events winning", () => {
     expect(template).toContain("feeds_schema.<feed>.eventKinds");
     expect(template).toContain("`behavior_events`");
     expect(template).toContain("detail.auth_schema");
     expect(template).toContain("detail.options_schema");
+    expect(template).toContain("subscribable `event_type`");
+    expect(template).toContain("baseline without activation");
     expect(template).toContain(
       "SELECT id, title, payload_text, metadata, occurred_at FROM events"
     );
@@ -45,8 +47,9 @@ describe("generated AGENTS.md onboarding guidance", () => {
     expect(template).toContain('source: "workspace"');
     expect(template).toContain("declared event output");
     expect(template).toContain(
-      "Ordinary knowledge saves and connector-ingested events remain data"
+      "Ordinary knowledge saves and connector-ingested events"
     );
+    expect(template).toContain("do not activate workspace-source triggers");
     expect(template).toContain("exact event pointers");
     expect(template).toContain("docs/BEHAVIORS.md");
   });

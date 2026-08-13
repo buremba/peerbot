@@ -25,7 +25,7 @@ const SCRIPT_FIELDS = {
   title: Type.Optional(
     Type.String({
       description:
-        'Optional human-friendly heading for this result (e.g. "Company pipeline"). When set, the UI renders it above the execution status.',
+        'Human-friendly heading for this result (e.g. "Companies missing a domain"). The UI renders it above the execution status; without it the result card has no subject line. Set it whenever a person will read the result.',
       maxLength: 200,
     }),
   ),

@@ -7,7 +7,7 @@ import {
   SandboxClass,
 } from "@daytona/sdk";
 import { file, sleep, spawnSync, write } from "bun";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, platform, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -424,6 +424,19 @@ export function assertOwlettoInManifest(manifest: string): void {
   }
 }
 
+export function buildSourceManifest(
+  tracked: string,
+  untracked: string,
+  pathExists: (path: string) => boolean = (path) =>
+    lstatSync(path, { throwIfNoEntry: false }) !== undefined
+): string {
+  const paths = new Set([...tracked.split("\0"), ...untracked.split("\0")]);
+  return [...paths]
+    .filter((path) => path.length > 0 && pathExists(path))
+    .map((path) => `${path}\0`)
+    .join("");
+}
+
 function integerEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
@@ -624,12 +637,15 @@ async function syncSource(sandbox: Sandbox): Promise<void> {
   const manifestPath = join(tempRoot, "manifest");
   const archivePath = join(tempRoot, "source.tar.gz");
   try {
-    const manifest = runLocal([
+    const tracked = runLocal(["git", "ls-files", "-z", "--recurse-submodules"]);
+    const untracked = runLocal([
       "git",
       "ls-files",
       "-z",
-      "--recurse-submodules",
+      "--others",
+      "--exclude-standard",
     ]);
+    const manifest = buildSourceManifest(tracked, untracked);
     assertOwlettoInManifest(manifest);
     await write(manifestPath, manifest);
     runLocal([

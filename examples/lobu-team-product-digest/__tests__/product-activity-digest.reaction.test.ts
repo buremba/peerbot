@@ -1,5 +1,5 @@
+import { describe, expect, it, mock } from "bun:test";
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
-import { describe, expect, it, vi } from "vitest";
 import productActivityDigest, {
   buildProductActivityCard,
   collectProductActivityDigest,
@@ -28,10 +28,10 @@ const context = {
 
 describe("Lobu Team product activity digest reaction", () => {
   it("stays silent when the window has no activity", async () => {
-    const send = vi.fn();
-    const log = vi.fn();
+    const send = mock();
+    const log = mock();
     const client = {
-      query: vi.fn().mockResolvedValue([]),
+      query: mock().mockResolvedValue([]),
       notifications: { send },
       log,
     } as unknown as ReactionClient;
@@ -109,11 +109,11 @@ describe("Lobu Team product activity digest reaction", () => {
         },
       },
     ];
-    const send = vi.fn().mockResolvedValue({ notified_count: 1 });
+    const send = mock().mockResolvedValue({ notified_count: 1 });
     const client = {
-      query: vi.fn().mockResolvedValue(rows),
+      query: mock().mockResolvedValue(rows),
       notifications: { send },
-      log: vi.fn(),
+      log: mock(),
     } as unknown as ReactionClient;
 
     await productActivityDigest(context, client);

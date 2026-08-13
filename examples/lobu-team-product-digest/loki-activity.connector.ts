@@ -327,8 +327,4 @@ export default class LokiActivityConnector extends ConnectorRuntime<
       checkpoint: windowEnd ? { window_end: windowEnd } : {},
     };
   }
-
-  async execute() {
-    return { success: false, error: "no actions" };
-  }
 }

@@ -809,6 +809,7 @@ import { createSkillRoutes } from "./gateway/routes/public/skill";
 app.route("/api", createSkillRoutes());
 
 import {
+	activatePageRun,
 	completeActionRun,
 	completeAuthRun,
 	completeEmbeddings,
@@ -899,6 +900,7 @@ app.use("/api/workers/*", async (c, next) => {
 			// scoping (which we haven't added). Block them at the door.
 			const allowedPathsForUserWorker = new Set([
 				"/api/workers/poll",
+				"/api/workers/activate-page",
 				"/api/workers/heartbeat",
 				"/api/workers/stream",
 				"/api/workers/complete",
@@ -993,6 +995,7 @@ app.use("/api/workers/*", async (c, next) => {
 });
 
 app.post("/api/workers/poll", pollWorkerJob);
+app.post("/api/workers/activate-page", activatePageRun);
 app.post("/api/workers/heartbeat", heartbeat);
 app.post("/api/workers/stream", streamContent);
 app.post("/api/workers/complete", completeWorkerJob);

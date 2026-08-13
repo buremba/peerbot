@@ -78,6 +78,10 @@ import type {
 } from "../../operations/types";
 import { createConnectorOperationRun } from "../../runs/queue-service";
 import {
+	DEFAULT_PAGE_ACTIVATION_SECONDS,
+	normalizePageActivationUrls,
+} from "../../runs/page-activation";
+import {
 	DEVICE_ONLINE_WINDOW_SECONDS,
 	describeDeviceLastSeen,
 } from "../../utils/device-liveness";
@@ -1394,6 +1398,29 @@ async function handleExecute(
 	}
 	const shouldQueue =
 		mode === "approval" || policyDecision === "require_approval";
+	if (args.activation && shouldQueue) {
+		throw new ToolUserError(
+			"Page-activated operations cannot also require human approval.",
+			422,
+		);
+	}
+	const activation = args.activation
+		? {
+				kind: args.activation.kind,
+				urls: normalizePageActivationUrls(args.activation.urls),
+				expiresInSeconds:
+					args.activation.expires_in_seconds ??
+					DEFAULT_PAGE_ACTIVATION_SECONDS,
+			}
+		: undefined;
+	// Activation is claimed by the owning user's own browser; a run with no
+	// resolvable owner could never match a worker and would park until timeout.
+	if (activation && !visibilityUserId) {
+		throw new ToolUserError(
+			"Page activation requires an operation owned by a resolvable user.",
+			422,
+		);
+	}
 
 	// Detect device-bound connector by reading the connector definition's
 	// `runtime` field. When set (e.g. chrome-extension, macos, ios), the
@@ -1410,6 +1437,12 @@ async function handleExecute(
     LIMIT 1
   `) as Array<{ runtime: Record<string, unknown> | null }>;
 	const isDeviceBound = defRows[0]?.runtime != null;
+	if (activation && (operation.backend !== "local_action" || isDeviceBound)) {
+		throw new ToolUserError(
+			"Page activation requires a server-executed local connector operation.",
+			422,
+		);
+	}
 
 	const approvalMode: "inline" | "queued" | "device" = shouldQueue
 		? "queued"
@@ -1592,16 +1625,26 @@ async function handleExecute(
 		requireCompiledCode: operation.backend === "local_action",
 		policyPrincipalKind: actor.kind,
 		policyPrincipalId: actor.id,
-		createdByUserId: ctx.userId,
+		createdByUserId: activation ? visibilityUserId : ctx.userId,
 		watcherId: ctx.actingWatcherId,
 		windowId: ctx.actingWindowId,
 		idempotencyKey: args.idempotency_key,
+		activation,
 	});
 	if (!claim.created) {
 		await trackOperationReaction(claim.runId);
 		return replayExistingOperationRun(claim, operation.name, ctx);
 	}
 	const runId = claim.runId;
+	if (activation) {
+		await trackOperationReaction(runId);
+		return {
+			action: "execute",
+			run_id: runId,
+			status: "in_progress",
+			message: `Operation '${operation.name}' is waiting for an eligible page visit.`,
+		};
+	}
 
 	// Device-bound branch: the run is pending; a device worker (chrome
 	// extension, mac bridge, ...) will claim it via /api/workers/poll and

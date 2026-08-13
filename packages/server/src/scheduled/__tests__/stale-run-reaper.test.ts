@@ -62,6 +62,8 @@ interface SeedRunOpts {
 	dryRun?: boolean;
 	/** runs.expires_at — explicit claim horizon. NULL when omitted. */
 	expiresAtAgoSeconds?: number | null;
+	/** Park this action until a matching browser page is visited. */
+	pageActivation?: "waiting" | "activated";
 }
 
 async function seedRun(opts: SeedRunOpts): Promise<number> {
@@ -86,10 +88,16 @@ async function seedRun(opts: SeedRunOpts): Promise<number> {
 	const rows = (await sql.unsafe(
 		`INSERT INTO runs (
        organization_id, run_type, feed_id, status, approval_status,
-       claimed_at, last_heartbeat_at, claimed_by, created_at, dry_run, expires_at
+       claimed_at, last_heartbeat_at, claimed_by, created_at, dry_run, expires_at,
+       activation_kind, activation_target_urls, activated_at,
+       activated_by_device_worker_id, activation_tab_id
      ) VALUES (
        $1, $2, $3, $4, $5,
-       ${claimInterval}, ${hbInterval}, 'test-worker', ${createdAt}, $6, ${expiresAt}
+       ${claimInterval}, ${hbInterval}, 'test-worker', ${createdAt}, $6, ${expiresAt},
+       $7, $8::text[],
+       ${opts.pageActivation === "activated" ? "current_timestamp" : "NULL"},
+       ${opts.pageActivation === "activated" ? "'00000000-0000-0000-0000-000000000001'::uuid" : "NULL"},
+       ${opts.pageActivation === "activated" ? "17" : "NULL"}
      )
      RETURNING id`,
 		[
@@ -99,6 +107,8 @@ async function seedRun(opts: SeedRunOpts): Promise<number> {
 			opts.status,
 			opts.approvalStatus ?? "auto",
 			opts.dryRun ?? false,
+			opts.pageActivation ? "page_visit" : null,
+			opts.pageActivation ? '{"https://x.com/ada/status/123"}' : null,
 		],
 	)) as unknown as Array<{ id: number | string }>;
 	return Number(rows[0].id);
@@ -266,6 +276,38 @@ describe("reapStaleRuns — connector lanes", () => {
 
 		expect(result.reaped).toBe(1);
 		expect(await statusOf(autoId)).toBe("timeout");
+	});
+
+	test("a page-activated action waits until its explicit expiry", async () => {
+		const waitingId = await seedRun({
+			status: "pending",
+			approvalStatus: "auto",
+			lastHeartbeatAgoSeconds: null,
+			runType: "action",
+			createdAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+			expiresAtAgoSeconds: -3600,
+			pageActivation: "waiting",
+		});
+
+		const result = await reapStaleRuns();
+		expect(result.reaped).toBe(0);
+		expect(await statusOf(waitingId)).toBe("pending");
+	});
+
+	test("a page-activated action times out after its explicit expiry", async () => {
+		const waitingId = await seedRun({
+			status: "pending",
+			approvalStatus: "auto",
+			lastHeartbeatAgoSeconds: null,
+			runType: "action",
+			createdAtAgoSeconds: 5,
+			expiresAtAgoSeconds: 1,
+			pageActivation: "waiting",
+		});
+
+		const result = await reapStaleRuns();
+		expect(result.reaped).toBe(1);
+		expect(await statusOf(waitingId)).toBe("timeout");
 	});
 
 	// #2044 REGRESSION GUARD — the single most important assertion here.

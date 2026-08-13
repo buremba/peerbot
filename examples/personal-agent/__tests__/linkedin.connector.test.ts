@@ -1851,11 +1851,13 @@ describe("prepare_comment helpers", () => {
       { required: ["post_url"] },
       { required: ["activity_id"] },
     ]);
-    expect(action?.inputSchema?.properties?.browser_connection_id?.type).toBe(
-      "integer"
+    expect(action?.inputSchema?.properties).not.toHaveProperty(
+      "browser_connection_id"
     );
-    expect(c.definition.version).toBe("3.8.0");
-    expect(String(action?.description ?? "")).toMatch(/NEVER submits/i);
+    expect(c.definition.version).toBe("3.9.0");
+    expect(String(action?.description ?? "")).toMatch(
+      /NEVER opens a tab or submits/i
+    );
   });
 
   test("definition declares verify_staged_comment as read-only", () => {
@@ -1909,61 +1911,6 @@ describe("prepare_comment helpers", () => {
       /insertText|dispatchKeyEvent|key:\s*['"]Enter['"]/
     );
     expect(expr).not.toMatch(/Post[\s\S]*\.click\(/);
-  });
-
-  test("prepareLinkedInComment stamps conversation handoff on navigate", async () => {
-    const log: Array<{ key: string; input: Record<string, unknown> }> = [];
-    const dispatcher = {
-      dispatch: async (key: string, input: Record<string, unknown>) => {
-        log.push({ key, input });
-        if (key === "navigate") {
-          return {
-            tab_id: 9,
-            current_url:
-              "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567",
-          };
-        }
-        if (key === "wait_for_selector") return { found: true };
-        if (key === "evaluate") {
-          return {
-            value: { ok: true, reason: "typed", preview: "hi" },
-          };
-        }
-        if (
-          key === "focus_tab" ||
-          key === "show_notification" ||
-          key === "release_tab"
-        )
-          return {};
-        throw new Error(`unexpected ${key}`);
-      },
-    };
-    const result = await prepareLinkedInComment(dispatcher, {
-      postUrl: "7312345678901234567",
-      body: "hi there draft",
-      agentId: "agent_abc",
-      threadId: "thread_xyz",
-      messageId: "msg_1",
-      notify: false,
-      banner: false,
-    });
-    const nav = log.find((e) => e.key === "navigate");
-    expect(nav?.input.holder_agent_id).toBe("agent_abc");
-    expect(nav?.input.holder_thread_id).toBe("thread_xyz");
-    expect(nav?.input.holder_message_id).toBe("msg_1");
-    expect(result.agent_id).toBe("agent_abc");
-
-    log.length = 0;
-    const incomplete = await prepareLinkedInComment(dispatcher, {
-      postUrl: "7312345678901234567",
-      body: "another draft",
-      agentId: "agent_without_thread",
-      notify: false,
-      banner: false,
-    });
-    const incompleteNav = log.find((e) => e.key === "navigate");
-    expect(incompleteNav?.input.holder_agent_id).toBeUndefined();
-    expect(incomplete.agent_id).toBeUndefined();
   });
 
   test("verifyLinkedInStagedComment matches scraped comments", async () => {
@@ -2079,9 +2026,6 @@ describe("prepare_comment helpers", () => {
           expect(expr).toContain("Met at conference");
           return { value: { ok: true, anchored: true } };
         }
-        if (key === "focus_tab") return { focused: true, tab_id: 42 };
-        if (key === "show_notification") return { shown: true };
-        if (key === "release_tab") return { tab_id: 42, released: true };
         throw new Error(`unexpected dispatch ${key}`);
       },
     };
@@ -2099,9 +2043,6 @@ describe("prepare_comment helpers", () => {
       body: "Great insight — thanks for sharing.",
       banner_shown: true,
       reason_preview: "Met at conference",
-      // Without this the reaper closes the tab, and the draft with it, ~5
-      // minutes later while prepared: true still claims success.
-      released: true,
     });
     expect(result.post_url).toContain("activity:7312345678901234567");
 
@@ -2111,50 +2052,10 @@ describe("prepare_comment helpers", () => {
       "wait_for_selector",
       "evaluate",
       "evaluate",
-      "focus_tab",
-      "show_notification",
-      // Last: the tab is handed to the human only once the draft is verified
-      // in the page, so a run that dies earlier still leaves a reapable tab.
-      "release_tab",
     ]);
     // Never click Post (no click_ref at all on the happy path).
     expect(keys).not.toContain("click_ref");
     expect(keys).not.toContain("type_ref");
-    const note = log.find((e) => e.key === "show_notification");
-    expect(note?.input.tab_id).toBe(42);
-    expect(String(note?.input.message)).toContain("Met at conference");
-  });
-
-  // The tab is the only copy of the draft. An extension-owned tab is reaped
-  // after ~5 minutes, so release failure must fail the action.
-  test("fails when the tab cannot be released to the user", async () => {
-    const dispatcher = {
-      dispatch: async (key: string) => {
-        if (key === "navigate") {
-          return {
-            tab_id: 42,
-            current_url:
-              "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567",
-          };
-        }
-        if (key === "wait_for_selector") return { found: true };
-        if (key === "evaluate") {
-          return { value: { ok: true, reason: "typed", preview: "hi" } };
-        }
-        if (key === "release_tab") {
-          throw new Error("Invalid operation_key 'release_tab'");
-        }
-        return {};
-      },
-    };
-    await expect(
-      prepareLinkedInComment(dispatcher, {
-        postUrl: "7312345678901234567",
-        body: "hi",
-        focus: false,
-        notify: false,
-      })
-    ).rejects.toThrow("Invalid operation_key 'release_tab'");
   });
 
   test("never releases a tab when the composer was never filled", async () => {
@@ -2181,12 +2082,11 @@ describe("prepare_comment helpers", () => {
       prepareLinkedInComment(dispatcher, {
         postUrl: "7312345678901234567",
         body: "hi",
-        focus: false,
-        notify: false,
       })
     ).rejects.toThrow(/could not fill comment composer/);
-    // An empty tab SHOULD be reaped; releasing it would leak a blank tab.
+    // Failure must not attempt any follow-up tab mutation.
     expect(log).not.toContain("release_tab");
+    expect(log).not.toContain("focus_tab");
   });
 
   test("prepareLinkedInComment falls back to type_ref when evaluate is unavailable", async () => {
@@ -2231,12 +2131,6 @@ describe("prepare_comment helpers", () => {
           expect(input.text).toBe("hi");
           return {};
         }
-        if (
-          key === "focus_tab" ||
-          key === "show_notification" ||
-          key === "release_tab"
-        )
-          return {};
         throw new Error(`unexpected ${key} ${JSON.stringify(input)}`);
       },
     };
@@ -2245,7 +2139,6 @@ describe("prepare_comment helpers", () => {
       postUrl:
         "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567",
       body: "hi",
-      notify: false,
     });
     expect(result.method).toBe("type_ref");
     expect(result.prepared).toBe(true);
@@ -2277,7 +2170,7 @@ describe("prepare_comment helpers", () => {
     ).rejects.toThrow(/Not logged into LinkedIn/);
   });
 
-  test("prepareLinkedInComment routes every dispatch to the explicit interactive browser", async () => {
+  test("prepareLinkedInComment requires the exact activated page without selecting a browser", async () => {
     const inputs: Array<Record<string, unknown>> = [];
     const dispatcher = {
       dispatch: async (key: string, input: Record<string, unknown>) => {
@@ -2299,16 +2192,15 @@ describe("prepare_comment helpers", () => {
     await prepareLinkedInComment(dispatcher, {
       postUrl: "7312345678901234567",
       body: "Nice post",
-      focus: false,
-      notify: false,
       banner: false,
-      targetBrowserConnectionId: 432,
     });
 
     expect(inputs.length).toBeGreaterThan(0);
-    expect(
-      inputs.every((input) => input.target_browser_connection_id === 432)
-    ).toBe(true);
+    expect(inputs[0]?.require_page_activation).toBe(true);
+    expect(inputs[0]).not.toHaveProperty("open_in_new_tab");
+    expect(inputs.every((input) => !input.target_browser_connection_id)).toBe(
+      true
+    );
   });
 
   test("execute prepare_comment returns success output via dispatcher", async () => {
@@ -2318,7 +2210,6 @@ describe("prepare_comment helpers", () => {
       input: {
         activity_id: "7312345678901234567",
         body: "Nice post",
-        notify: false,
       },
       credentials: null,
       config: {},
@@ -2338,7 +2229,6 @@ describe("prepare_comment helpers", () => {
                 value: { ok: true, reason: "typed", preview: "Nice post" },
               };
             }
-            if (key === "focus_tab") return {};
             return {};
           },
         },
@@ -2405,7 +2295,6 @@ describe("prepare_comment helpers", () => {
       input: {
         post_url: "https://www.linkedin.com/feed/",
         body: "Nice post",
-        notify: false,
       },
       credentials: null,
       config: {},
@@ -2431,8 +2320,6 @@ describe("prepare_comment helpers", () => {
       input: {
         activity_id: "urn:li:activity:7312345678901234567",
         body: "Nice post",
-        notify: false,
-        focus: false,
         banner: false,
       },
       credentials: null,
@@ -2471,8 +2358,6 @@ describe("prepare_comment helpers", () => {
         post_url:
           "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567",
         body: "Nice post",
-        notify: false,
-        focus: false,
         banner: false,
       },
       credentials: null,

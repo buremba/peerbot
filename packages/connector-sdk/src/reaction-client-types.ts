@@ -122,6 +122,8 @@ export interface NotificationsSendInput {
   recipients?: "admins" | "all" | string[];
   /** Relative URL the notification links to (e.g. `/acme/entities`). */
   resource_url?: string;
+  /** HTTP(S) page a browser-side notification action should open in the current user tab. */
+  browser_url?: string;
   /** Stable producer key used to collapse retried sends. */
   idempotency_key?: string;
   /** Deliver only through this specific bot connection (its id). */
@@ -281,6 +283,11 @@ export interface ReactionClient {
       input?: Record<string, unknown>;
       /** Durable key for at-most-once execution across reaction retries. */
       idempotency_key?: string;
+      activation?: {
+        kind: "page_visit";
+        urls: string[];
+        expires_in_seconds?: number;
+      };
       behavior_source?: { behavior_id: number; window_id: number };
     }): Promise<{
       status?:

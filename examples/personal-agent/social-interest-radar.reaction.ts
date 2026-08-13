@@ -3,8 +3,9 @@
  *
  * Declared outputs have already persisted and deduplicated the threaded signal
  * and draft events. The reaction notifies from this run's signal rows and
- * stages its single best reply in an explicitly named interactive browser. A
- * later run that re-ranks the same source neither notifies nor opens a tab.
+ * schedules its single best reply for activation when the user visits that
+ * exact post. A later run that re-ranks the same source neither notifies nor
+ * opens a tab.
  */
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
@@ -152,33 +153,6 @@ function isReviewableLinkedInPostUrl(value: string): boolean {
   }
 }
 
-const LINKEDIN_REVIEW_SCHEMA = {
-  type: "object",
-  properties: {
-    outcome: {
-      type: "string",
-      title: "Outcome",
-      enum: ["posted_unchanged", "posted_edited"],
-      description:
-        "Choose what you actually posted. Use Reject instead if the draft was not relevant or should not be posted.",
-    },
-    final_text: {
-      type: "string",
-      title: "Final text (if edited)",
-      description:
-        "If you changed the comment before posting, paste the final version so future suggestions can learn from the edit.",
-      maxLength: 3000,
-    },
-    note: {
-      type: "string",
-      title: "Optional note",
-      description: "Anything else the system should learn from your choice.",
-      maxLength: 1000,
-    },
-  },
-  required: ["outcome"],
-} as const;
-
 export default async (
   ctx: ReactionContext,
   client: ReactionClient
@@ -258,53 +232,11 @@ export default async (
     return;
   }
 
-  // This is intentionally a stable, human-selected pairing slug. Never pick an
-  // arbitrary online Chrome connection: that can stage a draft in the wrong
-  // physical browser or signed-in account.
-  // The connections SDK computes device online/offline server-side; raw SQL
-  // cannot reach the worker liveness table (not in the queryable allowlist).
-  // Page through the list so a large org with many Chrome connections cannot
-  // push the pinned browser past the newest-50 default page; a short page is
-  // the only terminator, so no arbitrary bound can skip an older browser.
-  let browserConnectionId = 0;
-  for (let offset = 0; ; offset += 50) {
-    const page = (await client.connections.list({
-      connector_key: "chrome",
-      status: "active",
-      limit: 50,
-      offset,
-    })) as {
-      connections?: Array<{
-        id?: unknown;
-        slug?: string;
-        device_online?: boolean;
-      }>;
-    };
-    const browser = (page?.connections ?? []).find(
-      (c) => c.slug === "chrome-macbook" && c.device_online === true
-    );
-    if (browser) {
-      browserConnectionId = Number(browser.id);
-      break;
-    }
-    if ((page?.connections?.length ?? 0) < 50) break;
-  }
-  if (!Number.isSafeInteger(browserConnectionId) || browserConnectionId <= 0) {
-    client.log(
-      "Interactive browser 'chrome-macbook' is not online; draft event was saved but no browser was guessed."
-    );
-    deliveryNotes.push(
-      "Draft not staged: the pinned interactive Chrome is offline."
-    );
-    await sendDigest();
-    return;
-  }
-
   const behaviorSource = {
     behavior_id: ctx.behavior.id,
     window_id: ctx.window.id,
   };
-  const reviewedSourceEventIds = new Set<number>();
+  const notifiedSourceEventIds = new Set<number>();
   for (const draft of deliveredDrafts) {
     const connectionId = Number(draft.metadata.source_connection_id);
     const body = draft.payload_text?.trim();
@@ -324,17 +256,17 @@ export default async (
         }
       );
       deliveryNotes.push(
-        "Draft not staged: its saved handoff data is incomplete."
+        "Draft not scheduled: its saved handoff data is incomplete."
       );
       continue;
     }
     if (platform === "linkedin" && !isReviewableLinkedInPostUrl(sourceUrl)) {
       client.log(
-        "Saved LinkedIn draft has only the generic feed URL; a durable post permalink is required before staging.",
+        "Saved LinkedIn draft has only the generic feed URL; a durable post permalink is required before scheduling.",
         { draft_event_id: draft.id, source_url: sourceUrl }
       );
       deliveryNotes.push(
-        "LinkedIn draft not staged: the post did not expose a durable link."
+        "LinkedIn draft not scheduled: the post did not expose a durable link."
       );
       continue;
     }
@@ -351,44 +283,32 @@ export default async (
                 tweet_url: sourceUrl,
                 body,
                 reason: draft.metadata.why,
-                browser_connection_id: browserConnectionId,
               }
             : {
                 post_url: sourceUrl,
                 body,
                 reason: draft.metadata.why,
-                browser_connection_id: browserConnectionId,
               },
+        activation: {
+          kind: "page_visit",
+          urls: [sourceUrl],
+          expires_in_seconds: 86_400,
+        },
         behavior_source: behaviorSource,
       });
     } catch (error) {
-      // A thrown execute call may have durably created the idempotent device
-      // run before an internal bookkeeping step failed. Retrying is the only
-      // safe way to distinguish that case from a handoff that never started;
-      // a terminal device failure is returned as a status below.
-      if (platform === "linkedin") {
-        throw error;
-      }
       client.log(
-        "Social draft staging threw; continuing with the signal digest.",
+        "Social draft scheduling threw; retrying the reaction because the durable operation may already exist.",
         {
           draft_event_id: draft.id,
           error: error instanceof Error ? error.message : String(error),
         }
       );
-      deliveryNotes.push(
-        `${draft.metadata.platform === "linkedin" ? "LinkedIn" : "Social"} draft not staged: the browser handoff errored.`
-      );
-      continue;
+      throw error;
     }
-    if (result.status === "in_progress") {
-      throw new Error(
-        `Social draft staging is still in progress for saved draft ${draft.id}.`
-      );
-    }
-    if (result.status !== "completed") {
+    if (result.status !== "in_progress" && result.status !== "completed") {
       client.log(
-        "Could not stage the saved social draft in the interactive browser.",
+        "Could not schedule the saved social draft for page activation.",
         {
           draft_event_id: draft.id,
           status: result.status,
@@ -396,51 +316,49 @@ export default async (
         }
       );
       deliveryNotes.push(
-        `${platform === "linkedin" ? "LinkedIn" : "X"} draft not staged: the browser handoff failed.`
+        `${platform === "linkedin" ? "LinkedIn" : "X"} draft not scheduled.`
       );
       continue;
     }
 
-    if (platform === "linkedin") {
-      const sourceEventId = Number(draft.metadata.source_event_id);
-      const matchingSignal = deliveredSignals.find(
-        (signal) => Number(signal.metadata.source_event_id) === sourceEventId
-      );
-      const author =
-        draft.author_name?.trim() ||
-        matchingSignal?.author_name?.trim() ||
-        "this post";
-      const reviewBody = notificationBody([
-        "Review the staged comment in LinkedIn. Record what you posted, or use Reject and explain why it was not relevant.",
-        "",
-        `Why it was suggested: ${draft.metadata.why ?? "Relevant social signal"}`,
+    const sourceEventId = Number(draft.metadata.source_event_id);
+    const matchingSignal = deliveredSignals.find(
+      (signal) => Number(signal.metadata.source_event_id) === sourceEventId
+    );
+    const author =
+      draft.author_name?.trim() ||
+      matchingSignal?.author_name?.trim() ||
+      "this post";
+    await client.notifications.send({
+      title: `Draft ready for ${author} on ${platform === "x" ? "X" : "LinkedIn"}`,
+      body: notificationBody([
+        `Why: ${draft.metadata.why ?? "Relevant social signal"}`,
         "",
         `Draft: ${body}`,
         "",
-        `Post: ${sourceUrl}`,
-      ]);
-      // Once staging succeeds, review creation is part of the durable contract.
-      // Let a transient send failure retry the reaction; both calls are
-      // idempotent, so the browser handoff will not be duplicated.
-      await client.notifications.send({
-        title: `Review LinkedIn comment for ${author}`,
-        body: reviewBody,
-        recipients: "admins",
-        input_schema: LINKEDIN_REVIEW_SCHEMA,
-        idempotency_key: `social-radar:review:${draft.id}`,
-        behavior_source: behaviorSource,
-      });
-      if (Number.isSafeInteger(sourceEventId) && sourceEventId > 0) {
-        reviewedSourceEventIds.add(sourceEventId);
-      }
+        "Open the post in Chrome and Lobu will place this draft in the composer. You still choose whether to post it.",
+      ]),
+      recipients: "admins",
+      resource_url: `/${encodeURIComponent(ctx.organization_slug)}/memory?content_ids=${[
+        sourceEventId,
+        draft.id,
+      ]
+        .filter((id) => Number.isSafeInteger(id) && id > 0)
+        .join(",")}`,
+      browser_url: sourceUrl,
+      idempotency_key: `social-radar:draft-ready:${draft.id}`,
+      behavior_source: behaviorSource,
+    });
+    if (Number.isSafeInteger(sourceEventId) && sourceEventId > 0) {
+      notifiedSourceEventIds.add(sourceEventId);
     }
   }
 
-  // The answerable review replaces the duplicate FYI for that LinkedIn signal,
-  // but unrelated signals from the same firing still get the normal digest.
-  const unreviewedSignals = deliveredSignals.filter(
+  // A draft-ready notification replaces the duplicate digest entry for its
+  // source; unrelated observations from the same firing still get the digest.
+  const undeliveredSignals = deliveredSignals.filter(
     (signal) =>
-      !reviewedSourceEventIds.has(Number(signal.metadata.source_event_id))
+      !notifiedSourceEventIds.has(Number(signal.metadata.source_event_id))
   );
-  await sendDigest(unreviewedSignals, reviewedSourceEventIds.size === 0);
+  await sendDigest(undeliveredSignals, notifiedSourceEventIds.size === 0);
 };

@@ -7,13 +7,14 @@ interface BehaviorConnectionVisibilityContext {
 }
 
 /**
- * Resolve the user identity used only for connection row visibility.
+ * Resolve the user identity used for connection visibility and user-owned page
+ * activation.
  *
  * Behavior reactions are headless, so their execution context intentionally has
  * no user principal. They may still use private connections owned by their
  * durable creator. Policy, provenance, and approval checks continue to use the
- * autonomous Behavior principal; this resolver only supplies the principal for
- * connection visibility predicates.
+ * autonomous Behavior principal; this resolver supplies the human principal for
+ * connection visibility and for a Behavior's page-activation ownership.
  */
 export async function resolveBehaviorConnectionVisibilityUserId(
   ctx: BehaviorConnectionVisibilityContext,

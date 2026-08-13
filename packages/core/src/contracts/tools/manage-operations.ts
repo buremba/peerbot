@@ -86,6 +86,20 @@ export const ExecuteAction = Type.Object({
         "Durable caller key. Replays return the original operation run; reusing the key for a different operation or input is rejected.",
     })
   ),
+  activation: Type.Optional(
+    Type.Object({
+      kind: Type.Literal("page_visit"),
+      urls: Type.Array(Type.String({ format: "uri" }), {
+        minItems: 1,
+        maxItems: 8,
+        description:
+          "Exact HTTP(S) page URLs that may activate this operation on a user-owned browser tab.",
+      }),
+      expires_in_seconds: Type.Optional(
+        Type.Integer({ minimum: 60, maximum: 604800, default: 86400 })
+      ),
+    })
+  ),
   behavior_source: Type.Optional(
     Type.Object({
       behavior_id: Type.Number(),
@@ -399,6 +413,7 @@ export const ManageOperationsResultSchema = Type.Union([
         href: Type.Union([Type.String(), Type.Null()]),
         unread: Type.Optional(Type.Boolean()),
         notification_id: Type.Optional(Type.Integer()),
+        browser_url: Type.Optional(Type.String()),
         run_id: Type.Optional(Type.Integer()),
         /**
          * Kind of pending interaction behind this notification (events

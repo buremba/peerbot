@@ -7,7 +7,7 @@
  * - JSON utilities for duplicate detection
  */
 
-import type { DbClient } from '../db/client';
+import { type DbClient, parsePgTextArray, pgTextArray } from '../db/client';
 import {
   resolvedEventExecution,
   type BehaviorEventTrigger,
@@ -1056,6 +1056,11 @@ export async function createConnectorOperationRun(params: {
    *               macos bridge, ios bridge). No gateway-side execution.
    */
   approvalMode: 'inline' | 'queued' | 'device';
+  activation?: {
+    kind: 'page_visit';
+    urls: string[];
+    expiresInSeconds: number;
+  };
   requireCompiledCode?: boolean;
   /**
    * The TRUSTED principal (kind + stable id) that requested this operation,
@@ -1089,9 +1094,15 @@ export async function createConnectorOperationRun(params: {
   errorMessage: string | null;
 }> {
   const sql = params.db ?? getDb();
+  if (params.activation && params.approvalMode !== 'inline') {
+    throw new Error(
+      'Page activation requires inline execution; device and approval-queued operations cannot be parked.'
+    );
+  }
 
   const approvalStatus = params.approvalMode === 'queued' ? 'pending' : 'auto';
-  const status = params.approvalMode === 'inline' ? 'running' : 'pending';
+  const status =
+    params.activation || params.approvalMode !== 'inline' ? 'pending' : 'running';
 
   // Ephemeral device/browser/shell action runs get a bounded claim horizon:
   // a `device` run waits for a device worker to claim it via /poll, and an
@@ -1101,9 +1112,14 @@ export async function createConnectorOperationRun(params: {
   // claiming the run when the caller gives up, and the reaper terminalizes it
   // on its next tick. Durable human-gated runs (`queued`) get NO expiry here —
   // the long-horizon approval reaper owns their lifecycle. `inline` runs
-  // execute immediately on the gateway and are already claimed.
-  const expiresAtSeconds =
-    params.approvalMode === 'device' ? DEVICE_ACTION_QUEUE_BUDGET_MS / 1000 : null;
+  // execute immediately on the gateway and are already claimed — unless they
+  // carry an activation, which parks them pending until the user visits a
+  // matching page; the caller's activation deadline is then the claim horizon.
+  const expiresAtSeconds = params.activation
+    ? params.activation.expiresInSeconds
+    : params.approvalMode === 'device'
+      ? DEVICE_ACTION_QUEUE_BUDGET_MS / 1000
+      : null;
 
   // Resolve connector version, verifying it is runnable only when the caller
   // requires compiled code (device/inline executors that load the bundle).
@@ -1139,7 +1155,9 @@ export async function createConnectorOperationRun(params: {
       action_key, action_input, approval_status, status,
       watcher_id, window_id,
       policy_principal_kind, policy_principal_id, created_by_user_id,
-      action_idempotency_key, expires_at, created_at
+      action_idempotency_key, expires_at,
+      activation_kind, activation_target_urls,
+      created_at
     ) VALUES (
       ${params.organizationId}, 'action', ${params.connectionId},
       ${params.connectorKey}, ${connectorVersion},
@@ -1152,6 +1170,8 @@ export async function createConnectorOperationRun(params: {
       ${expiresAtSeconds == null
         ? null
         : sql`current_timestamp + (${expiresAtSeconds}::int * interval '1 second')`},
+      ${params.activation?.kind ?? null},
+      ${params.activation ? pgTextArray(params.activation.urls) : null}::text[],
       current_timestamp
     )
     ON CONFLICT (organization_id, action_idempotency_key)
@@ -1175,6 +1195,8 @@ export async function createConnectorOperationRun(params: {
       created_by_user_id: string | null;
       watcher_id: number | null;
       window_id: number | null;
+      activation_kind: string | null;
+      activation_target_urls: string | string[] | null;
       status: string;
       approval_status: string;
       action_output: unknown;
@@ -1182,7 +1204,7 @@ export async function createConnectorOperationRun(params: {
     }>`
       SELECT id, connection_id, connector_key, action_key, action_input,
              policy_principal_kind, policy_principal_id, created_by_user_id,
-             watcher_id, window_id,
+             watcher_id, window_id, activation_kind, activation_target_urls,
              status, approval_status, action_output, error_message
       FROM runs
       WHERE organization_id = ${params.organizationId}
@@ -1202,6 +1224,10 @@ export async function createConnectorOperationRun(params: {
       prior.policy_principal_kind === (params.policyPrincipalKind ?? null) &&
       prior.policy_principal_id === (params.policyPrincipalId ?? null) &&
       prior.created_by_user_id === (params.createdByUserId ?? null);
+    const sameActivation =
+      prior.activation_kind === (params.activation?.kind ?? null) &&
+      stableJson(parsePgTextArray(prior.activation_target_urls)) ===
+        stableJson(params.activation?.urls ?? []);
     const priorWatcherId = prior.watcher_id == null ? null : Number(prior.watcher_id);
     const priorWindowId = prior.window_id == null ? null : Number(prior.window_id);
     const requestedWatcherId = params.watcherId ?? null;
@@ -1209,7 +1235,7 @@ export async function createConnectorOperationRun(params: {
     const compatibleProvenance =
       (priorWatcherId == null || priorWatcherId === requestedWatcherId) &&
       (priorWindowId == null || priorWindowId === requestedWindowId);
-    if (!sameRequest || !compatibleProvenance) {
+    if (!sameRequest || !sameActivation || !compatibleProvenance) {
       throw new ToolUserError(
         `Action idempotency key '${params.idempotencyKey}' is already bound to a different request.`,
         409

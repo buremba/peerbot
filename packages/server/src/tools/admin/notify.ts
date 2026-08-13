@@ -53,6 +53,12 @@ const SendAction = Type.Object({
   resource_url: Type.Optional(
     Type.String({ description: 'Relative URL to link the notification to (e.g. /acme/entities)' })
   ),
+  browser_url: Type.Optional(
+    Type.String({
+      format: 'uri',
+      description: 'HTTP(S) page for an explicit browser-side "Open" action in the current user tab.',
+    })
+  ),
   idempotency_key: Type.Optional(
     Type.String({
       minLength: 1,
@@ -130,6 +136,17 @@ async function handleSend(
     throw new ToolUserError(
       'notify: `semantic_type` and `input_schema` are mutually exclusive — a notification is either content (kind + data) or a question (input_schema), not both.'
     );
+  }
+  if (args.browser_url) {
+    let browserUrl: URL;
+    try {
+      browserUrl = new URL(args.browser_url);
+    } catch {
+      throw new ToolUserError('notify: `browser_url` must be a valid HTTP(S) URL.', 422);
+    }
+    if (browserUrl.protocol !== 'http:' && browserUrl.protocol !== 'https:') {
+      throw new ToolUserError('notify: `browser_url` must be a valid HTTP(S) URL.', 422);
+    }
   }
 
   // Validate the request even when recipient resolution later produces no rows.
@@ -334,6 +351,7 @@ async function handleSend(
     resourceType: ask ? 'event' : null,
     resourceId: ask ? String(ask.interactionEventId) : null,
     resourceUrl: args.resource_url ?? askReviewUrl ?? null,
+    browserUrl: args.browser_url ?? null,
     idempotencyKey: args.idempotency_key ?? null,
     connectionId: args.connection_id ?? null,
     // An ask builds its chat card from the SAME schema the web row reads, via

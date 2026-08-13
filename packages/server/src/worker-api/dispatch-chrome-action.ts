@@ -23,7 +23,7 @@ import type { DispatchChromeActionRequest } from '@lobu/core/contracts/worker/pr
 import type { Context } from 'hono';
 import { resolveBehaviorConnectionVisibilityUserId } from '../authz/behavior-connection-visibility';
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
-import { getDb, pgTextArray } from '../db/client';
+import { getDb, parsePgTextArray, pgTextArray } from '../db/client';
 import type { Env } from '../index';
 import { waitForDeviceActionRun } from '../tools/admin/device-action-wait';
 import { DEVICE_ONLINE_WINDOW_SECONDS } from '../utils/device-liveness';
@@ -32,6 +32,7 @@ import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
 import { createConnectorOperationRun } from '../runs/queue-service';
+import { normalizePageActivationUrl } from '../runs/page-activation';
 
 /** Live unique index: one chrome connection per (org, device_worker) pin. */
 const CHROME_DEVICE_PIN_UNIQUE = 'idx_connections_org_connector_device_live';
@@ -81,8 +82,8 @@ export interface ChromeActionDispatchResult {
 export type ResolveOnlineChromeOptions = {
   /**
    * Prefer this device_workers.id when it is an online debugger-capable
-   * chrome-extension. Used for browser affinity: a LinkedIn/X/Revolut
-   * connection may set device_worker_id to a chrome-extension worker to mean
+   * chrome-extension. Used for browser affinity: a data connection may set
+   * device_worker_id to a chrome-extension worker to mean
    * "scrape with this browser" (the parent connector run stays on the fleet — see
    * poll.ts browser-affinity claim rules).
    */
@@ -511,11 +512,12 @@ export async function resolveOnlineChromeConnection(
  * Why this exists. A connection's `device_worker_id` means "scrape with this
  * browser", and for a sync that is right — it belongs on the always-on machine.
  * But an interactive action exists to put a page in front of a person. Routing
- * it by the scrape pin stages the draft on whichever box runs the cron, so the
- * human never sees it — exactly the bug this key fixes. Only the connector
+ * it by the scrape pin stages the interaction on whichever box runs the cron,
+ * so the human never sees it — exactly the bug this key fixes. Only the connector
  * knows an action is interactive, so the connector names the browser; syncs
- * never set it and are unaffected. `x.prepare_reply` and
- * `linkedin.prepare_comment` set it for human-visible draft staging.
+ * never set it and are unaffected. Page-activated operations no longer use it:
+ * the activated run's device pin below beats it, so this remains only for
+ * explicitly targeted actions.
  *
  * Consumed and stripped here — never forwarded to the extension.
  */
@@ -609,7 +611,7 @@ export async function dispatchChromeActionToExtension(params: {
   /** Parent connector run id, also used to scope extension-owned tabs. */
   parentRunId?: number;
   /**
-   * Data connection that owns the parent connector run (e.g. LinkedIn). When pinned to
+   * Data connection that owns the parent connector run. When pinned to
    * a chrome-extension, scrapes target that browser.
    */
   parentConnectionId?: number | null;
@@ -632,9 +634,14 @@ export async function dispatchChromeActionToExtension(params: {
   let createdByUserId = visibilityUserId;
   let watcherId: number | null = null;
   let windowId: number | null = null;
+  let activatedDeviceWorkerId: string | null = null;
+  let activationTabId: number | null = null;
+  let activationTargetUrls: string[] = [];
   if (parentRunId != null) {
     const parentRows = (await sql`
-      SELECT created_by_user_id, watcher_id, window_id
+      SELECT created_by_user_id, watcher_id, window_id,
+             activated_by_device_worker_id, activation_tab_id,
+             activation_target_urls
       FROM runs
       WHERE id = ${parentRunId}
         AND organization_id = ${organizationId}
@@ -643,6 +650,9 @@ export async function dispatchChromeActionToExtension(params: {
       created_by_user_id: string | null;
       watcher_id: number | null;
       window_id: number | null;
+      activated_by_device_worker_id: string | null;
+      activation_tab_id: number | null;
+      activation_target_urls: string | string[] | null;
     }>;
     if (parentRows.length === 0) {
       return {
@@ -655,15 +665,67 @@ export async function dispatchChromeActionToExtension(params: {
       parentRows[0].watcher_id == null ? null : Number(parentRows[0].watcher_id);
     windowId =
       parentRows[0].window_id == null ? null : Number(parentRows[0].window_id);
+    activatedDeviceWorkerId = parentRows[0].activated_by_device_worker_id;
+    activationTabId =
+      parentRows[0].activation_tab_id == null
+        ? null
+        : Number(parentRows[0].activation_tab_id);
+    activationTargetUrls = parsePgTextArray(
+      parentRows[0].activation_target_urls
+    );
   }
 
+  const requiresPageActivation = actionInput.require_page_activation === true;
+  if (
+    actionKey === 'navigate' &&
+    requiresPageActivation &&
+    (!activatedDeviceWorkerId || activationTabId == null)
+  ) {
+    return {
+      status: 'failed',
+      error_message:
+        'This browser operation requires an exact user page visit before it can run.',
+    };
+  }
+  if (
+    activatedDeviceWorkerId &&
+    activationTabId != null &&
+    actionKey === 'navigate'
+  ) {
+    let requestedUrl: string | null = null;
+    if (typeof actionInput.url === 'string') {
+      try {
+        requestedUrl = normalizePageActivationUrl(actionInput.url);
+      } catch {
+        requestedUrl = null;
+      }
+    }
+    if (!requestedUrl || !activationTargetUrls.includes(requestedUrl)) {
+      return {
+        status: 'failed',
+        error_message:
+          'Activated browser operations may not navigate the user-owned tab away from its matching page.',
+      };
+    }
+    return {
+      status: 'completed',
+      output: {
+        tab_id: activationTabId,
+        current_url: requestedUrl,
+        user_owned: true,
+      },
+    };
+  }
   // An interactive action may name the browser it wants to be seen in. That
   // beats the parent connection's scrape pin, which points at whichever machine
   // owns the cron rather than wherever the human is sitting.
   const rawTarget = (actionInput ?? {})[TARGET_BROWSER_CONNECTION_INPUT_KEY];
   let targetedBrowser = false;
   let preferredDeviceWorkerId: string | null;
-  if (rawTarget != null) {
+  if (activatedDeviceWorkerId) {
+    preferredDeviceWorkerId = activatedDeviceWorkerId;
+    targetedBrowser = true;
+  } else if (rawTarget != null) {
     const resolved = await resolveTargetBrowserWorker(
       organizationId,
       visibilityUserId,
@@ -703,6 +765,7 @@ export async function dispatchChromeActionToExtension(params: {
   const operationInput: Record<string, unknown> = { ...(actionInput ?? {}) };
   // Routing directive, not an extension argument — the extension must never see it.
   delete operationInput[TARGET_BROWSER_CONNECTION_INPUT_KEY];
+  delete operationInput.require_page_activation;
   if (
     parentRunId != null &&
     operationInput.holder_run_id == null &&

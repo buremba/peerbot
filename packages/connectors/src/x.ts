@@ -1869,38 +1869,6 @@ const dmMetadataSchema = {
 // against the signed-in app). The only way to put text in X's composer is to
 // type it, so this drives the paired Owletto Chrome and stops before submit.
 
-/**
- * Reserved chrome-action input key read (and stripped) by the gateway's
- * chrome-action dispatcher: "run this in the browser paired with THIS chrome
- * connection", overriding the X connection's scrape pin.
- *
- * The scrape pin is correct for syncs — the timeline should be read by the
- * always-on machine. It is wrong for prepare_reply, whose whole purpose is to
- * put a draft in front of a person: honouring the scrape pin stages the tab on
- * the cron box and the human never sees it. Must match
- * TARGET_BROWSER_CONNECTION_INPUT_KEY in
- * packages/server/src/worker-api/dispatch-chrome-action.ts.
- */
-export const TARGET_BROWSER_CONNECTION_INPUT_KEY =
-	"target_browser_connection_id";
-
-/**
- * Which browser should show the staged draft. Null means "no opinion" — the
- * dispatcher falls back to the scrape pin (previous behaviour).
- */
-export function resolveTargetBrowserConnectionId(
-	input: Record<string, unknown>,
-): number | null {
-	const raw = input.browser_connection_id;
-	if (raw == null) return null;
-	if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw <= 0) {
-		throw new Error(
-			`prepare_reply: browser_connection_id must be a positive integer chrome connection id, got ${JSON.stringify(raw)}`,
-		);
-	}
-	return raw;
-}
-
 /** Cap the explanation shown in the in-page banner. Mirrors linkedin. */
 export function truncateHandoffReason(
 	reason: string | undefined | null,
@@ -1917,7 +1885,7 @@ export function truncateHandoffReason(
  * JS expression: inject a small Lobu handoff banner above X's reply composer,
  * carrying the reason this post was worth answering.
  *
- * Without it the staged tab is context-free — you get a draft in a box with no
+ * Without it the staged page is context-free — you get a draft in a box with no
  * record of why the agent thought this post mattered, which is most of what you
  * need in order to accept, edit, or bin it. Same banner as
  * `linkedin.prepare_comment`, adapted for X: its own composer selectors, no
@@ -2031,7 +1999,7 @@ export function buildInjectHandoffBannerExpression(opts: {
     (document.body || document.documentElement).appendChild(root);
   }
 
-  // No auto-dismiss: release_tab makes the draft durable, so its context must
+  // No auto-dismiss: the draft lives in the user's page, so its context should
   // still be present when the user returns later. The dismiss button remains.
 
   return { ok: true, anchored: anchored };
@@ -2050,8 +2018,6 @@ export interface PrepareReplyResult {
 	submit_blocked: boolean;
 	/** Whether the in-page handoff banner was injected. */
 	banner_shown?: boolean;
-	/** Whether the tab was handed to the user so the reaper cannot close it. */
-	released: true;
 	/** Truncated reason shown on the banner (if any). */
 	reason_preview?: string;
 	message: string;
@@ -2166,13 +2132,6 @@ export async function prepareXReply(
 		reason?: string;
 		/** Inject the in-page handoff banner (default true). */
 		banner?: boolean;
-		/**
-		 * Chrome connection whose browser should show the staged draft. Without
-		 * it the dispatcher falls back to this connection's scrape pin, which is
-		 * the always-on machine running the feed cron — so the draft lands where
-		 * nobody is looking. See TARGET_BROWSER_CONNECTION_INPUT_KEY.
-		 */
-		targetBrowserConnectionId?: number | null;
 	},
 ): Promise<PrepareReplyResult> {
 	const body = opts.body.trim();
@@ -2194,9 +2153,7 @@ export async function prepareXReply(
 	}
 
 	// Single chokepoint for every dispatch this action makes: it refuses submit
-	// clicks, and it stamps the browser the draft must appear in. Both belong
-	// here rather than at each call site — a new dispatch added below inherits
-	// them instead of having to remember them.
+	// clicks and strips the private guard token before dispatch.
 	const safeDispatch: ChromeActionDispatcher = {
 		dispatch: async (action_key, action_input) => {
 			if (action_key === "click_ref") {
@@ -2208,10 +2165,6 @@ export async function prepareXReply(
 			}
 			const input = { ...action_input };
 			delete input.allowed_click;
-			if (opts.targetBrowserConnectionId != null) {
-				input[TARGET_BROWSER_CONNECTION_INPUT_KEY] =
-					opts.targetBrowserConnectionId;
-			}
 			return dispatcher.dispatch(action_key, input);
 		},
 	};
@@ -2221,12 +2174,7 @@ export async function prepareXReply(
 		current_url?: string;
 	}>("navigate", {
 		url: tweetUrl,
-		open_in_new_tab: true,
-		wait_for_load: true,
-		// Deliberately not asking navigate to focus: it opens a background
-		// scratch tab (tabs.create active:false) and only reads `focus` on the
-		// `persistent` sticky-anchor path. The tab is brought forward by the
-		// explicit focus_tab dispatch below, once the draft is actually in it.
+		require_page_activation: true,
 		allowed_origins: X_ALLOWED_ORIGINS,
 	});
 	const tabId = nav.tab_id;
@@ -2357,30 +2305,6 @@ export async function prepareXReply(
 		}
 	}
 
-	try {
-		await safeDispatch.dispatch("focus_tab", {
-			tab_id: tabId,
-			draw_attention: true,
-			allowed_origins: X_ALLOWED_ORIGINS,
-		});
-	} catch {
-		// Focus is best-effort; the draft is still staged.
-	}
-
-	// Hand the tab to the human. Until this point it is an extension-owned
-	// scratch tab, which the reaper force-closes after ~5 minutes — with the
-	// draft in it. Before release_tab was required, the action still returned
-	// prepared: true (measured 2026-08-02: staged 23:45:09, gone by 23:52:28).
-	// Released, it is an ordinary user tab the reaper ignores.
-	//
-	// Deliberately last, after the staged-text check: a run that fails earlier
-	// leaves the tab owned, and a tab with no draft in it SHOULD be reaped.
-	//
-	// The one dispatch here without allowed_origins: release_tab gates on run
-	// tab-ownership, not on the page's origin, so an origin list would only add
-	// a way for the handover to fail — and a failed handover is a reaped draft.
-	await safeDispatch.dispatch("release_tab", { tab_id: tabId });
-
 	// X's own verdict, not ours. Still `prepared: true` — the draft IS in the
 	// composer and the human is about to look at it, so trimming it there beats
 	// throwing away work over a limit we cannot compute correctly.
@@ -2394,7 +2318,6 @@ export async function prepareXReply(
 		method: "type_ref",
 		staged_text: staged,
 		banner_shown: bannerShown,
-		released: true,
 		...(reasonPreview ? { reason_preview: reasonPreview } : {}),
 		submitted: false,
 		submit_blocked: submitBlocked,
@@ -2412,7 +2335,7 @@ export default class XConnector extends ConnectorRuntime {
 		name: "X (Twitter)",
 		description:
 			"Fetches tweets, likes, bookmarks, and DMs via the X API v2 or the paired Owletto Chrome extension. Links authors and DM counterparts into the person identity graph.",
-		version: "3.11.0",
+		version: "3.12.0",
 		faviconDomain: "x.com",
 		authSchema: {
 			methods: [
@@ -2574,7 +2497,7 @@ export default class XConnector extends ConnectorRuntime {
 				kind: "write",
 				name: "Prepare reply",
 				description:
-					"Stage a reply draft on an X post in the paired Chrome browser (open post, focus the reply composer, type the draft). NEVER submits — the human must click Reply. No auto-post path exists. There is no URL that can prefill X's composer, so this is the only way to hand a draft over.",
+					"Stage a reply draft after the user opens the exact X post (fill the reply composer). NEVER opens a tab or submits — the human must click Reply. No auto-post path exists.",
 				annotations: {
 					destructiveHint: false,
 					idempotentHint: false,
@@ -2611,11 +2534,6 @@ export default class XConnector extends ConnectorRuntime {
 							description:
 								"Inject the in-page Lobu handoff banner carrying `reason` (default true).",
 						},
-						browser_connection_id: {
-							type: "integer",
-							description:
-								"Chrome connection to open the draft in. Set this to the machine you are actually sitting at — otherwise the draft is staged in whichever browser syncs the timeline.",
-						},
 					},
 				},
 				outputSchema: {
@@ -2631,7 +2549,6 @@ export default class XConnector extends ConnectorRuntime {
 						staged_text: { type: "string" },
 						submit_blocked: { type: "boolean" },
 						banner_shown: { type: "boolean" },
-						released: { type: "boolean" },
 						reason_preview: { type: "string" },
 					},
 				},
@@ -2639,9 +2556,9 @@ export default class XConnector extends ConnectorRuntime {
 				// publishing, and X's own Reply button already guards it — a human
 				// must click it, and this action structurally cannot (safeDispatch
 				// rejects every click_ref except focusing the composer). A Lobu gate
-				// here would only guard "opens an x.com tab and types", while forcing
+				// here would only guard "fills an already-open X page", while forcing
 				// the user to approve a draft BEFORE they can see it in context. The
-				// staged tab is the approval. `linkedin.prepare_comment` is ungated for
+				// user-opened page is the approval. `linkedin.prepare_comment` is ungated for
 				// the same reason.
 				requiresApproval: false,
 			},
@@ -2673,7 +2590,6 @@ export default class XConnector extends ConnectorRuntime {
 				...(typeof ctx.input.reason === "string"
 					? { reason: ctx.input.reason }
 					: {}),
-				targetBrowserConnectionId: resolveTargetBrowserConnectionId(ctx.input),
 			});
 			return { success: true, output: { ...output } };
 		} catch (error) {

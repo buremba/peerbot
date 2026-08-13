@@ -34,10 +34,6 @@ let isXAuthWall: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let prepareXReply: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
-let resolveTargetBrowserConnectionId: any;
-// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
-let TARGET_BROWSER_CONNECTION_INPUT_KEY: any;
-// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let truncateHandoffReason: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let buildInjectHandoffBannerExpression: any;
@@ -58,11 +54,8 @@ beforeAll(async () => {
 	isReplySubmitLabel = mod.isReplySubmitLabel;
 	isXAuthWall = mod.isXAuthWall;
 	prepareXReply = mod.prepareXReply;
-	resolveTargetBrowserConnectionId = mod.resolveTargetBrowserConnectionId;
 	truncateHandoffReason = mod.truncateHandoffReason;
 	buildInjectHandoffBannerExpression = mod.buildInjectHandoffBannerExpression;
-	TARGET_BROWSER_CONNECTION_INPUT_KEY =
-		mod.TARGET_BROWSER_CONNECTION_INPUT_KEY;
 });
 
 // A tweet_results.result node in x.com's GraphQL shape. `restId`/`legacy` is
@@ -926,16 +919,16 @@ describe("isReplySubmitLabel", () => {
 
 describe("prepare_reply action contract", () => {
 	test("pins the connector version for catalog upgrades", () => {
-		expect(new XConnector().definition.version).toBe("3.11.0");
+		expect(new XConnector().definition.version).toBe("3.12.0");
 	});
 
 	// This is a deliberate design decision, not an oversight. Publishing is
 	// guarded by X's own Reply button, which a human must click and this action
-	// cannot. A Lobu approval gate would only guard "opens a tab and types",
+	// cannot. A Lobu approval gate would only guard "fills the open page",
 	// while forcing the user to approve a draft before seeing it in context —
 	// which defeats the whole review-and-iterate workflow. Do not flip this back
 	// without re-reading the comment at the definition site.
-	test("does not require Lobu approval — the staged tab is the approval", () => {
+	test("does not require Lobu approval — the user-opened page is the approval", () => {
 		const action = new XConnector().definition.actions.prepare_reply;
 		expect(action.requiresApproval).toBe(false);
 		expect(action.kind).toBe("write");
@@ -1143,50 +1136,19 @@ describe("prepareXReply", () => {
 	});
 });
 
-// The draft is only useful in the browser the human is actually sitting at. The
-// connection's own pin points at whichever machine runs the timeline cron, so
-// without an explicit target the tab opens where nobody is looking.
-describe("prepare_reply browser targeting", () => {
-	// The connector cannot import from the server, so the key is declared twice.
-	// Both copies are pinned to this literal (the server's in
-	// dispatch-chrome-action-parent.test.ts) — drift in either breaks a test
-	// instead of silently routing the draft by the scrape pin again.
-	test("uses the wire key the gateway's dispatcher strips", () => {
-		expect(TARGET_BROWSER_CONNECTION_INPUT_KEY).toBe(
-			"target_browser_connection_id",
-		);
-	});
-
-	test("stamps the target browser on EVERY dispatch, not just navigate", async () => {
+describe("prepare_reply page activation", () => {
+	test("requires the exact user-opened page instead of selecting a browser", async () => {
 		const { dispatcher, calls } = stagingDispatcher();
 
 		await prepareXReply(dispatcher, {
 			tweetUrl: "2083959735481716957",
-			body: "staged where I can see it",
-			targetBrowserConnectionId: 432,
+			body: "staged only after I visit the post",
 		});
 
-		expect(calls.length).toBeGreaterThan(1);
-		// A dispatch that loses the target mid-sequence would act on a different
-		// browser than the one the tab was opened in.
-		for (const call of calls) {
-			expect(call.input[TARGET_BROWSER_CONNECTION_INPUT_KEY]).toBe(432);
-		}
-	});
-
-	test("omits the key entirely when no target is given, preserving scrape-pin routing", async () => {
-		const { dispatcher, calls } = stagingDispatcher();
-
-		await prepareXReply(dispatcher, {
-			tweetUrl: "2083959735481716957",
-			body: "no opinion about the browser",
-		});
-
-		for (const call of calls) {
-			expect(call.input).not.toHaveProperty(
-				TARGET_BROWSER_CONNECTION_INPUT_KEY,
-			);
-		}
+		const navigate = calls.find((call) => call.action === "navigate");
+		expect(navigate?.input.require_page_activation).toBe(true);
+		expect(navigate?.input).not.toHaveProperty("open_in_new_tab");
+		expect(navigate?.input).not.toHaveProperty("target_browser_connection_id");
 	});
 
 	test("never leaks the internal allowed_click guard token to the extension", async () => {
@@ -1195,133 +1157,12 @@ describe("prepare_reply browser targeting", () => {
 		await prepareXReply(dispatcher, {
 			tweetUrl: "2083959735481716957",
 			body: "check the click payload",
-			targetBrowserConnectionId: 432,
 		});
 
 		const click = calls.find((c) => c.action === "click_ref");
 		expect(click).toBeDefined();
 		// allowed_click is the internal guard token and must still be stripped.
 		expect(click?.input).not.toHaveProperty("allowed_click");
-	});
-
-	test("accepts a per-call browser_connection_id", () => {
-		expect(resolveTargetBrowserConnectionId({ browser_connection_id: 432 })).toBe(
-			432,
-		);
-	});
-
-	test("returns null when neither is set, so the scrape pin still wins", () => {
-		expect(resolveTargetBrowserConnectionId({})).toBeNull();
-	});
-
-	test("rejects a non-id rather than silently ignoring it and using the wrong browser", () => {
-		expect(() =>
-			resolveTargetBrowserConnectionId({ browser_connection_id: "432" }),
-		).toThrow(/positive integer chrome connection id/);
-		expect(() =>
-			resolveTargetBrowserConnectionId({ browser_connection_id: 0 }),
-		).toThrow(/positive integer chrome connection id/);
-		expect(() =>
-			resolveTargetBrowserConnectionId({
-				browser_connection_id: Number.MAX_SAFE_INTEGER + 1,
-			}),
-		).toThrow(/positive integer chrome connection id/);
-	});
-});
-
-// The staged tab must outlive the run. Until it is released the extension owns
-// it as a scratch tab and the reaper force-closes it after 5 minutes — the
-// draft vanishes while the run still reports prepared:true, so nothing at
-// runtime reveals the bug. These tests are the only guard.
-describe("prepare_reply tab survival", () => {
-	test("opens a non-persistent tab, focuses it, and hands it over with release_tab", async () => {
-		const { dispatcher, calls } = stagingDispatcher();
-
-		await prepareXReply(dispatcher, {
-			tweetUrl: "2083959735481716957",
-			body: "must still be here in an hour",
-		});
-
-		const nav = calls.find((c) => c.action === "navigate");
-		expect(nav).toBeDefined();
-		// NOT persistent: the sticky anchor survives the reaper too, but it
-		// opens its own window and X would not render the composer in it.
-		expect(nav?.input.persistent).toBeUndefined();
-		// The tab is brought forward by focus_tab, not by a navigate flag —
-		// navigate opens a background scratch tab and only honours `focus` on
-		// the persistent path.
-		const focused = calls.find((c) => c.action === "focus_tab");
-		expect(focused?.input.tab_id).toBe(42);
-
-		// The tab must be handed to the user, or the reaper closes the draft.
-		const release = calls.find((c) => c.action === "release_tab");
-		expect(release).toBeDefined();
-		expect(release?.input.tab_id).toBe(42);
-	});
-
-	test("releases only AFTER the draft is verified in the composer", async () => {
-		const { dispatcher, calls } = stagingDispatcher();
-		await prepareXReply(dispatcher, {
-			tweetUrl: "2083959735481716957",
-			body: "check the ordering",
-		});
-		const order = calls.map((c) => c.action);
-		// A tab released before the check would be un-reapable AND empty if the
-		// draft never landed.
-		expect(order.indexOf("release_tab")).toBeGreaterThan(
-			order.lastIndexOf("type_ref"),
-		);
-		expect(order.indexOf("release_tab")).toBeGreaterThan(
-			order.indexOf("evaluate"),
-		);
-	});
-
-	test("leaves the tab owned when staging fails, so the reaper still collects it", async () => {
-		const { dispatcher, calls } = stagingDispatcher({
-			stagedText: "something else entirely",
-		});
-		await expect(
-			prepareXReply(dispatcher, {
-				tweetUrl: "2083959735481716957",
-				body: "the draft",
-			}),
-		).rejects.toThrow(/does not match the draft/);
-		expect(calls.some((c) => c.action === "release_tab")).toBe(false);
-	});
-
-	test("fails when the tab cannot be released to the user", async () => {
-		const { dispatcher } = stagingDispatcher();
-		const inner = dispatcher.dispatch;
-		dispatcher.dispatch = async (
-			action: string,
-			input: Record<string, unknown>,
-		) => {
-			if (action === "release_tab") throw new Error("unknown tool");
-			return inner(action, input);
-		};
-
-		await expect(
-			prepareXReply(dispatcher, {
-				tweetUrl: "2083959735481716957",
-				body: "must survive the action run",
-			}),
-		).rejects.toThrow("unknown tool");
-	});
-
-	test("does not stamp holder_agent_id / holder_thread_id", async () => {
-		const { dispatcher, calls } = stagingDispatcher();
-
-		await prepareXReply(dispatcher, {
-			tweetUrl: "2083959735481716957",
-			body: "a draft",
-		});
-
-		// Those stamps buy a 30-min TTL but drive the sidepanel's conversation
-		// deep-link; faking them to win a TTL would break the sidepanel.
-		for (const call of calls) {
-			expect(call.input).not.toHaveProperty("holder_agent_id");
-			expect(call.input).not.toHaveProperty("holder_thread_id");
-		}
 	});
 });
 

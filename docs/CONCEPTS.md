@@ -1,0 +1,113 @@
+# Lobu concepts — entities, events, and the run lifecycle
+
+Read this first: the mental model in one screen, then the end-to-end lifecycle,
+then the feature map. `BEHAVIORS.md` holds the Behavior primitive contract;
+`connector-authoring.md` holds the connector contract.
+
+## Mental model
+
+- **Events are the durable knowledge and event record.** An event is an
+  immutable, append-only row in the `events` table describing one thing that
+  happened at one point in time: a GitHub PR, a webhook delivery, a knowledge
+  save, or a Behavior output. Nothing is deleted. Corrections write a new event
+  that **supersedes** the old one. Chat transcripts are durable too, but live in
+  `channel_messages`, not `events`.
+- **Entities are typed, current-state records linked to events.** An entity is
+  an instance of a declared entity type (for example, `ticket`) with typed
+  properties. Current values live on the entity row; linked content events and
+  append-only change events preserve its evidence and update history. Entities
+  are not a read-time fold over the event log.
+- **Identity has two layers.**
+  - `origin_id` — the source platform's stable id for an item, scoped to its
+    connection. This is cross-sync identity: re-syncing the same GitHub issue
+    keeps the same `origin_id` even when the stored row id changes.
+  - `events.id` — the stored-version id of a row. A resync that supersedes the
+    prior row allocates a new `events.id`. Never use it as source identity.
+  - `supersedes_event_id` — points at the event a new event replaces. The old
+    row stays in history but is hidden from normal reads; behaviors read the
+    masked `current_event_records` projection, not `public.events`.
+- **Behaviors turn events into work.** A Behavior is a versioned task owned by
+  an agent: a trigger decides when a run starts, prompt/skills decide what the
+  agent does, sources bound what it may read, outputs declare what a completed
+  run persists. See `BEHAVIORS.md`.
+
+## The event lifecycle (end to end)
+
+```mermaid
+flowchart LR
+  A["Connector feed sync"] --> B["EventEnvelope (origin_id, origin_type)"]
+  B --> C["events row (append-only; dedupe by connection + origin_id)"]
+  C --> D["Trigger match (connector eventKinds / schedule / workspace output)"]
+  D --> E["Run queue (window or turn; queue or coalesce)"]
+  E --> F["Behavior execution (governed sources + exact event pointers)"]
+  F --> G["Declared outputs (entity rows / append-only events)"]
+  G --> H["Downstream workspace-triggered Behaviors (chaining)"]
+```
+
+1. **Ingest.** A connector feed sync lands rows in `events`. Generic webhook
+   deliveries also land there; chat messages instead persist in
+   `channel_messages` and are normalized into connector turn signals. Connector
+   event ingestion dedupes by `(connection_id, origin_id)`; a row whose current
+   head is unchanged is not a new source item.
+2. **Match.** The platform checks active Behavior triggers. Connector triggers
+   use the connector's resolved event catalog (declared `behaviorEvents` in the
+   connector definition — persisted in the catalog as `behavior_events` — else
+   its feed `eventKinds`). For feed-derived triggers, the first successful
+   non-dry sync establishes a baseline; only later inserted items activate.
+   Workspace triggers fire only on **newly persisted declared event outputs**
+   from another Behavior. Ordinary knowledge saves and connector-ingested
+   events do not activate workspace-source triggers; connector events activate
+   only matching connector-source triggers. Schedules match by cron.
+3. **Run.** The matched Behavior's run is queued and claimed. A **window** run
+   reads its bounded data window; a **turn** run processes one delivery.
+   `queue` keeps activations separate; `coalesce` merges pending inputs up to
+   the safety limits in `BEHAVIORS.md`.
+4. **Persist.** A completed window may persist declared **outputs**: entity
+   rows (upsert by a key) and/or append-only events. Persisting an event output
+   atomically queues activation of downstream `source: "workspace"` Behaviors —
+   that is how automations chain.
+
+## Feature map
+
+| Layer | What it does | Where it lives |
+|---|---|---|
+| Connector | Pulls from an external source via feeds; executes write-back actions | built-ins in `packages/connectors/src/*.ts`; custom via `connectors/*.connector.ts` |
+| Feed | One sync source inside a connector; uses checkpoints; declares `eventKinds` | declared in the connector definition |
+| Event | Immutable append-only row; the bus between ingest, triggers, and chaining | `events` table; read via `current_event_records` |
+| Entity | Typed current-state projection of linked events | `defineEntityType` schema; `entities` rows |
+| Agent | Identity + persona + skills; owns Behaviors | `agents/<id>/` (`IDENTITY.md`, `SOUL.md`, `USER.md`); `defineAgent` |
+| Behavior | Triggered task owned by an agent; reads governed sources, persists outputs | `defineBehavior` |
+| Interaction surface | Where people talk to the agent: Web UI, API/SDK, MCP, chat platforms | built-in Web/API/MCP; chat via `defineConnection` |
+
+## Webhook connections (push sources)
+
+A connection with connector `webhook` turns any external system that POSTs JSON
+(Sentry, GitHub, Stripe, CI) into a push source: the delivery lands as an
+`events` row. Generic webhook rows are data rather than direct Event-trigger
+activations; process them with a scheduled or manual Behavior and a bounded SQL
+source.
+
+- **Deliver:** `POST <gateway>/lobu/api/v1/webhooks/<connectionId>` with
+  `Authorization: Bearer <token>` (or `?token=` when `allowQueryAuth` is on).
+- **Config:** `token` (auto-generated, returned once), `allowQueryAuth`,
+  `dedupeHeader` (the provider's delivery-id header; the default idempotency key
+  is `sha256(raw body)`), `semanticType`, `titlePath` (JSON pointer → `title`),
+  `searchable` (render `payload_text` for semantic recall).
+- **Delivery contract:** `202 {"ok":true,"id":<eventId>}` on persist;
+  redeliveries return the existing id; `413` over 256 KB; `400` non-JSON;
+  `429` over 120 authenticated deliveries/min per connection. Dedupe is a
+  partial unique index on `(organization_id, connector_key, origin_id)`.
+- **Read back:** scheduled or manual Behavior SQL sources select
+  `WHERE connector_key = 'webhook:<connectionId>'` and read the verbatim
+  payload from `payload_data`. Object-root JSON is stored directly; array or
+  primitive roots are wrapped as `{"payload": ...}`.
+
+## Reading and writing data (agent-facing)
+
+- `search_memory` / `save_memory` — recall and persist semantic knowledge;
+  pass `supersedes_event_id` to replace a stale fact.
+- `query_sdk` / `query_sql` — governed read-only access.
+- `run_sdk` — mutations and external operations.
+- `client.entities.create/update` — strict structured rows matching a declared
+  entity schema; `client.knowledge.save` — schema-less history.
+- Never `DELETE FROM events`; supersede or tombstone instead.

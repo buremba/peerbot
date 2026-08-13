@@ -253,13 +253,17 @@ login with `--force` unless the user separately approves that re-authentication.
 Call `client.catalog.listInstalled({ kinds: ["connectors"] })`; if the connector
 is not installed, call `client.catalog.listCatalog({ kinds: ["connectors"] })`.
 Inspect the selected entry's `detail.auth_schema`, `detail.options_schema`,
-`detail.feeds_schema`, and `detail.behavior_events`. Do not confuse
-`feeds_schema.<feed>.eventKinds`, which describes the semantic kinds emitted by
-a feed, with the connector's supported Behavior event triggers. Only values from
-`behavior_events` may be used in an event trigger. If there is no matching
-Behavior event, use a schedule plus a bounded named source, validate the query
-against the running local schema, and read event text from `payload_text`, for
-example:
+`detail.feeds_schema`, and `detail.behavior_events`. A connector's feed
+`feeds_schema.<feed>.eventKinds` are the default Behavior event trigger catalog:
+each declared kind is a subscribable `event_type` (the kind slug). A feed's first
+successful non-dry sync establishes its baseline without activation; later
+inserts of a matching kind activate subscribers. A connector that declares
+explicit `behaviorEvents` (persisted in the catalog as `behavior_events`) wins
+over that derivation for the trigger picker; keys that differ from the feed's
+`eventKinds` fire only when the connector attaches matching `behavior_signals`
+to the events it emits. If there is no matching Behavior event, use a schedule
+plus a bounded named source, validate the query against the running local
+schema, and read event text from `payload_text`, for example:
 
 ```ts
 sources: {
@@ -287,8 +291,9 @@ in `skills` and `lobu apply` compiles their bodies (in order) into the frozen
 instructions for that Behavior version. Schedule triggers, connector events
 with `execution: "window"`, workspace events with their default window
 execution, and Behaviors with no triggers (manual) require a prompt, a skill, or
-both. A connector event with `execution: "turn"` (chat/webhook listen) may omit
-both — the incoming message is the content and a built-in default applies.
+both. A connector event with `execution: "turn"` (chat or another connector signal) may omit
+both — the incoming connector signal is the content and a built-in default
+applies.
 
 ```ts
 const digestSkill = defineSkill({
@@ -322,10 +327,11 @@ complete result remains on Canvas. A `reaction` lets the Behavior act (post a
 message, call connectors, or request a governed merge) and can consume those
 persisted drafts. Omit `outputs` for a Canvas-only or reaction-only Behavior.
 Only newly persisted declared event outputs activate triggers with
-`source: "workspace"`. Ordinary knowledge saves and connector-ingested events remain data,
-and SQL sources are reads rather than subscriptions. The downstream run reads
-the exact event pointers plus its authored sources under the owning agent's
-ACL. See the complete primitive and limit model at
+`source: "workspace"`. Ordinary knowledge saves and connector-ingested events
+do not activate workspace-source triggers; connector events activate only
+matching connector-source triggers. SQL sources are reads rather than
+subscriptions. The downstream run reads the exact event pointers plus its
+authored sources under the owning agent's ACL. See the complete primitive and limit model at
 https://github.com/lobu-ai/lobu/blob/main/docs/BEHAVIORS.md.
 For an entity output, `key: ["a", "b"]` is one exact composite identity tuple,
 not two alternative keys. Use one to four durable fields; every row must include

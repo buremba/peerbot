@@ -395,6 +395,84 @@ describe('OAuth-protected MCP connector installation', () => {
     ).toBe(true);
   });
 
+  it('stamps the Jira virtual issues feed onto an Atlassian Rovo MCP install', async () => {
+    const atlassianUrl = 'https://mcp.atlassian.com/v1/mcp';
+    globalThis.fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const href = String(url);
+      if (href === atlassianUrl) {
+        return new Response(JSON.stringify({ error: 'invalid_token' }), {
+          status: 401,
+          headers: {
+            'Content-Type': 'application/json',
+            'WWW-Authenticate': `Bearer resource_metadata="${resourceMetadataUrl}"`,
+          },
+        });
+      }
+      if (href === resourceMetadataUrl) {
+        return jsonResponse({
+          resource: atlassianUrl,
+          authorization_servers: [authorizationServer],
+          scopes_supported: ['read:jira-work', 'write:jira-work', 'offline_access'],
+        });
+      }
+      if (href === authorizationMetadataUrl) {
+        return jsonResponse({
+          issuer: authorizationServer,
+          authorization_endpoint: 'https://auth.example.com/authorize',
+          token_endpoint: 'https://auth.example.com/token',
+          registration_endpoint: registrationUrl,
+          token_endpoint_auth_methods_supported: ['none'],
+          code_challenge_methods_supported: ['S256'],
+        });
+      }
+      if (href === registrationUrl) {
+        return jsonResponse({
+          client_id: 'atlassian-mcp-client',
+          token_endpoint_auth_method: 'none',
+        });
+      }
+      throw new Error(`Unexpected fetch: ${href} ${init?.method ?? ''}`);
+    }) as typeof fetch;
+
+    const { org, ctx } = await seedOwnerContext({
+      orgName: 'Atlassian MCP Feed Org',
+      userName: 'Atlassian MCP Feed Owner',
+    });
+    process.env.PUBLIC_GATEWAY_URL = 'https://gateway.test';
+    __resetPublicOriginCachesForTests();
+    ctx.baseUrl = 'https://gateway.test';
+
+    const installed = await manageConnections(
+      { action: 'install_connector', mcp_url: atlassianUrl },
+      TEST_ENV,
+      ctx
+    );
+    expect(installed).toMatchObject({
+      action: 'install_connector',
+      installed: true,
+      connector_key: 'mcp.mcp-atlassian-com',
+    });
+
+    const sql = getTestDb();
+    const [definition] = (await sql`
+      SELECT feeds_schema, mcp_config
+      FROM connector_definitions
+      WHERE organization_id = ${org.id}
+        AND key = 'mcp.mcp-atlassian-com'
+        AND status = 'active'
+    `) as Array<{
+      feeds_schema: Record<string, unknown> | null;
+      mcp_config: Record<string, unknown>;
+    }>;
+    expect(definition.mcp_config).toEqual({
+      upstream_url: atlassianUrl,
+      tool_prefix: 'mcp_atlassian_com',
+    });
+    expect(definition.feeds_schema).toMatchObject({
+      issues: { key: 'issues', virtual: true },
+    });
+  });
+
   it('installs a managed MCP manifest from trusted source without registering a local OAuth client', async () => {
     const { org, ctx } = await seedOwnerContext({
       orgName: 'Managed MCP Clone Org',

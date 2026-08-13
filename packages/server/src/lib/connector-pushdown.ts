@@ -15,6 +15,11 @@ import { dbEgressConfig } from '../utils/cloud-mode';
 import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCodeForKey } from '../utils/ensure-connector-installed';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
+import {
+  isAtlassianMcpConfig,
+  normalizeMcpProxyConfig,
+  readAtlassianMcpVirtualFeed,
+} from '../operations/atlassian-mcp-feed';
 
 interface ConnectorQueryParams {
   /** The ACL gate — tenant + principal. Its `organizationId`/`principal` drive
@@ -178,9 +183,19 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
     `SELECT f.id, f.feed_key, f.config, f.virtual,
             c.id AS connection_id, c.connector_key,
             c.auth_profile_id, c.app_auth_profile_id,
-            COALESCE(c.config, '{}'::jsonb) AS connection_config
+            COALESCE(c.config, '{}'::jsonb) AS connection_config,
+            cd.mcp_config
      FROM feeds f
      JOIN connections c ON c.id = f.connection_id
+     LEFT JOIN LATERAL (
+       SELECT mcp_config
+       FROM connector_definitions
+       WHERE key = c.connector_key
+         AND status = 'active'
+         AND organization_id = $2
+       ORDER BY updated_at DESC
+       LIMIT 1
+     ) cd ON TRUE
      WHERE f.id = $1
        AND f.organization_id = $2
        AND f.deleted_at IS NULL
@@ -200,6 +215,7 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
     auth_profile_id: number | null;
     app_auth_profile_id: number | null;
     connection_config: Record<string, unknown>;
+    mcp_config: Record<string, unknown> | null;
   }>;
 
   if (feedRows.length === 0) {
@@ -215,6 +231,25 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
 
   // Execution-time cloud gate, identical to the slug pushdown above.
   assertConnectorAllowedInCloud(feed.connector_key);
+
+  const mcpConfig = isAtlassianMcpConfig(feed.mcp_config)
+    ? normalizeMcpProxyConfig(feed.mcp_config)
+    : null;
+  if (mcpConfig) {
+    return readAtlassianMcpVirtualFeed({
+      organizationId: p.scope.organizationId,
+      connectionId: Number(feed.connection_id),
+      connectorKey: feed.connector_key,
+      mcpConfig,
+      feedConfig,
+      connectionConfig: feed.connection_config,
+      query: storedQuery || (typeof feedConfig.jql === 'string' ? feedConfig.jql : ''),
+      terms: p.terms,
+      limit: p.limit,
+      offset: p.offset,
+      sort: p.sort,
+    });
+  }
 
   const compiledCode = await resolveConnectorCodeForKey(
     feed.connector_key,

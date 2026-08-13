@@ -389,23 +389,32 @@ async function saveContentImpl(
             AND e.deleted_at IS NULL
           LIMIT 1
         `;
-        if (memberRows.length > 0) {
-          const memberId = Number(memberRows[0].id);
-          await sql`
-            INSERT INTO entity_identities (
-              organization_id, entity_id, namespace, identifier, source_connector
-            ) VALUES (
-              ${ctx.organizationId}, ${memberId}, 'auth_user_id', ${authId}, 'save_content'
-            )
-            ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
-            DO NOTHING
-          `;
-          logger.info(
-            { memberId, userId: ctx.userId, email: userEmail },
-            '$member linked via email → auth_user_id claim'
-          );
-        }
       }
+    }
+
+    // Heal the member's auth_user_id claim to the gate's trusted source. The
+    // channel-visibility gate only resolves a user to their $member via an
+    // entity_identities row with source_connector='auth:signup' (the anti-hijack
+    // guard); this call is a verified signed-in user resolved to their own
+    // member, so it IS that trusted tier. save_content historically wrote the
+    // claim with source 'save_content', which — because the live-unique index
+    // is on (org, namespace, identifier) — permanently blocks the correct
+    // insert and poisons the member for the authz gate. The upsert re-sources
+    // any existing wrong-source row, so a pre-fix poison heals on the next save
+    // instead of requiring manual backfill.
+    if (memberRows.length > 0 && authId) {
+      const memberId = Number(memberRows[0].id);
+      await sql`
+        INSERT INTO entity_identities (
+          organization_id, entity_id, namespace, identifier, source_connector
+        ) VALUES (
+          ${ctx.organizationId}, ${memberId}, 'auth_user_id', ${authId}, 'auth:signup'
+        )
+        ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
+        DO UPDATE SET
+          source_connector = 'auth:signup',
+          entity_id = EXCLUDED.entity_id
+      `;
     }
 
     if (memberRows.length > 0) {

@@ -70,20 +70,29 @@ export async function ensureInstallOperator(): Promise<{
   // would loop forever on `personal_org_missing`. Now we check each
   // step independently and patch missing pieces.
   const existing = (await sql`
-    SELECT id FROM "user"
+    SELECT id, email FROM "user"
      WHERE principal_kind = ${INSTALL_OPERATOR_KIND}
      LIMIT 1
-  `) as unknown as Array<{ id: string }>;
+  `) as unknown as Array<{ id: string; email: string | null }>;
 
   let userId: string;
+  let userEmail: string;
   let created: boolean;
 
   if (existing.length > 0) {
     userId = existing[0]!.id;
     created = false;
+    // Use the STORED email, never a fresh hostname-derived one. A rehomed
+    // machine changes `hostname()` but the user row is immutable; passing the
+    // recomputed email into personal-org provisioning makes
+    // provisionMemberAndCoreIdentities refuse ("user does not own the member
+    // email") on every boot forever. The stored value is the address the
+    // account was born with.
+    userEmail =
+      existing[0]!.email?.trim().toLowerCase() || installOperatorEmail();
   } else {
     userId = `user_install_${generateSecureToken(8)}`;
-    const email = installOperatorEmail();
+    userEmail = installOperatorEmail();
     const hashed = await hashPassword(encryptionKey);
 
     await sql.begin(async (tx) => {
@@ -91,7 +100,7 @@ export async function ensureInstallOperator(): Promise<{
         INSERT INTO "user"
           (id, name, email, "emailVerified", principal_kind, "createdAt", "updatedAt")
         VALUES
-          (${userId}, ${'Local Install'}, ${email}, true,
+          (${userId}, ${'Local Install'}, ${userEmail}, true,
            ${INSTALL_OPERATOR_KIND}, NOW(), NOW())
       `;
 
@@ -120,7 +129,7 @@ export async function ensureInstallOperator(): Promise<{
   try {
     await ensurePersonalOrganization({
       id: userId,
-      email: installOperatorEmail(),
+      email: userEmail,
       name: 'Local Install',
       username: null,
     });

@@ -17,6 +17,10 @@ export const input = {
 } as const;
 
 const MIDAS_HOLDING_PAGE_SIZE = 1_000;
+// The suffix must track MidasNetWorthSnapshot's `version`: replaying under a
+// prior version's key returns that version's persisted metadata as the
+// snapshot, so the notification would be built from a stale-schema payload.
+const MIDAS_NET_WORTH_IDEMPOTENCY_PREFIX = "midas-net-worth:v2";
 
 export interface MidasHoldingMetadata {
   symbol?: string;
@@ -427,7 +431,7 @@ async function notifySyncNeeded(
   await client.notifications.send({
     title: "Midas net worth needs attention",
     body: `${reason} Open Atlas in the paired browser and sync Midas before the next valuation.`,
-    idempotency_key: `midas-net-worth:needs-sync:window:${ctx.window.id}`,
+    idempotency_key: `${MIDAS_NET_WORTH_IDEMPOTENCY_PREFIX}:needs-sync:window:${ctx.window.id}`,
     behavior_source: {
       behavior_id: ctx.behavior.id,
       window_id: ctx.window.id,
@@ -510,8 +514,8 @@ export default async function runNetWorthSnapshot(
       input: { symbols: batch },
       idempotency_key:
         batches.length === 1
-          ? `midas-net-worth:quotes:window:${ctx.window.id}`
-          : `midas-net-worth:quotes:window:${ctx.window.id}:batch:${index + 1}`,
+          ? `${MIDAS_NET_WORTH_IDEMPOTENCY_PREFIX}:quotes:window:${ctx.window.id}`
+          : `${MIDAS_NET_WORTH_IDEMPOTENCY_PREFIX}:quotes:window:${ctx.window.id}:batch:${index + 1}`,
       behavior_source: behaviorSource,
     });
     if (operation.status !== "completed") {
@@ -541,7 +545,7 @@ export default async function runNetWorthSnapshot(
     payload_type: "markdown",
     metadata: snapshot as unknown as Record<string, unknown>,
     occurred_at: snapshot.calculated_at,
-    idempotency_key: `midas-net-worth:snapshot:window:${ctx.window.id}`,
+    idempotency_key: `${MIDAS_NET_WORTH_IDEMPOTENCY_PREFIX}:snapshot:window:${ctx.window.id}`,
     behavior_source: behaviorSource,
   });
   const persistedSnapshot = saved.created
@@ -550,7 +554,7 @@ export default async function runNetWorthSnapshot(
   await client.notifications.send({
     title: "Midas net worth updated",
     body: snapshotDigest(persistedSnapshot).slice(0, 1_000),
-    idempotency_key: `midas-net-worth:notification:window:${ctx.window.id}`,
+    idempotency_key: `${MIDAS_NET_WORTH_IDEMPOTENCY_PREFIX}:notification:window:${ctx.window.id}`,
     behavior_source: behaviorSource,
   });
 }

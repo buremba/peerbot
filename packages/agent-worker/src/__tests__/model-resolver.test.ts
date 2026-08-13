@@ -98,7 +98,7 @@ describe("resolveModelRef", () => {
     });
 
     expect(result.provider).toBe("nvidia");
-    expect(result.modelId).toBe(DEFAULT_PROVIDER_MODELS["nvidia"]);
+    expect(result.modelId).toBe(DEFAULT_PROVIDER_MODELS.nvidia);
   });
 
   test("an explicit ref routes a Lobu provider ID to its upstream runtime slug", () => {
@@ -252,7 +252,9 @@ describe("resolveModelRef", () => {
     // bare code. Sending the redundant prefix makes sdkCompat:openai providers
     // 400 "Unknown Model" — strip the configured provider's OWN id so the API
     // receives the unprefixed code.
-    const result = resolveModelRef("nvidia/nvidia/moonshotai/kimi-k2.6", { defaultProvider: "nvidia" });
+    const result = resolveModelRef("nvidia/nvidia/moonshotai/kimi-k2.6", {
+      defaultProvider: "nvidia",
+    });
     expect(result.provider).toBe("nvidia");
     expect(result.modelId).toBe("nvidia/moonshotai/kimi-k2.6");
   });
@@ -270,7 +272,9 @@ describe("resolveModelRef", () => {
   });
 
   test("configured provider: a bare model code is left untouched", () => {
-    const result = resolveModelRef("llama-3.3-70b-versatile", { defaultProvider: "groq" });
+    const result = resolveModelRef("llama-3.3-70b-versatile", {
+      defaultProvider: "groq",
+    });
     expect(result.provider).toBe("groq");
     expect(result.modelId).toBe("llama-3.3-70b-versatile");
   });
@@ -466,12 +470,7 @@ describe("resolveDynamicModelApi — real OpenAI uses the Responses API", () => 
   test("third-party openai-compatible providers keep openai-completions", () => {
     // groq / gemini / nvidia share the "openai" registry alias but only
     // speak the completions protocol — they must NOT be routed to responses.
-    for (const rawProvider of [
-      "groq",
-      "gemini",
-      "nvidia",
-      "together-ai",
-    ]) {
+    for (const rawProvider of ["groq", "gemini", "nvidia", "together-ai"]) {
       expect(resolveDynamicModelApi(rawProvider, "openai")).toBe(
         "openai-completions"
       );

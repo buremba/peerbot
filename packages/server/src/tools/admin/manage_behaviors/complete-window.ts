@@ -52,6 +52,22 @@ import { behaviorOutputOccurredAt } from '../../../utils/window-utils';
  *  cheap to store. Mirrors the capping rationale in worker-api/run-lifecycle. */
 const CAPTURE_PREVIEW_CONTENT_CAP = 200;
 
+/**
+ * Deterministic reaction-script failure classes that a retry can never fix.
+ * The sandbox prefixes these errors (`run-script.ts` classifyRuntimeError +
+ * terminateRun): a timed-out, quota-exhausted, oversize, or compile-failed
+ * reaction burns its full wall-clock budget on EVERY attempt, so retrying
+ * multiplies the stall (a 60s TimeoutError retried 3x costs ~182s) with zero
+ * recovery probability. Everything else — provider/network 5xx, transient SDK
+ * failures — stays retryable.
+ */
+export function reactionErrorIsNonTransient(error: string | undefined): boolean {
+  if (!error) return false;
+  return /^(TimeoutError|CompileError|QuotaExceeded|OutputSizeExceeded|AbortError|InvalidSleepDuration|NamespaceNotAvailable|CrossOrgAccessDenied|InvalidSDKDispatchEnvelope|ScriptExport):/.test(
+    error
+  );
+}
+
 // Initialize AJV for JSON Schema validation
 // removeAdditional: true strips fields like 'embedding' that workers add but aren't in the schema
 // This allows workers to add internal fields while still validating the core schema
@@ -1143,20 +1159,31 @@ export async function handleCompleteWindow(
           );
           break;
         }
-        if (attempt < MAX_ATTEMPTS) {
-          logger.warn(
-            { watcher_id: result.behavior_id, attempt, error: execResult.error },
-            'Reaction script failed, retrying...'
-          );
-          await new Promise((r) => setTimeout(r, 1000));
-        } else {
+
+        // Deterministic script failures are NOT transient: retrying a timed-out
+        // or quota-exhausted reaction re-burns the same 60s budget 3x and
+        // stalls complete_window by ~3 minutes for zero chance of recovery
+        // (run-script's error names are stable — TimeoutError, CompileError,
+        // QuotaExceeded, OutputSizeExceeded, AbortError, …). Only the transient
+        // remainder (provider/network 5xx and similar) gets the retry loop.
+        const isNonTransient = reactionErrorIsNonTransient(execResult.error);
+        if (isNonTransient || attempt === MAX_ATTEMPTS) {
           reactionStatus = 'failed';
           reactionError = execResult.error;
-          logger.error(
-            { watcher_id: result.behavior_id, error: execResult.error },
-            'Reaction script failed after all retries'
+          logger[isNonTransient ? 'warn' : 'error'](
+            { watcher_id: result.behavior_id, attempt, error: execResult.error },
+            isNonTransient
+              ? 'Reaction script failed on a non-transient error; not retrying'
+              : 'Reaction script failed after all retries'
           );
+          break;
         }
+
+        logger.warn(
+          { watcher_id: result.behavior_id, attempt, error: execResult.error },
+          'Reaction script failed, retrying...'
+        );
+        await new Promise((r) => setTimeout(r, 1000));
       }
     }
   } catch (err) {

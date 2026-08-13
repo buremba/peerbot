@@ -35,7 +35,7 @@
 7. `git push -u origin <branch>` → `gh pr create` (fill `.github/pull_request_template.md`; conventional-commit title).
 8. `make review` **once** on the settled HEAD; it posts the required `pi-review` status.
 9. `make ui-review`. Non-Owletto changes pass as not applicable; an Owletto pointer change needs exact hosted proof (`ARTIFACT=<url>`; see the playbook).
-10. `gh pr merge <n> --squash --admin` once green — never `--admin` past a check that has not reported.
+10. `gh pr merge <n> --squash --admin` once green — never `--admin` past a check that has not reported. Lobu's required `integration` fan-in is absent from `gh pr checks` until it starts, not pending, so diff against the branch-protection list (playbook).
 11. Prod-visible surface? Verify live after rollout: gate on the **squash commit**, not your branch head, keeping the argument order `git merge-base --is-ancestor "$MERGE_SHA" "$DEPLOYED_SHA"`. Record the result.
 
 ## How to work

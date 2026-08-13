@@ -136,4 +136,82 @@ describe("SDK MCP public result", () => {
 			).title,
 		).toBeUndefined();
 	});
+
+	test("summarizes change-capable calls a failed live run already dispatched", () => {
+		// The renderer's warning depends on this crossing the boundary: the raw
+		// sdk_call_trace never does, so a trace-derived warning would be invisible
+		// to every MCP client.
+		const result = toMcpPublicSdkScriptResult({
+			success: false,
+			skipped_calls: 0,
+			side_effect_preview: [],
+			dry_run: false,
+			error: { message: "TimeoutError: script exceeded 60000ms" },
+			sdk_call_trace: [
+				{ path: "entities.list", access: "read", skipped: false },
+				{ path: "entities.update", access: "write", skipped: false, args: [{ secret: "x" }] },
+				{ path: "entities.update", access: "write", skipped: false },
+				{ path: "slack.postMessage", access: "external", skipped: false },
+				{ path: "events.create", access: "write", skipped: true },
+				{ path: "something.odd", access: "unknown", skipped: false },
+			],
+		}) as Record<string, unknown>;
+
+		// Reads, skipped calls, and unknown-access calls are not evidence of change.
+		expect(result.started_side_effects).toEqual([
+			{ path: "entities.update", access: "write", count: 2 },
+			{ path: "slack.postMessage", access: "external", count: 1 },
+		]);
+		expect(result.started_side_effects_truncated).toBeUndefined();
+		// The diagnostic trace itself still never crosses, args included.
+		expect(result.sdk_call_trace).toBeUndefined();
+		expect(JSON.stringify(result)).not.toContain("secret");
+	});
+
+	test("flags an undercount when the internal trace was byte-capped", () => {
+		const result = toMcpPublicSdkScriptResult({
+			success: false,
+			skipped_calls: 0,
+			side_effect_preview: [],
+			dry_run: false,
+			sdk_call_trace: [{ path: "events.create", access: "write", skipped: false }],
+			sdk_call_trace_truncated: { dropped_entries: 412 },
+		}) as Record<string, unknown>;
+
+		expect(result.started_side_effects_truncated).toBe(true);
+	});
+
+	test("omits the summary for successful, dry-run, and read-only failures", () => {
+		const base = {
+			skipped_calls: 0,
+			side_effect_preview: [],
+			sdk_call_trace: [{ path: "entities.update", access: "write", skipped: false }],
+		};
+		// Succeeded: nothing to warn about.
+		expect(
+			(toMcpPublicSdkScriptResult({ ...base, success: true, dry_run: false }) as Record<
+				string,
+				unknown
+			>).started_side_effects,
+		).toBeUndefined();
+		// Dry-run: the sandbox skipped the writes.
+		expect(
+			(toMcpPublicSdkScriptResult({ ...base, success: false, dry_run: true }) as Record<
+				string,
+				unknown
+			>).started_side_effects,
+		).toBeUndefined();
+		// Failed, but only read.
+		expect(
+			(
+				toMcpPublicSdkScriptResult({
+					success: false,
+					skipped_calls: 0,
+					side_effect_preview: [],
+					dry_run: false,
+					sdk_call_trace: [{ path: "entities.list", access: "read", skipped: false }],
+				}) as Record<string, unknown>
+			).started_side_effects,
+		).toBeUndefined();
+	});
 });

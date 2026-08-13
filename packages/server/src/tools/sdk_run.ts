@@ -25,7 +25,7 @@ const SCRIPT_FIELDS = {
   title: Type.Optional(
     Type.String({
       description:
-        'Optional human-friendly heading for this result (e.g. "Company pipeline"). When set, the UI renders it above the execution status.',
+        'Human-friendly heading for this result (e.g. "Companies missing a domain"). The UI renders it above the execution status; without it the result card has no subject line. Set it whenever a person will read the result.',
       maxLength: 200,
     }),
   ),
@@ -57,6 +57,25 @@ const PublicSideEffectPreviewEntrySchema = Type.Object({
   ),
   args: Type.Array(Type.Unknown(), {
     description: "Redacted, bounded arguments for the proposed action.",
+  }),
+});
+
+/**
+ * One change-capable method path dispatched before a live script died, with how
+ * many times it ran. Deliberately narrower than the internal trace: a path, its
+ * access class, and a count — never arguments, which is where credentials and
+ * cross-org traversal would leak.
+ */
+const StartedSideEffectSchema = Type.Object({
+  path: Type.String({ description: "Dotted SDK method path that was dispatched." }),
+  access: Type.Union([
+    Type.Literal("write"),
+    Type.Literal("external"),
+    Type.Literal("admin"),
+  ], { description: "Access class of the dispatched call." }),
+  count: Type.Integer({
+    minimum: 1,
+    description: "How many times this path was dispatched before the failure.",
   }),
 });
 
@@ -120,6 +139,12 @@ export const SdkScriptResultSchema = Type.Object({
       dropped_entries: Type.Integer({ minimum: 1 }),
     }),
   ),
+  started_side_effects: Type.Optional(
+    Type.Array(StartedSideEffectSchema, {
+      description:
+        "Change-capable calls dispatched before a live script failed, grouped by method path. Present only when success=false and dry_run=false. Dispatch is not confirmation — a call listed here may or may not have completed.",
+    }),
+  ),
   dry_run: Type.Boolean(),
 });
 
@@ -137,6 +162,49 @@ function asPublicPreviewEntry(value: unknown): PublicSideEffectPreviewEntry | nu
       ? row.access
       : "unknown";
   return { path: row.path, access, args: row.args };
+}
+
+type StartedSideEffect = Static<typeof StartedSideEffectSchema>;
+
+/**
+ * Normalize the sandbox's dispatch tally into the bounded public summary: which
+ * change-capable paths ran before a failed live run, and how often.
+ *
+ * Returns null unless the run actually failed outside dry-run with at least one
+ * such call — a successful run has nothing to warn about, and under dry-run the
+ * sandbox skipped the writes.
+ */
+function summarizeStartedSideEffects(
+  row: Record<string, unknown>,
+): StartedSideEffect[] | null {
+  if (row.success !== false) return null;
+  if (row.dry_run === true) return null;
+  // The sandbox tallies these at dispatch time. Deriving them from
+  // `sdk_call_trace` instead would lose exactly the runs that matter: the trace
+  // is a byte-capped ring evicting OLDEST entries, so a long run's early writes
+  // vanish and the surviving tail can be all reads — suppressing the warning on
+  // precisely the runs most likely to have timed out mid-write.
+  if (!Array.isArray(row.started_side_effects)) return null;
+
+  const entries: StartedSideEffect[] = [];
+  for (const entry of row.started_side_effects) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const call = entry as Record<string, unknown>;
+    if (typeof call.path !== "string") continue;
+    if (call.access !== "write" && call.access !== "external" && call.access !== "admin") {
+      continue;
+    }
+    const count =
+      typeof call.count === "number" && Number.isSafeInteger(call.count) ? call.count : 0;
+    if (count < 1) continue;
+    entries.push({ path: call.path, access: call.access, count });
+  }
+  if (entries.length === 0) return null;
+
+  entries.sort((a, b) => b.count - a.count || a.path.localeCompare(b.path));
+  // No hedge: the sandbox counts every dispatch, so this is exact regardless of
+  // how much of the diagnostic trace was evicted.
+  return entries;
 }
 
 /**
@@ -205,6 +273,14 @@ export function toMcpPublicSdkScriptResult(result: unknown): unknown {
   if (skippedCalls > preview.length) {
     out.side_effect_preview_truncated = { dropped_entries: skippedCalls - preview.length };
   }
+
+  // A live script killed mid-run (timeout, quota) leaves already-dispatched
+  // writes behind. "Failed" alone reads as "nothing happened", so the caller
+  // re-runs and repeats them. Summarize what was dispatched — paths and counts
+  // only — so the result card can warn without the diagnostic trace crossing
+  // the boundary. Skipped calls never ran, and reads change nothing.
+  const started = summarizeStartedSideEffects(row);
+  if (started) out.started_side_effects = started;
   return out;
 }
 
@@ -299,6 +375,7 @@ async function runSandbox(
     sdk_calls: result.sdkCalls,
     skipped_calls: result.skippedCalls,
     sdk_call_trace: result.sdkCallTrace,
+    started_side_effects: result.startedSideEffects,
     side_effect_preview: result.sideEffectPreview,
     sdk_call_trace_truncated:
       result.traceDropped > 0 ? { dropped_entries: result.traceDropped } : undefined,

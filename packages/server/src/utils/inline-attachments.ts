@@ -304,8 +304,7 @@ async function transcribeOne(
   const baseRows = (await sql`
     SELECT id, entity_ids, title, payload_type, payload_data, attachments,
            author_name, source_url, occurred_at, metadata, semantic_type,
-           origin_type, connector_key, connection_id, feed_key, feed_id,
-           score, origin_parent_id
+           origin_type, score
     FROM events
     WHERE organization_id = ${organizationId}
       AND origin_id = ${job.originId}
@@ -327,12 +326,7 @@ async function transcribeOne(
     metadata: Record<string, unknown> | null;
     semantic_type: string;
     origin_type: string | null;
-    connector_key: string | null;
-    connection_id: number | null;
-    feed_key: string | null;
-    feed_id: number | null;
     score: number | null;
-    origin_parent_id: string | null;
   }>;
   const base = baseRows[0];
   if (!base) return;
@@ -357,11 +351,6 @@ async function transcribeOne(
     semanticType: base.semantic_type,
     originType: base.origin_type,
     metadata: meta,
-    connectorKey: base.connector_key,
-    connectionId: base.connection_id,
-    feedKey: base.feed_key,
-    feedId: base.feed_id,
-    parentOriginId: base.origin_parent_id,
     score: base.score,
     supersedesEventId: base.id,
   });

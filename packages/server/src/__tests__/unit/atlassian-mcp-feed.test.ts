@@ -5,6 +5,7 @@ import {
 	isAtlassianMcpUrl,
 	parseAtlassianCloudId,
 	parseAtlassianMcpIssues,
+	parseAtlassianMcpNextPageToken,
 } from "../../operations/atlassian-mcp-feed";
 
 describe("Atlassian MCP virtual feed helpers", () => {
@@ -74,6 +75,22 @@ describe("Atlassian MCP virtual feed helpers", () => {
 				status: "Done",
 			}),
 		]);
+	});
+
+	it("reads nextPageToken out of an MCP tools/call payload", () => {
+		expect(
+			parseAtlassianMcpNextPageToken({
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify({
+							issues: [{ id: "1", key: "KAN-1" }],
+							nextPageToken: "cursor-2",
+						}),
+					},
+				],
+			}),
+		).toBe("cursor-2");
 	});
 
 	it("reads a cloud id out of accessible-resources MCP text", () => {

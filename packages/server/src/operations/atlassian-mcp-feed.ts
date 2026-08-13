@@ -36,7 +36,7 @@ export const ATLASSIAN_MCP_FEEDS = {
 		key: ATLASSIAN_JIRA_ISSUES_FEED_KEY,
 		name: "Issues",
 		description:
-			"Live Jira issues via JQL (virtual by default); collected sync remains available when explicitly requested.",
+			"Live Jira issues via JQL. Reads call Rovo searchJiraIssuesUsingJql; nothing is copied into events.",
 		virtual: true,
 		configSchema: {
 			type: "object",
@@ -54,14 +54,7 @@ export const ATLASSIAN_MCP_FEEDS = {
 				jql: {
 					type: "string",
 					description:
-						"Legacy JQL filter (collected sync + fallback when query is unset). Defaults to recently-updated issues on sync.",
-				},
-				lookback_days: {
-					type: "integer",
-					minimum: 1,
-					maximum: 730,
-					default: 365,
-					description: "Collected-sync lookback window when jql/query is unset.",
+						"Fallback JQL when query is unset (same as the bundled Jira feed).",
 				},
 				max_results: {
 					type: "integer",
@@ -393,6 +386,38 @@ export function parseAtlassianMcpIssues(
 	return rows;
 }
 
+export function parseAtlassianMcpNextPageToken(payload: unknown): string | undefined {
+	if (!payload) return undefined;
+	if (typeof payload === "string") {
+		return parseAtlassianMcpNextPageToken(tryParseJson(payload));
+	}
+	if (Array.isArray(payload)) {
+		for (const item of payload) {
+			const token = parseAtlassianMcpNextPageToken(item);
+			if (token) return token;
+		}
+		return undefined;
+	}
+	if (typeof payload !== "object") return undefined;
+	const record = payload as Record<string, unknown>;
+	if (record.type === "text" && typeof record.text === "string") {
+		return parseAtlassianMcpNextPageToken(tryParseJson(record.text));
+	}
+	return (
+		asString(record.nextPageToken) ??
+		asString(record.next_page_token) ??
+		parseAtlassianMcpNextPageToken(record.content)
+	);
+}
+
+function mcpTextError(content: unknown, fallback: string): string {
+	if (Array.isArray(content)) {
+		const text = (content[0] as { text?: string } | undefined)?.text;
+		if (typeof text === "string" && text.trim()) return text;
+	}
+	return fallback;
+}
+
 export function parseAtlassianCloudId(payload: unknown): string | undefined {
 	const collected: unknown[] = [];
 	collectIssues(payload, collected);
@@ -457,32 +482,42 @@ export async function readAtlassianMcpVirtualFeed(params: {
 		terms: params.terms,
 		sort: params.sort,
 	});
-	const maxResults = Math.min(
+	const offset = Math.max(0, params.offset ?? 0);
+	const limit = Math.max(1, params.limit ?? 50);
+	const pageSize = Math.min(
 		100,
-		Math.max(1, Number(config.max_results) || params.limit || 50),
+		Math.max(1, Number(config.max_results) || Math.min(limit, 50)),
 	);
+	const needed = offset + limit;
+	const rows: Record<string, unknown>[] = [];
+	let nextPageToken: string | undefined;
 
-	const result = await callTool(
-		params.connectorKey,
-		params.mcpConfig,
-		params.organizationId,
-		"searchJiraIssuesUsingJql",
-		{ cloudId, jql, maxResults },
-		params.connectionId,
-	);
-	if (result.isError) {
-		const text =
-			Array.isArray(result.content) &&
-			typeof (result.content[0] as { text?: string } | undefined)?.text ===
-				"string"
-				? (result.content[0] as { text: string }).text
-				: "searchJiraIssuesUsingJql failed";
-		throw new Error(text);
+	// Walk Rovo pages until the requested window is filled. Jira's token has
+	// no random access, so we fetch and discard the prefix — same as bundled
+	// jira liveSearch.
+	for (let page = 0; page < 20 && rows.length < needed; page += 1) {
+		const result = await callTool(
+			params.connectorKey,
+			params.mcpConfig,
+			params.organizationId,
+			"searchJiraIssuesUsingJql",
+			{
+				cloudId,
+				jql,
+				maxResults: pageSize,
+				...(nextPageToken ? { nextPageToken } : {}),
+			},
+			params.connectionId,
+		);
+		if (result.isError) {
+			throw new Error(mcpTextError(result.content, "searchJiraIssuesUsingJql failed"));
+		}
+		const pageRows = parseAtlassianMcpIssues(result.content, config);
+		rows.push(...pageRows);
+		nextPageToken = parseAtlassianMcpNextPageToken(result.content);
+		if (pageRows.length === 0 || !nextPageToken) break;
 	}
 
-	const rows = parseAtlassianMcpIssues(result.content, config);
-	const offset = Math.max(0, params.offset ?? 0);
-	const limit = params.limit ?? rows.length;
 	return {
 		rows: rows.slice(offset, offset + limit),
 		columns: [...ATLASSIAN_JIRA_ISSUE_COLUMNS],

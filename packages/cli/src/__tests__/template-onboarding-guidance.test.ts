@@ -31,13 +31,13 @@ describe("generated AGENTS.md onboarding guidance", () => {
     expect(template).toContain("`.env.example` when present");
   });
 
-  test("derives Behavior event triggers from feed eventKinds with explicit behavior_events winning", () => {
+  test("derives Behavior event triggers from feed eventKinds with explicit behaviorEvents winning", () => {
     expect(template).toContain("feeds_schema.<feed>.eventKinds");
     expect(template).toContain("`behavior_events`");
     expect(template).toContain("detail.auth_schema");
     expect(template).toContain("detail.options_schema");
     expect(template).toContain("subscribable `event_type`");
-    expect(template).toContain("baseline without activation");
+    expect(template).toContain("behavior_signals");
     expect(template).toContain(
       "SELECT id, title, payload_text, metadata, occurred_at FROM events"
     );

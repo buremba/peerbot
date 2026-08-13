@@ -259,10 +259,11 @@ each declared kind is a subscribable `event_type` (the kind slug). A feed's firs
 successful non-dry sync establishes its baseline without activation; later
 inserts of a matching kind activate subscribers. A connector that declares
 explicit `behaviorEvents` (persisted in the catalog as `behavior_events`) wins
-over that derivation, and the trigger picker reads the same resolved catalog.
-If there is no matching Behavior event, use a schedule plus a bounded named
-source, validate the query against the running local schema, and read event text
-from `payload_text`, for example:
+over that derivation for the trigger picker; keys that differ from the feed's
+`eventKinds` fire only when the connector attaches matching `behavior_signals`
+to the events it emits. If there is no matching Behavior event, use a schedule
+plus a bounded named source, validate the query against the running local
+schema, and read event text from `payload_text`, for example:
 
 ```ts
 sources: {

@@ -53,7 +53,8 @@ export class CredentialService {
       clientSecret?: string;
       authMethod?: 'client_secret_post' | 'client_secret_basic' | 'none';
       resource?: string;
-    }
+    },
+    opts?: { forceRefresh?: boolean }
   ): Promise<CredentialTokens | null> {
     const result = await this.sql`
       SELECT
@@ -70,17 +71,24 @@ export class CredentialService {
 
     const tokens = result[0] as unknown as CredentialTokens;
 
-    // Check if token needs refresh
-    if (tokens.expiresAt) {
-      if (isTokenExpiringSoon(tokens.expiresAt) && tokens.refreshToken && oauthConfig) {
-        const newTokens = await this.refreshAccountUnderLock(accountId, oauthConfig);
-        if (newTokens) {
-          return {
-            ...tokens,
-            accessToken: newTokens.accessToken,
-            expiresAt: newTokens.expiresAt,
-          };
-        }
+    // Check if token needs refresh. `forceRefresh` is set when the upstream
+    // rejected the current access token (401 invalid_token) even though the
+    // stored expiry looked valid — a token can be revoked upstream before its
+    // timer expires, and the MCP proxy must not serve that dead token forever.
+    if (
+      tokens.refreshToken &&
+      oauthConfig &&
+      (opts?.forceRefresh || isTokenExpiringSoon(tokens.expiresAt))
+    ) {
+      const newTokens = await this.refreshAccountUnderLock(accountId, oauthConfig, {
+        forceRefresh: opts?.forceRefresh,
+      });
+      if (newTokens) {
+        return {
+          ...tokens,
+          accessToken: newTokens.accessToken,
+          expiresAt: newTokens.expiresAt,
+        };
       }
     }
 
@@ -129,7 +137,8 @@ export class CredentialService {
       clientSecret?: string;
       authMethod?: 'client_secret_post' | 'client_secret_basic' | 'none';
       resource?: string;
-    }
+    },
+    opts?: { forceRefresh?: boolean }
   ): Promise<{ accessToken: string; expiresAt: Date; refreshToken?: string } | null> {
     return this.sql.begin(async (tx) => {
       await tx.unsafe(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
@@ -154,7 +163,10 @@ export class CredentialService {
 
       // If the token is no longer expiring soon, another worker just rotated
       // it — return the now-current credentials instead of refreshing again.
-      if (current.expiresAt && !isTokenExpiringSoon(current.expiresAt)) {
+      // Skipped under forceRefresh: a 401 means the CURRENT token was rejected
+      // upstream even though its timer looks fine, so a just-rotated token that
+      // is still within its window is exactly the one we must replace.
+      if (!opts?.forceRefresh && current.expiresAt && !isTokenExpiringSoon(current.expiresAt)) {
         return current.accessToken
           ? { accessToken: current.accessToken, expiresAt: new Date(current.expiresAt) }
           : null;

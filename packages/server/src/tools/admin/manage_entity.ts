@@ -998,7 +998,7 @@ async function handleList(
 	if (args.entity_type === MEMBER_ENTITY_TYPE_SLUG && !canSeeMemberList(ctx)) {
 		throw new ToolUserError(
 			"The member list is only visible to members of this workspace. Join the workspace to see members.",
-			403,
+			400,
 		);
 	}
 
@@ -1284,7 +1284,7 @@ async function handleGet(
 	) {
 		throw new ToolUserError(
 			"Member details are only visible to members of this workspace. Join the workspace to see members.",
-			403,
+			400,
 		);
 	}
 

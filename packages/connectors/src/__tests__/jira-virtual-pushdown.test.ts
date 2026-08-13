@@ -441,7 +441,24 @@ describe('Jira virtual-feed pushdown', () => {
   test('feed definition defaults issues to virtual', () => {
     const c = new JiraConnector();
     expect(c.definition.feeds?.issues?.virtual).toBe(true);
-    expect(c.definition.version).toBe('1.1.2');
+    expect(c.definition.version).toBe('1.1.3');
+  });
+
+  test('offers every scope Jira requires to deliver issue and comment webhooks', () => {
+    const c = new JiraConnector();
+    expect(c.definition.authSchema?.methods?.[0]?.optionalScopes).toEqual([
+      'read:issue-details:jira',
+      'read:comment.property:jira',
+      'read:comment:jira',
+      'read:epic:jira-software',
+      'read:group:jira',
+      'read:issue.property:jira',
+      'read:issue-type:jira',
+      'read:project:jira',
+      'read:project-role:jira',
+      'read:status:jira',
+      'read:user:jira',
+    ]);
   });
 
   test('lazy-resolves cloud_id via accessible-resources when config omits it', async () => {

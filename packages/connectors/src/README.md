@@ -1,6 +1,6 @@
 # Connector SDK
 
-Connectors are TypeScript modules that sync data from external services into Lobu and optionally execute write-back actions. Each connector is a single `.ts` file that exports a class extending `ConnectorRuntime` from `@lobu/connector-sdk`.
+Connectors are TypeScript modules that sync data from external services into Lobu and optionally execute write-back actions. Each connector has a `.ts` entry point whose default export is a class extending `ConnectorRuntime` from `@lobu/connector-sdk`; the entry point may import sibling modules, which the compiler bundles. The functional `defineConnector({ ... })` helper lowers to the same class shape. This document covers the SDK/runtime contract for bundled built-ins and child-process execution; the project-level authoring flow (`connectorFromFile` + `lobu apply`) is in `docs/connector-authoring.md`.
 
 ## Quick Start
 
@@ -78,6 +78,7 @@ interface ConnectorDefinition {
   authSchema?: ConnectorAuthSchema;         // Authentication configuration
   feeds?: Record<string, FeedDefinition>;   // Data sources (keyed by feed_key)
   actions?: Record<string, ActionDefinition>; // Write-back actions
+  behaviorEvents?: ConnectorBehaviorEvent[]; // Explicit Behavior trigger catalog
   optionsSchema?: Record<string, unknown>;  // Global connector options (JSON Schema)
   mcpConfig?: { upstreamUrl: string };      // Proxy an upstream MCP server
   openapiConfig?: {                         // Generate actions from an OpenAPI spec
@@ -119,7 +120,7 @@ authSchema: {
     description: 'API key for authentication.',
     fields: [
       {
-        key: 'API_KEY',          // Key name, accessed via ctx.credentials
+        key: 'API_KEY',          // Key name, accessed via ctx.config
         label: 'API Key',        // UI label
         description: 'Your service API key',
         example: 'sk-...',       // Placeholder hint
@@ -213,9 +214,11 @@ interface FeedDefinition {
 
 The feed key is passed to `sync()` as `ctx.feedKey`, so a single connector can handle multiple feed types by switching on `ctx.feedKey`.
 
+A feed's `eventKinds` are also the **default Behavior trigger catalog**. The first successful non-dry sync establishes a baseline without activation; later inserts whose kind matches a declared `eventKinds` key activate subscribers. A non-empty `behaviorEvents` declaration (camelCase in `ConnectorDefinition`, persisted as `behavior_events` in the catalog) replaces that derived catalog in the trigger picker. Keys that differ from the feed's `eventKinds` fire only when the emitted `EventEnvelope` carries matching `behavior_signals`.
+
 ## Syncing Data
 
-The `sync()` method is called by the worker on a schedule. It receives a `SyncContext` and returns a `SyncResult`.
+The worker calls `sync()` for scheduled and manually triggered sync runs. It receives a `SyncContext` and returns a `SyncResult`.
 
 ### SyncContext
 
@@ -224,7 +227,7 @@ interface SyncContext {
   feedKey: string;                          // Which feed to sync
   config: Record<string, unknown>;          // Feed + connector config merged
   checkpoint: Record<string, unknown> | null; // Previous checkpoint (null on first sync)
-  credentials: SyncCredentials | null;      // OAuth token, env keys, etc.
+  credentials: SyncCredentials | null;      // OAuth/session credentials; env_keys are in config
   entityIds: number[];                      // Linked entity IDs
   sessionState?: Record<string, unknown>;   // Browser session state (cookies, tokens)
   emitEvents?: (events: EventEnvelope[]) => Promise<void>;      // Stream events mid-sync
@@ -253,7 +256,7 @@ Each piece of content is an `EventEnvelope`:
 
 ```typescript
 interface EventEnvelope {
-  origin_id: string;           // Unique ID from the source platform
+  origin_id: string;           // Stable source-item ID, scoped to its feed/connection
   origin_type?: string;        // Source-native type (must match a key in eventKinds)
   payload_text: string;        // Main text content
   title?: string;              // Title / subject
@@ -265,6 +268,7 @@ interface EventEnvelope {
   origin_parent_id?: string;   // Parent reference for threaded content
   metadata?: Record<string, unknown>; // Matches the eventKind's metadataSchema
   embedding?: number[];        // Pre-computed embedding vector (optional)
+  behavior_signals?: ConnectorBehaviorSignalDraft[]; // Explicit Behavior activations
 }
 ```
 
@@ -435,31 +439,37 @@ Browser connectors use `patchright` (an npm alias for Playwright). The SDK expor
 
 ## Worker Sandbox Environment
 
-Connector code runs in a worker subprocess with a restricted environment. Key things to know:
+Connector code runs in a worker subprocess with an explicit environment boundary. Key things to know:
 
-- **Minimal env vars**: Only `PATH`, `HOME`, `TMPDIR`, `TZ`, `NODE_ENV`, `NODE_PATH`, and `PLAYWRIGHT_BROWSERS_PATH` are available. No access to the host's env vars.
-- **Secrets via ctx**: API keys and tokens flow through `ctx.credentials` and `ctx.config`, not environment variables. The `env_keys` auth method stores secrets on auth profiles, and the platform injects them into `ctx.config` at sync time.
+- **Minimal env vars**: The child receives the required system keys plus explicit values in `job.env`, not the complete host environment. `WORKER_API_TOKEN` is deliberately excluded.
+- **Credentials via ctx**: OAuth/session credentials flow through `ctx.credentials`; `env_keys` values are injected into `ctx.config`, and interactive auth receives `previousCredentials`.
 - **No filesystem persistence**: Don't write to disk expecting it to survive between syncs. Use `checkpoint` for state.
 
 ## npm Dependencies
 
-You can import npm packages inline using the `npm:` protocol:
+Declare npm dependencies at exact versions in the project/package `package.json`; the connector compiler resolves them from `node_modules` and bundles them:
 
 ```typescript
 import TurndownService from 'turndown';
 ```
 
-Always pin the version to avoid unexpected breakage.
+`npm:` specifiers are also accepted, but they resolve against the installed package; the `package.json` entry remains the authoritative version pin.
 
 ## Build & Installation
 
 ### Generating the catalog
 
+Build the workspace packages first so the generator can resolve the shared connector compiler:
+
 ```bash
-npx tsx scripts/generate-connector-catalog.ts
+make build-packages
 ```
 
-This compiles each `.ts` file in this directory via esbuild, extracts the `definition` metadata, and writes `connectors/catalog.json`. The catalog is a metadata-only index — it does not contain compiled code.
+The server build generates all catalog manifests. Once the shared packages are already built, rerun only that generator with `bun packages/server/scripts/build-catalog-manifests.ts`. Its connector pass compiles each `.ts` file in this directory via esbuild, extracts the `definition` metadata, and writes `packages/server/dist/catalogs/connectors.json`. The connector manifest is a metadata-only index — it does not contain compiled code — and the runtime loads configured manifests through `LOBU_CATALOG_URIS`.
+
+### Project-local custom connectors
+
+A project authors its own connector at `connectors/<name>.connector.ts` and registers it in `lobu.config.ts` with `connectorFromFile("./connectors/<name>.connector.ts")`. `lobu apply` compiles it with the project's dependencies and installs the resulting bundle in the target organization; model it on `examples/lobu-crm/npm-downloads.connector.ts`. See `docs/connector-authoring.md`.
 
 ### Auto-install per org
 
@@ -474,24 +484,24 @@ Connectors can also be installed manually via `client.connections.installConnect
 
 ### How connector code runs
 
-1. For fleet workers and embedded-mode hosts (worker + gateway share a host), the gateway sends only `connector_key` in the worker-poll response — both pods have the `.ts` source on disk, and the worker compiles locally via the shared pipeline at `@lobu/connector-worker/compile`. For DB-only / device workers without source on disk, the gateway sends `compiled_code` inline.
-2. The compiled bundle is written to a temp file (`.connector-child-{pid}-{rand}.mjs`) under cwd and loaded via dynamic `import()` inside a forked child process.
-3. The parent and child speak `ExecutorJob` / `ExecutorResult` over IPC — the same V1 SDK shapes (`SyncContext` / `ActionContext` / `AuthContext` in, `SyncResult` / `ActionResult` / `AuthResult` out, no envelope). Sync events stream via `event_chunk` IPC messages as the connector emits them.
-4. Each sync/action runs in an **isolated child process** with a 10-minute timeout and 512MB memory limit.
-5. The child process has a restricted environment — only `PATH`, `HOME`, `TMPDIR`, `TZ`, `NODE_ENV`, `NODE_PATH`, and `PLAYWRIGHT_BROWSERS_PATH` are available as env vars.
-6. Secrets flow through `ctx.credentials` and `ctx.config`, not environment variables.
+1. For fleet workers and embedded-mode hosts (worker + gateway share a host), the gateway sends only `connector_key` in the worker-poll response — both runtimes have the `.ts` source on disk, and the worker compiles locally via the shared pipeline at `@lobu/connector-worker/compile`. For DB-only / device workers without source on disk, the gateway sends `compiled_code` inline.
+2. The compiled bundle is written to a temp file (`.connector-child-{pid}-{rand}.mjs`) under cwd and loaded via dynamic `import()` inside an isolated Node child process (direct `fork`, or a `nix-shell` wrapper when native packages are declared).
+3. The parent and child speak `ExecutorJob` / `ExecutorResult` over IPC — the SDK shapes (`SyncContext` / `ActionContext` / `AuthContext` in, `SyncResult` / `ActionResult` / `AuthResult` out, no envelope). Sync events stream via `event_chunk` IPC messages as the connector emits them.
+4. Connector code gets process isolation, not a hardened security sandbox. `SubprocessExecutor` defaults to a 10-minute timeout and a 512 MB V8 old-space setting; the standalone daemon raises old space to 1024 MB, and interactive auth runs disable the fixed timeout while waiting for the user.
+5. The child inherits only the required system keys (`PATH`, `HOME`, `TMPDIR`, `TZ`, `NODE_ENV`, `NODE_PATH`, `PLAYWRIGHT_BROWSERS_PATH`) plus explicit values supplied in `job.env` — never the complete host environment.
+6. Connection credentials and config flow through the typed job context (`ctx.credentials`, `ctx.config`, or auth's `previousCredentials`). The worker API token is never forwarded to connector code.
 
-This means edits to `.ts` files in `connectors/` take effect on the next sync without reinstalling.
+For source-backed bundled connectors, the worker recompiles a `.ts` file after its mtime changes. Built deployments still require rebuild/redeploy, while project-local connector changes require another `lobu apply` to install a new organization-scoped version.
 
 ## Existing Connectors
 
 | Connector | Auth | Feeds | Actions |
 |-----------|------|-------|---------|
-| `github` | oauth/env_keys | issues, PRs, comments, discussions | create/close/reopen issues, PRs |
-| `hackernews` | none | stories, comments | - |
+| `github` | app_installation/oauth/env_keys | issues, PRs, comments, discussions, commits, stargazers | create/comment/close/reopen issues; create/merge PRs |
+| `hackernews` | none | stories, front page, comments | - |
 | `market.quotes` | none | - | quote (read-only, quotes returned to the caller, never persisted) |
 | `producthunt` | env_keys | posts & comments | - |
-| `reddit` | oauth/none | posts, comments | - |
+| `reddit` | oauth/none | posts, comments, user activity | - |
 | `rss` | none | articles | - |
-| `x` | browser (CLI) | tweets | - |
-| `youtube` | oauth (Google) | liked videos, playlists, keyword search (sync) | search, get_video, search_liked_videos, list_playlists, get_playlist |
+| `x` | browser/oauth | tweets, own posts, likes, bookmarks, DMs, home timeline | prepare reply |
+| `youtube` | oauth (Google) | liked videos, playlists, subscriptions, videos | search, get_video, search_liked_videos, list_playlists, get_playlist |

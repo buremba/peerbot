@@ -293,11 +293,16 @@ function assertLoopbackClient(
  */
 async function createSessionToken(
   c: Context<{ Bindings: Env }>,
-  userId: string
+  userId: string,
+  activeOrganizationId?: string | null
 ): Promise<string | null> {
   const auth = await createAuth(c.env, c.req.raw);
   const ctx = await auth.$context;
-  const session = await ctx.internalAdapter.createSession(userId);
+  const session = await ctx.internalAdapter.createSession(
+    userId,
+    undefined,
+    activeOrganizationId ? { activeOrganizationId } : undefined
+  );
   return session?.token ?? null;
 }
 
@@ -359,8 +364,8 @@ async function mintSessionCookieValue(
 }
 
 /**
- * Resolve a `?token=…` deep-link credential to a user id. Accepts all three
- * credential shapes the deep-link callers hold:
+ * Resolve a `?token=…` deep-link credential to its user and organization.
+ * Accepts all three credential shapes the deep-link callers hold:
  *   - Personal Access Tokens (`owl_pat_*`, `personal_access_tokens`)
  *   - OAuth 2.1 access tokens (`oauth_tokens`) — what the Owletto extension's
  *     device-code pairing issues; without this the cloud-paired iframe 401s at
@@ -374,17 +379,26 @@ async function mintSessionCookieValue(
 async function resolveDeepLinkToken(
   c: Context<{ Bindings: Env }>,
   token: string
-): Promise<string | null> {
+): Promise<{ userId: string; organizationId: string | null } | null> {
   const sql = createDbClientFromEnv(c.env);
   const baseUrl = resolveBaseUrl({ request: c.req.raw });
   const authInfo = await new OAuthProvider(sql, baseUrl).verifyAccessToken(token);
-  if (authInfo?.userId) return authInfo.userId;
+  if (authInfo?.userId) {
+    return {
+      userId: authInfo.userId,
+      organizationId: authInfo.organizationId,
+    };
+  }
   // Otherwise treat it as a Better Auth session token. Better Auth's adapter
   // looks it up by the raw token (the unsigned half of the cookie value).
   const auth = await createAuth(c.env, c.req.raw);
   const ctx = await auth.$context;
   const session = await ctx.internalAdapter.findSession(token);
-  return session?.session?.userId ?? null;
+  if (!session?.session?.userId) return null;
+  return {
+    userId: session.session.userId,
+    organizationId: session.session.activeOrganizationId ?? null,
+  };
 }
 
 /**
@@ -416,15 +430,15 @@ async function handleExchangeToken(
     );
   }
 
-  const userId = await resolveDeepLinkToken(c, trimmed);
-  if (!userId) {
+  const identity = await resolveDeepLinkToken(c, trimmed);
+  if (!identity) {
     return c.json(
       { error: 'invalid_token', error_description: 'token is invalid, expired, or revoked' },
       401
     );
   }
 
-  const minted = await mintSessionCookieValue(c, userId);
+  const minted = await mintSessionCookieValue(c, identity.userId);
   if ('error' in minted) {
     return c.json(
       { error: 'session_create_failed', error_description: minted.error },
@@ -470,15 +484,19 @@ credentialRoutes.post('/extension-session', async (c) => {
     );
   }
 
-  const userId = await resolveDeepLinkToken(c, token);
-  if (!userId) {
+  const identity = await resolveDeepLinkToken(c, token);
+  if (!identity) {
     return c.json(
       { error: 'invalid_token', error_description: 'token is invalid, expired, or revoked' },
       401
     );
   }
 
-  const sessionToken = await createSessionToken(c, userId);
+  const sessionToken = await createSessionToken(
+    c,
+    identity.userId,
+    identity.organizationId
+  );
   if (!sessionToken) {
     return c.json(
       { error: 'session_create_failed', error_description: 'failed to mint session' },
@@ -517,8 +535,8 @@ credentialRoutes.get('/sse-ticket', async (c) => {
     );
   }
 
-  const userId = await resolveDeepLinkToken(c, bearer);
-  if (!userId) {
+  const identity = await resolveDeepLinkToken(c, bearer);
+  if (!identity) {
     return c.json(
       { error: 'invalid_token', error_description: 'token is invalid, expired, or revoked' },
       401
@@ -530,7 +548,11 @@ credentialRoutes.get('/sse-ticket', async (c) => {
   // resolves the SAME owner it would for a first-party web session. No jti →
   // no revocation lookup needed; the short TTL is the bound.
   const ticket = encrypt(
-    JSON.stringify({ userId, platform: 'external', exp: Date.now() + SSE_TICKET_TTL_MS })
+    JSON.stringify({
+      userId: identity.userId,
+      platform: 'external',
+      exp: Date.now() + SSE_TICKET_TTL_MS,
+    })
   );
   return c.json({ ticket });
 });

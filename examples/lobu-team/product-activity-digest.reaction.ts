@@ -18,24 +18,14 @@ export const input = {
 
 interface ActivityRow {
   connection_slug: string;
-  payload_data?: unknown;
+  title?: string | null;
+  payload_text?: string | null;
   metadata?: unknown;
   source_url?: string | null;
 }
 
-interface ProductActivity {
-  activity_type?: string;
-  activity_id?: string;
-  user_id?: string | null;
-  user_name?: string | null;
-  email?: string | null;
-  organization_name?: string | null;
-  connector_key?: string | null;
-  connection_name?: string | null;
-  client_software_id?: string | null;
-  last_action?: string | null;
-  call_count?: number | string | null;
-  failed_count?: number | string | null;
+interface PreviousDigestRow {
+  created_at: string;
 }
 
 interface LogActivity {
@@ -46,10 +36,10 @@ interface LogActivity {
 }
 
 export interface ProductActivityDigest {
-  signups: ProductActivity[];
-  logins: ProductActivity[];
-  connections: ProductActivity[];
-  mcp_conversations: ProductActivity[];
+  signups: string[];
+  logins: string[];
+  connections: string[];
+  mcp_conversations: string[];
   errors: number;
   warnings: number;
   error_samples: string[];
@@ -74,15 +64,12 @@ export function collectProductActivityDigest(
 
   for (const row of rows) {
     if (row.connection_slug === PRODUCT_ACTIVITY_CONNECTION) {
-      const activity = record(row.payload_data) as unknown as ProductActivity;
-      if (activity.activity_type === "signup") digest.signups.push(activity);
-      if (activity.activity_type === "login") digest.logins.push(activity);
-      if (activity.activity_type === "connection") {
-        digest.connections.push(activity);
-      }
-      if (activity.activity_type === "mcp_conversation") {
-        digest.mcp_conversations.push(activity);
-      }
+      const text = row.payload_text?.trim();
+      if (!text) continue;
+      if (row.title === "New signup") digest.signups.push(text);
+      if (row.title === "User login") digest.logins.push(text);
+      if (row.title === "New connection") digest.connections.push(text);
+      if (row.title === "MCP activity") digest.mcp_conversations.push(text);
       continue;
     }
 
@@ -131,37 +118,16 @@ export function buildProductActivityCard(
     },
   ];
 
-  appendSection(children, "New signups", digest.signups.map(formatUser));
-  appendSection(children, "Online users", online.map(formatUser));
-  appendSection(
-    children,
-    "New connections",
-    digest.connections.map(
-      (item) =>
-        `${safe(item.connector_key ?? "unknown connector")} — ` +
-        `${safe(item.connection_name ?? "Unnamed connection")} — ` +
-        `${safe(item.organization_name ?? "Unknown organization")}` +
-        (item.email ? ` — created by ${safe(item.email)}` : "")
-    )
-  );
+  appendSection(children, "New signups", digest.signups.map(safe));
+  appendSection(children, "Online users", online.map(safe));
+  appendSection(children, "New connections", digest.connections.map(safe));
   appendSection(
     children,
     "Active MCP conversations",
-    digest.mcp_conversations.map(
-      (item) =>
-        `${safe(item.client_software_id ?? "Unknown client")} — ` +
-        `${formatUser(item)}` +
-        (item.last_action ? ` — ${safe(item.last_action)}` : "") +
-        (finiteCount(item.call_count) > 0
-          ? ` — ${finiteCount(item.call_count)} total calls`
-          : "") +
-        (finiteCount(item.failed_count) > 0
-          ? ` — ${finiteCount(item.failed_count)} failed`
-          : "")
-    )
+    digest.mcp_conversations.map(safe)
   );
-  appendSection(children, "Recent errors", digest.error_samples);
-  appendSection(children, "Recent warnings", digest.warning_samples);
+  appendSection(children, "Recent errors", digest.error_samples.map(safe));
+  appendSection(children, "Recent warnings", digest.warning_samples.map(safe));
   if (digest.logs_url) {
     children.push({
       type: "actions",
@@ -218,24 +184,13 @@ function chunkText(value: string): string[] {
   return chunks;
 }
 
-function uniqueUsers(rows: ProductActivity[]): ProductActivity[] {
-  const users = new Map<string, ProductActivity>();
+function uniqueUsers(rows: string[]): string[] {
+  const users = new Map<string, string>();
   for (const row of rows) {
-    const key =
-      row.user_id ?? row.email ?? `anonymous:${row.activity_id ?? ""}`;
-    const existing = users.get(key);
-    if (!existing || (!existing.email && row.email)) users.set(key, row);
+    const email = row.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i)?.[0];
+    users.set(email?.toLowerCase() ?? row, row);
   }
   return [...users.values()];
-}
-
-function formatUser(user: ProductActivity): string {
-  const name = safe(user.user_name?.trim() || "Unnamed user");
-  const email = user.email ? safe(user.email) : "anonymous";
-  const organization = user.organization_name
-    ? ` — ${safe(user.organization_name)}`
-    : "";
-  return `${name} — ${email}${organization}`;
 }
 
 function formatWindow(start: string, end: string): string {
@@ -313,22 +268,40 @@ export default async (
   ctx: ReactionContext,
   client: ReactionClient
 ): Promise<void> => {
-  const start = new Date(ctx.window.window_start);
-  const end = new Date(ctx.window.window_end);
-  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) {
-    throw new Error("Product activity digest received an invalid window");
+  const runId = Number(ctx.window.run_id);
+  if (!Number.isSafeInteger(runId) || runId <= 0) {
+    throw new Error("Product activity digest requires a durable run id");
   }
+
+  // Sub-hour schedules share a daily Canvas window. Use the last delivered
+  // digest as a durable cursor so every newly ingested row is reported once.
+  const previousRows = (await client.query(`
+    SELECT created_at
+    FROM events
+    WHERE behavior_id = ${ctx.window.behavior_id}
+      AND semantic_type = 'notification'
+      AND title = 'Lobu production activity digest'
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `)) as PreviousDigestRow[];
+  const end = new Date();
+  const previous = previousRows[0]?.created_at
+    ? new Date(previousRows[0].created_at)
+    : new Date(end.getTime() - 20 * 60 * 1000);
+  const start = Number.isFinite(previous.getTime())
+    ? previous
+    : new Date(end.getTime() - 20 * 60 * 1000);
 
   const rows = (await client.query(`
     SELECT
       c.slug AS connection_slug,
-      e.payload_data,
+      e.title,
+      e.payload_text,
       e.metadata,
       e.source_url
     FROM events e
     JOIN connections c ON c.id = e.connection_id
     WHERE c.slug IN ('${PRODUCT_ACTIVITY_CONNECTION}', '${LOG_ACTIVITY_CONNECTION}')
-      AND e.superseded_by IS NULL
       AND e.created_at > '${start.toISOString()}'::timestamptz
       AND e.created_at <= '${end.toISOString()}'::timestamptz
     ORDER BY e.created_at ASC, e.id ASC
@@ -354,7 +327,7 @@ export default async (
       end: end.toISOString(),
     }),
     recipients: "admins",
-    idempotency_key: `product-activity-digest:${ctx.window.id}`,
+    idempotency_key: `product-activity-digest:run:${runId}`,
     behavior_source: {
       behavior_id: ctx.window.behavior_id,
       window_id: ctx.window.id,

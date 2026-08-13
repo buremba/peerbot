@@ -38,7 +38,7 @@ describe("findEnclosingMonorepoRoot", () => {
 
   it("walks up from a project subdir to the enclosing root", () => {
     const root = makeFakeMonorepo();
-    const subdir = join(root, "examples", "office-bot");
+    const subdir = join(root, "examples", "lobu-team");
     mkdirSync(subdir, { recursive: true });
     expect(findEnclosingMonorepoRoot(subdir)).toBe(root);
   });

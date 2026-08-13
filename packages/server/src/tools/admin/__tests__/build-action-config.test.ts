@@ -1,7 +1,7 @@
 /**
  * Unit test for buildActionConfig — the config an inline connector action sees.
  *
- * Regression guard: a connector action (e.g. the office-bot Deliveroo
+ * Regression guard: a connector action (e.g. the Lobu Team Deliveroo
  * connector's search_restaurants) must receive its connection's own config
  * (e.g. `restaurants_url`). Before the fix the inline path merged only
  * env + credentials and dropped connection.config entirely, so the action

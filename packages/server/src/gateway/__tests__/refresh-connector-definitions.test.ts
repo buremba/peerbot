@@ -65,6 +65,22 @@ async function loadGithubDef(orgId: string): Promise<{
 	return rows[0];
 }
 
+async function seedStaleAtlassianMcpDef(orgId: string): Promise<void> {
+	const sql = getDb();
+	await sql`
+    INSERT INTO connector_definitions (
+      organization_id, key, name, version, status, mcp_config, feeds_schema
+    ) VALUES (
+      ${orgId}, 'mcp.mcp-atlassian-com', 'Atlassian', '1.0.0', 'active',
+      ${sql.json({
+			upstream_url: "https://mcp.atlassian.com/v1/mcp",
+			tool_prefix: "mcp_atlassian_com",
+		})},
+      NULL
+    )
+  `;
+}
+
 beforeAll(async () => {
 	await ensureDbForGatewayTests();
 }, 60_000);
@@ -138,5 +154,28 @@ describe("refreshConnectorDefinitions", () => {
 
 		const other = await loadGithubDef(OTHER_ORG);
 		expect(other).toBeUndefined();
+	});
+
+	test("backfills the Jira feed onto an existing Atlassian MCP definition", async () => {
+		await seedAgentRow("agent-refresh", { organizationId: ORG });
+		await seedStaleAtlassianMcpDef(ORG);
+
+		const [before] = await getDb()`
+      SELECT feeds_schema FROM connector_definitions
+      WHERE organization_id = ${ORG} AND key = 'mcp.mcp-atlassian-com'
+    `;
+		expect(before?.feeds_schema).toBeNull();
+
+		const result = await refreshConnectorDefinitions();
+		expect(result.refreshed).toBeGreaterThanOrEqual(1);
+
+		const [after] = await getDb()`
+      SELECT feeds_schema FROM connector_definitions
+      WHERE organization_id = ${ORG} AND key = 'mcp.mcp-atlassian-com'
+    `;
+		expect(after?.feeds_schema?.issues).toMatchObject({
+			key: "issues",
+			virtual: true,
+		});
 	});
 });

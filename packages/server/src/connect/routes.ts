@@ -45,7 +45,12 @@ import { mergeOAuthScopeAuthData, normalizeScopeList } from '../auth/oauth/scope
 import { createSyncRun, describeSyncRunSkip } from '../runs/queue-service';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 import { buildConnectionsUrl, getOrganizationSlug, getPublicWebUrl } from '../utils/url-builder';
-import { isAtlassianMcpConfig } from '../operations/atlassian-mcp-feed';
+import {
+  ATLASSIAN_JIRA_ISSUES_FEED_KEY,
+  isAtlassianMcpConfig,
+  normalizeMcpProxyConfig,
+} from '../operations/atlassian-mcp-feed';
+import { reconcileAtlassianMcpJiraSite } from './atlassian-mcp-site';
 import {
   jiraSiteConfigPatch,
   resolveJiraCloudSite,
@@ -742,12 +747,13 @@ async function handleOAuthCallback(
     WHERE key = ${tokenRow.connector_key}
       AND organization_id = ${tokenRow.organization_id}
       AND status = 'active'
+    ORDER BY updated_at DESC
     LIMIT 1
   `) as Array<{ mcp_config: Record<string, unknown> | null }>;
-  if (
-    tokenRow.connector_key === 'jira' ||
-    isAtlassianMcpConfig(mcpDefinition?.mcp_config)
-  ) {
+  const atlassianMcpConfig = isAtlassianMcpConfig(mcpDefinition?.mcp_config)
+    ? normalizeMcpProxyConfig(mcpDefinition.mcp_config)
+    : null;
+  if (tokenRow.connector_key === 'jira') {
     jiraSite = await resolveJiraCloudSite(tokens.accessToken);
     if (jiraSite) {
       logger.info(
@@ -996,6 +1002,53 @@ async function handleOAuthCallback(
 
   if (resolvedAuthProfileId) {
     await syncOAuthConnectionsForAuthProfile(tokenRow.organization_id, resolvedAuthProfileId);
+  }
+
+  // Rovo tokens target the MCP resource, not api.atlassian.com. Once the token
+  // is durably attached, ask Rovo for its site and persist the identity. This is
+  // best-effort like Jira REST discovery: ambiguous grants stay connected but
+  // must select cloud_id before creating or reading a feed.
+  if (tokenRow.connection_id && atlassianMcpConfig) {
+    try {
+      const feedRows = (await sql`
+        SELECT id, config
+        FROM feeds
+        WHERE organization_id = ${tokenRow.organization_id}
+          AND connection_id = ${tokenRow.connection_id}
+          AND feed_key = ${ATLASSIAN_JIRA_ISSUES_FEED_KEY}
+          AND deleted_at IS NULL
+        ORDER BY id
+      `) as Array<{ id: number; config: Record<string, unknown> | null }>;
+      const feed = feedRows[0];
+      const preferredCloudId =
+        typeof feed?.config?.cloud_id === 'string'
+          ? feed.config.cloud_id.trim() || undefined
+          : undefined;
+      const { site } = await reconcileAtlassianMcpJiraSite({
+        organizationId: tokenRow.organization_id,
+        connectionId: tokenRow.connection_id,
+        connectorKey: tokenRow.connector_key,
+        mcpConfig: atlassianMcpConfig,
+        preferredCloudId,
+        feedId: feed?.id,
+        sql,
+      });
+      logger.info(
+        {
+          connector_key: tokenRow.connector_key,
+          connection_id: tokenRow.connection_id,
+          cloud_id: site.cloudId,
+          site_url: site.siteUrl,
+          site_count: site.resourceCount,
+        },
+        'Resolved Jira Cloud site through Atlassian MCP after OAuth'
+      );
+    } catch (error) {
+      logger.warn(
+        { connector_key: tokenRow.connector_key, connection_id: tokenRow.connection_id, error },
+        'Atlassian MCP OAuth succeeded but Jira site reconciliation did not complete'
+      );
+    }
   }
 
   logger.info(

@@ -40,6 +40,12 @@ import {
 } from '../../authz/channel-about';
 import { filterChannelsForRequester } from '../../authz/channel-visibility';
 import { readVirtualFeed } from '../../lib/connector-pushdown';
+import {
+  ATLASSIAN_JIRA_ISSUES_FEED_KEY,
+  isAtlassianMcpConfig,
+  normalizeMcpProxyConfig,
+} from '../../operations/atlassian-mcp-feed';
+import { reconcileAtlassianMcpJiraSite } from '../../connect/atlassian-mcp-site';
 import { readChannelTranscript } from '../../gateway/connections/channel-transcript';
 import type { Env } from '../../index';
 import { getAuthProfileById } from '../../utils/auth-profiles';
@@ -526,10 +532,11 @@ async function handleCreateFeed(
   const { organizationId } = ctx;
 
   const connRows = await sql`
-    SELECT c.id, c.connector_key, c.status, c.auth_profile_id, c.config, cd.feeds_schema
+    SELECT c.id, c.connector_key, c.status, c.auth_profile_id, c.config,
+           cd.feeds_schema, cd.mcp_config
     FROM connections c
     LEFT JOIN LATERAL (
-      SELECT feeds_schema
+      SELECT feeds_schema, mcp_config
       FROM connector_definitions
       WHERE key = c.connector_key
         AND status = 'active'
@@ -581,13 +588,43 @@ async function handleCreateFeed(
   const isVirtual =
     args.virtual === true || (args.virtual !== false && schemaDefaultVirtual);
 
+  // Resolve the concrete Atlassian site through the authenticated MCP
+  // connection at this write-time chokepoint. Persisting site identity makes
+  // future live reads and Jira app webhook routing exact and replica-safe.
+  let effectiveFeedConfig: Record<string, unknown> = { ...(args.config ?? {}) };
+  const mcpConfig = isAtlassianMcpConfig(conn.mcp_config)
+    ? normalizeMcpProxyConfig(conn.mcp_config)
+    : null;
+  if (
+    conn.status === 'active' &&
+    mcpConfig &&
+    args.feed_key === ATLASSIAN_JIRA_ISSUES_FEED_KEY
+  ) {
+    try {
+      const preferredCloudId =
+        typeof effectiveFeedConfig.cloud_id === 'string'
+          ? effectiveFeedConfig.cloud_id.trim() || undefined
+          : undefined;
+      const { configPatch } = await reconcileAtlassianMcpJiraSite({
+        organizationId,
+        connectionId: Number(conn.id),
+        connectorKey: String(conn.connector_key),
+        mcpConfig,
+        preferredCloudId,
+      });
+      effectiveFeedConfig = { ...effectiveFeedConfig, ...configPatch };
+    } catch (err) {
+      return { error: getErrorMessage(err) };
+    }
+  }
+
   // Validate config against the connector's declared feed configSchema up
   // front so a mis-shaped config fails here instead of at sync or live-read
   // time. The schema describes both collected and virtual feed configuration,
   // but its `required` fields are the sync contract only, and a virtual feed is
   // never synced, so a missing one must not gate creation (rss `articles`
   // requires feed_urls; a virtual read of it needs only the query fence).
-  const configError = validateFeedConfig(feedsSchema, args.feed_key, args.config ?? {}, {
+  const configError = validateFeedConfig(feedsSchema, args.feed_key, effectiveFeedConfig, {
     ignoreRequired: isVirtual,
   });
   if (configError) return { error: configError };
@@ -633,7 +670,7 @@ async function handleCreateFeed(
   const displayName = await resolveFeedDisplayName({
     explicitName: args.display_name,
     feedKey: args.feed_key,
-    config: args.config ?? null,
+    config: effectiveFeedConfig,
     entityIds: args.entity_ids ?? null,
     feedsSchema,
   });
@@ -645,7 +682,7 @@ async function handleCreateFeed(
     ) VALUES (
       ${organizationId}, ${args.connection_id}, ${args.feed_key}, ${displayName}, ${feedInitialStatus},
       ${entityIdsValue}::bigint[],
-      ${args.config ? sql.json(args.config) : null},
+      ${args.config || Object.keys(effectiveFeedConfig).length > 0 ? sql.json(effectiveFeedConfig) : null},
       ${schedule}, ${timezone}, ${nextRunAtVal},
       ${isVirtual ? 'virtual' : 'collected'}, ${isVirtual}
     )

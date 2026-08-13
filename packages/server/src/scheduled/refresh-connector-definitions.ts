@@ -7,6 +7,10 @@
  */
 
 import { getDb } from '../db/client';
+import {
+  ATLASSIAN_MCP_FEEDS,
+  isAtlassianMcpConfig,
+} from '../operations/atlassian-mcp-feed';
 import { upsertBundledConnectorForOrg } from '../utils/ensure-connector-installed';
 import logger from '../utils/logger';
 
@@ -24,6 +28,7 @@ interface RefreshResult {
 interface DefRow {
   organization_id: string;
   key: string;
+  mcp_config: Record<string, unknown> | null;
 }
 
 export async function refreshConnectorDefinitions(): Promise<RefreshResult> {
@@ -32,11 +37,12 @@ export async function refreshConnectorDefinitions(): Promise<RefreshResult> {
   // Every (org, key) that currently has an ACTIVE built-in definition. We only
   // refresh what an org already installed — never auto-install a new connector.
   const rows = (await sql`
-    SELECT DISTINCT organization_id, key
+    SELECT DISTINCT ON (organization_id, key)
+      organization_id, key, mcp_config
     FROM connector_definitions
     WHERE status = 'active'
       AND organization_id IS NOT NULL
-    ORDER BY key
+    ORDER BY organization_id, key, updated_at DESC
   `) as unknown as DefRow[];
 
   const result: RefreshResult = {
@@ -51,6 +57,30 @@ export async function refreshConnectorDefinitions(): Promise<RefreshResult> {
   const noSourceKeys = new Set<string>();
 
   for (const row of rows) {
+    // MCP definitions have no bundled source file. Atlassian Rovo gained its
+    // Jira feed after existing installs were already stored, so converge those
+    // snapshots here instead of requiring every user to reinstall.
+    if (isAtlassianMcpConfig(row.mcp_config)) {
+      try {
+        await sql`
+          UPDATE connector_definitions
+          SET feeds_schema = COALESCE(feeds_schema, '{}'::jsonb)
+                || ${sql.json(ATLASSIAN_MCP_FEEDS)}::jsonb,
+              updated_at = NOW()
+          WHERE organization_id = ${row.organization_id}
+            AND key = ${row.key}
+            AND status = 'active'
+        `;
+        result.refreshed += 1;
+      } catch (err) {
+        result.errored += 1;
+        logger.error(
+          { connector_key: row.key, organization_id: row.organization_id, err },
+          '[refresh-connector-definitions] Failed to refresh Atlassian MCP definition for org'
+        );
+      }
+      continue;
+    }
     if (noSourceKeys.has(row.key)) {
       result.skippedNoSource += 1;
       continue;

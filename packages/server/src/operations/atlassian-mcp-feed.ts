@@ -10,6 +10,11 @@
 
 import { callTool } from "../mcp-proxy/client";
 import type { McpProxyConfig } from "../mcp-proxy/types";
+import {
+	pickUniqueJiraSite,
+	type AtlassianAccessibleResource,
+	type JiraCloudSite,
+} from "../connect/atlassian-resources";
 
 export const ATLASSIAN_JIRA_ISSUES_FEED_KEY = "issues";
 
@@ -36,7 +41,7 @@ export const ATLASSIAN_MCP_FEEDS = {
 		key: ATLASSIAN_JIRA_ISSUES_FEED_KEY,
 		name: "Issues",
 		description:
-			"Live Jira issues via JQL. Reads call Rovo searchJiraIssuesUsingJql; nothing is copied into events.",
+			"Live Jira issues via JQL. Reads call Rovo searchJiraIssuesUsingJql; signed Jira issue/comment webhooks are copied into events.",
 		virtual: true,
 		configSchema: {
 			type: "object",
@@ -170,14 +175,17 @@ function namedField(value: unknown): string | undefined {
 	return asString((value as Record<string, unknown>).name);
 }
 
-function adfToText(value: unknown): string {
+export function atlassianDocumentToText(value: unknown): string {
 	if (typeof value === "string") return value;
 	if (!value || typeof value !== "object") return "";
 	const node = value as { type?: string; text?: string; content?: unknown[] };
 	if (node.type === "hardBreak") return "\n";
 	if (typeof node.text === "string") return node.text;
 	if (Array.isArray(node.content)) {
-		return node.content.map((child) => adfToText(child)).join("").trim();
+		return node.content
+			.map((child) => atlassianDocumentToText(child))
+			.join("")
+			.trim();
 	}
 	return "";
 }
@@ -318,7 +326,7 @@ export function mapAtlassianIssueToRow(
 		created_at: asString(fields.created) ?? asString(issue.created) ?? null,
 		updated_at: asString(fields.updated) ?? asString(issue.updated) ?? null,
 		description:
-			adfToText(fields.description ?? issue.description) || null,
+			atlassianDocumentToText(fields.description ?? issue.description) || null,
 		url: issueUrl(issue, fields, config) ?? null,
 	};
 }
@@ -418,24 +426,118 @@ function mcpTextError(content: unknown, fallback: string): string {
 	return fallback;
 }
 
-export function parseAtlassianCloudId(payload: unknown): string | undefined {
-	const collected: unknown[] = [];
-	collectIssues(payload, collected);
-	if (typeof payload === "object" && payload) collected.unshift(payload);
-	for (const item of collected) {
-		if (!item || typeof item !== "object") continue;
-		const record = item as Record<string, unknown>;
-		const id =
-			asString(record.id) ??
-			asString(record.cloudId) ??
-			asString(record.cloud_id);
-		if (id) return id;
+function collectAtlassianResources(
+	value: unknown,
+	into: AtlassianAccessibleResource[],
+): void {
+	if (!value) return;
+	if (typeof value === "string") {
+		collectAtlassianResources(tryParseJson(value), into);
+		return;
 	}
-	if (typeof payload === "string") {
-		const parsed = tryParseJson(payload);
-		if (parsed !== payload) return parseAtlassianCloudId(parsed);
+	if (Array.isArray(value)) {
+		for (const item of value) collectAtlassianResources(item, into);
+		return;
 	}
-	return undefined;
+	if (typeof value !== "object") return;
+	const record = value as Record<string, unknown>;
+	if (record.type === "text" && typeof record.text === "string") {
+		collectAtlassianResources(record.text, into);
+		return;
+	}
+	const id =
+		asString(record.id) ?? asString(record.cloudId) ?? asString(record.cloud_id);
+	if (id) {
+		into.push({
+			id,
+			url: asString(record.url) ?? null,
+			name: asString(record.name) ?? null,
+			scopes: Array.isArray(record.scopes)
+				? record.scopes.filter(
+						(scope): scope is string => typeof scope === "string",
+					)
+				: [],
+		});
+		return;
+	}
+	for (const nested of [record.content, record.values, record.resources]) {
+		collectAtlassianResources(nested, into);
+	}
+}
+
+export function parseAtlassianMcpResources(
+	payload: unknown,
+): AtlassianAccessibleResource[] {
+	const resources: AtlassianAccessibleResource[] = [];
+	collectAtlassianResources(payload, resources);
+	return [
+		...new Map(resources.map((resource) => [resource.id, resource])).values(),
+	];
+}
+
+export function parseAtlassianMcpJiraSite(
+	payload: unknown,
+	preferredCloudId?: string,
+): JiraCloudSite | null {
+	const resources = parseAtlassianMcpResources(payload);
+	if (preferredCloudId) {
+		const preferred = resources.find(
+			(resource) => resource.id === preferredCloudId,
+		);
+		return preferred
+			? {
+					cloudId: preferred.id,
+					siteUrl: preferred.url,
+					siteName: preferred.name,
+					resourceCount: resources.length,
+				}
+			: null;
+	}
+	return pickUniqueJiraSite(resources);
+}
+
+export async function resolveAtlassianMcpJiraSite(params: {
+	organizationId: string;
+	connectionId: number;
+	connectorKey: string;
+	mcpConfig: McpProxyConfig;
+	preferredCloudId?: string;
+}): Promise<JiraCloudSite> {
+	const result = await callTool(
+		params.connectorKey,
+		params.mcpConfig,
+		params.organizationId,
+		"getAccessibleAtlassianResources",
+		{},
+		params.connectionId,
+	);
+	if (result.isError) {
+		throw new Error(
+			mcpTextError(
+				result.content,
+				"Atlassian MCP did not return an accessible Jira site",
+			),
+		);
+	}
+	const resources = parseAtlassianMcpResources(result.content);
+	if (resources.length === 0) {
+		throw new Error(
+			"Atlassian MCP did not return an accessible Jira site for this connection",
+		);
+	}
+	const site = parseAtlassianMcpJiraSite(
+		result.content,
+		params.preferredCloudId,
+	);
+	if (site) return site;
+	if (params.preferredCloudId) {
+		throw new Error(
+			`Atlassian cloud_id '${params.preferredCloudId}' is not accessible to this connection`,
+		);
+	}
+	throw new Error(
+		"Atlassian MCP returned multiple accessible Jira sites; set feed config.cloud_id explicitly",
+	);
 }
 
 export async function readAtlassianMcpVirtualFeed(params: {
@@ -458,18 +560,14 @@ export async function readAtlassianMcpVirtualFeed(params: {
 	const config = { ...params.connectionConfig, ...params.feedConfig };
 	let cloudId = asString(config.cloud_id) ?? asString(config.cloudId);
 	if (!cloudId) {
-		const resources = await callTool(
-			params.connectorKey,
-			params.mcpConfig,
-			params.organizationId,
-			"getAccessibleAtlassianResources",
-			{},
-			params.connectionId,
-		);
-		if (resources.isError) {
-			throw new Error("Atlassian MCP did not return an accessible site for this connection");
-		}
-		cloudId = parseAtlassianCloudId(resources.content);
+		cloudId = (
+			await resolveAtlassianMcpJiraSite({
+				organizationId: params.organizationId,
+				connectionId: params.connectionId,
+				connectorKey: params.connectorKey,
+				mcpConfig: params.mcpConfig,
+			})
+		).cloudId;
 	}
 	if (!cloudId) {
 		throw new Error(
@@ -495,7 +593,8 @@ export async function readAtlassianMcpVirtualFeed(params: {
 	// Walk Rovo pages until the requested window is filled. Jira's token has
 	// no random access, so we fetch and discard the prefix — same as bundled
 	// jira liveSearch.
-	for (let page = 0; page < 20 && rows.length < needed; page += 1) {
+	const maxPages = 20;
+	for (let page = 0; page < maxPages && rows.length < needed; page += 1) {
 		const result = await callTool(
 			params.connectorKey,
 			params.mcpConfig,
@@ -516,6 +615,11 @@ export async function readAtlassianMcpVirtualFeed(params: {
 		rows.push(...pageRows);
 		nextPageToken = parseAtlassianMcpNextPageToken(result.content);
 		if (pageRows.length === 0 || !nextPageToken) break;
+	}
+	if (rows.length < needed && nextPageToken) {
+		throw new Error(
+			`Jira virtual feed pagination limit (${maxPages} pages) reached before offset+limit (${needed}); narrow the JQL or lower offset`,
+		);
 	}
 
 	return {

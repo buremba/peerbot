@@ -52,6 +52,50 @@ export default class MyConnector extends ConnectorRuntime {
 }
 ```
 
+The functional `defineConnector` form derives feed/action keys from the record
+keys and dispatches each call to the handler declared on that entry:
+
+```ts
+import { defineConnector } from "@lobu/connector-sdk";
+
+export default defineConnector({
+  key: "my_connector",
+  name: "My Connector",
+  version: "1.0.0",
+  authSchema: { methods: [{ type: "none" }] },
+  feeds: {
+    items: {
+      name: "Items",
+      eventKinds: { item: { description: "An item from the service" } },
+      sync: async () => ({
+        events: [],
+        checkpoint: { last_sync_at: new Date().toISOString() },
+      }),
+    },
+  },
+  actions: {
+    create_item: {
+      name: "Create item",
+      requiresApproval: true,
+      annotations: { openWorldHint: true },
+      inputSchema: {
+        type: "object",
+        required: ["name"],
+        properties: { name: { type: "string" } },
+      },
+      execute: async (ctx) => ({
+        success: true,
+        output: { name: ctx.input.name },
+      }),
+    },
+  },
+});
+```
+
+Optional top-level handlers (`authenticate`, `query`, `search`,
+`reflectMetrics`, `registerWebhook`, `unregisterWebhook`) dispatch through the
+corresponding `ConnectorRuntime` methods.
+
 ### What a feed sync must get right
 
 - **`origin_id` stability.** Keep `origin_id` identical for the same source item

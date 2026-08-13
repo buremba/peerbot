@@ -44,6 +44,8 @@ import logger from "./utils/logger";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "./utils/run-statuses";
 import { getRuntimeInfo } from "./utils/runtime-info";
 
+type GetBehaviorArgs = Parameters<typeof getBehavior>[0];
+
 function clamp(
 	value: number,
 	options?: { min?: number; max?: number }
@@ -187,7 +189,7 @@ export async function restGetBehaviors(c: Context<{ Bindings: Env }>) {
 			entity_id: entityId,
 			content_since: c.req.query("content_since"),
 			content_until: c.req.query("content_until"),
-			granularity: c.req.query("granularity") as any,
+			granularity: c.req.query("granularity") as GetBehaviorArgs["granularity"],
 			template_version: safeParseInt(c.req.query("template_version"), {
 				min: 1,
 			}),
@@ -197,12 +199,10 @@ export async function restGetBehaviors(c: Context<{ Bindings: Env }>) {
 				c.req.query("include_classification") || undefined,
 			include_versions: c.req.query("include_versions") === "true",
 			include_pending_ranges: c.req.query("include_pending_ranges") === "true",
-			// Always include Behavior version details (prompt / outputs / sources).
-			include_template_details: true,
-		};
+		} satisfies GetBehaviorArgs;
 
 		const ctx = toToolContext(extractAuthContext(c));
-		const result = await getBehavior(params as any, c.env, ctx);
+		const result = await getBehavior(params, c.env, ctx);
 		return c.json(toJsonSafe(result));
 	} catch (error) {
 		return restErrorResponse(c, error);
@@ -241,28 +241,29 @@ export async function publicRestGetBehaviors(c: Context<{ Bindings: Env }>) {
 			);
 		}
 
-		return getBehavior(
-			{
-				behavior_id: behaviorId,
-				entity_id: entityId,
-				content_since: c.req.query("content_since"),
-				content_until: c.req.query("content_until"),
-				granularity: c.req.query("granularity") as any,
-				template_version: safeParseInt(c.req.query("template_version"), {
-					min: 1,
-				}),
-				page: safeParseInt(c.req.query("page"), { min: 1 }),
-				page_size: safeParseInt(c.req.query("page_size"), { min: 1, max: 500 }),
-				include_classification:
-					c.req.query("include_classification") || undefined,
-				include_versions: c.req.query("include_versions") === "true",
-				include_pending_ranges:
-					c.req.query("include_pending_ranges") === "true",
-				include_template_details: behaviorId ? true : undefined,
-			} as any,
-			c.env,
-			ctx
-		);
+		const params = {
+			behavior_id: behaviorId,
+			entity_id: entityId,
+			content_since: c.req.query("content_since"),
+			content_until: c.req.query("content_until"),
+			granularity: c.req.query("granularity") as GetBehaviorArgs["granularity"],
+			template_version: safeParseInt(c.req.query("template_version"), {
+				min: 1,
+			}),
+			page: safeParseInt(c.req.query("page"), { min: 1 }),
+			page_size: safeParseInt(c.req.query("page_size"), { min: 1, max: 500 }),
+			include_classification:
+				c.req.query("include_classification") || undefined,
+			include_versions: c.req.query("include_versions") === "true",
+			include_pending_ranges:
+				c.req.query("include_pending_ranges") === "true",
+		} satisfies Partial<GetBehaviorArgs>;
+
+		// Partial + cast (not `satisfies GetBehaviorArgs`): detailRequested can
+		// be triggered by a detail query param without behavior_id, so
+		// behavior_id may be undefined here — the tool's own arg validation
+		// turns that into the 400 naming the missing field.
+		return getBehavior(params as GetBehaviorArgs, c.env, ctx);
 	});
 }
 

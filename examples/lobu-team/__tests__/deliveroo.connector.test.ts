@@ -2,7 +2,7 @@
  * Unit tests for the Deliveroo connector's pure parsers.
  *
  * Run from the worktree root so `@lobu/connector-sdk` resolves to the workspace
- * build: `bunx vitest run examples/office-bot/__tests__/deliveroo.connector.test.ts`.
+ * build: `bunx vitest run examples/lobu-team/__tests__/deliveroo.connector.test.ts`.
  *
  * The scrape *selectors* (which DOM element a field reads) can only be verified
  * against the live site / the real extension — these tests cover the parsing

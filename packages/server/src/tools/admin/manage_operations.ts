@@ -351,7 +351,7 @@ async function executeLocalActionInline(
 			},
 			hooks: {
 				// Let an inline connector action drive the paired Owletto Chrome
-				// extension (the office-bot Deliveroo connector scrapes restaurant
+				// extension (the Lobu Team Deliveroo connector scrapes restaurant
 				// search + menu pages this way). The connector calls
 				// `ctx.sessionState.chrome_dispatcher.dispatch(...)`; that surfaces here
 				// and we resolve a chrome worker + run the device action in-process,

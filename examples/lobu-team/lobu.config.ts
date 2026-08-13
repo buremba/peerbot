@@ -1,17 +1,20 @@
 import {
   connectorFromFile,
   defineAgent,
+  defineAuthProfile,
+  defineBehavior,
   defineConfig,
-  defineSkill,
   defineConnection,
   defineEntityType,
-  defineBehavior,
+  defineSkill,
   reactionFromFile,
   secret,
   skillFromFile,
 } from "@lobu/cli/config";
 import type DeliverooConnector from "./deliveroo.connector.ts";
 import type lunchDeliverooReaction from "./lunch-deliveroo.reaction.ts";
+import type LokiActivityConnector from "./loki-activity.connector.ts";
+import type productActivityDigestReaction from "./product-activity-digest.reaction.ts";
 
 const lunchOpenSkill = defineSkill({
   name: "lunch-open",
@@ -171,26 +174,219 @@ const lunchFinalize = defineBehavior({
   // handoff contract is the entity, not a Behavior-authored payload.
 });
 
+const productOps = defineAgent({
+  id: "product-ops",
+  name: "product-ops",
+  description:
+    "Summarizes Lobu production activity from organization-owned read-only feeds",
+  providers: [{ id: "qwen", model: "qwen3.8-max" }],
+});
+
+// Reuse the Lobu Team read-only database credentials already stored in Lobu.
+// Apply preserves the live secret because credentials are intentionally omitted.
+const productActivityDbAuth = defineAuthProfile({
+  slug: "lobu-prod-db-read-only",
+  connector: "postgres",
+  authKind: "env",
+  name: "Lobu Prod DB (read-only)",
+});
+
+const productActivityDb = defineConnection({
+  slug: "lobu-product-activity-db",
+  connector: "postgres",
+  name: "Lobu Prod DB — product activity",
+  authProfile: productActivityDbAuth,
+  feeds: [
+    {
+      feed: "query",
+      name: "Lobu production activity",
+      schedule: "2,22,42 * * * *",
+      config: {
+        primary_key: "activity_id",
+        cursor_column: "occurred_at",
+        max_rows_per_sync: 5000,
+        // The connector adds keyset pagination. Keep each row human-readable so
+        // the digest does not depend on connector-specific payload_data fields.
+        query: `SELECT *
+          FROM (
+            SELECT
+              'signup:' || u.id AS activity_id,
+              u."createdAt" AS occurred_at,
+              'New signup'::text AS title,
+              concat_ws(
+                ' · ',
+                coalesce(nullif(u.name, ''), 'Unnamed user'),
+                u.email,
+                coalesce((
+                  SELECT string_agg(DISTINCT o.name, ', ' ORDER BY o.name)
+                  FROM member m
+                  JOIN organization o ON o.id = m."organizationId"
+                  WHERE m."userId" = u.id
+                ), 'No organization')
+              ) AS payload_text
+            FROM "user" u
+            WHERE coalesce(u.principal_kind, 'human') = 'human'
+              AND u."createdAt" > now() - interval '24 hours'
+
+            UNION ALL
+
+            SELECT
+              'login:' || s.id,
+              s."createdAt",
+              'User login'::text,
+              concat_ws(
+                ' · ',
+                coalesce(nullif(u.name, ''), 'Unnamed user'),
+                u.email,
+                coalesce((
+                  SELECT string_agg(DISTINCT o.name, ', ' ORDER BY o.name)
+                  FROM member m
+                  JOIN organization o ON o.id = m."organizationId"
+                  WHERE m."userId" = u.id
+                ), 'No organization')
+              )
+            FROM session s
+            JOIN "user" u ON u.id = s."userId"
+            WHERE coalesce(u.principal_kind, 'human') = 'human'
+              AND s."createdAt" > now() - interval '24 hours'
+
+            UNION ALL
+
+            SELECT
+              'connection:' || c.id,
+              c.created_at,
+              'New connection'::text,
+              concat_ws(
+                ' · ',
+                c.connector_key,
+                coalesce(nullif(c.display_name, ''), 'Unnamed connection'),
+                o.name,
+                CASE WHEN u.email IS NOT NULL THEN 'created by ' || u.email END
+              )
+            FROM connections c
+            JOIN organization o ON o.id = c.organization_id
+            LEFT JOIN "user" u ON u.id = c.created_by
+            WHERE c.deleted_at IS NULL
+              AND c.created_at > now() - interval '24 hours'
+
+            UNION ALL
+
+            SELECT
+              concat_ws(':', 'mcp', m.organization_id, m.client_identity, m.conversation_id),
+              m.last_activity_at,
+              'MCP activity'::text,
+              concat_ws(
+                ' · ',
+                coalesce(m.client_software_id, 'Unknown client'),
+                coalesce(nullif(u.name, ''), 'Unknown user'),
+                u.email,
+                o.name,
+                CASE WHEN m.last_action IS NOT NULL THEN 'last action: ' || m.last_action END,
+                m.call_count || ' total calls',
+                m.failed_count || ' failed'
+              )
+            FROM mcp_client_conversations m
+            JOIN organization o ON o.id = m.organization_id
+            LEFT JOIN "user" u ON u.id = m.user_id
+            WHERE m.call_count > 0
+              AND m.last_activity_at > now() - interval '24 hours'
+          ) activity`,
+        mapping: {
+          title: "title",
+          occurred_at: "occurred_at",
+          payload_text: "payload_text",
+        },
+      },
+    },
+  ],
+});
+
+const productionLogsAuth = defineAuthProfile({
+  slug: "lobu-production-loki",
+  connector: "loki.activity",
+  authKind: "env",
+  name: "Lobu production Loki",
+  credentials: {
+    LOKI_URL: secret("LOBU_PRODUCT_OPS_LOKI_URL"),
+  },
+});
+
+const productionLogs = defineConnection({
+  slug: "lobu-production-logs",
+  connector: "loki.activity",
+  name: "Lobu production Kubernetes logs",
+  authProfile: productionLogsAuth,
+  config: {
+    namespace: "summaries-prod",
+    grafana_url:
+      "https://monitoring-kube-prometheus-stack-grafana.brill-kanyu.ts.net",
+  },
+  feeds: [
+    {
+      feed: "activity",
+      name: "Lobu production log activity",
+      schedule: "3,23,43 * * * *",
+      config: {},
+    },
+  ],
+});
+
+const productActivityDigest = defineBehavior({
+  agent: productOps,
+  slug: "product-activity-digest",
+  name: "Lobu production activity digest",
+  description:
+    "Every 20 minutes, summarize new signups, logins, connections, MCP clients, and Kubernetes log activity; stay silent when nothing happened.",
+  triggers: [
+    {
+      kind: "schedule",
+      cron: "5,25,45 * * * *",
+      skip_if_unchanged: true,
+    },
+  ],
+  sources: {
+    product_activity: "@connection:lobu-product-activity-db",
+    kubernetes_logs: "@connection:lobu-production-logs",
+  },
+  notification: { channel: "both", priority: "normal" },
+  minCooldownSeconds: 60,
+  tags: ["product-ops", "production", "slack"],
+  prompt:
+    'The reaction sends the exact activity rows for this window. Return exactly {"run":true}.',
+  reactionsGuidance:
+    "Send one rich digest containing every user email and activity detail in the window. Send nothing when both sources are empty.",
+  reaction: reactionFromFile<typeof productActivityDigestReaction>(
+    "./product-activity-digest.reaction.ts"
+  ),
+});
+
+const lobuTeamSlack = defineConnection({
+  slug: "lobu-team-slack",
+  connector: "slack",
+  credentialMode: "hosted",
+  surfaces: ["dm", "channel"],
+  codeTtlMinutes: 15,
+});
+
 export default defineConfig({
   connectors: [
     connectorFromFile<typeof DeliverooConnector>("./deliveroo.connector.ts"),
+    connectorFromFile<typeof LokiActivityConnector>(
+      "./loki-activity.connector.ts"
+    ),
   ],
   org: "lobu-team",
   orgName: "Lobu Team",
-  orgDescription: "Office-ops agents — first up: the weekday lunch order",
+  orgDescription: "Lobu Team agents and internal operations",
   organizationId: "UdNAH1bb3csC842vhOgxAHVcfX4tYU5A",
-  agents: [foodOrdering],
+  agents: [foodOrdering, productOps],
+  authProfiles: [productActivityDbAuth, productionLogsAuth],
   entities: [lunchRun],
   connections: [
     deliverooConn,
-    // Hosted Lobu Slack bot — no bot token needed (`/lobu link <code>`).
-    defineConnection({
-      slug: "office-slack",
-      connector: "slack",
-      credentialMode: "hosted",
-      surfaces: ["dm", "channel"],
-      codeTtlMinutes: 15,
-    }),
+    productActivityDb,
+    productionLogs,
+    lobuTeamSlack,
   ],
-  behaviors: [lunchOpen, lunchFinalize],
+  behaviors: [lunchOpen, lunchFinalize, productActivityDigest],
 });

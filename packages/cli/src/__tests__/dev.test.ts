@@ -134,7 +134,7 @@ describe("lobu run backend bundle resolution", () => {
       join(root, "packages", "agent-worker", "src", "index.ts"),
       "// worker"
     );
-    const subdir = join(root, "examples", "office-bot");
+    const subdir = join(root, "examples", "lobu-team");
     mkdirSync(subdir, { recursive: true });
 
     expect(findEnclosingMonorepoRoot(subdir)).toBe(root);

@@ -10,6 +10,7 @@ const context = {
   entities: [],
   window: {
     id: 99,
+    run_id: 1234,
     behavior_id: 42,
     window_start: "2026-08-13T12:00:00.000Z",
     window_end: "2026-08-13T12:20:00.000Z",
@@ -30,8 +31,9 @@ describe("Lobu Team product activity digest reaction", () => {
   it("stays silent when the window has no activity", async () => {
     const send = mock();
     const log = mock();
+    const query = mock().mockResolvedValueOnce([]).mockResolvedValueOnce([]);
     const client = {
-      query: mock().mockResolvedValue([]),
+      query,
       notifications: { send },
       log,
     } as unknown as ReactionClient;
@@ -42,8 +44,8 @@ describe("Lobu Team product activity digest reaction", () => {
     expect(log).toHaveBeenCalledWith(
       "No production activity; Slack digest skipped",
       expect.objectContaining({
-        window_start: "2026-08-13T12:00:00.000Z",
-        window_end: "2026-08-13T12:20:00.000Z",
+        window_start: expect.any(String),
+        window_end: expect.any(String),
       })
     );
   });
@@ -52,51 +54,25 @@ describe("Lobu Team product activity digest reaction", () => {
     const rows = [
       {
         connection_slug: "lobu-product-activity-db",
-        payload_data: {
-          activity_id: "signup:u1",
-          activity_type: "signup",
-          user_id: "u1",
-          user_name: "Ada Lovelace",
-          email: "ada@example.com",
-          organization_name: "Analytical Engines",
-        },
+        title: "New signup",
+        payload_text: "Ada Lovelace · ada@example.com · Analytical Engines",
       },
       {
         connection_slug: "lobu-product-activity-db",
-        payload_data: {
-          activity_id: "login:s1",
-          activity_type: "login",
-          user_id: "u1",
-          user_name: "Ada Lovelace",
-          email: "ada@example.com",
-          organization_name: "Analytical Engines",
-        },
+        title: "User login",
+        payload_text: "Ada Lovelace · ada@example.com · Analytical Engines",
       },
       {
         connection_slug: "lobu-product-activity-db",
-        payload_data: {
-          activity_id: "connection:7",
-          activity_type: "connection",
-          connector_key: "google.gmail",
-          connection_name: "Ada's Gmail",
-          email: "ada@example.com",
-          organization_name: "Analytical Engines",
-        },
+        title: "New connection",
+        payload_text:
+          "google.gmail · Ada's Gmail · Analytical Engines · created by ada@example.com",
       },
       {
         connection_slug: "lobu-product-activity-db",
-        payload_data: {
-          activity_id: "mcp:1",
-          activity_type: "mcp_conversation",
-          user_id: "u1",
-          user_name: "Ada Lovelace",
-          email: "ada@example.com",
-          organization_name: "Analytical Engines",
-          client_software_id: "lobu-cli",
-          last_action: "memory.search",
-          call_count: 13,
-          failed_count: 1,
-        },
+        title: "MCP activity",
+        payload_text:
+          "lobu-cli · Ada Lovelace · ada@example.com · Analytical Engines · memory.search · 13 total calls · 1 failed",
       },
       {
         connection_slug: "lobu-production-logs",
@@ -110,8 +86,11 @@ describe("Lobu Team product activity digest reaction", () => {
       },
     ];
     const send = mock().mockResolvedValue({ notified_count: 1 });
+    const query = mock()
+      .mockResolvedValueOnce([{ created_at: "2026-08-13T12:00:00.000Z" }])
+      .mockResolvedValueOnce(rows);
     const client = {
-      query: mock().mockResolvedValue(rows),
+      query,
       notifications: { send },
       log: mock(),
     } as unknown as ReactionClient;
@@ -123,7 +102,7 @@ describe("Lobu Team product activity digest reaction", () => {
     expect(notification).toMatchObject({
       title: "Lobu production activity digest",
       recipients: "admins",
-      idempotency_key: "product-activity-digest:99",
+      idempotency_key: "product-activity-digest:run:1234",
       behavior_source: { behavior_id: 42, window_id: 99 },
     });
     const serializedCard = JSON.stringify(notification?.card);
@@ -135,30 +114,29 @@ describe("Lobu Team product activity digest reaction", () => {
     expect(serializedCard).toContain("1 failed");
     expect(serializedCard).toContain("pool exhausted");
     expect(serializedCard).toContain("Open production logs");
+
+    const cursorQuery = String(query.mock.calls[0]?.[0]);
+    expect(cursorQuery).toContain("behavior_id = 42");
+    expect(cursorQuery).toContain("ORDER BY created_at DESC, id DESC");
+
+    const queryText = String(query.mock.calls[1]?.[0]);
+    expect(queryText).not.toContain("superseded_by");
+    expect(queryText).toContain("e.created_at");
+    expect(queryText).toContain("FROM events e");
+    expect(queryText).toContain("e.payload_text");
   });
 
   it("deduplicates online users while retaining every activity section", () => {
     const digest = collectProductActivityDigest([
       {
         connection_slug: "lobu-product-activity-db",
-        payload_data: {
-          activity_type: "login",
-          activity_id: "login:1",
-          user_id: "u1",
-          user_name: "Ada",
-          email: "ada@example.com",
-        },
+        title: "User login",
+        payload_text: "Ada · ada@example.com",
       },
       {
         connection_slug: "lobu-product-activity-db",
-        payload_data: {
-          activity_type: "mcp_conversation",
-          activity_id: "mcp:1",
-          user_id: "u1",
-          user_name: "Ada",
-          email: "ada@example.com",
-          client_software_id: "codex",
-        },
+        title: "MCP activity",
+        payload_text: "codex · Ada · ada@example.com",
       },
     ]);
     const card = buildProductActivityCard(digest, {
@@ -170,5 +148,25 @@ describe("Lobu Team product activity digest reaction", () => {
       '"label":"Online users","value":"1"'
     );
     expect(JSON.stringify(card)).toContain("Active MCP conversations (1)");
+  });
+
+  it("requires the run id used to deduplicate retries", async () => {
+    const query = mock();
+    const client = {
+      query,
+      notifications: { send: mock() },
+      log: mock(),
+    } as unknown as ReactionClient;
+
+    await expect(
+      productActivityDigest(
+        {
+          ...context,
+          window: { ...context.window, run_id: undefined },
+        },
+        client
+      )
+    ).rejects.toThrow("requires a durable run id");
+    expect(query).not.toHaveBeenCalled();
   });
 });

@@ -19,7 +19,7 @@ import type productActivityDigestReaction from "./product-activity-digest.reacti
 const lunchOpenSkill = defineSkill({
   name: "lunch-open",
   content:
-    "Open today's office lunch run (step 1 in your instructions):\n\n1. Check memory for a `lunch-run` entity dated today — if one exists and isn't\n   cancelled, stop (don't open a second one).\n2. Guess who's in from recent chat activity and past `lunch-run` entities.\n3. Post the lunch call in the channel: react 🍕 / \"+1\" to join, drop restaurant\n   recommendations, options coming ~11:35, targeting ~12:30 delivery. @-mention\n   the people you think are in, but make clear anyone can join or skip.\n4. Open a thread off that message.\n5. Save a `lunch-run` entity {date, channel, status: \"collecting\", thread_ref,\n   restaurant: null, items: []} and a `lunch:opened` event linked to it.\n\nThen end — the lunch-finalize Behavior takes it from here. Keep it to one short\nmessage in the channel.\n",
+    "Open today's office lunch run (step 1 in your instructions):\n\n1. Check memory for a `lunch-run` entity dated today — if one exists and isn't\n   cancelled, stop (don't open a second one).\n2. Guess who's in from recent chat activity and past `lunch-run` entities.\n3. Post the lunch call in the channel: react 🍕 / \"+1\" to join, drop restaurant\n   recommendations, options coming ~11:35, targeting ~12:30 delivery. @-mention\n   the people you think are in, but make clear anyone can join or skip.\n4. Open a thread off that message.\n5. Save a `lunch-run` entity {date, channel, status: \"collecting\", thread_ref,\n   restaurant: null, items: []} and a `lunch:opened` event linked to it.\n\nThen end — the lobu-team-lunch-finalize Behavior takes it from here. Keep it to one short\nmessage in the channel.\n",
 });
 
 const lunchFinalizeSkill = defineSkill({
@@ -98,7 +98,7 @@ const lunchRun = defineEntityType({
     thread_ref: {
       type: "string",
       description:
-        "Reference to the thread/message where the run is happening — lunch-finalize uses this to find the conversation",
+        "Reference to the thread/message where the run is happening — lobu-team-lunch-finalize uses this to find the conversation",
     },
     items: {
       type: "array",
@@ -128,7 +128,7 @@ const lunchRun = defineEntityType({
 });
 
 // The office's Deliveroo connection. Feedless — it exposes only on-demand
-// actions (search_restaurants / read_menu) that the lunch-finalize reaction
+// actions (search_restaurants / read_menu) that the lobu-team-lunch-finalize reaction
 // drives through the paired Owletto Chrome extension. `restaurants_url` is the
 // office's delivery-location restaurants list (set it to your office postcode's
 // Deliveroo page — the geohash pins delivery to that address).
@@ -144,7 +144,7 @@ const deliverooConn = defineConnection({
 
 const lunchOpen = defineBehavior({
   agent: foodOrdering,
-  slug: "lunch-open",
+  slug: "lobu-team-lunch-open",
   name: "Open the lunch run",
   triggers: [{ kind: "schedule", cron: "0 11 * * 1-5" }],
   notification: { priority: "high", channel: "both" },
@@ -157,7 +157,7 @@ const lunchOpen = defineBehavior({
 
 const lunchFinalize = defineBehavior({
   agent: foodOrdering,
-  slug: "lunch-finalize",
+  slug: "lobu-team-lunch-finalize",
   name: "Collect orders and hand off",
   triggers: [{ kind: "schedule", cron: "35 11 * * 1-5" }],
   notification: { priority: "high" },
@@ -167,7 +167,7 @@ const lunchFinalize = defineBehavior({
     "./lunch-deliveroo.reaction.ts"
   ),
   reactionsGuidance:
-    "When the run ends in `placed` or `manual`, store the per-head cost back into a\n`lunch:placed` event on the lunch-run entity so the next day's lunch-open can\nread the most-recent restaurant.\n",
+    "When the run ends in `placed` or `manual`, store the per-head cost back into a\n`lunch:placed` event on the lunch-run entity so the next day's lobu-team-lunch-open can\nread the most-recent restaurant.\n",
   skills: ["lunch-finalize"],
   // No inline schema: the reaction reads the run's outcome straight off the
   // `lunch-run` entity this prompt updates (status "done" + restaurant), so the

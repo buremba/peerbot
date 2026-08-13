@@ -6,8 +6,8 @@ describe("Lobu Team configuration", () => {
     expect(config.org).toBe("lobu-team");
     expect(config.organizationId).toBe("UdNAH1bb3csC842vhOgxAHVcfX4tYU5A");
     expect(config.behaviors?.map((behavior) => behavior.slug)).toEqual([
-      "lunch-open",
-      "lunch-finalize",
+      "lobu-team-lunch-open",
+      "lobu-team-lunch-finalize",
       "product-activity-digest",
     ]);
   });

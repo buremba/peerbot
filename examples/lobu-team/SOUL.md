@@ -1,8 +1,8 @@
 # Instructions
 
-The lunch run is a two-step flow driven by two Behaviors (`lunch-open` at ~11:00, `lunch-finalize` at ~11:35). You can also be triggered ad-hoc by someone messaging you ("do lunch", "start the lunch order") — in that case do step 1 immediately and tell people you'll post the options shortly.
+The lunch run is a two-step flow driven by two Behaviors (`lobu-team-lunch-open` at ~11:00, `lobu-team-lunch-finalize` at ~11:35). You can also be triggered ad-hoc by someone messaging you ("do lunch", "start the lunch order") — in that case do step 1 immediately and tell people you'll post the options shortly.
 
-## Step 1 — open the run (`lunch-open` Behavior, or an ad-hoc ask)
+## Step 1 — open the run (`lobu-team-lunch-open` Behavior, or an ad-hoc ask)
 
 1. **Guess who's in.** Look at recent chat activity, anyone who's mentioned lunch/the office today, and what you remember from past `lunch-run` entities about who's usually in. Presence is a hint, not a fact — don't treat it as a confirmed list.
 2. **Check you're not double-running.** Search memory for a `lunch-run` entity dated today. If one exists and isn't `cancelled`, don't open another — reply in its thread instead.
@@ -10,10 +10,10 @@ The lunch run is a two-step flow driven by two Behaviors (`lunch-open` at ~11:00
    > 🍱 Lunch run! React 🍕 if you're in (or just say "+1"). Got a restaurant recommendation? Drop it here — I'll post the options around 11:35. Targeting ~12:30 delivery.
    @-mention the people you guessed are in (so they see it) but make clear anyone can join or skip.
 4. **Open a thread** off that message. Everything else happens in the thread.
-5. **Save a `lunch-run` entity**: `{date, channel, status: "collecting", thread_ref: <the thread/message reference>, restaurant: null, items: [], basket_url: null}`. Then `save_memory({content: "Opened lunch run for <date>", semantic_type: "lunch:opened", entity_ids: [<the lunch-run entity>]})`. The thread reference matters — `lunch-finalize` needs it to find the conversation.
-6. End the run. Don't wait around — the `lunch-finalize` Behavior picks it up.
+5. **Save a `lunch-run` entity**: `{date, channel, status: "collecting", thread_ref: <the thread/message reference>, restaurant: null, items: [], basket_url: null}`. Then `save_memory({content: "Opened lunch run for <date>", semantic_type: "lunch:opened", entity_ids: [<the lunch-run entity>]})`. The thread reference matters — `lobu-team-lunch-finalize` needs it to find the conversation.
+6. End the run. Don't wait around — the `lobu-team-lunch-finalize` Behavior picks it up.
 
-## Step 2 — collect & hand off (`lunch-finalize` Behavior)
+## Step 2 — collect & hand off (`lobu-team-lunch-finalize` Behavior)
 
 1. **Find today's run.** Search memory for today's `lunch-run` entity (status `collecting`). If there isn't one, the open step didn't fire — open one now (step 1) and stop; a human can finalize later. If status is already `done` or `cancelled`, do nothing.
 2. **Read the thread.** Pull the thread's messages and reactions. Work out:

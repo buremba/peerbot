@@ -1,6 +1,6 @@
 ---
 name: deliveroo-order
-description: Turn collected lunch orders into a clean per-person order list for a human to place on Deliveroo. Use in step 2 of the lunch run, after orders are collected. The live menu is fetched automatically by the lunch-finalize reaction (via the Owletto Chrome extension) — this skill never places an order or touches payment.
+description: Turn collected lunch orders into a clean per-person order list for a human to place on Deliveroo. Use in step 2 of the lunch run, after orders are collected. The live menu is fetched automatically by the lobu-team-lunch-finalize reaction (via the Owletto Chrome extension) — this skill never places an order or touches payment.
 ---
 
 # Deliveroo lunch order
@@ -16,7 +16,7 @@ two on-demand actions, not a feed:
   (`{ name, price, price_minor, description, kcal }`).
 
 These actions need the Behavior's system context, so the **agent does not call
-them in-turn** — the `lunch-finalize` **reaction** does (see
+them in-turn** — the `lobu-team-lunch-finalize` **reaction** does (see
 `lunch-deliveroo.reaction.ts`). After the agent's turn picks a restaurant, the
 reaction searches for it, reads the live menu, and posts the menu + Deliveroo
 order link back into the channel for a human to place.

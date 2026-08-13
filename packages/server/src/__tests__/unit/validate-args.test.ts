@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { ManageOperationsSchema } from "@lobu/core/contracts/tools/manage-operations";
 import { Type } from "@sinclair/typebox";
 import { getAllTools, getMcpTools, getTool } from "../../tools/registry";
 import {
@@ -146,6 +147,31 @@ describe("validateToolArgs coercion", () => {
     }) as Record<string, unknown>;
     expect(ok.id).toBe("f6a7b2c1-3d4e-4f50-8a9b-0c1d2e3f4a5b");
     expect(() => validateToolArgs("t", s, { id: "not-a-uuid" })).toThrow(ToolUserError);
+  });
+
+  it("accepts the URI format used by page-activated operation URLs", () => {
+    const out = validateToolArgs("manage_operations", ManageOperationsSchema, {
+      action: "execute",
+      connection_id: 399,
+      operation_key: "prepare_reply",
+      activation: {
+        kind: "page_visit",
+        urls: ["https://x.com/dhh/status/2087839779811373514"],
+      },
+    }) as Record<string, unknown>;
+
+    expect(out.activation).toEqual({
+      kind: "page_visit",
+      urls: ["https://x.com/dhh/status/2087839779811373514"],
+    });
+    expect(() =>
+      validateToolArgs("manage_operations", ManageOperationsSchema, {
+        action: "execute",
+        connection_id: 399,
+        operation_key: "prepare_reply",
+        activation: { kind: "page_visit", urls: ["https://example.com/a b"] },
+      })
+    ).toThrow(ToolUserError);
   });
 });
 

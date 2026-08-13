@@ -25,12 +25,19 @@ import { ToolUserError } from '../utils/errors';
 import { stripNul } from '../utils/strip-nul';
 
 // typebox's Value.Check FAILS (returns false) on any `format` constraint that
-// isn't registered — there is no permissive default. `manage_schedules` gates
-// ids with `format: 'uuid'`, so without this registration every pause/cancel
-// would 400 the moment validation runs.
+// isn't registered — there is no permissive default. Register every format
+// used by a tool contract here so adding a schema annotation cannot make all
+// otherwise-valid calls fail before their handler runs.
 if (!FormatRegistry.Has('uuid')) {
   FormatRegistry.Set('uuid', (value) =>
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+  );
+}
+if (!FormatRegistry.Has('uri')) {
+  // Same absolute-URI shape used by ajv-formats' fast validator. Individual
+  // handlers still enforce narrower contracts such as HTTP(S)-only URLs.
+  FormatRegistry.Set('uri', (value) =>
+    /^(?:[a-z][a-z0-9+\-.]*:)(?:\/?\/)?[^\s]*$/i.test(value)
   );
 }
 

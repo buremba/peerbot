@@ -21,7 +21,7 @@ describe("Midas net-worth configuration", () => {
     });
   });
 
-  test("declares a same-org, feedless quote connection", () => {
+  test("declares a same-org catalog quote handle without shipping duplicate source", () => {
     expect(
       config.connections?.find(
         (connection) => connection.slug === "market-quotes"
@@ -34,7 +34,7 @@ describe("Midas net-worth configuration", () => {
       config.connectors?.find(
         (connector) => connector.path === "./market-quotes.connector.ts"
       )
-    ).toBeDefined();
+    ).toBeUndefined();
   });
 
   test("the tax workspace no longer declares a net-worth Behavior", () => {

@@ -37,7 +37,10 @@ export interface MidasDashboardSnapshot {
   holdings: MidasHolding[];
   total_usd: number;
   total_try: number;
-  /** False when ticker rows were visible but not all parsed successfully. */
+  /**
+   * True when every visible ticker row parsed successfully. False on holding
+   * row layout drift, or when no market section header was found at all.
+   */
   positions_complete: boolean;
   /** Market sections actually present in this scrape. */
   markets_observed: MidasMarket[];

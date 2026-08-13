@@ -13,7 +13,6 @@ import {
 import type GoogleTakeoutConnector from "./google-takeout.connector.ts";
 import type InstagramTakeoutConnector from "./instagram-takeout.connector.ts";
 import type LinkedInConnector from "./linkedin.connector.ts";
-import type MarketQuotesConnector from "./market-quotes.connector.ts";
 import type RevolutTransactionsConnector from "./revolut-transactions.connector.ts";
 import type SpotifyConnector from "./spotify.connector.ts";
 import type TwitterTakeoutConnector from "./twitter-takeout.connector.ts";
@@ -1222,13 +1221,13 @@ const midasNetWorth = defineBehavior({
   slug: "midas-net-worth",
   name: "Midas net worth",
   description:
-    "Values the latest Midas holdings cohort with available market marks and saves one derived snapshot.",
+    "Values current active Midas holdings with available market marks and saves one derived snapshot.",
   triggers: [
     {
       kind: "schedule",
       cron: "0 9 * * 1",
       timezone: "Europe/London",
-      // Prices change even when the latest broker sync cohort does not.
+      // Prices change even when the current broker position book does not.
       skip_if_unchanged: false,
     },
   ],
@@ -1238,7 +1237,7 @@ const midasNetWorth = defineBehavior({
   prompt:
     'The deterministic reaction performs this scheduled Midas valuation. Return only {"summary":"Run the deterministic Midas valuation."}; do not calculate values, create entities, or call connector operations yourself.',
   reactionsGuidance:
-    "The reaction owns quote execution, cohort selection, derived snapshot persistence, and the notification. It fails if the local quote execution path is missing and labels per-symbol broker fallbacks explicitly.",
+    "The reaction owns quote execution, current active-position selection, derived snapshot persistence, and the notification. It fails if the local quote execution path is missing and labels per-symbol broker fallbacks explicitly.",
   reaction: reactionFromFile<typeof NetWorthReaction>(
     "./net-worth.reaction.ts"
   ),
@@ -1322,9 +1321,6 @@ export default defineConfig({
   prune: true,
   connectors: [
     connectorFromFile<typeof MidasConnector>("./midas.connector.ts"),
-    connectorFromFile<typeof MarketQuotesConnector>(
-      "./market-quotes.connector.ts"
-    ),
     connectorFromFile<typeof RevolutTransactionsConnector>(
       "./revolut-transactions.connector.ts"
     ),

@@ -1,5 +1,5 @@
 /**
- * Credential-free market marks for the personal net-worth Behavior.
+ * Credential-free market marks for deterministic portfolio valuation.
  *
  * This connector exposes one read-only action and no feeds. Quotes are returned
  * to the caller and are never persisted as raw market-price events.

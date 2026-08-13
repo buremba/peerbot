@@ -12,4 +12,4 @@ Read root `AGENTS.md` first. This package owns built-in Lobu connectors.
 - For the same source object across syncs, keep `origin_id` stable. Ingestion may supersede the prior event and allocate a new `events.id`; downstream cross-sync dedupe relies on `origin_id`, not the version-row id. Change `origin_id` only when the source identity genuinely changes.
 
 ## Validation
-- Validation: the root gates (`make pre-pr` + `make review`, see root `AGENTS.md`) plus targeted connector tests.
+- Validation: the root gates (see root `AGENTS.md`) plus targeted connector tests.

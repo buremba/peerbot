@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ctx, runOrSkip, stubSDK } from "./_helpers";
+import { runOrSkip, stubSDK } from "./_helpers";
 
 /**
  * The sandbox tallies change-capable dispatches outside the byte-capped call

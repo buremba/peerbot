@@ -167,8 +167,8 @@ function asPublicPreviewEntry(value: unknown): PublicSideEffectPreviewEntry | nu
 type StartedSideEffect = Static<typeof StartedSideEffectSchema>;
 
 /**
- * Roll the internal call trace up into the bounded public summary: which
- * change-capable paths were dispatched before a failed live run, and how often.
+ * Normalize the sandbox's dispatch tally into the bounded public summary: which
+ * change-capable paths ran before a failed live run, and how often.
  *
  * Returns null unless the run actually failed outside dry-run with at least one
  * such call — a successful run has nothing to warn about, and under dry-run the

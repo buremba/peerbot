@@ -166,6 +166,11 @@ describe("fixed-action REST arg composition", () => {
 /** Guard route registrations against bypassing the tested composition. */
 describe("fixed-action REST route registrations", () => {
 	const indexSrc = readFileSync(join(__dirname, "../../../index.ts"), "utf8");
+	const restApiSrc = readFileSync(join(__dirname, "../../../rest-api.ts"), "utf8");
+
+	it("does not pass retired arguments through the strict Behavior tool boundary", () => {
+		expect(restApiSrc).not.toContain("include_template_details");
+	});
 
 	it("has no restToolProxy call that spreads caller params after an action", () => {
 		const trailingSpread =

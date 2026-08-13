@@ -289,7 +289,7 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
     name: 'Jira',
     description:
       'Live-reads Jira Cloud issues via JQL (virtual feeds) and receives real-time issue/comment webhooks.',
-    version: '1.1.2',
+    version: '1.1.3',
     faviconDomain: 'atlassian.com',
     webhook: {
       // Jira Connect app webhooks HMAC-sign the raw body with the installation
@@ -324,6 +324,27 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
             'read:jira-user',
             'manage:jira-webhook',
             'offline_access',
+          ],
+          // Granular scopes Jira checks before DELIVERING registered webhook
+          // events (registration alone only needs manage:jira-webhook):
+          // jira:issue_created/updated require read:issue-details:jira, and
+          // comment_created requires the other ten — see the scope table under
+          // "Registering a webhook via the REST API" in the Jira webhooks docs.
+          // Optional rather than required because Atlassian fails the entire
+          // authorize redirect when the app config doesn't have a requested
+          // scope enabled, which would break JQL reads for existing apps.
+          optionalScopes: [
+            'read:issue-details:jira',
+            'read:comment.property:jira',
+            'read:comment:jira',
+            'read:epic:jira-software',
+            'read:group:jira',
+            'read:issue.property:jira',
+            'read:issue-type:jira',
+            'read:project:jira',
+            'read:project-role:jira',
+            'read:status:jira',
+            'read:user:jira',
           ],
           authorizationUrl: 'https://auth.atlassian.com/authorize',
           tokenUrl: 'https://auth.atlassian.com/oauth/token',

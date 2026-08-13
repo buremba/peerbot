@@ -489,6 +489,7 @@ This means edits to `.ts` files in `connectors/` take effect on the next sync wi
 |-----------|------|-------|---------|
 | `github` | oauth/env_keys | issues, PRs, comments, discussions | create/close/reopen issues, PRs |
 | `hackernews` | none | stories, comments | - |
+| `market.quotes` | none | - | quote (read-only, quotes returned to the caller, never persisted) |
 | `producthunt` | env_keys | posts & comments | - |
 | `reddit` | oauth/none | posts, comments | - |
 | `rss` | none | articles | - |

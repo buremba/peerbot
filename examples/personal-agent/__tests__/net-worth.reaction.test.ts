@@ -2,16 +2,10 @@ import { describe, expect, test } from "bun:test";
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 import runNetWorthSnapshot, {
   buildMidasSnapshot,
-  type MidasBalanceRow,
   type MidasHoldingMetadata,
   type MidasHoldingRow,
   type QuoteRow,
 } from "../net-worth.reaction";
-
-const balance: MidasBalanceRow = {
-  run_id: 22,
-  occurred_at: "2026-08-10T08:00:00.000Z",
-};
 
 function holding(
   symbol: string,
@@ -29,6 +23,7 @@ function holding(
       avg_cost: value / 4,
       value,
       currency: "USD",
+      status: "active",
       ...overrides,
     },
   };
@@ -85,13 +80,13 @@ describe("buildMidasSnapshot", () => {
     ];
 
     const snapshot = buildMidasSnapshot(
-      balance,
       holdings,
       quotes,
       "2026-08-12T09:00:00.000Z"
     );
 
-    expect(snapshot.midas_run_id).toBe(22);
+    expect(snapshot.version).toBe(2);
+    expect(snapshot).not.toHaveProperty("midas_run_id");
     expect(snapshot.positions).toHaveLength(2);
     expect(snapshot.positions[0]).toMatchObject({
       symbol: "AAPL",
@@ -122,7 +117,6 @@ describe("buildMidasSnapshot", () => {
 
   test("rejects a quote in a different currency instead of mixing currencies", () => {
     const snapshot = buildMidasSnapshot(
-      balance,
       [holding("AAPL", 200)],
       [
         {
@@ -152,7 +146,7 @@ describe("buildMidasSnapshot", () => {
 });
 
 describe("weekly net-worth reaction", () => {
-  test("queries one Midas cohort, executes the local quote action, and saves one derived event", async () => {
+  test("queries current active Midas holdings, executes the local quote action, and saves one derived event", async () => {
     const queries: string[] = [];
     const operationInputs: unknown[] = [];
     const saved: unknown[] = [];
@@ -160,9 +154,7 @@ describe("weekly net-worth reaction", () => {
     const client = {
       query: async (sql: string) => {
         queries.push(sql);
-        return queries.length === 1
-          ? [balance]
-          : [holding("AAPL", 200), holding("NOPE", 80)];
+        return [holding("AAPL", 200), holding("NOPE", 80)];
       },
       connections: {
         list: async () => ({
@@ -227,8 +219,9 @@ describe("weekly net-worth reaction", () => {
 
     await runNetWorthSnapshot(ctx, client);
 
-    expect(queries).toHaveLength(2);
-    expect(queries[1]).toContain("run_id = 22");
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toContain("metadata->>'status' = 'active'");
+    expect(queries[0]).not.toContain("run_id");
     expect(operationInputs).toEqual([
       {
         connection_id: 77,
@@ -239,7 +232,7 @@ describe("weekly net-worth reaction", () => {
             { market: "US", symbol: "NOPE" },
           ],
         },
-        idempotency_key: "midas-net-worth:quotes:window:91:midas-run:22",
+        idempotency_key: "midas-net-worth:quotes:window:91",
         behavior_source: { behavior_id: 45, window_id: 91 },
       },
     ]);
@@ -251,7 +244,7 @@ describe("weekly net-worth reaction", () => {
       behavior_source: { behavior_id: 45, window_id: 91 },
       metadata: {
         scope: "midas",
-        midas_run_id: 22,
+        version: 2,
         by_currency: [{ currency: "USD", current_value: 580 }],
       },
     });
@@ -260,15 +253,13 @@ describe("weekly net-worth reaction", () => {
 
   test("notifies from the persisted snapshot after an idempotent save replay", async () => {
     const persistedSnapshot = buildMidasSnapshot(
-      balance,
       [holding("AAPL", 200)],
       [],
       ctx.window.window_end
     );
     const notified: Array<{ body?: string }> = [];
     const client = {
-      query: async (sql: string) =>
-        sql.includes("midas-balance") ? [balance] : [holding("AAPL", 200)],
+      query: async () => [holding("AAPL", 200)],
       connections: {
         list: async () => ({
           connections: [
@@ -325,17 +316,18 @@ describe("weekly net-worth reaction", () => {
     expect(notified[0]?.body).not.toContain("USD 500.00 current");
   });
 
-  test("includes every holding when a Midas cohort contains more than 200 positions", async () => {
-    const cohort = Array.from({ length: 1_001 }, (_, index) =>
+  test("includes every holding when the active book contains more than one page", async () => {
+    const activeBook = Array.from({ length: 1_001 }, (_, index) =>
       holding(`STOCK${index}`, 4)
     );
     const saved: Array<{ metadata?: { positions?: unknown[] } }> = [];
     const client = {
       query: async (sql: string) => {
-        if (sql.includes("midas-balance")) return [balance];
-        const limit = Number(sql.match(/LIMIT (\d+)/)?.[1] ?? cohort.length);
+        const limit = Number(
+          sql.match(/LIMIT (\d+)/)?.[1] ?? activeBook.length
+        );
         const offset = Number(sql.match(/OFFSET (\d+)/)?.[1] ?? 0);
-        return cohort.slice(offset, offset + limit);
+        return activeBook.slice(offset, offset + limit);
       },
       connections: {
         list: async () => ({
@@ -386,13 +378,12 @@ describe("weekly net-worth reaction", () => {
     await runNetWorthSnapshot(ctx, client);
 
     expect(saved).toHaveLength(1);
-    expect(saved[0]?.metadata?.positions).toHaveLength(cohort.length);
+    expect(saved[0]?.metadata?.positions).toHaveLength(activeBook.length);
   });
 
   test("fails closed when the configured quote connection is absent", async () => {
     const client = {
-      query: async (sql: string) =>
-        sql.includes("midas-balance") ? [balance] : [holding("AAPL", 200)],
+      query: async () => [holding("AAPL", 200)],
       connections: { list: async () => ({ connections: [] }) },
       log: () => undefined,
     } as unknown as ReactionClient;
@@ -400,5 +391,24 @@ describe("weekly net-worth reaction", () => {
     await expect(runNetWorthSnapshot(ctx, client)).rejects.toThrow(
       /active market-quotes connection/i
     );
+  });
+
+  test("does not value closed or legacy status-less holdings", async () => {
+    const queries: string[] = [];
+    const client = {
+      query: async (sql: string) => {
+        queries.push(sql);
+        return [];
+      },
+      notifications: {
+        send: async () => ({ notified_count: 1, event_id: 502, url: null }),
+      },
+      log: () => undefined,
+    } as unknown as ReactionClient;
+
+    await runNetWorthSnapshot(ctx, client);
+
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toContain("metadata->>'status' = 'active'");
   });
 });

@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { beforeAll, describe, expect, mock, test } from "bun:test";
 import type { ChromeActionDispatcher } from "@lobu/connector-sdk";
+import type { MidasCheckpoint } from "../midas.connector";
 import { connectorSdkMock } from "./connector-sdk.mock";
 
 // Stub @lobu/connector-sdk (it pulls in playwright) so the connector imports
@@ -42,12 +43,81 @@ beforeAll(async () => {
   MIDAS_ALLOWED_ORIGINS = mod.MIDAS_ALLOWED_ORIGINS;
 });
 
+function dispatcherFor(bodyText: string) {
+  return {
+    dispatch: async (action: string) =>
+      action === "navigate"
+        ? { tab_id: 42, current_url: MIDAS_DASHBOARD_URL }
+        : { value: bodyText },
+  };
+}
+
+function syncWith(bodyText: string, checkpoint: MidasCheckpoint | null = {}) {
+  return new MidasConnector().sync({
+    feedKey: "assets",
+    config: {},
+    checkpoint,
+    sessionState: { chrome_dispatcher: dispatcherFor(bodyText) },
+  } as never);
+}
+
 // Synthetic Atlas TR "Pozisyonlar" capture — layout mirrors production, values
 // are fabricated (no real holdings/quantities/prices) to avoid committing PII.
 const DASHBOARD_FIXTURE = readFileSync(
   path.join(import.meta.dir, "fixtures/midas-dashboard-positions.txt"),
   "utf8"
 );
+
+const DASHBOARD_WITHOUT_NOVA = DASHBOARD_FIXTURE.replace(
+  "\nNOVA\nBIST Hisseleri",
+  "\nBIST Hisseleri"
+)
+  .replace("\n3\n$10.000,00", "\n2\n$3.000,00")
+  .replace(
+    "\n25\n$280,00\n$260,00\n$7.000,00\n%70,00\n$70,00(%1,00)\n$400,00(%6,00)",
+    ""
+  );
+
+const DRIFTED_DASHBOARD_FIXTURE = [
+  "ABD Hisseleri",
+  "ACME",
+  "GLOB",
+  "2",
+  "$1.000,00",
+  "$10,00(%1,00)",
+  "$100,00(%10,00)",
+  "10",
+  "$50,00",
+  "$40,00",
+  "$500,00",
+  "%50,00",
+  "$5,00(%1,00)",
+  "$50,00(%12,50)",
+  "n/a",
+  "n/a",
+  "n/a",
+  "n/a",
+  "n/a",
+  "n/a",
+  "n/a",
+].join("\n");
+
+const US_ONLY_DASHBOARD_FIXTURE = [
+  "Pozisyonlar",
+  "ABD Hisseleri",
+  "ACME",
+  "1",
+  "$2.100,00",
+  "$50,00(%1,00)",
+  "$500,00(%25,00)",
+  "10,5",
+  "$200,00",
+  "$150,00",
+  "$2.100,00",
+  "%100,00",
+  "$50,00(%1,00)",
+  "$500,00(%25,00)",
+].join("\n");
 
 describe("requireExtensionDispatcher", () => {
   test("throws when chrome_dispatcher is missing (the prod failure mode)", () => {
@@ -202,36 +272,15 @@ describe("parseMidasDashboardText (synthetic fixture)", () => {
       holdings: [],
       total_usd: 0,
       total_try: 0,
+      positions_complete: false,
+      markets_observed: [],
     });
   });
 
   test("malformed rows are skipped, not emitted as zero-valued holdings", () => {
     // Second holding row is non-numeric (layout drift). The parser must stop
     // rather than push a corrupt { shares: 0, price: 0, value: 0 } holding.
-    const drifted = [
-      "ABD Hisseleri",
-      "ACME",
-      "GLOB",
-      "2",
-      "$1.000,00",
-      "$10,00(%1,00)",
-      "$100,00(%10,00)",
-      "10",
-      "$50,00",
-      "$40,00",
-      "$500,00",
-      "%50,00",
-      "$5,00(%1,00)",
-      "$50,00(%12,50)",
-      "n/a",
-      "n/a",
-      "n/a",
-      "n/a",
-      "n/a",
-      "n/a",
-      "n/a",
-    ].join("\n");
-    const s = parseMidasDashboardText(drifted);
+    const s = parseMidasDashboardText(DRIFTED_DASHBOARD_FIXTURE);
     expect(s.holdings.map((h) => h.symbol)).toEqual(["ACME"]);
     expect(s.holdings.every((h) => h.value > 0)).toBe(true);
   });
@@ -334,6 +383,65 @@ describe("MidasConnector.sync", () => {
       holdings: 5,
       backend: "extension-dom",
     });
+  });
+
+  test("emits a closed superseding observation when a holding disappears", async () => {
+    const first = await syncWith(DASHBOARD_FIXTURE, {});
+    const second = await syncWith(DASHBOARD_WITHOUT_NOVA, first.checkpoint);
+
+    expect(
+      second.events.filter(
+        (event) => event.origin_id === "midas-holding-US-NOVA"
+      )
+    ).toEqual([
+      expect.objectContaining({
+        semantic_type: "financial_asset",
+        metadata: expect.objectContaining({
+          type: "US",
+          symbol: "NOVA",
+          shares: 0,
+          price: 0,
+          avg_cost: 0,
+          value: 0,
+          currency: "USD",
+          status: "closed",
+        }),
+      }),
+    ]);
+
+    const third = await syncWith(DASHBOARD_WITHOUT_NOVA, second.checkpoint);
+    expect(
+      third.events.filter(
+        (event) => event.origin_id === "midas-holding-US-NOVA"
+      )
+    ).toEqual([]);
+  });
+
+  test("does not close positions from an incomplete dashboard parse", async () => {
+    const first = await syncWith(DASHBOARD_FIXTURE);
+
+    await expect(
+      syncWith(DRIFTED_DASHBOARD_FIXTURE, first.checkpoint)
+    ).rejects.toThrow(/incomplete/i);
+  });
+
+  test("preserves checkpoint positions when their market section is absent", async () => {
+    const first = await syncWith(DASHBOARD_FIXTURE);
+    const second = await syncWith(US_ONLY_DASHBOARD_FIXTURE, first.checkpoint);
+
+    const closedOrigins = second.events
+      .filter((event) => event.metadata?.status === "closed")
+      .map((event) => event.origin_id);
+    expect(closedOrigins).toEqual([
+      "midas-holding-US-GLOB",
+      "midas-holding-US-NOVA",
+    ]);
+    expect(second.checkpoint?.active_holdings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "TR", symbol: "BANKX" }),
+        expect.objectContaining({ type: "TR", symbol: "GOLD.S1" }),
+      ])
+    );
   });
 
   test("throws a clear error when chrome_dispatcher is missing", async () => {

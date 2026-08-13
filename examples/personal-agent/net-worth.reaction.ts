@@ -2,8 +2,8 @@
  * Deterministic weekly Midas valuation.
  *
  * Stored reactions are single-file artifacts, so the valuation logic lives
- * here instead of importing a project helper. It reads the latest Midas sync
- * cohort, marks each holding through the same-org market.quotes
+ * here instead of importing a project helper. It reads current active Midas
+ * holdings, marks each holding through the same-org market.quotes
  * action, persists one derived snapshot event, and sends a concise digest.
  */
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
@@ -18,11 +18,6 @@ export const input = {
 
 const MIDAS_HOLDING_PAGE_SIZE = 1_000;
 
-export interface MidasBalanceRow {
-  run_id: number | string;
-  occurred_at: Date | string;
-}
-
 export interface MidasHoldingMetadata {
   symbol?: string;
   type?: string;
@@ -31,6 +26,7 @@ export interface MidasHoldingMetadata {
   avg_cost?: number;
   value?: number;
   currency?: string;
+  status?: "active" | "closed";
 }
 
 export interface MidasHoldingRow {
@@ -97,12 +93,11 @@ interface MidasSnapshotTotal {
 }
 
 interface MidasNetWorthSnapshot {
-  version: 1;
+  version: 2;
   scope: "midas";
   calculated_at: string;
   broker_as_of: string;
   quote_as_of: string | null;
-  midas_run_id: number;
   by_currency: MidasSnapshotTotal[];
   positions: MidasSnapshotPosition[];
 }
@@ -166,6 +161,7 @@ function normalizeHolding(row: MidasHoldingRow): {
   const averageCost = finiteNumber(metadata.avg_cost);
   const brokerPrice = finiteNumber(metadata.price);
   const statedValue = finiteNumber(metadata.value);
+  const status = metadata.status;
 
   if (!market || !symbol || !currency) {
     throw new Error(`Midas holding ${row.origin_id} has incomplete identity.`);
@@ -178,6 +174,9 @@ function normalizeHolding(row: MidasHoldingRow): {
   }
   if (brokerPrice == null || brokerPrice <= 0) {
     throw new Error(`Midas holding ${row.origin_id} has invalid broker price.`);
+  }
+  if (status !== "active") {
+    throw new Error(`Midas holding ${row.origin_id} is not explicitly active.`);
   }
   const brokerValue =
     statedValue != null && statedValue > 0
@@ -227,17 +226,12 @@ function fallbackQuote(
 }
 
 export function buildMidasSnapshot(
-  balance: MidasBalanceRow,
   holdingRows: MidasHoldingRow[],
   quoteRows: QuoteRow[],
   calculatedAt: string
 ): MidasNetWorthSnapshot {
-  const midasRunId = finiteNumber(balance.run_id);
-  if (midasRunId == null || !Number.isSafeInteger(midasRunId)) {
-    throw new Error("The latest Midas balance has no valid sync run id.");
-  }
   if (holdingRows.length === 0) {
-    throw new Error(`Midas sync run ${midasRunId} contains no holdings.`);
+    throw new Error("Midas has no active holdings.");
   }
 
   const holdings = holdingRows.map(normalizeHolding);
@@ -359,7 +353,7 @@ export function buildMidasSnapshot(
       new Date(holding.occurredAt).getTime() > new Date(latest).getTime()
         ? holding.occurredAt
         : latest,
-    isoTimestamp(balance.occurred_at, "balance occurred_at")
+    holdings[0]?.occurredAt ?? calculatedAt
   );
   const quoteAsOf = positions.reduce<string | null>((latest, position) => {
     if (!position.quote_as_of) return latest;
@@ -370,12 +364,11 @@ export function buildMidasSnapshot(
   }, null);
 
   return {
-    version: 1,
+    version: 2,
     scope: "midas",
     calculated_at: isoTimestamp(calculatedAt, "calculated_at"),
     broker_as_of: brokerAsOf,
     quote_as_of: quoteAsOf,
-    midas_run_id: midasRunId,
     by_currency: [...totals.values()].sort((left, right) =>
       left.currency.localeCompare(right.currency)
     ),
@@ -450,25 +443,6 @@ export default async function runNetWorthSnapshot(
     behavior_id: ctx.behavior.id,
     window_id: ctx.window.id,
   };
-  const balances = (await client.query(
-    `SELECT run_id, occurred_at
-     FROM events
-     WHERE connector_key = 'midas'
-       AND origin_id = 'midas-balance'
-       AND run_id IS NOT NULL
-     ORDER BY occurred_at DESC, id DESC
-     LIMIT 1`
-  )) as MidasBalanceRow[];
-  const balance = balances[0];
-  if (!balance) {
-    await notifySyncNeeded(ctx, client, "No Midas balance cohort exists.");
-    return;
-  }
-  const midasRunId = finiteNumber(balance.run_id);
-  if (midasRunId == null || !Number.isSafeInteger(midasRunId)) {
-    throw new Error("The latest Midas balance has no valid sync run id.");
-  }
-
   const holdings: MidasHoldingRow[] = [];
   while (true) {
     const page = (await client.query(
@@ -477,7 +451,7 @@ export default async function runNetWorthSnapshot(
        WHERE connector_key = 'midas'
          AND semantic_type = 'financial_asset'
          AND origin_id LIKE 'midas-holding-%'
-         AND run_id = ${midasRunId}
+         AND metadata->>'status' = 'active'
        ORDER BY origin_id, id
        LIMIT ${MIDAS_HOLDING_PAGE_SIZE}
        OFFSET ${holdings.length}`
@@ -489,7 +463,7 @@ export default async function runNetWorthSnapshot(
     await notifySyncNeeded(
       ctx,
       client,
-      `Midas sync run ${midasRunId} contains no holdings.`
+      "No explicitly active Midas holdings exist."
     );
     return;
   }
@@ -536,10 +510,8 @@ export default async function runNetWorthSnapshot(
       input: { symbols: batch },
       idempotency_key:
         batches.length === 1
-          ? `midas-net-worth:quotes:window:${ctx.window.id}:midas-run:${midasRunId}`
-          : `midas-net-worth:quotes:window:${ctx.window.id}:midas-run:${midasRunId}:batch:${
-              index + 1
-            }`,
+          ? `midas-net-worth:quotes:window:${ctx.window.id}`
+          : `midas-net-worth:quotes:window:${ctx.window.id}:batch:${index + 1}`,
       behavior_source: behaviorSource,
     });
     if (operation.status !== "completed") {
@@ -557,7 +529,6 @@ export default async function runNetWorthSnapshot(
   }
 
   const snapshot = buildMidasSnapshot(
-    balance,
     holdings,
     allQuotes,
     ctx.window.window_end

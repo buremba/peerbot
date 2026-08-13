@@ -3,14 +3,14 @@ import { connectorSdkMock } from "./connector-sdk.mock";
 
 mock.module("@lobu/connector-sdk", connectorSdkMock);
 
-let MarketQuotesConnector: typeof import("../market-quotes.connector").default;
-let normalizeSymbolInput: typeof import("../market-quotes.connector").normalizeSymbolInput;
-let parseYahooChartBody: typeof import("../market-quotes.connector").parseYahooChartBody;
-let quoteMany: typeof import("../market-quotes.connector").quoteMany;
-let toProviderSymbol: typeof import("../market-quotes.connector").toProviderSymbol;
+let MarketQuotesConnector: typeof import("../market_quotes").default;
+let normalizeSymbolInput: typeof import("../market_quotes").normalizeSymbolInput;
+let parseYahooChartBody: typeof import("../market_quotes").parseYahooChartBody;
+let quoteMany: typeof import("../market_quotes").quoteMany;
+let toProviderSymbol: typeof import("../market_quotes").toProviderSymbol;
 
 beforeAll(async () => {
-  const mod = await import("../market-quotes.connector");
+  const mod = await import("../market_quotes");
   MarketQuotesConnector = mod.default;
   normalizeSymbolInput = mod.normalizeSymbolInput;
   parseYahooChartBody = mod.parseYahooChartBody;

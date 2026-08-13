@@ -336,6 +336,8 @@ export interface WebhookActorAttribution {
 export interface WebhookIngestOverrides {
 	title?: string | null;
 	sourceUrl?: string | null;
+	/** Provider-specific bearer verification (Atlassian OAuth webhook JWTs). */
+	verifyBearerToken?: (token: string) => Promise<boolean>;
 	/**
 	 * Resolve the authoring actor → a person. Invoked only on the WINNING insert,
 	 * inside the persist transaction (the `sql` handle IS that tx), so the actor
@@ -410,11 +412,10 @@ export async function handleWebhookIngest(
 		});
 	}
 
-	// 3. Auth. A delivery authenticates by EITHER a matching bearer token OR a
-	//    verified provider HMAC signature (connector webhooks: GitHub/Linear/Jira
-	//    sign, they don't send a bearer). Fail closed when neither method is
-	//    configured — an ingest endpoint must never be open just because its
-	//    secret went missing.
+	// 3. Auth. A delivery authenticates by a matching bearer token, a verified
+	//    provider HMAC signature (connector webhooks: GitHub/Linear sign), or a
+	//    provider-verified bearer JWT (Atlassian OAuth-app webhooks). Fail closed
+	//    when no method is configured.
 	// Resolve both candidate secrets concurrently — either (or both) may gate
 	// this delivery, so we need them before deciding auth.
 	const [configuredToken, signatureSecret] = await Promise.all([
@@ -427,7 +428,7 @@ export async function handleWebhookIngest(
 			typeof config.signatureSecret === "string" ? config.signatureSecret : undefined,
 		),
 	]);
-	if (!configuredToken && !signatureSecret) {
+	if (!configuredToken && !signatureSecret && !overrides?.verifyBearerToken) {
 		logger.warn(
 			{ connectionId: stored.id },
 			"[webhook-ingest] no resolvable token or signature secret — rejecting delivery",
@@ -443,6 +444,13 @@ export async function handleWebhookIngest(
 		!!configuredToken &&
 		!!presentedToken &&
 		tokensMatch(presentedToken, configuredToken);
+	if (
+		!authenticated &&
+		presentedToken &&
+		overrides?.verifyBearerToken
+	) {
+		authenticated = await overrides.verifyBearerToken(presentedToken);
+	}
 	if (!authenticated && !signatureSecret) {
 		return json(401, { error: "Unauthorized" });
 	}

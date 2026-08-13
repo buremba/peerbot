@@ -95,11 +95,8 @@ function callbackBaseUrl(baseUrl: string, connectionId: number): URL {
 function callbackUrl(
 	baseUrl: string,
 	connectionId: number,
-	callbackToken: string,
 ): string {
-	const url = callbackBaseUrl(baseUrl, connectionId);
-	url.searchParams.set("token", callbackToken);
-	return url.href;
+	return callbackBaseUrl(baseUrl, connectionId).href;
 }
 
 function hasCallbackPath(value: string | undefined, expected: URL): boolean {
@@ -598,7 +595,10 @@ async function ensureUnderLock(params: {
 		));
 
 	const apiBase = jiraApiBase(cloudId);
-	const targetUrl = callbackUrl(params.baseUrl, connection.id, callbackToken);
+	// OAuth-app dynamic webhooks authenticate with Atlassian's bearer JWT.
+	// Keep the legacy callback-token secret only as durable crash-window evidence
+	// for teardown; Jira drops callback query parameters from deliveries.
+	const targetUrl = callbackUrl(params.baseUrl, connection.id);
 	const callbackPath = callbackBaseUrl(params.baseUrl, connection.id);
 	const webhooks = await listJiraWebhooks(
 		params.fetchImpl,

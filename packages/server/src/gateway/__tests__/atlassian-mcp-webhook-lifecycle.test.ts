@@ -238,9 +238,7 @@ describe("Atlassian MCP Jira dynamic webhooks", () => {
 		expect(`${callback.origin}${callback.pathname}`).toBe(
 			`https://lobu.example.com/api/v1/webhooks/${connectionId}`,
 		);
-		expect(callback.searchParams.get("token")?.length).toBeGreaterThanOrEqual(
-			32,
-		);
+		expect(callback.search).toBe("");
 		expect(body.webhooks[0].events).toEqual([
 			"jira:issue_created",
 			"jira:issue_updated",

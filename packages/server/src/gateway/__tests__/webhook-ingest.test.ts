@@ -32,12 +32,11 @@ import {
 	resetTestDatabase,
 	seedAgentRow,
 } from "./helpers/db-setup.js";
-import type { WritableSecretStore } from "../secrets/index.js";
-
 const ORG = "org-webhook";
 const AGENT = "agent-webhook";
 const TOKEN = "whk-test-token-0123456789abcdef";
 const SIG_SECRET = "whk-sig-secret-0123456789abcdef";
+const JIRA_CLIENT_SECRET = "jira-client-secret";
 
 /** Compute a provider HMAC signature header value over the exact raw bytes. */
 function sign(
@@ -58,6 +57,20 @@ const githubSigConfig = {
 	signaturePrefix: "sha256=",
 	signatureSecret: SIG_SECRET,
 };
+
+function signAtlassianWebhookJwt(secret = JIRA_CLIENT_SECRET): string {
+	const encodedHeader = Buffer.from(
+		JSON.stringify({ alg: "HS256", typ: "JWT" }),
+	).toString("base64url");
+	const encodedPayload = Buffer.from(
+		JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 60 }),
+	).toString("base64url");
+	const signingInput = `${encodedHeader}.${encodedPayload}`;
+	const signature = createHmac("sha256", secret)
+		.update(signingInput)
+		.digest("base64url");
+	return `${signingInput}.${signature}`;
+}
 
 beforeAll(async () => {
 	await ensureDbForGatewayTests();
@@ -1054,12 +1067,12 @@ describe("connector-connection webhook bridge (connections table)", () => {
 		return id;
 	}
 
-	async function seedRegisteredAtlassianConnection(
-		secretStore: WritableSecretStore,
-	): Promise<{ id: string; callbackToken: string }> {
+	async function seedRegisteredAtlassianConnection(): Promise<{ id: string }> {
 		const { getDb } = await import("../../db/client.js");
-		const { orgContext } = await import("../../lobu/stores/org-context.js");
-		const { persistSecretValue } = await import("../secrets/index.js");
+		const { createAuthProfile } = await import("../../utils/auth-profiles.js");
+		const { persistAuthCredentials } = await import(
+			"../../utils/auth-credential-secrets.js"
+		);
 		const sql = getDb();
 		const connectorKey = "mcp.mcp-atlassian-com";
 		await sql`
@@ -1071,6 +1084,24 @@ describe("connector-connection webhook bridge (connections table)", () => {
 				${sql.json({ issues: { key: "issues", virtual: true } })}
 			)
 		`;
+		const appProfile = await createAuthProfile({
+			organizationId: ORG,
+			connectorKey: "jira",
+			displayName: "Jira Webhook App",
+			slug: "jira-webhook-app",
+			profileKind: "oauth_app",
+			status: "active",
+			provider: "jira",
+			createdBy: AGENT,
+		});
+		await persistAuthCredentials({
+			organizationId: ORG,
+			authProfileId: appProfile.id,
+			credentials: {
+				JIRA_CLIENT_ID: "jira-client-id",
+				JIRA_CLIENT_SECRET,
+			},
+		});
 		const [connection] = await sql`
 			INSERT INTO connections (
 				organization_id, connector_key, slug, display_name, status, config, visibility
@@ -1080,6 +1111,7 @@ describe("connector-connection webhook bridge (connections table)", () => {
 					cloud_id: "cloud-1",
 					site_cloud_id: "cloud-1",
 					site_url: "https://acme.atlassian.net",
+					jira_webhook_app_profile_slug: appProfile.slug,
 				})},
 				'org'
 			)
@@ -1093,23 +1125,14 @@ describe("connector-connection webhook bridge (connections table)", () => {
 				${ORG}, ${id}, 'issues', 'Issues', 'active', 'virtual', true, '{}'::jsonb
 			)
 		`;
-		const callbackToken = SIG_SECRET;
-		const callbackTokenRef = await orgContext.run({ organizationId: ORG }, () =>
-			persistSecretValue(
-				secretStore,
-				`webhook/${id}/callback-token`,
-				callbackToken,
-			),
-		);
 		await sql`
 			UPDATE connections
 			SET config = config || ${sql.json({
 				webhook_external_id: "jira-hook-123",
-				webhook_callback_token: callbackTokenRef,
 			})}::jsonb
 			WHERE id = ${id}
 		`;
-		return { id, callbackToken };
+		return { id };
 	}
 
 	test("a signed GitHub delivery to a connector connection marks the feed due (poll-canonical)", async () => {
@@ -1190,13 +1213,12 @@ describe("connector-connection webhook bridge (connections table)", () => {
 
 	test("an authenticated Jira delivery lands as a structured event on the Atlassian Rovo feed", async () => {
 		await seedAgentRow(AGENT, { organizationId: ORG });
-		const { manager, secretStore } = await buildManager();
+		const { manager } = await buildManager();
 		const { createConnectionWebhookRoutes } = await import(
 			"../routes/public/connections.js"
 		);
 		const { getDb } = await import("../../db/client.js");
-		const { id, callbackToken } =
-			await seedRegisteredAtlassianConnection(secretStore);
+		const { id } = await seedRegisteredAtlassianConnection();
 		const app = createConnectionWebhookRoutes(manager);
 		const raw = JSON.stringify({
 			webhookEvent: "jira:issue_updated",
@@ -1213,16 +1235,14 @@ describe("connector-connection webhook bridge (connections table)", () => {
 			},
 		});
 		const res = await app.fetch(
-			new Request(
-				`http://gateway.test/api/v1/webhooks/${id}?token=${callbackToken}`,
-				{
-					method: "POST",
-					body: raw,
-					headers: {
-						"content-type": "application/json",
-					},
+			new Request(`http://gateway.test/api/v1/webhooks/${id}`, {
+				method: "POST",
+				body: raw,
+				headers: {
+					"content-type": "application/json",
+					authorization: `Bearer ${signAtlassianWebhookJwt()}`,
 				},
-			),
+			}),
 		);
 		expect(res.status).toBe(202);
 		const rows = await getDb()`
@@ -1260,16 +1280,14 @@ describe("connector-connection webhook bridge (connections table)", () => {
 			},
 		});
 		const commentRes = await app.fetch(
-			new Request(
-				`http://gateway.test/api/v1/webhooks/${id}?token=${callbackToken}`,
-				{
-					method: "POST",
-					body: commentRaw,
-					headers: {
-						"content-type": "application/json",
-					},
+			new Request(`http://gateway.test/api/v1/webhooks/${id}`, {
+				method: "POST",
+				body: commentRaw,
+				headers: {
+					"content-type": "application/json",
+					authorization: `Bearer ${signAtlassianWebhookJwt()}`,
 				},
-			),
+			}),
 		);
 		expect(commentRes.status).toBe(202);
 		const [comment] = await getDb()`
@@ -1285,11 +1303,12 @@ describe("connector-connection webhook bridge (connections table)", () => {
 		});
 
 		const forged = await app.fetch(
-			new Request(`http://gateway.test/api/v1/webhooks/${id}?token=forged`, {
+			new Request(`http://gateway.test/api/v1/webhooks/${id}`, {
 				method: "POST",
 				body: commentRaw,
 				headers: {
 					"content-type": "application/json",
+					authorization: `Bearer ${signAtlassianWebhookJwt("forged-secret")}`,
 				},
 			}),
 		);

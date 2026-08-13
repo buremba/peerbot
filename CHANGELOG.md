@@ -1,5 +1,18 @@
 # Changelog
 
+## [14.22.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.21.0...lobu-v14.22.0) (2026-08-13)
+
+
+### Features
+
+* **cli:** sync managed MCP connectors automatically ([#2714](https://github.com/lobu-ai/lobu/issues/2714)) ([a1ce960](https://github.com/lobu-ai/lobu/commit/a1ce9606f58ee61bef89b983900fbf50ffe2f108))
+* **discovery:** add Claude Code plugin marketplace ([#2682](https://github.com/lobu-ai/lobu/issues/2682)) ([3981db7](https://github.com/lobu-ai/lobu/commit/3981db7ff3a9734eb8cddbce162a1c53b33e252b))
+
+
+### Bug Fixes
+
+* **ci:** pass --timeout 30000 to every bun test lane ([#2711](https://github.com/lobu-ai/lobu/issues/2711)) ([6ab5f0d](https://github.com/lobu-ai/lobu/commit/6ab5f0d305e76d621222357242a28d69184dc9ad))
+
 ## [14.21.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.20.0...lobu-v14.21.0) (2026-08-12)
 
 

@@ -13,6 +13,24 @@ const AGENT = "agent-atlassian-webhook";
 const USER = "user-atlassian-webhook";
 const ADMIN_ONLY_ERROR =
 	"Only admins can configure the secondary Jira authorization used by Atlassian webhook delivery.";
+const PROJECT_JQL = 'project IN ("KAN")';
+
+function requestUrl(input: string | URL | Request): string {
+	return typeof input === "string"
+		? input
+		: input instanceof URL
+			? input.href
+			: input.url;
+}
+
+function projectSearchResponse(): Response {
+	return Response.json({
+		values: [{ id: "10000", key: "KAN" }],
+		isLast: true,
+		startAt: 0,
+		maxResults: 100,
+	});
+}
 
 beforeAll(async () => {
 	await ensureDbForGatewayTests();
@@ -190,15 +208,12 @@ describe("Atlassian MCP Jira dynamic webhooks", () => {
 			input: string | URL | Request,
 			init?: RequestInit,
 		): Promise<Response> => {
-			const url =
-				typeof input === "string"
-					? input
-					: input instanceof URL
-						? input.href
-						: input.url;
+			const url = requestUrl(input);
 			requests.push({ url, init });
 			if (init?.method === "GET") {
-				return Response.json({ values: [] });
+				return url.includes("/project/search")
+					? projectSearchResponse()
+					: Response.json({ values: [], isLast: true });
 			}
 			return Response.json({
 				webhookRegistrationResult: [{ createdWebhookId: 123 }],
@@ -214,11 +229,11 @@ describe("Atlassian MCP Jira dynamic webhooks", () => {
 			fetchImpl,
 		});
 
-		expect(requests).toHaveLength(2);
+		expect(requests).toHaveLength(3);
 		expect(requests[0].init?.headers).toMatchObject({
 			Authorization: "Bearer jira-access-token",
 		});
-		const body = JSON.parse(String(requests[1].init?.body));
+		const body = JSON.parse(String(requests[2].init?.body));
 		const callback = new URL(body.url);
 		expect(`${callback.origin}${callback.pathname}`).toBe(
 			`https://lobu.example.com/api/v1/webhooks/${connectionId}`,
@@ -231,6 +246,7 @@ describe("Atlassian MCP Jira dynamic webhooks", () => {
 			"jira:issue_updated",
 			"comment_created",
 		]);
+		expect(body.webhooks[0].jqlFilter).toBe(PROJECT_JQL);
 		expect(body.secret).toBeUndefined();
 
 		const { getDb } = await import("../../db/client.js");
@@ -240,12 +256,153 @@ describe("Atlassian MCP Jira dynamic webhooks", () => {
 		`;
 		expect(row.config).toMatchObject({
 			webhook_external_id: "123",
+			webhook_project_jql: PROJECT_JQL,
 			webhook_status: "active",
 		});
 		expect(String(row.config.webhook_callback_token)).toStartWith("secret://");
 		expect(
 			new Date(String(row.config.webhook_expires_at)).getTime(),
 		).toBeGreaterThan(Date.now() + 20 * 24 * 60 * 60 * 1000);
+	});
+
+	test("fails closed when the Jira grant has no accessible projects", async () => {
+		const connectionId = await seedConfiguredConnection();
+		const { ensureAtlassianMcpJiraWebhook } = await import(
+			"../../connect/atlassian-mcp-webhook.js"
+		);
+		await expect(
+			ensureAtlassianMcpJiraWebhook({
+				organizationId: ORG,
+				connectionId,
+				baseUrl: "https://lobu.example.com",
+				fetchImpl: async () => Response.json({ values: [], isLast: true }),
+			}),
+		).rejects.toThrow(
+			"Jira webhook registration requires at least one accessible project",
+		);
+		const { getDb } = await import("../../db/client.js");
+		const [row] =
+			await getDb()`SELECT config FROM connections WHERE id = ${connectionId}`;
+		expect(row.config.webhook_status).toBe("error");
+		expect(String(row.config.webhook_error)).toContain(
+			"requires at least one accessible project",
+		);
+	});
+
+	test("re-registers when the accessible Jira project set changes", async () => {
+		const connectionId = await seedConfiguredConnection();
+		const { ensureAtlassianMcpJiraWebhook } = await import(
+			"../../connect/atlassian-mcp-webhook.js"
+		);
+		let registeredUrl = "";
+		await ensureAtlassianMcpJiraWebhook({
+			organizationId: ORG,
+			connectionId,
+			baseUrl: "https://lobu.example.com",
+			fetchImpl: async (input, init) => {
+				if (init?.method === "GET") {
+					return requestUrl(input).includes("/project/search")
+						? projectSearchResponse()
+						: Response.json({ values: [], isLast: true });
+				}
+				registeredUrl = JSON.parse(String(init?.body)).url;
+				return Response.json({
+					webhookRegistrationResult: [{ createdWebhookId: 123 }],
+				});
+			},
+		});
+
+		const methods: string[] = [];
+		let deleteBody: unknown;
+		let registrationBody: Record<string, unknown> | undefined;
+		await ensureAtlassianMcpJiraWebhook({
+			organizationId: ORG,
+			connectionId,
+			baseUrl: "https://lobu.example.com",
+			fetchImpl: async (input, init) => {
+				methods.push(String(init?.method));
+				if (init?.method === "GET") {
+					return requestUrl(input).includes("/project/search")
+						? Response.json({
+								values: [
+									{ id: "10000", key: "KAN" },
+									{ id: "10001", key: "NEW" },
+								],
+								isLast: true,
+							})
+						: Response.json({
+								values: [
+									{
+										id: 123,
+										url: registeredUrl,
+										jqlFilter: PROJECT_JQL,
+									},
+								],
+								isLast: true,
+							});
+				}
+				if (init?.method === "DELETE") {
+					deleteBody = JSON.parse(String(init.body));
+					return Response.json({});
+				}
+				registrationBody = JSON.parse(String(init?.body));
+				return Response.json({
+					webhookRegistrationResult: [{ createdWebhookId: 456 }],
+				});
+			},
+		});
+		expect(methods).toEqual(["GET", "GET", "DELETE", "POST"]);
+		expect(deleteBody).toEqual({ webhookIds: [123] });
+		expect(
+			(registrationBody?.webhooks as Array<{ jqlFilter: string }>)[0].jqlFilter,
+		).toBe('project IN ("KAN", "NEW")');
+	});
+
+	test("does not re-register when Jira normalizes the stored project filter", async () => {
+		const connectionId = await seedConfiguredConnection();
+		const { ensureAtlassianMcpJiraWebhook } = await import(
+			"../../connect/atlassian-mcp-webhook.js"
+		);
+		let registeredUrl = "";
+		await ensureAtlassianMcpJiraWebhook({
+			organizationId: ORG,
+			connectionId,
+			baseUrl: "https://lobu.example.com",
+			fetchImpl: async (input, init) => {
+				if (init?.method === "GET") {
+					return requestUrl(input).includes("/project/search")
+						? projectSearchResponse()
+						: Response.json({ values: [], isLast: true });
+				}
+				registeredUrl = JSON.parse(String(init?.body)).url;
+				return Response.json({
+					webhookRegistrationResult: [{ createdWebhookId: 123 }],
+				});
+			},
+		});
+
+		const methods: string[] = [];
+		await ensureAtlassianMcpJiraWebhook({
+			organizationId: ORG,
+			connectionId,
+			baseUrl: "https://lobu.example.com",
+			fetchImpl: async (input, init) => {
+				methods.push(String(init?.method));
+				return requestUrl(input).includes("/project/search")
+					? projectSearchResponse()
+					: Response.json({
+							values: [
+								{
+									id: 123,
+									url: registeredUrl,
+									jqlFilter: "project = KAN",
+								},
+							],
+							isLast: true,
+						});
+			},
+		});
+		expect(methods).toEqual(["GET", "GET"]);
 	});
 
 	test("refreshes a due subscription without registering a duplicate", async () => {
@@ -260,8 +417,12 @@ describe("Atlassian MCP Jira dynamic webhooks", () => {
 			connectionId,
 			baseUrl: "https://lobu.example.com",
 			now: firstNow,
-			fetchImpl: async (_input, init) => {
-				if (init?.method === "GET") return Response.json({ values: [] });
+			fetchImpl: async (input, init) => {
+				if (init?.method === "GET") {
+					return requestUrl(input).includes("/project/search")
+						? projectSearchResponse()
+						: Response.json({ values: [], isLast: true });
+				}
 				registeredUrl = JSON.parse(String(init?.body)).url;
 				return Response.json({
 					webhookRegistrationResult: [{ createdWebhookId: 123 }],
@@ -276,22 +437,27 @@ describe("Atlassian MCP Jira dynamic webhooks", () => {
 			connectionId,
 			baseUrl: "https://lobu.example.com",
 			now: secondNow,
-			fetchImpl: async (_input, init) => {
+			fetchImpl: async (input, init) => {
 				methods.push(String(init?.method));
-				return init?.method === "GET"
-					? Response.json({
-							values: [
-								{
-									id: 123,
-									url: registeredUrl,
-									expirationDate: "2026-09-09T12:00:00.000Z",
-								},
-							],
-						})
-					: Response.json({ expirationDate: refreshedExpiry });
+				if (init?.method === "GET") {
+					return requestUrl(input).includes("/project/search")
+						? projectSearchResponse()
+						: Response.json({
+								values: [
+									{
+										id: 123,
+										url: registeredUrl,
+										jqlFilter: PROJECT_JQL,
+										expirationDate: "2026-09-09T12:00:00.000Z",
+									},
+								],
+								isLast: true,
+							});
+				}
+				return Response.json({ expirationDate: refreshedExpiry });
 			},
 		});
-		expect(methods).toEqual(["GET", "PUT"]);
+		expect(methods).toEqual(["GET", "GET", "PUT"]);
 		const { getDb } = await import("../../db/client.js");
 		const [row] =
 			await getDb()`SELECT config FROM connections WHERE id = ${connectionId}`;
@@ -308,8 +474,12 @@ describe("Atlassian MCP Jira dynamic webhooks", () => {
 			organizationId: ORG,
 			connectionId,
 			baseUrl: "https://lobu.example.com",
-			fetchImpl: async (_input, init) => {
-				if (init?.method === "GET") return Response.json({ values: [] });
+			fetchImpl: async (input, init) => {
+				if (init?.method === "GET") {
+					return requestUrl(input).includes("/project/search")
+						? projectSearchResponse()
+						: Response.json({ values: [], isLast: true });
+				}
 				registeredUrl = JSON.parse(String(init?.body)).url;
 				return Response.json({
 					webhookRegistrationResult: [{ createdWebhookId: 123 }],
@@ -378,7 +548,11 @@ describe("Atlassian MCP Jira dynamic webhooks", () => {
 			},
 		});
 		expect(fetchCalls).toBe(0);
-		expect(result).toEqual({ handled: true, changed: false, status: "disabled" });
+		expect(result).toEqual({
+			handled: true,
+			changed: false,
+			status: "disabled",
+		});
 	});
 
 	test("an orphaned callback-token secret forces provider reconciliation on teardown", async () => {

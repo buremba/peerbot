@@ -100,7 +100,8 @@ export async function supersedeActionEvent(
 ): Promise<number | undefined> {
 	const sql = db;
 	const originalEvent = await sql`
-    SELECT id, entity_ids, connection_id, connector_key, metadata, author_name, interaction_input_schema, interaction_input
+    SELECT id, entity_ids, connection_id, connector_key, metadata, author_name,
+      behavior_id, behavior_version_id, interaction_input_schema, interaction_input
     FROM current_event_records
     WHERE run_id = ${runId}
       AND organization_id = ${organizationId}
@@ -136,6 +137,12 @@ export async function supersedeActionEvent(
 			connectorKey: orig.connector_key,
 			connectionId: orig.connection_id,
 			runId,
+			behaviorId:
+				orig.behavior_id == null ? null : Number(orig.behavior_id),
+			behaviorVersionId:
+				orig.behavior_version_id == null
+					? null
+					: Number(orig.behavior_version_id),
 			interactionType: "approval",
 			interactionStatus:
 				status === "confirmed"

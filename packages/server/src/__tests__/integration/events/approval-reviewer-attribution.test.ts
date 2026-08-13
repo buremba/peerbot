@@ -33,7 +33,8 @@ async function insertActionRun(organizationId: string): Promise<number> {
 async function insertPendingApprovalEvent(
   organizationId: string,
   runId: number,
-  extraMetadata: Record<string, unknown> = {}
+  extraMetadata: Record<string, unknown> = {},
+  behavior?: { id: number; versionId: number }
 ): Promise<number> {
   const inserted = await insertEvent({
     entityIds: [],
@@ -44,11 +45,53 @@ async function insertPendingApprovalEvent(
     semanticType: 'operation',
     connectorKey: 'apple.computer_use',
     runId,
+    behaviorId: behavior?.id,
+    behaviorVersionId: behavior?.versionId,
     interactionType: 'approval',
     interactionStatus: 'pending',
     metadata: { status: 'pending_approval', ...extraMetadata },
   });
   return Number(inserted.id);
+}
+
+async function insertBehavior(
+  organizationId: string,
+  userId: string
+): Promise<{ id: number; versionId: number }> {
+  const sql = getDb();
+  const [behavior] = await sql`
+    INSERT INTO watchers (
+      organization_id, created_by, watcher_group_id, name, slug, agent_id
+    ) VALUES (
+      ${organizationId}, ${userId}, 0, 'Approval attribution',
+      'approval-attribution', 'approval-agent'
+    )
+    RETURNING id
+  `;
+  const id = Number(behavior.id);
+  await sql`UPDATE watchers SET watcher_group_id = ${id} WHERE id = ${id}`;
+  const [version] = await sql`
+    INSERT INTO watcher_versions (
+      watcher_id, version, name, created_by, prompt
+    ) VALUES (
+      ${id}, 1, 'Approval attribution', ${userId}, 'prompt'
+    )
+    RETURNING id
+  `;
+  return { id, versionId: Number(version.id) };
+}
+
+async function attributionFor(eventId: number): Promise<{
+  behavior_id: number | null;
+  behavior_version_id: number | null;
+}> {
+  const [row] = (await getDb()`
+    SELECT behavior_id, behavior_version_id FROM events WHERE id = ${eventId}
+  `) as Array<{
+    behavior_id: number | null;
+    behavior_version_id: number | null;
+  }>;
+  return row;
 }
 
 async function metadataFor(eventId: number): Promise<{
@@ -145,8 +188,9 @@ describe('approval reviewer attribution', () => {
   it('records the reviewer + reason on a reject transition', async () => {
     const org = await createTestOrganization();
     const reviewer = await createTestUser({ name: 'Rex Rejector' });
+    const behavior = await insertBehavior(org.id, reviewer.id);
     const runId = await insertActionRun(org.id);
-    await insertPendingApprovalEvent(org.id, runId);
+    await insertPendingApprovalEvent(org.id, runId, {}, behavior);
 
     const rejectedId = await supersedeActionEvent(
       runId,
@@ -163,6 +207,10 @@ describe('approval reviewer attribution', () => {
     expect(rejected.created_by).toBe(reviewer.id);
     expect(rejected.metadata.reviewed_by_name).toBe('Rex Rejector');
     expect(rejected.metadata.reason).toBe('not needed');
+    expect(await attributionFor(rejectedId!)).toEqual({
+      behavior_id: behavior.id,
+      behavior_version_id: behavior.versionId,
+    });
   });
 
   it('inherits the reviewer onto a later system transition (completed)', async () => {
@@ -199,6 +247,41 @@ describe('approval reviewer attribution', () => {
     expect(completed.created_by).toBe(reviewer.id);
     expect(completed.metadata.reviewed_by_id).toBe(reviewer.id);
     expect(completed.metadata.reviewed_by_name).toBe('Ada Approver');
+  });
+
+  it('preserves Behavior attribution through approved and completed states', async () => {
+    const org = await createTestOrganization();
+    const reviewer = await createTestUser({ name: 'Ada Approver' });
+    const behavior = await insertBehavior(org.id, reviewer.id);
+    const runId = await insertActionRun(org.id);
+    await insertPendingApprovalEvent(org.id, runId, {}, behavior);
+
+    const approvedId = await supersedeActionEvent(
+      runId,
+      org.id,
+      'confirmed',
+      'screenshot — executing',
+      'Operation confirmed',
+      {},
+      { userId: reviewer.id, name: reviewer.name }
+    );
+    expect(await attributionFor(approvedId!)).toEqual({
+      behavior_id: behavior.id,
+      behavior_version_id: behavior.versionId,
+    });
+
+    const completedId = await supersedeActionEvent(
+      runId,
+      org.id,
+      'completed',
+      'screenshot — completed',
+      'Operation completed',
+      { output: { bytes: 1 } }
+    );
+    expect(await attributionFor(completedId!)).toEqual({
+      behavior_id: behavior.id,
+      behavior_version_id: behavior.versionId,
+    });
   });
 
   it('leaves no reviewer when none was ever supplied', async () => {

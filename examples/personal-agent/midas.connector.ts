@@ -37,10 +37,25 @@ export interface MidasDashboardSnapshot {
   holdings: MidasHolding[];
   total_usd: number;
   total_try: number;
+  /** False when ticker rows were visible but not all parsed successfully. */
+  positions_complete: boolean;
+  /** Market sections actually present in this scrape. */
+  markets_observed: MidasMarket[];
+}
+
+export interface MidasHoldingIdentity {
+  type: MidasMarket;
+  symbol: string;
+  currency: "USD" | "TRY";
 }
 
 export interface MidasCheckpoint {
   last_run?: string;
+  /**
+   * Open-position book as of the last successful sync. Markets absent from a
+   * scrape carry their previous identities forward until observed again.
+   */
+  active_holdings?: MidasHoldingIdentity[];
 }
 
 /**
@@ -307,7 +322,24 @@ export function parseMidasDashboardText(text: string): MidasDashboardSnapshot {
   totalUsd = readBlock(usTickers, "US", "USD");
   totalTry = readBlock(trTickers, "TR", "TRY");
 
-  return { holdings, total_usd: totalUsd, total_try: totalTry };
+  return {
+    holdings,
+    total_usd: totalUsd,
+    total_try: totalTry,
+    positions_complete:
+      (usStartIdx !== -1 || trStartIdx !== -1) &&
+      holdings.length === usTickers.length + trTickers.length,
+    markets_observed: [
+      ...(usStartIdx !== -1 ? (["US"] as const) : []),
+      ...(trStartIdx !== -1 ? (["TR"] as const) : []),
+    ],
+  };
+}
+
+export function holdingOriginId(
+  holding: Pick<MidasHoldingIdentity, "type" | "symbol">
+): string {
+  return `midas-holding-${holding.type}-${holding.symbol}`;
 }
 
 export function holdingToEvent(
@@ -316,7 +348,7 @@ export function holdingToEvent(
 ): EventEnvelope {
   // Namespace by market so a dual-listed ticker cannot collide on origin_id.
   return {
-    origin_id: `midas-holding-${h.type}-${h.symbol}`,
+    origin_id: holdingOriginId(h),
     title: `Midas Holding: ${h.symbol}`,
     payload_text: `${h.symbol} (${h.type}): ${h.shares} @ ${h.price} ${h.currency} = ${h.value} ${h.currency} (avg ${h.avg_cost})`,
     occurred_at: occurredAt,
@@ -330,8 +362,57 @@ export function holdingToEvent(
       avg_cost: h.avg_cost,
       value: h.value,
       currency: h.currency,
+      status: "active",
     },
   };
+}
+
+function closedHoldingToEvent(
+  holding: MidasHoldingIdentity,
+  occurredAt: Date
+): EventEnvelope {
+  return {
+    origin_id: holdingOriginId(holding),
+    title: `Midas Holding Closed: ${holding.symbol}`,
+    payload_text: `${holding.symbol} (${holding.type}) is no longer present in the Midas portfolio.`,
+    occurred_at: occurredAt,
+    semantic_type: "financial_asset",
+    source_url: MIDAS_DASHBOARD_URL,
+    metadata: {
+      type: holding.type,
+      symbol: holding.symbol,
+      shares: 0,
+      price: 0,
+      avg_cost: 0,
+      value: 0,
+      currency: holding.currency,
+      status: "closed",
+    },
+  };
+}
+
+function checkpointHoldings(
+  checkpoint: MidasCheckpoint | null
+): MidasHoldingIdentity[] {
+  if (!Array.isArray(checkpoint?.active_holdings)) return [];
+
+  const byOrigin = new Map<string, MidasHoldingIdentity>();
+  for (const candidate of checkpoint.active_holdings) {
+    if (
+      !candidate ||
+      (candidate.type !== "US" && candidate.type !== "TR") ||
+      typeof candidate.symbol !== "string" ||
+      candidate.symbol.trim() === "" ||
+      (candidate.currency !== "USD" && candidate.currency !== "TRY") ||
+      (candidate.type === "US" && candidate.currency !== "USD") ||
+      (candidate.type === "TR" && candidate.currency !== "TRY")
+    ) {
+      continue;
+    }
+    const holding = { ...candidate, symbol: candidate.symbol.trim() };
+    byOrigin.set(holdingOriginId(holding), holding);
+  }
+  return [...byOrigin.values()];
 }
 
 export function balanceToEvent(
@@ -390,13 +471,13 @@ async function notifyMidasAuthWall(
   }
 }
 
-export default class MidasConnector extends ConnectorRuntime {
+export default class MidasConnector extends ConnectorRuntime<MidasCheckpoint> {
   readonly definition: ConnectorDefinition = {
     key: "midas",
     name: "Midas",
     description:
       "Syncs Midas portfolio holdings via the Owletto Chrome extension.",
-    version: "1.0.2",
+    version: "1.0.3",
     faviconDomain: "atlas.getmidas.com",
     authSchema: {
       methods: [{ type: "none" }],
@@ -421,6 +502,7 @@ export default class MidasConnector extends ConnectorRuntime {
                 avg_cost: { type: "number" },
                 value: { type: "number" },
                 currency: { type: "string" },
+                status: { type: "string", enum: ["active", "closed"] },
               },
             },
           },
@@ -441,7 +523,9 @@ export default class MidasConnector extends ConnectorRuntime {
     optionsSchema: { type: "object", properties: {} },
   };
 
-  async sync(ctx: SyncContext): Promise<SyncResult> {
+  async sync(
+    ctx: SyncContext<MidasCheckpoint>
+  ): Promise<SyncResult<MidasCheckpoint>> {
     if (ctx.feedKey !== "assets") {
       throw new Error(`Unknown feed: ${ctx.feedKey}`);
     }
@@ -518,22 +602,51 @@ export default class MidasConnector extends ConnectorRuntime {
       );
     }
 
+    if (!snapshot.positions_complete) {
+      throw new Error(
+        "Incomplete Midas dashboard parse — one or more visible holding rows were malformed. No events or closed positions were emitted."
+      );
+    }
+
     const occurredAt = new Date();
+    const activeHoldings: MidasHoldingIdentity[] = snapshot.holdings.map(
+      ({ type, symbol, currency }) => ({ type, symbol, currency })
+    );
+    const previousHoldings = checkpointHoldings(ctx.checkpoint);
+    const observedMarkets = new Set(snapshot.markets_observed);
+    const currentOrigins = new Set(activeHoldings.map(holdingOriginId));
+    const closedEvents = previousHoldings
+      .filter(
+        (holding) =>
+          observedMarkets.has(holding.type) &&
+          !currentOrigins.has(holdingOriginId(holding))
+      )
+      .map((holding) => closedHoldingToEvent(holding, occurredAt));
+    // A missing market section is ambiguous: it can mean an empty market or a
+    // partially rendered SPA. Preserve that market's checkpoint identities and
+    // emit no closures until a later scrape explicitly observes the section.
+    const unobservedHoldings = previousHoldings.filter(
+      (holding) => !observedMarkets.has(holding.type)
+    );
     const events: EventEnvelope[] = [
       ...snapshot.holdings.map((h) => holdingToEvent(h, occurredAt)),
+      ...closedEvents,
       balanceToEvent(snapshot, occurredAt),
     ];
 
     const checkpoint: MidasCheckpoint = {
       last_run: occurredAt.toISOString(),
+      active_holdings: [...activeHoldings, ...unobservedHoldings],
     };
 
     return {
       events,
-      checkpoint: checkpoint as unknown as Record<string, unknown>,
+      checkpoint,
       metadata: {
         items_found: events.length,
         holdings: snapshot.holdings.length,
+        holdings_closed: closedEvents.length,
+        markets_observed: snapshot.markets_observed,
         total_usd: snapshot.total_usd,
         total_try: snapshot.total_try,
         backend: "extension-dom",

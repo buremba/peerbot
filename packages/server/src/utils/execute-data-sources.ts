@@ -59,9 +59,11 @@ export interface DataSourceContext {
   windowStart?: string;
   windowEnd?: string;
   /**
-   * When set, the events CTE drops rows this Behavior produced. Set it for a
-   * Behavior's own source execution and nowhere else — a generic reader
-   * (`query_sql`, entity templates) must still see Behavior-produced events.
+   * When set, the events CTE drops rows this Behavior produced, except human
+   * canvas corrections (`semantic_type='canvas_state'` with
+   * `metadata.correction`). Set it for a Behavior's own source execution and
+   * nowhere else — a generic reader (`query_sql`, entity templates) must still
+   * see Behavior-produced events.
    */
   excludeProducedByBehaviorId?: number | null;
 }
@@ -634,13 +636,14 @@ export function buildScopedQuery(
       // and only this predicate stops an hourly Behavior compounding on itself.
       //
       // Self-scoped: one Behavior refining another's output is ordinary
-      // composition, so this drops rows from THIS Behavior only. Corrections
-      // are never stamped with a `behavior_id`, so human feedback still reaches
-      // the Behavior it was written about.
+      // composition, so this drops rows from THIS Behavior only. A supersede
+      // copies the producer stamp, including onto human canvas corrections —
+      // those stay visible via canvas_state + metadata.correction, not by
+      // clearing lineage. Tombstones keep the stamp and stay hidden.
       if (context.excludeProducedByBehaviorId != null) {
         idx++;
         params.push(context.excludeProducedByBehaviorId);
-        eventsCte += ` AND (ev.behavior_id IS NULL OR ev.behavior_id <> $${idx})`;
+        eventsCte += ` AND (ev.behavior_id IS NULL OR ev.behavior_id <> $${idx} OR (ev.semantic_type = 'canvas_state' AND ev.metadata->>'correction' = 'true'))`;
       }
 
       eventsCte += eventConnVisibility('ev');

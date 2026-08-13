@@ -87,9 +87,11 @@ interface InsertEventParams {
    * The Behavior that PRODUCED this row, and the version of it that ran.
    * Produced, never analyzed — a Behavior reading an event does not stamp it.
    *
-   * Set it on every path that writes on a Behavior's behalf. Leaving it unset
-   * makes the row invisible to `produced_by_behavior_id` and, worse, readable
-   * by the Behavior's own next window: self-exclusion keys on this column.
+   * Set it on the first write. A supersede copies producer/source lineage
+   * from the predecessor — omit or null cannot drop it. A later number
+   * restamps this version (new run / prompt version). Self-exclusion keys
+   * on this column; human canvas corrections stay visible via
+   * `metadata.correction`, not by clearing the stamp.
    */
   behaviorId?: number | null;
   behaviorVersionId?: number | null;
@@ -241,7 +243,12 @@ function isSemanticallyEqual(
     (existing.origin_type ?? null) === (params.originType ?? null) &&
     stableJson(existing.metadata ?? {}) === stableJson(params.metadata ?? {}) &&
     Number(existing.score ?? 0) === Number(params.score ?? 0) &&
-    (existing.origin_parent_id ?? null) === (params.parentOriginId ?? null) &&
+    // Compare the value a supersede would WRITE: a null parentOriginId copies
+    // the predecessor's parent (loadEventLineage), so only a caller-supplied
+    // parent can differ. Comparing the raw param would re-supersede a
+    // copied-parent head on every parentless re-sync, forever.
+    (params.parentOriginId == null ||
+      (existing.origin_parent_id ?? null) === params.parentOriginId) &&
     existing.interaction_type === (params.interactionType ?? 'none') &&
     (existing.interaction_status ?? null) === (params.interactionStatus ?? null) &&
     stableJson(existing.interaction_input_schema ?? null) ===
@@ -274,6 +281,78 @@ async function upsertEmbedding(
     INSERT INTO event_embeddings (event_id, chunk_index, embedding, embedding_model)
     VALUES (${eventId}, 0, ${vectorLiteral}::vector, ${embeddingModel})
   `;
+}
+
+type EventLineage = {
+  connectorKey: string | null;
+  connectionId: number | null;
+  feedKey: string | null;
+  feedId: number | null;
+  runId: number | null;
+  behaviorId: number | null;
+  behaviorVersionId: number | null;
+  parentOriginId: string | null;
+  identityNs: string | null;
+  identityKey: string | null;
+};
+
+function nullableNumber(value: number | string | null): number | null {
+  return value == null ? null : Number(value);
+}
+
+/**
+ * Resolve lineage for a new stored version. Connector/feed and identity belong
+ * to the chain and are always copied. Producer, run, and parent copy unless
+ * the caller supplies a replacement value — null cannot clear them. Identity
+ * cannot first appear on a successor: uniqueness is rooted at
+ * supersedes_event_id NULL.
+ */
+async function loadEventLineage(
+  sql: DbClient,
+  supersedesEventId: number,
+  params: InsertEventParams
+): Promise<EventLineage> {
+  const rows = await sql`
+    SELECT connector_key, connection_id, feed_key, feed_id, run_id,
+           behavior_id, behavior_version_id, origin_parent_id,
+           identity_ns, identity_key
+    FROM events
+    WHERE id = ${supersedesEventId}
+      AND organization_id = ${params.organizationId}
+    LIMIT 1
+  `;
+  const prior = rows[0] as
+    | {
+        connector_key: string | null;
+        connection_id: number | string | null;
+        feed_key: string | null;
+        feed_id: number | string | null;
+        run_id: number | string | null;
+        behavior_id: number | string | null;
+        behavior_version_id: number | string | null;
+        origin_parent_id: string | null;
+        identity_ns: string | null;
+        identity_key: string | null;
+      }
+    | undefined;
+  if (!prior) {
+    throw new Error(
+      `insertEvent: cannot supersede event ${supersedesEventId} — not found in organization ${params.organizationId}`
+    );
+  }
+  return {
+    connectorKey: prior.connector_key ?? null,
+    connectionId: nullableNumber(prior.connection_id),
+    feedKey: prior.feed_key ?? null,
+    feedId: nullableNumber(prior.feed_id),
+    runId: params.runId ?? nullableNumber(prior.run_id),
+    behaviorId: params.behaviorId ?? nullableNumber(prior.behavior_id),
+    behaviorVersionId:
+      params.behaviorVersionId ?? nullableNumber(prior.behavior_version_id),
+    parentOriginId: params.parentOriginId ?? prior.origin_parent_id ?? null,
+    identityNs: prior.identity_ns ?? null,
+    identityKey: prior.identity_key ?? null,
+  };
 }
 
 function isEventsClientIdForeignKeyViolation(error: unknown): boolean {
@@ -382,6 +461,22 @@ export async function insertEvent(
     sql: DbClient,
     supersedesEventId: number | null
   ): Promise<InsertedEvent> => {
+    const lineage: EventLineage =
+      supersedesEventId != null
+        ? await loadEventLineage(sql, supersedesEventId, params)
+        : {
+            connectorKey: params.connectorKey ?? null,
+            connectionId: params.connectionId ?? null,
+            feedKey: params.feedKey ?? null,
+            feedId: params.feedId ?? null,
+            runId: params.runId ?? null,
+            behaviorId: params.behaviorId ?? null,
+            behaviorVersionId: params.behaviorVersionId ?? null,
+            parentOriginId: params.parentOriginId ?? null,
+            identityNs: params.identity?.ns ?? null,
+            identityKey: params.identity?.key ?? null,
+          };
+
     const insertWithClientId = (activeSql: DbClient, clientId: string | null) => activeSql`
     INSERT INTO events (
       entity_ids, organization_id, origin_id, title,
@@ -409,15 +504,15 @@ export async function insertEvent(
       ${params.authorName ?? null},
       ${params.sourceUrl ?? null},
       ${params.occurredAt ?? new Date()},
-      ${params.parentOriginId ?? null},
+      ${lineage.parentOriginId},
       ${params.originType ?? null},
-      ${params.connectorKey ?? null},
-      ${params.connectionId ?? null},
-      ${params.feedKey ?? null},
-      ${params.feedId ?? null},
-      ${params.runId ?? null},
-      ${params.behaviorId ?? null},
-      ${params.behaviorVersionId ?? null},
+      ${lineage.connectorKey},
+      ${lineage.connectionId},
+      ${lineage.feedKey},
+      ${lineage.feedId},
+      ${lineage.runId},
+      ${lineage.behaviorId},
+      ${lineage.behaviorVersionId},
       ${params.semanticType},
       ${clientId},
       ${params.createdBy ?? null},
@@ -428,8 +523,8 @@ export async function insertEvent(
       ${params.interactionOutput ? sql.json(params.interactionOutput) : null},
       ${params.interactionError ?? null},
       ${supersedesEventId},
-      ${params.identity?.ns ?? null},
-      ${params.identity?.key ?? null},
+      ${lineage.identityNs},
+      ${lineage.identityKey},
       (
         SELECT COALESCE(array_agg(DISTINCT x.o), '{}'::text[])
         FROM (
@@ -439,7 +534,7 @@ export async function insertEvent(
           UNION ALL
           SELECT c.organization_id AS o
           FROM public.connections c
-          WHERE c.id = ${params.connectionId ?? null}
+          WHERE c.id = ${lineage.connectionId}
         ) x
         WHERE x.o IS NOT NULL
           AND (x.o <> ${params.organizationId}::text OR ${params.organizationId}::text IS NULL)

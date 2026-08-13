@@ -15,7 +15,7 @@ import type { ModelPreferenceStore } from "./auth/settings/model-preference-stor
 import type { UserAgentsStore } from "./auth/user-agents-store.js";
 import type { BehaviorSubscriptionService } from "./channels/behavior-subscription-service.js";
 import type { ArtifactStore } from "./files/artifact-store.js";
-import type { WorkerGateway } from "./gateway/index.js";
+import type { WorkerGateway } from "./worker-dispatch/worker-gateway.js";
 import type {
   IMessageQueue,
   QueueProducer,

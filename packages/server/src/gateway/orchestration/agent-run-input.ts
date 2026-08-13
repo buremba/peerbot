@@ -110,7 +110,7 @@ export function attachFreshRunJobToken(
         allowedDomains: token.allowedDomains,
         deniedDomains: token.deniedDomains,
         nixPackages: token.nixPackages,
-        // Same reason as the refresh mint in gateway/index.ts: dropping the
+        // Same reason as the refresh mint in worker-dispatch/worker-gateway.ts: dropping the
         // capture pair here would hand a re-dispatched eval replay a live
         // token, and the replay would perform for real everything it was
         // supposed to only record.

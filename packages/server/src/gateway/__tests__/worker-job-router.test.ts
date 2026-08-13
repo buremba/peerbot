@@ -9,8 +9,8 @@ import {
   encrypt,
   verifyWorkerToken,
 } from "@lobu/core";
-import { WorkerConnectionManager } from "../gateway/connection-manager.js";
-import { WorkerJobRouter } from "../gateway/job-router.js";
+import { WorkerConnectionManager } from "../worker-dispatch/connection-manager.js";
+import { WorkerJobRouter } from "../worker-dispatch/job-router.js";
 import {
   cleanupTestEnv,
   MockMessageQueue,

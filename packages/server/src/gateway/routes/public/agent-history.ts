@@ -22,7 +22,7 @@ import { resolveOrgId } from "../../../lobu/stores/org-context.js";
 import { readCurrentSuggestion } from "../../suggestions/persist-suggestion.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
 import type { ArtifactStore } from "../../files/artifact-store.js";
-import type { WorkerConnectionManager } from "../../gateway/connection-manager.js";
+import type { WorkerConnectionManager } from "../../worker-dispatch/connection-manager.js";
 import {
 	isConversationVisible,
 	listAgentThreads,

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { generateWorkerToken } from "@lobu/core";
 import type { DbClient } from "../../db/client.js";
 import { resolveBehaviorRunSkills } from "../behavior-run-session.js";
-import { WorkerGateway } from "../gateway/index.js";
+import { WorkerGateway } from "../worker-dispatch/worker-gateway.js";
 
 const TEST_ENCRYPTION_KEY = Buffer.from(
   "12345678901234567890123456789012"

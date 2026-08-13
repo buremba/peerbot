@@ -913,6 +913,20 @@ jobs:
         # another user's private-connection data through a new read path.
         run: bun scripts/check-connection-visibility-compiler.mjs
 
+      - name: Directory-structure gate
+        # Two shapes that made modules unfindable and drifted back in unnoticed,
+        # because nothing mechanical rejected them. (1) A directory repeating its
+        # parent's name: gateway/gateway/ held class WorkerGateway in an index.ts,
+        # so the most important object in the dispatch path could not be located
+        # by filename. (2) A <name>.ts larger than the <name>/ beside it: that
+        # pairing is this repo's extraction facade (manage_connections.ts at 140
+        # lines over 4,229), and manage_operations.ts sat at 3,488 over 627 —
+        # an abandoned extraction, shape-identical to the finished ones.
+        run: bun scripts/check-directory-structure.mjs
+
+      - name: Directory-structure gate tests
+        run: bun test scripts/__tests__/check-directory-structure.test.ts --timeout 30000
+
       - name: Review tooling shell tests
         # These previously ran inside scripts/review.sh's local unit stage; the
         # review runner is now LLM-only (CI owns the deterministic suites), so

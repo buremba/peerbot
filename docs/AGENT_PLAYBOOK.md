@@ -61,6 +61,25 @@ The macOS app lane stays on GitHub/Mac hardware. Subset runs (`make pre-pr-remot
 
 **Depot serializes org-wide.** A newer dispatch silently cancels the older run, and `gh run rerun` counts as a dispatch — re-running an *old* commit's CI cancels the run for the current HEAD. Check `pgrep -f "make pre-pr-remote"` immediately before dispatching.
 
+**Knowing when every required check has reported.** `gh pr checks <n> --required` prints only contexts GitHub has returned for the pull request. Lobu's required `integration` fan-in waits on the `integration-vitest` shards and `integration-bun`, and GitHub does not return it until it starts. Early on it is therefore absent rather than `pending`. A wait loop that counts `pending` rows exits successfully while that required check is still missing, and the merge fails with `Required status check "integration" is expected.`
+
+Diff the branch-protection list against the merge-satisfying results instead:
+
+```sh
+required_contexts=$(
+  gh api repos/lobu-ai/lobu/branches/main/protection/required_status_checks --jq '.contexts[]'
+) &&
+satisfied_contexts=$(
+  gh pr checks <n> --required --json name,bucket \
+    --jq '.[]|select(.bucket=="pass" or .bucket=="skipping")|.name'
+) &&
+comm -23 \
+  <(printf '%s\n' "$required_contexts" | sort) \
+  <(printf '%s\n' "$satisfied_contexts" | sort)
+```
+
+The chain must exit zero **and** print nothing before merge. Nonzero does not mean the read failed: `gh pr checks` exits 8 while checks are pending and nonzero when one has failed, so the `&&` chain stops there before `comm` ever runs. Output, when it runs, names a context that is either not merge-satisfying or not yet reported. Either way you are not ready to merge — run `gh pr checks <n> --required` to tell a reported failure or pending result apart from an absent context.
+
 **`make review` skip rule.** Small safe-class diffs (docs, renames, generated, additive tests; under 100 lines) skip the cross-harness reviewer by default. `REVIEWER_MODE=full make review` forces the independent review; `REVIEWER_SHADOW=1` measures the skip rule instead of trusting it.
 
 **UI proof.** `gh` cannot upload images inline. Capture before shots from the unmodified branch and after shots from the same booted app (auth recipe in `docs/BROWSER_TESTING.md`), base64-embed the PNGs into one self-contained HTML comparison page, host it at an HTTPS URL, and pass that URL as `ARTIFACT` to `make ui-review`. The gate records it on the exact merged Owletto PR, links it from the parent, and binds the evidence to that parent-base and Owletto-pointer pair for normal PR review. A rerun may reuse an exact proof already recorded for that pointer pair; otherwise no `ARTIFACT` means no proof and no pass.

@@ -29,6 +29,7 @@ import {
 } from "../../../../gateway/connections/chat-connection-service";
 import {
   EMPTY_SUMMARY,
+  getOperationsSummariesByConnection,
   getOperationsSummary,
   getOperationsSummaryBatch,
 } from "../../../../operations/connector-operations";
@@ -225,9 +226,17 @@ export async function handleListConnectorGroups(
 
   const rows = await query;
   const connectorKeys = [...new Set(rows.map((r) => String(r.connector_key)))];
+  const connectionIdByKey = new Map<string, number>();
+  for (const row of rows) {
+    const connectorKey = String(row.connector_key);
+    if (connectionIdByKey.has(connectorKey)) continue;
+    const firstConnection = mapConnectorGroupSummaries(row.connections)[0];
+    if (firstConnection) connectionIdByKey.set(connectorKey, firstConnection.id);
+  }
 	const opsSummaries = await getOperationsSummaryBatch(
 		organizationId,
 		connectorKeys,
+		connectionIdByKey,
 	);
 
   const groups = rows.map((row) => {
@@ -380,9 +389,12 @@ export async function handleList(
 	const connectorKeys = [
 		...new Set(resolved.map((r) => String(r.connector_key))),
 	];
-	const summaries = await getOperationsSummaryBatch(
+	const summaries = await getOperationsSummariesByConnection(
 		organizationId,
-		connectorKeys,
+		resolved.map((r) => ({
+			id: Number(r.id),
+			connectorKey: String(r.connector_key),
+		})),
 	);
 	// `SELECT c.*` carries the raw `config` jsonb, which is written verbatim
 	// (split by feed scope, never by secrecy). Resolve each connector's
@@ -393,7 +405,7 @@ export async function handleList(
 	);
 
   const connections = resolved.map((row) => {
-		const operationsSummary = summaries.get(String(row.connector_key)) ?? {
+		const operationsSummary = summaries.get(Number(row.id)) ?? {
 			...EMPTY_SUMMARY,
 		};
     const hasOperations = operationsSummary.total > 0;
@@ -548,6 +560,7 @@ export async function handleGet(
   const operationsSummary = await getOperationsSummary(
     organizationId,
 		String((resolved as any).connector_key),
+		args.connection_id,
   );
 
   const getRow = resolved as Record<string, unknown>;

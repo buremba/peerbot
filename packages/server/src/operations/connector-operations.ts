@@ -778,23 +778,35 @@ function summarizeOperations(
 export async function getOperationsSummary(
 	organizationId: string,
 	connectorKey: string,
+	connectionId?: number,
 ): Promise<OperationsSummary> {
-	const { operations } = await listOperations({
+	const connectors = await getConnectorsForListing({
 		organizationId,
 		connectorKey,
-		includeInputSchema: false,
-		includeOutputSchema: false,
+		connectionId,
 	});
+	if (connectors.length === 0) return { ...EMPTY_SUMMARY };
+	const operations = await buildConnectorOperations(
+		connectors[0],
+		organizationId,
+		{ connectionId, tolerateMcpFailure: true },
+	);
 	return summarizeOperations(operations);
 }
 
 /**
- * Batch version — fetches all connectors for the org in a single DB query,
- * then builds summaries in parallel. Use this in list endpoints to avoid N+1.
+ * Connector-keyed summaries for catalog/group views. Fetches the org's
+ * definitions once, then builds summaries in parallel.
+ *
+ * OAuth-protected MCP tools are connection-scoped. Pass `connectionIdByKey`
+ * whenever the caller already has a connection so discovery uses that
+ * account's credentials instead of an unauthenticated probe. Per-row
+ * connection lists should use `getOperationsSummariesByConnection`.
  */
 export async function getOperationsSummaryBatch(
 	organizationId: string,
 	connectorKeys: string[],
+	connectionIdByKey?: ReadonlyMap<string, number>,
 ): Promise<Map<string, OperationsSummary>> {
 	if (connectorKeys.length === 0) return new Map();
 
@@ -806,7 +818,10 @@ export async function getOperationsSummaryBatch(
 			const operations = await buildConnectorOperations(
 				connector,
 				organizationId,
-				{ tolerateMcpFailure: true },
+				{
+					connectionId: connectionIdByKey?.get(connector.key),
+					tolerateMcpFailure: true,
+				},
 			);
 			return [connector.key, summarizeOperations(operations)] as const;
 		}),
@@ -818,4 +833,36 @@ export async function getOperationsSummaryBatch(
 		if (!result.has(key)) result.set(key, { ...EMPTY_SUMMARY });
 	}
 	return result;
+}
+
+/**
+ * Per-connection summaries. Remote MCP catalogs can differ by account, so
+ * list/get must not collapse two connections of the same connector key.
+ */
+export async function getOperationsSummariesByConnection(
+	organizationId: string,
+	connections: Array<{ id: number; connectorKey: string }>,
+): Promise<Map<number, OperationsSummary>> {
+	if (connections.length === 0) return new Map();
+
+	const connectors = await getConnectorsForListing({ organizationId });
+	const byKey = new Map(connectors.map((connector) => [connector.key, connector]));
+
+	const entries = await Promise.all(
+		connections.map(async (connection) => {
+			const connector = byKey.get(connection.connectorKey);
+			if (!connector) return [connection.id, { ...EMPTY_SUMMARY }] as const;
+			const operations = await buildConnectorOperations(
+				connector,
+				organizationId,
+				{
+					connectionId: connection.id,
+					tolerateMcpFailure: true,
+				},
+			);
+			return [connection.id, summarizeOperations(operations)] as const;
+		}),
+	);
+
+	return new Map(entries);
 }

@@ -104,6 +104,31 @@ describe("check-directory-structure", () => {
     expect(result.exitCode).toBe(0);
   });
 
+  it("governs handwritten client source but not its generated surface", () => {
+    // packages/client mixes a tool-authored src/generated/** tree with ~670
+    // lines of handwritten source. Excluding the whole package to skip the
+    // generated half would leave the handwritten half ungoverned, so the
+    // generated tree is skipped by SKIPPED_DIRS and the package is not.
+    const clientSrc = join(dir, "packages", "client", "src");
+    mkdirSync(join(clientSrc, "generated", "generated"), { recursive: true });
+    writeFileSync(
+      join(clientSrc, "generated", "generated", "types.ts"),
+      "export {};"
+    );
+    mkdirSync(join(clientSrc, "session", "session"), { recursive: true });
+    writeFileSync(
+      join(clientSrc, "session", "session", "index.ts"),
+      "export {};"
+    );
+
+    const result = runGate(dir);
+    expect(result.exitCode).toBe(1);
+    const err = result.stderr.toString();
+    expect(err).toContain("1 violation(s)");
+    expect(err).toContain(join("client", "src", "session", "session"));
+    expect(err).not.toContain("generated");
+  });
+
   it("reports every violation, not just the first", () => {
     writeSrc(dir, "gateway/gateway/index.ts", 1200);
     writeSrc(dir, "tools/manage_ops.ts", 3500);

@@ -41,7 +41,6 @@ const PACKAGES_DIR = "packages";
 /** Packages whose src tree this gate does not govern. */
 const EXCLUDED_PACKAGES = new Set([
   "owletto", // git submodule: separate repo, separate conventions
-  "client", // generated SDK surface (src/generated/**) is tool-authored
   "node_modules",
 ]);
 

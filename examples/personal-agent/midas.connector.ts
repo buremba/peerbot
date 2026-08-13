@@ -336,7 +336,7 @@ export function parseMidasDashboardText(text: string): MidasDashboardSnapshot {
   };
 }
 
-export function holdingOriginId(
+function holdingOriginId(
   holding: Pick<MidasHoldingIdentity, "type" | "symbol">
 ): string {
   return `midas-holding-${holding.type}-${holding.symbol}`;
@@ -584,10 +584,21 @@ export default class MidasConnector extends ConnectorRuntime<MidasCheckpoint> {
     const bodyText = textObs.value ?? "";
     const snapshot = parseMidasDashboardText(bodyText);
 
+    // A confirmed-empty portfolio and a failed parse both yield zero holdings
+    // and zero totals, but they are not the same event and must not share an
+    // outcome. Selling the last position is precisely when a closure matters
+    // most: throw here and the final holdings stay active forever.
+    //
+    // `markets_observed` separates them structurally. It is non-empty only when
+    // a section header was actually found, so an empty portfolio still reports
+    // both markets while a soft logout or a renamed UI reports neither. Rows
+    // that rendered but failed to parse are caught by the `positions_complete`
+    // check below, which still refuses to emit closures.
     if (
       snapshot.holdings.length === 0 &&
       snapshot.total_usd === 0 &&
-      snapshot.total_try === 0
+      snapshot.total_try === 0 &&
+      snapshot.markets_observed.length === 0
     ) {
       // Empty portfolio is rare; more often the UI language/layout changed or
       // the session is soft-logged-out without a hard redirect.

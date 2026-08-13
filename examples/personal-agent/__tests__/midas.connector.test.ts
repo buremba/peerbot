@@ -102,6 +102,15 @@ const DRIFTED_DASHBOARD_FIXTURE = [
   "n/a",
 ].join("\n");
 
+// Both market sections rendered, no positions in either. Structurally this is
+// a confirmed-empty portfolio, not a failed parse: the headers are present and
+// every ticker they list (none) was read.
+const EMPTY_DASHBOARD_FIXTURE = [
+  "Pozisyonlar",
+  "ABD Hisseleri",
+  "BIST Hisseleri",
+].join("\n");
+
 const US_ONLY_DASHBOARD_FIXTURE = [
   "Pozisyonlar",
   "ABD Hisseleri",
@@ -415,6 +424,38 @@ describe("MidasConnector.sync", () => {
         (event) => event.origin_id === "midas-holding-US-NOVA"
       )
     ).toEqual([]);
+  });
+
+  test("closes the last remaining holdings when the portfolio empties out", async () => {
+    const first = await syncWith(DASHBOARD_FIXTURE, {});
+    const opened = first.events
+      .filter((event) => event.metadata?.status === "active")
+      .map((event) => event.origin_id)
+      .sort();
+    expect(opened.length).toBeGreaterThan(0);
+
+    const second = await syncWith(EMPTY_DASHBOARD_FIXTURE, first.checkpoint);
+
+    // Selling the final position is the one transition that must not be lost:
+    // with no replacement row every holding stays "active" forever.
+    expect(
+      second.events
+        .filter((event) => event.metadata?.status === "closed")
+        .map((event) => event.origin_id)
+        .sort()
+    ).toEqual(opened);
+    expect(second.checkpoint?.active_holdings).toEqual([]);
+
+    const third = await syncWith(EMPTY_DASHBOARD_FIXTURE, second.checkpoint);
+    expect(
+      third.events.filter((event) => event.metadata?.status === "closed")
+    ).toEqual([]);
+  });
+
+  test("still fails closed when no market section rendered at all", async () => {
+    await expect(
+      syncWith("Pozisyonlar\nsomething else entirely", {})
+    ).rejects.toThrow(/no holdings or totals found/);
   });
 
   test("does not close positions from an incomplete dashboard parse", async () => {

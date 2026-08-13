@@ -22,6 +22,23 @@ dotenv.config();
 
 const dsn = process.env.SENTRY_DSN;
 
+// A dev runtime never legitimately reports as production. The worktree/dev
+// stacks that carry a prod .env copy (SENTRY_DSN + an exported ENVIRONMENT)
+// were shipping local errors into the prod Sentry project as `production`
+// events — e.g. LOBU-BACKEND-36 with a /Users/.../.claude/worktrees path.
+// NODE_ENV=development with ENVIRONMENT=production is that exact misconfig,
+// so force the environment down so the prod filter stays trustworthy.
+if (
+  dsn &&
+  process.env.ENVIRONMENT === 'production' &&
+  process.env.NODE_ENV === 'development'
+) {
+  console.error(
+    '[instrument] ENVIRONMENT=production with NODE_ENV=development — tagging local Sentry events as development instead of polluting prod'
+  );
+  process.env.ENVIRONMENT = 'development';
+}
+
 if (dsn) {
   const isDev = process.env.NODE_ENV === 'development' || process.env.ENVIRONMENT === 'development';
 

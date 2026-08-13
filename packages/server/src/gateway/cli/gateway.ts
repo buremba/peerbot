@@ -643,9 +643,10 @@ export function createGatewayApp(
       // Per-KIND delivery, dispatched off the DECLARED `deliveryKind` — never a
       // provider name. A `chat` connector forwards verified deliveries to the
       // chat adapter for its provider (Slack today); a `data` connector lands
-      // them through the data path: its poll-canonical trigger/store hook when it
-      // ships one (GitHub), else the raw event-ingest fallback (Jira/Linear → no
-      // hook). Both the chat-forward routing and the data hooks live outside this
+      // them through the data path: its per-connector delivery hook when it
+      // ships one (GitHub sync-now triggers, Jira → Rovo issue events), else the
+      // raw event-ingest fallback (Linear, and Jira until a Rovo feed exists).
+      // Both the chat-forward routing and the data hooks live outside this
       // wiring, keyed off the connector, so gateway core carries no provider
       // literal.
       const deliveryKind = integration.webhookSchema.deliveryKind ?? "data";

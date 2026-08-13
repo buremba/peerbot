@@ -16,6 +16,7 @@ import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCodeForKey } from '../utils/ensure-connector-installed';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
 import {
+  ATLASSIAN_JIRA_ISSUES_FEED_KEY,
   isAtlassianMcpConfig,
   normalizeMcpProxyConfig,
   readAtlassianMcpVirtualFeed,
@@ -236,6 +237,11 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
     ? normalizeMcpProxyConfig(feed.mcp_config)
     : null;
   if (mcpConfig) {
+    if (feed.feed_key !== ATLASSIAN_JIRA_ISSUES_FEED_KEY) {
+      throw new Error(
+        `Atlassian MCP virtual feed '${feed.feed_key}' has no registered live-read adapter`
+      );
+    }
     return readAtlassianMcpVirtualFeed({
       organizationId: p.scope.organizationId,
       connectionId: Number(feed.connection_id),

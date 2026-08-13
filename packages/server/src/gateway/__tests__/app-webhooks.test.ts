@@ -33,6 +33,7 @@ import {
 	extractTenantFromSchema,
 	verifyDeclaredWebhook,
 } from "../routes/public/app-webhooks.js";
+import { createJiraWebhookDelivery } from "../routes/public/jira-mcp-webhook-delivery.js";
 
 // The connectors' DECLARED webhook schemas (mirrors of their `webhook` blocks).
 // Drives the generic engine in tests exactly as the bundled declaration does in
@@ -741,7 +742,14 @@ function buildJiraApp() {
 	return createAppWebhookRoutes({
 		installationStore: createPostgresAppInstallationStore(),
 		secretStore: fakeSecretStore,
-		providers: [createDeclaredAppWebhookProvider({ provider: "jira", appId: JIRA_APP_ID, webhookSchema: JIRA_WEBHOOK_SCHEMA })],
+		providers: [
+			createDeclaredAppWebhookProvider({
+				provider: "jira",
+				appId: JIRA_APP_ID,
+				webhookSchema: JIRA_WEBHOOK_SCHEMA,
+				onDelivery: createJiraWebhookDelivery(),
+			}),
+		],
 		resolveAppWebhookSecret: async () => JIRA_SECRET,
 	});
 }
@@ -759,6 +767,52 @@ async function seedJiraInstall(): Promise<number> {
 	return row.id;
 }
 
+async function seedAtlassianMcpIssuesFeed(): Promise<{
+	connectionId: number;
+	feedId: number;
+	connectorKey: string;
+}> {
+	const { getDb } = await import("../../db/client.js");
+	const sql = getDb();
+	const connectorKey = "mcp.mcp-atlassian-com";
+	await sql`
+    INSERT INTO connector_definitions (
+      organization_id, key, name, version, status, mcp_config, feeds_schema
+    ) VALUES (
+      ${ORG}, ${connectorKey}, 'Atlassian', '1.0.0', 'active',
+      ${sql.json({ upstream_url: "https://mcp.atlassian.com/v1/mcp" })},
+      ${sql.json({ issues: { key: "issues", virtual: true } })}
+    )
+  `;
+	const [connection] = await sql`
+    INSERT INTO connections (
+      organization_id, connector_key, slug, display_name, status, config, visibility
+    ) VALUES (
+      ${ORG}, ${connectorKey}, 'atlassian-rovo', 'Atlassian', 'active',
+      ${sql.json({
+			cloud_id: "cloud-1",
+			site_cloud_id: "cloud-1",
+			site_url: `https://${JIRA_SITE}`,
+		})},
+      'org'
+    )
+    RETURNING id
+  `;
+	const [feed] = await sql`
+    INSERT INTO feeds (
+      organization_id, connection_id, feed_key, display_name, status, kind, virtual, config
+    ) VALUES (
+      ${ORG}, ${connection.id}, 'issues', 'Issues', 'active', 'virtual', true, '{}'::jsonb
+    )
+    RETURNING id
+  `;
+	return {
+		connectionId: Number(connection.id),
+		feedId: Number(feed.id),
+		connectorKey,
+	};
+}
+
 function jiraDelivery(
 	rawBody: string,
 	{ signature = jiraSign(rawBody) }: { signature?: string } = {},
@@ -774,6 +828,82 @@ function jiraDelivery(
 }
 
 describe("app-webhook router (Jira)", () => {
+	test("a signed issue delivery lands as a structured event on the matching Atlassian MCP feed", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		await seedJiraInstall();
+		const target = await seedAtlassianMcpIssuesFeed();
+		const app = buildJiraApp();
+
+		const raw = JSON.stringify({
+			webhookEvent: "jira:issue_updated",
+			issue: {
+				id: "10000",
+				key: "ACME-1",
+				self: `https://${JIRA_SITE}/rest/api/2/issue/10000`,
+				fields: {
+					summary: "Rovo webhook",
+					description: "Arrived through the Jira app",
+					status: { name: "In Progress" },
+					reporter: { displayName: "Ada" },
+					created: "2026-08-13T10:00:00.000Z",
+					updated: "2026-08-13T11:00:00.000Z",
+				},
+			},
+		});
+		const res = await app.fetch(jiraDelivery(raw));
+		expect(res.status).toBe(200);
+		expect(await res.json()).toMatchObject({ ok: true, triggered: true });
+
+		const rows = await eventRows(target.connectorKey);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			connection_id: target.connectionId,
+			feed_id: target.feedId,
+			feed_key: "issues",
+			origin_id: "jira_issue_10000",
+			origin_type: "issue",
+			title: "Rovo webhook",
+			author_name: "Ada",
+		});
+		expect(await appInstallEventCount()).toBe(0);
+	});
+
+	test("a signed comment delivery lands under the issue as a structured comment event", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		await seedJiraInstall();
+		const target = await seedAtlassianMcpIssuesFeed();
+		const app = buildJiraApp();
+
+		const raw = JSON.stringify({
+			webhookEvent: "comment_created",
+			issue: {
+				id: "10000",
+				key: "ACME-1",
+				self: `https://${JIRA_SITE}/rest/api/2/issue/10000`,
+				fields: { summary: "Rovo webhook" },
+			},
+			comment: {
+				id: "20000",
+				self: `https://${JIRA_SITE}/rest/api/2/issue/10000/comment/20000`,
+				body: "Looks good",
+				author: { displayName: "Grace" },
+				created: "2026-08-13T11:05:00.000Z",
+			},
+		});
+		const res = await app.fetch(jiraDelivery(raw));
+		expect(res.status).toBe(200);
+
+		const rows = await eventRows(target.connectorKey);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			origin_id: "jira_comment_20000",
+			origin_parent_id: "jira_issue_10000",
+			origin_type: "comment",
+			author_name: "Grace",
+			payload_text: "Looks good",
+		});
+	});
+
 	test("a signed issue delivery routes to the owning org via its site host", async () => {
 		await seedAgentRow(AGENT, { organizationId: ORG });
 		const installId = await seedJiraInstall();

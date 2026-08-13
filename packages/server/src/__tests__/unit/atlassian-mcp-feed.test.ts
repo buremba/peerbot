@@ -3,8 +3,8 @@ import {
 	ATLASSIAN_MCP_FEEDS,
 	buildAtlassianMcpJql,
 	isAtlassianMcpUrl,
-	parseAtlassianCloudId,
 	parseAtlassianMcpIssues,
+	parseAtlassianMcpJiraSite,
 	parseAtlassianMcpNextPageToken,
 } from "../../operations/atlassian-mcp-feed";
 
@@ -95,7 +95,7 @@ describe("Atlassian MCP virtual feed helpers", () => {
 
 	it("reads a cloud id out of accessible-resources MCP text", () => {
 		expect(
-			parseAtlassianCloudId({
+			parseAtlassianMcpJiraSite({
 				content: [
 					{
 						type: "text",
@@ -104,7 +104,23 @@ describe("Atlassian MCP virtual feed helpers", () => {
 						]),
 					},
 				],
-			}),
+			})?.cloudId,
 		).toBe("49140293-40ce-45b6-8cdc-ec4e1356a7c8");
+	});
+
+	it("fails closed instead of choosing the first accessible Jira site", () => {
+		expect(
+			parseAtlassianMcpJiraSite({
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify([
+							{ id: "cloud-1", url: "https://one.atlassian.net" },
+							{ id: "cloud-2", url: "https://two.atlassian.net" },
+						]),
+					},
+				],
+			}),
+		).toBeNull();
 	});
 });

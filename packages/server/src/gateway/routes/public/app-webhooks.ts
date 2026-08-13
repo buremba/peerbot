@@ -54,6 +54,7 @@ import {
 	githubUserIdentityKey,
 } from "@lobu/connectors/github-identity";
 import { extractGithubActor, resolveGithubWebhookActor } from "./github-webhook-actor.js";
+import { createJiraWebhookDelivery } from "./jira-mcp-webhook-delivery.js";
 
 const logger = createLogger("app-webhook-routes");
 
@@ -148,9 +149,13 @@ export interface AppWebhookProvider {
 	onDelivery?(params: {
 		rawBody: Uint8Array;
 		headers: Headers;
-		install: { id: number | string; organizationId: string };
+		install: {
+			id: number | string;
+			organizationId: string;
+			externalTenantId: string;
+		};
 		sql: DbClient;
-	}): Promise<{ triggered: boolean }>;
+	}): Promise<{ triggered: boolean; handled?: boolean }>;
 	/**
 	 * Optional: take over the ENTIRE delivery after `verify`, bypassing the
 	 * router's `extractTenant` → `resolveActiveByTenant` (`app_installations`) →
@@ -513,12 +518,13 @@ export function createGithubWebhookDelivery(options: {
  * data delivery — NOT by a provider-name branch in the gateway wiring. A data
  * integration whose deliveries are POLL-CANONICAL (GitHub: trigger the affected
  * feed / store event-complete signals) ships a hook here; data integrations that
- * RAW-STORE their deliveries (Jira/Linear) ship none, so the router falls through
- * to the raw event-ingest path. This lookup lives in the data-delivery module
- * (alongside the hook impls), so the gateway selects `data` vs `chat` by
- * deliveryKind and delegates the per-connector data hook to this — gateway core
- * stays free of provider literals. A new poll-canonical data integration adds its
- * hook here; everything else needs no change.
+ * RAW-STORE their deliveries (Linear) ship none, so the router falls through to
+ * the raw event-ingest path. Jira routes matching sites to Atlassian Rovo
+ * issue feeds and explicitly falls through while no Rovo feed exists. This
+ * lookup lives in the data-delivery module, so the gateway selects `data` vs
+ * `chat` by deliveryKind and delegates the per-connector data hook to this —
+ * gateway core stays free of provider literals. A new hook-shipping data
+ * integration adds its hook here; everything else needs no change.
  */
 export function createDataWebhookDelivery(
 	connectorKey: string,
@@ -529,6 +535,7 @@ export function createDataWebhookDelivery(
 			storeWebhookEvents: process.env.GITHUB_WEBHOOK_STORE_EVENTS !== "false",
 		});
 	}
+	if (connectorKey === "jira") return createJiraWebhookDelivery();
 	return undefined;
 }
 
@@ -1122,20 +1129,26 @@ export function createAppWebhookRoutes(deps: AppWebhookRouterDeps): Hono {
 			return json(200, { ok: true, landed: false });
 		}
 
-		// 4. Trigger-handling providers (github) treat the delivery as a "sync now"
-		//    signal rather than a record: resolve identity + mark the affected
-		//    repo's feeds due, no raw event. The canonical record is the poll, so
-		//    push and backfill stay one consolidated dataset. Providers without
-		//    onDelivery fall through to the raw store below (jira/linear).
+		// 4. Structured-delivery providers handle the delivery as a sync signal
+		//    (GitHub: resolve identity + mark the affected repo's feeds due, no raw
+		//    event — the poll stays the canonical record, so push and backfill are
+		//    one consolidated dataset) or as a structured connector event (Jira →
+		//    Rovo issues feed). A handler may return handled:false when its target
+		//    is not configured yet; that falls through to the raw store below,
+		//    preserving the staged migration (Atlassian Rovo before the legacy Jira
+		//    connector is removed). Providers without onDelivery (linear) fall
+		//    through the same way.
 		if (provider.onDelivery) {
 			try {
-				const { triggered } = await provider.onDelivery({
+				const { triggered, handled } = await provider.onDelivery({
 					rawBody,
 					headers: c.req.raw.headers,
 					install,
 					sql: getDb(),
 				});
-				return json(200, { ok: true, triggered });
+				if (handled !== false) {
+					return json(200, { ok: true, triggered });
+				}
 			} catch (error) {
 				routeLogger.error(
 					{ provider: providerName, installationId: install.id, error: String(error) },

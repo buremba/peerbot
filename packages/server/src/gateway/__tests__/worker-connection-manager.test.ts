@@ -4,7 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { WorkerConnectionManager } from "../gateway/connection-manager.js";
+import { WorkerConnectionManager } from "../worker-dispatch/connection-manager.js";
 import {
   cleanupTestEnv,
   MockResponse,

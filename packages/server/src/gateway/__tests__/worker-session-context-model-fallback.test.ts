@@ -25,7 +25,7 @@ import {
 } from "../../lobu/stores/provider-secrets.js";
 import { resolveAgentOptions } from "../services/platform-helpers.js";
 import { ProviderCatalogService } from "../auth/provider-catalog.js";
-import { WorkerGateway } from "../gateway/index.js";
+import { WorkerGateway } from "../worker-dispatch/worker-gateway.js";
 
 // createInferenceProvider encrypts the org key and ProviderCatalogService later
 // decrypts it, so each test owns the process-wide env value and cached key.

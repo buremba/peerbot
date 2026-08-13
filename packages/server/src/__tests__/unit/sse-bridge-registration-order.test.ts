@@ -1,7 +1,7 @@
 /**
  * Regression tests for the three race windows that PR #845 missed (codex audit):
  *
- *   1. `gateway/gateway/index.ts` — `WorkerGateway.handleStreamConnection`
+ *   1. `gateway/worker-dispatch/worker-gateway.ts` — `WorkerGateway.handleStreamConnection`
  *      registered the `sseWriter.onClose` cleanup AFTER awaiting
  *      `pauseWorker`/`addConnection`/`registerWorker`. An abort fired in that
  *      window left a dead writer in `WorkerConnectionManager`.
@@ -55,7 +55,7 @@ function fakeConnectionManager() {
 describe('worker SSE handleStreamConnection — registration-order latch', () => {
   it('does not add a dead writer when abort fires during async pauseWorker', async () => {
     // Re-implement the route's latch shape against fakes. This mirrors the
-    // production code in `packages/server/src/gateway/gateway/index.ts`
+    // production code in `packages/server/src/gateway/worker-dispatch/worker-gateway.ts`
     // (`handleStreamConnection`) — see the comments around `runCleanup`.
     const manager = fakeConnectionManager();
     const ctrl = new AbortController();

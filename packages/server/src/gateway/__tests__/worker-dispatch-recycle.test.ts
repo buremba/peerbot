@@ -23,10 +23,10 @@ import {
   ConversationOwnedElsewhereError,
   type MessagePayload,
 } from "@lobu/core";
-import { WorkerConnectionManager } from "../gateway/connection-manager.js";
-import type { DispatchRecycler } from "../gateway/dispatch-recycle.js";
-import { StaleWorkerError } from "../gateway/dispatch-recycle.js";
-import { WorkerJobRouter } from "../gateway/job-router.js";
+import { WorkerConnectionManager } from "../worker-dispatch/connection-manager.js";
+import type { DispatchRecycler } from "../worker-dispatch/dispatch-recycle.js";
+import { StaleWorkerError } from "../worker-dispatch/dispatch-recycle.js";
+import { WorkerJobRouter } from "../worker-dispatch/job-router.js";
 import { generateDeploymentName } from "../orchestration/deployment-manager.js";
 import {
   cleanupTestEnv,

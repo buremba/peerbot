@@ -58,7 +58,7 @@ import { sweepStalePendingInteractions } from "../connections/pending-interactio
 import { createGatewayStateAdapter } from "../connections/state-adapter.js";
 import type { RuntimeProviderCredentialResolver } from "../embedded.js";
 import { ArtifactStore } from "../files/artifact-store.js";
-import { WorkerGateway } from "../gateway/index.js";
+import { WorkerGateway } from "../worker-dispatch/worker-gateway.js";
 import { registerBuiltinGuardrails } from "../guardrails/builtins.js";
 import type { IMessageQueue } from "../infrastructure/queue/index.js";
 import { QueueProducer, RunsQueue } from "../infrastructure/queue/index.js";

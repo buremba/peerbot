@@ -1,5 +1,4 @@
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { type ChildProcess, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -9,17 +8,12 @@ import {
 	createLogger,
 	ErrorCode,
 	extractTraceId,
-	generateWorkerToken,
-	generateWorkerTokenPair,
 	getErrorMessage,
 	type MessagePayload,
 	normalizeDomainPattern,
 	OrchestratorError,
-	retryWithBackoff,
 } from "@lobu/core";
-import { nixPackageAttrRef as nixPackageAttrRefBase } from "@lobu/connector-sdk/nix-package";
 import { intervals } from "../../config/intervals.js";
-import { getDb } from "../../db/client.js";
 import type { ProviderCredentialContext } from "../embedded.js";
 import type { ModelProviderModule } from "../modules/module-system.js";
 import type { GrantStore } from "../permissions/grant-store.js";
@@ -41,7 +35,6 @@ import {
   runInBatches,
 } from "./deployment-utils.js";
 import { failTurnsForDeployment } from "./turn-liveness.js";
-import { buildWorkerTokenClaims } from "./worker-token-claims.js";
 import { CredentialLeaseRegistry } from "../agent-tooling/credential-lease.js";
 import {
   EMPTY_AGENT_TOOLING,
@@ -52,211 +45,54 @@ import {
 } from "../agent-tooling/resolver.js";
 import { resolvePinnedSelection } from "../../lobu/stores/sandbox-store.js";
 import { getInternalGatewayUrl } from "../config/index.js";
+import {
+  SYSTEMD_FAST_FAIL_MS,
+  SYSTEMD_SETUP_ERROR_RE,
+  buildSystemdRunArgs,
+  disableSystemdRunForSession,
+  locateNixShell,
+  locateSystemdRun,
+  makeUnitName,
+  signalWorkerGroup,
+  workerSandboxRequired,
+} from "./host-capabilities.js";
+import { acquireConversationLock } from "./conversation-locks.js";
+import {
+  buildEmbeddedWorkerPath,
+  buildShellCommand,
+  buildWorkerInvocation,
+  nixPackageAttrRef,
+} from "./worker-invocation.js";
+import {
+  buildCanonicalConversationKey,
+  buildDeploymentTokenPair,
+  type DeploymentIdentity,
+  detectProviderBaseUrlCollisions,
+  generateDeploymentName,
+  isSecretEnvVar,
+} from "./deployment-identity.js";
+
+export { signalWorkerGroup, __resetCapabilityProbesForTests } from "./host-capabilities.js";
+export {
+  acquireConversationLock,
+  getMaxReservedLocks,
+  getReservedLockCount,
+  resetReservedLockCountForTests,
+  setReservedLockCountForTests,
+} from "./conversation-locks.js";
+export { nixPackageAttrRef } from "./worker-invocation.js";
+export {
+  buildCanonicalConversationKey,
+  buildDeploymentWorkerToken,
+  detectProviderBaseUrlCollisions,
+  generateDeploymentName,
+  type DeploymentIdentity,
+} from "./deployment-identity.js";
 
 const logger = createLogger("orchestrator");
 
-
-/**
- * A `systemd-run --scope` that can't reach the user bus / start the scope
- * fails almost instantly — before the worker payload runs. We only treat an
- * exit as a systemd setup failure (vs. a genuine fast worker crash) when it
- * lands inside this window AND matches SYSTEMD_SETUP_ERROR_RE, so a real
- * worker bug is never masked as "fall back to plain spawn".
- */
-const SYSTEMD_FAST_FAIL_MS = 2_000;
-
-/**
- * stderr signatures emitted by `systemd-run` itself (not the worker) when the
- * user manager / dbus / scope setup is the problem (bus unreachable, or a
- * property the host's systemd rejects on a scope). Kept tight on purpose so a
- * genuine fast worker crash is never misread as a systemd failure.
- */
-const SYSTEMD_SETUP_ERROR_RE =
-  /Failed to connect to bus|No medium found|Failed to (start|create) (transient )?(scope|unit)|Unknown assignment|Interactive authentication required|Access denied|Transport endpoint is not connected/i;
-
-/**
- * Whether the operator REQUIRES the systemd worker sandbox. Default false:
- * workers run unwrapped when no usable `systemd-run --user` manager exists
- * (matching the prod container, which ships no systemd-run; the egress proxy is
- * the network boundary). A hardened deployment that has provisioned a user
- * systemd manager can set LOBU_REQUIRE_WORKER_SANDBOX=1 to fail closed instead
- * of silently running unwrapped. Re-read each call (cold path).
- */
-function workerSandboxRequired(): boolean {
-  return process.env.LOBU_REQUIRE_WORKER_SANDBOX === "1";
-}
-
 /** One-shot guard so the "running unsandboxed" notice logs once per process. */
 let warnedUnsandboxedWorkers = false;
-
-// The SIGTERM→SIGKILL grace window lives in config/intervals.ts
-// (`workerKillTimeoutMs`), env-overridable.
-
-/**
- * Signal a worker's entire process group. Workers are spawned `detached`, so
- * `child.pid` is the process-group leader; on Linux the direct child is a
- * wrapper (`systemd-run --scope` / `nix-shell --run`) with the real worker as a
- * descendant in the same group. `process.kill(-pid, …)` reaches the wrapper AND
- * the worker, where `child.kill()` would hit only the wrapper and orphan the
- * worker. Falls back to the single child if the group send fails (e.g. the
- * leader already exited, or the platform doesn't support group signals).
- * Returns true if a signal was delivered.
- */
-export function signalWorkerGroup(
-  child: Pick<ChildProcess, "pid" | "kill">,
-  signal: NodeJS.Signals
-): boolean {
-  const pid = child.pid;
-  if (pid === undefined) return false;
-  try {
-    process.kill(-pid, signal);
-    return true;
-  } catch {
-    try {
-      return child.kill(signal);
-    } catch {
-      return false;
-    }
-  }
-}
-
-/**
- * Detect once whether `systemd-run --user` is available. On Linux hosts with
- * a usable user manager this lets us spawn each worker as a transient scope
- * with cgroup limits + IPAddressDeny (a `--scope` cannot apply exec-context
- * hardening — see buildSystemdRunArgs). macOS dev hosts and Linux hosts
- * without a user systemd fall back to plain `child_process.spawn`.
- */
-let cachedSystemdRun: string | null | undefined;
-function locateSystemdRun(): string | null {
-  if (cachedSystemdRun !== undefined) return cachedSystemdRun;
-  if (process.platform !== "linux") {
-    cachedSystemdRun = null;
-    return cachedSystemdRun;
-  }
-  if (process.env.LOBU_DISABLE_SYSTEMD_RUN === "1") {
-    cachedSystemdRun = null;
-    return cachedSystemdRun;
-  }
-  try {
-    // Probe the EXACT path the worker spawn uses: a `--scope` unit with the
-    // same `-p` props, running `/bin/true`. The old probe was a `--no-block`
-    // transient *service* with no props — it could succeed while the real
-    // `--scope` spawn fails, because a scope rejects properties a service
-    // accepts (strict systemd answers "Unknown assignment" and the whole scope
-    // dies). Matching the real argv here means a host whose systemd refuses one
-    // of these props is detected now and degrades to a plain spawn, instead of
-    // killing every worker at first request. Bus reachability also matches: the
-    // probe inherits the gateway's process.env (incl. XDG_RUNTIME_DIR), the
-    // same coordinates the wrapped spawn forwards. `--scope` runs synchronously,
-    // so this returns as soon as `/bin/true` exits.
-    const probeArgs = [
-      ...buildSystemdRunArgs({ unitName: makeUnitName("probe") }),
-      "--",
-      "/bin/true",
-    ];
-    execFileSync("systemd-run", probeArgs, {
-      stdio: "ignore",
-      timeout: 3_000,
-    });
-    cachedSystemdRun = "systemd-run";
-  } catch {
-    cachedSystemdRun = null;
-  }
-  return cachedSystemdRun;
-}
-
-/**
- * Detect once whether `nix-shell` is available. Agents declare native deps via
- * `nixConfig.packages`; connectors declare theirs via `agentTooling.nix.packages`,
- * which we fold into `nixConfig.packages` when resolving the deployment. Either
- * way we normally provision the resulting set by wrapping the worker in
- * `nix-shell -p …`. Containers/hosts without Nix (e.g. the prod app
- * image, which bakes Chromium in directly rather than via Nix) won't have it,
- * so we fall back to a plain spawn — mirroring `locateSystemdRun`'s graceful
- * degradation — instead of crashing the worker with `spawn nix-shell ENOENT`.
- * The declared packages are simply unavailable in that turn unless the image
- * already provides them; a turn that doesn't use them runs fine.
- */
-let cachedNixShell: string | null | undefined;
-function locateNixShell(): string | null {
-  // Operator kill-switch always wins, even if an earlier probe cached a hit
-  // (tests set LOBU_DISABLE_NIX_SHELL=1 mid-process; a sticky "nix-shell"
-  // cache would ignore the flag and wrap workers that should run plain).
-  if (process.env.LOBU_DISABLE_NIX_SHELL === "1") {
-    return null;
-  }
-  if (cachedNixShell !== undefined) return cachedNixShell;
-  try {
-    execFileSync("nix-shell", ["--version"], {
-      stdio: "ignore",
-      timeout: 5_000,
-    });
-    cachedNixShell = "nix-shell";
-  } catch {
-    cachedNixShell = null;
-  }
-  return cachedNixShell;
-}
-
-/**
- * Test-only: clear the memoized systemd/nix capability probes so a test can
- * exercise a different host capability (e.g. force a re-probe after toggling
- * LOBU_DISABLE_SYSTEMD_RUN). Not used by production code paths.
- */
-export function __resetCapabilityProbesForTests(): void {
-  cachedSystemdRun = undefined;
-  cachedNixShell = undefined;
-}
-
-/**
- * Build the systemd-run argv prefix for a transient worker scope. Defaults are
- * tuned for a single Lobu worker; operators can override via
- * LOBU_WORKER_MEMORY_MAX / LOBU_WORKER_CPU_QUOTA / LOBU_WORKER_TASKS_MAX.
- *
- * ONLY cgroup/network properties are emitted. A `--scope` adopts a process the
- * caller forked, so systemd never execs it and CANNOT apply exec-context
- * hardening — NoNewPrivileges, PrivateTmp, ProtectSystem/Home, ReadWritePaths,
- * LimitNOFILE, CapabilityBoundingSet, RestrictAddressFamilies. Strict systemd
- * (observed on 255) rejects each with "Unknown assignment" and the whole scope
- * fails (the worker dies before it starts). Those would require a `--service`,
- * which would detach the worker from the gateway's process tree and break
- * stdout/stderr piping + group-signal teardown. The cgroup limits (Memory/CPU/
- * Tasks) and the network boundary (IPAddressDeny) DO apply to scopes; network
- * egress is additionally constrained by the worker HTTP proxy allowlist.
- */
-function buildSystemdRunArgs(opts: { unitName: string }): string[] {
-  const memMax = process.env.LOBU_WORKER_MEMORY_MAX || "512M";
-  const cpuQuota = process.env.LOBU_WORKER_CPU_QUOTA || "200%";
-  const tasksMax = process.env.LOBU_WORKER_TASKS_MAX || "64";
-  return [
-    "--user",
-    "--scope",
-    "--quiet",
-    `--unit=${opts.unitName}`,
-    "-p",
-    `MemoryMax=${memMax}`,
-    "-p",
-    `CPUQuota=${cpuQuota}`,
-    "-p",
-    `TasksMax=${tasksMax}`,
-    "-p",
-    "IPAddressDeny=any",
-    "-p",
-    "IPAddressAllow=127.0.0.1",
-    "-p",
-    "IPAddressAllow=::1",
-  ];
-}
-
-function makeUnitName(deploymentName: string): string {
-  // systemd unit names allow only [A-Za-z0-9:_.\\-]; sanitize and add a
-  // short random tag so concurrent workers don't collide if a prior unit
-  // is still being torn down.
-  const safe = deploymentName.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 64);
-  const tag = Math.random().toString(36).slice(2, 8);
-  return `lobu-worker-${safe}-${tag}`;
-}
 
 interface EmbeddedWorkerEntry {
   process: ChildProcess;
@@ -269,431 +105,6 @@ interface EmbeddedWorkerEntry {
    * entire subprocess lifetime, not just the spawn transaction.
    */
   releaseConvLock?: () => Promise<void>;
-}
-
-/** Stable namespace id for `pg_advisory_lock(key1, key2)` per-conversation locks. */
-const CONV_LOCK_KEY1 = 0x6c6f6275; // "lobu" in ASCII, signed int32-safe.
-
-/** Reserve this many connections in the postgres-js pool for non-locked
- *  query traffic (health probes, runs-queue claim, secret-proxy lookups,
- *  every gateway tagged-template query). Sustained pressure here is small
- *  and shorter-lived than the per-worker locks, but the queries can't be
- *  starved entirely or the gateway stops responding. */
-const POOL_HEADROOM = 5;
-
-/** Default cap for reserved Postgres connections held by
- *  acquireConversationLock. Derived from `DB_POOL_MAX` so the cap CAN'T
- *  exceed available connections — otherwise callers above the pool size
- *  would block inside `sql.reserve()` instead of returning null at this
- *  cap, defeating the cap's whole purpose. Operators can still raise the
- *  cap with `LOBU_MAX_RESERVED_LOCKS` if they've bumped DB_POOL_MAX
- *  accordingly. Codex round 2 P1#2 on PR #870. */
-function getDefaultMaxReservedLocks(): number {
-  const poolMax = Number.parseInt(process.env.DB_POOL_MAX || "20", 10);
-  if (!Number.isFinite(poolMax) || poolMax <= 0) {
-    return Math.max(1, 20 - POOL_HEADROOM);
-  }
-  return Math.max(1, poolMax - POOL_HEADROOM);
-}
-
-export function getMaxReservedLocks(): number {
-  const raw = process.env.LOBU_MAX_RESERVED_LOCKS;
-  if (!raw) return getDefaultMaxReservedLocks();
-  const n = Number.parseInt(raw, 10);
-  // Unparseable / negative / non-finite → fall back to default. `0` is
-  // honored as an explicit "block all reservations" value (useful for
-  // failover drains and load tests; the runs queue will retry).
-  if (!Number.isFinite(n) || n < 0) return getDefaultMaxReservedLocks();
-  return n;
-}
-
-/**
- * In-process counter of currently-held reserved connections from
- * `acquireConversationLock`. Single-process JS is single-threaded so a plain
- * mutable number is "atomic enough" for increment/decrement against this
- * counter — there's no true parallelism inside the gateway event loop. The
- * functions below are exported so tests can assert the counter without
- * reaching into module internals.
- *
- * The counter is incremented BEFORE the `await sql.reserve()` call so the
- * cap check accounts for in-flight acquisitions; decremented in the release
- * path so the slot becomes available the moment the worker exits.
- */
-let reservedLockCount = 0;
-/** Tracks whether we've already emitted the 80% warning so we don't spam
- *  every acquisition once we're operating near the ceiling. Reset when the
- *  count drops back below the threshold. */
-let warnedNearCap = false;
-
-export function getReservedLockCount(): number {
-  return reservedLockCount;
-}
-
-export function resetReservedLockCountForTests(): void {
-  reservedLockCount = 0;
-  warnedNearCap = false;
-}
-
-/**
- * Force the internal counter to a specific value. Test-only — production
- * code MUST go through `acquireConversationLock` so increment+decrement
- * pair via the canonical path. Used by the cap-enforcement test which
- * needs to stage the counter without actually consuming PG connections.
- */
-export function setReservedLockCountForTests(value: number): void {
-  reservedLockCount = Math.max(0, value);
-}
-
-/**
- * Acquire a session-level (NOT transaction-level) advisory lock on
- * `(org, agent, conversationId)`. Returns a release function that drops the
- * lock and the underlying reserved connection. Returns `null` if the lock is
- * held by another pod — caller should bail and let the runs queue re-deliver.
- *
- * Why session-level (`pg_try_advisory_lock`) over transaction-level: the
- * lock has to outlive any single query — it spans the entire worker
- * subprocess lifetime, which can be tens of minutes. A transaction-scoped
- * lock would release at the next commit/rollback and let a sibling pod
- * steal the conversation mid-run. The `sql.reserve()` connection is
- * dedicated and lock state survives until we explicitly release.
- *
- * The local embedded backend takes this same real path now that it runs on a
- * real multi-connection Postgres (no single-connection pin). In a single
- * process the lock is uncontended and the in-process `workers` Map (see
- * `spawnDeployment` above) is the primary per-conversation gate; the advisory
- * lock is the cross-pod gate that matters in clustered deployments.
- */
-export async function acquireConversationLock(
-  organizationId: string,
-  agentId: string,
-  conversationId: string
-): Promise<{ release: () => Promise<void> } | null> {
-  // Hard cap on reserved connections held across all live workers. Each lock
-  // pins one postgres-js pool slot for the worker's lifetime; without a cap
-  // multi-pod × multi-conversation pressure exhausts the pool and stalls
-  // every gateway query. Returning `null` here surfaces as a re-queueable
-  // failure in `spawnDeployment` (same code path as a contended advisory
-  // lock), so the runs queue retries with a delay on this pod or another.
-  const max = getMaxReservedLocks();
-  if (reservedLockCount >= max) {
-    logger.warn(
-      `Reserved-lock cap reached (${reservedLockCount}/${max}); deferring spawn for ${organizationId}/${agentId}/${conversationId}`
-    );
-    return null;
-  }
-
-  // Reserve the slot up-front so concurrent acquirers can see the increment
-  // before this one's `await sql.reserve()` settles. Without this an
-  // unbounded number of concurrent callers could each observe
-  // `reservedLockCount < max` and pile through.
-  reservedLockCount += 1;
-  // 80% threshold one-shot warn. Re-armed once the count drops back below.
-  if (!warnedNearCap && reservedLockCount >= Math.ceil(max * 0.8)) {
-    logger.warn(
-      `Reserved-lock count near cap: ${reservedLockCount}/${max}. Tune via LOBU_MAX_RESERVED_LOCKS or scale pods.`
-    );
-    warnedNearCap = true;
-  }
-
-  let decremented = false;
-  const decrementOnce = (): void => {
-    if (decremented) return;
-    decremented = true;
-    reservedLockCount = Math.max(0, reservedLockCount - 1);
-    if (warnedNearCap && reservedLockCount < Math.ceil(max * 0.8)) {
-      warnedNearCap = false;
-    }
-  };
-
-  // `getDb()` returns the wrapped tagged-template client; `.reserve()` is on
-  // the raw `postgres()` client. We access it via the shared singleton —
-  // same pattern better-auth uses for its dedicated connection (see
-  // `getAuthDialect()` in db/client.ts).
-  const sql = getDb() as unknown as {
-    reserve: () => Promise<
-      ((
-        strings: TemplateStringsArray,
-        ...values: unknown[]
-      ) => Promise<unknown[]>) & {
-        release: () => void;
-      }
-    >;
-  };
-  let reserved: Awaited<ReturnType<typeof sql.reserve>>;
-  try {
-    reserved = await sql.reserve();
-  } catch (err) {
-    decrementOnce();
-    throw err;
-  }
-  const key2 = hashConvKey2(organizationId, agentId, conversationId);
-  try {
-    const rows = (await reserved`SELECT pg_try_advisory_lock(${CONV_LOCK_KEY1}, ${key2}) AS acquired`) as Array<{ acquired: boolean }>;
-    if (!rows[0]?.acquired) {
-      reserved.release();
-      decrementOnce();
-      return null;
-    }
-  } catch (err) {
-    reserved.release();
-    decrementOnce();
-    throw err;
-  }
-  return {
-    async release() {
-      // Retry the unlock query up to 3× with linear backoff (100ms, 200ms).
-      // A transient DB hiccup mid-release would otherwise leave the
-      // conversation locked until the gateway recycles — every
-      // subsequent dispatch for that conv would `pg_try_advisory_lock`
-      // → false → DEPLOYMENT_CREATE_FAILED → runs-queue retry → repeat.
-      // Codex round 2 quality win E on PR #865.
-      const MAX_ATTEMPTS = 3;
-      const BACKOFF_MS = 100;
-      try {
-        await retryWithBackoff(
-          async () => {
-            await reserved`SELECT pg_advisory_unlock(${CONV_LOCK_KEY1}, ${key2})`;
-          },
-          {
-            maxRetries: MAX_ATTEMPTS - 1,
-            baseDelay: BACKOFF_MS,
-            strategy: "linear",
-            // Intermediate failures stay silent (matches the prior
-            // hand-rolled loop); only the terminal failure is logged below.
-            onRetry: () => {},
-          }
-        );
-      } catch (lastErr) {
-        // Log loudly so an operator notices — a stuck lock blocks every
-        // subsequent dispatch for the conversation. Includes the lock
-        // key triple so the operator can target a manual
-        // pg_advisory_unlock from psql if needed.
-        logger.error(
-          `Failed to release advisory lock after ${MAX_ATTEMPTS} attempts for ${organizationId}/${agentId}/${conversationId}: ${getErrorMessage(lastErr)}`
-        );
-      }
-      // ALWAYS return the reserved connection to the pool — keeping it
-      // pinned would starve the pool faster than the stuck lock starves
-      // any one conversation.
-      try {
-        reserved.release();
-      } catch {
-        /* postgres.js release is sync best-effort */
-      }
-      // Decrement after release so a metric snapshot taken mid-release
-      // never undercounts. Idempotent — the helper guards against
-      // double-decrement if the release path runs twice.
-      decrementOnce();
-    },
-  };
-}
-
-/**
- * Derive a 32-bit signed integer from `(org, agent, conv)` for the second
- * advisory-lock key. Postgres takes (int32, int32); we want a stable hash
- * over a string triple. Same shape as the existing
- * `hashtext('lobu:autowire', ${userId}:${connectorKey})` pattern in
- * worker-api/device-reconcile.ts but computed in Node so we don't pay a
- * round-trip just to feed the lock.
- */
-function hashConvKey2(
-  organizationId: string,
-  agentId: string,
-  conversationId: string
-): number {
-  // FNV-1a 32-bit. Cheap, no extra deps, stable across Node versions.
-  const input = `${organizationId}:${agentId}:${conversationId}`;
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i);
-    hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) | 0;
-  }
-  // pg_advisory_lock takes a signed int32; |0 already brings the value into
-  // that range. Return as-is.
-  return hash;
-}
-
-function buildEmbeddedWorkerPath(
-  binPathEntries: readonly string[] | undefined,
-  existingPath?: string
-): string | undefined {
-  const segments = (existingPath || "").split(":").filter(Boolean);
-
-  for (const candidate of [...(binPathEntries ?? [])].reverse()) {
-    if (!fs.existsSync(candidate)) continue;
-    if (segments.includes(candidate)) continue;
-    segments.unshift(candidate);
-  }
-
-  return segments.length > 0 ? segments.join(":") : existingPath;
-}
-
-function getBunExecutable(): string {
-  return path.basename(process.execPath).startsWith("bun")
-    ? process.execPath
-    : "bun";
-}
-
-function getNodeExecutable(): string {
-  return path.basename(process.execPath).startsWith("node")
-    ? process.execPath
-    : "node";
-}
-
-function shellQuote(value: string): string {
-  if (/^[A-Za-z0-9_/:=.,+@%-]+$/.test(value)) return value;
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function buildWorkerInvocation(entryPoint: string): {
-  command: string;
-  args: string[];
-} {
-  // Cap each worker child's V8 heap so one runaway turn (a huge transcript,
-  // pathological allocation) OOMs *itself* with a clean V8 error, instead of
-  // ballooning the process RSS until the pod's cgroup memory limit trips and the
-  // kernel OOM-kills the whole app pod — taking every other in-flight turn with
-  // it. N uncapped children sharing the pod ceiling is how the pod OOM-kills
-  // today; a per-child cap contains the blast radius to the offending turn.
-  // Env-tunable; default sized so a few concurrent workers fit under the pod
-  // limit with headroom for the parent + proxies.
-  const maxOldSpaceMb = Number.parseInt(
-    process.env.LOBU_WORKER_MAX_OLD_SPACE_MB || "512",
-    10
-  );
-  const ext = path.extname(entryPoint);
-  if (ext === ".js" || ext === ".cjs" || ext === ".mjs") {
-    // Prod path: agent-worker ships as dist/index.js, run under Node, where
-    // --max-old-space-size caps the V8 old-space (a hard, effective heap limit).
-    return {
-      command: getNodeExecutable(),
-      args: [`--max-old-space-size=${maxOldSpaceMb}`, entryPoint],
-    };
-  }
-
-  // Dev path: a .ts entrypoint runs under Bun (JavaScriptCore, not V8), which
-  // ignores --max-old-space-size. Bun's memory knob is --smol; it trades CPU for
-  // a smaller footprint rather than enforcing a hard ceiling, but it's the
-  // closest available lever and keeps dev behaviour honest (no no-op V8 flag).
-  return {
-    command: getBunExecutable(),
-    args: ["--smol", "run", entryPoint],
-  };
-}
-
-function buildShellCommand(command: string, args: string[]): string {
-  return [command, ...args].map(shellQuote).join(" ");
-}
-
-/**
- * Validate a declared Nix package name and return a safe Nix attribute
- * reference (`pkgs.<name>`). Delegates to the canonical sanitizer in
- * @lobu/connector-sdk (shared with the connector-worker executor so the two
- * paths can't drift), wrapping failures in an `OrchestratorError` for the
- * deployment surface.
- */
-export function nixPackageAttrRef(pkg: string): string {
-  return nixPackageAttrRefBase(
-    pkg,
-    (message) =>
-      new OrchestratorError(ErrorCode.DEPLOYMENT_CREATE_FAILED, message)
-  );
-}
-
-/**
- * Detect base-URL env keys claimed by more than one provider with CONFLICTING
- * values. When agents merge every installed provider's proxy base-URL mappings,
- * two providers sharing a key (e.g. the old bug where every sdkCompat provider
- * emitted OPENAI_BASE_URL) means the later-merged one silently clobbers the
- * earlier and a request egresses to the wrong slug. Pure + exported so the guard
- * is testable independently of a full deploy. Order matches the merge:
- * last-write-wins, so `incoming` is what survives.
- */
-export function detectProviderBaseUrlCollisions(
-  perProvider: Array<{ providerId: string; mappings: Record<string, string> }>
-): Array<{ key: string; providerId: string; existing: string; incoming: string }> {
-  const seen: Record<string, string> = {};
-  const collisions: Array<{
-    key: string;
-    providerId: string;
-    existing: string;
-    incoming: string;
-  }> = [];
-  for (const { providerId, mappings } of perProvider) {
-    for (const [key, value] of Object.entries(mappings)) {
-      const existing = seen[key];
-      if (existing !== undefined && existing !== value) {
-        collisions.push({ key, providerId, existing, incoming: value });
-      }
-      seen[key] = value;
-    }
-  }
-  return collisions;
-}
-
-/**
- * Mint the deployment-lifetime WORKER_TOKEN. This is the FALLBACK gateway auth
- * the worker uses when no per-run runJobToken was minted (`session-runner`:
- * `runJobToken || WORKER_TOKEN`). Extracted (mirrors message-consumer's
- * `buildRunJobToken`) so both primary-auth mints share a tested claim-parity
- * surface — the #1274 P0 was an omitted-claim divergence between exactly these
- * two mints. Every claim a downstream consumer reads off the verified worker
- * token MUST be set on BOTH mints, or a worker that lands on this fallback path
- * loses it (e.g. headless `source` → owner-gated card dead-letters).
- */
-export function buildDeploymentWorkerToken(args: {
-  userId: string;
-  conversationId: string;
-  deploymentName: string;
-  channelId: string;
-  teamId?: string;
-  agentId?: string;
-  organizationId?: string;
-  platform?: string;
-  platformMetadata?: Record<string, unknown>;
-  traceId?: string;
-  /** Resolved runtime provider + sandbox, so the deployment-lifetime token
-   *  also carries the claim the runtime route reads (parity with the per-run mint). */
-  runtimeProviderId?: string;
-  sandboxId?: string;
-  /** Resolved egress allowlist for a remote runtime sandbox (signed claim). */
-  allowedDomains?: string[];
-  /** Resolved egress denylist for a remote runtime sandbox (signed claim). */
-  deniedDomains?: string[];
-  /** Resolved nix package set for a remote runtime sandbox (signed claim). */
-  nixPackages?: string[];
-}): string {
-  return generateWorkerToken(
-    args.userId,
-    args.conversationId,
-    args.deploymentName,
-    buildDeploymentTokenOptions(args)
-  );
-}
-
-function buildDeploymentTokenOptions(
-  args: Parameters<typeof buildDeploymentWorkerToken>[0]
-) {
-  return {
-    // Shared routing claims — kept in lockstep with the per-run mint via
-    // `buildWorkerTokenClaims` so a worker that falls back to this
-    // deployment-lifetime token carries the same connectionId/source and
-    // doesn't dead-letter its interaction cards (#1274).
-    ...buildWorkerTokenClaims(args),
-    // Deployment-token-specific claim.
-    traceId: args.traceId,
-  };
-}
-
-function buildDeploymentTokenPair(
-  args: Parameters<typeof buildDeploymentWorkerToken>[0]
-): { workerToken: string; egressProxyToken: string } {
-  return generateWorkerTokenPair(
-    args.userId,
-    args.conversationId,
-    args.deploymentName,
-    buildDeploymentTokenOptions(args)
-  );
 }
 
 /**
@@ -743,50 +154,6 @@ const NIX_CACHE_DOMAINS = [
  */
 const NPM_REGISTRY_DOMAINS = ["registry.npmjs.org", "registry.npmmirror.com"];
 
-interface DeploymentIdentity {
-  conversationId: string;
-  channelId?: string;
-  platform?: string;
-  userId?: string;
-  agentId: string;
-  organizationId: string;
-}
-
-/**
- * Build a canonical conversation identity key for runtime routing.
- * Preferred format: organizationId:agentId:platform:channelId:conversationId
- */
-export function buildCanonicalConversationKey(
-  identity: DeploymentIdentity
-): string {
-  const { organizationId, agentId, conversationId, channelId, platform } =
-    identity;
-  const scope = `${organizationId}:${agentId}`;
-  if (platform && channelId) {
-    return `${scope}:${platform}:${channelId}:${conversationId}`;
-  }
-  if (channelId) {
-    return `${scope}:${channelId}:${conversationId}`;
-  }
-  return `${scope}:${conversationId}`;
-}
-
-/**
- * Generate a consistent worker runtime ID from canonical conversation identity.
- * Runtime IDs stay lowercase alphanumeric with hyphens for filesystem and
- * process-manager compatibility.
- */
-export function generateDeploymentName(identity: DeploymentIdentity): string {
-  const canonicalKey = buildCanonicalConversationKey(identity);
-  const rawHint = (identity.platform || identity.userId || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
-  const hint = (rawHint.slice(0, 8) || "ctx").toLowerCase();
-  const hash = createHash("sha256")
-    .update(canonicalKey)
-    .digest("hex")
-    .slice(0, 12);
-  return `lobu-worker-${hint}-${hash}`;
-}
-
 // Type for module environment variable builder function
 export type ModuleEnvVarsBuilder = (
   agentId: string,
@@ -834,23 +201,6 @@ export interface DeploymentInfo {
   replicas: number;
   isIdle: boolean;
   isVeryOld: boolean;
-}
-
-/** Check if an env var name looks like a secret (API key / token / secret / password). */
-function isSecretEnvVar(
-  name: string,
-  providerModules: ModelProviderModule[]
-): boolean {
-  for (const provider of providerModules) {
-    if (provider.getSecretEnvVarNames().includes(name)) return true;
-  }
-  const upper = name.toUpperCase();
-  return (
-    upper.includes("_KEY") ||
-    upper.includes("_TOKEN") ||
-    upper.includes("_SECRET") ||
-    upper.includes("_PASSWORD")
-  );
 }
 
 /**
@@ -2743,7 +2093,7 @@ export class DeploymentManager {
         logger.warn(
           `systemd-run scope for ${deploymentName} failed to start (${firstLine}); demoting systemd for this session and re-spawning the worker unsandboxed.`
         );
-        cachedSystemdRun = null;
+        disableSystemdRunForSession();
         // No reap needed: a `--scope` that can't reach the bus exits before
         // creating the scope or the worker, so there is no half-started unit
         // or process group to clean up. Re-spawn unwrapped, reusing the lock.

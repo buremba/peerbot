@@ -32,7 +32,7 @@ import { generateWorkerToken } from "@lobu/core";
 import { getDb } from "../../db/client.js";
 import { RunsQueue } from "../infrastructure/queue/runs-queue.js";
 import { armTurnTimeout } from "../orchestration/turn-liveness.js";
-import { WorkerGateway } from "../gateway/index.js";
+import { WorkerGateway } from "../worker-dispatch/worker-gateway.js";
 import {
   ensureDbForGatewayTests,
   resetTestDatabase,

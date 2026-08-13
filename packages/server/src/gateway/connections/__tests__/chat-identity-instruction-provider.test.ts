@@ -78,7 +78,7 @@ describe("ChatIdentityInstructionProvider", () => {
 
   test("no connectionId on the turn: framing WITHOUT identity, by design", async () => {
     // Identity resolution deliberately has no agent+platform fallback: there is
-    // exactly one InstructionContext construction site (`gateway/index.ts`) and
+    // exactly one InstructionContext construction site (`worker-dispatch/worker-gateway.ts`) and
     // it always carries the signed `connectionId`, which `enqueueUserTurn` sets
     // on every inbound chat turn. Guessing a connection when the field is
     // missing would pick an arbitrary one for an agent with several.

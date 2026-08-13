@@ -35,7 +35,7 @@ import {
   commitTerminalReply,
   failTurnsForDeployment,
 } from "../orchestration/turn-liveness.js";
-import { WorkerGateway } from "../gateway/index.js";
+import { WorkerGateway } from "../worker-dispatch/worker-gateway.js";
 import {
   ensureDbForGatewayTests,
   resetTestDatabase,

@@ -20,7 +20,7 @@ import { generateWorkerToken } from "@lobu/core";
 import { Hono } from "hono";
 import { getDb } from "../../db/client.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
-import { createTranscriptRoutes } from "../gateway/transcript-routes.js";
+import { createTranscriptRoutes } from "../worker-dispatch/transcript-routes.js";
 import { buildApiConversationId } from "../services/api-conversation-id.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
 import { readSnapshotJsonl } from "../services/transcript-snapshot.js";

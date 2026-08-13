@@ -3695,6 +3695,14 @@ export type ManageOperationsData = {
          * Durable caller key. Replays return the original operation run; reusing the key for a different operation or input is rejected.
          */
         idempotency_key?: string;
+        activation?: {
+          kind: "page_visit";
+          /**
+           * Exact HTTP(S) page URLs that may activate this operation on a user-owned browser tab.
+           */
+          urls: Array<string>;
+          expires_in_seconds?: number;
+        };
         behavior_source?: {
           behavior_id: number;
           window_id: number;
@@ -3981,6 +3989,7 @@ export type ManageOperationsResponses = {
           href: string | null;
           unread?: boolean;
           notification_id?: number;
+          browser_url?: string;
           run_id?: number;
           interaction_type?: string;
           interaction_status?: string;
@@ -4057,6 +4066,10 @@ export type NotifyData = {
      * Relative URL to link the notification to (e.g. /acme/entities)
      */
     resource_url?: string;
+    /**
+     * HTTP(S) page for an explicit browser-side "Open" action in the current user tab.
+     */
+    browser_url?: string;
     /**
      * Stable producer key. Repeating a send with the same key returns success without creating or delivering a duplicate.
      */

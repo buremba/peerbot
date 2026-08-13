@@ -35,6 +35,7 @@ interface CreateNotificationParams {
 	resourceType?: string | null;
 	resourceId?: string | null;
 	resourceUrl?: string | null;
+	browserUrl?: string | null;
 	/** Stable producer key used to collapse retried notification sends. */
 	idempotencyKey?: string | null;
 	/** When set, deliver only through this specific bot connection */
@@ -477,6 +478,7 @@ export async function createNotificationForUsers(
 		resource_type: params.resourceType ?? null,
 		resource_id: params.resourceId ?? null,
 		resource_url: params.resourceUrl ?? null,
+		browser_url: params.browserUrl ?? null,
 		// Persisted, not just handed to the fan-out: the card IS the notification's
 		// rendered form, and a connection that was offline at send time (or a
 		// surface that renders it later) has no other way to recover it.
@@ -597,6 +599,7 @@ export async function listNotifications(opts: {
       e.metadata->>'resource_type' AS resource_type,
       e.metadata->>'resource_id' AS resource_id,
       e.metadata->>'resource_url' AS resource_url,
+      e.metadata->>'browser_url' AS browser_url,
       e.connector_key AS platform,
       e.connection_id,
       source_connection.display_name AS connection_name,

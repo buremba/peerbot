@@ -54,6 +54,7 @@ export type ActivityCard = {
 	href: string | null;
 	unread?: boolean;
 	notification_id?: number;
+	browser_url?: string;
 	run_id?: number;
 	/**
 	 * Kind of pending interaction behind this notification (events
@@ -424,6 +425,8 @@ export async function listOrgActivity(opts: {
 					href: resolveNotifHref(opts.ownerSlug, n),
 					unread: n.is_read === false || n.is_read === "f",
 					notification_id: Number(n.id),
+					browser_url:
+						typeof n.browser_url === "string" ? n.browser_url : undefined,
 					platform: typeof n.platform === "string" ? n.platform : undefined,
 					connection_id:
 						typeof n.connection_id === "number" ? n.connection_id : undefined,

@@ -110,6 +110,14 @@ export const PollRequestSchema = Type.Object({
 /** `POST /api/workers/poll` response body (a claimed run, or a poll-again). */
 export const PollResponseSchema = Type.Object({
   next_poll_seconds: Type.Optional(Type.Number()),
+  page_activations: Type.Optional(
+    Type.Array(
+      Type.Object({
+        run_id: Type.Integer(),
+        urls: Type.Array(Type.String()),
+      })
+    )
+  ),
   run_id: Type.Optional(Type.Integer()),
   run_type: Type.Optional(RunTypeSchema),
   auth_profile_id: Type.Optional(Type.Integer()),
@@ -151,6 +159,17 @@ export const PollResponseSchema = Type.Object({
       metadata: Type.Record(Type.String(), Type.Unknown()),
     })
   ),
+});
+
+export const ActivatePageRequestSchema = Type.Object({
+  worker_id: Type.String({ minLength: 1 }),
+  run_id: Type.Integer({ minimum: 1 }),
+  tab_id: Type.Integer({ minimum: 0 }),
+  url: Type.String({ format: "uri" }),
+});
+
+export const ActivatePageResponseSchema = Type.Object({
+  status: Type.Union([Type.Literal("activated"), Type.Literal("unavailable")]),
 });
 
 // ── stream ──────────────────────────────────────────────────────────────────
@@ -336,6 +355,8 @@ export type WorkerExitDiagnostics = Static<typeof WorkerExitDiagnosticsSchema>;
 export type OAuthCredentials = Static<typeof OAuthCredentialsSchema>;
 export type PollRequest = Static<typeof PollRequestSchema>;
 export type PollResponse = Static<typeof PollResponseSchema>;
+export type ActivatePageRequest = Static<typeof ActivatePageRequestSchema>;
+export type ActivatePageResponse = Static<typeof ActivatePageResponseSchema>;
 export type ContentItem = Static<typeof ContentItemSchema>;
 export type StreamBatch = Static<typeof StreamBatchSchema>;
 export type CompleteRequest = Static<typeof CompleteRequestSchema>;

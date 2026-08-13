@@ -21,9 +21,9 @@
  * dedups all people on the shared `linkedin_slug`/`email` identity: a person met
  * live and a person in the CSV export collapse to the same entity.
  *
- * Write handoff: `prepare_comment` opens a post in the paired Chrome,
- * fills the comment composer, focuses the tab, and stops. The human clicks
- * Post themselves — Lobu never submits the comment.
+ * Write handoff: `prepare_comment` waits for the user to open the exact post,
+ * fills that page's comment composer, and stops. The human clicks Post
+ * themselves — Lobu never submits the comment.
  *
  * Closed-loop (optional): `verify_staged_comment` re-opens the post and scrapes
  * visible comments to check whether the human actually posted the draft.
@@ -798,22 +798,6 @@ function requireExtensionDispatcher(ctx: {
 
 // ── prepare_comment handoff (browser stage, human submits) ───────────
 
-/** Reserved gateway input selecting the physical Chrome for an interactive action. */
-const TARGET_BROWSER_CONNECTION_INPUT_KEY = "target_browser_connection_id";
-
-function resolveTargetBrowserConnectionId(
-  input: Record<string, unknown>
-): number | null {
-  const raw = input.browser_connection_id;
-  if (raw == null) return null;
-  if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw <= 0) {
-    throw new Error(
-      `prepare_comment: browser_connection_id must be a positive integer chrome connection id, got ${JSON.stringify(raw)}`
-    );
-  }
-  return raw;
-}
-
 /** Interactive a11y node from chrome `get_accessibility_tree`. */
 type A11yNode = {
   ref_id: number;
@@ -835,16 +819,10 @@ type PrepareCommentResult = {
   body: string;
   /** How the composer was filled: evaluate or the a11y type_ref fallback. */
   method: "type_ref" | "evaluate";
-  /** Whether the tab was handed to the user so the reaper cannot close it. */
-  released: true;
   /** Whether the in-page handoff banner was injected. */
   banner_shown?: boolean;
   /** Truncated reason shown on the banner (if any). */
   reason_preview?: string;
-  /** Optional agent chat handoff (stamped on the owned Chrome tab). */
-  agent_id?: string;
-  thread_id?: string;
-  message_id?: string;
   message: string;
 };
 
@@ -1185,7 +1163,7 @@ export function buildInjectHandoffBannerExpression(opts: {
     (document.body || document.documentElement).appendChild(root);
   }
 
-  // No auto-dismiss: release_tab makes the draft durable, so its context must
+  // No auto-dismiss: the draft lives in the user's page, so its context should
   // still be present when the user returns later. The dismiss button remains.
 
   return { ok: true, anchored: anchored, has_reason: !!REASON };
@@ -1319,8 +1297,8 @@ export function buildFillCommentExpression(body: string): string {
 }
 
 /**
- * Stage a LinkedIn comment in the paired Chrome: navigate → fill composer →
- * focus → notify.
+ * Stage a LinkedIn comment in the exact user-opened page: activate → fill
+ * composer. The ordinary Lobu notification is created by the calling Behavior.
  *
  * HARD RULE — never auto-post:
  *  - never click Post / Submit / Send
@@ -1335,20 +1313,8 @@ export async function prepareLinkedInComment(
     body: string;
     /** Short explanation for the in-page banner. */
     reason?: string;
-    focus?: boolean;
-    notify?: boolean;
     /** Inject in-page handoff banner (default true). */
     banner?: boolean;
-    /** Chrome connection whose browser should show this interactive draft. */
-    targetBrowserConnectionId?: number | null;
-    /**
-     * Optional Owletto sidepanel deep-link: when set with threadId, the
-     * extension stamps agent+thread on the owned tab so the sidepanel opens
-     * the conversation (and optionally scrolls to messageId).
-     */
-    agentId?: string;
-    threadId?: string;
-    messageId?: string;
   }
 ): Promise<PrepareCommentResult> {
   const body = opts.body.trim();
@@ -1361,23 +1327,8 @@ export async function prepareLinkedInComment(
       `prepare_comment: invalid post_url / activity_id: ${JSON.stringify(opts.postUrl)}`
     );
   }
-  const focus = opts.focus !== false;
-  const notify = opts.notify !== false;
   const banner = opts.banner !== false;
   const reasonPreview = truncateHandoffReason(opts.reason);
-  const agentId = opts.agentId?.trim() || undefined;
-  const threadId = opts.threadId?.trim() || undefined;
-  const messageId = opts.messageId?.trim() || undefined;
-  const handoff =
-    agentId && threadId ? { agentId, threadId, messageId } : undefined;
-  const handoffFields: Record<string, string> = {};
-  if (handoff) {
-    handoffFields.holder_agent_id = handoff.agentId;
-    handoffFields.holder_thread_id = handoff.threadId;
-    if (handoff.messageId) {
-      handoffFields.holder_message_id = handoff.messageId;
-    }
-  }
 
   // Refuse accidental submit clicks through the chrome dispatcher.
   const safeDispatch: ChromeActionDispatcher = {
@@ -1391,10 +1342,6 @@ export async function prepareLinkedInComment(
       }
       const input = { ...action_input };
       delete input.allowed_click;
-      if (opts.targetBrowserConnectionId != null) {
-        input[TARGET_BROWSER_CONNECTION_INPUT_KEY] =
-          opts.targetBrowserConnectionId;
-      }
       return dispatcher.dispatch(action_key, input);
     },
   };
@@ -1405,9 +1352,7 @@ export async function prepareLinkedInComment(
     title?: string;
   }>("navigate", {
     url: postUrl,
-    open_in_new_tab: true,
-    wait_for_load: true,
-    ...handoffFields,
+    require_page_activation: true,
     ...chromeOriginsInput(),
   });
   const tabId = nav.tab_id;
@@ -1556,60 +1501,14 @@ export async function prepareLinkedInComment(
     }
   }
 
-  if (focus) {
-    try {
-      await safeDispatch.dispatch("focus_tab", {
-        tab_id: tabId,
-        draw_attention: true,
-        ...chromeOriginsInput(),
-      });
-    } catch {
-      // Focus is best-effort; the draft is still staged.
-    }
-  }
-
-  if (notify) {
-    try {
-      const notifyMsg = reasonPreview
-        ? `Draft ready — ${reasonPreview}`
-        : "Draft is in the comment box — review and click Post yourself. Lobu did not submit.";
-      await safeDispatch.dispatch("show_notification", {
-        title: "LinkedIn comment ready",
-        message: notifyMsg.slice(0, 240),
-        tab_id: tabId,
-        click_url: postUrl,
-        ...chromeOriginsInput(),
-      });
-    } catch {
-      // Notifications are optional (permission may be denied).
-    }
-  }
-
-  // Hand the tab to the human. Until this point it is an extension-owned
-  // scratch tab, which the reaper force-closes after ~5 minutes — taking the
-  // staged draft with it. Released, it is an ordinary user tab the reaper
-  // ignores.
-  //
-  // Deliberately last, after the composer-filled check above: a run that fails
-  // earlier leaves the tab owned, and a tab with no draft in it SHOULD be
-  // reaped.
-  // No allowed_origins: release_tab gates on run tab-ownership, not on the
-  // page's origin, so passing them would only add a way for the handover to
-  // fail — and a failed handover is a reaped draft.
-  await safeDispatch.dispatch("release_tab", { tab_id: tabId });
-
   return {
     prepared: true,
     tab_id: tabId,
     post_url: postUrl,
     body,
     method,
-    released: true,
     banner_shown: bannerShown,
     reason_preview: reasonPreview,
-    agent_id: handoff?.agentId,
-    thread_id: handoff?.threadId,
-    message_id: handoff?.messageId,
     message:
       "Comment staged in your browser. Review the draft and click Post yourself — Lobu did not submit.",
   };
@@ -2248,7 +2147,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft for the human to Post; verify_staged_comment checks whether that draft appeared as a comment.",
-    version: "3.8.0",
+    version: "3.9.0",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com
@@ -2432,9 +2331,9 @@ export default class LinkedInConnector extends ConnectorRuntime<
         key: "prepare_comment",
         name: "Prepare comment",
         description:
-          "Stage a comment draft on LinkedIn in the paired Chrome browser (open post, fill composer, banner). NEVER submits — the human must click Post. No auto-post path exists.",
-        // Staging is the approval surface: this action can only open the
-        // composer and type. The human still performs the irreversible Post
+          "Stage a comment draft after the user opens the exact LinkedIn post (fill composer, banner). NEVER opens a tab or submits — the human must click Post.",
+        // The user-opened page is the approval surface: this action can only
+        // fill its composer. The human still performs the irreversible Post
         // click, which safeDispatch structurally refuses above.
         requiresApproval: false,
         kind: "write",
@@ -2471,40 +2370,10 @@ export default class LinkedInConnector extends ConnectorRuntime<
                 "Optional short explanation for the in-page banner (truncated).",
               maxLength: 500,
             },
-            focus: {
-              type: "boolean",
-              description:
-                "Bring the staged tab to the foreground (default true).",
-            },
-            notify: {
-              type: "boolean",
-              description:
-                "Show a desktop notification when the draft is ready (default true).",
-            },
             banner: {
               type: "boolean",
               description:
                 "Inject a small in-page Lobu handoff banner (default true).",
-            },
-            browser_connection_id: {
-              type: "integer",
-              description:
-                "Chrome connection to open the draft in. Set this to the machine you are actually sitting at; no fallback is used when explicitly targeted.",
-            },
-            agent_id: {
-              type: "string",
-              description:
-                "Optional agent id for Owletto sidepanel conversation deep-link (requires thread_id).",
-            },
-            thread_id: {
-              type: "string",
-              description:
-                "Optional agent chat thread id for sidepanel conversation deep-link (requires agent_id).",
-            },
-            message_id: {
-              type: "string",
-              description:
-                "Optional chat message id to scroll to when the sidepanel opens the conversation.",
             },
           },
         },
@@ -2527,12 +2396,8 @@ export default class LinkedInConnector extends ConnectorRuntime<
             post_url: { type: "string" },
             body: { type: "string" },
             method: { type: "string" },
-            released: { type: "boolean" },
             banner_shown: { type: "boolean" },
             reason_preview: { type: "string" },
-            agent_id: { type: "string" },
-            thread_id: { type: "string" },
-            message_id: { type: "string" },
             message: { type: "string" },
           },
         },
@@ -2684,27 +2549,11 @@ export default class LinkedInConnector extends ConnectorRuntime<
 
       const reason =
         typeof ctx.input.reason === "string" ? ctx.input.reason.trim() : "";
-      const agentId =
-        typeof ctx.input.agent_id === "string" ? ctx.input.agent_id.trim() : "";
-      const threadId =
-        typeof ctx.input.thread_id === "string"
-          ? ctx.input.thread_id.trim()
-          : "";
-      const messageId =
-        typeof ctx.input.message_id === "string"
-          ? ctx.input.message_id.trim()
-          : "";
       const output = await prepareLinkedInComment(dispatcher, {
         postUrl: normalizedPostUrl,
         body,
         reason: reason || undefined,
-        focus: ctx.input.focus !== false,
-        notify: ctx.input.notify !== false,
         banner: ctx.input.banner !== false,
-        agentId: agentId || undefined,
-        threadId: threadId || undefined,
-        messageId: messageId || undefined,
-        targetBrowserConnectionId: resolveTargetBrowserConnectionId(ctx.input),
       });
       return { success: true, output: { ...output, status: "prepared" } };
     } catch (error) {

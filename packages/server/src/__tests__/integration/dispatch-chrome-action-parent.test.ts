@@ -53,22 +53,21 @@ describe('dispatchChromeAction parent run authorization', () => {
 });
 
 /**
- * `target_browser_connection_id` lets an interactive action (x.prepare_reply)
- * name the browser its draft must appear in, overriding the parent connection's
- * scrape pin. It is a routing directive with real blast radius: pointed at the
- * wrong connection it stages a draft in someone else's signed-in browser, so it
+ * `target_browser_connection_id` lets an interactive action name the browser
+ * its draft must appear in, overriding the parent connection's scrape pin. It
+ * is a routing directive with real blast radius: pointed at the wrong
+ * connection it stages a draft in someone else's signed-in browser, so it
  * must resolve inside both the caller's org and connection-visibility scope,
- * then fail rather than fall back.
+ * then fail rather than fall back. (The built-in social connectors moved to
+ * page activation and no longer stamp it; connectors that do must declare
+ * their own copy of the key, since compiled connector code cannot import
+ * from the server.)
  */
 describe('dispatchChromeAction target browser routing', () => {
   beforeEach(cleanupTestDatabase);
   afterAll(cleanupTestDatabase);
 
-  // The connector declares its own copy of this key (packages/connectors/src/x.ts,
-  // pinned in x.test.ts) because a compiled connector cannot import from the
-  // server. Pinning the literal on both sides turns drift into a failing test
-  // rather than a draft silently routed by the scrape pin again.
-  it('uses the wire key the connector stamps', () => {
+  it('uses the wire key a connector must stamp', () => {
     expect(TARGET_BROWSER_CONNECTION_INPUT_KEY).toBe(
       'target_browser_connection_id'
     );

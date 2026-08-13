@@ -15,6 +15,11 @@ export interface OperationsExecuteInput {
 	operation_key: string;
 	input?: Record<string, unknown>;
 	idempotency_key?: string;
+	activation?: {
+		kind: "page_visit";
+		urls: string[];
+		expires_in_seconds?: number;
+	};
 	/**
 	 * Watcher provenance when this operation fires from a reaction. Both ids are
 	 * numeric.

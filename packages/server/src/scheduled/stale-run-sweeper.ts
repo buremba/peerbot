@@ -137,7 +137,15 @@ export function buildStaleRunWhereSql(spec: StaleRunSweepSpec): string {
          -- pending rows are genuinely waiting for a worker.
          AND approval_status <> 'pending'
          AND (
-           created_at < current_timestamp - ${intervalSql(spec.coarseStaleInterval)}
+           -- A page-activated action may remain intentionally parked until its
+           -- explicit expiry. Once activated, its activation timestamp starts
+           -- the ordinary worker-claim clock; the potentially old created_at
+           -- must not make it time out immediately.
+           (activation_kind IS NULL
+            AND created_at < current_timestamp - ${intervalSql(spec.coarseStaleInterval)})
+           OR (activation_kind = 'page_visit'
+               AND activated_at IS NOT NULL
+               AND activated_at < current_timestamp - ${intervalSql(spec.coarseStaleInterval)})
            -- An ephemeral run whose explicit claim horizon lapsed must never
            -- execute later — terminalize it even if it is younger than the
            -- coarse interval (device action runs carry expires_at; see

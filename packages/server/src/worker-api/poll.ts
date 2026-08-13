@@ -12,7 +12,7 @@ import {
   behaviorTriggerSignals,
   isWorkspaceEventTriggerSignal,
 } from '../behaviors/workspace-event-contract';
-import { getDb, pgTextArray } from '../db/client';
+import { getDb, parsePgTextArray, pgTextArray } from '../db/client';
 import type { Outputs } from '../types/watchers';
 import { deriveWatcherExtractionSchema } from '../utils/watcher-extraction-schema';
 import { withDbRetry } from '../db/with-retry';
@@ -447,7 +447,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // org falls through to the empty-array gate (claims only by capability).
   if (c.var.workerAuthMode === 'user' && (!claimableOrgIds || claimableOrgIds.length === 0)) {
     // No org in scope — nothing this worker can ever claim.
-    return c.json({ next_poll_seconds: 30 });
+    return c.json({
+      next_poll_seconds: 30,
+      ...(effectivePlatform === 'chrome-extension' ? { page_activations: [] } : {}),
+    });
   }
   const orgScopeActive = isUserScopedWorker;
   // Always pass a non-empty array to ANY() to keep the SQL valid; the gate
@@ -463,6 +466,31 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     orgScopeActive && effectiveWorkerOrgIds && effectiveWorkerOrgIds.length > 0
       ? effectiveWorkerOrgIds
       : [''];
+
+  const pageActivations =
+    isUserScopedWorker && effectivePlatform === 'chrome-extension'
+      ? (
+          await sql<{ run_id: number; urls: string | string[] }>`
+          SELECT id AS run_id, activation_target_urls AS urls
+          FROM runs
+          WHERE organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
+            AND created_by_user_id = ${effectiveWorkerUserId}
+            AND run_type = 'action'
+            AND status = 'pending'
+            AND approval_status = 'auto'
+            AND activation_kind = 'page_visit'
+            AND activated_at IS NULL
+            AND expires_at > current_timestamp
+          ORDER BY expires_at, id
+          LIMIT 100
+        `
+        ).map((row) => ({
+          run_id: Number(row.run_id),
+          urls: parsePgTextArray(row.urls),
+        }))
+      : undefined;
+  const pollMetadata =
+    pageActivations === undefined ? {} : { page_activations: pageActivations };
 
   const claimNextPendingRun = async () =>
     sql.begin(async (tx) => {
@@ -485,6 +513,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           LIMIT 1
         ) cd ON true
         WHERE r.status = 'pending'
+          AND (r.activation_kind IS NULL OR r.activated_at IS NOT NULL)
           AND (
             r.run_type <> 'action'
             OR r.expires_at IS NULL
@@ -517,11 +546,19 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                     OR NOT (r.connector_key = ANY(${dbEgressHardenedKeys}::text[]))
                   )
                   AND (
-                    con.device_worker_id IS NULL
+                    -- Page activation chooses the browser that owns subsequent
+                    -- sub-actions; it does not choose the worker that executes
+                    -- the connector parent. The parent always stays on fleet.
+                    (
+                      r.activation_kind = 'page_visit'
+                      AND r.activated_at IS NOT NULL
+                    )
+                    OR con.device_worker_id IS NULL
                     OR (
                       -- Browser affinity (not job host). Exclude run_type=action:
                       -- scrape actions are always connector_key='chrome' and use
-                      -- the org chrome connection pin, not LinkedIn's affinity pin.
+                      -- the org chrome connection pin, not the parent
+                      -- connection's browser-affinity pin.
                       pin_dw.platform = 'chrome-extension'
                       AND r.run_type IN ('sync', 'auth', 'embed_backfill')
                       AND r.connector_key NOT LIKE 'chrome%'
@@ -539,6 +576,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                   AND cd.required_capability IS NOT NULL
                   AND cd.required_capability = ANY(${pgTextArray(authorizedCapabilities)}::text[])
                   AND con.device_worker_id IS NULL
+                  AND NOT COALESCE(
+                    r.activation_kind = 'page_visit'
+                    AND r.activated_at IS NOT NULL,
+                    false
+                  )
                   AND r.organization_id = ANY(${pgTextArray(baseOrgScopeIds)}::text[])
                 )
                 -- ... or any connection explicitly pinned to THIS device for
@@ -549,6 +591,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                   ${isUserScopedWorker}
                   AND ${deviceWorkerId}::uuid IS NOT NULL
                   AND con.device_worker_id = ${deviceWorkerId}::uuid
+                  AND NOT COALESCE(
+                    r.activation_kind = 'page_visit'
+                    AND r.activated_at IS NOT NULL,
+                    false
+                  )
                   AND (
                     cd.required_capability IS NULL
                     OR cd.required_capability = ANY(${pgTextArray(authorizedCapabilities)}::text[])
@@ -722,7 +769,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   }
 
   if (!pending) {
-    return c.json({ next_poll_seconds: 10 });
+    return c.json({ next_poll_seconds: 10, ...pollMetadata });
   }
 
   const row = pending as unknown as {
@@ -824,9 +871,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         next_poll_seconds: 1,
         skipped_run_id: row.run_id,
         error: message,
+        ...pollMetadata,
       });
     }
     return c.json({
+      ...pollMetadata,
       run_id: row.run_id,
       run_type: row.run_type,
       organization_id: row.organization_id,
@@ -926,6 +975,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         next_poll_seconds: 1,
         skipped_run_id: row.run_id,
         error: message,
+        ...pollMetadata,
       });
     }
   }
@@ -974,6 +1024,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         next_poll_seconds: 1,
         skipped_run_id: row.run_id,
         error: message,
+        ...pollMetadata,
       });
     }
   }
@@ -1038,6 +1089,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   );
 
   return c.json({
+    ...pollMetadata,
     run_id: row.run_id,
     run_type: row.run_type,
     connector_key: row.connector_key,

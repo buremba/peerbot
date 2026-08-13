@@ -28,6 +28,7 @@ let holdingToEvent: typeof import("../midas.connector").holdingToEvent;
 let balanceToEvent: typeof import("../midas.connector").balanceToEvent;
 let MIDAS_DASHBOARD_URL: typeof import("../midas.connector").MIDAS_DASHBOARD_URL;
 let MIDAS_ALLOWED_ORIGINS: typeof import("../midas.connector").MIDAS_ALLOWED_ORIGINS;
+let MIDAS_DASHBOARD_TEXT_EXPRESSION: typeof import("../midas.connector").MIDAS_DASHBOARD_TEXT_EXPRESSION;
 
 beforeAll(async () => {
   const mod = await import("../midas.connector");
@@ -41,6 +42,7 @@ beforeAll(async () => {
   balanceToEvent = mod.balanceToEvent;
   MIDAS_DASHBOARD_URL = mod.MIDAS_DASHBOARD_URL;
   MIDAS_ALLOWED_ORIGINS = mod.MIDAS_ALLOWED_ORIGINS;
+  MIDAS_DASHBOARD_TEXT_EXPRESSION = mod.MIDAS_DASHBOARD_TEXT_EXPRESSION;
 });
 
 function dispatcherFor(bodyText: string) {
@@ -146,6 +148,45 @@ const US_ONLY_WITHOUT_COUNT_FIXTURE = US_ONLY_DASHBOARD_FIXTURE.replace(
   "\n1\n$2.100,00",
   "\n$2.100,00"
 );
+
+describe("Midas dashboard settle", () => {
+  test("waits for numeric position data after headings render", async () => {
+    const headingsOnly = [
+      "Pozisyonlar",
+      "ABD Hisseleri",
+      "BIST Hisseleri",
+    ].join("\n");
+    let reads = 0;
+    const document = {
+      body: {
+        get innerText() {
+          reads += 1;
+          return reads <= 2 ? headingsOnly : DASHBOARD_FIXTURE;
+        },
+      },
+    };
+    const evaluate = Function(
+      "document",
+      "setTimeout",
+      `return ${MIDAS_DASHBOARD_TEXT_EXPRESSION}`
+    ) as (
+      document: object,
+      setTimeout: (callback: () => void) => number
+    ) => Promise<string>;
+
+    const result = await evaluate(document, (callback) => {
+      callback();
+      return 0;
+    });
+
+    expect(result).toBe(DASHBOARD_FIXTURE);
+    expect(reads).toBeGreaterThan(2);
+    // A handful of reads means the loop exited via readiness. Thousands would
+    // mean ready() never matched the fixture and the 12s deadline bailed us
+    // out — which must fail, not pass slowly.
+    expect(reads).toBeLessThan(10);
+  });
+});
 
 describe("requireExtensionDispatcher", () => {
   test("throws when chrome_dispatcher is missing (the prod failure mode)", () => {

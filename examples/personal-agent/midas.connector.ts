@@ -19,6 +19,34 @@ export const MIDAS_ALLOWED_ORIGINS = [
   "*.getmidas.com",
 ] as const;
 
+/**
+ * Runs inside the Atlas page via the extension's `evaluate` action. Atlas
+ * paints the "Pozisyonlar" headings before appending the numeric rows, so
+ * readiness requires a market heading AND a currency amount on its own line
+ * within the section — a heading alone is a partial render. Returns the body
+ * text either way once the 12s deadline passes.
+ */
+export const MIDAS_DASHBOARD_TEXT_EXPRESSION = `(async () => {
+  const deadline = Date.now() + 12000;
+  const bodyText = () => (document.body ? document.body.innerText : "");
+  const ready = () => {
+    const t = bodyText();
+    const positionsStart = t.indexOf("Pozisyonlar");
+    if (positionsStart === -1) return false;
+    const positions = t.slice(positionsStart);
+    const hasMarket =
+      positions.includes("ABD Hisseleri") ||
+      positions.includes("BIST Hisseleri");
+    const hasSectionTotal =
+      /(?:^|\\n)(?:\\$|₺)\\d[\\d.]*,\\d{2}(?:\\n|$)/.test(positions);
+    return hasMarket && hasSectionTotal;
+  };
+  while (Date.now() < deadline && !ready()) {
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return bodyText();
+})()`;
+
 export type MidasMarket = "US" | "TR";
 
 export interface MidasHolding {
@@ -501,7 +529,7 @@ export default class MidasConnector extends ConnectorRuntime<MidasCheckpoint> {
     name: "Midas",
     description:
       "Syncs Midas portfolio holdings via the Owletto Chrome extension.",
-    version: "1.0.4",
+    version: "1.0.5",
     faviconDomain: "atlas.getmidas.com",
     authSchema: {
       methods: [{ type: "none" }],
@@ -585,23 +613,11 @@ export default class MidasConnector extends ConnectorRuntime<MidasCheckpoint> {
       );
     }
 
-    // SPA settle: poll for the Pozisyonlar section markers until they render
-    // (bounded), rather than a blind fixed sleep that races slow sessions.
+    // SPA settle: headings paint before Atlas appends the numeric rows. Wait
+    // for a section total inside Pozisyonlar, not just for an early marker.
     const textObs = await dispatcher.dispatch<{ value?: string }>("evaluate", {
       tab_id: nav.tab_id,
-      expression: `(async () => {
-        const markers = ["Pozisyonlar", "ABD Hisseleri", "BIST Hisseleri"];
-        const deadline = Date.now() + 12000;
-        const bodyText = () => (document.body ? document.body.innerText : "");
-        const ready = () => {
-          const t = bodyText();
-          return markers.some((m) => t.includes(m));
-        };
-        while (Date.now() < deadline && !ready()) {
-          await new Promise((r) => setTimeout(r, 250));
-        }
-        return bodyText();
-      })()`,
+      expression: MIDAS_DASHBOARD_TEXT_EXPRESSION,
       allowed_origins: [...MIDAS_ALLOWED_ORIGINS],
     });
 

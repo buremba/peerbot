@@ -344,6 +344,55 @@ describe('OAuth-protected MCP connector installation', () => {
         }),
       ])
     );
+
+    const expectedSummary = {
+      total: 2,
+      reads: 1,
+      writes: 1,
+      mcp_tool: 2,
+    };
+
+    const got = (await manageConnections(
+      { action: 'get', connection_id: connectionId },
+      TEST_ENV,
+      ctx
+    )) as {
+      connection: {
+        has_operations: boolean;
+        operations_summary: Record<string, number>;
+      };
+    };
+    expect(got.connection.has_operations).toBe(true);
+    expect(got.connection.operations_summary).toMatchObject(expectedSummary);
+
+    const listed = (await manageConnections(
+      { action: 'list', connector_key: 'mcp.mcp-example-com' },
+      TEST_ENV,
+      ctx
+    )) as {
+      connections: Array<{
+        has_operations: boolean;
+        operations_summary: Record<string, number>;
+      }>;
+    };
+    expect(listed.connections).toHaveLength(1);
+    expect(listed.connections[0].has_operations).toBe(true);
+    expect(listed.connections[0].operations_summary).toMatchObject(expectedSummary);
+
+    const groups = (await manageConnections(
+      { action: 'list_connector_groups' },
+      TEST_ENV,
+      ctx
+    )) as {
+      groups: Array<{
+        connector_key: string;
+        facets: { actions: boolean };
+      }>;
+    };
+    expect(
+      groups.groups.find((group) => group.connector_key === 'mcp.mcp-example-com')
+        ?.facets.actions
+    ).toBe(true);
   });
 
   it('installs a managed MCP manifest from trusted source without registering a local OAuth client', async () => {

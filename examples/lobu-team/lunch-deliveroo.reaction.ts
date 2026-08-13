@@ -1,5 +1,5 @@
 /**
- * Reaction for the `lunch-finalize` Behavior.
+ * Reaction for the `lobu-team-lunch-finalize` Behavior.
  *
  * The agent's turn collects orders and picks a restaurant; this reaction then
  * does the Deliveroo work the agent itself can't (executing connector actions

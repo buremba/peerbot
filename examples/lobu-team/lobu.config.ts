@@ -183,7 +183,15 @@ const productOps = defineAgent({
   description:
     "Summarizes Lobu production activity from organization-owned read-only feeds",
   providers: [{ id: "qwen", model: "qwen3.8-max" }],
-  tools: { allowed: [], strict: true },
+  tools: {
+    // Keep the headless lockdown (no native worker tools) and pre-approve the
+    // one MCP write the Behavior needs: run_sdk carries completeWindow, is not
+    // read-only, and would otherwise stall an unattended run on an approval
+    // card. query_sdk is readOnlyHint and needs no grant.
+    allowed: [],
+    strict: true,
+    preApproved: ["/mcp/lobu-memory/tools/run_sdk"],
+  },
 });
 
 // Reuse the Lobu Team read-only database credentials already stored in Lobu.

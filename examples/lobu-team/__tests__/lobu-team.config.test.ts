@@ -54,7 +54,11 @@ describe("Lobu Team configuration", () => {
     });
     expect(digest?.agent).toMatchObject({
       id: "product-ops",
-      tools: { allowed: [], strict: true },
+      tools: {
+        allowed: [],
+        strict: true,
+        preApproved: ["/mcp/lobu-memory/tools/run_sdk"],
+      },
     });
     expect(digest?.reaction).toMatchObject({
       kind: "reactionSource",

@@ -1,0 +1,16 @@
+{
+  "name": "lobu",
+  "owner": {
+    "name": "Lobu"
+  },
+  "plugins": [
+    {
+      "name": "lobu",
+      "source": "./claude-plugin",
+      "description": "Shared, permission-aware company context and governed actions for Claude and other AI agents.",
+      "category": "development",
+      "tags": ["agents", "mcp", "company-context", "memory", "permissions"]
+    }
+  ],
+  "description": "Official Lobu plugins for giving Claude shared company context and governed access to company systems."
+}

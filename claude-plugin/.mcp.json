@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "lobu": {
+      "type": "http",
+      "url": "https://lobu.ai/mcp"
+    }
+  }
+}

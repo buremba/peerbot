@@ -55,6 +55,17 @@ interface JiraWebhookRefreshResponse {
 	expirationDate?: string;
 }
 
+interface JiraProject {
+	key?: string;
+}
+
+interface JiraProjectSearchResponse {
+	values?: JiraProject[];
+	isLast?: boolean;
+	startAt?: number;
+	maxResults?: number;
+}
+
 export interface AtlassianMcpWebhookResult {
 	handled: boolean;
 	changed: boolean;
@@ -168,12 +179,80 @@ async function listJiraWebhooks(
 			(typeof result.maxResults === "number"
 				? result.maxResults
 				: values.length);
-		if (nextStart <= startAt || (result.isLast !== false && values.length < 100)) {
+		if (
+			nextStart <= startAt ||
+			(result.isLast !== false && values.length < 100)
+		) {
 			return all;
 		}
 		startAt = nextStart;
 	}
 	throw new Error("Jira webhook listing exceeded 100 pages");
+}
+
+function quoteJqlString(value: string): string {
+	return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+async function listJiraProjectKeys(
+	fetchImpl: typeof fetch,
+	apiBase: string,
+	accessToken: string,
+): Promise<Set<string>> {
+	const projectKeys = new Set<string>();
+	let startAt = 0;
+	for (let page = 0; page < 100; page += 1) {
+		const url = new URL(`${apiBase}/project/search`);
+		url.searchParams.set("startAt", String(startAt));
+		url.searchParams.set("maxResults", "100");
+		const result = await jiraJson<JiraProjectSearchResponse>(
+			fetchImpl,
+			url.href,
+			accessToken,
+			{ method: "GET" },
+		);
+		const values = result.values ?? [];
+		for (const project of values) {
+			const key = project.key?.trim();
+			if (key) projectKeys.add(key);
+		}
+		if (result.isLast === true || values.length === 0) return projectKeys;
+		const nextStart =
+			(typeof result.startAt === "number" ? result.startAt : startAt) +
+			(typeof result.maxResults === "number"
+				? result.maxResults
+				: values.length);
+		if (
+			nextStart <= startAt ||
+			(result.isLast !== false && values.length < 100)
+		) {
+			return projectKeys;
+		}
+		startAt = nextStart;
+	}
+	throw new Error("Jira project listing exceeded 100 pages");
+}
+
+async function jiraProjectJql(
+	fetchImpl: typeof fetch,
+	apiBase: string,
+	accessToken: string,
+): Promise<string> {
+	const projectKeys = await listJiraProjectKeys(
+		fetchImpl,
+		apiBase,
+		accessToken,
+	);
+	if (projectKeys.size === 0) {
+		throw new Error(
+			"Jira webhook registration requires at least one accessible project",
+		);
+	}
+	// Code-unit sort, not localeCompare: reconciliation equality-compares this
+	// string against the webhook_project_jql persisted at registration, so
+	// ordering must not vary with the process locale.
+	const sortedKeys = [...projectKeys].sort();
+	return `project IN (${sortedKeys.map(quoteJqlString).join(", ")})`;
 }
 
 async function loadConnection(
@@ -330,6 +409,7 @@ const WEBHOOK_STATE_KEYS = [
 	"webhook_algorithm",
 	"webhook_signature_prefix",
 	"webhook_dedupe_header",
+	"webhook_project_jql",
 	"webhook_expires_at",
 	"webhook_status",
 	"webhook_error",
@@ -525,13 +605,25 @@ async function ensureUnderLock(params: {
 		apiBase,
 		credentials.accessToken,
 	);
+	const projectJql = await jiraProjectJql(
+		params.fetchImpl,
+		apiBase,
+		credentials.accessToken,
+	);
+	// Compare against our persisted copy, not the jqlFilter Jira echoes back:
+	// Jira normalizes the stored JQL, so a provider-side compare would delete
+	// and re-register the webhook on every reconcile.
+	const projectScopeMatches =
+		stringConfig(connection.config, "webhook_project_jql") === projectJql;
 	const ownedCallbacks = webhooks.filter(
 		(item) => item.id !== undefined && hasCallbackPath(item.url, callbackPath),
 	);
-	let matches = ownedCallbacks.filter((item) => item.url === targetUrl);
-	const staleCallbacks = ownedCallbacks.filter(
-		(item) => item.url !== targetUrl,
-	);
+	let matches = projectScopeMatches
+		? ownedCallbacks.filter((item) => item.url === targetUrl)
+		: [];
+	const staleCallbacks = projectScopeMatches
+		? ownedCallbacks.filter((item) => item.url !== targetUrl)
+		: ownedCallbacks;
 	if (!hadCallbackToken || staleCallbacks.length > 0) {
 		const staleIds = (!hadCallbackToken ? ownedCallbacks : staleCallbacks).map(
 			(item) => Number(item.id),
@@ -596,7 +688,7 @@ async function ensureUnderLock(params: {
 					url: targetUrl,
 					webhooks: [
 						{
-							jqlFilter: "",
+							jqlFilter: projectJql,
 							events: [
 								"jira:issue_created",
 								"jira:issue_updated",
@@ -631,6 +723,7 @@ async function ensureUnderLock(params: {
 		...connection.config,
 		webhook_callback_token: callbackTokenRef,
 		webhook_external_id: externalId,
+		webhook_project_jql: projectJql,
 		webhook_expires_at: expiresAt,
 		webhook_status: "active",
 		webhook_error: null,

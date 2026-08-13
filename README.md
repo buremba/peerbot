@@ -1,57 +1,99 @@
-# Lobu — Open-source context and control plane for AI agents
+# Lobu — Shared company context for every AI agent
 
-**Lobu** is open-source AI teammate infrastructure for **shared company context and governed actions**. Connect company tools once, then let ChatGPT, Claude, Codex, and custom agents work from the same durable organizational memory — with scoped identities, approvals, auditable actions, and isolated execution when agents need to run code.
+**Lobu is an open-source shared context layer for AI agents.** Giving every agent direct access to company tools does not give the company shared memory. Each agent still reconstructs what happened inside one model session, then loses what it learned when that session ends.
 
-Lobu's data layer combines connectors, an append-only event log, typed entities, shared memory, and behaviors. Its control/runtime layer adds per-user or channel isolation, credential brokering, policies, approvals, and audit. External agents can use the same org-scoped graph over MCP without adopting Lobu's agent harness.
+Connect your company stack once. Claude Code, Codex, ChatGPT, and your own agents get one permission-aware memory of the company while keeping their existing interface, model, and runtime. When a responsibility should persist beyond the current chat, they can discover and hand work to a Lobu specialist over MCP.
 
-https://github.com/user-attachments/assets/d72a9286-0325-4b8b-afc0-c1efe9c96f4e
+## Start with the agent you already use
 
-## Three ways in
-
-Lobu is not a harness you have to build on. It is the data layer your agents
-work against — a durable event log and a typed ontology over your org's tools.
-Bring your own agent and reach it over MCP, the CLI, or the TypeScript SDK; or
-run Lobu's own agents on top. The same org-scoped graph backs all of them.
-
-### 1. Full agent — Slack, Telegram, behaviors, connectors
-
-Scaffold and run locally with the CLI. Lobu boots as a single Node process with zero-config embedded Postgres by default (or bring your own — pgvector required — via `DATABASE_URL`). `lobu run` opens the web UI on `:8787` and can wire Slack via the hosted bot or your own app.
+Point any MCP client at Lobu. No Lobu agent runtime or `lobu.config.ts` is required.
 
 ```bash
-npx @lobu/cli@latest init my-bot
-cd my-bot
-npx @lobu/cli@latest run                      # boots the stack and applies your agent
-npx @lobu/cli@latest chat -c local "hello"    # talk to it
+# Claude Code
+claude mcp add --transport http lobu https://lobu.ai/mcp
+
+# Codex
+codex mcp add lobu --url https://lobu.ai/mcp
 ```
 
-`lobu run` auto-applies your `lobu.config.ts`, so the scaffolded agent is usable immediately. To use an external Postgres, set `DATABASE_URL` in `.env`; to push later config changes, run `lobu apply`.
+Complete OAuth when prompted, connect the company sources you want to share, and ask your agent to use Lobu when it needs organizational context.
 
-Next steps: [Getting started](https://lobu.ai/getting-started/) (project layout, develop with your coding agent, evals) · [Memory](https://lobu.ai/getting-started/memory/) · [Skills](https://lobu.ai/getting-started/skills/) · [Channels](#channels)
+The same MCP endpoint works with **ChatGPT, Claude Desktop, Gemini CLI, Cursor**, and custom MCP clients. `lobu memory init` detects Claude Code, Codex, Gemini CLI, and Cursor, and prints manual setup steps for Claude Desktop and ChatGPT.
 
-### 2. Bring your own agent — memory over MCP
+Setup guides: [Claude](https://lobu.ai/connect-from/claude/) · [ChatGPT](https://lobu.ai/connect-from/chatgpt/) · [Codex](https://lobu.ai/connect-from/codex/) · [Grok](https://lobu.ai/connect-from/grok/)
 
-Point any MCP client at Lobu and it gets durable, structured memory — the same
-graph your Lobu agents read. No `lobu.config.ts` or local Lobu agent runtime is
-required.
+### Recall what the company knows
+
+Ask from Claude Code, Codex, or ChatGPT:
+
+> What did we decide about enterprise onboarding, and what changed since the last release?
+
+Lobu searches the same durable, org-scoped memory regardless of which agent asks. The answer can combine connected discussions, project activity, customer records, saved decisions, and typed company entities without rebuilding that context from scratch in every chat.
+
+### Hand work to a persistent Lobu specialist
+
+Ask your primary agent:
+
+> Ask our customer-researcher specialist to review the latest feedback and propose the next three interviews.
+
+The agent discovers the specialists available to you, selects the right one, delegates the task, and brings the result back. The specialist has its own identity, instructions, tools, durable conversations, and access policy.
+
+To the user this stays one conversation in their primary agent. The specialist itself persists: it remains available to other authorized people and agents instead of disappearing with the current chat.
+
+## Why Lobu
+
+Instead of every agent rebuilding company state through per-session tool calls, Lobu runs a shared data layer:
+
+- **Connect once.** Polls, webhooks, APIs, and agent-written connectors feed one append-only event log.
+- **Know once.** Events become searchable knowledge and typed entities such as companies, projects, incidents, and customers.
+- **Use from any agent.** Every authorized MCP client reads and contributes to the same organizational state.
+- **Delegate when useful.** Persistent Lobu specialists can own a role, conversation history, tools, and recurring responsibilities.
+- **Keep control.** Identity, source permissions, approvals, credential brokering, provenance, and audit stay server-side.
+
+```mermaid
+flowchart LR
+  Tools[Company tools] --> L[Lobu shared context]
+  APIs[APIs and webhooks] --> L
+  Custom[Custom connectors] --> L
+
+  L <--> MCP[MCP]
+  MCP <--> Claude[Claude Code]
+  MCP <--> Codex[Codex]
+  MCP <--> ChatGPT[ChatGPT]
+  MCP <--> Own[Your agents]
+
+  L <--> Specialists[Persistent Lobu specialists]
+  Specialists <--> Channels[Slack and web chat]
+```
+
+## Three ways to use Lobu
+
+### 1. Add shared context to existing agents
+
+Agents can search and save memory, query structured entities, inspect connected sources, and delegate to Lobu specialists without moving to a new chat interface or adopting Lobu's runtime.
+
+Docs: [Memory](https://lobu.ai/getting-started/memory/) · [Claude](https://lobu.ai/connect-from/claude/) · [ChatGPT](https://lobu.ai/connect-from/chatgpt/) · [Codex](https://lobu.ai/connect-from/codex/)
+
+### 2. Run persistent Lobu specialists
+
+Create a specialist for a durable responsibility: customer research, support triage, release coordination, incident follow-up, or an internal domain. People can talk to it from the Lobu web app or Slack, while other agents can call the same specialist over MCP.
+
+Scaffold and run one locally:
 
 ```bash
-claude mcp add --transport http lobu https://lobu.ai/mcp   # or http://localhost:8787/mcp locally
+npx @lobu/cli@latest init my-specialist
+cd my-specialist
+npx @lobu/cli@latest run
+npx @lobu/cli@latest chat -c local "hello"
 ```
 
-Complete the OAuth flow when prompted, then enable the connector. Pair it with a project instruction or skill that tells the agent when to search memory and when to save what it learned.
+`lobu run` starts a single Node process and an embedded Postgres database by default. It opens the web UI on `:8787` and applies the project's `lobu.config.ts`. Use `DATABASE_URL` when you want external Postgres; pgvector is required.
 
-`lobu memory init` can detect and configure **Claude Code**, **Codex**,
-**Gemini CLI**, and **Cursor**, and provides manual setup instructions for
-**Claude Desktop** and **ChatGPT**. It accepts a Lobu Cloud, local, or custom
-MCP endpoint. Setup guides:
-[Claude](https://lobu.ai/connect-from/claude/) ·
-[ChatGPT](https://lobu.ai/connect-from/chatgpt/) ·
-[Codex](https://lobu.ai/connect-from/codex/) ·
-[Grok](https://lobu.ai/connect-from/grok/).
+Docs: [Getting started](https://lobu.ai/getting-started/) · [Agent workspace](https://lobu.ai/guides/agent-prompts/) · [Skills](https://lobu.ai/getting-started/skills/) · [Slack](https://lobu.ai/platforms/slack/)
 
-### 3. Your own code — CLI and TypeScript SDK
+### 3. Build with the CLI and TypeScript SDK
 
-The data layer is reachable without an agent at all. From the terminal:
+The same governed data and operations are available without an agent:
 
 ```bash
 npx @lobu/cli@latest memory run                     # list the memory tools
@@ -60,12 +102,11 @@ npx @lobu/cli@latest memory exec \
   'export default async (_ctx, client) => client.entities.list({ limit: 5 })'
 ```
 
-Or from any Node/TypeScript program, with no sandbox in the loop:
+Or from Node and TypeScript:
 
 ```ts
 import { client, searchMemory } from "@lobu/client";
 
-// Defaults to http://localhost:8787 — point it at your instance and add a token.
 client.setConfig({
   baseUrl: "https://lobu.ai",
   headers: { Authorization: `Bearer ${process.env.LOBU_TOKEN}` },
@@ -77,81 +118,77 @@ const hits = await searchMemory({
 });
 ```
 
-Mint a token with `lobu token create`.
+Mint a token with `lobu token create`. The MCP tools, CLI, and typed SDK share the same server-side capabilities and access rules.
 
-The MCP and typed SDK operations share the server-side tool registry, while the
-CLI dispatches those same MCP operations by name.
+## Core concepts
 
-## Architecture
+### Shared context
 
-```mermaid
-flowchart LR
-  Slack[Slack] <--> GW[Gateway]
-  Telegram[Telegram] <--> GW
-  WhatsApp[WhatsApp] <--> GW
-  Discord[Discord] <--> GW
-  API[REST API] <--> GW
-  MCP[MCP clients] <--> GW
+[Connectors](https://lobu.ai/getting-started/author-a-connector/) collect company activity on a schedule or through webhooks. Discussions, project changes, customer records, API events, and saved agent knowledge land in the same append-only history.
 
-  GW <--> PG[(Postgres)]
-  GW -->|spawn| W[Worker]
+Typed entities connect that history to the things the company cares about: `Company`, `Project`, `Customer`, `Incident`, or schemas you define. Corrections supersede old facts rather than erasing their provenance.
 
-  subgraph Sandbox
-    W
-  end
+Connectors are extensible. You can build them in TypeScript, and coding agents can use Lobu's connector contract and validation flow to create integrations for sources Lobu does not ship with.
 
-  W -.->|HTTP proxy| GW
-  W -.->|MCP proxy| GW
-  GW -->|domain filter| Internet((Internet))
-  GW -->|scoped tokens| ExtMCP[MCP Servers]
+Docs: [Memory](https://lobu.ai/getting-started/memory/) · [Connectors](https://lobu.ai/getting-started/author-a-connector/) · [API](https://lobu.ai/reference/api-reference/)
+
+### Persistent specialists
+
+A Lobu specialist has a stable role, instructions, memory, tools, and conversation history. It can be reached from web chat or Slack and called by external agents through `client.conversations.send`.
+
+Specialists use role files for identity and behavior: `IDENTITY.md`, `SOUL.md`, and `USER.md`. Guardrails can inspect input, output, and tool calls. Actions can require approval, and their results return to the shared event log.
+
+External agents do not ask users to write delegation code. They pass scripts like these to Lobu's `query_sdk` and `run_sdk` MCP tools:
+
+```ts
+// Discover specialists through query_sdk.
+export default async (_ctx, client) => {
+  const { agents } = await client.agents.list();
+  return agents;
+};
 ```
 
-## Capabilities
-
-Most agent stacks treat MCP as the memory: every turn, the agent calls GitHub, Slack, and CRM tools to reconstruct what happened. That knowledge stays siloed in the session and disappears when the chat ends.
-
-Lobu runs a **data pipeline** instead. Connectors poll and webhooks push into one durable, append-only event log. Behaviors and chat agents read the same org-scoped knowledge graph — typed entities, relationships, searchable events — so anyone can resume where the organization left off, not where one conversation left off.
-
-### Memory — ingest, entities, behaviors
-
-**Ingest.** [Connectors](https://lobu.ai/getting-started/author-a-connector/) pull on a schedule; webhooks and the [REST API](https://lobu.ai/reference/api-reference/) push. Stripe charges, GitHub PRs, form submissions, and connector polls all land as rows in the same log — a stable record of what happened in the world, not something the agent has to re-fetch through MCP every turn.
-
-**Entities.** You define the schema (`Company`, `Project`, `Incident`, …) in `lobu.config.ts`. Events attach to entity instances (`Company:Acme`) and build a live knowledge graph the whole org shares. Corrections supersede old facts; nothing is deleted, so provenance and time-travel stay intact.
-
-**Behaviors.** Versioned jobs activated manually, on a schedule, by a declared connector event, or by a durable event output from another Behavior. They read governed sources, persist structured entities and append-only events, and may run a [reaction](https://lobu.ai/getting-started/author-a-connector/#reactions) to notify Slack, open a ticket, or kick off agent work — while nobody is in chat. See the [activation and chaining model](docs/BEHAVIORS.md).
-
-Docs: [Memory](https://lobu.ai/getting-started/memory/) · [Connectors](https://lobu.ai/getting-started/author-a-connector/) · [Reactions](https://lobu.ai/getting-started/author-a-connector/#reactions)
-
-### Agents — read the graph, branch to act
-
-Chat agents **look up** what the pipeline already captured — search entities, read the event log, pull thread history — then **branch** into an isolated sandbox ([just-bash](https://www.npmjs.com/package/just-bash) + Nix) to run bash, edit files, and call MCP tools for side effects. MCP is for *doing*; the knowledge graph is for *knowing*. Pick any of [16 LLM providers](https://lobu.ai/reference/providers/); credentials stay on the gateway.
-
-Behavior comes from a **role file model** — `IDENTITY.md` (who), `SOUL.md` (rules), `USER.md` (context). **Guardrails** gate input, output, and tool calls (`secret-scan`, `pii-scan`, inline LLM judges) so policy holds even when the prompt doesn't. Destructive MCP calls wait for in-thread approval; every action writes back to the log.
+```ts
+// Delegate through run_sdk and wait for the specialist's reply.
+export default async (_ctx, client) => {
+  return client.conversations.send({
+    agent_id: "customer-researcher",
+    thread: "enterprise-onboarding",
+    text: "Review the latest customer feedback and propose the next three interviews.",
+  });
+};
+```
 
 Docs: [Agent workspace](https://lobu.ai/guides/agent-prompts/) · [Guardrails](https://lobu.ai/guides/guardrails/) · [Security](https://lobu.ai/guides/security/)
 
-### Channels
+### Behaviors
 
-One instance serves **Slack, Telegram, WhatsApp, Discord, Teams, Google Chat**, and a [REST API](https://lobu.ai/reference/api-reference/) [![API Docs](https://img.shields.io/badge/API_Docs-0096FF?style=for-the-badge&logo=readme&logoColor=white)](https://lobu.ai/reference/api-reference/). Each channel/DM gets its own runtime, model, tools, credentials, and Nix packages. Platform setup: [Slack](https://lobu.ai/platforms/slack/) · [Telegram](https://lobu.ai/platforms/telegram/) · [Discord](https://lobu.ai/platforms/discord/) · [WhatsApp](https://lobu.ai/platforms/whatsapp/) · [Teams](https://lobu.ai/platforms/teams/) · [Google Chat](https://lobu.ai/platforms/google-chat/).
+Behaviors are versioned background responsibilities activated manually, on a schedule, by a connector event, or by another Behavior's durable output. They read governed sources, persist structured results, and can notify Slack, open a ticket, or start agent work while nobody is in chat.
 
-## How Lobu Differs
+See the [activation and chaining model](docs/BEHAVIORS.md).
 
-Lobu is the **infrastructure layer** for autonomous agents. Frameworks like LangChain or CrewAI help you *write* agent logic; Lobu is the delivery layer that runs those agents at scale — sandboxing, persistence, and messaging connectivity.
+### Optional execution
 
-**vs OpenClaw:** OpenClaw is [single-tenant by design](https://x.com/steipete/status/2026092642623201379) — every user shares the same filesystem and bash session. Lobu keeps the same autonomous loop but runs it **multi-tenant**: one gateway, an isolated sandbox per channel or DM, and org-scoped memory your whole team can share. Full write-up: [lobu.ai/getting-started/comparison](https://lobu.ai/getting-started/comparison/).
+Shared context and delegation over MCP do not require Lobu to execute code for the calling agent. When a Lobu specialist needs a shell, the built-in runtime provides lightweight `just-bash` execution. Remote sandbox providers such as Vercel Sandbox can be connected for workloads that need stronger isolation or more compute.
 
-| | Lobu | Claude Tag | OpenClaw |
-| --- | --- | --- | --- |
-| Tenancy | Multi-tenant — per-channel/DM isolation | Per-channel @Claude | Single-tenant — one shared runtime |
-| Open source / self-host | Yes | No | Yes |
-| Model choice | 16 providers | Claude only | Per setup |
-| Multi-platform | Slack, Telegram, WhatsApp, Discord, Teams, Google Chat, REST API, MCP | Slack (beta) | [15+ chat platforms](https://openclaw.ai/integrations) |
-| Custom connectors / behaviors | Yes (`lobu.config.ts`) | Admin-provisioned tools | Skills + local setup |
-| Secrets & network | Gateway proxy, domain-filtered egress | Managed | Direct from agent, no built-in isolation |
+Which sandbox runs the code is a deployment choice. Lobu provides the shared context, permissions, and governance around it.
+
+## Channels
+
+Lobu specialists can serve **Slack, Telegram, WhatsApp, Discord, Teams, Google Chat**, the web app, and a [REST API](https://lobu.ai/reference/api-reference/). Channel conversations remain separate while reading the same authorized organizational context.
+
+Setup: [Slack](https://lobu.ai/platforms/slack/) · [Telegram](https://lobu.ai/platforms/telegram/) · [Discord](https://lobu.ai/platforms/discord/) · [WhatsApp](https://lobu.ai/platforms/whatsapp/) · [Teams](https://lobu.ai/platforms/teams/) · [Google Chat](https://lobu.ai/platforms/google-chat/)
+
+## How Lobu differs
+
+- **Agent frameworks** help developers implement an agent loop. Lobu gives agents and people a shared organizational state and a place to keep persistent specialists.
+- **Direct MCP integrations** expose tools from one provider. Lobu continuously builds durable, cross-source context that every authorized agent can reuse.
+- **Agent runtimes** host a particular agent. Lobu lets people keep using Claude Code, Codex, ChatGPT, or their own runtime and add Lobu only where shared context or delegation is useful.
+- **Workflow engines** encode a graph of predetermined steps. Lobu Behaviors handle durable triggers and background responsibilities, while agents decide how to complete open-ended work.
 
 ## Agent configuration
 
-Runtime configuration is managed through the web app or the same org-scoped REST API used by the CLI. See the [CLI reference](https://lobu.ai/reference/cli/) and [`lobu apply`](https://lobu.ai/reference/cli/#apply).
+Runtime configuration is managed through the web app or the same org-scoped REST API used by the CLI. Local `lobu.config.ts` projects support validation and repeatable apply workflows.
 
 ```bash
 npx @lobu/cli@latest login
@@ -159,32 +196,22 @@ npx @lobu/cli@latest org set my-org
 npx @lobu/cli@latest agent list
 ```
 
-Local `lobu.config.ts` projects are still useful for `lobu validate` and `lobu apply` workflows.
+Docs: [CLI reference](https://lobu.ai/reference/cli/) · [`lobu apply`](https://lobu.ai/reference/cli/#apply)
 
 ## Deployment
 
-The quick start above is the fastest path. For production self-hosting, see the [deployment docs](https://lobu.ai/deployment/docker/): [Docker](https://lobu.ai/deployment/docker/) · [Cloud](https://lobu.ai/deployment/cloud/) · [Kubernetes](https://lobu.ai/deployment/kubernetes/).
+Use the embedded runtime locally or self-host Lobu with external Postgres. Production guides: [Docker](https://lobu.ai/deployment/docker/) · [Cloud](https://lobu.ai/deployment/cloud/) · [Kubernetes](https://lobu.ai/deployment/kubernetes/)
 
-## Security and Privacy
+## Security and privacy
 
-Secrets, egress policy, and MCP credential injection stay on the gateway; each channel or DM gets a separate worker subprocess with a best-effort sandbox. Guides: [Security](https://lobu.ai/guides/security/) · [Secret proxy](https://lobu.ai/guides/secret-proxy/) · [Guardrails](https://lobu.ai/guides/guardrails/) · [threat model](docs/SECURITY.md).
+Permissions, provider credentials, connector credentials, and audit stay on Lobu's gateway. Workers receive scoped placeholders or short-lived access rather than durable credentials. Actions can be approval-gated, and connected data remains organization-scoped.
 
-- [**Worker egress through the gateway proxy**](https://lobu.ai/guides/security/#network-isolation) — `HTTP_PROXY` on loopback (port from `WORKER_PROXY_PORT`, default 8118) with domain allowlist/blocklist and an optional [LLM egress judge](https://lobu.ai/guides/egress-judge/) for ambiguous hosts. On Linux hosts with an enabled, usable systemd user manager, worker spawn uses `systemd-run --user --scope` with `IPAddressDeny=any` plus `IPAddressAllow=127.0.0.1` and `IPAddressAllow=::1` to permit loopback while blocking non-loopback IP traffic at the kernel; without that scope, including on macOS dev, the proxy is best-effort.
-- [**Secrets stay in the gateway**](https://lobu.ai/guides/secret-proxy/) — provider credentials and `${env:}` substitution; OAuth and MCP tokens live in Lobu. Workers get opaque placeholders; the secret proxy swaps real values at egress. Workers never see API keys or refresh tokens.
-- [**Threat model**](https://lobu.ai/guides/security/) — `just-bash` and `isolated-vm` are policy + best-effort sandboxes, not security boundaries for hostile code. Read [docs/SECURITY.md](docs/SECURITY.md) before exposing Lobu to untrusted users.
-- [**Nix system packages**](docs/SECURITY.md#skills-and-policy) — per-agent reproducible tooling and skill policy via `runtime.nix.packages` and `lobu.config.ts`.
+The built-in `just-bash` and embedded execution modes are policy and convenience boundaries, not VMs for hostile code. Use a remote sandbox provider when the workload needs a stronger isolation boundary.
 
-## Support & Consultancy
+Docs: [Security](https://lobu.ai/guides/security/) · [Secret proxy](https://lobu.ai/guides/secret-proxy/) · [Guardrails](https://lobu.ai/guides/guardrails/) · [Threat model](docs/SECURITY.md)
 
-Lobu is open source, but deploying production-grade agents usually means tuning soul, identity, and integrations. I offer hands-on implementation for:
+## Design partners
 
-- **Employee AI assistants** — persistent sandboxed agents on Slack wired into internal tools and docs.
-- **Automated customer support** — multi-step ticket handling with human-in-the-loop.
-- **Autonomous workflows** — long-running, scheduled background jobs with persistent state.
-- **Managed infrastructure** — private Lobu deployments with updates and scaling.
-- **Custom tooling & skills** — bespoke MCP servers, Nix runtimes, and agent skills.
+We are working with technical teams that already use Claude Code, Codex, ChatGPT, or custom agents and want those agents to share company context or delegate to persistent specialists.
 
-I'm a second-time technical founder. Previously founded [rakam.io](https://rakam.io) (enterprise analytics PaaS), acquired by [LiveRamp](https://liveramp.com) (NYSE: RAMP).
-
-> [!TIP]
-> Want persistent agents for your team or customers? [Talk to Founder](https://calendar.app.google/LwAk3ecptkJQaYr87) or reach out on [X/Twitter](https://x.com/bu7emba).
+The best starting point is one team, one or two connected sources, and one repeated responsibility. [Talk to the founder](https://lobu.ai/schedule/) or reach out on [X/Twitter](https://x.com/bu7emba).

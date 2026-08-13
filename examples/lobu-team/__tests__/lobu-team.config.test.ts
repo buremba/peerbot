@@ -52,7 +52,10 @@ describe("Lobu Team configuration", () => {
       product_activity: "@connection:lobu-product-activity-db",
       kubernetes_logs: "@connection:lobu-production-logs",
     });
-    expect(digest?.agent).toMatchObject({ id: "product-ops" });
+    expect(digest?.agent).toMatchObject({
+      id: "product-ops",
+      tools: { allowed: [], strict: true },
+    });
     expect(digest?.reaction).toMatchObject({
       kind: "reactionSource",
       path: "./product-activity-digest.reaction.ts",

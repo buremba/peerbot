@@ -16,17 +16,8 @@ const SLACK_REQUEST_TIMEOUT_MS = 15_000;
 export interface SlackWebApi {
   /** `conversations.open` with a single user → the IM channel id (`D…`). */
   openDm(botToken: string, slackUserId: string): Promise<string>;
-  /**
-   * `chat.postMessage` of a plain-text body. Throws on a Slack-level error.
-   * `clientMessageId` is forwarded as `client_msg_id`; Slack returns the same
-   * message timestamp when the same UUID is retried in the same channel.
-   */
-  postMessage(
-    botToken: string,
-    channel: string,
-    text: string,
-    clientMessageId?: string,
-  ): Promise<void>;
+  /** `chat.postMessage` of a plain-text body. Throws on a Slack-level error. */
+  postMessage(botToken: string, channel: string, text: string): Promise<void>;
   /**
    * `conversations.members` for one channel — the bare `U…` ids of every member,
    * following `response_metadata.next_cursor` to completion. Throws on a
@@ -154,16 +145,11 @@ export function createSlackWebApi(): SlackWebApi {
       }
       return channelId;
     },
-    async postMessage(botToken, channel, text, clientMessageId) {
+    async postMessage(botToken, channel, text) {
       try {
-        await slackPost(botToken, "chat.postMessage", {
-          channel,
-          text,
-          client_msg_id: clientMessageId,
-        });
+        await slackPost(botToken, "chat.postMessage", { channel, text });
       } catch (error) {
-        // Callers own the failure policy (the welcome DM is best-effort, the
-        // ops digest fails closed); log the Slack-level detail either way.
+        // The welcome message is best-effort; the binding is the contract.
         logger.warn(
           { channel, error: String(error) },
           "Slack chat.postMessage failed"

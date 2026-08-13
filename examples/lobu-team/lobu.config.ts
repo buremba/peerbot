@@ -183,6 +183,7 @@ const productOps = defineAgent({
   description:
     "Summarizes Lobu production activity from organization-owned read-only feeds",
   providers: [{ id: "qwen", model: "qwen3.8-max" }],
+  tools: { allowed: [], strict: true },
 });
 
 // Reuse the Lobu Team read-only database credentials already stored in Lobu.

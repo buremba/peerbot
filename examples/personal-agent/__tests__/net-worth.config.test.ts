@@ -1,13 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import config from "../lobu.config";
 import taxConfig from "../../personal-finance/lobu.config";
+import config from "../lobu.config";
 
-describe("Midas net-worth configuration", () => {
-  test("runs weekly in London even when Midas events are unchanged", () => {
+describe("consolidated net-worth configuration", () => {
+  test("keeps the durable Behavior identity and runs weekly even when books are unchanged", () => {
     const behavior = config.behaviors?.find(
       (candidate) => candidate.slug === "midas-net-worth"
     );
     expect(behavior).toBeDefined();
+    expect(behavior?.name).toBe("Weekly net worth");
+    expect(behavior?.tags).toEqual(
+      expect.arrayContaining(["midas", "revolut", "net-worth"])
+    );
     expect(behavior?.triggers).toEqual([
       {
         kind: "schedule",
@@ -19,6 +23,19 @@ describe("Midas net-worth configuration", () => {
     expect(behavior?.reaction).toMatchObject({
       path: "./net-worth.reaction.ts",
     });
+  });
+
+  test("exposes the latest precomputed scalar and bounded drilldown as a derived entity", () => {
+    const entity = config.entities?.find(
+      (candidate) => candidate.key === "net-worth-snapshot"
+    );
+    expect(entity?.backing?.sql).toContain(
+      "metadata->>'schema' = 'net-worth-snapshot/v3'"
+    );
+    expect(entity?.backing?.sql).toContain("SUM(latest.net_worth_gbp) OVER ()");
+    expect(entity?.backing?.sql).toContain("ORDER BY created_at DESC, id DESC");
+    expect(entity?.backing?.sql).toContain("LIMIT 1");
+    expect(entity?.backing?.sql).not.toContain("GROUP BY");
   });
 
   test("declares a same-org catalog quote handle without shipping duplicate source", () => {

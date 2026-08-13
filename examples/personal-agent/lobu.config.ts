@@ -4,23 +4,23 @@ import {
   defineAuthProfile,
   defineBehavior,
   defineConfig,
-  defineSkill,
   defineConnection,
   defineEntityType,
   defineRelationshipType,
+  defineSkill,
   reactionFromFile,
 } from "@lobu/cli/config";
 import type GoogleTakeoutConnector from "./google-takeout.connector.ts";
 import type InstagramTakeoutConnector from "./instagram-takeout.connector.ts";
 import type LinkedInConnector from "./linkedin.connector.ts";
-import type RevolutTransactionsConnector from "./revolut-transactions.connector.ts";
-import type SpotifyConnector from "./spotify.connector.ts";
-import type TwitterTakeoutConnector from "./twitter-takeout.connector.ts";
-import type WhatsAppCloudConnector from "./whatsapp.cloud.connector.ts";
 import type MidasConnector from "./midas.connector.ts";
 import type NetWorthReaction from "./net-worth.reaction.ts";
+import type RevolutTransactionsConnector from "./revolut-transactions.connector.ts";
 import type SocialInterestRadarReaction from "./social-interest-radar.reaction.ts";
+import type SpotifyConnector from "./spotify.connector.ts";
 import { takeoutConfig } from "./takeout-dirs.ts";
+import type TwitterTakeoutConnector from "./twitter-takeout.connector.ts";
+import type WhatsAppCloudConnector from "./whatsapp.cloud.connector.ts";
 
 const hourlyTaskCollaboratorSkill = defineSkill({
   name: "hourly-task-collaborator",
@@ -431,6 +431,47 @@ const completedCardSpendWhere = `semantic_type = 'transaction'
     AND metadata->>'state' = 'COMPLETED'
     AND metadata->>'transaction_type' = 'CARD_PAYMENT'
     AND metadata->>'direction' = 'out'`;
+
+// One bounded, immutable weekly row is the financial read model. The inner
+// top-1 uses the live-event index; the outer SUM window runs over that one row
+// only and lets the existing derived-column classifier expose net_worth_gbp as
+// the first-class measure without a separate metrics DSL.
+const netWorthSnapshot = defineEntityType({
+  key: "net-worth-snapshot",
+  name: "Net Worth Snapshot",
+  description:
+    "Latest consolidated Midas and Revolut investment valuation, with weekly FX and deterministic attribution. Coverage is investments-only until more balance sources are connected.",
+  metadata: { icon: "wallet-cards", color: "#10B981" },
+  backing: {
+    sql: `SELECT
+      latest.id,
+      latest.week,
+      latest.snapshot_at,
+      SUM(latest.net_worth_gbp) OVER () AS net_worth_gbp,
+      latest.scope,
+      latest.sources,
+      latest.positions,
+      latest.breakdowns,
+      latest.attribution
+    FROM (
+      SELECT
+        id,
+        metadata->>'week' AS week,
+        occurred_at AS snapshot_at,
+        (metadata->>'net_worth_gbp')::numeric AS net_worth_gbp,
+        metadata->>'scope' AS scope,
+        metadata->'sources' AS sources,
+        metadata->'positions' AS positions,
+        metadata->'breakdowns' AS breakdowns,
+        metadata->'attribution' AS attribution
+      FROM events
+      WHERE semantic_type = 'summary'
+        AND metadata->>'schema' = 'net-worth-snapshot/v3'
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    ) latest`,
+  },
+});
 
 const asset = defineEntityType({
   key: "asset",
@@ -1218,10 +1259,12 @@ const socialInterestRadar = defineBehavior({
 
 const midasNetWorth = defineBehavior({
   agent: personalAgent,
+  // Keep the existing slug: it is the Behavior's durable identity. Renaming it
+  // would delete/recreate the Behavior and discard its cooldown/history.
   slug: "midas-net-worth",
-  name: "Midas net worth",
+  name: "Weekly net worth",
   description:
-    "Values current active Midas holdings with available market marks and saves one derived snapshot.",
+    "Consolidates current Midas and Revolut investment positions into one immutable weekly GBP snapshot with exact change attribution.",
   triggers: [
     {
       kind: "schedule",
@@ -1233,11 +1276,11 @@ const midasNetWorth = defineBehavior({
   ],
   notification: { channel: "canvas", priority: "low" },
   minCooldownSeconds: 300,
-  tags: ["finance", "midas", "net-worth"],
+  tags: ["finance", "midas", "revolut", "net-worth"],
   prompt:
-    'The deterministic reaction performs this scheduled Midas valuation. Return only {"summary":"Run the deterministic Midas valuation."}; do not calculate values, create entities, or call connector operations yourself.',
+    'The deterministic reaction performs this scheduled consolidated valuation. Return only {"summary":"Run the deterministic weekly net-worth snapshot."}; do not calculate values, create entities, or call connector operations yourself.',
   reactionsGuidance:
-    "The reaction owns quote execution, current active-position selection, derived snapshot persistence, and the notification. It fails if the local quote execution path is missing and labels per-symbol broker fallbacks explicitly.",
+    "The reaction owns active-connection deduplication, security and weekly FX marks, Midas/Revolut reconciliation, penny-exact attribution, immutable snapshot persistence, and the notification. Coverage is explicitly investments-only and missing FX fails closed.",
   reaction: reactionFromFile<typeof NetWorthReaction>(
     "./net-worth.reaction.ts"
   ),
@@ -1350,6 +1393,7 @@ export default defineConfig({
     task,
     channel,
     asset,
+    netWorthSnapshot,
     subscription,
     trip,
     goal,

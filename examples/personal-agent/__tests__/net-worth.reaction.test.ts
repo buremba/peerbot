@@ -1,31 +1,117 @@
 import { describe, expect, test } from "bun:test";
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 import runNetWorthSnapshot, {
-  buildMidasSnapshot,
-  type MidasHoldingMetadata,
-  type MidasHoldingRow,
+  buildFinancialSnapshot,
+  dedupeFinancialRows,
+  type FinancialEventRow,
+  type FinancialSnapshot,
+  isoWeekInTimeZone,
   type QuoteRow,
 } from "../net-worth.reaction";
 
-function holding(
-  symbol: string,
-  value: number,
-  overrides: Partial<MidasHoldingMetadata> = {}
-): MidasHoldingRow {
+function eventRow(
+  id: number,
+  connectorKey: "midas" | "revolut",
+  originId: string,
+  metadata: Record<string, unknown>,
+  occurredAt = "2026-08-10T08:00:00.000Z"
+): FinancialEventRow {
   return {
-    origin_id: `midas-holding-US-${symbol}`,
-    occurred_at: "2026-08-10T08:00:00.000Z",
-    metadata: {
-      symbol,
-      type: "US",
-      shares: 2,
-      price: value / 2,
-      avg_cost: value / 4,
+    id,
+    connector_key: connectorKey,
+    connection_id: connectorKey === "midas" ? 11 : 12,
+    connection_slug: connectorKey,
+    origin_id: originId,
+    occurred_at: occurredAt,
+    metadata,
+  };
+}
+
+function midas(
+  id: number,
+  symbol: string,
+  overrides: Record<string, unknown> = {}
+): FinancialEventRow {
+  return eventRow(id, "midas", `midas-holding-US-${symbol}`, {
+    symbol,
+    type: "US",
+    shares: 2,
+    price: 100,
+    avg_cost: 80,
+    value: 200,
+    currency: "USD",
+    status: "active",
+    ...overrides,
+  });
+}
+
+function revolutPosition(
+  id: number,
+  portfolioId: string,
+  ref: string,
+  value: number,
+  currency: string
+): FinancialEventRow {
+  return eventRow(
+    id,
+    "revolut",
+    `revolut-investment-position-${portfolioId}-${ref}`,
+    {
+      portfolio_id: portfolioId,
+      account_type: "Stocks & Shares ISA",
+      ref,
+      ticker: ref,
+      instrument_type: "ETF",
+      quantity: 10,
+      current_price: value / 10,
+      price_currency: currency,
       value,
-      currency: "USD",
-      status: "active",
-      ...overrides,
-    },
+      value_currency: currency,
+      allocation: 0.8,
+    }
+  );
+}
+
+function revolutBalance(
+  id: number,
+  portfolioId: string,
+  balance: number,
+  cash: number,
+  currency: string
+): FinancialEventRow {
+  return eventRow(
+    id,
+    "revolut",
+    `revolut-investment-portfolio-${portfolioId}`,
+    {
+      portfolio_id: portfolioId,
+      account_type: "Stocks & Shares ISA",
+      balance,
+      cash_balance: cash,
+      currency,
+      position_count: 1,
+    }
+  );
+}
+
+function quote(
+  id: string,
+  price: number,
+  currency: string,
+  symbol = id
+): QuoteRow {
+  return {
+    status: "quoted",
+    id,
+    market: id.startsWith("FX:") ? "FX" : "US",
+    symbol,
+    provider_symbol: symbol,
+    provider: "yahoo",
+    price,
+    currency,
+    as_of: "2026-08-12T08:58:00.000Z",
+    stale: false,
+    tier: "delayed",
   };
 }
 
@@ -44,294 +130,254 @@ const ctx: ReactionContext = {
   behavior: {
     id: 45,
     slug: "midas-net-worth",
-    name: "Midas net worth",
-    version: 1,
+    name: "Net worth",
+    version: 2,
   },
   organization_id: "org-buremba",
   organization_slug: "buremba",
 };
 
-describe("buildMidasSnapshot", () => {
-  test("uses live quotes while retaining unavailable holdings at their broker mark", () => {
-    const holdings = [holding("AAPL", 200), holding("NOPE", 80)];
-    const quotes: QuoteRow[] = [
-      {
-        status: "quoted",
-        id: "US:AAPL",
-        market: "US",
-        symbol: "AAPL",
-        provider_symbol: "AAPL",
-        provider: "yahoo",
-        price: 250,
-        currency: "USD",
-        as_of: "2026-08-12T08:58:00.000Z",
-        stale: false,
-        tier: "delayed",
-      },
-      {
-        status: "quote_unavailable",
-        id: "US:NOPE",
-        market: "US",
-        symbol: "NOPE",
-        provider_symbol: "NOPE",
-        provider: "yahoo",
-        reason: "not found",
-      },
-    ];
-
-    const snapshot = buildMidasSnapshot(
-      holdings,
-      quotes,
-      "2026-08-12T09:00:00.000Z"
-    );
-
-    expect(snapshot.version).toBe(2);
-    expect(snapshot).not.toHaveProperty("midas_run_id");
-    expect(snapshot.positions).toHaveLength(2);
-    expect(snapshot.positions[0]).toMatchObject({
-      symbol: "AAPL",
-      current_value: 500,
-      mark_source: "market_quote",
-      acquisition_cost: 100,
+describe("financial snapshot builder", () => {
+  test("consolidates Midas and Revolut without adding the portfolio total twice", () => {
+    const snapshot = buildFinancialSnapshot({
+      midasRows: [midas(1, "AAPL")],
+      revolutPositionRows: [revolutPosition(2, "isa", "VUAG", 1_000, "GBP")],
+      revolutBalanceRows: [revolutBalance(3, "isa", 1_200, 200, "GBP")],
+      quoteRows: [
+        quote("US:AAPL", 125, "USD", "AAPL"),
+        quote("FX:USD:DIRECT", 0.8, "GBP", "USDGBP=X"),
+      ],
+      previous: null,
+      calculatedAt: "2026-08-12T09:00:00.000Z",
     });
-    expect(snapshot.positions[1]).toMatchObject({
-      symbol: "NOPE",
-      current_value: 80,
-      mark_source: "broker_snapshot",
-      quote_status: "quote_unavailable",
+
+    expect(snapshot.schema).toBe("net-worth-snapshot/v3");
+    expect(snapshot.net_worth_gbp).toBe(1_400);
+    expect(snapshot.positions).toHaveLength(3);
+    expect(
+      snapshot.positions.find((position) => position.symbol === "AAPL")
+    ).toMatchObject({
+      source: "midas",
+      native_value: 250,
+      fx_to_gbp: 0.8,
+      value_gbp: 200,
+      price_source: "market_quote",
     });
-    expect(snapshot.by_currency).toEqual([
-      {
-        currency: "USD",
-        current_value: 580,
-        broker_value: 280,
-        acquisition_cost: 140,
-        unrealized_gain: 440,
-        position_count: 2,
-        quoted_count: 1,
-        stale_quote_count: 0,
-        unavailable_count: 1,
-      },
+    expect(
+      snapshot.sources.find((source) => source.connector_key === "revolut")
+    ).toMatchObject({
+      position_count: 2,
+      portfolio_balance_gbp: 1_200,
+      portfolio_reconciliation_residual_gbp: 0,
+    });
+    expect(snapshot.breakdowns.by_source).toEqual([
+      { key: "midas", value_gbp: 200 },
+      { key: "revolut", value_gbp: 1_200 },
     ]);
   });
 
-  test("rejects a quote in a different currency instead of mixing currencies", () => {
-    const snapshot = buildMidasSnapshot(
-      [holding("AAPL", 200)],
-      [
-        {
-          status: "quoted",
-          id: "US:AAPL",
-          market: "US",
-          symbol: "AAPL",
-          provider_symbol: "AAPL",
-          provider: "yahoo",
-          price: 250,
-          currency: "EUR",
-          as_of: "2026-08-12T08:58:00.000Z",
-          stale: false,
-          tier: "delayed",
-        },
-      ],
-      "2026-08-12T09:00:00.000Z"
-    );
-
-    expect(snapshot.positions[0]).toMatchObject({
-      current_value: 200,
-      mark_source: "broker_snapshot",
-      quote_status: "quote_unavailable",
-      quote_reason: "quote currency EUR does not match holding currency USD",
+  test("uses broker marks for missing security quotes but never invents FX", () => {
+    const fallback = buildFinancialSnapshot({
+      midasRows: [midas(1, "NOQUOTE")],
+      revolutPositionRows: [],
+      revolutBalanceRows: [],
+      quoteRows: [quote("FX:USD:DIRECT", 0.8, "GBP", "USDGBP=X")],
+      previous: null,
+      calculatedAt: "2026-08-12T09:00:00.000Z",
     });
+    expect(fallback.positions[0]).toMatchObject({
+      price_source: "broker_snapshot",
+      native_value: 200,
+      value_gbp: 160,
+    });
+    expect(fallback.sources[0]).toMatchObject({ broker_marked: 1, quoted: 0 });
+
+    expect(() =>
+      buildFinancialSnapshot({
+        midasRows: [midas(1, "NOQUOTE")],
+        revolutPositionRows: [],
+        revolutBalanceRows: [],
+        quoteRows: [],
+        previous: null,
+        calculatedAt: "2026-08-12T09:00:00.000Z",
+      })
+    ).toThrow(/missing a defensible USD.to.GBP FX rate/i);
+  });
+
+  test("inverts a GBP-native FX pair and records the fetched symbol", () => {
+    const snapshot = buildFinancialSnapshot({
+      midasRows: [midas(1, "GARAN", { currency: "TRY", type: "TR" })],
+      revolutPositionRows: [],
+      revolutBalanceRows: [],
+      quoteRows: [
+        quote("TR:GARAN", 120, "TRY", "GARAN.IS"),
+        quote("FX:TRY:INVERSE", 64, "TRY", "GBPTRY=X"),
+      ],
+      previous: null,
+      calculatedAt: "2026-08-12T09:00:00.000Z",
+    });
+
+    expect(snapshot.fx).toContainEqual(
+      expect.objectContaining({
+        currency: "TRY",
+        provider_symbol: "GBPTRY=X",
+        inverted: true,
+        rate: 0.015625,
+      })
+    );
+  });
+
+  test("dedupes forked connections by stable source identity, never event id identity", () => {
+    const older = midas(10, "AAPL", { value: 100 });
+    const newer = {
+      ...midas(12, "AAPL", { value: 240 }),
+      connection_id: 99,
+      connection_slug: "midas-reconnected",
+    };
+    const distinct = midas(11, "MSFT");
+
+    expect(dedupeFinancialRows([newer, distinct, older])).toEqual([
+      distinct,
+      newer,
+    ]);
+  });
+
+  test("attributes quantity, price, FX, additions, and disposals exactly to the penny", () => {
+    const previous: FinancialSnapshot = buildFinancialSnapshot({
+      midasRows: [midas(1, "AAPL", { shares: 1, price: 100, value: 100 })],
+      revolutPositionRows: [revolutPosition(2, "isa", "SOLD", 50, "GBP")],
+      revolutBalanceRows: [revolutBalance(3, "isa", 50, 0, "GBP")],
+      quoteRows: [
+        quote("US:AAPL", 100, "USD", "AAPL"),
+        quote("FX:USD:DIRECT", 0.8, "GBP", "USDGBP=X"),
+      ],
+      previous: null,
+      calculatedAt: "2026-08-05T09:00:00.000Z",
+    });
+    const current = buildFinancialSnapshot({
+      midasRows: [
+        midas(4, "AAPL", { shares: 2, price: 120, value: 240 }),
+        midas(5, "NEW", { shares: 1, price: 25, value: 25 }),
+      ],
+      revolutPositionRows: [],
+      revolutBalanceRows: [],
+      quoteRows: [
+        quote("US:AAPL", 120, "USD", "AAPL"),
+        quote("US:NEW", 25, "USD", "NEW"),
+        quote("FX:USD:DIRECT", 0.75, "GBP", "USDGBP=X"),
+      ],
+      previous: { event_id: 900, snapshot: previous },
+      calculatedAt: "2026-08-12T09:00:00.000Z",
+    });
+
+    expect(current.net_worth_gbp).toBe(198.75);
+    expect(current.previous).toMatchObject({
+      event_id: 900,
+      net_worth_gbp: 130,
+    });
+    expect(current.attribution).toEqual({
+      quantity_gbp: 48.75,
+      price_gbp: 32,
+      fx_gbp: -12,
+      additions_gbp: 18.75,
+      disposals_gbp: -50,
+      total_gbp: 68.75,
+    });
+    expect(
+      current.attribution.quantity_gbp +
+        current.attribution.price_gbp +
+        current.attribution.fx_gbp
+    ).toBe(current.attribution.total_gbp);
+    expect(current.attribution.total_gbp).toBe(
+      current.net_worth_gbp - previous.net_worth_gbp
+    );
+  });
+
+  test("keeps the telescoping attribution invariant across varied position inputs", () => {
+    let state = 0x5eed1234;
+    const next = () => {
+      state = (state * 1_664_525 + 1_013_904_223) >>> 0;
+      return state / 0x1_0000_0000;
+    };
+    for (let index = 0; index < 200; index += 1) {
+      const q0 = 0.25 + next() * 20;
+      const q1 = 0.25 + next() * 20;
+      const p0 = 5 + next() * 300;
+      const p1 = 5 + next() * 300;
+      const fx0 = 0.5 + next();
+      const fx1 = 0.5 + next();
+      const previous = buildFinancialSnapshot({
+        midasRows: [
+          midas(1, "PROP", { shares: q0, price: p0, value: q0 * p0 }),
+        ],
+        revolutPositionRows: [],
+        revolutBalanceRows: [],
+        quoteRows: [
+          quote("US:PROP", p0, "USD", "PROP"),
+          quote("FX:USD:DIRECT", fx0, "GBP", "USDGBP=X"),
+        ],
+        previous: null,
+        calculatedAt: "2026-08-05T09:00:00.000Z",
+      });
+      const current = buildFinancialSnapshot({
+        midasRows: [
+          midas(2, "PROP", { shares: q1, price: p1, value: q1 * p1 }),
+        ],
+        revolutPositionRows: [],
+        revolutBalanceRows: [],
+        quoteRows: [
+          quote("US:PROP", p1, "USD", "PROP"),
+          quote("FX:USD:DIRECT", fx1, "GBP", "USDGBP=X"),
+        ],
+        previous: { event_id: 900 + index, snapshot: previous },
+        calculatedAt: "2026-08-12T09:00:00.000Z",
+      });
+      expect(
+        Math.round(
+          (current.attribution.quantity_gbp +
+            current.attribution.price_gbp +
+            current.attribution.fx_gbp) *
+            100
+        )
+      ).toBe(Math.round(current.attribution.total_gbp * 100));
+      expect(Math.round(current.attribution.total_gbp * 100)).toBe(
+        Math.round((current.net_worth_gbp - previous.net_worth_gbp) * 100)
+      );
+    }
+  });
+
+  test("uses one Europe/London ISO-week key across a manually retriggered week", () => {
+    expect(isoWeekInTimeZone("2026-08-10T00:01:00.000Z", "Europe/London")).toBe(
+      "2026-W33"
+    );
+    expect(isoWeekInTimeZone("2026-08-16T22:59:00.000Z", "Europe/London")).toBe(
+      "2026-W33"
+    );
+    expect(isoWeekInTimeZone("2026-08-16T23:01:00.000Z", "Europe/London")).toBe(
+      "2026-W34"
+    );
   });
 });
 
 describe("weekly net-worth reaction", () => {
-  test("queries current active Midas holdings, executes the local quote action, and saves one derived event", async () => {
+  test("reads both active sources, fetches security and FX quotes, and saves one versioned snapshot", async () => {
     const queries: string[] = [];
-    const operationInputs: unknown[] = [];
-    const saved: unknown[] = [];
-    const notified: unknown[] = [];
+    const operationInputs: Array<{
+      input: { symbols: Array<Record<string, unknown>> };
+    }> = [];
+    const saved: Array<Record<string, unknown>> = [];
     const client = {
       query: async (sql: string) => {
         queries.push(sql);
-        return [holding("AAPL", 200), holding("NOPE", 80)];
-      },
-      connections: {
-        list: async () => ({
-          connections: [
-            {
-              id: 77,
-              slug: "market-quotes",
-              connector_key: "market.quotes",
-              status: "active",
-            },
-          ],
-        }),
-      },
-      operations: {
-        execute: async (input: unknown) => {
-          operationInputs.push(input);
-          return {
-            status: "completed",
-            output: {
-              quotes: [
-                {
-                  status: "quoted",
-                  id: "US:AAPL",
-                  market: "US",
-                  symbol: "AAPL",
-                  provider_symbol: "AAPL",
-                  provider: "yahoo",
-                  price: 250,
-                  currency: "USD",
-                  as_of: "2026-08-12T08:58:00.000Z",
-                  stale: false,
-                  tier: "delayed",
-                },
-                {
-                  status: "quote_unavailable",
-                  id: "US:NOPE",
-                  market: "US",
-                  symbol: "NOPE",
-                  provider_symbol: "NOPE",
-                  provider: "yahoo",
-                  reason: "not found",
-                },
-              ],
-            },
-          };
-        },
-      },
-      knowledge: {
-        save: async (input: unknown) => {
-          saved.push(input);
-          return { id: 501, created: true, metadata: {} };
-        },
-      },
-      notifications: {
-        send: async (input: unknown) => {
-          notified.push(input);
-          return { notified_count: 1, event_id: 502, url: null };
-        },
-      },
-      log: () => undefined,
-    } as unknown as ReactionClient;
-
-    await runNetWorthSnapshot(ctx, client);
-
-    expect(queries).toHaveLength(1);
-    expect(queries[0]).toContain("metadata->>'status' = 'active'");
-    expect(queries[0]).not.toContain("run_id");
-    expect(operationInputs).toEqual([
-      {
-        connection_id: 77,
-        operation_key: "quote",
-        input: {
-          symbols: [
-            { market: "US", symbol: "AAPL" },
-            { market: "US", symbol: "NOPE" },
-          ],
-        },
-        idempotency_key: "midas-net-worth:v2:quotes:window:91",
-        behavior_source: { behavior_id: 45, window_id: 91 },
-      },
-    ]);
-    expect(saved).toHaveLength(1);
-    expect(saved[0]).toMatchObject({
-      semantic_type: "summary",
-      title: "Midas net worth snapshot",
-      idempotency_key: "midas-net-worth:v2:snapshot:window:91",
-      behavior_source: { behavior_id: 45, window_id: 91 },
-      metadata: {
-        scope: "midas",
-        version: 2,
-        by_currency: [{ currency: "USD", current_value: 580 }],
-      },
-    });
-    expect(notified).toEqual([
-      expect.objectContaining({
-        idempotency_key: "midas-net-worth:v2:notification:window:91",
-      }),
-    ]);
-  });
-
-  test("notifies from the persisted snapshot after an idempotent save replay", async () => {
-    const persistedSnapshot = buildMidasSnapshot(
-      [holding("AAPL", 200)],
-      [],
-      ctx.window.window_end
-    );
-    const notified: Array<{ body?: string }> = [];
-    const client = {
-      query: async () => [holding("AAPL", 200)],
-      connections: {
-        list: async () => ({
-          connections: [
-            {
-              id: 77,
-              slug: "market-quotes",
-              connector_key: "market.quotes",
-              status: "active",
-            },
-          ],
-        }),
-      },
-      operations: {
-        execute: async () => ({
-          status: "completed",
-          output: {
-            quotes: [
-              {
-                status: "quoted",
-                id: "US:AAPL",
-                market: "US",
-                symbol: "AAPL",
-                provider_symbol: "AAPL",
-                provider: "yahoo",
-                price: 250,
-                currency: "USD",
-                as_of: "2026-08-12T08:58:00.000Z",
-                stale: false,
-                tier: "delayed",
-              },
-            ],
-          },
-        }),
-      },
-      knowledge: {
-        save: async () => ({
-          id: 501,
-          created: false,
-          metadata: persistedSnapshot as unknown as Record<string, unknown>,
-        }),
-      },
-      notifications: {
-        send: async (input: { body?: string }) => {
-          notified.push(input);
-          return { notified_count: 1, event_id: 502, url: null };
-        },
-      },
-      log: () => undefined,
-    } as unknown as ReactionClient;
-
-    await runNetWorthSnapshot(ctx, client);
-
-    expect(notified[0]?.body).toContain("USD 200.00 current");
-    expect(notified[0]?.body).not.toContain("USD 500.00 current");
-  });
-
-  test("includes every holding when the active book contains more than one page", async () => {
-    const activeBook = Array.from({ length: 1_001 }, (_, index) =>
-      holding(`STOCK${index}`, 4)
-    );
-    const saved: Array<{ metadata?: { positions?: unknown[] } }> = [];
-    const client = {
-      query: async (sql: string) => {
-        const limit = Number(
-          sql.match(/LIMIT (\d+)/)?.[1] ?? activeBook.length
-        );
-        const offset = Number(sql.match(/OFFSET (\d+)/)?.[1] ?? 0);
-        return activeBook.slice(offset, offset + limit);
+        if (sql.includes("connector_key = 'midas'")) return [midas(1, "AAPL")];
+        if (sql.includes("semantic_type = 'investment_position'")) {
+          return [revolutPosition(2, "isa", "VUAG", 1_000, "GBP")];
+        }
+        if (sql.includes("semantic_type = 'investment_balance'")) {
+          return [revolutBalance(3, "isa", 1_200, 200, "GBP")];
+        }
+        if (sql.includes("net-worth-snapshot/v3")) return [];
+        throw new Error(`Unexpected query: ${sql}`);
       },
       connections: {
         list: async () => ({
@@ -347,30 +393,33 @@ describe("weekly net-worth reaction", () => {
       },
       operations: {
         execute: async (input: {
-          input: { symbols: Array<{ market: string; symbol: string }> };
-        }) => ({
-          status: "completed",
-          output: {
-            quotes: input.input.symbols.map(({ market, symbol }) => ({
-              status: "quoted",
-              id: `${market}:${symbol}`,
-              market,
-              symbol,
-              provider_symbol: symbol,
-              provider: "yahoo",
-              price: 2,
-              currency: "USD",
-              as_of: "2026-08-12T08:58:00.000Z",
-              stale: false,
-              tier: "delayed",
-            })),
-          },
-        }),
+          input: { symbols: Array<Record<string, unknown>> };
+        }) => {
+          operationInputs.push(input);
+          return {
+            status: "completed",
+            output: {
+              quotes: input.input.symbols.map((symbol) => {
+                const id = String(
+                  symbol.id ?? `${symbol.market}:${symbol.symbol}`
+                );
+                return id.startsWith("FX:USD")
+                  ? quote(
+                      id,
+                      id.endsWith("DIRECT") ? 0.8 : 1.25,
+                      id.endsWith("DIRECT") ? "GBP" : "USD",
+                      String(symbol.provider_symbol)
+                    )
+                  : quote(id, 125, "USD", String(symbol.symbol));
+              }),
+            },
+          };
+        },
       },
       knowledge: {
-        save: async (input: { metadata?: { positions?: unknown[] } }) => {
+        save: async (input: Record<string, unknown>) => {
           saved.push(input);
-          return { id: 501, created: true, metadata: {} };
+          return { id: 501, created: true, metadata: input.metadata };
         },
       },
       notifications: {
@@ -381,38 +430,33 @@ describe("weekly net-worth reaction", () => {
 
     await runNetWorthSnapshot(ctx, client);
 
-    expect(saved).toHaveLength(1);
-    expect(saved[0]?.metadata?.positions).toHaveLength(activeBook.length);
-  });
-
-  test("fails closed when the configured quote connection is absent", async () => {
-    const client = {
-      query: async () => [holding("AAPL", 200)],
-      connections: { list: async () => ({ connections: [] }) },
-      log: () => undefined,
-    } as unknown as ReactionClient;
-
-    await expect(runNetWorthSnapshot(ctx, client)).rejects.toThrow(
-      /active market-quotes connection/i
+    expect(queries).toHaveLength(4);
+    expect(queries[0]).toContain("JOIN connections");
+    expect(queries[0]).toContain("connections.status = 'active'");
+    expect(queries[3]).toContain("metadata->>'week' <> '2026-W33'");
+    expect(operationInputs.flatMap((input) => input.input.symbols)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ market: "US", symbol: "AAPL" }),
+        expect.objectContaining({
+          id: "FX:USD:DIRECT",
+          provider_symbol: "USDGBP=X",
+        }),
+        expect.objectContaining({
+          id: "FX:USD:INVERSE",
+          provider_symbol: "GBPUSD=X",
+        }),
+      ])
     );
-  });
-
-  test("does not value closed or legacy status-less holdings", async () => {
-    const queries: string[] = [];
-    const client = {
-      query: async (sql: string) => {
-        queries.push(sql);
-        return [];
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({
+      semantic_type: "summary",
+      title: "Net worth snapshot · 2026-W33",
+      idempotency_key: "net-worth:v3:snapshot:week:2026-W33",
+      metadata: {
+        schema: "net-worth-snapshot/v3",
+        week: "2026-W33",
+        net_worth_gbp: 1_400,
       },
-      notifications: {
-        send: async () => ({ notified_count: 1, event_id: 502, url: null }),
-      },
-      log: () => undefined,
-    } as unknown as ReactionClient;
-
-    await runNetWorthSnapshot(ctx, client);
-
-    expect(queries).toHaveLength(1);
-    expect(queries[0]).toContain("metadata->>'status' = 'active'");
+    });
   });
 });

@@ -57,10 +57,11 @@ const MEASURE_EXPR_TYPES = new Set<string>([
 ]);
 
 /**
- * Peel `cast` / `paren` wrappers off a projection value so an aggregate hidden
- * under them (`COUNT(*)::int`, `(SUM(x))::numeric`) is still classified by its
- * underlying type. Stops at the first non-wrapper node. Bounded to guard against
- * a pathological/cyclic tree.
+ * Peel syntactic wrappers off a projection value so an aggregate hidden under
+ * them (`COUNT(*)::int`, `(SUM(x))::numeric`, `SUM(x) OVER ()`) is still
+ * classified by its underlying type. A non-aggregate window function remains a
+ * dimension. Stops at the first non-wrapper node. Bounded to guard against a
+ * pathological/cyclic tree.
  */
 function unwrapWrappers(node: Node): Node {
   let cur = node;
@@ -71,7 +72,7 @@ function unwrapWrappers(node: Node): Node {
     } catch {
       return cur;
     }
-    if (type !== 'cast' && type !== 'paren') return cur;
+    if (type !== 'cast' && type !== 'paren' && type !== 'window_function') return cur;
     const inner = (ast.getExprData(cur) as Record<string, unknown>).this;
     if (!inner || typeof inner !== 'object') return cur;
     cur = inner as Node;

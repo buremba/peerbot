@@ -12,7 +12,7 @@
 import type { EntityMetrics } from "@lobu/connector-sdk";
 import { getDb } from "../db/client";
 import { validateAndScopeQuery } from "../utils/execute-data-sources";
-import { compileMetricSql } from "./compiler";
+import { compileDerivedMetricSql, compileMetricSql } from "./compiler";
 
 interface RunMetricInput {
   organizationId: string;
@@ -43,7 +43,7 @@ interface RunMetricInput {
 export async function runMetric(input: RunMetricInput): Promise<Record<string, unknown>[]> {
   const sql = getDb();
   const found = await sql`
-    SELECT id, metrics_config
+    SELECT id, metrics_config, backing_sql
     FROM entity_types
     WHERE slug = ${input.entityType}
       AND organization_id = ${input.organizationId}
@@ -55,15 +55,23 @@ export async function runMetric(input: RunMetricInput): Promise<Record<string, u
   }
   const entityTypeId = Number(found[0].id);
   const metrics = (found[0].metrics_config ?? {}) as EntityMetrics;
-
-  const rawSql = compileMetricSql({
-    entityTypeId,
-    metrics,
-    measure: input.measure,
-    by: input.by,
-    segment: input.segment,
-    entityId: input.entityId,
-  });
+  const backingSql = found[0].backing_sql as string | null;
+  const rawSql = !metrics.measures?.[input.measure] && backingSql
+    ? compileDerivedMetricSql({
+        backingSql,
+        measure: input.measure,
+        by: input.by,
+        segment: input.segment,
+        entityId: input.entityId,
+      })
+    : compileMetricSql({
+        entityTypeId,
+        metrics,
+        measure: input.measure,
+        by: input.by,
+        segment: input.segment,
+        entityId: input.entityId,
+      });
   const scoped = validateAndScopeQuery(rawSql, input.organizationId, {
     userId: input.userId ?? null,
     excludeWorkspaceAudit: input.excludeWorkspaceAudit,

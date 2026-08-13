@@ -1,10 +1,11 @@
 /**
- * Deterministic weekly investment net-worth snapshot.
+ * Deterministic weekly household net-worth snapshot.
  *
  * Connector events remain the source of truth. This reaction normalizes the
- * current Midas and Revolut investment books, obtains this week's security and
- * FX marks through market.quotes, compares the result with the prior immutable
- * snapshot, and persists one bounded summary for the ISO week.
+ * current connector books plus current balance-sheet observations, obtains
+ * this week's security and FX marks through market.quotes, compares the result
+ * with the prior immutable snapshot, and persists one bounded summary for the
+ * ISO week.
  */
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
@@ -18,11 +19,12 @@ export const input = {
 
 const PAGE_SIZE = 1_000;
 const QUOTE_BATCH_SIZE = 50;
-const SNAPSHOT_SCHEMA = "net-worth-snapshot/v3";
+const SNAPSHOT_SCHEMA = "net-worth-snapshot/v4";
+const COMPONENT_SCHEMA = "net-worth-component/v1";
 // The version suffix must track SNAPSHOT_SCHEMA: replaying a save under a
 // prior version's key returns that version's persisted metadata as the
 // snapshot, so the notification would be built from a stale-schema payload.
-const IDEMPOTENCY_PREFIX = "net-worth:v3";
+const IDEMPOTENCY_PREFIX = "net-worth:v4";
 const SOURCE_FRESH_MS = 7 * 24 * 60 * 60 * 1_000;
 
 export interface FinancialEventRow {
@@ -31,6 +33,13 @@ export interface FinancialEventRow {
   connection_id: number;
   connection_slug: string;
   origin_id: string;
+  occurred_at: Date | string;
+  metadata: Record<string, unknown> | string | null;
+}
+
+export interface ComponentEventRow {
+  id: number;
+  origin_id: string | null;
   occurred_at: Date | string;
   metadata: Record<string, unknown> | string | null;
 }
@@ -86,11 +95,11 @@ interface PositionEffect {
 
 interface FinancialPosition {
   position_key: string;
-  source: "midas" | "revolut";
-  connection_id: number;
-  connection_slug: string;
+  source: string;
+  connection_id?: number;
+  connection_slug?: string;
   origin_id: string;
-  institution: "Midas" | "Revolut";
+  institution: string;
   account_key: string;
   account_type: string;
   asset_key: string;
@@ -103,7 +112,11 @@ interface FinancialPosition {
   native_value: number;
   value_gbp: number;
   value_gbp_pence: number;
-  price_source: "market_quote" | "broker_snapshot" | "cash_balance";
+  price_source:
+    | "market_quote"
+    | "broker_snapshot"
+    | "cash_balance"
+    | "balance_sheet_observation";
   price_as_of: string;
   quote_stale: boolean;
   fx_to_gbp: number;
@@ -112,6 +125,9 @@ interface FinancialPosition {
   fx_as_of: string;
   source_as_of: string;
   source_stale: boolean;
+  value_low_gbp?: number;
+  value_high_gbp?: number;
+  valuation_basis?: string;
   average_cost?: number;
   acquisition_cost_gbp?: number;
   weekly_effects?: Omit<
@@ -125,7 +141,7 @@ interface FinancialPosition {
 }
 
 interface SourceCoverage {
-  connector_key: "midas" | "revolut";
+  source: string;
   scope: string;
   status: "fresh" | "stale" | "missing";
   as_of: string | null;
@@ -146,13 +162,17 @@ interface BreakdownRow {
 }
 
 export interface FinancialSnapshot {
-  version: 3;
+  version: 4;
   schema: typeof SNAPSHOT_SCHEMA;
   week: string;
   calculated_at: string;
   base_currency: "GBP";
-  scope: "connected_investments_only";
+  scope: "household_balance_sheet";
   net_worth_gbp: number;
+  net_worth_range_gbp: {
+    low: number;
+    high: number;
+  };
   previous: {
     week: string;
     event_id: number;
@@ -238,6 +258,17 @@ function sourceIsStale(sourceAsOf: string, calculatedAt: string): boolean {
   return (
     new Date(calculatedAt).getTime() - new Date(sourceAsOf).getTime() >
     SOURCE_FRESH_MS
+  );
+}
+
+function observationIsStale(
+  sourceAsOf: string,
+  calculatedAt: string,
+  freshnessDays: number
+): boolean {
+  return (
+    new Date(calculatedAt).getTime() - new Date(sourceAsOf).getTime() >
+    freshnessDays * 24 * 60 * 60 * 1_000
   );
 }
 
@@ -562,6 +593,97 @@ function normalizeRevolutCash(
   };
 }
 
+function componentKey(row: ComponentEventRow): string {
+  const metadata = objectValue(row.metadata);
+  return String(metadata.component_key ?? "").trim();
+}
+
+export function dedupeComponentRows(
+  rows: ComponentEventRow[]
+): ComponentEventRow[] {
+  const current = new Map<string, ComponentEventRow>();
+  for (const row of rows) {
+    const key = componentKey(row);
+    if (!key)
+      throw new Error(`Component event ${row.id} has no component_key.`);
+    const existing = current.get(key);
+    if (!existing || row.id > existing.id) current.set(key, row);
+  }
+  return [...current.values()].sort((left, right) => left.id - right.id);
+}
+
+function normalizeComponent(
+  row: ComponentEventRow,
+  fx: FxMark,
+  calculatedAt: string
+): FinancialPosition | null {
+  const metadata = objectValue(row.metadata);
+  if (metadata.schema !== COMPONENT_SCHEMA) return null;
+  if (metadata.status === "inactive") return null;
+  const key = componentKey(row);
+  const source = String(metadata.source ?? "").trim();
+  const institution = String(metadata.institution ?? "").trim();
+  const accountKey = String(metadata.account_key ?? key).trim();
+  const assetClass = String(metadata.asset_class ?? "")
+    .trim()
+    .toLowerCase();
+  const currency = upper(metadata.currency);
+  const nativeValue = requiredNumber(metadata.value, "value", key);
+  const lowNative = finiteNumber(metadata.value_low) ?? nativeValue;
+  const highNative = finiteNumber(metadata.value_high) ?? nativeValue;
+  const freshnessDays = finiteNumber(metadata.freshness_days) ?? 7;
+  if (
+    !key ||
+    !source ||
+    !institution ||
+    !assetClass ||
+    !currency ||
+    nativeValue < 0 ||
+    lowNative < 0 ||
+    highNative < lowNative ||
+    nativeValue < lowNative ||
+    nativeValue > highNative ||
+    freshnessDays <= 0
+  ) {
+    throw new Error(
+      `${key || `Component event ${row.id}`} has invalid valuation fields.`
+    );
+  }
+  const sourceAsOf = isoTimestamp(row.occurred_at, `${key} occurred_at`);
+  const stale = observationIsStale(sourceAsOf, calculatedAt, freshnessDays);
+  const valuePence = pence(nativeValue * fx.rate);
+  return {
+    position_key: `component:${key}`,
+    source,
+    origin_id: row.origin_id ?? `net-worth-component:${key}`,
+    institution,
+    account_key: accountKey,
+    account_type: String(metadata.account_type ?? assetClass),
+    asset_key: key,
+    asset_class: assetClass,
+    market: null,
+    symbol: key,
+    quantity: 1,
+    native_currency: currency,
+    native_price: nativeValue,
+    native_value: nativeValue,
+    value_gbp: pounds(valuePence),
+    value_gbp_pence: valuePence,
+    value_low_gbp: pounds(pence(lowNative * fx.rate)),
+    value_high_gbp: pounds(pence(highNative * fx.rate)),
+    valuation_basis: String(metadata.valuation_basis ?? "reported_balance"),
+    price_source: "balance_sheet_observation",
+    price_as_of: sourceAsOf,
+    quote_stale: stale,
+    fx_to_gbp: fx.rate,
+    fx_pair: fx.pair,
+    fx_source: fx.provider,
+    fx_as_of: fx.as_of,
+    source_as_of: sourceAsOf,
+    source_stale: stale,
+  };
+}
+
 function latestTimestamp(rows: FinancialEventRow[]): string | null {
   return rows.reduce<string | null>((latest, row) => {
     const occurredAt = isoTimestamp(
@@ -704,6 +826,7 @@ export function buildFinancialSnapshot(args: {
   midasRows: FinancialEventRow[];
   revolutPositionRows: FinancialEventRow[];
   revolutBalanceRows: FinancialEventRow[];
+  componentRows: ComponentEventRow[];
   quoteRows: QuoteRow[];
   previous: { event_id: number; snapshot: FinancialSnapshot } | null;
   calculatedAt: string;
@@ -718,6 +841,9 @@ export function buildFinancialSnapshot(args: {
   const revolutBalanceRows = dedupeFinancialRows(
     args.revolutBalanceRows
   ).filter((row) => objectValue(row.metadata).closed !== true);
+  const componentRows = dedupeComponentRows(args.componentRows).filter(
+    (row) => objectValue(row.metadata).status !== "inactive"
+  );
   const quoteMap = new Map(
     args.quoteRows.map((row) => [row.id.trim().toUpperCase(), row])
   );
@@ -728,6 +854,8 @@ export function buildFinancialSnapshot(args: {
     currencies.add(upper(objectValue(row.metadata).value_currency));
   }
   for (const row of revolutBalanceRows)
+    currencies.add(upper(objectValue(row.metadata).currency));
+  for (const row of componentRows)
     currencies.add(upper(objectValue(row.metadata).currency));
   currencies.delete("");
   const fx = [...currencies]
@@ -763,13 +891,20 @@ export function buildFinancialSnapshot(args: {
     );
     if (position) positions.push(position);
   }
+  for (const row of componentRows) {
+    const currency = upper(objectValue(row.metadata).currency);
+    const position = normalizeComponent(
+      row,
+      requiredFxMark(fxByCurrency, currency),
+      calculatedAt
+    );
+    if (position) positions.push(position);
+  }
   positions.sort((left, right) =>
     left.position_key.localeCompare(right.position_key)
   );
   if (positions.length === 0) {
-    throw new Error(
-      "No current Midas or Revolut investment positions are available."
-    );
+    throw new Error("No current balance-sheet positions are available.");
   }
 
   const revolutByPortfolio = new Map<string, number>();
@@ -815,7 +950,7 @@ export function buildFinancialSnapshot(args: {
   );
   const sources: SourceCoverage[] = [
     {
-      connector_key: "midas",
+      source: "midas",
       scope: "investment positions",
       status: !midasAsOf
         ? "missing"
@@ -835,8 +970,8 @@ export function buildFinancialSnapshot(args: {
       ...(!midasAsOf ? { warning: "No current Midas investment rows." } : {}),
     },
     {
-      connector_key: "revolut",
-      scope: "Invest portfolios only; current-account cash is unavailable",
+      source: "revolut",
+      scope: "investment portfolios",
       status: !revolutAsOf
         ? "missing"
         : sourceIsStale(revolutAsOf, calculatedAt)
@@ -853,9 +988,30 @@ export function buildFinancialSnapshot(args: {
       portfolio_balance_gbp: pounds(portfolioBalancePence),
       cash_gbp: pounds(cashPence),
       portfolio_reconciliation_residual_gbp: pounds(portfolioResidualPence),
-      warning:
-        "Revolut coverage includes Invest portfolios, not retail current-account cash.",
     },
+    ...componentRows.map((row) => {
+      const metadata = objectValue(row.metadata);
+      const key = componentKey(row);
+      const position = positions.find(
+        (candidate) => candidate.position_key === `component:${key}`
+      );
+      const source = String(metadata.source);
+      return {
+        source,
+        scope: String(metadata.asset_class ?? "balance-sheet component"),
+        status: !position
+          ? "missing"
+          : position.source_stale
+            ? "stale"
+            : "fresh",
+        as_of: position?.source_as_of ?? null,
+        stale: position?.source_stale ?? true,
+        position_count: position ? 1 : 0,
+        quoted: 0,
+        broker_marked: 0,
+        excluded: position ? 0 : 1,
+      } satisfies SourceCoverage;
+    }),
   ];
 
   const previousSnapshot = args.previous?.snapshot ?? null;
@@ -879,14 +1035,28 @@ export function buildFinancialSnapshot(args: {
     (sum, position) => sum + position.value_gbp_pence,
     0
   );
+  const rangeLowPence = positions.reduce(
+    (sum, position) =>
+      sum + pence(position.value_low_gbp ?? position.value_gbp),
+    0
+  );
+  const rangeHighPence = positions.reduce(
+    (sum, position) =>
+      sum + pence(position.value_high_gbp ?? position.value_gbp),
+    0
+  );
   return {
-    version: 3,
+    version: 4,
     schema: SNAPSHOT_SCHEMA,
     week: isoWeekInTimeZone(calculatedAt, "Europe/London"),
     calculated_at: calculatedAt,
     base_currency: "GBP",
-    scope: "connected_investments_only",
+    scope: "household_balance_sheet",
     net_worth_gbp: pounds(netWorthPence),
+    net_worth_range_gbp: {
+      low: pounds(rangeLowPence),
+      high: pounds(rangeHighPence),
+    },
     previous: args.previous
       ? {
           week: args.previous.snapshot.week,
@@ -935,10 +1105,25 @@ async function readPages(
   }
 }
 
+async function readComponentPages(
+  client: ReactionClient,
+  query: (offset: number) => string
+): Promise<ComponentEventRow[]> {
+  const rows: ComponentEventRow[] = [];
+  while (true) {
+    const page = (await client.query(
+      query(rows.length)
+    )) as ComponentEventRow[];
+    rows.push(...page);
+    if (page.length < PAGE_SIZE) return dedupeComponentRows(rows);
+  }
+}
+
 function quoteInputs(args: {
   midasRows: FinancialEventRow[];
   revolutPositionRows: FinancialEventRow[];
   revolutBalanceRows: FinancialEventRow[];
+  componentRows: ComponentEventRow[];
 }): Array<Record<string, string>> {
   const inputs = new Map<string, Record<string, string>>();
   const currencies = new Set<string>();
@@ -957,6 +1142,10 @@ function quoteInputs(args: {
     if (currency) currencies.add(currency);
   }
   for (const row of args.revolutBalanceRows) {
+    const currency = upper(objectValue(row.metadata).currency);
+    if (currency) currencies.add(currency);
+  }
+  for (const row of args.componentRows) {
     const currency = upper(objectValue(row.metadata).currency);
     if (currency) currencies.add(currency);
   }
@@ -988,13 +1177,16 @@ function formatGbp(amount: number): string {
 function snapshotDigest(snapshot: FinancialSnapshot): string {
   const lines = [
     `Net worth: ${formatGbp(snapshot.net_worth_gbp)} (${snapshot.week}).`,
+    snapshot.net_worth_range_gbp.low === snapshot.net_worth_range_gbp.high
+      ? "Valuation range: exact at the recorded marks."
+      : `Valuation range: ${formatGbp(snapshot.net_worth_range_gbp.low)} to ${formatGbp(snapshot.net_worth_range_gbp.high)}.`,
     snapshot.previous
       ? `Weekly change: ${formatGbp(snapshot.attribution.total_gbp)}; quantity ${formatGbp(snapshot.attribution.quantity_gbp)}, price ${formatGbp(snapshot.attribution.price_gbp)}, FX ${formatGbp(snapshot.attribution.fx_gbp)}.`
       : "This is the first consolidated baseline; weekly attribution starts with the next snapshot.",
     ...snapshot.sources.map((source) =>
-      `${source.connector_key}: ${source.status}, ${source.position_count} included position${source.position_count === 1 ? "" : "s"}. ${source.warning ?? ""}`.trim()
+      `${source.source}: ${source.status}, ${source.position_count} included position${source.position_count === 1 ? "" : "s"}. ${source.warning ?? ""}`.trim()
     ),
-    "Coverage is connected investments only; it is not complete household net worth.",
+    "Coverage is the current household balance sheet recorded by connectors and superseding observations.",
   ];
   return lines.join("\n");
 }
@@ -1023,6 +1215,10 @@ export default async function runNetWorthSnapshot(
   const week = isoWeekInTimeZone(calculatedAt, "Europe/London");
   const eventColumns =
     "events.id, events.connector_key, events.connection_id, connections.slug AS connection_slug, events.origin_id, events.occurred_at, events.metadata";
+  // State predicates (status/closed) stay out of these queries on purpose: on
+  // a forked reconnect the newest stored version of an identity may be the
+  // closed one, and prefiltering would hide it and resurrect the older active
+  // row. Fetch every current row, dedupe by stable identity, then filter.
   const midasRows = await readPages(
     client,
     (offset) => `SELECT ${eventColumns}
@@ -1032,7 +1228,6 @@ export default async function runNetWorthSnapshot(
        WHERE events.connector_key = 'midas'
          AND connections.status = 'active'
          AND events.semantic_type = 'financial_asset'
-         AND events.metadata->>'status' = 'active'
        ORDER BY events.origin_id, events.id
        LIMIT ${PAGE_SIZE} OFFSET ${offset}`
   );
@@ -1045,7 +1240,6 @@ export default async function runNetWorthSnapshot(
        WHERE events.connector_key = 'revolut'
          AND connections.status = 'active'
          AND events.semantic_type = 'investment_position'
-         AND events.metadata->>'closed' IS DISTINCT FROM 'true'
        ORDER BY events.origin_id, events.id
        LIMIT ${PAGE_SIZE} OFFSET ${offset}`
   );
@@ -1058,19 +1252,30 @@ export default async function runNetWorthSnapshot(
        WHERE events.connector_key = 'revolut'
          AND connections.status = 'active'
          AND events.semantic_type = 'investment_balance'
-         AND events.metadata->>'closed' IS DISTINCT FROM 'true'
        ORDER BY events.origin_id, events.id
+       LIMIT ${PAGE_SIZE} OFFSET ${offset}`
+  );
+  const componentRows = await readComponentPages(
+    client,
+    (
+      offset
+    ) => `SELECT events.id, events.origin_id, events.occurred_at, events.metadata
+       FROM events
+       WHERE events.semantic_type = 'observation'
+         AND events.metadata->>'schema' = '${COMPONENT_SCHEMA}'
+       ORDER BY events.id
        LIMIT ${PAGE_SIZE} OFFSET ${offset}`
   );
   if (
     midasRows.length === 0 &&
     revolutPositionRows.length === 0 &&
-    revolutBalanceRows.length === 0
+    revolutBalanceRows.length === 0 &&
+    componentRows.length === 0
   ) {
     await notifyNeedsAttention(
       ctx,
       client,
-      "No current Midas or Revolut investment data is available. Sync the investment feeds and retry."
+      "No current balance-sheet data is available. Sync connectors or record a net-worth component and retry."
     );
     return;
   }
@@ -1098,6 +1303,7 @@ export default async function runNetWorthSnapshot(
     midasRows,
     revolutPositionRows,
     revolutBalanceRows,
+    componentRows,
   });
   const allQuotes: QuoteRow[] = [];
   if (requestedQuotes.length > 0) {
@@ -1153,6 +1359,7 @@ export default async function runNetWorthSnapshot(
       midasRows,
       revolutPositionRows,
       revolutBalanceRows,
+      componentRows,
       quoteRows: allQuotes,
       previous,
       calculatedAt,

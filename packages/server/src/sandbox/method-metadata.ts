@@ -1038,12 +1038,12 @@ export default async (_ctx, client) => {
 	// metrics — governed measures (prefer over client.query / query_sql)
 	"metrics.list": {
 		summary:
-			"List declared metrics per entity type: measures, dimensions, and segments with descriptions. Keyword-search with `q`. Pair with `metrics.query`.",
+			"Discover governed declared and SQL-derived business metrics such as spend or net worth, with available measures, dimensions, and segments. Keyword-search with `q`, then call `metrics.query`.",
 		access: "read",
 		signature:
 			"metrics.list(input?: { entity_type?: string; q?: string }): Promise<unknown> // not paginated",
 		example:
-			"const { entity_types } = await client.metrics.list({ q: 'spend' });",
+			"const { entity_types } = await client.metrics.list({ q: 'net worth' });",
 		usageExample: `// Discover governed measures before running one.
 export default async (_ctx, client) => {
   const { entity_types } = await client.metrics.list({ entity_type: 'company' });
@@ -1052,7 +1052,7 @@ export default async (_ctx, client) => {
 	},
 	"metrics.query": {
 		summary:
-			"Run a declared measure for an entity type. Pass entity_type + measure; optional by, segment, entity_id. Prefer this over client.query when a measure exists.",
+			"Run a governed declared or SQL-derived measure such as spend or net worth. Pass entity_type + measure; optional by, segment, entity_id. Prefer this over client.query when a measure exists.",
 		access: "read",
 		example:
 			"await client.metrics.query({ entity_type: 'company', measure: 'spend', by: ['month'] });",

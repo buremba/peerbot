@@ -1,10 +1,10 @@
 /**
- * query_metric — run a DECLARED, governed metric and return its rows.
+ * query_metric — run a governed declared or derived measure and return its rows.
  *
- * Prefer this over `query_sql` whenever a declared measure answers the question:
- * the metric layer enforces the resolution, dedupe, segment, and aggregation so
- * the numbers are consistent. Discover what exists with `list_metrics`; fall
- * back to `query_sql` only when no measure covers the ask.
+ * Prefer this over `query_sql` whenever an available measure answers the
+ * question. Declared measures enforce their resolution, dedupe, segments, and
+ * aggregation; derived measures execute their reusable, precomputed SQL grain.
+ * Discover both with `list_metrics`.
  *
  * Thin wrapper over runMetric (compile → org-scope → read-only execute) — the
  * same path a federated warehouse metric flows through.
@@ -19,10 +19,10 @@ import { withValidatedArgs } from '../validate-args';
 
 export const QueryMetricSchema = Type.Object({
   entity_type: Type.String({
-    description: 'Entity type slug that declares the metric (e.g. "company"). See list_metrics.',
+    description: 'Entity type slug exposing the measure (e.g. "company"). See list_metrics.',
   }),
   measure: Type.String({
-    description: 'Declared measure name on that entity type (e.g. "spend").',
+    description: 'Available declared or derived measure name (e.g. "spend" or "net_worth_gbp").',
   }),
   by: Type.Optional(
     Type.Array(Type.String(), {

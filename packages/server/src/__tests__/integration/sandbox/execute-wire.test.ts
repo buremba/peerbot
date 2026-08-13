@@ -16,6 +16,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import {
   addUserToOrganization,
   createTestAccessToken,
+  createTestEvent,
   createTestOAuthClient,
   createTestOrganization,
   createTestUser,
@@ -67,6 +68,54 @@ describe('sandbox run (wire)', () => {
       name: 'Company',
     });
     await seedClient.entities.create({ type: 'company', name: 'Sandbox Co' });
+    await seedClient.entity_schema.createType({
+      slug: 'net-worth-snapshot',
+      name: 'Net Worth Snapshot',
+      backing: {
+        sql: `SELECT
+          latest.week,
+          SUM(latest.net_worth_gbp) OVER () AS net_worth_gbp,
+          SUM(latest.net_worth_low_gbp) OVER () AS net_worth_low_gbp,
+          SUM(latest.net_worth_high_gbp) OVER () AS net_worth_high_gbp,
+          latest.breakdowns,
+          latest.previous,
+          latest.attribution
+        FROM (
+          SELECT
+            metadata->>'week' AS week,
+            (metadata->>'net_worth_gbp')::numeric AS net_worth_gbp,
+            (metadata->'net_worth_range_gbp'->>'low')::numeric AS net_worth_low_gbp,
+            (metadata->'net_worth_range_gbp'->>'high')::numeric AS net_worth_high_gbp,
+            metadata->'breakdowns' AS breakdowns,
+            metadata->'previous' AS previous,
+            metadata->'attribution' AS attribution
+          FROM events
+          WHERE semantic_type = 'summary'
+            AND metadata->>'schema' = 'net-worth-snapshot/v4'
+          ORDER BY created_at DESC, id DESC
+          LIMIT 1
+        ) latest`,
+      },
+    });
+    await createTestEvent({
+      organization_id: org.id,
+      content: 'weekly household net worth',
+      semantic_type: 'summary',
+      metadata: {
+        schema: 'net-worth-snapshot/v4',
+        week: '2026-W33',
+        net_worth_gbp: 2_685_826.12,
+        net_worth_range_gbp: { low: 2_547_076.12, high: 2_839_576.12 },
+        breakdowns: {
+          by_source: [
+            { key: 'midas', value_gbp: 805_829.74 },
+            { key: 'property', value_gbp: 652_500 },
+          ],
+        },
+        previous: { week: '2026-W32', event_id: 41, net_worth_gbp: 1_342.5 },
+        attribution: { fx_gbp: 12_345.67, total_gbp: 45_678.9 },
+      },
+    });
   });
 
   it('runs a trivial script and returns its result', async (testCtx) => {
@@ -144,6 +193,50 @@ describe('sandbox run (wire)', () => {
        };`
     );
     expect(JSON.stringify(result)).toContain('"hasCatalog":true');
+  });
+
+  it('discovers and queries net worth through the public MCP and SDK sandbox', async (testCtx) => {
+    if (!isolatedAvailable) return testCtx.skip();
+    const client = new TestMcpClient({ token, orgSlug });
+
+    const discovery = JSON.stringify(await client.searchSdk({ query: 'net worth' }));
+    expect(discovery).toContain('metrics.list');
+    expect(discovery).toContain('metrics.query');
+
+    const result = await client.querySdk<unknown>(
+      `export default async (_ctx, client) => {
+         const catalog = await client.metrics.list({ q: 'net worth' });
+         const metric = catalog.entity_types.find(
+           (entry) => entry.entity_type === 'net-worth-snapshot'
+         );
+         const snapshot = await client.metrics.query({
+           entity_type: 'net-worth-snapshot',
+           measure: 'net_worth_gbp',
+           by: ['week', 'breakdowns', 'previous', 'attribution'],
+         });
+         const low = await client.metrics.query({
+           entity_type: 'net-worth-snapshot',
+           measure: 'net_worth_low_gbp',
+         });
+         const high = await client.metrics.query({
+           entity_type: 'net-worth-snapshot',
+           measure: 'net_worth_high_gbp',
+         });
+         return {
+           measures: metric?.measures.map((measure) => measure.name),
+           snapshot: snapshot.rows[0],
+           low: low.rows[0]?.net_worth_low_gbp,
+           high: high.rows[0]?.net_worth_high_gbp,
+         };
+       };`
+    );
+    const json = JSON.stringify(result);
+    expect(json).toContain('"net_worth_gbp":"2685826.12"');
+    expect(json).toContain('"low":"2547076.12"');
+    expect(json).toContain('"high":"2839576.12"');
+    expect(json).toContain('"key":"midas"');
+    expect(json).toContain('"week":"2026-W32"');
+    expect(json).toContain('"fx_gbp":12345.67');
   });
 
   it('run_sdk can list agents via client.agents.list', async (testCtx) => {

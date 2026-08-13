@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 import runNetWorthSnapshot, {
   buildFinancialSnapshot,
+  type ComponentEventRow,
   dedupeFinancialRows,
   type FinancialEventRow,
   type FinancialSnapshot,
@@ -115,6 +116,33 @@ function quote(
   };
 }
 
+function component(
+  id: number,
+  componentKey: string,
+  value: number,
+  currency: string,
+  overrides: Record<string, unknown> = {}
+): ComponentEventRow {
+  return {
+    id,
+    origin_id: `net-worth-component:${componentKey}`,
+    occurred_at: "2026-08-10T08:00:00.000Z",
+    metadata: {
+      schema: "net-worth-component/v1",
+      component_key: componentKey,
+      source: componentKey.split("-")[0],
+      institution: componentKey,
+      account_key: componentKey,
+      account_type: "balance-sheet",
+      asset_class: "cash",
+      currency,
+      value,
+      freshness_days: 30,
+      ...overrides,
+    },
+  };
+}
+
 const ctx: ReactionContext = {
   extracted_data: { summary: "Run the deterministic valuation." },
   entities: [],
@@ -143,6 +171,7 @@ describe("financial snapshot builder", () => {
       midasRows: [midas(1, "AAPL")],
       revolutPositionRows: [revolutPosition(2, "isa", "VUAG", 1_000, "GBP")],
       revolutBalanceRows: [revolutBalance(3, "isa", 1_200, 200, "GBP")],
+      componentRows: [],
       quoteRows: [
         quote("US:AAPL", 125, "USD", "AAPL"),
         quote("FX:USD:DIRECT", 0.8, "GBP", "USDGBP=X"),
@@ -151,7 +180,7 @@ describe("financial snapshot builder", () => {
       calculatedAt: "2026-08-12T09:00:00.000Z",
     });
 
-    expect(snapshot.schema).toBe("net-worth-snapshot/v3");
+    expect(snapshot.schema).toBe("net-worth-snapshot/v4");
     expect(snapshot.net_worth_gbp).toBe(1_400);
     expect(snapshot.positions).toHaveLength(3);
     expect(
@@ -164,7 +193,7 @@ describe("financial snapshot builder", () => {
       price_source: "market_quote",
     });
     expect(
-      snapshot.sources.find((source) => source.connector_key === "revolut")
+      snapshot.sources.find((source) => source.source === "revolut")
     ).toMatchObject({
       position_count: 2,
       portfolio_balance_gbp: 1_200,
@@ -181,6 +210,7 @@ describe("financial snapshot builder", () => {
       midasRows: [midas(1, "NOQUOTE")],
       revolutPositionRows: [],
       revolutBalanceRows: [],
+      componentRows: [],
       quoteRows: [quote("FX:USD:DIRECT", 0.8, "GBP", "USDGBP=X")],
       previous: null,
       calculatedAt: "2026-08-12T09:00:00.000Z",
@@ -197,6 +227,7 @@ describe("financial snapshot builder", () => {
         midasRows: [midas(1, "NOQUOTE")],
         revolutPositionRows: [],
         revolutBalanceRows: [],
+        componentRows: [],
         quoteRows: [],
         previous: null,
         calculatedAt: "2026-08-12T09:00:00.000Z",
@@ -209,6 +240,7 @@ describe("financial snapshot builder", () => {
       midasRows: [midas(1, "GARAN", { currency: "TRY", type: "TR" })],
       revolutPositionRows: [],
       revolutBalanceRows: [],
+      componentRows: [],
       quoteRows: [
         quote("TR:GARAN", 120, "TRY", "GARAN.IS"),
         quote("FX:TRY:INVERSE", 64, "TRY", "GBPTRY=X"),
@@ -227,6 +259,39 @@ describe("financial snapshot builder", () => {
     );
   });
 
+  test("adds current balance-sheet observations and preserves valuation ranges", () => {
+    const snapshot = buildFinancialSnapshot({
+      midasRows: [],
+      revolutPositionRows: [],
+      revolutBalanceRows: [],
+      componentRows: [
+        component(1, "chase-cash", 300_000, "GBP"),
+        component(2, "kartal-property", 4_500_000, "TRY", {
+          source: "property",
+          asset_class: "property",
+          value_low: 3_500_000,
+          value_high: 5_500_000,
+          valuation_basis: "market_range_midpoint",
+          freshness_days: 365,
+        }),
+      ],
+      quoteRows: [quote("FX:TRY:DIRECT", 0.015, "GBP", "TRYGBP=X")],
+      previous: null,
+      calculatedAt: "2026-08-12T09:00:00.000Z",
+    });
+
+    expect(snapshot.scope).toBe("household_balance_sheet");
+    expect(snapshot.net_worth_gbp).toBe(367_500);
+    expect(snapshot.net_worth_range_gbp).toEqual({
+      low: 352_500,
+      high: 382_500,
+    });
+    expect(snapshot.breakdowns.by_asset_class).toEqual([
+      { key: "cash", value_gbp: 300_000 },
+      { key: "property", value_gbp: 67_500 },
+    ]);
+  });
+
   test("dedupes forked connections by stable source identity, never event id identity", () => {
     const older = midas(10, "AAPL", { value: 100 });
     const newer = {
@@ -242,11 +307,34 @@ describe("financial snapshot builder", () => {
     ]);
   });
 
+  test("a fork that closes a position beats the stale active row from the old connection", () => {
+    const staleActive = midas(10, "AAPL", { value: 100 });
+    const newerClosed = {
+      ...midas(12, "AAPL", { status: "closed" }),
+      connection_id: 99,
+      connection_slug: "midas-reconnected",
+    };
+    const snapshot = buildFinancialSnapshot({
+      midasRows: [staleActive, newerClosed, midas(11, "MSFT")],
+      revolutPositionRows: [],
+      revolutBalanceRows: [],
+      componentRows: [],
+      quoteRows: [quote("FX:USD:DIRECT", 0.8, "GBP", "USDGBP=X")],
+      previous: null,
+      calculatedAt: "2026-08-12T09:00:00.000Z",
+    });
+
+    expect(snapshot.positions.map((position) => position.symbol)).toEqual([
+      "MSFT",
+    ]);
+  });
+
   test("attributes quantity, price, FX, additions, and disposals exactly to the penny", () => {
     const previous: FinancialSnapshot = buildFinancialSnapshot({
       midasRows: [midas(1, "AAPL", { shares: 1, price: 100, value: 100 })],
       revolutPositionRows: [revolutPosition(2, "isa", "SOLD", 50, "GBP")],
       revolutBalanceRows: [revolutBalance(3, "isa", 50, 0, "GBP")],
+      componentRows: [],
       quoteRows: [
         quote("US:AAPL", 100, "USD", "AAPL"),
         quote("FX:USD:DIRECT", 0.8, "GBP", "USDGBP=X"),
@@ -261,6 +349,7 @@ describe("financial snapshot builder", () => {
       ],
       revolutPositionRows: [],
       revolutBalanceRows: [],
+      componentRows: [],
       quoteRows: [
         quote("US:AAPL", 120, "USD", "AAPL"),
         quote("US:NEW", 25, "USD", "NEW"),
@@ -312,6 +401,7 @@ describe("financial snapshot builder", () => {
         ],
         revolutPositionRows: [],
         revolutBalanceRows: [],
+        componentRows: [],
         quoteRows: [
           quote("US:PROP", p0, "USD", "PROP"),
           quote("FX:USD:DIRECT", fx0, "GBP", "USDGBP=X"),
@@ -325,6 +415,7 @@ describe("financial snapshot builder", () => {
         ],
         revolutPositionRows: [],
         revolutBalanceRows: [],
+        componentRows: [],
         quoteRows: [
           quote("US:PROP", p1, "USD", "PROP"),
           quote("FX:USD:DIRECT", fx1, "GBP", "USDGBP=X"),
@@ -376,7 +467,8 @@ describe("weekly net-worth reaction", () => {
         if (sql.includes("semantic_type = 'investment_balance'")) {
           return [revolutBalance(3, "isa", 1_200, 200, "GBP")];
         }
-        if (sql.includes("net-worth-snapshot/v3")) return [];
+        if (sql.includes("net-worth-component/v1")) return [];
+        if (sql.includes("net-worth-snapshot/v4")) return [];
         throw new Error(`Unexpected query: ${sql}`);
       },
       connections: {
@@ -430,10 +522,16 @@ describe("weekly net-worth reaction", () => {
 
     await runNetWorthSnapshot(ctx, client);
 
-    expect(queries).toHaveLength(4);
+    expect(queries).toHaveLength(5);
     expect(queries[0]).toContain("JOIN connections");
     expect(queries[0]).toContain("connections.status = 'active'");
-    expect(queries[3]).toContain("metadata->>'week' <> '2026-W33'");
+    // Row state is filtered after the write-time dedupe, never in SQL — a
+    // prefilter would resurrect a stale active row when the newest fork
+    // version of the same identity is closed.
+    expect(queries[0]).not.toContain("metadata->>'status'");
+    expect(queries[1]).not.toContain("metadata->>'closed'");
+    expect(queries[2]).not.toContain("metadata->>'closed'");
+    expect(queries[4]).toContain("metadata->>'week' <> '2026-W33'");
     expect(operationInputs.flatMap((input) => input.input.symbols)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ market: "US", symbol: "AAPL" }),
@@ -451,12 +549,35 @@ describe("weekly net-worth reaction", () => {
     expect(saved[0]).toMatchObject({
       semantic_type: "summary",
       title: "Net worth snapshot · 2026-W33",
-      idempotency_key: "net-worth:v3:snapshot:week:2026-W33",
+      idempotency_key: "net-worth:v4:snapshot:week:2026-W33",
       metadata: {
-        schema: "net-worth-snapshot/v3",
+        schema: "net-worth-snapshot/v4",
         week: "2026-W33",
         net_worth_gbp: 1_400,
       },
     });
+  });
+
+  test("fails closed when quotes are needed but the market-quotes connection is absent", async () => {
+    const saved: unknown[] = [];
+    const client = {
+      query: async (sql: string) => {
+        if (sql.includes("connector_key = 'midas'")) return [midas(1, "AAPL")];
+        return [];
+      },
+      connections: { list: async () => ({ connections: [] }) },
+      knowledge: {
+        save: async (input: unknown) => {
+          saved.push(input);
+          return { id: 501, created: true, metadata: {} };
+        },
+      },
+      log: () => undefined,
+    } as unknown as ReactionClient;
+
+    await expect(runNetWorthSnapshot(ctx, client)).rejects.toThrow(
+      /active market-quotes connection/i
+    );
+    expect(saved).toHaveLength(0);
   });
 });

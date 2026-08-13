@@ -12,7 +12,7 @@ For durable facts, ingest into `learning` entities or `save_memory` — not as f
 
 | Connector | Slug | Feeds |
 |-----------|------|-------|
-| Revolut | `revolut` | `transactions` → `asset`, `subscription`, `trip` |
+| Revolut | `revolut` | `transactions` → `account`, `subscription`, `trip` |
 
 **Commonly added alongside this example** (via dashboard or extended config):
 

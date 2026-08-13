@@ -52,6 +52,20 @@ describe('metric MCP tools', () => {
 
     const owner = await TestApiClient.for({ organizationId: org.id, userId: user.id, memberRole: 'owner' });
     await owner.entity_schema.createType({ slug: 'company', name: 'Company', metrics_config: METRICS });
+    await owner.entity_schema.createType({
+      slug: 'net-worth-snapshot',
+      name: 'Net Worth Snapshot',
+      backing: { sql: `SELECT week, SUM(net_worth_gbp) OVER () AS net_worth_gbp
+        FROM (
+          SELECT metadata->>'week' AS week,
+                 (metadata->>'net_worth_gbp')::numeric AS net_worth_gbp
+          FROM events
+          WHERE semantic_type = 'summary'
+            AND metadata->>'schema' = 'net-worth-snapshot/v4'
+          ORDER BY created_at DESC, id DESC
+          LIMIT 1
+        ) latest` },
+    });
 
     const company = await createTestEntity({ name: 'Anthropic', entity_type: 'company', organization_id: org.id });
     const sql = getTestDb();
@@ -63,6 +77,16 @@ describe('metric MCP tools', () => {
     await charge({ date: '2025-11-01', amount: 20.0, currency: 'GBP', direction: 'out', description: 'Anthropic' });
     await charge({ date: '2025-11-01', amount: 20.0, currency: 'GBP', direction: 'out', description: 'Anthropic' }); // dup
     await charge({ date: '2025-11-05', amount: 99.0, currency: 'GBP', direction: 'in', description: 'Claude.ai' }); // refund
+    await createTestEvent({
+      organization_id: org.id,
+      content: 'weekly net worth',
+      semantic_type: 'summary',
+      metadata: {
+        schema: 'net-worth-snapshot/v4',
+        week: '2026-W33',
+        net_worth_gbp: 2_685_826.12,
+      },
+    });
   });
 
   it('query_metric returns the deduped, governed sum', async () => {
@@ -93,5 +117,31 @@ describe('metric MCP tools', () => {
     expect(company?.segments.map((s) => s.name)).toContain('outflow');
     // "currency" dimension doesn't match "outflow" → filtered out.
     expect(company?.dimensions.length).toBe(0);
+  });
+
+  it('queries an inferred measure from derived SQL through the same metric API', async () => {
+    const res = (await queryMetric(
+      {
+        entity_type: 'net-worth-snapshot',
+        measure: 'net_worth_gbp',
+        by: ['week'],
+      },
+      env,
+      ctx,
+    )) as { rows: Record<string, unknown>[]; row_count: number };
+    expect(res.rows).toEqual([
+      { week: '2026-W33', net_worth_gbp: '2685826.12' },
+    ]);
+  });
+
+  it('discovers inferred derived measures with human-spaced keywords', async () => {
+    const res = (await listMetrics({ q: 'net worth' }, env, ctx)) as {
+      entity_types: Array<{ entity_type: string; measures: { name: string }[] }>;
+    };
+    expect(
+      res.entity_types
+        .find((entry) => entry.entity_type === 'net-worth-snapshot')
+        ?.measures.map((measure) => measure.name),
+    ).toContain('net_worth_gbp');
   });
 });

@@ -16,6 +16,7 @@
  */
 
 import type { EntityMetrics } from "@lobu/connector-sdk";
+import { inferColumns } from "../utils/infer-measures";
 
 class MetricCompileError extends Error {}
 class MetricNotImplementedError extends MetricCompileError {}
@@ -139,6 +140,46 @@ export function compileMetricSql(input: CompileMetricInput): string {
   return `SELECT ${selectCols}
      FROM (${resolved}) resolved
      GROUP BY ${groupCols.join(", ")}`;
+}
+
+/**
+ * Select a precomputed measure from a derived entity's backing SQL. The
+ * authored SQL owns aggregation and grain; this path only validates that the
+ * requested columns were inferred with the right roles, then projects them.
+ * That keeps derived measures composable with ordinary SQL without inventing
+ * a second metric declaration language.
+ */
+export function compileDerivedMetricSql(input: {
+  backingSql: string;
+  measure: string;
+  by?: string[];
+  segment?: string;
+  entityId?: number;
+}): string {
+  if (input.segment) {
+    throw new MetricNotImplementedError(
+      "segments do not apply to a precomputed derived measure",
+    );
+  }
+  if (input.entityId !== undefined) {
+    throw new MetricNotImplementedError(
+      "entity_id does not apply to a derived entity",
+    );
+  }
+  const columns = new Map(inferColumns(input.backingSql).map((column) => [column.name, column.role]));
+  if (columns.get(input.measure) !== "measure") {
+    throw new MetricCompileError(`measure "${input.measure}" is not declared or inferred`);
+  }
+  const dimensions = (input.by ?? []).map((name) => {
+    if (columns.get(name) !== "dimension") {
+      throw new MetricCompileError(`dimension "${name}" is not inferred`);
+    }
+    return outName("dimension", name);
+  });
+  const measure = outName("measure", input.measure);
+  const backing = input.backingSql.trim().replace(/;\s*$/, "");
+  return `SELECT ${[...dimensions, measure].join(", ")}
+     FROM (${backing}) derived_metric`;
 }
 
 /** The aggregate column for a measure. `count` ⇒ COUNT(*); others aggregate the

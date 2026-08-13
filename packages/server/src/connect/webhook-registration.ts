@@ -26,6 +26,10 @@ import { resolveConnectorCodeForKey } from '../utils/ensure-connector-installed'
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
 import logger from '../utils/logger';
 import { getErrorMessage } from "@lobu/core";
+import {
+  ensureAtlassianMcpJiraWebhook,
+  unregisterAtlassianMcpJiraWebhook,
+} from './atlassian-mcp-webhook';
 
 interface ConnectorConnectionRow {
   id: number;
@@ -43,6 +47,8 @@ interface ConnectorConnectionRow {
 export interface ConnectionWebhookState {
   /** Provider subscription id, for teardown. */
   webhook_external_id?: string;
+  /** `secret://` ref to the unguessable token embedded in a callback URL. */
+  webhook_callback_token?: string;
   /** `secret://` ref to the signing secret the provider HMACs deliveries with. */
   webhook_signature_secret?: string;
   /** The connector's declarative verification scheme, stamped at register time. */
@@ -50,6 +56,9 @@ export interface ConnectionWebhookState {
   webhook_algorithm?: 'sha256' | 'sha1';
   webhook_signature_prefix?: string;
   webhook_dedupe_header?: string;
+  webhook_expires_at?: string;
+  webhook_status?: 'registering' | 'active' | 'error';
+  webhook_error?: string | null;
 }
 
 function toNumberOrNull(value: number | string | null): number | null {
@@ -128,9 +137,21 @@ export async function registerConnectorWebhook(params: {
   connectionId: number;
   /** When this connector doesn't declare a webhook block, callers can skip. */
   request?: Request | null;
+  /** Explicit public gateway origin for request-less admin/scheduled callers. */
+  baseUrl?: string;
+  /** Config mutations that disable durable delivery must fail closed. */
+  throwOnError?: boolean;
 }): Promise<void> {
   const { organizationId, connectionId } = params;
   try {
+    const atlassian = await ensureAtlassianMcpJiraWebhook({
+      organizationId,
+      connectionId,
+      baseUrl:
+        params.baseUrl ??
+        resolveBaseUrl({ request: params.request ?? null }).replace(/\/+$/, ''),
+    });
+    if (atlassian.handled) return;
     await orgContext.run({ organizationId }, async () => {
       const connection = await loadConnection(organizationId, connectionId);
       if (!connection) return;
@@ -224,6 +245,7 @@ export async function registerConnectorWebhook(params: {
       },
       'Connector webhook registration failed (connection stays active)'
     );
+    if (params.throwOnError) throw error;
   }
 }
 
@@ -236,9 +258,19 @@ export async function registerConnectorWebhook(params: {
 export async function unregisterConnectorWebhook(params: {
   organizationId: string;
   connectionId: number;
+  /** Deletion must fail closed when external teardown fails. */
+  throwOnError?: boolean;
+  /** Explicit public gateway origin used to reconcile ambiguous provider state. */
+  baseUrl?: string;
 }): Promise<void> {
   const { organizationId, connectionId } = params;
   try {
+    const atlassian = await unregisterAtlassianMcpJiraWebhook({
+      organizationId,
+      connectionId,
+      baseUrl: params.baseUrl,
+    });
+    if (atlassian.handled) return;
     await orgContext.run({ organizationId }, async () => {
       const connection = await loadConnection(organizationId, connectionId);
       if (!connection) return;
@@ -312,6 +344,7 @@ export async function unregisterConnectorWebhook(params: {
       },
       'Connector webhook teardown failed'
     );
+    if (params.throwOnError) throw error;
   }
 }
 
@@ -325,9 +358,14 @@ export async function resolveConnectionWebhookConfig(
   config: Record<string, unknown> | null | undefined
 ): Promise<Record<string, unknown> | null> {
   const c = (config ?? {}) as Record<string, unknown> & ConnectionWebhookState;
-  if (!c.webhook_signature_secret && !c.webhook_external_id) return null;
+  if (!c.webhook_signature_secret && !c.webhook_callback_token && !c.webhook_external_id) {
+    return null;
+  }
   return {
     platform: 'webhook',
+    ...(c.webhook_callback_token
+      ? { token: c.webhook_callback_token, allowQueryAuth: true }
+      : {}),
     ...(c.webhook_signature_secret ? { signatureSecret: c.webhook_signature_secret } : {}),
     ...(c.webhook_signature_header ? { signatureHeader: c.webhook_signature_header } : {}),
     ...(c.webhook_algorithm ? { algorithm: c.webhook_algorithm } : {}),

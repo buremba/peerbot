@@ -6,7 +6,10 @@ import { randomUUID } from "node:crypto";
 import { getErrorMessage, parseJsonObject } from "@lobu/core";
 import { getScopedConnectorDefinition } from "../../../../catalog/connector-definitions";
 import { enrichConnectorGroupsWithCatalogDisplay } from "../../../../catalog/connector-group-display";
-import { unregisterConnectorWebhook } from "../../../../connect/webhook-registration";
+import {
+	registerConnectorWebhook,
+	unregisterConnectorWebhook,
+} from "../../../../connect/webhook-registration";
 import {
 	getDb,
 	parsePgNumberArray,
@@ -27,6 +30,7 @@ import {
 	updateChatConnection,
 	upsertByoChatConnection,
 } from "../../../../gateway/connections/chat-connection-service";
+import { isAtlassianMcpConfig } from "../../../../operations/atlassian-mcp-feed";
 import {
   EMPTY_SUMMARY,
   getOperationsSummariesByConnection,
@@ -120,6 +124,17 @@ import {
 } from "../../helpers/connect-setup-continuation";
 import { createConnectionSetupBundle } from "../../helpers/interactive-connection-setup";
 import { supersedeActionEvent } from "../../approval-events";
+
+// These Atlassian MCP config keys select a separately-consented Jira OAuth
+// grant. A member must not bind an admin's Jira authorization to a connection.
+const JIRA_WEBHOOK_CREDENTIAL_KEYS = [
+	"jira_webhook_auth_profile_slug",
+	"jira_webhook_app_profile_slug",
+	"webhook_enabled",
+] as const;
+
+const JIRA_WEBHOOK_ADMIN_ONLY_ERROR =
+	"Only admins can configure the secondary Jira authorization used by Atlassian webhook delivery.";
 
 // ============================================
 // handleListConnectorGroups
@@ -692,6 +707,15 @@ export async function handleCreate(
 			error: `Connector '${args.connector_key}' not found or not active`,
 		};
 	}
+	if (
+		!callerIsAdmin &&
+		isAtlassianMcpConfig(connector.mcp_config) &&
+		JIRA_WEBHOOK_CREDENTIAL_KEYS.some((key) =>
+			Object.hasOwn(args.config ?? {}, key),
+		)
+	) {
+		return { error: JIRA_WEBHOOK_ADMIN_ONLY_ERROR };
+	}
 
 	// Schema-declared secret config keys for this connector — used to redact the
 	// `RETURNING *` row before it is serialized back to the caller.
@@ -1241,6 +1265,21 @@ export async function handleCreate(
 		);
   }
 
+	if (connectionStatus === "active" && isAtlassianMcpConfig(connector.mcp_config)) {
+		await registerConnectorWebhook({
+			organizationId,
+			connectionId: Number(inserted[0].id),
+			baseUrl: getGatewayBaseUrl(ctx),
+		});
+		const read = await handleGet(
+			{ action: "get", connection_id: Number(inserted[0].id) },
+			ctx,
+		);
+		if (!("error" in read) && read.action === "get") {
+			inserted[0] = read.connection as Record<string, unknown>;
+		}
+	}
+
   logger.info(
     {
       connection_id: inserted[0].id,
@@ -1362,10 +1401,11 @@ export async function handleUpdate(
   // Verify ownership
   const existingRows = await sql`
     SELECT c.id, c.connector_key, c.auth_profile_id, c.app_auth_profile_id, c.created_by,
-           c.config, c.credential_mode, cd.auth_schema, cd.options_schema, cd.feeds_schema
+           c.config, c.credential_mode, cd.auth_schema, cd.options_schema, cd.feeds_schema,
+           cd.mcp_config
     FROM connections c
     LEFT JOIN LATERAL (
-      SELECT auth_schema, options_schema, feeds_schema
+      SELECT auth_schema, options_schema, feeds_schema, mcp_config
       FROM connector_definitions
       WHERE key = c.connector_key
         AND status = 'active'
@@ -1387,6 +1427,7 @@ export async function handleUpdate(
     auth_schema: { methods?: Array<Record<string, unknown>> } | null;
     options_schema: Record<string, unknown> | null;
     feeds_schema: Record<string, unknown> | null;
+    mcp_config: Record<string, unknown> | null;
     auth_profile_id: number | null;
     app_auth_profile_id: number | null;
     created_by: string | null;
@@ -1725,6 +1766,15 @@ export async function handleUpdate(
     : splitConfig.connectionConfig
       ? { ...existingConfig, ...splitConfig.connectionConfig }
       : existingConfig;
+	if (
+		!callerIsAdmin &&
+		isAtlassianMcpConfig(existing.mcp_config) &&
+		JIRA_WEBHOOK_CREDENTIAL_KEYS.some(
+			(key) => resultingConfig[key] !== existingConfig[key],
+		)
+	) {
+		return { error: JIRA_WEBHOOK_ADMIN_ONLY_ERROR };
+	}
 	const willBeConsentOnly =
 		parseJsonObject(resultingConfig).consent_only === true;
   if (willBeConsentOnly && existingConfig.consent_only !== true) {
@@ -1996,6 +2046,18 @@ export async function handleUpdate(
     await syncOAuthConnectionsForAuthProfile(organizationId, effectiveAuth.id);
   }
 
+	if (
+		(args.config !== undefined || args.status !== undefined) &&
+		isAtlassianMcpConfig(existing.mcp_config)
+	) {
+		await registerConnectorWebhook({
+			organizationId,
+			connectionId: args.connection_id,
+			baseUrl: getGatewayBaseUrl(ctx),
+			throwOnError: true,
+		});
+	}
+
   const updatedRow = updated[0] as Record<string, unknown>;
   const changedFields = [
     ...(args.display_name !== undefined ? ["display_name"] : []),
@@ -2016,6 +2078,16 @@ export async function handleUpdate(
     state: updatedRow,
     ...(changedFields.length > 0 ? { changedFields } : {}),
   });
+
+	if (args.config !== undefined || args.status !== undefined) {
+		const read = await handleGet(
+			{ action: "get", connection_id: args.connection_id },
+			ctx,
+		);
+		if (!("error" in read) && read.action === "get") {
+			return { action: "update", connection: read.connection };
+		}
+	}
 
   return {
 		action: "update",
@@ -2150,10 +2222,16 @@ export async function handleDelete(
       return { error: getErrorMessage(error) };
     }
   } else {
-    await unregisterConnectorWebhook({
-      organizationId,
-      connectionId: args.connection_id,
-    });
+		try {
+			await unregisterConnectorWebhook({
+				organizationId,
+				connectionId: args.connection_id,
+				throwOnError: true,
+				baseUrl: getGatewayBaseUrl(ctx),
+			});
+		} catch (error) {
+			return { error: getErrorMessage(error) };
+		}
   }
 
   // Phase 2 (atomic): the durable connection tombstone, every pending run/card

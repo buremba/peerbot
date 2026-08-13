@@ -32,6 +32,7 @@ import {
 	resetTestDatabase,
 	seedAgentRow,
 } from "./helpers/db-setup.js";
+import type { WritableSecretStore } from "../secrets/index.js";
 
 const ORG = "org-webhook";
 const AGENT = "agent-webhook";
@@ -1053,6 +1054,64 @@ describe("connector-connection webhook bridge (connections table)", () => {
 		return id;
 	}
 
+	async function seedRegisteredAtlassianConnection(
+		secretStore: WritableSecretStore,
+	): Promise<{ id: string; callbackToken: string }> {
+		const { getDb } = await import("../../db/client.js");
+		const { orgContext } = await import("../../lobu/stores/org-context.js");
+		const { persistSecretValue } = await import("../secrets/index.js");
+		const sql = getDb();
+		const connectorKey = "mcp.mcp-atlassian-com";
+		await sql`
+			INSERT INTO connector_definitions (
+				organization_id, key, name, version, status, mcp_config, feeds_schema
+			) VALUES (
+				${ORG}, ${connectorKey}, 'Atlassian', '1.0.0', 'active',
+				${sql.json({ upstream_url: "https://mcp.atlassian.com/v1/mcp" })},
+				${sql.json({ issues: { key: "issues", virtual: true } })}
+			)
+		`;
+		const [connection] = await sql`
+			INSERT INTO connections (
+				organization_id, connector_key, slug, display_name, status, config, visibility
+			) VALUES (
+				${ORG}, ${connectorKey}, 'atlassian-rovo', 'Atlassian', 'active',
+				${sql.json({
+					cloud_id: "cloud-1",
+					site_cloud_id: "cloud-1",
+					site_url: "https://acme.atlassian.net",
+				})},
+				'org'
+			)
+			RETURNING id
+		`;
+		const id = String(connection.id);
+		await sql`
+			INSERT INTO feeds (
+				organization_id, connection_id, feed_key, display_name, status, kind, virtual, config
+			) VALUES (
+				${ORG}, ${id}, 'issues', 'Issues', 'active', 'virtual', true, '{}'::jsonb
+			)
+		`;
+		const callbackToken = SIG_SECRET;
+		const callbackTokenRef = await orgContext.run({ organizationId: ORG }, () =>
+			persistSecretValue(
+				secretStore,
+				`webhook/${id}/callback-token`,
+				callbackToken,
+			),
+		);
+		await sql`
+			UPDATE connections
+			SET config = config || ${sql.json({
+				webhook_external_id: "jira-hook-123",
+				webhook_callback_token: callbackTokenRef,
+			})}::jsonb
+			WHERE id = ${id}
+		`;
+		return { id, callbackToken };
+	}
+
 	test("a signed GitHub delivery to a connector connection marks the feed due (poll-canonical)", async () => {
 		// Clean-cut: OAuth/PAT GitHub webhooks do NOT raw-store under webhook:<id>.
 		// They mark the matching feed due so CheckDueFeeds + poll attach
@@ -1127,6 +1186,114 @@ describe("connector-connection webhook bridge (connections table)", () => {
 		expect(new Date(String(feed.next_run_at)).getTime()).toBeLessThanOrEqual(
 			Date.now() + 1000,
 		);
+	});
+
+	test("an authenticated Jira delivery lands as a structured event on the Atlassian Rovo feed", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const { manager, secretStore } = await buildManager();
+		const { createConnectionWebhookRoutes } = await import(
+			"../routes/public/connections.js"
+		);
+		const { getDb } = await import("../../db/client.js");
+		const { id, callbackToken } =
+			await seedRegisteredAtlassianConnection(secretStore);
+		const app = createConnectionWebhookRoutes(manager);
+		const raw = JSON.stringify({
+			webhookEvent: "jira:issue_updated",
+			issue: {
+				id: "10000",
+				key: "KAN-1",
+				self: "https://api.atlassian.com/ex/jira/cloud-1/rest/api/3/issue/10000",
+				fields: {
+					summary: "Webhook bridge works",
+					status: { name: "To Do" },
+					created: "2026-08-13T10:00:00.000Z",
+					updated: "2026-08-13T10:01:00.000Z",
+				},
+			},
+		});
+		const res = await app.fetch(
+			new Request(
+				`http://gateway.test/api/v1/webhooks/${id}?token=${callbackToken}`,
+				{
+					method: "POST",
+					body: raw,
+					headers: {
+						"content-type": "application/json",
+					},
+				},
+			),
+		);
+		expect(res.status).toBe(202);
+		const rows = await getDb()`
+			SELECT connector_key, connection_id, feed_key, origin_id, semantic_type
+			FROM events
+			WHERE connection_id = ${id}
+			ORDER BY id
+		`;
+		expect(rows).toEqual([
+			{
+				connector_key: "mcp.mcp-atlassian-com",
+				connection_id: Number(id),
+				feed_key: "issues",
+				origin_id: "jira_issue_10000",
+				semantic_type: "issue",
+			},
+		]);
+
+		const commentRaw = JSON.stringify({
+			webhookEvent: "comment_created",
+			issue: { id: "10000", key: "KAN-1", fields: {} },
+			comment: {
+				id: "20000",
+				body: {
+					type: "doc",
+					content: [
+						{
+							type: "paragraph",
+							content: [{ type: "text", text: "Webhook comment" }],
+						},
+					],
+				},
+				author: { displayName: "Jira User" },
+				created: "2026-08-13T10:02:00.000Z",
+			},
+		});
+		const commentRes = await app.fetch(
+			new Request(
+				`http://gateway.test/api/v1/webhooks/${id}?token=${callbackToken}`,
+				{
+					method: "POST",
+					body: commentRaw,
+					headers: {
+						"content-type": "application/json",
+					},
+				},
+			),
+		);
+		expect(commentRes.status).toBe(202);
+		const [comment] = await getDb()`
+			SELECT origin_id, origin_parent_id, semantic_type, payload_text
+			FROM events
+			WHERE connection_id = ${id} AND origin_id = 'jira_comment_20000'
+		`;
+		expect(comment).toMatchObject({
+			origin_id: "jira_comment_20000",
+			origin_parent_id: "jira_issue_10000",
+			semantic_type: "comment",
+			payload_text: "Webhook comment",
+		});
+
+		const forged = await app.fetch(
+			new Request(`http://gateway.test/api/v1/webhooks/${id}?token=forged`, {
+				method: "POST",
+				body: commentRaw,
+				headers: {
+					"content-type": "application/json",
+				},
+			}),
+		);
+		expect(forged.status).toBe(401);
 	});
 
 	test("a forged signature to a connector connection is rejected with 401", async () => {

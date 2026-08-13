@@ -58,6 +58,8 @@ import {
   type PlatformConnection,
 } from "./types.js";
 import { deliverGithubConnectorConnectionWebhook } from "../routes/public/app-webhooks.js";
+import { deliverJiraMcpConnectionWebhook } from "../routes/public/jira-mcp-webhook-delivery.js";
+import { isAtlassianMcpConfig } from "../../operations/atlassian-mcp-feed.js";
 import {
 	handleWebhookIngest,
 	prepareWebhookIngestConfig,
@@ -1316,7 +1318,32 @@ export class ChatInstanceManager {
                     );
                   },
                 }
-              : undefined,
+              : bridged.structuredWebhook === "jira_mcp"
+                ? {
+                    handleInsteadOfPersist: async ({
+                      rawBody,
+                      organizationId,
+                      connectionId: connId,
+                    }) => {
+                      const result = await deliverJiraMcpConnectionWebhook({
+                        sql: getDb(),
+                        connectionId: Number(connId),
+                        organizationId,
+                        rawBody,
+                      });
+                      return new Response(
+                        JSON.stringify({
+                          ok: result.handled,
+                          triggered: result.triggered,
+                        }),
+                        {
+                          status: result.handled ? 202 : 400,
+                          headers: { "content-type": "application/json" },
+                        },
+                      );
+                    },
+                  }
+                : undefined,
 					),
         );
       }
@@ -1365,14 +1392,25 @@ export class ChatInstanceManager {
   ): Promise<{
     stored: StoredConnection;
     connectorKey: string;
+    structuredWebhook: "jira_mcp" | null;
   } | null> {
     // Connector connection ids are bigints; a non-numeric id can't match.
     if (!/^\d+$/.test(connectionId)) return null;
     const rows = await getDb()`
-      SELECT id, organization_id, connector_key, config, status
-      FROM connections
-      WHERE id = ${connectionId}
-        AND deleted_at IS NULL
+      SELECT c.id, c.organization_id, c.connector_key, c.config, c.status,
+             cd.mcp_config
+      FROM connections c
+      LEFT JOIN LATERAL (
+        SELECT mcp_config
+        FROM connector_definitions
+        WHERE organization_id = c.organization_id
+          AND key = c.connector_key
+          AND status = 'active'
+        ORDER BY updated_at DESC
+        LIMIT 1
+      ) cd ON TRUE
+      WHERE c.id = ${connectionId}
+        AND c.deleted_at IS NULL
       LIMIT 1
     `;
     const row = rows[0] as
@@ -1382,6 +1420,7 @@ export class ChatInstanceManager {
           connector_key: string;
           config: Record<string, unknown> | null;
           status: string;
+          mcp_config: Record<string, unknown> | null;
         }
       | undefined;
     if (!row || !row.organization_id) return null;
@@ -1406,6 +1445,9 @@ export class ChatInstanceManager {
         updatedAt: Date.now(),
       },
       connectorKey: String(row.connector_key),
+      structuredWebhook: isAtlassianMcpConfig(row.mcp_config)
+        ? "jira_mcp"
+        : null,
     };
   }
 

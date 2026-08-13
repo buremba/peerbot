@@ -97,8 +97,11 @@ const lunchRun = defineEntityType({
     },
     thread_ref: {
       type: "string",
+      // Adopted verbatim from the live lobu-team schema so `lobu apply`
+      // converges instead of blocking on undeclared drift — "lunch-finalize"
+      // is the remote wording, not a typo for the Behavior slug.
       description:
-        "Reference to the thread/message where the run is happening — lobu-team-lunch-finalize uses this to find the conversation",
+        "Reference to the thread/message where the run is happening — lunch-finalize uses this to find the conversation",
     },
     items: {
       type: "array",

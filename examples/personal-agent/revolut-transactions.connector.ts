@@ -1,8 +1,8 @@
 /**
  * Revolut Connector
  *
- * Revolut has no public personal-banking API, so this connector reads the
- * user's transactions by REPLAYING the retail API the Revolut web app
+ * Revolut has no public personal-banking API, so the transactions feed reads
+ * the user's history by REPLAYING the retail API the Revolut web app
  * (`app.revolut.com`) already calls — not by scraping the rendered DOM. It runs
  * inside the user's real signed-in Chrome via the paired Owletto extension:
  * reuse the revolut.com sticky anchor the user signs into once, capture the app's own
@@ -28,15 +28,20 @@
  * `fetch` carries cookies (`credentials:"include"`) plus those headers, so it
  * authenticates where a header-less raw fetch 401s (`{code:9001}`).
  *
- * Auth is implicit but two-layered: SSO login ≠ retail-API auth. The app-level
- * passcode (rwa flow) must be entered in app.revolut.com or the retail API 401s
- * (`{code:9001}`) and the page renders skeletons. When that happens — no
- * transactions intercepted — we `notifyRevolutAuthWall` and throw
+ * The balances feed uses the authenticated Invest app instead. It joins stable
+ * account ids from the app's `trading/accounts` response to selected cells in
+ * the rendered portfolio tables, and rejects snapshots that fail its account
+ * and total-value completeness checks rather than storing raw page text.
+ *
+ * Transaction auth is implicit but two-layered: SSO login ≠ retail-API auth.
+ * The app-level passcode (rwa flow) must be entered in app.revolut.com or the
+ * retail API 401s (`{code:9001}`) and the page renders skeletons. When that
+ * happens — no transactions intercepted — we `notifyRevolutAuthWall` and throw
  * `RevolutAuthWallError` instead of reporting a silently-empty sync.
  *
- * The emitted event shape matches the original file-import Revolut connector
- * (`semantic_type: "transaction"`, metadata `{ date, description, amount,
- * direction, balance, currency }`) so historical imports stay uniform.
+ * The transaction event shape matches the original file-import Revolut
+ * connector (`semantic_type: "transaction"`, metadata `{ date, description,
+ * amount, direction, balance, currency }`) so historical imports stay uniform.
  */
 
 import {
@@ -55,6 +60,8 @@ import {
 export interface RevolutCheckpoint {
   last_transaction_id?: string;
   last_timestamp?: string;
+  /** Investment feed: prior identities used to close vanished holdings. */
+  investment_refs?: RevolutInvestmentRef[];
 }
 
 export interface RevolutTransaction {
@@ -123,7 +130,7 @@ export interface RevolutTransaction {
   merchantBrandId?: string;
 }
 
-export interface RevolutInvestmentPosition {
+interface RevolutInvestmentPosition {
   ref: string;
   ticker: string;
   instrumentType: string;
@@ -135,7 +142,7 @@ export interface RevolutInvestmentPosition {
   allocation: number;
 }
 
-export interface RevolutInvestmentSnapshot {
+interface RevolutInvestmentSnapshot {
   portfolioId: string;
   accountType: string;
   totalValue: number;
@@ -144,13 +151,13 @@ export interface RevolutInvestmentSnapshot {
   positions: RevolutInvestmentPosition[];
 }
 
-export interface RevolutInvestmentResponse {
+interface RevolutInvestmentResponse {
   url: string;
   status?: number;
   body?: string;
 }
 
-export interface RevolutInvestmentDomPosition {
+interface RevolutInvestmentDomPosition {
   ref: string;
   instrumentType: string;
   quantity: string;
@@ -159,7 +166,7 @@ export interface RevolutInvestmentDomPosition {
   allocation: string;
 }
 
-export interface RevolutInvestmentDomAccount {
+interface RevolutInvestmentDomAccount {
   accountType: string;
   totalValue: string;
   cashValue: string;
@@ -367,16 +374,13 @@ interface RawInvestmentAccount {
   accountType?: unknown;
 }
 
-function finiteNumber(value: unknown): number | undefined {
-  if (typeof value !== "number" && typeof value !== "string") {
-    return undefined;
-  }
-  if (typeof value === "string" && !value.trim()) return undefined;
-  const number = typeof value === "number" ? value : Number(value);
+function finiteNumber(value: string): number | undefined {
+  if (!value.trim()) return undefined;
+  const number = Number(value);
   return Number.isFinite(number) ? number : undefined;
 }
 
-function responseJson(body: unknown): unknown {
+function responseJson(body: string | undefined): unknown {
   if (typeof body !== "string" || !body.trim()) return undefined;
   try {
     return JSON.parse(body);
@@ -417,10 +421,13 @@ export function parseInvestmentDomSnapshot(
 ): RevolutInvestmentSnapshot[] {
   const accountTypes = new Map<string, string>();
   for (const response of responses) {
+    // `responses` crosses a process boundary from the Chrome extension, so the
+    // declared shape is a claim, not a guarantee. Skip malformed entries rather
+    // than throwing on `.url` below.
     if (
       !response ||
-      (response.status !== undefined && response.status !== 200) ||
-      typeof response.url !== "string"
+      typeof response.url !== "string" ||
+      (response.status !== undefined && response.status !== 200)
     ) {
       continue;
     }
@@ -431,10 +438,11 @@ export function parseInvestmentDomSnapshot(
       typeof json === "object" &&
       Array.isArray((json as { created?: unknown }).created)
     ) {
-      for (const account of (json as { created: RawInvestmentAccount[] })
-        .created) {
-        const id = str(account?.id);
-        const accountType = str(account?.accountType);
+      for (const account of (json as { created: unknown[] }).created) {
+        if (!account || typeof account !== "object") continue;
+        const raw = account as RawInvestmentAccount;
+        const id = str(raw.id);
+        const accountType = str(raw.accountType);
         if (!id || !accountType) continue;
         const existingId = accountTypes.get(accountType);
         if (!existingId) accountTypes.set(accountType, id);
@@ -453,6 +461,8 @@ export function parseInvestmentDomSnapshot(
       !total ||
       !cash ||
       cash.currency !== total.currency ||
+      // Also extension-supplied: a half-rendered table can omit `positions`
+      // entirely, and iterating it below would throw instead of failing closed.
       !Array.isArray(account.positions)
     ) {
       return [];
@@ -508,22 +518,68 @@ export function parseInvestmentDomSnapshot(
     });
   }
 
-  // New/missing accounts and half-rendered position tables fail closed rather
-  // than replacing a complete net-worth snapshot with partial data.
+  // Account-count mismatches and position tables whose displayed components
+  // do not reconcile with the displayed total fail closed.
   if (accountTypes.size === 0 || snapshots.length !== accountTypes.size) {
     return [];
   }
   return snapshots.sort((a, b) => a.portfolioId.localeCompare(b.portfolioId));
 }
 
+/** Identity and display fields used to close holdings on the next sync. */
+interface RevolutInvestmentRef {
+  portfolio_id: string;
+  account_type: string;
+  /** Present for positions, absent for a portfolio balance. */
+  ref?: string;
+  ticker?: string;
+}
+
+const portfolioOriginId = (portfolioId: string) =>
+  `revolut-investment-portfolio-${portfolioId}`;
+const positionOriginId = (portfolioId: string, ref: string) =>
+  `revolut-investment-position-${portfolioId}-${ref}`;
+
+function investmentRefsFromSnapshots(
+  snapshots: RevolutInvestmentSnapshot[]
+): RevolutInvestmentRef[] {
+  const refs: RevolutInvestmentRef[] = [];
+  for (const snapshot of snapshots) {
+    refs.push({
+      portfolio_id: snapshot.portfolioId,
+      account_type: snapshot.accountType,
+    });
+    for (const position of snapshot.positions) {
+      refs.push({
+        portfolio_id: snapshot.portfolioId,
+        account_type: snapshot.accountType,
+        ref: position.ref,
+        ticker: position.ticker,
+      });
+    }
+  }
+  return refs;
+}
+
+/**
+ * A holding that disappears is not the same as a holding left unmentioned.
+ * Lobu upserts on (connection_id, origin_id), so a poll that simply omits a
+ * sold position leaves its previous row standing as the current value forever.
+ * Every ref from `previous` that is absent from this poll therefore gets an
+ * explicit zeroed replacement under the SAME origin id, which supersedes it.
+ */
 export function investmentSnapshotsToEvents(
   snapshots: RevolutInvestmentSnapshot[],
-  occurredAt = new Date()
+  occurredAt = new Date(),
+  previous: readonly RevolutInvestmentRef[] = []
 ): EventEnvelope[] {
   const events: EventEnvelope[] = [];
+  const live = new Set<string>();
   for (const snapshot of snapshots) {
+    const portfolioId = portfolioOriginId(snapshot.portfolioId);
+    live.add(portfolioId);
     events.push({
-      origin_id: `revolut-investment-portfolio-${snapshot.portfolioId}`,
+      origin_id: portfolioId,
       occurred_at: occurredAt,
       semantic_type: "investment_balance",
       payload_text: `Revolut ${snapshot.accountType} portfolio: ${currencySymbol(snapshot.valueCurrency)}${snapshot.totalValue.toFixed(2)}`,
@@ -537,8 +593,10 @@ export function investmentSnapshotsToEvents(
       },
     });
     for (const position of snapshot.positions) {
+      const positionId = positionOriginId(snapshot.portfolioId, position.ref);
+      live.add(positionId);
       events.push({
-        origin_id: `revolut-investment-position-${snapshot.portfolioId}-${position.ref}`,
+        origin_id: positionId,
         occurred_at: occurredAt,
         semantic_type: "investment_position",
         payload_text: `${position.ticker}: ${position.quantity} shares worth ${currencySymbol(position.valueCurrency)}${position.value.toFixed(2)}`,
@@ -557,6 +615,45 @@ export function investmentSnapshotsToEvents(
         },
       });
     }
+  }
+  for (const ref of previous) {
+    const originId =
+      ref.ref === undefined
+        ? portfolioOriginId(ref.portfolio_id)
+        : positionOriginId(ref.portfolio_id, ref.ref);
+    if (live.has(originId)) continue;
+    if (ref.ref === undefined) {
+      events.push({
+        origin_id: originId,
+        occurred_at: occurredAt,
+        semantic_type: "investment_balance",
+        payload_text: `Revolut ${ref.account_type} portfolio closed`,
+        metadata: {
+          portfolio_id: ref.portfolio_id,
+          account_type: ref.account_type,
+          closed: true,
+          balance: 0,
+          cash_balance: 0,
+          position_count: 0,
+        },
+      });
+      continue;
+    }
+    events.push({
+      origin_id: originId,
+      occurred_at: occurredAt,
+      semantic_type: "investment_position",
+      payload_text: `${ref.ticker ?? ref.ref}: position closed`,
+      metadata: {
+        portfolio_id: ref.portfolio_id,
+        account_type: ref.account_type,
+        ref: ref.ref,
+        ticker: ref.ticker,
+        closed: true,
+        quantity: 0,
+        value: 0,
+      },
+    });
   }
   return events;
 }
@@ -687,9 +784,9 @@ function requireExtensionDispatcher(ctx: SyncContext): ChromeActionDispatcher {
 
 /** Raised when the retail API is unauthenticated (passcode / SSO sign-in wall). */
 export class RevolutAuthWallError extends Error {
-  constructor(landedUrl: string) {
+  constructor(landedUrl: string, dataKind = "transactions") {
     super(
-      `Revolut session needs sign-in (no transactions returned from ${landedUrl}). Enter your Revolut passcode in the focused Chrome window; the next sync will use the authenticated session.`
+      `Revolut session needs sign-in (no ${dataKind} returned from ${landedUrl}). Enter your Revolut passcode in the focused Chrome window; the next sync will use the authenticated session.`
     );
     this.name = "RevolutAuthWallError";
   }
@@ -1101,7 +1198,7 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     name: "Revolut",
     description:
       "Syncs exact Revolut transactions and current Invest balances through your paired Owletto Chrome session, with no separate connector login.",
-    version: "4.6.4",
+    version: "4.7.0",
     faviconDomain: "app.revolut.com",
     authSchema: {
       // Auth is implicit via the paired Owletto extension's signed-in Chrome —
@@ -1143,6 +1240,11 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
                 currency: { type: "string" },
                 cash_balance: { type: "number" },
                 position_count: { type: "integer" },
+                closed: {
+                  type: "boolean",
+                  description:
+                    "True when the portfolio was present in an earlier sync but is gone now. Balances are zeroed; this row supersedes the last known value rather than leaving it standing as current.",
+                },
               },
             },
           },
@@ -1162,6 +1264,11 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
                 value: { type: "number" },
                 value_currency: { type: "string" },
                 allocation: { type: "number" },
+                closed: {
+                  type: "boolean",
+                  description:
+                    "True when the holding was present in an earlier sync but is gone now (sold or transferred). Quantity and value are zeroed; this row supersedes the last known position rather than leaving it standing as current.",
+                },
               },
             },
           },
@@ -1199,13 +1306,12 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
         .catch(() => undefined);
       const landedUrl = initialRoute.value?.href || REVOLUT_INVEST_URL;
       await notifyRevolutAuthWall(dispatcher, landedUrl);
-      throw new RevolutAuthWallError(landedUrl);
+      throw new RevolutAuthWallError(landedUrl, "investment data");
     }
 
-    // Account ids remain the stable event identity. Values come from the
-    // rendered, ready-state tables because Revolut may satisfy allocation
-    // requests from its in-page cache, where network interception sees no
-    // response. Only selected table cells are returned; page text is not.
+    // Account ids remain the stable event identity; values come from the
+    // rendered, ready-state tables. Only selected cells are returned, never
+    // the page's raw text.
     const intercept = await dispatcher.dispatch<{ session_id: string }>(
       "network_intercept_start",
       {
@@ -1224,6 +1330,7 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
       href?: string;
       accounts?: RevolutInvestmentDomAccount[];
     } = {};
+    let bodyFailed = false;
     try {
       await dispatcher.dispatch("navigate", {
         tab_id: tabId,
@@ -1251,13 +1358,20 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
         allowed_origins: REVOLUT_ALLOWED_ORIGINS,
       });
       responses = Array.isArray(drained.responses) ? drained.responses : [];
+    } catch (error) {
+      bodyFailed = true;
+      throw error;
     } finally {
-      await dispatcher
-        .dispatch("network_intercept_stop", {
-          session_id: sessionId,
-          allowed_origins: REVOLUT_ALLOWED_ORIGINS,
-        })
-        .catch(() => undefined);
+      // Teardown failure is not swallowed: a leaked interception session would
+      // otherwise let the sync report success. But when the body already
+      // failed, that error is the one the user must act on, so a teardown
+      // failure must not replace it — `finally` would do exactly that.
+      const stop = dispatcher.dispatch("network_intercept_stop", {
+        session_id: sessionId,
+        allowed_origins: REVOLUT_ALLOWED_ORIGINS,
+      });
+      if (bodyFailed) await stop.catch(() => undefined);
+      else await stop;
     }
 
     if (!route.authed) {
@@ -1266,7 +1380,7 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
         .catch(() => undefined);
       const landedUrl = route.href || REVOLUT_INVEST_URL;
       await notifyRevolutAuthWall(dispatcher, landedUrl);
-      throw new RevolutAuthWallError(landedUrl);
+      throw new RevolutAuthWallError(landedUrl, "investment data");
     }
 
     const snapshots = parseInvestmentDomSnapshot(
@@ -1284,16 +1398,23 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
           .dispatch("focus_tab", { tab_id: tabId })
           .catch(() => undefined);
         await notifyRevolutAuthWall(dispatcher, REVOLUT_INVEST_URL);
-        throw new RevolutAuthWallError(REVOLUT_INVEST_URL);
+        throw new RevolutAuthWallError(REVOLUT_INVEST_URL, "investment data");
       }
       throw new Error(
         `Revolut Invest did not return a complete portfolio snapshot${route.ready ? "" : " before the page-loading deadline"}. No balance was stored; retry the sync.`
       );
     }
 
+    // The checkpoint carries the previous emission so a sold holding or a
+    // closed portfolio gets an explicit zeroed replacement instead of leaving
+    // its last known value standing as current forever.
+    const previousRefs =
+      ((ctx.checkpoint ?? {}) as RevolutCheckpoint).investment_refs ?? [];
     return {
-      events: investmentSnapshotsToEvents(snapshots),
-      checkpoint: {},
+      events: investmentSnapshotsToEvents(snapshots, new Date(), previousRefs),
+      checkpoint: {
+        investment_refs: investmentRefsFromSnapshots(snapshots),
+      } satisfies RevolutCheckpoint,
       metadata: {
         backend: "extension-structured-dom",
         portfolio_count: snapshots.length,

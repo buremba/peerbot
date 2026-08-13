@@ -102,6 +102,29 @@ const DRIFTED_DASHBOARD_FIXTURE = [
   "n/a",
 ].join("\n");
 
+// Progressive SPA render: both market headers are painted and each market's
+// declared position count is present, but only one ticker row has been
+// appended under each. The declared counts (3 US, 2 TR) contradict the single
+// row rendered per market, which is what distinguishes this from a portfolio
+// where the other holdings were genuinely sold.
+const PARTIAL_ROWS_DASHBOARD_FIXTURE = DASHBOARD_FIXTURE.replace(
+  "\nGLOB\nNOVA\nBIST",
+  "\nBIST"
+)
+  .replace("\nBANKX\nGOLD.S1", "\nGOLD.S1")
+  .replace(
+    "\n2,25\n$400,00\n$350,00\n$900,00\n%9,00\n-$20,00(-%2,00)\n$100,00(%12,50)",
+    ""
+  )
+  .replace(
+    "\n25\n$280,00\n$260,00\n$7.000,00\n%70,00\n$70,00(%1,00)\n$400,00(%6,00)",
+    ""
+  )
+  .replace(
+    "\n1.000\n₺3,00\n₺2,50\n₺3.000,00\n%60,00\n₺30,00(%1,00)\n₺500,00(%20,00)",
+    ""
+  );
+
 const US_ONLY_DASHBOARD_FIXTURE = [
   "Pozisyonlar",
   "ABD Hisseleri",
@@ -118,6 +141,11 @@ const US_ONLY_DASHBOARD_FIXTURE = [
   "$50,00(%1,00)",
   "$500,00(%25,00)",
 ].join("\n");
+
+const US_ONLY_WITHOUT_COUNT_FIXTURE = US_ONLY_DASHBOARD_FIXTURE.replace(
+  "\n1\n$2.100,00",
+  "\n$2.100,00"
+);
 
 describe("requireExtensionDispatcher", () => {
   test("throws when chrome_dispatcher is missing (the prod failure mode)", () => {
@@ -274,6 +302,7 @@ describe("parseMidasDashboardText (synthetic fixture)", () => {
       total_try: 0,
       positions_complete: false,
       markets_observed: [],
+      markets_complete: [],
     });
   });
 
@@ -283,6 +312,22 @@ describe("parseMidasDashboardText (synthetic fixture)", () => {
     const s = parseMidasDashboardText(DRIFTED_DASHBOARD_FIXTURE);
     expect(s.holdings.map((h) => h.symbol)).toEqual(["ACME"]);
     expect(s.holdings.every((h) => h.value > 0)).toBe(true);
+    expect(s.markets_complete).toEqual([]);
+  });
+
+  test("does not mistake a section total for an omitted position count", () => {
+    const s = parseMidasDashboardText(US_ONLY_WITHOUT_COUNT_FIXTURE);
+    expect(s.holdings).toEqual([
+      expect.objectContaining({
+        type: "US",
+        symbol: "ACME",
+        shares: 10.5,
+        price: 200,
+        value: 2_100,
+      }),
+    ]);
+    expect(s.total_usd).toBe(2_100);
+    expect(s.markets_complete).toEqual([]);
   });
 });
 
@@ -415,6 +460,29 @@ describe("MidasConnector.sync", () => {
         (event) => event.origin_id === "midas-holding-US-NOVA"
       )
     ).toEqual([]);
+  });
+
+  test("does not close omitted holdings from partially rendered markets", async () => {
+    const first = await syncWith(DASHBOARD_FIXTURE, {});
+    const second = await syncWith(
+      PARTIAL_ROWS_DASHBOARD_FIXTURE,
+      first.checkpoint
+    );
+
+    expect(
+      second.events
+        .filter((event) => event.metadata?.status === "closed")
+        .map((event) => event.origin_id)
+    ).toEqual([]);
+    expect(second.metadata).toMatchObject({
+      holdings: 2,
+      markets_complete: [],
+    });
+    expect(
+      second.checkpoint?.active_holdings
+        ?.map(({ type, symbol }) => `${type}:${symbol}`)
+        .sort()
+    ).toEqual(["TR:BANKX", "TR:GOLD.S1", "US:ACME", "US:GLOB", "US:NOVA"]);
   });
 
   test("does not close positions from an incomplete dashboard parse", async () => {

@@ -44,6 +44,12 @@ export interface MidasDashboardSnapshot {
   positions_complete: boolean;
   /** Market sections actually present in this scrape. */
   markets_observed: MidasMarket[];
+  /**
+   * Markets whose ticker labels and parsed rows match Atlas's rendered position
+   * count. Only these are safe to reconcile closures against — a header alone
+   * proves the section started rendering, not that it finished.
+   */
+  markets_complete: MidasMarket[];
 }
 
 export interface MidasHoldingIdentity {
@@ -55,8 +61,8 @@ export interface MidasHoldingIdentity {
 export interface MidasCheckpoint {
   last_run?: string;
   /**
-   * Open-position book as of the last successful sync. Markets absent from a
-   * scrape carry their previous identities forward until observed again.
+   * Open-position book as of the last successful sync. Markets absent from or
+   * incomplete in a scrape carry prior identities forward until fully rendered.
    */
   active_holdings?: MidasHoldingIdentity[];
 }
@@ -271,6 +277,8 @@ export function parseMidasDashboardText(text: string): MidasDashboardSnapshot {
   let totalUsd = 0;
   let totalTry = 0;
 
+  const completeMarkets = new Set<MidasMarket>();
+
   const readBlock = (
     tickers: string[],
     market: MidasMarket,
@@ -281,8 +289,10 @@ export function parseMidasDashboardText(text: string): MidasDashboardSnapshot {
     // Optional holdings-count line: advance past it when the current line is a
     // bare positive integer, otherwise treat the current line as the section total.
     const countRaw = lines[currentIdx];
-    const count = Number.parseInt(countRaw.replace(/[^\d]/g, ""), 10);
-    if (Number.isFinite(count) && count > 0) {
+    const declaredCount = /^[1-9]\d*$/.test(countRaw)
+      ? Number.parseInt(countRaw, 10)
+      : null;
+    if (declaredCount !== null) {
       currentIdx += 1;
     }
 
@@ -292,6 +302,7 @@ export function parseMidasDashboardText(text: string): MidasDashboardSnapshot {
     // Section daily return + total return (not per-holding).
     currentIdx += SECTION_SUMMARY_LINES;
 
+    const holdingsBefore = holdings.length;
     for (const symbol of tickers) {
       if (currentIdx + HOLDING_ROW_LINES - 1 >= lines.length) break;
       // Reject drifted layouts: a real row has numeric shares/price/value.
@@ -319,6 +330,12 @@ export function parseMidasDashboardText(text: string): MidasDashboardSnapshot {
       });
       currentIdx += HOLDING_ROW_LINES;
     }
+    if (
+      declaredCount === tickers.length &&
+      holdings.length - holdingsBefore === tickers.length
+    ) {
+      completeMarkets.add(market);
+    }
     return total;
   };
 
@@ -335,6 +352,10 @@ export function parseMidasDashboardText(text: string): MidasDashboardSnapshot {
     markets_observed: [
       ...(usStartIdx !== -1 ? (["US"] as const) : []),
       ...(trStartIdx !== -1 ? (["TR"] as const) : []),
+    ],
+    markets_complete: [
+      ...(completeMarkets.has("US") ? (["US"] as const) : []),
+      ...(completeMarkets.has("TR") ? (["TR"] as const) : []),
     ],
   };
 }
@@ -480,7 +501,7 @@ export default class MidasConnector extends ConnectorRuntime<MidasCheckpoint> {
     name: "Midas",
     description:
       "Syncs Midas portfolio holdings via the Owletto Chrome extension.",
-    version: "1.0.3",
+    version: "1.0.4",
     faviconDomain: "atlas.getmidas.com",
     authSchema: {
       methods: [{ type: "none" }],
@@ -616,20 +637,22 @@ export default class MidasConnector extends ConnectorRuntime<MidasCheckpoint> {
       ({ type, symbol, currency }) => ({ type, symbol, currency })
     );
     const previousHoldings = checkpointHoldings(ctx.checkpoint);
-    const observedMarkets = new Set(snapshot.markets_observed);
+    const completeMarkets = new Set(snapshot.markets_complete);
     const currentOrigins = new Set(activeHoldings.map(holdingOriginId));
     const closedEvents = previousHoldings
       .filter(
         (holding) =>
-          observedMarkets.has(holding.type) &&
+          completeMarkets.has(holding.type) &&
           !currentOrigins.has(holdingOriginId(holding))
       )
       .map((holding) => closedHoldingToEvent(holding, occurredAt));
-    // A missing market section is ambiguous: it can mean an empty market or a
-    // partially rendered SPA. Preserve that market's checkpoint identities and
-    // emit no closures until a later scrape explicitly observes the section.
-    const unobservedHoldings = previousHoldings.filter(
-      (holding) => !observedMarkets.has(holding.type)
+    // A missing market may be empty or not rendered yet; a present market short
+    // of its declared count cannot prove omitted holdings are closed. Preserve
+    // prior identities not present until a later scrape renders the full market.
+    const preservedHoldings = previousHoldings.filter(
+      (holding) =>
+        !completeMarkets.has(holding.type) &&
+        !currentOrigins.has(holdingOriginId(holding))
     );
     const events: EventEnvelope[] = [
       ...snapshot.holdings.map((h) => holdingToEvent(h, occurredAt)),
@@ -639,7 +662,7 @@ export default class MidasConnector extends ConnectorRuntime<MidasCheckpoint> {
 
     const checkpoint: MidasCheckpoint = {
       last_run: occurredAt.toISOString(),
-      active_holdings: [...activeHoldings, ...unobservedHoldings],
+      active_holdings: [...activeHoldings, ...preservedHoldings],
     };
 
     return {
@@ -650,6 +673,7 @@ export default class MidasConnector extends ConnectorRuntime<MidasCheckpoint> {
         holdings: snapshot.holdings.length,
         holdings_closed: closedEvents.length,
         markets_observed: snapshot.markets_observed,
+        markets_complete: snapshot.markets_complete,
         total_usd: snapshot.total_usd,
         total_try: snapshot.total_try,
         backend: "extension-dom",

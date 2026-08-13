@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentConnectionStore, StoredConnection } from "@lobu/core";
 import { createLogger, getErrorMessage, isSecretRef } from "@lobu/core";
 import { type AdapterPostableMessage, Chat } from "chat";
+import { verifyAtlassianWebhookAuthorization } from "../../connect/atlassian-webhook-auth.js";
 import { resolveConnectionWebhookConfig } from "../../connect/webhook-registration.js";
 import { getDb } from "../../db/client.js";
 import { orgContext, tryGetOrgId } from "../../lobu/stores/org-context.js";
@@ -1320,6 +1321,12 @@ export class ChatInstanceManager {
                 }
               : bridged.structuredWebhook === "jira_mcp"
                 ? {
+                    verifyBearerToken: (token: string) =>
+                      verifyAtlassianWebhookAuthorization({
+                        organizationId: bridged.stored.organizationId!,
+                        connectionConfig: bridged.connectionConfig,
+                        token,
+                      }),
                     handleInsteadOfPersist: async ({
                       rawBody,
                       organizationId,
@@ -1393,6 +1400,7 @@ export class ChatInstanceManager {
     stored: StoredConnection;
     connectorKey: string;
     structuredWebhook: "jira_mcp" | null;
+    connectionConfig: Record<string, unknown>;
   } | null> {
     // Connector connection ids are bigints; a non-numeric id can't match.
     if (!/^\d+$/.test(connectionId)) return null;
@@ -1448,6 +1456,7 @@ export class ChatInstanceManager {
       structuredWebhook: isAtlassianMcpConfig(row.mcp_config)
         ? "jira_mcp"
         : null,
+      connectionConfig: row.config ?? {},
     };
   }
 

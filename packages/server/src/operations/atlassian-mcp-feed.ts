@@ -61,7 +61,7 @@ export const ATLASSIAN_MCP_FEEDS = {
 					minimum: 1,
 					maximum: 100,
 					description:
-						"Optional cap on issues returned per virtual-feed read. The uncapped default request size is 50.",
+						"Page size per Rovo search request (default min(limit, 50), max 100).",
 				},
 			},
 		},

@@ -1,0 +1,11 @@
+{
+  "name": "lobu",
+  "description": "Give Claude shared, permission-aware company context, durable organizational memory, and governed actions through Lobu MCP.",
+  "author": {
+    "name": "Lobu"
+  },
+  "homepage": "https://lobu.ai",
+  "repository": "https://github.com/lobu-ai/lobu",
+  "license": "Apache-2.0",
+  "version": "0.1.0"
+}

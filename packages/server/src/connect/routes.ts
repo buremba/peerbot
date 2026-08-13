@@ -45,6 +45,7 @@ import { mergeOAuthScopeAuthData, normalizeScopeList } from '../auth/oauth/scope
 import { createSyncRun, describeSyncRunSkip } from '../runs/queue-service';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 import { buildConnectionsUrl, getOrganizationSlug, getPublicWebUrl } from '../utils/url-builder';
+import { isAtlassianMcpConfig } from '../operations/atlassian-mcp-feed';
 import {
   jiraSiteConfigPatch,
   resolveJiraCloudSite,
@@ -735,7 +736,18 @@ async function handleOAuthCallback(
   // discovery failure or a multi-site grant does not fail OAuth; an ambiguous
   // connection must set config.cloud_id before its first Jira read.
   let jiraSite: JiraCloudSite | null = null;
-  if (tokenRow.connector_key === 'jira') {
+  const [mcpDefinition] = (await sql`
+    SELECT mcp_config
+    FROM connector_definitions
+    WHERE key = ${tokenRow.connector_key}
+      AND organization_id = ${tokenRow.organization_id}
+      AND status = 'active'
+    LIMIT 1
+  `) as Array<{ mcp_config: Record<string, unknown> | null }>;
+  if (
+    tokenRow.connector_key === 'jira' ||
+    isAtlassianMcpConfig(mcpDefinition?.mcp_config)
+  ) {
     jiraSite = await resolveJiraCloudSite(tokens.accessToken);
     if (jiraSite) {
       logger.info(

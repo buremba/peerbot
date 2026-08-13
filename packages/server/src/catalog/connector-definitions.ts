@@ -30,6 +30,10 @@ import {
 } from "../utils/ensure-connector-installed";
 import logger from "../utils/logger";
 import { listCatalogEntries } from "./load";
+import {
+	ATLASSIAN_MCP_FEEDS,
+	isAtlassianMcpUrl,
+} from "../operations/atlassian-mcp-feed";
 
 type AuthSchema =
 	| { methods?: Array<Record<string, unknown>> }
@@ -289,7 +293,7 @@ export async function installConnectorFromMcpUrl(params: {
 		version: probed.serverInfo.version || "0.0.0",
 		authSchema,
 		webhook: null,
-		feeds: null,
+		feeds: isAtlassianMcpUrl(params.mcpUrl) ? ATLASSIAN_MCP_FEEDS : null,
 		actions: null,
 		behaviorEvents: null,
 		optionsSchema: null,

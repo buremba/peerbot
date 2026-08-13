@@ -478,6 +478,11 @@ export default async function runNetWorthSnapshot(
          AND semantic_type = 'financial_asset'
          AND origin_id LIKE 'midas-holding-%'
          AND run_id = ${midasRunId}
+         -- A closed row is a tombstone for a holding that no longer exists:
+         -- shares/price/value are zeroed, which normalization below rejects as
+         -- invalid. It contributes nothing to net worth, so exclude it here
+         -- rather than let one disappeared holding fail the whole valuation.
+         AND COALESCE(metadata->>'status', 'active') <> 'closed'
        ORDER BY origin_id, id
        LIMIT ${MIDAS_HOLDING_PAGE_SIZE}
        OFFSET ${holdings.length}`

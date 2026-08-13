@@ -258,6 +258,83 @@ describe("weekly net-worth reaction", () => {
     expect(notified).toHaveLength(1);
   });
 
+  test("excludes closed holdings from the cohort so one sale cannot fail the valuation", async () => {
+    const closed = holding("NOVA", 0, {
+      shares: 0,
+      price: 0,
+      avg_cost: 0,
+      value: 0,
+      status: "closed",
+    });
+    // Stands in for Postgres: the row is withheld only if the SQL actually
+    // filters it out. Drop the exclusion from the query and the closed row
+    // reaches normalization, which rejects shares <= 0 and throws.
+    const client = {
+      query: async (sql: string) => {
+        if (sql.includes("midas-balance")) return [balance];
+        const rows = [holding("AAPL", 200), closed];
+        return sql.includes("<> 'closed'")
+          ? rows.filter((row) => row.metadata.status !== "closed")
+          : rows;
+      },
+      connections: {
+        list: async () => ({
+          connections: [
+            {
+              id: 77,
+              slug: "market-quotes",
+              connector_key: "market.quotes",
+              status: "active",
+            },
+          ],
+        }),
+      },
+      operations: {
+        execute: async () => ({
+          status: "completed",
+          output: {
+            quotes: [
+              {
+                status: "quoted",
+                id: "US:AAPL",
+                market: "US",
+                symbol: "AAPL",
+                provider_symbol: "AAPL",
+                provider: "yahoo",
+                price: 250,
+                currency: "USD",
+                as_of: "2026-08-12T08:58:00.000Z",
+                stale: false,
+                tier: "delayed",
+              },
+            ],
+          },
+        }),
+      },
+      knowledge: {
+        save: async () => ({ id: 501, created: true, metadata: {} }),
+      },
+      notifications: {
+        send: async () => ({ notified_count: 1, event_id: 502, url: null }),
+      },
+      log: () => undefined,
+    } as unknown as ReactionClient;
+
+    await runNetWorthSnapshot(ctx, client);
+  });
+
+  test("a closed holding reaching normalization is rejected", () => {
+    // Why the SQL exclusion above is load-bearing rather than cosmetic.
+    expect(() =>
+      buildMidasSnapshot(
+        balance,
+        [holding("NOVA", 0, { shares: 0, price: 0, value: 0 })],
+        [],
+        ctx.window.window_end
+      )
+    ).toThrow(/invalid shares/);
+  });
+
   test("notifies from the persisted snapshot after an idempotent save replay", async () => {
     const persistedSnapshot = buildMidasSnapshot(
       balance,

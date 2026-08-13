@@ -426,35 +426,19 @@ describe("MidasConnector.sync", () => {
     ).toEqual([]);
   });
 
-  test("closes the last remaining holdings when the portfolio empties out", async () => {
+  // A header-only render and a genuinely empty portfolio are indistinguishable
+  // here: the readiness probe returns on the FIRST marker, so headers can paint
+  // before ticker rows exist. Both produce zero holdings and zero totals. We
+  // fail closed rather than report every live holding as sold.
+  test("refuses to close anything when the dashboard renders no positions", async () => {
     const first = await syncWith(DASHBOARD_FIXTURE, {});
-    const opened = first.events
-      .filter((event) => event.metadata?.status === "active")
-      .map((event) => event.origin_id)
-      .sort();
+    const opened = first.events.filter(
+      (event) => event.metadata?.status === "active"
+    );
     expect(opened.length).toBeGreaterThan(0);
 
-    const second = await syncWith(EMPTY_DASHBOARD_FIXTURE, first.checkpoint);
-
-    // Selling the final position is the one transition that must not be lost:
-    // with no replacement row every holding stays "active" forever.
-    expect(
-      second.events
-        .filter((event) => event.metadata?.status === "closed")
-        .map((event) => event.origin_id)
-        .sort()
-    ).toEqual(opened);
-    expect(second.checkpoint?.active_holdings).toEqual([]);
-
-    const third = await syncWith(EMPTY_DASHBOARD_FIXTURE, second.checkpoint);
-    expect(
-      third.events.filter((event) => event.metadata?.status === "closed")
-    ).toEqual([]);
-  });
-
-  test("still fails closed when no market section rendered at all", async () => {
     await expect(
-      syncWith("Pozisyonlar\nsomething else entirely", {})
+      syncWith(EMPTY_DASHBOARD_FIXTURE, first.checkpoint)
     ).rejects.toThrow(/no holdings or totals found/);
   });
 

@@ -584,21 +584,20 @@ export default class MidasConnector extends ConnectorRuntime<MidasCheckpoint> {
     const bodyText = textObs.value ?? "";
     const snapshot = parseMidasDashboardText(bodyText);
 
-    // A confirmed-empty portfolio and a failed parse both yield zero holdings
-    // and zero totals, but they are not the same event and must not share an
-    // outcome. Selling the last position is precisely when a closure matters
-    // most: throw here and the final holdings stay active forever.
-    //
-    // `markets_observed` separates them structurally. It is non-empty only when
-    // a section header was actually found, so an empty portfolio still reports
-    // both markets while a soft logout or a renamed UI reports neither. Rows
-    // that rendered but failed to parse are caught by the `positions_complete`
-    // check below, which still refuses to emit closures.
+    // KNOWN LIMITATION: selling the *last* holding lands here and throws, so
+    // the final positions are never closed. That is deliberate. A rendered
+    // section header is not proof of an empty market — the readiness probe
+    // above returns as soon as ANY marker appears, so a dashboard whose headers
+    // painted before its ticker rows did is indistinguishable from a genuinely
+    // empty portfolio: both yield zero holdings, zero totals, and
+    // positions_complete === true. Closing on that signal would mark live
+    // holdings as sold and corrupt net worth, which is strictly worse than
+    // leaving one stale row. Resolving it needs the real Atlas empty-state
+    // markup, which we cannot observe without a live session.
     if (
       snapshot.holdings.length === 0 &&
       snapshot.total_usd === 0 &&
-      snapshot.total_try === 0 &&
-      snapshot.markets_observed.length === 0
+      snapshot.total_try === 0
     ) {
       // Empty portfolio is rare; more often the UI language/layout changed or
       // the session is soft-logged-out without a hard redirect.

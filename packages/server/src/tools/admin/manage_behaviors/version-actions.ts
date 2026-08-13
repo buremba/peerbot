@@ -58,7 +58,7 @@ export async function handleCreateVersion(
   const sql = getDb();
 
   if (!args.behavior_id) {
-    throw new Error('behavior_id is required for create_version action');
+    throw new ToolUserError('behavior_id is required for create_version action', 400);
   }
 
   // Get current watcher + resolve the group root. Versioned config
@@ -74,7 +74,7 @@ export async function handleCreateVersion(
     FROM watchers i WHERE i.id = ${args.behavior_id}
   `;
   if (watcherRows.length === 0) {
-    throw new Error(`Behavior ${args.behavior_id} not found`);
+    throw new ToolUserError(`Behavior ${args.behavior_id} not found`, 404);
   }
 
   const groupId = Number(watcherRows[0].watcher_group_id);
@@ -451,14 +451,14 @@ export async function handleGetVersions(args: ManageBehaviorsArgs): Promise<{
   const sql = getDb();
 
   if (!args.behavior_id) {
-    throw new Error('behavior_id is required for get_versions action');
+    throw new ToolUserError('behavior_id is required for get_versions action', 400);
   }
 
   const watcherRows = await sql`
     SELECT id, name, slug, current_version_id, watcher_group_id FROM watchers WHERE id = ${args.behavior_id}
   `;
   if (watcherRows.length === 0) {
-    throw new Error(`Behavior ${args.behavior_id} not found`);
+    throw new ToolUserError(`Behavior ${args.behavior_id} not found`, 404);
   }
 
   const currentVersionId = watcherRows[0].current_version_id;
@@ -514,7 +514,7 @@ export async function handleGetVersionDetails(
   const sql = getDb();
 
   if (!args.behavior_id) {
-    throw new Error('behavior_id is required for get_version_details action');
+    throw new ToolUserError('behavior_id is required for get_version_details action', 400);
   }
 
   // Version rows live on the group root while sources live on the assignment.
@@ -524,7 +524,7 @@ export async function handleGetVersionDetails(
     FROM watchers WHERE id = ${args.behavior_id}
   `;
   if (watcherRows.length === 0) {
-    throw new Error(`Behavior ${args.behavior_id} not found`);
+    throw new ToolUserError(`Behavior ${args.behavior_id} not found`, 404);
   }
   const groupId = Number(watcherRows[0].watcher_group_id ?? watcherRows[0].id);
 

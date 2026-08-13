@@ -259,11 +259,11 @@ async function handleCreate(
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
 	if (!args.entity_type) {
-		throw new Error("entity_type is required for create action");
+		throw new ToolUserError("entity_type is required for create action", 400);
 	}
 
 	if (!args.name) {
-		throw new Error("name is required for create action");
+		throw new ToolUserError("name is required for create action", 400);
 	}
 
 	// (Derived-type rejection lives in createEntity — the single chokepoint that
@@ -425,7 +425,7 @@ async function handleUpdate(
     WHERE e.id = ${entityId} AND e.deleted_at IS NULL
   `;
 	if (beforeRows.length === 0) {
-		throw new Error(`Entity with ID ${entityId} not found`);
+		throw new ToolUserError(`Entity with ID ${entityId} not found`, 404);
 	}
 	const before = beforeRows[0];
 
@@ -1272,7 +1272,7 @@ async function handleGet(
 	const entity = await getEntity(entityId, env, ctx, { includeDeleted });
 
 	if (!entity) {
-		throw new Error(`Entity with ID ${entityId} not found`);
+		throw new ToolUserError(`Entity with ID ${entityId} not found`, 404);
 	}
 
 	await assertEntityReadAllowed(undefined, ctx, entity.entity_type);
@@ -1332,7 +1332,7 @@ async function handleDelete(
 	// Get entity info before deletion
 	const entity = await getEntity(entityId, env, ctx);
 	if (!entity) {
-		throw new Error(`Entity with ID ${entityId} not found`);
+		throw new ToolUserError(`Entity with ID ${entityId} not found`, 404);
 	}
 
 	const deleteActor = await actingPrincipalFor(args, ctx);
@@ -1573,7 +1573,7 @@ async function handleUnlink(
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
 	if (!args.relationship_id)
-		throw new Error("relationship_id is required for unlink");
+		throw new ToolUserError("relationship_id is required for unlink", 400);
 
   const sql = getDb();
 
@@ -1583,7 +1583,7 @@ async function handleUnlink(
     LIMIT 1
   `;
 	if (existing.length === 0) {
-		throw new Error(`Relationship ${args.relationship_id} not found`);
+		throw new ToolUserError(`Relationship ${args.relationship_id} not found`, 404);
 	}
 	if (String(existing[0].organization_id) !== ctx.organizationId) {
 		throw new Error(
@@ -1609,7 +1609,7 @@ async function handleUpdateLink(
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
 	if (!args.relationship_id)
-		throw new Error("relationship_id is required for update_link");
+		throw new ToolUserError("relationship_id is required for update_link", 400);
 
   const sql = getDb();
 
@@ -1619,7 +1619,7 @@ async function handleUpdateLink(
     LIMIT 1
   `;
 	if (existing.length === 0) {
-		throw new Error(`Relationship ${args.relationship_id} not found`);
+		throw new ToolUserError(`Relationship ${args.relationship_id} not found`, 404);
 	}
 	if (String(existing[0].organization_id) !== ctx.organizationId) {
 		throw new Error(

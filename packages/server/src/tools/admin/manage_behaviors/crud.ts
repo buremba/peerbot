@@ -360,7 +360,7 @@ export async function handleCreate(
       // 4. Auto-create classifiers (entity-level only)
       if (entityId && classifiers && Array.isArray(classifiers) && classifiers.length > 0) {
         if (!ctx.userId) {
-          throw new Error('Authenticated user is required to create Behavior classifiers');
+          throw new ToolUserError('Authenticated user is required to create Behavior classifiers', 403);
         }
 
         await createClassifiersForWatcher(tx, watcherId as number, entityId, classifiers as any[], {
@@ -475,7 +475,7 @@ export async function handleUpdate(
   const sql = getDb();
 
   if (!args.behavior_id) {
-    throw new Error('behavior_id is required for update action');
+    throw new ToolUserError('behavior_id is required for update action', 400);
   }
   assertValidExecutionConfig(args.execution_config, ctx);
   // Re-pinning to a device targets that device owner's machine — validate the
@@ -659,7 +659,7 @@ export async function handleDelete(
   const sql = getDb();
 
   if (!args.behavior_ids || args.behavior_ids.length === 0) {
-    throw new Error('behavior_ids is required and cannot be empty');
+    throw new ToolUserError('behavior_ids is required and cannot be empty', 400);
   }
 
   const results: WatcherOperationResult[] = [];
@@ -763,9 +763,9 @@ export async function handleCreateFromVersion(
 }> {
   const sql = getDb();
 
-  if (!args.version_id) throw new Error('version_id is required for create_from_version');
+  if (!args.version_id) throw new ToolUserError('version_id is required for create_from_version', 400);
   if (!args.entity_ids || args.entity_ids.length === 0) {
-    throw new Error('entity_ids is required for create_from_version');
+    throw new ToolUserError('entity_ids is required for create_from_version', 400);
   }
   // Bind the narrowed value: the transaction closure below re-widens
   // `args.entity_ids` back to `number[] | undefined`, losing this guard.
@@ -787,7 +787,7 @@ export async function handleCreateFromVersion(
     WHERE wv.id = ${args.version_id}
     LIMIT 1
   `;
-  if (versionRows.length === 0) throw new Error(`Version ${args.version_id} not found`);
+  if (versionRows.length === 0) throw new ToolUserError(`Version ${args.version_id} not found`, 404);
   const version = versionRows[0];
   const organizationId = version.organization_id as string;
   if (!organizationId || organizationId !== ctx.organizationId) {
@@ -883,7 +883,7 @@ export async function handleCreateFromVersion(
     await sql.begin(async (tx) => {
       for (const entityId of entityIds) {
         const entity = entityMap.get(entityId);
-        if (!entity) throw new Error(`Entity ${entityId} not found`);
+        if (!entity) throw new ToolUserError(`Entity ${entityId} not found`, 404);
 
         const namePattern = args.name_pattern ?? `${version.name}: {{entity_name}}`;
         const watcherName = namePattern.replace(/\{\{entity_name\}\}/g, entity.name as string);

@@ -253,7 +253,7 @@ async function resolveVirtualFeedId(ref: string, scope: AuthzScope): Promise<num
     [scope.organizationId, connectionSlug, feedKey],
   )) as unknown as Array<{ id: number }>;
   if (rows.length === 0) {
-    throw new Error(`virtual feed '${ref}' not found or not accessible`);
+    throw new ToolUserError(`virtual feed '${ref}' not found or not accessible`, 404);
   }
   return rows[0].id;
 }

@@ -70,7 +70,7 @@ import { withValidatedArgs } from './validate-args';
 // ============================================
 
 export const GetBehaviorSchema = Type.Object({
-  behavior_id: Type.String({ description: 'Behavior ID to query' }),
+  behavior_id: Type.Number({ description: 'Behavior ID to query' }),
   entity_id: Type.Optional(
     Type.Number({
       description: 'Optional entity ID for access validation and URL context',
@@ -266,7 +266,7 @@ function parseWatcherSources(value: unknown): WatcherSource[] {
 
 async function requireWatcherReadAccess(
   sql: DbClient,
-  watcherId: string,
+  watcherId: string | number,
   ctx: ToolContext
 ): Promise<void> {
   const rows = await sql`

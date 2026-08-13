@@ -31,6 +31,7 @@ import { nextRunAt } from "../utils/cron";
 import { ensureCanvasEntity, findCanvasHead } from "../utils/canvas-events";
 import { insertEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
+import { ToolUserError } from "../utils/errors";
 import { isUniqueViolation } from "../utils/pg-errors";
 import { classifyRunOutcome } from "../runs/run-outcome";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
@@ -369,7 +370,7 @@ export async function enqueueWatcherRunForWatcher(
 	const watcher = await loadWatcherForAutomation(sql, watcherId);
 
 	if (!watcher) {
-		throw new Error(`Behavior ${watcherId} not found.`);
+		throw new ToolUserError(`Behavior ${watcherId} not found.`, 404);
 	}
 
 	return enqueueWatcherRunForRecord(sql, watcher, dispatchSource);

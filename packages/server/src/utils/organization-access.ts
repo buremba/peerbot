@@ -151,7 +151,7 @@ async function canReadOrg(sql: DbClient, ctx: ToolContext): Promise<boolean> {
 export async function requireOrgReadAccess(sql: DbClient, ctx: ToolContext): Promise<void> {
   const ok = await canReadOrg(sql, ctx);
   if (!ok) {
-    throw new Error('Access denied: organization-level read access is required');
+    throw new ToolUserError('Access denied: organization-level read access is required', 403);
   }
 }
 
@@ -161,6 +161,6 @@ export async function requireOrgReadAccess(sql: DbClient, ctx: ToolContext): Pro
 export async function requireOrgWriteAccess(sql: DbClient, ctx: ToolContext): Promise<void> {
   const ok = await canWriteOrg(sql, ctx);
   if (!ok) {
-    throw new Error('Access denied: organization-level write access is required');
+    throw new ToolUserError('Access denied: organization-level write access is required', 403);
   }
 }

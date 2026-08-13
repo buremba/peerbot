@@ -166,7 +166,7 @@ function restErrorResponse(
  */
 export async function restGetBehaviors(c: Context<{ Bindings: Env }>) {
 	try {
-		const behaviorId = c.req.query("behavior_id");
+		const behaviorId = safeParseInt(c.req.query("behavior_id"), { min: 1 });
 		const entityId = safeParseInt(c.req.query("entity_id"), { min: 1 });
 
 		if (!behaviorId) {
@@ -211,7 +211,7 @@ export async function restGetBehaviors(c: Context<{ Bindings: Env }>) {
 
 export async function publicRestGetBehaviors(c: Context<{ Bindings: Env }>) {
 	return withPublicOrg(c, async (organizationId) => {
-		const behaviorId = c.req.query("behavior_id");
+		const behaviorId = safeParseInt(c.req.query("behavior_id"), { min: 1 });
 		const entityId = safeParseInt(c.req.query("entity_id"), { min: 1 });
 		const ctx = publicToolContext(c.req.url, organizationId);
 		const detailRequested =

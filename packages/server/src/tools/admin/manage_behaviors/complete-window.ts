@@ -474,8 +474,9 @@ export async function handleCompleteWindow(
   const batchContentIds = [...new Set(perTokenIds.flat())];
   const summedContentCount = perTokenIds.reduce((sum, ids) => sum + ids.length, 0);
   if (batchContentIds.length !== summedContentCount) {
-    throw new Error(
-      'window_tokens contain overlapping content IDs. Pass each read_knowledge page token once.'
+    throw new ToolUserError(
+      'window_tokens contain overlapping content IDs. Pass each read_knowledge page token once.',
+      409
     );
   }
 

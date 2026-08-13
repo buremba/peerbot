@@ -363,7 +363,7 @@ export async function fingerprintWatcherSources(args: {
     LIMIT 1
   `;
   const row = rows[0];
-  if (!row) throw new Error(`Behavior ${args.watcherId} not found`);
+  if (!row) throw new ToolUserError(`Behavior ${args.watcherId} not found`, 404);
   const versionSources = parseJson(row.version_sources) || [];
   const sources = (
     versionSources.length > 0 ? versionSources : parseJson(row.sources) || []
@@ -458,7 +458,7 @@ export async function handleBehaviorMode(
   `;
 
   if (watcherResult.length === 0) {
-    throw new Error(`Behavior ${watcherId} not found`);
+    throw new ToolUserError(`Behavior ${watcherId} not found`, 404);
   }
 
   const watcher = watcherResult[0];

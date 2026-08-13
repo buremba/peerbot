@@ -13,9 +13,9 @@ import { type AgentErrorCtaResolvers, renderAgentError } from "../url-builder";
 
 const SETTINGS_URL = "https://app.lobu.ai/acme/agents/agent-1/settings";
 const CONNECT_URL =
-  "https://app.lobu.ai/acme/connectors/inference-provider%3Az-ai?reason=model_provider_not_connected";
+  "https://app.lobu.ai/acme/connectors/inference-provider%3Anvidia?reason=model_provider_not_connected";
 const MANAGE_URL =
-  "https://app.lobu.ai/acme/connectors/inference-provider%3Az-ai?model=glm-5.2";
+  "https://app.lobu.ai/acme/connectors/inference-provider%3Anvidia?model=nvidia/moonshotai/kimi-k2.6";
 
 // Distinct resolvers per CTA kind, so a test can assert that a code routes to
 // the RIGHT page (pick-a-model vs connect-a-provider), not just "some url".
@@ -167,9 +167,9 @@ describe("provider error bodies are labelled and unwrapped", () => {
       AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED,
       plain,
       resolvers,
-      { provider: "z-ai" }
+      { provider: "nvidia" }
     );
-    expect(r.text).toBe(`z.ai returned an error:\n${plain}`);
+    expect(r.text).toBe(`NVIDIA NIM returned an error:\n${plain}`);
   });
 
   it("falls back to the raw body when no provider is known", async () => {

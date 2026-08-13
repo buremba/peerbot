@@ -4,7 +4,6 @@ const PROVIDER_API_KEY_ENV_VARS: Record<string, string> = {
   google: "GOOGLE_API_KEY",
   mistral: "MISTRAL_API_KEY",
   anthropic: "ANTHROPIC_API_KEY",
-  "z-ai": "Z_AI_API_KEY",
 };
 
 function sanitizeProviderToken(value: string): string {
@@ -42,9 +41,9 @@ export function getProviderAuthHintFromError(
     return null;
   }
 
-  // Prefer the caller-supplied canonical provider name (e.g. gateway slug
-  // "z-ai") over a name extracted from the error string, because upstream
-  // libraries may use internal aliases (e.g. the model registry says "zai").
+  // Prefer the caller-supplied canonical provider name (e.g. gateway slug)
+  // over a name extracted from the error string, because upstream
+  // libraries may use internal aliases.
   // Fall back to regex extraction only when the caller has no context.
   const fallbackProvider = defaultProvider?.trim().toLowerCase() || undefined;
   const explicitProviderMatch = errorMessage.match(

@@ -206,7 +206,6 @@ export interface AgentErrorCtaResolvers {
  */
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   chatgpt: 'ChatGPT',
-  'z-ai': 'z.ai',
   'together-ai': 'Together AI',
   nvidia: 'NVIDIA NIM',
   fireworks: 'Fireworks AI',

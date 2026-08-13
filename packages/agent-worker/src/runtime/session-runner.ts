@@ -810,7 +810,7 @@ export async function runAISession(
     defaultProviderSlug: pc.defaultProviderSlug,
     installedProviderRoutes: pc.installedProviderRoutes,
   });
-  // Map gateway slug to model-registry provider name (e.g. "z-ai" → "zai")
+  // Map gateway slug to model-registry provider name (PROVIDER_REGISTRY_ALIASES)
   const provider = PROVIDER_REGISTRY_ALIASES[rawProvider] || rawProvider;
   onModelResolved(provider, modelId, providerSlug);
 
@@ -918,7 +918,7 @@ export async function runAISession(
         );
       }
     } else if (registryProvider === "openai" || rawProvider !== provider) {
-      // OpenAI-compatible (openai, nvidia, together-ai, z.ai, …) or any org BYO
+      // OpenAI-compatible (openai, nvidia, together-ai, …) or any org BYO
       // provider whose slug differs from its registry alias. Resolve the pi-ai
       // adapter from the provider's protocol; default to openai-completions.
       const api = resolveDynamicModelApi(rawProvider, registryProvider);
@@ -951,7 +951,7 @@ export async function runAISession(
     : baseModel;
 
   // Defensive: any `openai-completions` model whose baseUrl is not real
-  // OpenAI is a third-party compat endpoint (Gemini, Nvidia, Together, z.ai,
+  // OpenAI is a third-party compat endpoint (Gemini, Nvidia, Together,
   // etc.). These reject unknown fields and 400 with "Unknown name 'store'"
   // if pi-ai sends `store: false`. Force it off regardless of whether the
   // model came from the static registry or the dynamic fallback above.
@@ -1128,8 +1128,8 @@ export async function runAISession(
     authStorage.setRuntimeApiKey(provider, credValue);
     logger.info(`Set runtime API key for ${provider}`);
   } else {
-    // Look up the env var by the canonical gateway slug (e.g. "z-ai" → Z_AI_API_KEY),
-    // not the model-registry alias (e.g. "zai" → ZAI_API_KEY which nobody sets).
+    // Look up the env var by the canonical gateway slug (e.g. "gemini" → GEMINI_API_KEY),
+    // not the model-registry alias.
     const fallbackEnvVar = getApiKeyEnvVarForProvider(rawProvider);
     const fallbackValue =
       credentialStore.get(fallbackEnvVar) || process.env[fallbackEnvVar];

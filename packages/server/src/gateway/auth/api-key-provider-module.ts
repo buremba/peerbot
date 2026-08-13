@@ -84,7 +84,7 @@ export class ApiKeyProviderModule extends BaseProviderModule {
    * for the literal `openai` provider. The worker reads
    * DEFAULT_PROVIDER_BASE_URL_ENV.openai === "OPENAI_BASE_URL", so openai needs
    * it under that exact key. Every OTHER sdkCompat:"openai" provider (groq,
-   * gemini, z-ai, openrouter, …) resolves its base URL through its OWN dedicated
+   * gemini, openrouter, …) resolves its base URL through its OWN dedicated
    * <PROVIDER>_BASE_URL key (super emits it; the worker reads it via
    * DEFAULT_PROVIDER_BASE_URL_ENV, or falls back to the per-run singular
    * providerBaseUrl). Emitting OPENAI_BASE_URL for those too made every

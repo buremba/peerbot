@@ -65,7 +65,7 @@ export function classifyError(error: unknown): AgentErrorCode | undefined {
   if (message === SESSION_TIMEOUT_MESSAGE)
     return AgentErrorCode.SESSION_TIMEOUT;
 
-  // Provider usage/rate limit. Covers z.ai's "429 Weekly/Monthly Limit
+  // Provider usage/rate limit. Covers "429 Weekly/Monthly Limit
   // Exhausted", generic rate-limit/quota phrasings, and a bare 429. Placed
   // before PROVIDER_AUTH because a rate-limited request can also echo auth-ish
   // words; the quota shape is the more specific, more actionable signal.

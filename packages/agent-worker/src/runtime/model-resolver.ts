@@ -51,7 +51,6 @@ export const DEFAULT_PROVIDER_BASE_URL_ENV: Record<string, string> = {
   // runtime; these stay as fallbacks for providers not in providers.json.
   gemini: "GEMINI_API_BASE_URL",
   nvidia: "NVIDIA_API_BASE_URL",
-  "z-ai": "Z_AI_API_BASE_URL",
 };
 
 /**
@@ -70,16 +69,14 @@ export const DEFAULT_PROVIDER_MODELS: Record<string, string> = {
   gemini: "gemini-2.5-flash",
   // NVIDIA's model registry uses the "organization/model" prefix format.
   nvidia: "nvidia/moonshotai/kimi-k2.6",
-  "z-ai": "glm-4.7",
 };
 
 /**
  * Map gateway provider slugs to model-registry provider names.
- * The gateway uses slugs like "z-ai" while the model registry uses "zai".
+ * The gateway uses slugs like "openai-codex" while the model registry may use
+ * a different name; this map bridges the two where they diverge.
  */
-export const PROVIDER_REGISTRY_ALIASES: Record<string, string> = {
-  "z-ai": "zai",
-};
+export const PROVIDER_REGISTRY_ALIASES: Record<string, string> = {};
 
 /**
  * Registry alias → pi-ai adapter, derived from the protocol registry. Lets the
@@ -110,7 +107,7 @@ const PIAI_API_BY_DYNAMIC_PROVIDER: Record<string, PiAiApi> = {};
  * alias cannot make this call — both protocols share the "openai" alias and
  * the alias map collapses to completions — so the adapter is keyed on the raw
  * gateway slug: real OpenAI (`rawProvider === "openai"`) gets responses, while
- * every third-party openai-compatible endpoint (groq, z-ai, gemini, nvidia,
+ * every third-party openai-compatible endpoint (groq, gemini, nvidia,
  * together-ai, org BYO providers, …) keeps completions.
  */
 export function resolveDynamicModelApi(
@@ -189,7 +186,7 @@ interface DynamicModel {
 
 /**
  * Build a dynamic model entry for a config-driven provider whose model isn't in
- * pi-ai's static registry (gemini, nvidia, together-ai, z.ai, org BYO providers,
+ * pi-ai's static registry (gemini, nvidia, together-ai, org BYO providers,
  * …). The `api` selects the pi-ai adapter that speaks the provider's protocol —
  * defaults to openai-completions for the common OpenAI-compatible case.
  *
@@ -281,7 +278,7 @@ export function resolveModelRef(
   }
 
   // An explicit "<provider>/<model>" ref selects its own provider — a Behavior
-  // running on z-ai while its base agent uses Claude, or simply an agent pinned
+  // pinned to a provider the base agent does not use, or simply an agent pinned
   // to a provider the deployment does not publish as its default. `defaultProvider`
   // is a deployment-level fact and the ref is a run-level one, so the ref wins;
   // its Lobu ID is routed to the upstream runtime slug (claude → anthropic).
@@ -344,9 +341,9 @@ export function resolveModelRef(
       }
     }
     // Then strip a redundant leading "<configured-provider>/" self-prefix. Lobu
-    // names models "provider/model" ("z-ai/glm-4.7"), but the upstream
-    // provider's own namespace is the bare code ("glm-4.7") — shipping the Lobu
-    // prefix makes z.ai (and other sdkCompat:openai providers) 400 "Unknown
+    // names models "provider/model" ("nvidia/…"), but the upstream
+    // provider's own namespace is the bare code — shipping the Lobu
+    // prefix makes sdkCompat:openai providers 400 "Unknown
     // Model". Only the configured provider's OWN id is stripped, so a foreign
     // namespace slug (OpenRouter's "anthropic/claude-sonnet-4") stays intact.
     // Runs after the auto-resolution above so a prefixed default is covered too.

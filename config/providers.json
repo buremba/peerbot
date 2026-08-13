@@ -172,25 +172,6 @@
       ]
     },
     {
-      "id": "z-ai",
-      "name": "z.ai",
-      "description": "z.ai coding and reasoning models",
-      "providers": [
-        {
-          "displayName": "z.ai",
-          "iconUrl": "https://www.google.com/s2/favicons?domain=z.ai&sz=128",
-          "envVarName": "Z_AI_API_KEY",
-          "upstreamBaseUrl": "https://api.z.ai/api/coding/paas/v4",
-          "apiKeyInstructions": "Get your API key from <a href=\"https://z.ai/manage-apikey/apikey-list\" target=\"_blank\" class=\"text-blue-600 hover:underline\">z.ai</a>",
-          "apiKeyPlaceholder": "zai-...",
-          "sdkCompat": "openai",
-          "modalities": ["text"],
-          "models": ["glm-5.2", "glm-4.6", "glm-4.5-air"],
-          "defaultModel": "glm-5.2"
-        }
-      ]
-    },
-    {
       "id": "fireworks",
       "name": "Fireworks AI",
       "description": "Fast inference for open-source models",

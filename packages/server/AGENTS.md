@@ -40,6 +40,11 @@ Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
 - Streaming deltas/status are best-effort across pods today. Do not build correctness on cross-pod in-memory delivery.
 - Exclusive transports such as Telegram polling run on exactly one replica via `connection_claims`; webhook transports must run on any replica.
 
+## Durable dispatch and coordination
+- **Fail closed on durable dispatch/delivery state.** When a durable coordination or delivery operation fails, its caller must not reinterpret the error as proceed, deliver, or skip. Propagate a retry, defer, or terminal-failure outcome with a visible log; if the operation may already have succeeded, reconcile idempotently before retrying. Lock timeouts, pool errors, and ambiguous or expired rows are failures, not "nothing changed".
+- **Coordination design brake.** A change that needs a second lock, a second retry/deferral budget, or a prose termination argument to explain why it halts is patching a misplaced check. Re-derive where the decision belongs, and put it at the chokepoint that already serializes the action — worker dispatch is serialized by `job-router` on the worker-SSE-owner pod. Prefer deleting the state transition over coordinating it, and reuse queue-native retry over a hand-rolled hold/requeue.
+- **Interactive browser drafts are page-activated, never tab-pushed.** Persist the draft operation and its normal Lobu notification; the generic Chrome extension badges exact pending URLs and activates the run only when the user visits one in a user-owned tab. Extension and server core carry no connector, Behavior, selector, or site-specific rules — connector/reaction code owns URL shapes and page interaction. Never auto-submit. Only scrape-owned scratch tabs may be opened and closed automatically.
+
 ## Connector operations and feed health
 - Built-in connector definitions/catalog install in server; connector implementation details belong in `packages/connectors/AGENTS.md`.
 - The active `connector_definitions` row is capability truth. Definitions may come from bundled source, organization-scoped `connector_versions`, or device manifests, so a grep under `packages/connectors` cannot prove an action is absent; inspect the active row and `operations.listAvailable`.
@@ -59,7 +64,7 @@ Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
 - `make dev` uses shared brew Postgres with one DB per branch. `LOBU_EMBEDDED=1 make dev` / `make dev-embedded` uses embedded per-worktree Postgres.
 - Parallel worktrees use `.env.local` for non-default `PORT`/`WORKER_PROXY_PORT`; do not `git switch` while a dev server runs. Read your worktree's `PORT` from `.env.local` — it is not 8787.
 - Smoke a booted server: `curl -s localhost:$PORT/api/health` (readiness is `/health/ready`). The SPA is pathless at `:$PORT`; the agent API is under `:$PORT/lobu`. "It booted" is not "it works" — drive the path you changed.
-- Validation: the root gates (`make pre-pr` + `make review`, see root `AGENTS.md`) plus the relevant server `bun test` / `make test-integration` suites.
+- Validation: the root gates (see root `AGENTS.md`) plus the relevant server `bun test` / `make test-integration` suites.
 
 ## Slackbot MCP integration
 - Slackbot is an MCP client. A Slack app exposes tools/resources only with `mcp:connect` bot scope plus an `mcp_servers` manifest block; after scope changes, reinstall the app.

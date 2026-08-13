@@ -26,16 +26,29 @@ describe('deep-link token exchange', () => {
     await cleanupTestDatabase();
   });
 
-  async function patForNewUser(slug: string, email: string): Promise<string> {
+  async function patForNewUser(
+    slug: string,
+    email: string
+  ): Promise<{ token: string; orgId: string }> {
     const org = await createTestOrganization({ slug });
     const user = await createTestUser({ email });
     await addUserToOrganization(user.id, org.id, 'owner');
     const { token } = await createTestPAT(user.id, org.id, { scope: 'profile:read' });
-    return token;
+    return { token, orgId: org.id };
+  }
+
+  /** The minted session's active org, read back through Better Auth itself. */
+  async function activeOrgOf(sessionToken: string): Promise<string | null | undefined> {
+    const res = await get('/api/auth/get-session', { token: sessionToken });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      session?: { activeOrganizationId?: string | null };
+    };
+    return body.session?.activeOrganizationId;
   }
 
   it('POST /extension-session returns a session token for Bearer use (extension iframe)', async () => {
-    const token = await patForNewUser('xt-post-org', 'xt-post@test.example.com');
+    const { token, orgId } = await patForNewUser('xt-post-org', 'xt-post@test.example.com');
     const res = await postForm('/api/extension-session', { token });
 
     expect(res.status).toBe(200);
@@ -43,7 +56,17 @@ describe('deep-link token exchange', () => {
     expect(res.headers.get('set-cookie')).toBeNull();
     const body = (await res.json()) as { session_token?: string };
     expect(typeof body.session_token).toBe('string');
-    expect((body.session_token ?? '').length).toBeGreaterThan(0);
+    const sessionToken = body.session_token ?? '';
+    expect(sessionToken.length).toBeGreaterThan(0);
+    // The PAT's org becomes the session's active org — the sidebar reads it.
+    expect(await activeOrgOf(sessionToken)).toBe(orgId);
+
+    // Third credential shape: exchanging that Better Auth session token itself
+    // must carry the active org forward too (menu-bar/local-init hold one).
+    const rePaired = await postForm('/api/extension-session', { token: sessionToken });
+    expect(rePaired.status).toBe(200);
+    const reBody = (await rePaired.json()) as { session_token?: string };
+    expect(await activeOrgOf(reBody.session_token ?? '')).toBe(orgId);
   });
 
   it('POST /extension-session resolves an OAuth device-code access token (cloud pairing path)', async () => {
@@ -62,11 +85,13 @@ describe('deep-link token exchange', () => {
     const res = await postForm('/api/extension-session', { token });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { session_token?: string };
-    expect((body.session_token ?? '').length).toBeGreaterThan(0);
+    const sessionToken = body.session_token ?? '';
+    expect(sessionToken.length).toBeGreaterThan(0);
+    expect(await activeOrgOf(sessionToken)).toBe(org.id);
   });
 
   it('GET /exchange-token keeps a first-party Lax cookie — never Partitioned/None (CLI/menu-bar)', async () => {
-    const token = await patForNewUser('xt-get-org', 'xt-get@test.example.com');
+    const { token } = await patForNewUser('xt-get-org', 'xt-get@test.example.com');
     const res = await get(`/api/exchange-token?token=${encodeURIComponent(token)}&next=/`);
 
     expect(res.status).toBe(302);
@@ -83,7 +108,7 @@ describe('deep-link token exchange', () => {
     const previous = process.env.AUTH_COOKIE_DOMAIN;
     process.env.AUTH_COOKIE_DOMAIN = '.lobu.ai';
     try {
-      const token = await patForNewUser('xt-zone-org', 'xt-zone@test.example.com');
+      const { token } = await patForNewUser('xt-zone-org', 'xt-zone@test.example.com');
       const res = await get(`/api/exchange-token?token=${encodeURIComponent(token)}&next=/`);
       expect(res.status).toBe(302);
 

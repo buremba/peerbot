@@ -24,4 +24,4 @@ Read root `AGENTS.md` first. This package owns agent execution and Lobu integrat
 
 ## Validation
 - After editing `packages/agent-worker/*`, run `make clean-workers`.
-- Validation: the root gates (`make pre-pr` + `make review`, see root `AGENTS.md`) plus targeted worker tests.
+- Validation: the root gates (see root `AGENTS.md`) plus targeted worker tests.

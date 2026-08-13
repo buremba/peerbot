@@ -232,7 +232,7 @@ describe("weekly net-worth reaction", () => {
             { market: "US", symbol: "NOPE" },
           ],
         },
-        idempotency_key: "midas-net-worth:quotes:window:91",
+        idempotency_key: "midas-net-worth:v2:quotes:window:91",
         behavior_source: { behavior_id: 45, window_id: 91 },
       },
     ]);
@@ -240,7 +240,7 @@ describe("weekly net-worth reaction", () => {
     expect(saved[0]).toMatchObject({
       semantic_type: "summary",
       title: "Midas net worth snapshot",
-      idempotency_key: "midas-net-worth:snapshot:window:91",
+      idempotency_key: "midas-net-worth:v2:snapshot:window:91",
       behavior_source: { behavior_id: 45, window_id: 91 },
       metadata: {
         scope: "midas",
@@ -248,7 +248,11 @@ describe("weekly net-worth reaction", () => {
         by_currency: [{ currency: "USD", current_value: 580 }],
       },
     });
-    expect(notified).toHaveLength(1);
+    expect(notified).toEqual([
+      expect.objectContaining({
+        idempotency_key: "midas-net-worth:v2:notification:window:91",
+      }),
+    ]);
   });
 
   test("notifies from the persisted snapshot after an idempotent save replay", async () => {

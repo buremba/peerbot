@@ -896,4 +896,85 @@ describe('MCP refresh-on-401 (dead access token)', () => {
       callTool('mcp.refresh-demo', config, organizationId, 'do_thing', {}, connectionId)
     ).rejects.toThrow(/Upstream MCP returned 401/);
   });
+
+  it('refreshes once when the session expires AND the token is revoked during recovery', async () => {
+    const { connectionId, organizationId } = await seedOAuthMcpConnection();
+
+    // Session is established with the stale token; the first tools/call gets a
+    // 404 (session expired), and the reinitialize is rejected with a 401
+    // (token also revoked). The recovery path must route that 401 through the
+    // refresh and succeed — previously it surfaced the 401 with no refresh.
+    const initializeResponse = (sessionId: string) =>
+      jsonResponse(
+        {
+          jsonrpc: '2.0',
+          id: 0,
+          result: {
+            protocolVersion: MCP_PROTOCOL_VERSION,
+            capabilities: { tools: {} },
+          },
+        },
+        sessionId
+      );
+
+    let refreshHits = 0;
+    let initializeHits = 0;
+    let toolCalls = 0;
+    globalThis.fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const href = String(url);
+      if (href === 'https://demo.example/oauth/token') {
+        refreshHits += 1;
+        return jsonResponse({
+          access_token: 'fresh-after-session-expiry',
+          refresh_token: 'rotated-after-session-expiry',
+          expires_in: 3600,
+        });
+      }
+      if (href === config.upstream_url) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        const headers = new Headers(init?.headers);
+        if (body.method === 'initialize') {
+          initializeHits += 1;
+          // Initial initialize succeeds with the stale token (session cached);
+          // only the recovery reinitialize is rejected with a 401, and only
+          // while it still carries the stale token.
+          if (initializeHits > 1 && headers.get('authorization') === 'Bearer stale-access-token') {
+            return new Response(JSON.stringify({ error: 'invalid_token' }), { status: 401 });
+          }
+          return initializeResponse(`session-${initializeHits}`);
+        }
+        if (body.method === 'tools/call') {
+          toolCalls += 1;
+          if (headers.get('authorization') === 'Bearer stale-access-token') {
+            // First call: session expired (404) — call never ran.
+            return new Response('Session not found', { status: 404 });
+          }
+          return jsonResponse({
+            jsonrpc: '2.0',
+            id: 1,
+            result: { content: [{ type: 'text', text: 'ok' }], isError: false },
+          });
+        }
+        return jsonResponse({ jsonrpc: '2.0', id: null, result: {} });
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    }) as typeof fetch;
+
+    const result = await callTool(
+      'mcp.refresh-demo',
+      config,
+      organizationId,
+      'do_thing',
+      {},
+      connectionId
+    );
+
+    expect(result.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(result.isError).toBe(false);
+    expect(refreshHits).toBe(1);
+    // initialize: 1 (initial) + 1 (session recovery) + 1 (after refresh) = 3
+    expect(initializeHits).toBe(3);
+    // tools/call: 1 (404) + 1 (fresh token success) = 2 — no blind replay loop
+    expect(toolCalls).toBe(2);
+  });
 });

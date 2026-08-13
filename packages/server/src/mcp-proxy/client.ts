@@ -430,25 +430,21 @@ export async function callTool(
       connectionId
     );
 
+  // One bounded recovery loop for every safe-to-retry outcome. The ONLY
+  // retried cases are explicit no-execution signals: a 401 auth rejection
+  // (first attempt never produced a response), a 404 session rejection, or a
+  // JSON-RPC "not initialized" error. A timeout/5xx is ambiguous (the upstream
+  // may have executed the action) and must surface, never replay. Each
+  // recovery can rotate the token at most once (canRefreshAfter401) and
+  // rehandshake at most once per class, so the loop cannot spin. Every
+  // initializeSession call runs INSIDE the try so a 401 from a recovery
+  // reinitialize routes back through the refresh path instead of escaping.
   let response: JsonRpcResponse;
-  try {
-    response = await send();
-  } catch (error) {
-    // Refresh-on-401: the upstream rejected the access token even though its
-    // stored expiry looked valid (tokens get revoked upstream). Re-resolve
-    // against the exact rejected token under the per-account lock
-    // and retry ONCE. A still-failing 401 means the refresh token itself is
-    // dead — surface it rather than loop. HTTP 401 is an explicit auth rejection,
-    // unlike a timeout or 5xx whose execution outcome is ambiguous.
-    if (canRefreshAfter401 && error instanceof McpAuthRejectedError) {
-      logger.info(
-        { connectorKey, originalToolName, connectionId },
-        '[McpProxy] Upstream rejected access token; refreshing and retrying once'
-      );
-      const refreshed = await refreshRejectedCredentials(connectionId, orgId, credentials);
-      if (refreshed?.accessToken) {
-        credentials = refreshed;
-        sessions.delete(sessionKey(orgId, connectorKey, connectionId));
+  let phase: 'send' | 'reinitialize' = 'send';
+  let sessionRecovered = false;
+  while (true) {
+    try {
+      if (phase === 'reinitialize') {
         await initializeSession(
           config.upstream_url,
           credentials,
@@ -456,46 +452,57 @@ export async function callTool(
           connectorKey,
           connectionId
         );
-        response = await sendRequest(
-          config.upstream_url,
-          credentials,
-          orgId,
-          connectorKey,
-          jsonRpcBody,
-          FETCH_TIMEOUT_TOOL_MS,
-          connectionId
-        );
-      } else {
-        throw error;
       }
-    }
-    // A rejected session id means the call never ran upstream; every other
-    // transport failure is ambiguous and must surface rather than replay.
-    else if (error instanceof McpSessionExpiredError) {
-      logger.info({ connectorKey, originalToolName }, '[McpProxy] Session rejected, reinitializing');
-      await initializeSession(
-        config.upstream_url,
-        credentials,
-        orgId,
-        connectorKey,
-        connectionId
-      );
       response = await send();
-    } else {
+    } catch (error) {
+      // Refresh-on-401: the upstream rejected the access token even though its
+      // stored expiry looked valid (tokens get revoked upstream). Re-resolve
+      // against the exact rejected token under the per-account lock, drop the
+      // stale session, reinitialize, and retry once. A still-failing 401 means
+      // the refresh token itself is dead — surface it rather than loop.
+      if (canRefreshAfter401 && error instanceof McpAuthRejectedError) {
+        canRefreshAfter401 = false;
+        logger.info(
+          { connectorKey, originalToolName, connectionId },
+          '[McpProxy] Upstream rejected access token; refreshing and retrying once'
+        );
+        const refreshed = await refreshRejectedCredentials(connectionId, orgId, credentials);
+        if (!refreshed?.accessToken) throw error;
+        credentials = refreshed;
+        sessions.delete(sessionKey(orgId, connectorKey, connectionId));
+        phase = 'reinitialize';
+        continue;
+      }
+      // A rejected session id means the call never ran upstream; rehandshake
+      // and replay. This reinitialize may itself 401 (both an expired session
+      // AND a revoked token) — the loop routes that through the refresh above.
+      if (!sessionRecovered && error instanceof McpSessionExpiredError) {
+        sessionRecovered = true;
+        logger.info(
+          { connectorKey, originalToolName },
+          '[McpProxy] Session rejected, reinitializing'
+        );
+        phase = 'reinitialize';
+        continue;
+      }
+      // Ambiguous transport failure — the upstream may have executed the action.
       throw error;
     }
-  }
 
-  if (response.error && /not initialized/i.test(response.error.message || '')) {
-    logger.info({ connectorKey, originalToolName }, '[McpProxy] Session expired, reinitializing');
-    await initializeSession(
-      config.upstream_url,
-      credentials,
-      orgId,
-      connectorKey,
-      connectionId
-    );
-    response = await send();
+    // Stale-session response recovery ("not initialized"): the call never ran,
+    // so rehandshake and replay — same uniform path as the thrown 404 above.
+    if (response.error && /not initialized/i.test(response.error.message || '')) {
+      if (!sessionRecovered) {
+        sessionRecovered = true;
+        logger.info(
+          { connectorKey, originalToolName },
+          '[McpProxy] Session expired, reinitializing'
+        );
+        phase = 'reinitialize';
+        continue;
+      }
+    }
+    break;
   }
 
   if (response.error) {

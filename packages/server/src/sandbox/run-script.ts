@@ -136,6 +136,8 @@ interface RunScriptResult {
 	traceDropped: number;
 	logs: LogEntry[];
 	sdkCallTrace: SdkCallTraceEntry[];
+	/** Change-capable dispatches by path; unbounded, so trace eviction cannot hide them. */
+	startedSideEffects: Array<{ path: string; access: MethodAccess; count: number }>;
 	sideEffectPreview: SdkCallTraceEntry[];
 	error?: {
 		name: string;
@@ -723,6 +725,11 @@ export async function runScript(
 	const logs: LogEntry[] = [];
 	const sdkCallTrace: SdkCallTraceEntry[] = [];
 	const sideEffectPreview: SdkCallTraceEntry[] = [];
+	/**
+	 * Change-capable dispatches by path, kept outside the byte-capped trace so a
+	 * long run's early writes survive its oldest-first eviction.
+	 */
+	const startedSideEffects = new Map<string, { access: MethodAccess; count: number }>();
 	let sdkCalls = 0;
 	// Total calls skipped under dry-run, independent of preview retention so a
 	// truncated preview never undercounts the dry-run surface.
@@ -831,6 +838,9 @@ export async function runScript(
 			skippedCalls: 0,
 			traceDropped: 0,
 			sdkCallTrace,
+			startedSideEffects: [...startedSideEffects.entries()].map(
+				([path, { access, count }]) => ({ path, access, count }),
+			),
 			sideEffectPreview,
 		};
 	}
@@ -869,6 +879,9 @@ export async function runScript(
 			skippedCalls: 0,
 			traceDropped: 0,
 			sdkCallTrace,
+			startedSideEffects: [...startedSideEffects.entries()].map(
+				([path, { access, count }]) => ({ path, access, count }),
+			),
 			sideEffectPreview,
 		};
 	}
@@ -1009,6 +1022,18 @@ export async function runScript(
 						appendPreview.append(sideEffectPreview, trace);
 						return { dry_run: true, skipped_call: path, access };
 					}
+					// Count change-capable dispatches separately from the trace. The
+					// trace is a byte-capped ring that evicts OLDEST entries, so a
+					// long run's early writes disappear from it — exactly the runs
+					// most likely to time out. This tally is unbounded (one small
+					// entry per distinct path, no arguments) so the public
+					// started-side-effect summary cannot silently lose them.
+					if (access === "write" || access === "external" || access === "admin") {
+						startedSideEffects.set(path, {
+							access,
+							count: (startedSideEffects.get(path)?.count ?? 0) + 1,
+						});
+					}
 					appendTrace.append(sdkCallTrace, trace);
 					return namespace[method](...args);
 				})();
@@ -1145,6 +1170,9 @@ export async function runScript(
 					skippedCalls,
 					traceDropped: appendTrace.dropped() + appendPreview.dropped(),
 					sdkCallTrace,
+					startedSideEffects: [...startedSideEffects.entries()].map(
+						([path, { access, count }]) => ({ path, access, count }),
+					),
 					sideEffectPreview,
 				};
 			}
@@ -1186,6 +1214,9 @@ export async function runScript(
 			skippedCalls,
 			traceDropped: appendTrace.dropped() + appendPreview.dropped(),
 			sdkCallTrace,
+			startedSideEffects: [...startedSideEffects.entries()].map(
+				([path, { access, count }]) => ({ path, access, count }),
+			),
 			sideEffectPreview,
 		};
 	} catch (err) {
@@ -1201,6 +1232,9 @@ export async function runScript(
 			skippedCalls,
 			traceDropped: appendTrace.dropped() + appendPreview.dropped(),
 			sdkCallTrace,
+			startedSideEffects: [...startedSideEffects.entries()].map(
+				([path, { access, count }]) => ({ path, access, count }),
+			),
 			sideEffectPreview,
 		};
 	} finally {

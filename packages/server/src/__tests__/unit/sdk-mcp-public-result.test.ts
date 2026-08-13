@@ -148,12 +148,12 @@ describe("SDK MCP public result", () => {
 			dry_run: false,
 			error: { message: "TimeoutError: script exceeded 60000ms" },
 			sdk_call_trace: [
-				{ path: "entities.list", access: "read", skipped: false },
 				{ path: "entities.update", access: "write", skipped: false, args: [{ secret: "x" }] },
-				{ path: "entities.update", access: "write", skipped: false },
-				{ path: "slack.postMessage", access: "external", skipped: false },
-				{ path: "events.create", access: "write", skipped: true },
-				{ path: "something.odd", access: "unknown", skipped: false },
+			],
+			started_side_effects: [
+				{ path: "entities.update", access: "write", count: 2 },
+				{ path: "slack.postMessage", access: "external", count: 1 },
+				{ path: "something.odd", access: "unknown", count: 3 },
 			],
 		}) as Record<string, unknown>;
 
@@ -168,13 +168,38 @@ describe("SDK MCP public result", () => {
 		expect(JSON.stringify(result)).not.toContain("secret");
 	});
 
+	test("still warns when trace eviction left only reads behind", () => {
+		// traceBytes evicts OLDEST entries, so a long run's early writes vanish
+		// from sdk_call_trace and the survivors can be entirely reads. Deriving
+		// the summary from the trace would suppress the warning on exactly the
+		// runs most likely to have timed out mid-write; the sandbox's dispatch
+		// tally is the source of truth.
+		const result = toMcpPublicSdkScriptResult({
+			success: false,
+			skipped_calls: 0,
+			side_effect_preview: [],
+			dry_run: false,
+			sdk_call_trace: [
+				{ path: "entities.list", access: "read", skipped: false },
+				{ path: "entities.get", access: "read", skipped: false },
+			],
+			sdk_call_trace_truncated: { dropped_entries: 880 },
+			started_side_effects: [{ path: "entities.update", access: "write", count: 412 }],
+		}) as Record<string, unknown>;
+
+		expect(result.started_side_effects).toEqual([
+			{ path: "entities.update", access: "write", count: 412 },
+		]);
+		expect(result.started_side_effects_truncated).toBe(true);
+	});
+
 	test("flags an undercount when the internal trace was byte-capped", () => {
 		const result = toMcpPublicSdkScriptResult({
 			success: false,
 			skipped_calls: 0,
 			side_effect_preview: [],
 			dry_run: false,
-			sdk_call_trace: [{ path: "events.create", access: "write", skipped: false }],
+			started_side_effects: [{ path: "events.create", access: "write", count: 1 }],
 			sdk_call_trace_truncated: { dropped_entries: 412 },
 		}) as Record<string, unknown>;
 
@@ -185,7 +210,7 @@ describe("SDK MCP public result", () => {
 		const base = {
 			skipped_calls: 0,
 			side_effect_preview: [],
-			sdk_call_trace: [{ path: "entities.update", access: "write", skipped: false }],
+			started_side_effects: [{ path: "entities.update", access: "write", count: 1 }],
 		};
 		// Succeeded: nothing to warn about.
 		expect(
@@ -209,7 +234,7 @@ describe("SDK MCP public result", () => {
 					skipped_calls: 0,
 					side_effect_preview: [],
 					dry_run: false,
-					sdk_call_trace: [{ path: "entities.list", access: "read", skipped: false }],
+					started_side_effects: [],
 				}) as Record<string, unknown>
 			).started_side_effects,
 		).toBeUndefined();

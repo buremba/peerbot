@@ -185,31 +185,33 @@ function summarizeStartedSideEffects(
 ): { entries: StartedSideEffect[]; truncated: boolean } | null {
   if (row.success !== false) return null;
   if (row.dry_run === true) return null;
-  if (!Array.isArray(row.sdk_call_trace)) return null;
+  // The sandbox tallies these at dispatch time. Deriving them from
+  // `sdk_call_trace` instead would lose exactly the runs that matter: the trace
+  // is a byte-capped ring evicting OLDEST entries, so a long run's early writes
+  // vanish and the surviving tail can be all reads — suppressing the warning on
+  // precisely the runs most likely to have timed out mid-write.
+  if (!Array.isArray(row.started_side_effects)) return null;
 
-  const counts = new Map<string, { access: StartedSideEffect["access"]; count: number }>();
-  for (const entry of row.sdk_call_trace) {
+  const entries: StartedSideEffect[] = [];
+  for (const entry of row.started_side_effects) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
     const call = entry as Record<string, unknown>;
-    if (call.skipped === true) continue;
     if (typeof call.path !== "string") continue;
-    // Allowlist the change-capable classes: `read` mutates nothing and
-    // `unknown` is not evidence of a change.
     if (call.access !== "write" && call.access !== "external" && call.access !== "admin") {
       continue;
     }
-    const existing = counts.get(call.path);
-    if (existing) existing.count += 1;
-    else counts.set(call.path, { access: call.access, count: 1 });
+    const count =
+      typeof call.count === "number" && Number.isSafeInteger(call.count) ? call.count : 0;
+    if (count < 1) continue;
+    entries.push({ path: call.path, access: call.access, count });
   }
-  if (counts.size === 0) return null;
+  if (entries.length === 0) return null;
 
-  const entries = [...counts.entries()]
-    .map(([path, { access, count }]) => ({ path, access, count }))
-    .sort((a, b) => b.count - a.count || a.path.localeCompare(b.path));
+  entries.sort((a, b) => b.count - a.count || a.path.localeCompare(b.path));
   return {
     entries,
-    // traceBytes drops the oldest entries, so survivors undercount the run.
+    // The tally itself is complete; the flag only tells the reader that the
+    // diagnostic trace behind it was capped.
     truncated:
       Boolean(row.sdk_call_trace_truncated) &&
       typeof row.sdk_call_trace_truncated === "object",
@@ -387,6 +389,7 @@ async function runSandbox(
     sdk_calls: result.sdkCalls,
     skipped_calls: result.skippedCalls,
     sdk_call_trace: result.sdkCallTrace,
+    started_side_effects: result.startedSideEffects,
     side_effect_preview: result.sideEffectPreview,
     sdk_call_trace_truncated:
       result.traceDropped > 0 ? { dropped_entries: result.traceDropped } : undefined,

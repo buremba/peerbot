@@ -516,13 +516,6 @@ async function ensureUnderLock(params: {
 				callbackToken,
 			),
 		));
-	const registeringConfig = {
-		...connection.config,
-		webhook_callback_token: callbackTokenRef,
-		webhook_status: "registering",
-		webhook_error: null,
-	};
-	await persistConfig(sql, connection, registeringConfig);
 
 	const apiBase = jiraApiBase(cloudId);
 	const targetUrl = callbackUrl(params.baseUrl, connection.id, callbackToken);
@@ -636,6 +629,7 @@ async function ensureUnderLock(params: {
 	}
 	await persistConfig(sql, connection, {
 		...connection.config,
+		webhook_callback_token: callbackTokenRef,
 		webhook_external_id: externalId,
 		webhook_expires_at: expiresAt,
 		webhook_status: "active",

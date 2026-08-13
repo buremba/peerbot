@@ -2050,12 +2050,16 @@ export async function handleUpdate(
 		(args.config !== undefined || args.status !== undefined) &&
 		isAtlassianMcpConfig(existing.mcp_config)
 	) {
-		await registerConnectorWebhook({
-			organizationId,
-			connectionId: args.connection_id,
-			baseUrl: getGatewayBaseUrl(ctx),
-			throwOnError: true,
-		});
+		try {
+			await registerConnectorWebhook({
+				organizationId,
+				connectionId: args.connection_id,
+				baseUrl: getGatewayBaseUrl(ctx),
+				throwOnError: true,
+			});
+		} catch (error) {
+			return { error: getErrorMessage(error) };
+		}
 	}
 
   const updatedRow = updated[0] as Record<string, unknown>;

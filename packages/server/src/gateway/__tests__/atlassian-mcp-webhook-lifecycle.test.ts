@@ -1,4 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import type { Env } from "../../index.js";
+import type { ToolContext } from "../../tools/registry.js";
 import {
 	ensureDbForGatewayTests,
 	ensureEncryptionKey,
@@ -9,6 +11,8 @@ import {
 const ORG = "org-atlassian-webhook";
 const AGENT = "agent-atlassian-webhook";
 const USER = "user-atlassian-webhook";
+const ADMIN_ONLY_ERROR =
+	"Only admins can configure the secondary Jira authorization used by Atlassian webhook delivery.";
 
 beforeAll(async () => {
 	await ensureDbForGatewayTests();
@@ -20,7 +24,24 @@ beforeEach(async () => {
 	await seedAgentRow(AGENT, { organizationId: ORG });
 });
 
-async function seedConfiguredConnection(): Promise<number> {
+function memberContext(): ToolContext {
+	return {
+		organizationId: ORG,
+		userId: USER,
+		memberRole: "member",
+		agentId: AGENT,
+		isAuthenticated: true,
+		clientId: null,
+		scopes: ["mcp:read", "mcp:write"],
+		tokenType: "oauth",
+		scopedToOrg: true,
+		allowCrossOrg: false,
+	} as ToolContext;
+}
+
+async function seedConfiguredConnection(options?: {
+	memberRole?: "member";
+}): Promise<number> {
 	const { getDb } = await import("../../db/client.js");
 	const { createAuthProfile } = await import("../../utils/auth-profiles.js");
 	const { persistAuthCredentials } = await import(
@@ -31,6 +52,12 @@ async function seedConfiguredConnection(): Promise<number> {
 		INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
 		VALUES (${USER}, 'Owner', 'owner-atlassian-webhook@example.com', true, NOW(), NOW())
 	`;
+	if (options?.memberRole) {
+		await sql`
+			INSERT INTO member (id, "organizationId", "userId", role, "createdAt")
+			VALUES ('member-atlassian-webhook', ${ORG}, ${USER}, ${options.memberRole}, NOW())
+		`;
+	}
 	await sql`
 		INSERT INTO connector_definitions (
 			organization_id, key, name, version, status, mcp_config, feeds_schema
@@ -100,6 +127,62 @@ async function seedConfiguredConnection(): Promise<number> {
 }
 
 describe("Atlassian MCP Jira dynamic webhooks", () => {
+	test("rejects secondary Jira webhook credentials from a member on create", async () => {
+		await seedConfiguredConnection({ memberRole: "member" });
+		const { manageConnections } = await import(
+			"../../tools/admin/manage_connections.js"
+		);
+		const result = await manageConnections(
+			{
+				action: "create",
+				connector_key: "mcp.mcp-atlassian-com",
+				slug: "member-atlassian-create",
+				display_name: "Member Atlassian",
+				config: {
+					webhook_enabled: true,
+					jira_webhook_auth_profile_slug: "jira-webhook-account",
+					jira_webhook_app_profile_slug: "jira-webhook-app",
+				},
+			},
+			{} as Env,
+			memberContext(),
+		);
+		expect(result).toEqual({ error: ADMIN_ONLY_ERROR });
+		const { getDb } = await import("../../db/client.js");
+		const [row] = await getDb()`
+			SELECT count(*)::int AS count FROM connections
+			WHERE organization_id = ${ORG} AND slug = 'member-atlassian-create'
+		`;
+		expect(row.count).toBe(0);
+	});
+
+	test("rejects secondary Jira webhook credentials from a member on update", async () => {
+		const connectionId = await seedConfiguredConnection({
+			memberRole: "member",
+		});
+		const { getDb } = await import("../../db/client.js");
+		const [before] = await getDb()`
+			SELECT config FROM connections WHERE id = ${connectionId}
+		`;
+		const { manageConnections } = await import(
+			"../../tools/admin/manage_connections.js"
+		);
+		const result = await manageConnections(
+			{
+				action: "update",
+				connection_id: connectionId,
+				config: { webhook_enabled: false },
+			},
+			{} as Env,
+			memberContext(),
+		);
+		expect(result).toEqual({ error: ADMIN_ONLY_ERROR });
+		const [after] = await getDb()`
+			SELECT config FROM connections WHERE id = ${connectionId}
+		`;
+		expect(after.config).toEqual(before.config);
+	});
+
 	test("registers an authenticated per-connection webhook and persists verification state", async () => {
 		const connectionId = await seedConfiguredConnection();
 		const requests: Array<{ url: string; init?: RequestInit }> = [];

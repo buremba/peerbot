@@ -57,7 +57,7 @@ export interface ConnectionWebhookState {
   webhook_signature_prefix?: string;
   webhook_dedupe_header?: string;
   webhook_expires_at?: string;
-  webhook_status?: 'registering' | 'active' | 'error';
+  webhook_status?: 'active' | 'error';
   webhook_error?: string | null;
 }
 

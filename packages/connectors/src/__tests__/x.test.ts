@@ -736,6 +736,86 @@ describe("XConnector home_feed", () => {
 		expect(props.min_scrolls?.type).toBe("integer");
 	});
 
+	test("home_feed configSchema accepts use_existing_tab", () => {
+		const props = new XConnector().definition.feeds.home_feed.configSchema
+			.properties as Record<string, { type?: string }>;
+		expect(props.use_existing_tab?.type).toBe("boolean");
+	});
+
+	test("use_existing_tab passes existing_tab_match and reports the existing-tab backend", async () => {
+		const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
+		const dispatcher = {
+			dispatch: async (action: string, input: Record<string, unknown>) => {
+				calls.push({ action, input });
+				return {
+					tab_id: 1,
+					cs_scrape: true,
+					existing_tab: true,
+					result: {
+						loggedIn: true,
+						rows: [
+							{
+								id: "111",
+								body: "first tweet on my timeline",
+								status_path: "/alice/status/111",
+								published_at: "2026-06-30T12:00:00.000Z",
+							},
+						],
+					},
+				};
+			},
+		};
+
+		const connector = new XConnector();
+		const res = await connector.sync({
+			feedKey: "home_feed",
+			config: { max_scrolls: 4, use_existing_tab: true },
+			checkpoint: {},
+			sessionState: { chrome_dispatcher: dispatcher },
+		});
+
+		expect(calls).toHaveLength(1);
+		expect(calls[0].input.existing_tab_match).toBe("x.com/home");
+		expect(res.events).toHaveLength(1);
+		expect(res.metadata.backend).toBe("extension-cs-scrape-existing-tab");
+	});
+
+	test("without use_existing_tab no existing_tab_match is sent and backend stays extension-cs-scrape", async () => {
+		const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
+		const dispatcher = {
+			dispatch: async (action: string, input: Record<string, unknown>) => {
+				calls.push({ action, input });
+				return {
+					tab_id: 1,
+					cs_scrape: true,
+					result: {
+						loggedIn: true,
+						rows: [
+							{
+								id: "111",
+								body: "first tweet on my timeline",
+								status_path: "/alice/status/111",
+								published_at: "2026-06-30T12:00:00.000Z",
+							},
+						],
+					},
+				};
+			},
+		};
+
+		const connector = new XConnector();
+		const res = await connector.sync({
+			feedKey: "home_feed",
+			config: { max_scrolls: 4 },
+			checkpoint: {},
+			sessionState: { chrome_dispatcher: dispatcher },
+		});
+
+		expect(calls).toHaveLength(1);
+		expect(calls[0].input.existing_tab_match).toBeUndefined();
+		expect(res.metadata.backend).toBe("extension-cs-scrape");
+	});
+
 	test("min_scrolls/max_scrolls pick a scroll budget in range each run", async () => {
 		const scrollMaxes: number[] = [];
 		const dispatcher = {

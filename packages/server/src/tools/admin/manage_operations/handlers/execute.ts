@@ -2,6 +2,7 @@ import { executeCompiledConnector } from "@lobu/connector-worker/executor/runtim
 import { getErrorMessage } from "@lobu/core";
 import { ExecuteAction, type ManageOperationsResult } from "../schemas";
 import type { Static } from "@sinclair/typebox";
+import { readGrantedScopesFromAuthData } from "../../../../auth/oauth/scopes";
 import { resolveBehaviorConnectionVisibilityUserId } from "../../../../authz/behavior-connection-visibility";
 import { compileConnectionRowVisibility } from "../../../../authz/connection-visibility";
 import { resolveActingPrincipal, resolveWritePolicyDecision } from "../../../../authz/entity-policy";
@@ -15,12 +16,14 @@ import { resolveActionMode } from "../../../../operations/action-modes";
 import { getOperationForConnection } from "../../../../operations/connector-operations";
 import { executeHttpOperation } from "../../../../operations/execute-http-operation";
 import { validateOperationInput } from "../../../../operations/input-validation";
+import { getMissingKnownOAuthScopes } from "../../../../operations/oauth-scope-readiness";
 import type { OperationDescriptor } from "../../../../operations/types";
 import {
 	DEFAULT_PAGE_ACTIVATION_SECONDS,
 	normalizePageActivationUrls,
 } from "../../../../runs/page-activation";
 import { createConnectorOperationRun } from "../../../../runs/queue-service";
+import { getAuthProfileById } from "../../../../utils/auth-profiles";
 import { resolveConnectorCodeForKey } from "../../../../utils/ensure-connector-installed";
 import { ToolUserError } from "../../../../utils/errors";
 import { resolveExecutionAuth } from "../../../../utils/execution-context";
@@ -453,6 +456,24 @@ export async function handleExecute(
 	const { connection, operation } = resolved;
 	if (connection.status !== "active") {
 		return { error: `Connection is ${connection.status}, must be active` };
+	}
+
+	const requiredScopes = operation.required_scopes ?? [];
+	if (requiredScopes.length > 0) {
+		const authProfile = await getAuthProfileById(
+			ctx.organizationId,
+			connection.auth_profile_id,
+		);
+		const missingScopes = getMissingKnownOAuthScopes(
+			readGrantedScopesFromAuthData(authProfile?.auth_data),
+			Object.hasOwn(authProfile?.auth_data ?? {}, "granted_scopes"),
+			requiredScopes,
+		);
+		if (missingScopes.length > 0) {
+			return {
+				error: `Operation '${operation.operation_key}' requires additional OAuth consent for scope(s): ${missingScopes.join(", ")}. Reauthorize the connection and complete consent, then retry operations.execute with the same arguments. The operation will not resume automatically.`,
+			};
+		}
 	}
 
 	const input = args.input ?? {};

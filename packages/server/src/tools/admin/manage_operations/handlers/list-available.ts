@@ -4,7 +4,6 @@ import {
 } from "../schemas";
 import type { Static } from "@sinclair/typebox";
 import {
-	hasAllScopes,
 	readGrantedScopesFromAuthData,
 	readRequestedScopesFromAuthData,
 } from "../../../../auth/oauth/scopes";
@@ -20,6 +19,7 @@ import {
 	resolveActionMode,
 } from "../../../../operations/action-modes";
 import { listOperations } from "../../../../operations/connector-operations";
+import { getMissingKnownOAuthScopes } from "../../../../operations/oauth-scope-readiness";
 import type { AvailableOperation, OperationDescriptor } from "../../../../operations/types";
 import {
 	DEVICE_ONLINE_WINDOW_SECONDS,
@@ -394,17 +394,12 @@ function buildAvailableOperation(args: {
 				reason: "This operation is disabled on the connection.",
 			};
 		}
-		if (
-			publicTarget.executable &&
-			requiredScopes.length > 0 &&
-			// Older auth profiles may not record granted_scopes. Absence is unknown;
-			// a recorded empty grant is known and must still fail the scope gate.
-			granted_scopes_known &&
-			!hasAllScopes(granted_scopes, requiredScopes)
-		) {
-			const missing = requiredScopes.filter(
-				(scope) => !hasAllScopes(granted_scopes, [scope]),
-			);
+		const missing = getMissingKnownOAuthScopes(
+			granted_scopes,
+			granted_scopes_known,
+			requiredScopes,
+		);
+		if (publicTarget.executable && missing.length > 0) {
 			return {
 				...publicTarget,
 				status: "scope_upgrade_required",
@@ -473,11 +468,10 @@ function buildAvailableOperation(args: {
 	);
 	const missingScopes =
 		readiness === "scope_upgrade_required"
-			? requiredScopes.filter(
-					(scope) =>
-						!hasAllScopes(remediationInternalTarget?.granted_scopes ?? [], [
-							scope,
-						]),
+			? getMissingKnownOAuthScopes(
+					remediationInternalTarget?.granted_scopes ?? [],
+					remediationInternalTarget?.granted_scopes_known ?? false,
+					requiredScopes,
 				)
 			: [];
 	return {

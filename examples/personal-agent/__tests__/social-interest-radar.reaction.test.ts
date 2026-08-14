@@ -178,7 +178,7 @@ describe("social interest radar reaction", () => {
     expect(f.notifications).toHaveLength(1);
   });
 
-  it("retries an ambiguous scheduling error instead of completing with a misleading digest", async () => {
+  it("retries an ambiguous scheduling error instead of completing without a draft card", async () => {
     const f = fixture({
       operationErrorOnce: new Error(
         "reaction tracking temporarily unavailable"
@@ -199,7 +199,7 @@ describe("social interest radar reaction", () => {
     );
   });
 
-  it("keeps the ordinary digest when scheduling fails terminally", async () => {
+  it("sends no digest when scheduling fails terminally — only draft-ready cards", async () => {
     const f = fixture({
       operationResult: {
         status: "failed",
@@ -207,9 +207,8 @@ describe("social interest radar reaction", () => {
       },
     });
     await runReaction(context(), f.client);
-    expect(f.notifications).toHaveLength(1);
-    expect(f.notifications[0]?.title).toBe("Social interest radar");
-    expect(String(f.notifications[0]?.body)).toContain("draft not scheduled");
+    // No digest fallback: a failed scheduling run notifies nothing.
+    expect(f.notifications).toHaveLength(0);
   });
 
   it("refuses a generic LinkedIn feed URL because it cannot match one post", async () => {
@@ -229,14 +228,12 @@ describe("social interest radar reaction", () => {
     expect(f.operations).toHaveLength(0);
   });
 
-  it("delivers an observation-only run as the ordinary digest", async () => {
+  it("does not notify an observation-only run — only drafts get cards", async () => {
     const f = fixture({ includeDraft: false });
     await runReaction(context(), f.client);
     expect(f.operations).toHaveLength(0);
-    expect(f.notifications).toHaveLength(1);
-    expect(f.notifications[0]?.body).toBe(
-      "[high] Ada (linkedin) — Directly relevant to Lobu's delivery model."
-    );
+    // The "Social interest radar" digest is gone; signals alone notify nothing.
+    expect(f.notifications).toHaveLength(0);
   });
 
   it("does not notify when the persisted run owns no new output", async () => {
@@ -246,10 +243,11 @@ describe("social interest radar reaction", () => {
     expect(f.notifications).toHaveLength(0);
   });
 
-  it("keeps digest bodies within the notification service limit", async () => {
-    const f = fixture({ includeDraft: false, signalWhy: "x".repeat(1_200) });
+  it("does not truncate a draft-ready body below the service limit", async () => {
+    const f = fixture({ signalWhy: "x".repeat(1_200) });
     await runReaction(context(), f.client);
-    expect(String(f.notifications[0]?.body).length).toBe(1000);
+    expect(f.notifications).toHaveLength(1);
+    expect(String(f.notifications[0]?.body).length).toBeLessThanOrEqual(1000);
   });
 
   it("uses stable operation and notification keys across reaction retries", async () => {

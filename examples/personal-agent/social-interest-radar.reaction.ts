@@ -127,12 +127,6 @@ interface PersistedDraft {
   };
 }
 
-function producerRunKey(ctx: ReactionContext): string {
-  return ctx.window.run_id != null
-    ? `run:${ctx.window.run_id}`
-    : `window:${ctx.window.id}:version:${ctx.behavior.version}`;
-}
-
 function notificationBody(lines: string[]): string {
   const body = lines.join("\n");
   return body.length <= 1000 ? body : `${body.slice(0, 997)}...`;
@@ -189,46 +183,13 @@ export default async (
      ORDER BY id`
   )) as PersistedDraft[];
 
-  const producerKey = producerRunKey(ctx);
   const deliveryNotes: string[] = [];
 
-  const sendDigest = async (
-    signals: PersistedSignal[] = deliveredSignals,
-    includeDrafts = true
-  ): Promise<void> => {
-    if (signals.length === 0) return;
-    const contentIds = signals.flatMap((signal) => {
-      const sourceId = Number(signal.metadata.source_event_id);
-      return Number.isInteger(sourceId) && sourceId > 0
-        ? [sourceId, signal.id]
-        : [signal.id];
-    });
-    if (includeDrafts) {
-      for (const draft of deliveredDrafts) contentIds.push(draft.id);
-    }
-    const lines = signals.map(
-      ({ author_name, metadata }) =>
-        `[${metadata.priority ?? "normal"}] ${author_name ?? "Someone"} (${metadata.platform ?? "social"}) — ${metadata.why ?? "New signal"}`
-    );
-    if (deliveryNotes.length > 0) lines.push("", ...deliveryNotes);
-    const body = notificationBody(lines);
-    await client.notifications.send({
-      title: "Social interest radar",
-      body,
-      recipients: "admins",
-      resource_url: `/${encodeURIComponent(ctx.organization_slug)}/memory?content_ids=${[
-        ...new Set(contentIds),
-      ].join(",")}`,
-      idempotency_key: `social-radar:notification:${producerKey}`,
-      behavior_source: {
-        behavior_id: ctx.behavior.id,
-        window_id: ctx.window.id,
-      },
-    });
-  };
-
+  // Only draft-ready notifications are delivered. The "everything I noticed"
+  // digest added a raw timeline dump (source tweets + signals) as a second
+  // notification; the draft-ready cards already surface the curated, actionable
+  // items, so a run with no drafts notifies nothing.
   if (deliveredDrafts.length === 0) {
-    await sendDigest();
     return;
   }
 
@@ -236,7 +197,6 @@ export default async (
     behavior_id: ctx.behavior.id,
     window_id: ctx.window.id,
   };
-  const notifiedSourceEventIds = new Set<number>();
   for (const draft of deliveredDrafts) {
     const connectionId = Number(draft.metadata.source_connection_id);
     const body = draft.payload_text?.trim();
@@ -349,16 +309,5 @@ export default async (
       idempotency_key: `social-radar:draft-ready:${draft.id}`,
       behavior_source: behaviorSource,
     });
-    if (Number.isSafeInteger(sourceEventId) && sourceEventId > 0) {
-      notifiedSourceEventIds.add(sourceEventId);
-    }
   }
-
-  // A draft-ready notification replaces the duplicate digest entry for its
-  // source; unrelated observations from the same firing still get the digest.
-  const undeliveredSignals = deliveredSignals.filter(
-    (signal) =>
-      !notifiedSourceEventIds.has(Number(signal.metadata.source_event_id))
-  );
-  await sendDigest(undeliveredSignals, notifiedSourceEventIds.size === 0);
 };

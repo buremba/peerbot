@@ -70,7 +70,10 @@ export const input = {
           metadata: {
             type: "object",
             properties: {
-              platform: { type: "string", enum: ["x", "linkedin"] },
+              platform: {
+                type: "string",
+                enum: ["x", "linkedin", "hackernews"],
+              },
               why: { type: "string" },
               priority: {
                 type: "string",

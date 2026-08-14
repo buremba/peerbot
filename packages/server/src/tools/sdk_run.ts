@@ -235,9 +235,9 @@ export function toMcpPublicSdkScriptResult(result: unknown): unknown {
     dry_run: row.dry_run === true,
   };
 
-  // Echo the caller-supplied heading so MCP App / ChatGPT result cards can
-  // render it above status. Documented on the input schema and on
-  // SdkScriptResultSchema — dropping it here breaks that contract.
+  // Preserve the caller-supplied heading in the public structured result. It is
+  // documented on both the input schema and SdkScriptResultSchema, so dropping
+  // it here breaks that contract.
   if (typeof row.title === "string" && row.title.trim()) {
     out.title = row.title.trim();
   }

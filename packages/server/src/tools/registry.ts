@@ -205,7 +205,7 @@ export interface ToolDefinition<T = any> {
   mcpMeta?: Record<string, unknown>;
   /**
    * Defaults to true. Setting it false suppresses BOTH the invocation
-   * audit/activity record and the MCP App result snapshot, so the derived
+   * audit/activity record and any MCP App result snapshot, so the derived
    * app-state helpers neither pollute activity nor snapshot themselves over
    * the originating result they were called to restore.
    */
@@ -237,7 +237,7 @@ const WRITE_WITHOUT_CONFIRM: ToolAnnotations = {
   idempotentHint: false,
 };
 
-const RICH_RESULT_MCP_META = {
+const LOBU_VIEW_MCP_META = {
   ui: {
     resourceUri: LOBU_INTERACTION_RESOURCE_URI,
     visibility: ['model', 'app'],
@@ -245,7 +245,12 @@ const RICH_RESULT_MCP_META = {
   'openai/outputTemplate': LOBU_INTERACTION_RESOURCE_URI,
 } as const;
 
-/** Tools advertised on MCP `tools/list` and external OpenAPI. */
+/**
+ * Data and action tools advertised on MCP `tools/list` and external OpenAPI.
+ * These deliberately have no Apps UI resource: agents can chain them without
+ * mounting an iframe for every intermediate result, then call
+ * `render_lobu_view` once for the final user-facing view or approval.
+ */
 const AGENT_TOOLS: ToolDefinition[] = [
   // ─── Memory hot path — read ───────────────────────────────────────────────
   {
@@ -261,7 +266,6 @@ const AGENT_TOOLS: ToolDefinition[] = [
     annotations: { ...AUDITED_READ, title: 'Search memory' },
     authorizationReadOnly: true,
     securityScopes: ['mcp:read'],
-    mcpMeta: RICH_RESULT_MCP_META,
     handler: search,
   },
   {
@@ -272,7 +276,6 @@ const AGENT_TOOLS: ToolDefinition[] = [
     outputSchema: SaveContentResultSchema,
     annotations: { ...WRITE_WITHOUT_CONFIRM, title: 'Save memory' },
     securityScopes: ['mcp:write'],
-    mcpMeta: RICH_RESULT_MCP_META,
     handler: saveContent,
   },
   {
@@ -284,10 +287,6 @@ const AGENT_TOOLS: ToolDefinition[] = [
     annotations: { ...AUDITED_READ, title: 'Search SDK docs' },
     authorizationReadOnly: true,
     securityScopes: ['mcp:read'],
-    // Deliberately no UI resource. This is a model-facing doc lookup on the way
-    // to query_sdk/run_sdk — the reader has nothing to verify, act on, or keep,
-    // and declaring a template makes the host instantiate a widget iframe for
-    // every lookup mid-reasoning. A UI belongs on results a human acts on.
     handler: sdkSearch,
   },
   // ─── Power tools — TS scripting + raw SQL ─────────────────────────────────
@@ -301,7 +300,6 @@ const AGENT_TOOLS: ToolDefinition[] = [
     annotations: { ...AUDITED_READ, title: 'Query SDK (read-only)' },
     authorizationReadOnly: true,
     securityScopes: ['mcp:read'],
-    mcpMeta: RICH_RESULT_MCP_META,
     handler: querySdkScript,
   },
   {
@@ -313,7 +311,6 @@ const AGENT_TOOLS: ToolDefinition[] = [
     annotations: { ...AUDITED_READ, title: 'Query SQL' },
     authorizationReadOnly: true,
     securityScopes: ['mcp:read'],
-    mcpMeta: RICH_RESULT_MCP_META,
     handler: querySql,
   },
   {
@@ -330,7 +327,6 @@ const AGENT_TOOLS: ToolDefinition[] = [
       title: 'Run SDK',
     },
     securityScopes: ['mcp:write'],
-    mcpMeta: RICH_RESULT_MCP_META,
     handler: runSdkScript,
   },
 ];
@@ -351,7 +347,7 @@ const MCP_APP_TOOLS: ToolDefinition[] = [
     annotations: { ...AUDITED_READ, title: 'Render Lobu view' },
     authorizationReadOnly: true,
     securityScopes: ['mcp:read'],
-    mcpMeta: RICH_RESULT_MCP_META,
+    mcpMeta: LOBU_VIEW_MCP_META,
     handler: renderLobuView,
   },
   {

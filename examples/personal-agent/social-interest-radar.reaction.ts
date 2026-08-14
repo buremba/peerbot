@@ -264,10 +264,10 @@ export default async (
       platform === "hackernews" &&
       !/^https:\/\/news\.ycombinator\.com\/item\?id=\d+$/.test(targetUrl)
     ) {
-      client.log(
-        "Saved Hacker News draft has no durable item URL; skipping.",
-        { draft_event_id: draft.id, source_url: sourceUrl }
-      );
+      client.log("Saved Hacker News draft has no durable item URL; skipping.", {
+        draft_event_id: draft.id,
+        source_url: sourceUrl,
+      });
       continue;
     }
 

@@ -275,10 +275,9 @@ export function buildAttributionAndOwned(
       // The three-way baseline must record the execution_config the apply just
       // wrote (including the merged remote keys), or a later model edit is
       // misclassified as "remote moved" blocking drift instead of an update.
-      execution_config:
-        p.model
-          ? { ...(r?.execution_config ?? {}), model: p.model }
-          : (r?.execution_config ?? null),
+      execution_config: p.model
+        ? { ...(r?.execution_config ?? {}), model: p.model }
+        : (r?.execution_config ?? null),
       outputs: p.outputs,
       classifiers: p.classifiers,
     };

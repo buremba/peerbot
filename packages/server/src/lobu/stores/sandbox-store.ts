@@ -138,8 +138,8 @@ export interface AgentRuntimeSelection {
  * Resolve the agent's sandbox. THROWS on a database error — the pin path must
  * tell "resolved to builtin" apart from "resolution failed" (freezing a
  * transient failure to builtin would poison the pin permanently), and both
- * callers of {@link resolvePinnedSelection} handle the throw (the enqueue site
- * best-effort, the spawn site by retry). Callers pre-guard org/agent presence.
+ * callers of {@link resolvePinnedSelection} propagate the throw into their
+ * retry paths. Callers pre-guard org/agent presence.
  */
 async function resolveAgentRuntimeSelection(
 	agentId: string,
@@ -157,8 +157,8 @@ async function resolveAgentRuntimeSelection(
 	const row = rows[0];
 	// A provider sandbox → run there. Anything else (no sandbox, builtin, or a
 	// deleted sandbox row) → local just-bash. Throws on a DB error: the pin path
-	// must NOT freeze a failed lookup, and the enqueue caller wraps this
-	// best-effort while the spawn caller retries — neither wants a silent {}.
+	// must NOT freeze a failed lookup. Both dispatch callers retry rather than
+	// interpreting a failed resolution as a silent {}.
 	if (row?.provider_kind && row.sandbox_id != null) {
 		return {
 			runtimeProviderId: row.provider_kind,

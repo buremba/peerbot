@@ -391,27 +391,15 @@ export class MessageConsumer {
       // repoint never moves an existing conversation's sandbox. Undefined →
       // local just-bash.
       //
-      // Best-effort at the enqueue site: resolvePinnedSelection throws on a total
-      // DB failure (to fail-closed the RUNTIME realm decision), but dispatch
-      // liveness must not hinge on a pin read — a blip here degrades this ONE turn
-      // to unpinned rather than dropping the message. The pin self-heals on the
-      // next turn (the CAS guard means an unpinned dispatch never overwrites an
-      // existing pin), and the runtime route re-resolves the realm from the token.
-      let runtimeSelection: Awaited<ReturnType<typeof resolvePinnedSelection>>;
-      try {
-        runtimeSelection = await resolvePinnedSelection({
-          organizationId: data.organizationId,
-          agentId: data.agentId,
-          platform: data.platform,
-          conversationId: effectiveConversationId,
-        });
-      } catch (err) {
-        logger.warn(
-          { traceId, agentId: data.agentId, error: getErrorMessage(err) },
-          "Pin resolution failed at enqueue; dispatching this turn unpinned"
-        );
-        runtimeSelection = {};
-      }
+      // Resolution errors propagate to the durable queue's retry path. A remote
+      // runtime trusts the signed token and does not re-resolve the realm, so an
+      // unresolved pin must never be minted or delivered as an unpinned turn.
+      const runtimeSelection = await this.resolveRuntimeSelection({
+        organizationId: data.organizationId,
+        agentId: data.agentId,
+        platform: data.platform,
+        conversationId: effectiveConversationId,
+      });
 
       // Stamp the pinned provider onto the payload body so the worker selects its
       // bash backend per-turn (a warm deployment is reused across conversations
@@ -860,6 +848,13 @@ export class MessageConsumer {
 
   private releaseDeploymentLock(deploymentName: string): void {
     this.deploymentLocks.delete(deploymentName);
+  }
+
+  /** Test seam around the durable conversation-pin resolver. */
+  protected resolveRuntimeSelection(
+    args: Parameters<typeof resolvePinnedSelection>[0]
+  ): ReturnType<typeof resolvePinnedSelection> {
+    return resolvePinnedSelection(args);
   }
 
   /**

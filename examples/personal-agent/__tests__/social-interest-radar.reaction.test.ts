@@ -10,9 +10,9 @@ describe("hnItemUrl", () => {
   });
 
   it("canonicalizes an HN item URL", () => {
-    expect(
-      hnItemUrl("https://news.ycombinator.com/item?id=49296627")
-    ).toBe("https://news.ycombinator.com/item?id=49296627");
+    expect(hnItemUrl("https://news.ycombinator.com/item?id=49296627")).toBe(
+      "https://news.ycombinator.com/item?id=49296627"
+    );
   });
 
   it("leaves a non-HN URL unchanged", () => {

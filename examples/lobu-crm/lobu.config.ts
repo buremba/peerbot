@@ -41,9 +41,9 @@ const crm = defineAgent({
   ],
   providers: [
     {
-      id: "z-ai",
-      model: "z-ai/glm-5.2",
-      key: secret("Z_AI_API_KEY"),
+      id: "anthropic",
+      model: "claude/claude-sonnet-5",
+      key: secret("ANTHROPIC_API_KEY"),
     },
   ],
   network: {
@@ -58,8 +58,6 @@ const crm = defineAgent({
       "news.ycombinator.com",
       "hn.algolia.com",
       "api.producthunt.com",
-      "api.z.ai",
-      ".z.ai",
       "lobu.ai",
       ".dust.tt",
       ".glean.com",

@@ -70,21 +70,15 @@ describe("resolveSystemKeyProvidersAndModel (#9 — every system-key provider re
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
   ];
-  const ZAI_ENV = ["Z_AI_API_KEY", "ZAI_API_KEY"];
   const savedClaude: Record<string, string | undefined> = {};
-  const savedZai: Record<string, string | undefined> = {};
 
   beforeAll(async () => {
     await access(PROVIDERS_JSON);
     process.env.LOBU_PROVIDER_REGISTRY_PATH = PROVIDERS_JSON;
     process.env.OPENAI_API_KEY = "sk-test-system-resolution";
-    // Hermetic: clear ambient Claude/ZAI keys so openai is the config default.
+    // Hermetic: clear ambient Claude keys so openai is the config default.
     for (const v of CLAUDE_ENV) {
       savedClaude[v] = process.env[v];
-      delete process.env[v];
-    }
-    for (const v of ZAI_ENV) {
-      savedZai[v] = process.env[v];
       delete process.env[v];
     }
   });
@@ -98,10 +92,6 @@ describe("resolveSystemKeyProvidersAndModel (#9 — every system-key provider re
     if (prevOpenAI === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = prevOpenAI;
     for (const [k, v] of Object.entries(savedClaude)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
-    for (const [k, v] of Object.entries(savedZai)) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }

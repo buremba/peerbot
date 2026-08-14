@@ -41,19 +41,12 @@ const MODEL_PROVIDER_PREFERENCE = [
 	"xai",
 ];
 
-const ZAI_PROVIDER_ID = "z-ai";
-const ZAI_SYSTEM_ENV_VARS = ["Z_AI_API_KEY", "ZAI_API_KEY"];
-
 const CLAUDE_PROVIDER_ID = "claude";
 const CLAUDE_SYSTEM_ENV_VARS = [
 	"ANTHROPIC_API_KEY",
 	"ANTHROPIC_AUTH_TOKEN",
 	"CLAUDE_CODE_OAUTH_TOKEN",
 ];
-
-function hasZaiSystemKey(): boolean {
-	return ZAI_SYSTEM_ENV_VARS.some((v) => !!resolveEnv(v));
-}
 
 function hasClaudeSystemKey(): boolean {
 	return CLAUDE_SYSTEM_ENV_VARS.some((v) => !!resolveEnv(v));
@@ -77,10 +70,6 @@ export async function resolveSystemKeyProvidersAndModel(): Promise<ResolvedSyste
 		if (cfg.envVarName && resolveEnv(cfg.envVarName)) {
 			installed.add(providerId);
 		}
-	}
-
-	if (hasZaiSystemKey()) {
-		installed.add(ZAI_PROVIDER_ID);
 	}
 
 	if (hasClaudeSystemKey()) {
@@ -133,14 +122,12 @@ export async function resolveSystemKeyProvidersAndModel(): Promise<ResolvedSyste
 	const pickDefault = (providerId: string): string | null =>
 		installed.has(providerId) ? concreteRef(providerId) : null;
 
-	// Prefer Claude over ZAI and the remaining config-declared providers, but use
+	// Prefer Claude over the remaining config-declared providers, but use
 	// the catalog's defaultModel for every provider. Keeping a second model ID in
 	// code made auto-provisioned agents lag the picker after catalog updates.
 	let defaultRef: string | null = hasClaudeSystemKey()
 		? pickDefault(CLAUDE_PROVIDER_ID)
-		: hasZaiSystemKey()
-			? pickDefault(ZAI_PROVIDER_ID)
-			: null;
+		: null;
 	for (const providerId of MODEL_PROVIDER_PREFERENCE) {
 		if (defaultRef) break;
 		defaultRef = pickDefault(providerId);

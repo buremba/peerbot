@@ -158,7 +158,7 @@ export abstract class BaseProviderModule
     const { slug, upstreamBaseUrl, baseUrlEnvVarName, apiKeyHeader } =
       this.providerConfig;
     if (!slug || !upstreamBaseUrl) return null;
-    // Check env for base URL override (e.g., ANTHROPIC_BASE_URL=https://api.z.ai)
+    // Check env for base URL override (e.g., ANTHROPIC_BASE_URL=https://api.anthropic.com)
     const envOverride = baseUrlEnvVarName
       ? resolveEnv(baseUrlEnvVarName)
       : undefined;

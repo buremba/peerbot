@@ -60,6 +60,22 @@ interface AccessDenialMessages {
 }
 
 /**
+ * A token has already passed the workspace-role check but lacks an MCP scope
+ * needed for the requested operation. Keeping this distinct from a role denial
+ * lets nested SDK calls request progressive OAuth authorization without ever
+ * offering an admin grant to an ordinary member.
+ */
+export class McpScopeRequiredError extends Error {
+  constructor(
+    message: string,
+    readonly requiredScope: 'mcp:admin'
+  ) {
+    super(message);
+    this.name = 'McpScopeRequiredError';
+  }
+}
+
+/**
  * Enforce the role + MCP-scope policy for a required access level.
  * Throws the caller-provided message on denial; returns on success.
  */
@@ -84,6 +100,6 @@ export function enforceRoleScopeAccess(
     if (requiredAccess === 'write') {
       throw new Error(messages.writeScope);
     }
-    throw new Error(messages.adminScope);
+    throw new McpScopeRequiredError(messages.adminScope, 'mcp:admin');
   }
 }

@@ -335,7 +335,7 @@ export class TranscriptionService {
       const compat = stt?.sdkCompat || entry.sdkCompat;
       // STT is only offered for providers that declare it. Historically this
       // defaulted ON for every OpenAI-compatible provider, which wrongly listed
-      // text-only chat providers (Cerebras, z.ai, Mistral, …) as transcription
+      // text-only chat providers (Cerebras, Mistral, …) as transcription
       // candidates — they have no /audio/transcriptions endpoint and 404. Gate
       // on the provider's declared modalities; an explicit `stt` block (with
       // enabled !== false) still counts as declaring STT.

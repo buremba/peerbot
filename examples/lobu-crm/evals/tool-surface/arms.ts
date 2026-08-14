@@ -13,8 +13,8 @@
  *   `buildMcpCliCommands` — with the gateway `callTool` dep swapped for the
  *   in-process dispatcher so it hits the same handlers as Arm A.
  *
- * Both arms run on glm-4.7 via the z-ai provider, with the model object
- * constructed exactly as the worker's model-resolver does.
+ * Both arms run on glm-4.7 via the z-ai endpoint, with the harness constructing
+ * the OpenAI-compatible pi model directly.
  */
 
 import { spawn } from "node:child_process";
@@ -68,7 +68,7 @@ ${servers}`;
 const Z_AI_BASE_URL =
   process.env.Z_AI_API_BASE_URL || "https://api.z.ai/api/coding/paas/v4";
 
-/** Build the glm-4.7 model object the way the worker model-resolver does. */
+/** Build the glm-4.7 OpenAI-compatible model object used by this eval. */
 export function buildGlm47Model(): {
   model: unknown;
   authStorage: AuthStorage;

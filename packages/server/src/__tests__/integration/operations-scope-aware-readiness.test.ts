@@ -26,10 +26,25 @@ const ACTIONS_SCHEMA = {
 		requiresApproval: true,
 		requiredScopes: [WRITE_SCOPE],
 	},
+	update_event: {
+		key: "update_event",
+		name: "Update Event",
+		kind: "write",
+		requiresApproval: true,
+		requiredScopes: [WRITE_SCOPE],
+	},
+	delete_event: {
+		key: "delete_event",
+		name: "Delete Event",
+		kind: "write",
+		requiresApproval: true,
+		requiredScopes: [WRITE_SCOPE],
+	},
 	get_event: {
 		key: "get_event",
 		name: "Get Event",
 		kind: "read",
+		requiresApproval: false,
 	},
 };
 
@@ -50,7 +65,6 @@ describe("operation readiness respects OAuth scopes", () => {
 			connector_key: CONNECTOR_KEY,
 			created_by: userId,
 			visibility: "private",
-			config: { action_modes: { create_event: "auto", get_event: "auto" } },
 		});
 		const profile = await createAuthProfile({
 			organizationId: orgId,
@@ -111,7 +125,7 @@ describe("operation readiness respects OAuth scopes", () => {
 		`;
 		await sql`
 			UPDATE connector_versions
-			SET compiled_code = ${`class R { async sync(){return {items:[]};} async execute(ctx){return {success:true,output:{}};} } export { R };`}
+			SET compiled_code = ${`class R { async sync(){return {items:[]};} async execute(ctx){return {success:true,output:{operation_key:ctx.actionKey}};} } export { R };`}
 			WHERE connector_key = ${CONNECTOR_KEY}
 		`;
 
@@ -194,11 +208,19 @@ describe("operation readiness respects OAuth scopes", () => {
 			],
 		});
 
-		const [input] = op.next_action?.arguments as Array<Record<string, unknown>>;
+		const writeScopedCtx = {
+			...ctx,
+			scopes: ["mcp:read", "mcp:write"],
+		};
 		const result = await manageAuthProfiles(
-			{ action: "update_auth_profile", ...input } as never,
+			{
+				action: "update_auth_profile",
+				auth_profile_slug: seeded.profileSlug,
+				requested_scopes: [WRITE_SCOPE],
+				reconnect: true,
+			} as never,
 			{} as Env,
-			ctx,
+			writeScopedCtx,
 		);
 		expect(result).toMatchObject({
 			action: "update_auth_profile",
@@ -207,6 +229,52 @@ describe("operation readiness respects OAuth scopes", () => {
 				requested_scopes: [READONLY_SCOPE, WRITE_SCOPE],
 			},
 		});
+		const [stored] = await getTestDb()`
+			SELECT auth_data
+			FROM auth_profiles
+			WHERE organization_id = ${orgId} AND slug = ${seeded.profileSlug}
+		`;
+		expect(stored?.auth_data).toMatchObject({
+			requested_scopes: [READONLY_SCOPE, WRITE_SCOPE],
+			granted_scopes: [READONLY_SCOPE],
+		});
+	});
+
+	it("rejects direct execution with retry-after-consent guidance before creating a run", async () => {
+		const before = await getTestDb()`
+			SELECT COUNT(*)::integer AS count
+			FROM runs
+			WHERE organization_id = ${orgId}
+			  AND connection_id = ${readonlyConnId}
+			  AND run_type = 'action'
+		`;
+		const result = await manageOperations(
+			{
+				action: "execute",
+				connection_id: readonlyConnId,
+				operation_key: "create_event",
+				input: {},
+			},
+			{} as Env,
+			ctx,
+		);
+		expect(result).toEqual({
+			error: expect.stringContaining(WRITE_SCOPE),
+		});
+		expect(result).toMatchObject({
+			error: expect.stringMatching(/complete.*consent.*then retry.*operations\.execute/i),
+		});
+		expect(result).toMatchObject({
+			error: expect.stringMatching(/will not resume automatically/i),
+		});
+		const after = await getTestDb()`
+			SELECT COUNT(*)::integer AS count
+			FROM runs
+			WHERE organization_id = ${orgId}
+			  AND connection_id = ${readonlyConnId}
+			  AND run_type = 'action'
+		`;
+		expect(after[0]?.count).toBe(before[0]?.count);
 	});
 
 	it("keeps read actions on the same connection executable", async () => {
@@ -219,6 +287,45 @@ describe("operation readiness respects OAuth scopes", () => {
 		const op = await listOp("create_event", writableConnId);
 		expect(op.executable).toBe(true);
 		expect(op.readiness).toBe("ready");
+	});
+
+	it("keeps Calendar mutations approval-gated while get_event executes as a read", async () => {
+		for (const operationKey of [
+			"create_event",
+			"update_event",
+			"delete_event",
+		]) {
+			const result = await manageOperations(
+				{
+					action: "execute",
+					connection_id: writableConnId,
+					operation_key: operationKey,
+					input: {},
+				},
+				{} as Env,
+				ctx,
+			);
+			expect(result).toMatchObject({
+				action: "execute",
+				status: "pending_approval",
+			});
+		}
+
+		const read = await manageOperations(
+			{
+				action: "execute",
+				connection_id: writableConnId,
+				operation_key: "get_event",
+				input: {},
+			},
+			{} as Env,
+			ctx,
+		);
+		expect(read).toMatchObject({
+			action: "execute",
+			status: "completed",
+			output: { operation_key: "get_event" },
+		});
 	});
 
 	it("does not gate a legacy connection whose grant scopes were not recorded", async () => {

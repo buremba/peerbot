@@ -1,11 +1,14 @@
 import { type Static, Type } from "@sinclair/typebox";
 import { classifyToolError, isRetryable } from "@lobu/core";
-import { resolveMaxAccessLevel } from "../auth/tool-access";
+import { resolveSdkMaxAccessLevel } from "../auth/tool-access";
+import { buildMcpBearerChallenge } from "../auth/oauth/resource-indicator";
+import { isAdminOrOwnerRole } from "./access-control";
 import type { Env } from "../index";
 import { buildClientSDK, type SDKMode } from "../sandbox/client-sdk";
 import { MAX_SCRIPT_TIMEOUT_MS, runScript } from "../sandbox/run-script";
 import type { ToolContext } from "./registry";
 import { withValidatedArgs } from "./validate-args";
+import { attachMcpResultMeta } from "./mcp-result-meta";
 
 const SCRIPT_FIELDS = {
   script: Type.String({
@@ -232,9 +235,9 @@ export function toMcpPublicSdkScriptResult(result: unknown): unknown {
     dry_run: row.dry_run === true,
   };
 
-  // Echo the caller-supplied heading so MCP App / ChatGPT result cards can
-  // render it above status. Documented on the input schema and on
-  // SdkScriptResultSchema — dropping it here breaks that contract.
+  // Preserve the caller-supplied heading in the public structured result. It is
+  // documented on both the input schema and SdkScriptResultSchema, so dropping
+  // it here breaks that contract.
   if (typeof row.title === "string" && row.title.trim()) {
     out.title = row.title.trim();
   }
@@ -341,7 +344,7 @@ async function runSandbox(
     sdk: (abortSignal) => buildClientSDK(ctx, env, { mode, allowCrossOrg, abortSignal }),
     sdkMode: mode,
     allowCrossOrg,
-    maxAccessLevel: resolveMaxAccessLevel(ctx.memberRole, ctx.scopes),
+    maxAccessLevel: resolveSdkMaxAccessLevel(ctx.memberRole, ctx.scopes),
     dryRun,
     dryRunDispatchPaths:
       ctx.executionMode === "capture" ? CAPTURE_DISPATCH_PATHS : undefined,
@@ -363,7 +366,7 @@ async function runSandbox(
       })()
     : result.error;
   const title = args.title?.trim() || undefined;
-  return {
+  const output = {
     ...(title ? { title } : {}),
     success: result.success,
     return_value: result.returnValue,
@@ -384,6 +387,29 @@ async function runSandbox(
     // never appear under dry_run:false.
     dry_run: dryRun,
   };
+  const challengeRequestUrl = ctx.requestUrl ?? ctx.baseUrl;
+  // Only a failed run carries the challenge: the MCP handler flips any result
+  // holding one to isError, and a script that caught the denial and still
+  // succeeded must not be reported as an error.
+  if (
+    !result.success &&
+    result.requiredMcpScopes.includes("mcp:admin") &&
+    isAdminOrOwnerRole(ctx.memberRole) &&
+    (ctx.tokenType === "oauth" || ctx.tokenType === "pat") &&
+    challengeRequestUrl
+  ) {
+    return attachMcpResultMeta(output, {
+      "mcp/www_authenticate": [
+        buildMcpBearerChallenge(challengeRequestUrl, {
+          error: "insufficient_scope",
+          errorDescription:
+            result.error?.message ?? "The token lacks the required MCP admin scope.",
+          scope: "mcp:admin",
+        }),
+      ],
+    });
+  }
+  return output;
 }
 
 export const runSdkScript = withValidatedArgs(

@@ -51,7 +51,6 @@ export const DEFAULT_PROVIDER_BASE_URL_ENV: Record<string, string> = {
   // runtime; these stay as fallbacks for providers not in providers.json.
   gemini: "GEMINI_API_BASE_URL",
   nvidia: "NVIDIA_API_BASE_URL",
-  "z-ai": "Z_AI_API_BASE_URL",
 };
 
 /**
@@ -70,16 +69,14 @@ export const DEFAULT_PROVIDER_MODELS: Record<string, string> = {
   gemini: "gemini-2.5-flash",
   // NVIDIA's model registry uses the "organization/model" prefix format.
   nvidia: "nvidia/moonshotai/kimi-k2.6",
-  "z-ai": "glm-4.7",
 };
 
 /**
  * Map gateway provider slugs to model-registry provider names.
- * The gateway uses slugs like "z-ai" while the model registry uses "zai".
+ * The gateway uses slugs like "openai-codex" while the model registry may use
+ * a different name; this map bridges the two where they diverge.
  */
-export const PROVIDER_REGISTRY_ALIASES: Record<string, string> = {
-  "z-ai": "zai",
-};
+export const PROVIDER_REGISTRY_ALIASES: Record<string, string> = {};
 
 /**
  * Registry alias → pi-ai adapter, derived from the protocol registry. Lets the
@@ -94,6 +91,20 @@ export const PIAI_API_BY_REGISTRY_ALIAS: Record<string, PiAiApi> =
       .reverse()
       .map((p) => [p.registryAlias, p.api])
   );
+
+function stripOwnProviderPrefix(
+  modelId: string,
+  ...providerSlugs: Array<string | undefined>
+): string {
+  for (const providerSlug of new Set(
+    providerSlugs.filter((slug): slug is string => Boolean(slug))
+  )) {
+    if (modelId.startsWith(`${providerSlug}/`)) {
+      return modelId.slice(providerSlug.length + 1);
+    }
+  }
+  return modelId;
+}
 
 /** Exact adapters for dynamically registered provider slugs. */
 const PIAI_API_BY_DYNAMIC_PROVIDER: Record<string, PiAiApi> = {};
@@ -110,7 +121,7 @@ const PIAI_API_BY_DYNAMIC_PROVIDER: Record<string, PiAiApi> = {};
  * alias cannot make this call — both protocols share the "openai" alias and
  * the alias map collapses to completions — so the adapter is keyed on the raw
  * gateway slug: real OpenAI (`rawProvider === "openai"`) gets responses, while
- * every third-party openai-compatible endpoint (groq, z-ai, gemini, nvidia,
+ * every third-party openai-compatible endpoint (groq, gemini, nvidia,
  * together-ai, org BYO providers, …) keeps completions.
  */
 export function resolveDynamicModelApi(
@@ -189,7 +200,7 @@ interface DynamicModel {
 
 /**
  * Build a dynamic model entry for a config-driven provider whose model isn't in
- * pi-ai's static registry (gemini, nvidia, together-ai, z.ai, org BYO providers,
+ * pi-ai's static registry (gemini, nvidia, together-ai, org BYO providers,
  * …). The `api` selects the pi-ai adapter that speaks the provider's protocol —
  * defaults to openai-completions for the common OpenAI-compatible case.
  *
@@ -281,7 +292,7 @@ export function resolveModelRef(
   }
 
   // An explicit "<provider>/<model>" ref selects its own provider — a Behavior
-  // running on z-ai while its base agent uses Claude, or simply an agent pinned
+  // pinned to a provider the base agent does not use, or simply an agent pinned
   // to a provider the deployment does not publish as its default. `defaultProvider`
   // is a deployment-level fact and the ref is a run-level one, so the ref wins;
   // its Lobu ID is routed to the upstream runtime slug (claude → anthropic).
@@ -319,6 +330,7 @@ export function resolveModelRef(
         DEFAULT_PROVIDER_MODELS[routedProvider] ??
         modelId;
     }
+    modelId = stripOwnProviderPrefix(modelId, explicitProvider, routedProvider);
     return {
       provider: routedProvider,
       providerSlug: explicitProvider,
@@ -332,38 +344,43 @@ export function resolveModelRef(
   // "openai/gpt-4o" mean "OpenRouter's anthropic/openai model", not "switch to
   // the anthropic/openai provider". Splitting on "/" here would mis-route them.
   if (defaultProvider) {
+    // Normalize a leading "<configured-provider>/" self-prefix before the
+    // sentinel check. Lobu
+    // names models "provider/model" ("nvidia/…"), but the upstream
+    // provider's own namespace is the bare code — shipping the Lobu
+    // prefix makes sdkCompat:openai providers 400 "Unknown
+    // Model". Only the configured provider's OWN id is stripped, so a foreign
+    // namespace slug (OpenRouter's "anthropic/claude-sonnet-4") stays intact.
+    // Normalization runs before the sentinel check so "nvidia/auto" resolves like
+    // bare "auto" instead of reaching the upstream API as the literal model
+    // "auto".
+    //
+    // `defaultProvider` is the UPSTREAM slug ("anthropic"); strip that AND the
+    // LOBU slug ("claude") when they differ, since the stored model is prefixed
+    // with the Lobu id.
+    const normalizedModelId = stripOwnProviderPrefix(
+      modelRef,
+      defaultProvider,
+      defaultProviderSlug
+    );
     let modelId = modelRef;
-    // Resolve "auto" to the configured provider's default model FIRST — the
-    // default itself may carry a redundant prefix (e.g. nvidia →
-    // "nvidia/moonshotai/kimi-k2.5"), so stripping has to run after this.
-    if (modelId === "auto") {
+    if (normalizedModelId === "auto") {
       const fallback = DEFAULT_PROVIDER_MODELS[defaultProvider];
       if (fallback) {
         logger.info(`Resolved auto model for ${defaultProvider}: ${fallback}`);
         modelId = fallback;
+      } else {
+        modelId = normalizedModelId;
       }
     }
-    // Then strip a redundant leading "<configured-provider>/" self-prefix. Lobu
-    // names models "provider/model" ("z-ai/glm-4.7"), but the upstream
-    // provider's own namespace is the bare code ("glm-4.7") — shipping the Lobu
-    // prefix makes z.ai (and other sdkCompat:openai providers) 400 "Unknown
-    // Model". Only the configured provider's OWN id is stripped, so a foreign
-    // namespace slug (OpenRouter's "anthropic/claude-sonnet-4") stays intact.
-    // Runs after the auto-resolution above so a prefixed default is covered too.
-    //
-    // `defaultProvider` is the UPSTREAM slug ("anthropic"); strip that AND the
-    // LOBU slug ("claude") when they differ, since the stored model is prefixed
-    // with the Lobu id. Without the second strip, "claude/claude-opus-4-8"
-    // reaches the Anthropic API verbatim and 404s.
-    if (modelId.startsWith(`${defaultProvider}/`)) {
-      modelId = modelId.slice(defaultProvider.length + 1);
-    } else if (
-      defaultProviderSlug &&
-      defaultProviderSlug !== defaultProvider &&
-      modelId.startsWith(`${defaultProviderSlug}/`)
-    ) {
-      modelId = modelId.slice(defaultProviderSlug.length + 1);
-    }
+    // Strip exactly one prefix from the selected model. This covers prefixed
+    // provider defaults while preserving an intentional inner namespace in a
+    // doubly-prefixed stored ref such as "nvidia/nvidia/moonshotai/...".
+    modelId = stripOwnProviderPrefix(
+      modelId,
+      defaultProvider,
+      defaultProviderSlug
+    );
     // Reaching here means the ref did NOT name an installed provider other than
     // the configured one — it is the configured provider's own model, a bare
     // model id, or a prefix no installed provider answers to (an aggregator's

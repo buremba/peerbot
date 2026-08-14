@@ -23,6 +23,11 @@ const writeCtx: ToolContext = {
 	scopes: ["mcp:read", "mcp:write"],
 };
 
+const ownerWriteCtx: ToolContext = {
+	...writeCtx,
+	memberRole: "owner",
+};
+
 const adminCtx: ToolContext = {
 	...readCtx,
 	memberRole: "owner",
@@ -166,7 +171,69 @@ describe("sdkSearch", () => {
 			writeCtx
 		);
 		expect(result.match_count).toBe(0);
-		expect(result.notes).toContain("mcp:admin");
+		expect(result.notes).toMatch(/ask a workspace owner\/admin/i);
+		expect(result.notes).toMatch(/cannot elevate/i);
+	});
+
+	it("shows an owner with mcp:write progressively authorizable admin methods", async () => {
+		const result = await sdkSearch(
+			{ query: "connections.connect" },
+			stubEnv,
+			ownerWriteCtx,
+		);
+
+		expect(result.match_count).toBe(1);
+		expect(result.results[0]).toContain("connections.connect");
+		expect(result.results[0]).toContain("access: administer");
+	});
+
+	it("keeps exact read-mode misses caller-aware", async () => {
+		const owner = await sdkSearch(
+			{ query: "connections.connect", mode: "read" },
+			stubEnv,
+			ownerWriteCtx,
+		);
+		expect(owner.notes).toMatch(/requires run_sdk/i);
+		expect(owner.notes).toMatch(/progressively authorizable|OAuth challenge/i);
+		expect(owner.notes).toContain("mcp:admin");
+
+		const member = await sdkSearch(
+			{ query: "connections.connect", mode: "read" },
+			stubEnv,
+			writeCtx,
+		);
+		expect(member.notes).toMatch(/ask a workspace owner\/admin/i);
+		expect(member.notes).not.toMatch(/call via run_sdk/i);
+	});
+
+	it("keeps hidden admin namespaces role-aware without suggesting run_sdk", async () => {
+		const member = await sdkSearch(
+			{ query: "schedules" },
+			stubEnv,
+			writeCtx,
+		);
+		expect(member.match_count).toBe(0);
+		expect(member.notes).toMatch(/ask a workspace owner\/admin/i);
+		expect(member.notes).not.toMatch(/call via run_sdk/i);
+
+		const owner = await sdkSearch(
+			{ query: "schedules" },
+			stubEnv,
+			ownerWriteCtx,
+		);
+		expect(owner.match_count).toBeGreaterThan(0);
+		expect(owner.results.join("\n")).toContain("schedules.list");
+	});
+
+	it("shows progressively authorizable admin methods to an owner at write tier", async () => {
+		const result = await sdkSearch(
+			{ query: "agents.delete" },
+			stubEnv,
+			ownerWriteCtx
+		);
+		expect(result.match_count).toBe(1);
+		expect(result.results[0]).toContain("agents.delete");
+		expect(result.results[0]).toContain("access: administer");
 	});
 
 	it("shows the reclassified org-read agent lists in read mode", async () => {
@@ -200,7 +267,7 @@ describe("sdkSearch", () => {
 		expect(result.notes ?? "").not.toContain("none are visible");
 	});
 
-	it("discovers notifications.list in read mode; mutations need run_sdk", async () => {
+	it("discovers notifications.list in read mode and guides mutation elevation", async () => {
 		const listed = await sdkSearch(
 			{ query: "notifications", mode: "read" },
 			stubEnv,
@@ -218,13 +285,33 @@ describe("sdkSearch", () => {
 			readCtx
 		);
 		expect(markRead.match_count).toBe(0);
-		expect(markRead.notes ?? "").toContain("run_sdk");
+		expect(markRead.notes ?? "").toContain("operate access (mcp:write)");
+		expect(markRead.notes ?? "").toMatch(/reconnect|reauthorize/i);
+		expect(markRead.notes ?? "").not.toMatch(/call via run_sdk/i);
 	});
 
 	it("shows admin methods to admin-tier callers", async () => {
 		const result = await sdkSearch({ query: "agents.list" }, stubEnv, adminCtx);
 		expect(result.match_count).toBe(1);
 		expect(result.results[0]).toContain("agents.list");
+	});
+
+	it("renders public access tiers with their matching MCP scopes", async () => {
+		const operate = await sdkSearch(
+			{ query: "operations.execute" },
+			stubEnv,
+			writeCtx,
+		);
+		expect(operate.results[0]).toContain("access: operate (mcp:write)");
+
+		const administer = await sdkSearch(
+			{ query: "connections.connect" },
+			stubEnv,
+			adminCtx,
+		);
+		expect(administer.results[0]).toContain(
+			"access: administer (workspace owner/admin + mcp:admin)",
+		);
 	});
 
 	it("substring-matches across paths and summaries", async () => {

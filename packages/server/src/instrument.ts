@@ -12,6 +12,7 @@
 import dotenv from 'dotenv';
 import * as Sentry from '@sentry/node';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { resolveSentryRuntime } from './utils/runtime-info';
 
 // .env is the single source of truth for secrets. This module reads SENTRY_DSN
 // (and ENVIRONMENT / SENTRY_RELEASE) at load time and is imported before any
@@ -22,19 +23,33 @@ dotenv.config();
 
 const dsn = process.env.SENTRY_DSN;
 
-if (dsn) {
-  const isDev = process.env.NODE_ENV === 'development' || process.env.ENVIRONMENT === 'development';
+// A dev runtime never legitimately reports as production. A worktree/dev
+// stack can carry a prod .env copy with ENVIRONMENT=production, so use
+// NODE_ENV=development to keep those events out of the production stream.
+// Override only Sentry's tag: mutating process.env here would also change
+// logger mode and the environment inherited by workers later in the boot.
+const {
+  environment: sentryEnvironment,
+  isDevelopment: isDev,
+  devTaggedAsProduction,
+} = resolveSentryRuntime({
+  ENVIRONMENT: process.env.ENVIRONMENT,
+  NODE_ENV: process.env.NODE_ENV,
+});
+if (dsn && devTaggedAsProduction) {
+  console.error(
+    '[instrument] ENVIRONMENT=production with NODE_ENV=development — tagging local Sentry events as development instead of polluting prod'
+  );
+}
 
+if (dsn) {
   Sentry.init({
     dsn,
     // Default to 'development', NOT 'production'. Prod deployments set ENVIRONMENT
     // explicitly (charts/lobu), so the only stacks that hit this fallback are
-    // local/dev/example ones that happen to carry a SENTRY_DSN. Defaulting to
-    // 'production' made those mislabel as prod and pollute the prod Sentry view
-    // (e.g. a docker-compose stack dialing the dev-default `lobu-postgres` host
-    // surfaced as the #1 "production" error). A non-prod default keeps the prod
-    // environment filter trustworthy.
-    environment: process.env.ENVIRONMENT || 'development',
+    // local/dev/example ones that happen to carry a SENTRY_DSN. A non-prod
+    // default keeps the production environment filter trustworthy.
+    environment: sentryEnvironment,
     release: process.env.SENTRY_RELEASE || process.env.APP_GIT_SHA || undefined,
     // 0.1 produced ~250k spans/day (~7.5M/mo) and exhausted the plan's 5M span
     // quota by day ~20 of the usage period. 0.02 keeps ~50k/day (~1.5M/mo) —

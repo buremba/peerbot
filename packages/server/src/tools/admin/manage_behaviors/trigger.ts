@@ -6,6 +6,7 @@
 import { getDb } from "../../../db/client";
 import type { Env } from "../../../index";
 import { isLobuGatewayRunning } from "../../../lobu/gateway";
+import { ToolUserError } from "../../../utils/errors";
 import logger from "../../../utils/logger";
 import {
   getWatcherRunInfo,
@@ -36,7 +37,7 @@ export async function handleTrigger(
   const sql = getDb();
 
   if (!args.behavior_id) {
-    throw new Error("behavior_id is required for trigger action");
+    throw new ToolUserError("behavior_id is required for trigger action", 400);
   }
 
   if (!isLobuGatewayRunning()) {
@@ -80,7 +81,7 @@ export async function handleSetReactionScript(
   const sql = getDb();
 
   if (!args.behavior_id) {
-    throw new Error("behavior_id is required for set_reaction_script");
+    throw new ToolUserError("behavior_id is required for set_reaction_script", 400);
   }
 
   await requireExists(sql, "watchers", args.behavior_id, "Behavior");

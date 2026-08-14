@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { McpScopeRequiredError } from "../../../tools/access-control";
 import { runOrSkip, stubSDK } from "./_helpers";
 
 /**
@@ -95,5 +96,36 @@ describe("sandbox started-side-effect tally", () => {
 
     expect(result.startedSideEffects).toEqual([]);
     expect(result.skippedCalls).toBe(1);
+  });
+
+  test("carries an admin-scope denial across the isolate with prior side effects intact", async () => {
+    const result = await runOrSkip({
+      source: `export default async (ctx, client) => {
+        await client.entities.update({ id: 1 });
+        await client.agents.delete({ agent_id: "agent-1" });
+      }`,
+      sdk: stubSDK({
+        entities: { update: async () => ({ ok: true }) },
+        agents: {
+          delete: async () => {
+            throw new McpScopeRequiredError(
+              "Action manage_agents.delete requires an MCP session with admin access.",
+              "mcp:admin",
+            );
+          },
+        },
+      } as never),
+      sdkMode: "full",
+      maxAccessLevel: "admin",
+    });
+    if (!result) return;
+
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toContain("admin access");
+    expect(result.requiredMcpScopes).toEqual(["mcp:admin"]);
+    expect(result.startedSideEffects).toEqual([
+      { path: "entities.update", access: "write", count: 1 },
+      { path: "agents.delete", access: "admin", count: 1 },
+    ]);
   });
 });

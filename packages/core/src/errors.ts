@@ -159,7 +159,7 @@ export class ConfigError extends BaseError {
  * new branch in a renderer.
  */
 export enum AgentErrorCode {
-  /** Provider weekly/monthly/rate limit hit (e.g. z.ai 429 "Limit Exhausted"). */
+  /** Provider weekly/monthly/rate limit hit (e.g. a 429 "Limit Exhausted"). */
   PROVIDER_QUOTA_EXHAUSTED = "PROVIDER_QUOTA_EXHAUSTED",
   /** Provider credentials missing/invalid/expired. */
   PROVIDER_AUTH = "PROVIDER_AUTH",
@@ -318,7 +318,7 @@ export const AGENT_ERRORS: Record<AgentErrorCode, AgentErrorSpec> = {
  * `PROVIDER_QUOTA_EXHAUSTED`, and `providerQuotaResetNotBefore` (server) parks
  * a Behavior for a day on the same wording. They were maintained as separate
  * literals and drifted in both directions: the server list learned OpenAI's
- * "no credits remaining" and z.ai's "no resource package" while the worker's
+ * "no credits remaining" while the worker's
  * did not, and the worker matched "insufficient quota" while the server's park
  * list did not. Because the server gates on the code the worker assigns, the
  * first drift silently disabled BOTH the day-park and the provider-health

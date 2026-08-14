@@ -21,6 +21,35 @@ export function resolveRuntimeEnvironment(env?: RuntimeEnvLike | null): string {
   );
 }
 
+export function resolveSentryRuntime(env?: RuntimeEnvLike | null): {
+  environment: string;
+  isDevelopment: boolean;
+  devTaggedAsProduction: boolean;
+} {
+  const source = env ?? process.env;
+  // Sentry's environment tag comes from ENVIRONMENT alone — never NODE_ENV.
+  // The Docker images bake in NODE_ENV=production (docker/app, docker/worker),
+  // so a NODE_ENV fallback would tag every compose/local stack that omits
+  // ENVIRONMENT as "production" and pollute the prod Sentry stream.
+  // An explicitly supplied snapshot is authoritative. Falling through from a
+  // partial snapshot to the host process made callers depend on an unrelated
+  // shell ENVIRONMENT value.
+  const declaredEnvironment = cleanString(source.ENVIRONMENT) || 'development';
+  const nodeEnvironment = cleanString(source.NODE_ENV);
+  const devTaggedAsProduction =
+    nodeEnvironment === 'development' && declaredEnvironment === 'production';
+  const environment = devTaggedAsProduction
+    ? 'development'
+    : declaredEnvironment;
+
+  return {
+    environment,
+    isDevelopment:
+      nodeEnvironment === 'development' || environment === 'development',
+    devTaggedAsProduction,
+  };
+}
+
 export function getRuntimeInfo(env?: RuntimeEnvLike | null) {
   return {
     version: packageJson.version,

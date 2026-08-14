@@ -333,7 +333,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(resource._meta?.ui?.domain).toBeUndefined();
   });
 
-  it('advertises rich result UIs for every public data tool and an app-only approval tool', async () => {
+  it('links only view-producing tools to the App resource and keeps helpers app-only', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const response = await post(`/mcp/${org.slug}`, {
       body: { jsonrpc: '2.0', id: 1, method: 'tools/list' },
@@ -366,37 +366,25 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       })
     );
 
-    // `search_sdk` is deliberately unlinked from the app resource: a model-facing
-    // doc lookup on the way to query_sdk/run_sdk gives the reader nothing to
-    // verify or act on, and a declared template instantiates a widget per lookup.
-    const sdkSearchTool = body.result?.tools?.find(
-      (entry: { name?: string }) => entry.name === 'search_sdk'
-    );
-    expect(sdkSearchTool).toBeDefined();
-    expect(sdkSearchTool?._meta?.ui).toBeUndefined();
-    expect(sdkSearchTool?._meta?.['openai/outputTemplate']).toBeUndefined();
-
+    // Data and action tools stay headless so multi-step SDK/memory work does
+    // not mount an iframe for every intermediate call. The model explicitly
+    // calls render_lobu_view once it has selected the final content a person
+    // should inspect, edit, or approve.
     for (const name of [
       'search_memory',
       'save_memory',
+      'search_sdk',
       'query_sdk',
       'query_sql',
       'run_sdk',
-      'render_lobu_view',
     ]) {
-      const richTool = body.result?.tools?.find(
+      const dataTool = body.result?.tools?.find(
         (entry: { name?: string }) => entry.name === name
       );
-      expect(richTool?._meta?.ui).toEqual(
-        expect.objectContaining({
-          resourceUri: 'ui://lobu/interaction/v12.html',
-          visibility: ['model', 'app'],
-        })
-      );
-      expect(richTool?._meta?.['openai/outputTemplate']).toBe(
-        'ui://lobu/interaction/v12.html'
-      );
-      expect(richTool?.outputSchema).toEqual(expect.objectContaining({ type: 'object' }));
+      expect(dataTool).toBeDefined();
+      expect(dataTool?._meta?.ui).toBeUndefined();
+      expect(dataTool?._meta?.['openai/outputTemplate']).toBeUndefined();
+      expect(dataTool?.outputSchema).toEqual(expect.objectContaining({ type: 'object' }));
     }
 
     const resolveApproval = body.result?.tools?.find(
@@ -413,7 +401,11 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         outputSchema: expect.objectContaining({ type: 'object' }),
         securitySchemes: [{ type: 'oauth2', scopes: ['mcp:write'] }],
         _meta: expect.objectContaining({
-          ui: expect.objectContaining({ visibility: ['app'] }),
+          ui: expect.objectContaining({
+            resourceUri: 'ui://lobu/interaction/v12.html',
+            visibility: ['app'],
+          }),
+          'openai/outputTemplate': 'ui://lobu/interaction/v12.html',
         }),
       })
     );
@@ -532,25 +524,25 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       return (await response.json()).result;
     };
 
-    // The app gates its Debug (raw JSON) disclosure on owner/admin, and the
-    // views it gates are the GENERIC ones — a `query_sql` table, a restored
-    // snapshot — not the server-authored card `render_lobu_view` returns. These
-    // are the results whose role actually decides whether the toggle appears.
-    const sqlResult = await call('query_sql', { sql: 'SELECT 1 AS row_number' });
-    expect(sqlResult?.isError).not.toBe(true);
-    expect(sqlResult?._meta?.['lobu/member-role']).toBe('owner');
+    // The role rides on the explicit user-facing view and app-only helpers.
+    const viewResult = await call('render_lobu_view', {
+      action: 'render',
+      blocks: [{ type: 'text', value: 'owner view' }],
+    });
+    expect(viewResult?.isError).not.toBe(true);
+    expect(viewResult?._meta?.['lobu/member-role']).toBe('owner');
 
     const restoreResult = await call('restore_lobu_app_result', {
       tool_call_id: 'member-role-unknown-card',
-      tool_name: 'query_sql',
+      tool_name: 'render_lobu_view',
     });
     expect(restoreResult?.structuredContent?.found).toBe(false);
     expect(restoreResult?._meta?.['lobu/member-role']).toBe('owner');
 
-    // A tool with no app UI has no such view to gate, so it stays clean.
-    const adminResult = await call('manage_agents', { action: 'list' });
-    expect(adminResult?.isError).not.toBe(true);
-    expect(adminResult?._meta?.['lobu/member-role']).toBeUndefined();
+    // A headless data tool has no app view to gate, so it stays clean.
+    const sqlResult = await call('query_sql', { sql: 'SELECT 1 AS row_number' });
+    expect(sqlResult?.isError).not.toBe(true);
+    expect(sqlResult?._meta?.['lobu/member-role']).toBeUndefined();
 
     // The role is the caller's own membership row, not a constant: a plain
     // member gets 'member' and the app hides the toggle for them.
@@ -567,8 +559,11 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       sessionToken: memberToken,
     });
     const memberResult = await call(
-      'query_sql',
-      { sql: 'SELECT 1 AS row_number' },
+      'render_lobu_view',
+      {
+        action: 'render',
+        blocks: [{ type: 'text', value: 'member view' }],
+      },
       memberToken,
       memberSession
     );
@@ -605,10 +600,9 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         id: 'public-reader-app-render',
         method: 'tools/call',
         params: {
-          // `render_lobu_view`, not `search_sdk`: the member role rides on
-          // `mcpMeta.ui` (mcp-handler.ts), and search_sdk no longer declares a
-          // UI resource — a model-facing doc lookup has no app to inform of a
-          // role. This tool renders host-authored blocks without reading
+          // The member role rides on `mcpMeta.ui` (mcp-handler.ts), so only an
+          // explicit user-facing render has an app to inform of the role. This
+          // tool renders host-authored blocks without reading
           // org-private data, so it keeps the caller org-independent.
           name: 'render_lobu_view',
           arguments: {
@@ -631,8 +625,8 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
   });
 
   it('emits no member role for a tool that declares no UI resource', async () => {
-    // The role exists to tell the APP who is looking. `search_sdk` stopped
-    // declaring a UI resource, so there is no app to tell and the key must be
+    // The role exists to tell the APP who is looking. `query_sql` is headless,
+    // so there is no app to tell and the key must be
     // absent — not null. Absent and null mean different things to the host:
     // null is an explicit downgrade, absent means "unchanged".
     const sessionId = await initSession(`/mcp/${org.slug}`);
@@ -642,8 +636,8 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         id: 'no-ui-tool-role',
         method: 'tools/call',
         params: {
-          name: 'search_sdk',
-          arguments: { query: 'behaviors', mode: 'read' },
+          name: 'query_sql',
+          arguments: { sql: 'SELECT 1 AS row_number' },
         },
       },
       headers: { 'mcp-session-id': sessionId },
@@ -651,6 +645,29 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     const body = await response.json();
     expect(body.result?.isError).not.toBe(true);
     expect('lobu/member-role' in (body.result?._meta ?? {})).toBe(false);
+  });
+
+  it('does not create an App snapshot for a headless data tool', async () => {
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'headless-data-tool-snapshot',
+        method: 'tools/call',
+        params: {
+          name: 'query_sql',
+          arguments: { sql: 'SELECT 1 AS row_number' },
+          _meta: { 'openai/session': 'headless-data-tool-conversation' },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    expect(body.result?.structuredContent?.rows).toEqual([{ row_number: 1 }]);
+    expect(body.result?._meta?.['lobu/member-role']).toBeUndefined();
+    expect(body.result?._meta?.['lobu/mcp-app-snapshot-capability']).toBeUndefined();
   });
 
   it('carries canonical null member role on a thrown app-UI error for a public reader', async () => {
@@ -706,7 +723,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
   it('binds reused backend request ids to distinct host cards and restores exact state', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const conversationId = 'chatgpt-conversation-restore-test';
-    const runQuery = async (rowNumber: number) => {
+    const renderView = async (viewNumber: number) => {
       const response = await post(`/mcp/${org.slug}`, {
         body: {
           jsonrpc: '2.0',
@@ -714,8 +731,12 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
           id: 'reused-backend-request-id',
           method: 'tools/call',
           params: {
-            name: 'query_sql',
-            arguments: { sql: `SELECT ${rowNumber} AS row_number` },
+            name: 'render_lobu_view',
+            arguments: {
+              action: 'render',
+              title: `Result ${viewNumber}`,
+              blocks: [{ type: 'text', label: 'View', value: String(viewNumber) }],
+            },
             _meta: { 'openai/session': conversationId },
           },
         },
@@ -727,7 +748,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     const restore = async (
       toolCallId: string,
       hostConversationId = conversationId,
-      toolName = 'query_sql'
+      toolName = 'render_lobu_view'
     ) => {
       const response = await post(`/mcp/${org.slug}`, {
         body: {
@@ -763,7 +784,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
             name: 'save_lobu_app_state',
             arguments: {
               tool_call_id: toolCallId,
-              tool_name: 'query_sql',
+              tool_name: 'render_lobu_view',
               view_state: viewState,
               ...(capabilityTransport === 'argument'
                 ? { snapshot_capability: capability }
@@ -785,7 +806,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     const restoreByCapability = async (
       capability: string,
       hostConversationId = conversationId,
-      toolName = 'query_sql'
+      toolName = 'render_lobu_view'
     ) => {
       const response = await post(`/mcp/${org.slug}`, {
         body: {
@@ -817,7 +838,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
             arguments: {
               tool_call_id: toolCallId,
               snapshot_capability: capability,
-              tool_name: 'query_sql',
+              tool_name: 'render_lobu_view',
             },
             _meta: { 'openai/session': conversationId },
           },
@@ -840,7 +861,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
             name: 'save_lobu_app_state',
             arguments: {
               snapshot_capability: capability,
-              tool_name: 'query_sql',
+              tool_name: 'render_lobu_view',
               view_state: viewState,
             },
             _meta: { 'openai/session': conversationId },
@@ -852,14 +873,14 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       return (await response.json()).result?.structuredContent;
     };
 
-    const firstBody = await runQuery(1);
-    expect(firstBody.result?.structuredContent?.rows).toEqual([{ row_number: 1 }]);
+    const firstBody = await renderView(1);
+    expect(firstBody.result?.structuredContent?.title).toBe('Result 1');
     const firstCapability = firstBody.result?._meta?.['lobu/mcp-app-snapshot-capability'];
     expect(firstCapability).toEqual(expect.any(String));
     expect(await restore('host-card-1')).toEqual({ found: false, view_state: {} });
     expect(
       await bindCard('host-card-1', firstCapability, {
-        'table.sql.page': 2,
+        'view.page': 2,
         nested: { dropped: true },
       })
     ).toEqual({ saved: true });
@@ -873,30 +894,30 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     });
     expect(await restore('host-card-1')).toEqual({
       found: true,
-      tool_name: 'query_sql',
+      tool_name: 'render_lobu_view',
       data: firstBody.result.structuredContent,
-      view_state: { 'table.sql.page': 2 },
+      view_state: { 'view.page': 2 },
     });
     expect(
-      await bindCard('host-card-1', firstCapability, { 'table.sql.page': 3 })
+      await bindCard('host-card-1', firstCapability, { 'view.page': 3 })
     ).toEqual({ saved: true });
-    expect((await restore('host-card-1'))?.view_state).toEqual({ 'table.sql.page': 3 });
+    expect((await restore('host-card-1'))?.view_state).toEqual({ 'view.page': 3 });
 
-    const secondBody = await runQuery(2);
-    expect(secondBody.result?.structuredContent?.rows).toEqual([{ row_number: 2 }]);
+    const secondBody = await renderView(2);
+    expect(secondBody.result?.structuredContent?.title).toBe('Result 2');
     const secondCapability = secondBody.result?._meta?.['lobu/mcp-app-snapshot-capability'];
     expect(secondCapability).toEqual(expect.any(String));
     expect(secondCapability).not.toBe(firstCapability);
     expect(await bindCard('host-card-2', secondCapability, {}, 'metadata')).toEqual({
       saved: true,
     });
-    expect((await restore('host-card-1'))?.data?.rows).toEqual([{ row_number: 1 }]);
-    expect((await restore('host-card-2'))?.data?.rows).toEqual([{ row_number: 2 }]);
+    expect((await restore('host-card-1'))?.data?.title).toBe('Result 1');
+    expect((await restore('host-card-2'))?.data?.title).toBe('Result 2');
     expect(
-      (await restoreByCardAndCapability('host-card-1', secondCapability))?.data?.rows
-    ).toEqual([{ row_number: 2 }]);
+      (await restoreByCardAndCapability('host-card-1', secondCapability))?.data?.title
+    ).toBe('Result 2');
 
-    const thirdBody = await runQuery(3);
+    const thirdBody = await renderView(3);
     const thirdCapability = thirdBody.result?._meta?.['lobu/mcp-app-snapshot-capability'];
     expect(thirdCapability).toEqual(expect.any(String));
     expect(await bindByCapability(thirdCapability, { 'payload.open': true })).toEqual({
@@ -904,18 +925,18 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     });
     expect(await restoreByCapability(thirdCapability)).toEqual({
       found: true,
-      tool_name: 'query_sql',
+      tool_name: 'render_lobu_view',
       data: thirdBody.result.structuredContent,
       view_state: { 'payload.open': true },
     });
 
-    const fourthBody = await runQuery(4);
+    const fourthBody = await renderView(4);
     const fourthCapability = fourthBody.result?._meta?.['lobu/mcp-app-snapshot-capability'];
     expect(fourthCapability).toEqual(expect.any(String));
     expect(fourthCapability).not.toBe(thirdCapability);
     expect(await bindByCapability(fourthCapability)).toEqual({ saved: true });
-    expect((await restoreByCapability(thirdCapability))?.data?.rows).toEqual([{ row_number: 3 }]);
-    expect((await restoreByCapability(fourthCapability))?.data?.rows).toEqual([{ row_number: 4 }]);
+    expect((await restoreByCapability(thirdCapability))?.data?.title).toBe('Result 3');
+    expect((await restoreByCapability(fourthCapability))?.data?.title).toBe('Result 4');
     expect(await restoreByCapability(fourthCapability, `${conversationId}-wrong`)).toEqual({
       found: false,
       view_state: {},
@@ -928,19 +949,19 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     }>`SELECT body, conversation_key, tool_call_key
        FROM public.mcp_app_result_snapshots
        WHERE organization_id = ${org.id}
-         AND tool_name = 'query_sql'
+         AND tool_name = 'render_lobu_view'
        ORDER BY updated_at DESC
        LIMIT 1`;
     expect(snapshot).toBeDefined();
-    expect(snapshot.body).not.toContain('row_number');
+    expect(snapshot.body).not.toContain('Result 4');
     expect(snapshot.conversation_key).not.toBe(conversationId);
     expect(snapshot.tool_call_key).not.toBe('host-card-2');
 
-    const collidingBody = await runQuery(5);
+    const collidingBody = await renderView(5);
     const collidingCapability =
       collidingBody.result?._meta?.['lobu/mcp-app-snapshot-capability'];
     expect(await bindCard('host-card-2', collidingCapability)).toEqual({ saved: false });
-    expect((await restore('host-card-2'))?.data?.rows).toEqual([{ row_number: 2 }]);
+    expect((await restore('host-card-2'))?.data?.title).toBe('Result 2');
 
     const helperAudits = await getDb()<{
       tool_name: string;
@@ -1014,8 +1035,8 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     const renderBody = await renderResponse.json();
     expect(renderBody.result?.isError).not.toBe(true);
     expect(renderBody.result?._meta?.['lobu/approval-capability']).toBeUndefined();
-    // The viewer role rides on every app-rendered result, independent of the
-    // app-only approval capability this non-App client does not receive.
+    // The registered renderer still carries the viewer role, while the
+    // app-only approval capability is withheld from this non-App client.
     expect(renderBody.result?._meta?.['lobu/member-role']).toBe('owner');
     expect(renderBody.result?.structuredContent?.actions).toEqual([
       expect.objectContaining({ id: 'review', href: expect.stringMatching(/^https?:\/\//) }),

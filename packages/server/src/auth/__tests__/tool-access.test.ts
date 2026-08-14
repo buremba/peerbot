@@ -24,6 +24,7 @@ import {
   requiresMemberWrite,
   requiresOwnerAdmin,
   resolveMaxAccessLevel,
+  resolveSdkMaxAccessLevel,
   SCOPE_CHECK_NOT_APPLICABLE,
 } from '../tool-access';
 
@@ -798,5 +799,13 @@ describe('pinned access matrix', () => {
     expect(resolveMaxAccessLevel('member', ['mcp:admin'])).toBe('write');
     expect(resolveMaxAccessLevel(null, ['mcp:admin'])).toBe('read');
     expect(resolveMaxAccessLevel('owner', null)).toBe('admin');
+  });
+
+  it('raises only owner/admin SDK ceilings for progressive admin authorization', () => {
+    expect(resolveSdkMaxAccessLevel('owner', ['mcp:write'])).toBe('admin');
+    expect(resolveSdkMaxAccessLevel('admin', ['mcp:read', 'mcp:write'])).toBe('admin');
+    expect(resolveSdkMaxAccessLevel('member', ['mcp:write'])).toBe('write');
+    expect(resolveSdkMaxAccessLevel('member', ['mcp:admin'])).toBe('write');
+    expect(resolveSdkMaxAccessLevel('owner', ['mcp:read'])).toBe('read');
   });
 });

@@ -52,6 +52,27 @@ import { behaviorOutputOccurredAt } from '../../../utils/window-utils';
  *  cheap to store. Mirrors the capping rationale in worker-api/run-lifecycle. */
 const CAPTURE_PREVIEW_CONTENT_CAP = 200;
 
+/**
+ * Deterministic reaction-script failure classes that a retry can never fix.
+ * The sandbox prefixes these errors (`run-script.ts` classifyRuntimeError +
+ * terminateRun): a timed-out, quota-exhausted, oversize, or compile-failed
+ * reaction burns its full wall-clock budget on EVERY attempt, so retrying
+ * multiplies the stall (a 60s TimeoutError retried 3x costs ~182s) with zero
+ * recovery probability. Everything else — provider/network 5xx, transient SDK
+ * failures — stays retryable.
+ */
+export function reactionErrorIsNonTransient(error: string | undefined): boolean {
+  if (!error) return false;
+  return (
+    /^(TimeoutError|CompileError|QuotaExceeded|OutputSizeExceeded|InvalidSleepDuration|SleepLimitExceeded|OutOfMemory|ValidationError|ClientSdkActionError|McpScopeRequiredError):/.test(
+      error
+    ) ||
+    /^ScriptError: (?:Script must `export default` an async function|NamespaceNotAvailable:|CrossOrgAccessDenied:|InvalidSDKDispatchEnvelope|Unknown SDK method:)/.test(
+      error
+    )
+  );
+}
+
 // Initialize AJV for JSON Schema validation
 // removeAdditional: true strips fields like 'embedding' that workers add but aren't in the schema
 // This allows workers to add internal fields while still validating the core schema
@@ -152,15 +173,17 @@ export async function handleCompleteWindow(
         ? [args.window_token]
         : [];
   if (windowTokens.length === 0) {
-    throw new Error(
+    throw new ToolUserError(
       'window_token or window_tokens is required for complete_window action. ' +
-        'Get tokens from read_knowledge({ behavior_id: ... }) responses.'
+        'Get tokens from read_knowledge({ behavior_id: ... }) responses.',
+      400
     );
   }
   if (!args.extracted_data) {
-    throw new Error(
+    throw new ToolUserError(
       'extracted_data is required for complete_window action. ' +
-        'This should contain the LLM analysis results (e.g., { sentiment: "positive", themes: [...] }).'
+        'This should contain the LLM analysis results (e.g., { sentiment: "positive", themes: [...] }).',
+      400
     );
   }
   const extractedData = normalizeExtractedData(args.extracted_data);
@@ -191,7 +214,7 @@ export async function handleCompleteWindow(
       token.window_end !== window_end ||
       token.granularity !== granularity
     ) {
-      throw new Error('All window_tokens must belong to the same Behavior window.');
+      throw new ToolUserError('All window_tokens must belong to the same Behavior window.', 400);
     }
   }
 
@@ -328,9 +351,10 @@ export async function handleCompleteWindow(
   `;
 
   if (watcherRows.length === 0) {
-    throw new Error(
+    throw new ToolUserError(
       `Behavior ${watcherId} not found. ` +
-        'It may have been deleted. Use client.behaviors.list() via query_sdk to see available Behaviors.'
+        'It may have been deleted. Use client.behaviors.list() via query_sdk to see available Behaviors.',
+      404
     );
   }
 
@@ -425,14 +449,15 @@ export async function handleCompleteWindow(
         return `  - ${path}: ${e.message}`;
       });
 
-      throw new Error(
+      throw new ToolUserError(
         `extracted_data does not match the Behavior\'s extraction contract (derived from its entity type or reaction \`input\` schema).\n\n` +
           `Validation errors:\n${errorMessages.join('\n')}\n\n` +
           'Expected schema requires:\n' +
           `  - Required fields: ${JSON.stringify(extractionSchema.required || [])}\n` +
           `  - Top-level properties: ${Object.keys(extractionSchema.properties || {}).join(', ')}\n\n` +
           `Received top-level keys: ${Object.keys(extractedData).join(', ')}\n\n` +
-          'Please ensure your LLM output matches the template schema exactly.'
+          'Please ensure your LLM output matches the template schema exactly.',
+        400
       );
     }
 
@@ -474,8 +499,9 @@ export async function handleCompleteWindow(
   const batchContentIds = [...new Set(perTokenIds.flat())];
   const summedContentCount = perTokenIds.reduce((sum, ids) => sum + ids.length, 0);
   if (batchContentIds.length !== summedContentCount) {
-    throw new Error(
-      'window_tokens contain overlapping content IDs. Pass each read_knowledge page token once.'
+    throw new ToolUserError(
+      'window_tokens contain overlapping content IDs. Pass each read_knowledge page token once.',
+      409
     );
   }
 
@@ -1142,20 +1168,31 @@ export async function handleCompleteWindow(
           );
           break;
         }
-        if (attempt < MAX_ATTEMPTS) {
-          logger.warn(
-            { watcher_id: result.behavior_id, attempt, error: execResult.error },
-            'Reaction script failed, retrying...'
-          );
-          await new Promise((r) => setTimeout(r, 1000));
-        } else {
+
+        // Deterministic script failures are NOT transient: retrying a timed-out
+        // or quota-exhausted reaction re-burns the same 60s budget 3x and
+        // stalls complete_window by ~3 minutes for zero chance of recovery
+        // (run-script's error names are stable — TimeoutError, CompileError,
+        // QuotaExceeded, OutputSizeExceeded, ValidationError, …). Only the transient
+        // remainder (provider/network 5xx and similar) gets the retry loop.
+        const isNonTransient = reactionErrorIsNonTransient(execResult.error);
+        if (isNonTransient || attempt === MAX_ATTEMPTS) {
           reactionStatus = 'failed';
           reactionError = execResult.error;
-          logger.error(
-            { watcher_id: result.behavior_id, error: execResult.error },
-            'Reaction script failed after all retries'
+          logger[isNonTransient ? 'warn' : 'error'](
+            { watcher_id: result.behavior_id, attempt, error: execResult.error },
+            isNonTransient
+              ? 'Reaction script failed on a non-transient error; not retrying'
+              : 'Reaction script failed after all retries'
           );
+          break;
         }
+
+        logger.warn(
+          { watcher_id: result.behavior_id, attempt, error: execResult.error },
+          'Reaction script failed, retrying...'
+        );
+        await new Promise((r) => setTimeout(r, 1000));
       }
     }
   } catch (err) {

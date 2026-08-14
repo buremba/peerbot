@@ -230,8 +230,9 @@ async function resolveVirtualFeedId(ref: string, scope: AuthzScope): Promise<num
 
   const slash = trimmed.indexOf('/');
   if (slash <= 0 || slash === trimmed.length - 1) {
-    throw new Error(
-      `invalid feed reference '${ref}' — use a numeric feed id or "connection_slug/feed_key"`
+    throw new ToolUserError(
+      `invalid feed reference '${ref}' — use a numeric feed id or "connection_slug/feed_key"`,
+      400
     );
   }
   const connectionSlug = trimmed.slice(0, slash);
@@ -253,7 +254,7 @@ async function resolveVirtualFeedId(ref: string, scope: AuthzScope): Promise<num
     [scope.organizationId, connectionSlug, feedKey],
   )) as unknown as Array<{ id: number }>;
   if (rows.length === 0) {
-    throw new Error(`virtual feed '${ref}' not found or not accessible`);
+    throw new ToolUserError(`virtual feed '${ref}' not found or not accessible`, 404);
   }
   return rows[0].id;
 }

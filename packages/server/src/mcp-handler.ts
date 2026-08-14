@@ -476,13 +476,10 @@ function createServerForContext(
       mcpAppSnapshotCapability: snapshotCapabilityFromMeta(request.params._meta),
     };
     const tool = getTool(name);
-    // Every result the MCP Apps surface renders carries the viewer's org
-    // role, because the app gates its Debug (raw JSON) disclosure on
-    // owner/admin — and the views it gates are the GENERIC ones produced by
-    // the data tools (query_sql, search_memory, restore_lobu_app_result, …),
-    // not the server-authored card `render_lobu_view` returns. Attaching it
-    // per tool would therefore miss exactly the results that need it, so it
-    // is emitted here for every tool that declares app UI metadata.
+    // Every App-facing result carries the viewer's org role because the app
+    // gates its Debug (raw JSON) disclosure on owner/admin. Data and action
+    // tools are deliberately headless; the role therefore rides only on the
+    // explicit render tool and app-only helpers that declare UI metadata.
     //
     // The key must be PRESENT on every such result, carrying an explicit null
     // for a non-member reading a public workspace: the app falls back to the
@@ -499,6 +496,12 @@ function createServerForContext(
     const uiMemberRoleMeta: { 'lobu/member-role': string | null } | undefined = tool?.mcpMeta?.ui
       ? { 'lobu/member-role': callAuthCtx.memberRole }
       : undefined;
+    const uiMeta = tool?.mcpMeta?.ui;
+    const rendersMcpApp =
+      uiMeta !== null &&
+      typeof uiMeta === 'object' &&
+      'resourceUri' in uiMeta &&
+      typeof uiMeta.resourceUri === 'string';
 
     // Regular tool execution
     try {
@@ -536,8 +539,15 @@ function createServerForContext(
       // `isError`; otherwise the client treats it as a normal result. query_sql
       // also renders the error explicitly because its formatter would otherwise
       // turn `{ rows: [], error }` into a clean empty CSV result.
-      const softError = isSoftErrorResult(publicResult);
       const attachedMeta = getMcpResultMeta(result);
+      // OAuth challenges are MCP tool errors even when the underlying power tool
+      // intentionally preserves a structured failure payload (for example
+      // run_sdk's nested admin-scope denial). Hosts only perform progressive
+      // authorization reliably when the challenge is carried on an error result.
+      const attachedAuthChallenge =
+        Array.isArray(attachedMeta?.['mcp/www_authenticate']) &&
+        attachedMeta['mcp/www_authenticate'].length > 0;
+      const softError = isSoftErrorResult(publicResult) || attachedAuthChallenge;
       const resultMeta = uiMemberRoleMeta
         ? { ...attachedMeta, ...uiMemberRoleMeta }
         : attachedMeta;
@@ -545,7 +555,7 @@ function createServerForContext(
         const structured = validateToolResult(tool.outputSchema, publicResult);
         if (structured !== null) {
           let snapshotCapability: string | null = null;
-          if (tool.audit !== false) {
+          if (tool.audit !== false && rendersMcpApp) {
             try {
               const capability = randomUUID();
               const stored = await storeMcpAppResultSnapshot({

@@ -77,35 +77,37 @@ describe("resolveModelRef", () => {
   });
 
   test("an explicit ref switches to another installed provider", () => {
-    const result = resolveModelRef("z-ai/glm-5.2", {
+    const result = resolveModelRef("groq/llama-3.3-70b-versatile", {
       defaultModel: "claude/claude-sonnet-4-5",
       defaultProvider: "anthropic",
       defaultProviderSlug: "claude",
-      installedProviderRoutes: { claude: "anthropic", "z-ai": "z-ai" },
+      installedProviderRoutes: { claude: "anthropic", groq: "groq" },
     });
 
-    expect(result.provider).toBe("z-ai");
-    expect(result.providerSlug).toBe("z-ai");
-    expect(result.modelId).toBe("glm-5.2");
+    expect(result.provider).toBe("groq");
+    expect(result.providerSlug).toBe("groq");
+    expect(result.modelId).toBe("llama-3.3-70b-versatile");
   });
 
   test("an explicit ref resolves auto against the selected installed provider", () => {
-    const result = resolveModelRef("z-ai/auto", {
+    const result = resolveModelRef("nvidia/auto", {
       defaultModel: "claude/claude-sonnet-4-5",
       defaultProvider: "anthropic",
       defaultProviderSlug: "claude",
-      installedProviderRoutes: { claude: "anthropic", "z-ai": "z-ai" },
+      installedProviderRoutes: { claude: "anthropic", nvidia: "nvidia" },
     });
 
-    expect(result.provider).toBe("z-ai");
-    expect(result.modelId).toBe(DEFAULT_PROVIDER_MODELS["z-ai"]);
+    expect(result.provider).toBe("nvidia");
+    expect(result.modelId).toBe(
+      DEFAULT_PROVIDER_MODELS.nvidia.replace(/^nvidia\//, "")
+    );
   });
 
   test("an explicit ref routes a Lobu provider ID to its upstream runtime slug", () => {
     const result = resolveModelRef("claude/claude-sonnet-4-5", {
-      defaultModel: "z-ai/glm-5.2",
-      defaultProvider: "z-ai",
-      installedProviderRoutes: { claude: "anthropic", "z-ai": "z-ai" },
+      defaultModel: "groq/llama-3.3-70b-versatile",
+      defaultProvider: "groq",
+      installedProviderRoutes: { claude: "anthropic", groq: "groq" },
     });
 
     expect(result.provider).toBe("anthropic");
@@ -114,16 +116,11 @@ describe("resolveModelRef", () => {
   });
 
   test("an agent-level ref routes to its own provider, not the deployment default", () => {
-    // Prod 2026-08-06 (org `buremba`): the agent was pinned to
-    // `gemini/gemini-2.5-pro` with no per-Behavior override, yet the gateway
-    // published `z-ai` as `defaultProvider` from its credentialed fallback
-    // scan — and 79 runs in three days died on `z.ai 429 Insufficient balance`
-    // for an org that has no z-ai provider, secret or key of its own.
     // `defaultProvider` is a deployment-level fact; the ref is a run-level one.
     // The ref wins whenever its prefix names an installed provider.
     const result = resolveModelRef("gemini/gemini-2.5-pro", {
       defaultModel: "gemini/gemini-2.5-pro",
-      defaultProvider: "z-ai",
+      defaultProvider: "qwen",
       installedProviderRoutes: { gemini: "gemini", openai: "openai" },
     });
 
@@ -133,16 +130,16 @@ describe("resolveModelRef", () => {
   });
 
   test("an uninstalled prefix still falls through to the configured provider", () => {
-    // The installed-route guard is what keeps rerouting fail-safe: `z-ai` is
+    // The installed-route guard is what keeps rerouting fail-safe: `groq` is
     // not installed here, so the ref cannot conjure a provider the org never
     // configured.
-    const result = resolveModelRef("z-ai/glm-5.2", {
+    const result = resolveModelRef("groq/llama-3.3-70b-versatile", {
       defaultProvider: "qwen",
       installedProviderRoutes: { qwen: "qwen" },
     });
 
     expect(result.provider).toBe("qwen");
-    expect(result.modelId).toBe("z-ai/glm-5.2");
+    expect(result.modelId).toBe("groq/llama-3.3-70b-versatile");
   });
 
   test("falls back to overrides.defaultModel when rawModelRef is empty", () => {
@@ -191,7 +188,7 @@ describe("resolveModelRef", () => {
   test("installed providers do not reinterpret an OpenRouter vendor namespace", () => {
     const result = resolveModelRef("anthropic/claude-sonnet-4", {
       defaultProvider: "openrouter",
-      installedProviderRoutes: { openrouter: "openrouter", "z-ai": "z-ai" },
+      installedProviderRoutes: { openrouter: "openrouter", groq: "groq" },
     });
 
     expect(result.provider).toBe("openrouter");
@@ -247,13 +244,16 @@ describe("resolveModelRef", () => {
     expect(result.modelId).toBe("gpt-4o-mini");
   });
 
-  test("configured provider: a redundant self-prefix is stripped (z-ai/glm-4.7 → glm-4.7)", () => {
+  test("configured provider: a redundant self-prefix is stripped (nvidia/nvidia/moonshotai/kimi-k2.6 → nvidia/moonshotai/kimi-k2.6)", () => {
     // Lobu names models "provider/model", but the upstream namespace is the
-    // bare code. Sending "z-ai/glm-4.7" to z.ai 400s "Unknown Model" — strip
-    // the configured provider's OWN id so the API receives "glm-4.7".
-    const result = resolveModelRef("z-ai/glm-4.7", { defaultProvider: "z-ai" });
-    expect(result.provider).toBe("z-ai");
-    expect(result.modelId).toBe("glm-4.7");
+    // bare code. Sending the redundant prefix makes sdkCompat:openai providers
+    // 400 "Unknown Model" — strip the configured provider's OWN id so the API
+    // receives the unprefixed code.
+    const result = resolveModelRef("nvidia/nvidia/moonshotai/kimi-k2.6", {
+      defaultProvider: "nvidia",
+    });
+    expect(result.provider).toBe("nvidia");
+    expect(result.modelId).toBe("nvidia/moonshotai/kimi-k2.6");
   });
 
   test("configured provider: 'auto' resolving to a PREFIXED default is also stripped (nvidia)", () => {
@@ -268,10 +268,24 @@ describe("resolveModelRef", () => {
     expect(result.modelId.startsWith("nvidia/")).toBe(false);
   });
 
+  test("configured provider: a same-provider-prefixed auto matches bare auto", () => {
+    const overrides = {
+      defaultProvider: "nvidia",
+      defaultProviderSlug: "nvidia",
+      installedProviderRoutes: { nvidia: "nvidia" },
+    };
+
+    expect(resolveModelRef("nvidia/auto", overrides)).toEqual(
+      resolveModelRef("auto", overrides)
+    );
+  });
+
   test("configured provider: a bare model code is left untouched", () => {
-    const result = resolveModelRef("glm-4.7", { defaultProvider: "z-ai" });
-    expect(result.provider).toBe("z-ai");
-    expect(result.modelId).toBe("glm-4.7");
+    const result = resolveModelRef("llama-3.3-70b-versatile", {
+      defaultProvider: "groq",
+    });
+    expect(result.provider).toBe("groq");
+    expect(result.modelId).toBe("llama-3.3-70b-versatile");
   });
 
   test("configured provider + 'auto' resolves to that provider's default model", () => {
@@ -430,7 +444,7 @@ describe("buildDynamicOpenAIModel — never silently route to OpenAI", () => {
   });
 
   test("THROWS for nvidia/together/etc with no base URL (generic, all providers)", () => {
-    for (const rawProvider of ["nvidia", "together-ai", "z-ai", "groq"]) {
+    for (const rawProvider of ["nvidia", "together-ai", "groq"]) {
       expect(() =>
         buildDynamicOpenAIModel({
           rawProvider,
@@ -463,15 +477,9 @@ describe("resolveDynamicModelApi — real OpenAI uses the Responses API", () => 
   });
 
   test("third-party openai-compatible providers keep openai-completions", () => {
-    // groq / z-ai / gemini / nvidia share the "openai" registry alias but only
+    // groq / gemini / nvidia share the "openai" registry alias but only
     // speak the completions protocol — they must NOT be routed to responses.
-    for (const rawProvider of [
-      "groq",
-      "z-ai",
-      "gemini",
-      "nvidia",
-      "together-ai",
-    ]) {
+    for (const rawProvider of ["groq", "gemini", "nvidia", "together-ai"]) {
       expect(resolveDynamicModelApi(rawProvider, "openai")).toBe(
         "openai-completions"
       );

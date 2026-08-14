@@ -322,6 +322,12 @@ describe("manage_behaviors source-id + cross-org guards", () => {
 		expect(leaked.length).toBe(0);
 	});
 
+	it("list rejects a cross-org entity_id instead of exposing an empty result", async () => {
+		await expect(
+			owner.behaviors.list({ entity_id: foreignEntityId })
+		).rejects.toMatchObject({ httpStatus: 403 });
+	});
+
 	it("create_from_version accepts an in-org entity_id", async () => {
 		const base = (await owner.behaviors.create({
 			entity_id: inOrgEntityId,

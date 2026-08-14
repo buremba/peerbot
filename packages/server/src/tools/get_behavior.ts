@@ -39,7 +39,7 @@ import {
 import { formatDateISO, parseDateAlias } from '../utils/date-aliases';
 import { parseJsonObject } from '@lobu/core';
 import logger from '../utils/logger';
-import { ToolUserError } from '../utils/errors';
+import { parsePositiveIntegerId, ToolUserError } from '../utils/errors';
 import { canonicalizeBehaviorText } from '../utils/behavior-vocabulary';
 import {
   requireOrgReadAccess,
@@ -337,10 +337,12 @@ async function getBehaviorImpl(
   // ============================================
 
   if (!args.behavior_id) {
-    throw new Error(
-      "behavior_id is required. Use client.behaviors.list() via query_sdk to discover Behaviors."
+    throw new ToolUserError(
+      "behavior_id is required. Use client.behaviors.list() via query_sdk to discover Behaviors.",
+      400
     );
   }
+  parsePositiveIntegerId(args.behavior_id, 'behavior_id');
 
   await requireWatcherReadAccess(pgSql, args.behavior_id, ctx);
 

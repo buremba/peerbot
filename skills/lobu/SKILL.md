@@ -224,17 +224,14 @@ Search before create to avoid duplicates. Prefer a read or dry run before mutati
 Connectors are the primary integration path for third-party services. The
 end-to-end model (entities vs events, the run lifecycle) is in
 `docs/CONCEPTS.md`; authoring a new connector when none matches is in
-`docs/connector-authoring.md`. Use this lifecycle:
+`docs/connector-authoring.md`. Do not freeze a connector lifecycle in project
+instructions because it can drift from the deployed SDK:
 
-1. Call `search_sdk` with the service name. It returns installed and installable connectors, declared feed keys, SDK methods, and readiness details.
-2. Use `query_sdk` to inspect `client.catalog.listInstalled({ kinds: ["connectors"] })`, `client.catalog.listCatalog({ kinds: ["connectors"] })`, and `client.connections.list()` when you need a complete inventory.
-3. In `run_sdk`, call `client.connections.connect({ connector_key })`. An `active` or `pending_auth` result carries a `connection_id`. A `setup_required` result is a continuation: follow its `next_action`, `resume_call`, or `completion_check` exactly and do not create a feed until a `connection_id` is present. If the result carries `self_install_url` (a Slack app bootstrap deep link), offer it to the user so they can create + install their own app and paste back the bot token / signing secret.
-4. Create the feed with `client.feeds.create({ connection_id, feed_key, config })`. Connecting alone collects nothing.
-5. Trigger and verify it with `client.feeds.trigger({ feed_id, dry_run: true })`, then inspect `client.feeds.get({ feed_id })`. A dry run prevents Lobu writes but cannot undo upstream side effects caused by the connector.
+1. Call `search_sdk` with the service name immediately before acting. It returns installed and installable connectors, declared feed keys, readiness, and the caller-aware live lifecycle.
+2. Always follow the methods it returns in order instead of relying on a remembered connect/feed/operation sequence. Repeat discovery after authorization or state changes so the next step reflects the live connector and current caller.
+3. Treat `access: operate` as `mcp:write` and `access: administer` as workspace owner/admin plus `mcp:admin`. If discovery asks for MCP reauthorization or an owner/admin handoff, follow that instruction; never attempt methods it withheld as unavailable.
 
-Virtual feeds query the provider live and can be read with `client.feeds.readMany(...)`; collected feeds persist events for search and relational queries.
-
-Discover executable connector actions with `client.operations.listAvailable({ query, include_disconnected: true })`. Use the returned connection and operation target with `client.operations.execute({ connection_id, operation_key, input })`. If readiness is disconnected, follow the returned next action instead of guessing a connection. Approval-gated execution returns `pending_approval`; surface that state rather than treating it as failure.
+Virtual feeds query the provider live; collected feeds persist events for search and relational queries. For connector actions, use the live discovery result's operation target and readiness. If readiness is disconnected, follow the returned next action instead of guessing a connection. Surface approval-gated `pending_approval` as a waiting state, not a failure.
 
 ## Data Ingestion
 

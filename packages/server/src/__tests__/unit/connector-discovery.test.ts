@@ -75,7 +75,24 @@ function makeDeps(over?: {
 }
 
 const env = {} as Env;
-const ctx = { organizationId: "org-1", userId: "u1", memberRole: "member" } as ToolContext;
+const ctx = {
+	organizationId: "org-1",
+	userId: "u1",
+	memberRole: "admin",
+	scopes: ["mcp:read", "mcp:write", "mcp:admin"],
+} as ToolContext;
+
+const ownerWriteCtx = {
+	...ctx,
+	memberRole: "owner",
+	scopes: ["mcp:read", "mcp:write"],
+} as ToolContext;
+
+const memberCtx = {
+	...ctx,
+	memberRole: "member",
+	scopes: ["mcp:read", "mcp:write", "mcp:admin"],
+} as ToolContext;
 
 describe("searchLiveConnectors (search_sdk connector intent search)", () => {
 	it("surfaces an installed-but-unconfigured connector with feed key + connect lifecycle", async () => {
@@ -86,6 +103,34 @@ describe("searchLiveConnectors (search_sdk connector intent search)", () => {
 		expect(hits[0]).toMatch(/feed_key: 'pages'/);
 		expect(hits[0]).toMatch(/connections\.connect/);
 		expect(hits[0]).toMatch(/feeds\.trigger/);
+	});
+
+	it("shows owner/admin callers at mcp:write the lifecycle plus progressive admin authorization", async () => {
+		const hits = await searchLiveConnectors(
+			"website",
+			env,
+			ownerWriteCtx,
+			makeDeps(),
+		);
+
+		expect(hits[0]).toContain("client.connections.connect");
+		expect(hits[0]).toMatch(/client\.feeds\.(create|trigger)/);
+		expect(hits[0]).toMatch(/progressively authorizable|OAuth challenge/i);
+		expect(hits[0]).toContain("mcp:admin");
+	});
+
+	it("gives regular members an owner/admin handoff without impossible elevation", async () => {
+		const hits = await searchLiveConnectors(
+			"website",
+			env,
+			memberCtx,
+			makeDeps(),
+		);
+
+		expect(hits[0]).toMatch(/ask a workspace owner\/admin/i);
+		expect(hits[0]).toMatch(/cannot elevate/i);
+		expect(hits[0]).not.toMatch(/reconnect|reauthorize/i);
+		expect(hits[0]).not.toMatch(/client\.connections\.connect|client\.feeds\.(create|trigger)/);
 	});
 
 	it("matches a MULTI-WORD intent phrase via tokens, not just the bare name", async () => {

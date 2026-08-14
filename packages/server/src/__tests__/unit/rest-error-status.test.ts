@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { Hono } from "hono";
 import type { Env } from "../../index";
-import { restSearchKnowledge } from "../../rest-api";
+import { restGetBehaviors, restSearchKnowledge } from "../../rest-api";
 
 describe("REST ToolUserError responses", () => {
 	it("preserves the status thrown by the wrapped tool", async () => {
@@ -30,6 +30,18 @@ describe("REST ToolUserError responses", () => {
 		expect(response.status).toBe(403);
 		expect(await response.json()).toEqual({
 			error: "read_knowledge requires an MCP session with read access.",
+		});
+	});
+
+	it("rejects a malformed behavior_id instead of partially parsing it", async () => {
+		const app = new Hono<{ Bindings: Env }>();
+		app.get("/api/:orgSlug/behaviors", restGetBehaviors);
+
+		const response = await app.request("/api/test-org/behaviors?behavior_id=71%29");
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({
+			error: "behavior_id must be a positive integer",
 		});
 	});
 });

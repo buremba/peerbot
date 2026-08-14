@@ -34,12 +34,10 @@ describe("lobu skill resource", () => {
 
   it("teaches the agent-facing SDK connector lifecycle", () => {
     expect(LOBU_SKILL_MARKDOWN).toContain("search_sdk");
-    expect(LOBU_SKILL_MARKDOWN).toContain("connections.connect");
-    expect(LOBU_SKILL_MARKDOWN).toContain("setup_required");
-    expect(LOBU_SKILL_MARKDOWN).toContain("feeds.create");
-    expect(LOBU_SKILL_MARKDOWN).toContain("feeds.trigger");
-    expect(LOBU_SKILL_MARKDOWN).toContain("operations.listAvailable");
-    expect(LOBU_SKILL_MARKDOWN).toContain("operations.execute");
+    expect(LOBU_SKILL_MARKDOWN).toContain("caller-aware live lifecycle");
+    expect(LOBU_SKILL_MARKDOWN).toContain("follow the methods it returns");
+    expect(LOBU_SKILL_MARKDOWN).toContain("mcp:write");
+    expect(LOBU_SKILL_MARKDOWN).toContain("mcp:admin");
     expect(LOBU_SKILL_MARKDOWN).not.toContain("manage_connections");
     expect(LOBU_SKILL_MARKDOWN).not.toContain("manage_feeds");
   });

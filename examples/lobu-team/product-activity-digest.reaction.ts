@@ -337,8 +337,9 @@ export default async (
     "exclude_email" in ctx.extracted_data &&
     typeof (ctx.extracted_data as Record<string, unknown>).exclude_email ===
       "string"
-      ? String((ctx.extracted_data as Record<string, unknown>).exclude_email).trim() ||
-        null
+      ? String(
+          (ctx.extracted_data as Record<string, unknown>).exclude_email
+        ).trim() || null
       : null;
   const digest = collectProductActivityDigest(rows, excludedEmail);
   if (!hasProductActivity(digest)) {

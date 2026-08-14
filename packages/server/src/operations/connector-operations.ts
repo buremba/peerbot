@@ -672,6 +672,9 @@ export async function getOperationForConnection(
 		app_auth_profile_id: number | null;
 		display_name: string | null;
 		config: Record<string, unknown> | null;
+		device_worker_id: string | null;
+		device_platform: string | null;
+		connector_runtime: Record<string, unknown> | null;
 		name: string;
 	};
 	operation: OperationDescriptor;
@@ -686,15 +689,19 @@ export async function getOperationForConnection(
       c.app_auth_profile_id,
       c.display_name,
       c.config,
+      c.device_worker_id,
+      dw.platform AS device_platform,
       cd.name,
       cd.actions_schema,
       cd.mcp_config,
-      cd.openapi_config
+      cd.openapi_config,
+      cd.runtime AS connector_runtime
     FROM connections c
     JOIN connector_definitions cd
       ON cd.key = c.connector_key
      AND cd.status = 'active'
      AND cd.organization_id = ${organizationId}
+    LEFT JOIN device_workers dw ON dw.id = c.device_worker_id
     WHERE c.id = ${connectionId}
       AND c.organization_id = ${organizationId}
       AND c.deleted_at IS NULL
@@ -711,6 +718,9 @@ export async function getOperationForConnection(
 		app_auth_profile_id: number | null;
 		display_name: string | null;
 		config: Record<string, unknown> | null;
+		device_worker_id: string | null;
+		device_platform: string | null;
+		connector_runtime: Record<string, unknown> | null;
 	};
 	const operations = await buildConnectorOperations(
 		{
@@ -736,6 +746,9 @@ export async function getOperationForConnection(
 			app_auth_profile_id: row.app_auth_profile_id,
 			display_name: row.display_name,
 			config: row.config,
+			device_worker_id: row.device_worker_id,
+			device_platform: row.device_platform,
+			connector_runtime: row.connector_runtime,
 			name: row.name,
 		},
 		operation,

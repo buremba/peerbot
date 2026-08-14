@@ -581,22 +581,18 @@ export async function handleExecute(
 		);
 	}
 
-	// Detect device-bound connector by reading the connector definition's
-	// `runtime` field. When set (e.g. chrome-extension, macos, ios), the
-	// connector's execute() lives on a device worker, not on the gateway.
-	// Inline execution would hit the BRIDGE_ONLY throw. Instead, create a
-	// status='pending' run + wait for the worker to claim, complete it,
-	// and persist action_output via /api/workers/complete-action.
-	const defRows = (await sql`
-    SELECT runtime FROM connector_definitions
-    WHERE key = ${connection.connector_key}
-      AND organization_id = ${ctx.organizationId}
-      AND status = 'active'
-    ORDER BY updated_at DESC, id DESC
-    LIMIT 1
-  `) as Array<{ runtime: Record<string, unknown> | null }>;
-	const isDeviceBound = defRows[0]?.runtime != null;
-	if (activation && (operation.backend !== "local_action" || isDeviceBound)) {
+	// Intrinsically device-only connectors always execute on their connector
+	// runtime. Otherwise, a physical connection pin is exact operation
+	// placement. The sole exception is a non-Chrome connector pinned to a
+	// chrome-extension: that pin selects delegated scrape affinity for inline
+	// connector work; it does not move the parent operation onto the extension.
+	const isChromeScrapeAffinity =
+		connection.device_platform === "chrome-extension" &&
+		!connection.connector_key.startsWith("chrome");
+	const executesOnDevice =
+		connection.connector_runtime != null ||
+		(connection.device_worker_id != null && !isChromeScrapeAffinity);
+	if (activation && (operation.backend !== "local_action" || executesOnDevice)) {
 		throw new ToolUserError(
 			"Page activation requires a server-executed local connector operation.",
 			422,
@@ -605,7 +601,7 @@ export async function handleExecute(
 
 	const approvalMode: "inline" | "queued" | "device" = shouldQueue
 		? "queued"
-		: isDeviceBound
+		: executesOnDevice
 			? "device"
 			: "inline";
 

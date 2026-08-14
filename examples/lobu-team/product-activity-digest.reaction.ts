@@ -362,10 +362,12 @@ export default async (
         AND e.created_at > '${start.toISOString()}'::timestamptz
         AND e.created_at <= '${end.toISOString()}'::timestamptz
         AND (
-          ${lastCreatedAt == null
-            ? sqlTrue()
-            : `(e.created_at > '${lastCreatedAt}'::timestamptz
-              OR (e.created_at = '${lastCreatedAt}'::timestamptz AND e.id > ${lastId}))`}
+          ${
+            lastCreatedAt == null
+              ? sqlTrue()
+              : `(e.created_at > '${lastCreatedAt}'::timestamptz
+              OR (e.created_at = '${lastCreatedAt}'::timestamptz AND e.id > ${lastId}))`
+          }
         )
       ORDER BY e.created_at ASC, e.id ASC
       LIMIT ${PAGE_SIZE}

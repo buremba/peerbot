@@ -330,6 +330,28 @@ export function resolveMaxAccessLevel(
 	return "admin";
 }
 
+/**
+ * SDK discovery/manifest ceiling for a caller that can already invoke
+ * `run_sdk`. Owners/admins at write scope may see admin methods so an attempted
+ * call can return the standard progressive-auth challenge for `mcp:admin`.
+ * Ordinary members remain capped at write even if their token somehow carries
+ * `mcp:admin`; the role check is deliberately not authorizable.
+ */
+export function resolveSdkMaxAccessLevel(
+	memberRole: string | null | undefined,
+	scopes: readonly string[] | null | undefined
+): ToolAccessLevel {
+	const current = resolveMaxAccessLevel(memberRole, scopes);
+	if (
+		current === "write" &&
+		(memberRole === "owner" || memberRole === "admin") &&
+		hasRequiredMcpScope("write", scopes)
+	) {
+		return "admin";
+	}
+	return current;
+}
+
 export function isPublicReadable(toolName: string, args: unknown): boolean {
 	return actionMatches(PUBLIC_READ_ACTIONS, toolName, args);
 }

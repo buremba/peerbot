@@ -2,6 +2,7 @@ import { executeCompiledConnector } from "@lobu/connector-worker/executor/runtim
 import { getErrorMessage } from "@lobu/core";
 import { ExecuteAction, type ManageOperationsResult } from "../schemas";
 import type { Static } from "@sinclair/typebox";
+import { readGrantedScopesFromAuthData } from "../../../../auth/oauth/scopes";
 import { resolveBehaviorConnectionVisibilityUserId } from "../../../../authz/behavior-connection-visibility";
 import { compileConnectionRowVisibility } from "../../../../authz/connection-visibility";
 import { resolveActingPrincipal, resolveWritePolicyDecision } from "../../../../authz/entity-policy";
@@ -15,12 +16,14 @@ import { resolveActionMode } from "../../../../operations/action-modes";
 import { getOperationForConnection } from "../../../../operations/connector-operations";
 import { executeHttpOperation } from "../../../../operations/execute-http-operation";
 import { validateOperationInput } from "../../../../operations/input-validation";
+import { getMissingKnownOAuthScopes } from "../../../../operations/oauth-scope-readiness";
 import type { OperationDescriptor } from "../../../../operations/types";
 import {
 	DEFAULT_PAGE_ACTIVATION_SECONDS,
 	normalizePageActivationUrls,
 } from "../../../../runs/page-activation";
 import { createConnectorOperationRun } from "../../../../runs/queue-service";
+import { getAuthProfileById } from "../../../../utils/auth-profiles";
 import { resolveConnectorCodeForKey } from "../../../../utils/ensure-connector-installed";
 import { ToolUserError } from "../../../../utils/errors";
 import { resolveExecutionAuth } from "../../../../utils/execution-context";
@@ -455,6 +458,24 @@ export async function handleExecute(
 		return { error: `Connection is ${connection.status}, must be active` };
 	}
 
+	const requiredScopes = operation.required_scopes ?? [];
+	if (requiredScopes.length > 0) {
+		const authProfile = await getAuthProfileById(
+			ctx.organizationId,
+			connection.auth_profile_id,
+		);
+		const missingScopes = getMissingKnownOAuthScopes(
+			readGrantedScopesFromAuthData(authProfile?.auth_data),
+			Object.hasOwn(authProfile?.auth_data ?? {}, "granted_scopes"),
+			requiredScopes,
+		);
+		if (missingScopes.length > 0) {
+			return {
+				error: `Operation '${operation.operation_key}' requires additional OAuth consent for scope(s): ${missingScopes.join(", ")}. Reauthorize the connection and complete consent, then retry operations.execute with the same arguments. The operation will not resume automatically.`,
+			};
+		}
+	}
+
 	const input = args.input ?? {};
 	// A caller-provided behavior_source is only an attribution hint. Durable
 	// feedback must follow the server-stamped Behavior execution context.
@@ -560,22 +581,21 @@ export async function handleExecute(
 		);
 	}
 
-	// Detect device-bound connector by reading the connector definition's
-	// `runtime` field. When set (e.g. chrome-extension, macos, ios), the
-	// connector's execute() lives on a device worker, not on the gateway.
-	// Inline execution would hit the BRIDGE_ONLY throw. Instead, create a
-	// status='pending' run + wait for the worker to claim, complete it,
-	// and persist action_output via /api/workers/complete-action.
-	const defRows = (await sql`
-    SELECT runtime FROM connector_definitions
-    WHERE key = ${connection.connector_key}
-      AND organization_id = ${ctx.organizationId}
-      AND status = 'active'
-    ORDER BY updated_at DESC, id DESC
-    LIMIT 1
-  `) as Array<{ runtime: Record<string, unknown> | null }>;
-	const isDeviceBound = defRows[0]?.runtime != null;
-	if (activation && (operation.backend !== "local_action" || isDeviceBound)) {
+	// Intrinsically device-only connectors always execute on their connector
+	// runtime. Otherwise, a physical connection pin is exact operation
+	// placement. The sole exception is a non-Chrome connector pinned to a
+	// chrome-extension: that pin selects delegated scrape affinity for inline
+	// connector work; it does not move the parent operation onto the extension.
+	// "Chrome connector" matches the device-manifest allowlist for the
+	// chrome-extension platform: `chrome` or `chrome.*`.
+	const isChromeScrapeAffinity =
+		connection.device_platform === "chrome-extension" &&
+		connection.connector_key !== "chrome" &&
+		!connection.connector_key.startsWith("chrome.");
+	const executesOnDevice =
+		connection.connector_runtime != null ||
+		(connection.device_worker_id != null && !isChromeScrapeAffinity);
+	if (activation && (operation.backend !== "local_action" || executesOnDevice)) {
 		throw new ToolUserError(
 			"Page activation requires a server-executed local connector operation.",
 			422,
@@ -584,7 +604,7 @@ export async function handleExecute(
 
 	const approvalMode: "inline" | "queued" | "device" = shouldQueue
 		? "queued"
-		: isDeviceBound
+		: executesOnDevice
 			? "device"
 			: "inline";
 

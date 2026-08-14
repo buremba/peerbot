@@ -23,6 +23,8 @@ import type { Env } from '../index';
 import type { ToolContext } from './registry';
 import { getWorkspaceProvider } from '../workspace';
 import type { OrgInfo } from '../workspace/types';
+import { METHOD_METADATA } from '../sandbox/method-metadata';
+import { resolveSdkAccessGuidance } from '../sandbox/sdk-method-access';
 
 export interface ConnectorDiscoveryDeps {
   manageCatalog: typeof manageCatalog;
@@ -69,6 +71,25 @@ function matchesQueryTokens(query: string, ...fields: Array<string | null | unde
   if (tokens.length === 0) return false;
   const hay = fields.filter((f): f is string => typeof f === 'string').map((f) => f.toLowerCase());
   return tokens.some((t) => hay.some((f) => f.includes(t)));
+}
+
+/** Render a lifecycle only when every method in it is callable by this caller. */
+function lifecycleForCaller(
+  methodPaths: readonly string[],
+  lifecycle: string,
+  ctx: ToolContext
+): string {
+  const accesses = methodPaths.map((path) => {
+    const access = METHOD_METADATA[path]?.access;
+    if (!access) throw new Error(`Missing SDK metadata for lifecycle method: ${path}`);
+    return access;
+  });
+  const guidance = resolveSdkAccessGuidance(accesses, ctx.memberRole, ctx.scopes);
+  if (guidance.available) return lifecycle;
+  if (guidance.progressivelyAuthorizable) {
+    return `${lifecycle} ${guidance.instruction ?? ""}`.trim();
+  }
+  return guidance.instruction ?? lifecycle;
 }
 
 /**
@@ -145,7 +166,12 @@ export async function searchLiveConnectors(
     const withManagedAuth = (connectorKey: string, line: string): string => {
       const offer = managedOffers.get(connectorKey)?.[0];
       if (!offer) return line;
-      return `${line} Managed OAuth is available from public org '${offer.organizationSlug}' (Lobu login and one-time provider consent required; ${offer.joinRequired ? 'membership is added automatically' : 'already joined'}). Start it with run_sdk → client.${offer.connectMethod}({ managed_by_org: '${offer.organizationSlug}', connector_key: '${connectorKey}' }); after consent, \`${offer.localBootstrapCommand}\` generates the local managedBy config so provider data stays local.`;
+      const managedLifecycle = lifecycleForCaller(
+        ['connections.connectManaged'],
+        `Start it with run_sdk → client.${offer.connectMethod}({ managed_by_org: '${offer.organizationSlug}', connector_key: '${connectorKey}' }); after consent, \`${offer.localBootstrapCommand}\` generates the local managedBy config so provider data stays local.`,
+        ctx
+      );
+      return `${line} Managed OAuth is available from public org '${offer.organizationSlug}' (Lobu login and one-time provider consent required; ${offer.joinRequired ? 'membership is added automatically' : 'already joined'}). ${managedLifecycle}`;
     };
 
     // Only the installed connectors that MATCH the query need a status — resolve
@@ -188,8 +214,16 @@ export async function searchLiveConnectors(
       // send it down an invalid lifecycle. Point it at operations instead.
       const hasFeeds = !!feeds;
       const useHint = hasFeeds
-        ? `To add a feed: run_sdk → client.feeds.create({ connection_id, feed_key: ${feedKeyHint}, config }); then query_sql on events or search_memory to read.`
-        : `This connector has no data feeds — it exposes operations/actions. Discover them via query_sdk → client.operations.listAvailable({ connector_key: '${i.id}' }) and run with client.operations.execute.`;
+        ? lifecycleForCaller(
+            ['feeds.create'],
+            `To add a feed: run_sdk → client.feeds.create({ connection_id, feed_key: ${feedKeyHint}, config }); then query_sql on events or search_memory to read.`,
+            ctx
+          )
+        : lifecycleForCaller(
+            ['operations.listAvailable', 'operations.execute'],
+            `This connector has no data feeds — it exposes operations/actions. Discover them via query_sdk → client.operations.listAvailable({ connector_key: '${i.id}' }) and run with client.operations.execute.`,
+            ctx
+          );
       const status = bestStatus(i.id);
       if (status && USABLE.has(status)) {
         lines.push(withManagedAuth(i.id,
@@ -199,16 +233,28 @@ export async function searchLiveConnectors(
         // Connection exists but is NOT usable (revoked/error/paused/pending) —
         // repair it before use.
         lines.push(withManagedAuth(i.id,
-          `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED with a connection that needs attention (status: ${status}).${feedKeysNote} Reauthenticate/repair before use: run_sdk → client.connections.reauthenticate(<connection_id>) (or reconnect). Find the connection via query_sdk → client.connections.list({ connector_key: '${i.id}' }).`
+          `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED with a connection that needs attention (status: ${status}).${feedKeysNote} ${lifecycleForCaller(
+            ['connections.reauthenticate'],
+            `Reauthenticate/repair before use: run_sdk → client.connections.reauthenticate(<connection_id>) (or reconnect). Find the connection via query_sdk → client.connections.list({ connector_key: '${i.id}' }).`,
+            ctx
+          )}`
         ));
       } else if (hasFeeds) {
         lines.push(withManagedAuth(i.id,
-          `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED, not yet configured.${feedKeysNote} Lifecycle: run_sdk → client.connections.connect({ connector_key: '${i.id}' }) → client.feeds.create({ connection_id, feed_key: ${feedKeyHint}, config }) → client.feeds.trigger({ feed_id }); then query_sql on events or search_memory to read. Use search_sdk 'feeds.create feeds.trigger' for signatures.`
+          `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED, not yet configured.${feedKeysNote} ${lifecycleForCaller(
+            ['connections.connect', 'feeds.create', 'feeds.trigger'],
+            `Lifecycle: run_sdk → client.connections.connect({ connector_key: '${i.id}' }) → client.feeds.create({ connection_id, feed_key: ${feedKeyHint}, config }) → client.feeds.trigger({ feed_id }); then query_sql on events or search_memory to read. Use search_sdk 'feeds.create feeds.trigger' for signatures.`,
+            ctx
+          )}`
         ));
       } else {
         // Feedless connector, not yet connected — connect, then use operations.
         lines.push(withManagedAuth(i.id,
-          `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED, not yet connected. It has no data feeds — it exposes operations/actions. Lifecycle: run_sdk → client.connections.connect({ connector_key: '${i.id}' }); then query_sdk → client.operations.listAvailable({ connector_key: '${i.id}' }) and run with client.operations.execute.`
+          `connector '${i.id}' (${i.name ?? i.id}) — INSTALLED, not yet connected. It has no data feeds — it exposes operations/actions. ${lifecycleForCaller(
+            ['connections.connect', 'operations.listAvailable', 'operations.execute'],
+            `Lifecycle: run_sdk → client.connections.connect({ connector_key: '${i.id}' }); then query_sdk → client.operations.listAvailable({ connector_key: '${i.id}' }) and run with client.operations.execute.`,
+            ctx
+          )}`
         ));
       }
     }
@@ -228,7 +274,11 @@ export async function searchLiveConnectors(
         continue;
       }
       lines.push(withManagedAuth(c.id,
-        `connector '${c.id}' (${c.name ?? c.id}) — in the global CATALOG, not yet installed here. Install with run_sdk → client.connections.installConnector({ connector_id: '${c.id}' }), then connect + create feed.`
+        `connector '${c.id}' (${c.name ?? c.id}) — in the global CATALOG, not yet installed here. ${lifecycleForCaller(
+          ['connections.installConnector'],
+          `Install with run_sdk → client.connections.installConnector({ connector_id: '${c.id}' }), then repeat search_sdk for the live connect/use lifecycle.`,
+          ctx
+        )}`
       ));
     }
   } catch {

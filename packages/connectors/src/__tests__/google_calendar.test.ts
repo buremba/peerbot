@@ -14,6 +14,30 @@ beforeAll(async () => {
   GoogleCalendarConnector = mod.default;
 });
 
+describe('GoogleCalendarConnector authorization and operation policy', () => {
+  test('starts with read-only consent and keeps mutations approval-gated', () => {
+    const definition = new GoogleCalendarConnector().definition;
+    const oauth = definition.authSchema.methods[0];
+
+    expect(oauth.requiredScopes).toEqual([
+      'https://www.googleapis.com/auth/calendar.readonly',
+    ]);
+    expect(oauth.optionalScopes).toEqual([
+      'https://www.googleapis.com/auth/calendar.events',
+    ]);
+    for (const actionKey of ['create_event', 'update_event', 'delete_event']) {
+      expect(definition.actions[actionKey]).toMatchObject({
+        requiresApproval: true,
+        requiredScopes: ['https://www.googleapis.com/auth/calendar.events'],
+      });
+    }
+    expect(definition.actions.get_event).toMatchObject({
+      kind: 'read',
+      requiresApproval: false,
+    });
+  });
+});
+
 interface CalPage {
   status?: number;
   items?: Array<Record<string, unknown>>;

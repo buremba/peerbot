@@ -10,7 +10,7 @@ import {
 	resolveWriteEffect,
 } from "../authz/entity-policy";
 import type { WriteAction } from "../authz/write-action-manifest";
-import { resolveMaxAccessLevel } from "../auth/tool-access";
+import { resolveSdkMaxAccessLevel } from "../auth/tool-access";
 import { getDb } from "../db/client";
 import type { Env } from "../index";
 import {
@@ -20,6 +20,8 @@ import {
 } from "../sandbox/method-metadata";
 import { SDK_FIELD_ALIASES } from "../sandbox/sdk-aliases";
 import {
+	formatSdkRequiredTier,
+	resolveSdkAccessGuidance,
 	sdkMethodVisible,
 	type SdkDiscoveryMode,
 } from "../sandbox/sdk-method-access";
@@ -166,7 +168,7 @@ async function catalogForCaller(
 	ctx: ToolContext,
 	mode: SdkDiscoveryMode
 ): Promise<Array<[string, MethodMetadata]>> {
-	const callerMax = resolveMaxAccessLevel(ctx.memberRole, ctx.scopes);
+	const callerMax = resolveSdkMaxAccessLevel(ctx.memberRole, ctx.scopes);
 	const policyDenied = await deniedAgentsSdkPaths(ctx);
 	return Object.entries(SDK_DISCOVERY_METADATA).filter(([path, meta]) => {
 		if (!sdkMethodVisible(meta.access, callerMax, mode)) return false;
@@ -179,18 +181,24 @@ function hiddenMethodNote(
 	path: string,
 	meta: MethodMetadata,
 	mode: SdkDiscoveryMode,
-	policyDenied: Set<string>
+	policyDenied: Set<string>,
+	ctx: ToolContext,
 ): string {
 	if (policyDenied.has(path)) {
 		return `${path} is blocked by this agent's agent_config permissions.`;
 	}
+	const guidance = resolveSdkAccessGuidance(
+		meta.access,
+		ctx.memberRole,
+		ctx.scopes,
+	);
 	if (mode === "read" && meta.access !== "read") {
-		return `${path} exists but requires run_sdk (access: ${meta.access}). Retry with mode='full' or call via run_sdk.`;
+		if (guidance.available || guidance.progressivelyAuthorizable) {
+			return `${path} exists but requires run_sdk (access: ${formatSdkRequiredTier(meta.access)}). Retry with mode='full'. ${guidance.progressivelyAuthorizable ? guidance.instruction ?? "" : ""}`.trim();
+		}
+		return `${path} is not available at your access tier (access: ${formatSdkRequiredTier(meta.access)}). ${guidance.instruction ?? ""}`.trim();
 	}
-	if (meta.access === "admin") {
-		return `${path} requires workspace admin/owner + mcp:admin.`;
-	}
-	return `${path} is not available at your access tier (access: ${meta.access}).`;
+	return `${path} is not available at your access tier (access: ${formatSdkRequiredTier(meta.access)}). ${guidance.instruction ?? ""}`.trim();
 }
 
 function renderListLine(path: string, meta: MethodMetadata): string {
@@ -202,7 +210,7 @@ function renderDrillDown(path: string, meta: MethodMetadata): string {
 	lines.push(path);
 	lines.push(`  ${meta.summary}`);
 	lines.push(
-		`  access: ${meta.access}${meta.cost ? ` (cost: ${meta.cost})` : ""}`
+		`  access: ${formatSdkRequiredTier(meta.access)}${meta.cost ? ` (cost: ${meta.cost})` : ""}`
 	);
 	if (meta.signature) {
 		lines.push(`  signature: ${meta.signature}`);
@@ -331,7 +339,7 @@ async function sdkMethodSearch(
 	const mode: SdkDiscoveryMode = args.mode ?? "full";
 	const catalog = await catalogForCaller(ctx, mode);
 	const policyDenied = await deniedAgentsSdkPaths(ctx);
-	const callerMax = resolveMaxAccessLevel(ctx.memberRole, ctx.scopes);
+	const callerMax = resolveSdkMaxAccessLevel(ctx.memberRole, ctx.scopes);
 	const isMultiMethodQuery =
 		terms.length > 1 &&
 		terms.every(
@@ -355,7 +363,7 @@ async function sdkMethodSearch(
 					!sdkMethodVisible(meta.access, callerMax, mode) ||
 					policyDenied.has(path)
 				) {
-					hidden.push(hiddenMethodNote(path, meta, mode, policyDenied));
+					hidden.push(hiddenMethodNote(path, meta, mode, policyDenied, ctx));
 				} else if (!seen.has(path)) {
 					seen.add(path);
 					matches.push({ path, meta, exact: true });
@@ -418,7 +426,7 @@ async function sdkMethodSearch(
 				query,
 				match_count: 0,
 				results: [],
-				notes: hiddenMethodNote(path, meta, mode, policyDenied),
+				notes: hiddenMethodNote(path, meta, mode, policyDenied, ctx),
 			};
 		}
 		return {
@@ -446,10 +454,19 @@ async function sdkMethodSearch(
 				p.toLowerCase().startsWith(prefix)
 			);
 			if (hiddenNs.length > 0) {
-				const accesses = [...new Set(hiddenNs.map(([, m]) => m.access))]
+				const accesses = hiddenNs.map(([, meta]) => meta.access);
+				const accessLabels = [...new Set(accesses.map(formatSdkRequiredTier))]
 					.sort()
 					.join(", ");
-				hiddenNamespaceNote = `${lower}.* exists (${hiddenNs.length} method(s), access: ${accesses}) but none are visible${mode === "read" ? " in mode='read'" : ""} at your tier — call via run_sdk${accesses.includes("admin") ? " (admin methods need workspace admin/owner + mcp:admin)" : ""}.`;
+				const guidance = resolveSdkAccessGuidance(
+					accesses,
+					ctx.memberRole,
+					ctx.scopes,
+				);
+				const nextStep = guidance.available
+					? "Retry with mode='full' and call the returned methods via run_sdk."
+					: guidance.instruction;
+				hiddenNamespaceNote = `${lower}.* exists (${hiddenNs.length} method(s), access: ${accessLabels}) but none are visible${mode === "read" ? " in mode='read'" : ""} at your tier. ${nextStep ?? ""}`.trim();
 			}
 		}
 		if (combined.length > 0) {
@@ -511,7 +528,7 @@ async function sdkMethodSearch(
 		// zero-method query like "website" still returns the connector.
 		const hiddenExact = METADATA_BY_LOWER_PATH.get(lower);
 		const existsButHidden = hiddenExact
-			? hiddenMethodNote(hiddenExact[0], hiddenExact[1], mode, policyDenied)
+			? hiddenMethodNote(hiddenExact[0], hiddenExact[1], mode, policyDenied, ctx)
 			: undefined;
 		return {
 			query,

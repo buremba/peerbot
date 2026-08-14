@@ -14,6 +14,9 @@ type ConnectionRow = {
 	app_auth_profile_id: number | null;
 	display_name: string | null;
 	config: Record<string, unknown> | null;
+	device_worker_id: string | null;
+	device_platform: string | null;
+	connector_runtime: Record<string, unknown> | null;
 	name: string;
 };
 

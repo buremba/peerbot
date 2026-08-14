@@ -28,7 +28,7 @@ Ask from Claude Code, Codex, or ChatGPT:
 
 > What did we decide about enterprise onboarding, and what changed since the last release?
 
-Lobu searches the same durable, org-scoped memory regardless of which agent asks. The answer can combine connected discussions, project activity, customer records, saved decisions, and typed company entities without rebuilding that context from scratch in every chat.
+Lobu searches shared, durable organizational memory under the caller's permissions, regardless of which agent asks. The answer can combine connected discussions, project activity, customer records, saved decisions, and typed company entities without rebuilding that context from scratch in every chat.
 
 ### Hand work to a persistent Lobu specialist
 
@@ -45,8 +45,8 @@ To the user this stays one conversation in their primary agent. The specialist i
 Instead of every agent rebuilding company state through per-session tool calls, Lobu runs a shared data layer:
 
 - **Connect once.** Polls, webhooks, APIs, and agent-written connectors feed one append-only event log.
-- **Know once.** Events become searchable knowledge and typed entities such as companies, projects, incidents, and customers.
-- **Use from any agent.** Every authorized MCP client reads and contributes to the same organizational state.
+- **Know once.** Events can be indexed as searchable knowledge and linked to typed entities such as companies, projects, incidents, and customers.
+- **Use from any agent.** Authorized MCP clients read and contribute to the same organizational state according to their grants.
 - **Delegate when useful.** Persistent Lobu specialists can own a role, conversation history, tools, and recurring responsibilities.
 - **Keep control.** Identity, source permissions, approvals, credential brokering, provenance, and audit stay server-side.
 
@@ -87,7 +87,7 @@ npx @lobu/cli@latest run
 npx @lobu/cli@latest chat -c local "hello"
 ```
 
-`lobu run` starts a single Node process and an embedded Postgres database by default. It opens the web UI on `:8787` and applies the project's `lobu.config.ts`. Use `DATABASE_URL` when you want external Postgres; pgvector is required.
+`lobu run` starts the local stack with an embedded Postgres database by default and opens the web UI on `:8787`. It applies the project's `lobu.config.ts` automatically only in embedded mode. To use external Postgres, set `DATABASE_URL`, ensure pgvector is available, then authenticate and apply the project to that runtime separately.
 
 Docs: [Getting started](https://lobu.ai/getting-started/) · [Agent workspace](https://lobu.ai/guides/agent-prompts/) · [Skills](https://lobu.ai/getting-started/skills/) · [Slack](https://lobu.ai/platforms/slack/)
 
@@ -118,7 +118,7 @@ const hits = await searchMemory({
 });
 ```
 
-Mint a token with `lobu token create`. The MCP tools, CLI, and typed SDK share the same server-side capabilities and access rules.
+Mint a token with `lobu token create`. The MCP tools and typed SDK operations share the server-side tool registry and access rules; `lobu memory run` and `lobu memory exec` dispatch through the MCP endpoint.
 
 ## Core concepts
 
@@ -136,7 +136,7 @@ Docs: [Memory](https://lobu.ai/getting-started/memory/) · [Connectors](https://
 
 A Lobu specialist has a stable role, instructions, memory, tools, and conversation history. It can be reached from web chat or Slack and called by external agents through `client.conversations.send`.
 
-Specialists use role files for identity and behavior: `IDENTITY.md`, `SOUL.md`, and `USER.md`. Guardrails can inspect input, output, and tool calls. Actions can require approval, and their results return to the shared event log.
+Specialists use role files for identity and behavior: `IDENTITY.md`, `SOUL.md`, and `USER.md`. Guardrails can inspect input, output, and tool calls. Destructive MCP calls require in-thread approval unless they are explicitly pre-approved through `defineAgent({ tools: { preApproved } })` in `lobu.config.ts`; action results return to the shared event log.
 
 External agents do not ask users to write delegation code. They pass scripts like these to Lobu's `query_sdk` and `run_sdk` MCP tools:
 
@@ -204,7 +204,7 @@ Use the embedded runtime locally or self-host Lobu with external Postgres. Produ
 
 ## Security and privacy
 
-Permissions, provider credentials, connector credentials, and audit stay on Lobu's gateway. Workers receive scoped placeholders or short-lived access rather than durable credentials. Actions can be approval-gated, and connected data remains organization-scoped.
+Permissions and audit stay on Lobu's gateway. Lobu MCP servers and the credential-brokering layer handle provider and connector credentials, OAuth and token refresh, and third-party API proxying. Workers receive scoped placeholders or short-lived provider-derived access, never OAuth tokens or durable stored credentials. Destructive MCP calls require in-thread approval unless explicitly pre-approved, and connected data remains organization-scoped.
 
 The built-in `just-bash` and embedded execution modes are policy and convenience boundaries, not VMs for hostile code. Use a remote sandbox provider when the workload needs a stronger isolation boundary.
 

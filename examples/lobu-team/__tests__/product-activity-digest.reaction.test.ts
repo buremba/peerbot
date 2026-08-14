@@ -150,6 +150,66 @@ describe("Lobu Team product activity digest reaction", () => {
     expect(JSON.stringify(card)).toContain("Active MCP conversations (1)");
   });
 
+  it("excludes the operator's own login and MCP rows from presence", () => {
+    const digest = collectProductActivityDigest([
+      {
+        connection_slug: "lobu-product-activity-db",
+        title: "User login",
+        payload_text: "Burak · emrekabakci@gmail.com",
+      },
+      {
+        connection_slug: "lobu-product-activity-db",
+        title: "MCP activity",
+        payload_text: "lobu-cli · Burak · emrekabakci@gmail.com",
+      },
+      {
+        connection_slug: "lobu-product-activity-db",
+        title: "User login",
+        payload_text: "Ada · ada@example.com",
+      },
+    ]);
+    const card = buildProductActivityCard(digest, {
+      start: context.window.window_start,
+      end: context.window.window_end,
+    });
+
+    expect(digest.logins).toEqual(["Ada · ada@example.com"]);
+    expect(digest.mcp_conversations).toHaveLength(0);
+    expect(JSON.stringify(card)).toContain(
+      '"label":"Online users","value":"1"'
+    );
+    expect(JSON.stringify(card)).toContain("ada@example.com");
+    expect(JSON.stringify(card)).not.toContain("emrekabakci");
+  });
+
+  it("stays silent when the operator is the only online user", async () => {
+    const rows = [
+      {
+        connection_slug: "lobu-product-activity-db",
+        title: "User login",
+        payload_text: "Burak · emrekabakci@gmail.com",
+      },
+      {
+        connection_slug: "lobu-product-activity-db",
+        title: "MCP activity",
+        payload_text: "lobu-cli · Burak · emrekabakci@gmail.com",
+      },
+    ];
+    const send = mock();
+    const query = mock()
+      .mockResolvedValueOnce([{ created_at: "2026-08-13T12:00:00.000Z" }])
+      .mockResolvedValueOnce(rows);
+    const client = {
+      query,
+      notifications: { send },
+      log: mock(),
+    } as unknown as ReactionClient;
+
+    await productActivityDigest(context, client);
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("requires the run id used to deduplicate retries", async () => {
     const query = mock();
     const client = {

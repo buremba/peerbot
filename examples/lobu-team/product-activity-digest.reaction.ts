@@ -8,6 +8,14 @@ const PRODUCT_ACTIVITY_CONNECTION = "lobu-product-activity-db";
 const LOG_ACTIVITY_CONNECTION = "lobu-production-logs";
 const CARD_TEXT_LIMIT = 2_800;
 
+/**
+ * The digest's own operator account, excluded from presence rows (logins and
+ * MCP conversations). The "Online users" list then shows only other users, and
+ * a window whose sole activity is the operator's own session is skipped
+ * entirely (nothing remains for hasProductActivity to report).
+ */
+const EXCLUDED_EMAIL = "emrekabakci@gmail.com";
+
 export const input = {
   type: "object",
   properties: {
@@ -66,6 +74,15 @@ export function collectProductActivityDigest(
     if (row.connection_slug === PRODUCT_ACTIVITY_CONNECTION) {
       const text = row.payload_text?.trim();
       if (!text) continue;
+      // Presence rows carry the acting user's email; drop the operator's own
+      // session so "online users" reflects the rest of the team and a window
+      // where only the operator was active reports nothing.
+      if (
+        (row.title === "User login" || row.title === "MCP activity") &&
+        belongsToEmail(text, EXCLUDED_EMAIL)
+      ) {
+        continue;
+      }
       if (row.title === "New signup") digest.signups.push(text);
       if (row.title === "User login") digest.logins.push(text);
       if (row.title === "New connection") digest.connections.push(text);
@@ -182,6 +199,15 @@ function chunkText(value: string): string[] {
   }
   if (current) chunks.push(current);
   return chunks;
+}
+
+/** True when a presence payload belongs to the given email address. */
+function belongsToEmail(payload: string, email: string): boolean {
+  const want = email.toLowerCase();
+  const match = payload.match(
+    /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i
+  )?.[0];
+  return match != null && match.toLowerCase() === want;
 }
 
 function uniqueUsers(rows: string[]): string[] {

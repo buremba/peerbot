@@ -997,7 +997,8 @@ const midasConnection = defineConnection({
   slug: "midas",
   connector: "midas",
   name: "Midas",
-  feeds: [{ feed: "assets", config: {} }],});
+  feeds: [{ feed: "assets", config: {} }],
+});
 
 // A same-workspace execution target for market marks. It has no credentials or
 // feeds: the weekly reaction receives quotes directly from its read-only action
@@ -1374,9 +1375,7 @@ export default defineConfig({
       "./revolut-transactions.connector.ts"
     ),
     connectorFromFile<typeof LinkedInConnector>("./linkedin.connector.ts"),
-    connectorFromFile<typeof HackerNewsConnector>(
-      "./hackernews.connector.ts"
-    ),
+    connectorFromFile<typeof HackerNewsConnector>("./hackernews.connector.ts"),
     connectorFromFile<typeof SpotifyConnector>("./spotify.connector.ts"),
     connectorFromFile<typeof WhatsAppCloudConnector>(
       "./whatsapp.cloud.connector.ts"

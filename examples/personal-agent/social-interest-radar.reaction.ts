@@ -327,8 +327,7 @@ export default async (
       ]
         .filter((id) => Number.isSafeInteger(id) && id > 0)
         .join(",")}`,
-      browser_url:
-        platform === "hackernews" ? hnItemUrl(sourceUrl) : sourceUrl,
+      browser_url: platform === "hackernews" ? hnItemUrl(sourceUrl) : sourceUrl,
       idempotency_key: `social-radar:draft-ready:${draft.id}`,
       behavior_source: behaviorSource,
     });

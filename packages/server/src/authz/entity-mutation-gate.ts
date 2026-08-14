@@ -47,6 +47,7 @@ import {
 	buildCreateDeferral,
 	buildFieldChangeDeferral,
 } from "./approval-interceptor";
+import { transitionInterceptor } from "./transition-interceptor";
 
 export type MutationPrincipalKind = "user" | "agent" | "watcher";
 
@@ -123,6 +124,10 @@ export interface UpdateMutationRequest extends EntityMutationBase {
 	entityOrgId?: string | null;
 	/** field path (incl. reserved $-attributes) -> current owner. */
 	fields: Record<string, FieldOwner>;
+	/** field path (incl. reserved $-attributes) -> current value. */
+	currentValues: Record<string, unknown>;
+	/** field path (incl. reserved $-attributes) -> proposed value. */
+	proposedValues: Record<string, unknown>;
 }
 
 export type EntityMutationRequest =
@@ -178,6 +183,7 @@ export interface MutationInterceptor {
  */
 const BUILTIN_INTERCEPTORS: readonly MutationInterceptor[] = [
 	approvalInterceptor,
+	transitionInterceptor,
 ];
 
 const registry: MutationInterceptor[] = [...BUILTIN_INTERCEPTORS];

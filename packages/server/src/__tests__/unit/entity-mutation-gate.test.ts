@@ -17,7 +17,14 @@ import type { DbClient } from "../../db/client";
  * the interceptor contributes allow / an empty require-approval set, leaving
  * the outcome to the test-registered stubs.
  */
-const emptySql = (() => Promise.resolve([])) as unknown as DbClient;
+const emptySql = ((parts: TemplateStringsArray) => {
+	const query = parts.join(" ");
+	if (query.includes("FROM write_approval_policies")) return Promise.resolve([]);
+	if (query.includes("FROM entities e") && query.includes("JOIN entity_types et")) {
+		return Promise.resolve([{ name: "X", metadata: {}, metadata_schema: {} }]);
+	}
+	return Promise.resolve([]);
+}) as unknown as DbClient;
 
 function createReq(): CreateMutationRequest {
 	return {
@@ -44,6 +51,12 @@ function updateReq(
 		entityTypeSlug: "task",
 		entityId: 1,
 		fields,
+		currentValues: Object.fromEntries(
+			Object.keys(fields).map((field) => [field, null]),
+		),
+		proposedValues: Object.fromEntries(
+			Object.keys(fields).map((field) => [field, `${field}-next`]),
+		),
 	};
 }
 

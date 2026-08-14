@@ -306,6 +306,22 @@ async function upsertKeyedEntity(params: {
   `;
   if (existing.length > 0) {
     const entityId = Number(existing[0].entity_id);
+    const currentRows = await tx<{
+      metadata: unknown;
+      organization_id: string;
+    }>`
+      SELECT metadata, organization_id
+      FROM entities
+      WHERE id = ${entityId} AND deleted_at IS NULL
+      FOR UPDATE
+    `;
+    if (currentRows.length === 0) {
+      throw new Error(`Entity ${entityId} not found`);
+    }
+    const currentMetadata =
+      typeof currentRows[0].metadata === 'string'
+        ? JSON.parse(currentRows[0].metadata as string)
+        : ((currentRows[0].metadata ?? {}) as Record<string, unknown>);
     // Owners are 'none' here on purpose: human ownership is enforced inside the
     // merge itself; the gate only adds the org policy's field gates on top.
     const decision = await runMutationGate({
@@ -324,9 +340,14 @@ async function upsertKeyedEntity(params: {
       ownerResolved: params.watcherOwnerResolved,
       entityTypeSlug: params.entityTypeSlug,
       entityId,
+      entityOrgId: String(currentRows[0].organization_id),
       fields: Object.fromEntries(
         Object.keys(params.fieldValues).map((field) => [field, 'none' as const])
       ),
+      currentValues: Object.fromEntries(
+        Object.keys(params.fieldValues).map((field) => [field, currentMetadata[field]])
+      ),
+      proposedValues: params.fieldValues,
     });
     // Fail CLOSED on a deny: apply nothing and return a modeled policy outcome.
     // Unexpected persistence errors still throw and roll back the completion.

@@ -12,6 +12,12 @@ import {
 	ApprovalAttribution,
 	type ApprovalAttribution as ApprovalAttributionType,
 } from "@lobu/core/contracts/interaction-envelope";
+import {
+	runMutationGate,
+	type FieldOwner,
+	type MutationAttribution,
+	type MutationPrincipalKind,
+} from "../../authz/entity-mutation-gate";
 import { resolveEntityApprovalPolicy } from "../../authz/entity-policy";
 import { type DbClient, getDb, pgBigintArray } from "../../db/client";
 import {
@@ -1098,6 +1104,68 @@ export async function applyEntityFieldChangeProposal(
 		),
 	);
 	return await sql.begin(async (tx) => {
+		const entityRows = await tx<{
+			name: string | null;
+			metadata: unknown;
+			organization_id: string;
+			entity_type: string;
+			parent_id: number | null;
+			content: string | null;
+		}>`
+			SELECT e.name, e.metadata, e.organization_id, et.slug AS entity_type,
+			       e.parent_id, e.content
+			FROM entities e
+			JOIN entity_types et ON et.id = e.entity_type_id
+			WHERE e.id = ${proposal.entity_id} AND e.deleted_at IS NULL
+			FOR UPDATE
+		`;
+		if (entityRows.length === 0) {
+			throw new Error(`Entity ${proposal.entity_id} not found`);
+		}
+		const existingMetadata =
+			typeof entityRows[0].metadata === "string"
+				? JSON.parse(entityRows[0].metadata as string)
+				: ((entityRows[0].metadata ?? {}) as Record<string, unknown>);
+		const fields = Object.fromEntries(
+			Object.keys(proposal.fields).map((field) => [field, "none" as FieldOwner]),
+		);
+		const currentValues: Record<string, unknown> = {};
+		const proposedValues: Record<string, unknown> = {};
+		for (const [field, value] of Object.entries(metadataFields)) {
+			currentValues[field] = existingMetadata[field];
+			proposedValues[field] = value;
+		}
+		if (Object.hasOwn(attributeFields, "$name")) {
+			currentValues.$name = entityRows[0].name ?? null;
+			proposedValues.$name = attributeFields.$name;
+		}
+		if (Object.hasOwn(attributeFields, "$parent_id")) {
+			currentValues.$parent_id =
+				entityRows[0].parent_id == null ? null : Number(entityRows[0].parent_id);
+			proposedValues.$parent_id = attributeFields.$parent_id;
+		}
+		if (Object.hasOwn(attributeFields, "$content")) {
+			currentValues.$content = entityRows[0].content ?? null;
+			proposedValues.$content = attributeFields.$content;
+		}
+		if (Object.keys(fields).length > 0) {
+			const decision = await runMutationGate({
+				action: "update",
+				organizationId: String(entityRows[0].organization_id),
+				principalKind: "user" as MutationPrincipalKind,
+				sql: tx,
+				attribution: "agent" as MutationAttribution,
+				entityTypeSlug: String(entityRows[0].entity_type),
+				entityId: proposal.entity_id,
+				entityOrgId: String(entityRows[0].organization_id),
+				fields,
+				currentValues,
+				proposedValues,
+			});
+			if (decision.outcome === "deny") {
+				throw new Error(decision.reason);
+			}
+		}
 		const merge =
 			Object.keys(metadataFields).length > 0
 				? await mergeEntityFields({
@@ -1120,23 +1188,11 @@ export async function applyEntityFieldChangeProposal(
 						nextControls: {},
 					} satisfies FieldMergeResult);
 		if (Object.keys(attributeFields).length > 0) {
-			const rows = await tx<{
-				name: string | null;
-				parent_id: number | null;
-				content: string | null;
-			}>`
-        SELECT name, parent_id, content FROM entities
-        WHERE id = ${proposal.entity_id} AND deleted_at IS NULL
-        FOR UPDATE
-      `;
-			if (rows.length === 0) {
-				throw new Error(`Entity ${proposal.entity_id} not found`);
-			}
 			const live = {
-				$name: rows[0].name ?? null,
+				$name: entityRows[0].name ?? null,
 				$parent_id:
-					rows[0].parent_id == null ? null : Number(rows[0].parent_id),
-				$content: rows[0].content ?? null,
+					entityRows[0].parent_id == null ? null : Number(entityRows[0].parent_id),
+				$content: entityRows[0].content ?? null,
 			} as Record<string, unknown>;
 			const apply: Record<string, unknown> = {};
 			for (const [key, proposed] of Object.entries(attributeFields)) {

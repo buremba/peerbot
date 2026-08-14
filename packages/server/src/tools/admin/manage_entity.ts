@@ -429,11 +429,21 @@ async function handleUpdate(
 	}
 	const before = beforeRows[0];
 
-	// Validate metadata against entity type's JSON schema (if being updated)
+	// Validate metadata against entity type's JSON schema (if being updated).
+	// An update is a PATCH: `args.metadata` carries only the keys the caller is
+	// changing, and the write path merges it over the stored object key by key
+	// (see `computeFieldMerge`). So validate the MERGED document, not the patch —
+	// validating the patch alone reports every `required` key the caller did not
+	// resend as missing, which makes a partial update impossible on any type that
+	// declares required fields and forces callers to resend the whole object.
 	if (args.metadata !== undefined && Object.keys(args.metadata).length > 0) {
+		const mergedMetadata = {
+			...((before.metadata as Record<string, unknown> | null) ?? {}),
+			...args.metadata,
+		};
 		const validation = await validateEntityMetadata(
 			before.entity_type as string,
-			args.metadata,
+			mergedMetadata,
 			ctx,
 		);
 		if (!validation.valid) {
@@ -1458,6 +1468,90 @@ const RELATIONSHIP_JOINS = `
 // Relationship (Link) Action Handlers
 // ============================================
 
+/**
+ * Reserved attribute a graph edge is presented under when it goes through the
+ * mutation gate. Mirrors `$parent_id`, which already models the hierarchy edge
+ * as an attribute of the entity it hangs off.
+ */
+const LINKS_ATTRIBUTE = "$links";
+
+/**
+ * Run the mutation gate for a GRAPH edge write (link / unlink / update_link).
+ *
+ * The edge is presented as an `update` on its SOURCE entity under the reserved
+ * `$links` attribute. That shape is deliberate: every interceptor that already
+ * governs a document's fields then governs its graph too, with no interceptor
+ * changes. An invoice whose `grand_total` is sealed by an `x-transitions`
+ * freeze has its outbound references sealed by the same rule — previously the
+ * edge tables were reachable with no gate at all, so a legally frozen document
+ * could be re-pointed at a different quote or customer.
+ *
+ * Only the SOURCE endpoint is gated. `from_entity_id` is the endpoint the edge
+ * is filed under — it is also the one `validateScopeRule` requires to be in the
+ * caller's org — so a document's own outbound references are part of its record
+ * and freeze with it. Being POINTED AT is not a mutation of the target: a
+ * payment must stay applicable to a posted invoice, which is the ordinary
+ * accounting flow and would break if the target were gated too.
+ */
+async function gateEdgeMutation(
+	op: "link" | "unlink" | "update_link",
+	sourceEntityId: number,
+	proposed: Record<string, unknown> | null,
+	args: ManageEntityArgs,
+	ctx: ToolContext,
+): Promise<void> {
+	const sql = getDb();
+	const rows = await sql<{ entity_type: string; organization_id: string }>`
+    SELECT et.slug AS entity_type, e.organization_id
+    FROM entities e
+    JOIN entity_types et ON et.id = e.entity_type_id
+    WHERE e.id = ${sourceEntityId}
+      AND e.organization_id = ${ctx.organizationId}
+      AND e.deleted_at IS NULL
+    LIMIT 1
+  `;
+	// No row means the source is gone or cross-org. Leave the existing per-handler
+	// validation to produce its own error rather than inventing one here.
+	if (rows.length === 0) return;
+
+	const actor = await actingPrincipalFor(args, ctx);
+	const decision = await runMutationGate({
+		action: "update",
+		organizationId: ctx.organizationId,
+		principalKind: actor.kind,
+		sql,
+		attribution: attributionFor(actor),
+		watcherId: ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null,
+		windowId: ctx.actingWindowId ?? args.behavior_source?.window_id ?? null,
+		principalId: actor.id,
+		ownerAgentId: actor.ownerAgentId,
+		ownerResolved: actor.ownerResolved,
+		entityTypeSlug: rows[0].entity_type,
+		entityId: sourceEntityId,
+		entityOrgId: String(rows[0].organization_id),
+		fields: { [LINKS_ATTRIBUTE]: "none" },
+		// The gate compares current vs proposed to decide whether anything changed.
+		// An edge write is never a no-op, so the current side is null and the
+		// proposed side carries the edge — which also makes the approval card and
+		// the deny reason legible.
+		currentValues: { [LINKS_ATTRIBUTE]: null },
+		proposedValues: { [LINKS_ATTRIBUTE]: { op, ...(proposed ?? {}) } },
+	});
+	if (decision.outcome === "deny") {
+		throw new ToolUserError(decision.reason, 403);
+	}
+	if (decision.requireApproval.has(LINKS_ATTRIBUTE)) {
+		// An edge write is atomic — there is no partial-apply equivalent of holding
+		// back one field — so a policy that wants edges approved fails closed here
+		// rather than silently committing the edge. Deferring an edge write is not
+		// implemented; the deny path is.
+		throw new ToolUserError(
+			`Relationship changes on this ${rows[0].entity_type} require approval, which is not available for graph edges.`,
+			403,
+		);
+	}
+}
+
 async function handleLink(
 	args: ManageEntityArgs,
 	env: Env,
@@ -1532,6 +1626,17 @@ async function handleLink(
 
 	await checkDuplicateEdge(fromId, toId, typeId, sql);
 
+	await gateEdgeMutation(
+		"link",
+		fromId,
+		{
+			to_entity_id: toId,
+			relationship_type_slug: args.relationship_type_slug,
+		},
+		args,
+		ctx,
+	);
+
 	validateConfidence(args.confidence);
 	validateSource(args.source);
 	const source = args.source ?? "api";
@@ -1578,7 +1683,7 @@ async function handleUnlink(
   const sql = getDb();
 
   const existing = await sql`
-    SELECT id, organization_id FROM entity_relationships
+    SELECT id, organization_id, from_entity_id FROM entity_relationships
     WHERE id = ${args.relationship_id} AND deleted_at IS NULL
     LIMIT 1
   `;
@@ -1590,6 +1695,14 @@ async function handleUnlink(
 			"Access denied: relationship belongs to another organization",
 		);
 	}
+
+	await gateEdgeMutation(
+		"unlink",
+		Number(existing[0].from_entity_id),
+		{ relationship_id: args.relationship_id },
+		args,
+		ctx,
+	);
 
 	await sql`
     UPDATE entity_relationships
@@ -1614,7 +1727,7 @@ async function handleUpdateLink(
   const sql = getDb();
 
   const existing = await sql`
-    SELECT id, organization_id FROM entity_relationships
+    SELECT id, organization_id, from_entity_id FROM entity_relationships
     WHERE id = ${args.relationship_id} AND deleted_at IS NULL
     LIMIT 1
   `;
@@ -1626,6 +1739,14 @@ async function handleUpdateLink(
 			"Access denied: relationship belongs to another organization",
 		);
 	}
+
+	await gateEdgeMutation(
+		"update_link",
+		Number(existing[0].from_entity_id),
+		{ relationship_id: args.relationship_id, metadata: args.metadata ?? null },
+		args,
+		ctx,
+	);
 
 	validateConfidence(args.confidence);
 	validateSource(args.source);

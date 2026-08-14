@@ -636,13 +636,12 @@ export async function updateEntity(
 				? JSON.parse(current[0].field_controls as string)
 				: (current[0].field_controls ?? {})
 		) as Record<string, FieldControl>;
+		const principalKind: MutationPrincipalKind =
+			opts?.policyPrincipalKind ?? (isHumanEdit ? "user" : "agent");
 
-		// Non-human edits run ONE policy pass over metadata fields AND the
-		// top-level attributes (name/content/parent_id as reserved $-paths, so a
-		// field-scoped policy can target them too). A gated attribute is stripped
-		// from this write and queued as a blocked change like any owned field —
-		// otherwise "updates need approval" would gate metadata while an agent
-		// could still rename or re-parent the entity.
+		// Every edit runs the mutation gate so runtime data rules bind humans too.
+		// Ownership stays a non-human concept, so human writes carry owner="none"
+		// for every field and keep today's no-approval behavior.
 		const requireApproval: string[] = [];
 		const blockedAttributes: Record<
 			string,
@@ -651,77 +650,96 @@ export async function updateEntity(
 		let applyName = data.name !== undefined;
 		let applyParent = data.parent_id !== undefined;
 		let applyContent = hasContent;
-		if (!isHumanEdit) {
-			const principalKind: MutationPrincipalKind =
-				opts?.policyPrincipalKind ?? "agent";
-			const attributeProposals: Record<
-				string,
-				{ current: unknown; proposed: unknown }
-			> = {};
-			if (applyName && (data.name ?? null) !== (current[0].name ?? null)) {
-				attributeProposals.$name = {
-					current: current[0].name ?? null,
-					proposed: data.name ?? null,
-				};
-			}
-			const currentParentId =
-				current[0].parent_id == null ? null : Number(current[0].parent_id);
-			if (applyParent && (data.parent_id ?? null) !== currentParentId) {
-				attributeProposals.$parent_id = {
-					current: currentParentId,
-					proposed: data.parent_id ?? null,
-				};
-			}
-			if (
-				applyContent &&
-				contentValue !== ((current[0].content as string | null) ?? null)
-			) {
-				attributeProposals.$content = {
-					current: current[0].content ?? null,
-					proposed: contentValue,
-				};
-			}
-			const fieldOwners = {
-				...(Object.fromEntries(
-					Object.keys(metadataUpdates).map((field) => [
-						field,
-						Object.hasOwn(existingControls, field) ? "human" : "none",
-					]),
-				) as Record<string, "human" | "none">),
-				...(Object.fromEntries(
-					Object.keys(attributeProposals).map((attr) => [attr, "none"]),
-				) as Record<string, "none">),
+		const attributeProposals: Record<
+			string,
+			{ current: unknown; proposed: unknown }
+		> = {};
+		if (applyName && (data.name ?? null) !== (current[0].name ?? null)) {
+			attributeProposals.$name = {
+				current: current[0].name ?? null,
+				proposed: data.name ?? null,
 			};
-			if (Object.keys(fieldOwners).length > 0) {
-				const decision = await runMutationGate({
-					action: "update",
-					organizationId: ctx.organizationId,
-					principalKind,
-					sql: tx,
-					attribution: opts?.attribution ?? "agent",
-					windowId: opts?.windowId ?? null,
-					principalId:
-						opts?.principalId ??
-						mutationPrincipalId({ agentId: ctx.agentId }),
-					ownerAgentId: opts?.ownerAgentId ?? null,
-					ownerResolved: opts?.ownerResolved ?? true,
-					entityTypeSlug: String(current[0].entity_type),
-					entityId,
-					entityOrgId: String(current[0].organization_id),
-					fields: fieldOwners,
-				});
-				if (decision.outcome === "deny") {
-					throw new ToolUserError(decision.reason, 403);
-				}
-				for (const field of decision.requireApproval) {
-					if (attributeProposals[field]) {
-						blockedAttributes[field] = attributeProposals[field];
-						if (field === "$name") applyName = false;
-						if (field === "$parent_id") applyParent = false;
-						if (field === "$content") applyContent = false;
-					} else {
-						requireApproval.push(field);
-					}
+		}
+		const currentParentId =
+			current[0].parent_id == null ? null : Number(current[0].parent_id);
+		if (applyParent && (data.parent_id ?? null) !== currentParentId) {
+			attributeProposals.$parent_id = {
+				current: currentParentId,
+				proposed: data.parent_id ?? null,
+			};
+		}
+		if (
+			applyContent &&
+			contentValue !== ((current[0].content as string | null) ?? null)
+		) {
+			attributeProposals.$content = {
+				current: current[0].content ?? null,
+				proposed: contentValue,
+			};
+		}
+		const fieldOwners = {
+			...(Object.fromEntries(
+				Object.keys(metadataUpdates).map((field) => [
+					field,
+					isHumanEdit
+						? "none"
+						: Object.hasOwn(existingControls, field)
+							? "human"
+							: "none",
+				]),
+			) as Record<string, "human" | "none">),
+			...(Object.fromEntries(
+				Object.keys(attributeProposals).map((attr) => [attr, "none"]),
+			) as Record<string, "none">),
+		};
+		if (Object.keys(fieldOwners).length > 0) {
+			const decision = await runMutationGate({
+				action: "update",
+				organizationId: ctx.organizationId,
+				principalKind,
+				sql: tx,
+				attribution: opts?.attribution ?? "agent",
+				windowId: opts?.windowId ?? null,
+				principalId:
+					opts?.principalId ?? mutationPrincipalId({ agentId: ctx.agentId }),
+				ownerAgentId: opts?.ownerAgentId ?? null,
+				ownerResolved: opts?.ownerResolved ?? true,
+				entityTypeSlug: String(current[0].entity_type),
+				entityId,
+				entityOrgId: String(current[0].organization_id),
+				fields: fieldOwners,
+				currentValues: {
+					...(Object.fromEntries(
+						Object.keys(metadataUpdates).map((field) => [field, existing[field]]),
+					) as Record<string, unknown>),
+					...(Object.fromEntries(
+						Object.entries(attributeProposals).map(([field, proposal]) => [
+							field,
+							proposal.current,
+						]),
+					) as Record<string, unknown>),
+				},
+				proposedValues: {
+					...(metadataUpdates as Record<string, unknown>),
+					...(Object.fromEntries(
+						Object.entries(attributeProposals).map(([field, proposal]) => [
+							field,
+							proposal.proposed,
+						]),
+					) as Record<string, unknown>),
+				},
+			});
+			if (decision.outcome === "deny") {
+				throw new ToolUserError(decision.reason, 403);
+			}
+			for (const field of decision.requireApproval) {
+				if (attributeProposals[field]) {
+					blockedAttributes[field] = attributeProposals[field];
+					if (field === "$name") applyName = false;
+					if (field === "$parent_id") applyParent = false;
+					if (field === "$content") applyContent = false;
+				} else {
+					requireApproval.push(field);
 				}
 			}
 		}

@@ -8,18 +8,14 @@ const PRODUCT_ACTIVITY_CONNECTION = "lobu-product-activity-db";
 const LOG_ACTIVITY_CONNECTION = "lobu-production-logs";
 const CARD_TEXT_LIMIT = 2_800;
 
-/**
- * The digest's own operator account, excluded from presence rows (logins and
- * MCP conversations). The "Online users" list then shows only other users, and
- * a window whose sole activity is the operator's own session is skipped
- * entirely (nothing remains for hasProductActivity to report).
- */
-const EXCLUDED_EMAIL = "emrekabakci@gmail.com";
-
 export const input = {
   type: "object",
   properties: {
     run: { type: "boolean" },
+    // Presence rows (logins / MCP conversations) for this email are excluded
+    // from the "Online users" list, and a window whose only activity is that
+    // email reports nothing. Optional — default is no exclusion.
+    exclude_email: { type: "string", format: "email" },
   },
   required: ["run"],
 };
@@ -56,7 +52,8 @@ export interface ProductActivityDigest {
 }
 
 export function collectProductActivityDigest(
-  rows: ActivityRow[]
+  rows: ActivityRow[],
+  excludedEmail?: string | null
 ): ProductActivityDigest {
   const digest: ProductActivityDigest = {
     signups: [],
@@ -74,12 +71,13 @@ export function collectProductActivityDigest(
     if (row.connection_slug === PRODUCT_ACTIVITY_CONNECTION) {
       const text = row.payload_text?.trim();
       if (!text) continue;
-      // Presence rows carry the acting user's email; drop the operator's own
-      // session so "online users" reflects the rest of the team and a window
-      // where only the operator was active reports nothing.
+      // Presence rows carry the acting user's email; drop the excluded one
+      // (typically the operator's own) so "online users" reflects the rest of
+      // the team and a window where only that email was active reports nothing.
       if (
+        excludedEmail &&
         (row.title === "User login" || row.title === "MCP activity") &&
-        belongsToEmail(text, EXCLUDED_EMAIL)
+        belongsToEmail(text, excludedEmail)
       ) {
         continue;
       }
@@ -333,7 +331,16 @@ export default async (
     ORDER BY e.created_at ASC, e.id ASC
     LIMIT 5000
   `)) as ActivityRow[];
-  const digest = collectProductActivityDigest(rows);
+  const excludedEmail =
+    ctx.extracted_data &&
+    typeof ctx.extracted_data === "object" &&
+    "exclude_email" in ctx.extracted_data &&
+    typeof (ctx.extracted_data as Record<string, unknown>).exclude_email ===
+      "string"
+      ? String((ctx.extracted_data as Record<string, unknown>).exclude_email).trim() ||
+        null
+      : null;
+  const digest = collectProductActivityDigest(rows, excludedEmail);
   if (!hasProductActivity(digest)) {
     client.log("No production activity; Slack digest skipped", {
       window_start: start.toISOString(),

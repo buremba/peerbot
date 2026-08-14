@@ -33,7 +33,7 @@ import {
   validatePublicUrl,
 } from "@lobu/connector-sdk";
 
-const HN_ORIGINS = ["news.ycombinator.com", "hn.algolia.com"];
+const HN_ORIGINS = ["news.ycombinator.com"];
 
 // ---------------------------------------------------------------------------
 // Algolia HN API types (mirrors the built-in connector)

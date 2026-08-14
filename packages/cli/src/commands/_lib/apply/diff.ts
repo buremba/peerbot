@@ -1397,7 +1397,7 @@ function diffWatcher(
     scalar.push("agent_kind");
   }
   if (
-    desired.model !== undefined &&
+    desired.model &&
     desired.model !== (remote.execution_config?.model ?? undefined)
   ) {
     scalar.push("execution_config");

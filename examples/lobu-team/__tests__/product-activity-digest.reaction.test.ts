@@ -6,7 +6,7 @@ import productActivityDigest, {
 } from "../product-activity-digest.reaction.ts";
 
 const context = {
-  extracted_data: { run: true },
+  extracted_data: { run: true, exclude_email: "emrekabakci@gmail.com" },
   entities: [],
   window: {
     id: 99,
@@ -151,23 +151,26 @@ describe("Lobu Team product activity digest reaction", () => {
   });
 
   it("excludes the operator's own login and MCP rows from presence", () => {
-    const digest = collectProductActivityDigest([
-      {
-        connection_slug: "lobu-product-activity-db",
-        title: "User login",
-        payload_text: "Burak · emrekabakci@gmail.com",
-      },
-      {
-        connection_slug: "lobu-product-activity-db",
-        title: "MCP activity",
-        payload_text: "lobu-cli · Burak · emrekabakci@gmail.com",
-      },
-      {
-        connection_slug: "lobu-product-activity-db",
-        title: "User login",
-        payload_text: "Ada · ada@example.com",
-      },
-    ]);
+    const digest = collectProductActivityDigest(
+      [
+        {
+          connection_slug: "lobu-product-activity-db",
+          title: "User login",
+          payload_text: "Burak · emrekabakci@gmail.com",
+        },
+        {
+          connection_slug: "lobu-product-activity-db",
+          title: "MCP activity",
+          payload_text: "lobu-cli · Burak · emrekabakci@gmail.com",
+        },
+        {
+          connection_slug: "lobu-product-activity-db",
+          title: "User login",
+          payload_text: "Ada · ada@example.com",
+        },
+      ],
+      "emrekabakci@gmail.com"
+    );
     const card = buildProductActivityCard(digest, {
       start: context.window.window_start,
       end: context.window.window_end,

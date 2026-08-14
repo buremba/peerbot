@@ -136,14 +136,28 @@ function notificationBody(lines: string[]): string {
 }
 
 /**
- * Normalize an HN item URL/id to its canonical item-page URL
- * (`/item?id=`). HN's story comment box lives on the item page; the
- * /reply?id= page only serves individual comment replies.
+ * Normalize an HN item URL/id to its canonical item-page URL (`/item?id=`).
+ * HN's story comment box lives on the item page. Only rewrites a genuine HN
+ * item URL or a bare numeric id; any other URL is returned unchanged so a
+ * mislabeled draft can never be pointed at an unrelated HN story.
  */
-function hnItemUrl(value: string): string {
-  const match = value.match(/\/item\?id=(\d+)/) ?? value.match(/(\d{4,})/);
-  const id = match?.[1];
-  return id ? `https://news.ycombinator.com/item?id=${id}` : value;
+export function hnItemUrl(value: string): string {
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) {
+    return `https://news.ycombinator.com/item?id=${trimmed}`;
+  }
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase().replace(/^www\./, "");
+    if (host !== "news.ycombinator.com") return value;
+    const id = url.searchParams.get("id");
+    if (id && /^\d+$/.test(id)) {
+      return `https://news.ycombinator.com/item?id=${id}`;
+    }
+  } catch {
+    return value;
+  }
+  return value;
 }
 
 function isReviewableLinkedInPostUrl(value: string): boolean {
@@ -197,8 +211,6 @@ export default async (
      ORDER BY id`
   )) as PersistedDraft[];
 
-  const deliveryNotes: string[] = [];
-
   // Only draft-ready notifications are delivered. The "everything I noticed"
   // digest added a raw timeline dump (source tweets + signals) as a second
   // notification; the draft-ready cards already surface the curated, actionable
@@ -229,18 +241,12 @@ export default async (
           draft_event_id: draft.id,
         }
       );
-      deliveryNotes.push(
-        "Draft not scheduled: its saved handoff data is incomplete."
-      );
       continue;
     }
     if (platform === "linkedin" && !isReviewableLinkedInPostUrl(sourceUrl)) {
       client.log(
         "Saved LinkedIn draft has only the generic feed URL; a durable post permalink is required before scheduling.",
         { draft_event_id: draft.id, source_url: sourceUrl }
-      );
-      deliveryNotes.push(
-        "LinkedIn draft not scheduled: the post did not expose a durable link."
       );
       continue;
     }
@@ -299,9 +305,6 @@ export default async (
           status: result.status,
           error: result.error_message,
         }
-      );
-      deliveryNotes.push(
-        `${platform === "linkedin" ? "LinkedIn" : platform === "hackernews" ? "Hacker News" : "X"} draft not scheduled.`
       );
       continue;
     }

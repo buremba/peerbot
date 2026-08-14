@@ -1005,7 +1005,16 @@ export async function executePlan(
               ? { agent_kind: w.agentKind ?? null }
               : {}),
             ...(scalarForUpdate.includes("execution_config")
-              ? { execution_config: w.model ? { model: w.model } : null }
+              ? {
+                  // The server assigns execution_config wholesale, so preserve
+                  // remote keys (timeout_seconds, permission_mode, …) and
+                  // override only the model — otherwise a model drift would
+                  // silently drop config set outside this project.
+                  execution_config:
+                    w.model != null
+                      ? { ...(remote?.execution_config ?? {}), model: w.model }
+                      : null,
+                }
               : {}),
           });
         }

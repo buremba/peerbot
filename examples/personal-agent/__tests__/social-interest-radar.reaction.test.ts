@@ -1,6 +1,32 @@
 import { describe, expect, it } from "bun:test";
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
-import runReaction from "../social-interest-radar.reaction";
+import runReaction, { hnItemUrl } from "../social-interest-radar.reaction";
+
+describe("hnItemUrl", () => {
+  it("canonicalizes a bare numeric id", () => {
+    expect(hnItemUrl("49296627")).toBe(
+      "https://news.ycombinator.com/item?id=49296627"
+    );
+  });
+
+  it("canonicalizes an HN item URL", () => {
+    expect(
+      hnItemUrl("https://news.ycombinator.com/item?id=49296627")
+    ).toBe("https://news.ycombinator.com/item?id=49296627");
+  });
+
+  it("leaves a non-HN URL unchanged", () => {
+    expect(hnItemUrl("https://x.com/ada/status/1234567890")).toBe(
+      "https://x.com/ada/status/1234567890"
+    );
+  });
+
+  it("leaves an HN non-item URL unchanged", () => {
+    expect(hnItemUrl("https://news.ycombinator.com/jobs")).toBe(
+      "https://news.ycombinator.com/jobs"
+    );
+  });
+});
 
 const signalMetadata = {
   platform: "linkedin",

@@ -9,10 +9,15 @@
  * transactions, and includes a NEGATIVE CONTROL showing a Postgres SEQUENCE —
  * the obvious wrong answer — leaving exactly the gap the design has to avoid.
  *
- * `document_number_counters` does not exist in migrations yet (its DDL is an
- * unapproved DB-design change). This suite creates the PROPOSED table verbatim
- * in `beforeAll` and drops it in `afterAll`, so the locking protocol is proven
- * before the migration is written, and nothing is left behind.
+ * `document_number_counters` now ships in
+ * `db/migrations/20260814120000_document_number_counters.sql`, so this suite uses
+ * the migrated table (the harness runs migrations and TRUNCATEs between suites).
+ * It must NOT create or drop that table itself — dropping it would silently
+ * break every later suite sharing the database.
+ *
+ * This suite exercises the allocator directly. The end-to-end proof that the
+ * real create path allocates, stamps, and rolls back correctly lives in
+ * `document-numbering-create-path.test.ts`.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -31,24 +36,6 @@ import {
 	createTestOrganization,
 	createTestUser,
 } from "../../setup/test-fixtures";
-
-/**
- * The exact DDL proposed for `db/migrations/<ts>_document_number_counters.sql`.
- * Kept here verbatim so the protocol under test is the protocol proposed.
- */
-const PROPOSED_COUNTER_DDL = `
-  CREATE TABLE IF NOT EXISTS public.document_number_counters (
-    organization_id text NOT NULL REFERENCES public.organization(id) ON DELETE CASCADE,
-    entity_type_id integer NOT NULL REFERENCES public.entity_types(id) ON DELETE CASCADE,
-    series text NOT NULL,
-    period text NOT NULL,
-    last_value bigint NOT NULL DEFAULT 0,
-    updated_at timestamp with time zone NOT NULL DEFAULT now(),
-    CONSTRAINT document_number_counters_pkey
-      PRIMARY KEY (organization_id, entity_type_id, series, period),
-    CONSTRAINT document_number_counters_last_value_positive CHECK (last_value >= 0)
-  );
-`;
 
 const SPEC_SCHEMA = {
 	type: "object",
@@ -75,8 +62,6 @@ describe("gapless document numbering", () => {
 		const user = await createTestUser({ email: "numbering-owner@test.com" });
 		createdBy = user.id;
 
-		await sql.unsafe(PROPOSED_COUNTER_DDL);
-
 		const rows = await sql<{ id: number }>`
       INSERT INTO entity_types (slug, name, organization_id, created_by, metadata_schema)
       VALUES ('numbering_invoice', 'Invoice', ${organizationId}, ${user.id}, ${sql.json(SPEC_SCHEMA)})
@@ -94,9 +79,10 @@ describe("gapless document numbering", () => {
 			await sql`DELETE FROM entities WHERE organization_id = ${organizationId}`;
 		}
 		if (entityTypeId) {
+			// Cascades this suite's document_number_counters rows away; the TABLE
+			// itself is migration-owned and must survive for later suites.
 			await sql`DELETE FROM entity_types WHERE id = ${entityTypeId}`;
 		}
-		await sql.unsafe("DROP TABLE IF EXISTS public.document_number_counters");
 		await sql.unsafe(
 			"DROP SEQUENCE IF EXISTS public.numbering_negative_control_seq",
 		);

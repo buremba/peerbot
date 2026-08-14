@@ -30,6 +30,12 @@ import type { Env } from "../index";
 import { querySqlImpl } from "../tools/admin/query_sql";
 import type { ToolContext } from "../tools/registry";
 import { entityLinkMatchSql } from "./content-search";
+import {
+	allocateDocumentNumber,
+	DocumentNumberingError,
+	type NumberingSpec,
+	parseNumberingSpec,
+} from "./document-numbering";
 import { computeFieldMerge, type FieldControl } from "./entity-field-merge";
 import { type EntityHookContext, getEntityHooks } from "./entity-hooks";
 import { ToolUserError } from "./errors";
@@ -443,8 +449,12 @@ export async function createEntity(
 	// visibility flips to admins; long-term the right fix is either an
 	// explicit `is_catalog` flag on `organization` or per-agent `uses_catalog`
 	// declarations narrowing the search scope.
-	const typeRow = await sql<{ id: number; backing_sql: string | null }>`
-    SELECT et.id, et.backing_sql
+	const typeRow = await sql<{
+		id: number;
+		backing_sql: string | null;
+		metadata_schema: unknown;
+	}>`
+    SELECT et.id, et.backing_sql, et.metadata_schema
     FROM entity_types et
     LEFT JOIN organization o ON o.id = et.organization_id
     WHERE et.slug = ${data.entity_type}
@@ -478,6 +488,48 @@ export async function createEntity(
 
 	const metadata = mergeConvenienceFields(data, data.metadata || {}, "create");
 
+	// Re-checked here rather than reusing the guard above: `beforeCreate` may
+	// have replaced `data` since, so this both restores the type narrowing for
+	// the transaction closure below and closes the hole a hook could open.
+	const organizationId = data.organization_id;
+	if (!organizationId) {
+		throw new Error("Organization ID is required");
+	}
+
+	// Does this type declare gapless document numbering (`x-numbering`)? A
+	// malformed declaration THROWS rather than being ignored — a numbering rule
+	// that silently does nothing is how documents end up unnumbered in an audit.
+	let numberingSpec: NumberingSpec | null;
+	try {
+		numberingSpec = parseNumberingSpec(typeRow[0].metadata_schema);
+	} catch (error) {
+		throw new ToolUserError(
+			`Entity type '${data.entity_type}' declares invalid numbering: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+			400,
+		);
+	}
+	if (numberingSpec) {
+		// A caller-supplied number is REJECTED, never silently overwritten and
+		// never accepted. Overwriting would make the tool lie about what it
+		// stored; accepting would let a caller collide with, skip past, or
+		// reuse an issued number — either way the counter stops being the
+		// authority and the series stops being auditable. `null`/`""` are
+		// treated as "not supplied" so a client echoing an empty form field
+		// still works.
+		const supplied = metadata[numberingSpec.field];
+		if (supplied !== undefined && supplied !== null && supplied !== "") {
+			throw new ToolUserError(
+				`Field '${numberingSpec.field}' on entity type '${data.entity_type}' is assigned by the server's gapless document numbering and cannot be set by the caller (received ${JSON.stringify(
+					supplied,
+				)}). Omit it — the number is allocated when the record is created.`,
+				400,
+			);
+		}
+		delete metadata[numberingSpec.field];
+	}
+
 	const createdBy = data.created_by || "system";
 
 	// Validate parent hierarchy (replaces prevent_entity_cycles trigger)
@@ -491,12 +543,33 @@ export async function createEntity(
 
 	try {
 		const inserted = await sql.begin(async (tx) => {
+			// Allocate INSIDE the caller's transaction, immediately before the
+			// INSERT. This placement is the whole contract, not a convenience:
+			// allocating anywhere that commits separately (the mutation gate runs
+			// on a POOL client, in a different transaction) would leave the counter
+			// bumped when this INSERT fails — i.e. a gap, the one thing the design
+			// exists to prevent. It also keeps the advisory lock held from
+			// allocation to COMMIT, so no concurrent writer can interleave.
+			const insertMetadata = numberingSpec
+				? {
+						...metadata,
+						[numberingSpec.field]: (
+							await allocateDocumentNumber(tx, {
+								organizationId,
+								entityTypeId,
+								spec: numberingSpec,
+								metadata,
+							})
+						).formatted,
+					}
+				: metadata;
+
 			const rows = await tx<Omit<CreatedEntity, "entity_type">>`
         INSERT INTO entities (
           organization_id, entity_type_id, name, slug, parent_id, metadata, enabled_classifiers, created_by, content, embedding, content_hash, created_at, updated_at
         ) VALUES (
-          ${data.organization_id}, ${entityTypeId}, ${data.name.trim()}, ${slug}, ${data.parent_id || null},
-          ${sql.json(metadata)}, ${data.enabled_classifiers ? pgTextArray(data.enabled_classifiers) : null}::text[], ${createdBy},
+          ${organizationId}, ${entityTypeId}, ${data.name.trim()}, ${slug}, ${data.parent_id || null},
+          ${sql.json(insertMetadata)}, ${data.enabled_classifiers ? pgTextArray(data.enabled_classifiers) : null}::text[], ${createdBy},
           ${contentValue}, ${embeddingLiteral}::vector, ${contentHash}, current_timestamp, current_timestamp
         )
         RETURNING id, name, slug, parent_id, metadata, created_at
@@ -525,6 +598,13 @@ export async function createEntity(
 		return created;
 	} catch (error: any) {
 		const msg = error.message ?? "";
+
+		// A numbering failure is the caller's input (a missing series value), not
+		// a DB fault — surface it as a 400 instead of falling through to the
+		// constraint-violation mapping below, which would mangle the message.
+		if (error instanceof DocumentNumberingError) {
+			throw new ToolUserError(msg, 400);
+		}
 
 		// Handle database constraint violations
 		if (msg.includes("duplicate key") || msg.includes("unique constraint")) {

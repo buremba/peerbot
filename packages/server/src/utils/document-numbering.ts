@@ -4,10 +4,11 @@
  *
  * ## Where the behaviour is declared
  *
- * As an `x-numbering` vendor extension on the entity type's `metadata_schema`,
- * exactly like `x-transitions` — the type definition is the single place a
- * document rule lives, and `upsertEntityType`'s `schemaExtras` carries unknown
- * top-level `x-` keys across `lobu apply`:
+ * As an `x-numbering` vendor extension on the entity type's `metadata_schema` —
+ * the type definition is the single place a document rule lives.
+ * `manage_entity_schema` stores `metadata_schema` verbatim, and the AJV singleton
+ * runs with `strict: false`, so an unknown top-level `x-` key round-trips through
+ * create/update and is ignored by metadata validation:
  *
  * ```jsonc
  * "x-numbering": {
@@ -55,15 +56,28 @@
  * Postgres exposes no reliable in-transaction predicate at lock time (no xid is
  * assigned yet), so this is documented rather than detected.
  *
- * ## Not yet wired
+ * ## Where it is wired
  *
- * `allocateDocumentNumber` reads `document_number_counters`, which DOES NOT EXIST
- * yet — its migration is an unapproved DB-design change (repo rule: propose
- * first). Until that lands, this module is exercised only by
- * `__tests__/integration/entities/document-numbering-concurrency.test.ts`, which
- * creates the proposed table itself and drops it again. Nothing on the entity
- * write path calls the allocator, so no production create can hit the missing
- * table. The pure half (parse/derive/format/lock key) is table-free and final.
+ * The ONLY production caller is `createEntity` (`utils/entity-management.ts`),
+ * inside its existing `sql.begin`, immediately before `INSERT INTO entities`.
+ * That placement is load-bearing — see the caller contract above. In particular
+ * the entity mutation gate is NOT a valid seam: it runs on a pool client
+ * (`sql: getDb()` in `manage_entity.ts`) in a different transaction, so anything
+ * it allocated would commit early and be burned when the insert fails.
+ *
+ * Because approval-queued creates only reach `createEntity` when
+ * `applyEntityChangeProposal` runs, a deferred create allocates at APPLY time; a
+ * rejected proposal never touches a counter.
+ *
+ * KNOWN BYPASS: `utils/entity-link-upsert.ts` auto-creates entities from
+ * connector-extracted links with its own INSERT (retried across up to three slug
+ * variants) and does not allocate. A numbered document type auto-created from a
+ * link therefore lands unnumbered. Numbering-declaring types are ERP documents
+ * created deliberately, not link-extracted, so this is recorded rather than
+ * fixed here — the retry loop would need restructuring to hold one transaction.
+ *
+ * `document_number_counters` ships in
+ * `db/migrations/20260814120000_document_number_counters.sql`.
  */
 
 import type { DbClient } from "../db/client";

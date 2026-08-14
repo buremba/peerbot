@@ -257,6 +257,19 @@ export default async (
     // Computed once so the two cannot drift apart.
     const targetUrl =
       platform === "hackernews" ? hnItemUrl(sourceUrl) : sourceUrl;
+    // HN drafts must reference a real item page — a mislabeled URL would
+    // otherwise become the page-activation target and fail later in the
+    // connector. Skip like the LinkedIn durable-link guard.
+    if (
+      platform === "hackernews" &&
+      !/^https:\/\/news\.ycombinator\.com\/item\?id=\d+$/.test(targetUrl)
+    ) {
+      client.log(
+        "Saved Hacker News draft has no durable item URL; skipping.",
+        { draft_event_id: draft.id, source_url: sourceUrl }
+      );
+      continue;
+    }
 
     let result: Awaited<ReturnType<ReactionClient["operations"]["execute"]>>;
     try {

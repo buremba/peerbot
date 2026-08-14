@@ -276,7 +276,7 @@ export function buildAttributionAndOwned(
       // wrote (including the merged remote keys), or a later model edit is
       // misclassified as "remote moved" blocking drift instead of an update.
       execution_config:
-        p.model != null
+        p.model
           ? { ...(r?.execution_config ?? {}), model: p.model }
           : (r?.execution_config ?? null),
       outputs: p.outputs,

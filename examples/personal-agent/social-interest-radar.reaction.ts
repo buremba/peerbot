@@ -251,13 +251,15 @@ export default async (
       continue;
     }
 
+    // HN's story comment box lives on the item page, so the activation target
+    // AND the notification's browser_url must be the same item URL — the user
+    // clicks the notification and lands on the page where the comment box is.
+    // Computed once so the two cannot drift apart.
+    const targetUrl =
+      platform === "hackernews" ? hnItemUrl(sourceUrl) : sourceUrl;
+
     let result: Awaited<ReturnType<ReactionClient["operations"]["execute"]>>;
     try {
-      // HN's story comment box lives on the item page, so the activation
-      // target + browser_url must be that item URL — the user clicks the
-      // notification and lands on the page where the comment box is.
-      const targetUrl =
-        platform === "hackernews" ? hnItemUrl(sourceUrl) : sourceUrl;
       const input =
         platform === "x"
           ? {
@@ -333,7 +335,7 @@ export default async (
       ]
         .filter((id) => Number.isSafeInteger(id) && id > 0)
         .join(",")}`,
-      browser_url: platform === "hackernews" ? hnItemUrl(sourceUrl) : sourceUrl,
+      browser_url: targetUrl,
       idempotency_key: `social-radar:draft-ready:${draft.id}`,
       behavior_source: behaviorSource,
     });

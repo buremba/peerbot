@@ -127,7 +127,7 @@ function isHnAuthWall(url: string | undefined): boolean {
   try {
     const parsed = new URL(url);
     if (parsed.hostname !== "news.ycombinator.com") return false;
-    return parsed.pathname === "/login" || /\/login\b/.test(parsed.pathname);
+    return /\/login\b/.test(parsed.pathname);
   } catch {
     return false;
   }
@@ -601,7 +601,7 @@ export default class HackerNewsConnector extends ConnectorRuntime {
     // continues (the connector re-queries the window; it is not incremental).
 
     if (contentType !== "comment") {
-      await this.enrichStoriesWithExternalContent(events, deadline, ctx);
+      await this.enrichStoriesWithExternalContent(events, deadline);
     }
 
     return {
@@ -732,8 +732,7 @@ export default class HackerNewsConnector extends ConnectorRuntime {
 
   private async enrichStoriesWithExternalContent(
     events: EventEnvelope[],
-    deadline: number,
-    ctx: SyncContext
+    deadline: number
   ): Promise<void> {
     let fetches = 0;
     let consecutiveFailures = 0;

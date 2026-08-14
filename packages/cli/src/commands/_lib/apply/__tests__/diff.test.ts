@@ -755,6 +755,82 @@ describe("apply diff — watchers", () => {
     expect(row?.verb).toBe("noop");
   });
 
+  test("noop when desired model matches the remote execution_config model", () => {
+    const desired = buildState([], {
+      watchers: [
+        { ...desiredWatcher, deviceWorkerId: "dev-1", agentKind: "opencode", model: "opencode-go/deepseek-v4-flash" },
+      ],
+    });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      watchers: [
+        {
+          slug: "weekly-digest",
+          name: "Weekly digest",
+          agent_id: "triage",
+          prompt: "Produce a digest.",
+          triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
+          device_worker_id: "dev-1",
+          agent_kind: "opencode",
+          execution_config: { model: "opencode-go/deepseek-v4-flash" },
+        },
+      ],
+    };
+    const row = computeDiff(desired, remote).rows.find(
+      (r) => r.kind === "watcher"
+    );
+    expect(row?.verb).toBe("noop");
+  });
+
+  test("noop when the config omits a model but the remote has one (unmanaged)", () => {
+    const desired = buildState([], { watchers: [desiredWatcher] });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      watchers: [
+        {
+          slug: "weekly-digest",
+          name: "Weekly digest",
+          agent_id: "triage",
+          prompt: "Produce a digest.",
+          triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
+          execution_config: { model: "opencode-go/deepseek-v4-flash" },
+        },
+      ],
+    };
+    const row = computeDiff(desired, remote).rows.find(
+      (r) => r.kind === "watcher"
+    );
+    expect(row?.verb).toBe("noop");
+  });
+
+  test("update with execution_config scalar drift when the model differs", () => {
+    const desired = buildState([], {
+      watchers: [
+        { ...desiredWatcher, deviceWorkerId: "dev-1", agentKind: "opencode", model: "opencode-go/deepseek-v4-flash" },
+      ],
+    });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      watchers: [
+        {
+          slug: "weekly-digest",
+          name: "Weekly digest",
+          agent_id: "triage",
+          prompt: "Produce a digest.",
+          triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
+          device_worker_id: "dev-1",
+          agent_kind: "opencode",
+          execution_config: { model: "openai/gpt-5.6-luna" },
+        },
+      ],
+    };
+    const row = computeDiff(desired, remote).rows.find(
+      (r) => r.kind === "watcher"
+    );
+    expect(row?.verb).toBe("update");
+    expect(row?.changedFields).toContain("execution_config");
+  });
+
   test("update when a schedule trigger changes remotely", () => {
     const desired = buildState([], { watchers: [desiredWatcher] });
     const remote: RemoteSnapshot = {

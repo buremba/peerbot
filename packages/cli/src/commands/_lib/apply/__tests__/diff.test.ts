@@ -758,7 +758,12 @@ describe("apply diff — watchers", () => {
   test("noop when desired model matches the remote execution_config model", () => {
     const desired = buildState([], {
       watchers: [
-        { ...desiredWatcher, deviceWorkerId: "dev-1", agentKind: "opencode", model: "opencode-go/deepseek-v4-flash" },
+        {
+          ...desiredWatcher,
+          deviceWorkerId: "dev-1",
+          agentKind: "opencode",
+          model: "opencode-go/deepseek-v4-flash",
+        },
       ],
     });
     const remote: RemoteSnapshot = {
@@ -806,7 +811,12 @@ describe("apply diff — watchers", () => {
   test("update with execution_config scalar drift when the model differs", () => {
     const desired = buildState([], {
       watchers: [
-        { ...desiredWatcher, deviceWorkerId: "dev-1", agentKind: "opencode", model: "opencode-go/deepseek-v4-flash" },
+        {
+          ...desiredWatcher,
+          deviceWorkerId: "dev-1",
+          agentKind: "opencode",
+          model: "opencode-go/deepseek-v4-flash",
+        },
       ],
     });
     const remote: RemoteSnapshot = {

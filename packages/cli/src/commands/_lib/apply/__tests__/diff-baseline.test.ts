@@ -1104,4 +1104,79 @@ describe("legacy org — no baseline was ever recorded", () => {
     expect((row as { blocking?: boolean }).blocking).toBe(true);
     expect(plan.rows.some((r) => r.verb === "delete")).toBe(false);
   });
+
+  test("a second model edit after a recorded baseline is an update, not remote-moved drift", () => {
+    const desired = buildState([]);
+    desired.watchers = [
+      {
+        slug: "digest",
+        agent: "triage",
+        name: "Digest",
+        prompt: "Produce a digest.",
+        triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
+        deviceWorkerId: "dev-1",
+        agentKind: "opencode",
+        model: "opencode-go/deepseek-v4-flash",
+      },
+    ];
+    const remote = emptyRemote();
+    remote.agents = [{ agentId: "triage", name: "triage" }];
+    remote.agentSettings = new Map([["triage", null]]);
+    remote.watchers = [
+      {
+        slug: "digest",
+        behavior_id: "1",
+        agent_id: "triage",
+        name: "Digest",
+        prompt: "Produce a digest.",
+        triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
+        device_worker_id: "dev-1",
+        agent_kind: "opencode",
+        execution_config: { model: "opencode-go/deepseek-v4-flash" },
+      },
+    ];
+    // Record the post-apply baseline as buildAttributionAndOwned does.
+    const recorded = buildAttributionAndOwned(desired, remote, "org-1", false);
+    const baseline: Baseline = {
+      recorded: true,
+      attribution: {
+        ...recorded.attribution,
+        watchers: recorded.attribution.watchers,
+      },
+      owned: new Set(recorded.owned),
+    };
+
+    // Desired model B — the diff must classify this as an update (not a
+    // blocking "remote moved" drift on `model`).
+    const nextDesired = buildState([]);
+    nextDesired.watchers = [
+      {
+        slug: "digest",
+        agent: "triage",
+        name: "Digest",
+        prompt: "Produce a digest.",
+        triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
+        deviceWorkerId: "dev-1",
+        agentKind: "opencode",
+        model: "opencode-go/deepseek-v4-pro",
+      },
+    ];
+    const plan = computeDiff(nextDesired, remote, {
+      orgId: "org-1",
+      baseline,
+    });
+    const row = plan.rows.find((r) => r.kind === "watcher");
+    expect(row?.verb).toBe("update");
+    expect(row?.changedFields).toContain("execution_config");
+    // No blocking drift mislabeling the model edit as remote-moved.
+    const drift = plan.rows.find(
+      (r) =>
+        r.kind === "watcher" &&
+        (r as { changedValues?: Array<{ field: string }> }).changedValues?.some(
+          (v) => v.field === "model"
+        ) &&
+        (r as { blocking?: boolean }).blocking === true
+    );
+    expect(drift).toBeUndefined();
+  });
 });

@@ -344,29 +344,38 @@ export function resolveModelRef(
   // "openai/gpt-4o" mean "OpenRouter's anthropic/openai model", not "switch to
   // the anthropic/openai provider". Splitting on "/" here would mis-route them.
   if (defaultProvider) {
-    let modelId = modelRef;
-    // Resolve "auto" to the configured provider's default model FIRST — the
-    // default itself may carry a redundant prefix (e.g. nvidia →
-    // "nvidia/moonshotai/kimi-k2.5"), so stripping has to run after this.
-    if (modelId === "auto") {
-      const fallback = DEFAULT_PROVIDER_MODELS[defaultProvider];
-      if (fallback) {
-        logger.info(`Resolved auto model for ${defaultProvider}: ${fallback}`);
-        modelId = fallback;
-      }
-    }
-    // Then strip a redundant leading "<configured-provider>/" self-prefix. Lobu
+    // Normalize a leading "<configured-provider>/" self-prefix before the
+    // sentinel check. Lobu
     // names models "provider/model" ("nvidia/…"), but the upstream
     // provider's own namespace is the bare code — shipping the Lobu
     // prefix makes sdkCompat:openai providers 400 "Unknown
     // Model". Only the configured provider's OWN id is stripped, so a foreign
     // namespace slug (OpenRouter's "anthropic/claude-sonnet-4") stays intact.
-    // Runs after the auto-resolution above so a prefixed default is covered too.
+    // Normalization runs before the sentinel check so "nvidia/auto" resolves like
+    // bare "auto" instead of reaching the upstream API as the literal model
+    // "auto".
     //
     // `defaultProvider` is the UPSTREAM slug ("anthropic"); strip that AND the
     // LOBU slug ("claude") when they differ, since the stored model is prefixed
-    // with the Lobu id. Without the second strip, "claude/claude-opus-4-8"
-    // reaches the Anthropic API verbatim and 404s.
+    // with the Lobu id.
+    const normalizedModelId = stripOwnProviderPrefix(
+      modelRef,
+      defaultProvider,
+      defaultProviderSlug
+    );
+    let modelId = modelRef;
+    if (normalizedModelId === "auto") {
+      const fallback = DEFAULT_PROVIDER_MODELS[defaultProvider];
+      if (fallback) {
+        logger.info(`Resolved auto model for ${defaultProvider}: ${fallback}`);
+        modelId = fallback;
+      } else {
+        modelId = normalizedModelId;
+      }
+    }
+    // Strip exactly one prefix from the selected model. This covers prefixed
+    // provider defaults while preserving an intentional inner namespace in a
+    // doubly-prefixed stored ref such as "nvidia/nvidia/moonshotai/...".
     modelId = stripOwnProviderPrefix(
       modelId,
       defaultProvider,

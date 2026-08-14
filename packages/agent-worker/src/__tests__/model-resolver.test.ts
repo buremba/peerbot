@@ -268,6 +268,18 @@ describe("resolveModelRef", () => {
     expect(result.modelId.startsWith("nvidia/")).toBe(false);
   });
 
+  test("configured provider: a same-provider-prefixed auto matches bare auto", () => {
+    const overrides = {
+      defaultProvider: "nvidia",
+      defaultProviderSlug: "nvidia",
+      installedProviderRoutes: { nvidia: "nvidia" },
+    };
+
+    expect(resolveModelRef("nvidia/auto", overrides)).toEqual(
+      resolveModelRef("auto", overrides)
+    );
+  });
+
   test("configured provider: a bare model code is left untouched", () => {
     const result = resolveModelRef("llama-3.3-70b-versatile", {
       defaultProvider: "groq",

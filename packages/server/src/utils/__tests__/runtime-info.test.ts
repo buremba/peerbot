@@ -20,12 +20,23 @@ describe('resolveRuntimeEnvironment', () => {
 describe('resolveSentryRuntime', () => {
   it('ignores the baked-in NODE_ENV=production when ENVIRONMENT is missing', () => {
     // Docker images always set NODE_ENV=production; only an explicit
-    // ENVIRONMENT may tag Sentry events as production.
-    expect(resolveSentryRuntime({ NODE_ENV: 'production' })).toEqual({
-      environment: 'development',
-      isDevelopment: true,
-      devTaggedAsProduction: false,
-    });
+    // ENVIRONMENT in the supplied snapshot may tag Sentry events as production.
+    // An unrelated host value must not leak into an explicit test/runtime snapshot.
+    const previousEnvironment = process.env.ENVIRONMENT;
+    process.env.ENVIRONMENT = 'production';
+    try {
+      expect(resolveSentryRuntime({ NODE_ENV: 'production' })).toEqual({
+        environment: 'development',
+        isDevelopment: true,
+        devTaggedAsProduction: false,
+      });
+    } finally {
+      if (previousEnvironment === undefined) {
+        delete process.env.ENVIRONMENT;
+      } else {
+        process.env.ENVIRONMENT = previousEnvironment;
+      }
+    }
   });
 
   it('tags production only when ENVIRONMENT declares it', () => {

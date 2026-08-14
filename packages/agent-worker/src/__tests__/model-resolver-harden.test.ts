@@ -226,7 +226,6 @@ describe("DEFAULT_PROVIDER_MODELS completeness", () => {
     // NOT "google" — the gateway never emits "google" as a defaultProvider.
     "gemini",
     "nvidia",
-    "z-ai",
   ];
   const PROVIDERS_WITH_BASE_URL = [
     "anthropic",

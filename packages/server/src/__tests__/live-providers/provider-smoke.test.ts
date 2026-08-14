@@ -65,11 +65,6 @@ const FALLBACK_MODELS: Record<string, string> = {
 	chatgpt: "gpt-5.1-codex-max",
 };
 
-// ZAI remains a supported catalog provider, but it is deliberately outside
-// this production-readiness lane. Do not let an unrelated local ZAI key turn a
-// Claude/OpenAI/Gemini/OpenRouter validation run into a ZAI billing check.
-const EXCLUDED_LIVE_PROVIDER_IDS = new Set(["z-ai"]);
-
 const TIMEOUT_MS = 60_000;
 setDefaultTimeout(120_000);
 
@@ -86,7 +81,6 @@ function resolveCredential(
 	id: string,
 	envVarName: string,
 ): Credential | undefined {
-	if (EXCLUDED_LIVE_PROVIDER_IDS.has(id)) return undefined;
 	if (id === "claude") {
 		const oauth = firstEnv([
 			"ANTHROPIC_AUTH_TOKEN",

@@ -641,7 +641,7 @@ async function etHandleUpdate(
     `SELECT ${ENTITY_TYPE_COLUMNS} FROM entity_types WHERE id = $1 LIMIT 1`,
     [current.id]
   );
-  if (updated.length === 0) throw new Error(`Entity type '${args.slug}' not found after update`);
+  if (updated.length === 0) throw new ToolUserError(`Entity type '${args.slug}' not found after update`, 404);
 
   const result = mapRowToEntityType(updated[0] as Record<string, unknown>);
   // Same policy as get/list: never run a derived backing SQL just to echo a

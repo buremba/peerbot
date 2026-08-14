@@ -44,6 +44,12 @@ interface ResolveExecutionAuthParams {
   credentialDb: DbClient;
   logContext?: Record<string, unknown>;
   logMessage?: string;
+  /**
+   * The exact OAuth access token rejected upstream with a 401. Supplying the
+   * value refreshes it even when its expiry looks valid, while allowing the
+   * credential lock to reuse a token another replica already rotated.
+   */
+  rejectedAccessToken?: string;
 }
 
 export async function resolveExecutionAuth(
@@ -123,7 +129,8 @@ export async function resolveExecutionAuth(
       const tokens = await credentialService.getConnectionTokens(
         params.connectionId,
         authProfile.account_id,
-        oauthConfig
+        oauthConfig,
+        { rejectedAccessToken: params.rejectedAccessToken }
       );
       if (tokens?.provider && tokens.accessToken) {
         credentials = {

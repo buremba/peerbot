@@ -59,6 +59,38 @@ class McpOAuthRequiredError extends Error {
   }
 }
 
+/**
+ * The upstream rejected the credentials we sent (HTTP 401). Unlike a session
+ * rejection this MAY be a dead/revoked access token whose stored expiry still
+ * looks valid, so the caller re-resolves against the exact rejected token and
+ * retries once.
+ */
+class McpAuthRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'McpAuthRejectedError';
+  }
+}
+
+async function refreshRejectedCredentials(
+  connectionId: number,
+  orgId: string,
+  credentials: ResolvedCredentials | null
+): Promise<ResolvedCredentials | null> {
+  if (!credentials?.accessToken) return null;
+  try {
+    return await resolveCredentialsByConnectionId(connectionId, orgId, {
+      rejectedAccessToken: credentials.accessToken,
+    });
+  } catch (error) {
+    logger.warn(
+      { connectionId, orgId, error: errorMessage(error) },
+      '[McpProxy] Credential refresh after 401 failed'
+    );
+    return null;
+  }
+}
+
 function sessionKey(orgId: string, connectorKey: string, connectionId?: number): string {
   return connectionId === undefined
     ? `${orgId}:${connectorKey}`
@@ -136,6 +168,9 @@ async function sendRequest(
     if (response.status === 404 && session) {
       sessions.delete(key);
       throw new McpSessionExpiredError(`Upstream MCP returned 404: ${text}`);
+    }
+    if (response.status === 401) {
+      throw new McpAuthRejectedError(`Upstream MCP returned 401: ${text}`);
     }
     throw new Error(`Upstream MCP returned ${response.status}: ${text}`);
   }
@@ -232,81 +267,106 @@ export async function discoverTools(
   const cached = toolCache.get(cacheKey) ?? null;
   if (cached) return cached;
 
-  const credentials =
+  let credentials =
     connectionId === undefined
       ? null
       : await resolveCredentialsByConnectionId(connectionId, orgId);
 
-  try {
-    // Initialize session first
-    const capabilities = await initializeSession(
-      config.upstream_url,
-      credentials,
-      orgId,
-      connectorKey,
-      connectionId
-    );
+  let canRefreshAfter401 = connectionId !== undefined;
+  while (true) {
+    try {
+      // Initialize session first
+      const capabilities = await initializeSession(
+        config.upstream_url,
+        credentials,
+        orgId,
+        connectorKey,
+        connectionId
+      );
 
-    // A server that does not advertise tools is legitimately toolless. Once it
-    // advertises the capability, however, tools/list is part of the negotiated
-    // contract and discovery failures must fail the install instead of silently
-    // persisting a connector with zero operations.
-    if (!Object.hasOwn(capabilities, 'tools')) {
-      toolCache.set(cacheKey, []);
-      return [];
+      // A server that does not advertise tools is legitimately toolless. Once it
+      // advertises the capability, however, tools/list is part of the negotiated
+      // contract and discovery failures must fail the install instead of silently
+      // persisting a connector with zero operations.
+      if (!Object.hasOwn(capabilities, 'tools')) {
+        toolCache.set(cacheKey, []);
+        return [];
+      }
+
+      // Fetch tools/list
+      const response = await sendRequest(
+        config.upstream_url,
+        credentials,
+        orgId,
+        connectorKey,
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'tools/list',
+          params: {},
+          id: 1,
+        }),
+        FETCH_TIMEOUT_TOOL_MS,
+        connectionId
+      );
+
+      if (response.error) {
+        throw new Error(`MCP tools/list failed: ${response.error.message}`);
+      }
+
+      const rawTools = response.result?.tools;
+      if (!Array.isArray(rawTools)) {
+        throw new Error('MCP tools/list response omitted tools');
+      }
+      const prefix = config.tool_prefix;
+
+      const tools: DiscoveredTool[] = rawTools.map((t) => ({
+        name: `${prefix}__${t.name}`,
+        originalName: t.name,
+        description: t.description ?? '',
+        inputSchema: t.inputSchema ?? { type: 'object', properties: {} },
+        annotations: t.annotations,
+        connectorKey,
+        upstreamUrl: config.upstream_url,
+      }));
+
+      toolCache.set(cacheKey, tools);
+
+      logger.info(
+        { connectorKey, toolCount: tools.length, prefix },
+        '[McpProxy] Discovered tools from upstream MCP'
+      );
+
+      return tools;
+    } catch (error) {
+      if (
+        canRefreshAfter401 &&
+        error instanceof McpAuthRejectedError &&
+        connectionId !== undefined
+      ) {
+        canRefreshAfter401 = false;
+        logger.info(
+          { connectorKey, url: config.upstream_url, connectionId },
+          '[McpProxy] Tool discovery rejected (401); refreshing and retrying once'
+        );
+        const refreshed = await refreshRejectedCredentials(
+          connectionId,
+          orgId,
+          credentials
+        );
+        if (refreshed?.accessToken) {
+          credentials = refreshed;
+          sessions.delete(cacheKey);
+          toolCache.delete(cacheKey);
+          continue;
+        }
+      }
+
+      logger.error(
+        { connectorKey, url: config.upstream_url, error: errorMessage(error) },
+        '[McpProxy] Tool discovery failed'
+      );
+      throw error;
     }
-
-    // Fetch tools/list
-    const response = await sendRequest(
-      config.upstream_url,
-      credentials,
-      orgId,
-      connectorKey,
-      JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'tools/list',
-        params: {},
-        id: 1,
-      }),
-      FETCH_TIMEOUT_TOOL_MS,
-      connectionId
-    );
-
-    if (response.error) {
-      throw new Error(`MCP tools/list failed: ${response.error.message}`);
-    }
-
-    const rawTools = response.result?.tools;
-    if (!Array.isArray(rawTools)) {
-      throw new Error('MCP tools/list response omitted tools');
-    }
-    const prefix = config.tool_prefix;
-
-    const tools: DiscoveredTool[] = rawTools.map((t) => ({
-      name: `${prefix}__${t.name}`,
-      originalName: t.name,
-      description: t.description ?? '',
-      inputSchema: t.inputSchema ?? { type: 'object', properties: {} },
-      annotations: t.annotations,
-      connectorKey,
-      upstreamUrl: config.upstream_url,
-    }));
-
-    toolCache.set(cacheKey, tools);
-
-    logger.info(
-      { connectorKey, toolCount: tools.length, prefix },
-      '[McpProxy] Discovered tools from upstream MCP'
-    );
-
-    return tools;
-  } catch (error) {
-    logger.error(
-      { connectorKey, url: config.upstream_url, error: errorMessage(error) },
-      '[McpProxy] Tool discovery failed'
-    );
-    if (cached) return cached;
-    throw error;
   }
 }
 
@@ -322,7 +382,8 @@ export async function callTool(
   args: Record<string, unknown>,
   connectionId: number
 ): Promise<{ content: unknown[]; isError: boolean }> {
-  const credentials = await resolveCredentialsByConnectionId(connectionId, orgId);
+  let credentials = await resolveCredentialsByConnectionId(connectionId, orgId);
+  let canRefreshAfter401 = true;
 
   const key = sessionKey(orgId, connectorKey, connectionId);
 
@@ -331,13 +392,28 @@ export async function callTool(
   // the response was lost — so it must never be interpreted as permission to
   // initialize and replay a potentially destructive call.
   if (!sessions.get(key)) {
-    await initializeSession(
-      config.upstream_url,
-      credentials,
-      orgId,
-      connectorKey,
-      connectionId
-    );
+    try {
+      await initializeSession(
+        config.upstream_url,
+        credentials,
+        orgId,
+        connectorKey,
+        connectionId
+      );
+    } catch (error) {
+      if (!(error instanceof McpAuthRejectedError)) throw error;
+      const refreshed = await refreshRejectedCredentials(connectionId, orgId, credentials);
+      if (!refreshed?.accessToken) throw error;
+      canRefreshAfter401 = false;
+      credentials = refreshed;
+      await initializeSession(
+        config.upstream_url,
+        credentials,
+        orgId,
+        connectorKey,
+        connectionId
+      );
+    }
   }
 
   const jsonRpcBody = JSON.stringify({
@@ -358,35 +434,79 @@ export async function callTool(
       connectionId
     );
 
+  // One bounded recovery loop for every safe-to-retry outcome. The ONLY
+  // retried cases are explicit no-execution signals: a 401 auth rejection
+  // (first attempt never produced a response), a 404 session rejection, or a
+  // JSON-RPC "not initialized" error. A timeout/5xx is ambiguous (the upstream
+  // may have executed the action) and must surface, never replay. Each
+  // recovery can rotate the token at most once (canRefreshAfter401) and
+  // rehandshake at most once per class, so the loop cannot spin. Every
+  // initializeSession call runs INSIDE the try so a 401 from a recovery
+  // reinitialize routes back through the refresh path instead of escaping.
   let response: JsonRpcResponse;
-  try {
-    response = await send();
-  } catch (error) {
-    // A rejected session id means the call never ran upstream; every other
-    // transport failure is ambiguous and must surface rather than replay.
-    if (!(error instanceof McpSessionExpiredError)) throw error;
-    logger.info({ connectorKey, originalToolName }, '[McpProxy] Session rejected, reinitializing');
-    await initializeSession(
-      config.upstream_url,
-      credentials,
-      orgId,
-      connectorKey,
-      connectionId
-    );
-    response = await send();
-  }
+  let phase: 'send' | 'reinitialize' = 'send';
+  let sessionRecovered = false;
+  while (true) {
+    try {
+      if (phase === 'reinitialize') {
+        await initializeSession(
+          config.upstream_url,
+          credentials,
+          orgId,
+          connectorKey,
+          connectionId
+        );
+      }
+      response = await send();
+    } catch (error) {
+      // Refresh-on-401: the upstream rejected the access token even though its
+      // stored expiry looked valid (tokens get revoked upstream). Re-resolve
+      // against the exact rejected token under the per-account lock, drop the
+      // stale session, reinitialize, and retry once. A still-failing 401 means
+      // the refresh token itself is dead — surface it rather than loop.
+      if (canRefreshAfter401 && error instanceof McpAuthRejectedError) {
+        canRefreshAfter401 = false;
+        logger.info(
+          { connectorKey, originalToolName, connectionId },
+          '[McpProxy] Upstream rejected access token; refreshing and retrying once'
+        );
+        const refreshed = await refreshRejectedCredentials(connectionId, orgId, credentials);
+        if (!refreshed?.accessToken) throw error;
+        credentials = refreshed;
+        sessions.delete(sessionKey(orgId, connectorKey, connectionId));
+        phase = 'reinitialize';
+        continue;
+      }
+      // A rejected session id means the call never ran upstream; rehandshake
+      // and replay. This reinitialize may itself 401 (both an expired session
+      // AND a revoked token) — the loop routes that through the refresh above.
+      if (!sessionRecovered && error instanceof McpSessionExpiredError) {
+        sessionRecovered = true;
+        logger.info(
+          { connectorKey, originalToolName },
+          '[McpProxy] Session rejected, reinitializing'
+        );
+        phase = 'reinitialize';
+        continue;
+      }
+      // Ambiguous transport failure — the upstream may have executed the action.
+      throw error;
+    }
 
-  // Stale session recovery: "not initialized" → reinitialize + retry once
-  if (response.error && /not initialized/i.test(response.error.message || '')) {
-    logger.info({ connectorKey, originalToolName }, '[McpProxy] Session expired, reinitializing');
-    await initializeSession(
-      config.upstream_url,
-      credentials,
-      orgId,
-      connectorKey,
-      connectionId
-    );
-    response = await send();
+    // Stale-session response recovery ("not initialized"): the call never ran,
+    // so rehandshake and replay — same uniform path as the thrown 404 above.
+    if (response.error && /not initialized/i.test(response.error.message || '')) {
+      if (!sessionRecovered) {
+        sessionRecovered = true;
+        logger.info(
+          { connectorKey, originalToolName },
+          '[McpProxy] Session expired, reinitializing'
+        );
+        phase = 'reinitialize';
+        continue;
+      }
+    }
+    break;
   }
 
   if (response.error) {

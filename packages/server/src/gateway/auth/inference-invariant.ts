@@ -64,8 +64,8 @@ export async function resolveUrlInvariant(
   }
 
   if (!config.custom || !config.baseUrl) {
-    // The org can store a key while keeping the catalog provider's static URL
-    // (the common setup for providers such as Z.AI). That row key is still the
+    // The org can store a key while keeping the catalog provider's static URL.
+    // That row key is still the
     // org's configured credential and must not be ignored. A missing key may
     // safely fall through because the destination remains the trusted catalog
     // URL rather than a tenant-defined upstream.

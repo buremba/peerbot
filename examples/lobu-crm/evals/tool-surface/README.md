@@ -17,8 +17,8 @@ The toggle that selects between them in production is the worker's
 
 ## What is real vs. reconstructed
 
-- **Model:** real glm-4.7 over z-ai (`Z_AI_API_KEY`), model object built exactly
-  as the worker's `model-resolver.ts` does (openai-completions, base URL
+- **Model:** real glm-4.7 over z-ai (`Z_AI_API_KEY`), with the harness building
+  an OpenAI-compatible pi model directly (openai-completions, base URL
   `https://api.z.ai/api/coding/paas/v4`, `compat.supportsStore=false`).
 - **Tools:** the REAL Lobu MCP handlers (`manage_entity`, `save_memory`,
   `search_memory`, `query_sql`, `manage_behaviors`, …) against a real Postgres

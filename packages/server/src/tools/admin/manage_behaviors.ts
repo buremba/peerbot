@@ -42,7 +42,7 @@ import { notifyActionApprovalNeeded } from '../../notifications/triggers';
 import { insertEvent } from '../../utils/insert-event';
 import logger from '../../utils/logger';
 import { buildResourcePermalink, buildBehaviorSettingsUrl } from '../../utils/url-builder';
-import { ToolUserError } from '../../utils/errors';
+import { parsePositiveIntegerId, ToolUserError } from '../../utils/errors';
 import {
   requireOrgReadAccess,
   requireOrgWriteAccess,
@@ -110,6 +110,13 @@ async function manageBehaviorsImpl(
   env: Env,
   ctx: ToolContext
 ): Promise<ManageBehaviorsResult> {
+  if (args.behavior_id !== undefined) {
+    parsePositiveIntegerId(args.behavior_id, 'behavior_id');
+  }
+  for (const behaviorId of args.behavior_ids ?? []) {
+    parsePositiveIntegerId(behaviorId, 'behavior_ids');
+  }
+
   const pgSql = createDbClientFromEnv(env);
 
   // Field-level `update` validation runs before any access check or write-gate

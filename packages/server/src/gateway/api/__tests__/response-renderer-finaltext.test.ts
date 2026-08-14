@@ -149,16 +149,16 @@ describe("ApiResponseRenderer.handleError targeting context", () => {
       basePayload({
         error: raw,
         errorCode: "PROVIDER_QUOTA_EXHAUSTED",
-        errorContext: { provider: "z-ai", model: "glm-5.2" },
+        errorContext: { provider: "nvidia", model: "nvidia/moonshotai/kimi-k2.6" },
       }),
       "session-key"
     );
 
     for (const event of ["error", "agent-error"]) {
       expect(broadcasts.find((b) => b.event === event)?.data).toMatchObject({
-        error: "z.ai returned an error:\nYour credit balance is too low.",
+        error: "NVIDIA NIM returned an error:\nYour credit balance is too low.",
         errorCode: "PROVIDER_QUOTA_EXHAUSTED",
-        errorContext: { provider: "z-ai", model: "glm-5.2" },
+        errorContext: { provider: "nvidia", model: "nvidia/moonshotai/kimi-k2.6" },
       });
     }
   });

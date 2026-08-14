@@ -49,6 +49,7 @@ import {
 	type EntityData,
 } from "../../utils/entity-management";
 import { applyMergeGroupInTransaction } from "../../utils/entity-merge";
+import { ToolUserError } from "../../utils/errors";
 import { insertEvent, stableJson } from "../../utils/insert-event";
 import logger from "../../utils/logger";
 import {
@@ -529,13 +530,13 @@ async function buildMergeReviewSnapshot(
 	);
 	const requireSnapshot = (entityId: number) => {
 		const snapshot = byId.get(entityId);
-		if (!snapshot) throw new Error(`Entity ${entityId} not found`);
+		if (!snapshot) throw new ToolUserError(`Entity ${entityId} not found`, 404);
 		return snapshot;
 	};
 	const requireResolutionKeys = (entityId: number) => {
 		const keys = keysById.get(entityId);
 		if (!keys) {
-			throw new Error(`Resolution keys for entity ${entityId} not found`);
+			throw new ToolUserError(`Resolution keys for entity ${entityId} not found`, 404);
 		}
 		return keys;
 	};
@@ -553,7 +554,7 @@ async function buildMergeReviewSnapshot(
 		requireResolutionKeys(input.winnerEntityId),
 	);
 	const [loser, ...rest] = linkedDuplicates;
-	if (!loser) throw new Error("At least one duplicate entity is required");
+	if (!loser) throw new ToolUserError("At least one duplicate entity is required", 400);
 	return { loser, duplicates: [loser, ...rest], winner: linkedWinner };
 }
 
@@ -1130,7 +1131,7 @@ export async function applyEntityFieldChangeProposal(
         FOR UPDATE
       `;
 			if (rows.length === 0) {
-				throw new Error(`Entity ${proposal.entity_id} not found`);
+				throw new ToolUserError(`Entity ${proposal.entity_id} not found`, 404);
 			}
 			const live = {
 				$name: rows[0].name ?? null,

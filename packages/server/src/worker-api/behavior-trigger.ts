@@ -18,7 +18,7 @@
 import type { Context } from 'hono';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
-import { errorMessage } from '../utils/errors';
+import { errorMessage, ToolUserError } from '../utils/errors';
 import logger from '../utils/logger';
 import { enqueueWatcherRunForWatcher } from '../watchers/automation';
 
@@ -145,6 +145,12 @@ export async function triggerBehaviorForDevice(c: Context<{ Bindings: Env }>) {
       200
     );
   } catch (err) {
+    if (err instanceof ToolUserError) {
+      return c.json(
+        { error: err.message },
+        err.httpStatus as import("hono/utils/http-status").ContentfulStatusCode
+      );
+    }
     logger.error(
       { error: errorMessage(err), watcherId },
       '[triggerBehaviorForDevice] enqueue failed'

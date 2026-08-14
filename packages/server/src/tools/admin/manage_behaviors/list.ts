@@ -10,6 +10,7 @@ import {
 import { getDb } from "../../../db/client";
 import type { Env } from "../../../index";
 import { canonicalizeBehaviorText } from "../../../utils/behavior-vocabulary";
+import { ToolUserError } from "../../../utils/errors";
 import logger from "../../../utils/logger";
 import {
 	buildBehaviorUrl,
@@ -35,10 +36,14 @@ export async function handleList(
 	const sql = getDb();
 
 	if (args.entity_id) {
-		const entityCheck =
-			await sql`SELECT id FROM entities WHERE id = ${args.entity_id}`;
+		const entityCheck = await sql`
+			SELECT id
+			FROM entities
+			WHERE id = ${args.entity_id}
+			  AND organization_id = ${ctx.organizationId}
+		`;
 		if (entityCheck.length === 0) {
-			throw new Error(`Entity with ID ${args.entity_id} not found`);
+			throw new ToolUserError(`Entity with ID ${args.entity_id} not found`, 404);
 		}
 	}
 

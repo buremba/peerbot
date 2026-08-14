@@ -41,7 +41,6 @@
  */
 
 import { createLogger } from '@lobu/core';
-import * as Sentry from '@sentry/node';
 import type { DbClient } from '../db/client';
 import { incrementCounter } from '../gateway/metrics/prometheus';
 import { notifyChannelFor } from '../gateway/infrastructure/queue/runs-queue';
@@ -310,10 +309,6 @@ export class TaskScheduler {
       logger.error(
         { taskName: data.name, runId: job.id },
         '[task-scheduler] No handler registered for task; failing run',
-      );
-      Sentry.captureMessage(
-        `[task-scheduler] No handler for task "${data.name}" (run ${job.id})`,
-        'error' as any,
       );
       throw new Error(`No handler registered for task "${data.name}"`);
     }

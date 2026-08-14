@@ -316,6 +316,32 @@ export default async (
     ? previous
     : new Date(end.getTime() - 20 * 60 * 1000);
 
+  const excludedEmail =
+    ctx.extracted_data &&
+    typeof ctx.extracted_data === "object" &&
+    "exclude_email" in ctx.extracted_data &&
+    typeof (ctx.extracted_data as Record<string, unknown>).exclude_email ===
+      "string"
+      ? String(
+          (ctx.extracted_data as Record<string, unknown>).exclude_email
+        ).trim() || null
+      : null;
+
+  // Exclude the operator's presence rows in SQL, BEFORE ORDER/LIMIT: a window
+  // dominated by their logins must not consume the 5,000-row budget and starve
+  // later valid activity. The in-memory guard in collectProductActivityDigest
+  // stays as a redundant safety net for any caller that passes rows directly.
+  const excludedEmailClause =
+    excludedEmail != null
+      ? `AND NOT (
+           c.slug = '${PRODUCT_ACTIVITY_CONNECTION}'
+           AND e.title IN ('User login', 'MCP activity')
+           AND lower(e.payload_text) LIKE '%${excludedEmail
+             .toLowerCase()
+             .replace(/'/g, "''")}%'
+         )`
+      : "";
+
   const rows = (await client.query(`
     SELECT
       c.slug AS connection_slug,
@@ -328,19 +354,10 @@ export default async (
     WHERE c.slug IN ('${PRODUCT_ACTIVITY_CONNECTION}', '${LOG_ACTIVITY_CONNECTION}')
       AND e.created_at > '${start.toISOString()}'::timestamptz
       AND e.created_at <= '${end.toISOString()}'::timestamptz
+      ${excludedEmailClause}
     ORDER BY e.created_at ASC, e.id ASC
     LIMIT 5000
   `)) as ActivityRow[];
-  const excludedEmail =
-    ctx.extracted_data &&
-    typeof ctx.extracted_data === "object" &&
-    "exclude_email" in ctx.extracted_data &&
-    typeof (ctx.extracted_data as Record<string, unknown>).exclude_email ===
-      "string"
-      ? String(
-          (ctx.extracted_data as Record<string, unknown>).exclude_email
-        ).trim() || null
-      : null;
   const digest = collectProductActivityDigest(rows, excludedEmail);
   if (!hasProductActivity(digest)) {
     client.log("No production activity; Slack digest skipped", {

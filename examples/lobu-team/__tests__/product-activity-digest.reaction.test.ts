@@ -124,6 +124,18 @@ describe("Lobu Team product activity digest reaction", () => {
     expect(queryText).toContain("e.created_at");
     expect(queryText).toContain("FROM events e");
     expect(queryText).toContain("e.payload_text");
+    // The excluded operator's presence rows must be filtered in SQL before
+    // ORDER/LIMIT so they cannot consume the 5,000-row budget.
+    expect(queryText).toContain(
+      "exclude_email"
+        .replace("exclude_email", "emrekabakci@gmail.com")
+        .toLowerCase()
+    );
+    expect(queryText).toContain("AND NOT");
+    expect(queryText).toContain("LIKE '%emrekabakci@gmail.com%'");
+    expect(queryText.indexOf("AND NOT")).toBeLessThan(
+      queryText.indexOf("LIMIT 5000")
+    );
   });
 
   it("deduplicates online users while retaining every activity section", () => {

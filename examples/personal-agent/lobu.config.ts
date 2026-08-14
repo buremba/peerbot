@@ -11,6 +11,7 @@ import {
   reactionFromFile,
 } from "@lobu/cli/config";
 import type GoogleTakeoutConnector from "./google-takeout.connector.ts";
+import type HackerNewsConnector from "./hackernews.connector.ts";
 import type InstagramTakeoutConnector from "./instagram-takeout.connector.ts";
 import type LinkedInConnector from "./linkedin.connector.ts";
 import type MidasConnector from "./midas.connector.ts";
@@ -960,6 +961,8 @@ const linkedinConnection = defineConnection({
   slug: "linkedin-buremba",
   connector: "linkedin",
   name: "LinkedIn",
+  // Scrape affinity: the paired Mac mini Chrome owns the signed-in session.
+  deviceWorkerId: "2e8a0557-ddd9-48a9-913e-f476163c0cd2",
   feeds: [
     // Local Data Export (CSV) feeds.
     ...(linkedinTakeoutDir
@@ -981,12 +984,20 @@ const linkedinConnection = defineConnection({
   ],
 });
 
+const hackerNewsConnection = defineConnection({
+  slug: "hackernews-buremba",
+  connector: "hackernews",
+  name: "Hacker News",
+  // Draft staging rides the paired Mac mini Chrome's signed-in HN session.
+  deviceWorkerId: "2e8a0557-ddd9-48a9-913e-f476163c0cd2",
+  feeds: [{ feed: "front_page", config: {} }],
+});
+
 const midasConnection = defineConnection({
   slug: "midas",
   connector: "midas",
   name: "Midas",
-  feeds: [{ feed: "assets", config: {} }],
-});
+  feeds: [{ feed: "assets", config: {} }],});
 
 // A same-workspace execution target for market marks. It has no credentials or
 // feeds: the weekly reaction receives quotes directly from its read-only action
@@ -1181,6 +1192,9 @@ const voiceProfileSynthesis = defineBehavior({
   ],
   notification: { channel: "canvas", priority: "low" },
   minCooldownSeconds: 3600,
+  agentKind: "opencode",
+  deviceWorkerId: "e7806c72-9485-4a8c-a619-7e6bdcb14eaf",
+  model: "opencode-go/deepseek-v4-flash",
   outputs: {
     profiles: {
       entity: voiceProfile,
@@ -1189,7 +1203,7 @@ const voiceProfileSynthesis = defineBehavior({
   },
   sources: {
     authored_recent:
-      "SELECT id, occurred_at, connector_key, origin_type, left(payload_text, 400) AS payload_text, metadata FROM events WHERE payload_text IS NOT NULL AND length(payload_text) >= 40 AND occurred_at > now() - interval '21 days' AND ((connector_key = 'twitter.takeout' AND origin_type IN ('reply','tweet')) OR (connector_key = 'x' AND origin_type IN ('tweet','reply') AND lower(coalesce(metadata->>'author_handle','')) = 'bu7emba') OR (connector_key IN ('linkedin','linkedin.takeout') AND origin_type = 'message')) ORDER BY occurred_at DESC LIMIT 200",
+      "SELECT id, occurred_at, connector_key, origin_type, left(payload_text, 400) AS payload_text, metadata FROM events WHERE payload_text IS NOT NULL AND length(payload_text) >= 40 AND occurred_at > now() - interval '21 days' AND ((connector_key = 'twitter.takeout' AND origin_type IN ('reply','tweet')) OR (connector_key = 'x' AND origin_type IN ('tweet','reply') AND lower(coalesce(metadata->>'author_handle','')) = 'bu7emba') OR (connector_key IN ('linkedin','linkedin.takeout') AND origin_type = 'message') OR (connector_key = 'hackernews' AND origin_type = 'comment' AND lower(coalesce(author_name,'')) = 'buremba')) ORDER BY occurred_at DESC LIMIT 200",
     engaged_recent:
       "SELECT id, occurred_at, connector_key, origin_type, left(payload_text, 300) AS payload_text, metadata FROM events WHERE payload_text IS NOT NULL AND length(payload_text) >= 20 AND occurred_at > now() - interval '21 days' AND ((connector_key IN ('x','twitter.takeout') AND origin_type IN ('liked_tweet','bookmark')) OR (connector_key = 'instagram.takeout' AND origin_type IN ('like','saved','comment'))) ORDER BY occurred_at DESC LIMIT 200",
     existing_profiles: {
@@ -1207,16 +1221,19 @@ const voiceProfileSynthesis = defineBehavior({
 const socialInterestRadar = defineBehavior({
   agent: personalAgent,
   slug: "social-interest-radar-v2",
-  name: "Social interest radar (X + LinkedIn)",
+  name: "Social interest radar (X + LinkedIn + Hacker News)",
   tags: ["social", "x", "linkedin", "notifications"],
   triggers: [
     { kind: "schedule", cron: "25 * * * *", skip_if_unchanged: false },
   ],
   notification: { channel: "both", priority: "normal" },
   minCooldownSeconds: 1800,
+  agentKind: "opencode",
+  deviceWorkerId: "e7806c72-9485-4a8c-a619-7e6bdcb14eaf",
+  model: "opencode-go/deepseek-v4-flash",
   sources: {
     recent_social:
-      "SELECT id, origin_id, connection_id, occurred_at, payload_text, source_url, metadata, connector_key, origin_type FROM events WHERE connector_key IN ('x','linkedin') AND ((connector_key='x' AND origin_type IN ('tweet','bookmark')) OR (connector_key='linkedin' AND origin_type='post')) AND payload_text IS NOT NULL AND origin_id IS NOT NULL AND connection_id IS NOT NULL ORDER BY occurred_at DESC LIMIT 80",
+      "SELECT id, origin_id, connection_id, occurred_at, payload_text, source_url, metadata, connector_key, origin_type FROM events WHERE connector_key IN ('x','linkedin','hackernews') AND ((connector_key='x' AND origin_type IN ('tweet','bookmark')) OR (connector_key='linkedin' AND origin_type='post') OR (connector_key='hackernews' AND origin_type IN ('story','ask_hn','show_hn'))) AND payload_text IS NOT NULL AND origin_id IS NOT NULL AND connection_id IS NOT NULL ORDER BY occurred_at DESC LIMIT 80",
     already_emitted: {
       context: true,
       query:
@@ -1238,7 +1255,7 @@ const socialInterestRadar = defineBehavior({
     drafts: { event: "draft_reply" },
   },
   prompt:
-    'Rank at most 8 new, high-signal X or LinkedIn posts for Burak. Use voice_profiles for taste and known_people for relationship context. Prefer AI, agents, infrastructure, developer tools, people he knows, launches, funding, and technical substance; ignore engagement bait, generic memes, and ads. Return each choice in `signals` as a standard observation event draft. Set `title` to the author/platform, `author` to the post author\'s display name (never "unknown"), `content` to the specific why plus a concrete suggested action, `source_url` to the source row source_url, `parent_event_id` to the source row id, and `idempotency_key` to its origin_id. Put only `{ platform, why, priority, source_event_id, source_connection_id }` in metadata, copying the source id and connection_id exactly. Never restate the author, the source origin_id, the post excerpt, or a kind in metadata: `author`, `parent_event_id`, and `content` already carry them on the event itself, and the platform stamps the behavior and output names. Prefer posts not present in already_emitted. Also return `drafts`: either [] or exactly one standard draft_reply event for the single best item that genuinely deserves a response. Its content is only the proposed reply text; copy author, source_url, and parent_event_id, use `draft:` plus origin_id as idempotency_key, and metadata `{ platform, why, priority, source_event_id, source_connection_id }`. Never claim to publish: the reaction only stages the draft and the human submits it. Return empty arrays when nothing qualifies.',
+    'Rank at most 8 new, high-signal X, LinkedIn, or Hacker News posts for Burak. Use voice_profiles for taste and known_people for relationship context. Prefer AI, agents, infrastructure, developer tools, people he knows, launches, funding, and technical substance; ignore engagement bait, generic memes, and ads. Return each choice in `signals` as a standard observation event draft. Set `title` to the author/platform, `author` to the post author\'s display name (never "unknown"), `content` to the specific why plus a concrete suggested action, `source_url` to the source row source_url, `parent_event_id` to the source row id, and `idempotency_key` to its origin_id. Put only `{ platform, why, priority, source_event_id, source_connection_id }` in metadata, copying the source id and connection_id exactly. `platform` is one of "x", "linkedin", or "hackernews". Never restate the author, the source origin_id, the post excerpt, or a kind in metadata: `author`, `parent_event_id`, and `content` already carry them on the event itself, and the platform stamps the behavior and output names. Prefer posts not present in already_emitted. Also return `drafts`: either [] or exactly one standard draft_reply event for the single best item that genuinely deserves a response. Its content is only the proposed reply text; copy author, source_url, and parent_event_id, use `draft:` plus origin_id as idempotency_key, and metadata `{ platform, why, priority, source_event_id, source_connection_id }`. Never claim to publish: the reaction only stages the draft and the human submits it. Return empty arrays when nothing qualifies.',
   reactionsGuidance:
     "Declared outputs own event persistence and source-level deduplication. The reaction delivers a digest and schedules at most one saved draft for the first signed-in Chrome device that visits the exact post; it never publishes.",
   reaction: reactionFromFile<typeof SocialInterestRadarReaction>(
@@ -1357,6 +1374,9 @@ export default defineConfig({
       "./revolut-transactions.connector.ts"
     ),
     connectorFromFile<typeof LinkedInConnector>("./linkedin.connector.ts"),
+    connectorFromFile<typeof HackerNewsConnector>(
+      "./hackernews.connector.ts"
+    ),
     connectorFromFile<typeof SpotifyConnector>("./spotify.connector.ts"),
     connectorFromFile<typeof WhatsAppCloudConnector>(
       "./whatsapp.cloud.connector.ts"
@@ -1414,6 +1434,7 @@ export default defineConfig({
     twitterTakeoutConnection,
     instagramTakeoutConnection,
     linkedinConnection,
+    hackerNewsConnection,
     gmailConnection,
   ],
 });

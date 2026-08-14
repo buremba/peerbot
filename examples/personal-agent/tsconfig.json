@@ -5,7 +5,12 @@
     "moduleResolution": "bundler",
     "strict": true,
     "skipLibCheck": true,
-    "noEmit": true
+    "noEmit": true,
+    "baseUrl": "../..",
+    "paths": {
+      "@lobu/connector-sdk": ["packages/connector-sdk/src/index.ts"],
+      "@lobu/connector-sdk/*": ["packages/connector-sdk/src/*"]
+    }
   },
   "include": ["**/*.ts"]
 }

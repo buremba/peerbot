@@ -504,6 +504,18 @@ export interface Behavior {
   /** Agent-kind override for firings (e.g. "background", "notifier"). */
   agentKind?: string;
   /**
+   * UUID pinning this Behavior's runs to a specific device worker. Only
+   * meaningful together with `agentKind` — the pinned device's local CLI
+   * (selected by `agentKind`) executes the run.
+   */
+  deviceWorkerId?: string;
+  /**
+   * Model alias/id passed to the device's local CLI (`--model`) when this
+   * Behavior runs on a device (see `agentKind`/`deviceWorkerId`). Omitted on
+   * cloud runs, which use the owning agent's model.
+   */
+  model?: string;
+  /**
    * A sibling `.ts` reaction script (`./reactions/foo.reaction.ts`) compiled +
    * run in a sandboxed isolate when the Behavior fires, built with
    * {@link reactionFromFile}. The script must `export default async (ctx,

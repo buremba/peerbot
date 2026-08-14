@@ -1146,6 +1146,7 @@ interface WatcherProjection {
   sources?: BehaviorSource[] | null;
   reactionsGuidance?: string | null;
   deviceWorkerId?: string | null;
+  model?: string | null;
   notificationChannel?: string | null;
   notificationPriority?: string | null;
   minCooldownSeconds?: number | null;
@@ -1188,6 +1189,12 @@ export const projectDesiredWatcher = (
     d.deviceWorkerId !== undefined
       ? d.deviceWorkerId
       : (remote?.device_worker_id ?? null),
+  model:
+    d.model !== undefined
+      ? d.model
+      : typeof remote?.execution_config?.model === "string"
+        ? (remote.execution_config.model as string)
+        : null,
   notificationChannel:
     d.notificationChannel !== undefined
       ? d.notificationChannel
@@ -1222,6 +1229,10 @@ const projectRemoteWatcher = (w: RemoteBehavior): WatcherProjection => ({
   sources: w.sources ?? [],
   reactionsGuidance: w.reactions_guidance ?? null,
   deviceWorkerId: w.device_worker_id ?? null,
+  model:
+    typeof w.execution_config?.model === "string"
+      ? (w.execution_config.model as string)
+      : null,
   notificationChannel: w.notification_channel ?? null,
   notificationPriority: w.notification_priority ?? null,
   minCooldownSeconds: w.min_cooldown_seconds ?? null,
@@ -1384,6 +1395,12 @@ function diffWatcher(
     desired.agentKind !== (remote.agent_kind ?? undefined)
   ) {
     scalar.push("agent_kind");
+  }
+  if (
+    desired.model !== undefined &&
+    desired.model !== (remote.execution_config?.model ?? undefined)
+  ) {
+    scalar.push("execution_config");
   }
 
   const versionBound: string[] = [];

@@ -136,6 +136,8 @@ export interface DesiredWatcher {
   reactionsGuidance?: string;
   /** UUID of a device worker to pin this watcher's runs to (see `device_workers.id`). */
   deviceWorkerId?: string;
+  /** Model alias/id passed to the device's local CLI (`--model`) on device runs. */
+  model?: string;
   /** Where firings surface — defaults to canvas server-side. */
   notificationChannel?: "canvas" | "notification" | "both";
   /** Priority class used by the dispatcher interrupt budget. */

@@ -36,7 +36,7 @@ function context(): ReactionContext {
 }
 
 function fixture(options?: {
-  platform?: "x" | "linkedin";
+  platform?: "x" | "linkedin" | "hackernews";
   operationResult?: Record<string, unknown>;
   operationErrorOnce?: Error;
   includeSignal?: boolean;
@@ -47,12 +47,15 @@ function fixture(options?: {
   const sourceUrl =
     platform === "x"
       ? "https://x.com/ada/status/123?ref=home"
-      : "https://www.linkedin.com/feed/update/urn:li:activity:123";
+      : platform === "hackernews"
+        ? "https://news.ycombinator.com/item?id=42954035"
+        : "https://www.linkedin.com/feed/update/urn:li:activity:123";
   const metadata = {
     ...draftMetadata,
     platform,
     why: options?.signalWhy ?? draftMetadata.why,
-    source_connection_id: platform === "x" ? 411 : 410,
+    source_connection_id:
+      platform === "x" ? 411 : platform === "hackernews" ? 412 : 410,
   };
   const signals =
     options?.includeSignal === false
@@ -168,6 +171,26 @@ describe("social interest radar reaction", () => {
       },
     });
     expect(f.operations[0]?.input).not.toHaveProperty("browser_connection_id");
+  });
+
+  it("stages a Hacker News draft via prepare_comment with the item url", async () => {
+    const f = fixture({ platform: "hackernews", includeSignal: false });
+    await runReaction(context(), f.client);
+
+    expect(f.connectionListCalls).toBe(0);
+    expect(f.operations[0]).toMatchObject({
+      connection_id: 412,
+      operation_key: "prepare_comment",
+      input: { item_url: "https://news.ycombinator.com/item?id=42954035" },
+      activation: {
+        kind: "page_visit",
+        urls: ["https://news.ycombinator.com/item?id=42954035"],
+      },
+    });
+    expect(f.notifications[0]).toMatchObject({
+      title: "Draft ready for Ada on Hacker News",
+      browser_url: "https://news.ycombinator.com/item?id=42954035",
+    });
   });
 
   it("accepts an idempotent completed run and still retries the draft notification", async () => {

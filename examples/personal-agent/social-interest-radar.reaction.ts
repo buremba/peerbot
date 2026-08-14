@@ -207,7 +207,7 @@ export default async (
       connectionId <= 0 ||
       !body ||
       !sourceUrl ||
-      (platform !== "x" && platform !== "linkedin")
+      (platform !== "x" && platform !== "linkedin" && platform !== "hackernews")
     ) {
       client.log(
         "Saved social draft is missing a valid source connection, URL, or body.",
@@ -233,22 +233,28 @@ export default async (
 
     let result: Awaited<ReturnType<ReactionClient["operations"]["execute"]>>;
     try {
-      result = await client.operations.execute({
-        connection_id: connectionId,
-        operation_key: platform === "x" ? "prepare_reply" : "prepare_comment",
-        idempotency_key: `social-radar:draft:${draft.id}`,
-        input:
-          platform === "x"
+      const input =
+        platform === "x"
+          ? {
+              tweet_url: sourceUrl,
+              body,
+              reason: draft.metadata.why,
+            }
+          : platform === "hackernews"
             ? {
-                tweet_url: sourceUrl,
+                item_url: sourceUrl,
                 body,
-                reason: draft.metadata.why,
               }
             : {
                 post_url: sourceUrl,
                 body,
                 reason: draft.metadata.why,
-              },
+              };
+      result = await client.operations.execute({
+        connection_id: connectionId,
+        operation_key: platform === "x" ? "prepare_reply" : "prepare_comment",
+        idempotency_key: `social-radar:draft:${draft.id}`,
+        input,
         activation: {
           kind: "page_visit",
           urls: [sourceUrl],
@@ -276,7 +282,7 @@ export default async (
         }
       );
       deliveryNotes.push(
-        `${platform === "linkedin" ? "LinkedIn" : "X"} draft not scheduled.`
+        `${platform === "linkedin" ? "LinkedIn" : platform === "hackernews" ? "Hacker News" : "X"} draft not scheduled.`
       );
       continue;
     }
@@ -290,7 +296,7 @@ export default async (
       matchingSignal?.author_name?.trim() ||
       "this post";
     await client.notifications.send({
-      title: `Draft ready for ${author} on ${platform === "x" ? "X" : "LinkedIn"}`,
+      title: `Draft ready for ${author} on ${platform === "x" ? "X" : platform === "hackernews" ? "Hacker News" : "LinkedIn"}`,
       body: notificationBody([
         `Why: ${draft.metadata.why ?? "Relevant social signal"}`,
         "",

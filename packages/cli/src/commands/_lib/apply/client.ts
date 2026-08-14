@@ -147,6 +147,7 @@ export interface RemoteBehavior {
   device_worker_id?: string | null;
   goal_id?: number | null;
   agent_kind?: string | null;
+  execution_config?: Record<string, unknown> | null;
   notification_channel?: string | null;
   notification_priority?: string | null;
   min_cooldown_seconds?: number | null;
@@ -1076,6 +1077,7 @@ export class ApplyClient {
     min_cooldown_seconds?: number;
     tags?: string[];
     agent_kind?: string;
+    execution_config?: Record<string, unknown> | null;
     outputs?: Record<string, unknown> | null;
     classifiers?: unknown[];
   }): Promise<{ behavior_id?: string }> {
@@ -1113,6 +1115,9 @@ export class ApplyClient {
         ...(payload.agent_kind !== undefined
           ? { agent_kind: payload.agent_kind }
           : {}),
+        ...(payload.execution_config !== undefined
+          ? { execution_config: payload.execution_config }
+          : {}),
         ...(payload.outputs !== undefined ? { outputs: payload.outputs } : {}),
         ...(payload.classifiers !== undefined
           ? { classifiers: payload.classifiers }
@@ -1141,6 +1146,7 @@ export class ApplyClient {
     min_cooldown_seconds?: number;
     tags?: string[];
     agent_kind?: string | null;
+    execution_config?: Record<string, unknown> | null;
   }): Promise<void> {
     await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
       action: "update",
@@ -1162,6 +1168,9 @@ export class ApplyClient {
       ...(payload.tags !== undefined ? { tags: payload.tags } : {}),
       ...(payload.agent_kind !== undefined
         ? { agent_kind: payload.agent_kind }
+        : {}),
+      ...(payload.execution_config !== undefined
+        ? { execution_config: payload.execution_config }
         : {}),
     });
   }

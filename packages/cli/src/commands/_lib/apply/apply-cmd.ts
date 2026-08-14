@@ -946,6 +946,7 @@ export async function executePlan(
           min_cooldown_seconds: w.minCooldownSeconds,
           tags: w.tags,
           agent_kind: w.agentKind,
+          execution_config: w.model ? { model: w.model } : undefined,
           outputs: w.outputs,
           classifiers: w.classifiers,
         });
@@ -1002,6 +1003,9 @@ export async function executePlan(
               : {}),
             ...(scalarForUpdate.includes("agent_kind")
               ? { agent_kind: w.agentKind ?? null }
+              : {}),
+            ...(scalarForUpdate.includes("execution_config")
+              ? { execution_config: w.model ? { model: w.model } : null }
               : {}),
           });
         }

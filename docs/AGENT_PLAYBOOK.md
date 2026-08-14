@@ -55,7 +55,7 @@ Mechanical traps (build, SQL, testing, submodule, browser) live in `docs/GOTCHAS
 | `make pre-pr` | CPU-heavy local fallback for when Depot is unavailable. |
 | `make review` | Handles the review verdict/status or safe-class skip. Runs no typecheck, knip, or tests — **not** proof CI will pass. |
 | `make review-fix` | Unposted fixer pass. Edits the working tree; re-read files before trusting them. |
-| `make ui-review` | Records exact UI proof for Owletto pointer changes; passes other changes as not applicable. |
+| `make ui-review` | Records exact UI proof for Owletto pointer changes; passes non-Owletto changes and complete, forward-only pointer diffs confined to `deploy/` as not applicable. |
 
 The macOS app lane stays on GitHub/Mac hardware. Subset runs (`make pre-pr-remote REMOTE_JOBS=unit`) rerun one lane but never attest. A fresh full `make review` requires the matching Depot tree attestation and refuses a surprise local build; safe-class skips and cached verdicts do not rebuild. Only a documented Depot outage permits `REVIEW_ALLOW_LOCAL_BUILD=1 make review`.
 
@@ -82,7 +82,7 @@ The chain must exit zero **and** print nothing before merge. Nonzero does not me
 
 **`make review` skip rule.** Small safe-class diffs (docs, renames, generated, additive tests; under 100 lines) skip the cross-harness reviewer by default. `REVIEWER_MODE=full make review` forces the independent review; `REVIEWER_SHADOW=1` measures the skip rule instead of trusting it.
 
-**UI proof.** `gh` cannot upload images inline. Capture before shots from the unmodified branch and after shots from the same booted app (auth recipe in `docs/BROWSER_TESTING.md`), base64-embed the PNGs into one self-contained HTML comparison page, host it at an HTTPS URL, and pass that URL as `ARTIFACT` to `make ui-review`. The gate records it on the exact merged Owletto PR, links it from the parent, and binds the evidence to that parent-base and Owletto-pointer pair for normal PR review. A rerun may reuse an exact proof already recorded for that pointer pair; otherwise no `ARTIFACT` means no proof and no pass.
+**UI proof.** `gh` cannot upload images inline. Capture before shots from the unmodified branch and after shots from the same booted app (auth recipe in `docs/BROWSER_TESTING.md`), base64-embed the PNGs into one self-contained HTML comparison page, host it at an HTTPS URL, and pass that URL as `ARTIFACT` to `make ui-review`. The gate records it on the exact merged Owletto PR, links it from the parent, and binds the evidence to that parent-base and Owletto-pointer pair for normal PR review. A rerun may reuse an exact proof already recorded for that pointer pair. Complete, forward-only endpoint diffs confined to `deploy/` pass as not applicable; every other pointer change needs reusable exact proof or an `ARTIFACT`.
 
 ## Post-merge rollout verification
 

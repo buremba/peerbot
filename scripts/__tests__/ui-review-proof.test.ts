@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import {
   buildProofBody,
+  COMPARE_FILE_CAP,
   findProofComment,
+  isDeployOnlyRange,
   isHttpsArtifact,
   parseProof,
   permittedFluxTailParent,
@@ -150,6 +152,48 @@ describe("UI review proof", () => {
     ]) {
       expect(permittedFluxTailParent(candidate)).toBeNull();
     }
+  });
+
+  it("accepts only a complete deploy-only endpoint diff", () => {
+    expect(
+      isDeployOnlyRange([
+        { filename: "deploy/k8s/clusters/lobu-prod/apps.yaml" },
+        { filename: "deploy/k8s/apps/lobu/base/helmrelease.yaml" },
+      ])
+    ).toBe(true);
+
+    // The range spans several merged PRs. A surviving UI change from an earlier
+    // commit must still demand proof when the head PR is deploy-only on its own.
+    expect(
+      isDeployOnlyRange([
+        { filename: "src/components/shell/responsive-app-shell.tsx" },
+        { filename: "deploy/k8s/clusters/lobu-prod/apps.yaml" },
+      ])
+    ).toBe(false);
+
+    // `deploy/` is a path prefix, not a substring.
+    expect(isDeployOnlyRange([{ filename: "src/deploy/widget.tsx" }])).toBe(
+      false
+    );
+    expect(
+      isDeployOnlyRange([
+        {
+          filename: "deploy/k8s/archived-app.tsx",
+          previous_filename: "src/app.tsx",
+        },
+      ])
+    ).toBe(false);
+
+    // Fail closed when the compare response tells us nothing, and when it may
+    // have been truncated at the cap.
+    expect(isDeployOnlyRange([])).toBe(false);
+    expect(
+      isDeployOnlyRange(
+        Array.from({ length: COMPARE_FILE_CAP }, (_, index) => ({
+          filename: `deploy/k8s/generated/${index}.yaml`,
+        }))
+      )
+    ).toBe(false);
   });
 
   it("requires a hosted HTTPS artifact", () => {

@@ -23,6 +23,7 @@ interface MockState {
     method: string;
     payload: Record<string, unknown>;
   }>;
+  opened?: string;
 }
 
 const temporaryDirectories: string[] = [];
@@ -132,6 +133,13 @@ if (endpoint.includes("/contents/packages/owletto?ref=")) {
     files: [{ filename: "deploy/k8s/apps/lobu/base/helmrelease.yaml" }],
     parents: [{ sha: process.env.MOCK_PRODUCT_POINTER }],
   });
+} else if (endpoint.startsWith("repos/lobu-ai/owletto/compare/")) {
+  output({
+    status: process.env.MOCK_COMPARE_STATUS || "ahead",
+    files: JSON.parse(
+      process.env.MOCK_OWLETTO_FILES || '[{"filename":"src/app.tsx"}]'
+    ),
+  });
 } else if (endpoint.includes("/collaborators/") && endpoint.endsWith("/permission")) {
   output({ permission: "admin" });
 } else if (endpoint.includes("/statuses/") && method === "POST") {
@@ -173,6 +181,16 @@ await writeState();
 `;
   writeFileSync(join(bin, "gh"), mockGh);
   chmodSync(join(bin, "gh"), 0o755);
+  const mockOpen = `#!/usr/bin/env bun
+const stateFile = process.env.MOCK_STATE_FILE;
+const state = JSON.parse(await Bun.file(stateFile).text());
+state.opened = process.argv[2];
+await Bun.write(stateFile, JSON.stringify(state));
+`;
+  for (const command of ["open", "xdg-open"]) {
+    writeFileSync(join(bin, command), mockOpen);
+    chmodSync(join(bin, command), 0o755);
+  }
   return { repo, bin, stateFile, head };
 }
 
@@ -279,6 +297,96 @@ describe("ui-review command", () => {
     expect(statuses.at(-1)?.payload).toMatchObject({
       context: "ui-review",
       state: "pending",
+    });
+  });
+
+  it("passes a complete deploy-only PR and clears stale parent proof copy", () => {
+    const fixture = createFixture();
+    const state = readState(fixture.stateFile);
+    const parentEndpoint = "repos/lobu-ai/lobu/issues/2500/comments";
+    state.comments[parentEndpoint] = [
+      {
+        id: 900,
+        body: "<!-- lobu-ui-review-marker -->\n**UI review recorded**",
+        created_at: "2026-08-04T11:00:00Z",
+        updated_at: "2026-08-04T11:00:00Z",
+        html_url: "https://github.com/comment/900",
+        user: { login: "agent" },
+      },
+    ];
+    writeFileSync(fixture.stateFile, JSON.stringify(state));
+
+    const result = runUiReview(fixture, {
+      OPEN: "1",
+      MOCK_OWLETTO_FILES: JSON.stringify([
+        { filename: "deploy/k8s/clusters/lobu-prod/apps.yaml" },
+        { filename: "deploy/k8s/apps/lobu/base/helmrelease.yaml" },
+      ]),
+    });
+
+    expectExit(result, 0);
+    const finalState = readState(fixture.stateFile);
+    expect(
+      finalState.calls
+        .filter((call) => call.endpoint.includes("/statuses/"))
+        .at(-1)?.payload
+    ).toMatchObject({
+      context: "ui-review",
+      state: "success",
+      description:
+        "Owletto 111111111...222222222 is deploy-only; no UI to prove",
+      target_url: "https://github.com/lobu-ai/owletto/pull/712",
+    });
+    // The exemption is judged over the whole pointer range, so the range is what
+    // the human-readable note must name.
+    expect(finalState.comments[parentEndpoint]?.[0]?.body).toContain(
+      `\`${"1".repeat(40)}...${"2".repeat(40)}\` changes only \`deploy/\` (2 files, through Owletto #712).`
+    );
+    expect(finalState.opened).toBe(
+      "https://github.com/lobu-ai/owletto/pull/712"
+    );
+  });
+
+  it("requires proof when an earlier commit left a UI change in the range", () => {
+    const fixture = createFixture();
+    // The head PR is deploy-only on its own, but the pointer moves across a
+    // commit that touched `src/`. Judging by the head PR alone would skip proof
+    // for a real UI change, so the exemption must read the whole range.
+    const result = runUiReview(fixture, {
+      MOCK_OWLETTO_FILES: JSON.stringify([
+        { filename: "src/components/shell/responsive-app-shell.tsx" },
+        { filename: "deploy/k8s/clusters/lobu-prod/apps.yaml" },
+      ]),
+    });
+
+    expectExit(result, 2);
+    const status = readState(fixture.stateFile)
+      .calls.filter((call) => call.endpoint.includes("/statuses/"))
+      .at(-1);
+    expect(status?.payload).toMatchObject({
+      context: "ui-review",
+      state: "error",
+      description: "UI proof missing; rerun make ui-review with ARTIFACT=...",
+    });
+  });
+
+  it("requires proof when the pointer comparison diverged", () => {
+    const fixture = createFixture();
+    const result = runUiReview(fixture, {
+      MOCK_COMPARE_STATUS: "diverged",
+      MOCK_OWLETTO_FILES: JSON.stringify([
+        { filename: "deploy/k8s/apps/lobu/base/helmrelease.yaml" },
+      ]),
+    });
+
+    expectExit(result, 2);
+    const status = readState(fixture.stateFile)
+      .calls.filter((call) => call.endpoint.includes("/statuses/"))
+      .at(-1);
+    expect(status?.payload).toMatchObject({
+      context: "ui-review",
+      state: "error",
+      description: "UI proof missing; rerun make ui-review with ARTIFACT=...",
     });
   });
 

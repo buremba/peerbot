@@ -39,7 +39,7 @@ import {
 import { formatDateISO, parseDateAlias } from '../utils/date-aliases';
 import { parseJsonObject } from '@lobu/core';
 import logger from '../utils/logger';
-import { ToolUserError } from '../utils/errors';
+import { parsePositiveIntegerId, ToolUserError } from '../utils/errors';
 import { canonicalizeBehaviorText } from '../utils/behavior-vocabulary';
 import {
   requireOrgReadAccess,
@@ -342,9 +342,7 @@ async function getBehaviorImpl(
       400
     );
   }
-  if (!/^[1-9]\d*$/.test(args.behavior_id) || !Number.isSafeInteger(Number(args.behavior_id))) {
-    throw new ToolUserError('behavior_id must be a positive integer', 400);
-  }
+  parsePositiveIntegerId(args.behavior_id, 'behavior_id');
 
   await requireWatcherReadAccess(pgSql, args.behavior_id, ctx);
 

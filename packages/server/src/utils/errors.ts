@@ -31,6 +31,17 @@ export class ToolUserError extends Error {
   }
 }
 
+export function parsePositiveIntegerId(value: string, fieldName: string): number {
+  if (!/^[1-9]\d*$/.test(value)) {
+    throw new ToolUserError(`${fieldName} must be a positive integer`, 400);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new ToolUserError(`${fieldName} must be a positive integer`, 400);
+  }
+  return parsed;
+}
+
 /**
  * Thrown when a tool name reaches `executeTool` but is not registered. Indicates
  * registry/frontend drift (e.g. frontend `apiCall('foo', …)` references a name

@@ -8,6 +8,7 @@ describe('reactionErrorIsNonTransient', () => {
     expect(reactionErrorIsNonTransient('QuotaExceeded: SDK call quota reached')).toBe(true);
     expect(reactionErrorIsNonTransient('OutputSizeExceeded: bridge message exceeded bytes')).toBe(true);
     expect(reactionErrorIsNonTransient('ValidationError: invalid SDK arguments')).toBe(true);
+    expect(reactionErrorIsNonTransient('McpScopeRequiredError: mcp:write is required')).toBe(true);
     expect(reactionErrorIsNonTransient('ScriptError: Script must `export default` an async function')).toBe(true);
     expect(reactionErrorIsNonTransient('ScriptError: CrossOrgAccessDenied: unavailable')).toBe(true);
   });

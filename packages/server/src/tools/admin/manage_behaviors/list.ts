@@ -36,8 +36,12 @@ export async function handleList(
 	const sql = getDb();
 
 	if (args.entity_id) {
-		const entityCheck =
-			await sql`SELECT id FROM entities WHERE id = ${args.entity_id}`;
+		const entityCheck = await sql`
+			SELECT id
+			FROM entities
+			WHERE id = ${args.entity_id}
+			  AND organization_id = ${ctx.organizationId}
+		`;
 		if (entityCheck.length === 0) {
 			throw new ToolUserError(`Entity with ID ${args.entity_id} not found`, 404);
 		}

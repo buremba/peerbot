@@ -98,7 +98,9 @@ describe("resolveModelRef", () => {
     });
 
     expect(result.provider).toBe("nvidia");
-    expect(result.modelId).toBe(DEFAULT_PROVIDER_MODELS.nvidia);
+    expect(result.modelId).toBe(
+      DEFAULT_PROVIDER_MODELS.nvidia.replace(/^nvidia\//, "")
+    );
   });
 
   test("an explicit ref routes a Lobu provider ID to its upstream runtime slug", () => {

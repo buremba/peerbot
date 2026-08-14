@@ -12,6 +12,7 @@
 import dotenv from 'dotenv';
 import * as Sentry from '@sentry/node';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { resolveSentryRuntime } from './utils/runtime-info';
 
 // .env is the single source of truth for secrets. This module reads SENTRY_DSN
 // (and ENVIRONMENT / SENTRY_RELEASE) at load time and is imported before any
@@ -27,11 +28,14 @@ const dsn = process.env.SENTRY_DSN;
 // NODE_ENV=development to keep those events out of the production stream.
 // Override only Sentry's tag: mutating process.env here would also change
 // logger mode and the environment inherited by workers later in the boot.
-const devTaggedAsProduction =
-  process.env.NODE_ENV === 'development' && process.env.ENVIRONMENT === 'production';
-const sentryEnvironment = devTaggedAsProduction
-  ? 'development'
-  : process.env.ENVIRONMENT || 'development';
+const {
+  environment: sentryEnvironment,
+  isDevelopment: isDev,
+  devTaggedAsProduction,
+} = resolveSentryRuntime({
+  ENVIRONMENT: process.env.ENVIRONMENT,
+  NODE_ENV: process.env.NODE_ENV,
+});
 if (dsn && devTaggedAsProduction) {
   console.error(
     '[instrument] ENVIRONMENT=production with NODE_ENV=development — tagging local Sentry events as development instead of polluting prod'
@@ -39,8 +43,6 @@ if (dsn && devTaggedAsProduction) {
 }
 
 if (dsn) {
-  const isDev = process.env.NODE_ENV === 'development' || sentryEnvironment === 'development';
-
   Sentry.init({
     dsn,
     // Default to 'development', NOT 'production'. Prod deployments set ENVIRONMENT

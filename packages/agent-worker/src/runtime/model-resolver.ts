@@ -92,6 +92,20 @@ export const PIAI_API_BY_REGISTRY_ALIAS: Record<string, PiAiApi> =
       .map((p) => [p.registryAlias, p.api])
   );
 
+function stripOwnProviderPrefix(
+  modelId: string,
+  ...providerSlugs: Array<string | undefined>
+): string {
+  for (const providerSlug of new Set(
+    providerSlugs.filter((slug): slug is string => Boolean(slug))
+  )) {
+    if (modelId.startsWith(`${providerSlug}/`)) {
+      return modelId.slice(providerSlug.length + 1);
+    }
+  }
+  return modelId;
+}
+
 /** Exact adapters for dynamically registered provider slugs. */
 const PIAI_API_BY_DYNAMIC_PROVIDER: Record<string, PiAiApi> = {};
 
@@ -316,6 +330,7 @@ export function resolveModelRef(
         DEFAULT_PROVIDER_MODELS[routedProvider] ??
         modelId;
     }
+    modelId = stripOwnProviderPrefix(modelId, explicitProvider, routedProvider);
     return {
       provider: routedProvider,
       providerSlug: explicitProvider,
@@ -352,15 +367,11 @@ export function resolveModelRef(
     // LOBU slug ("claude") when they differ, since the stored model is prefixed
     // with the Lobu id. Without the second strip, "claude/claude-opus-4-8"
     // reaches the Anthropic API verbatim and 404s.
-    if (modelId.startsWith(`${defaultProvider}/`)) {
-      modelId = modelId.slice(defaultProvider.length + 1);
-    } else if (
-      defaultProviderSlug &&
-      defaultProviderSlug !== defaultProvider &&
-      modelId.startsWith(`${defaultProviderSlug}/`)
-    ) {
-      modelId = modelId.slice(defaultProviderSlug.length + 1);
-    }
+    modelId = stripOwnProviderPrefix(
+      modelId,
+      defaultProvider,
+      defaultProviderSlug
+    );
     // Reaching here means the ref did NOT name an installed provider other than
     // the configured one — it is the configured provider's own model, a bare
     // model id, or a prefix no installed provider answers to (an aggregator's

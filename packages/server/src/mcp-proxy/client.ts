@@ -82,7 +82,11 @@ async function refreshRejectedCredentials(
     return await resolveCredentialsByConnectionId(connectionId, orgId, {
       rejectedAccessToken: credentials.accessToken,
     });
-  } catch {
+  } catch (error) {
+    logger.warn(
+      { connectionId, orgId, error: errorMessage(error) },
+      '[McpProxy] Credential refresh after 401 failed'
+    );
     return null;
   }
 }

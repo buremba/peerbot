@@ -37,6 +37,7 @@ import {
 } from "./tools/registry";
 import {
 	errorMessage,
+	parsePositiveIntegerId,
 	ToolNotRegisteredError,
 	ToolUserError,
 } from "./utils/errors";
@@ -69,14 +70,7 @@ function safeParseInt(
 
 function parseBehaviorId(value: string | undefined): number | undefined {
 	if (value === undefined) return undefined;
-	if (!/^[1-9]\d*$/.test(value)) {
-		throw new ToolUserError("behavior_id must be a positive integer", 400);
-	}
-	const parsed = Number(value);
-	if (!Number.isSafeInteger(parsed)) {
-		throw new ToolUserError("behavior_id must be a positive integer", 400);
-	}
-	return parsed;
+	return parsePositiveIntegerId(value, "behavior_id");
 }
 
 function safeParseFloat(

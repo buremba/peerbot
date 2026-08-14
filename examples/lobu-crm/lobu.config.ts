@@ -42,7 +42,7 @@ const crm = defineAgent({
   providers: [
     {
       id: "anthropic",
-      model: "claude/sonnet-4-5",
+      model: "claude/claude-sonnet-5",
       key: secret("ANTHROPIC_API_KEY"),
     },
   ],

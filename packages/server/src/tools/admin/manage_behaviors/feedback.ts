@@ -185,6 +185,12 @@ export async function handleSubmitFeedback(
   }
 
   for (const c of corrections) {
+    if (!c || typeof c !== 'object' || Array.isArray(c)) {
+      throw new ToolUserError(
+        'each correction must be an object with a string field_path',
+        400
+      );
+    }
     if (!c.field_path || typeof c.field_path !== 'string') {
       throw new ToolUserError('each correction requires a string field_path', 400);
     }

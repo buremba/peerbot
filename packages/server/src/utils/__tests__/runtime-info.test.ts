@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { getRuntimeInfo, resolveRuntimeEnvironment } from '../runtime-info';
+import {
+  getRuntimeInfo,
+  resolveRuntimeEnvironment,
+  resolveSentryRuntime,
+} from '../runtime-info';
 
 describe('resolveRuntimeEnvironment', () => {
   it('prefers ENVIRONMENT over NODE_ENV', () => {
@@ -10,6 +14,38 @@ describe('resolveRuntimeEnvironment', () => {
 
   it('falls back to NODE_ENV when ENVIRONMENT is missing', () => {
     expect(resolveRuntimeEnvironment({ NODE_ENV: 'production' })).toBe('production');
+  });
+});
+
+describe('resolveSentryRuntime', () => {
+  it('ignores the baked-in NODE_ENV=production when ENVIRONMENT is missing', () => {
+    // Docker images always set NODE_ENV=production; only an explicit
+    // ENVIRONMENT may tag Sentry events as production.
+    expect(resolveSentryRuntime({ NODE_ENV: 'production' })).toEqual({
+      environment: 'development',
+      isDevelopment: true,
+      devTaggedAsProduction: false,
+    });
+  });
+
+  it('tags production only when ENVIRONMENT declares it', () => {
+    expect(
+      resolveSentryRuntime({ ENVIRONMENT: 'production', NODE_ENV: 'production' })
+    ).toEqual({
+      environment: 'production',
+      isDevelopment: false,
+      devTaggedAsProduction: false,
+    });
+  });
+
+  it('downgrades only a development runtime carrying a production tag', () => {
+    expect(
+      resolveSentryRuntime({ ENVIRONMENT: 'production', NODE_ENV: 'development' })
+    ).toEqual({
+      environment: 'development',
+      isDevelopment: true,
+      devTaggedAsProduction: true,
+    });
   });
 });
 

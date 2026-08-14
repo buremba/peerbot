@@ -64,7 +64,7 @@ const CAPTURE_PREVIEW_CONTENT_CAP = 200;
 export function reactionErrorIsNonTransient(error: string | undefined): boolean {
   if (!error) return false;
   return (
-    /^(TimeoutError|CompileError|QuotaExceeded|OutputSizeExceeded|InvalidSleepDuration|SleepLimitExceeded|OutOfMemory|ValidationError|ClientSdkActionError):/.test(
+    /^(TimeoutError|CompileError|QuotaExceeded|OutputSizeExceeded|InvalidSleepDuration|SleepLimitExceeded|OutOfMemory|ValidationError|ClientSdkActionError|McpScopeRequiredError):/.test(
       error
     ) ||
     /^ScriptError: (?:Script must `export default` an async function|NamespaceNotAvailable:|CrossOrgAccessDenied:|InvalidSDKDispatchEnvelope|Unknown SDK method:)/.test(

@@ -61,6 +61,53 @@ describe('entity schema CRUD', () => {
       expect(tombstone.entity_type).toBeNull();
     });
 
+    it('round-trips a slug that needs normalizing through every entity-type verb', async () => {
+      await owner.entity_schema.createType({
+        slug: 'stock_movement',
+        name: 'Stock Movement',
+      });
+
+      const got = (await owner.entity_schema.getType('stock_movement')) as {
+        entity_type?: { slug: string; name: string };
+      };
+      expect(got.entity_type?.name).toBe('Stock Movement');
+      expect(got.entity_type?.slug).toBe('stock-movement');
+
+      const alias = (await owner.entity_schema.getType('stock-movement')) as {
+        entity_type?: { slug: string };
+      };
+      expect(alias.entity_type?.slug).toBe('stock-movement');
+
+      await owner.entity_schema.updateType({
+        slug: 'stock_movement',
+        name: 'Stok Fisi',
+      });
+      const after = (await owner.entity_schema.getType('stock-movement')) as {
+        entity_type?: { name: string };
+      };
+      expect(after.entity_type?.name).toBe('Stok Fisi');
+
+      const audit = (await owner.entity_schema.auditType('stock_movement')) as {
+        audit_entries?: Array<{ action: string }>;
+      };
+      expect(audit.audit_entries?.map((entry) => entry.action)).toEqual(
+        expect.arrayContaining(['create', 'update'])
+      );
+
+      await owner.entity_schema.deleteType({ slug: 'stock_movement' });
+      const tombstone = (await owner.entity_schema.getType('stock-movement')) as {
+        entity_type: null | unknown;
+      };
+      expect(tombstone.entity_type).toBeNull();
+    });
+
+    it('preserves system entity-type slugs while normalizing lookups', async () => {
+      const got = (await owner.entity_schema.getType('$MEMBER')) as {
+        entity_type?: { slug: string };
+      };
+      expect(got.entity_type?.slug).toBe('$member');
+    });
+
     it('accepts event_kinds with a jsonTemplate, and event_kinds:null to clear (lobu apply)', async () => {
       // `lobu apply` sends event_kinds on every upsert: an object to declare,
       // `null` to clear. The schema must accept BOTH — a regression here halted

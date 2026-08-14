@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   isReservedEntityTypeSlug,
   isSystemEntityType,
+  normalizeEntityTypeSlug,
   RESERVED_ENTITY_TYPE_SLUGS,
   RESERVED_PATHS,
 } from "../reserved";
@@ -35,6 +36,16 @@ describe("isReservedEntityTypeSlug", () => {
     expect(isReservedEntityTypeSlug("inference-providers")).toBe(true);
     expect(isReservedEntityTypeSlug("environments")).toBe(true);
     expect(isReservedEntityTypeSlug("infrastructure")).toBe(true);
+  });
+});
+
+describe("normalizeEntityTypeSlug", () => {
+  it("matches stored domain slugs without rewriting system slugs", () => {
+    expect(normalizeEntityTypeSlug("Stock_Movement")).toBe("stock-movement");
+    expect(normalizeEntityTypeSlug("stock--movement!")).toBe(
+      "stock--movement-"
+    );
+    expect(normalizeEntityTypeSlug("$MEMBER")).toBe("$member");
   });
 });
 

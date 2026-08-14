@@ -191,6 +191,49 @@ describe("mapProjectToDesiredState", () => {
     ]);
   });
 
+  test("maps normalized and system entity-type references to stored slugs", () => {
+    const agent = defineAgent({ id: "inventory" });
+    const movement = defineEntityType({ key: "stock_movement" });
+    const tracks = defineRelationshipType({
+      key: "tracks",
+      rules: [{ source: movement, target: "$member" }],
+    });
+    const automation = defineAutomation({
+      agent,
+      slug: "record-movement",
+      skills: ["inventory"],
+      outputs: { movements: { entity: movement, key: ["sku"] } },
+      triggers: [
+        {
+          kind: "event",
+          source: "workspace",
+          entity_type: "stock_movement",
+          event_types: ["movement-recorded"],
+        },
+      ],
+    });
+
+    const state = mapProjectToDesiredState(
+      defineConfig({
+        agents: [agent],
+        entities: [movement],
+        relationships: [tracks],
+        automations: [automation],
+      })
+    );
+
+    expect(state.memorySchema.entityTypes[0]?.slug).toBe("stock-movement");
+    expect(state.memorySchema.relationshipTypes[0]?.rules).toEqual([
+      { source: "stock-movement", target: "$member" },
+    ]);
+    expect(state.automations[0]?.outputs).toEqual({
+      movements: { entity: "stock-movement", key: ["sku"] },
+    });
+    expect(state.automations[0]?.triggers[0]).toMatchObject({
+      entity_type: "stock-movement",
+    });
+  });
+
   test("preserves explicit null outputs so apply can clear an Automation", () => {
     const agent = defineAgent({ id: "radar" });
     const automation = defineAutomation({

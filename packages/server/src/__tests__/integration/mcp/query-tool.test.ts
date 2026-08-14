@@ -177,7 +177,7 @@ describe('MCP query_sdk / run_sdk tool surface', () => {
     expect(result.title).toBe('Recent rows');
   });
 
-  it('preserves query_sql titles and viewer metadata on structured errors', async () => {
+  it('preserves query_sql titles without viewer-role metadata on structured errors', async () => {
     const response = await mcpRequest<any>(
       'tools/call',
       {
@@ -193,7 +193,7 @@ describe('MCP query_sdk / run_sdk tool surface', () => {
 
     expect(response.result?.isError).toBe(true);
     expect(response.result?.structuredContent?.title).toBe('Invalid query');
-    expect(response.result?._meta?.['lobu/member-role']).toBe('owner');
+    expect(response.result?._meta?.['lobu/member-role']).toBeUndefined();
   });
 
   it('preserves search_memory titles when no entity is found', async () => {

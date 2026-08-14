@@ -157,7 +157,6 @@ export async function prepareHnComment(
     );
   }
   const itemUrl = `https://news.ycombinator.com/item?id=${itemId}`;
-  const replyUrl = `https://news.ycombinator.com/reply?id=${itemId}`;
 
   // Refuse accidental submit clicks through the chrome dispatcher.
   const safeDispatch: ChromeActionDispatcher = {
@@ -171,16 +170,17 @@ export async function prepareHnComment(
     },
   };
 
-  // The reply form lives on its OWN page (/reply?id=), so that page is the
-  // page-activation target — the user opens it (via the notification's
-  // browser_url) and activation fires here. We navigate to it exactly once
-  // and fill its textarea; no tab is auto-opened and the tab is never moved
-  // off the activated page (which the page-activation gate would reject).
+  // The story's comment box (textarea[name="text"]) lives on the ITEM page —
+  // HN's /reply?id= page is only for replying to a specific COMMENT and comes
+  // back empty for a story id. So the item page is the page-activation target:
+  // the user opens it (via the notification's browser_url) and activation
+  // fires here. We navigate to it exactly once and fill the textarea; no tab
+  // is auto-opened and the tab is never moved off the activated page.
   const nav = await safeDispatch.dispatch<{
     tab_id?: number;
     current_url?: string;
   }>("navigate", {
-    url: replyUrl,
+    url: itemUrl,
     require_page_activation: true,
     ...chromeOriginsInput(),
   });

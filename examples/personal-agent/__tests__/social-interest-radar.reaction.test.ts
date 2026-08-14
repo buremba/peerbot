@@ -173,7 +173,7 @@ describe("social interest radar reaction", () => {
     expect(f.operations[0]?.input).not.toHaveProperty("browser_connection_id");
   });
 
-  it("stages a Hacker News draft via prepare_comment with the reply-form url", async () => {
+  it("stages a Hacker News draft via prepare_comment with the item-page url", async () => {
     const f = fixture({ platform: "hackernews", includeSignal: false });
     await runReaction(context(), f.client);
 
@@ -182,16 +182,16 @@ describe("social interest radar reaction", () => {
       connection_id: 412,
       operation_key: "prepare_comment",
       input: {
-        item_url: "https://news.ycombinator.com/reply?id=42954035",
+        item_url: "https://news.ycombinator.com/item?id=42954035",
       },
       activation: {
         kind: "page_visit",
-        urls: ["https://news.ycombinator.com/reply?id=42954035"],
+        urls: ["https://news.ycombinator.com/item?id=42954035"],
       },
     });
     expect(f.notifications[0]).toMatchObject({
       title: "Draft ready for Ada on Hacker News",
-      browser_url: "https://news.ycombinator.com/reply?id=42954035",
+      browser_url: "https://news.ycombinator.com/item?id=42954035",
     });
   });
 

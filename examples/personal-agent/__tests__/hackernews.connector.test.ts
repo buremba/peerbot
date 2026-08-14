@@ -78,11 +78,11 @@ describe("prepareHnComment", () => {
       "https://news.ycombinator.com/item?id=42954035"
     );
 
-    // Navigated directly to the reply form (the activation target) once.
+    // Navigated directly to the item page (the activation target) once.
     const navigations = calls.filter((c) => c.action === "navigate");
     expect(navigations).toHaveLength(1);
     expect(navigations[0]?.input.url).toBe(
-      "https://news.ycombinator.com/reply?id=42954035"
+      "https://news.ycombinator.com/item?id=42954035"
     );
     expect(navigations[0]?.input.require_page_activation).toBe(true);
 

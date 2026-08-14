@@ -132,11 +132,15 @@ function notificationBody(lines: string[]): string {
   return body.length <= 1000 ? body : `${body.slice(0, 997)}...`;
 }
 
-/** Convert an HN item URL/id to its reply-form URL (`/reply?id=`). */
-function hnReplyUrl(value: string): string {
+/**
+ * Normalize an HN item URL/id to its canonical item-page URL
+ * (`/item?id=`). HN's story comment box lives on the item page; the
+ * /reply?id= page only serves individual comment replies.
+ */
+function hnItemUrl(value: string): string {
   const match = value.match(/\/item\?id=(\d+)/) ?? value.match(/(\d{4,})/);
   const id = match?.[1];
-  return id ? `https://news.ycombinator.com/reply?id=${id}` : value;
+  return id ? `https://news.ycombinator.com/item?id=${id}` : value;
 }
 
 function isReviewableLinkedInPostUrl(value: string): boolean {
@@ -240,13 +244,11 @@ export default async (
 
     let result: Awaited<ReturnType<ReactionClient["operations"]["execute"]>>;
     try {
-      // HN's reply form lives on /reply?id= (not the item page), so the
-      // activation target + browser_url must be that reply URL — the user
-      // clicks the notification and lands directly on the form.
+      // HN's story comment box lives on the item page, so the activation
+      // target + browser_url must be that item URL — the user clicks the
+      // notification and lands on the page where the comment box is.
       const targetUrl =
-        platform === "hackernews"
-          ? hnReplyUrl(sourceUrl)
-          : sourceUrl;
+        platform === "hackernews" ? hnItemUrl(sourceUrl) : sourceUrl;
       const input =
         platform === "x"
           ? {
@@ -326,7 +328,7 @@ export default async (
         .filter((id) => Number.isSafeInteger(id) && id > 0)
         .join(",")}`,
       browser_url:
-        platform === "hackernews" ? hnReplyUrl(sourceUrl) : sourceUrl,
+        platform === "hackernews" ? hnItemUrl(sourceUrl) : sourceUrl,
       idempotency_key: `social-radar:draft-ready:${draft.id}`,
       behavior_source: behaviorSource,
     });

@@ -8,13 +8,14 @@
  * in the paired Owletto Chrome where the human is signed into HN.
  *
  * Write handoff: `prepare_comment` waits for the user to open the exact HN item
- * (`news.ycombinator.com/item?id=<id>`), then visits the `/reply?id=<id>`
- * comment form in that same user-owned tab and fills its `textarea[name="text"]`.
- * The human clicks "add comment" themselves — Lobu never submits.
+ * (`news.ycombinator.com/item?id=<id>`), then fills that page's comment box
+ * (`textarea[name="text"]`). The human clicks "add comment" themselves — Lobu
+ * never submits.
  *
- * HN has no public comment API and no OAuth. The reply form lives on a
- * dedicated `/reply?id=<id>` page (there is no composer on the item page), and
- * it requires an HN login in the paired browser.
+ * HN has no public comment API and no OAuth. The story comment box lives on the
+ * item page itself (a dedicated `/reply?id=<id>` page only serves replying to an
+ * individual COMMENT), and commenting requires an HN login in the paired
+ * browser.
  */
 
 import TurndownService from "turndown";
@@ -85,8 +86,6 @@ export function normalizeHnItemId(raw: string): string | null {
   }
   const host = parsed.hostname.replace(/^www\./, "");
   if (host !== "news.ycombinator.com") return null;
-  const m = parsed.pathname.match(/^\/(?:item|reply)\?id=(\d+)/);
-  if (m) return m[1];
   if (parsed.pathname === "/item" || parsed.pathname === "/reply") {
     const id = parsed.searchParams.get("id");
     if (id && /^\d+$/.test(id)) return id;

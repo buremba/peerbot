@@ -132,6 +132,13 @@ function notificationBody(lines: string[]): string {
   return body.length <= 1000 ? body : `${body.slice(0, 997)}...`;
 }
 
+/** Convert an HN item URL/id to its reply-form URL (`/reply?id=`). */
+function hnReplyUrl(value: string): string {
+  const match = value.match(/\/item\?id=(\d+)/) ?? value.match(/(\d{4,})/);
+  const id = match?.[1];
+  return id ? `https://news.ycombinator.com/reply?id=${id}` : value;
+}
+
 function isReviewableLinkedInPostUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -233,6 +240,13 @@ export default async (
 
     let result: Awaited<ReturnType<ReactionClient["operations"]["execute"]>>;
     try {
+      // HN's reply form lives on /reply?id= (not the item page), so the
+      // activation target + browser_url must be that reply URL — the user
+      // clicks the notification and lands directly on the form.
+      const targetUrl =
+        platform === "hackernews"
+          ? hnReplyUrl(sourceUrl)
+          : sourceUrl;
       const input =
         platform === "x"
           ? {
@@ -242,7 +256,7 @@ export default async (
             }
           : platform === "hackernews"
             ? {
-                item_url: sourceUrl,
+                item_url: targetUrl,
                 body,
               }
             : {
@@ -257,7 +271,7 @@ export default async (
         input,
         activation: {
           kind: "page_visit",
-          urls: [sourceUrl],
+          urls: [targetUrl],
           expires_in_seconds: 86_400,
         },
         behavior_source: behaviorSource,
@@ -311,7 +325,8 @@ export default async (
       ]
         .filter((id) => Number.isSafeInteger(id) && id > 0)
         .join(",")}`,
-      browser_url: sourceUrl,
+      browser_url:
+        platform === "hackernews" ? hnReplyUrl(sourceUrl) : sourceUrl,
       idempotency_key: `social-radar:draft-ready:${draft.id}`,
       behavior_source: behaviorSource,
     });

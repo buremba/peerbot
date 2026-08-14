@@ -17,7 +17,7 @@
  * it requires an HN login in the paired browser.
  */
 
-import TurndownService from 'turndown';
+import TurndownService from "turndown";
 import {
   type ActionContext,
   type ActionResult,
@@ -30,9 +30,9 @@ import {
   type SyncContext,
   type SyncResult,
   validatePublicUrl,
-} from '@lobu/connector-sdk';
+} from "@lobu/connector-sdk";
 
-const HN_ORIGINS = ['news.ycombinator.com', 'hn.algolia.com'];
+const HN_ORIGINS = ["news.ycombinator.com", "hn.algolia.com"];
 
 // ---------------------------------------------------------------------------
 // Algolia HN API types (mirrors the built-in connector)
@@ -63,10 +63,10 @@ interface AlgoliaResponse {
 }
 
 const CONTENT_TYPE_TAG: Record<string, string> = {
-  story: 'story',
-  comment: 'comment',
-  ask_hn: 'ask_hn',
-  show_hn: 'show_hn',
+  story: "story",
+  comment: "comment",
+  ask_hn: "ask_hn",
+  show_hn: "show_hn",
 };
 
 // ---------------------------------------------------------------------------
@@ -83,12 +83,12 @@ export function normalizeHnItemId(raw: string): string | null {
   } catch {
     return null;
   }
-  const host = parsed.hostname.replace(/^www\./, '');
-  if (host !== 'news.ycombinator.com') return null;
+  const host = parsed.hostname.replace(/^www\./, "");
+  if (host !== "news.ycombinator.com") return null;
   const m = parsed.pathname.match(/^\/(?:item|reply)\?id=(\d+)/);
   if (m) return m[1];
-  if (parsed.pathname === '/item' || parsed.pathname === '/reply') {
-    const id = parsed.searchParams.get('id');
+  if (parsed.pathname === "/item" || parsed.pathname === "/reply") {
+    const id = parsed.searchParams.get("id");
     if (id && /^\d+$/.test(id)) return id;
   }
   return null;
@@ -115,9 +115,9 @@ function requireExtensionDispatcher(ctx: {
   const handle = ctx.sessionState?.chrome_dispatcher as
     | ChromeActionDispatcher
     | undefined;
-  if (!handle || typeof handle.dispatch !== 'function') {
+  if (!handle || typeof handle.dispatch !== "function") {
     throw new Error(
-      'HackerNews connector requires a paired Owletto Chrome extension. No chrome_dispatcher was injected into sessionState.'
+      "HackerNews connector requires a paired Owletto Chrome extension. No chrome_dispatcher was injected into sessionState."
     );
   }
   return handle;
@@ -127,8 +127,8 @@ function isHnAuthWall(url: string | undefined): boolean {
   if (!url) return false;
   try {
     const parsed = new URL(url);
-    if (parsed.hostname !== 'news.ycombinator.com') return false;
-    return parsed.pathname === '/login' || /\/login\b/.test(parsed.pathname);
+    if (parsed.hostname !== "news.ycombinator.com") return false;
+    return parsed.pathname === "/login" || /\/login\b/.test(parsed.pathname);
   } catch {
     return false;
   }
@@ -139,7 +139,7 @@ interface PrepareHnCommentResult {
   tab_id: number;
   item_url: string;
   body: string;
-  method: 'evaluate';
+  method: "evaluate";
   submitted: false;
   message: string;
 }
@@ -149,7 +149,7 @@ export async function prepareHnComment(
   opts: { itemUrl: string; body: string }
 ): Promise<PrepareHnCommentResult> {
   const body = opts.body.trim();
-  if (!body) throw new Error('prepare_comment: body must be non-empty');
+  if (!body) throw new Error("prepare_comment: body must be non-empty");
   const itemId = normalizeHnItemId(opts.itemUrl);
   if (!itemId) {
     throw new Error(
@@ -162,29 +162,31 @@ export async function prepareHnComment(
   // Refuse accidental submit clicks through the chrome dispatcher.
   const safeDispatch: ChromeActionDispatcher = {
     dispatch: async (action_key, action_input) => {
-      if (action_key === 'click_ref') {
+      if (action_key === "click_ref") {
         throw new Error(
-          'prepare_comment: blocked click_ref — never click on HN (no submit path)'
+          "prepare_comment: blocked click_ref — never click on HN (no submit path)"
         );
       }
       return dispatcher.dispatch(action_key, action_input);
     },
   };
 
-  // Navigate to the item page first — this is the page the user visits (and
-  // the activation target). The reply form is a separate /reply?id= page, so
-  // after confirming the item page we navigate the SAME tab to the reply form.
+  // The reply form lives on its OWN page (/reply?id=), so that page is the
+  // page-activation target — the user opens it (via the notification's
+  // browser_url) and activation fires here. We navigate to it exactly once
+  // and fill its textarea; no tab is auto-opened and the tab is never moved
+  // off the activated page (which the page-activation gate would reject).
   const nav = await safeDispatch.dispatch<{
     tab_id?: number;
     current_url?: string;
-  }>('navigate', {
-    url: itemUrl,
+  }>("navigate", {
+    url: replyUrl,
     require_page_activation: true,
     ...chromeOriginsInput(),
   });
   const tabId = nav.tab_id;
-  if (typeof tabId !== 'number') {
-    throw new Error('prepare_comment: navigate did not return tab_id');
+  if (typeof tabId !== "number") {
+    throw new Error("prepare_comment: navigate did not return tab_id");
   }
   if (isHnAuthWall(nav.current_url)) {
     throw new Error(
@@ -192,17 +194,9 @@ export async function prepareHnComment(
     );
   }
 
-  // The reply form lives on its own page; navigate there in the same tab.
-  await safeDispatch.dispatch('navigate', {
-    tab_id: tabId,
-    url: replyUrl,
-    wait_for_load: true,
-    ...chromeOriginsInput(),
-  });
-
   // Give the form a moment to render.
   try {
-    await safeDispatch.dispatch('wait_for_selector', {
+    await safeDispatch.dispatch("wait_for_selector", {
       tab_id: tabId,
       selector: 'textarea[name="text"]',
       timeout_ms: 8000,
@@ -216,7 +210,7 @@ export async function prepareHnComment(
   const evalOut = await safeDispatch.dispatch<{
     value?: { ok?: boolean; reason?: string; value?: string };
     exception?: string;
-  }>('evaluate', {
+  }>("evaluate", {
     tab_id: tabId,
     expression: fillReplyTextareaExpression(body),
     await_promise: true,
@@ -229,14 +223,15 @@ export async function prepareHnComment(
       tab_id: tabId,
       item_url: itemUrl,
       body,
-      method: 'evaluate',
+      method: "evaluate",
       submitted: false,
-      message: 'Draft staged in the HN reply form. You choose whether to submit.',
+      message:
+        "Draft staged in the HN reply form. You choose whether to submit.",
     };
   }
 
   throw new Error(
-    'prepare_comment: could not fill the HN reply form (no textarea[name=text]). Is the user signed in and the item still replyable?'
+    "prepare_comment: could not fill the HN reply form (no textarea[name=text]). Is the user signed in and the item still replyable?"
   );
 }
 
@@ -246,49 +241,49 @@ export async function prepareHnComment(
 
 export default class HackerNewsConnector extends ConnectorRuntime {
   readonly definition: ConnectorDefinition = {
-    key: 'hackernews',
-    name: 'Hacker News',
+    key: "hackernews",
+    name: "Hacker News",
     description:
-      'Searches Hacker News stories and comments via Algolia API; prepare_comment stages a reply draft in the reply form for the human to submit.',
-    version: '1.0.1',
-    faviconDomain: 'news.ycombinator.com',
+      "Searches Hacker News stories and comments via Algolia API; prepare_comment stages a reply draft in the reply form for the human to submit.",
+    version: "1.0.1",
+    faviconDomain: "news.ycombinator.com",
     authSchema: {
-      methods: [{ type: 'none' }],
+      methods: [{ type: "none" }],
     },
     feeds: {
       stories: {
-        key: 'stories',
-        name: 'Stories',
-        description: 'Search HN for stories, Ask HN, and Show HN posts.',
+        key: "stories",
+        name: "Stories",
+        description: "Search HN for stories, Ask HN, and Show HN posts.",
         configSchema: {
-          type: 'object',
-          required: ['search_query'],
+          type: "object",
+          required: ["search_query"],
           properties: {
             search_query: {
-              type: 'string',
+              type: "string",
               minLength: 1,
-              description: 'Search term',
+              description: "Search term",
             },
             story_type: {
-              type: 'string',
-              enum: ['story', 'ask_hn', 'show_hn'],
-              default: 'story',
-              description: 'Story type filter',
+              type: "string",
+              enum: ["story", "ask_hn", "show_hn"],
+              default: "story",
+              description: "Story type filter",
             },
             lookback_days: {
-              type: 'integer',
+              type: "integer",
               minimum: 1,
               maximum: 730,
               default: 365,
-              description: 'Lookback window in days',
+              description: "Lookback window in days",
             },
             search_fields: {
-              type: 'array',
+              type: "array",
               items: {
-                type: 'string',
-                enum: ['title', 'url', 'story_text'],
+                type: "string",
+                enum: ["title", "url", "story_text"],
               },
-              default: ['title'],
+              default: ["title"],
               description:
                 'Algolia fields to search in. Defaults to title only. Add url and/or story_text for broader matching (may increase noise for common words like "notion" or "linear").',
             },
@@ -296,142 +291,150 @@ export default class HackerNewsConnector extends ConnectorRuntime {
         },
         eventKinds: {
           story: {
-            description: 'A Hacker News story',
+            description: "A Hacker News story",
             metadataSchema: {
-              type: 'object',
+              type: "object",
               properties: {
-                story_type: { type: 'string', description: 'story, ask_hn, or show_hn' },
-                tags: { type: 'array', items: { type: 'string' } },
-                external_url: { type: 'string', format: 'uri' },
-                score: { type: 'number', description: 'HN points' },
-                reply_count: { type: 'number' },
+                story_type: {
+                  type: "string",
+                  description: "story, ask_hn, or show_hn",
+                },
+                tags: { type: "array", items: { type: "string" } },
+                external_url: { type: "string", format: "uri" },
+                score: { type: "number", description: "HN points" },
+                reply_count: { type: "number" },
               },
             },
           },
           ask_hn: {
-            description: 'An Ask HN post',
+            description: "An Ask HN post",
             metadataSchema: {
-              type: 'object',
+              type: "object",
               properties: {
-                story_type: { type: 'string' },
-                tags: { type: 'array', items: { type: 'string' } },
-                score: { type: 'number' },
-                reply_count: { type: 'number' },
+                story_type: { type: "string" },
+                tags: { type: "array", items: { type: "string" } },
+                score: { type: "number" },
+                reply_count: { type: "number" },
               },
             },
           },
           show_hn: {
-            description: 'A Show HN post',
+            description: "A Show HN post",
             metadataSchema: {
-              type: 'object',
+              type: "object",
               properties: {
-                story_type: { type: 'string' },
-                tags: { type: 'array', items: { type: 'string' } },
-                external_url: { type: 'string', format: 'uri' },
-                score: { type: 'number' },
-                reply_count: { type: 'number' },
+                story_type: { type: "string" },
+                tags: { type: "array", items: { type: "string" } },
+                external_url: { type: "string", format: "uri" },
+                score: { type: "number" },
+                reply_count: { type: "number" },
               },
             },
           },
         },
       },
       front_page: {
-        key: 'front_page',
-        name: 'Front Page',
+        key: "front_page",
+        name: "Front Page",
         description:
-          'The current Hacker News front page — the live homepage, not a keyword search. No search query.',
+          "The current Hacker News front page — the live homepage, not a keyword search. No search query.",
         configSchema: {
-          type: 'object',
+          type: "object",
           properties: {
             min_score: {
-              type: 'integer',
+              type: "integer",
               minimum: 0,
               default: 0,
-              description: 'Only include front-page stories with at least this many points.',
+              description:
+                "Only include front-page stories with at least this many points.",
             },
           },
         },
         eventKinds: {
           story: {
-            description: 'A Hacker News front-page story',
+            description: "A Hacker News front-page story",
             metadataSchema: {
-              type: 'object',
+              type: "object",
               properties: {
-                story_type: { type: 'string', description: 'story, ask_hn, or show_hn' },
-                tags: { type: 'array', items: { type: 'string' } },
-                external_url: { type: 'string', format: 'uri' },
-                score: { type: 'number', description: 'HN points' },
-                reply_count: { type: 'number' },
+                story_type: {
+                  type: "string",
+                  description: "story, ask_hn, or show_hn",
+                },
+                tags: { type: "array", items: { type: "string" } },
+                external_url: { type: "string", format: "uri" },
+                score: { type: "number", description: "HN points" },
+                reply_count: { type: "number" },
               },
             },
           },
           ask_hn: {
-            description: 'An Ask HN post on the front page',
+            description: "An Ask HN post on the front page",
             metadataSchema: {
-              type: 'object',
+              type: "object",
               properties: {
-                story_type: { type: 'string' },
-                tags: { type: 'array', items: { type: 'string' } },
-                score: { type: 'number' },
-                reply_count: { type: 'number' },
+                story_type: { type: "string" },
+                tags: { type: "array", items: { type: "string" } },
+                score: { type: "number" },
+                reply_count: { type: "number" },
               },
             },
           },
           show_hn: {
-            description: 'A Show HN post on the front page',
+            description: "A Show HN post on the front page",
             metadataSchema: {
-              type: 'object',
+              type: "object",
               properties: {
-                story_type: { type: 'string' },
-                tags: { type: 'array', items: { type: 'string' } },
-                external_url: { type: 'string', format: 'uri' },
-                score: { type: 'number' },
-                reply_count: { type: 'number' },
+                story_type: { type: "string" },
+                tags: { type: "array", items: { type: "string" } },
+                external_url: { type: "string", format: "uri" },
+                score: { type: "number" },
+                reply_count: { type: "number" },
               },
             },
           },
         },
       },
       comments: {
-        key: 'comments',
-        name: 'Comments',
-        description: 'Search HN for comments.',
+        key: "comments",
+        name: "Comments",
+        description: "Search HN for comments.",
         configSchema: {
-          type: 'object',
-          required: ['search_query'],
+          type: "object",
+          required: ["search_query"],
           properties: {
             search_query: {
-              type: 'string',
+              type: "string",
               minLength: 1,
-              description: 'Search term',
+              description: "Search term",
             },
             lookback_days: {
-              type: 'integer',
+              type: "integer",
               minimum: 1,
               maximum: 730,
               default: 365,
-              description: 'Lookback window in days',
+              description: "Lookback window in days",
             },
             search_fields: {
-              type: 'array',
+              type: "array",
               items: {
-                type: 'string',
-                enum: ['comment_text', 'author'],
+                type: "string",
+                enum: ["comment_text", "author"],
               },
-              default: ['comment_text'],
-              description: 'Algolia fields to search in. Defaults to comment_text.',
+              default: ["comment_text"],
+              description:
+                "Algolia fields to search in. Defaults to comment_text.",
             },
           },
         },
         eventKinds: {
           comment: {
-            description: 'A Hacker News comment',
+            description: "A Hacker News comment",
             metadataSchema: {
-              type: 'object',
+              type: "object",
               properties: {
-                story_id: { type: 'number' },
-                parent_id: { type: 'number' },
-                tags: { type: 'array', items: { type: 'string' } },
+                story_id: { type: "number" },
+                parent_id: { type: "number" },
+                tags: { type: "array", items: { type: "string" } },
               },
             },
           },
@@ -440,57 +443,58 @@ export default class HackerNewsConnector extends ConnectorRuntime {
     },
     actions: {
       prepare_comment: {
-        key: 'prepare_comment',
-        name: 'Prepare comment',
+        key: "prepare_comment",
+        name: "Prepare comment",
         description:
           "Stage a reply draft in the HN reply form for the exact item. NEVER submits — the human must click 'add comment'. Requires the user to visit the item page.",
         requiresApproval: false,
-        kind: 'write',
+        kind: "write",
         annotations: {
           openWorldHint: true,
           destructiveHint: false,
           idempotentHint: false,
         },
         inputSchema: {
-          type: 'object',
-          required: ['body'],
-          anyOf: [{ required: ['item_url'] }, { required: ['item_id'] }],
+          type: "object",
+          required: ["body"],
+          anyOf: [{ required: ["item_url"] }, { required: ["item_id"] }],
           properties: {
             item_url: {
-              type: 'string',
+              type: "string",
               description:
-                'HN item URL or numeric id (e.g. https://news.ycombinator.com/item?id=42954035 or 42954035).',
+                "HN item URL or numeric id (e.g. https://news.ycombinator.com/item?id=42954035 or 42954035).",
             },
             item_id: {
-              type: 'string',
-              description: 'Numeric HN item id when item_url is omitted (digits).',
+              type: "string",
+              description:
+                "Numeric HN item id when item_url is omitted (digits).",
             },
             body: {
-              type: 'string',
+              type: "string",
               description:
-                'Draft reply text. Left in the reply form for the user to edit/submit.',
+                "Draft reply text. Left in the reply form for the user to edit/submit.",
               minLength: 1,
               maxLength: 2000,
             },
           },
         },
         outputSchema: {
-          type: 'object',
+          type: "object",
           properties: {
-            prepared: { type: 'boolean' },
-            tab_id: { type: 'integer' },
-            item_url: { type: 'string' },
-            body: { type: 'string' },
-            method: { type: 'string' },
-            submitted: { type: 'boolean' },
-            message: { type: 'string' },
+            prepared: { type: "boolean" },
+            tab_id: { type: "integer" },
+            item_url: { type: "string" },
+            body: { type: "string" },
+            method: { type: "string" },
+            submitted: { type: "boolean" },
+            message: { type: "string" },
           },
         },
       },
     },
   };
 
-  private readonly BASE_URL = 'https://hn.algolia.com/api/v1';
+  private readonly BASE_URL = "https://hn.algolia.com/api/v1";
   private readonly ENGAGEMENT_THRESHOLD = 50;
   private readonly CONTENT_FETCH_TIMEOUT = 5000;
   private readonly MAX_PAGES = 50;
@@ -504,8 +508,8 @@ export default class HackerNewsConnector extends ConnectorRuntime {
   constructor() {
     super();
     this.turndownService = new TurndownService({
-      headingStyle: 'atx',
-      codeBlockStyle: 'fenced',
+      headingStyle: "atx",
+      codeBlockStyle: "fenced",
     });
   }
 
@@ -514,18 +518,24 @@ export default class HackerNewsConnector extends ConnectorRuntime {
   // -------------------------------------------------------------------------
 
   async sync(ctx: SyncContext): Promise<SyncResult> {
-    const isFrontPage = ctx.feedKey === 'front_page';
+    const isFrontPage = ctx.feedKey === "front_page";
     const searchQuery = ctx.config.search_query as string;
     const contentType =
-      ctx.feedKey === 'comments' ? 'comment' : ((ctx.config.story_type as string) ?? 'story');
+      ctx.feedKey === "comments"
+        ? "comment"
+        : ((ctx.config.story_type as string) ?? "story");
     const lookbackDays = (ctx.config.lookback_days as number) ?? 365;
     const minScore = (ctx.config.min_score as number) ?? 0;
     const searchFields =
       (ctx.config.search_fields as string[] | undefined) ??
-      (contentType === 'comment' ? ['comment_text'] : ['title']);
+      (contentType === "comment" ? ["comment_text"] : ["title"]);
 
-    const lookbackTimestamp = Math.floor((Date.now() - lookbackDays * 86400000) / 1000);
-    const tag = isFrontPage ? 'front_page' : (CONTENT_TYPE_TAG[contentType] ?? 'story');
+    const lookbackTimestamp = Math.floor(
+      (Date.now() - lookbackDays * 86400000) / 1000
+    );
+    const tag = isFrontPage
+      ? "front_page"
+      : (CONTENT_TYPE_TAG[contentType] ?? "story");
 
     const events: EventEnvelope[] = [];
     let page = 0;
@@ -535,24 +545,28 @@ export default class HackerNewsConnector extends ConnectorRuntime {
     while (hasMore && page < this.MAX_PAGES && Date.now() < deadline) {
       const url = isFrontPage
         ? `${this.BASE_URL}/search?tags=front_page&hitsPerPage=100&page=${page}` +
-          (minScore > 0 ? `&numericFilters=${encodeURIComponent(`points>=${minScore}`)}` : '')
+          (minScore > 0
+            ? `&numericFilters=${encodeURIComponent(`points>=${minScore}`)}`
+            : "")
         : `${this.BASE_URL}/search?query=${encodeURIComponent(searchQuery)}` +
           `&tags=${tag}&hitsPerPage=100&page=${page}` +
-          '&typoTolerance=false' +
-          `&restrictSearchableAttributes=${encodeURIComponent(searchFields.join(','))}` +
+          "&typoTolerance=false" +
+          `&restrictSearchableAttributes=${encodeURIComponent(searchFields.join(","))}` +
           `&numericFilters=${encodeURIComponent(`created_at_i>${lookbackTimestamp}`)}`;
 
       const response = await fetch(url);
 
       if (response.status === 429) {
-        const retryAfter = response.headers.get('Retry-After');
-        const waitMs = retryAfter ? Math.min(60_000, Math.max(1, Number(retryAfter)) * 1000) : 5000;
+        const retryAfter = response.headers.get("Retry-After");
+        const waitMs = retryAfter
+          ? Math.min(60_000, Math.max(1, Number(retryAfter)) * 1000)
+          : 5000;
         await sleep(Number.isFinite(waitMs) ? waitMs : 5000);
         continue;
       }
 
       if (!response.ok) {
-        const text = await response.text().catch(() => '');
+        const text = await response.text().catch(() => "");
         throw new Error(`Algolia API error (${response.status}): ${text}`);
       }
 
@@ -565,11 +579,11 @@ export default class HackerNewsConnector extends ConnectorRuntime {
       }
 
       if (!data || !Array.isArray(data.hits)) {
-        throw new Error('Algolia API returned an unexpected response shape');
+        throw new Error("Algolia API returned an unexpected response shape");
       }
 
       for (const hit of data.hits) {
-        if (contentType === 'comment') {
+        if (contentType === "comment") {
           const event = this.transformComment(hit);
           if (event) events.push(event);
         } else {
@@ -589,7 +603,7 @@ export default class HackerNewsConnector extends ConnectorRuntime {
       // Hit the sync budget; next scheduled run continues.
     }
 
-    if (contentType !== 'comment') {
+    if (contentType !== "comment") {
       await this.enrichStoriesWithExternalContent(events, deadline, ctx);
     }
 
@@ -606,23 +620,22 @@ export default class HackerNewsConnector extends ConnectorRuntime {
 
   async execute(ctx: ActionContext): Promise<ActionResult> {
     try {
-      if (ctx.actionKey !== 'prepare_comment') {
+      if (ctx.actionKey !== "prepare_comment") {
         return { success: false, error: `Unknown action: ${ctx.actionKey}` };
       }
       const body =
-        typeof ctx.input.body === 'string' ? ctx.input.body.trim() : '';
+        typeof ctx.input.body === "string" ? ctx.input.body.trim() : "";
       if (!body) {
-        return { success: false, error: 'body is required' };
+        return { success: false, error: "body is required" };
       }
       const itemRaw =
-        (typeof ctx.input.item_url === 'string' &&
-          ctx.input.item_url.trim()) ||
-        (typeof ctx.input.item_id === 'string' && ctx.input.item_id.trim()) ||
-        '';
+        (typeof ctx.input.item_url === "string" && ctx.input.item_url.trim()) ||
+        (typeof ctx.input.item_id === "string" && ctx.input.item_id.trim()) ||
+        "";
       if (!itemRaw) {
         return {
           success: false,
-          error: 'item_url or item_id is required',
+          error: "item_url or item_id is required",
         };
       }
       const dispatcher = requireExtensionDispatcher(ctx);
@@ -644,17 +657,17 @@ export default class HackerNewsConnector extends ConnectorRuntime {
   // -------------------------------------------------------------------------
 
   private transformStory(hit: AlgoliaHit): EventEnvelope {
-    const isAskHN = hit._tags.includes('ask_hn');
-    const isShowHN = hit._tags.includes('show_hn');
+    const isAskHN = hit._tags.includes("ask_hn");
+    const isShowHN = hit._tags.includes("show_hn");
 
-    let storyType = 'story';
-    let originType = 'story';
+    let storyType = "story";
+    let originType = "story";
     if (isAskHN) {
-      storyType = 'ask_hn';
-      originType = 'ask_hn';
+      storyType = "ask_hn";
+      originType = "ask_hn";
     } else if (isShowHN) {
-      storyType = 'show_hn';
-      originType = 'show_hn';
+      storyType = "show_hn";
+      originType = "show_hn";
     }
 
     const engagementData = {
@@ -664,15 +677,15 @@ export default class HackerNewsConnector extends ConnectorRuntime {
 
     return {
       origin_id: `hn_story_${hit.objectID}`,
-      title: hit.title ?? '',
-      payload_text: (hit.story_text ?? '').trim(),
+      title: hit.title ?? "",
+      payload_text: (hit.story_text ?? "").trim(),
       author_name: hit.author,
       source_url: `https://news.ycombinator.com/item?id=${hit.objectID}`,
       occurred_at: new Date(hit.created_at_i * 1000),
       origin_type: originType,
-      score: calculateEngagementScore('hackernews', engagementData),
+      score: calculateEngagementScore("hackernews", engagementData),
       metadata: {
-        type: 'story',
+        type: "story",
         story_type: storyType,
         tags: hit._tags,
         external_url: hit.url,
@@ -685,7 +698,11 @@ export default class HackerNewsConnector extends ConnectorRuntime {
 
   private transformComment(hit: AlgoliaHit): EventEnvelope | null {
     let parentExternalId: string | undefined;
-    if (hit.parent_id != null && hit.story_id != null && hit.parent_id !== hit.story_id) {
+    if (
+      hit.parent_id != null &&
+      hit.story_id != null &&
+      hit.parent_id !== hit.story_id
+    ) {
       parentExternalId = `hn_comment_${hit.parent_id}`;
     } else if (hit.story_id != null) {
       parentExternalId = `hn_story_${hit.story_id}`;
@@ -699,11 +716,11 @@ export default class HackerNewsConnector extends ConnectorRuntime {
       author_name: hit.author,
       source_url: `https://news.ycombinator.com/item?id=${hit.objectID}`,
       occurred_at: new Date(hit.created_at_i * 1000),
-      origin_type: 'comment',
-      score: calculateEngagementScore('hackernews', { score: 0 }),
+      origin_type: "comment",
+      score: calculateEngagementScore("hackernews", { score: 0 }),
       origin_parent_id: parentExternalId,
       metadata: {
-        type: 'comment',
+        type: "comment",
         story_id: hit.story_id,
         parent_id: hit.parent_id,
         created_at_i: hit.created_at_i,
@@ -770,14 +787,17 @@ export default class HackerNewsConnector extends ConnectorRuntime {
     }
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.CONTENT_FETCH_TIMEOUT);
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      this.CONTENT_FETCH_TIMEOUT
+    );
     let response: Response;
     try {
       response = await fetch(url, {
         signal: controller.signal,
         headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; HNBot/1.0)',
-          Accept: 'text/html,application/xhtml+xml',
+          "User-Agent": "Mozilla/5.0 (compatible; HNBot/1.0)",
+          Accept: "text/html,application/xhtml+xml",
         },
       });
     } catch {
@@ -789,37 +809,38 @@ export default class HackerNewsConnector extends ConnectorRuntime {
     try {
       if (!response.ok) return { ok: false, network: false };
 
-      const contentType = response.headers.get('content-type') ?? '';
-      if (!contentType.includes('text/html')) return { ok: false, network: false };
+      const contentType = response.headers.get("content-type") ?? "";
+      if (!contentType.includes("text/html"))
+        return { ok: false, network: false };
 
       const html = await response.text();
 
       const stripTags = [
-        'script',
-        'style',
-        'noscript',
-        'nav',
-        'header',
-        'footer',
-        'aside',
-        'iframe',
-        'svg',
-        'canvas',
-        'video',
-        'audio',
-        'menu',
-        'dialog',
-        'embed',
-        'object',
+        "script",
+        "style",
+        "noscript",
+        "nav",
+        "header",
+        "footer",
+        "aside",
+        "iframe",
+        "svg",
+        "canvas",
+        "video",
+        "audio",
+        "menu",
+        "dialog",
+        "embed",
+        "object",
       ];
       let cleanHtml = html;
       for (const tag of stripTags) {
         cleanHtml = cleanHtml.replace(
-          new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}>`, 'gi'),
-          ''
+          new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}>`, "gi"),
+          ""
         );
       }
-      cleanHtml = cleanHtml.replace(/<(link|meta|input)\b[^>]*\/?>/gi, '');
+      cleanHtml = cleanHtml.replace(/<(link|meta|input)\b[^>]*\/?>/gi, "");
 
       const markdown = this.turndownService.turndown(cleanHtml);
       const trimmed = markdown.trim().substring(0, 2000);

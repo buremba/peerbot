@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import {
-  normalizeHnItemId,
-  prepareHnComment,
-} from "../hackernews.connector";
+import { normalizeHnItemId, prepareHnComment } from "../hackernews.connector";
 
 function makeDispatcher() {
   const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
   const dispatcher = {
-    dispatch: async (action: string, input: Record<string, unknown>) => {
+    dispatch: async (
+      action: string,
+      input: Record<string, unknown>
+    ): Promise<unknown> => {
       calls.push({ action, input });
       if (action === "navigate") {
         return {
@@ -31,7 +31,7 @@ function makeDispatcher() {
       }
       return { ok: true };
     },
-  };
+  } as import("@lobu/connector-sdk").ChromeActionDispatcher;
   return { dispatcher, calls };
 }
 
@@ -41,15 +41,15 @@ describe("normalizeHnItemId", () => {
   });
 
   test("accepts an item URL", () => {
-    expect(normalizeHnItemId("https://news.ycombinator.com/item?id=42954035")).toBe(
-      "42954035"
-    );
+    expect(
+      normalizeHnItemId("https://news.ycombinator.com/item?id=42954035")
+    ).toBe("42954035");
   });
 
   test("accepts a reply URL", () => {
-    expect(normalizeHnItemId("https://news.ycombinator.com/reply?id=42954035")).toBe(
-      "42954035"
-    );
+    expect(
+      normalizeHnItemId("https://news.ycombinator.com/reply?id=42954035")
+    ).toBe("42954035");
   });
 
   test("rejects a non-HN host", () => {
@@ -57,7 +57,9 @@ describe("normalizeHnItemId", () => {
   });
 
   test("rejects a non-numeric id", () => {
-    expect(normalizeHnItemId("https://news.ycombinator.com/item?id=abc")).toBeNull();
+    expect(
+      normalizeHnItemId("https://news.ycombinator.com/item?id=abc")
+    ).toBeNull();
   });
 });
 
@@ -72,17 +74,17 @@ describe("prepareHnComment", () => {
     expect(result.prepared).toBe(true);
     expect(result.submitted).toBe(false);
     expect(result.tab_id).toBe(7);
-    expect(result.item_url).toBe("https://news.ycombinator.com/item?id=42954035");
-
-    // Navigated to item page first (activation target), then the reply form.
-    const navigations = calls.filter((c) => c.action === "navigate");
-    expect(navigations[0]?.input.url).toBe(
+    expect(result.item_url).toBe(
       "https://news.ycombinator.com/item?id=42954035"
     );
-    expect(navigations[0]?.input.require_page_activation).toBe(true);
-    expect(navigations[1]?.input.url).toBe(
+
+    // Navigated directly to the reply form (the activation target) once.
+    const navigations = calls.filter((c) => c.action === "navigate");
+    expect(navigations).toHaveLength(1);
+    expect(navigations[0]?.input.url).toBe(
       "https://news.ycombinator.com/reply?id=42954035"
     );
+    expect(navigations[0]?.input.require_page_activation).toBe(true);
 
     // Filled via evaluate targeting textarea[name=text].
     const evaluate = calls.find((c) => c.action === "evaluate");

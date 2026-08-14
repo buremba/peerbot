@@ -27,6 +27,8 @@ interface DomScrapeOpts {
   allowedOrigins: string[];
   persistent?: boolean;
   focus?: boolean;
+  existingTabMatch?: string;
+  fallbackToScratch?: boolean;
 }
 
 // Faithful copies of the SDK's pure pagination generators (no browser stack).
@@ -168,15 +170,35 @@ export function connectorSdkMock() {
       properties: {},
     },
     extensionDomScrape: async (opts: DomScrapeOpts) => {
-      const observation = await opts.dispatcher.dispatch('navigate', {
-        cs_scrape: true,
-		persistent: opts.persistent ?? false,
-		focus: opts.focus ?? false,
-        url: opts.url,
-        scrape_config: opts.config,
-        allowed_origins: opts.allowedOrigins,
-      });
-      const result = observation?.result;
+      const wantsExistingTab =
+        typeof opts.existingTabMatch === 'string' && opts.existingTabMatch.length > 0;
+      const fallbackToScratch = opts.fallbackToScratch ?? true;
+      const dispatchScrape = (existing: boolean) =>
+        opts.dispatcher.dispatch('navigate', {
+          cs_scrape: true,
+          persistent: opts.persistent ?? false,
+          focus: opts.focus ?? false,
+          url: opts.url,
+          scrape_config: opts.config,
+          allowed_origins: opts.allowedOrigins,
+          ...(existing && wantsExistingTab
+            ? { existing_tab_match: opts.existingTabMatch }
+            : {}),
+        });
+      let usedExistingTab = false;
+      let observation = await dispatchScrape(wantsExistingTab);
+      let result = observation?.result;
+      if (wantsExistingTab && result?.error === 'no_matching_tab') {
+        if (!fallbackToScratch) {
+          throw new Error(
+            `cs_scrape: no open tab matches existing_tab_match "${opts.existingTabMatch}".`
+          );
+        }
+        observation = await dispatchScrape(false);
+        result = observation?.result;
+      } else if (wantsExistingTab) {
+        usedExistingTab = true;
+      }
       const items = opts.parseRows(result?.rows ?? []);
       return {
         items,
@@ -184,6 +206,7 @@ export function connectorSdkMock() {
         count: result?.count ?? items.length,
         host: result?.host,
         landedUrl: result?.landedUrl,
+        usedExistingTab,
       };
     },
   };

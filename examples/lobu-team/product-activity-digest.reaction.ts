@@ -8,6 +8,11 @@ const PRODUCT_ACTIVITY_CONNECTION = "lobu-product-activity-db";
 const LOG_ACTIVITY_CONNECTION = "lobu-production-logs";
 const CARD_TEXT_LIMIT = 2_800;
 
+/** `true` for SQL text — used to keep the keyset-pagination first page unclaused. */
+function sqlTrue(): string {
+  return "TRUE";
+}
+
 export const input = {
   type: "object",
   properties: {
@@ -26,6 +31,9 @@ interface ActivityRow {
   payload_text?: string | null;
   metadata?: unknown;
   source_url?: string | null;
+  /** Keyset-pagination cursor columns; stripped before digesting. */
+  _created_at?: string | Date | null;
+  _id?: number | null;
 }
 
 interface PreviousDigestRow {
@@ -327,37 +335,48 @@ export default async (
         ).trim() || null
       : null;
 
-  // Exclude the operator's presence rows in SQL, BEFORE ORDER/LIMIT: a window
-  // dominated by their logins must not consume the 5,000-row budget and starve
-  // later valid activity. The in-memory guard in collectProductActivityDigest
-  // stays as a redundant safety net for any caller that passes rows directly.
-  const excludedEmailClause =
-    excludedEmail != null
-      ? `AND NOT (
-           c.slug = '${PRODUCT_ACTIVITY_CONNECTION}'
-           AND e.title IN ('User login', 'MCP activity')
-           AND lower(e.payload_text) LIKE '%${excludedEmail
-             .toLowerCase()
-             .replace(/'/g, "''")}%'
-         )`
-      : "";
-
-  const rows = (await client.query(`
-    SELECT
-      c.slug AS connection_slug,
-      e.title,
-      e.payload_text,
-      e.metadata,
-      e.source_url
-    FROM events e
-    JOIN connections c ON c.id = e.connection_id
-    WHERE c.slug IN ('${PRODUCT_ACTIVITY_CONNECTION}', '${LOG_ACTIVITY_CONNECTION}')
-      AND e.created_at > '${start.toISOString()}'::timestamptz
-      AND e.created_at <= '${end.toISOString()}'::timestamptz
-      ${excludedEmailClause}
-    ORDER BY e.created_at ASC, e.id ASC
-    LIMIT 5000
-  `)) as ActivityRow[];
+  // Read the window in bounded keyset pages ordered by (created_at, id) and
+  // exclude the operator's presence rows in memory. No leading-wildcard LIKE
+  // over events, and excluded rows cannot consume a fixed LIMIT budget: the
+  // cursor keeps advancing past them until the window is exhausted or the
+  // safety cap is hit, so later valid activity is never starved.
+  const rows: ActivityRow[] = [];
+  let lastCreatedAt: string | null = null;
+  let lastId = 0;
+  const PAGE_SIZE = 1000;
+  const MAX_ROWS = 20_000;
+  let sawPartialPage = true;
+  while (sawPartialPage && rows.length < MAX_ROWS) {
+    const page = (await client.query(`
+      SELECT
+        c.slug AS connection_slug,
+        e.title,
+        e.payload_text,
+        e.metadata,
+        e.source_url,
+        e.created_at AS _created_at,
+        e.id AS _id
+      FROM events e
+      JOIN connections c ON c.id = e.connection_id
+      WHERE c.slug IN ('${PRODUCT_ACTIVITY_CONNECTION}', '${LOG_ACTIVITY_CONNECTION}')
+        AND e.created_at > '${start.toISOString()}'::timestamptz
+        AND e.created_at <= '${end.toISOString()}'::timestamptz
+        AND (
+          ${lastCreatedAt == null
+            ? sqlTrue()
+            : `(e.created_at > '${lastCreatedAt}'::timestamptz
+              OR (e.created_at = '${lastCreatedAt}'::timestamptz AND e.id > ${lastId}))`}
+        )
+      ORDER BY e.created_at ASC, e.id ASC
+      LIMIT ${PAGE_SIZE}
+    `)) as ActivityRow[];
+    sawPartialPage = page.length === PAGE_SIZE;
+    for (const row of page) {
+      rows.push(row);
+      if (typeof row._created_at === "string") lastCreatedAt = row._created_at;
+      if (typeof row._id === "number") lastId = row._id;
+    }
+  }
   const digest = collectProductActivityDigest(rows, excludedEmail);
   if (!hasProductActivity(digest)) {
     client.log("No production activity; Slack digest skipped", {

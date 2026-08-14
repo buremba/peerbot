@@ -577,6 +577,12 @@ export async function listNotifications(opts: {
 	unreadOnly?: boolean;
 	clientIds?: string[];
 	mcpActivityId?: string | null;
+	/**
+	 * Return only notifications carrying a `browser_url` (a browser-handoff
+	 * draft staged in the user's browser). Used by the attention feed to keep
+	 * undismissed drafts visible regardless of the recent-activity window.
+	 */
+	browserUrlOnly?: boolean;
 }): Promise<{
 	notifications: Record<string, unknown>[];
 	nextCursor: number | null;
@@ -587,6 +593,7 @@ export async function listNotifications(opts: {
 	const unreadOnly = opts.unreadOnly ?? false;
 	const clientIds = opts.clientIds?.length ? opts.clientIds : null;
 	const mcpActivityId = opts.mcpActivityId?.trim() || null;
+	const browserUrlOnly = opts.browserUrlOnly ?? false;
 
 	const rows = (await sql`
     SELECT
@@ -693,6 +700,7 @@ export async function listNotifications(opts: {
       AND t.user_id = ${opts.userId}
       AND (${cursor}::bigint IS NULL OR e.id < ${cursor})
       AND (${!unreadOnly} OR t.read_at IS NULL)
+      ${browserUrlOnly ? sql`AND COALESCE(e.metadata->>'browser_url', '') <> ''` : sql``}
 			${clientIds
 				? sql`AND e.client_id = ANY(${pgTextArray(clientIds)}::text[])`
 				: sql``}

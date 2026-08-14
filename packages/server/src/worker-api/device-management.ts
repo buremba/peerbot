@@ -28,6 +28,7 @@ import {
 } from '../utils/device-pin-tombstones';
 import { getWorkspaceRole } from '../utils/organization-access';
 import { parseJsonBody } from '../gateway/routes/shared/helpers';
+import { buildBehaviorUrl, getPublicWebUrl } from '../utils/url-builder';
 
 /**
  * GET /api/me/devices
@@ -496,10 +497,12 @@ export async function updateDeviceWorkerOrg(c: Context<{ Bindings: Env }>) {
 /**
  * DELETE /api/me/devices/:id
  *
- * Permanently forgets one of the caller's registered devices. Connections
- * pinned to it are un-pinned and paused — they can't run anywhere without the
- * device — and their active feeds are paused. If the device app is still
- * running it re-registers on its next heartbeat as a fresh device.
+ * Permanently forgets one of the caller's registered devices. Refused with a
+ * 409 (listing the blockers) while active Behaviors are pinned to the device;
+ * archived Behaviors are un-pinned. Connections pinned to it are un-pinned and
+ * paused — they can't run anywhere without the device — and their active feeds
+ * are paused. If the device app is still running it re-registers on its next
+ * heartbeat as a fresh device.
  */
 export async function deleteDeviceWorker(c: Context<{ Bindings: Env }>) {
   const userId = c.var.user?.id;
@@ -512,17 +515,44 @@ export async function deleteDeviceWorker(c: Context<{ Bindings: Env }>) {
   }
   try {
     const sql = getDb();
-    const deleted = await sql.begin(async (tx) => {
+    const result = await sql.begin(async (tx) => {
       const owned = (await tx`
         SELECT organization_id, label, worker_id FROM device_workers
         WHERE id = ${deviceWorkerId} AND user_id = ${userId}
         LIMIT 1
+        FOR UPDATE
       `) as unknown as Array<{
         organization_id: string | null;
         label: string | null;
         worker_id: string;
       }>;
-      if (owned.length === 0) return null;
+      if (owned.length === 0) return { kind: 'not_found' } as const;
+
+      const behaviors = (await tx`
+        SELECT w.id::text AS behavior_id, w.name, o.slug AS organization_slug
+        FROM watchers w
+        JOIN organization o ON o.id = w.organization_id
+        WHERE w.device_worker_id = ${deviceWorkerId}
+          AND w.status = 'active'
+        ORDER BY w.id
+      `) as unknown as Array<{
+        behavior_id: string;
+        name: string;
+        organization_slug: string;
+      }>;
+      if (behaviors.length > 0) {
+        return { kind: 'conflict', behaviors } as const;
+      }
+
+      // Archival is the supported soft-delete for Behaviors. Archived rows are
+      // retained for history, but no longer execute and must not keep the
+      // restrictive FK alive after the user explicitly archives them.
+      await tx`
+        UPDATE watchers
+        SET device_worker_id = NULL, updated_at = NOW()
+        WHERE device_worker_id = ${deviceWorkerId}
+          AND status = 'archived'
+      `;
       // Un-pin and pause every connection backed by this device — a device
       // connector can't run anywhere without it; the owner re-pins to a new
       // device (or removes the connection) to bring it back.
@@ -543,18 +573,36 @@ export async function deleteDeviceWorker(c: Context<{ Bindings: Env }>) {
         `;
       }
       await tx`DELETE FROM device_workers WHERE id = ${deviceWorkerId} AND user_id = ${userId}`;
-      return owned[0];
+      return { kind: 'deleted', device: owned[0] } as const;
     });
-    if (!deleted) {
+    if (result.kind === 'not_found') {
       return c.json({ error: 'Device not found or not owned by you' }, 404);
     }
-    if (deleted.organization_id) {
+    if (result.kind === 'conflict') {
+      const baseUrl = getPublicWebUrl(c.req.url);
+      return c.json(
+        {
+          error:
+            'Device is pinned by active Behaviors. Reassign or archive the listed Behaviors, then retry device deletion.',
+          behaviors: result.behaviors.map((behavior) => ({
+            ...behavior,
+            view_url: buildBehaviorUrl(
+              behavior.organization_slug,
+              behavior.behavior_id,
+              baseUrl
+            ),
+          })),
+        },
+        409
+      );
+    }
+    if (result.device.organization_id) {
       recordLifecycleEvent({
-        organizationId: deleted.organization_id,
+        organizationId: result.device.organization_id,
         entityType: 'device',
         op: 'deleted',
         entityId: deviceWorkerId,
-        summary: `Device "${deleted.label ?? deleted.worker_id}" removed`,
+        summary: `Device "${result.device.label ?? result.device.worker_id}" removed`,
       });
     }
     return c.json({ ok: true });

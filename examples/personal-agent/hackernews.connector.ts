@@ -675,7 +675,9 @@ export default class HackerNewsConnector extends ConnectorRuntime {
     return {
       origin_id: `hn_story_${hit.objectID}`,
       title: hit.title ?? "",
-      payload_text: (hit.story_text ?? "").trim(),
+      // Link submissions have no story_text; fall back to the title so the
+      // row still carries rankable content for consumers (e.g. the radar).
+      payload_text: ((hit.story_text ?? "").trim() || hit.title || "").trim(),
       author_name: hit.author,
       source_url: `https://news.ycombinator.com/item?id=${hit.objectID}`,
       occurred_at: new Date(hit.created_at_i * 1000),

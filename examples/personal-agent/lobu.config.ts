@@ -1234,7 +1234,7 @@ const socialInterestRadar = defineBehavior({
   model: "opencode-go/deepseek-v4-flash",
   sources: {
     recent_social:
-      "SELECT id, origin_id, connection_id, occurred_at, payload_text, source_url, metadata, connector_key, origin_type FROM events WHERE connector_key IN ('x','linkedin','hackernews') AND ((connector_key='x' AND origin_type IN ('tweet','bookmark')) OR (connector_key='linkedin' AND origin_type='post') OR (connector_key='hackernews' AND origin_type IN ('story','ask_hn','show_hn'))) AND payload_text IS NOT NULL AND origin_id IS NOT NULL AND connection_id IS NOT NULL ORDER BY occurred_at DESC LIMIT 80",
+      "SELECT id, origin_id, connection_id, occurred_at, title, author_name, payload_text, source_url, metadata, connector_key, origin_type FROM events WHERE connector_key IN ('x','linkedin','hackernews') AND ((connector_key='x' AND origin_type IN ('tweet','bookmark')) OR (connector_key='linkedin' AND origin_type='post') OR (connector_key='hackernews' AND origin_type IN ('story','ask_hn','show_hn'))) AND payload_text IS NOT NULL AND origin_id IS NOT NULL AND connection_id IS NOT NULL ORDER BY occurred_at DESC LIMIT 80",
     already_emitted: {
       context: true,
       query:

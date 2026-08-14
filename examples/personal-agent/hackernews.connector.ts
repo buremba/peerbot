@@ -597,10 +597,8 @@ export default class HackerNewsConnector extends ConnectorRuntime {
         await sleep(this.PAGE_DELAY_MS);
       }
     }
-
-    if (hasMore && Date.now() >= deadline) {
-      // Hit the sync budget; next scheduled run continues.
-    }
+    // If the wall-clock budget ran out mid-pagination, the next scheduled run
+    // continues (the connector re-queries the window; it is not incremental).
 
     if (contentType !== "comment") {
       await this.enrichStoriesWithExternalContent(events, deadline, ctx);

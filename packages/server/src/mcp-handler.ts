@@ -536,8 +536,15 @@ function createServerForContext(
       // `isError`; otherwise the client treats it as a normal result. query_sql
       // also renders the error explicitly because its formatter would otherwise
       // turn `{ rows: [], error }` into a clean empty CSV result.
-      const softError = isSoftErrorResult(publicResult);
       const attachedMeta = getMcpResultMeta(result);
+      // OAuth challenges are MCP tool errors even when the underlying power tool
+      // intentionally preserves a structured failure payload (for example
+      // run_sdk's nested admin-scope denial). Hosts only perform progressive
+      // authorization reliably when the challenge is carried on an error result.
+      const attachedAuthChallenge =
+        Array.isArray(attachedMeta?.['mcp/www_authenticate']) &&
+        attachedMeta['mcp/www_authenticate'].length > 0;
+      const softError = isSoftErrorResult(publicResult) || attachedAuthChallenge;
       const resultMeta = uiMemberRoleMeta
         ? { ...attachedMeta, ...uiMemberRoleMeta }
         : attachedMeta;

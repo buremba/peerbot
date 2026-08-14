@@ -10,7 +10,7 @@ import {
 	resolveWriteEffect,
 } from "../authz/entity-policy";
 import type { WriteAction } from "../authz/write-action-manifest";
-import { resolveMaxAccessLevel } from "../auth/tool-access";
+import { resolveSdkMaxAccessLevel } from "../auth/tool-access";
 import { getDb } from "../db/client";
 import type { Env } from "../index";
 import {
@@ -166,7 +166,7 @@ async function catalogForCaller(
 	ctx: ToolContext,
 	mode: SdkDiscoveryMode
 ): Promise<Array<[string, MethodMetadata]>> {
-	const callerMax = resolveMaxAccessLevel(ctx.memberRole, ctx.scopes);
+	const callerMax = resolveSdkMaxAccessLevel(ctx.memberRole, ctx.scopes);
 	const policyDenied = await deniedAgentsSdkPaths(ctx);
 	return Object.entries(SDK_DISCOVERY_METADATA).filter(([path, meta]) => {
 		if (!sdkMethodVisible(meta.access, callerMax, mode)) return false;
@@ -331,7 +331,7 @@ async function sdkMethodSearch(
 	const mode: SdkDiscoveryMode = args.mode ?? "full";
 	const catalog = await catalogForCaller(ctx, mode);
 	const policyDenied = await deniedAgentsSdkPaths(ctx);
-	const callerMax = resolveMaxAccessLevel(ctx.memberRole, ctx.scopes);
+	const callerMax = resolveSdkMaxAccessLevel(ctx.memberRole, ctx.scopes);
 	const isMultiMethodQuery =
 		terms.length > 1 &&
 		terms.every(

@@ -1140,6 +1140,46 @@ describe('MCP Authentication', () => {
       expect(result.return_value?.denied).toBe(false);
     });
 
+    it('offers an owner at write tier progressive authorization for nested admin SDK methods', async () => {
+      const roleOrg = await createTestOrganization({ name: 'Scoped Progressive Admin Org' });
+      const owner = await createTestUser({});
+      await addUserToOrganization(owner.id, roleOrg.id, 'owner');
+      const { token } = await createTestPAT(owner.id, roleOrg.id, {
+        scope: 'mcp:read mcp:write',
+      });
+
+      const discovery = await mcpToolsCall(
+        'search_sdk',
+        { query: 'connections.installConnector' },
+        { token, orgSlug: roleOrg.slug }
+      );
+      expect(discovery.match_count).toBe(1);
+      expect(discovery.results[0]).toContain('access: admin');
+
+      const response = await mcpRequest<any>(
+        'tools/call',
+        {
+          name: 'run_sdk',
+          arguments: {
+            script:
+              'export default async (_c, client) => { await client.connections.installConnector({ connector_id: "__nonexistent__" }); return { ok: true }; }',
+          },
+        },
+        { token, orgSlug: roleOrg.slug }
+      );
+      const result = response.result as any;
+      const challenge = result?._meta?.['mcp/www_authenticate']?.[0];
+
+      expect(result?.isError).toBe(true);
+      expect(result?.structuredContent?.success).toBe(false);
+      expect(result?.structuredContent?.error?.message).toContain('admin access');
+      expect(result?.structuredContent?.started_side_effects).toEqual([
+        { path: 'connections.installConnector', access: 'admin', count: 1 },
+      ]);
+      expect(challenge).toContain('error="insufficient_scope"');
+      expect(challenge).toContain('scope="mcp:admin"');
+    });
+
     it('lets a normal MEMBER discover connectors (list_installed is read-tier) but NOT do admin actions', async () => {
       const roleOrg = await createTestOrganization({
         name: 'Scoped Member Org',
@@ -1178,6 +1218,38 @@ describe('MCP Authentication', () => {
       expect(admin.error?.message).toMatch(
         /admin or owner access|admin access|not a function|not available/i
       );
+    });
+
+    it('never offers a regular member an mcp:admin escalation', async () => {
+      const roleOrg = await createTestOrganization({ name: 'Scoped Non-Admin Org' });
+      const member = await createTestUser({});
+      await addUserToOrganization(member.id, roleOrg.id, 'member');
+      const { token } = await createTestPAT(member.id, roleOrg.id, {
+        scope: 'mcp:read mcp:write',
+      });
+
+      const discovery = await mcpToolsCall(
+        'search_sdk',
+        { query: 'connections.installConnector' },
+        { token, orgSlug: roleOrg.slug }
+      );
+      expect(discovery.match_count).toBe(0);
+
+      const response = await mcpRequest<any>(
+        'tools/call',
+        {
+          name: 'run_sdk',
+          arguments: {
+            script:
+              'export default async (_c, client) => { await client.connections.installConnector({ connector_id: "__nonexistent__" }); }',
+          },
+        },
+        { token, orgSlug: roleOrg.slug }
+      );
+      const result = response.result as any;
+
+      expect(result?.structuredContent?.success).toBe(false);
+      expect(result?._meta?.['mcp/www_authenticate']).toBeUndefined();
     });
   });
 
@@ -1239,6 +1311,9 @@ describe('MCP Authentication', () => {
       expect(toolNames).not.toContain('read_knowledge');
       expect(toolNames).not.toContain('execute');
       expect(toolNames).not.toContain('join_organization');
+
+      const runSdk = (result.tools as any[]).find((tool) => tool.name === 'run_sdk');
+      expect(runSdk?.securitySchemes).toEqual([{ type: 'oauth2', scopes: ['mcp:write'] }]);
     });
 
     it('lists Behaviors through the consolidated internal admin tool', async () => {

@@ -20,6 +20,7 @@ import { ClientSdkActionError } from "./namespaces/action-call";
 import { METHOD_METADATA, type MethodAccess } from "./method-metadata";
 import type { ToolAccessLevel } from "../auth/tool-access";
 import { enumerateSDKManifest, type SDKMode } from "./sdk-manifest";
+import { McpScopeRequiredError } from "../tools/access-control";
 
 export interface RunLimits {
 	memoryMb?: number;
@@ -138,6 +139,8 @@ interface RunScriptResult {
 	sdkCallTrace: SdkCallTraceEntry[];
 	/** Change-capable dispatches by path; unbounded, so trace eviction cannot hide them. */
 	startedSideEffects: Array<{ path: string; access: MethodAccess; count: number }>;
+	/** Token scopes requested by post-role-check SDK denials during this run. */
+	requiredMcpScopes: Array<"mcp:admin">;
 	sideEffectPreview: SdkCallTraceEntry[];
 	error?: {
 		name: string;
@@ -294,6 +297,7 @@ function classifyRuntimeError(error: {
 	// its stack (a genuine bug the developer needs to trace).
 	const isExpectedUserError =
 		error.name === "ClientSdkActionError" ||
+		error.name === "McpScopeRequiredError" ||
 		error.name === "ToolUserError" ||
 		/^Invalid arguments for /.test(message);
 	if (error.name === "ClientSdkActionError") {
@@ -302,6 +306,9 @@ function classifyRuntimeError(error: {
 			message,
 			...(error.details === undefined ? {} : { details: error.details }),
 		};
+	}
+	if (error.name === "McpScopeRequiredError") {
+		return { name: "McpScopeRequiredError", message };
 	}
 	if (isExpectedUserError) {
 		return { name: "ValidationError", message };
@@ -730,6 +737,7 @@ export async function runScript(
 	 * long run's early writes survive its oldest-first eviction.
 	 */
 	const startedSideEffects = new Map<string, { access: MethodAccess; count: number }>();
+	const requiredMcpScopes = new Set<"mcp:admin">();
 	let sdkCalls = 0;
 	// Total calls skipped under dry-run, independent of preview retention so a
 	// truncated preview never undercounts the dry-run surface.
@@ -841,6 +849,7 @@ export async function runScript(
 			startedSideEffects: [...startedSideEffects.entries()].map(
 				([path, { access, count }]) => ({ path, access, count }),
 			),
+			requiredMcpScopes: [...requiredMcpScopes],
 			sideEffectPreview,
 		};
 	}
@@ -882,6 +891,7 @@ export async function runScript(
 			startedSideEffects: [...startedSideEffects.entries()].map(
 				([path, { access, count }]) => ({ path, access, count }),
 			),
+			requiredMcpScopes: [...requiredMcpScopes],
 			sideEffectPreview,
 		};
 	}
@@ -1045,6 +1055,18 @@ export async function runScript(
 						abortController.signal,
 					);
 				} catch (error) {
+					if (error instanceof McpScopeRequiredError) {
+						requiredMcpScopes.add(error.requiredScope);
+						const json = JSON.stringify({
+							__lobu_sdk_dispatch: 1,
+							ok: false,
+							error: {
+								name: error.name,
+								message: error.message,
+							},
+						});
+						return guardMessage(json) ? json : terminalEnvelope();
+					}
 					if (error instanceof ClientSdkActionError) {
 						const json = JSON.stringify({
 							__lobu_sdk_dispatch: 1,
@@ -1173,6 +1195,7 @@ export async function runScript(
 					startedSideEffects: [...startedSideEffects.entries()].map(
 						([path, { access, count }]) => ({ path, access, count }),
 					),
+					requiredMcpScopes: [...requiredMcpScopes],
 					sideEffectPreview,
 				};
 			}
@@ -1217,6 +1240,7 @@ export async function runScript(
 			startedSideEffects: [...startedSideEffects.entries()].map(
 				([path, { access, count }]) => ({ path, access, count }),
 			),
+			requiredMcpScopes: [...requiredMcpScopes],
 			sideEffectPreview,
 		};
 	} catch (err) {
@@ -1235,6 +1259,7 @@ export async function runScript(
 			startedSideEffects: [...startedSideEffects.entries()].map(
 				([path, { access, count }]) => ({ path, access, count }),
 			),
+			requiredMcpScopes: [...requiredMcpScopes],
 			sideEffectPreview,
 		};
 	} finally {

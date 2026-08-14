@@ -23,6 +23,11 @@ const writeCtx: ToolContext = {
 	scopes: ["mcp:read", "mcp:write"],
 };
 
+const ownerWriteCtx: ToolContext = {
+	...writeCtx,
+	memberRole: "owner",
+};
+
 const adminCtx: ToolContext = {
 	...readCtx,
 	memberRole: "owner",
@@ -167,6 +172,17 @@ describe("sdkSearch", () => {
 		);
 		expect(result.match_count).toBe(0);
 		expect(result.notes).toContain("mcp:admin");
+	});
+
+	it("shows progressively authorizable admin methods to an owner at write tier", async () => {
+		const result = await sdkSearch(
+			{ query: "agents.delete" },
+			stubEnv,
+			ownerWriteCtx
+		);
+		expect(result.match_count).toBe(1);
+		expect(result.results[0]).toContain("agents.delete");
+		expect(result.results[0]).toContain("access: admin");
 	});
 
 	it("shows the reclassified org-read agent lists in read mode", async () => {

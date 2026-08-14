@@ -316,6 +316,79 @@ describe("connection-to-device operation routing lifecycle", () => {
 		`) as unknown as Array<{ status: string; claimed_by: string | null }>;
 		expect(chromeRun).toEqual({ status: "completed", claimed_by: null });
 
+		// A connector whose key merely starts with "chrome" is still non-Chrome.
+		// A chrome-extension pin therefore remains delegated browser affinity: the
+		// parent connector operation stays inline and is never claimed by the device.
+		const chromePrefixKey = "chromecast.demo";
+		await createTestConnectorDefinition({
+			key: chromePrefixKey,
+			name: "Chrome-prefix non-Chrome connector",
+			organization_id: org.id,
+			auth_schema: { methods: [{ type: "none" }] },
+		});
+		await sql`
+			UPDATE connector_definitions
+			SET actions_schema = ${sql.json({
+				[ACTION_KEY]: {
+					name: "Echo",
+					kind: "write",
+					input_schema: {
+						type: "object",
+						properties: { value: { type: "string" } },
+						required: ["value"],
+					},
+				},
+			})}
+			WHERE key = ${chromePrefixKey} AND organization_id = ${org.id}
+		`;
+		await sql`
+			UPDATE connector_versions
+			SET compiled_code = ${`
+				class ConnectorRuntime {
+					async sync() { return { items: [] }; }
+					async execute(ctx) {
+						return { success: true, output: { inline: true, value: ctx.input.value } };
+					}
+				}
+				export { ConnectorRuntime };
+			`}
+			WHERE connector_key = ${chromePrefixKey}
+		`;
+		const chromePrefixConnection = await createTestConnection({
+			organization_id: org.id,
+			connector_key: chromePrefixKey,
+			created_by: user.id,
+			visibility: "private",
+			createDefaultFeed: false,
+		});
+		await sql`
+			UPDATE connections SET device_worker_id = ${chrome.id}::uuid
+			WHERE id = ${chromePrefixConnection.id}
+		`;
+		const chromePrefixIdempotencyKey = "device-routing:chrome-prefix";
+		const chromePrefixResult = await manageOperations(
+			{
+				action: "execute",
+				connection_id: chromePrefixConnection.id,
+				operation_key: ACTION_KEY,
+				input: { value: "chrome-prefix" },
+				idempotency_key: chromePrefixIdempotencyKey,
+			},
+			{} as Env,
+			ctx,
+		);
+		expect(chromePrefixResult).toMatchObject({
+			status: "completed",
+			output: { inline: true, value: "chrome-prefix" },
+		});
+		const [chromePrefixRun] = (await sql`
+			SELECT status, claimed_by
+			FROM runs
+			WHERE connection_id = ${chromePrefixConnection.id}
+			  AND action_idempotency_key = ${chromePrefixIdempotencyKey}
+		`) as unknown as Array<{ status: string; claimed_by: string | null }>;
+		expect(chromePrefixRun).toEqual({ status: "completed", claimed_by: null });
+
 		// Intrinsic connector runtime remains authoritative even without a pin.
 		await sql`
 			UPDATE connector_definitions

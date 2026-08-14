@@ -586,9 +586,12 @@ export async function handleExecute(
 	// placement. The sole exception is a non-Chrome connector pinned to a
 	// chrome-extension: that pin selects delegated scrape affinity for inline
 	// connector work; it does not move the parent operation onto the extension.
+	// "Chrome connector" matches the device-manifest allowlist for the
+	// chrome-extension platform: `chrome` or `chrome.*`.
 	const isChromeScrapeAffinity =
 		connection.device_platform === "chrome-extension" &&
-		!connection.connector_key.startsWith("chrome");
+		connection.connector_key !== "chrome" &&
+		!connection.connector_key.startsWith("chrome.");
 	const executesOnDevice =
 		connection.connector_runtime != null ||
 		(connection.device_worker_id != null && !isChromeScrapeAffinity);

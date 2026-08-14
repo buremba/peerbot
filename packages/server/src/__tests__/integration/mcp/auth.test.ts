@@ -1180,6 +1180,33 @@ describe('MCP Authentication', () => {
       expect(challenge).toContain('scope="mcp:admin"');
     });
 
+    it('does not challenge when an owner catches a nested admin denial and run_sdk succeeds', async () => {
+      const roleOrg = await createTestOrganization({ name: 'Scoped Caught Admin Org' });
+      const owner = await createTestUser({});
+      await addUserToOrganization(owner.id, roleOrg.id, 'owner');
+      const { token } = await createTestPAT(owner.id, roleOrg.id, {
+        scope: 'mcp:read mcp:write',
+      });
+
+      const response = await mcpRequest<any>(
+        'tools/call',
+        {
+          name: 'run_sdk',
+          arguments: {
+            script:
+              'export default async (_c, client) => { try { await client.connections.installConnector({ connector_id: "__nonexistent__" }); } catch { return { ok: true, caught: true }; } return { ok: false, caught: false }; }',
+          },
+        },
+        { token, orgSlug: roleOrg.slug }
+      );
+      const result = response.result as any;
+
+      expect(result?.isError).not.toBe(true);
+      expect(result?.structuredContent?.success).toBe(true);
+      expect(result?.structuredContent?.return_value).toEqual({ ok: true, caught: true });
+      expect(result?._meta?.['mcp/www_authenticate']).toBeUndefined();
+    });
+
     it('lets a normal MEMBER discover connectors (list_installed is read-tier) but NOT do admin actions', async () => {
       const roleOrg = await createTestOrganization({
         name: 'Scoped Member Org',

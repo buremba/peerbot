@@ -388,7 +388,11 @@ async function runSandbox(
     dry_run: dryRun,
   };
   const challengeRequestUrl = ctx.requestUrl ?? ctx.baseUrl;
+  // Only a failed run carries the challenge: the MCP handler flips any result
+  // holding one to isError, and a script that caught the denial and still
+  // succeeded must not be reported as an error.
   if (
+    !result.success &&
     result.requiredMcpScopes.includes("mcp:admin") &&
     isAdminOrOwnerRole(ctx.memberRole) &&
     (ctx.tokenType === "oauth" || ctx.tokenType === "pat") &&

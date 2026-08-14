@@ -38,9 +38,12 @@ CHAT_OUT="$RUN_DIR/chat.out"
 # its fresh database with real device registrations and default Behaviors.
 export HOME="$RUN_DIR/home"
 
-# Node 22-24 is required (the worker uses isolated-vm). Prefer a Homebrew node@22
-# locally; CI provides node via actions/setup-node.
-if [ -x /opt/homebrew/opt/node@22/bin/node ] && ! node --version 2>/dev/null | grep -qE '^v(22|23|24)\.'; then
+# The sandbox supports Node 22-24 via isolated-vm@6 and Node 26+ via the
+# isolated-vm-next alias. Node 25 is the only supported-age gap. Prefer a
+# Homebrew node@22 locally only when the current Node is actually unsupported;
+# otherwise keep the installed runtime and its matching native optional dep.
+NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)"
+if [ -x /opt/homebrew/opt/node@22/bin/node ] && { [ "$NODE_MAJOR" -lt 22 ] || [ "$NODE_MAJOR" -eq 25 ]; }; then
   export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
 fi
 

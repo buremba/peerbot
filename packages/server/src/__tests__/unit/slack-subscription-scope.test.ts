@@ -4,7 +4,7 @@ import { resolveSubscriptionTeam } from "../../gateway/channels/subscription-sco
 import { resolveSlackSubscriptionTeam } from "../../gateway/connections/slack-subscription-scope";
 
 /**
- * The subscription-team invariant: a chat Behavior's projected team is ALWAYS the
+ * The subscription-team invariant: a chat Automation's projected team is ALWAYS the
  * concrete WORKSPACE (`T…`), never a Grid ENTERPRISE id (`E…`). These cover the
  * connector resolver's non-DB branches (hint priority, `T…`-stored fast path)
  * and the generic default dispatch. The `E…` → conversations.info branch (which

@@ -1,8 +1,14 @@
 #!/usr/bin/env bun
 /**
- * Guard: keep the product name "Behavior" on the agent-facing surface.
+ * Guard: keep "Automation" canonical across the live repository.
  *
- * The word "watcher" remains an internal engine/DB term, but must not appear in:
+ * The retired product and engine terms must not appear in live code,
+ * documentation, tests, fixtures, paths, or generated inputs. Immutable
+ * migration history and explicit negative-test fixtures are the only
+ * exceptions.
+ *
+ * Semantic scans additionally cover the places where vocabulary can be
+ * assembled indirectly:
  *
  *   - MCP tool schemas, names, descriptions, or titles
  *   - ClientSDK discovery metadata, aliases, or namespace method names
@@ -11,27 +17,25 @@
  *   - query_sql's queryable-relation allowlist (QUERYABLE_SCHEMA table names),
  *     which the unknown-table error enumerates verbatim to the caller
  *
- * TypeBox schema initializers are scanned under the core tool contracts and the
- * server's tool/type sources. Other source scans are deliberately limited to
- * files whose literals are rendered into MCP or ClientSDK discovery output.
- * Comments are ignored except in the published connector-sdk declaration file,
- * where JSDoc is part of the public contract.
- *
- * Internal identifiers such as `actingWatcherId`, DB table/column names, and
- * implementation comments remain allowed outside those exposed constructs.
- * Source only — never dist/ or tests.
+ * TypeBox schema initializers and referenced namespace types are scanned under
+ * the core tool contracts and server tool/type sources. The repository-wide
+ * pass includes tracked and untracked live files in both the parent repository
+ * and Owletto, while skipping binary content and build output ignored by Git.
  *
  * Run: bun scripts/check-exposed-surface-naming.ts
  */
 
+import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const BANNED = /watcher/i;
-const BANNED_SNAKE_KEY = /^[a-z0-9_]*watcher[a-z0-9_]*$/;
+const BANNED = /watcher|behavior/i;
+const BANNED_SNAKE_KEY = /^[a-z0-9_]*(?:watcher|behavior)[a-z0-9_]*$/;
+const RETIRED_CANONICAL_VOCABULARY =
+  /watchers?|Behaviors?|BEHAVIORS?|\bbehaviors\b|behaviou?r[_-]|behaviou?r(?=[A-Z])|[/?&=]behaviou?r\b|["'`]behavior["'`]|\b(?:per-?[Bb]ehaviou?r|[Bb]ehaviou?r (?:runs?|fires?|firing|output|set|synthesis|YAML|editor)|(?:New|Create|Created|first|custom) behaviou?r)\b/;
 
 type Violation = { file: string; line: number; excerpt: string };
 
@@ -296,7 +300,7 @@ function findTypeDeclaration(
  * shipped a false negative past an earlier revision of this guard:
  *
  *   - Depth: an agent-facing key is agent-facing at any depth, so
- *     `{ source: { watcher_id } }` and `method(input: { watcher_id })` are
+ *     `{ source: { automation_id } }` and `method(input: { automation_id })` are
  *     violations exactly like a top-level member.
  *   - Reference: `profile_kind: AuthProfileKind` puts whatever
  *     `AuthProfileKind` resolves to on the wire. Scanning only the current
@@ -305,8 +309,8 @@ function findTypeDeclaration(
  *     node_modules is not our surface to police).
  *
  * String literals count here, not just property names: a referenced type is
- * frequently a union of wire values (`"watcher" | "behavior"`), which is
- * exposed vocabulary even though no property carries the word.
+ * frequently a union of wire values, which is exposed vocabulary even though
+ * no property carries the retired word.
  */
 function scanNamespaceSurface(file: string, violations: Violation[]): void {
   const seen = new Set<string>();
@@ -400,14 +404,14 @@ function scanNamespaceSurface(file: string, violations: Violation[]): void {
  * BLIND SPOT THIS CLOSES: `QUERYABLE_SCHEMA` in
  * `packages/server/src/utils/table-schema.ts` is agent-facing vocabulary — the
  * allowlist error enumerates every relation name verbatim to the caller — but
- * `utils/` was in NO scanned directory, and the name reaches the agent through
+ * `utils/` was in no scanned directory, and the name reaches the agent through
  * a runtime `[...QUERYABLE_TABLE_NAMES].join(', ')` rather than a static
  * literal, so neither the directory scans nor the literal scans could have
- * seen it. `watchers` / `watcher_versions` were exposed to agents for the
- * entire life of this guard while it reported clean.
+ * seen it. Retired relation names could therefore have remained exposed while
+ * the guard reported clean.
  *
  * Scanning the whole file would fire on every legitimate internal use (physical
- * table names in the CTE builder, `watcher_id` columns, comments). What is
+ * table names in the CTE builder, `automation_id` columns, comments). What is
  * agent-facing is precisely the `name:` of each entry in the
  * `QUERYABLE_SCHEMA.tables` array, so that is what is checked — the exposed
  * relation names only, not the physical mapping beside them.
@@ -470,7 +474,114 @@ function scanFullText(file: string, violations: Violation[]): void {
   }
 }
 
+const CANONICAL_SCAN_EXCLUSIONS = new Set([
+  "CHANGELOG.md",
+  "docs/REVIEW_SCHEMA.md",
+  "prompts/review-output-schema.json",
+  "prompts/review-prompt.md",
+  "scripts/check-exposed-surface-naming.ts",
+  "scripts/__tests__/check-exposed-surface-naming.test.ts",
+  "scripts/__tests__/review-output-schema.test.ts",
+  "scripts/lib/__tests__/review-cache.test.sh",
+  "scripts/lib/__tests__/review-reviewer.test.sh",
+  "scripts/review.sh",
+  "packages/server/src/__tests__/integration/db/automation-schema-vocabulary.test.ts",
+  // Vendored/generated Kubernetes API descriptions use generic standards prose.
+  "packages/owletto/deploy/k8s/infrastructure/cert-manager/cert-manager.yaml",
+]);
+
+function isCanonicalScanException(file: string): boolean {
+  return (
+    CANONICAL_SCAN_EXCLUSIONS.has(file) ||
+    file.startsWith("packages/owletto/.pi-subagents/artifacts/") ||
+    file.startsWith("db/migrations/") ||
+    file === "AGENTS.md" ||
+    file.endsWith("/AGENTS.md")
+  );
+}
+
+/** Scan every tracked live text file, including the Owletto submodule. */
+function scanCanonicalVocabulary(violations: Violation[]): void {
+  const repositories = [REPO_ROOT, join(REPO_ROOT, "packages/owletto")];
+  for (const repository of repositories) {
+    const prefix = repository === REPO_ROOT ? "" : "packages/owletto/";
+    const toplevel = execFileSync(
+      "git",
+      ["-C", repository, "rev-parse", "--show-toplevel"],
+      { encoding: "utf8" }
+    ).trim();
+    if (resolve(toplevel) !== resolve(repository)) {
+      if (repository === REPO_ROOT) {
+        console.error(
+          "check-exposed-surface-naming: cannot resolve the repository root."
+        );
+        process.exit(1);
+      }
+      console.warn(
+        `check-exposed-surface-naming: SKIPPED ${rel(repository)} — submodule ` +
+          `not checked out. Its vocabulary is gated on runs that have it.`
+      );
+      continue;
+    }
+    const output = execFileSync(
+      "git",
+      [
+        "-C",
+        repository,
+        "ls-files",
+        "-z",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+      ],
+      { encoding: "utf8" }
+    );
+    for (const path of output.split("\0")) {
+      if (!path) continue;
+      const repoPath = `${prefix}${path}`;
+      if (isCanonicalScanException(repoPath)) continue;
+      const file = join(repository, path);
+      let content: string;
+      try {
+        content = readFileSync(file, "utf8");
+      } catch {
+        continue;
+      }
+      if (content.includes("\0")) continue;
+      const lines = content.split("\n");
+      lines.forEach((line, index) => {
+        // Tests may load an immutable historical migration by its exact
+        // timestamped filename. The filename is history, not a live contract.
+        const canonicalLine = line
+          .replace(/\b20\d{12}_[A-Za-z0-9_-]+\.sql\b/g, "")
+          // Generic platform/merge-strategy options use `behavior` as a
+          // standards-shaped option name, not as the Lobu product noun.
+          .replace(
+            /["'`]behavior["'`]\s*:\s*["'`](?:init_only|prefer_non_empty|overwrite|auto|instant|smooth)["'`]/g,
+            ""
+          );
+        if (RETIRED_CANONICAL_VOCABULARY.test(canonicalLine)) {
+          violations.push({
+            file: rel(file),
+            line: index + 1,
+            excerpt: line.trim(),
+          });
+        }
+      });
+      if (RETIRED_CANONICAL_VOCABULARY.test(repoPath)) {
+        violations.push({
+          file: repoPath,
+          line: 1,
+          excerpt: "retired term in path",
+        });
+      }
+    }
+  }
+}
+
 const violations: Violation[] = [];
+
+scanCanonicalVocabulary(violations);
 
 // Public connector type declarations: JSDoc is published with the types.
 scanFullText(
@@ -508,7 +619,7 @@ for (const file of [
 }
 
 // Runtime-callable ClientSDK namespace member names, plus the exported input /
-// output types that describe their arguments — `watcher_id` on an exported
+// output types that describe their arguments — `automation_id` on an exported
 // namespace interface is an agent-facing wire key even though it is not a
 // method name.
 const namespacesDir = join(REPO_ROOT, "packages/server/src/sandbox/namespaces");
@@ -526,7 +637,7 @@ for (const file of [
     "packages/server/src/tools/admin/manage_operations/activity-feed.ts"
   ),
   join(REPO_ROOT, "packages/owletto/src/lib/api/activity.ts"),
-  join(REPO_ROOT, "packages/owletto/src/lib/api/behaviors.ts"),
+  join(REPO_ROOT, "packages/owletto/src/lib/api/automations.ts"),
   join(REPO_ROOT, "packages/owletto/src/lib/api/content.ts"),
   join(REPO_ROOT, "packages/owletto/src/lib/api/runs.ts"),
 ]) {
@@ -544,8 +655,8 @@ unique.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
 
 if (unique.length > 0) {
   console.error(
-    `check-exposed-surface-naming: "watcher" is banned on the agent-facing surface ` +
-      `(use Behavior / behavior_*). Found ${unique.length} occurrence(s):\n`
+    `check-exposed-surface-naming: retired watcher/Behavior vocabulary is banned from ` +
+      `the live repository. Found ${unique.length} occurrence(s):\n`
   );
   for (const violation of unique) {
     console.error(
@@ -553,13 +664,13 @@ if (unique.length > 0) {
     );
   }
   console.error(
-    `\nScope: MCP tool schemas/descriptions, ClientSDK discovery and callable ` +
-      `method names, public response types, and the reaction client types. Internal engine ` +
-      `names outside exposed schema constructs remain allowed.`
+    `\nScope: all tracked live code and documentation, plus semantic scans of ` +
+      `MCP schemas, ClientSDK types, query_sql, and reaction contracts. Only ` +
+      `immutable migration history and negative naming fixtures are exempt.`
   );
   process.exit(1);
 }
 
 console.log(
-  "check-exposed-surface-naming: clean — no agent-facing 'watcher' on exposed surface."
+  "check-exposed-surface-naming: clean — Automation is canonical across live tracked files."
 );

@@ -31,19 +31,19 @@ describe("generated AGENTS.md onboarding guidance", () => {
     expect(template).toContain("`.env.example` when present");
   });
 
-  test("derives Behavior event triggers from feed eventKinds with explicit behaviorEvents winning", () => {
+  test("derives Automation event triggers from feed eventKinds with explicit automationEvents winning", () => {
     expect(template).toContain("feeds_schema.<feed>.eventKinds");
-    expect(template).toContain("`behavior_events`");
+    expect(template).toContain("`automation_events`");
     expect(template).toContain("detail.auth_schema");
     expect(template).toContain("detail.options_schema");
     expect(template).toContain("subscribable `event_type`");
-    expect(template).toContain("behavior_signals");
+    expect(template).toContain("automation_signals");
     expect(template).toContain(
       "SELECT id, title, payload_text, metadata, occurred_at FROM events"
     );
   });
 
-  test("documents durable Behavior chaining without making every event a trigger", () => {
+  test("documents durable Automation chaining without making every event a trigger", () => {
     expect(template).toContain('source: "workspace"');
     expect(template).toContain("declared event output");
     expect(template).toContain(
@@ -51,7 +51,7 @@ describe("generated AGENTS.md onboarding guidance", () => {
     );
     expect(template).toContain("do not activate workspace-source triggers");
     expect(template).toContain("exact event pointers");
-    expect(template).toContain("docs/BEHAVIORS.md");
+    expect(template).toContain("docs/AUTOMATIONS.md");
   });
 
   test("treats Slack install, surfaces, and member knowledge as separate proofs", () => {
@@ -97,7 +97,7 @@ describe("generated TESTING.md onboarding guidance", () => {
     expect(testingTemplate).toContain(
       "explicitly approves provider-data access"
     );
-    expect(testingTemplate).toContain("client.behaviors.trigger");
+    expect(testingTemplate).toContain("client.automations.trigger");
     expect(testingTemplate).toContain("client.operations.getRun");
     expect(testingTemplate).toContain("memory run search_memory");
     expect(testingTemplate).toContain("records the run but does not persist");

@@ -17,7 +17,7 @@ function buildState(entityTypes: DesiredEntityType[]): DesiredState {
     agents: [],
     prune: false,
     memorySchema: { entityTypes, relationshipTypes: [] },
-    watchers: [],
+    automations: [],
     connectors: { definitions: [], authProfiles: [], connections: [] },
     providers: [],
     requiredSecrets: [],
@@ -30,7 +30,7 @@ function emptyRemote(): RemoteSnapshot {
     agentSettings: new Map(),
     entityTypes: [],
     relationshipTypes: [],
-    watchers: [],
+    automations: [],
     connectorDefinitions: [],
     authProfiles: [],
     connections: [],
@@ -82,7 +82,7 @@ function baselineFor(
     attribution: {
       entityTypes: attribution,
       relationshipTypes: [],
-      watchers: [],
+      automations: [],
     },
     owned: new Set(ownedIds.map((id) => ownedKey("entity-type", id))),
   };
@@ -299,9 +299,9 @@ describe("owned-based delete classification (baseline present)", () => {
         organization_id: "org-1",
       },
     ];
-    remote.watchers = [
+    remote.automations = [
       {
-        behavior_id: "b-11",
+        automation_id: "b-11",
         slug: "chat-slack-97",
         name: "Messages in slack:D095U1QV667",
         description: "Chat subscription",
@@ -342,7 +342,7 @@ describe("owned-based delete classification (baseline present)", () => {
         },
       },
       {
-        kind: "watcher",
+        kind: "automation",
         id: "chat-slack-97",
         remoteChange: {
           name: "Messages in slack:D095U1QV667",
@@ -678,7 +678,7 @@ describe("three-way edge cases", () => {
         entityTypes: [],
         relationshipTypes: recorded.attribution
           .relationshipTypes as Baseline["attribution"]["relationshipTypes"],
-        watchers: [],
+        automations: [],
       },
       owned: new Set(recorded.owned),
     };
@@ -717,7 +717,7 @@ describe("three-way edge cases", () => {
         entityTypes: recorded.attribution
           .entityTypes as Baseline["attribution"]["entityTypes"],
         relationshipTypes: [],
-        watchers: [],
+        automations: [],
       },
       owned: new Set(recorded.owned),
     };
@@ -755,7 +755,7 @@ describe("three-way edge cases", () => {
         entityTypes: recorded.attribution
           .entityTypes as Baseline["attribution"]["entityTypes"],
         relationshipTypes: [],
-        watchers: [],
+        automations: [],
       },
       owned: new Set(recorded.owned),
     };
@@ -803,8 +803,8 @@ describe("three-way edge cases", () => {
   });
 });
 
-describe("Behavior three-way attribution", () => {
-  function desiredWatcher(overrides: Record<string, unknown> = {}) {
+describe("Automation three-way attribution", () => {
+  function desiredAutomation(overrides: Record<string, unknown> = {}) {
     return {
       slug: "digest",
       agent: "agent-a",
@@ -813,10 +813,10 @@ describe("Behavior three-way attribution", () => {
       ...overrides,
     };
   }
-  function remoteWatcher(overrides: Record<string, unknown> = {}) {
+  function remoteAutomation(overrides: Record<string, unknown> = {}) {
     return {
       slug: "digest",
-      behavior_id: "b-1",
+      automation_id: "b-1",
       agent_id: "agent-a",
       name: "Digest",
       prompt: "Summarize",
@@ -824,19 +824,19 @@ describe("Behavior three-way attribution", () => {
     };
   }
 
-  test("recorded baseline missing an in-sync nameless Behavior → noop", () => {
-    // projectDesiredWatcher inherits the remote name as `?? null`; the remote
+  test("recorded baseline missing an in-sync nameless Automation → noop", () => {
+    // projectDesiredAutomation inherits the remote name as `?? null`; the remote
     // projection must normalize the same way, or deepEqual(null, undefined)
-    // false-blocks a Behavior the server never named.
+    // false-blocks an Automation the server never named.
     const desired = buildState([]);
-    desired.watchers = [
+    desired.automations = [
       { slug: "digest", agent: "agent-a", prompt: "Summarize" } as any,
     ];
     const remote = emptyRemote();
-    remote.watchers = [
+    remote.automations = [
       {
         slug: "digest",
-        behavior_id: "b-1",
+        automation_id: "b-1",
         agent_id: "agent-a",
         prompt: "Summarize",
         // name intentionally absent
@@ -847,23 +847,23 @@ describe("Behavior three-way attribution", () => {
       orgId: "org-1",
       baseline: baselineFor([], []),
     });
-    expect(plan.rows.find((r) => r.kind === "watcher")?.verb).toBe("noop");
+    expect(plan.rows.find((r) => r.kind === "automation")?.verb).toBe("noop");
     expect(plan.counts.drift).toBe(0);
   });
 
   test("remote agent reassignment → blocking drift (never silently overwritten)", () => {
     const desired = buildState([]);
-    desired.watchers = [desiredWatcher() as any];
+    desired.automations = [desiredAutomation() as any];
     const remote = emptyRemote();
-    remote.watchers = [remoteWatcher({ agent_id: "agent-b" }) as any];
+    remote.automations = [remoteAutomation({ agent_id: "agent-b" }) as any];
     const baseline = {
       recorded: true,
       attribution: {
         entityTypes: [],
         relationshipTypes: [],
-        watchers: [remoteWatcher()],
+        automations: [remoteAutomation()],
       },
-      owned: new Set<string>(["watcher:b-1"]),
+      owned: new Set<string>(["automation:b-1"]),
     };
 
     const plan = computeDiff(desired, remote, {
@@ -873,7 +873,7 @@ describe("Behavior three-way attribution", () => {
     const drift = plan.rows.filter((r) => r.verb === "drift");
     const row = drift.find(
       (r) =>
-        r.kind === "watcher" &&
+        r.kind === "automation" &&
         "blocking" in r &&
         r.blocking &&
         r.id === "digest"
@@ -885,10 +885,10 @@ describe("Behavior three-way attribution", () => {
     });
   });
 
-  test("unnamed Behavior inherits remote name (server slug default) — second apply is noop", () => {
+  test("unnamed Automation inherits remote name (server slug default) — second apply is noop", () => {
     const desired = buildState([]);
     // Config omits name — server stored name as the slug.
-    desired.watchers = [
+    desired.automations = [
       {
         slug: "digest",
         agent: "agent-a",
@@ -896,53 +896,55 @@ describe("Behavior three-way attribution", () => {
       } as any,
     ];
     const remote = emptyRemote();
-    remote.watchers = [
-      remoteWatcher({ name: "digest", prompt: "Summarize" }) as any,
+    remote.automations = [
+      remoteAutomation({ name: "digest", prompt: "Summarize" }) as any,
     ];
     const baseline = {
       recorded: true,
       attribution: {
         entityTypes: [],
         relationshipTypes: [],
-        watchers: [remoteWatcher({ name: "digest", prompt: "Summarize" })],
+        automations: [
+          remoteAutomation({ name: "digest", prompt: "Summarize" }),
+        ],
       },
-      owned: new Set<string>(["watcher:b-1"]),
+      owned: new Set<string>(["automation:b-1"]),
     };
     const plan = computeDiff(desired, remote, { orgId: "org-1", baseline });
     expect(plan.rows.some((r) => r.verb === "drift" && r.blocking)).toBe(false);
     expect(
-      plan.rows.find((r) => r.kind === "watcher" && r.id === "digest")?.verb
+      plan.rows.find((r) => r.kind === "automation" && r.id === "digest")?.verb
     ).toBe("noop");
   });
 
-  test("declared Behavior changes carry field names but deliberately no values", () => {
+  test("declared Automation changes carry field names but deliberately no values", () => {
     const desired = buildState([]);
-    desired.watchers = [
-      desiredWatcher({ agent: "agent-b", name: "Daily Digest" }) as any,
+    desired.automations = [
+      desiredAutomation({ agent: "agent-b", name: "Daily Digest" }) as any,
     ];
     const remote = emptyRemote();
-    remote.watchers = [remoteWatcher({ name: "Digest" }) as any];
+    remote.automations = [remoteAutomation({ name: "Digest" }) as any];
     const baseline = {
       recorded: true,
       attribution: {
         entityTypes: [],
         relationshipTypes: [],
-        watchers: [remoteWatcher({ name: "Digest" })],
+        automations: [remoteAutomation({ name: "Digest" })],
       },
-      owned: new Set<string>(["watcher:b-1"]),
+      owned: new Set<string>(["automation:b-1"]),
     };
     const plan = computeDiff(desired, remote, { orgId: "org-1", baseline });
     const row = plan.rows.find(
-      (r) => r.kind === "watcher" && r.id === "digest"
+      (r) => r.kind === "automation" && r.id === "digest"
     );
     expect(row?.verb).toBe("update");
     expect(row?.changedFields).toEqual(
       expect.arrayContaining(["agent_id", "name"])
     );
-    // Behaviors reach the plan through the two-way `diffWatcher` row, whose
+    // Automations reach the plan through the two-way `diffAutomation` row, whose
     // field identifiers differ from the projection's (`agent` vs `agent_id`).
     // Rendering values there needed a name-mapping table that was not worth
-    // its weight, so Behaviors keep the bare field-name list on purpose.
+    // its weight, so Automations keep the bare field-name list on purpose.
     expect(row).not.toHaveProperty("changedValues");
   });
 
@@ -950,12 +952,12 @@ describe("Behavior three-way attribution", () => {
     // Remote moved agent to B; config adopts B and also changes prompt.
     // Whole-object three-way would block; per-field must converge the prompt.
     const desired = buildState([]);
-    desired.watchers = [
-      desiredWatcher({ agent: "agent-b", prompt: "new prompt" }) as any,
+    desired.automations = [
+      desiredAutomation({ agent: "agent-b", prompt: "new prompt" }) as any,
     ];
     const remote = emptyRemote();
-    remote.watchers = [
-      remoteWatcher({
+    remote.automations = [
+      remoteAutomation({
         agent_id: "agent-b",
         prompt: "old prompt",
       }) as any,
@@ -965,11 +967,11 @@ describe("Behavior three-way attribution", () => {
       attribution: {
         entityTypes: [],
         relationshipTypes: [],
-        watchers: [
-          remoteWatcher({ agent_id: "agent-a", prompt: "old prompt" }),
+        automations: [
+          remoteAutomation({ agent_id: "agent-a", prompt: "old prompt" }),
         ],
       },
-      owned: new Set<string>(["watcher:b-1"]),
+      owned: new Set<string>(["automation:b-1"]),
     };
 
     const plan = computeDiff(desired, remote, {
@@ -978,37 +980,37 @@ describe("Behavior three-way attribution", () => {
     });
     expect(plan.rows.some((r) => r.verb === "drift" && r.blocking)).toBe(false);
     const row = plan.rows.find(
-      (r) => r.kind === "watcher" && r.id === "digest"
+      (r) => r.kind === "automation" && r.id === "digest"
     );
     expect(row?.verb).toBe("update");
   });
 
-  test("config-omitted sources on a Behavior are unmanaged — never false-block re-apply", () => {
+  test("config-omitted sources on an Automation are unmanaged — never false-block re-apply", () => {
     // Config only declares prompt; remote carries UI-authored sources.
     // Updating prompt must converge, and the post-apply attribution must
     // preserve those sources so the next apply is a noop (not remote-moved).
     const desired = buildState([]);
-    desired.watchers = [
-      desiredWatcher({ prompt: "new summary" }) as any, // no sources
+    desired.automations = [
+      desiredAutomation({ prompt: "new summary" }) as any, // no sources
     ];
     const sources = [{ id: "s1", kind: "events", query: "select 1" }];
     const remote = emptyRemote();
-    remote.watchers = [
-      remoteWatcher({ prompt: "old summary", sources }) as any,
+    remote.automations = [
+      remoteAutomation({ prompt: "old summary", sources }) as any,
     ];
     const baseline = {
       recorded: true,
       attribution: {
         entityTypes: [],
         relationshipTypes: [],
-        watchers: [remoteWatcher({ prompt: "old summary", sources })],
+        automations: [remoteAutomation({ prompt: "old summary", sources })],
       },
-      owned: new Set<string>(["watcher:b-1"]),
+      owned: new Set<string>(["automation:b-1"]),
     };
 
     const first = computeDiff(desired, remote, { orgId: "org-1", baseline });
     const update = first.rows.find(
-      (r) => r.kind === "watcher" && r.verb === "update"
+      (r) => r.kind === "automation" && r.verb === "update"
     );
     expect(update).toBeTruthy();
     expect(first.rows.some((r) => r.verb === "drift" && r.blocking)).toBe(
@@ -1017,12 +1019,12 @@ describe("Behavior three-way attribution", () => {
 
     // After apply: remote has the new prompt; sources still live remotely.
     const afterRemote = emptyRemote();
-    afterRemote.watchers = [
-      remoteWatcher({ prompt: "new summary", sources }) as any,
+    afterRemote.automations = [
+      remoteAutomation({ prompt: "new summary", sources }) as any,
     ];
     const recorded = buildAttributionAndOwned(desired, afterRemote);
     expect(
-      (recorded.attribution.watchers[0] as { sources?: unknown }).sources
+      (recorded.attribution.automations[0] as { sources?: unknown }).sources
     ).toEqual(sources);
 
     const second = computeDiff(desired, afterRemote, {
@@ -1037,7 +1039,8 @@ describe("Behavior three-way attribution", () => {
       false
     );
     expect(
-      second.rows.find((r) => r.kind === "watcher" && r.id === "digest")?.verb
+      second.rows.find((r) => r.kind === "automation" && r.id === "digest")
+        ?.verb
     ).toBe("noop");
   });
 });
@@ -1107,7 +1110,7 @@ describe("legacy org — no baseline was ever recorded", () => {
 
   test("a second model edit after a recorded baseline is an update, not remote-moved drift", () => {
     const desired = buildState([]);
-    desired.watchers = [
+    desired.automations = [
       {
         slug: "digest",
         agent: "triage",
@@ -1122,10 +1125,10 @@ describe("legacy org — no baseline was ever recorded", () => {
     const remote = emptyRemote();
     remote.agents = [{ agentId: "triage", name: "triage" }];
     remote.agentSettings = new Map([["triage", null]]);
-    remote.watchers = [
+    remote.automations = [
       {
         slug: "digest",
-        behavior_id: "1",
+        automation_id: "1",
         agent_id: "triage",
         name: "Digest",
         prompt: "Produce a digest.",
@@ -1141,7 +1144,7 @@ describe("legacy org — no baseline was ever recorded", () => {
       recorded: true,
       attribution: {
         ...recorded.attribution,
-        watchers: recorded.attribution.watchers,
+        automations: recorded.attribution.automations,
       },
       owned: new Set(recorded.owned),
     };
@@ -1149,7 +1152,7 @@ describe("legacy org — no baseline was ever recorded", () => {
     // Desired model B — the diff must classify this as an update (not a
     // blocking "remote moved" drift on `model`).
     const nextDesired = buildState([]);
-    nextDesired.watchers = [
+    nextDesired.automations = [
       {
         slug: "digest",
         agent: "triage",
@@ -1165,13 +1168,13 @@ describe("legacy org — no baseline was ever recorded", () => {
       orgId: "org-1",
       baseline,
     });
-    const row = plan.rows.find((r) => r.kind === "watcher");
+    const row = plan.rows.find((r) => r.kind === "automation");
     expect(row?.verb).toBe("update");
     expect(row?.changedFields).toContain("execution_config");
     // No blocking drift mislabeling the model edit as remote-moved.
     const drift = plan.rows.find(
       (r) =>
-        r.kind === "watcher" &&
+        r.kind === "automation" &&
         (r as { changedValues?: Array<{ field: string }> }).changedValues?.some(
           (v) => v.field === "model"
         ) &&

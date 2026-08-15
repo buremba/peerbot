@@ -27,8 +27,8 @@ export interface ClassifierCreateInput {
 	>;
 	entity_id?: number;
 	/** Omit for an org-level classifier (the only kind `apply` and the
-	 *  reconciliation job match); set to scope to a single Behavior. */
-	behavior_id?: string;
+	 *  reconciliation job match); set to scope to a single Automation. */
+	automation_id?: string;
 	min_similarity?: number;
 	fallback_value?: unknown;
 	created_by?: string;

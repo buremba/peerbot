@@ -3,7 +3,7 @@
 > **Status (2026-07-15):** **Shipped** — `channel_messages` ingestion + FeedReader recall registry and Slack sender attribution landed.
 
 > **Architecture update (2026-07-17):** channel routing now projects from
-> canonical Event Behavior triggers in `watchers.triggers`; the
+> canonical Event Automation triggers in `automations.triggers`; the
 > `agent_channel_bindings` references below describe the historical schema this
 > shipped against, not a current table or write path.
 

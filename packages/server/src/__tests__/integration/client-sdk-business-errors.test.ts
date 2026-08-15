@@ -87,10 +87,10 @@ describe("ClientSDK business failure boundary", () => {
 	it("throws when classifiers.create returns success false", async () => {
 		const stubEmbedding = Array.from({ length: 768 }, () => 0);
 		const promise = workspace.owner.classifiers.create({
-			slug: "missing-behavior-classifier",
-			name: "Missing Behavior Classifier",
+			slug: "missing-automation-classifier",
+			name: "Missing Automation Classifier",
 			attribute_key: "sentiment",
-			behavior_id: 999_999,
+			automation_id: 999_999,
 			attribute_values: {
 				positive: {
 					description: "positive sentiment",
@@ -103,18 +103,18 @@ describe("ClientSDK business failure boundary", () => {
 		await expect(promise).rejects.toMatchObject({
 			name: "ClientSdkActionError",
 			action: "create",
-			message: "Behavior not found: 999999",
+			message: "Automation not found: 999999",
 			httpStatus: 400,
 		});
 	});
 
-	it("throws when watchers.delete returns an all-failed aggregate", async () => {
+	it("throws when automations.delete returns an all-failed aggregate", async () => {
 		await expect(
-			workspace.owner.behaviors.delete({ behavior_ids: ["999999"] })
+			workspace.owner.automations.delete({ automation_ids: ["999999"] })
 		).rejects.toMatchObject({
 			name: "ClientSdkActionError",
 			action: "delete",
-			message: "Behavior not found or already archived",
+			message: "Automation not found or already archived",
 			httpStatus: 400,
 		});
 	});

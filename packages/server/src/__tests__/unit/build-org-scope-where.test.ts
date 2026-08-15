@@ -1,7 +1,7 @@
 /**
  * Unit coverage for the org-scoping clause used by `searchContentByText`
  * and (mirrored) by the events CTE in `execute-data-sources`. The runtime
- * behavior — that an event with `f.organization_id = caller` and no entity
+ * automation — that an event with `f.organization_id = caller` and no entity
  * bridge is now visible — is exercised end-to-end in
  * `__tests__/integration/events/search-content-org-scope.test.ts`. This
  * file pins the SQL shape so accidental regressions on the OR-triplet are

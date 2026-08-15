@@ -40,7 +40,7 @@ interface CreateNotificationParams {
 	idempotencyKey?: string | null;
 	/** When set, deliver only through this specific bot connection */
 	connectionId?: string | null;
-	/** When set, deliver only to this Behavior-subscribed channel. */
+	/** When set, deliver only to this Automation-subscribed channel. */
 	channelId?: string | null;
 	/** Optional workspace/team guard for channel-scoped delivery. */
 	teamId?: string | null;
@@ -59,7 +59,7 @@ interface CreateNotificationParams {
 	 */
 	card?: CardElement | null;
 	/**
-	 * Optional entity ids to anchor the notification event to (e.g. a watcher's
+	 * Optional entity ids to anchor the notification event to (e.g. an automation's
 	 * canvas entity, so the notification threads under the canvas). Stamped onto
 	 * the notification event's `entity_ids`.
 	 */
@@ -67,29 +67,29 @@ interface CreateNotificationParams {
 	/** Exact MCP conversation or transport session that caused this notification. */
 	mcpActivity?: McpActivityAttribution | null;
 	/**
-	 * The Behavior run that emitted this notification, when one did.
+	 * The Automation run that emitted this notification, when one did.
 	 *
-	 * These MUST come from server-set context (`ctx.actingWatcherId` /
+	 * These MUST come from server-set context (`ctx.actingAutomationId` /
 	 * `actingRunId`, stamped by the reaction executor), never from a caller-
-	 * supplied `behavior_source`. `behavior_id` drives window self-exclusion, so
-	 * an id a caller could choose would let one Behavior hide rows from another
-	 * Behavior's input.
+	 * supplied `automation_source`. `automation_id` drives window self-exclusion, so
+	 * an id a caller could choose would let one Automation hide rows from another
+	 * Automation's input.
 	 *
 	 * Before this existed, a notification was written with no run and no
-	 * Behavior at all — prod notification 4858497 had `run_id` NULL while every
+	 * Automation at all — prod notification 4858497 had `run_id` NULL while every
 	 * sibling output of the same run carried 880183 — so the thing a user
 	 * actually clicks could not be traced back to the run that sent it.
 	 */
-	behaviorId?: number | null;
-	behaviorVersionId?: number | null;
+	automationId?: number | null;
+	automationVersionId?: number | null;
 	runId?: number | null;
 }
 
 /**
  * Forward a notification to the org's active chat-bot connections so it lands
- * in the bound channel — e.g. a watcher digest posting to #leads.
+ * in the bound channel — e.g. an automation digest posting to #leads.
  *
- * Resolves connections + their Behavior subscriptions straight from Postgres and
+ * Resolves connections + their Automation subscriptions straight from Postgres and
  * posts in-process via the chat manager. Every app pod loads every active
  * connection at boot, so the locally-held instance can post regardless of
  * which pod fired the notification — correct under N>1 replicas, no cross-pod
@@ -526,8 +526,8 @@ export async function createNotificationForUsers(
 					metadata,
 					clientId: params.mcpActivity?.clientId ?? null,
 					runId: params.runId ?? null,
-					behaviorId: params.behaviorId ?? null,
-					behaviorVersionId: params.behaviorVersionId ?? null,
+					automationId: params.automationId ?? null,
+					automationVersionId: params.automationVersionId ?? null,
 				},
 				{ sql: tx },
 			);
@@ -613,8 +613,8 @@ export async function listNotifications(opts: {
       e.feed_id,
       e.feed_key,
       fd.display_name AS feed_name,
-      e.behavior_id,
-      COALESCE(wv.name, 'Behavior #' || e.behavior_id) AS behavior_name,
+      e.automation_id,
+      COALESCE(wv.name, 'Automation #' || e.automation_id) AS automation_name,
       COALESCE(
         NULLIF(e.metadata->>'agent_id', ''),
         NULLIF(source_run.approved_input->>'agent_id', '')
@@ -651,7 +651,7 @@ export async function listNotifications(opts: {
     FROM notification_targets t
     JOIN events e ON e.id = t.event_id
     LEFT JOIN feeds fd ON fd.id = e.feed_id
-    LEFT JOIN watcher_versions wv ON wv.id = e.behavior_version_id
+    LEFT JOIN automation_versions wv ON wv.id = e.automation_version_id
     LEFT JOIN connections source_connection
       ON source_connection.id = e.connection_id
      AND source_connection.organization_id = e.organization_id

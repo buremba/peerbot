@@ -21,14 +21,14 @@ import { fixedActionArgs } from "./http/rest-tool-routes";
 import type { Env } from "./index";
 import { getOperationsSummary } from "./operations/connector-operations";
 import { manageClassifiers } from "./tools/admin/manage_classifiers";
-import { manageBehaviors } from "./tools/admin/manage_behaviors";
+import { manageAutomations } from "./tools/admin/manage_automations";
 import {
 	executeTool,
 	extractAuthContext,
 	toToolContext,
 } from "./tools/execute";
 import { getContent } from "./tools/get_content";
-import { getBehavior } from "./tools/get_behavior";
+import { getAutomation } from "./tools/get_automation";
 import {
 	getAllTools,
 	getTool,
@@ -45,7 +45,7 @@ import logger from "./utils/logger";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "./utils/run-statuses";
 import { getRuntimeInfo } from "./utils/runtime-info";
 
-type GetBehaviorArgs = Parameters<typeof getBehavior>[0];
+type GetAutomationArgs = Parameters<typeof getAutomation>[0];
 
 function clamp(
 	value: number,
@@ -68,9 +68,9 @@ function safeParseInt(
 	return Number.isSafeInteger(parsed) ? clamp(parsed, options) : undefined;
 }
 
-function parseBehaviorId(value: string | undefined): number | undefined {
+function parseAutomationId(value: string | undefined): number | undefined {
 	if (value === undefined) return undefined;
-	return parsePositiveIntegerId(value, "behavior_id");
+	return parsePositiveIntegerId(value, "automation_id");
 }
 
 function safeParseFloat(
@@ -169,19 +169,19 @@ function restErrorResponse(
 }
 
 /**
- * GET /api/behaviors
- * Get or list Behaviors.
+ * GET /api/automations
+ * Get or list Automations.
  */
-export async function restGetBehaviors(c: Context<{ Bindings: Env }>) {
+export async function restGetAutomations(c: Context<{ Bindings: Env }>) {
 	try {
-		const behaviorId = parseBehaviorId(c.req.query("behavior_id"));
+		const automationId = parseAutomationId(c.req.query("automation_id"));
 		const entityId = safeParseInt(c.req.query("entity_id"), { min: 1 });
 
-		if (!behaviorId) {
-			const result = await manageBehaviors(
+		if (!automationId) {
+			const result = await manageAutomations(
 				{
 					action: "list",
-					behavior_id: behaviorId,
+					automation_id: automationId,
 					entity_id: entityId,
 					status: c.req.query("status") || undefined,
 					include_details: c.req.query("include_details") === "true",
@@ -193,11 +193,11 @@ export async function restGetBehaviors(c: Context<{ Bindings: Env }>) {
 		}
 
 		const params = {
-			behavior_id: String(behaviorId),
+			automation_id: String(automationId),
 			entity_id: entityId,
 			content_since: c.req.query("content_since"),
 			content_until: c.req.query("content_until"),
-			granularity: c.req.query("granularity") as GetBehaviorArgs["granularity"],
+			granularity: c.req.query("granularity") as GetAutomationArgs["granularity"],
 			template_version: safeParseInt(c.req.query("template_version"), {
 				min: 1,
 			}),
@@ -207,23 +207,23 @@ export async function restGetBehaviors(c: Context<{ Bindings: Env }>) {
 				c.req.query("include_classification") || undefined,
 			include_versions: c.req.query("include_versions") === "true",
 			include_pending_ranges: c.req.query("include_pending_ranges") === "true",
-		} satisfies GetBehaviorArgs;
+		} satisfies GetAutomationArgs;
 
 		const ctx = toToolContext(extractAuthContext(c));
-		const result = await getBehavior(params, c.env, ctx);
+		const result = await getAutomation(params, c.env, ctx);
 		return c.json(toJsonSafe(result));
 	} catch (error) {
 		return restErrorResponse(c, error);
 	}
 }
 
-export async function publicRestGetBehaviors(c: Context<{ Bindings: Env }>) {
+export async function publicRestGetAutomations(c: Context<{ Bindings: Env }>) {
 	return withPublicOrg(c, async (organizationId) => {
-		const behaviorId = parseBehaviorId(c.req.query("behavior_id"));
+		const automationId = parseAutomationId(c.req.query("automation_id"));
 		const entityId = safeParseInt(c.req.query("entity_id"), { min: 1 });
 		const ctx = publicToolContext(c.req.url, organizationId);
 		const detailRequested =
-			!!behaviorId ||
+			!!automationId ||
 			[
 				"content_since",
 				"content_until",
@@ -237,7 +237,7 @@ export async function publicRestGetBehaviors(c: Context<{ Bindings: Env }>) {
 			].some((key) => c.req.query(key) !== undefined);
 
 		if (!detailRequested) {
-			return manageBehaviors(
+			return manageAutomations(
 				{
 					action: "list",
 					entity_id: entityId,
@@ -250,11 +250,11 @@ export async function publicRestGetBehaviors(c: Context<{ Bindings: Env }>) {
 		}
 
 		const params = {
-			behavior_id: behaviorId === undefined ? undefined : String(behaviorId),
+			automation_id: automationId === undefined ? undefined : String(automationId),
 			entity_id: entityId,
 			content_since: c.req.query("content_since"),
 			content_until: c.req.query("content_until"),
-			granularity: c.req.query("granularity") as GetBehaviorArgs["granularity"],
+			granularity: c.req.query("granularity") as GetAutomationArgs["granularity"],
 			template_version: safeParseInt(c.req.query("template_version"), {
 				min: 1,
 			}),
@@ -265,13 +265,13 @@ export async function publicRestGetBehaviors(c: Context<{ Bindings: Env }>) {
 			include_versions: c.req.query("include_versions") === "true",
 			include_pending_ranges:
 				c.req.query("include_pending_ranges") === "true",
-		} satisfies Partial<GetBehaviorArgs>;
+		} satisfies Partial<GetAutomationArgs>;
 
-		// Partial + cast (not `satisfies GetBehaviorArgs`): detailRequested can
-		// be triggered by a detail query param without behavior_id, so
-		// behavior_id may be undefined here — the tool's own arg validation
+		// Partial + cast (not `satisfies GetAutomationArgs`): detailRequested can
+		// be triggered by a detail query param without automation_id, so
+		// automation_id may be undefined here — the tool's own arg validation
 		// turns that into the 400 naming the missing field.
-		return getBehavior(params as GetBehaviorArgs, c.env, ctx);
+		return getAutomation(params as GetAutomationArgs, c.env, ctx);
 	});
 }
 

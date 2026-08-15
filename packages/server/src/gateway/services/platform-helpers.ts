@@ -11,7 +11,7 @@ import {
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import { composeEffectiveModelRef } from "../auth/settings/model-selection.js";
 import { getOrgDefaultModel } from "../../lobu/stores/provider-secrets.js";
-import type { BehaviorSubscriptionService } from "../channels/behavior-subscription-service.js";
+import type { AutomationSubscriptionService } from "../channels/automation-subscription-service.js";
 
 const logger = createLogger("platform-helpers");
 
@@ -62,8 +62,8 @@ export async function resolveAgentOptions(
 
   const mergedOptions: Record<string, any> = { ...baseOptions };
 
-  // Layered model fallback: behavior override → agent default → org default.
-  // A per-behavior override arrives as baseOptions.model (injected at enqueue)
+  // Layered model fallback: automation override → agent default → org default.
+  // A per-automation override arrives as baseOptions.model (injected at enqueue)
   // and wins; otherwise resolve agent.models[0], then the org default. Only
   // when all three are empty do we leave model unset (worker surfaces an
   // actionable "no model" error).
@@ -75,22 +75,22 @@ export async function resolveAgentOptions(
   // gate (deployment-manager backstop) still validates the resulting ref.
   const rawOverride =
     typeof baseOptions.model === "string" ? baseOptions.model.trim() : "";
-  const behaviorOverride = isQualifiedModelRef(rawOverride) ? rawOverride : "";
-  if (rawOverride && !behaviorOverride) {
+  const automationOverride = isQualifiedModelRef(rawOverride) ? rawOverride : "";
+  if (rawOverride && !automationOverride) {
     logger.warn(
       { agentId, rejectedOverride: rawOverride },
       "Ignoring malformed model override (not a <provider>/<model> ref); falling back to the agent default",
     );
   }
   const effectiveModelRef =
-    behaviorOverride ||
+    automationOverride ||
     (await composeEffectiveModelRef(
       settings,
       organizationId,
       getOrgDefaultModel,
     ));
   logger.info(
-    { agentId, behaviorOverride: behaviorOverride || undefined, effectiveModel: effectiveModelRef },
+    { agentId, automationOverride: automationOverride || undefined, effectiveModel: effectiveModelRef },
 		"Applying agent settings",
   );
 
@@ -197,11 +197,11 @@ export function buildMessagePayload(params: {
 
 /**
  * Resolve agent ID for an inbound platform event:
- *   1. an existing channel-subscribed Behavior wins;
+ *   1. an existing channel-subscribed Automation wins;
  *   2. otherwise fall back to the connection's owning `agentId`.
  *
  * Returns `null` when neither resolves — the caller should drop the message.
- * Pure resolution: never writes a Behavior.
+ * Pure resolution: never writes an Automation.
  *
  * `crossOrg` is for hosted preview connections only: the bot lives in one org
  * but `/lobu link <code>` binds agents from OTHER orgs, so the lookup must be
@@ -215,13 +215,13 @@ export async function resolveAgentId(params: {
   agentId?: string;
   organizationId?: string;
 	connectionId?: string;
-  behaviorSubscriptionService?: BehaviorSubscriptionService;
+  automationSubscriptionService?: AutomationSubscriptionService;
   crossOrg?: boolean;
 }): Promise<{
   agentId: string;
   source: "subscription" | "connection";
   organizationId?: string;
-  /** Per-binding model override (Listen behavior), when routed via a binding. */
+  /** Per-binding model override (Listen automation), when routed via a binding. */
   model?: string;
 } | null> {
   const {
@@ -230,18 +230,18 @@ export async function resolveAgentId(params: {
     agentId,
     organizationId,
 		connectionId,
-    behaviorSubscriptionService,
+    automationSubscriptionService,
     crossOrg,
   } = params;
 
-  if (behaviorSubscriptionService) {
+  if (automationSubscriptionService) {
     // Subscriptions are org-scoped (a channel can be handled independently by
     // multiple tenants), so the read MUST be scoped to the inbound
 		// connection's org. Preview connections are the deliberate exception: they
 		// fan out across orgs, but still resolve through that concrete connection.
 		const subscription =
 			connectionId && organizationId
-				? await behaviorSubscriptionService.resolveForConnection(
+				? await automationSubscriptionService.resolveForConnection(
 						connectionId,
           channelId,
 						organizationId,
@@ -256,7 +256,7 @@ export async function resolveAgentId(params: {
           channelId,
           subscriptionOrg: subscription.organizationId,
         },
-				"Routing via message Behavior",
+				"Routing via message Automation",
       );
       return {
         agentId: subscription.agentId,

@@ -28,7 +28,7 @@ import {
 } from '../utils/device-pin-tombstones';
 import { getWorkspaceRole } from '../utils/organization-access';
 import { parseJsonBody } from '../gateway/routes/shared/helpers';
-import { buildBehaviorUrl, getPublicWebUrl } from '../utils/url-builder';
+import { buildAutomationUrl, getPublicWebUrl } from '../utils/url-builder';
 
 /**
  * GET /api/me/devices
@@ -220,7 +220,7 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
     // Device clients (Owletto Chrome extension via the Mac bridge) ALWAYS bind
     // to the user's personal org — never the calling token's org. Personal
     // device data (browser context, captured pages, …) belongs in the user's
-    // private workspace; a team org reaches the device by pinning a watcher /
+    // private workspace; a team org reaches the device by pinning an automation /
     // connection to it (see resolveDeviceClaimableOrgs), not by re-binding the
     // device token. Ignoring `c.var.organizationId` here is what makes a Mac
     // app whose own token is bound to a team org still land Chrome's data in
@@ -498,8 +498,8 @@ export async function updateDeviceWorkerOrg(c: Context<{ Bindings: Env }>) {
  * DELETE /api/me/devices/:id
  *
  * Permanently forgets one of the caller's registered devices. Refused with a
- * 409 (listing the blockers) while active Behaviors are pinned to the device;
- * archived Behaviors are un-pinned. Connections pinned to it are un-pinned and
+ * 409 (listing the blockers) while active Automations are pinned to the device;
+ * archived Automations are un-pinned. Connections pinned to it are un-pinned and
  * paused — they can't run anywhere without the device — and their active feeds
  * are paused. If the device app is still running it re-registers on its next
  * heartbeat as a fresh device.
@@ -528,27 +528,27 @@ export async function deleteDeviceWorker(c: Context<{ Bindings: Env }>) {
       }>;
       if (owned.length === 0) return { kind: 'not_found' } as const;
 
-      const behaviors = (await tx`
-        SELECT w.id::text AS behavior_id, w.name, o.slug AS organization_slug
-        FROM watchers w
+      const automations = (await tx`
+        SELECT w.id::text AS automation_id, w.name, o.slug AS organization_slug
+        FROM automations w
         JOIN organization o ON o.id = w.organization_id
         WHERE w.device_worker_id = ${deviceWorkerId}
           AND w.status = 'active'
         ORDER BY w.id
       `) as unknown as Array<{
-        behavior_id: string;
+        automation_id: string;
         name: string;
         organization_slug: string;
       }>;
-      if (behaviors.length > 0) {
-        return { kind: 'conflict', behaviors } as const;
+      if (automations.length > 0) {
+        return { kind: 'conflict', automations } as const;
       }
 
-      // Archival is the supported soft-delete for Behaviors. Archived rows are
+      // Archival is the supported soft-delete for Automations. Archived rows are
       // retained for history, but no longer execute and must not keep the
       // restrictive FK alive after the user explicitly archives them.
       await tx`
-        UPDATE watchers
+        UPDATE automations
         SET device_worker_id = NULL, updated_at = NOW()
         WHERE device_worker_id = ${deviceWorkerId}
           AND status = 'archived'
@@ -583,12 +583,12 @@ export async function deleteDeviceWorker(c: Context<{ Bindings: Env }>) {
       return c.json(
         {
           error:
-            'Device is pinned by active Behaviors. Reassign or archive the listed Behaviors, then retry device deletion.',
-          behaviors: result.behaviors.map((behavior) => ({
-            ...behavior,
-            view_url: buildBehaviorUrl(
-              behavior.organization_slug,
-              behavior.behavior_id,
+            'Device is pinned by active Automations. Reassign or archive the listed Automations, then retry device deletion.',
+          automations: result.automations.map((automation) => ({
+            ...automation,
+            view_url: buildAutomationUrl(
+              automation.organization_slug,
+              automation.automation_id,
               baseUrl
             ),
           })),

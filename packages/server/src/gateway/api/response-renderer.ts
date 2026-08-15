@@ -15,7 +15,7 @@ import { labelProviderErrorBody } from "../../utils/url-builder.js";
 import type { ThreadResponsePayload } from "../infrastructure/queue/types.js";
 import type { ResponseRenderer } from "../platform/response-renderer.js";
 import type { SseManager } from "../services/sse-manager.js";
-import { resolveWatcherRunsByMessageIds } from "../../watchers/run-completion.js";
+import { resolveAutomationRunsByMessageIds } from "../../automations/run-completion.js";
 import { readCurrentSuggestion } from "../suggestions/persist-suggestion.js";
 
 const logger = createLogger("api-response-renderer");
@@ -85,11 +85,11 @@ export class ApiResponseRenderer implements ResponseRenderer {
     // success resolver again after the error was already broadcast creates a
     // redundant DB dependency and can cause duplicate delivery on retry.
     if (!payload.error) {
-      // Complete durable Behavior bookkeeping before delivering the terminal SSE
+      // Complete durable Automation bookkeeping before delivering the terminal SSE
       // event. A database failure must reject the thread-response job so it can
       // retry; delivering first could acknowledge a turn whose run is unresolved
       // and whose schedule is still due.
-      await this.resolveWatcherRunsFromPayload(payload, { ok: true });
+      await this.resolveAutomationRunsFromPayload(payload, { ok: true });
     }
 
     // Resolve the current suggestion set for this conversation and decide
@@ -184,7 +184,7 @@ export class ApiResponseRenderer implements ResponseRenderer {
     const spec = code ? AGENT_ERRORS[code] : undefined;
     if (spec?.silent) {
       // Silent codes (SESSION_TIMEOUT) are retried and must not surface.
-      await this.resolveWatcherRunsFromPayload(payload, {
+      await this.resolveAutomationRunsFromPayload(payload, {
         ok: false,
         error: "agent error",
         errorCode: code,
@@ -195,11 +195,11 @@ export class ApiResponseRenderer implements ResponseRenderer {
       spec?.message ??
       labelProviderErrorBody(payload.error, payload.errorContext?.provider);
 
-    await this.resolveWatcherRunsFromPayload(payload, {
+    await this.resolveAutomationRunsFromPayload(payload, {
       ok: false,
       // Persist only the guarded/user-visible text. The raw provider string is
       // used solely to parse a reset boundary and must never reappear through
-      // Behavior run metadata.
+      // Automation run metadata.
       error: typeof errorText === "string" ? errorText : "agent error",
       errorCode: code,
       quotaResetError: payload.bookkeepingError,
@@ -224,13 +224,13 @@ export class ApiResponseRenderer implements ResponseRenderer {
   }
 
   /**
-   * Resolve any watcher runs whose dispatched messageId matches the terminal
+   * Resolve any automation runs whose dispatched messageId matches the terminal
    * event. Checks both the immediate messageId and processedMessageIds since
    * a single turn can batch-process multiple messages. Durable and replica-
    * safe: keyed on runs.dispatched_message_id, idempotent via the active-
    * status guard, so it's correct on whichever replica claims the row.
    */
-  private async resolveWatcherRunsFromPayload(
+  private async resolveAutomationRunsFromPayload(
     payload: ThreadResponsePayload,
     result:
       | { ok: true }
@@ -246,7 +246,7 @@ export class ApiResponseRenderer implements ResponseRenderer {
     for (const id of payload.processedMessageIds ?? []) {
       if (id) ids.add(id);
     }
-    await resolveWatcherRunsByMessageIds(ids, result);
+    await resolveAutomationRunsByMessageIds(ids, result);
   }
 
   /**

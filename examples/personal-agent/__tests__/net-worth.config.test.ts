@@ -3,16 +3,16 @@ import taxConfig from "../../personal-finance/lobu.config";
 import config from "../lobu.config";
 
 describe("consolidated net-worth configuration", () => {
-  test("keeps the durable Behavior identity and runs weekly even when books are unchanged", () => {
-    const behavior = config.behaviors?.find(
+  test("keeps the durable Automation identity and runs weekly even when books are unchanged", () => {
+    const automation = config.automations?.find(
       (candidate) => candidate.slug === "midas-net-worth"
     );
-    expect(behavior).toBeDefined();
-    expect(behavior?.name).toBe("Weekly net worth");
-    expect(behavior?.tags).toEqual(
+    expect(automation).toBeDefined();
+    expect(automation?.name).toBe("Weekly net worth");
+    expect(automation?.tags).toEqual(
       expect.arrayContaining(["finance", "net-worth", "balance-sheet"])
     );
-    expect(behavior?.triggers).toEqual([
+    expect(automation?.triggers).toEqual([
       {
         kind: "schedule",
         cron: "0 9 * * 1",
@@ -20,7 +20,7 @@ describe("consolidated net-worth configuration", () => {
         skip_if_unchanged: false,
       },
     ]);
-    expect(behavior?.reaction).toMatchObject({
+    expect(automation?.reaction).toMatchObject({
       path: "./net-worth.reaction.ts",
     });
   });
@@ -64,9 +64,11 @@ describe("consolidated net-worth configuration", () => {
     ).toBeUndefined();
   });
 
-  test("the tax workspace no longer declares a net-worth Behavior", () => {
+  test("the tax workspace no longer declares a net-worth Automation", () => {
     expect(
-      taxConfig.behaviors?.find((behavior) => behavior.slug === "net-worth")
+      taxConfig.automations?.find(
+        (automation) => automation.slug === "net-worth"
+      )
     ).toBeUndefined();
   });
 });

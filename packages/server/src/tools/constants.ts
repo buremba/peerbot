@@ -8,7 +8,7 @@
 /** Slug of the built-in workspace-member entity type. */
 export const MEMBER_ENTITY_TYPE_SLUG = '$member';
 
-/** Slug of the built-in per-Behavior canvas entity type. */
+/** Slug of the built-in per-Automation canvas entity type. */
 export const CANVAS_ENTITY_TYPE_SLUG = '$canvas';
 
 /** Slug of the built-in eval-case entity type (evals PR 3, lobu#2564). */

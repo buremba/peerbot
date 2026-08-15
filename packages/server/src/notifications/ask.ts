@@ -22,7 +22,7 @@ export const AGENT_ASK_ACTION_KEY = "agent_ask";
 /** What the agent asked, held in `runs.action_input` for the reviewer. */
 export interface AgentAskProposal {
 	question: string;
-	/** Reviewer context retained so future Behavior runs can interpret the answer. */
+	/** Reviewer context retained so future Automation runs can interpret the answer. */
 	context?: string;
 	/** Absent on legacy pending asks created before strict answer validation. */
 	input_schema_validation_version?: number;
@@ -72,13 +72,13 @@ export async function queueAgentAsk(params: {
 		const inserted = await tx`
 			INSERT INTO runs (
 				organization_id, run_type, action_key, action_input,
-				watcher_id, window_id,
+				automation_id, window_id,
 				created_by_user_id, initiator_kind, initiator_ref,
 				approval_status, status, created_at
 			) VALUES (
 				${params.ctx.organizationId}, 'internal', ${AGENT_ASK_ACTION_KEY},
 				${tx.json(proposal as unknown as Record<string, unknown>)},
-				${params.ctx.actingWatcherId ?? null},
+				${params.ctx.actingAutomationId ?? null},
 				${params.ctx.actingWindowId ?? null},
 				${initiator.createdByUserId},
 				${initiator.initiatorKind},

@@ -132,30 +132,30 @@ describe("ApplyClient", () => {
     });
   });
 
-  test("listBehaviors GETs /behaviors and unwraps the list", async () => {
+  test("listAutomations GETs /automations and unwraps the list", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new ApplyClient(
       { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
       (async (url, init) => {
         calls.push({ url: String(url), init });
         return new Response(
-          JSON.stringify({ behaviors: [{ slug: "digest", name: "Digest" }] }),
+          JSON.stringify({ automations: [{ slug: "digest", name: "Digest" }] }),
           { status: 200 }
         );
       }) as typeof fetch
     );
 
-    const behaviors = await client.listBehaviors();
+    const automations = await client.listAutomations();
     // `include_details=true` so the apply diff can see prompt /
     // reactions_guidance / etc. for drift detection.
     expect(calls[0]?.url).toBe(
-      "https://example.test/api/acme/behaviors?include_details=true"
+      "https://example.test/api/acme/automations?include_details=true"
     );
     expect(calls[0]?.init?.method).toBe("GET");
-    expect(behaviors).toEqual([{ slug: "digest", name: "Digest" }]);
+    expect(automations).toEqual([{ slug: "digest", name: "Digest" }]);
   });
 
-  test("createBehavior POSTs manage_behaviors with action=create and no entity_id", async () => {
+  test("createAutomation POSTs manage_automations with action=create and no entity_id", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new ApplyClient(
       { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
@@ -167,7 +167,7 @@ describe("ApplyClient", () => {
       }) as typeof fetch
     );
 
-    await client.createBehavior({
+    await client.createAutomation({
       slug: "digest",
       agentId: "triage",
       name: "Digest",
@@ -176,7 +176,7 @@ describe("ApplyClient", () => {
     });
 
     expect(calls[0]?.url).toBe(
-      "https://example.test/api/acme/manage_behaviors"
+      "https://example.test/api/acme/manage_automations"
     );
     expect(calls[0]?.init?.method).toBe("POST");
     const body = JSON.parse(String(calls[0]?.init?.body));
@@ -267,15 +267,15 @@ describe("ApplyClient — prune", () => {
     });
   });
 
-  test("deleteBehavior POSTs manage_behaviors delete with behavior_ids array", async () => {
+  test("deleteAutomation POSTs manage_automations delete with automation_ids array", async () => {
     const { calls, client } = recordingClient();
-    await client.deleteBehavior("42");
+    await client.deleteAutomation("42");
     expect(calls[0]?.url).toBe(
-      "https://example.test/api/acme/manage_behaviors"
+      "https://example.test/api/acme/manage_automations"
     );
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
       action: "delete",
-      behavior_ids: ["42"],
+      automation_ids: ["42"],
     });
   });
 

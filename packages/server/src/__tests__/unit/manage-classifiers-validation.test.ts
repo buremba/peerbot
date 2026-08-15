@@ -7,7 +7,7 @@ const createArgs = {
 	slug: "sentiment",
 	name: "Sentiment",
 	attribute_key: "sentiment",
-	behavior_id: "42",
+	automation_id: "42",
 };
 
 describe("manage_classifiers attribute_values validation", () => {

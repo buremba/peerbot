@@ -19,19 +19,19 @@ export const GetContentSchema = Type.Object({
   ),
   entity_id: Type.Optional(
     Type.Number({
-      description: 'Entity ID to filter by. Required unless behavior_id is provided.',
+      description: 'Entity ID to filter by. Required unless automation_id is provided.',
     })
   ),
-  behavior_id: Type.Optional(
+  automation_id: Type.Optional(
     Type.Number({
       description:
-        "Persisted Behavior ID (`behavior_id`) to fetch content for. When provided, uses the Behavior's sources and computes its pending window. Returns window_token for complete_window action.",
+        "Persisted Automation ID (`automation_id`) to fetch content for. When provided, uses the Automation's sources and computes its pending window. Returns window_token for complete_window action.",
     })
   ),
   template_version_id: Type.Optional(
     Type.Number({
       description:
-        "Pin to a specific persisted Behavior version when reading the prompt/schema. Workers receive this from runs.approved_input.version_id and pass it back so a group edit landing mid-run can't make extraction use a different schema. When omitted, defaults to the Behavior's current version.",
+        "Pin to a specific persisted Automation version when reading the prompt/schema. Workers receive this from runs.approved_input.version_id and pass it back so a group edit landing mid-run can't make extraction use a different schema. When omitted, defaults to the Automation's current version.",
     })
   ),
   connection_ids: Type.Optional(
@@ -75,31 +75,31 @@ export const GetContentSchema = Type.Object({
   ),
   window_id: Type.Optional(
     Type.Number({
-      description: 'Behavior window ID to filter by (shows only content analyzed in this window)',
+      description: 'Automation window ID to filter by (shows only content analyzed in this window)',
     })
   ),
-  analyzed_by_behavior_id: Type.Optional(
+  analyzed_by_automation_id: Type.Optional(
     Type.Number({
       description:
-        'Limit results to events this Behavior has analyzed (any window). Distinct from behavior_id, which enters Behavior read mode.',
+        'Limit results to events this Automation has analyzed (any window). Distinct from automation_id, which enters Automation read mode.',
     })
   ),
-  produced_by_behavior_id: Type.Optional(
+  produced_by_automation_id: Type.Optional(
     Type.Number({
       description:
-        'Limit results to events this Behavior WROTE — its outputs, entity change sets, canvas revisions and notifications. The counterpart to analyzed_by_behavior_id, which returns what it READ; the two are not interchangeable.',
+        'Limit results to events this Automation WROTE — its outputs, entity change sets, canvas revisions and notifications. The counterpart to analyzed_by_automation_id, which returns what it READ; the two are not interchangeable.',
     })
   ),
   since: Type.Optional(
     Type.String({
       description:
-        'Filter events published since this date. Supports: ISO 8601 ("2025-01-01"), named aliases ("yesterday", "last_week"), or relative ("7d", "30d", "1m", "1y"). When used with behavior_id, also sets window_start in the generated token.',
+        'Filter events published since this date. Supports: ISO 8601 ("2025-01-01"), named aliases ("yesterday", "last_week"), or relative ("7d", "30d", "1m", "1y"). When used with automation_id, also sets window_start in the generated token.',
     })
   ),
   until: Type.Optional(
     Type.String({
       description:
-        'Filter events published until this date. Supports: ISO 8601 ("2025-01-31"), named aliases ("today", "yesterday"), or relative ("7d", "30d", "1m", "1y"). When used with behavior_id, also sets window_end in the generated token.',
+        'Filter events published until this date. Supports: ISO 8601 ("2025-01-31"), named aliases ("today", "yesterday"), or relative ("7d", "30d", "1m", "1y"). When used with automation_id, also sets window_end in the generated token.',
     })
   ),
   min_similarity: Type.Optional(
@@ -212,13 +212,13 @@ export const GetContentSchema = Type.Object({
   content_ids: Type.Optional(
     Type.Array(Type.Number(), {
       description:
-        'Filter to specific content IDs. With behavior_id, these exact durable rows are added to the Behavior read and signed into its window token in addition to authored sources; this is how workspace-sourced event activations pass bounded event pointers without copying payloads.',
+        'Filter to specific content IDs. With automation_id, these exact durable rows are added to the Automation read and signed into its window token in addition to authored sources; this is how workspace-sourced event activations pass bounded event pointers without copying payloads.',
     })
   ),
-  exclude_behavior_id: Type.Optional(
+  exclude_automation_id: Type.Optional(
     Type.Number({
       description:
-        'Exclude content already analyzed in any window for this Behavior. Returns only unprocessed content for client-driven Behavior generation.',
+        'Exclude content already analyzed in any window for this Automation. Returns only unprocessed content for client-driven Automation generation.',
     })
   ),
   semantic_type: Type.Optional(

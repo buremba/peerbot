@@ -12,8 +12,8 @@
  *
  * This reaper deletes device_workers rows that are BOTH stale (unseen far
  * beyond the 7-day freshness window) AND have no bindings — no pinned
- * connections, watchers, or auth-profiles — so it never disturbs a device a
- * connection or watcher still depends on. The no-binding predicate is re-checked
+ * connections, automations, or auth-profiles — so it never disturbs a device a
+ * connection or automation still depends on. The no-binding predicate is re-checked
  * inside the DELETE so a binding created between the candidate scan and the
  * delete keeps the row alive. Child PATs bound to the reaped worker_ids are
  * revoked on the way out.
@@ -43,7 +43,7 @@ export async function reapStaleDeviceWorkers(): Promise<{
         WHERE c.device_worker_id = device_workers.id AND c.deleted_at IS NULL
       )
       AND NOT EXISTS (
-        SELECT 1 FROM watchers w WHERE w.device_worker_id = device_workers.id
+        SELECT 1 FROM automations w WHERE w.device_worker_id = device_workers.id
       )
       AND NOT EXISTS (
         SELECT 1 FROM auth_profiles ap WHERE ap.device_worker_id = device_workers.id
@@ -86,7 +86,7 @@ export async function reapStaleDeviceWorkers(): Promise<{
           WHERE c.device_worker_id = device_workers.id AND c.deleted_at IS NULL
         )
         AND NOT EXISTS (
-          SELECT 1 FROM watchers w WHERE w.device_worker_id = device_workers.id
+          SELECT 1 FROM automations w WHERE w.device_worker_id = device_workers.id
         )
         AND NOT EXISTS (
           SELECT 1 FROM auth_profiles ap WHERE ap.device_worker_id = device_workers.id

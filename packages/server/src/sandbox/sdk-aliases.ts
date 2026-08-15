@@ -21,7 +21,7 @@ export const SDK_FIELD_ALIASES: Readonly<
 	"schedules.pause": { schedule_id: "id" },
 	"schedules.cancel": { schedule_id: "id" },
 	// runtime field is `reaction_script`; callers guess `script`
-	"behaviors.setReactionScript": { script: "reaction_script" },
+	"automations.setReactionScript": { script: "reaction_script" },
 	// runtime field is `body`; callers guess `message`
 	"notifications.send": { message: "body" },
 	// runtime field is `display_name`; callers guess `name`

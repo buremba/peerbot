@@ -1,7 +1,7 @@
 /**
- * Notification-only reaction for the `funnel-digest` Behavior.
+ * Notification-only reaction for the `funnel-digest` Automation.
  *
- * The Behavior's declared `digests` output persists the summary event before
+ * The Automation's declared `digests` output persists the summary event before
  * this runs. The reaction has one job that is intentionally imperative: fan
  * the already-authored digest out to the team's notification connections.
  */
@@ -46,8 +46,8 @@ export default async (
       digest.title ??
       `Weekly funnel digest — ${ctx.window.window_end.slice(0, 10)}`,
     body: digest.content,
-    behavior_source: {
-      behavior_id: ctx.window.behavior_id,
+    automation_source: {
+      automation_id: ctx.window.automation_id,
       window_id: ctx.window.id,
     },
   });

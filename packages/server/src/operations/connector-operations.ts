@@ -615,7 +615,7 @@ export async function listOperations(params: {
 
 	// When listing for a specific connection, hide ops the user has marked
 	// 'disabled' in connection.config.action_modes so they never reach the
-	// agent (e.g. Behavior reaction context). manage_operations.list_available
+	// agent (e.g. Automation reaction context). manage_operations.list_available
 	// opts out via includeDisabled to surface them with readiness 'disabled'
 	// and enablement help instead; execution still refuses disabled ops.
 	if (params.connectionId && !params.includeDisabled) {

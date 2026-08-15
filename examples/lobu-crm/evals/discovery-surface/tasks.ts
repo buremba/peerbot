@@ -262,9 +262,9 @@ export const TASKS: EvalTask[] = [
     },
   },
 
-  // 6 — create a Behavior over a feed.
+  // 6 — create an Automation over a feed.
   {
-    id: "create-behavior",
+    id: "create-automation",
     tier: "admin",
     title: "Watch a feed and notify on a condition",
     seed: async (org) => {
@@ -282,11 +282,11 @@ export const TASKS: EvalTask[] = [
       const sql = db();
       const n = await countRows(
         sql<{ n: number }[]>`
-          SELECT count(*)::int AS n FROM watchers
+          SELECT count(*)::int AS n FROM automations
           WHERE organization_id = ${org.org.id} AND status = 'active'`
       );
-      if (n === 0) return { pass: false, detail: "no Behavior created" };
-      return { pass: true, detail: `${n} active Behavior(s)` };
+      if (n === 0) return { pass: false, detail: "no Automation created" };
+      return { pass: true, detail: `${n} active Automation(s)` };
     },
   },
 

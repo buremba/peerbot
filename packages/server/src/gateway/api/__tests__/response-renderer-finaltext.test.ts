@@ -13,8 +13,8 @@ import { ApiResponseRenderer } from "../response-renderer.js";
 import type { ThreadResponsePayload } from "../../infrastructure/queue/types.js";
 
 const resolveRunsMock = mock(async () => ({ resolved: 0 }));
-mock.module("../../../watchers/run-completion.js", () => ({
-  resolveWatcherRunsByMessageIds: resolveRunsMock,
+mock.module("../../../automations/run-completion.js", () => ({
+  resolveAutomationRunsByMessageIds: resolveRunsMock,
 }));
 
 function makeRenderer() {

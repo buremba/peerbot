@@ -29,9 +29,9 @@ const SPA_WIRE_FILES = [
 
 /**
  * Blank out // and block comments, preserving newlines. JSDoc must NOT count as
- * SPA support: a docblock saying `"agent" | "behavior"` while the code handles
+ * SPA support: a docblock saying `"agent" | "automation"` while the code handles
  * neither would otherwise satisfy this test (verified — deleting the SPA's only
- * `attribution === "behavior"` branch still passed before this was added).
+ * `attribution === "automation"` branch still passed before this was added).
  */
 function stripComments(source: string): string {
   return source
@@ -46,13 +46,13 @@ function extractQuotedLiterals(
   const found = new Set<string>();
   const source = stripComments(raw);
 
-  // Comparisons: resourceKind === "behavior", attribution !== 'agent'
+  // Comparisons: resourceKind === "automation", attribution !== 'agent'
   const cmp = new RegExp(`${field}\\s*(?:===|!==)\\s*['"]([^'"]+)['"]`, "g");
   for (const m of source.matchAll(cmp)) {
     found.add(m[1]!);
   }
 
-  // Type unions: resourceKind: 'agent' | 'behavior' | null
+  // Type unions: resourceKind: 'agent' | 'automation' | null
   const union = new RegExp(
     `${field}\\??\\s*:\\s*((?:['"][^'"]+['"]\\s*\\|\\s*)*['"][^'"]+['"](?:\\s*\\|\\s*null)?)`,
     "g"
@@ -93,8 +93,8 @@ describe("interaction-envelope SPA/core parity", () => {
   it("SPA attribution literals match APPROVAL_ATTRIBUTIONS", () => {
     const spa = loadSpaLiterals("attribution");
     if (spa === null) return;
-    // The SPA declares the full union on the field type (agent | behavior) and
-    // branches explicitly on behavior. Requiring the whole set — from code, not
+    // The SPA declares the full union on the field type (agent | automation) and
+    // branches explicitly on automation. Requiring the whole set — from code, not
     // JSDoc — is what makes a one-sided rename fail here.
     expect(spa).toEqual([...APPROVAL_ATTRIBUTIONS].sort());
   });
@@ -103,13 +103,13 @@ describe("interaction-envelope SPA/core parity", () => {
     // Pin the wire values so a silent rename in the constants is a test fail.
     expect([...INTERACTION_RESOURCE_KINDS]).toEqual([
       "agent",
-      "behavior",
+      "automation",
       "entity",
     ]);
-    expect([...APPROVAL_ATTRIBUTIONS]).toEqual(["agent", "behavior"]);
-    expect(isInteractionResourceKind("behavior")).toBe(true);
-    expect(isInteractionResourceKind("watcher")).toBe(false);
+    expect([...APPROVAL_ATTRIBUTIONS]).toEqual(["agent", "automation"]);
+    expect(isInteractionResourceKind("automation")).toBe(true);
+    expect(isInteractionResourceKind("workflow")).toBe(false);
     expect(isApprovalAttribution("agent")).toBe(true);
-    expect(isApprovalAttribution("watcher")).toBe(false);
+    expect(isApprovalAttribution("workflow")).toBe(false);
   });
 });

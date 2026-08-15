@@ -11,13 +11,13 @@ const context = {
   window: {
     id: 99,
     run_id: 1234,
-    behavior_id: 42,
+    automation_id: 42,
     window_start: "2026-08-13T12:00:00.000Z",
     window_end: "2026-08-13T12:20:00.000Z",
     granularity: "20 minutes",
     content_analyzed: 0,
   },
-  behavior: {
+  automation: {
     id: 42,
     slug: "product-activity-digest",
     name: "Lobu production activity digest",
@@ -103,7 +103,7 @@ describe("Lobu Team product activity digest reaction", () => {
       title: "Lobu production activity digest",
       recipients: "admins",
       idempotency_key: "product-activity-digest:run:1234",
-      behavior_source: { behavior_id: 42, window_id: 99 },
+      automation_source: { automation_id: 42, window_id: 99 },
     });
     const serializedCard = JSON.stringify(notification?.card);
     expect(serializedCard).toContain("Ada Lovelace");
@@ -116,7 +116,7 @@ describe("Lobu Team product activity digest reaction", () => {
     expect(serializedCard).toContain("Open production logs");
 
     const cursorQuery = String(query.mock.calls[0]?.[0]);
-    expect(cursorQuery).toContain("behavior_id = 42");
+    expect(cursorQuery).toContain("automation_id = 42");
     expect(cursorQuery).toContain("ORDER BY created_at DESC, id DESC");
 
     const queryText = String(query.mock.calls[1]?.[0]);

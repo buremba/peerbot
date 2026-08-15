@@ -1,5 +1,5 @@
 /**
- * manage_entity `merge` action — the tool surface a watcher's agent (or an admin)
+ * manage_entity `merge` action — the tool surface an automation's agent (or an admin)
  * calls to fuse two entities. Covers the gate (admin/owner only), the org fence
  * (no cross-tenant / deleted target), and the happy path delegating to applyMerge.
  * The fusion mechanics themselves are proven in events/entity-merge.test.ts.
@@ -171,17 +171,17 @@ describe("manage_entity merge action", () => {
 		).rejects.toThrow(/not found in this workspace/i);
 	});
 
-	it("queues a watcher merge for human approval and applies it only after approval", async () => {
+	it("queues an automation merge for human approval and applies it only after approval", async () => {
 		const org = await createTestOrganization({
-			name: "Watcher Merge Approval Org",
+			name: "Automation Merge Approval Org",
 		});
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
 		const { winner, loser } = await twoEntities(org.id, user.id);
 		const sql = getTestDb();
 		await sql`
-      INSERT INTO watchers
-        (id, organization_id, agent_id, created_by, watcher_group_id, name,
+      INSERT INTO automations
+        (id, organization_id, agent_id, created_by, automation_group_id, name,
          status, notification_channel, notification_priority, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
@@ -189,17 +189,17 @@ describe("manage_entity merge action", () => {
          'active', 'canvas', 'normal', 0, now(), now())
     `;
 
-		const watcherCtx = {
+		const automationCtx = {
 			...ctx(org.id, user.id, "owner"),
 			userId: null,
 			agentId: "personal-agent",
-			actingWatcherId: 6001,
+			actingAutomationId: 6001,
 			mcpSessionId: "session-entity-merge",
 		} as ToolContext;
 		const queued = (await manageEntity(
 			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
 			env,
-			watcherCtx,
+			automationCtx,
 		)) as unknown as { approval_queued: boolean; approval_run_id: number };
 
 		expect(queued.approval_queued).toBe(true);
@@ -208,9 +208,9 @@ describe("manage_entity merge action", () => {
 		expect(before.merged_into).toBeNull();
 		expect(before.deleted_at).toBeNull();
 		const [pending] = await sql`
-      SELECT watcher_id, approval_status, action_input FROM runs WHERE id = ${queued.approval_run_id}
+      SELECT automation_id, approval_status, action_input FROM runs WHERE id = ${queued.approval_run_id}
     `;
-		expect(Number(pending.watcher_id)).toBe(6001);
+		expect(Number(pending.automation_id)).toBe(6001);
 		expect(pending.approval_status).toBe("pending");
 		expect((pending.action_input as Record<string, unknown>).operation).toBe(
 			"merge",
@@ -262,7 +262,7 @@ describe("manage_entity merge action", () => {
 		const { winner, loser } = await twoEntities(org.id, user.id);
 		const sql = getTestDb();
 
-		const watcherCtx = {
+		const automationCtx = {
 			...ctx(org.id, user.id, "owner"),
 			userId: null,
 			agentId: "personal-agent",
@@ -270,7 +270,7 @@ describe("manage_entity merge action", () => {
 		const queued = (await manageEntity(
 			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
 			env,
-			watcherCtx,
+			automationCtx,
 		)) as unknown as { approval_queued: boolean; approval_run_id: number };
 		expect(queued.approval_queued).toBe(true);
 
@@ -714,7 +714,7 @@ describe("manage_entity merge action", () => {
 
 		expect(queued.approval_queued).toBe(true);
 		const [run] = await sql`
-			SELECT initiator_kind, initiator_ref, created_by_user_id, watcher_id
+			SELECT initiator_kind, initiator_ref, created_by_user_id, automation_id
 			FROM runs WHERE id = ${queued.approval_run_id}
 		`;
 		expect(run.initiator_kind).toBe("agent_session");
@@ -724,24 +724,24 @@ describe("manage_entity merge action", () => {
 			conversation_id: "conv-abc",
 		});
 		expect(run.created_by_user_id).toBe(user.id);
-		expect(run.watcher_id).toBeNull();
+		expect(run.automation_id).toBeNull();
 	});
 
-	it("keeps a behavior initiator's drill-down link when another caller reuses the run", async () => {
+	it("keeps an automation initiator's drill-down link when another caller reuses the run", async () => {
 		const org = await createTestOrganization({
-			name: "Initiator Behavior Org",
+			name: "Initiator Automation Org",
 		});
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
 		const { winner, loser } = await twoEntities(org.id, user.id);
 		const sql = getTestDb();
 		await sql`
-      INSERT INTO watchers
-        (id, organization_id, agent_id, created_by, watcher_group_id, name,
+      INSERT INTO automations
+        (id, organization_id, agent_id, created_by, automation_group_id, name,
          status, notification_channel, notification_priority, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
-        (6021, ${org.id}, 'personal-agent', ${user.id}, 6021, 'Initiator behavior',
+        (6021, ${org.id}, 'personal-agent', ${user.id}, 6021, 'Initiator automation',
          'active', 'canvas', 'normal', 0, now(), now())
     `;
 
@@ -751,7 +751,7 @@ describe("manage_entity merge action", () => {
 			{
 				...ctx(org.id, user.id, "owner"),
 				userId: null,
-				actingWatcherId: 6021,
+				actingAutomationId: 6021,
 				baseUrl: "https://app.lobu.test",
 			} as ToolContext,
 		)) as unknown as {
@@ -761,13 +761,13 @@ describe("manage_entity merge action", () => {
 		};
 
 		const [run] = await sql`
-			SELECT initiator_kind, initiator_ref, watcher_id
+			SELECT initiator_kind, initiator_ref, automation_id
 			FROM runs WHERE id = ${queued.approval_run_id}
 		`;
-		expect(run.initiator_kind).toBe("behavior");
-		expect((run.initiator_ref as { watcher_id: number }).watcher_id).toBe(6021);
-		expect(Number(run.watcher_id)).toBe(6021);
-		const expectedUrl = `https://app.lobu.test/${org.slug}/memory?agent=personal-agent&behavior=6021&run_ids=${queued.approval_run_id}`;
+		expect(run.initiator_kind).toBe("automation");
+		expect((run.initiator_ref as { automation_id: number }).automation_id).toBe(6021);
+		expect(Number(run.automation_id)).toBe(6021);
+		const expectedUrl = `https://app.lobu.test/${org.slug}/memory?agent=personal-agent&automation=6021&run_ids=${queued.approval_run_id}`;
 		expect(queued.approval_url).toBe(expectedUrl);
 
 		const replay = (await manageEntity(
@@ -783,19 +783,19 @@ describe("manage_entity merge action", () => {
 		expect(replay.approval_url).toBe(expectedUrl);
 	});
 
-	it("does not let a caller-supplied behavior_source forge the initiator", async () => {
+	it("does not let a caller-supplied automation_source forge the initiator", async () => {
 		const org = await createTestOrganization({ name: "Initiator Spoof Org" });
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
 		const { winner, loser } = await twoEntities(org.id, user.id);
 		const sql = getTestDb();
 		await sql`
-      INSERT INTO watchers
-        (id, organization_id, agent_id, created_by, watcher_group_id, name,
+      INSERT INTO automations
+        (id, organization_id, agent_id, created_by, automation_group_id, name,
          status, notification_channel, notification_priority, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
-        (6022, ${org.id}, 'other-agent', ${user.id}, 6022, 'Someone elses behavior',
+        (6022, ${org.id}, 'other-agent', ${user.id}, 6022, 'Someone elses automation',
          'active', 'canvas', 'normal', 0, now(), now())
     `;
 
@@ -804,7 +804,7 @@ describe("manage_entity merge action", () => {
 				action: "merge",
 				entity_id: loser.id,
 				winner_entity_id: winner.id,
-				behavior_source: { behavior_id: 6022, window_id: 1 },
+				automation_source: { automation_id: 6022, window_id: 1 },
 			},
 			env,
 			{
@@ -913,8 +913,8 @@ describe("manage_entity merge action", () => {
 			WHERE id = ${loser.id}
 		`;
 		await sql`
-			INSERT INTO watchers
-			  (id, organization_id, agent_id, created_by, watcher_group_id, name,
+			INSERT INTO automations
+			  (id, organization_id, agent_id, created_by, automation_group_id, name,
 			   status, notification_channel, notification_priority, min_cooldown_seconds,
 			   created_at, updated_at)
 			VALUES
@@ -922,12 +922,12 @@ describe("manage_entity merge action", () => {
 			   'Strict duplicate resolution', 'active', 'canvas', 'normal', 0,
 			   now(), now())
 		`;
-		const [watcherRun] = await sql<{ id: number }[]>`
+		const [automationRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, watcher_id, window_id,
+			  (run_type, status, organization_id, automation_id, window_id,
 			   approval_status, created_at, completed_at)
 			VALUES
-			  ('behavior', 'completed', ${org.id}, 6009, 7001, 'auto', now(), now())
+			  ('automation', 'completed', ${org.id}, 6009, 7001, 'auto', now(), now())
 			RETURNING id
 		`;
 
@@ -943,9 +943,9 @@ describe("manage_entity merge action", () => {
 				...ctx(org.id, user.id, "owner"),
 				userId: null,
 				agentId: "personal-agent",
-				actingWatcherId: 6009,
+				actingAutomationId: 6009,
 				actingWindowId: 7001,
-				actingRunId: watcherRun.id,
+				actingRunId: automationRun.id,
 			} as ToolContext,
 		)) as unknown as {
 			action: string;
@@ -969,7 +969,7 @@ describe("manage_entity merge action", () => {
 		`;
 		expect(operation).toMatchObject({
 			decision: "auto_merge",
-			source_run_id: watcherRun.id,
+			source_run_id: automationRun.id,
 			window_id: 7001,
 			status: "active",
 		});
@@ -1011,8 +1011,8 @@ describe("manage_entity merge action", () => {
 			})} WHERE id = ${loser.id}
 		`;
 		await sql`
-			INSERT INTO watchers
-			  (id, organization_id, agent_id, created_by, watcher_group_id, name,
+			INSERT INTO automations
+			  (id, organization_id, agent_id, created_by, automation_group_id, name,
 			   status, notification_channel, notification_priority,
 			   min_cooldown_seconds, created_at, updated_at)
 			VALUES
@@ -1030,7 +1030,7 @@ describe("manage_entity merge action", () => {
 				...ctx(org.id, user.id, "owner"),
 				userId: null,
 				agentId: "personal-agent",
-				actingWatcherId: 6010,
+				actingAutomationId: 6010,
 			} as ToolContext,
 		);
 		expect(result).toMatchObject({
@@ -1065,8 +1065,8 @@ describe("manage_entity merge action", () => {
 			WHERE id = ${loser.id}
 		`;
 		await sql`
-			INSERT INTO watchers
-			  (id, organization_id, agent_id, created_by, watcher_group_id, name,
+			INSERT INTO automations
+			  (id, organization_id, agent_id, created_by, automation_group_id, name,
 			   status, notification_channel, notification_priority,
 			   min_cooldown_seconds, created_at, updated_at)
 			VALUES
@@ -1085,7 +1085,7 @@ describe("manage_entity merge action", () => {
 				...ctx(org.id, user.id, "owner"),
 				userId: null,
 				agentId: "personal-agent",
-				actingWatcherId: 6013,
+				actingAutomationId: 6013,
 			} as ToolContext,
 		);
 
@@ -1099,7 +1099,7 @@ describe("manage_entity merge action", () => {
 			SELECT approval_status, action_input
 			FROM runs
 			WHERE organization_id = ${org.id}
-			  AND watcher_id = 6013
+			  AND automation_id = 6013
 			  AND run_type = 'internal'
 		`;
 		expect(pending.approval_status).toBe("pending");
@@ -1150,8 +1150,8 @@ describe("manage_entity merge action", () => {
 			WHERE id = ${winner.id}
 		`;
 		await sql`
-			INSERT INTO watchers
-			  (id, organization_id, agent_id, created_by, watcher_group_id, name,
+			INSERT INTO automations
+			  (id, organization_id, agent_id, created_by, automation_group_id, name,
 			   status, notification_channel, notification_priority,
 			   min_cooldown_seconds, created_at, updated_at)
 			VALUES
@@ -1170,7 +1170,7 @@ describe("manage_entity merge action", () => {
 				...ctx(org.id, user.id, "owner"),
 				userId: null,
 				agentId: "personal-agent",
-				actingWatcherId: 6012,
+				actingAutomationId: 6012,
 			} as ToolContext,
 		);
 		expect(result).toMatchObject({
@@ -1183,7 +1183,7 @@ describe("manage_entity merge action", () => {
 			SELECT action_input
 			FROM runs
 			WHERE organization_id = ${org.id}
-			  AND watcher_id = 6012
+			  AND automation_id = 6012
 			  AND run_type = 'internal'
 			  AND approval_status = 'pending'
 			ORDER BY id
@@ -1203,24 +1203,24 @@ describe("manage_entity merge action", () => {
 		const { winner, loser } = await twoEntities(org.id, user.id);
 		const sql = getTestDb();
 		await sql`
-			INSERT INTO watchers
-			  (id, organization_id, agent_id, created_by, watcher_group_id, name,
+			INSERT INTO automations
+			  (id, organization_id, agent_id, created_by, automation_group_id, name,
 			   status, notification_channel, notification_priority,
 			   min_cooldown_seconds, created_at, updated_at)
 			VALUES
 			  (6011, ${org.id}, 'personal-agent', ${user.id}, 6011,
 			   'Rejected resolution', 'active', 'canvas', 'normal', 0, now(), now())
 		`;
-		const watcherCtx = {
+		const automationCtx = {
 			...ctx(org.id, user.id, "owner"),
 			userId: null,
 			agentId: "personal-agent",
-			actingWatcherId: 6011,
+			actingAutomationId: 6011,
 		} as ToolContext;
 		const first = (await manageEntity(
 			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
 			env,
-			watcherCtx,
+			automationCtx,
 		)) as unknown as { approval_run_id: number };
 		await manageOperations(
 			{ action: "reject", run_id: first.approval_run_id },
@@ -1231,7 +1231,7 @@ describe("manage_entity merge action", () => {
 		const unchanged = await manageEntity(
 			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
 			env,
-			watcherCtx,
+			automationCtx,
 		);
 		expect(unchanged).toMatchObject({
 			action: "merge",
@@ -1262,7 +1262,7 @@ describe("manage_entity merge action", () => {
 		const changed = await manageEntity(
 			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
 			env,
-			watcherCtx,
+			automationCtx,
 		);
 		expect(changed).toMatchObject({
 			action: "merge",
@@ -1284,8 +1284,8 @@ describe("manage_entity merge action", () => {
 			WHERE id IN (${winner.id}, ${loser.id})
 		`;
 		await sql`
-			INSERT INTO watchers
-			  (id, organization_id, agent_id, created_by, watcher_group_id, name,
+			INSERT INTO automations
+			  (id, organization_id, agent_id, created_by, automation_group_id, name,
 			   status, notification_channel, notification_priority,
 			   min_cooldown_seconds, created_at, updated_at)
 			VALUES
@@ -1293,23 +1293,23 @@ describe("manage_entity merge action", () => {
 			   'Cross-window resolution', 'active', 'canvas', 'normal', 0,
 			   now(), now())
 		`;
-		const watcherCtx = (windowId: number) =>
+		const automationCtx = (windowId: number) =>
 			({
 				...ctx(org.id, user.id, "owner"),
 				userId: null,
 				agentId: "personal-agent",
-				actingWatcherId: 6014,
+				actingAutomationId: 6014,
 				actingWindowId: windowId,
 			}) as ToolContext;
 		const first = (await manageEntity(
 			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
 			env,
-			watcherCtx(7101),
+			automationCtx(7101),
 		)) as unknown as { approval_run_id: number };
 		const second = (await manageEntity(
 			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
 			env,
-			watcherCtx(7102),
+			automationCtx(7102),
 		)) as unknown as { approval_run_id: number };
 		expect(second.approval_run_id).not.toBe(first.approval_run_id);
 
@@ -1407,7 +1407,7 @@ describe("manage_entity merge action", () => {
 		expect(Number(repaired.event_count)).toBe(1);
 	});
 
-	it("queues one atomic watcher approval for a duplicate group", async () => {
+	it("queues one atomic automation approval for a duplicate group", async () => {
 		const org = await createTestOrganization({
 			name: "Group Merge Approval Org",
 		});
@@ -1436,8 +1436,8 @@ describe("manage_entity merge action", () => {
          'connector:google-contacts', ${connection.id})
     `;
 		await sql`
-      INSERT INTO watchers
-        (id, organization_id, agent_id, created_by, watcher_group_id, name,
+      INSERT INTO automations
+        (id, organization_id, agent_id, created_by, automation_group_id, name,
          status, notification_channel, notification_priority, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
@@ -1456,7 +1456,7 @@ describe("manage_entity merge action", () => {
 				...ctx(org.id, user.id, "owner"),
 				userId: null,
 				agentId: "personal-agent",
-				actingWatcherId: 6003,
+				actingAutomationId: 6003,
 			} as ToolContext,
 		)) as unknown as { approval_run_id: number };
 
@@ -1527,8 +1527,8 @@ describe("manage_entity merge action", () => {
 		});
 		const sql = getTestDb();
 		await sql`
-      INSERT INTO watchers
-        (id, organization_id, agent_id, created_by, watcher_group_id, name,
+      INSERT INTO automations
+        (id, organization_id, agent_id, created_by, automation_group_id, name,
          status, notification_channel, notification_priority, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
@@ -1546,7 +1546,7 @@ describe("manage_entity merge action", () => {
 				...ctx(org.id, user.id, "owner"),
 				userId: null,
 				agentId: "personal-agent",
-				actingWatcherId: 6004,
+				actingAutomationId: 6004,
 			} as ToolContext,
 		)) as unknown as { approval_run_id: number };
 
@@ -1586,8 +1586,8 @@ describe("manage_entity merge action", () => {
 		const { winner, loser } = await twoEntities(org.id, user.id);
 		const sql = getTestDb();
 		await sql`
-      INSERT INTO watchers
-        (id, organization_id, agent_id, created_by, watcher_group_id, name,
+      INSERT INTO automations
+        (id, organization_id, agent_id, created_by, automation_group_id, name,
          status, notification_channel, notification_priority, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
@@ -1602,7 +1602,7 @@ describe("manage_entity merge action", () => {
 				...ctx(org.id, user.id, "owner"),
 				userId: null,
 				agentId: "personal-agent",
-				actingWatcherId: 6015,
+				actingAutomationId: 6015,
 			} as ToolContext,
 		)) as unknown as { approval_run_id: number };
 
@@ -1753,15 +1753,15 @@ describe("manage_entity merge action", () => {
 		}
 	});
 
-	it("does not apply an approved watcher merge when the loser was deleted after proposal", async () => {
+	it("does not apply an approved automation merge when the loser was deleted after proposal", async () => {
 		const org = await createTestOrganization({ name: "Stale Merge Org" });
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
 		const { winner, loser } = await twoEntities(org.id, user.id);
 		const sql = getTestDb();
 		await sql`
-      INSERT INTO watchers
-        (id, organization_id, agent_id, created_by, watcher_group_id, name,
+      INSERT INTO automations
+        (id, organization_id, agent_id, created_by, automation_group_id, name,
          status, notification_channel, notification_priority, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
@@ -1776,7 +1776,7 @@ describe("manage_entity merge action", () => {
 				...ctx(org.id, user.id, "owner"),
 				userId: null,
 				agentId: "personal-agent",
-				actingWatcherId: 6002,
+				actingAutomationId: 6002,
 			} as ToolContext,
 		)) as unknown as { approval_run_id: number };
 

@@ -54,11 +54,11 @@ export interface PlatformMetadata {
   /** Outbound: client-side message id correlation. */
   clientMessageId?: string;
   /**
-   * Per-turn Behavior id for reply-to-source delivery. The gateway restores it
+   * Per-turn Automation id for reply-to-source delivery. The gateway restores it
    * from the durable row named by the signed per-run token, never from the
    * response body; the response bridge also verifies ownership.
    */
-  behaviorId?: number;
+  automationId?: number;
 }
 
 /**

@@ -1,18 +1,18 @@
 /**
- * Window utilities for watcher time windows
+ * Window utilities for automation time windows
  *
  * Computes pending window dates based on schedule (cron) or granularity label.
  */
 
 import {
-  addBehaviorPeriod,
-  alignToBehaviorWindowStart,
-  subtractBehaviorPeriod,
-  type BehaviorTimeGranularity,
+  addAutomationPeriod,
+  alignToAutomationWindowStart,
+  subtractAutomationPeriod,
+  type AutomationTimeGranularity,
 } from '@lobu/connector-sdk';
 import type { DbClient } from '../db/client';
 import { parseDateAlias } from './date-aliases';
-import type { UnprocessedRange } from '../types/watchers';
+import type { UnprocessedRange } from '../types/automations';
 
 interface WindowDates {
   windowStart: Date;
@@ -39,13 +39,13 @@ interface MonthlyLinkedRow {
 
 /**
  * Fold two month-bucketed aggregates — total events per month vs. events linked
- * to a watcher's windows per month — into the `UnprocessedRange[]` histogram.
+ * to an automation's windows per month — into the `UnprocessedRange[]` histogram.
  *
- * Shared by `get_content` (Behavior mode) and `get_behavior` (pending analysis).
+ * Shared by `get_content` (Automation mode) and `get_automation` (pending analysis).
  *
  * @param includeComplete when true, months with zero unprocessed content are
  *   still emitted (with `status: 'complete'`). When false, only months with
- *   unprocessed content are emitted. `get_content` passes true; `get_behavior`
+ *   unprocessed content are emitted. `get_content` passes true; `get_automation`
  *   passes false.
  */
 export function foldUnprocessedRanges(
@@ -97,7 +97,7 @@ export function foldUnprocessedRanges(
 }
 
 /**
- * Compute the pending window dates for a watcher.
+ * Compute the pending window dates for an automation.
  *
  * Returns a period-aligned window of exactly one granularity period:
  * `[aligned start, start + 1 period)`. The end is EXCLUSIVE.
@@ -111,13 +111,13 @@ export function foldUnprocessedRanges(
  * then (a) collapses to a ZERO-length window once clamped — five such windows
  * exist on prod, every one with `content_analyzed = 0` — and (b) never matches
  * a fresh period in `findCanvasHead`, so no new chain root is created, so this
- * function keeps returning the same window forever (Behavior 71 spent a full
+ * function keeps returning the same window forever (Automation 71 spent a full
  * day re-completing the previous day's window).
  *
  * Re-aligning the stored start also makes the 14 already-misaligned prod rows
  * self-heal on their next run, with no migration rewriting window identities.
  *
- * The period never runs ahead of the clock: `BEHAVIOR_TIME_GRANULARITIES` has
+ * The period never runs ahead of the clock: `AUTOMATION_TIME_GRANULARITIES` has
  * no 'hourly', so an hourly cron necessarily gets a DAILY window and every run
  * inside a day must resolve to that SAME day for `replace_existing` to refresh
  * it. Advancing unconditionally would mint tomorrow's window at 00:01 and march
@@ -126,25 +126,25 @@ export function foldUnprocessedRanges(
  */
 export async function computePendingWindow(
   sql: DbClient,
-  watcherId: number,
-  granularity: BehaviorTimeGranularity
+  automationId: number,
+  granularity: AutomationTimeGranularity
 ): Promise<WindowDates> {
-  const cursor = await readWindowCursor(sql, watcherId);
-  const windowStart = nextBehaviorWindowStart(cursor, new Date(), granularity);
+  const cursor = await readWindowCursor(sql, automationId);
+  const windowStart = nextAutomationWindowStart(cursor, new Date(), granularity);
 
   // Always a full period. `windowStart <= alignedNow` by construction, so this
   // can never exceed the current period's end and never needs clamping — which
   // is what keeps it from degenerating.
-  const windowEnd = addBehaviorPeriod(windowStart, granularity);
+  const windowEnd = addAutomationPeriod(windowStart, granularity);
 
   return { windowStart, windowEnd, cursor };
 }
 
 /**
- * The Behavior's window cursor: the start of the latest period it has a canvas
+ * The Automation's window cursor: the start of the latest period it has a canvas
  * chain root for, or null if it has none.
  *
- * `canvas_windows` holds one row per root, so this is a bounded per-Behavior
+ * `canvas_windows` holds one row per root, so this is a bounded per-Automation
  * lookup, not a history aggregation. Ordered by `window_start` because that is
  * the field being chained; ordering by `window_end` would re-introduce the
  * boundary ambiguity documented on `computePendingWindow`. Zero-content windows
@@ -157,12 +157,12 @@ export async function computePendingWindow(
  */
 export async function readWindowCursor(
   sql: DbClient,
-  watcherId: number
+  automationId: number
 ): Promise<Date | null> {
   const rows = await sql`
     SELECT window_start
     FROM canvas_windows
-    WHERE watcher_id = ${watcherId}
+    WHERE automation_id = ${automationId}
     ORDER BY window_start DESC
     LIMIT 1
   `;
@@ -172,7 +172,7 @@ export async function readWindowCursor(
 /**
  * Resolve an agent-supplied `since`/`until` to a UTC instant.
  *
- * Window boundaries are UTC everywhere in this file (`alignToBehaviorWindowStart`
+ * Window boundaries are UTC everywhere in this file (`alignToAutomationWindowStart`
  * is all `setUTCHours`), but `parseDateAlias` normalizes every result to midnight
  * in the SERVER's LOCAL zone — and the two disagree by a full day in BOTH
  * directions:
@@ -181,10 +181,10 @@ export async function readWindowCursor(
  *          `.setHours(0,0,0,0)` lands on Aug 5. The agent asked for the 6th and
  *          would have written the 5th.
  *   UTC+3  the same call lands on local Aug 6 = `2026-08-05T21:00Z`, which
- *          `alignToBehaviorWindowStart` then snaps back to Aug 5. Same wrong day,
+ *          `alignToAutomationWindowStart` then snaps back to Aug 5. Same wrong day,
  *          reached by a different route.
  *
- * `get_behavior.next_action` hands MCP clients exactly such a `YYYY-MM-DD` string,
+ * `get_automation.next_action` hands MCP clients exactly such a `YYYY-MM-DD` string,
  * so the server's own suggested call did not round-trip on any non-UTC
  * deployment. A calendar date is a UTC day here, so parse it as one directly and
  * never let the local zone touch it.
@@ -196,7 +196,7 @@ export async function readWindowCursor(
  * Caught by the e2e on a west-of-UTC machine (it asked for 2026-08-06 and got the
  * 2026-08-05 window). Invisible to every unit test, which all pass in UTC.
  */
-export function parseBehaviorWindowDate(value: string): Date {
+export function parseAutomationWindowDate(value: string): Date {
   const trimmed = value.trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
     return new Date(`${trimmed}T00:00:00.000Z`);
@@ -206,9 +206,9 @@ export function parseBehaviorWindowDate(value: string): Date {
 }
 
 /**
- * When something a Behavior window produced actually happened.
+ * When something an Automation window produced actually happened.
  *
- * `window_end` alone is a future instant for the whole day a sub-daily Behavior
+ * `window_end` alone is a future instant for the whole day a sub-daily Automation
  * runs — `window-utils` has no 'hourly' granularity — and every read path bounds
  * on `occurred_at <= now()`, so a flat `window_end` stamp hides the row until
  * the window closes. Clamping keeps the period-end reading for a window
@@ -220,7 +220,7 @@ export function parseBehaviorWindowDate(value: string): Date {
  * clamped, correcting an open window's canvas made it vanish — the uncorrected
  * head was visible and its correction was not.
  */
-export function behaviorOutputOccurredAt(windowEnd: string | Date): string {
+export function automationOutputOccurredAt(windowEnd: string | Date): string {
   const endMs = new Date(windowEnd).getTime();
   return new Date(
     Number.isFinite(endMs) ? Math.min(endMs, Date.now()) : Date.now()
@@ -232,7 +232,7 @@ export function behaviorOutputOccurredAt(windowEnd: string | Date): string {
  *
  * Deliberately does NOT clamp to a single period. The backfill affordance
  * depends on being able to ask for a wider span — the unprocessed-ranges
- * formatter suggests whole months to a daily Behavior — so the span is
+ * formatter suggests whole months to a daily Automation — so the span is
  * preserved and only its edges move.
  *
  * The end is aligned UP to the next period start, making it EXCLUSIVE. The
@@ -245,15 +245,15 @@ export function behaviorOutputOccurredAt(windowEnd: string | Date): string {
 export function alignRequestedWindow(
   since: Date,
   until: Date,
-  granularity: BehaviorTimeGranularity
+  granularity: AutomationTimeGranularity
 ): { windowStart: Date; windowEnd: Date } {
-  const windowStart = alignToBehaviorWindowStart(since, granularity);
-  const alignedUntil = alignToBehaviorWindowStart(until, granularity);
+  const windowStart = alignToAutomationWindowStart(since, granularity);
+  const alignedUntil = alignToAutomationWindowStart(until, granularity);
   // `until` is inclusive as the caller means it ("through June 30"), so the
   // period containing it is part of the span and the exclusive end is the
   // period after that one. A same-period since/until yields exactly one period
   // rather than a zero-length window.
-  const windowEnd = addBehaviorPeriod(
+  const windowEnd = addAutomationPeriod(
     alignedUntil < windowStart ? windowStart : alignedUntil,
     granularity
   );
@@ -265,20 +265,20 @@ export function alignRequestedWindow(
  *
  * Two different facts, and conflating them is a bug this function was rewritten
  * to fix. `periodsBehind` measures the WINDOW BEING HANDED OUT, not the cursor.
- * Measured against the cursor, a perfectly healthy daily Behavior reads as two
+ * Measured against the cursor, a perfectly healthy daily Automation reads as two
  * periods behind at the moment its run calls `read_knowledge` — the cursor is the
  * period completed by the PREVIOUS run, and the pending window is the one after
- * that. Prod Behavior 79 (`0 4 * * *`) sits exactly there every single day. Any
+ * that. Prod Automation 79 (`0 4 * * *`) sits exactly there every single day. Any
  * staleness threshold applied to the cursor therefore fires on healthy runs.
  *
- * `periodsSkipped` is the span the floor in `nextBehaviorWindowStart` jumped
+ * `periodsSkipped` is the span the floor in `nextAutomationWindowStart` jumped
  * over: the periods between the cursor and the window now being handed out, which
  * no run will ever be dispatched for. Zero on every healthy run, because the
  * window chains directly off the cursor. This is a statement about what the
  * server DID, not a judgment — which is why it needs no threshold.
  *
  * Deliberately still raw facts: no `is_stale` flag. Whether a skipped span is
- * worth draining depends on what the Behavior is FOR — a drafting Behavior wants
+ * worth draining depends on what the Automation is FOR — a drafting Automation wants
  * to skip, a metrics one wants every period because the gaps are its data — and
  * that judgment lives in the prompt, which this function will never see.
  */
@@ -286,7 +286,7 @@ export function computeWindowLag(
   cursor: Date | null,
   windowStart: Date,
   now: Date,
-  granularity: BehaviorTimeGranularity
+  granularity: AutomationTimeGranularity
 ): {
   currentPeriodStart: Date;
   periodsBehind: number;
@@ -294,8 +294,8 @@ export function computeWindowLag(
   skippedTo: Date | null;
   periodsSkipped: number;
 } {
-  const currentPeriodStart = alignToBehaviorWindowStart(now, granularity);
-  const alignedWindow = alignToBehaviorWindowStart(windowStart, granularity);
+  const currentPeriodStart = alignToAutomationWindowStart(now, granularity);
+  const alignedWindow = alignToAutomationWindowStart(windowStart, granularity);
   // Whole periods between the two aligned instants. Arithmetic rather than a
   // loop so a window years adrift costs the same as one a day adrift, and exact
   // because every alignment is UTC — no DST to round over.
@@ -307,7 +307,7 @@ export function computeWindowLag(
   // The period the window WOULD have covered by chaining. When the floor moved
   // the window past it, everything from here to the window is skipped.
   const chained = cursor
-    ? addBehaviorPeriod(alignToBehaviorWindowStart(cursor, granularity), granularity)
+    ? addAutomationPeriod(alignToAutomationWindowStart(cursor, granularity), granularity)
     : null;
   const periodsSkipped =
     chained && chained < alignedWindow
@@ -321,8 +321,8 @@ export function computeWindowLag(
     // Inclusive: the last period actually skipped is the one before the window.
     skippedTo:
       periodsSkipped > 0
-        ? alignToBehaviorWindowStart(
-            subtractBehaviorPeriod(alignedWindow, granularity),
+        ? alignToAutomationWindowStart(
+            subtractAutomationPeriod(alignedWindow, granularity),
             granularity
           )
         : null,
@@ -334,17 +334,17 @@ export function computeWindowLag(
  * The lag stated in words, or null when there is nothing to say.
  *
  * This exists because reporting the NUMBER was not enough. Measured 2026-08-06
- * against a live run: a Behavior seeded fifty periods behind, handed
+ * against a live run: an Automation seeded fifty periods behind, handed
  * `periods_behind: 50`, analysed the stale window anyway and advanced the cursor
  * by exactly one period — the prod pathology reproduced WITH the lag field in
- * place. Behavior runs reach knowledge through `run_sdk`, which returns JSON, so
+ * place. Automation runs reach knowledge through `run_sdk`, which returns JSON, so
  * all the model ever saw was four numbers inside a thirteen-key object. The
- * prose lived in the markdown formatter, on a path Behavior runs never take.
+ * prose lived in the markdown formatter, on a path Automation runs never take.
  *
  * So the guidance travels WITH the data, on every surface.
  *
  * What it SAYS changed once the floor landed. It no longer asks a run to rescue a
- * stuck cursor — `nextBehaviorWindowStart` now does that deterministically, for
+ * stuck cursor — `nextAutomationWindowStart` now does that deterministically, for
  * every model — it reports the span the server skipped in order to get current,
  * and offers the one decision that is genuinely the run's: whether that span is
  * worth reading.
@@ -352,10 +352,10 @@ export function computeWindowLag(
  * No threshold. It speaks exactly when periods were skipped, which never happens
  * on a healthy run, so there is no number to tune and nothing training a model to
  * ignore a notice it sees every time. The previous `periodsBehind >= 2` rule
- * would have fired on every healthy daily Behavior — see `computeWindowLag`.
+ * would have fired on every healthy daily Automation — see `computeWindowLag`.
  *
  * Worded without attributing the skip to anything. A gap between the cursor and
- * the window can be the floor jumping a lagging Behavior forward OR the agent
+ * the window can be the floor jumping a lagging Automation forward OR the agent
  * asking for a later span itself, and the payload cannot tell the two apart;
  * claiming the server moved the window would be false on the second path.
  */
@@ -363,18 +363,18 @@ export function describeWindowLag(lag: {
   skippedFrom: Date | null;
   skippedTo: Date | null;
   periodsSkipped: number;
-  granularity: BehaviorTimeGranularity;
+  granularity: AutomationTimeGranularity;
 }): string | null {
   if (lag.periodsSkipped < 1 || !lag.skippedFrom || !lag.skippedTo) return null;
   return (
-    `${lag.periodsSkipped} ${lag.granularity} period(s) between this Behavior's last completed ` +
+    `${lag.periodsSkipped} ${lag.granularity} period(s) between this Automation's last completed ` +
     `window and the one above were skipped — ${lag.skippedFrom.toISOString()} through ` +
     `${lag.skippedTo.toISOString()} — and no run will be dispatched for them. ` +
-    "If this Behavior's purpose needs that span, read it " +
+    "If this Automation's purpose needs that span, read it " +
     'explicitly: call read_knowledge again with `since`/`until` covering it and complete the ' +
     'token that call returns. Completing an older window records it without moving the cursor ' +
-    'back, so draining the backlog cannot make this Behavior stale again. If only recent ' +
-    'periods matter for what this Behavior does, ignore this and analyse the window above.'
+    'back, so draining the backlog cannot make this Automation stale again. If only recent ' +
+    'periods matter for what this Automation does, ignore this and analyse the window above.'
   );
 }
 
@@ -383,7 +383,7 @@ const MS_PER_DAY = 86_400_000;
 function wholePeriodsBetween(
   from: Date,
   to: Date,
-  granularity: BehaviorTimeGranularity
+  granularity: AutomationTimeGranularity
 ): number {
   switch (granularity) {
     case 'daily':
@@ -404,12 +404,12 @@ function monthsBetween(from: Date, to: Date): number {
 }
 
 /**
- * The period a Behavior should analyse next, given the start of its most recent
+ * The period an Automation should analyse next, given the start of its most recent
  * window (or null if it has none).
  *
  * Pure and exported because TWO call sites need it and they must not drift:
  * `computePendingWindow` above, which is what actually dispatches, and
- * `get_behavior`'s `next_window`, which only PREVIEWS the dispatch. While those
+ * `get_automation`'s `next_window`, which only PREVIEWS the dispatch. While those
  * were two implementations they disagreed by a full period on legacy rows —
  * telling the agent one window and handing the run another. One rule, one
  * implementation, no drift.
@@ -422,18 +422,18 @@ function monthsBetween(from: Date, to: Date): number {
  * `now` is a parameter rather than read here so the rule stays a pure function
  * of its inputs and can be tested at a chosen instant.
  */
-export function nextBehaviorWindowStart(
+export function nextAutomationWindowStart(
   lastWindowStart: Date | null,
   now: Date,
-  granularity: BehaviorTimeGranularity
+  granularity: AutomationTimeGranularity
 ): Date {
-  const alignedNow = alignToBehaviorWindowStart(now, granularity);
-  // The oldest window a current Behavior is ever handed. Aligned BEFORE the
+  const alignedNow = alignToAutomationWindowStart(now, granularity);
+  // The oldest window a current Automation is ever handed. Aligned BEFORE the
   // subtraction: `setUTCMonth(month - 1)` on the 29th–31st rolls FORWARD
-  // (Feb 31 → Mar 3), so subtracting from a raw `now` handed a monthly Behavior
+  // (Feb 31 → Mar 3), so subtracting from a raw `now` handed a monthly Automation
   // run on the 31st the window it was already on.
-  const previousPeriod = alignToBehaviorWindowStart(
-    subtractBehaviorPeriod(alignedNow, granularity),
+  const previousPeriod = alignToAutomationWindowStart(
+    subtractAutomationPeriod(alignedNow, granularity),
     granularity
   );
 
@@ -444,15 +444,15 @@ export function nextBehaviorWindowStart(
 
   // Next period after the last one, re-aligned so a corrupt stored start cannot
   // propagate.
-  const chained = addBehaviorPeriod(
-    alignToBehaviorWindowStart(lastWindowStart, granularity),
+  const chained = addAutomationPeriod(
+    alignToAutomationWindowStart(lastWindowStart, granularity),
     granularity
   );
 
   // THE FLOOR, and the reason this file changed. Chaining advances one period per
   // COMPLETED window while the clock advances one period per period, so a gap
   // never closes on its own — it freezes at whatever width the outage left. Prod
-  // Behavior 2 sat 50 days behind, drafting replies to month-dead Hacker News
+  // Automation 2 sat 50 days behind, drafting replies to month-dead Hacker News
   // threads one June day at a time, and would have needed 50 more successful runs
   // to reach the present.
   //
@@ -461,8 +461,8 @@ export function nextBehaviorWindowStart(
   // guidance cannot buy: prose changes the odds, a floor changes the guarantee.
   //
   // Only the window ASKED FOR moves. The cursor still advances solely when a run
-  // completes a window, so a Behavior whose runs all fail keeps reporting its full
-  // lag rather than looking current — the floor cannot mask a broken Behavior.
+  // completes a window, so an Automation whose runs all fail keeps reporting its full
+  // lag rather than looking current — the floor cannot mask a broken Automation.
   const floored = chained < previousPeriod ? previousPeriod : chained;
 
   // Capped at the current period: being "done" with today means today gets
@@ -472,9 +472,9 @@ export function nextBehaviorWindowStart(
 }
 
 /**
- * Build the SELECT clause for watcher windows queries.
+ * Build the SELECT clause for automation windows queries.
  *
- * This is used by the get_behavior tool for both the main query and fallback granularity queries.
+ * This is used by the get_automation tool for both the main query and fallback granularity queries.
  * Extracts common SQL to avoid duplication.
  *
  * @returns SQL SELECT ... FROM ... JOIN fragment (without WHERE clause)
@@ -488,23 +488,23 @@ export function nextBehaviorWindowStart(
 /** FROM fragment for callers that need `iw` joined to versions (the SELECT clause). */
 export function buildWindowsFromWithVersions(): string {
   return `canvas_windows iw
-    JOIN watchers i ON iw.watcher_id = i.id
-    LEFT JOIN watcher_versions watcher_v ON i.current_version_id = watcher_v.id
-    LEFT JOIN watcher_versions window_v ON iw.version_id = window_v.id`;
+    JOIN automations i ON iw.automation_id = i.id
+    LEFT JOIN automation_versions automation_v ON i.current_version_id = automation_v.id
+    LEFT JOIN automation_versions window_v ON iw.version_id = window_v.id`;
 }
 
 /** Bare FROM fragment for the COUNT(*) pagination fallback (no version joins). */
 export function buildWindowsCountFromClause(): string {
   return `canvas_windows iw
-    JOIN watchers i ON iw.watcher_id = i.id`;
+    JOIN automations i ON iw.automation_id = i.id`;
 }
 
 export function buildWindowsSelectClause(): string {
   return `
     SELECT
       iw.id as window_id,
-      iw.watcher_id,
-      COALESCE(window_v.name, watcher_v.name, i.name) as watcher_name,
+      iw.automation_id,
+      COALESCE(window_v.name, automation_v.name, i.name) as automation_name,
       iw.granularity,
       iw.window_start,
       iw.window_end,

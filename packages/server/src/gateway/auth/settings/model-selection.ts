@@ -5,7 +5,7 @@ import { isUnresolvedModelRef } from "../model-sentinel.js";
  * Enforce the EXACT-model allow-list against a requested model ref. This is the
  * pure core of the universal dispatch gate applied in the deployment manager —
  * the single point every dispatch lane (direct API, Listen bridge,
- * chat-instance, watcher HTTP, scheduled-job direct enqueue) converges on
+ * chat-instance, automation HTTP, scheduled-job direct enqueue) converges on
  * before a worker runs.
  *
  * Decision B semantics — NO org-default escalation:
@@ -84,12 +84,12 @@ export type OrgDefaultModelReader = (
 
 /**
  * The agent-layer model ref — the middle of the layered fallback
- * `behavior → agent → org default`. Pure and synchronous: it returns the head
+ * `automation → agent → org default`. Pure and synchronous: it returns the head
  * of the agent's `models` list (an explicit `provider/model` ref), or undefined
  * when the list is empty/absent. The caller composes the tail:
  * `resolveEffectiveModelRef(settings) ?? await getOrgDefaultModel(orgId)`.
  *
- * The per-behavior override sits ABOVE this and is injected at run-enqueue into
+ * The per-automation override sits ABOVE this and is injected at run-enqueue into
  * `agentOptions.model` (so it wins before this is consulted).
  */
 export function resolveEffectiveModelRef(
@@ -101,7 +101,7 @@ export function resolveEffectiveModelRef(
 
 /**
  * Compose the full layered fallback for a run: the caller has already applied any
- * per-behavior override (it wins upstream, injected into the run's `model`
+ * per-automation override (it wins upstream, injected into the run's `model`
  * option), so this resolves `agent.models[0] → org default`. Returns undefined
  * only when the agent pins nothing AND the org has no default — the worker then
  * surfaces its actionable "no model" error. `organizationId` may be undefined

@@ -316,7 +316,7 @@ export const AGENT_ERRORS: Record<AgentErrorCode, AgentErrorSpec> = {
  * Lives in core because two packages must agree on it and previously did not:
  * `classifyError` (agent-worker) turns the message into
  * `PROVIDER_QUOTA_EXHAUSTED`, and `providerQuotaResetNotBefore` (server) parks
- * a Behavior for a day on the same wording. They were maintained as separate
+ * an Automation for a day on the same wording. They were maintained as separate
  * literals and drifted in both directions: the server list learned OpenAI's
  * "no credits remaining" while the worker's
  * did not, and the worker matched "insufficient quota" while the server's park

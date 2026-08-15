@@ -30,7 +30,7 @@ function fenceGroupLockTag(
  * (cloudId) under a single routing + ownership contract.
  *
  * This is an org/tenant INSTALLATION resource, not an agent connection: one
- * installed tenant routes to many agents via channel Behaviors, so it has no
+ * installed tenant routes to many agents via channel Automations, so it has no
  * owning agent. Credentials live in `auth_profiles` (referenced by
  * `authProfileId`), never plaintext here; `metadata` carries provider-specific
  * tenant data (team_name, account login, site url, etc.).
@@ -96,7 +96,7 @@ export interface AppInstallationUpsert extends AppInstallationTenantKey {
    * the fence for a claim that must be a deliberate move, not a silent slot
    * steal. Checked INSIDE the advisory-locked transaction, so it holds across
    * replicas even against a concurrent activation of the same tuple. Default
-   * false (transfer proceeds, preserving the historical one-active-owner behavior
+   * false (transfer proceeds, preserving the historical one-active-owner automation
    * for reinstall/OAuth paths).
    */
   blockCrossOrgTransfer?: boolean;

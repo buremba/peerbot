@@ -73,7 +73,7 @@ export interface ConnectorSpec
   /**
    * Optional interactive auth flow. When provided, lowers to
    * `ConnectorRuntime.authenticate`; when omitted, the connector inherits the
-   * base behavior (throws — non-interactive auth needs no handler).
+   * base automation (throws — non-interactive auth needs no handler).
    */
   authenticate?(ctx: AuthContext): Promise<AuthResult>;
   /**
@@ -127,7 +127,7 @@ function buildDefinition(spec: ConnectorSpec): ConnectorDefinition {
     requiredCapability: spec.requiredCapability,
     runtime: spec.runtime,
     webhook: spec.webhook,
-    behaviorEvents: spec.behaviorEvents,
+    automationEvents: spec.automationEvents,
   };
 
   if (spec.feeds) {

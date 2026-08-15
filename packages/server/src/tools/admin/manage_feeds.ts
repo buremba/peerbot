@@ -248,11 +248,11 @@ async function handleListFeeds(
                AND ent.id IN ${sql.unsafe(feedLinkedEntityIdsSql('p', 'c'))}
            ) AS entity_names,
            (SELECT COUNT(*) FROM runs r WHERE r.feed_id = p.id AND r.status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[]))::int AS active_runs,
-           -- Agent targeted by this feed's channel Behavior (streaming feeds only), so the
-           -- Behaviors Listen picker can hide channels already owned by another
-           -- agent instead of silently reassigning the Behavior when linked.
+           -- Agent targeted by this feed's channel Automation (streaming feeds only), so the
+           -- Automations Listen picker can hide channels already owned by another
+           -- agent instead of silently reassigning the Automation when linked.
            (SELECT subscription.agent_id
-             FROM behavior_message_subscriptions subscription
+             FROM automation_message_subscriptions subscription
              WHERE subscription.organization_id = p.organization_id
                AND subscription.connection_id = p.connection_id
                AND subscription.channel_id = p.feed_key
@@ -353,17 +353,17 @@ async function handleReadFeed(
            c.connector_key,
            c.external_tenant_id,
            c.display_name AS connection_name,
-           -- The channel's CONCRETE workspace, from its Behavior trigger: the
+           -- The channel's CONCRETE workspace, from its Automation trigger: the
            -- SAME real team the about-edge writer keyed on. For a Grid org-wide install the
            -- connection tenant is the enterprise E-id, so the about lookup must
            -- NOT fall back to it; the trigger holds the real T-id.
            (SELECT subscription.trigger_team_id
-             FROM behavior_message_subscriptions subscription
+             FROM automation_message_subscriptions subscription
              WHERE subscription.organization_id = f.organization_id
                AND subscription.connection_id = f.connection_id
                AND subscription.channel_id = f.feed_key
                AND subscription.trigger_team_id IS NOT NULL
-             LIMIT 1) AS behavior_team_id,
+             LIMIT 1) AS automation_team_id,
            (
              SELECT string_agg(DISTINCT ent.name, ', ' ORDER BY ent.name)
              FROM entities ent
@@ -423,12 +423,12 @@ async function handleReadFeed(
       organizationId,
       connectionId: feed.connection_id,
       connectorKey: String(feed.connector_key ?? 'slack'),
-      // The Behavior trigger's real workspace (`T…`) — NOT the connection tenant,
+      // The Automation trigger's real workspace (`T…`) — NOT the connection tenant,
       // which is the enterprise `E…` on a Grid org-wide install. Falls back to the tenant
       // only for a non-team-scoped connector / not-yet-healed trigger, matching
       // the writer.
       teamId:
-        (feed.behavior_team_id as string | null) ??
+        (feed.automation_team_id as string | null) ??
         (feed.external_tenant_id as string | null) ??
         null,
       channelId: feedKey,
@@ -829,7 +829,7 @@ async function handleUpdateFeed(
 
     // Resume starts a fresh failure episode so the next hard-pause emits a new
     // feed.auto_paused delivery_id (keyed on first_failure_at) instead of
-    // silently reusing the prior pause episode's Behavior run.
+    // silently reusing the prior pause episode's Automation run.
     const resuming =
       args.status === 'active' && String(feedRow.status) !== 'active';
 

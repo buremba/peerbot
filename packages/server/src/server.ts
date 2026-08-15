@@ -98,7 +98,7 @@ async function main(): Promise<void> {
 			// Derive a STABLE secret from ENCRYPTION_KEY so window_tokens survive a
 			// restart and verify across replicas — a random per-boot secret broke
 			// both (a token signed before a restart or on a sibling replica failed
-			// verification, so watcher complete_window silently failed). Fall back
+			// verification, so automation complete_window silently failed). Fall back
 			// to random only when ENCRYPTION_KEY is unset (the ephemeral-key opt-in,
 			// which is itself per-boot and non-persistent by design).
 			process.env.JWT_SECRET = process.env.ENCRYPTION_KEY

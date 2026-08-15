@@ -19,10 +19,10 @@
  *    full four-lane set here. The browser-worker (Chrome) lane runs out
  *    of a service-worker and also heartbeats now (owletto#186) but uses
  *    its own `chrome.alarms` cadence — it shares this WHERE clause.
- *  - `watcher` — driven in-process by the embedded gateway. Lifecycle is
+ *  - `automation` — driven in-process by the embedded gateway. Lifecycle is
  *    handled by the durable terminal-event resolution (run-completion.ts)
- *    + the dedicated `sweepStaleWatcherRuns` / `resetOrphanedWatcherRuns`
- *    helpers in watchers/automation.ts.
+ *    + the dedicated `sweepStaleAutomationRuns` / `resetOrphanedAutomationRuns`
+ *    helpers in automations/automation.ts.
  *  - lobu-queue lanes (`chat_message`, `schedule`, `agent_run`, `internal`,
  *    `task`) — claimed by RunsQueue with its own per-claim heartbeat on
  *    `claimed_at` and own 5-min stale sweep. Not touched here.
@@ -34,12 +34,12 @@
  * `setInterval` started by `startStaleRunReaper` in the gateway boot path
  * (server-lifecycle.ts). The 5-minute `checkStalledExecutions` cron no longer
  * calls it (the two firing it was redundant); the cron now only does the
- * surrounding housekeeping (watcher reconcile/sweep, connect-token expiry,
+ * surrounding housekeeping (automation reconcile/sweep, connect-token expiry,
  * 30-day retention).
  */
 
 import type { ReservedSql } from 'postgres';
-import { maybeEmitFeedAutoPausedAfterFailure } from '../behaviors/platform-events';
+import { maybeEmitFeedAutoPausedAfterFailure } from '../automations/platform-events';
 import { intervals } from '../config/intervals';
 import { feedBackoff } from '../connectors/feed-backoff';
 import { getDb } from '../db/client';
@@ -51,7 +51,7 @@ import {
 } from '../tools/admin/approval-events';
 import { expireStaleConnectTokens } from '../utils/connect-tokens';
 import logger from '../utils/logger';
-import { reconcileWatcherRuns, sweepStaleWatcherRuns } from '../watchers/automation';
+import { reconcileAutomationRuns, sweepStaleAutomationRuns } from '../automations/automation';
 import { buildStaleRunWhereSql } from './stale-run-sweeper';
 
 /** Advisory-lock key for cross-pod coordination of the stale-run reaper.
@@ -378,7 +378,7 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
         return { acquired: true, reaped: 0, retriesCreated: 0 };
       }
 
-      // Threshold-crossing hard pauses from the never-claimed path → Behavior signal.
+      // Threshold-crossing hard pauses from the never-claimed path → Automation signal.
       const autoPausedRaw = reapedRow?.auto_paused_feeds;
       const autoPausedList: Array<{ id: number; consecutive_failures: number }> =
         Array.isArray(autoPausedRaw)
@@ -471,7 +471,7 @@ function stopStaleRunReaper(): void {
 
 /**
  * Periodic housekeeping run by the 5-minute `check-stalled-executions`
- * TaskScheduler cron: watcher reconcile + stale watcher sweep + connect-token
+ * TaskScheduler cron: automation reconcile + stale automation sweep + connect-token
  * expiry + 30-day retention. These don't justify a dedicated interval each.
  *
  * Stale-run reaping is NOT done here — it is owned exclusively by the 30s
@@ -484,14 +484,14 @@ export async function checkStalledExecutions(_env: Env): Promise<void> {
   // Isolate each phase so a throw in one (e.g. the `malformed array literal`
   // bug, lobu#1046) doesn't disable the rest of the housekeeping.
   try {
-    await reconcileWatcherRuns(sql);
+    await reconcileAutomationRuns(sql);
   } catch (error) {
-    logger.error({ error }, '[StalledRuns] reconcileWatcherRuns failed');
+    logger.error({ error }, '[StalledRuns] reconcileAutomationRuns failed');
   }
   try {
-    await sweepStaleWatcherRuns(sql);
+    await sweepStaleAutomationRuns(sql);
   } catch (error) {
-    logger.error({ error }, '[StalledRuns] sweepStaleWatcherRuns failed');
+    logger.error({ error }, '[StalledRuns] sweepStaleAutomationRuns failed');
   }
 
   try {

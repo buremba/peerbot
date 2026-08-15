@@ -17,7 +17,7 @@ function managedState(
     agents: [],
     prune: false,
     memorySchema: { entityTypes: [], relationshipTypes: [] },
-    watchers: [],
+    automations: [],
     connectors: {
       definitions: [],
       authProfiles: [],

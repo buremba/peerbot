@@ -951,7 +951,7 @@ async function generateLobuConfig(
 
   // Hosted Lobu Slack bot — a project-level connection with no token. `lobu run`
   // prints a `/lobu link <code>` you redeem by DMing the bot; redeeming binds an
-  // agent by creating a channel Behavior.
+  // agent by creating a channel Automation.
   const connectionDecls: string[] = [];
   if (options.enableHostedSlack) {
     connectionDecls.push(

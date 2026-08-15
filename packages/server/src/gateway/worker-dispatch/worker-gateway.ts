@@ -18,11 +18,11 @@ import { stream } from "hono/streaming";
 import { getDb } from "../../db/client.js";
 import { bindRequestAbortToStream } from "../../events/sse-abort-bridge.js";
 import {
-  BEHAVIOR_RUN_SOURCE,
-  type BehaviorRunSkillResolver,
-  formatBehaviorRunSkillInstructions,
-  resolveBehaviorRunSkills,
-} from "../behavior-run-session.js";
+  AUTOMATION_RUN_SOURCE,
+  type AutomationRunSkillResolver,
+  formatAutomationRunSkillInstructions,
+  resolveAutomationRunSkills,
+} from "../automation-run-session.js";
 import { toPublicWebOrigin } from "../../utils/url-builder.js";
 import type { ApiKeyProviderModule } from "../auth/api-key-provider-module.js";
 import { getRevokedTokenStore } from "../auth/revoked-token-store.js";
@@ -78,7 +78,7 @@ export class WorkerGateway {
   private mcpProxy?: McpProxy;
   private providerCatalogService?: ProviderCatalogService;
   private agentSettingsStore?: AgentSettingsStore;
-  private behaviorRunSkillResolver: BehaviorRunSkillResolver;
+  private automationRunSkillResolver: AutomationRunSkillResolver;
   private deploymentActivityTracker?: DeploymentActivityTracker;
 
   constructor(
@@ -89,7 +89,7 @@ export class WorkerGateway {
     mcpProxy?: McpProxy,
     providerCatalogService?: ProviderCatalogService,
     agentSettingsStore?: AgentSettingsStore,
-    behaviorRunSkillResolver: BehaviorRunSkillResolver = resolveBehaviorRunSkills
+    automationRunSkillResolver: AutomationRunSkillResolver = resolveAutomationRunSkills
   ) {
     this.queue = queue;
     this.publicGatewayUrl = publicGatewayUrl;
@@ -100,7 +100,7 @@ export class WorkerGateway {
     this.mcpProxy = mcpProxy;
     this.providerCatalogService = providerCatalogService;
     this.agentSettingsStore = agentSettingsStore;
-    this.behaviorRunSkillResolver = behaviorRunSkillResolver;
+    this.automationRunSkillResolver = automationRunSkillResolver;
 
     // Setup Hono app
     this.app = new Hono();
@@ -369,17 +369,17 @@ export class WorkerGateway {
   }
 
   /**
-   * Resolve the reply-to-source Behavior selected for this exact queued turn.
+   * Resolve the reply-to-source Automation selected for this exact queued turn.
    *
    * platformMetadata in a worker response is attacker-controlled. The signed
-   * per-run token carries the queued runs.id rather than a Behavior id;
-   * re-reading that durable gateway-written row binds the Behavior id to the
+   * per-run token carries the queued runs.id rather than an Automation id;
+   * re-reading that durable gateway-written row binds the Automation id to the
    * planner decision without putting per-turn state on the deployment-lifetime
    * fallback token. Missing per-run identity degrades safely to no schedule
    * mutation. Database errors propagate so a terminal quota reply is retried
    * rather than delivered with an untrusted id.
    */
-  private async resolveTrustedBehaviorId(
+  private async resolveTrustedAutomationId(
     tokenData: WorkerTokenData
   ): Promise<number | undefined> {
     const { runId, organizationId, agentId, messageId } = tokenData;
@@ -426,11 +426,11 @@ export class WorkerGateway {
     if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
       return undefined;
     }
-    const behaviorId = (metadata as { behaviorId?: unknown }).behaviorId;
-    return typeof behaviorId === "number" &&
-      Number.isSafeInteger(behaviorId) &&
-      behaviorId > 0
-      ? behaviorId
+    const automationId = (metadata as { automationId?: unknown }).automationId;
+    return typeof automationId === "number" &&
+      Number.isSafeInteger(automationId) &&
+      automationId > 0
+      ? automationId
       : undefined;
   }
 
@@ -457,9 +457,9 @@ export class WorkerGateway {
       // token and retain only non-routing metadata from the body. In particular,
       // an absent connectionId must remove a body-supplied value rather than
       // turning a non-chat run into a cross-tenant Chat delivery.
-      const trustedBehaviorId =
+      const trustedAutomationId =
         responseData.errorCode === AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED
-          ? await this.resolveTrustedBehaviorId(auth.tokenData)
+          ? await this.resolveTrustedAutomationId(auth.tokenData)
           : undefined;
       const tokenRouting = {
         userId: auth.tokenData.userId,
@@ -479,7 +479,7 @@ export class WorkerGateway {
         teamId: tokenRouting.teamId,
         source: auth.tokenData.source,
         senderId: tokenRouting.userId,
-        behaviorId: trustedBehaviorId,
+        automationId: trustedAutomationId,
       };
       const platformMetadata =
         responseData.platformMetadata &&
@@ -663,7 +663,7 @@ export class WorkerGateway {
       // ANOTHER org's identity/soul/skills/MCP-slug and ship it to the worker.
       // Declared (SDK-embedded) agents are org-agnostic, so they resolve without
       // an org. When `!orgScopedOk` for a DB-backed agent we deny ALL agent-scoped
-      // reads (fail closed to generic/no-agent behavior).
+      // reads (fail closed to generic/no-agent automation).
       const tokenOrgId = auth.tokenData.organizationId;
       // ORG-AWARE declared check: a declared id that ALSO has a real DB row in
       // the token's org is DB-backed (the DB row wins), so a collision cannot
@@ -809,15 +809,15 @@ export class WorkerGateway {
       // (the correct fail-closed value: NO skill content leaks cross-tenant), and
       // this removes the duplicate id-only read that ignored the org guard.
       //
-      // A Behavior run uses version-pinned instructions, so the live library
+      // An Automation run uses version-pinned instructions, so the live library
       // must not re-enter the turn. Replace both live surfaces with the pinned
       // snapshot: `skillsConfig` syncs the frozen files, and the compact catalog
       // tells the agent which of those files this version requires.
-      const behaviorRun = auth.tokenData.source === BEHAVIOR_RUN_SOURCE;
+      const automationRun = auth.tokenData.source === AUTOMATION_RUN_SOURCE;
       let skillsConfig: Array<{ name: string; content: string }> = [];
       const mcpContext: Record<string, string> = {};
-      if (behaviorRun) {
-        skillsConfig = await this.behaviorRunSkillResolver({
+      if (automationRun) {
+        skillsConfig = await this.automationRunSkillResolver({
           conversationId,
           organizationId: tokenOrgId,
           agentId,
@@ -829,12 +829,12 @@ export class WorkerGateway {
           .map((s) => ({ name: s.name, content: s.content! }));
       }
 
-      const mergedSkillsInstructions = behaviorRun
-        ? formatBehaviorRunSkillInstructions(skillsConfig)
+      const mergedSkillsInstructions = automationRun
+        ? formatAutomationRunSkillInstructions(skillsConfig)
         : contextData.skillsInstructions || "";
 
       logger.info(
-        `Session context for ${userId}: ${Object.keys(mcpConfig.mcpServers || {}).length} MCPs, ${contextData.agentLayers.identityMd.length}/${contextData.agentLayers.soulMd.length}/${contextData.agentLayers.userMd.length} chars identity/soul/user, ${contextData.platformInstructions.length} chars platform instructions, ${contextData.networkInstructions.length} chars network instructions, ${mergedSkillsInstructions.length} chars skills instructions, ${enrichedMcpStatus.length} MCP status entries, ${Object.keys(mcpTools).length} MCP tool lists, ${Object.keys(mcpInstructions).length} MCP instructions, ${skillsConfig.length} skills${behaviorRun ? " (Behavior run — pinned snapshot)" : ""}, provider: ${providerConfig.defaultProvider || "none"}`
+        `Session context for ${userId}: ${Object.keys(mcpConfig.mcpServers || {}).length} MCPs, ${contextData.agentLayers.identityMd.length}/${contextData.agentLayers.soulMd.length}/${contextData.agentLayers.userMd.length} chars identity/soul/user, ${contextData.platformInstructions.length} chars platform instructions, ${contextData.networkInstructions.length} chars network instructions, ${mergedSkillsInstructions.length} chars skills instructions, ${enrichedMcpStatus.length} MCP status entries, ${Object.keys(mcpTools).length} MCP tool lists, ${Object.keys(mcpInstructions).length} MCP instructions, ${skillsConfig.length} skills${automationRun ? " (Automation run — pinned snapshot)" : ""}, provider: ${providerConfig.defaultProvider || "none"}`
       );
 
       return c.json({
@@ -986,7 +986,7 @@ export class WorkerGateway {
         // effects against the org being scored. Both travel together because
         // `verifyWorkerToken` rejects one without the other.
         executionMode: tokenData.executionMode,
-        behaviorRunId: tokenData.behaviorRunId,
+        automationRunId: tokenData.automationRunId,
       }
     );
 

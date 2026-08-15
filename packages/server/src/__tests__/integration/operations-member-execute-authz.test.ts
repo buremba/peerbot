@@ -205,7 +205,7 @@ describe("manage_operations.execute member authorization", () => {
 		});
 
 		it("system/reaction context (bypasses role+scope at routeAction) still sees ready ops as executable", async () => {
-			// Watcher reactions run with userId=null + memberRole=null; routeAction
+			// Automation reactions run with userId=null + memberRole=null; routeAction
 			// bypasses the tier for them, so list_available must NOT downgrade a
 			// genuinely executable target to session_scope_required.
 			const systemCtx: ToolContext = {

@@ -13,7 +13,7 @@ Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
 ## Boundaries and vocabulary
 - Connections are rows, not processes. Agents bind to connections/channels; replicas hydrate connection instances on demand from DB rows and must not assume boot warm-start.
 - Connectors collect external data into feeds/events; chat platforms deliver conversations/messages. Do not blur connector sync with chat transport.
-- Behaviors are the UI umbrella: Listen, Watch, Schedule. A watcher owns windows; a window's living state is a canvas (`semantic_type='canvas_state'`). Artifacts are stored files, not watcher state.
+- Automations are the UI umbrella: Listen, Watch, Schedule. An automation owns windows; a window's living state is a canvas (`semantic_type='canvas_state'`). Artifacts are stored files, not automation state.
 - Platform isolation: InteractionService events carry `platform`; each renderer filters on its own platform and never another's.
 
 ## Connections, feeds, and routing
@@ -43,7 +43,7 @@ Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
 ## Durable dispatch and coordination
 - **Fail closed on durable dispatch/delivery state.** When a durable coordination or delivery operation fails, its caller must not reinterpret the error as proceed, deliver, or skip. Propagate a retry, defer, or terminal-failure outcome with a visible log; if the operation may already have succeeded, reconcile idempotently before retrying. Lock timeouts, pool errors, and ambiguous or expired rows are failures, not "nothing changed".
 - **Coordination design brake.** A change that needs a second lock, a second retry/deferral budget, or a prose termination argument to explain why it halts is patching a misplaced check. Re-derive where the decision belongs, and put it at the chokepoint that already serializes the action — worker dispatch is serialized by `job-router` on the worker-SSE-owner pod. Prefer deleting the state transition over coordinating it, and reuse queue-native retry over a hand-rolled hold/requeue.
-- **Interactive browser drafts are page-activated, never tab-pushed.** Persist the draft operation and its normal Lobu notification; the generic Chrome extension badges exact pending URLs and activates the run only when the user visits one in a user-owned tab. Extension and server core carry no connector, Behavior, selector, or site-specific rules — connector/reaction code owns URL shapes and page interaction. Never auto-submit. Only scrape-owned scratch tabs may be opened and closed automatically.
+- **Interactive browser drafts are page-activated, never tab-pushed.** Persist the draft operation and its normal Lobu notification; the generic Chrome extension badges exact pending URLs and activates the run only when the user visits one in a user-owned tab. Extension and server core carry no connector, Automation, selector, or site-specific rules — connector/reaction code owns URL shapes and page interaction. Never auto-submit. Only scrape-owned scratch tabs may be opened and closed automatically.
 
 ## Connector operations and feed health
 - Built-in connector definitions/catalog install in server; connector implementation details belong in `packages/connectors/AGENTS.md`.
@@ -51,7 +51,7 @@ Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
 - Organization-scoped compiled code shadows the shared artifact for the active version. `refreshConnectorDefinitions` skips keys with no bundled source, but re-syncs every active key that does have bundled source and can reset its definition version/schema to bundled metadata; inspect the active definition after deploy instead of assuming an override survived.
 - A data connection's `device_worker_id` is scrape affinity, not evidence that the browser is in front of the user. Connector-initiated browser actions currently inherit that pin. Until an interactive flow carries an explicit Chrome connection, a `completed` action proves execution on the selected extension, not that the user can see it; verify the resolved Chrome connection/worker before claiming delivery.
 - Connector health scans `connections` + `feeds`; chat connections are not collector connections and should not trip zero-feed collector health rules.
-- Feed hard auto-pause emits `feed.auto_paused` (Behavior signal + lifecycle event). Prefer a normal Behavior over new special-case agent subsystems.
+- Feed hard auto-pause emits `feed.auto_paused` (Automation signal + lifecycle event). Prefer a normal Automation over new special-case agent subsystems.
 
 ## Guardrails, network, and runtime
 - Guardrails live under `packages/core/src/guardrails/`; server built-ins/aggregation live under gateway guardrail code. Guardrail infra errors fail open; each trip writes a `guardrail-trip` event.

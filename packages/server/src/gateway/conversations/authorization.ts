@@ -10,7 +10,7 @@
  * immediately (no cached grant).
  *
  * Authorization boundary (v1): an agent may read+post to any channel it is
- * subscribed to through a Behavior, including the hosted-preview cross-org
+ * subscribed to through an Automation, including the hosted-preview cross-org
  * case where the binding lives under the agent's org but is served by a shared
  * preview connection in another org. Proactive DMs are intentionally NOT in v1
  * (highest-abuse surface; needs per-user opt-out) — the `kind` union leaves the

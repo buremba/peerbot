@@ -10,17 +10,17 @@ import type { Env } from '@lobu/connector-sdk';
 import { runAclSyncTick } from '../authz/acl-sync';
 import {
   activateWorkspaceEventTask,
-} from '../behaviors/workspace-event';
-import type { WorkspaceEventActivationTaskPayload } from '../behaviors/workspace-event-contract';
+} from '../automations/workspace-event';
+import type { WorkspaceEventActivationTaskPayload } from '../automations/workspace-event-contract';
 import type { CoreServices } from '../gateway/services/core-services';
 import { getChatInstanceManager } from '../lobu/gateway';
 import { cleanupExpiredMcpSessions } from '../mcp-handler';
 import { cleanupExpiredMcpAppResultSnapshots } from '../mcp-app-result-snapshots';
 import logger from '../utils/logger';
-import { runWatcherAutomationTick } from '../watchers/automation';
+import { runAutomationTick } from '../automations/automation';
 import { checkStalledExecutions } from './check-stalled-executions';
 import { runConnectorHealthCheck } from '../connectors/connector-health';
-import { retryPendingFeedAutoPausedSignals } from '../behaviors/platform-events';
+import { retryPendingFeedAutoPausedSignals } from '../automations/platform-events';
 import { runClassificationReconciliation } from './classification-reconciliation';
 import { refreshConnectorDefinitions } from './refresh-connector-definitions';
 import {
@@ -239,8 +239,8 @@ function registerMaintenanceTasks(
   // path — no new alerting infra.
   //
   // Also redelivers feed.auto_paused signals if activation was lost after a
-  // hard pause (idempotent delivery_id). Remediation Behaviors come from the
-  // Behavior catalog — not auto-created watchers.
+  // hard pause (idempotent delivery_id). Remediation Automations come from the
+  // Automation catalog — not auto-created automations.
   scheduler.register(
     'connector-health-alert',
     async () => {
@@ -337,7 +337,7 @@ function registerMaintenanceTasks(
   );
 
   // Stale device-worker reaper — deletes device_workers rows that are unseen
-  // for 30+ days AND have no pinned connections/watchers/auth-profiles. Safety
+  // for 30+ days AND have no pinned connections/automations/auth-profiles. Safety
   // net for orphaning that identity-reuse-at-mint can't cover (extension
   // uninstall, "clear extension data", abandoned second machine): those rows
   // have no live credential anywhere, so they're dead and only clutter the
@@ -379,7 +379,7 @@ function registerMaintenanceTasks(
     { cron: '31 3 * * *' },
   );
 
-  // Eval scorer queue: score terminal `behavior_eval` replays that have no
+  // Eval scorer queue: score terminal `automation_eval` replays that have no
   // score events yet. The anti-join predicate IS the claim (rationale in
   // scheduled/score-eval-runs.ts) — no cursor, no in-memory sampler, safe under
   // N>1 replicas.
@@ -405,27 +405,27 @@ function registerMaintenanceTasks(
     { cron: '*/5 * * * *' },
   );
 
-  // Watcher automation: reconcile in-flight runs, materialize newly-due runs,
+  // Automation automation: reconcile in-flight runs, materialize newly-due runs,
   // dispatch pending runs. The orphaned-runs reset is bounded and idempotent
   // so it runs every tick — no per-pod first-tick latch needed.
   //
   // Each phase is isolated: a throw in one (e.g. the `malformed array literal`
   // bug that wedged reconcile, lobu#1046) must NOT abort the later phases —
-  // otherwise a single fault stops materialize+dispatch and no watcher fires.
+  // otherwise a single fault stops materialize+dispatch and no automation fires.
   scheduler.register(
-    'watcher-automation',
+    'automation',
     async () => {
-      const { errors, ...summary } = await runWatcherAutomationTick(env);
+      const { errors, ...summary } = await runAutomationTick(env);
       logger.info(
         { ...summary, ...(errors.length > 0 ? { errors } : {}) },
-        '[task] watcher-automation completed',
+        '[task] automation completed',
       );
     },
     { cron: '* * * * *' },
   );
 
-  // A Behavior output event and this task row commit together. The handler
-  // performs subscriber lookup and takes downstream per-Behavior locks only
+  // An Automation output event and this task row commit together. The handler
+  // performs subscriber lookup and takes downstream per-Automation locks only
   // after the producer's window transaction has released its own resources.
   scheduler.register(WORKSPACE_EVENT_ACTIVATION_TASK, async (ctx) => {
     const result = await activateWorkspaceEventTask(
@@ -520,7 +520,7 @@ export interface WakeAgentTaskPayload {
   /**
    * Optional per-schedule model override (a `provider/model` ref or "auto").
    * Injected into agentOptions.model at dispatch so the layered fallback
-   * (behavior → agent → org default) resolves it as the winning override.
+   * (automation → agent → org default) resolves it as the winning override.
    */
   model?: string | null;
 }
@@ -569,7 +569,7 @@ export async function runWakeAgentTask(
   // Per-schedule model override (a `provider/model` ref or "auto"). Injected
   // into agentOptions.model on both dispatch paths so `resolveAgentOptions`
   // treats it as the winning override in the layered fallback.
-  const behaviorModel =
+  const automationModel =
     typeof p.model === 'string' && p.model.trim() ? p.model.trim() : undefined;
 
   // When the schedule carries trusted gateway-owned delivery context, dispatch
@@ -610,7 +610,7 @@ export async function runWakeAgentTask(
           organizationId: orgId,
           source: 'scheduled-job',
         },
-        agentOptions: behaviorModel ? { model: behaviorModel } : {},
+        agentOptions: automationModel ? { model: automationModel } : {},
       })
     );
     return;
@@ -641,7 +641,7 @@ export async function runWakeAgentTask(
       threadId,
       messageText: p.prompt,
       source: 'scheduled-job',
-      model: behaviorModel,
+      model: automationModel,
     }
   );
 }

@@ -33,8 +33,8 @@ export default async (ctx, client) => {
   const orgs = await client.organizations.list();           // user's memberships + public orgs they can read
   const buremba = orgs.find(o => o.slug === 'buremba');
   if (!buremba) throw new Error('buremba not found');
-  const behaviors = await client.org(buremba.id).behaviors.list({ template: 'reddit' });
-  return behaviors.filter(b => b.status !== 'active' || b.pending > 0);
+  const automations = await client.org(buremba.id).automations.list({ template: 'reddit' });
+  return automations.filter(b => b.status !== 'active' || b.pending > 0);
 };
 ```
 
@@ -81,20 +81,20 @@ These make "LLMs write bash more fluently than typed SDKs" a non-concern:
 
   ```ts
   // Example:
-  // const w = await client.behaviors.list({ entity_id: 42, status: 'active' });
+  // const w = await client.automations.list({ entity_id: 42, status: 'active' });
   ```
 
   Stored in `src/sandbox/method-metadata.ts` next to the summary/throws annotations.
 - **Structured errors keyed for repair.** TypeBox `Value.Errors` surface as:
 
   ```ts
-  { name: 'ValidationError', method: 'behaviors.create',
+  { name: 'ValidationError', method: 'automations.create',
     fields: [{ path: 'extraction_schema', expected: 'object', got: 'string',
                example: { type: 'object', properties: { ... } } }] }
   ```
 
   The `example` field on validation errors nudges the model to the right shape on retry.
-- **Dry-run first-class.** Add `client.behaviors.testReaction` for reaction previews. Add `execute` dry-run mode too: `{ script, dry_run: true }` runs under the same write-interception wrapper that reactions use, returning the `would_have` list without committing. Cost is one wrapper branch, same SDK.
+- **Dry-run first-class.** Add `client.automations.testReaction` for reaction previews. Add `execute` dry-run mode too: `{ script, dry_run: true }` runs under the same write-interception wrapper that reactions use, returning the `would_have` list without committing. Cost is one wrapper branch, same SDK.
 
 ## Frontend plan
 
@@ -128,18 +128,18 @@ Files:
 - `src/app/[owner]/settings/organizations/page.tsx`
 - `src/components/settings/organizations/{members,invites,my-orgs,delete}-tab.tsx`
 
-### Upgrade: Behavior reaction editor
+### Upgrade: Automation reaction editor
 
-Today: plain `<Textarea>` in `src/components/entity-tabs/watchers-tab/from-scratch-panel.tsx:461–466`. No syntax highlighting, no dry-run, no compile feedback until save.
+Today: plain `<Textarea>` in `src/components/entity-tabs/automations-tab/from-scratch-panel.tsx:461–466`. No syntax highlighting, no dry-run, no compile feedback until save.
 
 - Replace textarea with Monaco (reusing whatever component the new execute console lands).
-- "Test reaction" button — calls `client.behaviors.testReaction` against the most recent window, surfaces the `would_have` list + logs inline.
+- "Test reaction" button — calls `client.automations.testReaction` against the most recent window, surfaces the `would_have` list + logs inline.
 - Inline compile errors (line/col) from esbuild — fire on blur or debounced keystroke.
-- Collapsible "Context" card showing the `ctx.extracted_rows` shape for this Behavior's extraction schema.
+- Collapsible "Context" card showing the `ctx.extracted_rows` shape for this Automation's extraction schema.
 
 Files touched:
-- `src/components/entity-tabs/watchers-tab/from-scratch-panel.tsx`
-- `src/hooks/use-watchers.ts` (`useTestReaction` new hook)
+- `src/components/entity-tabs/automations-tab/from-scratch-panel.tsx`
+- `src/hooks/use-automations.ts` (`useTestReaction` new hook)
 
 ### Upgrade: sidebar org dropdown
 
@@ -165,9 +165,9 @@ From a BLOCKER/GUARD/BENIGN survey of the current codebase:
 ### Reactions
 
 - **Stored reaction calls `client.org(X)`** — reactions set `allowCrossOrg: false`, so the accessor rejects with `CrossOrgAccessDenied` before membership resolution or target-org dispatch.
-- **Reaction fires on a Behavior whose org was hard-deleted** — the upstream `watchers` storage row is already gone by FK cascade; the reaction never schedules. BENIGN.
+- **Reaction fires on an Automation whose org was hard-deleted** — the upstream `automations` storage row is already gone by FK cascade; the reaction never schedules. BENIGN.
 - **Dry-run must classify cross-org calls** — the dry-run wrapper wraps the entire `ClientSDK`, so `client.org(X).entities.create(...)` goes through the same interceptor. Classification is method-keyed in `method-metadata.ts`, unaffected by org swap.
-- **Reaction authorization** — reactions run as a system context with `actingWatcherId`/`actingWindowId`; autonomous write policy is therefore tied to the owning Behavior even though there is no human member role.
+- **Reaction authorization** — reactions run as a system context with `actingAutomationId`/`actingWindowId`; autonomous write policy is therefore tied to the owning Automation even though there is no human member role.
 
 ### Sandbox limits
 
@@ -203,7 +203,7 @@ From a BLOCKER/GUARD/BENIGN survey of the current codebase:
 
   Plus a nullable `execute_invocation_id uuid` column on every change-event table the SDK writes to (already uniform today — single `event` table per the existing schema). The SDK sets the column from `ctx` on every write. Admins can now query "all side effects of invocation X" in one SQL.
 
-- Reactions get their own path already (`watcher_reactions` table). Don't double-log.
+- Reactions get their own path already (`automation_reactions` table). Don't double-log.
 
 ## File-by-file changes
 
@@ -212,7 +212,7 @@ From a BLOCKER/GUARD/BENIGN survey of the current codebase:
 New:
 - `src/sandbox/client-sdk.ts` — `buildClientSDK(toolCtx, env, opts?: { dryRun?: boolean })`. Top-level `org(slugOrId)` accessor returns a proxy SDK with swapped ToolContext after a membership check.
 - `src/sandbox/run-script.ts` — shared `isolated-vm` runner.
-- `src/sandbox/namespaces/{entities, entitySchema, connections, feeds, authProfiles, operations, behaviors, classifiers, viewTemplates, knowledge, organizations}.ts` — per-namespace thin delegations.
+- `src/sandbox/namespaces/{entities, entitySchema, connections, feeds, authProfiles, operations, automations, classifiers, viewTemplates, knowledge, organizations}.ts` — per-namespace thin delegations.
 - `src/sandbox/method-metadata.ts` — summary, throws, cost, access, **example** per SDK path.
 - `src/sandbox/typebox-to-signature.ts` — formatter.
 - `src/tools/sdk_search.ts`, `src/tools/sdk_execute.ts`.
@@ -223,7 +223,7 @@ Modified:
 - `src/tools/execute.ts` — drop `ORG_AGNOSTIC_TOOLS` scoping restriction. `switch_organization` allowed on scoped endpoints; session mutates default org in place (same code path as today's unscoped handler).
 - `src/tools/organizations.ts` — `listOrganizations` surfaces `role` in addition to `is_member`. Drop the old `join_organization` handler entirely.
 - `src/auth/tool-access.ts` — `execute: 'write'`; `search: 'read'`. Drop `join_organization`. Per-method check table remains authoritative.
-- `src/watchers/reaction-executor.ts` — swap `buildReactionSDK` for `buildClientSDK(reactionCtx, env)`. `runScript({ entryPoint: 'react', ... })` shared with `execute`.
+- `src/automations/reaction-executor.ts` — swap `buildReactionSDK` for `buildClientSDK(reactionCtx, env)`. `runScript({ entryPoint: 'react', ... })` shared with `execute`.
 - `src/mcp-handler.ts` — `includeOrgSwitching` gating removed (always true).
 
 Deleted:
@@ -240,8 +240,8 @@ New:
 - `src/hooks/{use-execute, use-invitations}.ts`
 
 Modified:
-- `src/components/entity-tabs/watchers-tab/from-scratch-panel.tsx` — Monaco + test-reaction button.
-- `src/hooks/use-watchers.ts` — `useTestReaction` hook.
+- `src/components/entity-tabs/automations-tab/from-scratch-panel.tsx` — Monaco + test-reaction button.
+- `src/hooks/use-automations.ts` — `useTestReaction` hook.
 - `src/components/sidebar/organization-dropdown.tsx` — pending-invites badge + "Manage organizations" link.
 
 ## PR plan
@@ -252,7 +252,7 @@ Five PRs, landable in order. Each is independently mergeable; later PRs stack on
 
 Scope:
 - `src/sandbox/{run-script, client-sdk, method-metadata, typebox-to-signature}.ts`
-- Per-namespace delegations (most thin wrappers; `organizations` and `behaviors` have real logic).
+- Per-namespace delegations (most thin wrappers; `organizations` and `automations` have real logic).
 - `client.org()` accessor with membership check + LRU cache.
 - Add `isolated-vm` dep; verify the Node runtime can load its native addon on the target host.
 
@@ -284,7 +284,7 @@ Scope:
 - Admin SQL examples in docs.
 
 Validation:
-- Integration test: script creating 3 entities + 1 Behavior → `SELECT * FROM event WHERE execute_invocation_id = $1` returns 4 rows.
+- Integration test: script creating 3 entities + 1 Automation → `SELECT * FROM event WHERE execute_invocation_id = $1` returns 4 rows.
 
 ### PR-4: scoped-endpoint UX fix
 
@@ -306,15 +306,15 @@ Scope:
 - Sidebar pending-invite badge.
 
 Validation:
-- Manual QA: create a 3-line script, run, verify result. Run dry-run, verify `would_have` list. Switch orgs via selector, re-run. Open a Behavior, hit "Test reaction", verify inline logs.
+- Manual QA: create a 3-line script, run, verify result. Run dry-run, verify `would_have` list. Switch orgs via selector, re-run. Open an Automation, hit "Test reaction", verify inline logs.
 
 ## Risks and gotchas
 
 - **`isolated-vm` native build.** Node version pin, `python3` + `build-essential` when a prebuild is unavailable. Half-day risk on hosts without a matching prebuild; verify before deep work.
-- **Existing reaction scripts in DB.** Stored scripts that still target the legacy `ReactionSDK` shape (`actions.execute`, `content.save`, `notify`, `query(sql, params)`, `react(ctx, sdk)` export) will not transparently work with `ClientSDK`. Audit persisted `watchers.reaction_script` rows before changing the runtime contract; rewrite and recompile any legacy scripts found.
+- **Existing reaction scripts in DB.** Stored scripts that still target the legacy `ReactionSDK` shape (`actions.execute`, `content.save`, `notify`, `query(sql, params)`, `react(ctx, sdk)` export) will not transparently work with `ClientSDK`. Audit persisted `automations.reaction_script` rows before changing the runtime contract; rewrite and recompile any legacy scripts found.
 - **Dry-run write classification misses a handler.** If a new method is added without metadata, dry-run might treat it as a read and mutate prod. Ship-blocking test: `method-metadata.ts` must cover every public SDK path; CI fails if not.
 - **Async SDK bridge leaks.** `isolated-vm` `Reference.apply` patterns have known footguns (un-disposed references, leaked promises). Budget unit-test time here up front.
-- **Token budgets of `search`.** A namespace listing in a crowded namespace (`behaviors` has ~15 methods) can still run ~500 tokens. Document a `depth` param later if needed.
+- **Token budgets of `search`.** A namespace listing in a crowded namespace (`automations` has ~15 methods) can still run ~500 tokens. Document a `depth` param later if needed.
 - **Frontend bundle size from Monaco.** ~2MB gzipped. Lazy-load the editor behind a dynamic import; never ship it on non-console pages.
 
 ## Critical files
@@ -325,10 +325,10 @@ Backend:
 - `src/tools/organizations.ts` (the whole file)
 - `src/mcp-handler.ts` (lines 100–170, 350–360)
 - `src/auth/tool-access.ts`
-- `src/watchers/reaction-executor.ts`
+- `src/automations/reaction-executor.ts`
 - `db/schema.sql` (additions for `execute_invocation` + FK on `event`)
 
 Frontend:
 - `src/components/sidebar/organization-dropdown.tsx`
-- `src/components/entity-tabs/watchers-tab/from-scratch-panel.tsx` (lines 461–466)
-- `src/hooks/{use-org-context, use-watchers}.ts`
+- `src/components/entity-tabs/automations-tab/from-scratch-panel.tsx` (lines 461–466)
+- `src/hooks/{use-org-context, use-automations}.ts`

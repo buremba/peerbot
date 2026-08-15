@@ -634,7 +634,7 @@ async function markGithubFeedDueForConnection(params: {
  * Poll-canonical handling for a GitHub connector connection webhook
  * (`POST /api/v1/webhooks/:connectionId` after the OAuth/PAT bridge).
  * TRIGGER events mark the feed due so the next CheckDueFeeds tick runs the
- * poll and attaches behavior_signals; STORE events land structured rows under
+ * poll and attaches automation_signals; STORE events land structured rows under
  * the real github connector_key. Never raw-stores under webhook:<id>.
  */
 export async function deliverGithubConnectorConnectionWebhook(params: {

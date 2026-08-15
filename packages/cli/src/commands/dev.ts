@@ -751,7 +751,7 @@ async function printPreviewInstructions(cwd: string): Promise<void> {
 
   // Hosted chat connections (`credentialMode: "hosted"`) are reached via the
   // hosted Lobu bot. The connection carries no owning agent — binding happens at
-  // redeem time via a Behavior — so `lobu run` mints one `/lobu link <code>` per
+  // redeem time via an Automation — so `lobu run` mints one `/lobu link <code>` per
   // (agent, hosted connection): the code's agent is the default `/lobu link`
   // binds to, which the redeemer can still override.
   const hostedConnections = (project.connections ?? []).filter(

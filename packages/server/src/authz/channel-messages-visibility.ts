@@ -1,7 +1,7 @@
 /**
  * Channel-membership gate for the `channel_messages` read seam — the SQL analog
  * of `./channel-visibility`'s `filterChannelsForRequester`, expressed as a WHERE
- * fragment so raw-SQL callers (watcher @feed sources, query_sql) read chat
+ * fragment so raw-SQL callers (automation @feed sources, query_sql) read chat
  * transcripts with the same fail-closed membership contract.
  *
  * Rule (keyed on the channel identity rather than `events.entity_ids`, because
@@ -18,7 +18,7 @@
  *
  * Fail-closed: a headless/null principal, an enforced channel the requester
  * doesn't belong to, or a stale-ACL connection all see nothing. This is what
- * makes a (headless) watcher run safe to read a streaming @feed — it reads only
+ * makes a (headless) automation run safe to read a streaming @feed — it reads only
  * not-graphed channels; enforced/stale ones return zero rows, so their content
  * never reaches the shared recap.
  *

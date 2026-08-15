@@ -3,9 +3,9 @@
  * file existed.
  *
  * The judge's reply is the one place a model's output turns into a number that
- * can move a Behavior's regression verdict. The parser is deliberately strict:
+ * can move an Automation's regression verdict. The parser is deliberately strict:
  * an unusable reply returns null (the metric is SKIPPED, never scored 0), so a
- * misbehaving judge must not punish the Behavior. These tests pin that
+ * misbehaving judge must not punish the Automation. These tests pin that
  * contract — fence stripping, range checks, the derive-from-score default, and
  * the hard null on anything not a verdict.
  *

@@ -2,7 +2,7 @@
  * P4 FINAL steady state: classify_facet is the ONE classifier table — event_classifiers and
  * event_classifier_versions are dropped. Proves the inverted table stands on its own: it
  * self-generates ids, backs event_classifications via the repointed FK, and enforces the
- * (organization_id, entity_id, watcher_id, slug) uniqueness the watcher-extraction upsert relies on.
+ * (organization_id, entity_id, automation_id, slug) uniqueness the automation-extraction upsert relies on.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -45,7 +45,7 @@ describe('classify_facet is the sole classifier table (P4 final)', () => {
     expect(rows).toHaveLength(1);
     expect(Number(rows[0].classifier_id)).toBe(Number(c.id));
 
-    // The (organization_id, entity_id, watcher_id, slug) NULLS NOT DISTINCT unique
+    // The (organization_id, entity_id, automation_id, slug) NULLS NOT DISTINCT unique
     // (extraction upsert target) is enforced — same org here, so the dup collides.
     await expect(
       sql`

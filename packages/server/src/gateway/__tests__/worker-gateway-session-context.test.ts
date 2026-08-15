@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { generateWorkerToken } from "@lobu/core";
 import type { DbClient } from "../../db/client.js";
-import { resolveBehaviorRunSkills } from "../behavior-run-session.js";
+import { resolveAutomationRunSkills } from "../automation-run-session.js";
 import { WorkerGateway } from "../worker-dispatch/worker-gateway.js";
 
 const TEST_ENCRYPTION_KEY = Buffer.from(
@@ -23,7 +23,7 @@ describe("WorkerGateway session context", () => {
     }
   });
 
-  test("syncs live skills for chat and pinned snapshots for Behavior runs", async () => {
+  test("syncs live skills for chat and pinned snapshots for Automation runs", async () => {
     // A DECLARED (SDK-embedded) agent has org-agnostic settings, so an orgless
     // token legitimately syncs its skills. (A DB-backed agent with an orgless
     // token would fail closed — covered by the cross-tenant test below.)
@@ -66,8 +66,8 @@ describe("WorkerGateway session context", () => {
       } as any,
       async () => [
         {
-          name: "pinned-behavior-skill",
-          content: "# Pinned Behavior Skill\n",
+          name: "pinned-automation-skill",
+          content: "# Pinned Automation Skill\n",
         },
       ]
     );
@@ -116,20 +116,20 @@ describe("WorkerGateway session context", () => {
     expect(chat.skillsInstructions).toContain("owner/custom-skill");
     expect(chat.skillsInstructions).not.toContain("Built-in System Skills");
 
-    const behaviorRun = await fetchContext(
-      "watcher-run",
-      "agent-1_watcher_42_run_99"
+    const automationRun = await fetchContext(
+      "automation-run",
+      "agent-1_automation_42_run_99"
     );
-    expect(behaviorRun.skillsConfig).toEqual([
+    expect(automationRun.skillsConfig).toEqual([
       {
-        name: "pinned-behavior-skill",
-        content: "# Pinned Behavior Skill\n",
+        name: "pinned-automation-skill",
+        content: "# Pinned Automation Skill\n",
       },
     ]);
-    expect(behaviorRun.skillsInstructions).toContain("pinned-behavior-skill");
-    expect(behaviorRun.skillsInstructions).not.toContain("custom-skill");
+    expect(automationRun.skillsInstructions).toContain("pinned-automation-skill");
+    expect(automationRun.skillsInstructions).not.toContain("custom-skill");
 
-    // Other headless sources do not execute frozen Behavior instructions.
+    // Other headless sources do not execute frozen Automation instructions.
     const connectorRepair = await fetchContext("connector-repair");
     expect(connectorRepair.skillsConfig).toHaveLength(1);
     expect(connectorRepair.skillsInstructions).toContain("## Skills");
@@ -181,7 +181,7 @@ describe("WorkerGateway session context", () => {
     expect(body.webOrigin).not.toContain("cluster.local");
   });
 
-  test("resolves pinned skills through the signed Behavior run correlation", async () => {
+  test("resolves pinned skills through the signed Automation run correlation", async () => {
     let queryValues: unknown[] = [];
     const db = (async (
       _strings: TemplateStringsArray,
@@ -197,9 +197,9 @@ describe("WorkerGateway session context", () => {
       ];
     }) as unknown as DbClient;
 
-    const skills = await resolveBehaviorRunSkills(
+    const skills = await resolveAutomationRunSkills(
       {
-        conversationId: "agent-1_watcher_42_run_99",
+        conversationId: "agent-1_automation_42_run_99",
         organizationId: "org-1",
         agentId: "agent-1",
       },

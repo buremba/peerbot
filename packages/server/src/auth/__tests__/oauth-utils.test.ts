@@ -158,7 +158,7 @@ describe("parseScopes", () => {
   test("scope string with only unknown values → empty array (not defaults)", () => {
     // Non-empty string bypasses the !scope early-return, so unknown scopes
     // are filtered to [] — NOT DEFAULT_SCOPES. This documents the actual
-    // behavior: defaults are only returned for null/undefined/"".
+    // automation: defaults are only returned for null/undefined/"".
     expect(parseScopes("completely:invented scope:xyz")).toEqual([]);
   });
 });

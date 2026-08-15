@@ -18,7 +18,7 @@ interface AccessControlContext {
 }
 
 /**
- * Watcher reactions and other in-process system calls run with
+ * Automation reactions and other in-process system calls run with
  * `userId=null + isAuthenticated=true` and no member role. They bypass
  * role/scope policy checks at the handler boundary.
  *
@@ -30,7 +30,7 @@ export function isSystemContext(ctx: AccessControlContext): boolean {
 }
 
 /**
- * True for a trusted in-process system call (watcher reaction and friends),
+ * True for a trusted in-process system call (automation reaction and friends),
  * which run with `userId: null` + `isAuthenticated: true` + `tokenType: 'session'`.
  *
  * `isSystemContext` alone also matches a userless OAuth/PAT token admitted to a

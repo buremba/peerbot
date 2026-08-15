@@ -1,6 +1,6 @@
 import type { GuardrailStage } from "@lobu/core";
-import { resolveBehaviorEventCatalog } from "../behaviors/connector-derived";
-import { withPlatformBehaviorEvents } from "../behaviors/platform-event-catalog";
+import { resolveAutomationEventCatalog } from "../automations/connector-derived";
+import { withPlatformAutomationEvents } from "../automations/platform-event-catalog";
 import { getModelProviderModules } from "../gateway/modules/module-system";
 import type { Env } from "../index";
 import { getLobuCoreServices } from "../lobu/gateway";
@@ -9,7 +9,7 @@ import {
 	EMPTY_SUMMARY,
 	getOperationsSummaryBatch,
 } from "../operations/connector-operations";
-import { handleList } from "../tools/admin/manage_behaviors/list";
+import { handleList } from "../tools/admin/manage_automations/list";
 import type { ToolContext } from "../tools/registry";
 import { connectorSourcePathToUri } from "../utils/connector-definition-install";
 import { listScopedConnectorDefinitions } from "./connector-definitions";
@@ -25,23 +25,23 @@ import type {
 	OrgInstalledKind,
 } from "./types";
 
-/** Installed UI metadata: merge platform Behavior events into each connector. */
-function behaviorEventsForUi(
+/** Installed UI metadata: merge platform Automation events into each connector. */
+function automationEventsForUi(
 	raw: Array<Record<string, unknown>> | null | undefined,
 	feedsSchema?: unknown,
-	bundled?: { behavior_events?: unknown; feeds_schema?: unknown },
+	bundled?: { automation_events?: unknown; feeds_schema?: unknown },
 	useBundledFallback = false,
 ): Array<Record<string, unknown>> | undefined {
 	// Same precedence as trigger validation (persisted > bundled legacy >
 	// derived from eventKinds, gated on shared-version provenance) so the
-	// picker can never advertise a value Behavior creation rejects.
-	const source = resolveBehaviorEventCatalog({
+	// picker can never advertise a value Automation creation rejects.
+	const source = resolveAutomationEventCatalog({
 		persistedEvents: raw,
 		feedsSchema,
 		bundled,
 		useBundledFallback,
 	});
-	const merged = withPlatformBehaviorEvents(source);
+	const merged = withPlatformAutomationEvents(source);
 	return merged.length > 0 ? (merged as Array<Record<string, unknown>>) : undefined;
 }
 
@@ -111,7 +111,7 @@ export async function listOrgInstalled(
 			rows.map((row) => row.key)
 		);
 		// Bundled immutable catalog, for the persisted > bundled > derived
-		// behavior-event precedence shared with trigger validation. Loaded once
+		// automation-event precedence shared with trigger validation. Loaded once
 		// and reused by the merge below.
 		const bundledConnectors = (await listCatalogEntries(["connectors"])).connectors;
 		const bundledByKey = new Map(
@@ -135,8 +135,8 @@ export async function listOrgInstalled(
 					auth_schema: row.auth_schema,
 					feeds_schema: row.feeds_schema,
 					actions_schema: row.actions_schema,
-					behavior_events: behaviorEventsForUi(
-						row.behavior_events,
+					automation_events: automationEventsForUi(
+						row.automation_events,
 						row.feeds_schema,
 						bundledByKey.get(row.key),
 						row.source_org_id == null,
@@ -163,7 +163,7 @@ export async function listOrgInstalled(
 		};
 	}
 
-	if (wanted.has("behaviors")) {
+	if (wanted.has("automations")) {
 		const toolCtx: ToolContext = {
 			organizationId,
 			userId: ctx.userId ?? null,
@@ -176,19 +176,19 @@ export async function listOrgInstalled(
 			requestUrl: "",
 		};
 		const listed = await handleList({ status: "active" }, {} as Env, toolCtx);
-		const behaviors = Array.isArray(listed.behaviors) ? listed.behaviors : [];
-		result.behaviors = {
-			kind: "behaviors",
-			items: behaviors.map((watcher: Record<string, unknown>) => ({
-				id: String(watcher.behavior_id ?? ""),
-				name: String(watcher.name ?? watcher.watcher_name ?? "Behavior"),
+		const automations = Array.isArray(listed.automations) ? listed.automations : [];
+		result.automations = {
+			kind: "automations",
+			items: automations.map((automation: Record<string, unknown>) => ({
+				id: String(automation.automation_id ?? ""),
+				name: String(automation.name ?? automation.automation_name ?? "Automation"),
 				detail: {
-					slug: watcher.slug,
-					status: watcher.status,
-					agent_id: watcher.agent_id,
-					entity_id: watcher.entity_id,
-					schedule: watcher.schedule,
-					version: watcher.version,
+					slug: automation.slug,
+					status: automation.status,
+					agent_id: automation.agent_id,
+					entity_id: automation.entity_id,
+					schedule: automation.schedule,
+					version: automation.version,
 				},
 			})),
 		};

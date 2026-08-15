@@ -155,16 +155,16 @@ describe('sandbox run (wire)', () => {
     expect(JSON.stringify(result)).toContain('"hasSchedules":true');
   });
 
-  it('query_sdk can list Behaviors via client.behaviors.list', async (testCtx) => {
+  it('query_sdk can list Automations via client.automations.list', async (testCtx) => {
     if (!isolatedAvailable) return testCtx.skip();
     const client = new TestMcpClient({ token, orgSlug });
     const result = await client.querySdk<unknown>(
       `export default async (_ctx, client) => {
-         const out = await client.behaviors.list({ status: 'active' });
-				 return { hasBehaviors: Array.isArray(out.behaviors) };
+         const out = await client.automations.list({ status: 'active' });
+				 return { hasAutomations: Array.isArray(out.automations) };
        };`
     );
-    expect(JSON.stringify(result)).toContain('"hasBehaviors":true');
+    expect(JSON.stringify(result)).toContain('"hasAutomations":true');
   });
 
   it('run_sdk can create an agent via client.agents.create', async (testCtx) => {

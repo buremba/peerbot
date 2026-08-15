@@ -65,7 +65,7 @@ describe("durable replay preserves every signed claim", () => {
     // performs for real everything it was supposed to only record. Both are
     // present because `verifyWorkerToken` rejects one without the other.
     executionMode: "capture" as const,
-    behaviorRunId: 874626,
+    automationRunId: 874626,
   };
 
   /**

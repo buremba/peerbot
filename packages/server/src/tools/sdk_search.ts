@@ -66,7 +66,7 @@ const METADATA_BY_LOWER_PATH = new Map(
 
 export const SdkSearchSchema = Type.Object({
 	query: Type.String({
-		description: `SDK method or runtime-helper discovery query. Use a namespace (e.g. 'behaviors'), one or more dotted paths separated by whitespace (e.g. 'behaviors.create ctx.sleep'), an optional client. prefix, or free text. Pass mode='read' for query_sdk-safe methods only; omit mode for your full run_sdk tier. Namespaces: ${NAMESPACES.join(", ")}.`,
+		description: `SDK method or runtime-helper discovery query. Use a namespace (e.g. 'automations'), one or more dotted paths separated by whitespace (e.g. 'automations.create ctx.sleep'), an optional client. prefix, or free text. Pass mode='read' for query_sdk-safe methods only; omit mode for your full run_sdk tier. Namespaces: ${NAMESPACES.join(", ")}.`,
 		minLength: 1,
 	}),
 	mode: Type.Optional(
@@ -119,14 +119,14 @@ async function agentConfigBlanketDenied(
 	ctx: ToolContext,
 	action: WriteAction
 ): Promise<boolean> {
-	if (!ctx.organizationId || (!ctx.agentId && !ctx.actingWatcherId)) {
+	if (!ctx.organizationId || (!ctx.agentId && !ctx.actingAutomationId)) {
 		return false;
 	}
 	const actor = await resolveActingPrincipal(getDb(), {
 		organizationId: ctx.organizationId,
 		userId: ctx.userId,
 		agentId: ctx.agentId,
-		sessionWatcherId: ctx.actingWatcherId ?? null,
+		sessionAutomationId: ctx.actingAutomationId ?? null,
 	});
 	if (actor.kind === "user") return false;
 	const effect = await resolveWriteEffect({
@@ -145,7 +145,7 @@ async function agentConfigBlanketDenied(
 /** Paths hidden for this agent principal by agent_config blanket policy. */
 async function deniedAgentsSdkPaths(ctx: ToolContext): Promise<Set<string>> {
 	const denied = new Set<string>();
-	if (!ctx.agentId && !ctx.actingWatcherId) return denied;
+	if (!ctx.agentId && !ctx.actingAutomationId) return denied;
 
 	const actions: WriteAction[] = ["read", "create", "update", "delete"];
 	const denyByAction = new Map<WriteAction, boolean>();

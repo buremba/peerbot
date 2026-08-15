@@ -67,7 +67,7 @@ export function deviceManifestToConnectorMetadata(manifest: DeviceConnectorManif
     webhook: null,
     feeds: manifest.feeds_schema ?? {},
     actions: manifest.actions_schema ?? null,
-    behaviorEvents: null,
+    automationEvents: null,
     optionsSchema: manifest.options_schema ?? null,
     faviconDomain: manifest.favicon_domain ?? null,
     mcpConfig: null,

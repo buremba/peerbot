@@ -6,7 +6,7 @@ import type { JudgeRequest } from "./types.js";
  * operator extra policy) is injected under "Policy" below.
  *
  * We keep the harness closed so all judges return the same shape and the
- * output parser stays trivial. Skill authors influence behavior via their
+ * output parser stays trivial. Skill authors influence automation via their
  * judge policy text, not by rewriting the harness.
  */
 const SYSTEM_PROMPT = `You are a safety judge for an autonomous AI agent's outbound network requests.

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildAgentSettingsUrl,
-  buildBehaviorSettingsUrl,
-  buildBehaviorUrl,
+  buildAutomationSettingsUrl,
+  buildAutomationUrl,
   buildEntityUrl,
   buildProviderConnectUrl,
   buildProviderManagementUrl,
@@ -17,7 +17,7 @@ import {
 import * as workspaceModule from '../../workspace';
 
 /**
- * Behavior contract for `getPublicWebUrl`:
+ * Automation contract for `getPublicWebUrl`:
  *   1. Explicit `baseUrl` argument wins.
  *   2. `PUBLIC_GATEWAY_URL` env wins next.
  *   3. With no local frontend bundled, fall back to the hosted-UI origin
@@ -146,53 +146,53 @@ describe('buildAgentSettingsUrl', () => {
   });
 });
 
-describe('buildBehaviorSettingsUrl', () => {
+describe('buildAutomationSettingsUrl', () => {
   stubOrgSlug();
-  it('deep-links to the Behavior edit route under its owning agent', async () => {
-    const url = await buildBehaviorSettingsUrl(
+  it('deep-links to the workspace Automation edit route', async () => {
+    const url = await buildAutomationSettingsUrl(
       'https://app.lobu.com/lobu',
       'org-1',
       7
     );
-    expect(url).toBe('https://app.lobu.com/acme/behaviors/7');
+    expect(url).toBe('https://app.lobu.com/acme/automations/7');
   });
 
   it('appends ?run_id when a review run is given', async () => {
-    const url = await buildBehaviorSettingsUrl(
+    const url = await buildAutomationSettingsUrl(
       'https://app.lobu.com/lobu',
       'org-1',
       7,
       { runId: 42 }
     );
-    expect(url).toBe('https://app.lobu.com/acme/behaviors/7?run_id=42');
+    expect(url).toBe('https://app.lobu.com/acme/automations/7?run_id=42');
   });
 
-  it('accepts a string Behavior id and percent-encodes the slug', async () => {
-    const url = await buildBehaviorSettingsUrl(
+  it('accepts a string Automation id and percent-encodes the slug', async () => {
+    const url = await buildAutomationSettingsUrl(
       'https://app.lobu.com',
       'org-special',
       '7'
     );
-    expect(url).toBe('https://app.lobu.com/acme%2Fteam/behaviors/7');
+    expect(url).toBe('https://app.lobu.com/acme%2Fteam/automations/7');
   });
 
   it('returns null when the org slug cannot be resolved', async () => {
     expect(
-      await buildBehaviorSettingsUrl('https://app.lobu.com', 'unknown-org', 7)
+      await buildAutomationSettingsUrl('https://app.lobu.com', 'unknown-org', 7)
     ).toBeNull();
   });
 
   it('returns null when any required piece is missing', async () => {
-    expect(await buildBehaviorSettingsUrl(undefined, 'org-1', 7)).toBeNull();
-    expect(await buildBehaviorSettingsUrl('https://x', undefined, 7)).toBeNull();
-    expect(await buildBehaviorSettingsUrl('https://x', 'org-1', undefined)).toBeNull();
+    expect(await buildAutomationSettingsUrl(undefined, 'org-1', 7)).toBeNull();
+    expect(await buildAutomationSettingsUrl('https://x', undefined, 7)).toBeNull();
+    expect(await buildAutomationSettingsUrl('https://x', 'org-1', undefined)).toBeNull();
   });
 });
 
-describe('buildBehaviorUrl', () => {
-  it('builds the canonical Behavior detail route and strips embedded /lobu', () => {
-    expect(buildBehaviorUrl('acme/team', 7, 'https://app.lobu.com/lobu')).toBe(
-      'https://app.lobu.com/acme%2Fteam/behaviors/7'
+describe('buildAutomationUrl', () => {
+  it('builds the canonical Automation detail route and strips embedded /lobu', () => {
+    expect(buildAutomationUrl('acme/team', 7, 'https://app.lobu.com/lobu')).toBe(
+      'https://app.lobu.com/acme%2Fteam/automations/7'
     );
   });
 });
@@ -315,15 +315,15 @@ describe('buildResourcePermalink', () => {
     ).toBe('https://app.lobu.com/acme/memory?run_ids=536620');
   });
 
-  it('behavior run kind → agent and behavior drill-down scoped to the run', () => {
+  it('automation run kind → Automation-filtered activity scoped to the run', () => {
     expect(
       buildResourcePermalink(
         'acme',
-        { kind: 'behavior_run', runId: 536620, agentId: 'agent/one', behaviorId: 42 },
+        { kind: 'automation_run', runId: 536620, agentId: 'agent/one', automationId: 42 },
         'https://app.lobu.com'
       )
     ).toBe(
-      'https://app.lobu.com/acme/memory?agent=agent%2Fone&behavior=42&run_ids=536620'
+      'https://app.lobu.com/acme/memory?agent=agent%2Fone&automation=42&run_ids=536620'
     );
   });
 

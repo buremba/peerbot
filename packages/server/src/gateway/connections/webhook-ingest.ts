@@ -5,9 +5,9 @@
  * no mention/DM handlers, no thread semantics. It is a push-source primitive —
  * any external system (Sentry, GitHub, Stripe, healthchecks) POSTs JSON to
  * `POST /api/v1/webhooks/:connectionId` and the payload is persisted as an
- * `events` row (`connector_key = 'webhook:<connectionId>'`). Watchers consume
+ * `events` row (`connector_key = 'webhook:<connectionId>'`). Automations consume
  * those rows through their existing checkpointed SQL sources; reaction latency
- * is bounded by the watcher cadence, not by this handler.
+ * is bounded by the automation cadence, not by this handler.
  *
  * Request pipeline (persist BEFORE ack — a 202 issued before the insert
  * commits would lose the delivery on pod crash, and providers won't retry a
@@ -148,7 +148,7 @@ function isQueryTokenAllowed(config: WebhookIngestConfig): boolean {
 /**
  * Whether to project the payload into `payload_text` so the row is embedded
  * and recallable via `search_memory`. Off by default — store-only rows stay
- * cheap and keep high-volume webhook noise out of semantic memory; watchers
+ * cheap and keep high-volume webhook noise out of semantic memory; automations
  * read them via SQL regardless. Accepts the string spelling because
  * declarative (`lobu apply`) configs carry string values only.
  */
@@ -244,7 +244,7 @@ export const WEBHOOK_PAYLOAD_TEXT_MAX_CHARS = 8 * 1024;
  * Render the parsed payload into a flat text document for `events.payload_text`.
  * Without this the column is null, so the embed-backfill (which skips rows with
  * empty payload_text) never embeds the row and it stays invisible to semantic
- * recall / `search_memory` — reachable only by behavior SQL. Leaf scalars become
+ * recall / `search_memory` — reachable only by automation SQL. Leaf scalars become
  * `dotted.path: value` lines, so the JSON structure doubles as searchable
  * context (e.g. `event.title: ZeroDivisionError`). Bounded by
  * WEBHOOK_PAYLOAD_TEXT_MAX_CHARS.
@@ -349,7 +349,7 @@ export interface WebhookIngestOverrides {
 	 * After auth + size/rate limits, handle the delivery instead of persisting a
 	 * raw `webhook:<id>` event. Used by poll-canonical connectors (GitHub) so
 	 * OAuth/PAT webhooks mark the matching feed due (or store event-complete
-	 * signals) the same way app-webhooks do — Behavior signals then ride the
+	 * signals) the same way app-webhooks do — Automation signals then ride the
 	 * poll path with full envelopes. Returning a Response short-circuits insert.
 	 */
 	handleInsteadOfPersist?: (ctx: {
@@ -505,7 +505,7 @@ export async function handleWebhookIngest(
 	}
 
 	// Poll-canonical connectors (GitHub OAuth/PAT) replace raw webhook:<id>
-	// storage with feed-due / structured-store handling so Behavior activations
+	// storage with feed-due / structured-store handling so Automation activations
 	// share the same envelope path as scheduled polls. Auth above is identical.
 	if (overrides?.handleInsteadOfPersist) {
 		return overrides.handleInsteadOfPersist({

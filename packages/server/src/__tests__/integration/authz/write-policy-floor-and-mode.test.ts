@@ -5,7 +5,7 @@
  *    any-principal (org) row. The strictest matched effect wins.
  *  - The class default is a STARTING POINT, not a floor: an explicit row may
  *    loosen the default (agent_config update = auto → allow).
- *  - One envelope for chat and watchers (principal_mode dropped): watchers
+ *  - One envelope for chat and automations (principal_mode dropped): automations
  *    inherit the owning agent's envelope via ownerAgentId.
  */
 
@@ -154,7 +154,7 @@ describe("write-gate floor + single-envelope semantics", () => {
 		).toBe("require_approval");
 	});
 
-	it("chat and watcher share one envelope: same agent policy binds both modes", async () => {
+	it("chat and automation share one envelope: same agent policy binds both modes", async () => {
 		await seedPolicy({
 			orgId,
 			resourceClass: "entity",
@@ -303,10 +303,10 @@ describe("write-gate floor + single-envelope semantics", () => {
 		).toBe("allow");
 	});
 
-	it("owner-agent fold: a watcher inherits its agent's envelope via ownerAgentId", async () => {
-		// The agent (owning agent) sets delete=deny. The WATCHER is the acting
-		// principal (principalKind='watcher') with its agent folded in via
-		// ownerAgentId — the agent's deny must bind the watcher's write.
+	it("owner-agent fold: an automation inherits its agent's envelope via ownerAgentId", async () => {
+		// The agent (owning agent) sets delete=deny. The AUTOMATION is the acting
+		// principal (principalKind='automation') with its agent folded in via
+		// ownerAgentId — the agent's deny must bind the automation's write.
 		await seedPolicy({
 			orgId,
 			resourceClass: "entity",
@@ -317,8 +317,8 @@ describe("write-gate floor + single-envelope semantics", () => {
 		expect(
 			await evaluateEntityMutation({
 				organizationId: orgId,
-				principalKind: "watcher",
-				principalId: "watcher:7",
+				principalKind: "automation",
+				principalId: "automation:7",
 				ownerAgentId: "agent-1",
 				action: "delete",
 				entityTypeSlug: "task",
@@ -326,9 +326,9 @@ describe("write-gate floor + single-envelope semantics", () => {
 		).toBe("deny");
 	});
 
-	it("owner-agent fold: a watcher-specific deny is NOT loosened by a looser agent envelope", async () => {
-		// The owning agent auto-approves delete; a pre-existing WATCHER-specific row
-		// denies it. Folding the agent envelope in must NOT loosen the watcher's own
+	it("owner-agent fold: an automation-specific deny is NOT loosened by a looser agent envelope", async () => {
+		// The owning agent auto-approves delete; a pre-existing AUTOMATION-specific row
+		// denies it. Folding the agent envelope in must NOT loosen the automation's own
 		// deny — the strictest matched effect wins (this is the P1 regression).
 		await seedPolicy({
 			orgId,
@@ -340,15 +340,15 @@ describe("write-gate floor + single-envelope semantics", () => {
 		await seedPolicy({
 			orgId,
 			resourceClass: "entity",
-			principalKind: "watcher",
-			principalId: "watcher:7",
+			principalKind: "automation",
+			principalId: "automation:7",
 			effects: [{ action: "delete", effect: "deny" }],
 		});
 		expect(
 			await evaluateEntityMutation({
 				organizationId: orgId,
-				principalKind: "watcher",
-				principalId: "watcher:7",
+				principalKind: "automation",
+				principalId: "automation:7",
 				ownerAgentId: "agent-1",
 				action: "delete",
 				entityTypeSlug: "task",
@@ -412,15 +412,15 @@ describe("write-gate floor + single-envelope semantics", () => {
 		expect(stored?.effects).toEqual({ delete: "deny" });
 	});
 
-	it("fails CLOSED when a watcher's owning agent can't be resolved (codex-8)", async () => {
-		// A reaction whose watcher row was hard-deleted mid-flight arrives with
+	it("fails CLOSED when an automation's owning agent can't be resolved (codex-8)", async () => {
+		// A reaction whose automation row was hard-deleted mid-flight arrives with
 		// ownerResolved=false. Even with the most permissive org default (entity
 		// create = auto, no deny anywhere), the gate must DENY — proceeding as an
-		// unowned watcher would let the write slip its agent's envelope.
+		// unowned automation would let the write slip its agent's envelope.
 		const denied = await evaluateEntityMutation({
 			organizationId: orgId,
-			principalKind: "watcher",
-			principalId: "watcher:999",
+			principalKind: "automation",
+			principalId: "automation:999",
 			ownerResolved: false,
 			action: "create",
 			entityTypeSlug: "task",
@@ -429,20 +429,20 @@ describe("write-gate floor + single-envelope semantics", () => {
 		// Sanity: the SAME call with a resolved owner (default true) allows (auto).
 		const allowed = await evaluateEntityMutation({
 			organizationId: orgId,
-			principalKind: "watcher",
-			principalId: "watcher:999",
+			principalKind: "automation",
+			principalId: "automation:999",
 			action: "create",
 			entityTypeSlug: "task",
 		});
 		expect(allowed).toBe("allow");
 	});
 
-	it("resolveWriteEffect also fails closed on an unresolved watcher owner (codex-8)", async () => {
+	it("resolveWriteEffect also fails closed on an unresolved automation owner (codex-8)", async () => {
 		const effect = await resolveWriteEffect({
 			organizationId: orgId,
 			resourceClass: "connector_action",
-			principalKind: "watcher",
-			principalId: "watcher:999",
+			principalKind: "automation",
+			principalId: "automation:999",
 			ownerResolved: false,
 			action: "execute",
 		});

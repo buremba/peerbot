@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
 
 /**
- * Queue an eval replay of a real Behavior run.
+ * Queue an eval replay of a real Automation run.
  *
  *   bun scripts/queue-eval-run.ts --run 873146
  *   bun scripts/queue-eval-run.ts --run 873146 --key attempt-2
  *
  * The replay reuses the source run's frozen dispatch payload and is dispatched
- * by the normal Behavior dispatcher. Because its `run_type` is `behavior_eval`,
+ * by the normal Automation dispatcher. Because its `run_type` is `automation_eval`,
  * the server derives `executionMode = 'capture'` for the session, so the agent
  * runs for real but its side effects are recorded rather than performed.
  *
@@ -32,7 +32,7 @@ const { values: args } = parseNodeArgs({
 
 const sourceRunId = Number(args.run);
 if (!Number.isSafeInteger(sourceRunId) || sourceRunId < 1) {
-  console.error("--run <behavior run id> is required");
+  console.error("--run <automation run id> is required");
   process.exit(1);
 }
 
@@ -51,7 +51,7 @@ if (!result) {
 
 console.log(
   result.created
-    ? `Queued eval run ${result.runId} replaying behavior run ${result.sourceRunId} (behavior ${result.behaviorId}).`
-    : `Eval run ${result.runId} for behavior run ${result.sourceRunId} is already in flight.`
+    ? `Queued eval run ${result.runId} replaying automation run ${result.sourceRunId} (automation ${result.automationId}).`
+    : `Eval run ${result.runId} for automation run ${result.sourceRunId} is already in flight.`
 );
 process.exit(0);

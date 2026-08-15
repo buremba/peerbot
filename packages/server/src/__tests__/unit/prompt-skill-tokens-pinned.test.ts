@@ -8,14 +8,14 @@
  * `.skills/` file behind it. Silent wrong instructions are worse than a 422.
  *
  * The check is deliberately ONE-directional. A pinned skill with no chip is
- * legal — that is the declarative path (`defineBehavior({ skills: [...] })`
+ * legal — that is the declarative path (`defineAutomation({ skills: [...] })`
  * carries no prompt at all), and rejecting it would strand every CLI-authored
- * Behavior.
+ * Automation.
  */
 
 import { describe, expect, it } from "bun:test";
-import { assertPromptSkillTokensPinned } from "../../tools/admin/manage_behaviors/shared";
-import { skillNamesFromPrompt } from "../../watchers/source-refs";
+import { assertPromptSkillTokensPinned } from "../../tools/admin/manage_automations/shared";
+import { skillNamesFromPrompt } from "../../automations/source-refs";
 
 const chip = (name: string, label = name) =>
 	`@[skill:${name}:${label}](/acme/agents/a/skills/${name})`;
@@ -86,7 +86,7 @@ describe("assertPromptSkillTokensPinned", () => {
 	});
 
 	it("allows a pinned skill that the prompt never mentions", () => {
-		// The declarative path: `defineBehavior({ skills: [...] })` has no prompt.
+		// The declarative path: `defineAutomation({ skills: [...] })` has no prompt.
 		expect(() =>
 			assertPromptSkillTokensPinned(null, [{ name: "deploy-runbook" }]),
 		).not.toThrow();

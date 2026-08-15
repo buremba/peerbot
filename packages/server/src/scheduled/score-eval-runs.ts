@@ -5,7 +5,7 @@
  * session. Scoring it there would put the judge call on the dispatch hot path
  * and lose the verdict entirely whenever that pod dies mid-call. So scoring is
  * a queue, and the queue is Postgres: the work item is simply "a terminal
- * `behavior_eval` run with no live `eval_score` event yet".
+ * `automation_eval` run with no live `eval_score` event yet".
  *
  * That predicate IS the claim. There is no in-memory sampler, no cursor, and no
  * per-pod state another replica has to read — a run leaves the queue only when
@@ -30,7 +30,7 @@ import {
 	scoreEvalRun,
 	TERMINAL_RUN_STATUSES_PG,
 } from "../runs/eval-scores";
-import { BEHAVIOR_EVAL_RUN_TYPE } from "../runs/run-types";
+import { AUTOMATION_EVAL_RUN_TYPE } from "../runs/run-types";
 import logger from "../utils/logger";
 
 /**
@@ -94,7 +94,7 @@ export async function runScoreEvalRuns(opts?: {
 	const candidates = (await sql`
     SELECT r.id
     FROM runs r
-    WHERE r.run_type = ${BEHAVIOR_EVAL_RUN_TYPE}
+    WHERE r.run_type = ${AUTOMATION_EVAL_RUN_TYPE}
       AND r.status = ANY(${TERMINAL_RUN_STATUSES_PG}::text[])
       AND coalesce(r.completed_at, r.created_at)
             < now() - ${`${SCORE_SETTLE_SECONDS} seconds`}::interval

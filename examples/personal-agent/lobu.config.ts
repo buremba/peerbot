@@ -2,7 +2,7 @@ import {
   connectorFromFile,
   defineAgent,
   defineAuthProfile,
-  defineBehavior,
+  defineAutomation,
   defineConfig,
   defineConnection,
   defineEntityType,
@@ -302,7 +302,7 @@ const channel = defineEntityType({
 
 // Collaborative actions for Burak + personal-agent. Identity comes from the
 // stable source plus a per-source task key, never editable display wording.
-// Schema is owned here — the Behavior does not declare an extraction schema.
+// Schema is owned here — the Automation does not declare an extraction schema.
 const task = defineEntityType({
   key: "task",
   name: "Task",
@@ -807,7 +807,8 @@ const learning = defineEntityType({
     },
     source: {
       type: "string",
-      description: "Where it was learned (conversation, Behavior, observation)",
+      description:
+        "Where it was learned (conversation, Automation, observation)",
     },
     learned_date: {
       type: "string",
@@ -1181,9 +1182,9 @@ const socialSignal = defineEntityType({
   required: ["platform", "author", "why", "priority", "source_origin_id"],
 });
 
-// ── Behaviors (must be declared under prune or apply deletes them) ─
+// ── Automations (must be declared under prune or apply deletes them) ─
 
-const voiceProfileSynthesis = defineBehavior({
+const voiceProfileSynthesis = defineAutomation({
   agent: personalAgent,
   slug: "voice-profile-synth-v2",
   name: "Voice profile synthesis",
@@ -1219,7 +1220,7 @@ const voiceProfileSynthesis = defineBehavior({
     "ALWAYS re-emit every existing_profiles row (same channel/mode). Refine if recent evidence; never return empty profiles[] when existing_profiles non-empty.",
 });
 
-const socialInterestRadar = defineBehavior({
+const socialInterestRadar = defineAutomation({
   agent: personalAgent,
   slug: "social-interest-radar-v2",
   name: "Social interest radar",
@@ -1238,7 +1239,7 @@ const socialInterestRadar = defineBehavior({
     already_emitted: {
       context: true,
       query:
-        "SELECT id, origin_parent_id AS source_origin_id FROM events WHERE semantic_type = 'observation' AND metadata->>'behavior_output' = 'signals' AND occurred_at > now() - interval '7 days' ORDER BY occurred_at DESC LIMIT 400",
+        "SELECT id, origin_parent_id AS source_origin_id FROM events WHERE semantic_type = 'observation' AND metadata->>'automation_output' = 'signals' AND occurred_at > now() - interval '7 days' ORDER BY occurred_at DESC LIMIT 400",
     },
     voice_profiles: {
       context: true,
@@ -1256,7 +1257,7 @@ const socialInterestRadar = defineBehavior({
     drafts: { event: "draft_reply" },
   },
   prompt:
-    'Rank at most 8 new, high-signal X, LinkedIn, or Hacker News posts for Burak. Use voice_profiles for taste and known_people for relationship context. Prefer AI, agents, infrastructure, developer tools, people he knows, launches, funding, and technical substance; ignore engagement bait, generic memes, and ads. Return each choice in `signals` as a standard observation event draft. Set `title` to the author/platform, `author` to the post author\'s display name (never "unknown"), `content` to the specific why plus a concrete suggested action, `source_url` to the source row source_url, `parent_event_id` to the source row id, and `idempotency_key` to its origin_id. Put only `{ platform, why, priority, source_event_id, source_connection_id }` in metadata, copying the source id and connection_id exactly. `platform` is one of "x", "linkedin", or "hackernews". Never restate the author, the source origin_id, the post excerpt, or a kind in metadata: `author`, `parent_event_id`, and `content` already carry them on the event itself, and the platform stamps the behavior and output names. Prefer posts not present in already_emitted. Also return `drafts`: either [] or exactly one standard draft_reply event for the single best item that genuinely deserves a response. Its content is only the proposed reply text; copy author, source_url, and parent_event_id, use `draft:` plus origin_id as idempotency_key, and metadata `{ platform, why, priority, source_event_id, source_connection_id }`. Never claim to publish: the reaction only stages the draft and the human submits it. Return empty arrays when nothing qualifies.',
+    'Rank at most 8 new, high-signal X, LinkedIn, or Hacker News posts for Burak. Use voice_profiles for taste and known_people for relationship context. Prefer AI, agents, infrastructure, developer tools, people he knows, launches, funding, and technical substance; ignore engagement bait, generic memes, and ads. Return each choice in `signals` as a standard observation event draft. Set `title` to the author/platform, `author` to the post author\'s display name (never "unknown"), `content` to the specific why plus a concrete suggested action, `source_url` to the source row source_url, `parent_event_id` to the source row id, and `idempotency_key` to its origin_id. Put only `{ platform, why, priority, source_event_id, source_connection_id }` in metadata, copying the source id and connection_id exactly. `platform` is one of "x", "linkedin", or "hackernews". Never restate the author, the source origin_id, the post excerpt, or a kind in metadata: `author`, `parent_event_id`, and `content` already carry them on the event itself, and the platform stamps the automation and output names. Prefer posts not present in already_emitted. Also return `drafts`: either [] or exactly one standard draft_reply event for the single best item that genuinely deserves a response. Its content is only the proposed reply text; copy author, source_url, and parent_event_id, use `draft:` plus origin_id as idempotency_key, and metadata `{ platform, why, priority, source_event_id, source_connection_id }`. Never claim to publish: the reaction only stages the draft and the human submits it. Return empty arrays when nothing qualifies.',
   reactionsGuidance:
     "Declared outputs own event persistence and source-level deduplication. Only draft-ready notifications are delivered: the reaction schedules at most one saved draft for the first signed-in Chrome device that visits the exact post, and a signal-only run is silent. It never publishes.",
   reaction: reactionFromFile<typeof SocialInterestRadarReaction>(
@@ -1264,10 +1265,10 @@ const socialInterestRadar = defineBehavior({
   ),
 });
 
-const midasNetWorth = defineBehavior({
+const midasNetWorth = defineAutomation({
   agent: personalAgent,
-  // Keep the existing slug: it is the Behavior's durable identity. Renaming it
-  // would delete/recreate the Behavior and discard its cooldown/history.
+  // Keep the existing slug: it is the Automation's durable identity. Renaming it
+  // would delete/recreate the Automation and discard its cooldown/history.
   slug: "midas-net-worth",
   name: "Weekly net worth",
   description:
@@ -1293,7 +1294,7 @@ const midasNetWorth = defineBehavior({
   ),
 });
 
-const hourlyTaskCollaborator = defineBehavior({
+const hourlyTaskCollaborator = defineAutomation({
   agent: personalAgent,
   slug: "hourly-task-collaborator",
   name: "Hourly Task Collaborator",
@@ -1345,7 +1346,7 @@ const hourlyTaskCollaborator = defineBehavior({
   skills: ["hourly-task-collaborator"],
 });
 
-const duplicateEntityResolution = defineBehavior({
+const duplicateEntityResolution = defineAutomation({
   agent: personalAgent,
   slug: "duplicate-entity-resolution-real-v3-final",
   name: "Duplicate entity resolution — real contacts",
@@ -1366,7 +1367,7 @@ const duplicateEntityResolution = defineBehavior({
 
 export default defineConfig({
   // Source of truth for buremba definitions. Deletes org-owned entity /
-  // relationship types and behaviors absent from this config (including
+  // relationship types and automations absent from this config (including
   // UI-created ones). Data rows, connections, auth profiles, and agents are
   // never pruned. Tax-graph types belong in examples/personal-finance only.
   prune: true,
@@ -1418,7 +1419,7 @@ export default defineConfig({
     founderOf,
     sameAs,
   ],
-  behaviors: [
+  automations: [
     hourlyTaskCollaborator,
     duplicateEntityResolution,
     voiceProfileSynthesis,

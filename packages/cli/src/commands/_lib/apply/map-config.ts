@@ -14,7 +14,7 @@ import type { AgentSettingsStored } from "@lobu/core/contracts/agent-settings";
 import {
   normalizeWorkspaceEventTrigger,
   resolvedEventExecution,
-} from "@lobu/core/contracts/tools/manage-behaviors";
+} from "@lobu/core/contracts/tools/manage-automations";
 
 /**
  * Exhaustiveness projection over the stored AgentSettings shape. Every key is
@@ -65,7 +65,7 @@ import { CronExpressionParser } from "cron-parser";
 import type {
   Agent,
   AuthProfile,
-  Behavior,
+  Automation,
   Connection,
   ConnectorRef,
   EntityType,
@@ -87,7 +87,7 @@ import type {
   DesiredOrgProvider,
   DesiredRelationshipType,
   DesiredState,
-  DesiredWatcher,
+  DesiredAutomation,
 } from "./desired-state.js";
 
 /** Source label recorded on connector docs (mirrors the YAML manifest path). */
@@ -545,8 +545,8 @@ function mapRelationshipType(rel: RelationshipType): DesiredRelationshipType {
   };
 }
 
-function mapBehaviorOutputs(
-  outputs: NonNullable<Behavior["outputs"]>
+function mapAutomationOutputs(
+  outputs: NonNullable<Automation["outputs"]>
 ): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(outputs).map(([name, output]) => [
@@ -562,14 +562,14 @@ function mapBehaviorOutputs(
   );
 }
 
-/** Max skills a Behavior may pin on one version (issue #2320 cap). */
-const MAX_BEHAVIOR_SKILLS = 5;
+/** Max skills an Automation may pin on one version (issue #2320 cap). */
+const MAX_AUTOMATION_SKILLS = 5;
 
 /**
  * Skills-presence rule. An event trigger executing as "turn" carries its own
  * content (the incoming message/event), so it may run with zero skills on the
  * built-in default instruction. Everything else — schedule triggers, event
- * triggers with execution "window", and Behaviors with no triggers at all
+ * triggers with execution "window", and Automations with no triggers at all
  * (manual runs) — needs a prompt, at least one skill, or both.
  *
  * This CLI preflight mirrors the server rule, catching the error against the
@@ -577,30 +577,30 @@ const MAX_BEHAVIOR_SKILLS = 5;
  * triggers and instructions change, apply sends them together through
  * create_version so the final pair is validated atomically.
  */
-function assertBehaviorSkills(watcher: DesiredWatcher): void {
-  const skills = watcher.skills ?? [];
+function assertAutomationSkills(automation: DesiredAutomation): void {
+  const skills = automation.skills ?? [];
   const duplicates = skills.filter((name, i) => skills.indexOf(name) !== i);
   if (duplicates.length > 0) {
     throw new ValidationError(
-      `Behavior "${watcher.slug}" lists duplicate skill(s): ${[...new Set(duplicates)].join(", ")} — each skill may appear once (the compile is ordered, not repeated)`
+      `Automation "${automation.slug}" lists duplicate skill(s): ${[...new Set(duplicates)].join(", ")} — each skill may appear once (the compile is ordered, not repeated)`
     );
   }
-  if (skills.length > MAX_BEHAVIOR_SKILLS) {
+  if (skills.length > MAX_AUTOMATION_SKILLS) {
     throw new ValidationError(
-      `Behavior "${watcher.slug}" references ${skills.length} skills — the maximum is ${MAX_BEHAVIOR_SKILLS}`
+      `Automation "${automation.slug}" references ${skills.length} skills — the maximum is ${MAX_AUTOMATION_SKILLS}`
     );
   }
-  const triggers = watcher.triggers ?? [];
+  const triggers = automation.triggers ?? [];
   if (
-    watcher.outputs &&
-    Object.keys(watcher.outputs).length > 0 &&
+    automation.outputs &&
+    Object.keys(automation.outputs).length > 0 &&
     triggers.some(
       (trigger) =>
         trigger.kind === "event" && resolvedEventExecution(trigger) === "turn"
     )
   ) {
     throw new ValidationError(
-      `Behavior "${watcher.slug}" declares outputs but has a turn trigger — outputs require execution "window". Change the trigger or split the turn into a separate Behavior.`
+      `Automation "${automation.slug}" declares outputs but has a turn trigger — outputs require execution "window". Change the trigger or split the turn into a separate Automation.`
     );
   }
   const requiresSkills =
@@ -611,21 +611,20 @@ function assertBehaviorSkills(watcher: DesiredWatcher): void {
         (trigger.kind === "event" &&
           resolvedEventExecution(trigger) === "window")
     );
-  // Either instruction source satisfies the rule. A Behavior whose whole job is
+  // Either instruction source satisfies the rule. An Automation whose whole job is
   // "run this skill" has no task statement to write, and one that spells its
   // task out inline needs no skill — demanding both would be stricter than the
   // server and would reject configs the API accepts.
-  if (requiresSkills && skills.length === 0 && !watcher.prompt.trim()) {
+  if (requiresSkills && skills.length === 0 && !automation.prompt.trim()) {
     throw new ValidationError(
-      `Behavior "${watcher.slug}" needs instructions: schedule triggers, event triggers with execution "window", and Behaviors with no triggers run on stored instructions alone, so give it a "prompt", at least one skill, or both. Only event triggers with execution "turn" may omit both.`
+      `Automation "${automation.slug}" needs instructions: schedule triggers, event triggers with execution "window", and Automations with no triggers run on stored instructions alone, so give it a "prompt", at least one skill, or both. Only event triggers with execution "turn" may omit both.`
     );
   }
 }
 
-function mapBehavior(behavior: Behavior): DesiredWatcher {
-  const watcher = behavior;
-  const sources = watcher.sources
-    ? Object.entries(watcher.sources).map(([name, value]) => {
+function mapAutomation(automation: Automation): DesiredAutomation {
+  const sources = automation.sources
+    ? Object.entries(automation.sources).map(([name, value]) => {
         if (typeof value === "string") return { name, query: value };
         return {
           name,
@@ -635,17 +634,17 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
       })
     : undefined;
   let hasSchedule = false;
-  const triggers = watcher.triggers?.map((trigger) => {
+  const triggers = automation.triggers?.map((trigger) => {
     if (trigger.kind === "schedule") {
       if (hasSchedule) {
         throw new ValidationError(
-          `Behavior "${watcher.slug}" has more than one schedule trigger`
+          `Automation "${automation.slug}" has more than one schedule trigger`
         );
       }
       const err = cronError(trigger.cron);
       if (err) {
         throw new ValidationError(
-          `Behavior "${watcher.slug}" has an invalid schedule trigger "${trigger.cron}": ${err}`
+          `Automation "${automation.slug}" has an invalid schedule trigger "${trigger.cron}": ${err}`
         );
       }
       hasSchedule = true;
@@ -677,7 +676,7 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
     } as const;
     if (connection !== undefined && trigger.connection_id !== undefined) {
       throw new ValidationError(
-        `Behavior "${watcher.slug}" trigger must use either connection or connection_id, not both`
+        `Automation "${automation.slug}" trigger must use either connection or connection_id, not both`
       );
     }
     if (connection === undefined) return normalizedEventTrigger;
@@ -686,7 +685,7 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
       connectorKey(connection.connector) !== trigger.connector_key
     ) {
       throw new ValidationError(
-        `Behavior "${watcher.slug}" trigger is ${trigger.connector_key}, but connection "${connection.slug}" uses ${connectorKey(connection.connector)}`
+        `Automation "${automation.slug}" trigger is ${trigger.connector_key}, but connection "${connection.slug}" uses ${connectorKey(connection.connector)}`
       );
     }
     const connectionSlug =
@@ -694,45 +693,45 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
     return { ...normalizedEventTrigger, connectionSlug };
   });
   return {
-    slug: watcher.slug,
-    agent: agentId(watcher.agent),
+    slug: automation.slug,
+    agent: agentId(automation.agent),
     // The author's task statement, carried straight through. Skill BODIES are
     // no longer folded in here — the loader resolves them into `skillSnapshots`
-    // (see `resolveBehaviorSkills` in desired-state.ts), because the mapper is
-    // pure and cannot read skill files. "" is legitimate for a Behavior whose
-    // whole job is its skills, and for event-turn Behaviors with neither.
-    prompt: watcher.prompt ?? "",
-    ...(watcher.skills?.length ? { skills: watcher.skills } : {}),
-    ...(watcher.outputs !== undefined
+    // (see `resolveAutomationSkills` in desired-state.ts), because the mapper is
+    // pure and cannot read skill files. "" is legitimate for an Automation whose
+    // whole job is its skills, and for event-turn Automations with neither.
+    prompt: automation.prompt ?? "",
+    ...(automation.skills?.length ? { skills: automation.skills } : {}),
+    ...(automation.outputs !== undefined
       ? {
           outputs:
-            watcher.outputs === null
+            automation.outputs === null
               ? null
-              : mapBehaviorOutputs(watcher.outputs),
+              : mapAutomationOutputs(automation.outputs),
         }
       : {}),
-    ...(watcher.name ? { name: watcher.name } : {}),
-    ...(watcher.description ? { description: watcher.description } : {}),
+    ...(automation.name ? { name: automation.name } : {}),
+    ...(automation.description ? { description: automation.description } : {}),
     triggers: triggers ?? [],
     ...(sources ? { sources } : {}),
-    ...(watcher.notification?.channel
-      ? { notificationChannel: watcher.notification.channel }
+    ...(automation.notification?.channel
+      ? { notificationChannel: automation.notification.channel }
       : {}),
-    ...(watcher.notification?.priority
-      ? { notificationPriority: watcher.notification.priority }
+    ...(automation.notification?.priority
+      ? { notificationPriority: automation.notification.priority }
       : {}),
-    ...(watcher.minCooldownSeconds !== undefined
-      ? { minCooldownSeconds: watcher.minCooldownSeconds }
+    ...(automation.minCooldownSeconds !== undefined
+      ? { minCooldownSeconds: automation.minCooldownSeconds }
       : {}),
-    ...(watcher.tags ? { tags: watcher.tags } : {}),
-    ...(watcher.reactionsGuidance
-      ? { reactionsGuidance: watcher.reactionsGuidance }
+    ...(automation.tags ? { tags: automation.tags } : {}),
+    ...(automation.reactionsGuidance
+      ? { reactionsGuidance: automation.reactionsGuidance }
       : {}),
-    ...(watcher.agentKind ? { agentKind: watcher.agentKind } : {}),
-    ...(watcher.deviceWorkerId !== undefined
-      ? { deviceWorkerId: watcher.deviceWorkerId }
+    ...(automation.agentKind ? { agentKind: automation.agentKind } : {}),
+    ...(automation.deviceWorkerId !== undefined
+      ? { deviceWorkerId: automation.deviceWorkerId }
       : {}),
-    ...(watcher.model !== undefined ? { model: watcher.model } : {}),
+    ...(automation.model !== undefined ? { model: automation.model } : {}),
   };
 }
 
@@ -934,7 +933,7 @@ function isHostedConnection(connection: Connection): boolean {
 /**
  * Translate an authoring project into the apply `DesiredState`. When `only` is
  * set, connector definitions/connections/auth-profiles are skipped (and their
- * secrets not collected), matching the TOML loader's `--only` behavior so
+ * secrets not collected), matching the TOML loader's `--only` automation so
  * `lobu apply --only agents` doesn't demand connector secrets.
  */
 export function mapProjectToDesiredState(
@@ -949,8 +948,8 @@ export function mapProjectToDesiredState(
   const relationshipTypes = (project.relationships ?? []).map(
     mapRelationshipType
   );
-  const watchers =
-    only === "agents" ? [] : (project.behaviors ?? []).map(mapBehavior);
+  const automations =
+    only === "agents" ? [] : (project.automations ?? []).map(mapAutomation);
   const authProfiles = only
     ? []
     : (project.authProfiles ?? []).map((profile) =>
@@ -976,20 +975,20 @@ export function mapProjectToDesiredState(
   assertUniqueBy(agents, (a) => a.metadata.agentId, "agent id");
   assertUniqueBy(entityTypes, (e) => e.slug, "entity type key");
   assertUniqueBy(relationshipTypes, (r) => r.slug, "relationship type key");
-  assertUniqueBy(watchers, (w) => w.slug, "Behavior slug");
+  assertUniqueBy(automations, (w) => w.slug, "Automation slug");
   assertUniqueBy(authProfiles, (p) => p.slug, "auth profile slug");
   assertUniqueBy(connections, (c) => c.slug, "connection slug");
   assertUniqueBy(providers, (p) => p.slug, "provider slug");
 
   const agentIds = new Set(project.agents.map((agent) => agent.id));
-  for (const watcher of watchers) {
-    if (!agentIds.has(watcher.agent)) {
+  for (const automation of automations) {
+    if (!agentIds.has(automation.agent)) {
       throw new ValidationError(
-        `Behavior "${watcher.slug}" names agent "${watcher.agent}", but no agent with that id is declared in lobu.config.ts`
+        `Automation "${automation.slug}" names agent "${automation.agent}", but no agent with that id is declared in lobu.config.ts`
       );
     }
-    assertBehaviorSkills(watcher);
-    for (const trigger of watcher.triggers ?? []) {
+    assertAutomationSkills(automation);
+    for (const trigger of automation.triggers ?? []) {
       if (
         trigger.kind !== "event" ||
         trigger.source === "workspace" ||
@@ -1002,13 +1001,13 @@ export function mapProjectToDesiredState(
       );
       if (!connection) {
         throw new ValidationError(
-          `Behavior "${watcher.slug}" references connection "${trigger.connectionSlug}", but it is not declared in lobu.config.ts`
+          `Automation "${automation.slug}" references connection "${trigger.connectionSlug}", but it is not declared in lobu.config.ts`
         );
       }
       const declaredConnector = connectorKey(connection.connector);
       if (declaredConnector !== trigger.connector_key) {
         throw new ValidationError(
-          `Behavior "${watcher.slug}" trigger is ${trigger.connector_key}, but connection "${trigger.connectionSlug}" uses ${declaredConnector}`
+          `Automation "${automation.slug}" trigger is ${trigger.connector_key}, but connection "${trigger.connectionSlug}" uses ${declaredConnector}`
         );
       }
     }
@@ -1025,7 +1024,7 @@ export function mapProjectToDesiredState(
     prune: project.prune ?? false,
     ...(Object.keys(memory).length > 0 ? { memory } : {}),
     memorySchema: { entityTypes, relationshipTypes },
-    watchers,
+    automations,
     connectors: { definitions: [], authProfiles, connections },
     providers,
     requiredSecrets: [...required].sort(),

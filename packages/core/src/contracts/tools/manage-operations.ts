@@ -100,9 +100,9 @@ export const ExecuteAction = Type.Object({
       ),
     })
   ),
-  behavior_source: Type.Optional(
+  automation_source: Type.Optional(
     Type.Object({
-      behavior_id: Type.Number(),
+      automation_id: Type.Number(),
       window_id: Type.Number(),
     })
   ),
@@ -147,7 +147,7 @@ export const ListRunsAction = Type.Object({
   ),
   /**
    * Filter by run_type. Omit to list every OPERATIONAL run type (sync, action,
-   * behavior, auth, …) — chat-message transport runs are excluded by default
+   * automation, auth, …) — chat-message transport runs are excluded by default
    * (see LIST_RUNS_DEFAULT_EXCLUDED_RUN_TYPES); name 'chat_message' explicitly
    * to inspect that low-level trace lane.
    */
@@ -166,9 +166,11 @@ export const ListRunsAction = Type.Object({
         "Only runs created before this ISO 8601 timestamp (exclusive)",
     })
   ),
-  /** Filter behavior runs by behavior id(s). */
-  behavior_ids: Type.Optional(
-    Type.Array(Type.Number({ description: "Filter by persisted Behavior IDs" }))
+  /** Filter automation runs by automation id(s). */
+  automation_ids: Type.Optional(
+    Type.Array(
+      Type.Number({ description: "Filter by persisted Automation IDs" })
+    )
   ),
   /** Keyset cursor: return runs ordered before (before_created_at, before_id). */
   before_id: Type.Optional(
@@ -197,7 +199,7 @@ export const GetRunAction = Type.Object({
 export const ListActivityAction = Type.Object({
   action: Type.Literal("list_activity", {
     description:
-      "Org attention feed: notifications + recent user-facing runs (Behavior/sync/action/internal), with optional adjacent aggregation and deep-links for the UI and agent context.",
+      "Org attention feed: notifications + recent user-facing runs (Automation/sync/action/internal), with optional adjacent aggregation and deep-links for the UI and agent context.",
   }),
   limit: Type.Optional(
     Type.Integer({
@@ -212,14 +214,14 @@ export const ListActivityAction = Type.Object({
   /** Include runs (default true). */
   include_runs: Type.Optional(Type.Boolean({ default: true })),
   /**
-   * Collapse adjacent same-connection (or behavior) runs that share status.
+   * Collapse adjacent same-connection (or automation) runs that share status.
    * Failures never merge with successes. Default true.
    */
   aggregate: Type.Optional(Type.Boolean({ default: true })),
-  /** Restrict run kinds: behavior | sync | action | notification (default all). */
+  /** Restrict run kinds: automation | sync | action | notification (default all). */
   kinds: Type.Optional(Type.Array(Type.String())),
   /**
-   * Scope the feed to a single agent: only that agent's Behavior runs are
+   * Scope the feed to a single agent: only that agent's Automation runs are
    * returned and notifications are excluded (they are org/user-scoped, not
    * per-agent). Omit for the org-wide feed (Home).
    */
@@ -274,10 +276,10 @@ export const ApprovalBatchScope = Type.Object(
         description: "Only approvals for this operation key.",
       })
     ),
-    behavior_id: Type.Optional(
+    automation_id: Type.Optional(
       Type.Integer({
         minimum: 1,
-        description: "Only approvals queued by this Behavior.",
+        description: "Only approvals queued by this Automation.",
       })
     ),
     older_than_days: Type.Optional(
@@ -290,14 +292,14 @@ export const ApprovalBatchScope = Type.Object(
   },
   {
     description:
-      "Scope filters for a connector-approval batch. At least one of connection_id / connector_key / action_key / behavior_id is required.",
+      "Scope filters for a connector-approval batch. At least one of connection_id / connector_key / action_key / automation_id is required.",
   }
 );
 
 export const ApproveBatchAction = Type.Object({
   action: Type.Literal("approve_batch", {
     description:
-      "Approve many pending approvals at once. Either scope by window_id (a Behavior run's proposals) or by `scope` (queued connector operations). Exactly one of the two is required — there is no unscoped approve-everything.",
+      "Approve many pending approvals at once. Either scope by window_id (an Automation run's proposals) or by `scope` (queued connector operations). Exactly one of the two is required — there is no unscoped approve-everything.",
   }),
   window_id: Type.Optional(Type.Number()),
   scope: Type.Optional(ApprovalBatchScope),
@@ -315,7 +317,7 @@ export const ApproveBatchAction = Type.Object({
 export const RejectBatchAction = Type.Object({
   action: Type.Literal("reject_batch", {
     description:
-      "Reject many pending approvals at once. Either scope by window_id (a Behavior run's proposals — the reason is fed back so the agent revises) or by `scope` (queued connector operations). Exactly one of the two is required.",
+      "Reject many pending approvals at once. Either scope by window_id (an Automation run's proposals — the reason is fed back so the agent revises) or by `scope` (queued connector operations). Exactly one of the two is required.",
   }),
   window_id: Type.Optional(Type.Number()),
   scope: Type.Optional(ApprovalBatchScope),
@@ -437,8 +439,8 @@ export const ManageOperationsResultSchema = Type.Union([
         feed_id: Type.Optional(Type.Integer()),
         feed_key: Type.Optional(Type.String()),
         feed_name: Type.Optional(Type.String()),
-        behavior_id: Type.Optional(Type.Integer()),
-        behavior_name: Type.Optional(Type.String()),
+        automation_id: Type.Optional(Type.Integer()),
+        automation_name: Type.Optional(Type.String()),
         agent_id: Type.Optional(Type.String()),
         agent_name: Type.Optional(Type.String()),
         client_id: Type.Optional(Type.String()),
@@ -466,7 +468,7 @@ export const ManageOperationsResultSchema = Type.Union([
   }),
   Type.Object({
     action: Type.Literal("approve_batch"),
-    /** Present when the batch was scoped by window (Behavior proposals). */
+    /** Present when the batch was scoped by window (Automation proposals). */
     window_id: Type.Optional(Type.Integer()),
     approved_count: Type.Integer(),
     failed_count: Type.Integer(),
@@ -475,7 +477,7 @@ export const ManageOperationsResultSchema = Type.Union([
   }),
   Type.Object({
     action: Type.Literal("reject_batch"),
-    /** Present when the batch was scoped by window (Behavior proposals). */
+    /** Present when the batch was scoped by window (Automation proposals). */
     window_id: Type.Optional(Type.Integer()),
     rejected_count: Type.Integer(),
     run_ids: Type.Array(Type.Integer()),

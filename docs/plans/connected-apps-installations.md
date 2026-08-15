@@ -67,13 +67,13 @@ generic endpoint; Slack is just the first deliveryKind:chat consumer.
 ## Event-sourcing the connect (from prior discussion)
 
 - At bind time: (a) **inline** "Connected ✓ — try asking me X" DM (immediate;
-  do NOT route through a cron watcher), and (b) append a `slack_connected` /
+  do NOT route through a cron automation), and (b) append a `slack_connected` /
   `app_connected` lifecycle **event** to the user's `$member` entity
   (semantic_type `event`).
-- Watchers are `scheduled`/`manual` only (no event push trigger), but can DM via
-  the `notify` tool (supports bot-connection delivery + rich cards + watcher
+- Automations are `scheduled`/`manual` only (no event push trigger), but can DM via
+  the `notify` tool (supports bot-connection delivery + rich cards + automation
   attribution). So **deferred** onboarding (drip, re-engagement, "you connected
-  but set no goal") = a scheduled watcher reading those events. Editable, not
+  but set no goal") = a scheduled automation reading those events. Editable, not
   hardcoded.
 
 ## Phasing
@@ -82,7 +82,7 @@ generic endpoint; Slack is just the first deliveryKind:chat consumer.
    + identity match. Slack first; the endpoint is provider-generic.
 2. **P2** — `conversations.list/join` channel picker (bind shared channels) +
    inline welcome DM + the `app_connected` lifecycle event.
-3. **P3** — starter onboarding watcher (scheduled) reading the events → `notify`.
+3. **P3** — starter onboarding automation (scheduled) reading the events → `notify`.
 4. **P4** (optional) — unify Sources (data) on the same generic list primitive;
    org-level "Connected apps" page spanning all providers.
 

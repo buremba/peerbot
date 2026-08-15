@@ -1,7 +1,7 @@
 /**
  * Eval cases (evals PR 3, lobu#2564).
  *
- * A case is a real Behavior run somebody decided is worth asking again.
+ * A case is a real Automation run somebody decided is worth asking again.
  * Promoting one freezes that judgement as a `$eval_case` entity so the case set
  * is a reviewable thing in the workspace — diffable, commentable, owned by a
  * person — rather than a list of run ids in someone's notes.
@@ -35,7 +35,7 @@ import {
 	loadReplayableSource,
 	type ReplaySourceRejection,
 } from "./eval-runs.js";
-import { BEHAVIOR_EVAL_RUN_TYPE } from "./run-types.js";
+import { AUTOMATION_EVAL_RUN_TYPE } from "./run-types.js";
 
 /** Namespace for the (source run, case key) identity claim in `entity_identities`. */
 export const EVAL_CASE_NAMESPACE = "eval_case";
@@ -75,7 +75,7 @@ const TRIAL_SUFFIX_RE = /#t\d+$/;
 /**
  * Recover the `entity_identities` identifier for the case a run belongs to.
  *
- * `createEvalRun` stamps `idempotency_key = 'behavior_eval:<sourceRunId>:<caseKey>'`
+ * `createEvalRun` stamps `idempotency_key = 'automation_eval:<sourceRunId>:<caseKey>'`
  * and `promoteEvalCase` claims identifier `'<sourceRunId>:<caseKey>'`. The
  * suffix of the one IS the other, which is why neither needed a join column.
  * Trials append `#t<n>`, stripped here so every trial resolves to its case.
@@ -83,7 +83,7 @@ const TRIAL_SUFFIX_RE = /#t\d+$/;
 export function evalCaseIdentifierFromRunKey(
 	idempotencyKey: string | null,
 ): string | null {
-	const prefix = `${BEHAVIOR_EVAL_RUN_TYPE}:`;
+	const prefix = `${AUTOMATION_EVAL_RUN_TYPE}:`;
 	if (!idempotencyKey?.startsWith(prefix)) return null;
 	const identifier = idempotencyKey.slice(prefix.length);
 	if (!identifier) return null;
@@ -109,13 +109,13 @@ const EVAL_CASE_METADATA_SCHEMA = {
 	properties: {
 		source_run_id: {
 			type: "integer",
-			description: "Behavior run this case replays",
+			description: "Automation run this case replays",
 			readOnly: true,
 			"x-table-column": true,
 		},
-		behavior_id: {
+		automation_id: {
 			type: "integer",
-			description: "Behavior",
+			description: "Automation",
 			readOnly: true,
 			"x-table-column": true,
 		},
@@ -152,7 +152,7 @@ export interface EvalCase {
 	entityId: number;
 	organizationId: string;
 	sourceRunId: number;
-	behaviorId: number;
+	automationId: number;
 	caseKey: string;
 }
 
@@ -167,7 +167,7 @@ export type PromoteEvalCaseResult =
 	  };
 
 /**
- * Promote a real Behavior run into a reusable eval case.
+ * Promote a real Automation run into a reusable eval case.
  *
  * Validates with the SAME predicate the replay path uses
  * (`loadReplayableSource`), so a promoted case is always one that can actually
@@ -238,7 +238,7 @@ export async function promoteEvalCase(
     )
     VALUES (
       ${EVAL_CASE_ENTITY_TYPE_SLUG}, 'Eval case',
-      'A Behavior run promoted into a reusable evaluation case', 'flask-conical',
+      'An Automation run promoted into a reusable evaluation case', 'flask-conical',
       ${sql.json(EVAL_CASE_METADATA_SCHEMA as never)},
       ${source.organizationId}, current_timestamp, current_timestamp
     )
@@ -260,7 +260,7 @@ export async function promoteEvalCase(
 		caseKey,
 		metadata: {
 			source_run_id: source.sourceRunId,
-			behavior_id: source.behaviorId,
+			automation_id: source.automationId,
 			case_key: caseKey,
 			expectation: params.expectation?.trim() || null,
 			status: "active",
@@ -298,10 +298,10 @@ export async function promoteEvalCase(
 			{
 				entityId,
 				sourceRunId: source.sourceRunId,
-				behaviorId: source.behaviorId,
+				automationId: source.automationId,
 				caseKey,
 			},
-			"[evals] Promoted a Behavior run into an eval case",
+			"[evals] Promoted an Automation run into an eval case",
 		);
 	}
 	return {
@@ -310,7 +310,7 @@ export async function promoteEvalCase(
 			entityId,
 			organizationId: source.organizationId,
 			sourceRunId: source.sourceRunId,
-			behaviorId: source.behaviorId,
+			automationId: source.automationId,
 			caseKey,
 		},
 		created: placed.created,
@@ -505,7 +505,7 @@ async function findEvalCaseByIdentifier(
 		entityId: Number(rows[0].id),
 		organizationId,
 		sourceRunId: Number(metadata.source_run_id),
-		behaviorId: Number(metadata.behavior_id),
+		automationId: Number(metadata.automation_id),
 		caseKey:
 			typeof metadata.case_key === "string" ? metadata.case_key : "default",
 	};

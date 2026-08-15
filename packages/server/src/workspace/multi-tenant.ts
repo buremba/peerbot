@@ -275,7 +275,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
     // 1) Embedded worker direct-auth for the in-process lobu-memory MCP.
     // The gateway MCP proxy sets this header after validating/issuing the worker
     // token. Treat it as an internal admin-scoped MCP session for the URL org so
-    // unattended watcher runs can use memory tools without a second OAuth loop.
+    // unattended automation runs can use memory tools without a second OAuth loop.
     if (authHeader?.startsWith('Bearer ') && c.req.header('x-lobu-memory-direct-auth') === '1') {
       const workerToken = authHeader.slice(7);
       const tokenData = verifyWorkerToken(workerToken);

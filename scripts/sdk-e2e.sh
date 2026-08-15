@@ -13,7 +13,7 @@
 #      prune:true fixture this also guards the system-type ($member) exemption —
 #      an un-exempted prune halts every apply.
 #   2. every declared definition is created (agent, entity/relationship types,
-#      Behaviors), including a Behavior with entity + event outputs.
+#      Automations), including an Automation with entity + event outputs.
 #   3. `lobu chat` drives a real turn through the worker → the mock's reply.
 #   4. a stable re-apply is idempotent (0 deletes).
 #
@@ -35,7 +35,7 @@ CHAT_OUT="$RUN_DIR/chat.out"
 # Isolate CLI contexts, credentials, and embedded-runtime discovery from the
 # developer's real HOME. Without this, `lobu run` changes the active local
 # context and a running Owletto menubar follows the E2E gateway, contaminating
-# its fresh database with real device registrations and default Behaviors.
+# its fresh database with real device registrations and default Automations.
 export HOME="$RUN_DIR/home"
 
 # The sandbox supports Node 22-24 via isolated-vm@6 and Node 26+ via the
@@ -97,12 +97,12 @@ PROJ="$RUN_DIR/proj"; mkdir -p "$PROJ"
 ( cd "$PROJ" && $LOBU init . -y --here --provider gemini >/dev/null 2>&1 )
 rm -rf "$PROJ/package.json" "$PROJ/node_modules" "$PROJ/bun.lock"
 cat > "$PROJ/lobu.config.ts" <<'TS'
-import { connectorFromFile, defineAgent, defineBehavior, defineConfig, defineConnection, defineEntityType, defineRelationshipType, defineSkill, reactionFromFile, secret } from "@lobu/cli/config";
+import { connectorFromFile, defineAgent, defineAutomation, defineConfig, defineConnection, defineEntityType, defineRelationshipType, defineSkill, reactionFromFile, secret } from "@lobu/cli/config";
 import type PulseConnector from "./connectors/pulse.connector.ts";
 import type digestReaction from "./reactions/digest.reaction.ts";
 
-// The Behavior's instructions live in the agent's skill library; `lobu apply`
-// compiles the referenced bodies into the Behavior version's frozen prompt.
+// The Automation's instructions live in the agent's skill library; `lobu apply`
+// compiles the referenced bodies into the Automation version's frozen prompt.
 const digestSkill = defineSkill({ name: "digest", content: "summarize" });
 
 const agent = defineAgent({
@@ -139,14 +139,14 @@ const pulseConn = defineConnection({
   feeds: [{ feed: "pulse", name: "Pulse" }],
 });
 
-// The watcher runs an LLM extraction then a reaction script
+// The automation runs an LLM extraction then a reaction script
 // (./reactions/digest.reaction.ts) that writes an assertable knowledge event.
 // `sources` selects the connector-emitted events by connector_key so the
-// watcher's window has linked content — the reaction only fires on a non-empty
+// automation's window has linked content — the reaction only fires on a non-empty
 // window. The gate drives read_knowledge → complete_window deterministically
 // (the agentic LLM turn never produces the complete_window tool-call against a
 // fixed-reply mock) and asserts the reaction's side effect.
-const digest = defineBehavior({
+const digest = defineAutomation({
   slug: "digest", agent, name: "Digest", skills: ["digest"],
   // No inline extraction schema — the reaction OWNS the contract via its exported
   // `input`, which set_reaction_script extracts and surfaces to the worker.
@@ -157,11 +157,11 @@ const digest = defineBehavior({
   },
 });
 
-// A second Behavior exercises durable outputs without a reaction. One completed
+// A second Automation exercises durable outputs without a reaction. One completed
 // window must upsert a typed entity and append a registered event, proving the
 // declarative config, API contract, extraction schema, and persistence path as
 // one installed-project flow.
-const publisher = defineBehavior({
+const publisher = defineAutomation({
   slug: "publisher", agent, name: "Publisher", prompt: "Publish companies and observation events.",
   outputs: {
     companies: { entity: company, key: ["name"], name: ["name"] },
@@ -175,7 +175,7 @@ const publisher = defineBehavior({
 
 // prune:true so the gate exercises the destructive path on every run (this is
 // what catches the system-type $member halt class of bug).
-export default defineConfig({ prune: true, agents: [agent], entities: [company, contact], relationships: [worksAt], connectors: [connectorFromFile<typeof PulseConnector>("./connectors/pulse.connector.ts")], connections: [pulseConn], behaviors: [digest, publisher] });
+export default defineConfig({ prune: true, agents: [agent], entities: [company, contact], relationships: [worksAt], connectors: [connectorFromFile<typeof PulseConnector>("./connectors/pulse.connector.ts")], connections: [pulseConn], automations: [digest, publisher] });
 TS
 
 # Local connector: deterministic, zero-dep, no network. `sync()` returns one
@@ -226,7 +226,7 @@ export default class PulseConnector extends ConnectorRuntime<Checkpoint> {
 }
 TS
 
-# Behavior reaction: writes a deterministic, assertable knowledge event when the
+# Automation reaction: writes a deterministic, assertable knowledge event when the
 # window completes. Kept in its own file so the SDK type-checks it.
 mkdir -p "$PROJ/reactions"
 cat > "$PROJ/reactions/digest.reaction.ts" <<'TS'
@@ -251,7 +251,7 @@ export default async (ctx: ReactionContext, client: ReactionClient): Promise<voi
     content: data.s,
     semantic_type: "summary",
     metadata: {
-      behavior_slug: ctx.behavior.slug,
+      automation_slug: ctx.automation.slug,
       window_id: ctx.window.id,
       content_analyzed: ctx.window.content_analyzed,
     },
@@ -310,7 +310,7 @@ grep -qiE "Apply halted" "$RUN_LOG" && fail "apply halted on a failure"
 echo "✓ lobu run auto-applied the project (Apply complete)"
 
 # 2b) Every declared definition created.
-for marker in "+ entity-type company" "+ entity-type contact" "+ relationship-type works-at" "+ behavior digest" "+ behavior publisher"; do
+for marker in "+ entity-type company" "+ entity-type contact" "+ relationship-type works-at" "+ automation digest" "+ automation publisher"; do
   grep -qF "$marker" "$RUN_LOG" || fail "expected created definition not in plan: '$marker'"
 done
 # System $member must be ignorable drift, never a delete row (the prune-halt bug).
@@ -323,10 +323,10 @@ grep -qF "$MOCK_REPLY" "$CHAT_OUT" || fail "agent turn did not return the mock r
 grep -qiE "Forwarding to upstream: POST http://127.0.0.1:$MOCK_PORT" "$RUN_LOG" || fail "worker never called the mock provider upstream"
 echo "✓ agent completed a real turn through the worker (reply: $MOCK_REPLY)"
 
-# ── API setup for the connector/watcher assertions ────────────────────────────
+# ── API setup for the connector/automation assertions ────────────────────────────
 # Mint a personal access token bound to the loopback `local` context, and
 # resolve the org slug the bootstrap auto-provisioned (don't hardcode it).
-# trigger_feed / watcher trigger / complete_window / query_sql are owner-admin
+# trigger_feed / automation trigger / complete_window / query_sql are owner-admin
 # tools (tool-access.ts), so mint with mcp:admin — the local-install user is the
 # org owner.
 GW="http://localhost:$GW_PORT"
@@ -609,16 +609,16 @@ EVENT_COUNT="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
 [ "${EVENT_COUNT:-0}" -ge 1 ] 2>/dev/null || fail "connector sync persisted 0 events (event_count=$EVENT_COUNT)"
 echo "✓ connector sync ran the compiled connector and emitted events (items=$RUN_ITEMS, event_count=$EVENT_COUNT)"
 
-# 7) Watcher reaction — prove the reaction script RUNS and produces a side
-#    effect. Trigger the watcher (proves the dispatch path doesn't error), then
+# 7) Automation reaction — prove the reaction script RUNS and produces a side
+#    effect. Trigger the automation (proves the dispatch path doesn't error), then
 #    deterministically drive read_knowledge → complete_window so the reaction
 #    fires regardless of the fixed-reply mock (the agentic turn would never
 #    produce a complete_window tool-call). The reaction saves SDKE2E_REACTION_OK.
-BEHAVIORS="$RUN_DIR/behaviors.json"
-api manage_behaviors '{"action":"list"}' > "$BEHAVIORS" 2>/dev/null || fail "could not list Behaviors"
-WATCHER_ID="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const arr=j.behaviors||j.items||(Array.isArray(j)?j:[]);const w=arr.find(x=>x.slug==="digest")||arr[0];const id=w?(w.behavior_id??w.watcher_id??w.id):null;process.stdout.write(id!=null?String(id):"")})' < "$BEHAVIORS")"
-[ -n "$WATCHER_ID" ] || { cat "$BEHAVIORS" >&2; fail "no 'digest' Behavior found after apply"; }
-echo "✓ apply created the digest Behavior (id=$WATCHER_ID)"
+AUTOMATIONS="$RUN_DIR/automations.json"
+api manage_automations '{"action":"list"}' > "$AUTOMATIONS" 2>/dev/null || fail "could not list Automations"
+AUTOMATION_ID="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const arr=j.automations||j.items||(Array.isArray(j)?j:[]);const w=arr.find(x=>x.slug==="digest")||arr[0];const id=w?(w.automation_id??w.automation_id??w.id):null;process.stdout.write(id!=null?String(id):"")})' < "$AUTOMATIONS")"
+[ -n "$AUTOMATION_ID" ] || { cat "$AUTOMATIONS" >&2; fail "no 'digest' Automation found after apply"; }
+echo "✓ apply created the digest Automation (id=$AUTOMATION_ID)"
 
 # Declarative rendering config: the `company` type's event_kinds + view template
 # must have applied. event_kinds rides manage_entity_schema; the view template is
@@ -638,26 +638,26 @@ VT_V1="$(vt_version)"
 [ -n "$VT_V1" ] || fail "company view template was not applied (no default version — declarative viewTemplate broken)"
 echo "✓ apply set entity-type view template (company default v$VT_V1)"
 
-# Trigger the watcher — exercise the FULL dispatch path. This mints an internal
+# Trigger the automation — exercise the FULL dispatch path. This mints an internal
 # service token (needs the `lobu-internal` oauth_client, ensured by
-# getLobuServiceToken) and dispatches a watcher run to a spawned worker. We
+# getLobuServiceToken) and dispatches an automation run to a spawned worker. We
 # assert the trigger returns a run_id, that dispatch did NOT fail on the service
 # token (the regression this guards — a missing `lobu-internal` client fails
-# every watcher run), and that a watcher worker session actually started.
-TW="$RUN_DIR/trigger-watcher.json"
-api manage_behaviors "{\"action\":\"trigger\",\"behavior_id\":\"$WATCHER_ID\"}" > "$TW" 2>/dev/null \
-  || { cat "$TW" >&2; fail "watcher trigger failed"; }
+# every automation run), and that an automation worker session actually started.
+TW="$RUN_DIR/trigger-automation.json"
+api manage_automations "{\"action\":\"trigger\",\"automation_id\":\"$AUTOMATION_ID\"}" > "$TW" 2>/dev/null \
+  || { cat "$TW" >&2; fail "automation trigger failed"; }
 TRIG_RUN_ID="$(jget run_id < "$TW" 2>/dev/null || echo)"
-[ -n "$TRIG_RUN_ID" ] || { cat "$TW" >&2; fail "watcher trigger did not dispatch a run (no run_id)"; }
+[ -n "$TRIG_RUN_ID" ] || { cat "$TW" >&2; fail "automation trigger did not dispatch a run (no run_id)"; }
 grep -qi "Failed to generate an embedded Lobu service token" "$RUN_LOG" \
-  && fail "watcher dispatch failed on the service token (lobu-internal oauth_client missing)"
+  && fail "automation dispatch failed on the service token (lobu-internal oauth_client missing)"
 for _ in $(seq 1 30); do
-  grep -qiE "Lobu worker for session: session-[^ ]*watcher_${WATCHER_ID}_run" "$RUN_LOG" && break
+  grep -qiE "Lobu worker for session: session-[^ ]*automation_${AUTOMATION_ID}_run" "$RUN_LOG" && break
   sleep 1
 done
-grep -qiE "Lobu worker for session: session-[^ ]*watcher_${WATCHER_ID}_run" "$RUN_LOG" \
-  || fail "watcher run ${TRIG_RUN_ID} did not dispatch to a worker"
-echo "✓ watcher trigger dispatched a run to a worker (run_id=$TRIG_RUN_ID)"
+grep -qiE "Lobu worker for session: session-[^ ]*automation_${AUTOMATION_ID}_run" "$RUN_LOG" \
+  || fail "automation run ${TRIG_RUN_ID} did not dispatch to a worker"
+echo "✓ automation trigger dispatched a run to a worker (run_id=$TRIG_RUN_ID)"
 
 # Deterministic reaction drive: read_knowledge over the window holding the
 # connector events → window_token → complete_window with extracted_data. The
@@ -665,13 +665,13 @@ echo "✓ watcher trigger dispatched a run to a worker (run_id=$TRIG_RUN_ID)"
 SINCE="$(node -e 'process.stdout.write("2000-01-01")')"
 UNTIL="$(node -e 'const d=new Date(Date.now()+86400000);process.stdout.write(d.toISOString().slice(0,10))')"
 RK="$RUN_DIR/read-knowledge.json"
-api read_knowledge "{\"behavior_id\":$WATCHER_ID,\"since\":\"$SINCE\",\"until\":\"$UNTIL\"}" > "$RK" 2>/dev/null \
-  || { cat "$RK" >&2; fail "read_knowledge (behavior mode) failed"; }
+api read_knowledge "{\"automation_id\":$AUTOMATION_ID,\"since\":\"$SINCE\",\"until\":\"$UNTIL\"}" > "$RK" 2>/dev/null \
+  || { cat "$RK" >&2; fail "read_knowledge (automation mode) failed"; }
 WINDOW_TOKEN="$(jget window_token < "$RK")"
 [ -n "$WINDOW_TOKEN" ] || { cat "$RK" >&2; fail "read_knowledge returned no window_token (no content in window — connector events missing?)"; }
 
 CW="$RUN_DIR/complete-window.json"
-api manage_behaviors "$(node -e 'const t=process.argv[1],w=process.argv[2];process.stdout.write(JSON.stringify({action:"complete_window",behavior_id:w,window_token:t,extracted_data:{s:"SDKE2E_REACTION_OK"},run_metadata:{executor:"sdk-e2e"}}))' "$WINDOW_TOKEN" "$WATCHER_ID")" > "$CW" 2>/dev/null \
+api manage_automations "$(node -e 'const t=process.argv[1],w=process.argv[2];process.stdout.write(JSON.stringify({action:"complete_window",automation_id:w,window_token:t,extracted_data:{s:"SDKE2E_REACTION_OK"},run_metadata:{executor:"sdk-e2e"}}))' "$WINDOW_TOKEN" "$AUTOMATION_ID")" > "$CW" 2>/dev/null \
   || { cat "$CW" >&2; fail "complete_window failed"; }
 grep -q '"action":"complete_window"\|"action": "complete_window"' "$CW" || { cat "$CW" >&2; fail "complete_window did not return the expected action"; }
 
@@ -690,30 +690,30 @@ for _ in $(seq 1 30); do
   if [ "${N:-0}" -ge 1 ] 2>/dev/null; then REACT_OK=1; break; fi
   sleep 1
 done
-[ -n "$REACT_OK" ] || { cat "$CW" >&2; cat "$REACT" >&2; fail "watcher reaction did not produce its SDKE2E_REACTION_OK knowledge event"; }
-echo "✓ watcher reaction ran and saved its assertable side effect (SDKE2E_REACTION_OK)"
+[ -n "$REACT_OK" ] || { cat "$CW" >&2; cat "$REACT" >&2; fail "automation reaction did not produce its SDKE2E_REACTION_OK knowledge event"; }
+echo "✓ automation reaction ran and saved its assertable side effect (SDKE2E_REACTION_OK)"
 
-# 7b) Durable Behavior outputs — exercise the installed config and public API,
+# 7b) Durable Automation outputs — exercise the installed config and public API,
 # not an internal helper. Complete one real connector-backed window containing
 # both output arrays, then read the typed entity and event through query_sql.
-PUBLISHER_ID="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const arr=j.behaviors||j.items||(Array.isArray(j)?j:[]);const w=arr.find(x=>x.slug==="publisher");const id=w?(w.behavior_id??w.watcher_id??w.id):null;process.stdout.write(id!=null?String(id):"")})' < "$BEHAVIORS")"
-[ -n "$PUBLISHER_ID" ] || { cat "$BEHAVIORS" >&2; fail "no 'publisher' Behavior found after apply"; }
+PUBLISHER_ID="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const arr=j.automations||j.items||(Array.isArray(j)?j:[]);const w=arr.find(x=>x.slug==="publisher");const id=w?(w.automation_id??w.automation_id??w.id):null;process.stdout.write(id!=null?String(id):"")})' < "$AUTOMATIONS")"
+[ -n "$PUBLISHER_ID" ] || { cat "$AUTOMATIONS" >&2; fail "no 'publisher' Automation found after apply"; }
 
 PUB="$RUN_DIR/publisher.json"
-api manage_behaviors "{\"action\":\"list\",\"behavior_id\":\"$PUBLISHER_ID\",\"include_details\":true}" > "$PUB" 2>/dev/null \
-  || { cat "$PUB" >&2; fail "could not read the publisher Behavior"; }
+api manage_automations "{\"action\":\"list\",\"automation_id\":\"$PUBLISHER_ID\",\"include_details\":true}" > "$PUB" 2>/dev/null \
+  || { cat "$PUB" >&2; fail "could not read the publisher Automation"; }
 grep -q '"companies"' "$PUB" && grep -q '"observations"' "$PUB" \
   || { cat "$PUB" >&2; fail "publisher API response omitted its named outputs"; }
-grep -q 'keying_config' "$PUB" && { cat "$PUB" >&2; fail "retired keying_config leaked through the public Behavior API"; }
+grep -q 'keying_config' "$PUB" && { cat "$PUB" >&2; fail "retired keying_config leaked through the public Automation API"; }
 
 PUB_RK="$RUN_DIR/publisher-read-knowledge.json"
-api read_knowledge "{\"behavior_id\":$PUBLISHER_ID,\"since\":\"$SINCE\",\"until\":\"$UNTIL\"}" > "$PUB_RK" 2>/dev/null \
+api read_knowledge "{\"automation_id\":$PUBLISHER_ID,\"since\":\"$SINCE\",\"until\":\"$UNTIL\"}" > "$PUB_RK" 2>/dev/null \
   || { cat "$PUB_RK" >&2; fail "publisher read_knowledge failed"; }
 PUB_WINDOW_TOKEN="$(jget window_token < "$PUB_RK")"
 [ -n "$PUB_WINDOW_TOKEN" ] || { cat "$PUB_RK" >&2; fail "publisher read_knowledge returned no window_token"; }
 
 PUB_CW="$RUN_DIR/publisher-complete-window.json"
-api manage_behaviors "$(node -e 'const t=process.argv[1],w=process.argv[2];process.stdout.write(JSON.stringify({action:"complete_window",behavior_id:w,window_token:t,extracted_data:{companies:[{name:"SDK E2E Output Co",domain:"sdk-output.example"}],observations:[{title:"SDK E2E observation",content:"SDKE2E_OUTPUT_EVENT",metadata:{amount:42},idempotency_key:"sdk-e2e-output-observation"}]},run_metadata:{executor:"sdk-e2e"}}))' "$PUB_WINDOW_TOKEN" "$PUBLISHER_ID")" > "$PUB_CW" 2>/dev/null \
+api manage_automations "$(node -e 'const t=process.argv[1],w=process.argv[2];process.stdout.write(JSON.stringify({action:"complete_window",automation_id:w,window_token:t,extracted_data:{companies:[{name:"SDK E2E Output Co",domain:"sdk-output.example"}],observations:[{title:"SDK E2E observation",content:"SDKE2E_OUTPUT_EVENT",metadata:{amount:42},idempotency_key:"sdk-e2e-output-observation"}]},run_metadata:{executor:"sdk-e2e"}}))' "$PUB_WINDOW_TOKEN" "$PUBLISHER_ID")" > "$PUB_CW" 2>/dev/null \
   || { cat "$PUB_CW" >&2; fail "publisher complete_window failed"; }
 
 OUTPUT_ENTITY="$RUN_DIR/output-entity.json"
@@ -728,7 +728,7 @@ api query_sql "$OUTPUT_EVENT_QUERY" > "$OUTPUT_EVENT" 2>/dev/null \
   || { cat "$OUTPUT_EVENT" >&2; fail "querying the publisher event output failed"; }
 grep -q 'SDKE2E_OUTPUT_EVENT' "$OUTPUT_EVENT" \
   || { cat "$OUTPUT_EVENT" >&2; fail "publisher event output was not persisted"; }
-echo "✓ Behavior outputs persisted a typed entity and a registered event through the public API"
+echo "✓ Automation outputs persisted a typed entity and a registered event through the public API"
 
 # 5) Idempotent re-apply (stable config → 0 deletes). Unlike `lobu run`, `lobu
 # apply` does not auto-load the project .env, so pass the secret it resolves for

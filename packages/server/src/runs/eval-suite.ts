@@ -1,10 +1,10 @@
 /**
- * Running a Behavior's eval suite and reading the answer (evals PR 4, lobu#2564).
+ * Running an Automation's eval suite and reading the answer (evals PR 4, lobu#2564).
  *
  * Scoring one replay produces a number. This module is what makes that number
- * mean something: it replays every active case of a Behavior N times, and reads
+ * mean something: it replays every active case of an Automation N times, and reads
  * back per-case latest-vs-previous so the question people actually have — "I
- * edited this Behavior, did I break it?" — has an answer.
+ * edited this Automation, did I break it?" — has an answer.
  *
  * **Trials are not optional decoration.** Our own research evals swung ±1 task
  * on identical 22-task batteries. A single run per case reports noise as a
@@ -50,7 +50,7 @@ interface EvalSuiteCase {
 }
 
 export interface RunEvalSuiteResult {
-	behaviorId: number;
+	automationId: number;
 	trials: number;
 	/** Runs actually queued. Fewer than cases×trials when a replay is in flight. */
 	queued: number;
@@ -60,7 +60,7 @@ export interface RunEvalSuiteResult {
 }
 
 /**
- * Load a Behavior's ACTIVE eval cases.
+ * Load an Automation's ACTIVE eval cases.
  *
  * Retired cases are excluded here rather than at the call site: a retired case
  * is one a human decided no longer describes desired behaviour, and silently
@@ -68,7 +68,7 @@ export interface RunEvalSuiteResult {
  */
 async function listActiveCases(
 	organizationId: string,
-	behaviorId: number,
+	automationId: number,
 	caseIds?: number[],
 	db?: DbClient,
 ): Promise<EvalSuiteCase[]> {
@@ -84,7 +84,7 @@ async function listActiveCases(
     WHERE e.organization_id = ${organizationId}
       AND et.slug = ${EVAL_CASE_ENTITY_TYPE_SLUG}
       AND e.deleted_at IS NULL
-      AND (e.metadata->>'behavior_id')::bigint = ${behaviorId}
+      AND (e.metadata->>'automation_id')::bigint = ${automationId}
       AND coalesce(e.metadata->>'status', 'active') = 'active'
       ${
 				// The client runs with `fetch_types: false`, so a raw JS array binds as
@@ -135,7 +135,7 @@ async function listActiveCases(
 export async function runEvalSuite(
 	params: {
 		organizationId: string;
-		behaviorId: number;
+		automationId: number;
 		caseIds?: number[];
 		trials?: number;
 	},
@@ -149,13 +149,13 @@ export async function runEvalSuite(
 
 	const cases = await listActiveCases(
 		params.organizationId,
-		params.behaviorId,
+		params.automationId,
 		params.caseIds,
 		sql,
 	);
 
 	const result: RunEvalSuiteResult = {
-		behaviorId: params.behaviorId,
+		automationId: params.automationId,
 		trials,
 		queued: 0,
 		cases: [],
@@ -207,7 +207,7 @@ export async function runEvalSuite(
 
 	logger.info(
 		{
-			behaviorId: params.behaviorId,
+			automationId: params.automationId,
 			cases: result.cases.length,
 			skipped: result.skipped.length,
 			trials,
@@ -235,7 +235,7 @@ export interface EvalCaseResult {
 }
 
 export interface EvalResults {
-	behaviorId: number;
+	automationId: number;
 	cases: EvalCaseResult[];
 	summary: {
 		cases: number;
@@ -280,12 +280,12 @@ function groupSignature(scores: CaseScoreEntry[]): string | null {
 }
 
 /**
- * Read a Behavior's suite results: per case, latest vs previous, plus a summary.
+ * Read an Automation's suite results: per case, latest vs previous, plus a summary.
  *
  * Pure entity reads — no `events`, no aggregation over run history.
  */
 export async function readEvalResults(
-	params: { organizationId: string; behaviorId: number; trials?: number },
+	params: { organizationId: string; automationId: number; trials?: number },
 	db?: DbClient,
 ): Promise<EvalResults> {
 	const sql = db ?? getDb();
@@ -301,7 +301,7 @@ export async function readEvalResults(
     WHERE e.organization_id = ${params.organizationId}
       AND et.slug = ${EVAL_CASE_ENTITY_TYPE_SLUG}
       AND e.deleted_at IS NULL
-      AND (e.metadata->>'behavior_id')::bigint = ${params.behaviorId}
+      AND (e.metadata->>'automation_id')::bigint = ${params.automationId}
       AND coalesce(e.metadata->>'status', 'active') = 'active'
     ORDER BY e.id
   `) as unknown as Array<{
@@ -344,7 +344,7 @@ export async function readEvalResults(
 				: null;
 		// Only like-for-like groups are compared: a changed metric set (say a lost
 		// judge) makes the two denominators different, and a move between them is
-		// not a signal about the Behavior. An UNKNOWN set never compares equal —
+		// not a signal about the Automation. An UNKNOWN set never compares equal —
 		// to a measured set OR to another unknown — so both must resolve to a
 		// known signature for the comparison to run at all. delta stays null
 		// otherwise, which keeps the case out of regressions/improvements and the
@@ -401,7 +401,7 @@ export async function readEvalResults(
 			: null;
 
 	return {
-		behaviorId: params.behaviorId,
+		automationId: params.automationId,
 		cases,
 		summary: {
 			cases: cases.length,

@@ -1,0 +1,292 @@
+/**
+ * Automation health surfacing (item 3, #2033).
+ *
+ * 3.1: manage_automations `list` returns a computed `health` field —
+ *   `degraded` for an active automation that missed a firing, has a stale pending
+ *   run, or whose latest run failed/timed out; `healthy` otherwise.
+ *
+ * 3.2: getSchedulerHealth (the /health/scheduler alarm path) surfaces overdue
+ *   active automations and stuck-pending automation runs in `issues[]` — previously
+ *   it filtered run_type='sync' ONLY, so automations were invisible to alerting.
+ *
+ * Automation runs carry run_type='automation' and are linked through
+ * runs.automation_id.
+ */
+
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import type { Env } from "../../index";
+import { getSchedulerHealth } from "../../scheduled/scheduler-health";
+import { manageAutomations } from "../../tools/admin/manage_automations";
+import { getAutomation } from "../../tools/get_automation";
+import { computeAutomationHealth } from "../../automations/automation-health";
+import { initWorkspaceProvider } from "../../workspace";
+import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
+import { createTestAgent, seedOwnerContext } from "../setup/test-fixtures";
+
+async function createScheduledAutomation(): Promise<{
+  automationId: number;
+  ctx: Awaited<ReturnType<typeof seedOwnerContext>>["ctx"];
+}> {
+  const { org, user, ctx } = await seedOwnerContext();
+  const agent = await createTestAgent({
+    organizationId: org.id,
+    ownerUserId: user.id,
+  });
+  const created = await manageAutomations(
+    {
+      action: "create",
+      slug: `health-automation-${Date.now()}`,
+      name: "Health automation",
+      prompt: "Summarize newly landed content.",
+      agent_id: agent.agentId,
+      sources: [
+        {
+          name: "github",
+          query: "SELECT id, payload_text FROM events WHERE 1=0",
+        },
+      ],
+      triggers: [
+        {
+          kind: "schedule",
+          cron: "* * * * *",
+          execution: "window",
+          active_run: "coalesce",
+        },
+      ],
+    },
+    {} as Env,
+    ctx,
+  );
+  if (created.action !== "create" || !("automation_id" in created)) {
+    throw new Error("Automation creation did not complete");
+  }
+  return { automationId: Number(created.automation_id), ctx };
+}
+
+describe("automation health surfacing (#2033)", () => {
+  beforeAll(async () => {
+    await initWorkspaceProvider();
+  });
+
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+  });
+
+  it("3.1 (unit): computeAutomationHealth is degraded for an active, overdue automation", () => {
+    const now = Date.now();
+    const degraded = computeAutomationHealth(
+      {
+        status: "active",
+        // Overdue by 30 min — well past the 6-min missed-firing margin.
+        nextRunAt: new Date(now - 30 * 60 * 1000).toISOString(),
+      },
+      now,
+    );
+    expect(degraded.health).toBe("degraded");
+    expect(degraded.reasons.length).toBeGreaterThan(0);
+
+    // An Automation scheduled in the future is healthy.
+    const healthy = computeAutomationHealth(
+      { status: "active", nextRunAt: new Date(now + 60 * 1000).toISOString() },
+      now,
+    );
+    expect(healthy.health).toBe("healthy");
+
+    // An in-flight run is NOT false-degraded even if next_run_at slipped.
+    const inFlight = computeAutomationHealth(
+      {
+        status: "active",
+        nextRunAt: new Date(now - 30 * 60 * 1000).toISOString(),
+        latestRunStatus: "running",
+      },
+      now,
+    );
+    expect(inFlight.health).toBe("healthy");
+  });
+
+  it("3.1 (integration): manage_automations list returns health='degraded' for an overdue active automation", async () => {
+    const { automationId, ctx } = await createScheduledAutomation();
+    const sql = getTestDb();
+    // Push next_run_at well into the past → missed firing.
+    await sql`
+      UPDATE automations
+      SET next_run_at = current_timestamp - interval '30 minutes'
+      WHERE id = ${automationId}
+    `;
+
+    const result = await manageAutomations({ action: "list" }, {} as Env, ctx);
+    if (result.action !== "list") throw new Error("expected list result");
+    const row = result.automations.find(
+      (b) => String((b as { automation_id?: unknown }).automation_id) === String(automationId),
+    ) as { health?: string; health_reasons?: string[] } | undefined;
+    expect(row).toBeDefined();
+    expect(row?.health).toBe("degraded");
+    expect((row?.health_reasons ?? []).length).toBeGreaterThan(0);
+  });
+
+  it("3.1 (integration): a future-scheduled automation lists as healthy", async () => {
+    const { automationId, ctx } = await createScheduledAutomation();
+    const sql = getTestDb();
+    await sql`
+      UPDATE automations
+      SET next_run_at = current_timestamp + interval '5 minutes'
+      WHERE id = ${automationId}
+    `;
+
+    const result = await manageAutomations({ action: "list" }, {} as Env, ctx);
+    if (result.action !== "list") throw new Error("expected list result");
+    const row = result.automations.find(
+      (b) => String((b as { automation_id?: unknown }).automation_id) === String(automationId),
+    ) as { health?: string } | undefined;
+    expect(row?.health).toBe("healthy");
+  });
+
+  it("3.1 (integration): a failed latest run degrades an on-schedule automation", async () => {
+    const { automationId, ctx } = await createScheduledAutomation();
+    const sql = getTestDb();
+    // On schedule (future) so the ONLY unhealthy signal is the failed run —
+    // proving health reflects the run outcome, not just the scheduler cursor.
+    await sql`
+      UPDATE automations
+      SET next_run_at = current_timestamp + interval '5 minutes'
+      WHERE id = ${automationId}
+    `;
+    await sql`
+      INSERT INTO runs
+        (organization_id, run_type, automation_id, status, approval_status,
+         error_message, created_at, completed_at)
+      VALUES
+        (${ctx.organizationId}, 'automation', ${automationId}, 'failed', 'auto',
+         'No model is configured', current_timestamp - interval '2 minutes',
+         current_timestamp - interval '1 minute')
+    `;
+
+    const result = await manageAutomations({ action: "list" }, {} as Env, ctx);
+    if (result.action !== "list") throw new Error("expected list result");
+    const row = result.automations.find(
+      (b) => String((b as { automation_id?: unknown }).automation_id) === String(automationId),
+    ) as
+      | { health?: string; last_scheduling_error?: string | null }
+      | undefined;
+    expect(row?.health).toBe("degraded");
+    expect(row?.last_scheduling_error).toBe("No model is configured");
+  });
+
+  it("3.3: list emits canonical automation lineage keys", async () => {
+    const { automationId, ctx } = await createScheduledAutomation();
+    await getTestDb()`
+      UPDATE automations
+      SET source_automation_id = id
+      WHERE id = ${automationId}
+    `;
+    const result = await manageAutomations({ action: "list" }, {} as Env, ctx);
+    if (result.action !== "list") throw new Error("expected list result");
+    const row = result.automations.find(
+      (b) => String((b as { automation_id?: unknown }).automation_id) === String(automationId),
+    ) as Record<string, unknown> | undefined;
+    expect(row).toBeDefined();
+    expect(row?.automation_group_id).toBe(String(automationId));
+    expect(row?.source_automation_id).toBe(String(automationId));
+  });
+
+  it("3.4: list preserves canonical client.automations.* run errors", async () => {
+    const { automationId, ctx } = await createScheduledAutomation();
+    const sql = getTestDb();
+    await sql`
+      UPDATE automations
+      SET next_run_at = current_timestamp + interval '5 minutes'
+      WHERE id = ${automationId}
+    `;
+    await sql`
+      INSERT INTO runs
+        (organization_id, run_type, automation_id, status, approval_status,
+         error_message, created_at, completed_at)
+      VALUES
+        (${ctx.organizationId}, 'automation', ${automationId}, 'failed', 'auto',
+         'Agent never called client.automations.completeWindow()',
+         current_timestamp - interval '2 minutes',
+         current_timestamp - interval '1 minute')
+    `;
+
+    const result = await manageAutomations({ action: "list" }, {} as Env, ctx);
+    if (result.action !== "list") throw new Error("expected list result");
+    const row = result.automations.find(
+      (b) => String((b as { automation_id?: unknown }).automation_id) === String(automationId),
+    ) as
+      | { automation_run_error?: string | null; last_scheduling_error?: string | null }
+      | undefined;
+    // Both the raw error field and the health-echoed error carry the public vocabulary.
+    expect(row?.automation_run_error).toBe(
+      "Agent never called client.automations.completeWindow()",
+    );
+    expect(row?.last_scheduling_error).toBe(
+      "Agent never called client.automations.completeWindow()",
+    );
+  });
+
+  it("3.5: get_automation preserves canonical run errors everywhere", async () => {
+    const { automationId, ctx } = await createScheduledAutomation();
+    await getTestDb()`
+      INSERT INTO runs
+        (organization_id, run_type, automation_id, status, approval_status,
+         error_message, created_at, completed_at)
+      VALUES
+        (${ctx.organizationId}, 'automation', ${automationId}, 'failed', 'auto',
+         'Agent never called client.automations.completeWindow()',
+         current_timestamp - interval '2 minutes', current_timestamp - interval '1 minute')
+    `;
+
+    const result = await getAutomation({ automation_id: String(automationId) }, {} as Env, ctx);
+    expect(result.automation?.automation_run?.error_message).toBe(
+      "Agent never called client.automations.completeWindow()"
+    );
+    expect(result.automation?.last_scheduling_error).toBe(
+      "Agent never called client.automations.completeWindow()"
+    );
+  });
+
+  it("3.2: getSchedulerHealth surfaces an overdue automation in issues[]", async () => {
+    const { automationId } = await createScheduledAutomation();
+    const sql = getTestDb();
+    // Overdue by 2 hours → past the 1-hour automation overdue threshold.
+    await sql`
+      UPDATE automations
+      SET next_run_at = current_timestamp - interval '2 hours'
+      WHERE id = ${automationId}
+    `;
+
+    const health = await getSchedulerHealth({} as Env);
+    expect(health.metrics.overdueAutomations).toBeGreaterThanOrEqual(1);
+    expect(health.metrics.automationsOverdueByHours).toBeGreaterThan(1);
+    expect(health.healthy).toBe(false);
+    expect(health.issues.some((i) => /automations overdue/i.test(i))).toBe(true);
+  });
+
+  it("3.2: getSchedulerHealth surfaces a stuck-pending automation run in issues[]", async () => {
+    const { automationId, ctx } = await createScheduledAutomation();
+    const sql = getTestDb();
+    // Keep next_run_at in the future so the ONLY issue is the stuck run.
+    await sql`
+      UPDATE automations
+      SET next_run_at = current_timestamp + interval '5 minutes'
+      WHERE id = ${automationId}
+    `;
+    const orgId = ctx.organizationId;
+    // A pending automation run created 3 hours ago — past the 2h stale interval.
+    await sql`
+      INSERT INTO runs
+        (organization_id, run_type, automation_id, status, approval_status, created_at)
+      VALUES
+        (${orgId}, 'automation', ${automationId}, 'pending', 'auto',
+         current_timestamp - interval '3 hours')
+    `;
+
+    const health = await getSchedulerHealth({} as Env);
+    expect(health.metrics.stalePendingAutomationRuns).toBeGreaterThanOrEqual(1);
+    expect(health.issues.some((i) => /stuck pending/i.test(i))).toBe(true);
+  });
+});
+
+afterAll(() => {
+  // no-op; embedded PG torn down by the global harness.
+});

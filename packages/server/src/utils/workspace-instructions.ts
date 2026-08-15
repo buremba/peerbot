@@ -2,7 +2,7 @@
  * Workspace Instructions Builder
  *
  * Generates MCP instructions with workspace schema (entity types, relationship
- * types) and behavioral guidance so LLMs act as a proactive memory layer.
+ * types) and automational guidance so LLMs act as a proactive memory layer.
  * All entity-level data comes from tool calls at runtime, not from instructions.
  */
 
@@ -15,17 +15,17 @@ function singleLine(value: unknown): string {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
 }
 
-const INTERNAL_BEHAVIOR_SCHEMA_FIELDS = new Set([
-  'acting_watcher_id',
-  'analyzed_by_watcher_id',
-  'exclude_watcher_id',
-  'source_watcher_id',
-  'watcher_id',
-  'watcher_ids',
+const INTERNAL_AUTOMATION_SCHEMA_FIELDS = new Set([
+  'acting_automation_id',
+  'analyzed_by_automation_id',
+  'exclude_automation_id',
+  'source_automation_id',
+  'automation_id',
+  'automation_ids',
 ]);
 
-function isInternalBehaviorSchemaField(field: string): boolean {
-  return INTERNAL_BEHAVIOR_SCHEMA_FIELDS.has(field.toLowerCase());
+function isInternalAutomationSchemaField(field: string): boolean {
+  return INTERNAL_AUTOMATION_SCHEMA_FIELDS.has(field.toLowerCase());
 }
 
 /** Translate engine vocabulary only on known internal fields. */
@@ -33,8 +33,8 @@ function publicFieldDescription(field: string, value: unknown): string {
   const description = singleLine(value);
   if (field.toLowerCase() !== 'window_id') return description;
   return description
-    .replace(/\bwatchers\b/gi, 'Behaviors')
-    .replace(/\bwatcher\b/gi, 'Behavior');
+    .replace(/\bautomations\b/gi, 'Automations')
+    .replace(/\bautomation\b/gi, 'Automation');
 }
 
 /**
@@ -55,7 +55,7 @@ function renderSchemaFields(schema: unknown): string {
   }
   if (!props) return '';
   return Object.entries(props)
-    .filter(([field]) => !isInternalBehaviorSchemaField(field))
+    .filter(([field]) => !isInternalAutomationSchemaField(field))
     .map(([field, def]) => {
       const desc = publicFieldDescription(
         field,
@@ -156,7 +156,7 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
         const desc = singleLine(def.description);
         const metaFields = def.metadataSchema?.properties
           ? Object.keys(def.metadataSchema.properties as Record<string, unknown>)
-              .filter((field) => !isInternalBehaviorSchemaField(field))
+              .filter((field) => !isInternalAutomationSchemaField(field))
               .join(', ')
           : '';
         const parts = [desc, metaFields ? `metadata: ${metaFields}` : '']
@@ -238,7 +238,7 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
       'A connector may be INSTALLED for this org yet absent from the global catalog, so always check installed connectors before concluding a source is unsupported:',
       '- Find the connector: `search_sdk` with the source/topic word (e.g. "website", "slack") returns any matching live connector + its feed keys + lifecycle. Or list them: `query_sdk` → `client.catalog.listInstalled({ kinds: ["connectors"] })` (installed = ready to configure; each item\'s `detail.feeds_schema` keys are the feed_key values) and `client.catalog.listCatalog({ kinds: ["connectors"] })` (global, installable) and `client.connections.list()` (already configured).',
       '- Lifecycle: `run_sdk` → `client.connections.connect({ connector_key })` → `client.feeds.create({ connection_id, feed_key, config })` → `client.feeds.trigger({ feed_id })`; then verify with `query_sql` on the events table and search with `search_memory`.',
-      'For reads beyond search_memory, prefer `query_sdk` with a TS script. For writes (entity CRUD, Behaviors, classifiers, connections, feeds, view templates, operations), use `run_sdk`. Use `search_sdk` to discover method names.',
+      'For reads beyond search_memory, prefer `query_sdk` with a TS script. For writes (entity CRUD, Automations, classifiers, connections, feeds, view templates, operations), use `run_sdk`. Use `search_sdk` to discover method names.',
       '### Returning a result the user can read',
       'The script return value IS the card the user sees. Write it for a person, not for your own bookkeeping:',
       '- Pass `title` on the call — a short heading for what this result is (e.g. "Companies missing a domain"). Without it the card has no subject line.',

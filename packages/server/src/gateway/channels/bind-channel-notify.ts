@@ -60,7 +60,7 @@ export type PostChannelBindConfirmationParams = {
 	channelId: string;
 	agentId: string;
 	agentName: string;
-	/** Owletto Behaviors page — rendered as the link label when set. */
+	/** Owletto Automations page — rendered as the link label when set. */
 	agentUrl?: string;
 	/** When equal to `agentId`, skip — rebinding the same agent (e.g. model tweak). */
 	previousAgentId?: string | null;

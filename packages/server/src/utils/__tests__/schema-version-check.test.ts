@@ -56,7 +56,7 @@ describe('readExpectedSchemaVersion', () => {
   });
 
   it('fails closed when two migration files share one ledger version', () => {
-    writeFileSync(path.join(dir, '20260803140000_behavior_outputs.sql'), '');
+    writeFileSync(path.join(dir, '20260803140000_automation_outputs.sql'), '');
     writeFileSync(path.join(dir, '20260803140000_mcp_client_id.sql'), '');
 
     expect(() => readExpectedSchemaVersion(dir)).toThrow(

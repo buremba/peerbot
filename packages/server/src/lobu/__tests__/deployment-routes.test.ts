@@ -216,7 +216,7 @@ describe('GET /deployments (feed)', () => {
     // One standalone UI edit.
     await insertConfigEvent({
       organizationId: ORG,
-      resourceKind: 'behavior',
+      resourceKind: 'automation',
       resourceId: 'w-1',
       op: 'created',
       state: { prompt: 'watch things' },
@@ -225,7 +225,7 @@ describe('GET /deployments (feed)', () => {
     // Noise in another org must not leak.
     await insertConfigEvent({
       organizationId: OTHER_ORG,
-      resourceKind: 'behavior',
+      resourceKind: 'automation',
       resourceId: 'w-other',
       op: 'created',
       state: {},
@@ -246,7 +246,7 @@ describe('GET /deployments (feed)', () => {
     expect(deployment.gitSha).toBe('deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
 
     const change = body.items.find((i) => i.type === 'change');
-    expect(change.resourceKind).toBe('behavior');
+    expect(change.resourceKind).toBe('automation');
     expect(change.actorSource).toBe('ui');
     // Feed rows never carry state snapshots.
     expect(change.before).toBeUndefined();
@@ -336,14 +336,14 @@ describe('GET /deployments/changes/:eventId', () => {
     const app = await importDeploymentRoutes();
     await insertConfigEvent({
       organizationId: ORG,
-      resourceKind: 'behavior',
+      resourceKind: 'automation',
       resourceId: 'w-1',
       op: 'created',
       state: { prompt: 'v1' },
     });
     const secondId = await insertConfigEvent({
       organizationId: ORG,
-      resourceKind: 'behavior',
+      resourceKind: 'automation',
       resourceId: 'w-1',
       op: 'updated',
       state: { prompt: 'v2' },
@@ -603,7 +603,7 @@ describe('blocked deployments + GET /deployments/latest', () => {
     });
     await insertConfigEvent({
       organizationId: ORG,
-      resourceKind: 'behavior',
+      resourceKind: 'automation',
       resourceId: 'w-late',
       op: 'created',
       state: {},

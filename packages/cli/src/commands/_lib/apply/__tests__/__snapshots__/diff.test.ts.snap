@@ -77,14 +77,14 @@ Summary: 2 create, 0 update, 0 noop, 0 drift"
 
 exports[`renderSummary renders zero-row plan 1`] = `"Summary: 0 create, 0 update, 0 noop, 0 drift"`;
 
-exports[`renderPlan — behavior labels (not watcher) plan create/update/drift rows print behavior, never watcher 1`] = `
+exports[`renderPlan — automation labels plan create/update/drift rows print automation 1`] = `
 "
 Plan:
 
-  behaviors:
-  ~ behavior weekly-digest
-  + behavior new-digest
-  ? behavior orphaned-digest (drift — ignored, not deleted)
+  automations:
+  ~ automation weekly-digest
+  + automation new-digest
+  ? automation orphaned-digest (drift — ignored, not deleted)
 
 Summary: 1 create, 1 update, 0 noop, 1 drift"
 `;

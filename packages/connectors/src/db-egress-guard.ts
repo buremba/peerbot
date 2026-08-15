@@ -669,7 +669,7 @@ export interface DbEgressHardening {
  * without a DNS round-trip) and the pinning `socket` factory. Under
  * `allow-private` this behaves exactly like `assertConnectionStringAllowed`
  * (literal-only checks, no resolve, no overrides) so self-hosted keeps native
- * driver behavior (its own DNS, failover, and URL-controlled TLS).
+ * driver automation (its own DNS, failover, and URL-controlled TLS).
  */
 export async function buildDbEgressHardening(
   connectionString: string,

@@ -7,7 +7,7 @@
  * Glossary — "namespace" in tool descriptions below means three different things,
  * none of which is a memory-scope axis:
  *   1. A namespace passed in `search_sdk`'s `query` param — a ClientSDK property name
- *      (`behaviors`, `entities`, `knowledge`, ...).
+ *      (`automations`, `entities`, `knowledge`, ...).
  *   2. `resolve_path`'s "namespace-based URL path" — the first URL segment
  *      (an organization slug or `@user` handle).
  *   3. `entity_identities.namespace` (deep in SQL) — the identifier type
@@ -102,23 +102,23 @@ export interface ToolContext {
   /** Durable Lobu/Lobu agent identity bound to this MCP session, when provided. */
   agentId?: string | null;
   /**
-   * The watcher whose reaction script is driving these tool calls, when the
-   * session IS a watcher reaction (set by the reaction executor). Every gated
-   * write then resolves this watcher's owning agent and evaluates autonomously,
-   * WITHOUT the script having to pass `behavior_source` — so a reaction can never
+   * The automation whose reaction script is driving these tool calls, when the
+   * session IS an automation reaction (set by the reaction executor). Every gated
+   * write then resolves this automation's owning agent and evaluates autonomously,
+   * WITHOUT the script having to pass `automation_source` — so a reaction can never
    * escape its agent's envelope by simply omitting the attribution. Null for all
    * non-reaction sessions.
    */
-  actingWatcherId?: number | null;
+  actingAutomationId?: number | null;
   /**
-   * The watcher-run WINDOW driving this reaction (its root event id), set by the
-   * reaction executor alongside {@link actingWatcherId}. Threaded into a deferred
+   * The automation-run WINDOW driving this reaction (its root event id), set by the
+   * reaction executor alongside {@link actingAutomationId}. Threaded into a deferred
    * approval's `runs.window_id` so proposals from the same window batch into one
    * approval card and identical proposals from DIFFERENT windows stay distinct —
-   * even when the script omits an explicit `behavior_source`. Null off-reaction.
+   * even when the script omits an explicit `automation_source`. Null off-reaction.
    */
   actingWindowId?: number | null;
-  /** Durable watcher run driving this reaction. Used only for provenance. */
+  /** Durable automation run driving this reaction. Used only for provenance. */
   actingRunId?: number | null;
   /** Verified source conversation for worker-originated tool calls, when any. */
   sourceContext?: ToolSourceContext | null;
@@ -281,7 +281,7 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'search_sdk',
     description:
-      'Discover available SDK methods and runtime helpers. Search by method name, namespace (e.g. "entities", "connections", "behaviors"), or keyword. Returns documentation, signatures, and access requirements for each method. (Then call methods via query_sdk for reads or run_sdk for writes. Pass mode="read" to show only query_sdk-safe methods.) The search does not change workspace content or external systems. OAuth and PAT calls append a private audit/activity record.',
+      'Discover available SDK methods and runtime helpers. Search by method name, namespace (e.g. "entities", "connections", "automations"), or keyword. Returns documentation, signatures, and access requirements for each method. (Then call methods via query_sdk for reads or run_sdk for writes. Pass mode="read" to show only query_sdk-safe methods.) The search does not change workspace content or external systems. OAuth and PAT calls append a private audit/activity record.',
     inputSchema: SdkSearchSchema,
     outputSchema: SdkSearchResultSchema,
     annotations: { ...AUDITED_READ, title: 'Search SDK docs' },

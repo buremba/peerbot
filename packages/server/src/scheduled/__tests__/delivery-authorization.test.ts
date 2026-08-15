@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { createTestBehaviorSubscription } from "../../__tests__/setup/behavior-subscriptions";
+import { createTestAutomationSubscription } from "../../__tests__/setup/automation-subscriptions";
 import { getDb } from "../../db/client";
 import {
   ensureDbForGatewayTests,
@@ -58,13 +58,13 @@ describe("validateDeliveryAuthorization team predicate", () => {
   }, 60_000);
 
   test("authorizes delivery with no teamId when trigger has no team but connection has external_tenant_id", async () => {
-    // Regression: behavior_message_subscriptions.team_id is
+    // Regression: automation_message_subscriptions.team_id is
     // COALESCE(trigger match, connections.external_tenant_id, config teamId).
     // A legacy binding with no trigger team constraint used to match via
     // team_id IS NULL; after the COALESCE fallback the same row has a non-null
     // team_id and must still authorize deliveries that carry no teamId.
     await seedAgentlessSlackConnection("T-workspace");
-    await createTestBehaviorSubscription({
+    await createTestAutomationSubscription({
       organizationId: ORG,
       agentId: AGENT,
       connectionSlug: runtimeConnectionIdToSlug(CONN),
@@ -76,7 +76,7 @@ describe("validateDeliveryAuthorization team predicate", () => {
 
     const viewRows = await getDb()`
       SELECT team_id, trigger_team_id
-      FROM behavior_message_subscriptions
+      FROM automation_message_subscriptions
       WHERE organization_id = ${ORG}
         AND platform = 'slack'
         AND native_channel_id = ${CHANNEL}
@@ -95,7 +95,7 @@ describe("validateDeliveryAuthorization team predicate", () => {
 
   test("denies delivery when teamId does not match trigger or resolved team", async () => {
     await seedAgentlessSlackConnection("T-workspace");
-    await createTestBehaviorSubscription({
+    await createTestAutomationSubscription({
       organizationId: ORG,
       agentId: AGENT,
       connectionSlug: runtimeConnectionIdToSlug(CONN),
@@ -118,7 +118,7 @@ describe("validateDeliveryAuthorization team predicate", () => {
 
   test("authorizes team-scoped delivery when delivery teamId matches resolved team_id", async () => {
     await seedAgentlessSlackConnection("T-workspace");
-    await createTestBehaviorSubscription({
+    await createTestAutomationSubscription({
       organizationId: ORG,
       agentId: AGENT,
       connectionSlug: runtimeConnectionIdToSlug(CONN),

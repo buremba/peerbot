@@ -6,7 +6,7 @@ import {
 import type { Context } from "hono";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { cleanupTestDatabase } from "../../__tests__/setup/test-db.js";
-import { listTestBehaviorSubscriptions } from "../../__tests__/setup/behavior-subscriptions.js";
+import { listTestAutomationSubscriptions } from "../../__tests__/setup/automation-subscriptions.js";
 import {
   addUserToOrganization,
   createTestAgent,
@@ -47,14 +47,14 @@ const FOREIGN_TELEGRAM_CONNECTION = "foreign-telegram";
 
 let ORG_ID = "";
 let FOREIGN_ORG_ID = "";
-// A real `user` row — the binding attributes the chat Behavior's `created_by`
+// A real `user` row — the binding attributes the chat Automation's `created_by`
 // from the claim's `createdBy`, resolved against `"user"`, so it must be an
 // actual user.
 let USER_ID = "";
 
-async function clearChatBehaviors(): Promise<void> {
+async function clearChatAutomations(): Promise<void> {
   await getDb()`
-    UPDATE watchers
+    UPDATE automations
     SET status = 'archived', updated_at = current_timestamp
     WHERE status = 'active'
       AND tags @> ARRAY['system:chat-link']::text[]
@@ -114,7 +114,7 @@ async function createClaim(
   return res.body.code as string;
 }
 
-describe("Slack Preview claims + channel Behaviors", () => {
+describe("Slack Preview claims + channel Automations", () => {
   beforeAll(async () => {
     await cleanupTestDatabase();
     const org = await createTestOrganization({
@@ -190,7 +190,7 @@ describe("Slack Preview claims + channel Behaviors", () => {
 
   beforeEach(async () => {
     const sql = getDb();
-    await clearChatBehaviors();
+    await clearChatAutomations();
     await sql`DELETE FROM oauth_states WHERE scope = 'slack-preview-claim'`;
   });
 
@@ -251,7 +251,7 @@ describe("Slack Preview claims + channel Behaviors", () => {
     });
     expect(bound).toMatchObject({ status: "bound", agentId: AGENT_ID });
 
-    const rows = await listTestBehaviorSubscriptions({ platform: "telegram" });
+    const rows = await listTestAutomationSubscriptions({ platform: "telegram" });
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ channel_id: "telegram:12345", team_id: null });
   });
@@ -271,7 +271,7 @@ describe("Slack Preview claims + channel Behaviors", () => {
 
     // Stored under the canonical `slack:<id>` key the message-handler bridge
     // looks up via getBinding — the bare slash-command channel id is prefixed.
-    const rows = await listTestBehaviorSubscriptions({ platform: "slack" });
+    const rows = await listTestAutomationSubscriptions({ platform: "slack" });
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       agent_id: AGENT_ID,
@@ -307,7 +307,7 @@ describe("Slack Preview claims + channel Behaviors", () => {
       expect(refused).toEqual({ status: "connection_mismatch" });
     }
     expect(
-      await listTestBehaviorSubscriptions({ platform: "slack" })
+      await listTestAutomationSubscriptions({ platform: "slack" })
     ).toHaveLength(0);
 
     // A real preview marker is still scoped to its persisted Slack workspace.
@@ -334,7 +334,7 @@ describe("Slack Preview claims + channel Behaviors", () => {
       connectionOrganizationId: FOREIGN_ORG_ID,
     });
     expect(hosted).toMatchObject({ status: "bound", agentId: AGENT_ID });
-    const subscriptions = await listTestBehaviorSubscriptions({
+    const subscriptions = await listTestAutomationSubscriptions({
       platform: "slack",
     });
     expect(subscriptions).toHaveLength(1);
@@ -397,7 +397,7 @@ describe("Slack Preview claims + channel Behaviors", () => {
     });
     expect(rebound).toMatchObject({ status: "bound", agentId: OTHER_AGENT_ID });
 
-    const rows = await listTestBehaviorSubscriptions({
+    const rows = await listTestAutomationSubscriptions({
       platform: "slack",
       channelId: "slack:Csame",
       teamId: TEAM_ID,
@@ -421,7 +421,7 @@ describe("Slack Preview claims + channel Behaviors", () => {
     expect(
       await consumeSlack({ code, teamId: TEAM_ID, channelId: "D1" })
     ).toEqual({ status: "not_found" });
-    const bindings = await listTestBehaviorSubscriptions({ platform: "slack" });
+    const bindings = await listTestAutomationSubscriptions({ platform: "slack" });
     expect(bindings).toHaveLength(0);
   });
 
@@ -443,7 +443,7 @@ describe("Slack Preview claims + channel Behaviors", () => {
         channelId: "slack:D999",
       })
     ).toMatchObject({ status: "bound", agentId: AGENT_ID });
-    const rows = await listTestBehaviorSubscriptions({
+    const rows = await listTestAutomationSubscriptions({
       platform: "slack",
       teamId: TEAM_ID,
     });
@@ -476,7 +476,7 @@ describe("Slack Preview claims + channel Behaviors", () => {
     expect(handled).toBe(true);
     expect(replies.join("\n")).toContain(`agent \`${AGENT_ID}\``);
 
-    const rows = await listTestBehaviorSubscriptions({
+    const rows = await listTestAutomationSubscriptions({
       platform: "slack",
       channelId: "slack:D777",
       teamId: TEAM_ID,
@@ -560,7 +560,7 @@ describe("Public preview — /lobu try a demo agent", () => {
   });
 
   beforeEach(async () => {
-    await clearChatBehaviors();
+    await clearChatAutomations();
   });
 
   test("listPreviewAgents returns the org's agents, excluding the connection's owning agent", async () => {
@@ -585,7 +585,7 @@ describe("Public preview — /lobu try a demo agent", () => {
     });
     expect(res).toEqual({ status: "bound", agentId: DEMO_A });
 
-    const rows = await listTestBehaviorSubscriptions({ platform: "slack" });
+    const rows = await listTestAutomationSubscriptions({ platform: "slack" });
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ agent_id: DEMO_A, channel_id: "slack:D100", team_id: TEAM_ID });
   });
@@ -600,7 +600,7 @@ describe("Public preview — /lobu try a demo agent", () => {
       teamId: TEAM_ID, channelId: canonicalSlackChannelId("Dswap"),
     });
     expect(res).toMatchObject({ status: "bound", agentId: DEMO_B });
-    const rows = await listTestBehaviorSubscriptions({
+    const rows = await listTestAutomationSubscriptions({
       channelId: "slack:Dswap",
       teamId: TEAM_ID,
     });
@@ -621,7 +621,7 @@ describe("Public preview — /lobu try a demo agent", () => {
         teamId: TEAM_ID, channelId: canonicalSlackChannelId("D200"),
       })
     ).toEqual({ status: "not_available" });
-    expect(await listTestBehaviorSubscriptions()).toHaveLength(0);
+    expect(await listTestAutomationSubscriptions()).toHaveLength(0);
   });
 
   test("reports no_connection for an unknown connection id", async () => {
@@ -652,7 +652,7 @@ describe("Public preview — /lobu try a demo agent", () => {
     });
     expect(handled).toBe(true);
     expect(replies.join("\n")).toContain(`\`${DEMO_A}\``);
-    const rows = await listTestBehaviorSubscriptions({
+    const rows = await listTestAutomationSubscriptions({
       channelId: "slack:D777",
       teamId: TEAM_ID,
     });
@@ -731,7 +731,7 @@ describe("chat-user identity + codeless re-link by agent id", () => {
 
   beforeEach(async () => {
     const sql = getDb();
-    await clearChatBehaviors();
+    await clearChatAutomations();
     await sql`DELETE FROM oauth_states WHERE scope = 'slack-preview-claim'`;
   });
 
@@ -791,7 +791,7 @@ describe("chat-user identity + codeless re-link by agent id", () => {
         connectionOrganizationId: idOrgId,
       })
     ).toEqual({ status: "bound" });
-    const rows = await listTestBehaviorSubscriptions({
+    const rows = await listTestAutomationSubscriptions({
       channelId: "slack:D901",
       teamId: ID_TEAM,
     });
@@ -840,7 +840,7 @@ describe("chat-user identity + codeless re-link by agent id", () => {
       },
     });
     expect(replies.join("\n")).toContain("`second-agent`");
-    const rows = await listTestBehaviorSubscriptions({
+    const rows = await listTestAutomationSubscriptions({
       channelId: "slack:D903",
       teamId: ID_TEAM,
     });

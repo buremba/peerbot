@@ -22,7 +22,7 @@ function stateWithSecrets(): DesiredState {
     ],
     prune: false,
     memorySchema: { entityTypes: [], relationshipTypes: [] },
-    watchers: [],
+    automations: [],
     connectors: {
       definitions: [
         {

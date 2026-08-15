@@ -115,8 +115,8 @@ describe("public connection projection", () => {
 	});
 
 	it("leaves an in-process system caller's row untouched", () => {
-		// A watcher reaction: userId null, isAuthenticated true, tokenType
-		// 'session' (watchers/reaction-executor.ts). It reads credential_mode /
+		// An automation reaction: userId null, isAuthenticated true, tokenType
+		// 'session' (automations/reaction-executor.ts). It reads credential_mode /
 		// error_message / device fields, so narrowing it would break reactions.
 		const systemCtx = {
 			...ctxWith(null),

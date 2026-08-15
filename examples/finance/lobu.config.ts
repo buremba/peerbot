@@ -5,7 +5,7 @@ import {
   defineSkill,
   defineEntityType,
   defineRelationshipType,
-  defineBehavior,
+  defineAutomation,
   secret,
 } from "@lobu/cli/config";
 import type QuickBooksTransactionsConnector from "./quickbooks-transactions.connector.ts";
@@ -173,7 +173,7 @@ const summarizedIn = defineRelationshipType({
     "Let agents trace reporting outputs back to the supporting data.",
 });
 
-const reconciliationMonitor = defineBehavior({
+const reconciliationMonitor = defineAutomation({
   agent: finance,
   slug: "reconciliation-monitor",
   name: "Reconciliation monitor",
@@ -198,5 +198,5 @@ export default defineConfig({
   agents: [finance],
   entities: [account, report, transaction, variance],
   relationships: [createsVariance, reconcilesTo, summarizedIn],
-  behaviors: [reconciliationMonitor],
+  automations: [reconciliationMonitor],
 });

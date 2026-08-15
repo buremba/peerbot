@@ -4,9 +4,9 @@
  *
  * The tool schema has always promised "Defaults to now if omitted", but the
  * implementation passed NULL through to insertEvent. A NULL occurred_at makes
- * the event invisible to every watcher window (window content is an events CTE
+ * the event invisible to every automation window (window content is an events CTE
  * filtered on occurred_at within [window_start, window_end)), so agent-saved
- * knowledge silently never reached watchers.
+ * knowledge silently never reached automations.
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -154,9 +154,9 @@ describe('saveContent > occurred_at default', () => {
   it('returns the original event for a repeated idempotency key', async () => {
     const input = {
       entity_ids: [entityId],
-      content: 'A retry-safe Behavior reply.',
+      content: 'A retry-safe Automation reply.',
       semantic_type: 'note',
-      idempotency_key: 'behavior:71:source:stable-post-1',
+      idempotency_key: 'automation:71:source:stable-post-1',
       metadata: { source_origin_id: 'stable-post-1' },
     } as never;
 
@@ -170,7 +170,7 @@ describe('saveContent > occurred_at default', () => {
       SELECT count(*)::int AS n
       FROM events
       WHERE organization_id = ${org.id}
-        AND metadata->>'_lobu_idempotency_key' = 'behavior:71:source:stable-post-1'
+        AND metadata->>'_lobu_idempotency_key' = 'automation:71:source:stable-post-1'
     `;
     expect(Number(count.n)).toBe(1);
   });

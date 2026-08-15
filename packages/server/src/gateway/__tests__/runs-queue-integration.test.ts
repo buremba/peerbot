@@ -1,7 +1,7 @@
 /**
  * Integration tests for RunsQueue against a real Postgres.
  *
- * Covers the production behaviors that unit-level mocking cannot exercise —
+ * Covers the production automations that unit-level mocking cannot exercise —
  * SKIP LOCKED concurrency, graceful shutdown release, priority + expires_at +
  * retryDelay options, startup recovery scan.
  *
@@ -58,7 +58,7 @@ describe("RunsQueue — SKIP LOCKED claim concurrency", () => {
 
     // Inside one RunsQueue instance, a queue name has one active worker loop.
     // This still exercises the production SKIP LOCKED claim SQL against real
-    // Postgres, without mocking the row-lock behavior.
+    // Postgres, without mocking the row-lock automation.
     await queue.work("test-skip-locked", handler);
 
     // Drain — poll until all claimed.

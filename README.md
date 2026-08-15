@@ -161,11 +161,11 @@ export default async (_ctx, client) => {
 
 Docs: [Agent workspace](https://lobu.ai/guides/agent-prompts/) · [Guardrails](https://lobu.ai/guides/guardrails/) · [Security](https://lobu.ai/guides/security/)
 
-### Behaviors
+### Automations
 
-Behaviors are versioned background responsibilities activated manually, on a schedule, by a connector event, or by another Behavior's durable output. They read governed sources, persist structured results, and can notify Slack, open a ticket, or start agent work while nobody is in chat.
+Automations are versioned background responsibilities activated manually, on a schedule, by a connector event, or by another Automation's durable output. They read governed sources, persist structured results, and can notify Slack, open a ticket, or start agent work while nobody is in chat.
 
-See the [activation and chaining model](docs/BEHAVIORS.md).
+See the [activation and chaining model](docs/AUTOMATIONS.md).
 
 ### Optional execution
 
@@ -184,7 +184,7 @@ Setup: [Slack](https://lobu.ai/platforms/slack/) · [Telegram](https://lobu.ai/p
 - **Agent frameworks** help developers implement an agent loop. Lobu gives agents and people a shared organizational state and a place to keep persistent specialists.
 - **Direct MCP integrations** expose tools from one provider. Lobu continuously builds durable, cross-source context that every authorized agent can reuse.
 - **Agent runtimes** host a particular agent. Lobu lets people keep using Claude Code, Codex, ChatGPT, or their own runtime and add Lobu only where shared context or delegation is useful.
-- **Workflow engines** encode a graph of predetermined steps. Lobu Behaviors handle durable triggers and background responsibilities, while agents decide how to complete open-ended work.
+- **Workflow engines** encode a graph of predetermined steps. Lobu Automations handle durable triggers and background responsibilities, while agents decide how to complete open-ended work.
 
 ## Agent configuration
 

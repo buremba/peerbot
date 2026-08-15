@@ -7,7 +7,7 @@ import {
   defineConnection,
   defineEntityType,
   defineRelationshipType,
-  defineBehavior,
+  defineAutomation,
   reactionFromFile,
   secret,
   skillFromFile,
@@ -171,7 +171,7 @@ const converted_to = defineRelationshipType({
     "Links a lead to the pilot it became, so the path from first signal to paying pilot stays explicit.",
 });
 
-const funnelDigestBehavior = defineBehavior({
+const funnelDigestAutomation = defineAutomation({
   agent: crm,
   slug: "funnel-digest",
   name: "Weekly funnel digest",
@@ -186,7 +186,7 @@ const funnelDigestBehavior = defineBehavior({
   skills: ["funnel-digest"],
 });
 
-const inboundTriageBehavior = defineBehavior({
+const inboundTriageAutomation = defineAutomation({
   agent: crm,
   slug: "inbound-triage",
   name: "Inbound triage",
@@ -410,7 +410,7 @@ export default defineConfig({
     lobu_activityDbConn,
     // Hosted Lobu Slack bot — no bot token needed. `lobu run` prints a
     // `/lobu link <code>` you redeem by DMing the bot; redeeming binds an
-    // agent by creating a message Behavior for that DM/channel.
+    // agent by creating a message Automation for that DM/channel.
     defineConnection({
       slug: "crm-slack",
       connector: "slack",
@@ -425,5 +425,5 @@ export default defineConfig({
     x_accountAuth,
     lobu_dbAuth,
   ],
-  behaviors: [funnelDigestBehavior, inboundTriageBehavior],
+  automations: [funnelDigestAutomation, inboundTriageAutomation],
 });

@@ -44,13 +44,13 @@ function context(): ReactionContext {
     window: {
       id: 44,
       run_id: 88,
-      behavior_id: 71,
+      automation_id: 71,
       window_start: "2026-08-01T15:00:00.000Z",
       window_end: "2026-08-01T16:00:00.000Z",
       granularity: "hour",
       content_analyzed: 1,
     },
-    behavior: {
+    automation: {
       id: 71,
       slug: "social-interest-radar",
       name: "Social interest radar (X + LinkedIn)",
@@ -105,7 +105,7 @@ function fixture(options?: {
   let operationError = options?.operationErrorOnce;
   const client = {
     query: async (sql: string) =>
-      sql.includes("behavior_output' = 'signals") ? signals : drafts,
+      sql.includes("automation_output' = 'signals") ? signals : drafts,
     connections: {
       list: async () => {
         connectionListCalls += 1;
@@ -166,7 +166,7 @@ describe("social interest radar reaction", () => {
           urls: ["https://www.linkedin.com/feed/update/urn:li:activity:123"],
           expires_in_seconds: 86_400,
         },
-        behavior_source: { behavior_id: 71, window_id: 44 },
+        automation_source: { automation_id: 71, window_id: 44 },
       },
     ]);
     expect(f.notifications).toHaveLength(1);
@@ -267,7 +267,7 @@ describe("social interest radar reaction", () => {
     const originalQuery = f.client.query;
     f.client.query = (async (sql: string) => {
       const rows = await originalQuery(sql);
-      if (sql.includes("behavior_output' = 'drafts")) {
+      if (sql.includes("automation_output' = 'drafts")) {
         return (rows as Array<Record<string, unknown>>).map((row) => ({
           ...row,
           source_url: "https://www.linkedin.com/feed/",

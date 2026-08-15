@@ -118,7 +118,7 @@ export const ResolvedEntityDetailsSchema = Type.Intersect([
     // Stats
     total_content: Type.Integer(),
     active_connections: Type.Integer(),
-    behaviors_count: Type.Integer(),
+    automations_count: Type.Integer(),
     // Derived ("view") entity: synthesized from the type's `backing_sql` filtered
     // to this slug, not a stored `entities` row. `metadata` holds the full view
     // row; `measure_columns` are its aggregate columns. Stored entities omit both.
@@ -185,7 +185,7 @@ const BootstrapEntityTypeSummarySchema = Type.Object({
  */
 const WorkspaceCountsSchema = Type.Object({
   connections: Type.Integer(),
-  behaviors: Type.Integer(),
+  automations: Type.Integer(),
   agents: Type.Integer(),
   // Devices are owned by the requesting user, not the org — count is per-user.
   devices: Type.Integer(),
@@ -599,7 +599,7 @@ async function _resolvePath(
     const [
       [eventsCount],
       [connectionsCount],
-      [watchersCount],
+      [automationsCount],
       entityTabs,
       entityTypeTabs,
       { cleanTemplate: entityCleanTpl, templateData: entityTemplateData },
@@ -621,7 +621,7 @@ async function _resolvePath(
              AND ${feedLinkedToBusinessEntitySql('$2::int', 'f', 'cn', '$1')}`,
           [workspace.id, Number(entityRow.id)],
         ),
-        sql`SELECT COUNT(*) as cnt FROM watchers i
+        sql`SELECT COUNT(*) as cnt FROM automations i
               WHERE ${Number(entityRow.id)}::int = ANY(i.entity_ids)
                 AND i.organization_id = ${workspace.id}
                 AND i.status = 'active'`,
@@ -693,7 +693,7 @@ async function _resolvePath(
       created_at: createdAt,
       total_content: Number(eventsCount?.cnt) || 0,
       active_connections: Number(connectionsCount?.cnt) || 0,
-      behaviors_count: Number(watchersCount?.cnt) || 0,
+      automations_count: Number(automationsCount?.cnt) || 0,
     };
   }
 
@@ -939,7 +939,7 @@ async function resolveDerivedLeaf(
 
   return {
     // Derived rows have no stored numeric id; routing/identity use the slug, and
-    // the id-keyed tabs (knowledge/connectors/behaviors) are hidden client-side.
+    // the id-keyed tabs (knowledge/connectors/automations) are hidden client-side.
     id: 0,
     entity_type: segment.entity_type,
     slug: segment.slug,
@@ -955,7 +955,7 @@ async function resolveDerivedLeaf(
     created_at: new Date().toISOString(),
     total_content: 0,
     active_connections: 0,
-    behaviors_count: 0,
+    automations_count: 0,
     is_derived: true,
     measure_columns: measures,
   };
@@ -1066,7 +1066,7 @@ async function listEntityTypes(
 
 const EMPTY_WORKSPACE_COUNTS: WorkspaceCounts = {
   connections: 0,
-  behaviors: 0,
+  automations: 0,
   agents: 0,
   devices: 0,
   clients: 0,
@@ -1092,7 +1092,7 @@ function resolveWorkspaceCounts(
  * All five aggregate bounded config tables, so the cost is flat in history
  * size and this can run on every resolve. Keeping them in one statement is
  * what makes that true — the previous split (agents/devices in one query,
- * connections/behaviors in another) paid two round trips for five scalars.
+ * connections/automations in another) paid two round trips for five scalars.
  *
  * `clients` mirrors the grouped live inventory rendered by AgentsPage: a
  * registration only counts while it has an active grant, and repeat
@@ -1115,10 +1115,10 @@ async function fetchWorkspaceCounts(
       ) AS connections,
       (
         SELECT COUNT(*)::int
-        FROM watchers w
+        FROM automations w
         WHERE w.organization_id = ${organizationId}
           AND w.status = 'active'
-      ) AS behaviors,
+      ) AS automations,
       (
         SELECT COUNT(*)::int
         FROM agents a
@@ -1155,7 +1155,7 @@ async function fetchWorkspaceCounts(
   const counts = row as Partial<Record<keyof WorkspaceCounts, number>> | undefined;
   return {
     connections: Number(counts?.connections) || 0,
-    behaviors: Number(counts?.behaviors) || 0,
+    automations: Number(counts?.automations) || 0,
     agents: Number(counts?.agents) || 0,
     devices: Number(counts?.devices) || 0,
     clients: Number(counts?.clients) || 0,

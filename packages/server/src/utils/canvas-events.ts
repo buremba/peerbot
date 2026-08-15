@@ -1,14 +1,14 @@
 /**
  * Canvas-on-events helpers.
  *
- * A watcher "window" (canvas) is a supersede chain of `semantic_type='canvas_state'`
+ * An automation "window" (canvas) is a supersede chain of `semantic_type='canvas_state'`
  * events. The chain ROOT (supersedes_event_id IS NULL) is the window identity —
  * its event id is the `window_id` everywhere. Human edits and materialized
  * corrections supersede the current head, copying the root's period metadata so
  * period queries hit any chain member consistently.
  *
- * Identity: a lazy per-watcher "canvas" entity claimed via `entity_identities`
- * (namespace `watcher_canvas`, identifier = `<watcherId>`), anchoring the chain
+ * Identity: a lazy per-automation "canvas" entity claimed via `entity_identities`
+ * (namespace `automation_canvas`, identifier = `<automationId>`), anchoring the chain
  * via `entity_ids`. The partial unique index `idx_entity_identities_live_unique`
  * (org, namespace, identifier WHERE deleted_at IS NULL) is the multi-replica lock.
  *
@@ -28,24 +28,24 @@ import type { DbClient } from '../db/client';
 import { CANVAS_ENTITY_TYPE_SLUG } from '../tools/constants';
 import { resolveEntityCreator } from './resolve-entity-creator';
 
-/** Namespace for the per-watcher canvas identity claim in `entity_identities`. */
-export const WATCHER_CANVAS_NAMESPACE = 'watcher_canvas';
+/** Namespace for the per-automation canvas identity claim in `entity_identities`. */
+export const AUTOMATION_CANVAS_NAMESPACE = 'automation_canvas';
 
 /** Metadata keys copied onto every chain member so period queries are consistent. */
 export interface CanvasPeriodMeta {
-  watcher_id: number;
+  automation_id: number;
   granularity: string;
   window_start: string;
   window_end: string;
 }
 
 /**
- * Ensure the lazy per-watcher canvas entity exists and return its id. Idempotent
- * and multi-replica-safe via the `watcher_canvas` live-unique identity claim:
+ * Ensure the lazy per-automation canvas entity exists and return its id. Idempotent
+ * and multi-replica-safe via the `automation_canvas` live-unique identity claim:
  * the reuse fast-path resolves an existing claim; the create path tolerates a
  * concurrent claim (ON CONFLICT DO NOTHING) and resolves the winner.
  *
- * The canvas entity is a child of the watcher's bound entity (`parentEntityId`)
+ * The canvas entity is a child of the automation's bound entity (`parentEntityId`)
  * when present, else a root entity. It binds to the built-in `$canvas` entity
  * type, created on demand for the org (entity_type_id is NOT NULL). Runs on the
  * caller's transaction handle so the entity + identity writes commit atomically
@@ -53,13 +53,13 @@ export interface CanvasPeriodMeta {
  */
 export async function ensureCanvasEntity(params: {
   tx: DbClient;
-  watcherId: number;
+  automationId: number;
   organizationId: string;
   parentEntityId: number | null;
   createdBy: string | null | undefined;
 }): Promise<number | null> {
-  const { tx, watcherId, organizationId, parentEntityId } = params;
-  const identifier = String(watcherId);
+  const { tx, automationId, organizationId, parentEntityId } = params;
+  const identifier = String(automationId);
 
   // 1. Existing claim → reuse (idempotent fast path).
   const existing = await tx<{ entity_id: number | string }>`
@@ -67,7 +67,7 @@ export async function ensureCanvasEntity(params: {
     FROM entity_identities ei
     JOIN entities e ON e.id = ei.entity_id
     WHERE ei.organization_id = ${organizationId}
-      AND ei.namespace = ${WATCHER_CANVAS_NAMESPACE}
+      AND ei.namespace = ${AUTOMATION_CANVAS_NAMESPACE}
       AND ei.identifier = ${identifier}
       AND ei.deleted_at IS NULL
       AND e.deleted_at IS NULL
@@ -91,7 +91,7 @@ export async function ensureCanvasEntity(params: {
       slug, name, description, icon, organization_id, created_at, updated_at
     )
     VALUES (
-      ${CANVAS_ENTITY_TYPE_SLUG}, 'Canvas', 'Per-Behavior canvas window', 'layout',
+      ${CANVAS_ENTITY_TYPE_SLUG}, 'Canvas', 'Per-Automation canvas window', 'layout',
       ${organizationId}, current_timestamp, current_timestamp
     )
     ON CONFLICT (organization_id, slug) WHERE organization_id IS NOT NULL AND deleted_at IS NULL
@@ -103,15 +103,15 @@ export async function ensureCanvasEntity(params: {
 
   // 2. Create the entity (sequence-allocated id — multi-replica safe). Slug is
   //    unique per (org, parent); a collision here is astronomically unlikely
-  //    (one canvas per watcher) but tolerate it by suffixing the watcher id.
-  const baseSlug = `watcher-canvas-${watcherId}`;
+  //    (one canvas per automation) but tolerate it by suffixing the automation id.
+  const baseSlug = `automation-canvas-${automationId}`;
   const inserted = await tx<{ id: number | string }>`
     INSERT INTO entities (
       organization_id, entity_type_id, name, slug, parent_id, metadata,
       created_by, created_at, updated_at
     ) VALUES (
-      ${organizationId}, ${entityTypeId}, ${`Canvas · watcher ${watcherId}`}, ${baseSlug},
-      ${parentEntityId}, ${tx.json({ watcher_id: watcherId, source: 'watcher_canvas' })},
+      ${organizationId}, ${entityTypeId}, ${`Canvas · automation ${automationId}`}, ${baseSlug},
+      ${parentEntityId}, ${tx.json({ automation_id: automationId, source: 'automation_canvas' })},
       ${createdBy}, current_timestamp, current_timestamp
     )
     ON CONFLICT DO NOTHING
@@ -120,7 +120,7 @@ export async function ensureCanvasEntity(params: {
 
   let entityId: number | null = inserted.length > 0 ? Number(inserted[0].id) : null;
   if (entityId == null) {
-    // Slug collision (pre-existing canvas entity for this watcher). Resolve it.
+    // Slug collision (pre-existing canvas entity for this automation). Resolve it.
     const bySlug = await tx<{ id: number | string }>`
       SELECT id FROM entities
       WHERE organization_id = ${organizationId}
@@ -139,7 +139,7 @@ export async function ensureCanvasEntity(params: {
     INSERT INTO entity_identities (
       organization_id, entity_id, namespace, identifier, source_connector
     ) VALUES (
-      ${organizationId}, ${entityId}, ${WATCHER_CANVAS_NAMESPACE}, ${identifier}, 'watcher'
+      ${organizationId}, ${entityId}, ${AUTOMATION_CANVAS_NAMESPACE}, ${identifier}, 'automation'
     )
     ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
     DO NOTHING
@@ -151,7 +151,7 @@ export async function ensureCanvasEntity(params: {
     SELECT entity_id
     FROM entity_identities
     WHERE organization_id = ${organizationId}
-      AND namespace = ${WATCHER_CANVAS_NAMESPACE}
+      AND namespace = ${AUTOMATION_CANVAS_NAMESPACE}
       AND identifier = ${identifier}
       AND deleted_at IS NULL
     LIMIT 1
@@ -173,7 +173,7 @@ export async function ensureCanvasEntity(params: {
  */
 export async function findCanvasHead(
   tx: DbClient,
-  period: { watcherId: number; granularity: string; windowStart: string }
+  period: { automationId: number; granularity: string; windowStart: string }
 ): Promise<{
   id: number;
   rootEventId: number;
@@ -195,7 +195,7 @@ export async function findCanvasHead(
            e.client_id, e.run_id
     FROM events e
     WHERE e.semantic_type = 'canvas_state'
-      AND (e.metadata->>'watcher_id')::bigint = ${period.watcherId}
+      AND (e.metadata->>'automation_id')::bigint = ${period.automationId}
       AND (e.metadata->>'granularity') = ${period.granularity}
       AND (e.metadata->>'window_start')::timestamptz = ${period.windowStart}
       AND e.superseded_by IS NULL

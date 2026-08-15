@@ -1298,7 +1298,7 @@ export function buildFillCommentExpression(body: string): string {
 
 /**
  * Stage a LinkedIn comment in the exact user-opened page: activate → fill
- * composer. The ordinary Lobu notification is created by the calling Behavior.
+ * composer. The ordinary Lobu notification is created by the calling Automation.
  *
  * HARD RULE — never auto-post:
  *  - never click Post / Submit / Send

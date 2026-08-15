@@ -17,7 +17,7 @@ function baseState(overrides: Partial<DesiredState> = {}): DesiredState {
     agents: [],
     prune: false,
     memorySchema: { entityTypes: [], relationshipTypes: [] },
-    watchers: [],
+    automations: [],
     connectors: { definitions: [], authProfiles: [], connections: [] },
     providers: [],
     requiredSecrets: [],
@@ -103,7 +103,11 @@ describe("deployment baseline encoding", () => {
       baseState(),
       {},
       {
-        attribution: { entityTypes: [], relationshipTypes: [], watchers: [] },
+        attribution: {
+          entityTypes: [],
+          relationshipTypes: [],
+          automations: [],
+        },
         owned: [],
       }
     );
@@ -116,14 +120,14 @@ describe("buildCountsByKind", () => {
     const rows = [
       { kind: "agent", verb: "create" },
       { kind: "agent", verb: "noop" },
-      { kind: "watcher", verb: "update" },
-      { kind: "watcher", verb: "update" },
+      { kind: "automation", verb: "update" },
+      { kind: "automation", verb: "update" },
       { kind: "connection", verb: "drift" },
       { kind: "feed", verb: "delete" },
     ] as unknown as DiffRow[];
     expect(buildCountsByKind(rows)).toEqual({
       agent: { create: 1 },
-      behavior: { update: 2 },
+      automation: { update: 2 },
       feed: { delete: 1 },
     });
   });

@@ -17,7 +17,7 @@ import {
 } from "../authz/entity-mutation-gate";
 import {
 	mutationPrincipalId,
-	watcherIdFromPrincipalId,
+	automationIdFromPrincipalId,
 } from "../authz/entity-policy";
 import {
 	createDbClientFromEnv,
@@ -179,22 +179,22 @@ interface EntityUpdateOptions {
 	policyPrincipalKind?: MutationPrincipalKind;
 	/** Attribution for a deferred approval of blocked fields. Defaults to 'agent'. */
 	attribution?: MutationAttribution;
-	/** Watcher-run window, so a deferred approval groups into its per-window batch. */
+	/** Automation-run window, so a deferred approval groups into its per-window batch. */
 	windowId?: number | null;
 	/**
-	 * The resolved acting-principal id (`watcher:<id>` / agent id / null), from the
+	 * The resolved acting-principal id (`automation:<id>` / agent id / null), from the
 	 * shared {@link resolveActingPrincipal} seam. Used directly for per-principal
 	 * policy matching — the caller owns identity resolution, not this function.
 	 */
 	principalId?: string | null;
 	/**
-	 * The watcher's owning agent, folded into the gate so the agent's envelope
-	 * binds a watcher's direct update (a reaction script) — see the gate's
+	 * The automation's owning agent, folded into the gate so the agent's envelope
+	 * binds an automation's direct update (a reaction script) — see the gate's
 	 * `ownerAgentId`. Null for agent/user writes.
 	 */
 	ownerAgentId?: string | null;
 	/**
-	 * False iff a watcher whose owning agent couldn't be resolved — the gate fails
+	 * False iff an automation whose owning agent couldn't be resolved — the gate fails
 	 * closed (deny). See the gate's `ownerResolved`. Defaults true.
 	 */
 	ownerResolved?: boolean;
@@ -263,7 +263,7 @@ export interface EntityData {
   organization_id?: string;
 
   // Attribution: entities.created_by is NOT NULL and FK → user. Set explicitly by
-  // the approval-apply path to the approving human (a watcher/agent proposer isn't
+  // the approval-apply path to the approving human (an automation/agent proposer isn't
   // a user row). Falls back to "system" — which is only valid where a matching
   // user exists — when omitted.
   created_by?: string | null;
@@ -280,12 +280,12 @@ export interface EntityData {
   metadata?: Record<string, any>;
 
   // Optional human-correction note: on a human update it is stored on the
-  // field_controls marker for every field this edit claims, so the watcher (and
+  // field_controls marker for every field this edit claims, so the automation (and
   // the UI) can show WHY the value was set. Ignored for agent/system writes.
   field_note?: string | null;
 
   // Approve/affirm: field names whose CURRENT value the human endorses as-is.
-  // No value change, but ownership is claimed so a watcher can't later overwrite
+  // No value change, but ownership is claimed so an automation can't later overwrite
   // them without an approval. This is the "approve" half of the recap feedback
   // loop; "correct" is a normal metadata update. Ignored for agent/system writes.
   affirm_fields?: string[] | null;
@@ -314,7 +314,7 @@ export interface CreatedEntity {
   created_at: Date;
   total_content?: number | null;
   active_connections?: number | null;
-  behaviors_count?: number | null;
+  automations_count?: number | null;
   children_count?: number | null;
   current_view_template_version_id?: number | null;
   warnings?: string[];
@@ -585,9 +585,9 @@ export async function updateEntity(
 		: [];
 
 	// A genuine human edit (a real user, not an agent run) claims per-field
-	// ownership so a watcher can't later overwrite it without an approval. Every
-	// non-human write (chat agent or watcher reaction via manage_entity) is an
-	// ownership-aware watcher-source merge: unowned fields write, owned fields
+	// ownership so an automation can't later overwrite it without an approval. Every
+	// non-human write (chat agent or automation reaction via manage_entity) is an
+	// ownership-aware automation-source merge: unowned fields write, owned fields
 	// are blocked and surfaced to the caller for an approval. There is no
 	// plain-merge branch — the only caller is agent-attributed.
 	const isHumanEdit = !!ctx.userId && !ctx.agentId;
@@ -733,7 +733,7 @@ export async function updateEntity(
 				metadata: existing,
 				controls: existingControls,
 				fields: metadataUpdates,
-				source: isHumanEdit ? "human" : "watcher",
+				source: isHumanEdit ? "human" : "automation",
 				actorId: isHumanEdit
 					? ctx.userId
 					: (ctx.agentId ?? ctx.clientId ?? null),
@@ -743,7 +743,7 @@ export async function updateEntity(
 				requireApproval,
 			});
 			mergedMetadata = merge.nextMetadata;
-			// A human edit claims ownership of the fields it sets; a watcher-source
+			// A human edit claims ownership of the fields it sets; an automation-source
 			// merge never claims ownership, so leave field_controls untouched.
 			mergedControls = isHumanEdit ? merge.nextControls : null;
 			fieldMerge = {
@@ -809,9 +809,9 @@ export async function updateEntity(
 					blockedPaths.map((p) => [p, blocked[p].current]),
 				),
 				attribution: opts?.attribution ?? "agent",
-				// The approval card groups by the acting watcher; recover its numeric
-				// id from the resolved principalId (`watcher:<id>`), null otherwise.
-				watcherId: watcherIdFromPrincipalId(opts?.principalId ?? null),
+				// The approval card groups by the acting automation; recover its numeric
+				// id from the resolved principalId (`automation:<id>`), null otherwise.
+				automationId: automationIdFromPrincipalId(opts?.principalId ?? null),
 				windowId: opts?.windowId ?? null,
 			}),
 		};
@@ -835,7 +835,7 @@ export async function getEntity(
   const includeDeleted = opts?.includeDeleted ?? false;
 
   // Operational counts always scope to the caller's org. When `e` is a
-  // public-catalog entity, totals reflect the caller's events/feeds/watchers/
+  // public-catalog entity, totals reflect the caller's events/feeds/automations/
   // children that reference it — never cross-tenant activity around the
   // public row.
   //
@@ -862,10 +862,10 @@ export async function getEntity(
           AND ${sql.unsafe(feedLinkedToBusinessEntitySql('e.id', 'f', 'c', 'e.organization_id'))}
       ) as active_connections,
       (
-        SELECT COUNT(*) FROM watchers i
+        SELECT COUNT(*) FROM automations i
         WHERE e.id = ANY(i.entity_ids)
           AND i.organization_id = ${ctx.organizationId}
-      ) as behaviors_count,
+      ) as automations_count,
       (
         SELECT COUNT(*) FROM entities c
         WHERE c.parent_id = e.id
@@ -897,8 +897,8 @@ export async function getEntity(
 export interface ForceDeleteTreeReport {
   entities: number;
   relationships: number;
-  behaviors_deleted: number;
-  behaviors_detached: number;
+  automations_deleted: number;
+  automations_detached: number;
   feeds_deleted: number;
   feeds_detached: number;
   events_detached: number;
@@ -908,7 +908,7 @@ export interface ForceDeleteTreeReport {
  * Delete entity
  * Soft delete by default (sets deleted_at), hard delete with force=true.
  * A hard delete removes the tree + its relationships, deletes/detaches
- * dependent behaviors and feeds, and detaches (never deletes) event rows that
+ * dependent automations and feeds, and detaches (never deletes) event rows that
  * reference the tree. `dryRun` returns the dependency report without mutating.
  * Requires write access (entity must belong to user's organization)
  */
@@ -975,7 +975,7 @@ export async function deleteEntity(
     const entityTreeIdsLiteral = pgBigintArray(entityTreeIds);
 
     // Preflight dependency report: what this delete removes vs. detaches.
-    // A behavior/feed whose entities all live inside the tree is deleted with
+    // An automation/feed whose entities all live inside the tree is deleted with
     // it; one that also spans outside entities is detached (tree ids pruned
     // from its entity_ids). Event rows are append-only history — they are
     // counted here and DETACHED below, never deleted.
@@ -984,12 +984,12 @@ export async function deleteEntity(
         (SELECT COUNT(*) FROM entity_relationships r
           WHERE r.from_entity_id = ANY(${entityTreeIdsLiteral}::bigint[])
              OR r.to_entity_id = ANY(${entityTreeIdsLiteral}::bigint[]))::int AS relationships,
-        (SELECT COUNT(*) FROM watchers w
+        (SELECT COUNT(*) FROM automations w
           WHERE w.entity_ids && ${entityTreeIdsLiteral}::bigint[]
-            AND w.entity_ids <@ ${entityTreeIdsLiteral}::bigint[])::int AS behaviors_deleted,
-        (SELECT COUNT(*) FROM watchers w
+            AND w.entity_ids <@ ${entityTreeIdsLiteral}::bigint[])::int AS automations_deleted,
+        (SELECT COUNT(*) FROM automations w
           WHERE w.entity_ids && ${entityTreeIdsLiteral}::bigint[]
-            AND NOT (w.entity_ids <@ ${entityTreeIdsLiteral}::bigint[]))::int AS behaviors_detached,
+            AND NOT (w.entity_ids <@ ${entityTreeIdsLiteral}::bigint[]))::int AS automations_detached,
         (SELECT COUNT(*) FROM feeds f
           WHERE f.entity_ids && ${entityTreeIdsLiteral}::bigint[]
             AND f.entity_ids <@ ${entityTreeIdsLiteral}::bigint[])::int AS feeds_deleted,
@@ -1002,8 +1002,8 @@ export async function deleteEntity(
     const report: ForceDeleteTreeReport = {
       entities: entityTreeIds.length,
       relationships: Number(preflight[0]?.relationships || 0),
-      behaviors_deleted: Number(preflight[0]?.behaviors_deleted || 0),
-      behaviors_detached: Number(preflight[0]?.behaviors_detached || 0),
+      automations_deleted: Number(preflight[0]?.automations_deleted || 0),
+      automations_detached: Number(preflight[0]?.automations_detached || 0),
       feeds_deleted: Number(preflight[0]?.feeds_deleted || 0),
       feeds_detached: Number(preflight[0]?.feeds_detached || 0),
       events_detached: Number(preflight[0]?.events_detached || 0),
@@ -1018,7 +1018,7 @@ export async function deleteEntity(
       };
     }
 
-    // Deletion predicate for behaviors/feeds: only rows whose entity set is
+    // Deletion predicate for automations/feeds: only rows whose entity set is
     // non-empty AND fully inside the tree. Requiring the overlap (&&) first is
     // load-bearing — a bare `entity_ids <@ tree` (or a COALESCE to '{}') also
     // matches every empty/NULL-linked row IN EVERY ORG (empty set ⊂ anything),
@@ -1032,84 +1032,84 @@ export async function deleteEntity(
       `;
 
       // Canvas-on-events: window_id link rows carry canvas root event ids, so
-      // key the cleanup on the denormalized watcher_id.
+      // key the cleanup on the denormalized automation_id.
       await tx`
-        DELETE FROM watcher_window_events
-        WHERE watcher_id IN (
+        DELETE FROM automation_window_events
+        WHERE automation_id IN (
           SELECT id
-          FROM watchers
+          FROM automations
           WHERE entity_ids && ${entityTreeIdsLiteral}::bigint[]
             AND entity_ids <@ ${entityTreeIdsLiteral}::bigint[]
         )
       `;
-      // Before hard-deleting watchers: if any of those rows are group roots
-      // (id = watcher_group_id) with surviving siblings, transfer ownership
-      // of the shared watcher_versions chain to a sibling so the upcoming
+      // Before hard-deleting automations: if any of those rows are group roots
+      // (id = automation_group_id) with surviving siblings, transfer ownership
+      // of the shared automation_versions chain to a sibling so the upcoming
       // ON DELETE CASCADE doesn't wipe out the version row that the rest
       // of the group still depends on.
       await tx`
-        UPDATE watcher_versions wv
-        SET watcher_id = s.new_root
+        UPDATE automation_versions wv
+        SET automation_id = s.new_root
         FROM (
           SELECT r.old_root, MIN(s.id) AS new_root
           FROM (
             SELECT w.id AS old_root
-            FROM watchers w
-            WHERE w.id = w.watcher_group_id
+            FROM automations w
+            WHERE w.id = w.automation_group_id
               AND w.entity_ids && ${entityTreeIdsLiteral}::bigint[]
               AND w.entity_ids <@ ${entityTreeIdsLiteral}::bigint[]
           ) r
-          JOIN watchers s
-            ON s.watcher_group_id = r.old_root
+          JOIN automations s
+            ON s.automation_group_id = r.old_root
            AND s.id <> r.old_root
            AND NOT (
              COALESCE(s.entity_ids, '{}'::bigint[]) && ${entityTreeIdsLiteral}::bigint[]
              AND COALESCE(s.entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
            )
            AND NOT EXISTS (
-             SELECT 1 FROM watcher_versions vv WHERE vv.watcher_id = s.id
+             SELECT 1 FROM automation_versions vv WHERE vv.automation_id = s.id
            )
           GROUP BY r.old_root
         ) s
-        WHERE wv.watcher_id = s.old_root
+        WHERE wv.automation_id = s.old_root
       `;
       await tx`
-        UPDATE watchers w
-        SET watcher_group_id = s.new_root,
-            source_watcher_id = CASE WHEN w.source_watcher_id = s.old_root THEN s.new_root ELSE w.source_watcher_id END
+        UPDATE automations w
+        SET automation_group_id = s.new_root,
+            source_automation_id = CASE WHEN w.source_automation_id = s.old_root THEN s.new_root ELSE w.source_automation_id END
         FROM (
           SELECT r.old_root, MIN(s.id) AS new_root
           FROM (
             SELECT w.id AS old_root
-            FROM watchers w
-            WHERE w.id = w.watcher_group_id
+            FROM automations w
+            WHERE w.id = w.automation_group_id
               AND w.entity_ids && ${entityTreeIdsLiteral}::bigint[]
               AND w.entity_ids <@ ${entityTreeIdsLiteral}::bigint[]
           ) r
-          JOIN watchers s
-            ON s.watcher_group_id = r.old_root
+          JOIN automations s
+            ON s.automation_group_id = r.old_root
            AND s.id <> r.old_root
            AND NOT (
              COALESCE(s.entity_ids, '{}'::bigint[]) && ${entityTreeIdsLiteral}::bigint[]
              AND COALESCE(s.entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
            )
            AND NOT EXISTS (
-             SELECT 1 FROM watcher_versions vv WHERE vv.watcher_id = s.id
+             SELECT 1 FROM automation_versions vv WHERE vv.automation_id = s.id
            )
           GROUP BY r.old_root
         ) s
-        WHERE w.watcher_group_id = s.old_root
+        WHERE w.automation_group_id = s.old_root
       `;
       await tx`
-        DELETE FROM watchers
+        DELETE FROM automations
         WHERE entity_ids && ${entityTreeIdsLiteral}::bigint[]
           AND entity_ids <@ ${entityTreeIdsLiteral}::bigint[]
       `;
-      // Detach survivors: prune tree ids from watchers that also span entities
+      // Detach survivors: prune tree ids from automations that also span entities
       // outside the tree. Fully-contained rows were deleted above, so pruning
       // can never leave an empty entity set behind — no orphan sweep needed.
       await tx`
-        UPDATE watchers
+        UPDATE automations
         SET entity_ids = ARRAY(
           SELECT linked_id
           FROM unnest(entity_ids) AS linked_id
@@ -1327,7 +1327,7 @@ export async function listEntities(
 		created_at: "e.created_at",
 		total_content: "total_content",
 		active_connections: "active_connections",
-		behaviors_count: "behaviors_count",
+		automations_count: "automations_count",
 		children_count: "children_count",
 	};
 
@@ -1353,7 +1353,7 @@ export async function listEntities(
         AND c.deleted_at IS NULL
         AND ${feedLinkedToBusinessEntitySql('e.id', 'f', 'c', 'e.organization_id')}
     ) ac ON true
-    LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM watchers i WHERE e.id = ANY(i.entity_ids)) ic ON true
+    LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM automations i WHERE e.id = ANY(i.entity_ids)) ic ON true
     LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM entities c WHERE c.parent_id = e.id) cc ON true
     WHERE ${whereClause}
   `;
@@ -1387,7 +1387,7 @@ export async function listEntities(
       e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at,
       COALESCE(tc.cnt, 0) as total_content,
       COALESCE(ac.cnt, 0) as active_connections,
-      COALESCE(ic.cnt, 0) as behaviors_count,
+      COALESCE(ic.cnt, 0) as automations_count,
       COALESCE(cc.cnt, 0) as children_count,
       pe.name as parent_name, pe.slug as parent_slug, pet.slug as parent_entity_type
     ${baseQuery}
@@ -1477,7 +1477,7 @@ async function listDerivedEntities(
 			created_at: createdAt,
 			total_content: 0,
 			active_connections: 0,
-			behaviors_count: 0,
+			automations_count: 0,
 			children_count: 0,
 		});
 	});

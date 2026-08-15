@@ -200,7 +200,7 @@ export const EntitySchema = Type.Object({
     connection_count: Type.Integer(),
     active_connection_count: Type.Integer(),
     children_count: Type.Integer(), // child count for root entities
-    behavior_count: Type.Integer(),
+    automation_count: Type.Integer(),
   }),
   match_score: Type.Number(),
   match_reason: Type.String(),
@@ -235,7 +235,7 @@ interface EntityQueryRow {
   connection_count: number;
   active_connection_count: number;
   children_count: number;
-  behavior_count: number;
+  automation_count: number;
   match_score?: number;
   match_reason?: string;
   organization_slug?: string | null;
@@ -891,7 +891,7 @@ export async function gatherRecall(
 export const search = withValidatedArgs('search_memory', SearchSchema, searchImpl);
 
 /**
- * Drop entity hits the acting agent/watcher is not allowed to read. Humans skip.
+ * Drop entity hits the acting agent/automation is not allowed to read. Humans skip.
  * Default entity read is auto (unrestricted); a type-scoped deny removes those
  * results so search can't leak around manage_entity get/list.
  */
@@ -900,14 +900,14 @@ async function filterEntitiesByReadPolicy<T extends { entity_type: string }>(
   entities: T[]
 ): Promise<T[]> {
   if (entities.length === 0 || !ctx.organizationId) return entities;
-  // Human-driven tools (no agent/watcher) keep full org entity search.
-  if (!ctx.agentId && !ctx.actingWatcherId) return entities;
+  // Human-driven tools (no agent/automation) keep full org entity search.
+  if (!ctx.agentId && !ctx.actingAutomationId) return entities;
   const actor = await resolveActingPrincipal(getDb(), {
     organizationId: ctx.organizationId,
     userId: ctx.userId,
     agentId: ctx.agentId,
-    explicitWatcherId: null,
-    sessionWatcherId: ctx.actingWatcherId ?? null,
+    explicitAutomationId: null,
+    sessionAutomationId: ctx.actingAutomationId ?? null,
   });
   if (actor.kind === 'user') return entities;
   const typeCache = new Map<string, boolean>();
@@ -1131,7 +1131,7 @@ async function searchImpl(
     '**Next steps:** call `run_sdk` with a TS script over `client`:\n' +
     `1. Create the entity: \`await client.entities.create({ type: '<entity_type>', name: '${query}' })\` (optionally pass parent_id for hierarchy)\n` +
     "2. Create a connection: `await client.connections.create({ connector_key: '<connector>', ... })`, then scope it with `await client.feeds.create({ ... })`\n" +
-    '3. Wait for ingestion to start automatically, then discover Behaviors with `client.behaviors.list(...)` and inspect results with `client.knowledge.read(...)` / `client.behaviors.get(...)`.\n\n' +
+    '3. Wait for ingestion to start automatically, then discover Automations with `client.automations.list(...)` and inspect results with `client.knowledge.read(...)` / `client.automations.get(...)`.\n\n' +
     '**Alternative:** If you know this entity should exist, verify the spelling or try a different search term.';
 
   // Fetch top entities per type so the LLM knows what exists (still filtered by read policy).
@@ -1202,7 +1202,7 @@ async function fetchTopEntitiesByType(
 // ============================================
 
 // Build the entity SELECT projection. The count subqueries (events,
-// connections, watchers, children) are tenant-private operational data:
+// connections, automations, children) are tenant-private operational data:
 // running them globally for a public-catalog entity would leak other
 // tenants' activity volumes through aggregate counts. Each count is
 // gated on `e.organization_id = $callerOrg` so we return zeros for
@@ -1251,8 +1251,8 @@ function entitySelectColumns(callerOrgParamIdx: number, scope: AuthzScope): stri
     COALESCE((SELECT COUNT(*) FROM entities c WHERE c.parent_id = e.id AND c.organization_id = e.organization_id), 0)
   ELSE 0 END as children_count,
   CASE WHEN ${ownOrg} THEN
-    COALESCE((SELECT COUNT(*) FROM watchers i WHERE e.id = ANY(i.entity_ids) AND i.organization_id = e.organization_id), 0)
-  ELSE 0 END as behavior_count`;
+    COALESCE((SELECT COUNT(*) FROM automations i WHERE e.id = ANY(i.entity_ids) AND i.organization_id = e.organization_id), 0)
+  ELSE 0 END as automation_count`;
 }
 
 const ENTITY_JOINS = `
@@ -1340,7 +1340,7 @@ async function queryEntities(
   // and canonical hits in one call. The result row carries the org_id so the
   // agent can tell which is which. The same param index is reused by the
   // count subqueries in entitySelectColumns(orgParamIdx, scope), which gate
-  // operational counts (events, connections, watchers) on caller-org rows
+  // operational counts (events, connections, automations) on caller-org rows
   // so cross-org public results don't leak other tenants' activity.
   const includePublic = args.include_public_catalogs ?? true;
   const orgParamIdx = addParam(scope.organizationId);
@@ -1476,7 +1476,7 @@ async function formatEntityResult(
       connection_count: Number(row.connection_count) || 0,
       active_connection_count: Number(row.active_connection_count) || 0,
       children_count: Number(row.children_count) || 0,
-      behavior_count: Number(row.behavior_count) || 0,
+      automation_count: Number(row.automation_count) || 0,
     },
     match_score: Number(row.match_score) || 1.0,
     match_reason: row.match_reason || 'exact_name',

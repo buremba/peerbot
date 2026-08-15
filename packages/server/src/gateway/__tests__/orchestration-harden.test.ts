@@ -2,7 +2,7 @@
  * Hardening tests for gateway orchestration + worker lifecycle.
  *
  * Covers:
- *  1. Watcher-run-race regression — classifyQueue never maps to 'watcher',
+ *  1. Automation-run-race regression — classifyQueue never maps to 'automation',
  *     so RunsQueue can never claim connector-worker lanes.
  *  2. Two workers racing to claim the same queued run (SKIP LOCKED semantics).
  *  3. Run that crashes mid-execution → marked failed, not stuck-running.
@@ -163,16 +163,16 @@ afterEach(() => {
 });
 
 // ============================================================================
-// 1. WATCHER-RUN-RACE REGRESSION
+// 1. AUTOMATION-RUN-RACE REGRESSION
 // ============================================================================
 
-describe("watcher-run-race regression — classifyQueue never emits connector lanes", () => {
-  const CONNECTOR_LANES = ["sync", "action", "embed_backfill", "watcher", "auth"];
+describe("automation-run-race regression — classifyQueue never emits connector lanes", () => {
+  const CONNECTOR_LANES = ["sync", "action", "embed_backfill", "automation", "auth"];
 
   test("none of the connector run_types appear in LOBU_RUN_TYPES", () => {
     // classifyQueue maps any queueName to one of the lobu-queue run_types.
     // It must NEVER return a connector-worker lane so RunsQueue.claimOne()
-    // cannot accidentally pick up watcher/sync/action rows.
+    // cannot accidentally pick up automation/sync/action rows.
     const lobuRunTypes = new Set([
       "chat_message",
       "schedule",
@@ -189,13 +189,13 @@ describe("watcher-run-race regression — classifyQueue never emits connector la
     }
   });
 
-  test("watcher queue-name input does not classify as watcher run_type", () => {
-    // The bug: connector-worker used to poll runs WHERE run_type='watcher'.
+  test("automation queue-name input does not classify as automation run_type", () => {
+    // The bug: connector-worker used to poll runs WHERE run_type='automation'.
     // The fix: lobu queue daemon uses run_type derived from classifyQueue()
-    // which never returns 'watcher'.
-    expect(classifyQueue("watcher")).not.toBe("watcher");
-    expect(classifyQueue("watcher:123")).not.toBe("watcher");
-    expect(classifyQueue("watcher_run")).not.toBe("watcher");
+    // which never returns 'automation'.
+    expect(classifyQueue("automation")).not.toBe("automation");
+    expect(classifyQueue("automation:123")).not.toBe("automation");
+    expect(classifyQueue("automation_run")).not.toBe("automation");
   });
 
   test("sync, action, auth queue names map to lobu lanes, not connector lanes", () => {

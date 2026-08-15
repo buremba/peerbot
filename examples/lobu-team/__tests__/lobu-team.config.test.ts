@@ -5,7 +5,7 @@ describe("Lobu Team configuration", () => {
   test("owns office and product operations in one organization config", () => {
     expect(config.org).toBe("lobu-team");
     expect(config.organizationId).toBe("UdNAH1bb3csC842vhOgxAHVcfX4tYU5A");
-    expect(config.behaviors?.map((behavior) => behavior.slug)).toEqual([
+    expect(config.automations?.map((automation) => automation.slug)).toEqual([
       "lobu-team-lunch-open",
       "lobu-team-lunch-finalize",
       "product-activity-digest",
@@ -38,8 +38,8 @@ describe("Lobu Team configuration", () => {
       )
     ).toMatchObject({ connector: "loki.activity" });
 
-    const digest = config.behaviors?.find(
-      (behavior) => behavior.slug === "product-activity-digest"
+    const digest = config.automations?.find(
+      (automation) => automation.slug === "product-activity-digest"
     );
     expect(digest?.triggers).toEqual([
       {

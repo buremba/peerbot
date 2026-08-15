@@ -99,7 +99,7 @@ export function classifyError(error: unknown): AgentErrorCode | undefined {
     message.includes("No model configured") ||
     message.includes("No model selected") ||
     // model-resolver.ts throws "No model resolved for this run…" when no
-    // default/per-behavior/org model is set. Was previously UNCLASSIFIED — it
+    // default/per-automation/org model is set. Was previously UNCLASSIFIED — it
     // dodged the catalog and surfaced as a raw "💥 Worker crashed" instead of
     // the actionable "connect a provider" guidance.
     message.includes("No model resolved") ||

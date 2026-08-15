@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { parseSlackUserMessageEvent } from "@lobu/connectors/slack-behavior-events";
+import { parseSlackUserMessageEvent } from "@lobu/connectors/slack-automation-events";
 
 const JSON_CT = "application/json";
 

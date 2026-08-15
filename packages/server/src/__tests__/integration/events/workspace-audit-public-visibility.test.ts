@@ -253,7 +253,7 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     `;
     const facetId = Number(facet[0].id);
     await sql`
-      INSERT INTO event_classifications (event_id, classifier_id, watcher_id, window_id,
+      INSERT INTO event_classifications (event_id, classifier_id, automation_id, window_id,
                                          "values", confidences, source, is_manual)
       VALUES (${orgWideWorkspaceAuditEventId}, ${facetId}, NULL, NULL, ${'{sensitive}'}::text[],
               ${sql.json({ sensitive: 1 })}, 'user', true)
@@ -368,30 +368,30 @@ describe('workspace-identity audit events > public-read exclusion', () => {
     expect(ids.has(workspaceAuditEventId)).toBe(false);
   });
 
-  it('non-member behavior_id read is denied (no workspace audit surface)', async () => {
-    // Behavior read mode executes a Behavior's authored sources; a public
+  it('non-member automation_id read is denied (no workspace audit surface)', async () => {
+    // Automation read mode executes an Automation's authored sources; a public
     // non-member must not be able to run it and surface workspace-identity
-    // audit rows. The denial happens before any behavior lookup.
+    // audit rows. The denial happens before any automation lookup.
     await expect(
       getContent(
-        { behavior_id: 999999, limit: 100 } as never,
+        { automation_id: 999999, limit: 100 } as never,
         {} as never,
         signedInOutsiderCtx()
       )
     ).rejects.toThrow(/workspace membership/);
   });
 
-  it('ordinary member behavior_id read is NOT denied (membership gate only)', async () => {
+  it('ordinary member automation_id read is NOT denied (membership gate only)', async () => {
     // The membership gate must deny only NON-members. An ordinary member gets
-    // past the gate and fails on the (nonexistent) behavior lookup instead of
+    // past the gate and fails on the (nonexistent) automation lookup instead of
     // a 403 — proving the gate no longer misapplies to members.
     await expect(
       getContent(
-        { behavior_id: 999999, limit: 100 } as never,
+        { automation_id: 999999, limit: 100 } as never,
         {} as never,
         memberCtx()
       )
-    ).rejects.toThrow(/Behavior/);
+    ).rejects.toThrow(/Automation/);
   });
 
   it('classification stats exclude workspace audit rows for non-members', async () => {

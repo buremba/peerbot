@@ -94,7 +94,7 @@ export const ManageEntitySchema = Type.Object({
       {
         maxItems: 25,
         description:
-          "[merge] Optional structured evidence for human-initiated merge provenance. Agent and Behavior evidence is always recomputed from the entity type's resolution policy.",
+          "[merge] Optional structured evidence for human-initiated merge provenance. Agent and Automation evidence is always recomputed from the entity type's resolution policy.",
       }
     )
   ),
@@ -191,7 +191,7 @@ export const ManageEntitySchema = Type.Object({
   field_note: Type.Optional(
     Type.String({
       description:
-        "[update] Optional note explaining a human correction. Stored on the per-field ownership marker for every metadata field this update sets, so a Behavior (and the UI) can see why the value was set.",
+        "[update] Optional note explaining a human correction. Stored on the per-field ownership marker for every metadata field this update sets, so an Automation (and the UI) can see why the value was set.",
     })
   ),
 
@@ -199,7 +199,7 @@ export const ManageEntitySchema = Type.Object({
   affirm_fields: Type.Optional(
     Type.Array(Type.String(), {
       description:
-        "[update] Metadata field names whose CURRENT value the human approves as-is. No value change, but each is marked human-owned so a Behavior can't later overwrite it without an approval. The 'approve' half of the recap feedback loop.",
+        "[update] Metadata field names whose CURRENT value the human approves as-is. No value change, but each is marked human-owned so an Automation can't later overwrite it without an approval. The 'approve' half of the recap feedback loop.",
     })
   ),
 
@@ -218,7 +218,7 @@ export const ManageEntitySchema = Type.Object({
   sort_by: Type.Optional(
     Type.String({
       description:
-        "[list] Sort by column (name, created_at, domain, total_content, active_connections, behaviors_count, children_count)",
+        "[list] Sort by column (name, created_at, domain, total_content, active_connections, automations_count, children_count)",
     })
   ),
   sort_order: SortOrderField("[list] Sort order (asc or desc)"),
@@ -293,11 +293,11 @@ export const ManageEntitySchema = Type.Object({
         "[get] Return the entity even if it is soft-deleted (deleted_at set). [list_links] Include soft-deleted relationships.",
     })
   ),
-  behavior_source: Type.Optional(
+  automation_source: Type.Optional(
     Type.Object(
       {
-        behavior_id: Type.Number({
-          description: "Behavior that triggered this mutation",
+        automation_id: Type.Number({
+          description: "Automation that triggered this mutation",
         }),
         window_id: Type.Number({
           description: "Window that triggered this mutation",
@@ -305,7 +305,7 @@ export const ManageEntitySchema = Type.Object({
       },
       {
         description:
-          "Attribution source when mutation is triggered by a Behavior reaction",
+          "Attribution source when mutation is triggered by an Automation reaction",
       }
     )
   ),
@@ -380,7 +380,7 @@ export const ManageEntityItemSchema = Type.Object({
   created_at: Type.Optional(Type.String()),
   total_content: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
   active_connections: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
-  behaviors_count: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
+  automations_count: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
   children_count: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
   space_name: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   view_url: Type.Optional(Type.String()),
@@ -410,7 +410,7 @@ export const ManageEntityResultSchema = Type.Union([
   Type.Object({
     action: Type.Literal("update"),
     entity: ManageEntityItemSchema,
-    /** Fields the ownership-aware merge wrote (unowned for a behavior-source edit). */
+    /** Fields the ownership-aware merge wrote (unowned for an automation-source edit). */
     applied_fields: Type.Optional(Type.Array(Type.String())),
     /** Human-owned fields the edit was blocked from writing — queued for approval. */
     blocked_fields: Type.Optional(Type.Array(Type.String())),
@@ -425,7 +425,7 @@ export const ManageEntityResultSchema = Type.Union([
     approval_fields: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
     /** Blocked field_path -> current human-owned value, for the diff. */
     approval_current: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-    /** Who proposed the blocked change: 'agent' | 'behavior'. */
+    /** Who proposed the blocked change: 'agent' | 'automation'. */
     approval_attribution: Type.Optional(ApprovalAttributionSchema),
   }),
   Type.Object({
@@ -478,8 +478,8 @@ export const ManageEntityResultSchema = Type.Union([
       Type.Object({
         entities: Type.Integer(),
         relationships: Type.Integer(),
-        behaviors_deleted: Type.Integer(),
-        behaviors_detached: Type.Integer(),
+        automations_deleted: Type.Integer(),
+        automations_detached: Type.Integer(),
         feeds_deleted: Type.Integer(),
         feeds_detached: Type.Integer(),
         events_detached: Type.Integer(),

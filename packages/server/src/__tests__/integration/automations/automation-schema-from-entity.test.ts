@@ -1,0 +1,349 @@
+/**
+ * Integration test: an automation derives its extraction schema from its target
+ * entity type's metadata_schema (consolidation — "schema lives on the entity
+ * type"). When an Automation declares an entity output, complete_window
+ * validates the extracted data against the entity type's schema — the SAME
+ * schema that validates manual entity writes, so
+ * a record's shape is defined exactly once.
+ *
+ * Proves:
+ *   1. deriveAutomationExtractionSchema resolves a real entity type's schema.
+ *   2. complete_window REJECTS extracted data that violates the entity type's
+ *      schema and ACCEPTS data that conforms — with no inline Automation schema.
+ */
+
+import { inferAutomationGranularityFromSchedule } from '@lobu/connector-sdk';
+import { beforeEach, describe, expect, it } from 'vitest';
+import type { DbClient } from '../../../db/client';
+import { createAutomationRun } from '../../../runs/queue-service';
+import {
+  deriveAutomationExtractionSchema,
+} from '../../../utils/automation-extraction-schema';
+import { computePendingWindow } from '../../../utils/window-utils';
+import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
+import { createTestAgent, createTestEntity, createTestEvent } from '../../setup/test-fixtures';
+import { TestApiClient, TestWorkspace } from '../../setup/test-mcp-client';
+
+const TOPIC_METADATA_SCHEMA = {
+  type: 'object',
+  properties: {
+    category: { type: 'string' },
+    name: { type: 'string' },
+  },
+  // `category` is intentionally optional on the entity type. Declaring it as
+  // an output key must still require it in every Automation-produced row.
+  required: ['name'],
+  additionalProperties: true,
+};
+
+const OUTPUTS = {
+  problems: { entity: 'topic', key: ['category', 'name'] },
+};
+
+async function setupEntityTypedAutomation() {
+  const sql = getTestDb();
+  const dbClient = sql as unknown as DbClient;
+  const workspace = await TestWorkspace.create({
+    name: 'Schema-From-Entity Org',
+  });
+  const ownerUserId = workspace.users.owner.id;
+
+  const parentEntity = await createTestEntity({
+    name: 'Parent Brand',
+    organization_id: workspace.org.id,
+    created_by: ownerUserId,
+  });
+
+  // The 'topic' type carries the metadata_schema that becomes the automation's
+  // extraction contract. entity_types' unique index is partial (WHERE deleted_at
+  // IS NULL), so ON CONFLICT can't bind — check then insert/update.
+  const existingType = await sql`
+    SELECT id FROM entity_types
+    WHERE organization_id = ${workspace.org.id} AND slug = 'topic' AND deleted_at IS NULL
+    LIMIT 1
+  `;
+  if (existingType.length > 0) {
+    await sql`
+      UPDATE entity_types SET metadata_schema = ${sql.json(TOPIC_METADATA_SCHEMA)}
+      WHERE id = ${existingType[0].id}
+    `;
+  } else {
+    await sql`
+      INSERT INTO entity_types (organization_id, slug, name, metadata_schema, created_at, updated_at)
+      VALUES (${workspace.org.id}, 'topic', 'Topic', ${sql.json(TOPIC_METADATA_SCHEMA)}, current_timestamp, current_timestamp)
+    `;
+  }
+
+  const agent = await createTestAgent({
+    organizationId: workspace.org.id,
+    ownerUserId,
+    agentId: 'schema-agent',
+    name: 'Schema Agent',
+  });
+
+  // NB: no inline Automation schema — the Automation relies on the entity type's schema.
+  const automation = (await workspace.owner.automations.create({
+    entity_id: parentEntity.id,
+    slug: 'schema-automation',
+    name: 'Scheman Automation',
+    prompt: 'Extract problems for {{entities}}.',
+    outputs: OUTPUTS,
+    triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
+    agent_id: agent.agentId,
+  })) as { automation_id: string };
+  const automationId = Number(automation.automation_id);
+
+  await sql`UPDATE automations SET next_run_at = NOW() - INTERVAL '10 minutes' WHERE id = ${automationId}`;
+
+  const api = await TestApiClient.for({
+    organizationId: workspace.org.id,
+    userId: ownerUserId,
+    memberRole: 'owner',
+  });
+
+  return {
+    sql,
+    dbClient,
+    workspace,
+    api,
+    parentEntityId: parentEntity.id,
+    agent,
+    automationId,
+  };
+}
+
+type Ctx = Awaited<ReturnType<typeof setupEntityTypedAutomation>>;
+
+async function queueRunningRun(ctx: Ctx) {
+  const granularity = inferAutomationGranularityFromSchedule('0 9 * * *');
+  const { windowStart, windowEnd } = await computePendingWindow(
+    ctx.dbClient,
+    ctx.automationId,
+    granularity
+  );
+  const queued = await createAutomationRun({
+    organizationId: ctx.workspace.org.id,
+    automationId: ctx.automationId,
+    agentId: ctx.agent.agentId,
+    windowStart: windowStart.toISOString(),
+    windowEnd: windowEnd.toISOString(),
+    dispatchSource: 'scheduled',
+  });
+  await ctx.sql`
+    UPDATE runs SET status = 'running', claimed_at = NOW(), claimed_by = ${`lobu:${ctx.agent.agentId}`}
+    WHERE id = ${queued.runId}
+  `;
+  return queued.runId;
+}
+
+async function readWindowToken(ctx: Ctx): Promise<string> {
+  const content = (await ctx.api.knowledge.read({
+    automation_id: ctx.automationId,
+  })) as { window_token: string };
+  return content.window_token;
+}
+
+describe('complete_window derives its schema from the entity type', () => {
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+  });
+
+  it('resolves a real entity type metadata_schema into an extraction schema', async () => {
+    const ctx = await setupEntityTypedAutomation();
+    const derived = (await deriveAutomationExtractionSchema(
+      ctx.dbClient,
+      ctx.workspace.org.id,
+      OUTPUTS
+    )) as Record<string, any>;
+    expect(derived).not.toBeNull();
+    expect(derived.properties.problems.items.allOf).toHaveLength(2);
+    expect(derived.properties.problems.items.allOf[0].required).toEqual(['name']);
+    expect(derived.properties.problems.items.allOf[1].required).toEqual([
+      'category',
+      'name',
+    ]);
+  });
+
+  it('still requires the named array when an entity type has no field schema', async () => {
+    const ctx = await setupEntityTypedAutomation();
+    await ctx.api.entity_schema.createType({ slug: 'unstructured', name: 'Unstructured' });
+    const derived = (await deriveAutomationExtractionSchema(
+      ctx.dbClient,
+      ctx.workspace.org.id,
+      { records: { entity: 'unstructured', key: ['id'] } }
+    )) as Record<string, any>;
+    expect(derived.required).toContain('records');
+    expect(derived.properties.records).toEqual({
+      type: 'array',
+      maxItems: 500,
+      items: {
+        allOf: [
+          { type: 'object' },
+          {
+            type: 'object',
+            properties: {
+              id: {
+                anyOf: [
+                  { type: 'string', minLength: 1, maxLength: 256 },
+                  { type: 'integer', minimum: -9007199254740991, maximum: 9007199254740991 },
+                  { type: 'boolean' },
+                ],
+              },
+            },
+            required: ['id'],
+          },
+        ],
+      },
+    });
+  });
+
+  it('intersects a reaction refinement with the durable output schema', async () => {
+    const ctx = await setupEntityTypedAutomation();
+    await ctx.sql`
+      UPDATE automations
+      SET reaction_input_schema = ${ctx.sql.json({
+        type: 'object',
+        properties: {
+          signals: {
+            type: 'array',
+            maxItems: 8,
+            items: {
+              type: 'object',
+              properties: {
+                content: { type: 'string', minLength: 1 },
+                metadata: {
+                  type: 'object',
+                  properties: { priority: { enum: ['low', 'high'] } },
+                  required: ['priority'],
+                },
+              },
+              required: ['content', 'metadata'],
+            },
+          },
+        },
+        required: ['signals'],
+      })}
+      WHERE id = ${ctx.automationId}
+    `;
+
+    const derived = (await deriveAutomationExtractionSchema(
+      ctx.dbClient,
+      ctx.workspace.org.id,
+      { signals: { event: 'observation' } },
+      ctx.automationId
+    )) as Record<string, any>;
+    expect(derived.properties.signals.allOf).toHaveLength(2);
+    expect(derived.properties.signals.allOf[0].items.properties.metadata).toBeDefined();
+    expect(derived.properties.signals.allOf[1].items.required).toEqual(['content']);
+  });
+
+  it('REJECTS extracted data missing a field the entity type requires', async () => {
+    const ctx = await setupEntityTypedAutomation();
+    await createTestEvent({
+      entity_id: ctx.parentEntityId,
+      organization_id: ctx.workspace.org.id,
+      content: 'Users report problems.',
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+
+    // 'name' is required by topic's metadata_schema but missing here.
+    await expect(
+      ctx.api.automations.completeWindow({
+        automation_id: String(ctx.automationId),
+        window_token: token,
+        extracted_data: { problems: [{ category: 'Stability' }] },
+        run_metadata: { automation_run_id: runId },
+      })
+    ).rejects.toThrow(/does not match|name/i);
+  });
+
+  it('REJECTS extracted data missing an output key even when the entity type makes it optional', async () => {
+    const ctx = await setupEntityTypedAutomation();
+    await createTestEvent({
+      entity_id: ctx.parentEntityId,
+      organization_id: ctx.workspace.org.id,
+      content: 'Users report problems.',
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+
+    await expect(
+      ctx.api.automations.completeWindow({
+        automation_id: String(ctx.automationId),
+        window_token: token,
+        extracted_data: { problems: [{ name: 'App Crashes' }] },
+        run_metadata: { automation_run_id: runId },
+      })
+    ).rejects.toThrow(/does not match|category/i);
+  });
+
+  it.each([
+    ['a blank string', '   ', /non-blank/i],
+    ['more than 256 UTF-8 bytes', 'é'.repeat(129), /256 bytes/i],
+  ])(
+    'REJECTS %s stable-key component as a 422 before writing the window',
+    async (_label, category, expectedMessage) => {
+      const ctx = await setupEntityTypedAutomation();
+      await createTestEvent({
+        entity_id: ctx.parentEntityId,
+        organization_id: ctx.workspace.org.id,
+        content: 'Users report problems.',
+        occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+      });
+      const runId = await queueRunningRun(ctx);
+      const token = await readWindowToken(ctx);
+
+      const error = await ctx.api.automations
+        .completeWindow({
+          automation_id: String(ctx.automationId),
+          window_token: token,
+          extracted_data: { problems: [{ category, name: 'App Crashes' }] },
+          run_metadata: { automation_run_id: runId },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toMatchObject({ name: 'ToolUserError', httpStatus: 422 });
+      expect((error as Error).message).toMatch(expectedMessage);
+      const durableRows = await ctx.sql<{ count: string }>`
+        SELECT count(*)::text AS count
+        FROM events
+        WHERE organization_id = ${ctx.workspace.org.id}
+          AND semantic_type = 'canvas_state'
+      `;
+      expect(durableRows[0].count).toBe('0');
+    }
+  );
+
+  it('ACCEPTS extracted data that conforms to the entity type schema (no inline schema)', async () => {
+    const ctx = await setupEntityTypedAutomation();
+    await createTestEvent({
+      entity_id: ctx.parentEntityId,
+      organization_id: ctx.workspace.org.id,
+      content: 'Users report problems.',
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+
+    const completion = (await ctx.api.automations.completeWindow({
+      automation_id: String(ctx.automationId),
+      window_token: token,
+      extracted_data: {
+        problems: [{ category: 'Stability', name: 'App Crashes' }],
+      },
+      run_metadata: { automation_run_id: runId },
+    })) as { action: string };
+    expect(completion.action).toBe('complete_window');
+
+    // And the conforming record promoted into a topic entity under the parent.
+    const promoted = await ctx.sql`
+      SELECT e.name FROM entities e
+      JOIN entity_identities ei ON ei.entity_id = e.id
+      WHERE ei.organization_id = ${ctx.workspace.org.id} AND ei.namespace = 'automation_key'
+    `;
+    expect(promoted.length).toBe(1);
+  });
+});

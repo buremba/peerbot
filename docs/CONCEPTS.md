@@ -1,7 +1,7 @@
 # Lobu concepts — entities, events, and the run lifecycle
 
 Read this first: the mental model in one screen, then the end-to-end lifecycle,
-then the feature map. `BEHAVIORS.md` holds the Behavior primitive contract;
+then the feature map. `AUTOMATIONS.md` holds the Automation primitive contract;
 `connector-authoring.md` holds the connector contract.
 
 ## Mental model
@@ -9,7 +9,7 @@ then the feature map. `BEHAVIORS.md` holds the Behavior primitive contract;
 - **Events are the durable knowledge and event record.** An event is an
   immutable, append-only row in the `events` table describing one thing that
   happened at one point in time: a GitHub PR, a webhook delivery, a knowledge
-  save, or a Behavior output. Nothing is deleted. Corrections write a new event
+  save, or an Automation output. Nothing is deleted. Corrections write a new event
   that **supersedes** the old one. Chat transcripts are durable too, but live in
   `channel_messages`, not `events`.
 - **Entities are typed, current-state records linked to events.** An entity is
@@ -24,12 +24,12 @@ then the feature map. `BEHAVIORS.md` holds the Behavior primitive contract;
   - `events.id` — the stored-version id of a row. A resync that supersedes the
     prior row allocates a new `events.id`. Never use it as source identity.
   - `supersedes_event_id` — points at the event a new event replaces. The old
-    row stays in history but is hidden from normal reads; behaviors read the
+    row stays in history but is hidden from normal reads; automations read the
     masked `current_event_records` projection, not `public.events`.
-- **Behaviors turn events into work.** A Behavior is a versioned task owned by
+- **Automations turn events into work.** An Automation is a versioned task owned by
   an agent: a trigger decides when a run starts, prompt/skills decide what the
   agent does, sources bound what it may read, outputs declare what a completed
-  run persists. See `BEHAVIORS.md`.
+  run persists. See `AUTOMATIONS.md`.
 
 ## The event lifecycle (end to end)
 
@@ -39,9 +39,9 @@ flowchart LR
   B --> C["events row (append-only; dedupe by connection + origin_id)"]
   C --> D["Trigger match (connector eventKinds / schedule / workspace output)"]
   D --> E["Run queue (window or turn; queue or coalesce)"]
-  E --> F["Behavior execution (governed sources + exact event pointers)"]
+  E --> F["Automation execution (governed sources + exact event pointers)"]
   F --> G["Declared outputs (entity rows / append-only events)"]
-  G --> H["Downstream workspace-triggered Behaviors (chaining)"]
+  G --> H["Downstream workspace-triggered Automations (chaining)"]
 ```
 
 1. **Ingest.** A connector feed sync lands rows in `events`. Generic webhook
@@ -49,22 +49,22 @@ flowchart LR
    `channel_messages` and are normalized into connector turn signals. Connector
    event ingestion dedupes by `(connection_id, origin_id)`; a row whose current
    head is unchanged is not a new source item.
-2. **Match.** The platform checks active Behavior triggers. Connector triggers
-   use the connector's resolved event catalog (declared `behaviorEvents` in the
-   connector definition — persisted in the catalog as `behavior_events` — else
+2. **Match.** The platform checks active Automation triggers. Connector triggers
+   use the connector's resolved event catalog (declared `automationEvents` in the
+   connector definition — persisted in the catalog as `automation_events` — else
    its feed `eventKinds`). For feed-derived triggers, the first successful
    non-dry sync establishes a baseline; only later inserted items activate.
    Workspace triggers fire only on **newly persisted declared event outputs**
-   from another Behavior. Ordinary knowledge saves and connector-ingested
+   from another Automation. Ordinary knowledge saves and connector-ingested
    events do not activate workspace-source triggers; connector events activate
    only matching connector-source triggers. Schedules match by cron.
-3. **Run.** The matched Behavior's run is queued and claimed. A **window** run
+3. **Run.** The matched Automation's run is queued and claimed. A **window** run
    reads its bounded data window; a **turn** run processes one delivery.
    `queue` keeps activations separate; `coalesce` merges pending inputs up to
-   the safety limits in `BEHAVIORS.md`.
+   the safety limits in `AUTOMATIONS.md`.
 4. **Persist.** A completed window may persist declared **outputs**: entity
    rows (upsert by a key) and/or append-only events. Persisting an event output
-   atomically queues activation of downstream `source: "workspace"` Behaviors —
+   atomically queues activation of downstream `source: "workspace"` Automations —
    that is how automations chain.
 
 ## Feature map
@@ -75,8 +75,8 @@ flowchart LR
 | Feed | One sync source inside a connector; uses checkpoints; declares `eventKinds` | declared in the connector definition |
 | Event | Immutable append-only row; the bus between ingest, triggers, and chaining | `events` table; read via `current_event_records` |
 | Entity | Typed current-state projection of linked events | `defineEntityType` schema; `entities` rows |
-| Agent | Identity + persona + skills; owns Behaviors | `agents/<id>/` (`IDENTITY.md`, `SOUL.md`, `USER.md`); `defineAgent` |
-| Behavior | Triggered task owned by an agent; reads governed sources, persists outputs | `defineBehavior` |
+| Agent | Identity + persona + skills; owns Automations | `agents/<id>/` (`IDENTITY.md`, `SOUL.md`, `USER.md`); `defineAgent` |
+| Automation | Triggered task owned by an agent; reads governed sources, persists outputs | `defineAutomation` |
 | Interaction surface | Where people talk to the agent: Web UI, API/SDK, MCP, chat platforms | built-in Web/API/MCP; chat via `defineConnection` |
 
 ## Webhook connections (push sources)
@@ -84,7 +84,7 @@ flowchart LR
 A connection with connector `webhook` turns any external system that POSTs JSON
 (Sentry, GitHub, Stripe, CI) into a push source: the delivery lands as an
 `events` row. Generic webhook rows are data rather than direct Event-trigger
-activations; process them with a scheduled or manual Behavior and a bounded SQL
+activations; process them with a scheduled or manual Automation and a bounded SQL
 source.
 
 - **Deliver:** `POST <gateway>/lobu/api/v1/webhooks/<connectionId>` with
@@ -97,7 +97,7 @@ source.
   redeliveries return the existing id; `413` over 256 KB; `400` non-JSON;
   `429` over 120 authenticated deliveries/min per connection. Dedupe is a
   partial unique index on `(organization_id, connector_key, origin_id)`.
-- **Read back:** scheduled or manual Behavior SQL sources select
+- **Read back:** scheduled or manual Automation SQL sources select
   `WHERE connector_key = 'webhook:<connectionId>'` and read the verbatim
   payload from `payload_data`. Object-root JSON is stored directly; array or
   primitive roots are wrapped as `{"payload": ...}`.

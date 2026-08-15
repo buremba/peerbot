@@ -14,8 +14,8 @@
  *  1. Exponential backoff on `next_run_at` after a failure, so a failing feed
  *     retries progressively less often instead of every cadence.
  *  2. A hard consecutive-failure threshold that pauses the feed outright and
- *     emits a `feed.auto_paused` Behavior signal so orgs can react with a
- *     normal Behavior (see behaviors/platform-events.ts).
+ *     emits a `feed.auto_paused` Automation signal so orgs can react with a
+ *     normal Automation (see automations/platform-events.ts).
  *
  * All timings are env-overridable for tests/operators via lazy getters (same
  * convention as config/intervals.ts).

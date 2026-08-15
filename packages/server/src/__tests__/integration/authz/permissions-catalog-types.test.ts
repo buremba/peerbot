@@ -74,7 +74,7 @@ describe("/permissions catalog type resolution", () => {
 
 	it("excludes every $-prefixed built-in, not just $member", async () => {
 		// The filter is by convention, not an enumerated list — a new built-in
-		// (here `$canvas`, which every Behavior canvas binds to) must stay out of
+		// (here `$canvas`, which every Automation canvas binds to) must stay out of
 		// the ACL picker without anyone remembering to add another `<>` clause.
 		await getTestDb()`
       INSERT INTO entity_types (organization_id, slug, name)

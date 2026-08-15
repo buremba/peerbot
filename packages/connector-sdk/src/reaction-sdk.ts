@@ -15,27 +15,27 @@ export interface ReactionEntity {
 
 /**
  * Context passed to reaction scripts containing the analysis results
- * and metadata about the Behavior window. Reaction scripts have the
+ * and metadata about the Automation window. Reaction scripts have the
  * shape `default async (ctx: ReactionContext, client, params?)`.
  */
 export interface ReactionContext {
   /** The extracted analysis data from the completed window */
   extracted_data: Record<string, unknown>;
-  /** All entities the Behavior is attached to */
+  /** All entities the Automation is attached to */
   entities: ReactionEntity[];
   /** The window that was just completed */
   window: {
     id: number;
-    /** Durable Behavior run that produced this window, when execution has one. */
+    /** Durable Automation run that produced this window, when execution has one. */
     run_id?: number | null;
-    behavior_id: number;
+    automation_id: number;
     window_start: string;
     window_end: string;
     granularity: string;
     content_analyzed: number;
   };
-  /** Behavior identity */
-  behavior: {
+  /** Automation identity */
+  automation: {
     id: number;
     slug: string;
     name: string;

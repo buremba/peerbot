@@ -65,7 +65,7 @@ const CREATE_LEGACY = `
 		organization_id text NOT NULL
 	);
 	-- Older schemas retained this table as a rolling-deploy projection; the
-	-- clean-cut Behaviors migration drops it. Either way, replace whatever is
+	-- clean-cut Automations migration drops it. Either way, replace whatever is
 	-- present inside the rolled-back transaction with the historical shell that
 	-- existed when the migration under test ran (IF EXISTS covers both schemas).
 	DROP TABLE IF EXISTS public.agent_channel_bindings;

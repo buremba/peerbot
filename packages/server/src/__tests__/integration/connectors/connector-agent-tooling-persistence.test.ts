@@ -31,7 +31,7 @@ function metadataFor(
     webhook: null,
     feeds: null,
     actions: null,
-    behaviorEvents: null,
+    automationEvents: null,
     optionsSchema: null,
     agentTooling,
   };

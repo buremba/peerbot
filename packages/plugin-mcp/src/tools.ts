@@ -33,9 +33,9 @@ const TOOLS_REQUESTING_JSON_FORMAT = new Set([
   // not formatted markdown, to forward an approval card into the chat (see
   // maybePostApprovalCard / createMcpToolDefinitions).
   "manage_agents",
-  // Same shape as manage_agents: behavior definition create/update/delete may
+  // Same shape as manage_agents: automation definition create/update/delete may
   // return pending_approval under the agent_config write-gate.
-  "manage_behaviors",
+  "manage_automations",
   // manage_entity's update path queues a human-owned-field change for approval
   // (approval_queued + approval_run_id + approval_fields/current). Same reason:
   // we need the JSON to forward the entity_field_change approval card.
@@ -48,11 +48,11 @@ const TOOLS_REQUESTING_JSON_FORMAT = new Set([
  * Approve/Reject diff. Handles three producers:
  *   - manage_agents write gate → `{ status: 'pending_approval', run_id,
  *     action, proposal, current }` (the builder agent's create/update/delete).
- *   - manage_behaviors write gate → same `pending_approval` shape (behavior
+ *   - manage_automations write gate → same `pending_approval` shape (automation
  *     definition create/update/delete under agent_config).
  *   - manage_entity update gate → `{ approval_queued: true, approval_run_id,
  *     approval_fields, approval_current, approval_attribution }` (a human-owned
- *     entity field an agent or Behavior proposed changing).
+ *     entity field an agent or Automation proposed changing).
  *
  * Best-effort — a failed post never breaks the tool call (the agent still
  * narrates the result, and the events-tab approval card remains the fallback).
@@ -96,8 +96,8 @@ export async function maybePostApprovalCard(
  * Parse a gated tool result into the /internal/interactions/create body, or
  * null when the result is not a pending approval. entity_field_change carries
  * `fields`/`attribution` (the human-owned-field diff); manage_agents carries
- * `proposal` (the agent row diff); manage_behaviors carries flat behavior args
- * plus `resourceKind: behavior`. All share the `tool_approval` transport.
+ * `proposal` (the agent row diff); manage_automations carries flat automation args
+ * plus `resourceKind: automation`. All share the `tool_approval` transport.
  * Wire literals come from `@lobu/core` (`interaction-envelope` contract).
  */
 function buildApprovalCardBody(
@@ -113,22 +113,22 @@ function buildApprovalCardBody(
   const parsed = recordOrNull(raw);
   if (!parsed) return null;
 
-  if (toolName === "manage_behaviors") {
+  if (toolName === "manage_automations") {
     if (
       parsed.status !== "pending_approval" ||
       typeof parsed.run_id !== "number"
     ) {
       return null;
     }
-    // Server proposal is `{ args: ManageBehaviorsArgs }`; SPA renderer needs the
-    // flat behavior fields (action, slug, prompt, schedule, …).
+    // Server proposal is `{ args: ManageAutomationsArgs }`; SPA renderer needs the
+    // flat automation fields (action, slug, prompt, schedule, …).
     const rawProposal = recordOrNull(parsed.proposal);
     const flatProposal = recordOrNull(rawProposal?.args) ?? rawProposal;
     return {
       interactionType: "tool_approval",
       runId: parsed.run_id,
       action: typeof parsed.action === "string" ? parsed.action : "change",
-      resourceKind: InteractionResourceKind.Behavior,
+      resourceKind: InteractionResourceKind.Automation,
       proposal: flatProposal,
       current: recordOrNull(parsed.current),
     };

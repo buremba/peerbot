@@ -172,10 +172,6 @@ export async function supersedeActionEvent(
 					? { error_message: extraMetadata.error_message }
 					: {}),
 				...extraMetadata,
-				...(priorMetadata.resourceKind === "watcher" ||
-				extraMetadata.resourceKind === "watcher"
-					? { resourceKind: "behavior" }
-					: {}),
 			},
 			authorName: orig.author_name ?? null,
 		},

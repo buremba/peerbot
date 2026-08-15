@@ -27,7 +27,7 @@ describe("catalog/merge", () => {
 					name: "Slack (catalog)",
 					detail: {
 						actions_schema: { ping: {} },
-						behavior_events: [
+						automation_events: [
 							{ key: "message.created", label: "A message is sent" },
 						],
 					},
@@ -43,7 +43,7 @@ describe("catalog/merge", () => {
 		expect(merged.map((item) => item.id)).toEqual(["slack", "github"]);
 		expect(merged[0]?.detail.installed).toBe(true);
 		expect(merged[0]?.detail.catalog_origin).toBe("org");
-		expect(merged[0]?.detail.behavior_events).toEqual([
+		expect(merged[0]?.detail.automation_events).toEqual([
 			{ key: "message.created", label: "A message is sent" },
 		]);
 		expect(merged[1]?.detail.installed).toBe(false);
@@ -108,16 +108,16 @@ describe("catalog/merge", () => {
 });
 
 // Platform event injection for the installed-connector UI is owned by
-// listOrgInstalled (withPlatformBehaviorEvents). Unit coverage for the pure
+// listOrgInstalled (withPlatformAutomationEvents). Unit coverage for the pure
 // merge helper lives next to platform-event-catalog.
 import {
 	PLATFORM_EVENT_FEED_AUTO_PAUSED,
-	withPlatformBehaviorEvents,
-} from "../../behaviors/platform-event-catalog";
+	withPlatformAutomationEvents,
+} from "../../automations/platform-event-catalog";
 
-describe("withPlatformBehaviorEvents (installed UI surface)", () => {
+describe("withPlatformAutomationEvents (installed UI surface)", () => {
 	it("exposes feed.auto_paused alongside connector-declared events", () => {
-		const merged = withPlatformBehaviorEvents([
+		const merged = withPlatformAutomationEvents([
 			{ key: "message.created", label: "A message is sent" },
 		]);
 		expect(merged.map((e) => e.key)).toEqual([
@@ -127,7 +127,7 @@ describe("withPlatformBehaviorEvents (installed UI surface)", () => {
 	});
 
 	it("does not duplicate when the connector already declares the platform event", () => {
-		const merged = withPlatformBehaviorEvents([
+		const merged = withPlatformAutomationEvents([
 			{ key: PLATFORM_EVENT_FEED_AUTO_PAUSED },
 			{ key: "message.created" },
 		]);

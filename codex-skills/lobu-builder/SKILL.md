@@ -57,7 +57,7 @@ If the repository already provides project-specific test scripts, use those.
 - Enable built-in skills with `npx @lobu/cli@latest skills list`, `search`, or `add`
 - Add a custom MCP server via `defineAgent({ mcpServers })`
 - Add a shared skill under `skills/` for repeated workflows
-- Add evals for risky behaviors and policy constraints
+- Add evals for risky automations and policy constraints
 - Wire observability only when needed; Lobu supports Grafana/Tempo traces
 
 ## References

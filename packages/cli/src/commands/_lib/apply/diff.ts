@@ -7,7 +7,7 @@ import { ValidationError } from "../../memory/_lib/errors.js";
 import type {
   RemoteAgent,
   RemoteAuthProfile,
-  RemoteBehavior,
+  RemoteAutomation,
   RemoteConnection,
   RemoteConnectorDefinition,
   RemoteEntityType,
@@ -18,7 +18,7 @@ import type {
 import type {
   DesiredAgent,
   DesiredAuthProfile,
-  DesiredBehaviorTrigger,
+  DesiredAutomationTrigger,
   DesiredConnection,
   DesiredConnectorDefinition,
   DesiredEntityType,
@@ -26,10 +26,10 @@ import type {
   DesiredOrgProvider,
   DesiredRelationshipType,
   DesiredState,
-  DesiredWatcher,
+  DesiredAutomation,
 } from "./desired-state.js";
 import {
-  type BehaviorSource,
+  type AutomationSource,
   declaredConnectorKeys,
   referencedConnectorKeys,
 } from "./shared.js";
@@ -61,8 +61,8 @@ interface ResourceRow<D, R> extends BaseRow {
  * auth profiles whose values must never be printed in a plan, so they have no
  * field to populate and the unsafe version does not typecheck.
  *
- * Behaviors are deliberately excluded too, though they are not secret-bearing:
- * their values reach the plan only through the two-way `diffWatcher` row, whose
+ * Automations are deliberately excluded too, though they are not secret-bearing:
+ * their values reach the plan only through the two-way `diffAutomation` row, whose
  * field identifiers differ from the projection's (`agent` vs `agent_id`), and
  * the name-mapping table that reconciled them was not worth its weight.
  */
@@ -93,16 +93,16 @@ export interface RelationshipTypeDiffRow
   kind: "relationship-type";
 }
 
-export interface WatcherDiffRow
-  extends ResourceRow<DesiredWatcher, RemoteBehavior> {
-  kind: "watcher";
+export interface AutomationDiffRow
+  extends ResourceRow<DesiredAutomation, RemoteAutomation> {
+  kind: "automation";
   /**
    * Field names that require a `create_version` + `upgrade` (vs a plain
    * `update`). Apply uses this to route writes to the right admin action.
    */
   versionBoundFields?: string[];
   /**
-   * True when the desired watcher declares a `reaction_script` — server stores
+   * True when the desired automation declares a `reaction_script` — server stores
    * it write-only, so the diff can't tell whether it changed; apply always
    * re-pushes (idempotent). Matches the auth-profile credentials pattern.
    */
@@ -146,7 +146,7 @@ export interface InferenceProviderDiffRow
    * True when the desired provider declares an API key — the server stores it
    * write-only (can't be read back), so the diff can't tell whether it changed;
    * apply always re-pushes (idempotent). Matches the auth-profile credentials /
-   * watcher reaction-script pattern.
+   * automation reaction-script pattern.
    */
   keyDeclared?: boolean;
   /**
@@ -165,7 +165,7 @@ export interface BlockingDriftRow extends BaseRow {
   verb: "drift";
   /** Always true — distinguishes blocking drift from legacy non-blocking drift. */
   blocking: true;
-  kind: "entity-type" | "relationship-type" | "watcher";
+  kind: "entity-type" | "relationship-type" | "automation";
   id: string;
   /** The moved field; absent for a whole remote-only definition. */
   field?: string;
@@ -183,7 +183,7 @@ export interface BlockingDriftRow extends BaseRow {
 export interface AttributionSnapshot {
   entityTypes: RemoteEntityType[];
   relationshipTypes: RemoteRelationshipType[];
-  watchers: RemoteBehavior[];
+  automations: RemoteAutomation[];
 }
 
 export interface Baseline {
@@ -212,7 +212,7 @@ export type DiffRow =
   | SettingsDiffRow
   | EntityTypeDiffRow
   | RelationshipTypeDiffRow
-  | WatcherDiffRow
+  | AutomationDiffRow
   | ConnectorDefinitionDiffRow
   | AuthProfileDiffRow
   | ConnectionDiffRow
@@ -1084,7 +1084,7 @@ export const effectiveRelationshipTypeAfterApply = (
 
 /** Classify a remote-only definition without deleting unproven ownership. */
 function remoteOnlyDefinitionRow(
-  kind: "entity-type" | "relationship-type" | "watcher",
+  kind: "entity-type" | "relationship-type" | "automation",
   remote: {
     slug: string;
     id?: number | string;
@@ -1117,7 +1117,7 @@ function remoteOnlyDefinitionRow(
     blocking: true,
     id: remote.slug,
     remote,
-    // Restrict terminal output to display metadata; schema bodies and Behavior
+    // Restrict terminal output to display metadata; schema bodies and Automation
     // prompts can contain sensitive values.
     remoteChange: {
       name: remote.name,
@@ -1126,24 +1126,24 @@ function remoteOnlyDefinitionRow(
   } as DiffRow;
 }
 
-// Watcher (Behavior) three-way — whole-definition, over a normalized
+// Automation (Automation) three-way — whole-definition, over a normalized
 // camelCase projection of the fields the diff cares about. Write-only fields
 // (`reactionScript`) are excluded (always-repush, never attributed).
 //
 // Optional fields the config omits are UNMANAGED — same contract as the
-// two-way `diffWatcher` (only declared fields converge) and as entity-type
+// two-way `diffAutomation` (only declared fields converge) and as entity-type
 // omittable facets. Projecting an omitted field as `[]`/`null` would make
 // every apply that leaves remote-only sources/skills/tags intact look like
 // remote-moved drift and permanently block re-apply.
 
-interface WatcherProjection {
+interface AutomationProjection {
   agent?: string | null;
   name?: string | null;
   description?: string | null;
-  triggers?: DesiredBehaviorTrigger[];
+  triggers?: DesiredAutomationTrigger[];
   prompt?: string | null;
   skills?: Array<{ name: string; content: string }> | null;
-  sources?: BehaviorSource[] | null;
+  sources?: AutomationSource[] | null;
   reactionsGuidance?: string | null;
   deviceWorkerId?: string | null;
   model?: string | null;
@@ -1157,16 +1157,16 @@ interface WatcherProjection {
 }
 
 /**
- * Desired Behavior → projection. For fields the two-way diff only compares
+ * Desired Automation → projection. For fields the two-way diff only compares
  * when declared, an omitted value inherits the live remote (unmanaged) so
  * three-way attribution never false-blocks on preserved remote state.
  * Always-managed fields (`triggers`, `prompt`, `outputs`, `agent`, `name`)
- * use the same defaults as `diffWatcher`.
+ * use the same defaults as `diffAutomation`.
  */
-export const projectDesiredWatcher = (
-  d: DesiredWatcher,
-  remote?: RemoteBehavior
-): WatcherProjection => ({
+export const projectDesiredAutomation = (
+  d: DesiredAutomation,
+  remote?: RemoteAutomation
+): AutomationProjection => ({
   agent: d.agent ?? null,
   // Name/description are optional in config; the server defaults name to the
   // slug. Inherit live remote when omitted so a second apply does not
@@ -1216,9 +1216,11 @@ export const projectDesiredWatcher = (
     d.classifiers !== undefined ? d.classifiers : (remote?.classifiers ?? []),
 });
 
-const projectRemoteWatcher = (w: RemoteBehavior): WatcherProjection => ({
+const projectRemoteAutomation = (
+  w: RemoteAutomation
+): AutomationProjection => ({
   agent: w.agent_id ?? null,
-  // `?? null` mirrors projectDesiredWatcher: an unnamed remote Behavior must
+  // `?? null` mirrors projectDesiredAutomation: an unnamed remote Automation must
   // compare EQUAL to the desired side that inherited it, or deepEqual(null,
   // undefined) false-blocks the first baseline.
   name: w.name ?? null,
@@ -1242,29 +1244,29 @@ const projectRemoteWatcher = (w: RemoteBehavior): WatcherProjection => ({
   classifiers: w.classifiers ?? [],
 });
 
-function diffWatcherWithBaseline(
-  desired: DesiredWatcher,
-  remote: RemoteBehavior | undefined,
+function diffAutomationWithBaseline(
+  desired: DesiredAutomation,
+  remote: RemoteAutomation | undefined,
   baseline: Baseline | undefined
-): { row: WatcherDiffRow; blocking: BlockingDriftRow[] } {
+): { row: AutomationDiffRow; blocking: BlockingDriftRow[] } {
   if (!remote) {
-    return { row: diffWatcher(desired, remote), blocking: [] };
+    return { row: diffAutomation(desired, remote), blocking: [] };
   }
   if (!baseline?.recorded) {
-    return { row: diffWatcher(desired, remote), blocking: [] };
+    return { row: diffAutomation(desired, remote), blocking: [] };
   }
-  const attr = baseline.attribution.watchers.find(
+  const attr = baseline.attribution.automations.find(
     (a) => a.slug === desired.slug
   );
   if (!attr) {
     const inSync = deepEqual(
-      projectDesiredWatcher(desired, remote),
-      projectRemoteWatcher(remote)
+      projectDesiredAutomation(desired, remote),
+      projectRemoteAutomation(remote)
     );
     if (inSync) {
       return {
         row: {
-          kind: "watcher",
+          kind: "automation",
           verb: "noop",
           id: desired.slug,
           desired,
@@ -1274,15 +1276,21 @@ function diffWatcherWithBaseline(
       };
     }
     return {
-      row: { kind: "watcher", verb: "noop", id: desired.slug, desired, remote },
+      row: {
+        kind: "automation",
+        verb: "noop",
+        id: desired.slug,
+        desired,
+        remote,
+      },
       blocking: [
         {
-          kind: "watcher",
+          kind: "automation",
           verb: "drift",
           blocking: true,
           id: desired.slug,
           // Field-qualified so blocked candidates record action=revert (not
-          // delete) — this is a declared Behavior whose remote moved.
+          // delete) — this is a declared Automation whose remote moved.
           field: "definition",
         },
       ],
@@ -1291,10 +1299,10 @@ function diffWatcherWithBaseline(
   // Per-field three-way: a remote-moved agent must not block a concurrent
   // config prompt change once the agent is adopted (desired==remote for that
   // field). Whole-object compare treated any residual mismatch as one block.
-  const dProj = projectDesiredWatcher(desired, remote);
-  const rProj = projectRemoteWatcher(remote);
-  const aProj = projectRemoteWatcher(attr);
-  const fieldNames = Object.keys(dProj) as Array<keyof WatcherProjection>;
+  const dProj = projectDesiredAutomation(desired, remote);
+  const rProj = projectRemoteAutomation(remote);
+  const aProj = projectRemoteAutomation(attr);
+  const fieldNames = Object.keys(dProj) as Array<keyof AutomationProjection>;
   const threeWay = classifyThreeWay(
     fieldNames.map((field) => ({
       field,
@@ -1306,14 +1314,14 @@ function diffWatcherWithBaseline(
   if (threeWay.blockingFields.length > 0) {
     return {
       row: {
-        kind: "watcher",
+        kind: "automation",
         verb: "noop",
         id: desired.slug,
         desired,
         remote,
       },
       blocking: threeWay.blockingFields.map((b) => ({
-        kind: "watcher" as const,
+        kind: "automation" as const,
         verb: "drift" as const,
         blocking: true as const,
         id: desired.slug,
@@ -1324,28 +1332,28 @@ function diffWatcherWithBaseline(
     };
   }
   // No remote-moved fields — converge config-moved (or noop) via two-way.
-  return { row: diffWatcher(desired, remote), blocking: [] };
+  return { row: diffAutomation(desired, remote), blocking: [] };
 }
 
 /**
- * Watcher drift fields split into two routing categories:
- *   - **scalar** lives on the `watchers` row → `manage_behaviors update`.
- *   - **version-bound** lives on the `watcher_versions` row → must go through
+ * Automation drift fields split into two routing categories:
+ *   - **scalar** lives on the `automations` row → `manage_automations update`.
+ *   - **version-bound** lives on the `automation_versions` row → must go through
  *     `create_version` + `upgrade` (server-side bumps `current_version_id`).
  * The diff returns both lists; apply-cmd routes accordingly.
  *
- * Reaction scripts aren't returned by Behavior lists (write-only on the row),
+ * Reaction scripts aren't returned by Automation lists (write-only on the row),
  * so we can't compare them — apply always re-pushes when declared (idempotent).
- * Remote watchers without a desired model are reported as drift, never deleted.
+ * Remote automations without a desired model are reported as drift, never deleted.
  */
-function diffWatcher(
-  desired: DesiredWatcher,
-  remote: RemoteBehavior | undefined
-): WatcherDiffRow {
+function diffAutomation(
+  desired: DesiredAutomation,
+  remote: RemoteAutomation | undefined
+): AutomationDiffRow {
   const reactionScriptDeclared = desired.reactionScript !== undefined;
   if (!remote) {
     return {
-      kind: "watcher",
+      kind: "automation",
       verb: "create",
       id: desired.slug,
       desired,
@@ -1404,7 +1412,7 @@ function diffWatcher(
   }
 
   const versionBound: string[] = [];
-  // name/description are version-owned (manage_behaviors create_version only;
+  // name/description are version-owned (manage_automations create_version only;
   // update rejects them). Only compare when declared so an omitted name
   // inherits the server slug default without perpetual churn.
   if (desired.name !== undefined && desired.name !== (remote.name ?? "")) {
@@ -1421,7 +1429,7 @@ function diffWatcher(
   }
   // Compare the resolved snapshots, not the config's name list. Editing a
   // SKILL.md changes no name, so a name-level diff would report "no changes"
-  // and leave every Behavior pinned to the old body — re-apply is how a config
+  // and leave every Automation pinned to the old body — re-apply is how a config
   // project takes a skill update, and this comparison is what makes it land.
   if (
     desired.skillSnapshots !== undefined &&
@@ -1429,7 +1437,7 @@ function diffWatcher(
   ) {
     versionBound.push("skills");
   }
-  // Sources live on the watchers row but are written as part of create_version
+  // Sources live on the automations row but are written as part of create_version
   // when changed (server copies them to the version's per-assignment scope).
   // Diff against `remote.sources` (also from the row) and route through
   // create_version so the version chain stays consistent.
@@ -1460,10 +1468,16 @@ function diffWatcher(
   const changed = [...scalar, ...versionBound];
   if (reactionScriptDeclared) changed.push("reaction_script");
   if (changed.length === 0) {
-    return { kind: "watcher", verb: "noop", id: desired.slug, desired, remote };
+    return {
+      kind: "automation",
+      verb: "noop",
+      id: desired.slug,
+      desired,
+      remote,
+    };
   }
   return {
-    kind: "watcher",
+    kind: "automation",
     verb: "update",
     id: desired.slug,
     desired,
@@ -1759,7 +1773,7 @@ export interface RemoteSnapshot {
   agentSettings: Map<string, AgentSettings | null>;
   entityTypes: RemoteEntityType[];
   relationshipTypes: RemoteRelationshipType[];
-  watchers: RemoteBehavior[];
+  automations: RemoteAutomation[];
   connectorDefinitions: RemoteConnectorDefinition[];
   authProfiles: RemoteAuthProfile[];
   connections: RemoteConnection[];
@@ -1775,7 +1789,7 @@ export interface RemoteSnapshot {
  */
 type DesiredStateForDiff = Pick<
   DesiredState,
-  "agents" | "memorySchema" | "watchers" | "connectors" | "providers"
+  "agents" | "memorySchema" | "automations" | "connectors" | "providers"
 >;
 
 interface ComputeDiffOptions {
@@ -1784,7 +1798,7 @@ interface ComputeDiffOptions {
   /**
    * When true, the config declares `prune: true`: it's the source of truth for
    * *definitions*, so a remote definition (entity type, relationship type,
-   * watcher, connector definition) absent from desired is emitted as a `delete`
+   * automation, connector definition) absent from desired is emitted as a `delete`
    * row instead of an ignored `drift` — INCLUDING definitions created via the
    * dashboard/API. Data (entity/relationship instances), connections, auth
    * profiles, feeds, and agents are never pruned. Default (false)
@@ -1801,7 +1815,7 @@ interface ComputeDiffOptions {
   /**
    * Attribution baseline (the last succeeded deployment's effective-remote
    * snapshot + owned incarnation identities). When recorded, entity/rel types
-   * and Behaviors get the three-way compare: block when the remote moved
+   * and Automations get the three-way compare: block when the remote moved
    * (`remote ≠ attribution` AND `desired ≠ remote`), converge only when the
    * config moved (`remote == attribution`). Without a recorded baseline,
    * declared definitions use the ordinary two-way diff; remote-only prune
@@ -1829,14 +1843,14 @@ export function computeDiff(
     definitionOrgId === orgId;
   // Platform-owned entity types must NEVER be pruned (`$` slug prefix).
   const isSystemSlug = (slug: string): boolean => slug.startsWith("$");
-  // Behaviors the platform/connectors create outside the config (e.g. Slack
+  // Automations the platform/connectors create outside the config (e.g. Slack
   // chat-link bindings) carry a `system:<kind>` tag and are NOT config-owned.
   // They must never block an apply or be pruned — like Terraform, unmanaged
   // resources are ignored, not fought.
   const isSystemTagged = (tags: string[] | null | undefined): boolean =>
     (tags ?? []).some((t) => t.startsWith("system:"));
-  const isSystemWatcher = (w: RemoteBehavior): boolean =>
-    isSystemSlug(w.slug) || isSystemTagged(w.tags);
+  const isSystemAutomation = (automation: RemoteAutomation): boolean =>
+    isSystemSlug(automation.slug) || isSystemTagged(automation.tags);
 
   if (only !== "memory") {
     const remoteByAgent = new Map(remote.agents.map((a) => [a.agentId, a]));
@@ -1994,50 +2008,52 @@ export function computeDiff(
       }
     }
 
-    const remoteWatcherBySlug = new Map(
-      remote.watchers.map((w) => [w.slug, w])
+    const remoteAutomationBySlug = new Map(
+      remote.automations.map((w) => [w.slug, w])
     );
-    const desiredWatcherSlugs = new Set(desired.watchers.map((w) => w.slug));
-    for (const watcher of desired.watchers) {
-      const { row, blocking } = diffWatcherWithBaseline(
-        watcher,
-        remoteWatcherBySlug.get(watcher.slug),
+    const desiredAutomationSlugs = new Set(
+      desired.automations.map((w) => w.slug)
+    );
+    for (const automation of desired.automations) {
+      const { row, blocking } = diffAutomationWithBaseline(
+        automation,
+        remoteAutomationBySlug.get(automation.slug),
         baseline
       );
       rows.push(row);
       rows.push(...blocking);
     }
-    for (const remoteWatcher of remote.watchers) {
-      if (!desiredWatcherSlugs.has(remoteWatcher.slug)) {
-        if (isSystemWatcher(remoteWatcher)) {
+    for (const remoteAutomation of remote.automations) {
+      if (!desiredAutomationSlugs.has(remoteAutomation.slug)) {
+        if (isSystemAutomation(remoteAutomation)) {
           rows.push({
-            kind: "watcher",
+            kind: "automation",
             verb: "drift",
-            id: remoteWatcher.slug,
-            remote: remoteWatcher,
+            id: remoteAutomation.slug,
+            remote: remoteAutomation,
           });
           continue;
         }
         rows.push(
           remoteOnlyDefinitionRow(
-            "watcher",
+            "automation",
             {
-              slug: remoteWatcher.slug,
-              id: remoteWatcher.behavior_id,
-              name: remoteWatcher.name,
-              description: remoteWatcher.description,
+              slug: remoteAutomation.slug,
+              id: remoteAutomation.automation_id,
+              name: remoteAutomation.name,
+              description: remoteAutomation.description,
             },
             baseline,
             prune,
             (slug) => {
-              const a = baseline?.attribution.watchers.find(
+              const a = baseline?.attribution.automations.find(
                 (x) => x.slug === slug
               );
               return (
                 !!a &&
                 deepEqual(
-                  projectRemoteWatcher(remoteWatcher),
-                  projectRemoteWatcher(a)
+                  projectRemoteAutomation(remoteAutomation),
+                  projectRemoteAutomation(a)
                 )
               );
             }

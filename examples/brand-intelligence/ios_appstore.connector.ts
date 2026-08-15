@@ -126,7 +126,7 @@ export default class IOSAppStoreConnector extends ConnectorRuntime {
       // `.raw()` retries transient 429/5xx, then resolves non-2xx responses for
       // our own handling — except a still-transient status throws after retries
       // are exhausted. Page 1 surfaces any failure; later pages treat it as the
-      // end of the feed (the original break-on-non-ok behavior), so a thrown
+      // end of the feed (the original break-on-non-ok automation), so a thrown
       // transient error past page 1 must collapse to the same break.
       let response: Response;
       try {

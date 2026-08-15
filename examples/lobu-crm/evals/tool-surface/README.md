@@ -21,7 +21,7 @@ The toggle that selects between them in production is the worker's
   an OpenAI-compatible pi model directly (openai-completions, base URL
   `https://api.z.ai/api/coding/paas/v4`, `compat.supportsStore=false`).
 - **Tools:** the REAL Lobu MCP handlers (`manage_entity`, `save_memory`,
-  `search_memory`, `query_sql`, `manage_behaviors`, …) against a real Postgres
+  `search_memory`, `query_sql`, `manage_automations`, …) against a real Postgres
   (the server package's test fixtures + migrations on `lobu_test`).
 - **Arm A surface:** the real discrete tool list from
   `getAllTools()` (names/descriptions/JSON schemas).

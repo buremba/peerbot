@@ -61,7 +61,7 @@ import { resolveRunInitiator, runPermalinkResource } from "../initiator";
 import type { ToolContext } from "../registry";
 import { getOrgUrlContext } from "../view-urls";
 
-/** Synthetic runs.action_key tagging a watcher field-change held for approval. */
+/** Synthetic runs.action_key tagging an automation field-change held for approval. */
 export const ENTITY_FIELD_CHANGE_ACTION_KEY = "entity_field_change";
 export const ENTITY_CHANGE_ACTION_KEY = "entity_change";
 export const ENTITY_CHANGE_ACTION_KEYS = [
@@ -73,25 +73,25 @@ export const ENTITY_CHANGE_ACTION_KEYS = [
 export interface EntityFieldChangeProposal {
 	operation?: "update";
 	entity_id: number;
-	/** field_path -> proposed value (what the watcher/agent wanted to write). */
+	/** field_path -> proposed value (what the automation/agent wanted to write). */
 	fields: Record<string, unknown>;
 	/** field_path -> current human-owned value (for the diff card). */
 	current?: Record<string, unknown>;
-	watcher_id?: number | null;
+	automation_id?: number | null;
 	/**
-	 * The watcher-run window that produced this proposal, if any. Stamped onto the
+	 * The automation-run window that produced this proposal, if any. Stamped onto the
 	 * `runs.window_id` COLUMN so a run that produced N proposals groups them
 	 * into ONE batch approval card. Stripped from action_input before the insert.
 	 */
 	window_id?: number | null;
-	/** Who proposed the change — drives the card label/author. Defaults to 'behavior'. */
+	/** Who proposed the change — drives the card label/author. Defaults to 'automation'. */
 	attribution?: ApprovalAttributionType;
 	reason?: string | null;
 	/**
 	 * The ONE human who owns every gated field (distinct
 	 * `field_controls[field].set_by`), resolved at propose time. Drives
 	 * owner-routed delivery (Slack DM tier) and lets that owner approve the run
-	 * without an admin role. Absent for mixed/no owners — admin-only behavior.
+	 * without an admin role. Absent for mixed/no owners — admin-only automation.
 	 * Lives in action_input (not run_metadata) because the approve path and the
 	 * Slack bridge already load action_input for the proposal; the dedupe SELECT
 	 * compares the canonical change identity, so replays still collapse.
@@ -111,7 +111,7 @@ export interface EntityDeleteProposal {
 		parent_id?: number | null;
 		metadata?: Record<string, unknown> | null;
 	};
-	watcher_id?: number | null;
+	automation_id?: number | null;
 	/** See EntityFieldChangeProposal.window_id — batches proposals by run window. */
 	window_id?: number | null;
 	attribution?: ApprovalAttributionType;
@@ -122,7 +122,7 @@ export interface EntityCreateProposal {
 	operation: "create";
 	entity_data: EntityData;
 	proposal: Record<string, unknown>;
-	watcher_id?: number | null;
+	automation_id?: number | null;
 	/** See EntityFieldChangeProposal.window_id — batches proposals by run window. */
 	window_id?: number | null;
 	attribution?: ApprovalAttributionType;
@@ -144,11 +144,11 @@ export interface EntityMergeProposal {
 		identifier: string;
 		identity_ids?: number[];
 	}>;
-	watcher_id?: number | null;
+	automation_id?: number | null;
 	window_id?: number | null;
 	/** Window copied into action_input because runs.window_id is transport grouping. */
 	source_window_id?: number | null;
-	/** Watcher run that discovered this candidate (the approval run is separate). */
+	/** Automation run that discovered this candidate (the approval run is separate). */
 	source_run_id?: number | null;
 	policy_hash?: string | null;
 	resolution_fingerprint?: string | null;
@@ -305,35 +305,35 @@ function entityChangeIdempotencyKey(
 		.digest("hex");
 	return `entity-change:${digest}`;
 }
-async function loadWatcherLabel(
+async function loadAutomationLabel(
 	ctx: ToolContext,
-	watcherId: number | null | undefined,
+	automationId: number | null | undefined,
 	attribution: ApprovalAttributionType | undefined,
 ): Promise<{
 	actorLabel: string;
-	watcherName: string | null;
-	watcherAgentId: string | null;
+	automationName: string | null;
+	automationAgentId: string | null;
 }> {
-	if (attribution !== ApprovalAttribution.Behavior) {
-		return { actorLabel: "An agent", watcherName: null, watcherAgentId: null };
+	if (attribution !== ApprovalAttribution.Automation) {
+		return { actorLabel: "An agent", automationName: null, automationAgentId: null };
 	}
-	if (!watcherId) {
-		return { actorLabel: "A Behavior", watcherName: null, watcherAgentId: null };
+	if (!automationId) {
+		return { actorLabel: "An Automation", automationName: null, automationAgentId: null };
 	}
 	const rows = await getDb()<{
 		name: string | null;
 		agent_id: string | null;
 	}>`
     SELECT name, agent_id
-    FROM watchers
-    WHERE id = ${watcherId}
+    FROM automations
+    WHERE id = ${automationId}
       AND organization_id = ${ctx.organizationId}
     LIMIT 1
   `;
 	return {
-		actorLabel: rows[0]?.name ?? `Behavior ${watcherId}`,
-		watcherName: rows[0]?.name ?? null,
-		watcherAgentId: rows[0]?.agent_id ?? null,
+		actorLabel: rows[0]?.name ?? `Automation ${automationId}`,
+		automationName: rows[0]?.name ?? null,
+		automationAgentId: rows[0]?.agent_id ?? null,
 	};
 }
 
@@ -475,8 +475,8 @@ async function resolveProposalFieldOwner(
 }
 
 /**
- * Queue a watcher field-change for approval. Returns the pending run/event ids.
- * Called post-commit from the watcher promotion path.
+ * Queue an automation field-change for approval. Returns the pending run/event ids.
+ * Called post-commit from the automation promotion path.
  */
 export async function proposeEntityFieldChange(
 	ctx: ToolContext,
@@ -728,12 +728,12 @@ export async function proposeEntityChange(
 
 	const fieldKeys = updateProposal ? Object.keys(updateProposal.fields) : [];
 	const fieldList = fieldKeys.join(", ");
-	const attribution = proposal.attribution ?? ApprovalAttribution.Behavior;
+	const attribution = proposal.attribution ?? ApprovalAttribution.Automation;
 	const actorNoun =
-		attribution === ApprovalAttribution.Agent ? "An agent" : "A Behavior";
-	const [{ actorLabel, watcherName, watcherAgentId }, entity] =
+		attribution === ApprovalAttribution.Agent ? "An agent" : "An Automation";
+	const [{ actorLabel, automationName, automationAgentId }, entity] =
 		await Promise.all([
-			loadWatcherLabel(ctx, proposal.watcher_id, attribution),
+			loadAutomationLabel(ctx, proposal.automation_id, attribution),
 			operation === "create"
 				? Promise.resolve(null)
 				: loadEntitySnapshot(ctx, changedEntityId(proposal)),
@@ -809,14 +809,14 @@ export async function proposeEntityChange(
 								: `${actorNoun} proposed creating this entity.`),
 				semanticType: "operation",
 				runId,
-				// A proposal is something the Behavior produced, so it belongs in the
-				// Behavior's produced feed and out of its own next window. Same source
-				// the approval run itself is keyed on below (`runs.watcher_id`), so the
+				// A proposal is something the Automation produced, so it belongs in the
+				// Automation's produced feed and out of its own next window. Same source
+				// the approval run itself is keyed on below (`runs.automation_id`), so the
 				// event and its run can never disagree about who proposed this.
-				// No version: the proposal carries none, and inventing the Behavior's
+				// No version: the proposal carries none, and inventing the Automation's
 				// CURRENT version here would misattribute a proposal made by an older
 				// one.
-				behaviorId: proposal.watcher_id ?? null,
+				automationId: proposal.automation_id ?? null,
 				interactionType: "approval",
 				interactionStatus: "pending",
 				interactionInput: proposal as unknown as Record<string, unknown>,
@@ -847,9 +847,9 @@ export async function proposeEntityChange(
 											deleteProposal.force_delete_tree ?? false,
 									}
 								: null,
-					watcher_id: proposal.watcher_id ?? null,
-					watcher_name: watcherName,
-					watcher_agent_id: watcherAgentId,
+					automation_id: proposal.automation_id ?? null,
+					automation_name: automationName,
+					automation_agent_id: automationAgentId,
 					// The run window this proposal belongs to, if any. Stamped so the UI can
 					// tell this proposal is part of a BATCH (the change-set card owns the
 					// Approve/Reject decision) and suppress this card's own duplicate buttons.
@@ -918,12 +918,12 @@ export async function proposeEntityChange(
 		const inserted = await tx<{ id: number }>`
 			INSERT INTO runs (
 				organization_id, run_type, action_key, action_input, window_id,
-				watcher_id, created_by_user_id, initiator_kind, initiator_ref,
+				automation_id, created_by_user_id, initiator_kind, initiator_ref,
 				approval_status, status, idempotency_key, created_at
 			) VALUES (
 				${ctx.organizationId}, 'internal', ${actionKey},
 				${tx.json(actionInputProposal as unknown as Record<string, unknown>)},
-				${windowId ?? null}, ${proposal.watcher_id ?? null},
+				${windowId ?? null}, ${proposal.automation_id ?? null},
 				${initiatorColumns.createdByUserId},
 				${initiatorColumns.initiatorKind},
 				${tx.json(initiatorColumns.initiatorRef)},
@@ -953,15 +953,15 @@ export async function proposeEntityChange(
 	}>`
 		SELECT r.initiator_kind, r.initiator_ref, w.agent_id AS initiator_agent_id
 		FROM runs r
-		LEFT JOIN watchers w
-			ON w.id = r.watcher_id AND w.organization_id = r.organization_id
+		LEFT JOIN automations w
+			ON w.id = r.automation_id AND w.organization_id = r.organization_id
 		WHERE r.id = ${runId} AND r.organization_id = ${ctx.organizationId}
 	`;
 	const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
 	// Run-scoped: the pending event is superseded on approve→complete; a run link
 	// stays valid across the chain. (Read-side content_ids resolution also covers
 	// the event id below, carried for the notification's resourceId.)
-	// A Behavior-initiated proposal lands on that Behavior's drill-down instead
+	// An Automation-initiated proposal lands on that Automation's drill-down instead
 	// of the workspace-wide log, so the link answers where it came from.
 	const approvalUrl = buildResourcePermalink(
 		ownerSlug,
@@ -1250,7 +1250,7 @@ export async function applyEntityChangeProposal(
 			{
 				...createProposal.entity_data,
 				organization_id: ctx.organizationId,
-				// The watcher that PROPOSED the create is not a real user row, so
+				// The automation that PROPOSED the create is not a real user row, so
 				// entities.created_by (NOT NULL, FK → user) must attribute the create to
 				// the human who APPROVED it. Approval is human-gated (requireHuman-
 				// ApprovalContext), so ctx.userId is a verified user here — using it
@@ -1279,7 +1279,7 @@ export async function applyEntityChangeProposal(
 			resolution: {
 				decision: "human" as const,
 				sourceRunId: mergeProposal.source_run_id ?? null,
-				watcherId: mergeProposal.watcher_id ?? null,
+				automationId: mergeProposal.automation_id ?? null,
 				windowId:
 					mergeProposal.source_window_id ?? mergeProposal.window_id ?? null,
 				policyHash: resolved.policyHash,

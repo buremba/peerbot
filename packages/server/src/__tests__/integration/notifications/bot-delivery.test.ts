@@ -2,7 +2,7 @@
  * Integration test for the notification → bot-connection delivery path.
  *
  * Exercises `resolveBotDeliveryTargets` against a real DB: it JOINs the org's
- * active chat connections to their Behavior subscriptions and returns the channel(s)
+ * active chat connections to their Automation subscriptions and returns the channel(s)
  * each notification should post to. This is the path that was a silent no-op
  * after #846 removed the HTTP endpoints the old implementation called.
  */
@@ -16,7 +16,7 @@ import {
 import { notify } from "../../../tools/admin/notify";
 import type { ToolContext } from "../../../tools/registry";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
-import { createTestBehaviorSubscription } from "../../setup/behavior-subscriptions";
+import { createTestAutomationSubscription } from "../../setup/automation-subscriptions";
 import {
 	addUserToOrganization,
   createTestAgent,
@@ -53,7 +53,7 @@ async function seedBinding(opts: {
 }): Promise<void> {
 	const configuredBy = await createTestUser();
 	await addUserToOrganization(configuredBy.id, opts.organizationId, "owner");
-  await createTestBehaviorSubscription({
+  await createTestAutomationSubscription({
     organizationId: opts.organizationId,
     agentId: opts.agentId,
     connectionSlug: `agentconn-${opts.connectionId}`,
@@ -102,7 +102,7 @@ describe("resolveBotDeliveryTargets", () => {
     ]);
   });
 
-	it("returns one target when multiple Behaviors share a physical channel", async () => {
+	it("returns one target when multiple Automations share a physical channel", async () => {
 		const org = await createTestOrganization();
 		const agent = await createTestAgent({
 			organizationId: org.id,
@@ -140,9 +140,9 @@ describe("resolveBotDeliveryTargets", () => {
 			organizationId: org.id,
 			type: "agent_message" as const,
 			title: "Social signal",
-			body: "A retry-safe Behavior notification.",
+			body: "A retry-safe Automation notification.",
 			resourceUrl: `/${org.slug}/memory?content_ids=42`,
-			idempotencyKey: "behavior:71:run:9001:notification",
+			idempotencyKey: "automation:71:run:9001:notification",
 		};
 
 		await Promise.all(
@@ -188,8 +188,8 @@ describe("resolveBotDeliveryTargets", () => {
 		const args = {
 			action: "send" as const,
 			title: "Social signal",
-			body: "A retry-safe Behavior notification.",
-			idempotency_key: "behavior:71:run:9002:notification",
+			body: "A retry-safe Automation notification.",
+			idempotency_key: "automation:71:run:9002:notification",
 		};
 
 		const first = (await notify(args, {} as never, ctx)) as {

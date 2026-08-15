@@ -1,7 +1,7 @@
 import {
   connectorFromFile,
   defineAgent,
-  defineBehavior,
+  defineAutomation,
   defineConfig,
   defineEntityType,
   defineRelationshipType,
@@ -475,7 +475,7 @@ const competitorOf = defineRelationshipType({
     "Two organizations or products compete in a defined market category",
 });
 
-const founderActivityTracker = defineBehavior({
+const founderActivityTracker = defineAutomation({
   agent: marketIntelligence,
   slug: "founder-activity-tracker",
   name: "Founder Activity Tracker",
@@ -493,7 +493,7 @@ const founderActivityTracker = defineBehavior({
     "Flag meaningful hiring, fundraising, product, strategy, or market-positioning changes for review.\n",
 });
 
-const opportunityMatcher = defineBehavior({
+const opportunityMatcher = defineAutomation({
   agent: marketIntelligence,
   slug: "opportunity-matcher",
   name: "Opportunity Matcher",
@@ -553,5 +553,5 @@ export default defineConfig({
     integratesWith,
     competitorOf,
   ],
-  behaviors: [founderActivityTracker, opportunityMatcher],
+  automations: [founderActivityTracker, opportunityMatcher],
 });

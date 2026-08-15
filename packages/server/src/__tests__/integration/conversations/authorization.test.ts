@@ -17,9 +17,9 @@ import {
 } from "../../../gateway/conversations/authorization";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
-  archiveTestBehaviorSubscriptions,
-  createTestBehaviorSubscription,
-} from "../../setup/behavior-subscriptions";
+  archiveTestAutomationSubscriptions,
+  createTestAutomationSubscription,
+} from "../../setup/automation-subscriptions";
 import {
 	createTestAgent,
 	createTestOrganization,
@@ -52,7 +52,7 @@ async function seedBinding(opts: {
   channelId: string;
   teamId?: string;
 }): Promise<void> {
-  await createTestBehaviorSubscription({
+  await createTestAutomationSubscription({
     organizationId: opts.organizationId,
     agentId: opts.agentId,
     connectionSlug: `agentconn-${opts.connectionId}`,
@@ -386,7 +386,7 @@ describe("conversation authorization", () => {
 			await resolveAuthorizedTarget(agent.agentId, org.id, t!.handle),
 		).toBeTruthy();
 
-    await archiveTestBehaviorSubscriptions({
+    await archiveTestAutomationSubscriptions({
       organizationId: org.id,
       agentId: agent.agentId,
     });

@@ -25,7 +25,7 @@ export type ConfigResourceKind =
   | 'platform'
   | 'entity-type'
   | 'relationship-type'
-  | 'behavior'
+  | 'automation'
   | 'connector-definition'
   | 'auth-profile'
   | 'connection'

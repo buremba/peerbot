@@ -8,7 +8,7 @@ docs below for shipped behavior.
 
 - **`CONCEPTS.md`** — entities vs events, identity (`origin_id` vs `events.id`),
   the end-to-end lifecycle, the feature map, webhook connections.
-- **`BEHAVIORS.md`** — the Behavior primitive contract: triggers, sources,
+- **`AUTOMATIONS.md`** — the Automation primitive contract: triggers, sources,
   outputs, chaining, and their safety limits.
 
 ## Build

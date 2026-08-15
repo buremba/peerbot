@@ -188,10 +188,10 @@ export async function resolveSystemKeyProvidersAndModel(): Promise<ResolvedSyste
 }
 
 /**
- * The `pre_approved_tools` every freshly created agent starts with. A Behavior
+ * The `pre_approved_tools` every freshly created agent starts with. An Automation
  * reaches `complete_window` through `run_sdk` (and reads through `query_sdk`) on
  * the internal `lobu-memory` MCP server; without this pre-approval those calls
- * need an interactive approval no watcher run can satisfy, so the turn ends
+ * need an interactive approval no automation run can satisfy, so the turn ends
  * without completing the window.
  *
  * The `lobu-memory` server itself is NOT stored per-agent — it is derived at
@@ -218,7 +218,7 @@ export const DEFAULT_PRE_APPROVED_TOOLS = ["/mcp/lobu-memory/tools/*"];
  *     (ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, a providers.json
  *     `envVarName`, a module registry `hasSystemKey()`) never create an
  *     `inference_providers` row, so without this the agent resolves NO model at
- *     all, never completes a turn, and its Behavior fails with "Agent reply
+ *     all, never completes a turn, and its Automation fails with "Agent reply
  *     finished without calling completeWindow".
  *
  * An explicit `default_model` supplied by the caller outranks both and is

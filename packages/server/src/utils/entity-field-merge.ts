@@ -1,11 +1,11 @@
 /**
- * Shared entity field-merge primitive for the watcher<->human feedback loop.
+ * Shared entity field-merge primitive for the automation<->human feedback loop.
  *
  * The value lives in `entities.metadata`; per-field ownership lives in the sparse
  * `entities.field_controls` jsonb column (a key present = that field is human-owned).
- * This is the SINGLE write path for both human edits and watcher promotion:
+ * This is the SINGLE write path for both human edits and automation promotion:
  *   - source='human'  : writes every changed field AND marks it owned (note/set_by/set_at).
- *   - source='watcher': writes only fields that are NOT human-owned; owned fields are
+ *   - source='automation': writes only fields that are NOT human-owned; owned fields are
  *     returned in `blocked` (the caller emits an approval) and never overwritten.
  *
  * The risky decision logic is the pure `computeFieldMerge` — unit-tested without a DB.
@@ -16,7 +16,7 @@
 
 import type { DbClient } from "../db/client";
 
-export type FieldWriteSource = "human" | "watcher";
+export type FieldWriteSource = "human" | "automation";
 
 /** Per-field ownership marker stored under entities.field_controls[field]. */
 export interface FieldControl {
@@ -43,13 +43,13 @@ export interface StaleChange {
 export interface FieldMergeResult {
 	/** Fields whose value changed and were written to metadata. */
 	applied: Record<string, AppliedChange>;
-	/** Owned fields a watcher tried to change — NOT written; surface as an approval. */
+	/** Owned fields an automation tried to change — NOT written; surface as an approval. */
 	blocked: Record<string, BlockedChange>;
 	/** Fields skipped because the live value drifted from the proposal's snapshot
 	 *  (a human re-edited the field after the proposal was queued). NOT written. */
 	stale: Record<string, StaleChange>;
 	/** Fields whose CURRENT value a human affirmed — value unchanged, but ownership
-	 *  is now claimed so a watcher can't silently overwrite it. */
+	 *  is now claimed so an automation can't silently overwrite it. */
 	affirmed: string[];
 	nextMetadata: Record<string, unknown>;
 	nextControls: Record<string, FieldControl>;
@@ -90,7 +90,7 @@ export function computeFieldMerge(args: {
 	 *  the human moved after the proposal was queued. */
 	expectedCurrent?: Record<string, unknown> | null;
 	/** Fields (source='human' only) whose CURRENT value the human approves as-is:
-	 *  no value change, but ownership is claimed so a watcher can't later overwrite
+	 *  no value change, but ownership is claimed so an automation can't later overwrite
 	 *  it without an approval. This is the "approve" half of the per-item recap
 	 *  feedback loop — affirming a value is NOT a no-op the way re-setting an
 	 *  unchanged value is. */
@@ -134,9 +134,9 @@ export function computeFieldMerge(args: {
 			}
 		}
 
-		// A watcher must never overwrite a human-owned field — propose instead.
+		// An automation must never overwrite a human-owned field — propose instead.
 		// Policy may also require approval for fields that are not human-owned yet.
-		if (source === "watcher" && (owned || requireApproval.has(field))) {
+		if (source === "automation" && (owned || requireApproval.has(field))) {
 			if (!sameValue(current, value)) {
 				blocked[field] = { current: current ?? null, proposed: value };
 			}
@@ -180,7 +180,7 @@ export function computeFieldMerge(args: {
 /**
  * DB wrapper: lock the entity row in the caller's transaction, apply the merge, and
  * persist metadata + field_controls atomically. Returns applied/blocked so the caller
- * can emit the audit event (human path) or the approval interactions (watcher path).
+ * can emit the audit event (human path) or the approval interactions (automation path).
  */
 export async function mergeEntityFields(params: {
 	tx: DbClient;

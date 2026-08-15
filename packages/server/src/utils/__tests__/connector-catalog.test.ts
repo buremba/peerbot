@@ -18,10 +18,10 @@ describe("connector-catalog helpers", () => {
 		}
 		const connectorsManifest = fileURLToPath(uris[0]!);
 		const skillsManifest = fileURLToPath(uris[1]!);
-		const watchersManifest = fileURLToPath(uris[2]!);
+		const automationsManifest = fileURLToPath(uris[2]!);
 		expect(connectorsManifest.endsWith("/connectors.json")).toBe(true);
 		expect(skillsManifest.endsWith("/skills.json")).toBe(true);
-		expect(watchersManifest.endsWith("/behaviors.json")).toBe(true);
+		expect(automationsManifest.endsWith("/automations.json")).toBe(true);
 		expect(existsSync(findBundledConnectorFile("google.gmail")!)).toBe(true);
 	});
 

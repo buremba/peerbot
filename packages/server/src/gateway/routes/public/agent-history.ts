@@ -34,7 +34,7 @@ import { isAdminOrOwnerRole } from "../../../tools/access-control.js";
 import { getCachedMembershipRole } from "../../../workspace/multi-tenant.js";
 import { buildApiConversationId } from "../../services/api-conversation-id.js";
 import { findConversationById } from "../../services/conversations-store.js";
-import { readWatcherRunThreads } from "../../services/watcher-run-thread.js";
+import { readAutomationRunThreads } from "../../services/automation-run-thread.js";
 import {
 	createOwnershipResolver,
 	resolveSettingsLookupUserId,
@@ -77,7 +77,7 @@ type ToolApprovalHistoryInteraction = {
 	current: Record<string, unknown> | null;
 	fields: Record<string, unknown> | null;
 	attribution: string | null;
-	/** Discriminator: "agent" | "behavior" | "entity". */
+	/** Discriminator: "agent" | "automation" | "entity". */
 	resourceKind: string | null;
 	reason: string | null;
 };
@@ -474,7 +474,7 @@ export function createAgentHistoryRoutes(deps: {
 	 * user who owns the agent. The outer Lobu middleware establishes this
 	 * ambient org only after verifying Better Auth membership (and pins PATs),
 	 * then the route intersects the agent's channel bindings with the source ACL.
-	 * Agent owners retain the legacy bound-channel behavior; everyone else needs
+	 * Agent owners retain the legacy bound-channel automation; everyone else needs
 	 * a fresh enforced ACL that proves channel membership.
 	 * Keep the owner resolver above for every other history surface.
 	 */
@@ -732,23 +732,19 @@ export function createAgentHistoryRoutes(deps: {
 				ORDER BY run_id
 			`;
 			interactions = rows.map((r) => {
-				// Normalize the legacy stored `resource_kind: "watcher"` to the public
-				// "behavior" value so old and new events emit one canonical discriminator.
-				const rawResourceKind =
+				const resourceKind =
 					r.resource_kind ??
-					(r.tool === "manage_behaviors"
-						? "behavior"
+					(r.tool === "manage_automations"
+						? "automation"
 						: r.tool === "manage_agents"
 							? "agent"
 							: r.tool === "entity_field_change" || r.tool === "entity_change"
 								? "entity"
 								: null);
-				const resourceKind =
-					rawResourceKind === "watcher" ? "behavior" : rawResourceKind;
-				// manage_behaviors stores proposal as `{ args }`; SPA expects flat fields.
+				// manage_automations stores proposal as `{ args }`; SPA expects flat fields.
 				const rawProposal = r.proposal ?? null;
 				const proposal =
-					resourceKind === "behavior" &&
+					resourceKind === "automation" &&
 					rawProposal &&
 					typeof rawProposal === "object" &&
 					(rawProposal as { args?: unknown }).args &&
@@ -887,24 +883,24 @@ export function createAgentHistoryRoutes(deps: {
 		return c.json(data);
 	});
 
-	// A watcher's recent completed runs as ready-to-stitch transcripts — the
-	// read-only run history rendered as one conversation. Watcher conversation
+	// An automation's recent completed runs as ready-to-stitch transcripts — the
+	// read-only run history rendered as one conversation. Automation conversation
 	// ids are org-less but the snapshot row carries the org; the service bridges
 	// that, so we just hand it the requester's resolved org.
-	app.get("/behaviors/:behaviorId/thread", async (c) => {
+	app.get("/automations/:automationId/thread", async (c) => {
 		const scope = await getAuthorizedAgentScope(c);
 		if (!scope) return errorResponse(c, "Unauthorized", 401);
 		if (!scope.organizationId) return c.json({ runs: [] });
 
-		const watcherId = Number(c.req.param("behaviorId"));
-		if (!Number.isFinite(watcherId)) {
-			return errorResponse(c, "Invalid behavior id", 400);
+		const automationId = Number(c.req.param("automationId"));
+		if (!Number.isFinite(automationId)) {
+			return errorResponse(c, "Invalid automation id", 400);
 		}
 		const limit = Math.min(parseInt(c.req.query("limit") || "20", 10), 50);
 
-		const data = await readWatcherRunThreads({
+		const data = await readAutomationRunThreads({
 			agentId: scope.agentId,
-			watcherId,
+			automationId,
 			organizationId: scope.organizationId,
 			limit,
 		});

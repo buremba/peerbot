@@ -18,7 +18,7 @@ const REPO_ROOT = resolve(import.meta.dir, "..", "..");
 const GUARD = join(REPO_ROOT, "scripts/check-exposed-surface-naming.ts");
 const NAMESPACE_FILE = join(
   REPO_ROOT,
-  "packages/server/src/sandbox/namespaces/behaviors.ts"
+  "packages/server/src/sandbox/namespaces/automations.ts"
 );
 const CONTRACT_FILE = join(
   REPO_ROOT,
@@ -41,6 +41,10 @@ const CATALOG_NAMESPACE_FILE = join(
 );
 /** Written and deleted per-test; reached only via the `@lobu/core/` alias. */
 const CORE_PROBE_FILE = join(REPO_ROOT, "packages/core/src/guard-probe.ts");
+const GENERIC_BEHAVIOR_PROBE_FILE = join(
+  REPO_ROOT,
+  "packages/core/src/guard-probe.json"
+);
 
 const touched: string[] = [];
 const created: string[] = [];
@@ -84,10 +88,28 @@ describe("check-exposed-surface-naming", () => {
     expect(runGuard()).toBe(0);
   });
 
+  it("allows the generic merge-strategy behavior option", () => {
+    create(GENERIC_BEHAVIOR_PROBE_FILE, '{"behavior":"overwrite"}\n');
+    expect(runGuard()).toBe(0);
+  });
+
+  it("does not turn the generic-option exception into a product-term escape", () => {
+    create(GENERIC_BEHAVIOR_PROBE_FILE, '{"behavior":"product"}\n');
+    expect(runGuard()).toBe(1);
+  });
+
+  it("fails on retired British-spelling product prose", () => {
+    create(
+      GENERIC_BEHAVIOR_PROBE_FILE,
+      '{"description":"Two Behaviour runs are racing"}\n'
+    );
+    expect(runGuard()).toBe(1);
+  });
+
   it("fails on a snake_case wire key in a TypeBox tool contract", () => {
     mutate(
       CONTRACT_FILE,
-      "  behavior_source: Type.Optional(",
+      "  automation_source: Type.Optional(",
       "  watcher_source: Type.Optional(Type.Number()),\n"
     );
     expect(runGuard()).toBe(1);
@@ -96,7 +118,7 @@ describe("check-exposed-surface-naming", () => {
   it("fails on a camelCase key in a TypeBox tool contract", () => {
     mutate(
       CONTRACT_FILE,
-      "  behavior_source: Type.Optional(",
+      "  automation_source: Type.Optional(",
       "  watcherId: Type.Optional(Type.String()),\n"
     );
     expect(runGuard()).toBe(1);
@@ -105,7 +127,7 @@ describe("check-exposed-surface-naming", () => {
   it("fails on a banned key in a plain public response type", () => {
     mutate(
       PUBLIC_ACTIVITY_FILE,
-      "\tbehavior_id?: number;",
+      "\tautomation_id?: number;",
       "\twatcher_id?: number;"
     );
     expect(runGuard()).toBe(1);

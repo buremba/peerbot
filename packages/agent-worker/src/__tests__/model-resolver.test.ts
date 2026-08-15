@@ -562,7 +562,7 @@ describe("resolveModelRef — routing and providerSlug must follow the REQUESTED
   });
 
   test("an agent's configured pin ROUTES even when it arrives via defaultModel", () => {
-    // Observed live (buremba, Behavior 20): the agent is pinned to
+    // Observed live (buremba, Automation 20): the agent is pinned to
     // "openai/gpt-5.6-luna" and OpenAI is installed, but the run carries no
     // per-turn model — so the pin reaches the resolver as `defaultModel`, not as
     // `rawModelRef`. The gateway's credentialed-fallback scan published qwen.

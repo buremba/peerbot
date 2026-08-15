@@ -32,7 +32,7 @@ const logger = createLogger("http-proxy");
  * through the request handlers — there is deliberately NO process-wide mutable
  * cache. A lazily-populated module global (the previous design) read `process.env`
  * at whatever moment the first request happened to fire and then froze that value
- * for the life of the process, which made behavior order-dependent (and, in the
+ * for the life of the process, which made automation order-dependent (and, in the
  * test runner where the module + env are shared across files, leaked one file's
  * env into another's). Resolving per-server removes that coupling entirely.
  */

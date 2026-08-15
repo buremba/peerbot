@@ -17,8 +17,8 @@ An open-source, event-sourced backend for AI agents:
   **entities** and **relationships**.
 - **Agents** react to messages in real time and answer over chat platforms, HTTP,
   and MCP.
-- **Behaviors** subscribe an agent to connector events, declared event outputs
-  from other Behaviors, schedules, or an explicit call (a PR review, Slack
+- **Automations** subscribe an agent to connector events, declared event outputs
+  from other Automations, schedules, or an explicit call (a PR review, Slack
   reply, daily digest, etc.). Their instructions come from prompts and the
   agent's skills, referenced by name.
 
@@ -28,7 +28,7 @@ on http://localhost:{{GATEWAY_PORT}}.
 ## Onboarding the user
 
 Ground the project in the user's real business before designing schemas or
-Behaviors. Ask one question at a time: the company or product and what it does,
+Automations. Ask one question at a time: the company or product and what it does,
 its public domain (optional for a personal project), the agent's goal and users,
 what it may do autonomously, what it should remember, its first data source, and
 where people should interact with it. Offer the Web UI, API/SDK, MCP, and supported
@@ -38,7 +38,7 @@ Ask for permission to research the public website and other public sources. If
 the user consents, research the business, cite the public sources, and summarize
 its product, customers, workflows, and useful signals. Propose one to three
 entity types, their relationships, the initial connector, and one or two useful
-Behaviors. Play the plan back and wait for confirmation before scaffolding it.
+Automations. Play the plan back and wait for confirmation before scaffolding it.
 An email supplied for Lobu login identifies the user; do not infer their company
 or public domain from a personal email address.
 
@@ -60,7 +60,7 @@ install it — don't work around it.
   user context.
 - `connectors/*.connector.ts` — custom data sources (only when no bundled
   connector fits).
-- `*.reaction.ts` — code a Behavior runs after extraction (post to Slack, update
+- `*.reaction.ts` — code an Automation runs after extraction (post to Slack, update
   an entity).
 - `skills/<name>/SKILL.md` — reusable capability bundles for the agent.
 - `.env` — secrets (`DATABASE_URL`, encryption keys, provider keys, OAuth creds).
@@ -72,7 +72,7 @@ install it — don't work around it.
 
 Author everything in `lobu.config.ts` with helpers from `@lobu/cli/config`:
 `defineConfig`, `defineAgent`, `defineEntityType`, `defineRelationshipType`,
-`defineBehavior`, `defineSkill`, `defineConnection`, `defineAuthProfile`,
+`defineAutomation`, `defineSkill`, `defineConnection`, `defineAuthProfile`,
 `secret`, plus `connectorFromFile`, `reactionFromFile`, `skillFromFile`.
 
 Read the complete, working reference before editing:
@@ -98,7 +98,7 @@ const agent = defineAgent({
 ### Chat connections (where people talk to agents)
 
 Declare chat integrations at the project level with `defineConnection`. A linked
-DM or channel is bound to an agent by a message Behavior. BYO chat `config` values
+DM or channel is bound to an agent by a message Automation. BYO chat `config` values
 may use `secret(...)` refs resolved from `.env`.
 
 For `slack` and `telegram` you do not need a bot token to start: use
@@ -253,15 +253,15 @@ login with `--force` unless the user separately approves that re-authentication.
 Call `client.catalog.listInstalled({ kinds: ["connectors"] })`; if the connector
 is not installed, call `client.catalog.listCatalog({ kinds: ["connectors"] })`.
 Inspect the selected entry's `detail.auth_schema`, `detail.options_schema`,
-`detail.feeds_schema`, and `detail.behavior_events`. A connector's feed
-`feeds_schema.<feed>.eventKinds` are the default Behavior event trigger catalog:
+`detail.feeds_schema`, and `detail.automation_events`. A connector's feed
+`feeds_schema.<feed>.eventKinds` are the default Automation event trigger catalog:
 each declared kind is a subscribable `event_type` (the kind slug). A feed's first
 successful non-dry sync establishes its baseline without activation; later
 inserts of a matching kind activate subscribers. A connector that declares
-explicit `behaviorEvents` (persisted in the catalog as `behavior_events`) wins
+explicit `automationEvents` (persisted in the catalog as `automation_events`) wins
 over that derivation for the trigger picker; keys that differ from the feed's
-`eventKinds` fire only when the connector attaches matching `behavior_signals`
-to the events it emits. If there is no matching Behavior event, use a schedule
+`eventKinds` fire only when the connector attaches matching `automation_signals`
+to the events it emits. If there is no matching Automation event, use a schedule
 plus a bounded named source, validate the query against the running local
 schema, and read event text from `payload_text`, for example:
 
@@ -284,13 +284,13 @@ Every credential is a `secret("ENV_NAME")` placeholder resolved from `.env` — 
 paste a real key into the config, and never fabricate one. If a secret is missing,
 ask the user to add it to `.env`.
 
-### Behavior (event from a connector or workspace, schedule, or manual) + outputs
+### Automation (event from a connector or workspace, schedule, or manual) + outputs
 
-A Behavior's instructions come from the agent's skill library: list skill names
+An Automation's instructions come from the agent's skill library: list skill names
 in `skills` and `lobu apply` compiles their bodies (in order) into the frozen
-instructions for that Behavior version. Schedule triggers, connector events
+instructions for that Automation version. Schedule triggers, connector events
 with `execution: "window"`, workspace events with their default window
-execution, and Behaviors with no triggers (manual) require a prompt, a skill, or
+execution, and Automations with no triggers (manual) require a prompt, a skill, or
 both. A connector event with `execution: "turn"` (chat or another connector signal) may omit
 both — the incoming connector signal is the content and a built-in default
 applies.
@@ -302,7 +302,7 @@ const digestSkill = defineSkill({
 });
 // … add it to the agent: defineAgent({ …, skills: [digestSkill] })
 
-const digest = defineBehavior({
+const digest = defineAutomation({
   agent,
   slug: "daily-digest",
   name: "Daily digest",
@@ -310,7 +310,7 @@ const digest = defineBehavior({
     { kind: "schedule", cron: "0 9 * * *", active_run: "coalesce", skip_if_unchanged: true },
     // Or react to a connector event:
     // { kind: "event", source: "connector", connector_key: "github", connection: gh, event_types: ["pull_request.created"] },
-    // Or to a declared event output from another Behavior:
+    // Or to a declared event output from another Automation:
     // { kind: "event", source: "workspace", event_types: ["observation"], match: { namespace: "account-risk" } },
   ],
   skills: ["daily-digest"],
@@ -323,26 +323,26 @@ const digest = defineBehavior({
 ```
 
 Declared outputs are persisted whether or not a `reaction` is present, and the
-complete result remains on Canvas. A `reaction` lets the Behavior act (post a
+complete result remains on Canvas. A `reaction` lets the Automation act (post a
 message, call connectors, or request a governed merge) and can consume those
-persisted drafts. Omit `outputs` for a Canvas-only or reaction-only Behavior.
+persisted drafts. Omit `outputs` for a Canvas-only or reaction-only Automation.
 Only newly persisted declared event outputs activate triggers with
 `source: "workspace"`. Ordinary knowledge saves and connector-ingested events
 do not activate workspace-source triggers; connector events activate only
 matching connector-source triggers. SQL sources are reads rather than
 subscriptions. The downstream run reads the exact event pointers plus its
 authored sources under the owning agent's ACL. See the complete primitive and limit model at
-https://github.com/lobu-ai/lobu/blob/main/docs/BEHAVIORS.md.
+https://github.com/lobu-ai/lobu/blob/main/docs/AUTOMATIONS.md.
 For an entity output, `key: ["a", "b"]` is one exact composite identity tuple,
 not two alternative keys. Use one to four durable fields; every row must include
 every field as a non-blank string (at most 256 UTF-8 bytes), safe integer, or
-boolean. Field order, the Behavior, and the output name are part of identity, so
+boolean. Field order, the Automation, and the output name are part of identity, so
 do not key on editable display labels.
 Event output rows use the standard draft fields: required `content`,
 plus optional `title`, `metadata`, `author`, `source_url`, `occurred_at`,
 `parent_event_id`, `payload_type`, and `idempotency_key`. Use
 `idempotency_key` when the same real-world source must emit at most once across
-runs. Omit `triggers` for a manual-only Behavior.
+runs. Omit `triggers` for a manual-only Automation.
 
 ### Wire it together
 
@@ -354,7 +354,7 @@ export default defineConfig({
   entities: [ticket],
   connections: [gh],
   authProfiles: [ghAccountAuth, ghAppAuth],
-  behaviors: [digest],
+  automations: [digest],
 });
 ```
 
@@ -377,7 +377,7 @@ Prove the selected local path before offering deployment: validate, boot, verify
 health and the Web UI, send a harmless direct message without tools, check the
 connector without reading provider data, and ask before accessing real provider
 data. After consent, dry-run each selected collected feed before a real sync and
-run each selected Behavior once. Skip feed triggering for chat integrations and
+run each selected Automation once. Skip feed triggering for chat integrations and
 other connectors that expose no collected feed. Show each completed run and any
 declared result event or entity. Use the authoritative `view_url` returned by
 Lobu for resources that provide one; never invent or reconstruct URLs. Keep

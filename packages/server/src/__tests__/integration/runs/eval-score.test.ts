@@ -5,8 +5,8 @@
  * scored as a FAILURE rather than skipped (that protocol violation is the
  * largest real agent-error class in prod, so refusing to score it would hide
  * exactly the runs worth measuring); the quality stamp is materialized onto the
- * Behavior row at write time; scoring is idempotent per (run, metric); and a
- * live `behavior` run can never be scored as if it were an eval.
+ * Automation row at write time; scoring is idempotent per (run, metric); and a
+ * live `automation` run can never be scored as if it were an eval.
  *
  * The judge is deliberately untested here — it needs a live provider, and the
  * unit-level contract that matters (an unaskable judge produces NO verdict
@@ -22,8 +22,8 @@ import {
 	scoreEvalRun,
 } from "../../../runs/eval-scores";
 import {
-	BEHAVIOR_EVAL_RUN_TYPE,
-	BEHAVIOR_RUN_TYPE,
+	AUTOMATION_EVAL_RUN_TYPE,
+	AUTOMATION_RUN_TYPE,
 } from "../../../runs/run-types";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
@@ -35,7 +35,7 @@ import {
 const sql = getTestDb();
 
 let organizationId: string;
-let behaviorId: number;
+let automationId: number;
 
 async function insertRun(params: {
 	runType: string;
@@ -45,10 +45,10 @@ async function insertRun(params: {
 }): Promise<number> {
 	const [run] = (await sql`
     INSERT INTO runs (
-      organization_id, run_type, watcher_id, approval_status, status,
+      organization_id, run_type, automation_id, approval_status, status,
       dry_run_preview, idempotency_key, completed_at, created_at
     ) VALUES (
-      ${organizationId}, ${params.runType}, ${behaviorId}, 'auto',
+      ${organizationId}, ${params.runType}, ${automationId}, 'auto',
       ${params.status ?? "completed"},
       ${params.preview ? sql.json(params.preview as never) : null},
       ${params.idempotencyKey ?? null},
@@ -94,22 +94,22 @@ beforeAll(async () => {
 	// org owner/admin — without a membership row nothing can be scored at all.
 	await addUserToOrganization(creator.id, organizationId, "owner");
 
-	const [behavior] = (await sql`
-    WITH next_id AS (SELECT nextval('watchers_id_seq')::integer AS id)
-    INSERT INTO watchers (
-      id, watcher_group_id, organization_id, created_by, name, slug, schedule, status
+	const [automation] = (await sql`
+    WITH next_id AS (SELECT nextval('automations_id_seq')::integer AS id)
+    INSERT INTO automations (
+      id, automation_group_id, organization_id, created_by, name, slug, schedule, status
     )
-    SELECT id, id, ${organizationId}, ${creator.id}, 'Scored Behavior', 'scored-behavior', '0 * * * *', 'active'
+    SELECT id, id, ${organizationId}, ${creator.id}, 'Scored Automation', 'scored-automation', '0 * * * *', 'active'
     FROM next_id
     RETURNING id
   `) as unknown as Array<{ id: number }>;
-	behaviorId = Number(behavior.id);
+	automationId = Number(automation.id);
 });
 
 describe("scoreEvalRun", () => {
-	test("a completed capture passes both code metrics and stamps the Behavior", async () => {
+	test("a completed capture passes both code metrics and stamps the Automation", async () => {
 		const runId = await insertRun({
-			runType: BEHAVIOR_EVAL_RUN_TYPE,
+			runType: AUTOMATION_EVAL_RUN_TYPE,
 			preview: {
 				captured: "complete_window",
 				extracted_data: { groups: ["a", "b"] },
@@ -135,7 +135,7 @@ describe("scoreEvalRun", () => {
 
 		const [stamp] = (await sql`
       SELECT latest_eval_score, latest_eval_run_id, latest_eval_at
-      FROM watchers WHERE id = ${behaviorId}
+      FROM automations WHERE id = ${automationId}
     `) as unknown as Array<{
 			latest_eval_score: string | number;
 			latest_eval_run_id: number;
@@ -153,7 +153,7 @@ describe("scoreEvalRun", () => {
 		// without completing its window. Skipping it would erase the single
 		// largest agent-error class from every quality number.
 		const runId = await insertRun({
-			runType: BEHAVIOR_EVAL_RUN_TYPE,
+			runType: AUTOMATION_EVAL_RUN_TYPE,
 			preview: { side_effects: [{ tool: "notify.send" }] },
 		});
 
@@ -171,7 +171,7 @@ describe("scoreEvalRun", () => {
 		// The two code metrics must stay separate: collapsing them would hide the
 		// agent that dutifully completes its window having extracted nothing.
 		const runId = await insertRun({
-			runType: BEHAVIOR_EVAL_RUN_TYPE,
+			runType: AUTOMATION_EVAL_RUN_TYPE,
 			preview: {
 				captured: "complete_window",
 				extracted_data: {},
@@ -191,7 +191,7 @@ describe("scoreEvalRun", () => {
 
 	test("rescoring supersedes rather than forking — one live verdict per metric", async () => {
 		const runId = await insertRun({
-			runType: BEHAVIOR_EVAL_RUN_TYPE,
+			runType: AUTOMATION_EVAL_RUN_TYPE,
 			preview: { captured: "complete_window", extracted_data: { a: 1 } },
 		});
 
@@ -220,9 +220,9 @@ describe("scoreEvalRun", () => {
 		expect(roots.n).toBe(1);
 	});
 
-	test("refuses a live Behavior run — production quality is never stamped from one", async () => {
+	test("refuses a live Automation run — production quality is never stamped from one", async () => {
 		const runId = await insertRun({
-			runType: BEHAVIOR_RUN_TYPE,
+			runType: AUTOMATION_RUN_TYPE,
 			preview: { captured: "complete_window", extracted_data: { a: 1 } },
 		});
 
@@ -235,7 +235,7 @@ describe("scoreEvalRun", () => {
 
 	test("refuses a run that has not gone terminal", async () => {
 		const runId = await insertRun({
-			runType: BEHAVIOR_EVAL_RUN_TYPE,
+			runType: AUTOMATION_EVAL_RUN_TYPE,
 			status: "running",
 			preview: { captured: "complete_window" },
 		});
@@ -248,19 +248,19 @@ describe("scoreEvalRun", () => {
 
 	test("anchors scores to the promoted case, and asks no judge it cannot ask", async () => {
 		// The case join has no column behind it: `createEvalRun` stamps
-		// `idempotency_key = 'behavior_eval:<sourceRunId>:<caseKey>'` and
+		// `idempotency_key = 'automation_eval:<sourceRunId>:<caseKey>'` and
 		// `promoteEvalCase` claims `entity_identities` under
 		// '<sourceRunId>:<caseKey>'. The suffix of the one IS the other. Assert it,
 		// because a silent mismatch would strand every score unanchored and the
 		// metrics layer would show an empty case suite with no error anywhere.
 		const [sourceRun] = (await sql`
       INSERT INTO runs (
-        organization_id, run_type, watcher_id, approval_status, status,
+        organization_id, run_type, automation_id, approval_status, status,
         approved_input, completed_at, created_at
       ) VALUES (
-        ${organizationId}, ${BEHAVIOR_RUN_TYPE}, ${behaviorId}, 'auto', 'completed',
+        ${organizationId}, ${AUTOMATION_RUN_TYPE}, ${automationId}, 'auto', 'completed',
         ${sql.json({
-					watcher_id: behaviorId,
+					automation_id: automationId,
 					agent_id: "11111111-2222-3333-4444-555555555555",
 					window_start: "2026-08-01T00:00:00.000Z",
 					window_end: "2026-08-01T01:00:00.000Z",
@@ -303,7 +303,7 @@ describe("scoreEvalRun", () => {
 		// The case HAS an expectation, so the judge was attempted — and this test
 		// org has no inference provider, so it could not be asked. The contract is
 		// that an unaskable judge yields NO verdict rather than a zero: a failed
-		// judge must never be recorded as a failing Behavior.
+		// judge must never be recorded as a failing Automation.
 		expect(result.verdicts.map((v) => v.metric)).not.toContain("judge_rubric");
 		expect(result.qualityScore).toBe(1);
 
@@ -328,7 +328,7 @@ describe("scoreEvalRun", () => {
 		// of every feed-scoped read. Canvas established the rule; breaking it here
 		// would silently push eval bookkeeping into users' search results.
 		const runId = await insertRun({
-			runType: BEHAVIOR_EVAL_RUN_TYPE,
+			runType: AUTOMATION_EVAL_RUN_TYPE,
 			preview: { captured: "complete_window", extracted_data: { a: 1 } },
 		});
 		await scoreEvalRun({ runId });

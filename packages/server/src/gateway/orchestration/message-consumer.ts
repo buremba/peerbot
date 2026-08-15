@@ -45,7 +45,7 @@ import { resolvePinnedSelection } from "../../lobu/stores/sandbox-store.js";
 import { threadIdFromApiConversationId } from "../services/api-conversation-id.js";
 import {
   classifyConversation,
-  isWatcherConversationId,
+  isAutomationConversationId,
   resolveConversationLocationLabel,
   upsertConversation,
 } from "../services/conversations-store.js";
@@ -295,11 +295,11 @@ export class MessageConsumer {
       }
 
       // Materialize the `conversations` listing row for this turn (the single
-      // sidebar source). Watcher runs stay derived from transcript snapshots
-      // (one entry per watcher, not per run), so they're excluded here. Best-
+      // sidebar source). Automation runs stay derived from transcript snapshots
+      // (one entry per automation, not per run), so they're excluded here. Best-
       // effort: upsertConversation swallows its own errors so a listing hiccup
       // never fails a live turn.
-      if (!isWatcherConversationId(effectiveConversationId)) {
+      if (!isAutomationConversationId(effectiveConversationId)) {
         const { kind, storedPlatform } = classifyConversation(data.platform);
         // Undo the API id packing once, here at write time, and store the result —
         // readers route on the stored `thread_id`, never by re-parsing the id.
@@ -688,7 +688,7 @@ export class MessageConsumer {
   /**
    * Enforce the agent's exact-model allow-list on the OUTBOUND payload model,
    * at enqueue time. This is the authoritative gate: every dispatch lane
-   * (direct API, Listen bridge, chat-instance, watcher HTTP, scheduled-job
+   * (direct API, Listen bridge, chat-instance, automation HTTP, scheduled-job
    * direct enqueue) — cold, warm, or resumed — funnels through `handleMessage`
    * → here → `sendToWorkerQueue`, which serializes `data.agentOptions.model`
    * into the queue job the worker reads verbatim. Mutating the model here

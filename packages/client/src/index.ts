@@ -16,8 +16,8 @@ export { client } from "./generated/client.gen.js";
  * `generated.*`.
  */
 export {
-  getBehavior,
-  manageBehaviors,
+  getAutomation,
+  manageAutomations,
   manageConversations,
   manageEntity,
   manageEntitySchema,

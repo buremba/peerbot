@@ -526,7 +526,7 @@ describe("handleWebhookIngest body handling", () => {
 		);
 		const rows = await eventRows();
 		// No payload_text → embed-backfill skips it → never enters semantic
-		// memory; the row is still reachable by behavior SQL on connector_key.
+		// memory; the row is still reachable by automation SQL on connector_key.
 		expect(rows[0].payload_text).toBeNull();
 	});
 });
@@ -746,7 +746,7 @@ describe("ChatInstanceManager webhook wiring", () => {
 			getPublicGatewayUrl: () => "",
 			getSecretStore: () => secretStore,
 			getConnectionStore: () => connectionStore,
-			getBehaviorSubscriptionService: () => ({ resolveForConnection: async () => null }),
+			getAutomationSubscriptionService: () => ({ resolveForConnection: async () => null }),
 			getCommandRegistry: () => undefined,
 		};
 		manager.publicGatewayUrl = "";
@@ -1008,7 +1008,7 @@ describe("connector-connection webhook bridge (connections table)", () => {
 			getPublicGatewayUrl: () => "",
 			getSecretStore: () => secretStore,
 			getConnectionStore: () => connectionStore,
-			getBehaviorSubscriptionService: () => ({ resolveForConnection: async () => null }),
+			getAutomationSubscriptionService: () => ({ resolveForConnection: async () => null }),
 			getCommandRegistry: () => undefined,
 		};
 		manager.publicGatewayUrl = "";
@@ -1138,7 +1138,7 @@ describe("connector-connection webhook bridge (connections table)", () => {
 	test("a signed GitHub delivery to a connector connection marks the feed due (poll-canonical)", async () => {
 		// Clean-cut: OAuth/PAT GitHub webhooks do NOT raw-store under webhook:<id>.
 		// They mark the matching feed due so CheckDueFeeds + poll attach
-		// behavior_signals — same contract as app-webhooks trigger mode.
+		// automation_signals — same contract as app-webhooks trigger mode.
 		await seedAgentRow(AGENT, { organizationId: ORG });
 		const { manager, secretStore } = await buildManager();
 		const { createConnectionWebhookRoutes } = await import(

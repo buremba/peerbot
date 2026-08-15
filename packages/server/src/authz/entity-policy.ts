@@ -1,6 +1,6 @@
 /**
  * Entity mutation policy — the single decision layer for whether an agent or
- * watcher write to an entity applies immediately or queues a durable approval.
+ * automation write to an entity applies immediately or queues a durable approval.
  *
  * Two inputs, one decision:
  *  - Built-in invariants that no org policy can disable: writes never cross
@@ -14,7 +14,7 @@
  * Human edits are never gated here — role restrictions for humans live in the
  * tool-access tier (e.g. manage_entity delete is owner/admin).
  *
- * Gated paths: manage_entity create/update/delete and watcher window promotion
+ * Gated paths: manage_entity create/update/delete and automation window promotion
  * (promote-keyed-entities). Ingestion-infrastructure writes (entity-link-upsert
  * identity stubs, classifier extraction) are exempt BY DESIGN — they are
  * high-volume provenance plumbing, not collaboration edits; gating them would
@@ -29,7 +29,7 @@ import {
 } from "./write-action-manifest";
 
 export type EntityPolicyDecision = "allow" | "deny" | "require_approval";
-export type EntityPolicyPrincipalKind = "user" | "agent" | "watcher";
+export type EntityPolicyPrincipalKind = "user" | "agent" | "automation";
 export type EntityMutationAction = "read" | "create" | "update" | "delete";
 /**
  * A stored per-action mode. `auto`/`approval` are the two entity modes; `deny`
@@ -51,7 +51,7 @@ export type EntityMutationMode = "auto" | "approval" | "deny" | "disabled";
 export type WriteResourceClass = "entity" | "agent_config" | "connector_action";
 
 /** A non-human principal a policy row may target. NULL principal = any of this kind. */
-export type PolicyPrincipalKind = "agent" | "watcher";
+export type PolicyPrincipalKind = "agent" | "automation";
 
 export interface EntityApprovalDeliveryTarget {
 	connectionId: string | null;
@@ -186,7 +186,7 @@ function normalizeResourceClass(value: unknown): WriteResourceClass {
 }
 
 function normalizePrincipalKind(value: unknown): PolicyPrincipalKind | null {
-	return value === "agent" || value === "watcher" ? value : null;
+	return value === "agent" || value === "automation" ? value : null;
 }
 
 /**
@@ -261,21 +261,21 @@ export function defaultEntityApprovalPolicy(
 /**
  * Who is performing this mutation, for policy purposes. Precedence is DELIBERATE
  * and security-relevant: a real agent run (trusted `agentId` on the context) is
- * classified as an agent EVEN IF the request also carries a `behavior_source`.
- * `behavior_source` is a caller-supplied arg (attribution, e.g. for card labels);
+ * classified as an agent EVEN IF the request also carries a `automation_source`.
+ * `automation_source` is a caller-supplied arg (attribution, e.g. for card labels);
  * letting it override the trusted agent identity would let an agent escape its
- * own per-principal policy by tagging its write as a watcher's. A genuine watcher
- * promotion runs with no agentId, so it still classifies as a watcher. A real
+ * own per-principal policy by tagging its write as an automation's. A genuine automation
+ * promotion runs with no agentId, so it still classifies as an automation. A real
  * user session (userId, no agentId) is a human; everything else is an agent.
  */
 export function classifyMutationPrincipal(args: {
 	userId?: string | null;
 	agentId?: string | null;
-	watcherSource?: unknown;
+	automationSource?: unknown;
 }): EntityPolicyPrincipalKind {
-	// Trusted agent identity wins over the caller-supplied watcher tag.
+	// Trusted agent identity wins over the caller-supplied automation tag.
 	if (args.agentId) return "agent";
-	if (args.watcherSource) return "watcher";
+	if (args.automationSource) return "automation";
 	if (args.userId) return "user";
 	return "agent";
 }
@@ -284,61 +284,61 @@ export function classifyMutationPrincipal(args: {
  * Stable identity of the acting non-human principal, for per-principal policy
  * matching. Mirrors {@link classifyMutationPrincipal}'s precedence: a trusted
  * `agentId` wins — an agent run resolves to its own agent id even when a
- * `watcherId` (from a caller-supplied behavior_source) is also present, so it
- * can't spoof `watcher:<id>` to dodge its agent policy. Only a genuine watcher
- * path (agentId null) resolves to `watcher:<id>`; no id → null ("any agent").
+ * `automationId` (from a caller-supplied automation_source) is also present, so it
+ * can't spoof `automation:<id>` to dodge its agent policy. Only a genuine automation
+ * path (agentId null) resolves to `automation:<id>`; no id → null ("any agent").
  */
 export function mutationPrincipalId(args: {
 	agentId?: string | null;
-	watcherId?: number | null;
+	automationId?: number | null;
 }): string | null {
 	if (args.agentId) return args.agentId;
-	if (args.watcherId != null) return `watcher:${args.watcherId}`;
+	if (args.automationId != null) return `automation:${args.automationId}`;
 	return null;
 }
 
-/** Inverse of {@link mutationPrincipalId} for a watcher: `watcher:<id>` → id, else null. */
-export function watcherIdFromPrincipalId(
+/** Inverse of {@link mutationPrincipalId} for an automation: `automation:<id>` → id, else null. */
+export function automationIdFromPrincipalId(
 	principalId: string | null | undefined,
 ): number | null {
-	if (!principalId?.startsWith("watcher:")) return null;
-	const id = Number(principalId.slice("watcher:".length));
+	if (!principalId?.startsWith("automation:")) return null;
+	const id = Number(principalId.slice("automation:".length));
 	return Number.isFinite(id) ? id : null;
 }
 
 /**
- * The agent that owns a watcher (`watchers.agent_id`, NOT NULL in schema). Every
- * watcher write is governed by its owning agent's envelope — a watcher is that
+ * The agent that owns an automation (`automations.agent_id`, NOT NULL in schema). Every
+ * automation write is governed by its owning agent's envelope — an automation is that
  * agent's autonomous mode — so the resolver folds the agent's rows in via
- * `ownerAgentId`. Shared by every watcher write surface (entity promotion, reaction
- * scripts, watcher CRUD) so the linkage is resolved ONE way.
+ * `ownerAgentId`. Shared by every automation write surface (entity promotion, reaction
+ * scripts, automation CRUD) so the linkage is resolved ONE way.
  *
- * Returns `{ ownerAgentId, resolved }`. `resolved` is false when the watcher row is
+ * Returns `{ ownerAgentId, resolved }`. `resolved` is false when the automation row is
  * GONE (hard-deleted mid-reaction, or a bad id) OR its owning AGENT no longer exists
- * (deleted out from under an in-flight watcher — there is no watcher→agent FK, so the
+ * (deleted out from under an in-flight automation — there is no automation→agent FK, so the
  * agent_id can dangle) — both are the same security-relevant state: the acting
- * watcher's agent envelope can't be folded, so proceeding as an unowned watcher would
+ * automation's agent envelope can't be folded, so proceeding as an unowned automation would
  * let the reaction slip its owning agent's deny/approval rules and fall back to the
- * (looser) org default. Callers acting on a TRUSTED watcher must FAIL CLOSED on
+ * (looser) org default. Callers acting on a TRUSTED automation must FAIL CLOSED on
  * `resolved === false` (see the gate resolvers).
  *
- * `organizationId` scopes both the watcher AND the owning-agent existence check so a
+ * `organizationId` scopes both the automation AND the owning-agent existence check so a
  * caller can't resolve against another org's rows.
  */
-export async function resolveWatcherOwner(
+export async function resolveAutomationOwner(
 	sql: DbClient,
-	watcherId: number,
+	automationId: number,
 	organizationId: string,
 ): Promise<{ ownerAgentId: string | null; resolved: boolean }> {
 	// INNER JOIN agents: the row resolves ONLY when the owning agent still exists in
 	// this org. A dangling agent_id (agent deleted mid-flight) yields zero rows →
 	// resolved:false → gates deny, closing the fail-open where a deleted agent's
-	// watcher would fall back to the looser org default.
+	// automation would fall back to the looser org default.
 	const rows = await sql<{ agent_id: string }>`
     SELECT w.agent_id
-    FROM watchers w
+    FROM automations w
     JOIN agents a ON a.id = w.agent_id AND a.organization_id = ${organizationId}
-    WHERE w.id = ${watcherId} AND w.organization_id = ${organizationId}
+    WHERE w.id = ${automationId} AND w.organization_id = ${organizationId}
     LIMIT 1
   `;
 	if (rows.length === 0) return { ownerAgentId: null, resolved: false };
@@ -348,45 +348,45 @@ export async function resolveWatcherOwner(
 /** The fully-resolved acting principal for one write, ready to hand to the gate. */
 export interface ActingPrincipal {
 	kind: EntityPolicyPrincipalKind;
-	/** `watcher:<id>` / agent id / null ("any of this kind"). */
+	/** `automation:<id>` / agent id / null ("any of this kind"). */
 	id: string | null;
-	/** The watcher's owning agent, folded max-restrictive; null unless a watcher. */
+	/** The automation's owning agent, folded max-restrictive; null unless an automation. */
 	ownerAgentId: string | null;
 	/**
-	 * False ONLY when this is a watcher whose owning-agent lookup FAILED (the watcher
+	 * False ONLY when this is an automation whose owning-agent lookup FAILED (the automation
 	 * row is gone). The gate must FAIL CLOSED (deny) rather than run the write as an
-	 * unowned watcher against the looser org default — otherwise a reaction whose
-	 * watcher was hard-deleted mid-flight escapes its agent's envelope. True for every
-	 * agent/user turn and every watcher whose owner resolved (incl. legitimately null).
+	 * unowned automation against the looser org default — otherwise a reaction whose
+	 * automation was hard-deleted mid-flight escapes its agent's envelope. True for every
+	 * agent/user turn and every automation whose owner resolved (incl. legitimately null).
 	 */
 	ownerResolved: boolean;
 }
 
 /**
- * Resolve WHO is performing a write, from the two channels an acting watcher can
- * arrive on, in ONE place — so no call site has to merge them. A watcher is
- * identified by `ctx.actingWatcherId` (the reaction session's own watcher, stamped
- * by the reaction executor) OR by an explicit `behavior_source.behavior_id` (a tag
- * the caller passed, e.g. a keyed-promotion). The trusted SESSION watcher wins:
+ * Resolve WHO is performing a write, from the two channels an acting automation can
+ * arrive on, in ONE place — so no call site has to merge them. An automation is
+ * identified by `ctx.actingAutomationId` (the reaction session's own automation, stamped
+ * by the reaction executor) OR by an explicit `automation_source.automation_id` (a tag
+ * the caller passed, e.g. a keyed-promotion). The trusted SESSION automation wins:
  * a reaction script can't retag itself with a different (nonexistent or
- * less-restricted) watcher to dodge its owning agent's envelope. Any watcher
- * channel makes this a watcher — which is strictly MORE restrictive, since it
- * folds the owning agent's rows in on top (a watcher can only tighten, never
- * loosen, its agent), so there's no way to "spoof a watcher tag" to escape agent
+ * less-restricted) automation to dodge its owning agent's envelope. Any automation
+ * channel makes this an automation — which is strictly MORE restrictive, since it
+ * folds the owning agent's rows in on top (an automation can only tighten, never
+ * loosen, its agent), so there's no way to "spoof an automation tag" to escape agent
  * policy.
  *
- * When a watcher acts, this looks up its owning agent (folded max-restrictive).
- * This is THE seam every write surface (manage_entity/agents/operations/watchers,
+ * When an automation acts, this looks up its owning agent (folded max-restrictive).
+ * This is THE seam every write surface (manage_entity/agents/operations/automations,
  * promotion) resolves identity through.
  */
-/** A watcher acting principal, folding its (already-resolved) owner agent. */
-function watcherPrincipal(
-	watcherId: number,
+/** An automation acting principal, folding its (already-resolved) owner agent. */
+function automationPrincipal(
+	automationId: number,
 	owner: { ownerAgentId: string | null; resolved: boolean },
 ): ActingPrincipal {
 	return {
-		kind: "watcher",
-		id: `watcher:${watcherId}`,
+		kind: "automation",
+		id: `automation:${automationId}`,
 		ownerAgentId: owner.ownerAgentId,
 		ownerResolved: owner.resolved,
 	};
@@ -398,33 +398,33 @@ export async function resolveActingPrincipal(
 		organizationId: string;
 		userId?: string | null;
 		agentId?: string | null;
-		explicitWatcherId?: number | null;
-		sessionWatcherId?: number | null;
+		explicitAutomationId?: number | null;
+		sessionAutomationId?: number | null;
 	},
 ): Promise<ActingPrincipal> {
-	// The trusted SESSION watcher (stamped by the reaction executor) always wins and
-	// folds its owning agent. An EXPLICIT behavior_source is caller-controlled, so it
+	// The trusted SESSION automation (stamped by the reaction executor) always wins and
+	// folds its owning agent. An EXPLICIT automation_source is caller-controlled, so it
 	// can't override an authenticated agent's identity: honor it only when there is
 	// no agent (the system/keyed-promotion path) OR when it genuinely belongs to that
-	// agent (an agent tagging its own watcher). Otherwise a restricted agent could
-	// tag a foreign/nonexistent watcher to null out ownerAgentId and skip its own
+	// agent (an agent tagging its own automation). Otherwise a restricted agent could
+	// tag a foreign/nonexistent automation to null out ownerAgentId and skip its own
 	// deny/approval rows — so we fall through to the agent as the principal.
-	if (args.sessionWatcherId != null) {
-		return watcherPrincipal(
-			args.sessionWatcherId,
-			await resolveWatcherOwner(sql, args.sessionWatcherId, args.organizationId),
+	if (args.sessionAutomationId != null) {
+		return automationPrincipal(
+			args.sessionAutomationId,
+			await resolveAutomationOwner(sql, args.sessionAutomationId, args.organizationId),
 		);
 	}
-	if (args.explicitWatcherId != null) {
-		const owner = await resolveWatcherOwner(
+	if (args.explicitAutomationId != null) {
+		const owner = await resolveAutomationOwner(
 			sql,
-			args.explicitWatcherId,
+			args.explicitAutomationId,
 			args.organizationId,
 		);
 		if (!args.agentId || owner.ownerAgentId === args.agentId) {
-			return watcherPrincipal(args.explicitWatcherId, owner);
+			return automationPrincipal(args.explicitAutomationId, owner);
 		}
-		// Caller-controlled tag that isn't this agent's own watcher — ignore it.
+		// Caller-controlled tag that isn't this agent's own automation — ignore it.
 	}
 	const kind = classifyMutationPrincipal({
 		userId: args.userId,
@@ -434,7 +434,7 @@ export async function resolveActingPrincipal(
 	// FAIL CLOSED. Its envelope rows are gone (the delete trigger cascades them), so
 	// gating would find no agent-specific policy and fall back to the looser org
 	// default — most dangerously connector_action → auto. Mark it unresolved so every
-	// gate denies, exactly as for a watcher whose owner vanished. Users are never
+	// gate denies, exactly as for an automation whose owner vanished. Users are never
 	// existence-checked here (they aren't gated as a principal). null agentId (the
 	// system/keyed path) has no row to check and stays resolved.
 	const ownerResolved =
@@ -655,12 +655,12 @@ async function loadCandidatePolicies(args: {
 	principalKind?: PolicyPrincipalKind | null;
 	principalId?: string | null;
 	/**
-	 * The OWNING AGENT of a watcher, when a watcher acts under its agent's
-	 * envelope. The write is then governed by BOTH the watcher's own rows (the
-	 * primary `principalKind='watcher'`) AND the agent's rows, folded max-
-	 * restrictive — so a pre-existing watcher-specific `deny` can only tighten and
+	 * The OWNING AGENT of an automation, when an automation acts under its agent's
+	 * envelope. The write is then governed by BOTH the automation's own rows (the
+	 * primary `principalKind='automation'`) AND the agent's rows, folded max-
+	 * restrictive — so a pre-existing automation-specific `deny` can only tighten and
 	 * the agent envelope can never loosen it away. Null = no owning agent (the
-	 * only two-principal case in the model: `watchers.agent_id` is the sole
+	 * only two-principal case in the model: `automations.agent_id` is the sole
 	 * principal-ownership edge, so there is never a third principal to fold).
 	 */
 	ownerAgentId?: string | null;
@@ -773,8 +773,8 @@ export async function evaluateEntityMutation(args: {
 	/** Stable acting-principal id for per-principal matching; null = any of its kind. */
 	principalId?: string | null;
 	/**
-	 * The owning agent of a watcher — folds the agent's rows in alongside the
-	 * watcher's, max-restrictive. See {@link loadCandidatePolicies}.
+	 * The owning agent of an automation — folds the agent's rows in alongside the
+	 * automation's, max-restrictive. See {@link loadCandidatePolicies}.
 	 */
 	ownerAgentId?: string | null;
 	action: EntityMutationAction;
@@ -782,10 +782,10 @@ export async function evaluateEntityMutation(args: {
 	entityId?: number | null;
 	entityOrgId?: string | null;
 	/**
-	 * False iff the acting principal is a watcher whose owning agent could not be
+	 * False iff the acting principal is an automation whose owning agent could not be
 	 * resolved (its row is gone). Fail CLOSED — the agent envelope can't be folded,
 	 * so we deny rather than run the write against the looser org default. Defaults
-	 * true (agent/user turns, and watchers whose owner resolved).
+	 * true (agent/user turns, and automations whose owner resolved).
 	 */
 	ownerResolved?: boolean;
 	sql?: DbClient;
@@ -820,7 +820,7 @@ export async function evaluateEntityMutation(args: {
  * Class-generic write decision for a non-scoped resource (agent_config today;
  * connector_action later). Humans with any org membership apply immediately —
  * the write-gate governs non-human principals; role restrictions for humans live
- * in the tool-access tier. For an agent/watcher, the matched policy row wins;
+ * in the tool-access tier. For an agent/automation, the matched policy row wins;
  * with no row, the class default applies. Entity writes keep their own scoped
  * paths ({@link evaluateEntityMutation} / {@link evaluateEntityFieldUpdates}).
  */
@@ -830,14 +830,14 @@ export async function resolveWritePolicyDecision(args: {
 	principalKind: EntityPolicyPrincipalKind;
 	principalId?: string | null;
 	/**
-	 * The owning agent of a watcher — folds the agent's rows in alongside the
-	 * watcher's, max-restrictive. Set for a watcher-attributed connector/agent_config
+	 * The owning agent of an automation — folds the agent's rows in alongside the
+	 * automation's, max-restrictive. Set for an automation-attributed connector/agent_config
 	 * write (e.g. a reaction script's `client.operations.execute`) so the agent's
-	 * envelope binds and a watcher-specific rule can only tighten. See
+	 * envelope binds and an automation-specific rule can only tighten. See
 	 * {@link loadCandidatePolicies}.
 	 */
 	ownerAgentId?: string | null;
-	/** See {@link resolveWriteEffect}. Fail closed (deny) when a watcher owner is unresolved. */
+	/** See {@link resolveWriteEffect}. Fail closed (deny) when an automation owner is unresolved. */
 	ownerResolved?: boolean;
 	action: WriteAction;
 	/** connector_action only: the operation being run — a per-op row tightens the
@@ -867,7 +867,7 @@ export async function resolveWriteEffect(args: {
 	principalId?: string | null;
 	ownerAgentId?: string | null;
 	/**
-	 * False iff a watcher whose owning agent could not be resolved (its row is
+	 * False iff an automation whose owning agent could not be resolved (its row is
 	 * gone) — fail CLOSED to `deny` so the write can't slip its agent's envelope.
 	 * See {@link evaluateEntityMutation}. Defaults true.
 	 */
@@ -954,10 +954,10 @@ export async function evaluateEntityFieldUpdates(args: {
 	principalKind: EntityPolicyPrincipalKind;
 	/** Stable acting-principal id for per-principal matching; null = any of its kind. */
 	principalId?: string | null;
-	/** The watcher's owning agent, folded alongside — see {@link evaluateEntityMutation}. */
+	/** The automation's owning agent, folded alongside — see {@link evaluateEntityMutation}. */
 	ownerAgentId?: string | null;
 	/**
-	 * False iff a watcher whose owning agent could not be resolved — deny every
+	 * False iff an automation whose owning agent could not be resolved — deny every
 	 * field (fail closed). See {@link evaluateEntityMutation}. Defaults true.
 	 */
 	ownerResolved?: boolean;

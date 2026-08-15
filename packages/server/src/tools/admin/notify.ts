@@ -19,12 +19,12 @@ import {
   getOrgSlug,
 } from '../../notifications/service';
 import { buildActionApprovalCard } from '../../notifications/triggers';
-import { WATCHER_CANVAS_NAMESPACE } from '../../utils/canvas-events';
+import { AUTOMATION_CANVAS_NAMESPACE } from '../../utils/canvas-events';
 import { ToolUserError } from '../../utils/errors';
 import { validateSaveContentSemanticType } from '../../utils/event-kind-validation';
 import logger from '../../utils/logger';
 import { buildResourcePermalink } from '../../utils/url-builder';
-import { trackWatcherReaction } from '../../utils/watcher-reactions';
+import { trackAutomationReaction } from '../../utils/automation-reactions';
 import type { ToolContext } from '../registry';
 import { action, defineActionTool } from './action-tool';
 
@@ -98,13 +98,13 @@ const SendAction = Type.Object({
         'Turn this notification into a QUESTION the recipient answers, instead of an FYI. Pass {} for a plain yes/no decision; a single required string-enum property for one-click options; or a flat object of primitive fields, scalar enums, string/scalar-enum arrays, and optional nullable anyOf wrappers for a form. Give each property a `title`. Nested objects, references, other combinators, constants, formats, patterns, and string/number/array constraints are unsupported and fail with HTTP 422 before a run is created. Read the answer with manage_operations get_run.',
     })
   ),
-  behavior_source: Type.Optional(
+  automation_source: Type.Optional(
     Type.Object(
       {
-        behavior_id: Type.Number({ description: 'Behavior that triggered this notification' }),
+        automation_id: Type.Number({ description: 'Automation that triggered this notification' }),
         window_id: Type.Number({ description: 'Window that triggered this notification' }),
       },
-      { description: 'Attribution source when notification is triggered by a Behavior reaction' }
+      { description: 'Attribution source when notification is triggered by an Automation reaction' }
     )
   ),
 });
@@ -202,31 +202,31 @@ async function handleSend(
     body = body ? `${body}\n\n${dataStr}` : dataStr;
   }
 
-  // Anchor watcher-sourced notifications to the watcher's canvas entity so they
-  // thread under the canvas. behavior_source is caller input, so validate the
-  // (watcher_id, window_id) pair against the caller's org before anchoring —
+  // Anchor automation-sourced notifications to the automation's canvas entity so they
+  // thread under the canvas. automation_source is caller input, so validate the
+  // (automation_id, window_id) pair against the caller's org before anchoring —
   // otherwise any org member could thread a notification under an unrelated
-  // watcher's canvas. Resolve the lazy canvas entity via its entity_identities
-  // claim; a mismatched pair or a watcher with no canvas yet anchors nothing.
+  // automation's canvas. Resolve the lazy canvas entity via its entity_identities
+  // claim; a mismatched pair or an automation with no canvas yet anchors nothing.
   let canvasEntityIds: number[] | undefined;
-  if (args.behavior_source) {
+  if (args.automation_source) {
     const rows = await getDb()<{ entity_id: number | string }>`
       SELECT ei.entity_id
       FROM entity_identities ei
-      JOIN watchers w
-        ON w.id = ${args.behavior_source.behavior_id}
+      JOIN automations w
+        ON w.id = ${args.automation_source.automation_id}
        AND w.organization_id = ${ctx.organizationId}
       WHERE ei.organization_id = ${ctx.organizationId}
-        AND ei.namespace = ${WATCHER_CANVAS_NAMESPACE}
-        AND ei.identifier = ${String(args.behavior_source.behavior_id)}
+        AND ei.namespace = ${AUTOMATION_CANVAS_NAMESPACE}
+        AND ei.identifier = ${String(args.automation_source.automation_id)}
         AND ei.deleted_at IS NULL
         AND (
-          ${args.behavior_source.window_id ?? null}::bigint IS NULL
+          ${args.automation_source.window_id ?? null}::bigint IS NULL
           OR EXISTS (
             -- window_id is the canvas ROOT event id; validate the pair.
             SELECT 1 FROM canvas_windows ww
-            WHERE ww.id = ${args.behavior_source.window_id ?? null}
-              AND ww.watcher_id = w.id
+            WHERE ww.id = ${args.automation_source.window_id ?? null}
+              AND ww.automation_id = w.id
           )
         )
       LIMIT 1
@@ -235,13 +235,13 @@ async function handleSend(
   }
 
   // Provenance for the notification row itself. Read from the SERVER-set acting
-  // context (the reaction executor stamps it), never from `args.behavior_source`
-  // — that is caller input, and `behavior_id` decides what a Behavior's own
-  // window excludes, so a chosen id would let one Behavior blind another.
-  // `behavior_source` stays what it always was: an attribution hint for canvas
+  // context (the reaction executor stamps it), never from `args.automation_source`
+  // — that is caller input, and `automation_id` decides what an Automation's own
+  // window excludes, so a chosen id would let one Automation blind another.
+  // `automation_source` stays what it always was: an attribution hint for canvas
   // anchoring and reaction tracking.
   //
-  // The version comes from the RUN, not from `watchers.current_version_id`.
+  // The version comes from the RUN, not from `automations.current_version_id`.
   // current_version_id is the version that is current *now*, at send time — a
   // version bump between dispatch and this notification would attribute the
   // output to a prompt that never produced it. Since the whole point of this
@@ -250,16 +250,16 @@ async function handleSend(
   // calls carry `actingRunId = null`), this stays NULL rather than guessing.
   // Same source the backfill trusts, and the same choice entity-field-approval
   // already makes.
-  const actingBehaviorId = ctx.actingWatcherId ?? null;
+  const actingAutomationId = ctx.actingAutomationId ?? null;
   const actingRunId = ctx.actingRunId ?? null;
   const actingVersionRows =
-    actingBehaviorId && actingRunId
+    actingAutomationId && actingRunId
       ? await getDb()<{ version_id: string | null }>`
           SELECT approved_input->>'version_id' AS version_id
           FROM runs
           WHERE id = ${actingRunId}
             AND organization_id = ${ctx.organizationId}
-            AND watcher_id = ${actingBehaviorId}
+            AND automation_id = ${actingAutomationId}
           LIMIT 1
         `
       : [];
@@ -272,15 +272,15 @@ async function handleSend(
   const orgSlug = await getOrgSlug(ctx.organizationId);
 
   // Feedback is learned from server-stamped execution provenance only.
-  // `behavior_source` remains a validated canvas-attribution hint above, but
-  // caller input must never choose another Behavior's learning history.
-  const reactionBehaviorId = ctx.actingWatcherId ?? null;
+  // `automation_source` remains a validated canvas-attribution hint above, but
+  // caller input must never choose another Automation's learning history.
+  const reactionAutomationId = ctx.actingAutomationId ?? null;
   const reactionWindowId = ctx.actingWindowId ?? null;
   const trackNotificationReaction = async (runId?: number): Promise<void> => {
-    if (reactionBehaviorId === null || reactionWindowId === null) return;
-    await trackWatcherReaction({
+    if (reactionAutomationId === null || reactionWindowId === null) return;
+    await trackAutomationReaction({
       organizationId: ctx.organizationId,
-      watcherId: reactionBehaviorId,
+      automationId: reactionAutomationId,
       windowId: reactionWindowId,
       reactionType: 'notification_sent',
       toolName: 'notify',
@@ -304,7 +304,7 @@ async function handleSend(
       if (priorRunId !== null) {
         // The notification can commit before this feedback edge. A failed first
         // attempt therefore reconciles here on retry instead of returning early
-        // forever with an ask the Behavior cannot learn from.
+        // forever with an ask the Automation cannot learn from.
         await trackNotificationReaction(priorRunId);
       }
       return {
@@ -370,8 +370,8 @@ async function handleSend(
         : null),
     entityIds: canvasEntityIds,
     mcpActivity: currentMcpActivityAttribution(ctx),
-    behaviorId: actingBehaviorId,
-    behaviorVersionId: actingVersionId,
+    automationId: actingAutomationId,
+    automationVersionId: actingVersionId,
     runId: actingRunId,
   });
 
@@ -382,7 +382,7 @@ async function handleSend(
   // Two replicas can race past the idempotency preflight above; the loser's
   // notification insert resolves to the winner's event, so the run WE queued is
   // an orphan nothing points at. Resolve the delivered run before reaction
-  // tracking so watcher_reactions always points at the decision the human sees.
+  // tracking so automation_reactions always points at the decision the human sees.
   let askRunId = ask?.runId ?? null;
   if (ask && !notification.created && notification.eventId !== null) {
     askRunId = await findAskRunForNotification(
@@ -396,16 +396,16 @@ async function handleSend(
   }
 
   if (askRunId !== null) {
-    // The ask-to-Behavior edge is required and idempotent: if it fails, surface
+    // The ask-to-Automation edge is required and idempotent: if it fails, surface
     // the failure so the caller retries and the preflight above repairs it.
     await trackNotificationReaction(askRunId);
   } else if (notification.created) {
     // Plain FYI notifications have no run handle to use as a durable dedupe
-    // key, so retain their historical best-effort tracking behavior.
+    // key, so retain their historical best-effort tracking automation.
     await trackNotificationReaction().catch((err) => {
       logger.warn(
-        { err, behaviorId: reactionBehaviorId, windowId: reactionWindowId },
-        'trackWatcherReaction failed'
+        { err, automationId: reactionAutomationId, windowId: reactionWindowId },
+        'trackAutomationReaction failed'
       );
     });
   }

@@ -4,7 +4,7 @@
  * The canonical gate: bootstrap a project from stubbed cloud state, then load
  * the generated `lobu.config.ts` back through `loadDesiredStateFromConfig` and
  * assert the resulting DesiredState matches the stubbed cloud input
- * (entities/relationships/behaviors/connections/authProfiles/agents), modulo
+ * (entities/relationships/automations/connections/authProfiles/agents), modulo
  * write-only secret values (placeholders) and `installedAt` timestamps.
  *
  * Network is stubbed through an injected fetch impl returning the canned
@@ -121,18 +121,18 @@ function fullOrgRoutes(): Record<
         { agentId: "sales", name: "Sales", description: "Revenue agent" },
       ],
     }),
-    "behaviors?behavior_id": () => ({
-      behavior: {
+    "automations?automation_id": () => ({
+      automation: {
         reaction_script:
           "export default async (ctx, client) => {\n  await client.knowledge.save({ content: 'ok', semantic_type: 'digest' });\n};\n",
         description: null,
       },
     }),
-    "behaviors?include_details": () => ({
-      behaviors: [
+    "automations?include_details": () => ({
+      automations: [
         {
           slug: "account-health",
-          behavior_id: "1",
+          automation_id: "1",
           name: "Account health",
           agent_id: "sales",
           prompt: "Poll CRM data.",
@@ -401,8 +401,8 @@ describe("lobu init --from-org", () => {
       rules: [{ source: "lead", target: "pilot" }],
     });
 
-    // ── watchers ───────────────────────────────────────────────────────────
-    const w = state.watchers[0];
+    // ── automations ───────────────────────────────────────────────────────────
+    const w = state.automations[0];
     expect(w?.slug).toBe("account-health");
     expect(w?.agent).toBe("sales");
     expect(w?.name).toBe("Account health");
@@ -427,7 +427,7 @@ describe("lobu init --from-org", () => {
       active_run: "coalesce",
       skip_if_unchanged: true,
     });
-    // No outputs means this round-trips as a Canvas/reaction-only Behavior.
+    // No outputs means this round-trips as a Canvas/reaction-only Automation.
     expect(w?.outputs).toBeUndefined();
     expect(w?.sources).toEqual([
       { name: "content", query: "SELECT * FROM events" },
@@ -503,7 +503,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/lone/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "behaviors?include_details": () => ({ behaviors: [] }),
+        "automations?include_details": () => ({ automations: [] }),
         manage_entity_schema: () => ({
           entity_types: [],
           relationship_types: [],
@@ -516,7 +516,7 @@ describe("lobu init --from-org", () => {
     const { state } = await loadDesiredStateFromConfig({ cwd: dir });
     expect(state.agents[0]?.metadata.agentId).toBe("lone");
     expect(state.memorySchema.entityTypes).toHaveLength(0);
-    expect(state.watchers).toHaveLength(0);
+    expect(state.automations).toHaveLength(0);
     expect(state.connectors.connections).toHaveLength(0);
   });
 
@@ -536,7 +536,7 @@ describe("lobu init --from-org", () => {
           updatedAt: 0,
         }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "behaviors?include_details": () => ({ behaviors: [] }),
+        "automations?include_details": () => ({ automations: [] }),
         manage_entity_schema: () => ({
           entity_types: [],
           relationship_types: [],
@@ -569,7 +569,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/lone/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "behaviors?include_details": () => ({ behaviors: [] }),
+        "automations?include_details": () => ({ automations: [] }),
         manage_entity_schema: () => ({
           entity_types: [],
           relationship_types: [],
@@ -643,7 +643,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/lone/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "behaviors?include_details": () => ({ behaviors: [] }),
+        "automations?include_details": () => ({ automations: [] }),
         manage_entity_schema: () => ({
           entity_types: [],
           relationship_types: [],
@@ -712,7 +712,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/lone/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "behaviors?include_details": () => ({ behaviors: [] }),
+        "automations?include_details": () => ({ automations: [] }),
         manage_entity_schema: () => ({
           entity_types: [],
           relationship_types: [],
@@ -813,7 +813,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/lone/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "behaviors?include_details": () => ({ behaviors: [] }),
+        "automations?include_details": () => ({ automations: [] }),
         // The REAL server `list` action omits rules (only `list_rules` returns
         // them). Branch on the action so this mirrors production: list → no
         // rules; list_rules → the rule rows in the server's snake_case shape.
@@ -871,7 +871,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/lone/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "behaviors?include_details": () => ({ behaviors: [] }),
+        "automations?include_details": () => ({ automations: [] }),
         manage_entity_schema: (body) => {
           if (body.action === "list_rules") {
             // The owned cross-org rel type binds an owned type to a NON-owned

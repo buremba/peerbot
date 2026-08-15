@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 /**
- * Promote a real Behavior run into a reusable eval case, and optionally replay
+ * Promote a real Automation run into a reusable eval case, and optionally replay
  * it straight away.
  *
  *   bun scripts/promote-eval-case.ts --run 876554 --expect "names the 4 dupes"
@@ -33,7 +33,7 @@ const { values: args } = parseNodeArgs({
 
 const sourceRunId = Number(args.run);
 if (!Number.isSafeInteger(sourceRunId) || sourceRunId < 1) {
-  console.error("--run <behavior run id> is required");
+  console.error("--run <automation run id> is required");
   process.exit(1);
 }
 
@@ -49,7 +49,7 @@ const result = await promoteEvalCase(
 
 if (!result.ok) {
   console.error(
-    `Could not promote behavior run ${sourceRunId}: ${result.reason}.`
+    `Could not promote automation run ${sourceRunId}: ${result.reason}.`
   );
   process.exit(1);
 }
@@ -57,8 +57,8 @@ if (!result.ok) {
 const { evalCase, created } = result;
 console.log(
   created
-    ? `Promoted behavior run ${evalCase.sourceRunId} into eval case ${evalCase.entityId} (behavior ${evalCase.behaviorId}, key "${evalCase.caseKey}").`
-    : `Eval case ${evalCase.entityId} already covers behavior run ${evalCase.sourceRunId} key "${evalCase.caseKey}".`
+    ? `Promoted automation run ${evalCase.sourceRunId} into eval case ${evalCase.entityId} (automation ${evalCase.automationId}, key "${evalCase.caseKey}").`
+    : `Eval case ${evalCase.entityId} already covers automation run ${evalCase.sourceRunId} key "${evalCase.caseKey}".`
 );
 
 if (args.replay) {

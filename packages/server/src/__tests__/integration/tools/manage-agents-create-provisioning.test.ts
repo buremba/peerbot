@@ -14,13 +14,13 @@
  * org-default tail reads `inference_providers WHERE is_default` — a DB ROW that
  * environment API keys never create. So on an env-key-only deployment an agent
  * made through `manage_agents create` resolved NO model, never completed a turn,
- * and its Behavior failed with "Agent reply finished without calling
- * completeWindow" — while the SAME Behavior succeeded on an older agent whose
+ * and its Automation failed with "Agent reply finished without calling
+ * completeWindow" — while the SAME Automation succeeded on an older agent whose
  * create path had baked the models list in.
  *
  * `pre_approved_tools` had the same shape of divergence: the web create route
  * seeds `/mcp/lobu-memory/tools/*` so the agent may call `query_sdk` / `run_sdk`
- * (which is how a Behavior reaches `completeWindow`) without an interactive
+ * (which is how an Automation reaches `completeWindow`) without an interactive
  * approval, and the tool path seeded nothing.
  */
 
@@ -162,7 +162,7 @@ describe("manage_agents create — env-key deployment provisions a runnable agen
 			SELECT pre_approved_tools FROM agents
 			WHERE organization_id = ${orgId} AND id = 'envkey-bot'
 		`;
-		// A Behavior reaches completeWindow through run_sdk on the lobu-memory
+		// An Automation reaches completeWindow through run_sdk on the lobu-memory
 		// MCP. The web create route already seeds this; the tool path did not.
 		expect(rows[0]?.pre_approved_tools).toContain("/mcp/lobu-memory/tools/*");
 	});

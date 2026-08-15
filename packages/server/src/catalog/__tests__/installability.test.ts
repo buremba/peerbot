@@ -23,7 +23,7 @@ function connectorDetail(entry: CatalogEntry): Record<string, unknown> {
 	const all = {
 		connectors: [entry],
 		skills: [],
-		behaviors: [],
+		automations: [],
 	} satisfies Record<CatalogKind, CatalogEntry[]>;
 	const response = buildCatalogListResponse(["connectors"], all);
 	return response.catalogs.connectors!.entries[0]!.detail;

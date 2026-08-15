@@ -4,7 +4,7 @@ import type {
   DiffPlan,
   DiffRow,
   EntityTypeDiffRow,
-  WatcherDiffRow,
+  AutomationDiffRow,
 } from "../diff.js";
 import { renderBlockedReport, renderPlan } from "../render.js";
 
@@ -68,11 +68,11 @@ describe("plan renders the values an update would overwrite", () => {
     expect(out).toContain('name: "Old" → "New"');
   });
 
-  test("a Behavior row renders field names only — no values, by design", () => {
-    // Behaviors carry no `changedValues`; WatcherDiffRow has no such field, so
+  test("an Automation row renders field names only — no values, by design", () => {
+    // Automations carry no `changedValues`; AutomationDiffRow has no such field, so
     // this is enforced by the type system, not just by this assertion.
-    const row: WatcherDiffRow = {
-      kind: "watcher",
+    const row: AutomationDiffRow = {
+      kind: "automation",
       verb: "update",
       id: "digest",
       changedFields: ["prompt", "reaction_script"],
@@ -130,7 +130,7 @@ describe("blocked report shows both sides of the disagreement", () => {
   test("a whole-definition block identifies the definition", () => {
     const out = renderBlockedReport([
       {
-        kind: "watcher",
+        kind: "automation",
         verb: "drift",
         blocking: true,
         id: "chat-slack-97",

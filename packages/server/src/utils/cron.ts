@@ -1,5 +1,5 @@
 /**
- * Cron scheduling utilities shared by feed and watcher schedulers.
+ * Cron scheduling utilities shared by feed and automation schedulers.
  *
  * Collected feeds with schedule = NULL are manual-only (trigger_feed). There is
  * no platform default cadence — callers that want a poll must pass an explicit

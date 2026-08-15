@@ -2,7 +2,7 @@
  * Single config-driven OAuth client for every subscription provider.
  *
  * Handles authorization-code (Claude), RFC 8628 device-code (xAI), and OpenAI's
- * proprietary JSON device-auth (ChatGPT). Behavior is selected by
+ * proprietary JSON device-auth (ChatGPT). Automation is selected by
  * `config.grant` — no per-provider subclasses.
  */
 

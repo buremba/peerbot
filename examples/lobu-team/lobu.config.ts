@@ -2,7 +2,7 @@ import {
   connectorFromFile,
   defineAgent,
   defineAuthProfile,
-  defineBehavior,
+  defineAutomation,
   defineConfig,
   defineConnection,
   defineEntityType,
@@ -19,7 +19,7 @@ import type productActivityDigestReaction from "./product-activity-digest.reacti
 const lunchOpenSkill = defineSkill({
   name: "lunch-open",
   content:
-    "Open today's office lunch run (step 1 in your instructions):\n\n1. Check memory for a `lunch-run` entity dated today — if one exists and isn't\n   cancelled, stop (don't open a second one).\n2. Guess who's in from recent chat activity and past `lunch-run` entities.\n3. Post the lunch call in the channel: react 🍕 / \"+1\" to join, drop restaurant\n   recommendations, options coming ~11:35, targeting ~12:30 delivery. @-mention\n   the people you think are in, but make clear anyone can join or skip.\n4. Open a thread off that message.\n5. Save a `lunch-run` entity {date, channel, status: \"collecting\", thread_ref,\n   restaurant: null, items: []} and a `lunch:opened` event linked to it.\n\nThen end — the lobu-team-lunch-finalize Behavior takes it from here. Keep it to one short\nmessage in the channel.\n",
+    "Open today's office lunch run (step 1 in your instructions):\n\n1. Check memory for a `lunch-run` entity dated today — if one exists and isn't\n   cancelled, stop (don't open a second one).\n2. Guess who's in from recent chat activity and past `lunch-run` entities.\n3. Post the lunch call in the channel: react 🍕 / \"+1\" to join, drop restaurant\n   recommendations, options coming ~11:35, targeting ~12:30 delivery. @-mention\n   the people you think are in, but make clear anyone can join or skip.\n4. Open a thread off that message.\n5. Save a `lunch-run` entity {date, channel, status: \"collecting\", thread_ref,\n   restaurant: null, items: []} and a `lunch:opened` event linked to it.\n\nThen end — the lobu-team-lunch-finalize Automation takes it from here. Keep it to one short\nmessage in the channel.\n",
 });
 
 const lunchFinalizeSkill = defineSkill({
@@ -97,7 +97,7 @@ const lunchRun = defineEntityType({
       type: "string",
       // Adopted verbatim from the live lobu-team schema so `lobu apply`
       // converges instead of blocking on undeclared drift — "lunch-finalize"
-      // is the remote wording, not a typo for the Behavior slug.
+      // is the remote wording, not a typo for the Automation slug.
       description:
         "Reference to the thread/message where the run is happening — lunch-finalize uses this to find the conversation",
     },
@@ -143,7 +143,7 @@ const deliverooConn = defineConnection({
   },
 });
 
-const lunchOpen = defineBehavior({
+const lunchOpen = defineAutomation({
   agent: foodOrdering,
   slug: "lobu-team-lunch-open",
   name: "Open the lunch run",
@@ -156,7 +156,7 @@ const lunchOpen = defineBehavior({
   // above) — the one source of truth, editable + correctable like any entity.
 });
 
-const lunchFinalize = defineBehavior({
+const lunchFinalize = defineAutomation({
   agent: foodOrdering,
   slug: "lobu-team-lunch-finalize",
   name: "Collect orders and hand off",
@@ -172,7 +172,7 @@ const lunchFinalize = defineBehavior({
   skills: ["lunch-finalize"],
   // No inline schema: the reaction reads the run's outcome straight off the
   // `lunch-run` entity this prompt updates (status "done" + restaurant), so the
-  // handoff contract is the entity, not a Behavior-authored payload.
+  // handoff contract is the entity, not an Automation-authored payload.
 });
 
 const productOps = defineAgent({
@@ -183,7 +183,7 @@ const productOps = defineAgent({
   providers: [{ id: "qwen", model: "qwen3.8-max" }],
   tools: {
     // Keep the headless lockdown (no native worker tools) and pre-approve the
-    // one MCP write the Behavior needs: run_sdk carries completeWindow, is not
+    // one MCP write the Automation needs: run_sdk carries completeWindow, is not
     // read-only, and would otherwise stall an unattended run on an approval
     // card. query_sdk is readOnlyHint and needs no grant.
     allowed: [],
@@ -341,7 +341,7 @@ const productionLogs = defineConnection({
   ],
 });
 
-const productActivityDigest = defineBehavior({
+const productActivityDigest = defineAutomation({
   agent: productOps,
   slug: "product-activity-digest",
   name: "Lobu production activity digest",
@@ -398,5 +398,5 @@ export default defineConfig({
     productionLogs,
     lobuTeamSlack,
   ],
-  behaviors: [lunchOpen, lunchFinalize, productActivityDigest],
+  automations: [lunchOpen, lunchFinalize, productActivityDigest],
 });

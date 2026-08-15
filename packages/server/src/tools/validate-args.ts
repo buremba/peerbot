@@ -12,7 +12,7 @@
  * Coercion before validation (`Value.Convert`) is load-bearing: the callers
  * of this boundary are LLMs and external MCP clients,
  * and the historical failure class was round-trip type drift (a list action
- * returns `watcher_id` as a number, the update schema gates on Type.String —
+ * returns `automation_id` as a number, the update schema gates on Type.String —
  * see #1131). Coercing `123` → `"123"` and `"5"` → `5` makes that whole
  * class a non-issue instead of a per-tool audit.
  */
@@ -244,7 +244,7 @@ function checkAgainst(toolName: string, schema: TSchema, args: unknown): unknown
   // coercion would satisfy the validator but the handler would still see the
   // raw value. Deliberately NO `Value.Default`: schema `default:` annotations
   // are client-facing documentation, and handlers apply their own defaults
-  // via `??`. Materializing them here changes behavior — e.g. read_knowledge
+  // via `??`. Materializing them here changes automation — e.g. read_knowledge
   // declares `sort_by: { default: 'score' }` while its include_superseded
   // path requires sort_by to be UNSET; injecting the default broke it.
   const coerced = Value.Convert(schema, normalizeArgs(args));

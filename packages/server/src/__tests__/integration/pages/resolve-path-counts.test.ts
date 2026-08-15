@@ -24,7 +24,7 @@ import { post } from '../../setup/test-helpers';
 
 interface Counts {
   connections: number;
-  behaviors: number;
+  automations: number;
   agents: number;
   devices: number;
   clients: number;
@@ -142,11 +142,11 @@ describe('resolve_path workspace counts', () => {
     expect((await resolveCounts(fixture)).clients).toBe(before);
   });
 
-  it('counts active behaviors', async () => {
+  it('counts active automations', async () => {
     const sql = getTestDb();
     await sql`
-      INSERT INTO watchers
-        (organization_id, created_by, watcher_group_id, name, status,
+      INSERT INTO automations
+        (organization_id, created_by, automation_group_id, name, status,
          notification_channel, notification_priority, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
@@ -155,7 +155,7 @@ describe('resolve_path workspace counts', () => {
         (${fixture.orgId}, ${fixture.userId}, 0, 'Archived', 'archived',
          'notification', 'normal', 0, NOW(), NOW())
     `;
-    expect((await resolveCounts(fixture)).behaviors).toBe(1);
+    expect((await resolveCounts(fixture)).automations).toBe(1);
   });
 
   it('returns counts without include_bootstrap', async () => {
@@ -165,7 +165,7 @@ describe('resolve_path workspace counts', () => {
     const counts = await resolveCounts(fixture, { include_bootstrap: false });
     expect(counts).toEqual({
       connections: expect.any(Number),
-      behaviors: expect.any(Number),
+      automations: expect.any(Number),
       agents: expect.any(Number),
       devices: expect.any(Number),
       clients: expect.any(Number),

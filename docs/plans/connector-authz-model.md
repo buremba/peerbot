@@ -110,7 +110,7 @@ Ordered by how much they threaten the stated requirements.
    "resource-level mirror."
 
 3. **Derived-data leakage.** Per-event gating is not enough. Summaries, embeddings, entity
-   fields, watcher outputs, and `metric_layer` rollups computed over the full corpus can leak
+   fields, automation outputs, and `metric_layer` rollups computed over the full corpus can leak
    restricted info to a user who can't see the underlying events. Derived/aggregate layers
    need the same gate (or per-audience computation), or they're a side channel.
 

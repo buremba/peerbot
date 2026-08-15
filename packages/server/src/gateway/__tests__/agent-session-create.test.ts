@@ -14,7 +14,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:te
 import { generateWorkerToken } from "@lobu/core";
 import { hashToken } from "../../auth/oauth/utils.js";
 import { getDb } from "../../db/client.js";
-import { parseBehaviorRunConversationId } from "../permissions/behavior-run-intent.js";
+import { parseAutomationRunConversationId } from "../permissions/automation-run-intent.js";
 import { createAgentApi } from "../routes/public/agent.js";
 import { setAuthProvider } from "../routes/public/settings-auth.js";
 import {
@@ -379,28 +379,28 @@ describe("POST /api/v1/agents — agent resolution + cross-tenant isolation", ()
 });
 
 /**
- * Watcher session-id shape.
+ * Automation session-id shape.
  *
- * Watcher dispatch correlation — the worker session key AND the API/SSE
+ * Automation dispatch correlation — the worker session key AND the API/SSE
  * owner-routing key (unified-thread-consumer) — both derive from the
- * conversationId and rely on the exact `..._watcher_<watcherId>_run_<runId>`
+ * conversationId and rely on the exact `..._automation_<automationId>_run_<runId>`
  * shape. The org-scope suffix added for the default-agent / pinned-API paths
- * must NOT be spliced into watcher conversationIds: `_<org>_` between
- * `watcher_<id>` and `run_<id>` breaks watcher→worker dispatch (the sdk-e2e
- * watcher gate went red on exactly this). Tenant isolation for watchers rides
+ * must NOT be spliced into automation conversationIds: `_<org>_` between
+ * `automation_<id>` and `run_<id>` breaks automation→worker dispatch (the sdk-e2e
+ * automation gate went red on exactly this). Tenant isolation for automations rides
  * `session.organizationId` (still set) + the route guard, not the id string.
  */
-describe("POST /api/v1/agents — behavior_run intent verification", () => {
-  const ORG_ID = "org-watcher";
-  const OTHER_ORG = "org-watcher-other";
-  const AGENT = "watcher-agent";
+describe("POST /api/v1/agents — automation_run intent verification", () => {
+  const ORG_ID = "org-automation";
+  const OTHER_ORG = "org-automation-other";
+  const AGENT = "automation-agent";
   const SEED_USER = "intent-seed-user";
   const INTERNAL_SERVICE_TOKEN = "intent-internal-service-token";
   const ORDINARY_ACCESS_TOKEN = "intent-ordinary-access-token";
 
   /**
-   * Seed one Behavior plus a run in the state the server dispatcher leaves it
-   * in. Returns both ids so a test can name a real Behavior and a real run
+   * Seed one Automation plus a run in the state the server dispatcher leaves it
+   * in. Returns both ids so a test can name a real Automation and a real run
    * without hardcoding sequence values.
    */
   async function seedDispatchedRun(
@@ -409,42 +409,42 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
       status?: string;
       claimedBy?: string | null;
     } = {},
-  ): Promise<{ behaviorId: number; runId: number }> {
+  ): Promise<{ automationId: number; runId: number }> {
     const sql = getDb();
     const orgId = opts.organizationId ?? ORG_ID;
     await seedAgentRow(AGENT, { organizationId: orgId });
-    // watchers.created_by is FK-constrained to `user`.
+    // automations.created_by is FK-constrained to `user`.
     await sql`
       INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
       VALUES (${SEED_USER}, ${SEED_USER}, ${`${SEED_USER}@example.com`},
               false, now(), now())
       ON CONFLICT (id) DO NOTHING
     `;
-    const [behavior] = (await sql`
-      WITH next_id AS (SELECT nextval('watchers_id_seq')::integer AS id)
-      INSERT INTO watchers (
-        id, watcher_group_id, organization_id, agent_id, created_by, name, slug
+    const [automation] = (await sql`
+      WITH next_id AS (SELECT nextval('automations_id_seq')::integer AS id)
+      INSERT INTO automations (
+        id, automation_group_id, organization_id, agent_id, created_by, name, slug
       )
       SELECT id, id, ${orgId}, ${AGENT}, ${SEED_USER},
              'Intent fixture', 'intent-fixture-' || id
       FROM next_id
       RETURNING id
     `) as unknown as Array<{ id: number }>;
-    const behaviorId = Number(behavior.id);
+    const automationId = Number(automation.id);
     const [run] = (await sql`
       INSERT INTO runs (
-        organization_id, run_type, watcher_id, status, claimed_by, created_at
+        organization_id, run_type, automation_id, status, claimed_by, created_at
       ) VALUES (
-        ${orgId}, 'behavior', ${behaviorId},
+        ${orgId}, 'automation', ${automationId},
         ${opts.status ?? "claimed"}, ${opts.claimedBy ?? "lobu-dispatcher"},
         now()
       )
       RETURNING id
     `) as unknown as Array<{ id: number }>;
-    return { behaviorId, runId: Number(run.id) };
+    return { automationId, runId: Number(run.id) };
   }
 
-  function makeWatcherApp() {
+  function makeAutomationApp() {
     const sessions = new Map<string, { conversationId: string }>();
     return createAgentApi({
       queueProducer: {} as never,
@@ -472,7 +472,7 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
       agentMetadataStore: {
         async getMetadata(id: string) {
           // Non-empty org metadata → tokenOrganizationId resolves, so the
-          // suffix WOULD be added on a non-watcher path. The watcher exemption
+          // suffix WOULD be added on a non-automation path. The automation exemption
           // is what keeps it out.
           return id === AGENT
             ? {
@@ -489,7 +489,7 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
     body: Record<string, unknown>,
     accessToken = INTERNAL_SERVICE_TOKEN,
   ): Promise<Response> {
-    return makeWatcherApp().request("/api/v1/agents", {
+    return makeAutomationApp().request("/api/v1/agents", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -499,11 +499,11 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
     });
   }
 
-  function intentBody(runId: number, behaviorId: number) {
+  function intentBody(runId: number, automationId: number) {
     return {
       agentId: AGENT,
       forceNew: true,
-      intent: { kind: "behavior_run", runId, behaviorId },
+      intent: { kind: "automation_run", runId, automationId },
     };
   }
 
@@ -543,23 +543,23 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
     `;
   });
 
-  test("a dispatched run keeps the watcher_<id>_run_<id> shape, no org suffix", async () => {
-    const { behaviorId, runId } = await seedDispatchedRun();
-    const res = await post(intentBody(runId, behaviorId));
+  test("a dispatched run keeps the automation_<id>_run_<id> shape, no org suffix", async () => {
+    const { automationId, runId } = await seedDispatchedRun();
+    const res = await post(intentBody(runId, automationId));
 
     expect(res.status).toBe(201);
     const body = (await res.json()) as { agentId?: string };
-    // Exact prod-proven shape: `<agentId>_watcher_<watcherId>_run_<runId>`.
-    expect(body.agentId).toBe(`${AGENT}_watcher_${behaviorId}_run_${runId}`);
+    // Exact prod-proven shape: `<agentId>_automation_<automationId>_run_<runId>`.
+    expect(body.agentId).toBe(`${AGENT}_automation_${automationId}_run_${runId}`);
     expect(body.agentId).not.toContain(ORG_ID);
   });
 
-  test("an ordinary same-org token cannot borrow an in-flight Behavior run", async () => {
-    const { behaviorId, runId } = await seedDispatchedRun();
+  test("an ordinary same-org token cannot borrow an in-flight Automation run", async () => {
+    const { automationId, runId } = await seedDispatchedRun();
     expect(
       (
         await post(
-          intentBody(runId, behaviorId),
+          intentBody(runId, automationId),
           ORDINARY_ACCESS_TOKEN,
         )
       ).status,
@@ -567,22 +567,22 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
   });
 
   test("an intent naming a run that does not exist is refused", async () => {
-    const { behaviorId } = await seedDispatchedRun();
-    const res = await post(intentBody(999_999, behaviorId));
+    const { automationId } = await seedDispatchedRun();
+    const res = await post(intentBody(999_999, automationId));
     expect(res.status).toBe(403);
     expect((await res.json()) as { error?: string }).toEqual({
       success: false,
-      error: "Unknown or undispatched Behavior run",
+      error: "Unknown or undispatched Automation run",
     });
   });
 
-  test("an intent naming another Behavior's run is refused", async () => {
-    // The escalation this closes: borrowing a sibling Behavior's session shape
+  test("an intent naming another Automation's run is refused", async () => {
+    // The escalation this closes: borrowing a sibling Automation's session shape
     // (and so its execution_config) by naming a run that is not its own.
     const mine = await seedDispatchedRun();
     const sibling = await seedDispatchedRun();
-    // Name MY Behavior but the sibling's run.
-    expect((await post(intentBody(sibling.runId, mine.behaviorId))).status).toBe(
+    // Name MY Automation but the sibling's run.
+    expect((await post(intentBody(sibling.runId, mine.automationId))).status).toBe(
       403,
     );
   });
@@ -590,31 +590,31 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
   test("an intent naming another tenant's run is refused", async () => {
     const other = await seedDispatchedRun({ organizationId: OTHER_ORG });
     expect(
-      (await post(intentBody(other.runId, other.behaviorId))).status,
+      (await post(intentBody(other.runId, other.automationId))).status,
     ).toBe(403);
   });
 
   test("a run the server never dispatched is refused", async () => {
-    // A pending run exists the moment an event activates a Behavior, long
+    // A pending run exists the moment an event activates an Automation, long
     // before dispatch. Accepting one would make the check trivially satisfiable
-    // by anyone who can trigger the Behavior.
-    const { behaviorId, runId } = await seedDispatchedRun({
+    // by anyone who can trigger the Automation.
+    const { automationId, runId } = await seedDispatchedRun({
       status: "pending",
       claimedBy: null,
     });
-    expect((await post(intentBody(runId, behaviorId))).status).toBe(403);
+    expect((await post(intentBody(runId, automationId))).status).toBe(403);
   });
 
   test("a run claimed by something other than the dispatcher is refused", async () => {
-    const { behaviorId, runId } = await seedDispatchedRun({
+    const { automationId, runId } = await seedDispatchedRun({
       claimedBy: "device-worker-1",
     });
-    expect((await post(intentBody(runId, behaviorId))).status).toBe(403);
+    expect((await post(intentBody(runId, automationId))).status).toBe(403);
   });
 
   /**
    * The invariant is not "these inputs 400" — it is that NO session without a
-   * verified intent ever carries the `_watcher_<id>_run_<id>` correlation the
+   * verified intent ever carries the `_automation_<id>_run_<id>` correlation the
    * unattended-tool policy reads. Two mechanisms deliver that, and which one
    * fires depends on whether an org resolves: `buildApiConversationId`
    * interleaves the org id between userId and thread (breaking the shape), and
@@ -622,12 +622,12 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
    * property covers both, and keeps passing if either mechanism changes.
    */
   for (const [name, userId, thread] of [
-    ["exact fields", "watcher_5", "run_1"],
-    ["split suffix", "caller_watcher_5", "run_1"],
-    ["suffix packed into userId", "caller_watcher_5_run_1", undefined],
-    ["suffix packed into thread", "caller", "topic_watcher_5_run_1"],
+    ["exact fields", "automation_5", "run_1"],
+    ["split suffix", "caller_automation_5", "run_1"],
+    ["suffix packed into userId", "caller_automation_5_run_1", undefined],
+    ["suffix packed into thread", "caller", "topic_automation_5_run_1"],
   ] as const) {
-    test(`an unverified session never carries the Behavior suffix — ${name}`, async () => {
+    test(`an unverified session never carries the Automation suffix — ${name}`, async () => {
       const res = await post({
         agentId: AGENT,
         userId,
@@ -638,13 +638,13 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
       if (res.status === 400) {
         expect((await res.json()) as { error?: string }).toEqual({
           success: false,
-          error: "Reserved Behavior conversation suffix",
+          error: "Reserved Automation conversation suffix",
         });
         return;
       }
       expect(res.status).toBe(201);
       const body = (await res.json()) as { agentId?: string };
-      expect(parseBehaviorRunConversationId(body.agentId ?? "")).toBeNull();
+      expect(parseAutomationRunConversationId(body.agentId ?? "")).toBeNull();
     });
   }
 
@@ -656,13 +656,13 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
     const res = await post({
       agentId: AGENT,
       userId: "caller",
-      thread: "topic_watcher_5_run_1",
+      thread: "topic_automation_5_run_1",
       forceNew: true,
     });
     expect(res.status).toBe(400);
     expect((await res.json()) as { error?: string }).toEqual({
       success: false,
-      error: "Reserved Behavior conversation suffix",
+      error: "Reserved Automation conversation suffix",
     });
   });
 });

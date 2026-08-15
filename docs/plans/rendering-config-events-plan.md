@@ -4,7 +4,7 @@
 
 ## Thesis (what we landed on)
 - **Types own schema + template.** Two first-class type registries — `entity_types` and a new
-  first-class `event_types` (lifted out of `entity_types.event_kinds`). Watchers own neither.
+  first-class `event_types` (lifted out of `entity_types.event_kinds`). Automations own neither.
 - **One renderer, one resolution order** for entities AND events:
   `instance override → thread overlay → env applied → type default → auto-generated-from-schema`.
 - **Config is field-grained config-change events on the events spine**, folded into "effective
@@ -23,7 +23,7 @@
 ## Already shipped (the foundation)
 - **B1** (`36f405b5e`) — source-ranked `entity_field_state` projection: events fold to current
   state with a precedence axis. **This is the exact primitive the config projection reuses.**
-- **Track A** — watcher authors no schema/template; rendering is the type's job. The reason this
+- **Track A** — automation authors no schema/template; rendering is the type's job. The reason this
   plan exists.
 
 ## Cross-cutting discipline
@@ -43,9 +43,9 @@
   promoted entities are never bare.
 - **R0.2** Unify the entity resolver to `instance → type → auto-default` (extend the existing
   `resolve_path` COALESCE with the auto-default tail).
-- **R0.3 (owletto)** Remove the dead watcher-`json_template` rendering (`watcher-detail`,
-  `watcher-group-detail`, `watcher-summary-view`); add **watcher → promoted-entities navigation**
-  so the watcher view links to the richly-rendered entities. Bump the lobu pointer.
+- **R0.3 (owletto)** Remove the dead automation-`json_template` rendering (`automation-detail`,
+  `automation-group-detail`, `automation-summary-view`); add **automation → promoted-entities navigation**
+  so the automation view links to the richly-rendered entities. Bump the lobu pointer.
 - Gate: entity render tests (default + override + drift graceful-skip); owletto compile + manual.
 
 ## Phase R1 — First-class event types (Gap 1)
@@ -64,13 +64,13 @@
 ## Phase C0 — Config-as-events foundation (the unified audit)
 *Config changes become field-grained events; build the config projection.*
 - **C0.1** Define the **config-change event** shape (`semantic_type='config_change'`):
-  `{ target_kind (entity_type|event_type|template|classifier|watcher), target_id, field_path,
+  `{ target_kind (entity_type|event_type|template|classifier|automation), target_id, field_path,
   mutation, value, layer, actor, thread_id? }` — same field-grained shape as corrections/`entity_field`.
 - **C0.2** Build the **config projection**: fold config-change events → effective config state,
   reusing the B1 projection pattern with a `layer` precedence axis. PG-backed projected table
   (`config_state` or per-type) + trigger, mirroring `project_entity_field`.
 - **C0.3** Make runtime config writers emit config-change events: `manage_view_templates`,
-  `manage_entity_schema`, `manage_classifiers`, watcher CRUD. (Audit lands on the spine — the
+  `manage_entity_schema`, `manage_classifiers`, automation CRUD. (Audit lands on the spine — the
   "it's in the event logs" requirement.) Keep version tables for now (mirror), retire later.
 - Gate: config projection tests (fold, precedence, replay); audit-replay test.
 
@@ -96,7 +96,7 @@
   dev accepts them as the working set. A mode flag the config write-path checks.
 - **A0.3** Thread commit → PR/apply path (a thread's overlay diff becomes a config change applied via
   the declarative pipeline).
-- **A0.4** Retire the version tables (`view_template_versions`, `watcher_versions`) once the config
+- **A0.4** Retire the version tables (`view_template_versions`, `automation_versions`) once the config
   projection + git are the source of truth — contract migrations, two-phase.
 - Gate: apply validation tests; dev/prod policy tests; e2e thread→commit→apply.
 

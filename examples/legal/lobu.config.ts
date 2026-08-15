@@ -5,7 +5,7 @@ import {
   defineSkill,
   defineEntityType,
   defineRelationshipType,
-  defineBehavior,
+  defineAutomation,
   secret,
 } from "@lobu/cli/config";
 import type DocuSignEnvelopesConnector from "./docusign-envelopes.connector.ts";
@@ -177,7 +177,7 @@ const createsRisk = defineRelationshipType({
   description: "Keep legal risk linked to the clause or term that caused it.",
 });
 
-const contractReviewTracker = defineBehavior({
+const contractReviewTracker = defineAutomation({
   agent: legalReview,
   slug: "contract-review-tracker",
   name: "Contract review tracker",
@@ -203,5 +203,5 @@ export default defineConfig({
   agents: [legalReview],
   entities: [clause, contract, counterparty, risk],
   relationships: [belongsToCounterparty, containsClause, createsRisk],
-  behaviors: [contractReviewTracker],
+  automations: [contractReviewTracker],
 });

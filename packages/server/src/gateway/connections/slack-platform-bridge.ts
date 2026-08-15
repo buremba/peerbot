@@ -102,7 +102,7 @@ export function registerSlackPlatformHandlers(
 
     // Slack hands slash commands the bare channel id (`C…`/`D…`), but inbound
     // messages reach the dispatcher with the Chat SDK's `slack:<id>` thread
-    // channel id — and Behavior channel subscriptions use that form. Use it
+    // channel id — and Automation channel subscriptions use that form. Use it
     // here too so `getBinding` lookups (and preview `/lobu link` bindings)
     // agree across both ingress paths.
     const channelId = `slack:${rawChannelId}`;

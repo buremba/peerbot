@@ -10,9 +10,9 @@
 // use (ReflectResult) and re-exported below for connector authors.
 import type { EntityTypeContribution, ReflectedMeasure } from './metrics.js';
 import type {
-  ConnectorBehaviorEvent,
-  ConnectorBehaviorSignalDraft,
-} from './behavior-triggers.js';
+  ConnectorAutomationEvent,
+  ConnectorAutomationSignalDraft,
+} from './automation-triggers.js';
 
 // =============================================================================
 // Connector Definition
@@ -44,8 +44,8 @@ export interface ConnectorDefinition {
   feeds?: Record<string, FeedDefinition>;
   /** Available action definitions (keyed by action_key) */
   actions?: Record<string, ActionDefinition>;
-  /** Connector-normalized events that can activate Behaviors. */
-  behaviorEvents?: ConnectorBehaviorEvent[];
+  /** Connector-normalized events that can activate Automations. */
+  automationEvents?: ConnectorAutomationEvent[];
   /**
    * Declarative inbound-webhook config. Presence means this connector receives
    * real-time provider deliveries at `POST /api/v1/webhooks/:connectionId`,
@@ -614,13 +614,13 @@ export interface EntityIdentitySpec {
    *     stale, since-reused secondary identifier like a renamed login must not
    *     conflate the two). A new entity is created keyed on the primary id.
    * Defaults to false: non-primary identities match equal-weight (a person is
-   * matched by ANY of them — the cross-channel behavior whatsapp/email rely on).
+   * matched by ANY of them — the cross-channel automation whatsapp/email rely on).
    */
   primary?: boolean;
 }
 
 /**
- * Descriptive field stored on `entities.metadata`. Behavior determines how
+ * Descriptive field stored on `entities.metadata`. Automation determines how
  * the ingestion pipeline reconciles the value on match vs create.
  */
 export interface EntityTraitSpec {
@@ -734,11 +734,11 @@ export interface Feed {
 // Run
 // =============================================================================
 
-export type RunType = 'sync' | 'action' | 'code' | 'behavior' | 'auth';
+export type RunType = 'sync' | 'action' | 'code' | 'automation' | 'auth';
 export type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timeout';
 // 'expired' is the system giving up on an undecided approval after the TTL
 // (scheduled/expire-pending-approvals.ts). It is deliberately distinct from
-// 'rejected', which is a HUMAN decision the Behavior learns from — an agent
+// 'rejected', which is a HUMAN decision the Automation learns from — an agent
 // must not train on silence as if it were disapproval.
 export type ApprovalStatus =
   | 'pending'
@@ -811,8 +811,8 @@ export interface EventEnvelope {
   metadata?: Record<string, unknown>;
   /** Pre-computed embedding vector */
   embedding?: number[];
-  /** Connector-normalized Behavior activations derived from this event. */
-  behavior_signals?: ConnectorBehaviorSignalDraft[];
+  /** Connector-normalized Automation activations derived from this event. */
+  automation_signals?: ConnectorAutomationSignalDraft[];
 }
 
 // =============================================================================
@@ -1217,10 +1217,10 @@ export interface ContentItem {
   feed_key?: string | null;
   /** Human-facing feed display name (e.g. "X Home Timeline"). */
   feed_name?: string | null;
-  /** Behavior that produced the event (when behavior-output-sourced). */
-  behavior_id?: number | null;
-  /** Human-facing behavior name (when behavior-output-sourced). */
-  behavior_name?: string | null;
+  /** Automation that produced the event (when automation-output-sourced). */
+  automation_id?: number | null;
+  /** Human-facing automation name (when automation-output-sourced). */
+  automation_name?: string | null;
   /** Managed agent that produced the event (authenticated workspace reads only). */
   agent_id?: string | null;
   /** Human-facing managed agent name. */

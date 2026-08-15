@@ -19,7 +19,7 @@ describe("migrate-up migration ledger versions", () => {
 
   it("rejects duplicate versions before connecting to Postgres", () => {
     writeFileSync(
-      join(dir, "20260803140000_behavior_outputs.sql"),
+      join(dir, "20260803140000_automation_outputs.sql"),
       "-- migrate:up\nSELECT 1;"
     );
     writeFileSync(

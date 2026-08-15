@@ -287,15 +287,15 @@ write_change examples/personal-agent/lobu.config.ts $'export default {\n  model:
 commit_all
 assert_review "model structural edit" "lobu.config.ts"
 
-# A model literal moved between Behavior blocks changes which Behavior uses the
+# A model literal moved between Automation blocks changes which Automation uses the
 # route. The delete-only and add-only hunks must not cancel out globally.
 new_repo
-write_change examples/personal-agent/lobu.config.ts $'export default {\n  behaviors: [\n    {\n      name: "first",\n      model: "qwen/old",\n      prompt: "first",\n    },\n    {\n      name: "second",\n      prompt: "second",\n    },\n  ],\n};'
+write_change examples/personal-agent/lobu.config.ts $'export default {\n  automations: [\n    {\n      name: "first",\n      model: "qwen/old",\n      prompt: "first",\n    },\n    {\n      name: "second",\n      prompt: "second",\n    },\n  ],\n};'
 commit_all
 git -C "$tmp_repo" branch -f main
-write_change examples/personal-agent/lobu.config.ts $'export default {\n  behaviors: [\n    {\n      name: "first",\n      prompt: "first",\n    },\n    {\n      name: "second",\n      model: "qwen/old",\n      prompt: "second",\n    },\n  ],\n};'
+write_change examples/personal-agent/lobu.config.ts $'export default {\n  automations: [\n    {\n      name: "first",\n      prompt: "first",\n    },\n    {\n      name: "second",\n      model: "qwen/old",\n      prompt: "second",\n    },\n  ],\n};'
 commit_all
-assert_review "model moved between behaviors" "lobu.config.ts"
+assert_review "model moved between automations" "lobu.config.ts"
 
 new_repo
 write_change examples/personal-agent/lobu.config.ts $'export default {\n  model: "qwen/old",\n  prompt: "old",\n};'

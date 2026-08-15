@@ -19,7 +19,7 @@ import { ENTITY_CHANGE_ACTION_KEYS } from "../entity-field-approval";
  *
  * A SAFETY policy, deliberately narrow — not a rendering hint. Entity changes
  * qualify because the card carries the whole diff. An agent ask qualifies
- * because the answer IS the outcome; nothing is applied unseen. A Behavior or
+ * because the answer IS the outcome; nothing is applied unseen. An Automation or
  * agent definition write does NOT: approving it from a row would commit a
  * config change the reviewer never looked at.
  *
@@ -41,7 +41,7 @@ function getInlineDecidableActionKeys(): readonly string[] {
 	return inlineDecidableActionKeys;
 }
 
-const USER_FACING_RUN_TYPES = ["behavior", "sync", "action", "internal"] as const;
+const USER_FACING_RUN_TYPES = ["automation", "sync", "action", "internal"] as const;
 
 export type ActivityCard = {
 	id: string;
@@ -91,8 +91,8 @@ export type ActivityCard = {
 	feed_id?: number;
 	feed_key?: string;
 	feed_name?: string;
-	behavior_id?: number;
-	behavior_name?: string;
+	automation_id?: number;
+	automation_name?: string;
 	agent_id?: string;
 	agent_name?: string;
 	client_id?: string;
@@ -148,7 +148,7 @@ function buildNotificationCard(
 	//
 	//   1. POLICY — is this family safe to decide without opening the
 	//      review page? Entity changes are (the diff is in the card);
-	//      a Behavior definition write deliberately is NOT. An ask is,
+	//      an Automation definition write deliberately is NOT. An ask is,
 	//      because the answer IS the outcome — there is no held
 	//      mutation being applied sight-unseen.
 	//   2. SHAPE — can the answer be given without typing? That is a
@@ -192,10 +192,10 @@ function buildNotificationCard(
 		feed_id: typeof n.feed_id === "number" ? n.feed_id : undefined,
 		feed_key: typeof n.feed_key === "string" ? n.feed_key : undefined,
 		feed_name: typeof n.feed_name === "string" ? n.feed_name : undefined,
-		behavior_id:
-			typeof n.behavior_id === "number" ? n.behavior_id : undefined,
-		behavior_name:
-			typeof n.behavior_name === "string" ? n.behavior_name : undefined,
+		automation_id:
+			typeof n.automation_id === "number" ? n.automation_id : undefined,
+		automation_name:
+			typeof n.automation_name === "string" ? n.automation_name : undefined,
 		agent_id: typeof n.agent_id === "string" ? n.agent_id : undefined,
 		agent_name:
 			typeof n.agent_name === "string" ? n.agent_name : undefined,
@@ -282,15 +282,15 @@ export function runHref(
 	row: {
 		id: number;
 		run_type: string;
-		watcher_id: number | null;
+		automation_id: number | null;
 		connection_id: number | null;
 		connector_key: string | null;
 		approval_status: string | null;
 		agent_id: string | null;
 	},
 ): string | null {
-	if (row.run_type === "behavior" && row.watcher_id != null && row.agent_id) {
-		return `/${ownerSlug}/agents/${row.agent_id}/behaviors/${row.watcher_id}`;
+	if (row.run_type === "automation" && row.automation_id != null) {
+		return `/${ownerSlug}/automations/${row.automation_id}`;
 	}
 	if (
 		(row.run_type === "sync" || row.run_type === "action") &&
@@ -318,8 +318,8 @@ export function runHref(
 
 function runTitle(row: {
 	run_type: string;
-	watcher_name: string | null;
-	watcher_id: number | null;
+	automation_name: string | null;
+	automation_id: number | null;
 	feed_display_name: string | null;
 	feed_key: string | null;
 	connection_display_name: string | null;
@@ -327,11 +327,11 @@ function runTitle(row: {
 	connector_key: string | null;
 	id: number;
 }): string {
-	if (row.run_type === "behavior") {
+	if (row.run_type === "automation") {
 		return (
-			row.watcher_name ??
-			(row.watcher_id != null
-				? `Behavior #${row.watcher_id}`
+			row.automation_name ??
+			(row.automation_id != null
+				? `Automation #${row.automation_id}`
 				: `Run #${row.id}`)
 		);
 	}
@@ -362,7 +362,7 @@ function runTitle(row: {
 function collapseKeyForRun(row: {
 	run_type: string;
 	connection_id: number | null;
-	watcher_id: number | null;
+	automation_id: number | null;
 	connector_key: string | null;
 	feed_id: number | null;
 }): string | null {
@@ -373,8 +373,8 @@ function collapseKeyForRun(row: {
 		}
 		return null;
 	}
-	if (row.run_type === "behavior" && row.watcher_id != null) {
-		return `watcher:${row.watcher_id}`;
+	if (row.run_type === "automation" && row.automation_id != null) {
+		return `automation:${row.automation_id}`;
 	}
 	return null;
 }
@@ -434,8 +434,8 @@ export function collapseAdjacentActivityCards(items: RawCard[]): RawCard[] {
 				kind:
 					latest.kind === "sync"
 						? "sync_group"
-						: latest.kind === "behavior_run"
-							? "behavior_run_group"
+						: latest.kind === "automation_run"
+							? "automation_run_group"
 							: `${latest.kind}_group`,
 				body,
 				count,
@@ -457,7 +457,7 @@ export async function listOrgActivity(opts: {
 	aggregate?: boolean;
 	kinds?: string[];
 	/**
-	 * Scope to one agent: filter runs to that agent's Behaviors and drop
+	 * Scope to one agent: filter runs to that agent's Automations and drop
 	 * notifications (org/user-scoped, not attributable to an agent).
 	 */
 	agentId?: string;
@@ -495,25 +495,25 @@ export async function listOrgActivity(opts: {
 			: [...USER_FACING_RUN_TYPES];
 		if (runKinds.length > 0) {
 			const sql = getDb();
-			// When agent-scoped, restrict to that agent's Behavior runs. The join to
-			// `watchers` already exposes `w.agent_id`; a non-null agentId turns the
-			// LEFT JOIN into an effective inner filter (runs with no watcher, i.e.
+			// When agent-scoped, restrict to that agent's Automation runs. The join to
+			// `automations` already exposes `w.agent_id`; a non-null agentId turns the
+			// LEFT JOIN into an effective inner filter (runs with no automation, i.e.
 			// bare syncs/actions, are dropped — they aren't agent-owned).
 			const agentFilter = opts.agentId
 				? sql`AND w.agent_id = ${opts.agentId}`
 				: sql``;
 			const rows = (await sql`
-        SELECT r.id, r.run_type, r.watcher_id, r.connection_id, r.feed_id,
+        SELECT r.id, r.run_type, r.automation_id, r.connection_id, r.feed_id,
                r.connector_key, r.action_key AS operation_key,
                r.approval_status, r.status, r.error_message, r.items_collected,
                r.created_at, r.completed_at,
                f.feed_key, f.display_name AS feed_display_name,
                c.display_name AS connection_display_name,
-               w.name AS watcher_name, w.agent_id
+               w.name AS automation_name, w.agent_id
         FROM runs r
         LEFT JOIN feeds f ON f.id = r.feed_id
         LEFT JOIN connections c ON c.id = r.connection_id
-        LEFT JOIN watchers w ON w.id = r.watcher_id
+        LEFT JOIN automations w ON w.id = r.automation_id
         WHERE r.organization_id = ${opts.organizationId}
           AND r.run_type = ANY(${pgTextArray(runKinds)}::text[])
           ${agentFilter}
@@ -522,7 +522,7 @@ export async function listOrgActivity(opts: {
       `) as unknown as Array<{
 				id: number;
 				run_type: string;
-				watcher_id: number | null;
+				automation_id: number | null;
 				connection_id: number | null;
 				feed_id: number | null;
 				connector_key: string | null;
@@ -535,7 +535,7 @@ export async function listOrgActivity(opts: {
 				feed_key: string | null;
 				feed_display_name: string | null;
 				connection_display_name: string | null;
-				watcher_name: string | null;
+				automation_name: string | null;
 				agent_id: string | null;
 			}>;
 
@@ -546,8 +546,8 @@ export async function listOrgActivity(opts: {
 						: String(r.created_at);
 				const atMs = new Date(created).getTime();
 				const kind =
-					r.run_type === "behavior"
-						? "behavior_run"
+					r.run_type === "automation"
+						? "automation_run"
 						: r.run_type === "sync"
 							? "sync"
 							: "run";
@@ -568,7 +568,7 @@ export async function listOrgActivity(opts: {
 					href: runHref(opts.ownerSlug, r),
 					run_id: r.id,
 					connection_id: r.connection_id ?? undefined,
-					behavior_id: r.watcher_id ?? undefined,
+					automation_id: r.automation_id ?? undefined,
 					collapseKey: collapseKeyForRun(r),
 					itemsCollected: r.items_collected,
 				});

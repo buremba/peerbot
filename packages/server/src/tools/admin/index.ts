@@ -1,5 +1,5 @@
 /**
- * Admin tool surface (manage_*, Behavior reads, knowledge reads, notify).
+ * Admin tool surface (manage_*, Automation reads, knowledge reads, notify).
  *
  * REST + MCP `tools/call` dispatch surface (`POST /api/:orgSlug/:toolName`).
  * Omitted from MCP `tools/list` — agents reach these via `query_sdk` / `run_sdk`
@@ -16,10 +16,10 @@ import {
 	getContent,
 } from "../get_content";
 import {
-	GetBehaviorResultSchema,
-	GetBehaviorSchema,
-	getBehavior,
-} from "../get_behavior";
+	GetAutomationResultSchema,
+	GetAutomationSchema,
+	getAutomation,
+} from "../get_automation";
 import type { ToolAnnotations, ToolContext, ToolDefinition } from "../registry";
 import { ManageAgentsSchema, manageAgents } from "./manage_agents";
 import {
@@ -73,10 +73,10 @@ import {
 	manageViewTemplates,
 } from "./manage_view_templates";
 import {
-	ManageBehaviorsSchema,
-	manageBehaviors,
-	ManageBehaviorsResultSchema,
-} from "./manage_behaviors";
+	ManageAutomationsSchema,
+	manageAutomations,
+	ManageAutomationsResultSchema,
+} from "./manage_automations";
 import { NotifySchema, notify } from "./notify";
 
 interface AdminToolEntry {
@@ -142,7 +142,7 @@ const ENTRIES: AdminToolEntry[] = [
 	{
 		name: "manage_connections",
 		description:
-			"Connection and connector lifecycle. Workflow: browse via `manage_catalog`, install with action `install_connector`, then `connect` (creates a connection + auth link in one call; returns a connect_url for the user — poll `get` until status='active'). Also: list/get/update/delete connections and connector config. Event/message subscriptions are Behaviors managed through `manage_behaviors`. Note: some connectors auto-register from a paired device (Chrome extension / Mac app advertising a capability) and appear in `list` without an explicit install. SDK alternative: client.connections.",
+			"Connection and connector lifecycle. Workflow: browse via `manage_catalog`, install with action `install_connector`, then `connect` (creates a connection + auth link in one call; returns a connect_url for the user — poll `get` until status='active'). Also: list/get/update/delete connections and connector config. Event/message subscriptions are Automations managed through `manage_automations`. Note: some connectors auto-register from a paired device (Chrome extension / Mac app advertising a capability) and appear in `list` without an explicit install. SDK alternative: client.connections.",
 		schema: ManageConnectionsSchema,
 		resultSchema: ManageConnectionsResultSchema,
 		handler: manageConnections,
@@ -151,7 +151,7 @@ const ENTRIES: AdminToolEntry[] = [
 	{
 		name: "manage_catalog",
 		description:
-			"Browse installable connectors, skills, and Behavior templates. Use `list_catalog` to see available (manifest) entries — each connector entry's `detail.source_uri` feeds into `manage_connections` action `install_connector`. Use `list_installed` with `include_catalog: true` to see installed + available with `installed`/`installable` flags. Read-only. SDK alternative: client.catalog.",
+			"Browse installable connectors, skills, and Automation templates. Use `list_catalog` to see available (manifest) entries — each connector entry's `detail.source_uri` feeds into `manage_connections` action `install_connector`. Use `list_installed` with `include_catalog: true` to see installed + available with `installed`/`installable` flags. Read-only. SDK alternative: client.catalog.",
 		schema: ManageCatalogSchema,
 		resultSchema: ManageCatalogResultSchema,
 		handler: manageCatalog,
@@ -226,22 +226,22 @@ const ENTRIES: AdminToolEntry[] = [
 		annotations: DESTRUCTIVE_WITH_TITLE("Manage schedules"),
 	},
 	{
-		name: "manage_behaviors",
+		name: "manage_automations",
 		description:
-			"Create, list, and manage Behaviors. SDK alternative: client.behaviors.",
-		schema: ManageBehaviorsSchema,
-		resultSchema: ManageBehaviorsResultSchema,
-		handler: manageBehaviors,
-		annotations: DESTRUCTIVE_WITH_TITLE("Manage behaviors"),
+			"Create, list, and manage Automations. SDK alternative: client.automations.",
+		schema: ManageAutomationsSchema,
+		resultSchema: ManageAutomationsResultSchema,
+		handler: manageAutomations,
+		annotations: DESTRUCTIVE_WITH_TITLE("Manage automations"),
 	},
 	{
-		name: "get_behavior",
+		name: "get_automation",
 		description:
-			"Behavior detail + windows. SDK alternative: client.behaviors.get.",
-		schema: GetBehaviorSchema,
-		resultSchema: GetBehaviorResultSchema,
-		handler: getBehavior,
-		annotations: READ_ONLY_WITH_TITLE("Get behavior"),
+			"Automation detail + windows. SDK alternative: client.automations.get.",
+		schema: GetAutomationSchema,
+		resultSchema: GetAutomationResultSchema,
+		handler: getAutomation,
+		annotations: READ_ONLY_WITH_TITLE("Get automation"),
 	},
 	{
 		name: "read_knowledge",

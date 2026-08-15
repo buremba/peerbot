@@ -9,16 +9,16 @@ import { authorizeCapabilities } from '@lobu/core';
 import type { PollRequest } from '@lobu/core/contracts/worker/protocol';
 import type { Context } from 'hono';
 import {
-  behaviorTriggerSignals,
+  automationTriggerSignals,
   isWorkspaceEventTriggerSignal,
-} from '../behaviors/workspace-event-contract';
+} from '../automations/workspace-event-contract';
 import { getDb, parsePgTextArray, pgTextArray } from '../db/client';
-import type { Outputs } from '../types/watchers';
-import { deriveWatcherExtractionSchema } from '../utils/watcher-extraction-schema';
+import type { Outputs } from '../types/automations';
+import { deriveAutomationExtractionSchema } from '../utils/automation-extraction-schema';
 import { withDbRetry } from '../db/with-retry';
 import type { Env } from '../index';
-import { claimPendingWatcherRun } from '../runs/queue-service';
-import { parseBehaviorSkillSnapshots } from '../behaviors/skill-snapshots';
+import { claimPendingAutomationRun } from '../runs/queue-service';
+import { parseAutomationSkillSnapshots } from '../automations/skill-snapshots';
 import { materializeDueFeeds } from '../scheduled/check-due-feeds';
 import { reconcileDeviceCapabilities } from './device-reconcile';
 import { findBundledConnectorFile } from '../utils/connector-catalog';
@@ -31,7 +31,7 @@ import { resolveDeviceClaimableOrgs } from '../utils/device-claimable-orgs';
 import { errorMessage } from '../utils/errors';
 import { resolveAuthCredentials } from '../utils/auth-credential-secrets';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
-import { stripServerOnlyExecutionConfig } from '../tools/admin/behavior-execution-config';
+import { stripServerOnlyExecutionConfig } from '../tools/admin/automation-execution-config';
 import { supersedeActionEvent } from '../tools/admin/approval-events';
 import logger from '../utils/logger';
 import { recordLifecycleEvent } from '../utils/insert-event';
@@ -126,19 +126,19 @@ function parseClaimJson(raw: unknown): Record<string, unknown> | null {
  * mutate or conflate the stored fields: `prompt` remains the author's task
  * statement and `skills` remain individually diffable on the version.
  */
-function formatDeviceBehaviorInstructions(
+function formatDeviceAutomationInstructions(
   prompt: string | null,
   rawSkills: unknown
 ): string | null {
-  const skills = parseBehaviorSkillSnapshots(rawSkills);
+  const skills = parseAutomationSkillSnapshots(rawSkills);
   if (skills.length === 0) return prompt;
   const skillSections = skills.map(
     (skill) => `### ${skill.name}\n\n${skill.content}`
   );
   return [
     ...(prompt?.trim() ? [prompt] : []),
-    '## Pinned Behavior skills',
-    'These frozen skills are part of this Behavior version. Follow every one when performing the task.',
+    '## Pinned Automation skills',
+    'These frozen skills are part of this Automation version. Follow every one when performing the task.',
     ...skillSections,
   ].join('\n\n');
 }
@@ -414,13 +414,13 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // connectors auto-wire) — the set is computed in the /api/workers/* auth
   // middleware. Trusted workers (matched WORKER_API_TOKEN) and anonymous
   // local-dev requests see all pending runs — preserving the existing
-  // server-side worker fleet behavior.
+  // server-side worker fleet automation.
   //
   // Cross-org device pins: also let the device claim runs in any org where it
-  // has a pinned watcher/connection AND its owner is still a member of that
+  // has a pinned automation/connection AND its owner is still a member of that
   // org. The pin IS the owner's consent — `evaluateDeviceWorkerAccess` only
   // lets a device's owner attach it — so this keeps the device anchored to its
-  // home + personal org while serving watchers it was explicitly attached to in
+  // home + personal org while serving automations it was explicitly attached to in
   // other orgs the owner belongs to. The membership join revokes access
   // automatically if the owner later leaves the org. Within-org claiming still
   // follows the pinned/capability rules below, so the device only ever runs the
@@ -496,7 +496,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     sql.begin(async (tx) => {
       const candidates = await tx`
       WITH next_run AS (
-        SELECT r.id, r.run_type, r.watcher_id
+        SELECT r.id, r.run_type, r.automation_id
         FROM runs r
         LEFT JOIN connections con ON con.id = r.connection_id
         -- Pin target platform: chrome-extension pins on non-chrome connectors mean
@@ -609,16 +609,16 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                 )
               )
             )
-            -- (2) Watcher lane: a watcher run with approved_input.device_worker_id
-            --     matching this device. Watchers don't carry a connection_id and
+            -- (2) Automation lane: an automation run with approved_input.device_worker_id
+            --     matching this device. Automations don't carry a connection_id and
             --     don't gate on capabilities — the matching device's local CLI
-            --     executor handles the work (Owletto's WatcherDispatcher routes
+            --     executor handles the work (Owletto's AutomationDispatcher routes
             --     by approved_input.agent_kind). The server-side dispatcher
             --     (#802) already refuses to claim rows with this pin set, so
             --     this branch is the only legal claim path for them.
             OR (
               ${isUserScopedWorker}
-              AND r.run_type = 'behavior'
+              AND r.run_type = 'automation'
               AND ${deviceWorkerId}::uuid IS NOT NULL
               AND r.approved_input ? 'device_worker_id'
               AND r.approved_input->>'device_worker_id' = ${deviceWorkerId}::text
@@ -626,8 +626,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
               AND NOT EXISTS (
                 SELECT 1
                 FROM runs active
-                WHERE active.watcher_id = r.watcher_id
-                  AND active.run_type = 'behavior'
+                WHERE active.automation_id = r.automation_id
+                  AND active.run_type = 'automation'
                   AND active.status IN ('claimed', 'running')
               )
             )
@@ -638,7 +638,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         FOR UPDATE OF r SKIP LOCKED
         LIMIT 1
       )
-      SELECT id, run_type, watcher_id
+      SELECT id, run_type, automation_id
       FROM next_run
     `;
 
@@ -649,13 +649,13 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       const candidate = candidates[0] as {
         id: unknown;
         run_type: unknown;
-        watcher_id: unknown;
+        automation_id: unknown;
       };
       const runId = Number(candidate.id);
-      if (candidate.run_type === 'behavior') {
-        const claimed = await claimPendingWatcherRun(tx, {
+      if (candidate.run_type === 'automation') {
+        const claimed = await claimPendingAutomationRun(tx, {
           runId,
-          watcherId: Number(candidate.watcher_id),
+          automationId: Number(candidate.automation_id),
           claimedBy: worker_id,
           status: 'running',
         });
@@ -690,7 +690,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         r.action_key,
         r.action_input,
         r.approved_input,
-        r.watcher_id,
+        r.automation_id,
         r.window_id,
         r.organization_id,
         r.created_at AS run_created_at,
@@ -709,15 +709,15 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         cd.runtime AS connector_runtime,
         cd.required_capability AS connector_required_capability,
         ap.auth_data AS auth_profile_auth_data,
-        w.name AS watcher_name,
-        w.slug AS watcher_slug,
-        w.agent_kind AS watcher_agent_kind,
-        w.notification_channel AS watcher_notification_channel,
-        w.notification_priority AS watcher_notification_priority,
-        w.execution_config AS watcher_execution_config,
-        wv.prompt AS watcher_prompt,
-        wv.skills AS watcher_skills,
-        wv.outputs AS watcher_outputs
+        w.name AS automation_name,
+        w.slug AS automation_slug,
+        w.agent_kind AS automation_agent_kind,
+        w.notification_channel AS automation_notification_channel,
+        w.notification_priority AS automation_notification_priority,
+        w.execution_config AS automation_execution_config,
+        wv.prompt AS automation_prompt,
+        wv.skills AS automation_skills,
+        wv.outputs AS automation_outputs
       FROM runs r
       LEFT JOIN feeds f ON f.id = r.feed_id
       LEFT JOIN connections conn ON conn.id = r.connection_id
@@ -734,10 +734,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         AND cd.organization_id = r.organization_id
         AND cd.status = 'active'
       LEFT JOIN auth_profiles ap ON ap.id = r.auth_profile_id
-      LEFT JOIN watchers w ON w.id = r.watcher_id
-      LEFT JOIN watcher_versions wv
+      LEFT JOIN automations w ON w.id = r.automation_id
+      LEFT JOIN automation_versions wv
         ON wv.id = COALESCE((r.approved_input->>'version_id')::bigint, w.current_version_id)
-        AND wv.watcher_id = w.watcher_group_id
+        AND wv.automation_id = w.automation_group_id
       WHERE r.id = ${runId}
       LIMIT 1
     `;
@@ -796,33 +796,33 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     connector_runtime: { nix?: { packages?: string[] } | null } | null;
     connector_required_capability: string | null;
     run_created_at: string | Date | null;
-    // Watcher run fields (populated via LEFT JOINs)
-    watcher_id: number | null;
+    // Automation run fields (populated via LEFT JOINs)
+    automation_id: number | null;
     window_id: number | null;
     organization_id: string;
-    watcher_name: string | null;
-    watcher_slug: string | null;
-    watcher_agent_kind: string | null;
-    watcher_notification_channel: string | null;
-    watcher_notification_priority: string | null;
-    watcher_execution_config: Record<string, unknown> | null;
-    watcher_prompt: string | null;
-    watcher_skills: unknown;
-    watcher_outputs: Record<string, unknown> | string | null;
+    automation_name: string | null;
+    automation_slug: string | null;
+    automation_agent_kind: string | null;
+    automation_notification_channel: string | null;
+    automation_notification_priority: string | null;
+    automation_execution_config: Record<string, unknown> | null;
+    automation_prompt: string | null;
+    automation_skills: unknown;
+    automation_outputs: Record<string, unknown> | string | null;
     // Auth run fields
     run_auth_profile_id: number | null;
     auth_profile_auth_data: Record<string, unknown> | null;
   };
 
-  // Watcher run: device worker is going to spawn a local CLI executor and
-  // return the result via /api/workers/me/runs/:runId/complete-behavior. No
+  // Automation run: device worker is going to spawn a local CLI executor and
+  // return the result via /api/workers/me/runs/:runId/complete-automation. No
   // connector code, no connection credentials, no compiled_code lookup —
   // just the payload envelope the dispatcher needs to build a prompt. The
   // server-side claim filter (#802 + this PR) already guarantees only the
   // matching device can land on this row.
-  if (row.run_type === 'behavior') {
+  if (row.run_type === 'automation') {
     const approved = (row.approved_input ?? {}) as Record<string, unknown>;
-    const triggerSignals = behaviorTriggerSignals({
+    const triggerSignals = automationTriggerSignals({
       trigger_signal: approved.trigger_signal,
       trigger_signals: approved.trigger_signals,
     });
@@ -836,7 +836,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         : typeof firedAtRaw === 'string' && firedAtRaw.trim()
           ? firedAtRaw
           : new Date().toISOString();
-    const watcherIdStr = row.watcher_id != null ? String(row.watcher_id) : '';
+    const automationIdStr = row.automation_id != null ? String(row.automation_id) : '';
     const agentKindFromPayload =
       typeof approved['agent_kind'] === 'string' && (approved['agent_kind'] as string).trim()
         ? (approved['agent_kind'] as string).trim()
@@ -844,17 +844,17 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     // Output contract for the device: composed from declared entity/event
     // outputs and the optional reaction input contract. The same helper is used
     // by complete_window, so extraction and validation cannot drift.
-    const watcherExtractionSchema = await deriveWatcherExtractionSchema(
+    const automationExtractionSchema = await deriveAutomationExtractionSchema(
       getDb(),
       row.organization_id,
-      parseClaimJson(row.watcher_outputs) as Outputs | null,
-      row.watcher_id
+      parseClaimJson(row.automation_outputs) as Outputs | null,
+      row.automation_id
     );
-    let watcherInstructions: string | null;
+    let automationInstructions: string | null;
     try {
-      watcherInstructions = formatDeviceBehaviorInstructions(
-        row.watcher_prompt,
-        row.watcher_skills
+      automationInstructions = formatDeviceAutomationInstructions(
+        row.automation_prompt,
+        row.automation_skills
       );
     } catch (err) {
       const message = errorMessage(err);
@@ -865,7 +865,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       });
       logger.error(
         { run_id: row.run_id, err },
-        'Failed to resolve pinned Behavior skills for device dispatch'
+        'Failed to resolve pinned Automation skills for device dispatch'
       );
       return c.json({
         next_poll_seconds: 1,
@@ -880,39 +880,39 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       run_type: row.run_type,
       organization_id: row.organization_id,
       payload: {
-        watcher: {
-          id: watcherIdStr,
-          name: row.watcher_name ?? null,
-          slug: row.watcher_slug ?? null,
-          agent_kind: agentKindFromPayload ?? row.watcher_agent_kind ?? null,
-          notification_channel: row.watcher_notification_channel ?? 'canvas',
-          notification_priority: row.watcher_notification_priority ?? 'normal',
+        automation: {
+          id: automationIdStr,
+          name: row.automation_name ?? null,
+          slug: row.automation_slug ?? null,
+          agent_kind: agentKindFromPayload ?? row.automation_agent_kind ?? null,
+          notification_channel: row.automation_notification_channel ?? 'canvas',
+          notification_priority: row.automation_notification_priority ?? 'normal',
           // Strip server-only keys (e.g. finalize_nudges) so the device-worker's
           // strict payload decode never sees a field it doesn't know.
-          execution_config: stripServerOnlyExecutionConfig(row.watcher_execution_config),
+          execution_config: stripServerOnlyExecutionConfig(row.automation_execution_config),
           // The instructions of the version this run was pinned to at creation:
           // the author's prompt plus its frozen skill snapshots. Device-local
           // executors do not receive the server-side worker's `.skills/` tree,
           // so dispatch composes the two at this boundary without changing the
           // separately stored/diffable version fields.
           //
-          // (run's snapshotted approved_input.version_id, else the watcher's
+          // (run's snapshotted approved_input.version_id, else the automation's
           // current_version_id) — same source complete_window validates
-          // against, so a watcher edited after the run was queued doesn't swap
+          // against, so an automation edited after the run was queued doesn't swap
           // the prompt mid-flight. Device-local executors had no other channel
-          // for the watcher's instructions (the payload shipped only
-          // id/name/slug), so a scheduled watcher's local CLI got a bare
+          // for the automation's instructions (the payload shipped only
+          // id/name/slug), so a scheduled automation's local CLI got a bare
           // "process this" and improvised; shipping it lets the device run the
-          // real prompt. Null only if the watcher has no version row.
-          prompt: watcherInstructions,
+          // real prompt. Null only if the automation has no version row.
+          prompt: automationInstructions,
           // The derived extraction contract (entity-typed → derived from that
           // entity type's metadata_schema; untyped → null). The dispatcher embeds
           // it in the prompt as the output contract: the CLI must finish with a
-          // JSON object matching it, which /complete-behavior feeds through the
+          // JSON object matching it, which /complete-automation feeds through the
           // shared complete_window pipeline (schema validation included). Null
-          // when the watcher is untyped — the dispatcher then asks for a
+          // when the automation is untyped — the dispatcher then asks for a
           // free-form `{"summary": ...}` object.
-          extraction_schema: watcherExtractionSchema,
+          extraction_schema: automationExtractionSchema,
         },
         event: {
           trigger_event_id:

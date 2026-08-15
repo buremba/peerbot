@@ -323,7 +323,7 @@ export async function upsertConnectorDefinitionRecords(params: {
   const authSchemaJson = metadata.authSchema ? sql.json(metadata.authSchema) : null;
   const feedsSchemaJson = metadata.feeds ? sql.json(metadata.feeds) : null;
   const actionsSchemaJson = metadata.actions ? sql.json(metadata.actions) : null;
-  const behaviorEventsJson = metadata.behaviorEvents ? sql.json(metadata.behaviorEvents) : null;
+  const automationEventsJson = metadata.automationEvents ? sql.json(metadata.automationEvents) : null;
   const optionsSchemaJson = metadata.optionsSchema ? sql.json(metadata.optionsSchema) : null;
   const mcpConfigJson = metadata.mcpConfig ? sql.json(metadata.mcpConfig) : null;
   const openapiConfigJson = metadata.openapiConfig ? sql.json(metadata.openapiConfig) : null;
@@ -362,7 +362,7 @@ export async function upsertConnectorDefinitionRecords(params: {
           auth_schema = ${authSchemaJson},
           feeds_schema = ${feedsSchemaJson},
           actions_schema = ${actionsSchemaJson},
-          behavior_events = ${behaviorEventsJson},
+          automation_events = ${automationEventsJson},
           options_schema = ${optionsSchemaJson},
           mcp_config = ${mcpConfigJson},
           openapi_config = ${openapiConfigJson},
@@ -386,13 +386,13 @@ export async function upsertConnectorDefinitionRecords(params: {
     const inserted = await sql`
       INSERT INTO connector_definitions (
         organization_id, key, name, description, version,
-        auth_schema, feeds_schema, actions_schema, behavior_events, options_schema,
+        auth_schema, feeds_schema, actions_schema, automation_events, options_schema,
         mcp_config, openapi_config, favicon_domain, required_capability,
         runtime, agent_tooling, supports_execute, status, login_enabled
       ) VALUES (
         ${params.organizationId}, ${metadata.key}, ${metadata.name},
         ${metadata.description ?? null}, ${metadata.version},
-        ${authSchemaJson}, ${feedsSchemaJson}, ${actionsSchemaJson}, ${behaviorEventsJson},
+        ${authSchemaJson}, ${feedsSchemaJson}, ${actionsSchemaJson}, ${automationEventsJson},
         ${optionsSchemaJson},
         ${mcpConfigJson}, ${openapiConfigJson},
         ${metadata.faviconDomain ?? null}, ${metadata.requiredCapability ?? null},
@@ -417,7 +417,7 @@ export async function upsertConnectorDefinitionRecords(params: {
             auth_schema = ${authSchemaJson},
             feeds_schema = ${feedsSchemaJson},
             actions_schema = ${actionsSchemaJson},
-            behavior_events = ${behaviorEventsJson},
+            automation_events = ${automationEventsJson},
             options_schema = ${optionsSchemaJson},
             mcp_config = ${mcpConfigJson},
             openapi_config = ${openapiConfigJson},

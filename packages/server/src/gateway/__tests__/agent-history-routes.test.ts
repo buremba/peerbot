@@ -12,7 +12,7 @@ import {
 	slackChannelsToResources,
 } from "@lobu/connectors/slack-identity";
 import { Hono } from "hono";
-import { createTestBehaviorSubscription } from "../../__tests__/setup/behavior-subscriptions.js";
+import { createTestAutomationSubscription } from "../../__tests__/setup/automation-subscriptions.js";
 import {
 	addUserToOrganization,
 	createTestEntity,
@@ -178,7 +178,7 @@ describe("agent history routes", () => {
 			status: "active",
 			metadata: { teamId: SLACK_TEAM_ID },
 		});
-		await createTestBehaviorSubscription({
+		await createTestAutomationSubscription({
 			organizationId: ORG_ID,
 			agentId: "agent-1",
 			connectionSlug: `agentconn-${SLACK_CONNECTION_ID}`,
@@ -735,7 +735,7 @@ describe("agent history routes", () => {
 			status: "active",
 			metadata: { teamId: TEAM },
 		});
-		await createTestBehaviorSubscription({
+		await createTestAutomationSubscription({
 			organizationId: SHARED_ORG,
 			agentId: "agent-1",
 			connectionSlug: `agentconn-shared-read-conn`,

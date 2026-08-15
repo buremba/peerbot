@@ -13,7 +13,7 @@ import logger from "../utils/logger";
 import { getConfiguredPublicOrigin } from "../utils/public-origin";
 import { requireOrgUser } from "../utils/require-org-user";
 import { MANAGED_CHAT_PLATFORMS_SET } from "./managed-platforms";
-import { BehaviorSubscriptionService } from "../gateway/channels/behavior-subscription-service";
+import { AutomationSubscriptionService } from "../gateway/channels/automation-subscription-service";
 
 // Slack Preview lets people trying Lobu locally talk to their agent through the
 // hosted "Lobu Developer" Slack workspace before they have their own bot token.
@@ -22,7 +22,7 @@ import { BehaviorSubscriptionService } from "../gateway/channels/behavior-subscr
 //   * The hosted "Lobu Developer" workspace is just an ordinary Slack
 //     `connections` row (no env var, no relay service).
 //   * `/lobu link <code>` in that workspace consumes the claim and writes a normal
-//     message-created Behavior trigger — so inbound messages
+//     message-created Automation trigger — so inbound messages
 //     route through the exact same Chat SDK adapter path every other platform
 //     connection uses.
 
@@ -114,7 +114,7 @@ function previewLinkCommand(platform: string, code: string): string {
 }
 
 /**
- * Chat Behavior projections expose Slack channels in the canonical
+ * Chat Automation projections expose Slack channels in the canonical
  * `slack:<id>` form that the message-handler bridge looks up via `getBinding`
  * (`thread.channelId`). The `/lobu link` slash command hands us the bare Slack
  * channel id (`D…` / `C…`), so prefix it; a value that already carries a
@@ -245,7 +245,7 @@ type ConsumeClaimResult =
 	| { status: "connection_mismatch" }
 	| { status: "surface_not_allowed"; surfaceType: SurfaceType };
 
-// Create/update the tagged chat-link Behavior for this concrete connection and
+// Create/update the tagged chat-link Automation for this concrete connection and
 // channel. `tx` keeps claim consumption + subscription creation atomic.
 async function upsertBinding(
 	tx: ReturnType<typeof getDb>,
@@ -257,7 +257,7 @@ async function upsertBinding(
 	connectionId: number,
 	configuredBy?: string | null,
 ): Promise<void> {
-	await new BehaviorSubscriptionService().createChatBehavior(
+	await new AutomationSubscriptionService().createChatAutomation(
 		agentId,
 		platform,
 		channelId,
@@ -336,7 +336,7 @@ export async function consumePreviewClaim(args: {
 			// A hosted claim may cross organizations only through the deliberately
 			// shared preview connection for the workspace handling the command. A normal
 			// managed/BYO installation must belong to the claimed agent's org; otherwise
-			// the Behavior would be written under the agent org but inbound messages
+			// the Automation would be written under the agent org but inbound messages
 			// would stay scoped to the connection org and could never fire.
 			if (!connectionId) return { status: "connection_mismatch" as const };
 			const matched = await tx<{ id: number }>`
@@ -643,7 +643,7 @@ function escapeMrkdwnLabel(text: string): string {
  * offer — the tenant links their own agents.
  *
  * Slack: lists the org's agents and, when the public origin is configured,
- * deep-links each to its Behaviors page (where a channel is added as a Listen
+ * deep-links each to its Automations page (where a channel is added as a Listen
  * source); also gives the CLI `lobu run` / `/lobu link <code>` path.
  *
  * Every other platform (Telegram, …) gets a generic dashboard+CLI notice —
@@ -669,7 +669,7 @@ export async function workspaceUnlinkedNotice(
 			"👋 This chat isn't linked to a Lobu agent yet.",
 			"",
 			"Link it two ways:",
-			"• In the dashboard — open an agent's Behaviors page and add this chat as a Listen source.",
+			"• In the dashboard — create an Automation for an agent and add this chat as a Listen source.",
 			`• From the CLI — run \`lobu run\`, then paste the \`${linkCommand(platform)} <code>\` it prints here.`,
 		].join("\n");
 	}
@@ -692,26 +692,27 @@ export async function workspaceUnlinkedNotice(
 	}
 
 	const origin = getConfiguredPublicOrigin()?.replace(/\/+$/, "");
-	// Deep-link each agent to its Behaviors "new" step with THIS channel prefilled,
+	// Deep-link each agent to the workspace Automation "new" step with THIS channel prefilled,
 	// so the canonical event trigger is selected without a separate subscription
 	// workflow. `channelId` remains canonical `slack:C…`; the editor converts it to
-	// the provider-native filter value. Falls back to the plain Behaviors page when
-	// no channel context is available.
+	// the provider-native filter value. The agent is always prefilled so every named
+	// link remains specific to the agent even without channel context.
 	const canLink = Boolean(origin && orgSlug);
-	const behaviorsUrl = (agentId: string): string => {
-		const base = `${origin}/${orgSlug}/agents/${agentId}/behaviors`;
-		if (!channel?.channelId) return base;
+	const automationsUrl = (agentId: string): string => {
 		const params = new URLSearchParams({
-			listen: channel.channelId,
-			platform: "slack",
+			agent: agentId,
 		});
-		if (channel.teamId) params.set("team", channel.teamId);
-		if (channel.connectionId)
-			params.set("connection", channel.connectionId);
-		// Friendly channel name → the editor subtitle. Prefixed with `#` so it reads
-		// as a channel.
-		if (channel.channelName) params.set("label", `#${channel.channelName}`);
-		return `${base}/new?${params.toString()}`;
+		if (channel?.channelId) {
+			params.set("listen", channel.channelId);
+			params.set("platform", "slack");
+			if (channel.teamId) params.set("team", channel.teamId);
+			if (channel.connectionId)
+				params.set("connection", channel.connectionId);
+			// Friendly channel name → the editor subtitle. Prefixed with `#` so it reads
+			// as a channel.
+			if (channel.channelName) params.set("label", `#${channel.channelName}`);
+		}
+		return `${origin}/${orgSlug}/automations/new?${params.toString()}`;
 	};
 	// Render each agent as a Slack mrkdwn inline link (`<url|label>`). The notice
 	// is posted via thread.post(string) → chat.postMessage({ text }), which Slack
@@ -722,7 +723,7 @@ export async function workspaceUnlinkedNotice(
 	// would terminate or corrupt the inline link.
 	const agentLines = agents.map((a) =>
 		canLink
-			? `   • <${behaviorsUrl(a.agentId)}|${escapeMrkdwnLabel(a.name)}>`
+			? `   • <${automationsUrl(a.agentId)}|${escapeMrkdwnLabel(a.name)}>`
 			: `   • ${a.name}`,
 	);
 
@@ -732,8 +733,8 @@ export async function workspaceUnlinkedNotice(
 			"",
 			"Link it to an agent two ways:",
 			canLink
-				? "• In the dashboard — open an agent's Behaviors page and add this channel as a Listen source:"
-				: "• In the dashboard — open an agent's Behaviors page and add this channel as a Listen source. Your agents:",
+				? "• In the dashboard — create an Automation for an agent and add this channel as a Listen source:"
+				: "• In the dashboard — create an Automation for an agent and add this channel as a Listen source. Your agents:",
 			...agentLines,
 			`• ${cliLine}`,
 		].join("\n");

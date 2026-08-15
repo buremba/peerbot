@@ -69,7 +69,7 @@ interface AuthProfilesManagerOptions {
   runtimeCredentialResolver?: RuntimeProviderCredentialResolver;
   /**
    * Resolve an agent's owning user id. Agent runs execute as a synthetic /
-   * platform user (web panel, Telegram, watcher), not the operator who
+   * platform user (web panel, Telegram, automation), not the operator who
    * connected a provider in the agent settings UI — so credential lookups
    * fall back to the owner's user-scoped profiles via this resolver.
    */
@@ -343,7 +343,7 @@ export class AuthProfilesManager {
     // Agent runs execute as a synthetic/platform user, not the operator who
     // connected the provider in the agent settings UI. Fall back to the agent
     // owner's user-scoped profiles so a UI-connected API key actually resolves
-    // for chat/watcher/Telegram runs. (`dedupeByScope` keeps the run user's
+    // for chat/automation/Telegram runs. (`dedupeByScope` keeps the run user's
     // own profile when both exist.)
     const ownerProfiles = await this.listAgentOwnerProfiles(agentId, userId);
 

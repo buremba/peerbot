@@ -103,7 +103,7 @@ describe("ChatInstanceManager Slack marketplace support", () => {
         getPublicGatewayUrl: () => "",
         getSecretStore: () => secretStore,
         getConnectionStore: () => connectionStore,
-        getBehaviorSubscriptionService: () => ({
+        getAutomationSubscriptionService: () => ({
           resolveForConnection: async () => null,
         }),
       } as any;

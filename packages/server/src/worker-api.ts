@@ -12,12 +12,12 @@
 export { pollWorkerJob } from './worker-api/poll';
 export { activatePageRun } from './worker-api/page-activation';
 
-// Run lifecycle (heartbeat, stream, complete, Behavior/auth/action/embedding)
+// Run lifecycle (heartbeat, stream, complete, Automation/auth/action/embedding)
 export {
   heartbeat,
   streamContent,
   completeWorkerJob,
-  completeBehaviorRun,
+  completeAutomationRun,
   completeEmbeddings,
   fetchEventsForEmbedding,
   emitAuthArtifact,
@@ -55,5 +55,5 @@ export {
   deleteMyDeviceFeed,
 } from './worker-api/device-feeds';
 
-// Device Behavior trigger (/api/workers/me/behaviors/:id/trigger)
-export { triggerBehaviorForDevice } from './worker-api/behavior-trigger';
+// Device Automation trigger (/api/workers/me/automations/:id/trigger)
+export { triggerAutomationForDevice } from './worker-api/automation-trigger';

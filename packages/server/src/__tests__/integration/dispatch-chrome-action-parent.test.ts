@@ -76,16 +76,16 @@ describe('dispatchChromeAction target browser routing', () => {
   async function seedParentRun(
     orgId: string,
     createdByUserId?: string,
-    watcherId?: number,
+    automationId?: number,
     windowId?: number
   ): Promise<number> {
     const [run] = (await sql`
       INSERT INTO runs (
         organization_id, run_type, action_key, status, claimed_by, claimed_at,
-        created_by_user_id, watcher_id, window_id
+        created_by_user_id, automation_id, window_id
       ) VALUES (
         ${orgId}, 'action', 'prepare_reply', 'running', 'connector-worker-1', NOW(),
-        ${createdByUserId ?? null}, ${watcherId ?? null}, ${windowId ?? null}
+        ${createdByUserId ?? null}, ${automationId ?? null}, ${windowId ?? null}
       )
       RETURNING id
     `) as unknown as Array<{ id: number }>;
@@ -232,26 +232,26 @@ describe('dispatchChromeAction target browser routing', () => {
     );
   });
 
-  it("accepts a Behavior creator's private chrome connection", async () => {
-    const org = await createTestOrganization({ name: 'Behavior private browser' });
+  it("accepts an Automation creator's private chrome connection", async () => {
+    const org = await createTestOrganization({ name: 'Automation private browser' });
     await createTestConnectorDefinition({
       key: 'chrome',
       name: 'Chrome',
       organization_id: org.id,
     });
-    const creator = await createTestUser({ email: 'behavior-browser@test.com' });
+    const creator = await createTestUser({ email: 'automation-browser@test.com' });
     await addUserToOrganization(creator.id, org.id);
     const agent = await createTestAgent({
       organizationId: org.id,
       ownerUserId: creator.id,
     });
-    const [behavior] = await sql`
-      WITH next_id AS (SELECT nextval('watchers_id_seq')::integer AS id)
-      INSERT INTO watchers (
-        id, watcher_group_id, organization_id, agent_id, created_by, name, slug
+    const [automation] = await sql`
+      WITH next_id AS (SELECT nextval('automations_id_seq')::integer AS id)
+      INSERT INTO automations (
+        id, automation_group_id, organization_id, agent_id, created_by, name, slug
       )
       SELECT id, id, ${org.id}, ${agent.agentId}, ${creator.id},
-        'Private browser behavior', 'private-browser-behavior'
+        'Private browser automation', 'private-browser-automation'
       FROM next_id
       RETURNING id
     `;
@@ -261,7 +261,7 @@ describe('dispatchChromeAction target browser routing', () => {
         metadata, occurred_at, created_at, created_by
       ) VALUES (
         ${org.id}, 'canvas_state', 'json_template', '{}'::jsonb,
-        ${sql.json({ watcher_id: Number(behavior.id) })}, NOW(), NOW(), ${creator.id}
+        ${sql.json({ automation_id: Number(automation.id) })}, NOW(), NOW(), ${creator.id}
       )
       RETURNING id
     `;
@@ -269,8 +269,8 @@ describe('dispatchChromeAction target browser routing', () => {
       INSERT INTO device_workers (
         user_id, worker_id, platform, capabilities, label, organization_id, last_seen_at
       ) VALUES (
-        ${creator.id}, 'ext-behavior-browser', 'chrome-extension',
-        ${sql.json(['browser.tabs', 'browser.debugger'])}, 'Behavior Browser',
+        ${creator.id}, 'ext-automation-browser', 'chrome-extension',
+        ${sql.json(['browser.tabs', 'browser.debugger'])}, 'Automation Browser',
         ${org.id}, NOW()
       )
       RETURNING id
@@ -280,7 +280,7 @@ describe('dispatchChromeAction target browser routing', () => {
         organization_id, connector_key, slug, display_name, status,
         created_by, visibility, device_worker_id, created_at, updated_at
       ) VALUES (
-        ${org.id}, 'chrome', 'chrome-behavior-private', 'Chrome', 'active',
+        ${org.id}, 'chrome', 'chrome-automation-private', 'Chrome', 'active',
         ${creator.id}, 'private', ${worker.id}::uuid, NOW(), NOW()
       )
       RETURNING id
@@ -288,7 +288,7 @@ describe('dispatchChromeAction target browser routing', () => {
     const runId = await seedParentRun(
       org.id,
       undefined,
-      Number(behavior.id),
+      Number(automation.id),
       Number(window.id)
     );
 
@@ -308,7 +308,7 @@ describe('dispatchChromeAction target browser routing', () => {
 
     await vi.waitFor(async () => {
       const childRows = await sql`
-        SELECT id, created_by_user_id, watcher_id, window_id
+        SELECT id, created_by_user_id, automation_id, window_id
         FROM runs
         WHERE organization_id = ${org.id}
           AND connector_key = 'chrome'
@@ -319,7 +319,7 @@ describe('dispatchChromeAction target browser routing', () => {
       expect(childRows).toHaveLength(1);
       const child = childRows[0];
       expect(child.created_by_user_id).toBeNull();
-      expect(Number(child.watcher_id)).toBe(Number(behavior.id));
+      expect(Number(child.automation_id)).toBe(Number(automation.id));
       expect(Number(child.window_id)).toBe(Number(window.id));
       await sql`
         UPDATE runs

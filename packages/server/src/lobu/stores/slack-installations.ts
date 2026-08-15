@@ -105,7 +105,7 @@ function toSlackRow(row: AppInstallationRow): SlackInstallationRow | null {
  * Upsert a per-workspace OAuth install (token + tenant data), keyed on
  * (org, team). Idempotent per (org, team): a reinstall reuses the SAME
  * `slackinst-<uuid>` external id (so the secret prefix, chat-instance-manager
- * memo, and any channel Behaviors stay stable) and refreshes the token + tenant
+ * memo, and any channel Automations stay stable) and refreshes the token + tenant
  * metadata. A fresh install from another org TRANSFERS ownership (the generic
  * store demotes the prior active row), so `getByTeam` stays unambiguous.
  *

@@ -1,6 +1,6 @@
 # Statement Ingestion Playbook
 
-When the user sends a file through WhatsApp — a bank statement, broker contract note, P60, dividend voucher, mortgage statement — follow this playbook. Forwarded Gmail messages are handled by the `gmail-tx` Behavior automatically; this document covers direct file uploads.
+When the user sends a file through WhatsApp — a bank statement, broker contract note, P60, dividend voucher, mortgage statement — follow this playbook. Forwarded Gmail messages are handled by the `gmail-tx` Automation automatically; this document covers direct file uploads.
 
 ## Inputs
 
@@ -37,7 +37,7 @@ Cap extracted text at ~50,000 characters. If longer, process in pages (`pdftotex
 
 ## Step 3 — extract structured rows
 
-Apply the same JSON schema the `gmail-tx` Behavior uses:
+Apply the same JSON schema the `gmail-tx` Automation uses:
 
 ```json
 {

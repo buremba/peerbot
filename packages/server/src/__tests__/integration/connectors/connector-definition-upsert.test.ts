@@ -22,7 +22,7 @@ function metadataFor(version: string): ConnectorMetadata {
     webhook: null,
     feeds: null,
     actions: null,
-    behaviorEvents: [
+    automationEvents: [
       {
         key: `probe.updated.${version}`,
         label: `Probe updated ${version}`,
@@ -103,12 +103,12 @@ describe('upsertConnectorDefinitionRecords', () => {
     }
 
     // The definition itself reflects the upgrade.
-    const def = await sql<{ version: string; behavior_events: Array<Record<string, unknown>> }[]>`
-      SELECT version, behavior_events FROM connector_definitions
+    const def = await sql<{ version: string; automation_events: Array<Record<string, unknown>> }[]>`
+      SELECT version, automation_events FROM connector_definitions
       WHERE organization_id = ${orgId} AND key = 'upsert-probe' AND status = 'active'
     `;
     expect(def[0]?.version).toBe('1.1.0');
-    expect(def[0]?.behavior_events).toEqual([
+    expect(def[0]?.automation_events).toEqual([
       {
         key: 'probe.updated.1.1.0',
         label: 'Probe updated 1.1.0',

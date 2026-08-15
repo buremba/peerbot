@@ -13,7 +13,7 @@
  * is NOT a ToolUserError, it was captured to Sentry as noise (sentry.ts) even
  * though no data is lost — the unique index correctly protects the invariant.
  *
- * Pinned behavior after the fix:
+ * Pinned automation after the fix:
  *   - Concurrent supersede race: the loser gets a clean ToolUserError (409),
  *     not a raw 23505. Exactly one supersede succeeds.
  *   - A stale supersede target (already superseded, or not found in the org)

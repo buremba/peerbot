@@ -3,7 +3,7 @@
 # CLI command-coverage smoke gate.
 #
 # Where scripts/sdk-e2e.sh proves the SDK *lifecycle* (apply -> prune -> worker
-# turn -> connector -> watcher -> client), THIS gate proves that EVERY `lobu`
+# turn -> connector -> automation -> client), THIS gate proves that EVERY `lobu`
 # command/subcommand actually RUNS -- argv parses, the handler executes, and a
 # representative invocation returns the documented success marker (or, for the
 # negative cases, fails gracefully with the documented message instead of a

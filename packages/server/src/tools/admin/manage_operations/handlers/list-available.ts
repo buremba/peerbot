@@ -8,7 +8,7 @@ import {
 	readRequestedScopesFromAuthData,
 } from "../../../../auth/oauth/scopes";
 import { resolveMaxAccessLevel, type ToolAccessLevel } from "../../../../auth/tool-access";
-import { resolveBehaviorConnectionVisibilityUserId } from "../../../../authz/behavior-connection-visibility";
+import { resolveAutomationConnectionVisibilityUserId } from "../../../../authz/automation-connection-visibility";
 import { compileConnectionRowVisibility } from "../../../../authz/connection-visibility";
 import { resolveActingPrincipal, resolveWriteEffects } from "../../../../authz/entity-policy";
 import { authzScopeFromToolContext } from "../../../../authz/scope";
@@ -502,7 +502,7 @@ async function loadVisibleOperationTargets(
 	ctx: ToolContext,
 ): Promise<OperationTargetRow[]> {
 	const sql = getDb();
-	const visibilityUserId = await resolveBehaviorConnectionVisibilityUserId(
+	const visibilityUserId = await resolveAutomationConnectionVisibilityUserId(
 		ctx,
 		sql,
 	);
@@ -608,7 +608,7 @@ export async function handleListAvailable(
     organizationId: ctx.organizationId,
     userId: ctx.userId,
     agentId: ctx.agentId,
-    sessionWatcherId: ctx.actingWatcherId ?? null,
+    sessionAutomationId: ctx.actingAutomationId ?? null,
   });
   // Fetch the FULL filtered set (offset 0, no caller limit), drop per-op-disabled
   // ops across the WHOLE set, THEN paginate. Filtering a single page and subtracting
@@ -685,7 +685,7 @@ export async function handleListAvailable(
 	// be told an op is ready to execute. System/reaction contexts (userId null,
 	// memberRole null) bypass role/scope entirely at routeAction, so they must
 	// be treated as fully capable here — downgrading them would hide ready ops
-	// from Behavior reactions.
+	// from Automation reactions.
 	const isSystem = isSystemContext(ctx);
 	const callerMax = isSystem
 		? "admin"

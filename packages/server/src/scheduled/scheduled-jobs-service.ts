@@ -109,7 +109,7 @@ export async function validateDeliveryAuthorization(params: {
   const deliveryTeamId = delivery.teamId ?? null;
   const bindingRows = await sql`
     SELECT agent_id
-    FROM behavior_message_subscriptions
+    FROM automation_message_subscriptions
     WHERE organization_id = ${organizationId}
       AND platform = ${delivery.platform}
       AND connection_id = ${connection.id}

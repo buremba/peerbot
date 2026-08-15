@@ -596,7 +596,7 @@ export async function createTestConnectorDefinition(options: {
   version?: string;
   feeds_schema?: Record<string, any>;
   auth_schema?: Record<string, any>;
-  behavior_events?: Array<Record<string, unknown>>;
+  automation_events?: Array<Record<string, unknown>>;
   organization_id?: string | null;
 }): Promise<TestConnectorDefinition> {
   const sql = getTestDb();
@@ -604,7 +604,7 @@ export async function createTestConnectorDefinition(options: {
 
   await sql`
     INSERT INTO connector_definitions (
-      key, name, version, feeds_schema, auth_schema, behavior_events,
+      key, name, version, feeds_schema, auth_schema, automation_events,
       organization_id,
       status, created_at, updated_at
     ) VALUES (
@@ -613,7 +613,7 @@ export async function createTestConnectorDefinition(options: {
       ${version},
       ${sql.json(options.feeds_schema ?? { default: {} })},
       ${sql.json(options.auth_schema ?? {})},
-      ${options.behavior_events ? sql.json(options.behavior_events) : null},
+      ${options.automation_events ? sql.json(options.automation_events) : null},
       ${options.organization_id ?? null},
       'active',
       NOW(), NOW()
@@ -734,8 +734,8 @@ export async function createTestEvent(options: {
   connection_id?: number;
   feed_id?: number;
   feed_key?: string;
-  behavior_id?: number;
-  behavior_version_id?: number;
+  automation_id?: number;
+  automation_version_id?: number;
   title?: string;
   content: string;
   occurred_at?: Date;
@@ -767,7 +767,7 @@ export async function createTestEvent(options: {
   let inserted: any;
   [inserted] = await sql`
     INSERT INTO events (
-      entity_ids, connection_id, feed_id, feed_key, behavior_id, behavior_version_id, origin_id,
+      entity_ids, connection_id, feed_id, feed_key, automation_id, automation_version_id, origin_id,
       title, payload_type, payload_text, occurred_at, semantic_type,
       connector_key, metadata,
       organization_id, created_at
@@ -776,8 +776,8 @@ export async function createTestEvent(options: {
       ${options.connection_id ?? null},
       ${options.feed_id ?? null},
       ${options.feed_key ?? null},
-      ${options.behavior_id ?? null},
-      ${options.behavior_version_id ?? null},
+      ${options.automation_id ?? null},
+      ${options.automation_version_id ?? null},
       ${originId},
       ${options.title ?? null},
       'text',
@@ -889,7 +889,7 @@ export async function createTestDeviceCode(
 // ============================================
 
 /**
- * Insert a canvas_state ROOT event (a watcher "window" in canvas-on-events) and
+ * Insert a canvas_state ROOT event (an automation "window" in canvas-on-events) and
  * return its event id — the value the read/write paths treat as `window_id`.
  * Mirrors the complete_window write path: metadata carries canonical UTC ISO
  * window_start/window_end (matching Date.toISOString()) so the row collides on
@@ -897,7 +897,7 @@ export async function createTestDeviceCode(
  * event's provenance run and stamps model/run_metadata on that run.
  */
 export async function createCanvasWindow(options: {
-  watcherId: number;
+  automationId: number;
   organizationId: string;
   granularity?: string;
   windowStart: Date | string;
@@ -931,7 +931,7 @@ export async function createCanvasWindow(options: {
       ${sql.json(options.extractedData ?? {})},
       'canvas_state',
       ${sql.json({
-        watcher_id: options.watcherId,
+        automation_id: options.automationId,
         granularity,
         window_start: windowStartIso,
         window_end: windowEndIso,

@@ -24,7 +24,7 @@ import {
 const sql = getTestDb();
 
 let organizationId: string;
-let behaviorId: number;
+let automationId: number;
 let evalRunId: number;
 let liveRunId: number;
 
@@ -35,7 +35,7 @@ let liveRunId: number;
  */
 function ctx(worker: {
 	executionMode?: "live" | "capture";
-	behaviorRunId?: number;
+	automationRunId?: number;
 }): Context<WorkerContext> {
 	return {
 		get: (key: string) =>
@@ -79,9 +79,9 @@ async function sideEffectsOf(runId: number): Promise<{
 async function seedRun(runType: string): Promise<number> {
 	const [run] = await sql<{ id: number }[]>`
     INSERT INTO runs (
-      organization_id, run_type, watcher_id, approval_status, status, created_at
+      organization_id, run_type, automation_id, approval_status, status, created_at
     ) VALUES (
-      ${organizationId}, ${runType}, ${behaviorId}, 'auto', 'running', current_timestamp
+      ${organizationId}, ${runType}, ${automationId}, 'auto', 'running', current_timestamp
     )
     RETURNING id
   `;
@@ -94,25 +94,25 @@ beforeAll(async () => {
 	organizationId = org.id;
 	const creator = await createTestUser();
 
-	const [behavior] = (await sql`
-    WITH next_id AS (SELECT nextval('watchers_id_seq')::integer AS id)
-    INSERT INTO watchers (
-      id, watcher_group_id, organization_id, created_by, name, slug, schedule, status
+	const [automation] = (await sql`
+    WITH next_id AS (SELECT nextval('automations_id_seq')::integer AS id)
+    INSERT INTO automations (
+      id, automation_group_id, organization_id, created_by, name, slug, schedule, status
     )
     SELECT id, id, ${organizationId}, ${creator.id}, 'Capture Source', 'capture-src', '0 * * * *', 'active'
     FROM next_id
     RETURNING id
   `) as unknown as Array<{ id: number }>;
-	behaviorId = Number(behavior.id);
+	automationId = Number(automation.id);
 
-	evalRunId = await seedRun("behavior_eval");
-	liveRunId = await seedRun("behavior");
+	evalRunId = await seedRun("automation_eval");
+	liveRunId = await seedRun("automation");
 });
 
 describe("captureSideEffect — suppression", () => {
 	test("a live run is not intercepted at all", async () => {
 		const result = await captureSideEffect(
-			ctx({ behaviorRunId: liveRunId }),
+			ctx({ automationRunId: liveRunId }),
 			"conversations.send",
 			{ text: "this really sends" },
 		);
@@ -123,7 +123,7 @@ describe("captureSideEffect — suppression", () => {
 
 	test("a capture run is intercepted and answered success-shaped", async () => {
 		const result = await captureSideEffect(
-			ctx({ executionMode: "capture", behaviorRunId: evalRunId }),
+			ctx({ executionMode: "capture", automationRunId: evalRunId }),
 			"conversations.send",
 			{ text: "hello" },
 		);
@@ -145,7 +145,7 @@ describe("captureSideEffect — the record", () => {
 
 	test("appends rather than overwriting, preserving order", async () => {
 		await captureSideEffect(
-			ctx({ executionMode: "capture", behaviorRunId: evalRunId }),
+			ctx({ executionMode: "capture", automationRunId: evalRunId }),
 			"images.generate",
 			{ prompt: "a cat" },
 		);
@@ -168,10 +168,10 @@ describe("captureSideEffect — the record", () => {
 			"audio.synthesize",
 			"runtime.exec",
 		];
-		const run = await seedRun("behavior_eval");
+		const run = await seedRun("automation_eval");
 		for (const action of actions) {
 			await captureSideEffect(
-				ctx({ executionMode: "capture", behaviorRunId: run }),
+				ctx({ executionMode: "capture", automationRunId: run }),
 				action,
 				{ label: action },
 			);
@@ -180,12 +180,12 @@ describe("captureSideEffect — the record", () => {
 		expect(entries.map((e) => e.action)).toEqual(actions);
 	});
 
-	test("a capture claim cannot stamp a live Behavior run", async () => {
+	test("a capture claim cannot stamp a live Automation run", async () => {
 		// The token is signed, but defence is in the WHERE clause: even pointed at
 		// a live run, the record must not land — while suppression still happens,
 		// because performing the side effect is the one unacceptable outcome.
 		const result = await captureSideEffect(
-			ctx({ executionMode: "capture", behaviorRunId: liveRunId }),
+			ctx({ executionMode: "capture", automationRunId: liveRunId }),
 			"conversations.send",
 			{ text: "must not be recorded here" },
 		);
@@ -195,7 +195,7 @@ describe("captureSideEffect — the record", () => {
 		expect(dryRun).toBe(false);
 	});
 
-	test("a token with no behaviorRunId still suppresses", async () => {
+	test("a token with no automationRunId still suppresses", async () => {
 		// Losing the record degrades scoring; performing the side effect would
 		// break the guarantee. The guard must not throw its way out of suppressing.
 		const result = await captureSideEffect(
@@ -208,10 +208,10 @@ describe("captureSideEffect — the record", () => {
 	});
 
 	test("the record is capped and says so", async () => {
-		const run = await seedRun("behavior_eval");
+		const run = await seedRun("automation_eval");
 		for (let i = 0; i < MAX_CAPTURED_SIDE_EFFECTS + 3; i++) {
 			await captureSideEffect(
-				ctx({ executionMode: "capture", behaviorRunId: run }),
+				ctx({ executionMode: "capture", automationRunId: run }),
 				"conversations.send",
 				{ i },
 			);
@@ -224,9 +224,9 @@ describe("captureSideEffect — the record", () => {
 	});
 
 	test("an uncapped record is not falsely marked truncated", async () => {
-		const run = await seedRun("behavior_eval");
+		const run = await seedRun("automation_eval");
 		await captureSideEffect(
-			ctx({ executionMode: "capture", behaviorRunId: run }),
+			ctx({ executionMode: "capture", automationRunId: run }),
 			"files.upload",
 			{ name: "x.txt" },
 		);
@@ -236,10 +236,10 @@ describe("captureSideEffect — the record", () => {
 	test("an oversized payload is bounded, not stored whole", async () => {
 		// The entry cap bounds how many effects are recorded, not how big each is.
 		// A single agent-authored message body is what actually bloats the column.
-		const run = await seedRun("behavior_eval");
+		const run = await seedRun("automation_eval");
 		const huge = "x".repeat(MAX_CAPTURED_DETAIL_CHARS * 3);
 		await captureSideEffect(
-			ctx({ executionMode: "capture", behaviorRunId: run }),
+			ctx({ executionMode: "capture", automationRunId: run }),
 			"conversations.send",
 			{ text: huge },
 		);
@@ -252,9 +252,9 @@ describe("captureSideEffect — the record", () => {
 	});
 
 	test("a payload under the size cap is stored verbatim", async () => {
-		const run = await seedRun("behavior_eval");
+		const run = await seedRun("automation_eval");
 		await captureSideEffect(
-			ctx({ executionMode: "capture", behaviorRunId: run }),
+			ctx({ executionMode: "capture", automationRunId: run }),
 			"runtime.exec",
 			{ command: "ls -la" },
 		);

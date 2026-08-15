@@ -85,8 +85,8 @@ describe("approval notification live state", () => {
 		await seedApprovalNotification({
 			organizationId: org.id,
 			userId: user.id,
-			actionKey: "manage_behaviors",
-			title: "Change Behavior",
+			actionKey: "manage_automations",
+			title: "Change Automation",
 		});
 
 		const pending = await listOrgActivity({
@@ -104,7 +104,7 @@ describe("approval notification live state", () => {
 				interaction_inline: true,
 			}),
 		);
-		expect(pending.items.find((item) => item.title === "Change Behavior")).toEqual(
+		expect(pending.items.find((item) => item.title === "Change Automation")).toEqual(
 			expect.objectContaining({
 				interaction_type: "approval",
 				interaction_status: "pending",

@@ -3,7 +3,7 @@
  * Tripwire: assert that every dep declared in EXTERNAL_RUNTIME_DEPS is
  * present in the worker package.json. Catches "added a dep to the
  * compiler's external list but forgot to install it in the runtime
- * image" — the failure mode that silently broke the Reddit watcher
+ * image" — the failure mode that silently broke the Reddit automation
  * for a week.
  *
  * Run in CI; exits non-zero on drift.

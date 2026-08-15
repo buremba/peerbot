@@ -228,7 +228,7 @@ describe('inference provider org default', () => {
    *
    * OAuth credentials live in per-user `auth_profiles`; `oauth://` joins to no
    * `agent_secrets` row, so the org-shared key reader returns null for it. A
-   * headless Behavior run carries a synthetic user id with no profile, so an
+   * headless Automation run carries a synthetic user id with no profile, so an
    * OAuth org default hands every agent a model it cannot authenticate — it
    * fails at egress instead of falling back, which is worse than no default.
    */
@@ -264,7 +264,7 @@ describe('inference provider org default', () => {
    * An OAuth row is rejected as an EXPLICIT default too, not just an automatic
    * one. Its credential lives in one user's `auth_profiles`
    * (`getProviderProfiles(agentId, provider, context.userId)`), so no other
-   * member — and no headless Behavior run, which carries a synthetic user id —
+   * member — and no headless Automation run, which carries a synthetic user id —
    * can read it. "The chooser holds the profile" is not enough: an org-wide
    * default is inherited by everyone else too.
    */

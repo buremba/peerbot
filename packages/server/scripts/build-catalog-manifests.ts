@@ -9,28 +9,28 @@ import { fileURLToPath } from 'node:url';
 import {
   generateConnectorsManifest,
   generateSkillsManifest,
-  generateBehaviorsManifest,
+  generateAutomationsManifest,
 } from '../src/catalog/generate-defaults';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const outDir = join(here, '..', 'dist', 'catalogs');
 
 await mkdir(outDir, { recursive: true });
-await rm(join(outDir, 'watchers.json'), { force: true });
+await rm(join(outDir, 'automations.json'), { force: true });
 
 const start = Date.now();
 const [connectors, skills] = await Promise.all([
   generateConnectorsManifest(),
   generateSkillsManifest(),
 ]);
-const behaviors = generateBehaviorsManifest();
+const automations = generateAutomationsManifest();
 
 await Promise.all([
   writeFile(join(outDir, 'connectors.json'), `${JSON.stringify(connectors, null, 2)}\n`, 'utf-8'),
   writeFile(join(outDir, 'skills.json'), `${JSON.stringify(skills, null, 2)}\n`, 'utf-8'),
-  writeFile(join(outDir, 'behaviors.json'), `${JSON.stringify(behaviors, null, 2)}\n`, 'utf-8'),
+  writeFile(join(outDir, 'automations.json'), `${JSON.stringify(automations, null, 2)}\n`, 'utf-8'),
 ]);
 
 console.log(
-  `\n=== catalog manifests: ${connectors.entries.length} connectors, ${skills.entries.length} skills, ${behaviors.entries.length} Behaviors -> ${outDir} (${Date.now() - start}ms)`
+  `\n=== catalog manifests: ${connectors.entries.length} connectors, ${skills.entries.length} skills, ${automations.entries.length} Automations -> ${outDir} (${Date.now() - start}ms)`
 );

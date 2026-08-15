@@ -1,8 +1,8 @@
 /**
  * Run lifecycle endpoints.
  *
- * Handlers for the in-flight and completion phases of connector/watcher/auth
- * runs: heartbeat, stream, complete, complete-behavior, complete-action,
+ * Handlers for the in-flight and completion phases of connector/automation/auth
+ * runs: heartbeat, stream, complete, complete-automation, complete-action,
  * complete-auth, complete-embeddings, fetch-events, emit-auth-artifact,
  * poll-auth-signal.
  */
@@ -19,18 +19,18 @@ import type {
 } from "@lobu/core/contracts/worker/protocol";
 import type { Context } from "hono";
 import {
-	activateBehaviorSignal,
-	type BehaviorActivationResult,
-	dispatchBehaviorRunsBestEffort,
-} from "../behaviors/activation";
+	activateAutomationSignal,
+	type AutomationActivationResult,
+	dispatchAutomationRunsBestEffort,
+} from "../automations/activation";
 import {
 	deriveConnectorActivationSignals,
 	loadConnectorDeriveFeedContext,
 	type ConnectorDeriveFeedContext,
-} from "../behaviors/connector-derived";
-import { materializeConnectorBehaviorSignal } from "../behaviors/connector-signal";
+} from "../automations/connector-derived";
+import { materializeConnectorAutomationSignal } from "../automations/connector-signal";
 import { feedBackoff } from "../connectors/feed-backoff";
-import { maybeEmitFeedAutoPausedAfterFailure } from "../behaviors/platform-events";
+import { maybeEmitFeedAutoPausedAfterFailure } from "../automations/platform-events";
 import { getDb, parsePgNumberArray } from "../db/client";
 import { emit } from "../events/emitter";
 import { parseJsonBody } from "../gateway/routes/shared/helpers";
@@ -59,11 +59,11 @@ import { stripNulDeep } from "../utils/strip-nul";
 import {
 	bumpDeviceFinalizeNudge,
 	resolveFinalizeNudgeBudget,
-} from "../watchers/run-completion";
+} from "../automations/run-completion";
 import {
 	advanceScheduleAfterTerminalFailure,
 	deviceProviderQuotaResetNotBefore,
-} from "../watchers/schedule-cursor";
+} from "../automations/schedule-cursor";
 import { authorizeRunForWorker } from "./shared";
 import { classifyRunOutcome } from "../runs/run-outcome";
 
@@ -339,16 +339,16 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 				errors: string[];
 			}> = [];
 
-			// Platform-derived Behavior activation: loaded once per batch, shared
-			// by every item. A connector that still attaches `behavior_signals`
+			// Platform-derived Automation activation: loaded once per batch, shared
+			// by every item. A connector that still attaches `automation_signals`
 			// (legacy) wins for those items. Loading is part of durable delivery:
 			// failure aborts the batch so a retry cannot persist an event without
-			// its matching Behavior run.
+			// its matching Automation run.
 			let deriveContext: ConnectorDeriveFeedContext | null = null;
 			if (
 				run.feed_id != null &&
 				run.feed_key &&
-				batch.items.some((item) => (item.behavior_signals?.length ?? 0) === 0)
+				batch.items.some((item) => (item.automation_signals?.length ?? 0) === 0)
 			) {
 				deriveContext = await loadConnectorDeriveFeedContext(
 					{
@@ -409,7 +409,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 					continue;
 				}
 
-				const activations: BehaviorActivationResult[] = [];
+				const activations: AutomationActivationResult[] = [];
 				const inserted = await insertEvent(
 					{
 						entityIds: entityIds,
@@ -449,10 +449,10 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 						// (connection_id, origin_id) across replicas.
 						sql: isDry ? db : undefined,
 						afterPersist: async (persisted, tx) => {
-							const drafts = item.behavior_signals ?? [];
+							const drafts = item.automation_signals ?? [];
 							if (drafts.length > 0) {
 								for (const [draftIndex, draft] of drafts.entries()) {
-									const signal = materializeConnectorBehaviorSignal({
+									const signal = materializeConnectorAutomationSignal({
 										draft,
 										change: persisted.change,
 										connectorKey: run.connector_key,
@@ -461,7 +461,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 									});
 									if (!signal) continue;
 									activations.push(
-										...(await activateBehaviorSignal({
+										...(await activateAutomationSignal({
 											organizationId: run.organization_id,
 											signal,
 											db: tx,
@@ -487,7 +487,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 								);
 								for (const signal of derived) {
 									activations.push(
-										...(await activateBehaviorSignal({
+										...(await activateAutomationSignal({
 											organizationId: run.organization_id,
 											signal,
 											db: tx,
@@ -498,12 +498,12 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 						},
 					}
 				);
-				// ESCAPES THE TX: this dispatches real Behavior runs to the worker
+				// ESCAPES THE TX: this dispatches real Automation runs to the worker
 				// fleet. The activation ROWS roll back with the tx, but a dispatched
 				// agent run has already left the database — it would run against, and
 				// react to, an event that is about to cease to exist.
 				if (!isDry) {
-					await dispatchBehaviorRunsBestEffort(activations);
+					await dispatchAutomationRunsBestEffort(activations);
 				}
 				if (inserted) {
 					totalItems++;
@@ -794,7 +794,7 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 			//    SQL so it stays correct under concurrent completions across replicas.
 			//  - Hard auto-pause: once the NEW count crosses the pause threshold, the
 			//    feed is paused (status='paused'; the DB trigger nulls next_run_at).
-			//    Crossing the threshold emits feed.auto_paused so Behaviors can react.
+			//    Crossing the threshold emits feed.auto_paused so Automations can react.
 			//    Manual feeds (no schedule) can't exponentially back off (nextRun is
 			//    NULL) but still hard-pause.
 			const backoffBaseMs = feedBackoff.baseMs;
@@ -840,7 +840,7 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 				const consec = Number(after?.consecutive_failures ?? 0);
 				// Emit when paused at/above threshold. delivery_id is stable per
 				// failure episode (first_failure_at), so retries after a failed
-				// activation are idempotent and do not double-queue Behaviors.
+				// activation are idempotent and do not double-queue Automations.
 				try {
 					await maybeEmitFeedAutoPausedAfterFailure({
 						feedId,
@@ -986,25 +986,25 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 }
 
 /**
- * Prompt appended to the re-spawned CLI when a device Behavior exited without
+ * Prompt appended to the re-spawned CLI when a device Automation exited without
  * calling completeWindow. Module-level so a granted resume and its idempotent
  * replay hand the device byte-identical instructions.
  */
 const MISSING_COMPLETE_WINDOW_NUDGE =
-	"Device CLI exited without calling completeWindow. Re-run the Behavior task and " +
+	"Device CLI exited without calling completeWindow. Re-run the Automation task and " +
 	"finalize via the lobu skill + CLI (preferred): " +
-	"`lobu memory exec` with client.knowledge.read({ behavior_id }) then " +
-	"client.behaviors.completeWindow({ window_token, extracted_data, behavior_run_id }). " +
+	"`lobu memory exec` with client.knowledge.read({ automation_id }) then " +
+	"client.automations.completeWindow({ window_token, extracted_data, automation_run_id }). " +
 	"MCP query_sdk/run_sdk is also fine if wired. Do not only print a summary.";
 
 /**
- * POST /api/workers/me/runs/:runId/complete-behavior
+ * POST /api/workers/me/runs/:runId/complete-automation
  *
- * Device-side EXIT REPORT for a watcher run executed by a local CLI agent
+ * Device-side EXIT REPORT for an automation run executed by a local CLI agent
  * (Claude Code, agy, etc.) on the user's machine. The Owletto Mac app's
- * `WatcherDispatcher` posts here once the subprocess exits.
+ * `AutomationDispatcher` posts here once the subprocess exits.
  *
- * The agent is expected to complete window Behaviors itself — via Lobu MCP
+ * The agent is expected to complete window Automations itself — via Lobu MCP
  * tools (`query_sdk` / `run_sdk` → `completeWindow`) and/or the local
  * `lobu` CLI (`lobu memory exec` with the same ClientSDK calls). This
  * endpoint records process exit metadata and enforces the finalize contract:
@@ -1012,11 +1012,11 @@ const MISSING_COMPLETE_WINDOW_NUDGE =
  * - body.error set → the subprocess crashed/timed out → run failed.
  * - clean exit + run already completed (by complete_window) → ack; stamp
  *   exit metadata and the window's wall-clock.
- * - clean exit + event-turn Behavior still running → complete without a
+ * - clean exit + event-turn Automation still running → complete without a
  *   window (turn path has no completeWindow step).
- * - clean exit + window Behavior still running + finalize budget left →
+ * - clean exit + window Automation still running + finalize budget left →
  *   status `resume` (run stays claimed/running; Mac re-spawns with nudge).
- * - clean exit + window Behavior still running + budget exhausted →
+ * - clean exit + window Automation still running + budget exhausted →
  *   failed with reason_code `missing_complete_window`.
  * - a replay of a report already answered with a resume (body
  *   `finalize_attempt` behind the stored count, i.e. the device never saw the
@@ -1025,7 +1025,7 @@ const MISSING_COMPLETE_WINDOW_NUDGE =
  * Authorization: the caller must own the claim — same gate as
  * /api/workers/complete (status='running' AND claimed_by === worker_id).
  */
-export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
+export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 	const runIdParam = c.req.param("runId");
 	if (!runIdParam) {
 		return c.json({ error: "runId is required" }, 400);
@@ -1066,7 +1066,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 	// exit-report decision; the status-and-claim predicates on the writes below
 	// remain authoritative if this read races another terminal path.
 	const runRows = (await sql`
-    SELECT id, organization_id, watcher_id, approved_input, run_type,
+    SELECT id, organization_id, automation_id, approved_input, run_type,
            claimed_at, claimed_by, status, window_id
     FROM runs
     WHERE id = ${runId}
@@ -1074,7 +1074,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
   `) as unknown as Array<{
 		id: number;
 		organization_id: string;
-		watcher_id: number | null;
+		automation_id: number | null;
 		approved_input: Record<string, unknown> | null;
 		run_type: string;
 		claimed_at: string | Date | null;
@@ -1084,17 +1084,17 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 	}>;
 	const run = runRows[0];
 	if (!run) return c.json({ error: "Run not found" }, 404);
-	if (run.run_type !== "behavior") {
-		return c.json({ error: "Not a Behavior run" }, 409);
+	if (run.run_type !== "automation") {
+		return c.json({ error: "Not an Automation run" }, 409);
 	}
-	if (run.watcher_id == null) {
-		return c.json({ error: "Behavior run missing watcher_id" }, 500);
+	if (run.automation_id == null) {
+		return c.json({ error: "Automation run missing automation_id" }, 500);
 	}
 	if (run.claimed_by !== body.worker_id) {
 		return c.json({ ok: true, status: run.status, idempotent: true });
 	}
 
-	const watcherId = Number(run.watcher_id);
+	const automationId = Number(run.automation_id);
 	const approved = (run.approved_input ?? {}) as Record<string, unknown>;
 
 	// Fix 2 (pi round-2): device-identity binding pinned to the OAuth token, not
@@ -1129,7 +1129,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 						body_worker_id: body.worker_id,
 						bound_worker_id: boundWorkerId,
 					},
-					"[completeBehaviorRun] body.worker_id != token-bound worker_id — rejecting"
+					"[completeAutomationRun] body.worker_id != token-bound worker_id — rejecting"
 				);
 				return c.json(
 					{
@@ -1159,7 +1159,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 							caller_device: callerDeviceWorkerId,
 							pinned_device: pinnedDeviceWorkerId,
 						},
-						"[completeBehaviorRun] device_worker_id mismatch — rejecting"
+						"[completeAutomationRun] device_worker_id mismatch — rejecting"
 					);
 					return c.json({ error: "Forbidden: device worker mismatch" }, 403);
 				}
@@ -1175,7 +1175,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 					worker_user_id: workerUserId,
 					body_worker_id: body.worker_id,
 				},
-				"[completeBehaviorRun] no token-bound workerId — falling back to user_id+worker_id check"
+				"[completeAutomationRun] no token-bound workerId — falling back to user_id+worker_id check"
 			);
 			const deviceRows = (await sql`
         SELECT id
@@ -1196,7 +1196,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 						caller_device: callerDeviceWorkerId,
 						pinned_device: pinnedDeviceWorkerId,
 					},
-					"[completeBehaviorRun] device_worker_id mismatch (legacy path) — rejecting"
+					"[completeAutomationRun] device_worker_id mismatch (legacy path) — rejecting"
 				);
 				return c.json({ error: "Forbidden: device worker mismatch" }, 403);
 			}
@@ -1234,13 +1234,13 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
       `) as unknown as Array<{ id: number }>;
 			if (failedRows.length === 0) return false;
 			await tx`
-        UPDATE watchers
+        UPDATE automations
         SET last_fired_at = NOW(), updated_at = NOW()
-        WHERE id = ${watcherId}
+        WHERE id = ${automationId}
       `;
 			await advanceScheduleAfterTerminalFailure(
 				tx,
-				watcherId,
+				automationId,
 				typeof approved.dispatch_source === "string"
 					? approved.dispatch_source
 					: null,
@@ -1260,13 +1260,13 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 		// and put the actual ran/errored detail under `extra`.
 		recordLifecycleEvent({
 			organizationId: run.organization_id,
-			entityType: "watcher",
+			entityType: "automation",
 			op: "updated",
-			entityId: String(watcherId),
+			entityId: String(automationId),
 			summary:
 				outcome === "failed"
-					? `Behavior run ${runId} failed on device CLI: ${detail ?? "unknown error"}`
-					: `Behavior run ${runId} completed via device CLI`,
+					? `Automation run ${runId} failed on device CLI: ${detail ?? "unknown error"}`
+					: `Automation run ${runId} completed via device CLI`,
 			extra: {
 				run_id: runId,
 				source: "device_worker",
@@ -1327,7 +1327,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 			// complete_window, so runs it left on the pipeline default get the device
 			// stamp. An explicit model passed by the agent wins. Provenance now lives
 			// on the RUN row (model_used / run_metadata.execution_time_ms), not the
-			// retired watcher_windows table — the canvas is the window projection and
+			// retired automation_windows table — the canvas is the window projection and
 			// reads pull execution_time_ms from run timestamps / run_metadata.
 			await sql`
         UPDATE runs
@@ -1357,9 +1357,9 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
       `;
 		}
 		await sql`
-      UPDATE watchers
+      UPDATE automations
       SET last_fired_at = NOW(), updated_at = NOW()
-      WHERE id = ${watcherId}
+      WHERE id = ${automationId}
     `;
 		emitCompletionEvent("completed");
 		return c.json({ ok: true, status: "completed", window_id: run.window_id });
@@ -1416,9 +1416,9 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 			});
 		}
 		await sql`
-      UPDATE watchers
+      UPDATE automations
       SET last_fired_at = NOW(), updated_at = NOW()
-      WHERE id = ${watcherId}
+      WHERE id = ${automationId}
     `;
 		emitCompletionEvent("completed");
 		return c.json({
@@ -1429,18 +1429,18 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 		});
 	}
 
-	// Window Behavior: agent never called completeWindow. Bounded device-held
+	// Window Automation: agent never called completeWindow. Bounded device-held
 	// resume (same finalize_nudges budget as cloud) so the Mac can re-spawn.
-	const watcherRows = (await sql`
+	const automationRows = (await sql`
     SELECT execution_config
-    FROM watchers
-    WHERE id = ${watcherId}
+    FROM automations
+    WHERE id = ${automationId}
     LIMIT 1
   `) as unknown as Array<{
 		execution_config: Record<string, unknown> | null;
 	}>;
 	const budget = resolveFinalizeNudgeBudget(
-		watcherRows[0]?.execution_config ?? null
+		automationRows[0]?.execution_config ?? null
 	);
 	const nudgeCount = Number(approved.finalize_nudge_count ?? 0);
 	const attemptsSoFar = Number.isFinite(nudgeCount) ? nudgeCount : 0;
@@ -1465,7 +1465,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 	if (reportedAttempt < attemptsSoFar) {
 		logger.info(
 			{ run_id: runId, reported: reportedAttempt, granted: attemptsSoFar },
-			"[completeBehaviorRun] replayed exit report — re-serving the granted resume"
+			"[completeAutomationRun] replayed exit report — re-serving the granted resume"
 		);
 		return c.json({
 			ok: true,
@@ -1534,7 +1534,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 		}
 		logger.info(
 			{ run_id: runId, attempt: nextAttempt, max: budget },
-			"[completeBehaviorRun] missing completeWindow — device resume"
+			"[completeAutomationRun] missing completeWindow — device resume"
 		);
 		return c.json({
 			ok: true,

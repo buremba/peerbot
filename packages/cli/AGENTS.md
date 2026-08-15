@@ -3,7 +3,7 @@
 Read root `AGENTS.md` first. This package is the `lobu` binary users install from npm: commands, project templates, config resolution, and the bundled server the Owletto Mac app shells out to.
 
 ## Boundaries
-- This is a published user-facing binary. Error messages are product surface — write them for someone who has never read this repo, and keep the agent-facing vocabulary rule (**Behavior**, never `watcher`) in anything a user or agent sees.
+- This is a published user-facing binary. Error messages are product surface — write them for someone who has never read this repo, and use **Automation** consistently in anything a user or agent sees.
 - `bin/lobu.js` runs on whatever Node the user has, *before* the bundle loads. Keep it dependency-free and import-free; anything it needs must be inline.
 - The Mac app resolves the CLI in this order (`locateLobuCLI` in `LocalLobuRunner.swift`): `LOBU_CLI_DEV_PATH`, then the source checkout at `~/Code/lobu/packages/cli/bin/lobu.js`, then the version-pinned CLI bundled in the app, then PATH. PATH is the *last* resort — on a machine with a source checkout the app runs your working copy, so know which artifact you are testing before concluding a change did or did not take effect.
 - Every one of those paths executes the built `dist`, so a source edit is invisible until you rebuild the package.

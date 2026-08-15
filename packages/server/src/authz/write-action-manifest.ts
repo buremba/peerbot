@@ -115,7 +115,7 @@ export function isLegalActionEffect(
 
 /**
  * The no-row default effect for a (class, action). An action the class does not
- * govern falls back to `deny` — asking "what happens by default when a watcher
+ * govern falls back to `deny` — asking "what happens by default when an automation
  * does X" for an X this class can't do is answered fail-closed.
  */
 export function defaultEffectFor(

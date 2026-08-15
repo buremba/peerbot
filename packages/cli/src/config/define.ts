@@ -1,19 +1,19 @@
 /**
  * Declarative authoring API. Each `define*` returns a branded plain object that
  * doubles as a typed handle (e.g. an {@link EntityType} can be passed to
- * {@link defineRelationshipType}, an {@link Agent} to {@link defineBehavior}).
+ * {@link defineRelationshipType}, an {@link Agent} to {@link defineAutomation}).
  *
  * These are pure data producers with no side effects — `lobu apply` imports the
  * entrypoint, reads the {@link Project} default export, and maps it to the
  * server's desired state. Executable handlers (connector `sync`/`execute`,
- * Behavior reactions) live in their own modules; these objects only declare
+ * Automation reactions) live in their own modules; these objects only declare
  * config and references.
  */
 
 import type {
-  BehaviorEventTrigger,
-  BehaviorScheduleTrigger,
-  BehaviorWorkspaceEventTrigger,
+  AutomationEventTrigger,
+  AutomationScheduleTrigger,
+  AutomationWorkspaceEventTrigger,
   ConnectorClass,
   ConnectorRuntime,
   Dimension,
@@ -266,7 +266,7 @@ export interface Connection {
    *     does not support auth profiles, device pinning, or declarative feeds.
    *   - `hosted`: the **hosted Lobu bot** — no `config` needed. `lobu run`
    *     prints a `/lobu link <code>` you redeem by DMing the bot (or in a
-   *     channel), which binds an agent by creating a message Behavior. Only
+   *     channel), which binds an agent by creating a message Automation. Only
    *     valid for slack/telegram. Hosted declarations do not support auth
    *     profiles, device pinning, or declarative feeds.
    *   - `managed`: an OAuth grant owned by a cloud (public) org; see
@@ -350,11 +350,11 @@ export function connectorFromFile<
 }
 
 // ---------------------------------------------------------------------------
-// Behaviors
+// Automations
 // ---------------------------------------------------------------------------
 
 /**
- * The shape a Behavior reaction module's default export must satisfy:
+ * The shape an Automation reaction module's default export must satisfy:
  * `export default async (ctx, client, params?) => …`. Used to type-check the
  * `<Handler>` generic on {@link reactionFromFile} against the referenced module.
  */
@@ -366,8 +366,8 @@ export type ReactionHandler = (
 
 /**
  * A local reaction source file to compile + run in a sandboxed isolate when the
- * Behavior fires. Built with {@link reactionFromFile} and set on
- * {@link Behavior.reaction}. Like {@link ConnectorSource}, this carries only the
+ * Automation fires. Built with {@link reactionFromFile} and set on
+ * {@link Automation.reaction}. Like {@link ConnectorSource}, this carries only the
  * path as plain data — the handler module is NOT imported at config-eval time;
  * `lobu apply` reads the raw source and the server compiles it.
  */
@@ -397,17 +397,17 @@ export function reactionFromFile<
   return { kind: "reactionSource", path };
 }
 
-export interface BehaviorNotification {
+export interface AutomationNotification {
   channel?: "canvas" | "notification" | "both";
   priority?: "low" | "normal" | "high";
 }
 
-export interface BehaviorEntityOutput {
+export interface AutomationEntityOutput {
   /** Stored entity type (a config handle or slug). */
   entity: EntityType | string;
   /**
    * One to four fields forming one exact composite identity tuple, scoped to
-   * this Behavior, output name, and entity type. Every row must contain every
+   * this Automation, output name, and entity type. Every row must contain every
    * field as a non-blank string (max 256 UTF-8 bytes), safe integer, or boolean.
    * Field order is significant; use durable source IDs rather than editable
    * labels.
@@ -417,47 +417,47 @@ export interface BehaviorEntityOutput {
   name?: string[];
 }
 
-export interface BehaviorEventOutput {
+export interface AutomationEventOutput {
   /** Semantic type assigned to every standard event draft in this output. */
   event: string;
 }
 
-export type BehaviorOutput = BehaviorEntityOutput | BehaviorEventOutput;
+export type AutomationOutput = AutomationEntityOutput | AutomationEventOutput;
 
 /**
  * Declarative event trigger. The persisted API contract uses an integer
  * `connection_id`; config may instead name a stable project connection handle
  * or slug, which `lobu apply` resolves after creating/updating connections.
  */
-export type BehaviorEventTriggerConfig = Omit<
-  BehaviorEventTrigger,
+export type AutomationEventTriggerConfig = Omit<
+  AutomationEventTrigger,
   "connection_id"
 > & {
   connection_id?: number;
   connection?: Connection | string;
 };
 
-export type BehaviorTriggerConfig =
-  | BehaviorEventTriggerConfig
-  | BehaviorWorkspaceEventTrigger
-  | BehaviorScheduleTrigger;
+export type AutomationTriggerConfig =
+  | AutomationEventTriggerConfig
+  | AutomationWorkspaceEventTrigger
+  | AutomationScheduleTrigger;
 
-export interface Behavior {
-  readonly kind: "behavior";
+export interface Automation {
+  readonly kind: "automation";
   /** Stable slug — diff key. */
   slug: string;
-  /** Owning agent (handle or id). Every Behavior belongs to exactly one agent. */
+  /** Owning agent (handle or id). Every Automation belongs to exactly one agent. */
   agent: Agent | string;
   name?: string;
   description?: string;
   /**
-   * Connector events, declared event outputs from other Behaviors, and/or a
-   * cadence that activate this Behavior. Omit for manual-only execution.
+   * Connector events, declared event outputs from other Automations, and/or a
+   * cadence that activate this Automation. Omit for manual-only execution.
    */
-  triggers?: BehaviorTriggerConfig[];
+  triggers?: AutomationTriggerConfig[];
   /**
-   * The task this Behavior performs, in plain text — *what to do when it fires*,
-   * as distinct from the reusable know-how in {@link Behavior.skills}.
+   * The task this Automation performs, in plain text — *what to do when it fires*,
+   * as distinct from the reusable know-how in {@link Automation.skills}.
    *
    * Delivered to the agent verbatim, with no template expansion; the window's
    * data arrives separately in the knowledge-read payload. Skills are NOT
@@ -469,55 +469,55 @@ export interface Behavior {
   /**
    * Ordered skill names from the owning agent's skill library
    * ({@link Agent.skills}). `lobu apply` resolves each name to its body and
-   * pins the pair onto the Behavior's version, so a run gets the text as it
+   * pins the pair onto the Automation's version, so a run gets the text as it
    * stood at apply time. Editing the library later does not reach an existing
-   * Behavior until the next `lobu apply`; re-applying is the explicit upgrade
+   * Automation until the next `lobu apply`; re-applying is the explicit upgrade
    * action for a declarative project.
    *
-   * Supply {@link Behavior.prompt}, `skills`, or both. One of the two is
+   * Supply {@link Automation.prompt}, `skills`, or both. One of the two is
    * required for schedule triggers, event triggers with execution `"window"`,
-   * and Behaviors with no triggers (manual runs); an event trigger with
+   * and Automations with no triggers (manual runs); an event trigger with
    * execution `"turn"` may omit both, since the incoming event is the content
    * and a built-in default applies.
    */
   skills?: string[];
   /**
-   * Named top-level arrays the Behavior persists after each completed window.
+   * Named top-level arrays the Automation persists after each completed window.
    * Entity output schemas live on their entity types; event outputs use Lobu's
-   * standard event draft. Event triggers on a Behavior with outputs must use
+   * standard event draft. Event triggers on an Automation with outputs must use
    * execution `"window"`; conversational `"turn"` triggers belong in a
-   * separate Behavior. Omit for a Canvas-only or reaction-only Behavior.
+   * separate Automation. Omit for a Canvas-only or reaction-only Automation.
    */
-  outputs?: Record<string, BehaviorOutput> | null;
+  outputs?: Record<string, AutomationOutput> | null;
   /**
    * Named SQL data sources. Value is either a query string or
    * `{ query, context? }` — `context: true` marks a context-only source
-   * (included in the Behavior payload's `sources` field but not the window's
+   * (included in the Automation payload's `sources` field but not the window's
    * event set).
    */
   sources?: Record<string, string | { query: string; context?: boolean }>;
-  notification?: BehaviorNotification;
+  notification?: AutomationNotification;
   minCooldownSeconds?: number;
   tags?: string[];
-  /** LLM guidance for the Behavior's downstream reaction agent. */
+  /** LLM guidance for the Automation's downstream reaction agent. */
   reactionsGuidance?: string;
   /** Agent-kind override for firings (e.g. "background", "notifier"). */
   agentKind?: string;
   /**
-   * UUID pinning this Behavior's runs to a specific device worker. Only
+   * UUID pinning this Automation's runs to a specific device worker. Only
    * meaningful together with `agentKind` — the pinned device's local CLI
    * (selected by `agentKind`) executes the run.
    */
   deviceWorkerId?: string;
   /**
    * Model alias/id passed to the device's local CLI (`--model`) when this
-   * Behavior runs on a device (see `agentKind`/`deviceWorkerId`). Omitted on
+   * Automation runs on a device (see `agentKind`/`deviceWorkerId`). Omitted on
    * cloud runs, which use the owning agent's model.
    */
   model?: string;
   /**
    * A sibling `.ts` reaction script (`./reactions/foo.reaction.ts`) compiled +
-   * run in a sandboxed isolate when the Behavior fires, built with
+   * run in a sandboxed isolate when the Automation fires, built with
    * {@link reactionFromFile}. The script must `export default async (ctx,
    * client, params?) => …` ({@link ReactionHandler}). Kept in its own file (not
    * inline) so your IDE type-checks it; the path must stay under the config
@@ -526,8 +526,8 @@ export interface Behavior {
   reaction?: ReactionSource;
 }
 
-export function defineBehavior(config: Omit<Behavior, "kind">): Behavior {
-  return { ...config, kind: "behavior" };
+export function defineAutomation(config: Omit<Automation, "kind">): Automation {
+  return { ...config, kind: "automation" };
 }
 
 // ---------------------------------------------------------------------------
@@ -649,7 +649,7 @@ export interface Agent {
   // including chat connections (slack/telegram, `credentialMode: "byo" |
   // "hosted"`) — are declared at the PROJECT level (`defineConfig({ entities,
   // relationships, connections })`), matching the apply model. Agent binding
-  // for a chat connection is a Behavior with a channel trigger, not an
+  // for a chat connection is an Automation with a channel trigger, not an
   // agent-scoped field here.
 }
 
@@ -722,7 +722,7 @@ export interface Project {
   org?: string;
   /**
    * When true, `lobu apply` deletes definitions (entity/relationship types,
-   * Behaviors, connector definitions) that are absent from this config —
+   * Automations, connector definitions) that are absent from this config —
    * INCLUDING ones created via the dashboard/API. Data, connections, auth
    * profiles, and agents are never pruned. Default false.
    */
@@ -738,7 +738,7 @@ export interface Project {
   relationships?: RelationshipType[];
   connections?: Connection[];
   authProfiles?: AuthProfile[];
-  behaviors?: Behavior[];
+  automations?: Automation[];
   /**
    * Org-owned inference providers (`[[providers]]`). Reconciled by `lobu apply`
    * against the org's `/inference-providers` API. NOT pruned: a provider absent

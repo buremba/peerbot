@@ -798,11 +798,9 @@ jobs:
         run: bun scripts/check-test-runner-coverage.mjs
 
       - name: Exposed-surface naming gate
-        # "watcher" is the internal engine/DB term; the agent-facing surface says
-        # "Behavior". MCP tool schemas, ClientSDK discovery metadata and callable
-        # method names, and the public reaction types must not leak the old word —
-        # renaming half a wire contract is how `watcher_source` survived the
-        # rename and reached prod.
+        # Automation is canonical across storage, runtime, and public surfaces.
+        # Keep schemas, discovery metadata, callable methods, and reaction types
+        # aligned so a partial vocabulary cutover cannot reach production.
         run: bun scripts/check-exposed-surface-naming.ts
 
       - name: Exposed-surface naming gate fixtures
@@ -1373,7 +1371,7 @@ jobs:
       # The Mac app has no XCTest target, so xcodebuild does not discover the
       # standalone @main tests under apps/mac/Tests — before this step they ran
       # only when someone pasted a swiftc line out of a file header, which is
-      # how WatcherDecodingTests stopped compiling on 2026-07-05 and stayed
+      # how AutomationDecodingTests stopped compiling on 2026-07-05 and stayed
       # broken. Runs before the app build so a failure names the assertion.
       - name: Run standalone Swift tests
         if: steps.submodule.outputs.stubbed != 'true'

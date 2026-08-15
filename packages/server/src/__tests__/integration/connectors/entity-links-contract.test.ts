@@ -3,7 +3,7 @@
  *
  * Uses a minimal WhatsApp-shaped connector definition instead of importing the
  * real connector runtime, so the test is stable under raw CI runners while
- * preserving the important ingestion behavior: auto-create $member identities.
+ * preserving the important ingestion automation: auto-create $member identities.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';

@@ -23,9 +23,9 @@ describe('validateNumericId', () => {
     // runtime: an untyped JSON body smuggling a string through a number-typed
     // field. The validator must refuse it so the value never reaches an SQL
     // string builder.
-    const malicious = "1) OR 1=1; DROP TABLE watchers; --" as unknown as number;
-    expect(() => validateNumericId(malicious, 'exclude_watcher_id')).toThrow(
-      /Invalid exclude_watcher_id/
+    const malicious = "1) OR 1=1; DROP TABLE automations; --" as unknown as number;
+    expect(() => validateNumericId(malicious, 'exclude_automation_id')).toThrow(
+      /Invalid exclude_automation_id/
     );
   });
 });

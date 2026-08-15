@@ -1,7 +1,7 @@
 /**
  * Compact resolve_path route contract.
  *
- * Keeps the important behavior from the old broad page tests while using the
+ * Keeps the important automation from the old broad page tests while using the
  * reusable MCP client/session helper introduced in this PR.
  */
 
@@ -219,9 +219,9 @@ describe('resolve_path contract', () => {
     const withBootstrap = (await resolvePath(fixture, {
       path: `/${fixture.orgSlug}`,
       include_bootstrap: true,
-    })) as { bootstrap?: { entity_types?: unknown[]; recent_watchers?: unknown[] } };
+    })) as { bootstrap?: { entity_types?: unknown[]; recent_automations?: unknown[] } };
     expect(withBootstrap.bootstrap?.entity_types?.length).toBeGreaterThan(0);
-    expect(withBootstrap.bootstrap).not.toHaveProperty('recent_watchers');
+    expect(withBootstrap.bootstrap).not.toHaveProperty('recent_automations');
   });
 
   it('strips audit requests from bootstrap content without altering ordinary payloads', async () => {

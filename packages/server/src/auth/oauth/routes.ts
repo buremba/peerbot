@@ -639,7 +639,7 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
   // first-party-only scopes, but clients that cached an older scopes_supported
   // (notably Slack MCP) still request them and require the token `scope` to
   // cover every requested entry. Unknown values are filtered later via
-  // parseScopes / AVAILABLE_SCOPES at token use. Device-specific *behavior*
+  // parseScopes / AVAILABLE_SCOPES at token use. Device-specific *automation*
   // (personal-org force-bind, mint-child-token) stays gated on the device
   // flow / resource binding, not solely on the scope string.
   const consentHasMcpScopes = hasMcpScopes(body.scope);
@@ -997,7 +997,7 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
   // `device_worker:run` tokens drive personal devices — the Owletto Mac app,
   // the Chrome extension, and the local `lobu run` worker. Device data
   // (WhatsApp, Photos, browser context, …) always belongs in the user's
-  // personal org; team orgs reach a device by pinning a watcher/connection
+  // personal org; team orgs reach a device by pinning an automation/connection
   // (see resolveDeviceClaimableOrgs), not by re-binding the device token.
   // So a device-worker grant is FORCE-bound to the personal org, ignoring
   // the resource slug, the active org, and the consent picker.

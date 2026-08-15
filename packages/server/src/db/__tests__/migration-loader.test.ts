@@ -16,7 +16,7 @@ describe('listMigrationFiles', () => {
   });
 
   it('fails closed when two files share one schema_migrations version', () => {
-    writeFileSync(path.join(dir, '20260803140000_behavior_outputs.sql'), '');
+    writeFileSync(path.join(dir, '20260803140000_automation_outputs.sql'), '');
     writeFileSync(path.join(dir, '20260803140000_mcp_client_id.sql'), '');
 
     expect(() => listMigrationFiles(dir)).toThrow(/duplicate migration version 20260803140000/i);

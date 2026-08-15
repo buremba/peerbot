@@ -25,7 +25,7 @@ const ENV_KEYS = ["ENCRYPTION_KEY", "WORKER_TOKEN_TTL_MS"] as const;
  *
  * The previous round-trip test listed eight claims by hand under the name
  * "all optional fields" and stayed at those eight as the interface grew to 21,
- * so `executionMode`, `behaviorRunId`, `organizationId`, `runId`, `messageId`,
+ * so `executionMode`, `automationRunId`, `organizationId`, `runId`, `messageId`,
  * `source`, `allowedDomains` and `deniedDomains` all shipped with no proof they
  * survived the token. Deleting `executionMode` from the generated payload left
  * all 33 tests in this file green, and that claim is what both capture lanes
@@ -44,14 +44,14 @@ const ALL_CLAIMS: Required<WorkerTokenOptions> = {
   connectionId: "conn-all",
   responseThreadId: "slack:C-all:thread-1",
   platform: "slack",
-  source: "watcher-run",
+  source: "automation-run",
   executionMode: "capture",
-  behaviorRunId: 874626,
+  automationRunId: 874626,
   sessionKey: "sess-all",
   traceId: "trace-all",
   runId: 4321,
   messageId: "msg-all",
-  adminTools: ["manage_behaviors"],
+  adminTools: ["manage_automations"],
   adminActorUserId: "user-admin",
   runtimeProviderId: "provider-all",
   sandboxId: "sandbox-all",
@@ -169,13 +169,13 @@ describe("worker auth token", () => {
       generateWorkerToken("user-1", "conv-1", "deploy-A", { channelId: "C1" })
     ) as WorkerTokenData;
     expect(d.executionMode).toBeUndefined();
-    expect(d.behaviorRunId).toBeUndefined();
+    expect(d.automationRunId).toBeUndefined();
     expect(d.runId).toBeUndefined();
   });
 
   test.each([
     0, -1, 1.5,
-  ])("a token claiming behaviorRunId=%p is rejected outright", (bad) => {
+  ])("a token claiming automationRunId=%p is rejected outright", (bad) => {
     // The claim addresses the row an eval writes its capture record onto, so
     // a malformed one must kill the whole token rather than quietly arrive
     // as undefined and route the record nowhere.
@@ -184,7 +184,7 @@ describe("worker auth token", () => {
         generateWorkerToken("user-1", "conv-1", "deploy-A", {
           channelId: "C1",
           executionMode: "capture",
-          behaviorRunId: bad,
+          automationRunId: bad,
         })
       )
     ).toBe(null);
@@ -200,7 +200,7 @@ describe("worker auth token", () => {
     // unrecognised value reads as LIVE and lets an eval replay perform real
     // side effects. Fail the token instead of defaulting it.
     //
-    // Deliberately minted WITHOUT `behaviorRunId`: with one present the pair
+    // Deliberately minted WITHOUT `automationRunId`: with one present the pair
     // check rejects the token first and this stays green no matter what the
     // shape check does. Mutation-verified — dropping the shape check turns
     // these red only in this shape, which is also the reachable hole: a
@@ -215,7 +215,7 @@ describe("worker auth token", () => {
     ).toBe(null);
   });
 
-  test("capture without behaviorRunId is rejected", () => {
+  test("capture without automationRunId is rejected", () => {
     // A capture run that cannot record is the one state evals must never
     // reach: side effects are suppressed but nothing says what was suppressed,
     // so the replay scores as clean while its intent is lost.
@@ -229,7 +229,7 @@ describe("worker auth token", () => {
     ).toBe(null);
   });
 
-  test("behaviorRunId without capture is rejected", () => {
+  test("automationRunId without capture is rejected", () => {
     // The other direction matters too: a live run addressing an eval row would
     // let real work stamp a capture record onto a run it never replayed.
     expect(
@@ -237,7 +237,7 @@ describe("worker auth token", () => {
         generateWorkerToken("user-1", "conv-1", "deploy-A", {
           channelId: "C1",
           executionMode: "live",
-          behaviorRunId: 874626,
+          automationRunId: 874626,
         })
       )
     ).toBe(null);

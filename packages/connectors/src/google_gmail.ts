@@ -139,7 +139,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
         requiredScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
         description:
           'Collected feeds sync Gmail threads; virtual feeds return live matching messages. Collected sync powers person attribution.',
-        // Collected remains the default: contact promotion + Behaviors need
+        // Collected remains the default: contact promotion + Automations need
         // durable events. Virtual is fully supported when the caller sets
         // virtual:true (query() / search() already implemented).
         configSchema: {

@@ -28,7 +28,7 @@ function getSentryIngestHost(): string | null {
 /**
  * Load allowed domains from environment
  *
- * Behavior:
+ * Automation:
  * - Not set: Complete isolation (deny all)
  * - "*": Unrestricted access (allow all)
  * - "domain1,domain2": Allowlist mode (deny by default, allow only these)

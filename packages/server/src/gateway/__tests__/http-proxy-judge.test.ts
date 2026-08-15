@@ -214,7 +214,7 @@ describe("HTTP Proxy — egress judge integration", () => {
       reason: "cached-deny",
     });
     // Deny + 403 path closes fast, so repeated requests are reliable without
-    // depending on upstream behavior.
+    // depending on upstream automation.
     await rawProxyRequest("http://example.com/cached-path", auth());
     await rawProxyRequest("http://example.com/cached-path", auth());
     expect(fakeClient.calls).toBe(1);

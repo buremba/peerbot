@@ -5,7 +5,7 @@ import {
   defineSkill,
   defineEntityType,
   defineRelationshipType,
-  defineBehavior,
+  defineAutomation,
   secret,
 } from "@lobu/cli/config";
 import type DiscoursePostsConnector from "./discourse-posts.connector.ts";
@@ -148,7 +148,7 @@ const writesAbout = defineRelationshipType({
     "Capture blog posts, newsletters, and public writing so matching includes current thinking, not just static bios.",
 });
 
-const opportunityMatcher = defineBehavior({
+const opportunityMatcher = defineAutomation({
   agent: agentCommunity,
   slug: "opportunity-matcher",
   name: "Opportunity matcher",
@@ -173,5 +173,5 @@ export default defineConfig({
   agents: [agentCommunity],
   entities: [match, post, topic],
   relationships: [interestedIn, introducedTo, matchesWith, writesAbout],
-  behaviors: [opportunityMatcher],
+  automations: [opportunityMatcher],
 });

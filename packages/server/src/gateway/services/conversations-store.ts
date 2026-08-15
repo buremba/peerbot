@@ -7,13 +7,13 @@ const logger = createLogger("conversations-store");
 /** A conversation's origin class, mirroring how the listing partitions ids. */
 export type ConversationKind = "owned" | "platform";
 
-/** Watcher conversation id shape: `{agentId}_watcher_{id}_run_{runId}`. These
- *  stay derived from `agent_transcript_snapshot` (one sidebar entry per WATCHER,
+/** Automation conversation id shape: `{agentId}_automation_{id}_run_{runId}`. These
+ *  stay derived from `agent_transcript_snapshot` (one sidebar entry per AUTOMATION,
  *  not per run) and must NEVER get a `conversations` row. */
-const WATCHER_CONVERSATION_ID = /_watcher_\d+_run_\d+$/;
+const AUTOMATION_CONVERSATION_ID = /_automation_\d+_run_\d+$/;
 
-export function isWatcherConversationId(conversationId: string): boolean {
-	return WATCHER_CONVERSATION_ID.test(conversationId);
+export function isAutomationConversationId(conversationId: string): boolean {
+	return AUTOMATION_CONVERSATION_ID.test(conversationId);
 }
 
 /**
@@ -23,8 +23,8 @@ export function isWatcherConversationId(conversationId: string): boolean {
  * interactions.ts:57, unified-thread-consumer.ts:391) and are stored as
  * ('owned', 'web'); every other platform is a real external channel stored as
  * ('platform', <platform>). Returning both from one place keeps kind and the
- * stored platform from drifting apart at the call site. Watcher ids are filtered
- * out BEFORE this by {@link isWatcherConversationId}.
+ * stored platform from drifting apart at the call site. Automation ids are filtered
+ * out BEFORE this by {@link isAutomationConversationId}.
  */
 export function classifyConversation(platform: string): {
 	kind: ConversationKind;
@@ -356,7 +356,7 @@ export async function readConversationReply(args: {
  * `DISTINCT ON (conversation_id) FROM agent_transcript_snapshot`.
  *
  * Returns owned + platform rows; the caller layers on per-conversation
- * visibility (platform ACL) and stitches in the derived watcher entries.
+ * visibility (platform ACL) and stitches in the derived automation entries.
  */
 export async function listConversations(args: {
 	organizationId: string;

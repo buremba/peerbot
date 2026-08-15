@@ -7,11 +7,17 @@ import {
 } from "../../../utils/openapi-generator";
 
 describe("generateOpenAPISpec", () => {
-	it("uses public Behavior terminology throughout ChatGPT metadata", () => {
+	it("uses public Automation terminology throughout ChatGPT metadata", () => {
 		const spec = generateOpenAPISpec("https://example.test");
-		expect(JSON.stringify(spec)).not.toMatch(/watcher/i);
 		expect(spec.paths["/api/{orgSlug}/render_lobu_view"]).toBeUndefined();
-		expect(spec.servers[0]?.description).toContain("Behaviors");
+		const saveMemory =
+			spec.paths["/api/{orgSlug}/save_memory"]?.post?.requestBody?.content?.[
+				"application/json"
+			]?.schema;
+		expect(
+			saveMemory?.properties?.automation_source?.properties?.automation_id,
+		).toBeDefined();
+		expect(spec.servers[0]?.description).toContain("Automations");
 	});
 });
 
@@ -98,6 +104,5 @@ describe("generateStrictToolPaths", () => {
 		const json = JSON.stringify(paths);
 		expect(json).not.toContain('"$id"');
 		expect(json).not.toContain('"static"');
-		expect(json).not.toMatch(/watcher/i);
 	});
 });

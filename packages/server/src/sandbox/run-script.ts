@@ -8,7 +8,7 @@
  * host↔guest bridge message (SDK payload, SDK result, or return envelope) is
  * capped at 4 MB — a larger message, or exhausting the 200-call quota,
  * terminates the run by disposing the isolate (uncatchable by the guest).
- * Extracted named exports keep the old hard-fail behavior because a partial
+ * Extracted named exports keep the old hard-fail automation because a partial
  * schema would be worse than none. Other caps: 180s wall-clock max
  * (device-bound operations may wait up to ~155s), and 30s per `ctx.sleep()`.
  * `client.org()` is stateless — each guest call carries
@@ -74,7 +74,7 @@ export interface RunScriptOptions {
 	 * behind them is itself capture-aware and refuses its own writes.
 	 *
 	 * This exists for exactly one case: an eval replay is told to finalize via
-	 * `client.behaviors.completeWindow`, and the blanket skip would swallow that
+	 * `client.automations.completeWindow`, and the blanket skip would swallow that
 	 * call — leaving the run with no window, so it gets nudged into a second
 	 * full replay and then failed with "finished without calling run_sdk". The
 	 * handler needs to RUN so it can record the extraction and answer

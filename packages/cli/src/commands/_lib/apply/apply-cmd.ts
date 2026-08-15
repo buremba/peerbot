@@ -28,7 +28,7 @@ import {
 import {
   type DesiredConnectorDefinition,
   type DesiredState,
-  type DesiredWatcher,
+  type DesiredAutomation,
   loadDesiredStateFromConfig,
   normalizeConnectionConfigScope,
   resolveConnectorSchemas,
@@ -88,14 +88,14 @@ export interface PendingAuthEntry {
 }
 
 /** Resolve declarative connection slugs to the integer API contract. */
-export function resolveBehaviorConnectionRefs(
-  watchers: DesiredWatcher[],
+export function resolveAutomationConnectionRefs(
+  automations: DesiredAutomation[],
   connectionIdBySlug: ReadonlyMap<string, number>,
   requireResolved: boolean
 ): void {
-  for (const watcher of watchers) {
-    if (!watcher.triggers) continue;
-    watcher.triggers = watcher.triggers.map((trigger) => {
+  for (const automation of automations) {
+    if (!automation.triggers) continue;
+    automation.triggers = automation.triggers.map((trigger) => {
       if (
         trigger.kind !== "event" ||
         trigger.source === "workspace" ||
@@ -107,7 +107,7 @@ export function resolveBehaviorConnectionRefs(
       if (connectionId === undefined) {
         if (requireResolved) {
           throw new ApiError(
-            `behavior "${watcher.slug}" references connection "${trigger.connectionSlug}" which has no remote ID — create the connection first, or omit --only so apply can create it`
+            `automation "${automation.slug}" references connection "${trigger.connectionSlug}" which has no remote ID — create the connection first, or omit --only so apply can create it`
           );
         }
         return trigger;
@@ -404,7 +404,7 @@ export async function fetchRemoteSnapshot(
       remote.rules = rules.map((r) => ({ source: r.source, target: r.target }));
     }
   }
-  const watchers = only === "agents" ? [] : await client.listBehaviors();
+  const automations = only === "agents" ? [] : await client.listAutomations();
 
   // Connectors run only on a full apply (`--only` skips them). A pruning config
   // also fetches them even when it declares none, so prune can delete a
@@ -412,10 +412,10 @@ export async function fetchRemoteSnapshot(
   // empty desired-connectors set would skip the fetch entirely).
   const hasConnectors = hasDesiredConnectors(state);
   const fetchConnectors = !only && (hasConnectors || prune);
-  const fetchBehaviorConnections =
+  const fetchAutomationConnections =
     only === "memory" &&
-    state.watchers.some((watcher) =>
-      watcher.triggers?.some(
+    state.automations.some((automation) =>
+      automation.triggers?.some(
         (trigger) =>
           trigger.kind === "event" &&
           trigger.source !== "workspace" &&
@@ -427,7 +427,7 @@ export async function fetchRemoteSnapshot(
     : [];
   const authProfiles = fetchConnectors ? await client.listAuthProfiles() : [];
   const connections =
-    fetchConnectors || fetchBehaviorConnections
+    fetchConnectors || fetchAutomationConnections
       ? await client.listConnections()
       : [];
   const feedsByConnectionId = new Map<number, RemoteFeed[]>();
@@ -451,7 +451,7 @@ export async function fetchRemoteSnapshot(
     agentSettings,
     entityTypes,
     relationshipTypes,
-    watchers,
+    automations,
     connectorDefinitions,
     authProfiles,
     connections,
@@ -909,28 +909,32 @@ export async function executePlan(
     printText(renderProgress(row.verb, "relationship-type", row.id));
   }
 
-  // Behaviors are applied after connections so declarative connection slugs
+  // Automations are applied after connections so declarative connection slugs
   // can resolve to the integer ids required by the API.
-  const applyBehaviors = async (
+  const applyAutomations = async (
     connectionIdBySlug: ReadonlyMap<string, number>
   ): Promise<void> => {
-    if (rowsByKind("watcher").length === 0) return;
-    resolveBehaviorConnectionRefs(ctx.state.watchers, connectionIdBySlug, true);
+    if (rowsByKind("automation").length === 0) return;
+    resolveAutomationConnectionRefs(
+      ctx.state.automations,
+      connectionIdBySlug,
+      true
+    );
 
-    // 6) Behaviors — create (full payload + reaction script) or update (scalar
+    // 6) Automations — create (full payload + reaction script) or update (scalar
     //    row fields via `update`, version-bound fields via `create_version`,
     //    reaction script via `set_reaction_script`). Drift detection lives in
-    //    `diffWatcher`; this loop just routes to the right admin action.
-    const remoteWatcherBySlug = new Map(
-      ctx.remote.watchers.map((w) => [w.slug, w])
+    //    `diffAutomation`; this loop just routes to the right admin action.
+    const remoteAutomationBySlug = new Map(
+      ctx.remote.automations.map((w) => [w.slug, w])
     );
-    for (const row of rowsByKind("watcher")) {
-      if (row.kind !== "watcher") continue;
+    for (const row of rowsByKind("automation")) {
+      if (row.kind !== "automation") continue;
       if (!row.desired) continue;
       const w = row.desired;
-      let watcherId: string | undefined;
+      let automationId: string | undefined;
       if (row.verb === "create") {
-        const created = await ctx.client.createBehavior({
+        const created = await ctx.client.createAutomation({
           slug: w.slug,
           agentId: w.agent,
           name: w.name,
@@ -950,13 +954,13 @@ export async function executePlan(
           outputs: w.outputs,
           classifiers: w.classifiers,
         });
-        watcherId = created.behavior_id;
+        automationId = created.automation_id;
       } else if (row.verb === "update") {
-        const remote = remoteWatcherBySlug.get(w.slug);
-        watcherId = remote?.behavior_id;
-        if (!watcherId) {
+        const remote = remoteAutomationBySlug.get(w.slug);
+        automationId = remote?.automation_id;
+        if (!automationId) {
           throw new ApiError(
-            `update behavior "${w.slug}" failed: remote row is missing behavior_id (refetch may be stale)`
+            `update automation "${w.slug}" failed: remote row is missing automation_id (refetch may be stale)`
           );
         }
         const versionBound = new Set(row.versionBoundFields ?? []);
@@ -973,10 +977,10 @@ export async function executePlan(
         const scalarForUpdate = triggersWithVersionChange
           ? scalarChanges.filter((f) => f !== "triggers")
           : scalarChanges;
-        // a) Scalar fields → manage_behaviors update
+        // a) Scalar fields → manage_automations update
         if (scalarForUpdate.length > 0) {
-          await ctx.client.updateBehavior({
-            behavior_id: watcherId,
+          await ctx.client.updateAutomation({
+            automation_id: automationId,
             ...(scalarForUpdate.includes("triggers")
               ? { triggers: w.triggers ?? [] }
               : {}),
@@ -1018,13 +1022,13 @@ export async function executePlan(
               : {}),
           });
         }
-        // b) Version-bound fields → manage_behaviors create_version (server
+        // b) Version-bound fields → manage_automations create_version (server
         //    inherits unset fields from the previous version row, but we always
         //    send the desired-side values for the changed keys). name/description
         //    are version-owned (update rejects them).
         if (row.versionBoundFields && row.versionBoundFields.length > 0) {
-          await ctx.client.createBehaviorVersion({
-            behavior_id: watcherId,
+          await ctx.client.createAutomationVersion({
+            automation_id: automationId,
             ...(versionBound.has("name") && w.name !== undefined
               ? { name: w.name }
               : {}),
@@ -1055,17 +1059,17 @@ export async function executePlan(
         }
       }
       // c) Reaction script — push when declared (idempotent server-side, no
-      //    drift signal available because it's not returned by Behavior lists).
-      if (w.reactionScript && watcherId) {
+      //    drift signal available because it's not returned by Automation lists).
+      if (w.reactionScript && automationId) {
         await ctx.client.setReactionScript(
-          watcherId,
+          automationId,
           w.reactionScript.sourceCode
         );
       }
       printText(
         renderProgress(
           row.verb,
-          "watcher",
+          "automation",
           row.id,
           row.changedFields ? `(${row.changedFields.join(", ")})` : undefined
         )
@@ -1127,7 +1131,7 @@ export async function executePlan(
       // the server persists a non-null `credential_mode` (the gateway needs it
       // to treat the row as chat) and resolves the token. Idempotent — an
       // unchanged declaration is a server-side no-op. No feeds/device pinning.
-      // Capture the returned id so Behaviors referencing this connection in the
+      // Capture the returned id so Automations referencing this connection in the
       // same apply resolve it (on a first create, `existing` is unset).
       const result = await ctx.client.applyChatConnection({
         slug: desired.slug,
@@ -1164,7 +1168,7 @@ export async function executePlan(
     printText(renderProgress(row.verb, "connection", row.id));
   }
 
-  await applyBehaviors(connectionIdBySlug);
+  await applyAutomations(connectionIdBySlug);
 
   // 10) Feeds (per connection — covers feeds whose connection itself was a noop)
   for (const row of rowsByKind("feed")) {
@@ -1264,20 +1268,20 @@ export async function executePlan(
 async function deleteRemovedDefinitions(ctx: ApplyContext): Promise<void> {
   const deletes = ctx.plan.rows.filter((r) => r.verb === "delete");
   if (deletes.length === 0) return;
-  const watcherIdBySlug = new Map(
-    ctx.remote.watchers.map((w) => [w.slug, w.behavior_id])
+  const automationIdBySlug = new Map(
+    ctx.remote.automations.map((w) => [w.slug, w.automation_id])
   );
   const steps: Array<[DiffRow["kind"], (id: string) => Promise<void>]> = [
     [
-      "watcher",
+      "automation",
       async (id) => {
-        const wid = watcherIdBySlug.get(id);
+        const wid = automationIdBySlug.get(id);
         if (!wid) {
           throw new ApiError(
-            `delete behavior "${id}": remote behavior_id missing`
+            `delete automation "${id}": remote automation_id missing`
           );
         }
-        await ctx.client.deleteBehavior(wid);
+        await ctx.client.deleteAutomation(wid);
       },
     ],
     ["relationship-type", (id) => ctx.client.deleteRelationshipType(id)],
@@ -1556,8 +1560,8 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
       (managedOrg) => loadManagedCloudConnectorCatalog(managedOrg, fetchImpl)
     );
   }
-  resolveBehaviorConnectionRefs(
-    state.watchers,
+  resolveAutomationConnectionRefs(
+    state.automations,
     new Map(
       remote.connections.map((connection) => [connection.slug, connection.id])
     ),
@@ -1670,10 +1674,10 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
       ),
       candidates: {
         items: blockingDrift.map((b) => {
-          // Public surface says Behavior (not watcher). Field-level drift is a
+          // Field-level Automation drift is a
           // revert of the remote edit; a whole remote-only definition is a
           // named delete (UI-created / unowned).
-          const kind = b.kind === "watcher" ? "behavior" : b.kind;
+          const kind = b.kind === "automation" ? "automation" : b.kind;
           const action = b.field ? ("revert" as const) : ("delete" as const);
           return {
             kind,

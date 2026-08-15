@@ -12,7 +12,7 @@
  * assert:
  *   - a non-system context whose scopes lack mcp:read is rejected (403),
  *   - a system context (userId=null + isAuthenticated) bypasses the scope gate
- *     (watcher reactions carry no user identity),
+ *     (automation reactions carry no user identity),
  *   - a context with mcp:read is allowed through the gate.
  */
 
@@ -102,7 +102,7 @@ describe('read-tier SDK delegate scope guard (F3)', () => {
     expect(Array.isArray(result.matches)).toBe(true);
   });
 
-  it('search bypasses the scope gate for a system context (watcher reaction)', async () => {
+  it('search bypasses the scope gate for a system context (automation reaction)', async () => {
     const org = await createTestOrganization({ name: 'Scope Org Search Sys' });
 
     // System context: userId=null + isAuthenticated=true + no memberRole, no scopes.

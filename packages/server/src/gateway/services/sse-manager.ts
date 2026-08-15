@@ -8,7 +8,7 @@
  * into SSE streams (API platform, response renderer, unified thread
  * consumer).
  *
- * Behavior notes:
+ * Automation notes:
  *  - Two backlog rings per agentId, both capped at `backlogLimit` most-recent
  *    entries and TTL-pruned lazily on every read AND write: one for stream
  *    events (`output`/`status`, high-volume, evict freely) and one for
@@ -255,7 +255,7 @@ export class SseManager {
   /**
    * Close every connection for `agentId`, emitting a `closed` event with
    * `reason` first (best-effort — write errors are swallowed, matching the
-   * previous inline DELETE /agents behavior). Also drops the backlog so a
+   * previous inline DELETE /agents automation). Also drops the backlog so a
    * later connection with the same key cannot replay stale completion
    * events from the deleted session, and tells peer replicas to do the same
    * (their backlogs are seeded by fan-out).

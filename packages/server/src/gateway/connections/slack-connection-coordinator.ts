@@ -1,6 +1,6 @@
 import { createLogger } from "@lobu/core";
 import { Chat } from "chat";
-import { parseSlackUserMessageEvent } from "@lobu/connectors/slack-behavior-events";
+import { parseSlackUserMessageEvent } from "@lobu/connectors/slack-automation-events";
 import { invalidateSlackConnectionAcl } from "../../authz/slack-acl-sync.js";
 import type { AppInstallationStore } from "../../lobu/stores/app-installation-store.js";
 import {
@@ -168,7 +168,7 @@ async function resolveOrgNameAndSlug(
  * done (install → workspace claimed → first agent mapped), confirming the bot is
  * live and wired to an agent.
  *
- * Call this AFTER any successful Slack channel Behavior subscription. The three preconditions
+ * Call this AFTER any successful Slack channel Automation subscription. The three preconditions
  * are enforced together by {@link claimSlackWelcomeDm}'s single conditional
  * UPDATE:
  *   - installed & workspace-mapped  → there is an ACTIVE `app_installations` row

@@ -37,15 +37,15 @@ export const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 	// stay admin-only. `get_auth_profile` is public-read because it returns the
 	// same sanitized metadata as list; `test_auth_profile` stays owner-admin.
 	manage_auth_profiles: new Set(["create_auth_profile", "update_auth_profile"]),
-	// `complete_window` is how watcher AGENTS report results — server-side
+	// `complete_window` is how automation AGENTS report results — server-side
 	// agent workers and device CLI runs (the Owletto Mac dispatcher wires the
 	// gateway MCP into the spawned CLI; device tokens carry mcp:write, not
 	// admin). The handler still enforces org/entity write access via
-	// requireWatcherAccess; watcher ADMINISTRATION (create/update/delete/…)
+	// requireAutomationAccess; automation ADMINISTRATION (create/update/delete/…)
 	// stays admin-tier below. `trigger` is write-tier: manual activation is the
-	// open lane — any member (or their MCP client) may fire a Behavior and
+	// open lane — any member (or their MCP client) may fire an Automation and
 	// complete the resulting run.
-	manage_behaviors: new Set(["complete_window", "trigger"]),
+	manage_automations: new Set(["complete_window", "trigger"]),
 	// `approve`/`reject` (and their `*_batch` forms) are write-tier so the
 	// recorded FIELD OWNER of an entity-change proposal (a plain member) can
 	// decide their own run. The handler enforces admin-or-run-owner per run — a
@@ -138,7 +138,7 @@ export const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 	// every action admin but was invisible to the drift guard, letting
 	// METHOD_METADATA advertise `schedules.list` as read (drift #2607-adjacent).
 	manage_schedules: new Set(["list", "create", "update", "pause", "cancel"]),
-	manage_behaviors: new Set([
+	manage_automations: new Set([
 		// `complete_window` and `trigger` are in MEMBER_WRITE_ACTIONS — the
 		// execution path (server workers + device CLI + manual MCP clients),
 		// not administration.
@@ -179,7 +179,7 @@ export const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
 	// Internal read-paths — kept for tests that exercise public-readability
 	// semantics; legitimate external access is via `query_sdk` / `run_sdk`.
 	read_knowledge: null,
-	get_behavior: null,
+	get_automation: null,
 	manage_entity: new Set(["list", "get", "list_links"]),
 	manage_entity_schema: new Set(["list", "get", "audit", "list_rules"]),
 	manage_connections: new Set(["list", "list_connector_groups", "get"]),
@@ -192,7 +192,7 @@ export const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
 		"get_run",
 		"list_activity",
 	]),
-	manage_behaviors: new Set([
+	manage_automations: new Set([
 		"list",
 		"get_versions",
 		"get_version_details",

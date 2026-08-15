@@ -11,7 +11,7 @@ import type { ContentItem } from '@lobu/connector-sdk';
 
 export type { ContentItem };
 
-/** Classifier configuration returned for watcher mode (for worker embedding generation) */
+/** Classifier configuration returned for automation mode (for worker embedding generation) */
 export interface ClassifierConfig {
   slug: string;
   extraction_config: Record<string, unknown> | null;
@@ -29,11 +29,11 @@ export interface ClassifierConfig {
  * Result of `read_knowledge`. TypeBox-first and the SINGLE source of truth:
  * `GetContentResult` is `Static<>`-derived from this schema, which is also the
  * tool's `outputSchema`. `ContentItem` (a 90-field type in
- * `@lobu/connector-sdk`, a published package) and the behavior-mode
+ * `@lobu/connector-sdk`, a published package) and the automation-mode
  * `ClassifierConfig`/`UnprocessedRange` payloads are modeled as `unknown`
  * inline — they're opaque over the wire, and mirroring them here would be a
  * brittle second source that drifts from the SDK. The envelope (content list,
- * total, pagination, behavior-mode flags) is precise.
+ * total, pagination, automation-mode flags) is precise.
  */
 export const GetContentResultSchema = Type.Object({
   content: Type.Array(Type.Unknown()),
@@ -61,10 +61,10 @@ export const GetContentResultSchema = Type.Object({
    * Permalink for the entity-scoped events listing in the public web app.
    * LLM agents calling `read_knowledge` over MCP read this from the response
    * and format it into chat replies; there is no programmatic consumer in
-   * this repo, but removing the field breaks that user-facing behavior.
+   * this repo, but removing the field breaks that user-facing automation.
    */
   view_url: Type.Optional(Type.String()),
-  // Behavior-mode fields (only present when behavior_id is provided)
+  // Automation-mode fields (only present when automation_id is provided)
   window_token: Type.Optional(Type.String()),
   window_start: Type.Optional(Type.String()),
   window_end: Type.Optional(Type.String()),
@@ -72,7 +72,7 @@ export const GetContentResultSchema = Type.Object({
    * How the window above sits against the clock, and what was skipped to get it.
    *
    * `window_start` alone cannot tell a run whether it is current: a stale window
-   * and a fresh one look identical from inside the run. Prod Behavior 2 drafted
+   * and a fresh one look identical from inside the run. Prod Automation 2 drafted
    * replies to month-dead Hacker News threads for weeks because nothing said so.
    *
    * Raw facts, deliberately — no staleness flag. A run that decides a skipped
@@ -81,12 +81,12 @@ export const GetContentResultSchema = Type.Object({
    */
   window_lag: Type.Optional(
     Type.Object({
-      /** Start of the newest window this Behavior has actually completed. */
+      /** Start of the newest window this Automation has actually completed. */
       last_window_start: Type.Union([Type.String(), Type.Null()]),
       current_period_start: Type.String(),
       /**
        * Age of the window above, in whole periods. One is the healthy resting
-       * value for a Behavior that runs once per period (it analyses the period
+       * value for an Automation that runs once per period (it analyses the period
        * that just closed); zero for a cron that fires several times per period.
        */
       periods_behind: Type.Integer(),
@@ -94,7 +94,7 @@ export const GetContentResultSchema = Type.Object({
       /**
        * Periods between `last_window_start` and the window above that no run will
        * ever be dispatched for, because the server moved the window forward to
-       * bring a lagging Behavior current. Zero on every healthy run.
+       * bring a lagging Automation current. Zero on every healthy run.
        */
       periods_skipped: Type.Integer(),
       skipped_from: Type.Union([Type.String(), Type.Null()]),
@@ -102,7 +102,7 @@ export const GetContentResultSchema = Type.Object({
       skipped_to: Type.Union([Type.String(), Type.Null()]),
       /**
        * The skip in words, present only when `periods_skipped` is non-zero. A
-       * Behavior run reads this response as JSON through `run_sdk`, so the
+       * Automation run reads this response as JSON through `run_sdk`, so the
        * affordance — that it may re-read a skipped span with `since`/`until`, and
        * that doing so cannot drag the cursor back — has to travel in the payload.
        * Reporting only numbers was measured NOT to change what a run did.
@@ -129,7 +129,7 @@ export const GetContentResultSchema = Type.Object({
     )
   ),
   /**
-   * Behavior-bound entities as structured rows (id, name, type, metadata,
+   * Automation-bound entities as structured rows (id, name, type, metadata,
    * field_controls). field_controls marks human-owned field values the agent
    * must not overwrite without new evidence.
    */
@@ -137,9 +137,9 @@ export const GetContentResultSchema = Type.Object({
   classifiers: Type.Optional(Type.Array(Type.Unknown())),
   unprocessed_ranges: Type.Optional(Type.Array(Type.Unknown())),
   reactions_guidance: Type.Optional(Type.String()),
-  /** Summary of this Behavior's recent reactions (self-learning context). */
+  /** Summary of this Automation's recent reactions (self-learning context). */
   past_reactions: Type.Optional(Type.String()),
-  /** Summary of recent human feedback on this Behavior's output. */
+  /** Summary of recent human feedback on this Automation's output. */
   past_feedback: Type.Optional(Type.String()),
   available_operations: Type.Optional(
     Type.Array(
@@ -232,8 +232,8 @@ export interface ContentRow {
   feed_id?: number | null;
   feed_key?: string | null;
   feed_name?: string | null;
-  behavior_id?: number | null;
-  behavior_name?: string | null;
+  automation_id?: number | null;
+  automation_name?: string | null;
   agent_id?: string | null;
   agent_name?: string | null;
   device_worker_id?: string | null;

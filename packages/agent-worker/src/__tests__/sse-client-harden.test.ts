@@ -201,8 +201,8 @@ describe("handleEvent job validation", () => {
       "job",
       makeJobEvent({
         platformMetadata: {
-          source: "watcher-run",
-          intent: { kind: "watcher_run", runId: 42, watcherId: 7 },
+          source: "automation-run",
+          intent: { kind: "automation_run", runId: 42, automationId: 7 },
         },
       })
     );
@@ -210,7 +210,7 @@ describe("handleEvent job validation", () => {
     expect(handleThreadMessage).toHaveBeenCalledTimes(1);
     expect(
       handleThreadMessage.mock.calls[0]?.[0].platformMetadata.intent
-    ).toEqual({ kind: "watcher_run", runId: 42, watcherId: 7 });
+    ).toEqual({ kind: "automation_run", runId: 42, automationId: 7 });
   });
 });
 
@@ -632,21 +632,21 @@ describe("live steering classification", () => {
     expect(isSteerableHumanMessage(payload)).toBe(true);
   });
 
-  test("steers only Behaviors that explicitly opt in", () => {
+  test("steers only Automations that explicitly opt in", () => {
     expect(
       isSteerableHumanMessage({
         ...payload,
         platformMetadata: {
-          behaviorId: 7,
-          behaviorActiveRunPolicy: "steer",
+          automationId: 7,
+          automationActiveRunPolicy: "steer",
         },
       })
     ).toBe(true);
-    for (const behaviorActiveRunPolicy of ["queue", "coalesce"]) {
+    for (const automationActiveRunPolicy of ["queue", "coalesce"]) {
       expect(
         isSteerableHumanMessage({
           ...payload,
-          platformMetadata: { behaviorId: 7, behaviorActiveRunPolicy },
+          platformMetadata: { automationId: 7, automationActiveRunPolicy },
         })
       ).toBe(false);
     }
@@ -678,7 +678,7 @@ describe("live steering classification", () => {
 
   test("keeps automation and attachments as follow-up turns", () => {
     for (const source of [
-      "watcher-run",
+      "automation-run",
       "scheduled-job",
       "connector-repair",
       "internal",
@@ -853,17 +853,17 @@ describe("live steering classification", () => {
     expect(processSingleMessage).toHaveBeenNthCalledWith(2, second, ["second"]);
   });
 
-  test("keeps queue-policy Behavior events as one turn per delivery", async () => {
+  test("keeps queue-policy Automation events as one turn per delivery", async () => {
     const client = makeClient();
     const processSingleMessage = mock(async () => undefined);
     (client as any).processSingleMessage = processSingleMessage;
     const first = {
       payload: {
         ...payload,
-        messageId: "behavior-first",
+        messageId: "automation-first",
         platformMetadata: {
-          behaviorId: 7,
-          behaviorActiveRunPolicy: "queue",
+          automationId: 7,
+          automationActiveRunPolicy: "queue",
         },
       },
       timestamp: 1,
@@ -871,10 +871,10 @@ describe("live steering classification", () => {
     const second = {
       payload: {
         ...payload,
-        messageId: "behavior-second",
+        messageId: "automation-second",
         platformMetadata: {
-          behaviorId: 7,
-          behaviorActiveRunPolicy: "queue",
+          automationId: 7,
+          automationActiveRunPolicy: "queue",
         },
       },
       timestamp: 2,
@@ -883,24 +883,24 @@ describe("live steering classification", () => {
     await (client as any).processBatchedMessages([first, second]);
 
     expect(processSingleMessage).toHaveBeenNthCalledWith(1, first, [
-      "behavior-first",
+      "automation-first",
     ]);
     expect(processSingleMessage).toHaveBeenNthCalledWith(2, second, [
-      "behavior-second",
+      "automation-second",
     ]);
   });
 
-  test("does not combine coalescing deliveries from different Behaviors", async () => {
+  test("does not combine coalescing deliveries from different Automations", async () => {
     const client = makeClient();
     const processSingleMessage = mock(async () => undefined);
     (client as any).processSingleMessage = processSingleMessage;
     const first = {
       payload: {
         ...payload,
-        messageId: "behavior-first",
+        messageId: "automation-first",
         platformMetadata: {
-          behaviorId: 7,
-          behaviorActiveRunPolicy: "coalesce",
+          automationId: 7,
+          automationActiveRunPolicy: "coalesce",
         },
       },
       timestamp: 1,
@@ -908,10 +908,10 @@ describe("live steering classification", () => {
     const second = {
       payload: {
         ...payload,
-        messageId: "behavior-second",
+        messageId: "automation-second",
         platformMetadata: {
-          behaviorId: 8,
-          behaviorActiveRunPolicy: "coalesce",
+          automationId: 8,
+          automationActiveRunPolicy: "coalesce",
         },
       },
       timestamp: 2,
@@ -920,24 +920,24 @@ describe("live steering classification", () => {
     await (client as any).processBatchedMessages([first, second]);
 
     expect(processSingleMessage).toHaveBeenNthCalledWith(1, first, [
-      "behavior-first",
+      "automation-first",
     ]);
     expect(processSingleMessage).toHaveBeenNthCalledWith(2, second, [
-      "behavior-second",
+      "automation-second",
     ]);
   });
 
-  test("does not combine a Behavior delivery with a human message", async () => {
+  test("does not combine an Automation delivery with a human message", async () => {
     const client = makeClient();
     const processSingleMessage = mock(async () => undefined);
     (client as any).processSingleMessage = processSingleMessage;
-    const behavior = {
+    const automation = {
       payload: {
         ...payload,
-        messageId: "behavior",
+        messageId: "automation",
         platformMetadata: {
-          behaviorId: 7,
-          behaviorActiveRunPolicy: "coalesce",
+          automationId: 7,
+          automationActiveRunPolicy: "coalesce",
         },
       },
       timestamp: 1,
@@ -951,10 +951,10 @@ describe("live steering classification", () => {
       timestamp: 2,
     };
 
-    await (client as any).processBatchedMessages([behavior, human]);
+    await (client as any).processBatchedMessages([automation, human]);
 
-    expect(processSingleMessage).toHaveBeenNthCalledWith(1, behavior, [
-      "behavior",
+    expect(processSingleMessage).toHaveBeenNthCalledWith(1, automation, [
+      "automation",
     ]);
     expect(processSingleMessage).toHaveBeenNthCalledWith(2, human, ["human"]);
   });

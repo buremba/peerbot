@@ -2,20 +2,20 @@
 
 /**
  * One-time adoption of `events.identity_ns` / `events.identity_key` for keyed
- * Behavior EVENT outputs (migration 20260806120000_events_identity_key).
+ * Automation EVENT outputs (migration 20260806120000_events_identity_key).
  *
  * ─── Why this exists ─────────────────────────────────────────────────────────
  * A keyed output declares `{ event: "voice_profile", key: ["channel","mode"] }`
  * and must keep exactly one live event per key. From this migration on,
  * insertEvent stamps the identity at write time and
- * idx_events_identity_root_behavior enforces one chain ROOT per key. Rows that
+ * idx_events_identity_root_automation enforces one chain ROOT per key. Rows that
  * existed before carry NULL, so the first post-deploy run would probe by
  * identity, find nothing, insert a fresh root, and leave the old chain live —
  * manufacturing exactly the duplicate the index exists to prevent. This script
  * stamps them first.
  *
  * ─── Why not in the migration ────────────────────────────────────────────────
- * The key is computed by computeStableKey()/formatBehaviorEventIdentity()
+ * The key is computed by computeStableKey()/formatAutomationEventIdentity()
  * (packages/server/src/utils/stable-keys.ts): base64url, per-scalar type tags,
  * a UTF-16 field-name budget, safe-integer canonicalisation, JS trim semantics.
  * Restating that in SQL means two implementations of one algorithm, and any
@@ -24,7 +24,7 @@
  * only and adoption calls the real function.
  *
  * ─── Ordering contract ───────────────────────────────────────────────────────
- * Run to completion BEFORE any keyed Behavior runs on the new build. The unique
+ * Run to completion BEFORE any keyed Automation runs on the new build. The unique
  * index may be in place already: it is empty while every identity_key is NULL,
  * and once populated a genuinely duplicated key surfaces as a 23505 naming the
  * offending row rather than as a whole-migration abort. That is the intended
@@ -32,7 +32,7 @@
  * this script should pick a winner for.
  *
  * ─── Exactly what it does ────────────────────────────────────────────────────
- * Reads the keyed EVENT outputs of every CURRENT Behavior version (historical
+ * Reads the keyed EVENT outputs of every CURRENT Automation version (historical
  * versions may declare a superseded key and would offer a second candidate
  * identity for the same row), then stamps every matching event — superseded
  * versions included, because identity belongs to the THING, not to one version
@@ -52,9 +52,9 @@
 import { parseArgs as parseNodeArgs } from "node:util";
 import { getDb } from "../packages/server/src/db/client";
 import {
-  BEHAVIOR_EVENT_IDENTITY_NS,
+  AUTOMATION_EVENT_IDENTITY_NS,
   computeStableKey,
-  formatBehaviorEventIdentity,
+  formatAutomationEventIdentity,
 } from "../packages/server/src/utils/stable-keys";
 
 const { values: args } = parseNodeArgs({
@@ -92,8 +92,8 @@ async function main() {
 			w.organization_id,
 			o.value ->> 'event' AS semantic_type,
 			o.value -> 'key' AS key_fields
-		FROM watchers w
-		JOIN watcher_versions wv ON wv.id = w.current_version_id
+		FROM automations w
+		JOIN automation_versions wv ON wv.id = w.current_version_id
 		CROSS JOIN LATERAL jsonb_each(wv.outputs) o
 		WHERE o.value ->> 'event' IS NOT NULL
 		  AND jsonb_typeof(o.value -> 'key') = 'array'
@@ -105,7 +105,7 @@ async function main() {
     return;
   }
 
-  // Two Behaviors in one org keying the same semantic type differently is not
+  // Two Automations in one org keying the same semantic type differently is not
   // resolvable here: each claims a different identity for the same row, and
   // whichever won would leave the other probing for a key that does not exist.
   const byScope = new Map<string, KeyedOutput[]>();
@@ -118,7 +118,7 @@ async function main() {
     console.error(
       `conflicting key declarations for: ${conflicts.map(([k]) => k).join(", ")}`
     );
-    console.error("reconcile the Behavior declarations before adopting.");
+    console.error("reconcile the Automation declarations before adopting.");
     process.exit(1);
   }
 
@@ -156,7 +156,7 @@ async function main() {
       for (const row of candidates) {
         let identityKey: string;
         try {
-          identityKey = formatBehaviorEventIdentity(
+          identityKey = formatAutomationEventIdentity(
             output.semantic_type,
             computeStableKey(row.metadata ?? {}, output.key_fields)
           );
@@ -176,7 +176,7 @@ async function main() {
         // should pick a winner for.
         await sql`
 					UPDATE events
-					SET identity_ns  = ${BEHAVIOR_EVENT_IDENTITY_NS},
+					SET identity_ns  = ${AUTOMATION_EVENT_IDENTITY_NS},
 					    identity_key = ${identityKey}
 					WHERE id = ${row.id} AND identity_key IS NULL
 				`;

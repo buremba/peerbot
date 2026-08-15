@@ -57,7 +57,7 @@ type ExtractedConnectorCatalogMetadata = {
 	webhook: Record<string, unknown> | null;
 	feeds_schema: Record<string, unknown> | null;
 	actions_schema: Record<string, unknown> | null;
-	behavior_events: Array<Record<string, unknown>> | null;
+	automation_events: Array<Record<string, unknown>> | null;
 	options_schema: Record<string, unknown> | null;
 	mcp_config: Record<string, unknown> | null;
 	openapi_config: Record<string, unknown> | null;
@@ -77,7 +77,7 @@ interface CatalogConnectorDefinition {
 	webhook: Record<string, unknown> | null;
 	feeds_schema: Record<string, unknown> | null;
 	actions_schema: Record<string, unknown> | null;
-	behavior_events: Array<Record<string, unknown>> | null;
+	automation_events: Array<Record<string, unknown>> | null;
 	options_schema: Record<string, unknown> | null;
 	favicon_domain: string | null;
 	required_capability: string | null;
@@ -227,7 +227,7 @@ async function extractConnectorCatalogMetadata(
 			webhook: metadata.webhook ?? null,
 			feeds_schema: metadata.feeds ?? null,
 			actions_schema: metadata.actions ?? null,
-			behavior_events: metadata.behaviorEvents ?? null,
+			automation_events: metadata.automationEvents ?? null,
 			options_schema: metadata.optionsSchema ?? null,
 			mcp_config: metadata.mcpConfig ?? null,
 			openapi_config: metadata.openapiConfig ?? null,
@@ -353,8 +353,8 @@ export async function listCatalogConnectorDefinitions(): Promise<
 				(detail.feeds_schema as Record<string, unknown> | null) ?? null,
 			actions_schema:
 				(detail.actions_schema as Record<string, unknown> | null) ?? null,
-			behavior_events:
-				(detail.behavior_events as Array<Record<string, unknown>> | null) ??
+			automation_events:
+				(detail.automation_events as Array<Record<string, unknown>> | null) ??
 				null,
 			options_schema:
 				(detail.options_schema as Record<string, unknown> | null) ?? null,

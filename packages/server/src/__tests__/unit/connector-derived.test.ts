@@ -1,12 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import type { ConnectorTriggerSignal } from '@lobu/connector-sdk';
 import {
-  deriveBehaviorEventCatalogFromFeeds,
+  deriveAutomationEventCatalogFromFeeds,
   deriveConnectorActivationSignals,
-  resolveBehaviorEventCatalog,
+  resolveAutomationEventCatalog,
   type ConnectorDeriveEventInput,
   type ConnectorDeriveFeedContext,
-} from '../../behaviors/connector-derived';
+} from '../../automations/connector-derived';
 
 const context: ConnectorDeriveFeedContext = {
   connectorKey: 'x',
@@ -93,13 +93,13 @@ describe('deriveConnectorActivationSignals', () => {
   });
 });
 
-describe('deriveBehaviorEventCatalogFromFeeds', () => {
+describe('deriveAutomationEventCatalogFromFeeds', () => {
   test('derives one subscribable type per declared kind', () => {
     const feeds = {
       home_feed: { eventKinds: { tweet: {}, dm_message: {} } },
       search: { eventKinds: { tweet: {}, thread: {} } },
     };
-    const catalog = deriveBehaviorEventCatalogFromFeeds(feeds);
+    const catalog = deriveAutomationEventCatalogFromFeeds(feeds);
     expect(catalog.map((entry) => entry.key).sort()).toEqual([
       'dm_message',
       'thread',
@@ -108,13 +108,13 @@ describe('deriveBehaviorEventCatalogFromFeeds', () => {
   });
 
   test('returns [] for no feeds or no eventKinds', () => {
-    expect(deriveBehaviorEventCatalogFromFeeds(null)).toEqual([]);
-    expect(deriveBehaviorEventCatalogFromFeeds({ home_feed: {} })).toEqual([]);
-    expect(deriveBehaviorEventCatalogFromFeeds({})).toEqual([]);
+    expect(deriveAutomationEventCatalogFromFeeds(null)).toEqual([]);
+    expect(deriveAutomationEventCatalogFromFeeds({ home_feed: {} })).toEqual([]);
+    expect(deriveAutomationEventCatalogFromFeeds({})).toEqual([]);
   });
 });
 
-describe('resolveBehaviorEventCatalog', () => {
+describe('resolveAutomationEventCatalog', () => {
   test('preserves every declared event field the UI editor reads', () => {
     const declared = [
       {
@@ -127,7 +127,7 @@ describe('resolveBehaviorEventCatalog', () => {
         capabilities: { steering: true, replyToSource: true },
       },
     ];
-    const resolved = resolveBehaviorEventCatalog({
+    const resolved = resolveAutomationEventCatalog({
       persistedEvents: declared,
       feedsSchema: {},
       bundled: null,
@@ -179,7 +179,7 @@ describe('resolveBehaviorEventCatalog', () => {
     const longKindA = 'a'.repeat(150);
     const longKindB = 'a'.repeat(130) + 'b';
     // Distinct long kinds sharing a prefix must NOT collapse into one type.
-    const catalog = deriveBehaviorEventCatalogFromFeeds({
+    const catalog = deriveAutomationEventCatalogFromFeeds({
       home_feed: { eventKinds: { [longKindA]: {}, [longKindB]: {} } },
     });
     expect(catalog).toEqual([]);
@@ -219,14 +219,14 @@ describe('resolveBehaviorEventCatalog', () => {
   });
 
   test('an org override with a null feedsSchema never borrows the bundled feeds', () => {
-    const resolved = resolveBehaviorEventCatalog({
+    const resolved = resolveAutomationEventCatalog({
       persistedEvents: null,
       feedsSchema: null,
       bundled: {
         feeds_schema: {
           pulls: { eventKinds: { pull_request: {} } },
         },
-        behavior_events: null,
+        automation_events: null,
       },
       useBundledFallback: false,
     });

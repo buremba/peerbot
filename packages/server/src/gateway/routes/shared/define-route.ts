@@ -158,7 +158,7 @@ export function defineRoute<
 			let raw: unknown;
 			try {
 				// A missing/empty body validates as {} (the previous zod-openapi
-				// validator's behavior — bodies are optional unless the schema has
+				// validator's automation — bodies are optional unless the schema has
 				// required fields, which {} then fails with a field-level 400).
 				const text = await c.req.text();
 				raw = text.trim() === "" ? {} : JSON.parse(text);

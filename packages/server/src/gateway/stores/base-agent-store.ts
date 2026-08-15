@@ -6,9 +6,9 @@
  * interface on top of those primitives, centralizing the get→merge→save
  * update pattern and the listConnections platform filter.
  *
- * User-agent associations and Behavior subscriptions vary too much between the
+ * User-agent associations and Automation subscriptions vary too much between the
  * in-memory (self-contained Maps) and the Postgres-backed paths (delegating
- * to UserAgentsStore / BehaviorSubscriptionService) to share concrete logic;
+ * to UserAgentsStore / AutomationSubscriptionService) to share concrete logic;
  * subclasses implement those groups directly. Grants use GrantStore.
  */
 

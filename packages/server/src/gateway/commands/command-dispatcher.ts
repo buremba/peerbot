@@ -3,7 +3,7 @@ import {
   type CommandRegistry,
   createLogger,
 } from "@lobu/core";
-import type { BehaviorSubscriptionService } from "../channels/behavior-subscription-service.js";
+import type { AutomationSubscriptionService } from "../channels/automation-subscription-service.js";
 import { platformAgentId } from "../spaces/space-resolver.js";
 
 const logger = createLogger("command-dispatcher");
@@ -22,16 +22,16 @@ interface CommandDispatchInput {
 
 interface CommandDispatcherDeps {
   registry: CommandRegistry;
-  behaviorSubscriptionService: BehaviorSubscriptionService;
+  automationSubscriptionService: AutomationSubscriptionService;
 }
 
 export class CommandDispatcher {
   private registry: CommandRegistry;
-  private behaviorSubscriptionService: BehaviorSubscriptionService;
+  private automationSubscriptionService: AutomationSubscriptionService;
 
   constructor(deps: CommandDispatcherDeps) {
     this.registry = deps.registry;
-    this.behaviorSubscriptionService = deps.behaviorSubscriptionService;
+    this.automationSubscriptionService = deps.automationSubscriptionService;
   }
 
   async tryHandleSlashText(
@@ -93,11 +93,11 @@ export class CommandDispatcher {
   }
 
   private async resolveAgentId(input: CommandDispatchInput): Promise<string> {
-    // Check message Behaviors first (Slack multi-tenant). Scope to the inbound
+    // Check message Automations first (Slack multi-tenant). Scope to the inbound
     // org so an org-less read cannot match another tenant's subscription.
 		const subscription =
 			input.connectionId && input.organizationId
-				? await this.behaviorSubscriptionService.resolveForConnection(
+				? await this.automationSubscriptionService.resolveForConnection(
 						input.connectionId,
       input.channelId,
 						input.organizationId,

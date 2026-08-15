@@ -87,7 +87,7 @@ async function seed(opts: { slug: string; labelModel: string; eventModel: string
   const [facet] = (await sql`
     INSERT INTO classify_facet (
       organization_id, slug, name, attribute_key, status, created_by,
-      watcher_id, entity_ids, min_similarity, fallback_value, attribute_values
+      automation_id, entity_ids, min_similarity, fallback_value, attribute_values
     ) VALUES (
       ${org.id}, ${opts.slug}, ${opts.slug}, ${opts.slug}, 'active', ${user.id},
       NULL, NULL, 0.5, NULL, ${sql.json(attributeValues as never)}

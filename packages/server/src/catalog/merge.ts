@@ -45,10 +45,10 @@ export function mergeConnectorInstalledWithCatalog(
 		const installedItem = merged.get(entry.id);
 		if (installedItem) {
 			if (
-				installedItem.detail.behavior_events === undefined &&
-				entry.detail.behavior_events !== undefined
+				installedItem.detail.automation_events === undefined &&
+				entry.detail.automation_events !== undefined
 			) {
-				installedItem.detail.behavior_events = entry.detail.behavior_events;
+				installedItem.detail.automation_events = entry.detail.automation_events;
 			}
 			continue;
 		}

@@ -123,8 +123,8 @@ describe("ClientSDK namespace dispatch (read paths)", () => {
 		expect(out).toMatchObject({ schedules: expect.any(Array) });
 	});
 
-	it("behaviors.list dispatches cleanly", async () => {
-		await expect(sdk.behaviors.list()).resolves.toBeDefined();
+	it("automations.list dispatches cleanly", async () => {
+		await expect(sdk.automations.list()).resolves.toBeDefined();
 	});
 
 	it("classifiers.list dispatches cleanly", async () => {

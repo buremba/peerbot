@@ -4,7 +4,7 @@
  * `entities.created_by` is NOT NULL behind an ON DELETE RESTRICT FK, so every
  * entity the server creates on its own behalf — a `$canvas` window, an
  * `$eval_case`, a promoted keyed row — still needs a real live user to point
- * at. Callers that already know the responsible person (a Behavior's creator,
+ * at. Callers that already know the responsible person (an Automation's creator,
  * the operator promoting a case) pass it through; the rest fall back to the
  * org's longest-standing owner/admin so the row is attributable to someone who
  * can actually be asked about it.

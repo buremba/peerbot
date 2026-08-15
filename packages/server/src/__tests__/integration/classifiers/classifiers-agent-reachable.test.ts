@@ -2,20 +2,20 @@
  * The classification engine was reachable in principle and unreachable in
  * practice. Two independent gaps, both pinned here.
  *
- * 1. `create` REQUIRED `behavior_id` and inserted it as `classify_facet.watcher_id`.
+ * 1. `create` REQUIRED `automation_id` and inserted it as `classify_facet.automation_id`.
  *    Every engine template lookup in `classification-query.ts` filters
- *    `cf.watcher_id IS NULL`. So every classifier creatable
+ *    `cf.automation_id IS NULL`. So every classifier creatable
  *    through the tool or the ClientSDK was invisible to the engine forever —
  *    `apply` and the reconciliation cron would both report a clean, successful,
  *    zero-result run. Measured in prod 2026-07-31: the `buremba` org held 5
- *    classifiers, all Behavior-owned, and 0 classifications; the org with
- *    working classifications held 23, all `watcher_id IS NULL` and predating the
- *    required-`behavior_id` rule.
+ *    classifiers, all Automation-owned, and 0 classifications; the org with
+ *    working classifications held 23, all `automation_id IS NULL` and predating the
+ *    required-`automation_id` rule.
  *
  * 2. `apply` existed on the MCP tool but not in the agent-facing SDK, so no
  *    agent could call the one verb that classifies without an entity link.
  *
- * A Behavior-owned classifier is still a legitimate thing (Behavior-scoped
+ * An Automation-owned classifier is still a legitimate thing (Automation-scoped
  * extraction config); it is simply not what the embedding engine matches. That
  * distinction is asserted rather than assumed, so nobody "fixes" this later by
  * loosening the engine's filter.
@@ -62,7 +62,7 @@ function adminCtx(organizationId: string, userId: string): ToolContext {
 }
 
 describe('classifiers reachable by agents', () => {
-  it('creates an engine-matchable classifier when no Behavior owns it, and applies it', async () => {
+  it('creates an engine-matchable classifier when no Automation owns it, and applies it', async () => {
     await cleanupTestDatabase();
     const org = await createTestOrganization({ name: 'Reachable Org' });
     const user = await createTestUser({ email: 'reachable@test.com' });
@@ -83,17 +83,17 @@ describe('classifiers reachable by agents', () => {
     );
     expect(created.success).toBe(true);
 
-    // The whole point: no owning Behavior means the engine can see it.
+    // The whole point: no owning Automation means the engine can see it.
     const rows = (await sql`
-      SELECT watcher_id, status FROM classify_facet
+      SELECT automation_id, status FROM classify_facet
       WHERE slug = 'agent-made' AND organization_id = ${org.id}
-    `) as unknown as Array<{ watcher_id: number | null; status: string }>;
+    `) as unknown as Array<{ automation_id: number | null; status: string }>;
     expect(rows).toHaveLength(1);
-    expect(rows[0].watcher_id).toBeNull();
+    expect(rows[0].automation_id).toBeNull();
     expect(rows[0].status).toBe('active');
 
     // And `list` must show it back to the agent that created it — the old
-    // `fc.watcher_id IS NOT NULL` list filter hid every org-level classifier.
+    // `fc.automation_id IS NOT NULL` list filter hid every org-level classifier.
     const listed = await manageClassifiers(
       { action: 'list' } as never,
       {} as never,
@@ -132,16 +132,16 @@ describe('classifiers reachable by agents', () => {
     expect(parsePgTextArray(written[0].values)).toEqual(['positive']);
   });
 
-  it('still accepts an owning Behavior, and that classifier stays outside the engine', async () => {
+  it('still accepts an owning Automation, and that classifier stays outside the engine', async () => {
     await cleanupTestDatabase();
-    const org = await createTestOrganization({ name: 'Behavior Owned Org' });
-    const user = await createTestUser({ email: 'behavior-owned@test.com' });
+    const org = await createTestOrganization({ name: 'Automation Owned Org' });
+    const user = await createTestUser({ email: 'automation-owned@test.com' });
     const ctx = adminCtx(org.id, user.id);
     const sql = getTestDb();
 
     const agent = await createTestAgent({ organizationId: org.id, ownerUserId: user.id });
-    const [behavior] = (await sql`
-      INSERT INTO watchers (organization_id, agent_id, watcher_group_id, name, created_by, status)
+    const [automation] = (await sql`
+      INSERT INTO automations (organization_id, agent_id, automation_group_id, name, created_by, status)
       VALUES (${org.id}, ${agent.agentId}, 0, 'owner', ${user.id}, 'active')
       RETURNING id
     `) as unknown as Array<{ id: number }>;
@@ -149,11 +149,11 @@ describe('classifiers reachable by agents', () => {
     const created = await manageClassifiers(
       {
         action: 'create',
-        slug: 'behavior-made',
-        name: 'Behavior made',
-        attribute_key: 'behavior-made',
+        slug: 'automation-made',
+        name: 'Automation made',
+        attribute_key: 'automation-made',
         attribute_values: ATTRIBUTE_VALUES,
-        behavior_id: String(behavior.id),
+        automation_id: String(automation.id),
         min_similarity: 0.5,
       } as never,
       {} as never,
@@ -162,10 +162,10 @@ describe('classifiers reachable by agents', () => {
     expect(created.success).toBe(true);
 
     const rows = (await sql`
-      SELECT watcher_id FROM classify_facet
-      WHERE slug = 'behavior-made' AND organization_id = ${org.id}
-    `) as unknown as Array<{ watcher_id: number | null }>;
-    expect(Number(rows[0].watcher_id)).toBe(Number(behavior.id));
+      SELECT automation_id FROM classify_facet
+      WHERE slug = 'automation-made' AND organization_id = ${org.id}
+    `) as unknown as Array<{ automation_id: number | null }>;
+    expect(Number(rows[0].automation_id)).toBe(Number(automation.id));
 
     // Deliberate, not a bug: the embedding engine matches org-level classifiers
     // only. `apply` must say so instead of reporting a successful empty run.
@@ -177,14 +177,14 @@ describe('classifiers reachable by agents', () => {
     const applied = await manageClassifiers(
       {
         action: 'apply',
-        classifier_slug: 'behavior-made',
+        classifier_slug: 'automation-made',
         content_ids: [Number(event.id)],
       } as never,
       {} as never,
       ctx
     );
     expect(applied.success).toBe(false);
-    expect(applied.message).toContain('behavior-made');
+    expect(applied.message).toContain('automation-made');
   });
 
   it('exposes apply on the agent SDK surface', () => {

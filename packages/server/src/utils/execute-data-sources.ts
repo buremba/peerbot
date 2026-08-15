@@ -3,7 +3,7 @@
  *
  * Queries run against a virtual schema of org-scoped CTEs. Table references
  * in user queries are resolved to:
- *   - Core tables (entities, events, connections, watchers, event_classifications)
+ *   - Core tables (entities, events, connections, automations, event_classifications)
  *     → CTE with organization_id filter
  *   - Any other name → treated as an entity_type slug, filtered from entities
  *
@@ -30,10 +30,9 @@ import {
   ADMIN_ONLY_QUERYABLE_TABLES,
   buildColumnList,
   type ColumnDef,
-  formatUnknownTablesError,
-  QUERYABLE_TABLE_NAMES,
-  RETIRED_RELATION_NAMES,
-  SAFE_COLUMN_DEFS,
+	formatUnknownTablesError,
+	QUERYABLE_TABLE_NAMES,
+	SAFE_COLUMN_DEFS,
   validateTableQuery,
 } from './table-schema';
 import { getErrorMessage } from "@lobu/core";
@@ -59,13 +58,13 @@ export interface DataSourceContext {
   windowStart?: string;
   windowEnd?: string;
   /**
-   * When set, the events CTE drops rows this Behavior produced, except human
+   * When set, the events CTE drops rows this Automation produced, except human
    * canvas corrections (`semantic_type='canvas_state'` with
-   * `metadata.correction`). Set it for a Behavior's own source execution and
+   * `metadata.correction`). Set it for an Automation's own source execution and
    * nowhere else — a generic reader (`query_sql`, entity templates) must still
-   * see Behavior-produced events.
+   * see Automation-produced events.
    */
-  excludeProducedByBehaviorId?: number | null;
+  excludeProducedByAutomationId?: number | null;
 }
 
 /** Operations that bypass READ ONLY transactions or have side-effects. */
@@ -531,7 +530,7 @@ export function buildScopedQuery(
   // Per-channel membership gate for the `channel_messages` table (alias has
   // `connection_id` + `channel_id`): on an ACL-enforced Slack connection, restrict
   // to channels the requester is `member_of`. A headless/null principal sees only
-  // non-enforced channels — this is what keeps a watcher's streaming @feed source
+  // non-enforced channels — this is what keeps an automation's streaming @feed source
   // from leaking enforced-channel content into the shared recap.
   const channelMessagesVisibility = (alias: string): string => {
     const vis = compileChannelMessagesVisibility(scope, idx + 1, alias);
@@ -608,7 +607,7 @@ export function buildScopedQuery(
         eventsCte += ` AND NOT (ev.metadata ? '_lobu_workspace_audit')`;
       }
 
-      // Entity scoping: filter events to the watcher's entities
+      // Entity scoping: filter events to the automation's entities
       if (context.entityIds && context.entityIds.length > 0) {
         const placeholders = context.entityIds.map((id) => {
           idx++;
@@ -629,21 +628,21 @@ export function buildScopedQuery(
         eventsCte += ` AND ev.occurred_at >= ${windowStartP}::timestamptz AND ev.occurred_at < ${windowEndP}::timestamptz`;
       }
 
-      // A Behavior never reads what it wrote itself. This used to be bought by
+      // An Automation never reads what it wrote itself. This used to be bought by
       // stamping outputs at `window_end` so they fell outside their own window
       // — which also made them future-dated and invisible everywhere else. Now
       // that outputs are stamped truthfully they land inside their own window,
-      // and only this predicate stops an hourly Behavior compounding on itself.
+      // and only this predicate stops an hourly Automation compounding on itself.
       //
-      // Self-scoped: one Behavior refining another's output is ordinary
-      // composition, so this drops rows from THIS Behavior only. A supersede
+      // Self-scoped: one Automation refining another's output is ordinary
+      // composition, so this drops rows from THIS Automation only. A supersede
       // copies the producer stamp, including onto human canvas corrections —
       // those stay visible via canvas_state + metadata.correction, not by
       // clearing lineage. Tombstones keep the stamp and stay hidden.
-      if (context.excludeProducedByBehaviorId != null) {
+      if (context.excludeProducedByAutomationId != null) {
         idx++;
-        params.push(context.excludeProducedByBehaviorId);
-        eventsCte += ` AND (ev.behavior_id IS NULL OR ev.behavior_id <> $${idx} OR (ev.semantic_type = 'canvas_state' AND ev.metadata->>'correction' = 'true'))`;
+        params.push(context.excludeProducedByAutomationId);
+        eventsCte += ` AND (ev.automation_id IS NULL OR ev.automation_id <> $${idx} OR (ev.semantic_type = 'canvas_state' AND ev.metadata->>'correction' = 'true'))`;
       }
 
       eventsCte += eventConnVisibility('ev');
@@ -665,25 +664,25 @@ export function buildScopedQuery(
           connectionRowVisibility('cn') +
           ')'
       );
-    } else if (table === 'behaviors') {
-      // Scoped on `watchers.organization_id` (NOT NULL), NOT through an
+    } else if (table === 'automations') {
+      // Scoped on `automations.organization_id` (NOT NULL), NOT through an
       // entity-existence join.
       //
       // The old predicate was `EXISTS (SELECT 1 FROM entities ent WHERE ent.id =
       // ANY(i.entity_ids) AND ent.organization_id = $org)`. `entity_ids` is
-      // NULLABLE and org-scoped Behaviors carry NULL, so every entity-less
-      // Behavior was structurally invisible — `SELECT count(*) FROM behaviors`
-      // returned a confident wrong number while `behaviors.list` showed them.
+      // NULLABLE and org-scoped Automations carry NULL, so every entity-less
+      // Automation was structurally invisible — `SELECT count(*) FROM automations`
+      // returned a confident wrong number while `automations.list` showed them.
       // The direct column is both COMPLETE (no row can lack it) and strictly
       // fail-closed (it is the tenancy key itself, so this cannot widen
       // cross-org visibility the way an EXISTS over a joined table could).
       // security-allowed: see block comment above the for-loop
       ctes.push(
-        `"${safeName}" AS (SELECT ${sel(table, 'i')} FROM public.watchers i ` +
+        `"${safeName}" AS (SELECT ${sel(table, 'i')} FROM public.automations i ` +
           `WHERE i.organization_id = ${orgP})`
       );
     } else if (table === 'canvas_windows') {
-      // Watcher windows as canvas chains (view over events; migration
+      // Automation windows as canvas chains (view over events; migration
       // 20260703000000) — org-scoped directly, the view carries organization_id.
       // security-allowed: see block comment above the for-loop
       ctes.push(
@@ -711,16 +710,16 @@ export function buildScopedQuery(
           eventResourceVisibility('ev') +
           '))'
       );
-    } else if (table === 'behavior_versions') {
-      // `watcher_versions` carries no organization_id of its own, so it inherits
-      // the parent Behavior's. Same fix as the `behaviors` CTE: the previous
-      // entity-existence join hid every version of an entity-less Behavior. The
+    } else if (table === 'automation_versions') {
+      // `automation_versions` carries no organization_id of its own, so it inherits
+      // the parent Automation's. Same fix as the `automations` CTE: the previous
+      // entity-existence join hid every version of an entity-less Automation. The
       // INNER JOIN is the tenancy boundary — a version whose parent is missing
       // or in another org yields no row, so this stays fail-closed.
       // security-allowed: see block comment above the for-loop
       ctes.push(
-        `"${safeName}" AS (SELECT ${sel(table, 'wv')} FROM public.watcher_versions wv ` +
-          'JOIN public.watchers w ON w.id = wv.watcher_id ' +
+        `"${safeName}" AS (SELECT ${sel(table, 'wv')} FROM public.automation_versions wv ` +
+          'JOIN public.automations w ON w.id = wv.automation_id ' +
           `WHERE w.organization_id = ${orgP})`
       );
     } else if (table === 'oauth_clients') {
@@ -749,7 +748,7 @@ export function buildScopedQuery(
       // `client.feeds.get` still returned it. Feeds carry their own
       // `deleted_at`; the CONNECTION's soft-delete is not the feed's, and
       // query_sql is an audit surface. Same structural-visibility class as the
-      // Behaviors defect: the SDK and the SQL view must agree on what exists.
+      // Automations defect: the SDK and the SQL view must agree on what exists.
       // The row form also honors the legacy-unowned (`created_by IS NULL`)
       // admin arm, which is the other half of the SDK/SQL disagreement.
       // security-allowed: see block comment above the for-loop
@@ -768,8 +767,8 @@ export function buildScopedQuery(
       //   1. connection visibility — a PRIVATE connection's transcript is visible
       //      only to its creator (org-visible connections to everyone). Resolved
       //      by slug because channel_messages.connection_id is the runtime id, not
-      //      connections.id. A null principal (headless watcher) → org-only.
-      //   2. time window (incremental mode) — only rows inside the watcher window,
+      //      connections.id. A null principal (headless automation) → org-only.
+      //   2. time window (incremental mode) — only rows inside the automation window,
       //      so a channel @feed reads its window, not the whole history.
       //   3. per-channel membership (channelMessagesVisibility) — ACL-enforced
       //      channels require member_of; stale/enforced fail closed.
@@ -852,7 +851,7 @@ export function buildScopedQuery(
  * Inspect a SELECT/WITH query's top-level projection and report whether it
  * surfaces an `id` column.
  *
- * Watcher-mode content aggregation keys every row by `row.id` (see
+ * Automation-mode content aggregation keys every row by `row.id` (see
  * queryContentData in get_content.ts) and the signed window_token only carries
  * those numeric ids. A source query that omits `id` (e.g. `SELECT origin_id,
  * payload_text FROM events`) therefore produces zero content_ids — which makes
@@ -978,7 +977,7 @@ export async function executeDataSources(
         const tableRefs = extractTableRefs(query);
 
         // Auth/identity tables (oauth_tokens, oauth_clients, user) must not be
-        // referenceable from a view-template / watcher data source — these
+        // referenceable from a view-template / automation data source — these
         // results surface to public/member readers via resolve_path. Mirror
         // query_sql's non-admin gate. (Entity-type slugs are never in this set.)
         const restricted = tableRefs.filter((t) =>
@@ -987,23 +986,6 @@ export async function executeDataSources(
         if (restricted.length > 0) {
           throw new Error(
             `Source '${name}': table(s) require admin access: ${[...new Set(restricted)].join(', ')}`
-          );
-        }
-
-        // A source saved against a RETIRED relation name must fail loudly. The
-        // agent-facing relations were renamed (`watchers` → `behaviors`), and
-        // unknown refs compile as entity-type CTEs rather than erroring — so a
-        // previously-saved `FROM watchers` would silently resolve to a
-        // nonexistent entity type and return ZERO ROWS instead of the Behaviors
-        // it used to. This check runs on every execution (not just save, where
-        // `validateEntitySlugs` applies) precisely because the rows it protects
-        // were saved BEFORE the rename.
-        const retired = tableRefs.filter((t) => RETIRED_RELATION_NAMES.has(t));
-        if (retired.length > 0) {
-          throw new Error(
-            `Source '${name}': table(s) renamed: ${[...new Set(retired)]
-              .map((t) => `${t} → ${RETIRED_RELATION_NAMES.get(t)}`)
-              .join(', ')}. Update the query to use the current name.`
           );
         }
 

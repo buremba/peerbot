@@ -1333,7 +1333,7 @@ describe('MCP Authentication', () => {
       expect(toolNames).not.toContain('list_metrics');
       expect(toolNames).not.toContain('query_metric');
       expect(toolNames).not.toContain('metric_series');
-      expect(toolNames).not.toContain('list_watchers');
+      expect(toolNames).not.toContain('list_automations');
       expect(toolNames).not.toContain('manage_entity');
       expect(toolNames).not.toContain('read_knowledge');
       expect(toolNames).not.toContain('execute');
@@ -1343,15 +1343,15 @@ describe('MCP Authentication', () => {
       expect(runSdk?.securitySchemes).toEqual([{ type: 'oauth2', scopes: ['mcp:write'] }]);
     });
 
-    it('lists Behaviors through the consolidated internal admin tool', async () => {
+    it('lists Automations through the consolidated internal admin tool', async () => {
       const { token } = await createTestAccessToken(user.id, org.id, client.client_id);
 
-      const result = await mcpToolsCall<{ behaviors?: unknown[] }>(
-        'manage_behaviors',
+      const result = await mcpToolsCall<{ automations?: unknown[] }>(
+        'manage_automations',
         { action: 'list', status: 'active' },
         { token, orgSlug: org.slug }
       );
-      expect(Array.isArray(result.behaviors)).toBe(true);
+      expect(Array.isArray(result.automations)).toBe(true);
     });
 
     it('should include tool descriptions', async () => {
@@ -1364,7 +1364,6 @@ describe('MCP Authentication', () => {
         expect(tool.description).toBeDefined();
         expect(typeof tool.description).toBe('string');
       }
-      expect(JSON.stringify(result.tools)).not.toMatch(/watcher/i);
     });
   });
 

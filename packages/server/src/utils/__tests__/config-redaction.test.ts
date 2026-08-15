@@ -59,7 +59,7 @@ describe('redactConfigState', () => {
   });
 
   it('preserves arrays and leaves null secret values untouched', () => {
-    const out = redactConfigState('behavior', {
+    const out = redactConfigState('automation', {
       sources: [{ feed: 'gmail' }],
       api_key: null,
     });

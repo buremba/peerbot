@@ -24,7 +24,7 @@ import { getCachedOrgBySlug } from "../../../workspace/multi-tenant.js";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store.js";
 import { listPendingToolsForConversation } from "../../auth/mcp/pending-tool-store.js";
 import { getRevokedTokenStore } from "../../auth/revoked-token-store.js";
-import { BEHAVIOR_RUN_SOURCE } from "../../behavior-run-session.js";
+import { AUTOMATION_RUN_SOURCE } from "../../automation-run-session.js";
 import {
   createApiAuthMiddleware,
   TOKEN_EXPIRATION_MS,
@@ -41,9 +41,9 @@ import type { ArtifactStore } from "../../files/artifact-store.js";
 import type { QueueProducer } from "../../infrastructure/queue/queue-producer.js";
 import type { PlatformRegistry } from "../../platform.js";
 import {
-  parseBehaviorRunConversationId,
-  verifyBehaviorRunIntent,
-} from "../../permissions/behavior-run-intent.js";
+  parseAutomationRunConversationId,
+  verifyAutomationRunIntent,
+} from "../../permissions/automation-run-intent.js";
 import { buildApiConversationId } from "../../services/api-conversation-id.js";
 import { resolveAgentOptions } from "../../services/platform-helpers.js";
 import type { SseManager } from "../../services/sse-manager.js";
@@ -80,10 +80,10 @@ const NixConfigSchema = Type.Object({
   packages: Type.Optional(Type.Array(Type.String())),
 });
 
-const BehaviorRunIntentSchema = Type.Object({
-  kind: Type.Literal("behavior_run"),
+const AutomationRunIntentSchema = Type.Object({
+  kind: Type.Literal("automation_run"),
   runId: Type.Integer({ minimum: 1 }),
-  behaviorId: Type.Integer({ minimum: 1 }),
+  automationId: Type.Integer({ minimum: 1 }),
 });
 
 const CreateAgentRequestSchema = Type.Object({
@@ -94,7 +94,7 @@ const CreateAgentRequestSchema = Type.Object({
   thread: Type.Optional(Type.String()),
   forceNew: Type.Optional(Type.Boolean()),
   dryRun: Type.Optional(Type.Boolean()),
-  intent: Type.Optional(BehaviorRunIntentSchema),
+  intent: Type.Optional(AutomationRunIntentSchema),
   networkConfig: Type.Optional(NetworkConfigSchema),
   nix: Type.Optional(NixConfigSchema),
 });
@@ -129,7 +129,7 @@ const SendMessageRequestSchema = Type.Object(
       Type.String({
         description:
           'Optional per-message model override (a `provider/model` ref or "auto"). ' +
-          "Wins over the agent/org default. Used by Behavior dispatch.",
+          "Wins over the agent/org default. Used by Automation dispatch.",
       }),
     ),
     platform: Type.Optional(
@@ -258,7 +258,7 @@ const createAgentRoute: RouteSpec = {
     ...errorResponses(ErrorResponseSchema, {
       400: "Invalid request",
       401: "Unauthorized",
-      // Unverified `behavior_run` intent, and the cross-tenant session-resume
+      // Unverified `automation_run` intent, and the cross-tenant session-resume
       // refusal further down.
       403: "Forbidden",
     }),
@@ -756,34 +756,34 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       (c.get("organizationId") as string | undefined) ??
       c.get("authContext")?.organizationId;
 
-    // A `behavior_run` intent decides this session's userId/thread, and hence
-    // the `_watcher_<id>_run_<id>` conversation suffix that downstream gates
-    // read a Behavior's identity out of. Verify both the dispatcher claim and
+    // A `automation_run` intent decides this session's userId/thread, and hence
+    // the `_automation_<id>_run_<id>` conversation suffix that downstream gates
+    // read an Automation's identity out of. Verify both the dispatcher claim and
     // its short-lived internal token HERE — the one place the intent enters
     // the system — so downstream code can trust the packed correlation.
-    const behaviorIntent = intent?.kind === "behavior_run" ? intent : null;
-    // Non-null only for a verified Behavior session. 'capture' means the run is
+    const automationIntent = intent?.kind === "automation_run" ? intent : null;
+    // Non-null only for a verified Automation session. 'capture' means the run is
     // an eval replay: it is derived from the run row here, travels as a signed
     // worker-token claim, and is what stops the agent touching the outside
     // world. See packages/server/src/runs/run-types.ts.
-    const behaviorExecutionMode = behaviorIntent
-      ? await verifyBehaviorRunIntent({
-          intent: behaviorIntent,
+    const automationExecutionMode = automationIntent
+      ? await verifyAutomationRunIntent({
+          intent: automationIntent,
           organizationId: tokenOrganizationId,
           accessToken: tokenFromHeader(c),
         })
       : null;
-    if (behaviorIntent && !behaviorExecutionMode) {
+    if (automationIntent && !automationExecutionMode) {
       logger.warn(
         {
-          runId: behaviorIntent.runId,
-          behaviorId: behaviorIntent.behaviorId,
+          runId: automationIntent.runId,
+          automationId: automationIntent.automationId,
           organizationId: tokenOrganizationId,
         },
-        "Rejected a Behavior-run session: intent does not name a dispatched run",
+        "Rejected an Automation-run session: intent does not name a dispatched run",
       );
       return c.json(
-        { success: false, error: "Unknown or undispatched Behavior run" },
+        { success: false, error: "Unknown or undispatched Automation run" },
         403,
       );
     }
@@ -794,21 +794,21 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     // authenticated caller's userId (per-org-unique via the auth bridge),
     // then fall back to agentId.
     const authUserId = c.get("authContext")?.userId;
-    const userId = behaviorIntent
-      ? // Internal correlation key: the `..._watcher_<id>_run_<id>` conversationId
+    const userId = automationIntent
+      ? // Internal correlation key: the `..._automation_<id>_run_<id>` conversationId
         // shape is prod-proven and drives worker dispatch + SSE owner-routing
-        // (see the conversationId comment below). Keep the internal `watcher_`
-        // wire prefix even though the public intent field is `behaviorId`.
-        `watcher_${behaviorIntent.behaviorId}`
+        // (see the conversationId comment below). Keep the internal `automation_`
+        // wire prefix even though the public intent field is `automationId`.
+        `automation_${automationIntent.automationId}`
       : requestedUserId || authUserId || agentId;
-    const effectiveThread = behaviorIntent
-      ? `run_${behaviorIntent.runId}`
+    const effectiveThread = automationIntent
+      ? `run_${automationIntent.runId}`
       : thread;
-    const effectiveForceNew = behaviorIntent ? true : forceNew;
-    const effectiveDryRun = behaviorIntent ? false : dryRun || false;
+    const effectiveForceNew = automationIntent ? true : forceNew;
+    const effectiveDryRun = automationIntent ? false : dryRun || false;
 
     // Build composite conversationId for user-specific sessions.
-    // Uses _ separator (colons not allowed in BullMQ custom IDs). Watcher
+    // Uses _ separator (colons not allowed in BullMQ custom IDs). Automation
     // automation gets one deterministic one-shot session per run and never
     // resumes human/API sessions such as marketing_marketing.
     //
@@ -819,33 +819,33 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     // suffix prevents `forceNew` from silently overwriting another tenant's
     // session at setSession time.
     //
-    // Watcher sessions are EXEMPT: their conversationId is already globally
-    // unique via the DB-serial watcherId + runId, and downstream correlation
-    // relies on the exact `..._watcher_<id>_run_<id>` shape — the worker
+    // Automation sessions are EXEMPT: their conversationId is already globally
+    // unique via the DB-serial automationId + runId, and downstream correlation
+    // relies on the exact `..._automation_<id>_run_<id>` shape — the worker
     // session key AND the API/SSE owner-routing key (unified-thread-consumer)
     // both derive from this conversationId. Injecting `_<org>_` mid-id splits
-    // `watcher_<id>` from `run_<id>`, breaking watcher→worker dispatch (caught
-    // by the sdk-e2e gate). Keep the prod-proven shape for the watcher path.
+    // `automation_<id>` from `run_<id>`, breaking automation→worker dispatch (caught
+    // by the sdk-e2e gate). Keep the prod-proven shape for the automation path.
     const conversationId = buildApiConversationId({
       agentId,
       userId,
-      organizationId: behaviorIntent ? undefined : tokenOrganizationId,
+      organizationId: automationIntent ? undefined : tokenOrganizationId,
       threadId: effectiveThread || undefined,
     });
     // Validate the packed id, not individual request fields: a caller can place
-    // `_watcher_<id>_run_<id>` across userId/thread boundaries or entirely
+    // `_automation_<id>_run_<id>` across userId/thread boundaries or entirely
     // inside either field. Only the verified internal intent may create the
     // suffix consumed by the unattended-tool policy.
     if (
-      !behaviorIntent &&
-      parseBehaviorRunConversationId(conversationId) !== null
+      !automationIntent &&
+      parseAutomationRunConversationId(conversationId) !== null
     ) {
       logger.warn(
         { conversationId, organizationId: tokenOrganizationId },
-        "Rejected a session using the reserved Behavior conversation suffix",
+        "Rejected a session using the reserved Automation conversation suffix",
       );
       return c.json(
-        { success: false, error: "Reserved Behavior conversation suffix" },
+        { success: false, error: "Reserved Automation conversation suffix" },
         400,
       );
     }
@@ -933,9 +933,9 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       agentId,
       ...(tokenOrganizationId ? { organizationId: tokenOrganizationId } : {}),
       dryRun: effectiveDryRun,
-      intent: behaviorIntent ?? undefined,
-      ...(behaviorExecutionMode
-        ? { executionMode: behaviorExecutionMode }
+      intent: automationIntent ?? undefined,
+      ...(automationExecutionMode
+        ? { executionMode: automationExecutionMode }
         : {}),
     };
     await sessMgr.setSession(session);
@@ -1424,17 +1424,17 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     try {
       const channelId = session.channelId || `api_${session.userId}`;
 
-      // A per-message model override (including Behavior dispatch)
+      // A per-message model override (including Automation dispatch)
       // wins over the session's model; otherwise the session model (already the
       // agent/org resolution) carries through. resolveAgentOptions then applies
       // the layered fallback for the empty case.
-      const behaviorModel =
+      const automationModel =
         typeof body.model === "string" && body.model.trim()
           ? body.model.trim()
           : undefined;
       const baseOptions: Record<string, any> = {
         provider: session.provider || "claude",
-        model: behaviorModel ?? session.model,
+        model: automationModel ?? session.model,
         nixConfig: session.nixConfig,
       };
       const agentOptions = await resolveAgentOptions(
@@ -1457,7 +1457,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       if (
         (session.turnCount ?? 0) === 0 &&
         !ephemeralForTurn &&
-        session.intent?.kind !== "behavior_run" &&
+        session.intent?.kind !== "automation_run" &&
         messageOrganizationId
       ) {
         try {
@@ -1523,11 +1523,11 @@ export function createAgentApi(config: AgentApiConfig): Hono {
 
       // `!`-bash from web/direct-API chat (the primary `!` surface — ChatGPT-UI
       // style clients driving the conversation's sandbox without the LLM). Gated
-      // to genuine user chat: a watcher_run's injected text must stay ordinary
+      // to genuine user chat: a automation_run's injected text must stay ordinary
       // text, never a deterministic shell trigger. The Chat SDK bridge does the
       // same for platform inbound.
       const bangBash =
-        session.intent?.kind === "behavior_run"
+        session.intent?.kind === "automation_run"
           ? null
           : parseBangBashCommand(messageContent);
 
@@ -1551,8 +1551,8 @@ export function createAgentApi(config: AgentApiConfig): Hono {
           // remain scoped to the authoritative organization.
           organizationId: messageOrganizationId,
           source:
-            session.intent?.kind === "behavior_run"
-              ? BEHAVIOR_RUN_SOURCE
+            session.intent?.kind === "automation_run"
+              ? AUTOMATION_RUN_SOURCE
               : "direct-api",
           traceparent: traceparent || undefined,
           dryRun: session.dryRun || false,

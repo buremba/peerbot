@@ -13,51 +13,22 @@ import type {
   DeleteApiV1AgentsByAgentIdData,
   DeleteApiV1AgentsByAgentIdErrors,
   DeleteApiV1AgentsByAgentIdResponses,
-  GetApiBedrockHealthData,
-  GetApiBedrockHealthResponses,
-  GetApiBedrockOpenaiAByAgentIdV1ModelsData,
-  GetApiBedrockOpenaiAByAgentIdV1ModelsResponses,
-  GetApiV1AgentsByAgentIdConfigData,
-  GetApiV1AgentsByAgentIdConfigErrors,
-  GetApiV1AgentsByAgentIdConfigGrantsData,
-  GetApiV1AgentsByAgentIdConfigGrantsResponses,
-  GetApiV1AgentsByAgentIdConfigResponses,
   GetApiV1AgentsByAgentIdData,
   GetApiV1AgentsByAgentIdErrors,
   GetApiV1AgentsByAgentIdEventsData,
   GetApiV1AgentsByAgentIdEventsErrors,
   GetApiV1AgentsByAgentIdEventsResponse,
   GetApiV1AgentsByAgentIdEventsResponses,
-  GetApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThreadData,
-  GetApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThreadResponses,
-  GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesData,
-  GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesResponses,
-  GetApiV1AgentsByAgentIdHistorySessionMessagesData,
-  GetApiV1AgentsByAgentIdHistorySessionMessagesResponses,
-  GetApiV1AgentsByAgentIdHistorySessionStatsData,
-  GetApiV1AgentsByAgentIdHistorySessionStatsResponses,
-  GetApiV1AgentsByAgentIdHistoryStatusData,
-  GetApiV1AgentsByAgentIdHistoryStatusResponses,
-  GetApiV1AgentsByAgentIdHistoryThreadsByThreadIdMessagesData,
-  GetApiV1AgentsByAgentIdHistoryThreadsByThreadIdMessagesResponses,
-  GetApiV1AgentsByAgentIdHistoryThreadsData,
-  GetApiV1AgentsByAgentIdHistoryThreadsResponses,
   GetApiV1AgentsByAgentIdPendingApprovalsData,
   GetApiV1AgentsByAgentIdPendingApprovalsResponses,
   GetApiV1AgentsByAgentIdResponses,
   GetApiV1AgentsData,
   GetApiV1AgentsResponses,
-  GetApiV1FilesByArtifactIdData,
-  GetApiV1FilesByArtifactIdResponses,
-  GetBehaviorData,
-  GetBehaviorErrors,
-  GetBehaviorResponses,
+  GetAutomationData,
+  GetAutomationErrors,
+  GetAutomationResponses,
   GetConnectClaimData,
   GetConnectClaimResponses,
-  GetGithubAppInstallCallbackData,
-  GetGithubAppInstallCallbackResponses,
-  GetGithubAppInstallData,
-  GetGithubAppInstallResponses,
   ListMetricsData,
   ListMetricsErrors,
   ListMetricsResponses,
@@ -70,9 +41,9 @@ import type {
   ManageAuthProfilesData,
   ManageAuthProfilesErrors,
   ManageAuthProfilesResponses,
-  ManageBehaviorsData,
-  ManageBehaviorsErrors,
-  ManageBehaviorsResponses,
+  ManageAutomationsData,
+  ManageAutomationsErrors,
+  ManageAutomationsResponses,
   ManageCatalogData,
   ManageCatalogErrors,
   ManageCatalogResponses,
@@ -111,8 +82,6 @@ import type {
   NotifyResponses,
   PatchApiV1AgentsByAgentIdData,
   PatchApiV1AgentsByAgentIdResponses,
-  PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsData,
-  PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsResponses,
   PostApiV1AgentsApproveData,
   PostApiV1AgentsApproveResponses,
   PostApiV1AgentsByAgentIdMessagesData,
@@ -121,12 +90,6 @@ import type {
   PostApiV1AgentsData,
   PostApiV1AgentsErrors,
   PostApiV1AgentsResponses,
-  PostApiV1AppWebhooksByProviderData,
-  PostApiV1AppWebhooksByProviderResponses,
-  PostApiV1AuthByProviderLogoutData,
-  PostApiV1AuthByProviderLogoutResponses,
-  PostApiV1AuthByProviderSaveKeyData,
-  PostApiV1AuthByProviderSaveKeyResponses,
   QueryMetricData,
   QueryMetricErrors,
   QueryMetricResponses,
@@ -177,7 +140,7 @@ export type Options<
 /**
  * Search saved workspace memory: entities, facts, decisions, preferences, observations, and notes
  *
- * Search saved workspace memory: entities, facts, decisions, preferences, observations, and notes. Use this to answer “what do we know?” Pair writes with `save_memory`; use `search_sdk` / `query_sdk` only when you need SDK capabilities or programmable reads.
+ * Search saved workspace memory: entities, facts, decisions, preferences, observations, and notes. Use this to answer “what do we know?” A query such as `memory 4939822` performs an exact permission-checked content read.
  */
 export const searchMemory = <ThrowOnError extends boolean = false>(
   options: Options<SearchMemoryData, ThrowOnError>,
@@ -219,7 +182,7 @@ export const saveMemory = <ThrowOnError extends boolean = false>(
 /**
  * Discover available SDK methods and runtime helpers
  *
- * Discover available SDK methods and runtime helpers. Search by method name, namespace (e.g. "entities", "connections", "behaviors"), or keyword. Returns documentation, signatures, and access requirements for each method. (Then call methods via query_sdk for reads or run_sdk for writes.
+ * Discover available SDK methods and runtime helpers. Search by method name, namespace (e.g. "entities", "connections", "automations"), or keyword. Returns documentation, signatures, and access requirements for each method. (Then call methods via query_sdk for reads or run_sdk for writes.
  */
 export const searchSdk = <ThrowOnError extends boolean = false>(
   options: Options<SearchSdkData, ThrowOnError>,
@@ -238,9 +201,9 @@ export const searchSdk = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Read workspace data through typed SDK methods
+ * Run capability-scoped, read-only TypeScript through the Lobu SDK
  *
- * Read workspace data through typed SDK methods. Query entities, relationships, feeds, operations, metrics, and more. Use this for lookups and searches that do not change workspace content or external systems. (For writes: use run_sdk. To discover available methods: use search_sdk.
+ * Run capability-scoped, read-only TypeScript through the Lobu SDK. Query entities, relationships, feeds, operations, metrics, and authorized connected-source data; write, administrative, and external-action methods are rejected by the sandbox.
  */
 export const querySdk = <ThrowOnError extends boolean = false>(
   options: Options<QuerySdkData, ThrowOnError>,
@@ -280,9 +243,9 @@ export const querySql = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Perform any workspace action: create/update/delete entities, set up connections (e
+ * Execute a capability-scoped Lobu SDK script against the current workspace
  *
- * Perform any workspace action: create/update/delete entities, set up connections (e.g. client.connections.connect({ connector_key: "github" })), manage Behaviors and feeds, run operations, or modify templates. Use this for anything that changes data. (For read-only access: use query_sdk.
+ * Execute a capability-scoped Lobu SDK script against the current workspace.
  */
 export const runSdk = <ThrowOnError extends boolean = false>(
   options: Options<RunSdkData, ThrowOnError>,
@@ -368,9 +331,9 @@ export const manageConnections = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Browse installable connectors, skills, and Behavior templates
+ * Browse installable connectors, skills, and Automation templates
  *
- * Browse installable connectors, skills, and Behavior templates. Use `list_catalog` to see available (manifest) entries — each connector entry's `detail.source_uri` feeds into `manage_connections` action `install_connector`.
+ * Browse installable connectors, skills, and Automation templates. Use `list_catalog` to see available (manifest) entries — each connector entry's `detail.source_uri` feeds into `manage_connections` action `install_connector`.
  */
 export const manageCatalog = <ThrowOnError extends boolean = false>(
   options: Options<ManageCatalogData, ThrowOnError>,
@@ -548,23 +511,23 @@ export const manageSchedules = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Create, list, and manage Behaviors
+ * Create, list, and manage Automations
  *
- * Create, list, and manage Behaviors. SDK alternative: client.behaviors.
+ * Create, list, and manage Automations. SDK alternative: client.automations.
  */
-export const manageBehaviors = <ThrowOnError extends boolean = false>(
-  options: Options<ManageBehaviorsData, ThrowOnError>,
+export const manageAutomations = <ThrowOnError extends boolean = false>(
+  options: Options<ManageAutomationsData, ThrowOnError>,
 ): RequestResult<
-  ManageBehaviorsResponses,
-  ManageBehaviorsErrors,
+  ManageAutomationsResponses,
+  ManageAutomationsErrors,
   ThrowOnError
 > =>
   (options.client ?? client).post<
-    ManageBehaviorsResponses,
-    ManageBehaviorsErrors,
+    ManageAutomationsResponses,
+    ManageAutomationsErrors,
     ThrowOnError
   >({
-    url: "/api/{orgSlug}/manage_behaviors",
+    url: "/api/{orgSlug}/manage_automations",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -573,19 +536,19 @@ export const manageBehaviors = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Behavior detail + windows
+ * Automation detail + windows
  *
- * Behavior detail + windows. SDK alternative: client.behaviors.get.
+ * Automation detail + windows. SDK alternative: client.automations.get.
  */
-export const getBehavior = <ThrowOnError extends boolean = false>(
-  options: Options<GetBehaviorData, ThrowOnError>,
-): RequestResult<GetBehaviorResponses, GetBehaviorErrors, ThrowOnError> =>
+export const getAutomation = <ThrowOnError extends boolean = false>(
+  options: Options<GetAutomationData, ThrowOnError>,
+): RequestResult<GetAutomationResponses, GetAutomationErrors, ThrowOnError> =>
   (options.client ?? client).post<
-    GetBehaviorResponses,
-    GetBehaviorErrors,
+    GetAutomationResponses,
+    GetAutomationErrors,
     ThrowOnError
   >({
-    url: "/api/{orgSlug}/get_behavior",
+    url: "/api/{orgSlug}/get_automation",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -690,9 +653,9 @@ export const listOrganizations = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * List declared governed metrics per entity type
+ * List governed declared and SQL-derived metrics per entity type, including business KPIs such as spend and net worth
  *
- * List declared governed metrics per entity type. SDK alternative: client.metrics.list.
+ * List governed declared and SQL-derived metrics per entity type, including business KPIs such as spend and net worth. SDK alternative: client.metrics.list.
  */
 export const listMetrics = <ThrowOnError extends boolean = false>(
   options: Options<ListMetricsData, ThrowOnError>,
@@ -711,9 +674,9 @@ export const listMetrics = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Run a declared metric
+ * Run a governed declared or SQL-derived measure, such as spend or net worth
  *
- * Run a declared metric. SDK alternative: client.metrics.query.
+ * Run a governed declared or SQL-derived measure, such as spend or net worth. SDK alternative: client.metrics.query.
  */
 export const queryMetric = <ThrowOnError extends boolean = false>(
   options: Options<QueryMetricData, ThrowOnError>,
@@ -772,69 +735,6 @@ export const resolvePath = <ThrowOnError extends boolean = false>(
       ...options.headers,
     },
   });
-
-/**
- * GET /api/bedrock/health
- */
-export const getApiBedrockHealth = <ThrowOnError extends boolean = false>(
-  options?: Options<GetApiBedrockHealthData, ThrowOnError>,
-): RequestResult<GetApiBedrockHealthResponses, unknown, ThrowOnError> =>
-  (options?.client ?? client).get<
-    GetApiBedrockHealthResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/api/bedrock/health", ...options });
-
-/**
- * GET /api/bedrock/openai/a/{agentId}/v1/models
- */
-export const getApiBedrockOpenaiAByAgentIdV1Models = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<GetApiBedrockOpenaiAByAgentIdV1ModelsData, ThrowOnError>,
-): RequestResult<
-  GetApiBedrockOpenaiAByAgentIdV1ModelsResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options.client ?? client).get<
-    GetApiBedrockOpenaiAByAgentIdV1ModelsResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/api/bedrock/openai/a/{agentId}/v1/models", ...options });
-
-/**
- * POST /api/bedrock/openai/a/{agentId}/v1/chat/completions
- */
-export const postApiBedrockOpenaiAByAgentIdV1ChatCompletions = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<
-    PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsData,
-    ThrowOnError
-  >,
-): RequestResult<
-  PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/api/bedrock/openai/a/{agentId}/v1/chat/completions", ...options });
-
-/**
- * GET /api/v1/files/{artifactId}
- */
-export const getApiV1FilesByArtifactId = <ThrowOnError extends boolean = false>(
-  options: Options<GetApiV1FilesByArtifactIdData, ThrowOnError>,
-): RequestResult<GetApiV1FilesByArtifactIdResponses, unknown, ThrowOnError> =>
-  (options.client ?? client).get<
-    GetApiV1FilesByArtifactIdResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/api/v1/files/{artifactId}", ...options });
 
 /**
  * List user agents
@@ -1007,268 +907,3 @@ export const getConnectClaim = <ThrowOnError extends boolean = false>(
     unknown,
     ThrowOnError
   >({ url: "/connect/claim", ...options });
-
-/**
- * GET /api/v1/agents/{agentId}/history/threads
- */
-export const getApiV1AgentsByAgentIdHistoryThreads = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<GetApiV1AgentsByAgentIdHistoryThreadsData, ThrowOnError>,
-): RequestResult<
-  GetApiV1AgentsByAgentIdHistoryThreadsResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options.client ?? client).get<
-    GetApiV1AgentsByAgentIdHistoryThreadsResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/api/v1/agents/{agentId}/history/threads", ...options });
-
-/**
- * GET /api/v1/agents/{agentId}/history/threads/{threadId}/messages
- */
-export const getApiV1AgentsByAgentIdHistoryThreadsByThreadIdMessages = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<
-    GetApiV1AgentsByAgentIdHistoryThreadsByThreadIdMessagesData,
-    ThrowOnError
-  >,
-): RequestResult<
-  GetApiV1AgentsByAgentIdHistoryThreadsByThreadIdMessagesResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options.client ?? client).get<
-    GetApiV1AgentsByAgentIdHistoryThreadsByThreadIdMessagesResponses,
-    unknown,
-    ThrowOnError
-  >({
-    url: "/api/v1/agents/{agentId}/history/threads/{threadId}/messages",
-    ...options,
-  });
-
-/**
- * GET /api/v1/agents/{agentId}/history/conversations/{conversationId}/messages
- */
-export const getApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessages =
-  <ThrowOnError extends boolean = false>(
-    options: Options<
-      GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesData,
-      ThrowOnError
-    >,
-  ): RequestResult<
-    GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesResponses,
-    unknown,
-    ThrowOnError
-  > =>
-    (options.client ?? client).get<
-      GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesResponses,
-      unknown,
-      ThrowOnError
-    >({
-      url: "/api/v1/agents/{agentId}/history/conversations/{conversationId}/messages",
-      ...options,
-    });
-
-/**
- * GET /api/v1/agents/{agentId}/history/behaviors/{behaviorId}/thread
- */
-export const getApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThread = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<
-    GetApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThreadData,
-    ThrowOnError
-  >,
-): RequestResult<
-  GetApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThreadResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options.client ?? client).get<
-    GetApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThreadResponses,
-    unknown,
-    ThrowOnError
-  >({
-    url: "/api/v1/agents/{agentId}/history/behaviors/{behaviorId}/thread",
-    ...options,
-  });
-
-/**
- * Get agent connection status
- */
-export const getApiV1AgentsByAgentIdHistoryStatus = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<GetApiV1AgentsByAgentIdHistoryStatusData, ThrowOnError>,
-): RequestResult<
-  GetApiV1AgentsByAgentIdHistoryStatusResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options.client ?? client).get<
-    GetApiV1AgentsByAgentIdHistoryStatusResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/api/v1/agents/{agentId}/history/status", ...options });
-
-/**
- * Get session messages
- */
-export const getApiV1AgentsByAgentIdHistorySessionMessages = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<
-    GetApiV1AgentsByAgentIdHistorySessionMessagesData,
-    ThrowOnError
-  >,
-): RequestResult<
-  GetApiV1AgentsByAgentIdHistorySessionMessagesResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options.client ?? client).get<
-    GetApiV1AgentsByAgentIdHistorySessionMessagesResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/api/v1/agents/{agentId}/history/session/messages", ...options });
-
-/**
- * Get session stats
- */
-export const getApiV1AgentsByAgentIdHistorySessionStats = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<
-    GetApiV1AgentsByAgentIdHistorySessionStatsData,
-    ThrowOnError
-  >,
-): RequestResult<
-  GetApiV1AgentsByAgentIdHistorySessionStatsResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options.client ?? client).get<
-    GetApiV1AgentsByAgentIdHistorySessionStatsResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/api/v1/agents/{agentId}/history/session/stats", ...options });
-
-/**
- * Get agent configuration
- */
-export const getApiV1AgentsByAgentIdConfig = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<GetApiV1AgentsByAgentIdConfigData, ThrowOnError>,
-): RequestResult<
-  GetApiV1AgentsByAgentIdConfigResponses,
-  GetApiV1AgentsByAgentIdConfigErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).get<
-    GetApiV1AgentsByAgentIdConfigResponses,
-    GetApiV1AgentsByAgentIdConfigErrors,
-    ThrowOnError
-  >({ url: "/api/v1/agents/{agentId}/config", ...options });
-
-/**
- * List domain grants
- */
-export const getApiV1AgentsByAgentIdConfigGrants = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<GetApiV1AgentsByAgentIdConfigGrantsData, ThrowOnError>,
-): RequestResult<
-  GetApiV1AgentsByAgentIdConfigGrantsResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options.client ?? client).get<
-    GetApiV1AgentsByAgentIdConfigGrantsResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/api/v1/agents/{agentId}/config/grants", ...options });
-
-/**
- * POST /api/v1/auth/{provider}/save-key
- */
-export const postApiV1AuthByProviderSaveKey = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<PostApiV1AuthByProviderSaveKeyData, ThrowOnError>,
-): RequestResult<
-  PostApiV1AuthByProviderSaveKeyResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    PostApiV1AuthByProviderSaveKeyResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/api/v1/auth/{provider}/save-key", ...options });
-
-/**
- * POST /api/v1/auth/{provider}/logout
- */
-export const postApiV1AuthByProviderLogout = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<PostApiV1AuthByProviderLogoutData, ThrowOnError>,
-): RequestResult<
-  PostApiV1AuthByProviderLogoutResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    PostApiV1AuthByProviderLogoutResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/api/v1/auth/{provider}/logout", ...options });
-
-/**
- * POST /api/v1/app-webhooks/{provider}
- */
-export const postApiV1AppWebhooksByProvider = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<PostApiV1AppWebhooksByProviderData, ThrowOnError>,
-): RequestResult<
-  PostApiV1AppWebhooksByProviderResponses,
-  unknown,
-  ThrowOnError
-> =>
-  (options.client ?? client).post<
-    PostApiV1AppWebhooksByProviderResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/api/v1/app-webhooks/{provider}", ...options });
-
-/**
- * GET /github/app/install
- */
-export const getGithubAppInstall = <ThrowOnError extends boolean = false>(
-  options?: Options<GetGithubAppInstallData, ThrowOnError>,
-): RequestResult<GetGithubAppInstallResponses, unknown, ThrowOnError> =>
-  (options?.client ?? client).get<
-    GetGithubAppInstallResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/github/app/install", ...options });
-
-/**
- * GET /github/app/install/callback
- */
-export const getGithubAppInstallCallback = <
-  ThrowOnError extends boolean = false,
->(
-  options?: Options<GetGithubAppInstallCallbackData, ThrowOnError>,
-): RequestResult<GetGithubAppInstallCallbackResponses, unknown, ThrowOnError> =>
-  (options?.client ?? client).get<
-    GetGithubAppInstallCallbackResponses,
-    unknown,
-    ThrowOnError
-  >({ url: "/github/app/install/callback", ...options });

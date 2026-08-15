@@ -25,11 +25,11 @@ export interface RelationshipRule {
   target: string;
 }
 
-/** One Behavior SQL data source. */
-export interface BehaviorSource {
+/** One Automation SQL data source. */
+export interface AutomationSource {
   name: string;
   query: string;
-  /** When true, source is context-only and is not linked into the Behavior window. */
+  /** When true, source is context-only and is not linked into the Automation window. */
   context?: boolean;
 }
 

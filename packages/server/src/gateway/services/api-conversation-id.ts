@@ -1,6 +1,6 @@
 /**
  * Composite conversation ids for the web-panel Agent API (`POST /api/v1/agents`).
- * Watcher automation is exempt from org scoping — pass `organizationId: undefined`
+ * Automation runs are exempt from org scoping — pass `organizationId: undefined`
  * for that path (see `routes/public/agent.ts`).
  */
 
@@ -12,7 +12,7 @@
  * `conversations.thread_id`; list readers do not parse the id string again.
  * Returns null when the id is not packed for this owner or has no thread suffix.
  *
- * NOTE for a future origin with OPAQUE ids (an MCP session, a behaviour run):
+ * NOTE for a future origin with OPAQUE ids (an MCP session, an Automation run):
  * storing the id verbatim here is NOT enough to make it work, and is why that
  * case is deliberately still null. The thread read path re-PACKS the id —
  * `readThreadMessages` and the interactions query in `routes/public/agent-history.ts`

@@ -44,7 +44,7 @@ export interface AuthContext {
   memberRole: string | null;
   agentId: string | null;
   /** Trusted internal reaction provenance. Never populated from request input. */
-  actingWatcherId?: number | null;
+  actingAutomationId?: number | null;
   /** Trusted internal reaction window. Never populated from request input. */
   actingWindowId?: number | null;
   /** Trusted internal reaction run. Never populated from request input. */
@@ -240,7 +240,7 @@ export function checkToolAccess(toolName: string, args: unknown, authCtx: AuthCo
  * Arg validation does NOT live here: every registered handler is wrapped
  * with `withValidatedArgs` at its definition (`tools/validate-args.ts`), so
  * direct REST calls and the sandbox SDK namespaces get the same coerce +
- * validate behavior as this path (lobu#1137).
+ * validate automation as this path (lobu#1137).
  */
 export async function executeTool(
   toolName: string,
@@ -396,7 +396,7 @@ export function toToolContext(authCtx: AuthContext): ToolContext {
     userId: authCtx.userId,
     memberRole: authCtx.memberRole,
     agentId: authCtx.agentId,
-    actingWatcherId: authCtx.actingWatcherId ?? null,
+    actingAutomationId: authCtx.actingAutomationId ?? null,
     actingWindowId: authCtx.actingWindowId ?? null,
     actingRunId: authCtx.actingRunId ?? null,
     sourceContext: authCtx.sourceContext ?? null,

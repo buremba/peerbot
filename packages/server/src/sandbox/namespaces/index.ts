@@ -4,7 +4,7 @@
 
 export { buildAgentsNamespace } from "./agents";
 export { buildAuthProfilesNamespace } from "./auth-profiles";
-export { buildBehaviorsNamespace } from "./behaviors";
+export { buildAutomationsNamespace } from "./automations";
 export { buildCatalogNamespace } from "./catalog";
 export { buildClassifiersNamespace } from "./classifiers";
 export { buildConnectionsNamespace } from "./connections";

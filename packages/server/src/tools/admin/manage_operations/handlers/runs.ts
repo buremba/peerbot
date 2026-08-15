@@ -44,7 +44,7 @@ export async function handleListActivity(
 	};
 }
 
-function publicBehaviorFields(value: unknown): unknown {
+function publicAutomationFields(value: unknown): unknown {
 	if (
 		value === null ||
 		typeof value !== "object" ||
@@ -53,12 +53,12 @@ function publicBehaviorFields(value: unknown): unknown {
 		return value;
 	}
 	const {
-		watcher_id: behaviorId,
+		automation_id: automationId,
 		...publicRef
 	} = value as Record<string, unknown>;
-	return behaviorId == null
+	return automationId == null
 		? publicRef
-		: { ...publicRef, behavior_id: behaviorId };
+		: { ...publicRef, automation_id: automationId };
 }
 
 function publicRunRecord(
@@ -71,11 +71,11 @@ function publicRunRecord(
 			ENTITY_CHANGE_ACTION_KEYS.some(
 				(actionKey) => actionKey === row.operation_key,
 			)
-				? publicBehaviorFields(row.input)
+				? publicAutomationFields(row.input)
 				: row.input,
 		initiator_ref:
-			row.initiator_kind === "behavior"
-				? publicBehaviorFields(row.initiator_ref)
+			row.initiator_kind === "automation"
+				? publicAutomationFields(row.initiator_ref)
 				: row.initiator_ref,
 	};
 	const { created_at, completed_at, ...redactable } = publicRecord;
@@ -157,8 +157,8 @@ export async function handleListRuns(
   if (args.approval_status) {
     where = sql`${where} AND r.approval_status = ${args.approval_status}`;
   }
-  if (args.behavior_ids && args.behavior_ids.length > 0) {
-    where = sql`${where} AND r.watcher_id = ANY(${pgBigintArray(args.behavior_ids)}::bigint[])`;
+  if (args.automation_ids && args.automation_ids.length > 0) {
+    where = sql`${where} AND r.automation_id = ANY(${pgBigintArray(args.automation_ids)}::bigint[])`;
   }
 
   const countQuery = sql`SELECT COUNT(*)::int AS total FROM runs r WHERE ${where}`;
@@ -168,7 +168,7 @@ export async function handleListRuns(
     pageWhere = sql`${pageWhere} AND (r.created_at, r.id) < (${args.before_created_at}::timestamptz, ${args.before_id})`;
   }
   const query = sql`
-    SELECT r.id, r.run_type, r.watcher_id AS behavior_id, r.window_id, r.connection_id, r.feed_id, r.connector_key, r.connector_version,
+    SELECT r.id, r.run_type, r.automation_id AS automation_id, r.window_id, r.connection_id, r.feed_id, r.connector_key, r.connector_version,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.items_collected, r.checkpoint,
            r.created_at, r.completed_at,
@@ -204,12 +204,12 @@ export async function handleGetRun(
   // connector 'action' runs: list_runs surfaces them and approve/reject act on
   // them, so a caller that can list and approve an internal run must be able to
   // get_run it too. get_run must resolve ANY run_type that list_runs surfaces —
-  // action, internal, behavior, sync — not just action+internal. It uses the
+  // action, internal, automation, sync — not just action+internal. It uses the
   // SAME excluded-types set as the list_runs default so the two can never drift:
   // a run visible in the list is always fetchable here. Only the chat-message
   // transport lane (the list's default exclusion) stays unfetchable.
   const rows = await sql`
-    SELECT r.id, r.watcher_id AS behavior_id, r.window_id, r.connection_id, r.connector_key,
+    SELECT r.id, r.automation_id AS automation_id, r.window_id, r.connection_id, r.connector_key,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.run_type,
            r.created_at, r.completed_at,

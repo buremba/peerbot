@@ -138,7 +138,7 @@ export async function validateEmbeddingsService(env: Env): Promise<void> {
     }
     throw new Error(
       `Embeddings service unavailable at ${url}. ` +
-        'Cannot save watcher window without generating embeddings. ' +
+        'Cannot save automation window without generating embeddings. ' +
         'Start the embeddings service or provide embeddings in extracted_data. ' +
         `Original error: ${error instanceof Error ? error.message : 'Unknown'}`
     );

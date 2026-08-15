@@ -13,10 +13,10 @@ describe('getCanonicalRedirectUrl', () => {
   it('redirects non-canonical hosts to the configured origin', () => {
     expect(
       getCanonicalRedirectUrl(
-        'https://lobu.com/brand/acme/behaviors?tab=recent',
+        'https://lobu.com/brand/acme/automations?tab=recent',
         'https://community.lobu.ai'
       )
-    ).toBe('https://community.lobu.ai/brand/acme/behaviors?tab=recent');
+    ).toBe('https://community.lobu.ai/brand/acme/automations?tab=recent');
   });
 
   it('does not redirect requests already on the canonical host', () => {

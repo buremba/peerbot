@@ -384,33 +384,33 @@ describe('notification list > source attribution', () => {
       RETURNING id
     `;
 
-    const watcherId = 910001;
+    const automationId = 910001;
     await sql`
-      INSERT INTO watchers (
+      INSERT INTO automations (
         id, name, slug, organization_id, entity_ids, schedule, timezone,
         next_run_at, agent_id, model_config, sources, version, tags, status,
-        created_by, created_at, updated_at, watcher_group_id, triggers
+        created_by, created_at, updated_at, automation_group_id, triggers
       ) VALUES (
-        ${watcherId}, 'Attr Notif Behavior', 'attr-notif-behavior',
+        ${automationId}, 'Attr Notif Automation', 'attr-notif-automation',
         ${org.id}, '{}'::bigint[], '0 9 * * *', 'Europe/London', NOW(),
         'attr-notif-agent', '{}'::jsonb, '[]'::jsonb, 1, '{}'::text[],
-        'active', ${user.id}, NOW(), NOW(), ${watcherId}, '[]'::jsonb
+        'active', ${user.id}, NOW(), NOW(), ${automationId}, '[]'::jsonb
       )
     `;
     const [v1] = await sql`
-      INSERT INTO watcher_versions (watcher_id, version, name, created_by, prompt, created_at)
-      VALUES (${watcherId}, 1, 'Attr Notif Behavior', ${user.id}, 'prompt', NOW())
+      INSERT INTO automation_versions (automation_id, version, name, created_by, prompt, created_at)
+      VALUES (${automationId}, 1, 'Attr Notif Automation', ${user.id}, 'prompt', NOW())
       RETURNING id
     `;
     await sql`
-      UPDATE watchers SET current_version_id = ${v1.id} WHERE id = ${watcherId}
+      UPDATE automations SET current_version_id = ${v1.id} WHERE id = ${automationId}
     `;
 
     const [sourceRun] = await sql`
       INSERT INTO runs (
-        organization_id, run_type, watcher_id, status, approved_input
+        organization_id, run_type, automation_id, status, approved_input
       ) VALUES (
-        ${org.id}, 'behavior', ${watcherId}, 'completed',
+        ${org.id}, 'automation', ${automationId}, 'completed',
         ${sql.json({
           agent_id: 'attr-notif-agent',
           device_worker_id: String(device.id),
@@ -423,11 +423,11 @@ describe('notification list > source attribution', () => {
       INSERT INTO events (
         organization_id, title, payload_type, payload_text, occurred_at,
         semantic_type, connector_key, connection_id, feed_id, feed_key,
-        behavior_id, behavior_version_id, run_id, client_id, metadata, created_at
+        automation_id, automation_version_id, run_id, client_id, metadata, created_at
       ) VALUES (
         ${org.id}, 'Attr notification', 'text', 'notification body', NOW(),
         'notification', 'attr-notif-connector', ${conn.id}, ${feed.id}, 'home_feed',
-        ${watcherId}, ${v1.id}, ${sourceRun.id}, ${attributedClient.client_id}, '{}'::jsonb, NOW()
+        ${automationId}, ${v1.id}, ${sourceRun.id}, ${attributedClient.client_id}, '{}'::jsonb, NOW()
       )
       RETURNING id
     `;
@@ -439,16 +439,16 @@ describe('notification list > source attribution', () => {
     // Change every mutable current assignment after the notification was
     // produced. Attribution must stay on the immutable event-time run values.
     const [v2] = await sql`
-      INSERT INTO watcher_versions (watcher_id, version, name, created_by, prompt, created_at)
-      VALUES (${watcherId}, 2, 'Renamed Notif Behavior', ${user.id}, 'prompt', NOW())
+      INSERT INTO automation_versions (automation_id, version, name, created_by, prompt, created_at)
+      VALUES (${automationId}, 2, 'Renamed Notif Automation', ${user.id}, 'prompt', NOW())
       RETURNING id
     `;
     await sql`
-      UPDATE watchers
+      UPDATE automations
       SET current_version_id = ${v2.id},
           agent_id = 'replacement-agent',
           device_worker_id = ${replacementDevice.id}
-      WHERE id = ${watcherId}
+      WHERE id = ${automationId}
     `;
     await sql`
       UPDATE connections
@@ -463,8 +463,8 @@ describe('notification list > source attribution', () => {
     const item = notifications.find((n) => n.id === ev.id);
     expect(item).toBeTruthy();
     // The producing version (v1) name, not the renamed current version.
-    expect(item!.behavior_name).toBe('Attr Notif Behavior');
-    expect(item!.behavior_id).toBe(watcherId);
+    expect(item!.automation_name).toBe('Attr Notif Automation');
+    expect(item!.automation_id).toBe(automationId);
     expect(item!.feed_name).toBe('Attr Notif Feed');
     expect(item!.feed_id).toBe(feed.id);
     expect(item!.feed_key).toBe('home_feed');
@@ -494,8 +494,8 @@ describe('notification list > source attribution', () => {
       feed_id: feed.id,
       feed_key: 'home_feed',
       feed_name: 'Attr Notif Feed',
-      behavior_id: watcherId,
-      behavior_name: 'Attr Notif Behavior',
+      automation_id: automationId,
+      automation_name: 'Attr Notif Automation',
       connection_name: 'Attribution account',
       agent_id: 'attr-notif-agent',
       agent_name: 'Attribution Agent',

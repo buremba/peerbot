@@ -1,9 +1,9 @@
 /**
  * get_run must fetch ANY run_type that list_runs surfaces — action, internal,
- * behavior, sync — not just action. list_runs shows every operational run
+ * automation, sync — not just action. list_runs shows every operational run
  * (everything except the chat_message transport lane), and approve/reject act
  * on them, but get_run filtered run_type IN ('action','internal') and returned
- * "Run not found" for a behavior/sync run the same principal could list. It now
+ * "Run not found" for an automation/sync run the same principal could list. It now
  * shares the list's excluded-types set, so any listed run is fetchable; only
  * chat_message (the list's default exclusion) stays unfetchable.
  */
@@ -17,14 +17,16 @@ import { createTestOrganization, createTestUser } from "../setup/test-fixtures";
 
 const env = {} as Env;
 
-function watcherKeys(value: unknown, path = "$"): string[] {
+function retiredVocabularyKeys(value: unknown, path = "$"): string[] {
 	if (Array.isArray(value)) {
-		return value.flatMap((item, index) => watcherKeys(item, `${path}[${index}]`));
+		return value.flatMap((item, index) =>
+			retiredVocabularyKeys(item, `${path}[${index}]`),
+		);
 	}
 	if (value === null || typeof value !== "object") return [];
 	return Object.entries(value).flatMap(([key, child]) => [
-		...(key.toLowerCase().includes("watcher") ? [`${path}.${key}`] : []),
-		...watcherKeys(child, `${path}.${key}`),
+		...(/watch(?:er)|behav(?:ior)/i.test(key) ? [`${path}.${key}`] : []),
+		...retiredVocabularyKeys(child, `${path}.${key}`),
 	]);
 }
 
@@ -43,7 +45,7 @@ describe("manage_operations get_run — internal runs", () => {
 	});
 
 	async function insertRun(
-		runType: "action" | "internal" | "sync" | "behavior" | "chat_message",
+		runType: "action" | "internal" | "sync" | "automation" | "chat_message",
 		actionKey: string | null,
 	): Promise<number> {
 		const db = getTestDb();
@@ -95,12 +97,12 @@ describe("manage_operations get_run — internal runs", () => {
 		expect(run.run_type).toBe("sync");
 	});
 
-	it("fetches a behavior run (listed operationally, so must be gettable)", async () => {
-		const id = await insertRun("behavior", "propose_entity_change");
+	it("fetches an automation run (listed operationally, so must be gettable)", async () => {
+		const id = await insertRun("automation", "propose_entity_change");
 		const result = await getRun(id);
 		const run = result.run as Record<string, unknown>;
 		expect(Number(run.id)).toBe(id);
-		expect(run.run_type).toBe("behavior");
+		expect(run.run_type).toBe("automation");
 	});
 
 	it("does NOT fetch a chat_message transport run (excluded from the operational list)", async () => {
@@ -149,37 +151,37 @@ describe("manage_operations get_run — internal runs", () => {
 		expect(found?.initiator_ref).toEqual(initiatorRef);
 	});
 
-	it("uses Behavior vocabulary for every platform-owned public run field", async () => {
+	it("uses Automation vocabulary for every platform-owned public run field", async () => {
 		const db = getTestDb();
 		const creator = await createTestUser();
-		const [behavior] = (await db`
+		const [automation] = (await db`
 			WITH next_id AS (
-				SELECT nextval('watchers_id_seq')::integer AS id
+				SELECT nextval('automations_id_seq')::integer AS id
 			)
-			INSERT INTO watchers (
-				id, watcher_group_id, organization_id, agent_id, created_by, name, slug
+			INSERT INTO automations (
+				id, automation_group_id, organization_id, agent_id, created_by, name, slug
 			)
 			SELECT id, id, ${orgId}, 'personal-agent', ${creator.id}, 'Public vocabulary', 'public-vocabulary'
 			FROM next_id
 			RETURNING id
 		`) as unknown as Array<{ id: number }>;
-		const behaviorId = Number(behavior.id);
+		const automationId = Number(automation.id);
 		const [row] = (await db`
 			INSERT INTO runs (
-				organization_id, run_type, action_key, action_input, watcher_id,
+				organization_id, run_type, action_key, action_input, automation_id,
 				status, approval_status,
 				initiator_kind, initiator_ref, created_at, run_at
 			)
 			VALUES (
 				${orgId}, 'internal', 'entity_field_change',
 				${db.json({
-					watcher_id: behaviorId,
+					automation_id: automationId,
 					entity_id: 42,
 					fields: { status: "reviewed" },
 				})},
-				${behaviorId}, 'completed', 'auto',
-				'behavior',
-				${db.json({ watcher_id: behaviorId, window_id: 17, run_id: 18 })},
+				${automationId}, 'completed', 'auto',
+				'automation',
+				${db.json({ automation_id: automationId, window_id: 17, run_id: 18 })},
 				now(), now()
 			)
 			RETURNING id
@@ -192,32 +194,32 @@ describe("manage_operations get_run — internal runs", () => {
 			ctx(),
 		)) as { runs: Array<Record<string, unknown>> };
 		const listedRun = listed.runs.find((run) => Number(run.id) === runId);
-		expect(listedRun?.behavior_id).toBe(behaviorId);
+		expect(listedRun?.automation_id).toBe(automationId);
 		expect(listedRun?.initiator_ref).toEqual({
-			behavior_id: behaviorId,
+			automation_id: automationId,
 			window_id: 17,
 			run_id: 18,
 		});
 		expect(listedRun?.input).toEqual({
-			behavior_id: behaviorId,
+			automation_id: automationId,
 			entity_id: 42,
 			fields: { status: "reviewed" },
 		});
-		expect(watcherKeys(listedRun)).toEqual([]);
+		expect(retiredVocabularyKeys(listedRun)).toEqual([]);
 
 		const got = (await getRun(runId)).run as Record<string, unknown>;
-		expect(got.behavior_id).toBe(behaviorId);
+		expect(got.automation_id).toBe(automationId);
 		expect(got.initiator_ref).toEqual({
-			behavior_id: behaviorId,
+			automation_id: automationId,
 			window_id: 17,
 			run_id: 18,
 		});
 		expect(got.input).toEqual({
-			behavior_id: behaviorId,
+			automation_id: automationId,
 			entity_id: 42,
 			fields: { status: "reviewed" },
 		});
-		expect(watcherKeys(got)).toEqual([]);
+		expect(retiredVocabularyKeys(got)).toEqual([]);
 
 		const activity = (await manageOperations(
 			{
@@ -229,7 +231,7 @@ describe("manage_operations get_run — internal runs", () => {
 			ctx(),
 		)) as { items: Array<Record<string, unknown>> };
 		const card = activity.items.find((item) => Number(item.run_id) === runId);
-		expect(card?.behavior_id).toBe(behaviorId);
-		expect(watcherKeys(card)).toEqual([]);
+		expect(card?.automation_id).toBe(automationId);
+		expect(retiredVocabularyKeys(card)).toEqual([]);
 	});
 });

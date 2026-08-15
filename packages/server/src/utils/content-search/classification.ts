@@ -40,7 +40,7 @@ export async function resolveClassifierIds(
       `
       SELECT ccl.slug, ccl.id as classifier_id
       FROM classify_facet ccl
-      JOIN watchers i ON i.id = ccl.watcher_id
+      JOIN automations i ON i.id = ccl.automation_id
       WHERE ccl.slug IN (${placeholders})
         AND $${slugs.length + 1} = ANY(i.entity_ids)
     `,
@@ -57,7 +57,7 @@ export async function resolveClassifierIds(
       SELECT ccl.slug, ccl.id as classifier_id
       FROM classify_facet ccl
       WHERE ccl.slug IN (${globalPlaceholders})
-        AND ccl.watcher_id IS NULL
+        AND ccl.automation_id IS NULL
     `,
       missingSlugs
     );

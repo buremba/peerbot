@@ -3,7 +3,7 @@
  *
  * Slack is a CHAT platform, not a data feed: inbound traffic is Chat SDK events
  * delivered to the shared app-webhook endpoint, and per-message routing is via
- * `/lobu link` Event Behaviors — NOT a connector `sync()`. This file exists so
+ * `/lobu link` Event Automations — NOT a connector `sync()`. This file exists so
  * the Slack app's credentials + install/webhook scheme flow through the SAME
  * declaration-driven resolver as GitHub/Jira/Linear: the gateway reads the
  * declared env-var NAMES here (`SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`,
@@ -30,7 +30,7 @@ import {
 	type ConnectorDefinition,
 	IntegrationConnector,
 } from "@lobu/connector-sdk";
-import { SLACK_BEHAVIOR_EVENTS } from "./slack-behavior-events.js";
+import { SLACK_AUTOMATION_EVENTS } from "./slack-automation-events.js";
 
 /**
  * Bot scopes requested by `/slack/install`. The Slack manifest does not drive
@@ -82,7 +82,7 @@ export default class SlackConnector extends IntegrationConnector {
     description:
 			"Connect a Slack workspace to Lobu. Mention the bot, DM it, or run /lobu in any channel to drive a sandboxed agent.",
 		version: "1.0.0",
-		behaviorEvents: SLACK_BEHAVIOR_EVENTS,
+		automationEvents: SLACK_AUTOMATION_EVENTS,
 		faviconDomain: "slack.com",
     webhook: {
       // App-level delivery: one webhook is configured ONCE on the Slack app, and

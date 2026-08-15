@@ -45,7 +45,7 @@ export function createInteractionRoutes(
           teamId,
           connectionId,
           platform,
-          // Headless run origin (watcher-run/scheduled-job/connector-repair/
+          // Headless run origin (automation-run/scheduled-job/connector-repair/
           // internal). Threaded onto the card so the API platform can exempt
           // it from the SSE-owner gate — a headless turn has no browser SSE on
           // any pod, so an owner-gated card would dead-letter.

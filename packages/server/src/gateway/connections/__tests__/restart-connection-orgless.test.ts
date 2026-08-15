@@ -59,7 +59,7 @@ async function buildManager() {
     getPublicGatewayUrl: () => "",
     getSecretStore: () => secretStore,
     getConnectionStore: () => connectionStore,
-    getBehaviorSubscriptionService: () => ({ resolveForConnection: async () => null }),
+    getAutomationSubscriptionService: () => ({ resolveForConnection: async () => null }),
     getCommandRegistry: () => undefined,
   } as any;
 

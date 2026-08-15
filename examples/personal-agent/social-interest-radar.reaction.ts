@@ -1,5 +1,5 @@
 /**
- * Delivery for the Social Interest Radar Behavior.
+ * Delivery for the Social Interest Radar Automation.
  *
  * Declared outputs have already persisted and deduplicated the threaded signal
  * and draft events. The reaction notifies from this run's signal rows and
@@ -198,16 +198,16 @@ export default async (
     `SELECT id, author_name, metadata FROM events
      WHERE ${runPredicate}
        AND semantic_type = 'observation'
-       AND metadata->>'behavior_output' = 'signals'
-       AND metadata->>'behavior_id' = '${Number(ctx.behavior.id)}'
+       AND metadata->>'automation_output' = 'signals'
+       AND metadata->>'automation_id' = '${Number(ctx.automation.id)}'
      ORDER BY id`
   )) as PersistedSignal[];
   const deliveredDrafts = (await client.query(
     `SELECT id, author_name, payload_text, source_url, metadata FROM events
      WHERE ${runPredicate}
        AND semantic_type = 'draft_reply'
-       AND metadata->>'behavior_output' = 'drafts'
-       AND metadata->>'behavior_id' = '${Number(ctx.behavior.id)}'
+       AND metadata->>'automation_output' = 'drafts'
+       AND metadata->>'automation_id' = '${Number(ctx.automation.id)}'
      ORDER BY id`
   )) as PersistedDraft[];
 
@@ -219,8 +219,8 @@ export default async (
     return;
   }
 
-  const behaviorSource = {
-    behavior_id: ctx.behavior.id,
+  const automationSource = {
+    automation_id: ctx.automation.id,
     window_id: ctx.window.id,
   };
   for (const draft of deliveredDrafts) {
@@ -300,7 +300,7 @@ export default async (
           urls: [targetUrl],
           expires_in_seconds: 86_400,
         },
-        behavior_source: behaviorSource,
+        automation_source: automationSource,
       });
     } catch (error) {
       client.log(
@@ -350,7 +350,7 @@ export default async (
         .join(",")}`,
       browser_url: targetUrl,
       idempotency_key: `social-radar:draft-ready:${draft.id}`,
-      behavior_source: behaviorSource,
+      automation_source: automationSource,
     });
   }
 };

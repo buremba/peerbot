@@ -212,6 +212,18 @@ describe("HTTP Proxy Authentication", () => {
       // Should pass auth — either upstream response or 502 (network error)
       expect(res.statusCode).not.toBe(407);
     });
+
+    test("accepts RFC-compliant repeated spaces after the Basic scheme", async () => {
+      const deploymentName = "test-worker-http-spaces";
+      const token = createValidToken(deploymentName);
+      const encoded = Buffer.from(`${deploymentName}:${token}`).toString(
+        "base64"
+      );
+      const res = await rawProxyRequest("http://example.com/", {
+        proxyAuth: `Basic    ${encoded}`,
+      });
+      expect(res.statusCode).not.toBe(407);
+    });
   });
 
   // ─── F1: cross-replica revocation ───────────────────────────────────────────

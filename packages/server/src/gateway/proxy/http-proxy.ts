@@ -400,14 +400,18 @@ function extractProxyCredentials(
     return null;
   }
 
-  // Parse Basic auth: "Basic base64(username:password)"
-  const match = authHeader.match(/^Basic\s+(.+)$/i);
-  if (!match?.[1]) {
+  // Parse Basic auth without a backtracking expression over an untrusted
+  // header. RFC 7235 permits one or more spaces between the scheme and token.
+  if (authHeader.slice(0, 6).toLowerCase() !== "basic ") {
     return null;
   }
+  let tokenStart = 6;
+  while (authHeader.charCodeAt(tokenStart) === 0x20) tokenStart += 1;
+  const encodedCredentials = authHeader.slice(tokenStart);
+  if (!encodedCredentials) return null;
 
   try {
-    const decoded = Buffer.from(match[1], "base64").toString("utf-8");
+    const decoded = Buffer.from(encodedCredentials, "base64").toString("utf-8");
     const colonIndex = decoded.indexOf(":");
     if (colonIndex === -1) {
       return null;

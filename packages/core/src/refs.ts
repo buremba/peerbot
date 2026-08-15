@@ -193,7 +193,8 @@ function sourceFieldName(value: string): string {
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9_]+/g, "_")
-      .replace(/^_+|_+$/g, "") || "source"
+      .replace(/^_+/, "")
+      .replace(/_+$/, "") || "source"
   );
 }
 

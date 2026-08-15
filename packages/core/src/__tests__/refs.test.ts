@@ -102,6 +102,12 @@ describe("automationSourcesFromPrompt", () => {
     ]);
   });
 
+  it("trims repeated separators from generated source names", () => {
+    expect(automationSourcesFromPrompt("@[feed:k1:___Issues___](/a)")).toEqual([
+      { name: "issues", query: "@feed:k1" },
+    ]);
+  });
+
   it("never treats a skill chip as a source", () => {
     expect(automationSourcesFromPrompt("@[skill:triage:triage](/a)")).toEqual(
       []

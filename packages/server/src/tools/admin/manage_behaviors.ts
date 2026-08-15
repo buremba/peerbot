@@ -544,6 +544,7 @@ const WATCHER_PATCHABLE_FIELDS = [
   'agent_kind',
   'notification_channel',
   'notification_priority',
+  'delivery_target',
   'min_cooldown_seconds',
 ] as const;
 
@@ -646,6 +647,7 @@ const WATCHER_APPROVAL_FIELD_TITLES: Record<string, string> = {
   reactions_guidance: 'Reactions guidance',
   notification_channel: 'Notification channel',
   notification_priority: 'Notification priority',
+  delivery_target: 'Delivery channel',
   min_cooldown_seconds: 'Min cooldown (seconds)',
   name_pattern: 'Name pattern',
 };

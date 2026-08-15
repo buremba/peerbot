@@ -11,6 +11,7 @@ import { type Static, Type } from '@sinclair/typebox';
 import {
   BehaviorTriggerSchema,
   type BehaviorTrigger,
+  BehaviorDeliveryTargetSchema,
   BehaviorSourceSchema,
   type BehaviorSource,
   BehaviorOutputsSchema,
@@ -135,6 +136,9 @@ export const WatcherMetadataSchema = Type.Object({
   triggers: Type.Optional(Type.Array(BehaviorTriggerSchema)),
   next_run_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   agent_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  delivery_target: Type.Optional(
+    Type.Union([BehaviorDeliveryTargetSchema, Type.Null()])
+  ),
   /**
    * Optional FK into `device_workers.id` pinning this watcher (and its run)
    * to a specific device worker. NULL/undefined means any worker can claim.

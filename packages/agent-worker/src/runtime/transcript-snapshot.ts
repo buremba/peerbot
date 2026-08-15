@@ -178,7 +178,7 @@ export async function writeSnapshot(
  *
  * Failures are logged but not thrown — reset is best-effort; if the
  * purge HTTP call fails the worst case is the next boot hydrates from
- * the previous transcript (the legacy file-mode behaviour). The local
+ * the previous transcript (the legacy file-mode semantics). The local
  * session.jsonl unlink is the primary signal; this is the multi-replica
  * complement to it.
  */

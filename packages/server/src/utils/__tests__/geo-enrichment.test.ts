@@ -22,7 +22,7 @@ type Sql = Parameters<typeof lookupGeoEnrichment>[1] extends { sql?: infer T } ?
 /**
  * Build a fake `sql` tagged-template handle that pattern-matches on the
  * SQL text. The real client returns an array of rows; ours does the same.
- * Two named hooks let us flip behaviour per test:
+ * Two named hooks let us flip semantics per test:
  *   - probeAvailability(...) returns the row geo-enrichment.ts uses to
  *     gate enrichment (presence of geo_lookup fn + non-empty geo_places).
  *   - lookupRow(lat, lng) returns the row the geo_lookup() fn would emit.

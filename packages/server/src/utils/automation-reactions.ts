@@ -179,9 +179,9 @@ export async function getPastReactionsSummary(
  *
  * A run-linked reaction is a durable feedback edge, not best-effort telemetry.
  * Serialize concurrent retries for the same edge and insert only when it is
- * missing. Callers that truly want fire-and-forget behavior can catch/log the
+ * missing. Callers that truly want fire-and-forget semantics can catch/log the
  * propagated error at their own boundary. Entries without a run handle retain
- * their historical best-effort behavior because they cannot be reconciled by a
+ * their historical best-effort semantics because they cannot be reconciled by a
  * later idempotent replay.
  */
 export async function trackAutomationReaction(params: {

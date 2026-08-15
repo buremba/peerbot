@@ -90,7 +90,7 @@ function createMessage(text: string) {
  */
 async function dispatchOnce(params: {
 	failListAppend: boolean;
-	/** Skip the production seam, to show the raw SDK behaviour it guards against. */
+	/** Skip the production seam, to show the raw SDK semantics it guards against. */
 	rawSdk?: boolean;
 }): Promise<string[]> {
 	const delivered: string[] = [];

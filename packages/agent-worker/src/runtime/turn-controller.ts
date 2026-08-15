@@ -40,7 +40,7 @@ interface TurnControllerOptions {
 }
 
 /**
- * Owns the decision to force-end an agent turn so the behavior never depends on
+ * Owns the decision to force-end an agent turn so termination never depends on
  * the model voluntarily stopping (a weak model ignores "end your turn now"
  * instructions). Two independent triggers, both ending in `agent.abort()`:
  *

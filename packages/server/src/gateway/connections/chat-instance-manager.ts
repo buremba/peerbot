@@ -2166,7 +2166,7 @@ export class ChatInstanceManager {
         // through the failure (no releaseClaim) on purpose — releasing it would
         // just bounce the same transient failure around N replicas (flapping).
         // One owner retrying on a capped backoff is the calmer,
-        // multi-replica-correct behaviour.
+        // multi-replica-correct semantics.
         const reread = await this.connectionStore.getConnection(s.id);
         const rowVersion = reread?.updatedAt ?? s.updatedAt;
         const prior =

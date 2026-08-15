@@ -31,7 +31,7 @@ so `gh pr merge --auto` completes only when both the suites and the agent
 verdict are green. The status fails when
 any merge gate below fails: `bug_free_confidence < 80`, `bugs > 0`,
 `slop > 15`, `simplicity < 70`, `blockers` is non-empty,
-or `tests_adequate == false`. `behavior_change_risk` is reported in the
+or `tests_adequate == false`. `runtime_change_risk` is reported in the
 status description but does NOT gate. Thresholds
 are tunable for one-off runs with `PI_REVIEW_MIN_BUG_FREE`,
 `PI_REVIEW_MAX_SLOP`, and `PI_REVIEW_MIN_SIMPLICITY`.
@@ -49,7 +49,7 @@ added later without touching the shape below.
   "simplicity": 0,
   "blockers": ["string", "..."],
   "change_type": "feat|fix|refactor|docs|chore|test|deps",
-  "behavior_change_risk": "none|low|medium|high",
+  "runtime_change_risk": "none|low|medium|high",
   "tests_adequate": true,
   "suggested_fixes": [{ "file": "path/to/file.ts", "line": 42, "change": "what to change" }],
   "notes": "freeform paragraph",
@@ -196,17 +196,17 @@ say so in `notes`.
 types. If a docs/chore/test PR needs an exception, use an explicit env override
 or admin merge.
 
-### `behavior_change_risk` (enum)
+### `runtime_change_risk` (enum)
 
 One of: `none`, `low`, `medium`, `high`.
 
-- **none** — pure refactor, docs, type-only changes. No runtime behavior
-  reaches users.
-- **low** — behavior change is bounded to a narrow code path with adequate
+- **none** — pure refactor, docs, type-only changes. No runtime change reaches
+  users.
+- **low** — runtime change is bounded to a narrow code path with adequate
   tests, or to a dev-only / opt-in surface.
-- **medium** — behavior change affects a path users hit but is well-typed and
+- **medium** — runtime change affects a path users hit but is well-typed and
   tested, or affects an internal API with multiple call sites.
-- **high** — behavior change touches a hot path, migrations, auth, billing,
+- **high** — runtime change touches a hot path, migrations, auth, billing,
   data integrity, or anything with cross-system consequences (queue,
   scheduler, retry).
 
@@ -220,9 +220,9 @@ above — even at `0 bugs, 0 blockers`, and the only way past was disabling
 
 ### `tests_adequate` (boolean)
 
-`true` if the diff includes tests covering the behavior change (or no tests
-are warranted because behavior_change_risk is `none`). `false` if a
-behavior change ships without test coverage.
+`true` if the diff includes tests covering the runtime change (or no tests
+are warranted because runtime_change_risk is `none`). `false` if a
+runtime change ships without test coverage.
 
 **Gate:** `make review` fails when `tests_adequate` is `false`. For docs/chore
 exceptions, use an explicit env override or admin merge.
@@ -283,8 +283,8 @@ that are small (<100 lines) **and** confined to classes where it adds near-zero
 signal: docs, CI-verified generated output, the root `bun.lock`, snapshots,
 exact renames between safe-class paths, additive-only tests, exact `model:`
 literal swaps in `lobu.config.ts`, or a pure `packages/owletto` pointer bump.
-Everything else — non-test `src/`, migrations, package manifests, behavioral
-config, other lockfiles, static assets, other submodule changes, an Owletto bump
+Everything else — non-test `src/`, migrations, package manifests,
+runtime-affecting config, other lockfiles, static assets, other submodule changes, an Owletto bump
 mixed with any other path, and the gate/CI machinery itself — always runs the
 LLM pass regardless of size.
 The skip is deterministic and path-gated: the driving agent may only escalate,

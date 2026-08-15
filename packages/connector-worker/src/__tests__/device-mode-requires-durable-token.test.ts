@@ -19,7 +19,7 @@ import path from "node:path";
 
 const BIN = path.join(import.meta.dir, "..", "bin.ts");
 // Port 1 is never listening, so the daemon cannot get past its first poll —
-// these tests assert on the STARTUP decision, not on any network behaviour.
+// these tests assert on the STARTUP decision, not on any network semantics.
 const DEAD_API = "http://127.0.0.1:1";
 
 /** Run the daemon briefly and return whatever it wrote to stderr. */

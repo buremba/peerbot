@@ -44,7 +44,7 @@ describe('removed entityLinks migration', () => {
       titlePath: 'metadata.push_name',
       identities: [{ namespace: 'wa_jid', eventPath: 'metadata.sender_jid' }],
       traits: {
-        push_name: { eventPath: 'metadata.push_name', behavior: 'prefer_non_empty' },
+        push_name: { eventPath: 'metadata.push_name', mergeStrategy: 'prefer_non_empty' },
       },
     };
     const currentAttribution = {
@@ -227,7 +227,7 @@ describe('removed entityLinks migration', () => {
           identities: [{ namespace: 'wa_jid', eventPath: 'metadata.sender_jid' }],
         },
         traits: {
-          push_name: { eventPath: 'metadata.push_name', behavior: 'prefer_non_empty' },
+          push_name: { eventPath: 'metadata.push_name', mergeStrategy: 'prefer_non_empty' },
         },
       },
     ]);

@@ -60,7 +60,7 @@ copyDirIfExists("../../db/migrations", "dist/db/migrations");
 // publish flow builds it (`bun run build` in packages/owletto, gated on the
 // submodule being present) before this script runs. Missing locally (fork or
 // uninitialised submodule) → the copy is skipped and `lobu run` boots headless
-// (API only), matching prior behaviour. `dev.ts` points WEB_DIST_DIR here.
+// (API only), matching prior semantics. `dev.ts` points WEB_DIST_DIR here.
 copyDirIfExists("../owletto/dist", "dist/owletto/dist");
 
 // Copy server bundles so `lobu run` is self-contained.

@@ -110,7 +110,7 @@ describe('applyEventAttributions', () => {
         { namespace: 'phone', eventPath: 'metadata.sender_phone' },
       ],
       traits: {
-        push_name: { eventPath: 'metadata.push_name', behavior: 'prefer_non_empty' },
+        push_name: { eventPath: 'metadata.push_name', mergeStrategy: 'prefer_non_empty' },
       },
     });
 
@@ -163,7 +163,7 @@ describe('applyEventAttributions', () => {
         identities: [{ namespace: 'x_user_id', eventPath: 'metadata.author_id' }],
       },
       traits: {
-        x_handle: { eventPath: 'metadata.author_handle', behavior: 'prefer_non_empty' },
+        x_handle: { eventPath: 'metadata.author_handle', mergeStrategy: 'prefer_non_empty' },
       },
     });
 
@@ -446,7 +446,7 @@ describe('applyEventAttributions', () => {
       titlePath: 'metadata.push_name',
       identities: [{ namespace: 'phone', eventPath: 'metadata.phone' }],
       traits: {
-        push_name: { eventPath: 'metadata.push_name', behavior: 'prefer_non_empty' },
+        push_name: { eventPath: 'metadata.push_name', mergeStrategy: 'prefer_non_empty' },
       },
     };
     const item = {

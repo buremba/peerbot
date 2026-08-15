@@ -292,7 +292,7 @@ export class UnifiedThreadResponseConsumer {
    * replica and returns false only when this replica genuinely can't run it
    * (deleted/stopped, or an exclusive transport leased to another replica). On
    * false we throw so the row re-queues until the owning pod claims it — exactly
-   * the chat-response text path's behaviour. On true the connection is warm
+   * the chat-response text path's semantics. On true the connection is warm
    * here, so `registerInteractionBridge` is subscribed to this pod's
    * `InteractionService`; re-emitting the original event renders the card.
    *

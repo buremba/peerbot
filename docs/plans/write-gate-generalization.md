@@ -102,7 +102,7 @@ threading (3 call sites), the principal axis, and the UI.
 - `manage_agents` currently queues approval **unconditionally for everyone incl. human
   admins** (`:497-507`). **RESOLVED: human admin agent edits apply immediately** (drop
   the human-gating); agent/automation-authored changes follow policy. Note as an
-  intentional behavior change in the PR. (Fable-flagged.)
+  intentional runtime change in the PR. (Fable-flagged.)
 - Adapter extraction is real work: the agent adapter's `isStale` must be BUILT.
 - Code-API naming: separate `target_scope_*` from `principal_*` even if physical
   columns are generic — don't call both "scope". (Codex.)
@@ -137,7 +137,7 @@ policy, unconditionally.
 half-state) — INCLUDING batched approvals (§6b). Reviewability comes from clean stacked
 commits read in order, NOT from separate PRs:
 1. `M1a expand (additive columns, deploy-safe) + principal identity plumbing` — agent AND
-   automation ids threaded; NO rename, NO column drop (§6e.1). No behavior change.
+   automation ids threaded; NO rename, NO column drop (§6e.1). No runtime change.
 2. `M1b cutover + per-principal resolver + additive API + tests` — new code reads new
    columns; backfill verbatim-move; scope-keyed API gains resource_class/principal_* additively
    (§6e.2); resolver understands deny before CHECK admits it (§6f R5).
@@ -153,7 +153,7 @@ The sub-sections below detail each commit's content.
 
 ### Commit-level content (was: three small PRs)
 
-**Commit 1 — M1a expand + principal plumbing (refactor, NO behavior change).**
+**Commit 1 — M1a expand + principal plumbing (refactor, NO runtime change).**
 M1a (deploy-safe, additive): ADD `resource_class DEFAULT 'entity'`, `target_scope_*`,
 `principal_*`, `predicate jsonb NULL` columns to the EXISTING `entity_approval_policies`
 table; widen mode CHECK. **No rename, no column drop** — old pods keep working (§6e.1).
@@ -180,8 +180,8 @@ principal picker beside the type picker; generalize `useEntityApprovalPolicy` �
 
 **Commit 5 — `manage_agents` as a governed class.**
 Wire `manage_agents` through the generalized gate; build its `isStale`; implement the
-human-admin-immediate behavior change (drop today's unconditional-approval for humans).
-Carries the one intentional behavior change — kept as its own commit for a clean review.
+human-admin-immediate runtime change (drop today's unconditional-approval for humans).
+Carries the one intentional runtime change — kept as its own commit for a clean review.
 
 ## 6. Roadmap after v1
 - **v1.1 — granular scopes**: predicate DSL (flat AND-only `{field, op, value}`, no

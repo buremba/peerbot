@@ -620,8 +620,8 @@ export interface EntityIdentitySpec {
 }
 
 /**
- * Descriptive field stored on `entities.metadata`. Automation determines how
- * the ingestion pipeline reconciles the value on match vs create.
+ * Descriptive field stored on `entities.metadata`. Its merge strategy determines
+ * how the ingestion pipeline reconciles the value on match vs create.
  */
 export interface EntityTraitSpec {
   /** Dot path into the event to extract the value. */
@@ -631,7 +631,7 @@ export interface EntityTraitSpec {
    * - `prefer_non_empty` — set only when current is null/empty, and skip empty event values.
    * - `overwrite`        — always write (for last_seen_at, status, etc.).
    */
-  behavior: 'init_only' | 'prefer_non_empty' | 'overwrite';
+  mergeStrategy: 'init_only' | 'prefer_non_empty' | 'overwrite';
 }
 
 /**

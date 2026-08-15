@@ -17,7 +17,7 @@
  *     ("rejects when callback session org differs from install state"
  *     asserts the row is preserved for a legitimate retry).
  *
- * Each test in this file asserts the post-fix behaviour. The PR description
+ * Each test in this file asserts the post-fix semantics. The PR description
  * pastes the corresponding pre-fix `bun test` output so the reproducer
  * doubles as a regression gate — flip a single fix line and the listed
  * assertion fails.

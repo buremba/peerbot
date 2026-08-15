@@ -339,7 +339,7 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
     } catch (err) {
       // Session mint is best-effort — child PAT is the primary credential.
       // Falling back to no session_token means the iframe shows sign-in,
-      // matching pre-existing behaviour for siblings that haven't adopted
+      // matching pre-existing semantics for siblings that haven't adopted
       // the handoff.
       logger.warn(
         { err: errorMessage(err), userId },

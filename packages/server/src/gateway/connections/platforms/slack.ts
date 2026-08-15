@@ -1,7 +1,7 @@
 /**
  * Slack capability descriptor: routing-info extraction, the file handler
  * built on the Chat SDK Postable.files path, and the per-agent identity
- * instruction provider. (Slack OAuth/coordinator behavior stays in
+ * instruction provider. (Slack OAuth/coordinator semantics stay in
  * `SlackConnectionCoordinator` — it is connection lifecycle, not a per-message
  * capability.)
  */

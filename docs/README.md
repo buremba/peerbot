@@ -2,7 +2,7 @@
 
 Hierarchy-first: read `CONCEPTS.md` first, then go deep on the surface you are
 touching. `plans/` holds design history rather than the current contract; use the
-docs below for shipped behavior.
+docs below for shipped semantics.
 
 ## Concepts (read first)
 

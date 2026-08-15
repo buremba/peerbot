@@ -100,7 +100,7 @@ export class SseFanout {
       });
     } catch (err) {
       // Fail open: without LISTEN, fan-out is disabled and broadcasts stay
-      // local-only — identical to single-replica behavior. Under N>1 this
+      // local-only — identical to single-replica semantics. Under N>1 this
       // means cross-pod streaming is lost (terminal/card delivery still rides
       // the owner-gate); the boot probe in server.ts surfaces the condition.
       logger.error(

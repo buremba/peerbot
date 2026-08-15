@@ -11,6 +11,87 @@ DROP FUNCTION IF EXISTS public.archive_behaviors_for_deleted_agent();
 DROP FUNCTION IF EXISTS public.archive_chat_behaviors_for_deleted_connection();
 DROP FUNCTION IF EXISTS public.stamp_watcher_last_run_completed_at();
 
+-- connector-trait-merge-strategy:start
+-- The published connector contract now calls the trait merge policy
+-- `mergeStrategy`. Rewrite the two durable JSON snapshots that can outlive the
+-- connector source that produced them. This is a hard cutover: application code
+-- reads only the new key.
+CREATE OR REPLACE FUNCTION pg_temp.rename_connector_trait_merge_strategy(node jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+DECLARE
+  rewritten jsonb;
+  entry_key text;
+  entry_value jsonb;
+BEGIN
+  CASE jsonb_typeof(node)
+    WHEN 'object' THEN
+      rewritten := '{}'::jsonb;
+      FOR entry_key, entry_value IN SELECT key, value FROM jsonb_each(node) LOOP
+        IF entry_key = 'behavior'
+          AND jsonb_typeof(entry_value) = 'string'
+          AND entry_value #>> '{}' IN ('init_only', 'prefer_non_empty', 'overwrite')
+        THEN
+          IF NOT (node ? 'mergeStrategy') THEN
+            rewritten := rewritten || jsonb_build_object('mergeStrategy', entry_value);
+          END IF;
+        ELSE
+          rewritten := rewritten || jsonb_build_object(
+            entry_key,
+            pg_temp.rename_connector_trait_merge_strategy(entry_value)
+          );
+        END IF;
+      END LOOP;
+      RETURN rewritten;
+    WHEN 'array' THEN
+      SELECT COALESCE(
+        jsonb_agg(
+          pg_temp.rename_connector_trait_merge_strategy(item.value)
+          ORDER BY item.ordinality
+        ),
+        '[]'::jsonb
+      )
+      INTO rewritten
+      FROM jsonb_array_elements(node) WITH ORDINALITY AS item(value, ordinality);
+      RETURN rewritten;
+    ELSE
+      RETURN node;
+  END CASE;
+END;
+$$;
+
+UPDATE public.connector_definitions
+SET feeds_schema = pg_temp.rename_connector_trait_merge_strategy(feeds_schema),
+    updated_at = current_timestamp
+WHERE feeds_schema::text ~
+  '"behavior"[[:space:]]*:[[:space:]]*"(init_only|prefer_non_empty|overwrite)"';
+
+UPDATE public.device_workers
+SET connector_manifests =
+  pg_temp.rename_connector_trait_merge_strategy(connector_manifests)
+WHERE connector_manifests::text ~
+  '"behavior"[[:space:]]*:[[:space:]]*"(init_only|prefer_non_empty|overwrite)"';
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM public.connector_definitions
+    WHERE feeds_schema::text ~
+      '"behavior"[[:space:]]*:[[:space:]]*"(init_only|prefer_non_empty|overwrite)"'
+  ) OR EXISTS (
+    SELECT 1
+    FROM public.device_workers
+    WHERE connector_manifests::text ~
+      '"behavior"[[:space:]]*:[[:space:]]*"(init_only|prefer_non_empty|overwrite)"'
+  ) THEN
+    RAISE EXCEPTION 'connector trait merge-strategy cutover left a retired key';
+  END IF;
+END $$;
+-- connector-trait-merge-strategy:end
+
 ALTER TABLE public.runs DROP CONSTRAINT IF EXISTS runs_run_type_check;
 ALTER TABLE public.runs DROP CONSTRAINT IF EXISTS runs_legacy_org_required;
 ALTER TABLE public.runs DROP CONSTRAINT IF EXISTS runs_policy_principal_kind_check;

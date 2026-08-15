@@ -106,7 +106,7 @@ PI_REVIEW_STATUS_CONTEXT="${PI_REVIEW_STATUS_CONTEXT:-pi-review}"
 # Verdict shape both the fresh-review validation and the cache-hit check rely
 # on. Shared so a cached verdict is validated with the exact same predicate
 # that validated it at store time.
-SCHEMA_JQ='(.bug_free_confidence | type == "number" and floor == . and . >= 0 and . <= 100) and (.bugs | type == "number" and floor == . and . >= 0) and (.slop | type == "number" and floor == . and . >= 0 and . <= 100) and (.simplicity | type == "number" and floor == . and . >= 0 and . <= 100) and (.blockers | type == "array") and (.change_type | IN("feat", "fix", "refactor", "docs", "chore", "test", "deps")) and (.behavior_change_risk | IN("none", "low", "medium", "high")) and (.tests_adequate | type == "boolean") and (.suggested_fixes | type == "array") and (.notes | type == "string") and (.categories | type == "object")'
+SCHEMA_JQ='(.bug_free_confidence | type == "number" and floor == . and . >= 0 and . <= 100) and (.bugs | type == "number" and floor == . and . >= 0) and (.slop | type == "number" and floor == . and . >= 0 and . <= 100) and (.simplicity | type == "number" and floor == . and . >= 0 and . <= 100) and (.blockers | type == "array") and (.change_type | IN("feat", "fix", "refactor", "docs", "chore", "test", "deps")) and (.runtime_change_risk | IN("none", "low", "medium", "high")) and (.tests_adequate | type == "boolean") and (.suggested_fixes | type == "array") and (.notes | type == "string") and (.categories | type == "object")'
 PI_REVIEW_MIN_BUG_FREE="${PI_REVIEW_MIN_BUG_FREE:-80}"
 PI_REVIEW_MAX_SLOP="${PI_REVIEW_MAX_SLOP:-15}"
 PI_REVIEW_MIN_SIMPLICITY="${PI_REVIEW_MIN_SIMPLICITY:-70}"
@@ -214,7 +214,7 @@ The deterministic CI suites remain required checks and still gate the merge. Run
 # honest "skipped" marker and status wording carry the audit trail.
 skip_verdict_json() {
   jq -n --arg reason "$1" \
-    '{bug_free_confidence:100,bugs:0,slop:0,simplicity:100,blockers:[],change_type:"chore",behavior_change_risk:"none",tests_adequate:true,suggested_fixes:[],notes:("Cross-harness review skipped: " + $reason + ". Pass REVIEWER_MODE=full to force an independent review."),categories:{},skipped_cross_harness:true}'
+    '{bug_free_confidence:100,bugs:0,slop:0,simplicity:100,blockers:[],change_type:"chore",runtime_change_risk:"none",tests_adequate:true,suggested_fixes:[],notes:("Cross-harness review skipped: " + $reason + ". Pass REVIEWER_MODE=full to force an independent review."),categories:{},skipped_cross_harness:true}'
 }
 
 # --- reviewer output persistence ---------------------------------------------
@@ -609,7 +609,7 @@ BUGS="$(echo "$VERDICT" | jq -r .bugs)"
 SLOP="$(echo "$VERDICT" | jq -r .slop)"
 SIMPLICITY="$(echo "$VERDICT" | jq -r .simplicity)"
 TESTS_ADEQUATE="$(echo "$VERDICT" | jq -r .tests_adequate)"
-RISK="$(echo "$VERDICT" | jq -r .behavior_change_risk)"
+RISK="$(echo "$VERDICT" | jq -r .runtime_change_risk)"
 BLOCKER_COUNT="$(echo "$VERDICT" | jq -r '.blockers|length')"
 HEADLINE="bug_free $BUG_FREE, simplicity $SIMPLICITY, slop $SLOP, bugs $BUGS, $BLOCKER_COUNT blockers, risk $RISK"
 STATUS_STATE="success"
@@ -620,7 +620,7 @@ STATUS_REASONS=()
 [ "$SIMPLICITY" -ge "$PI_REVIEW_MIN_SIMPLICITY" ] || STATUS_REASONS+=("simplicity<$PI_REVIEW_MIN_SIMPLICITY")
 [ "$BLOCKER_COUNT" -eq 0 ] || STATUS_REASONS+=("blockers>0")
 [ "$TESTS_ADEQUATE" = "true" ] || STATUS_REASONS+=("tests inadequate")
-# `behavior_change_risk` is REPORTED in the headline (see HEADLINE above) but
+# `runtime_change_risk` is REPORTED in the headline (see HEADLINE above) but
 # never gates. The check exists so the reviewer catches DEFECTS before a merge,
 # and bugs/blockers already cover those; a self-reported tier is not a defect.
 # Its rubric (docs/REVIEW_SCHEMA.md) classifies any queue/scheduler/retry change

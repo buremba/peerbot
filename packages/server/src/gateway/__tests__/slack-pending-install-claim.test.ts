@@ -4,7 +4,7 @@
  * `completeSlackPendingInstall` DMs the INSTALLER their connect link.
  *
  * This unit test stubs the Slack Web API (no HTTP), the pending-install store
- * (no DB), and the hosted-app credentials so the DM behaviour is exercised in
+ * (no DB), and the hosted-app credentials so the DM routing is exercised in
  * isolation. It proves: (1) with an installer id, `openDm` + `postMessage` are
  * called and the posted text carries the connect URL with the team id (no secret
  * token — authority is the Slack workspace-admin check at claim time); (2) with a

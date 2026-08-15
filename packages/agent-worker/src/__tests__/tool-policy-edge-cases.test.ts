@@ -96,7 +96,7 @@ describe("isDirectPackageInstallCommand", () => {
     });
   }
 
-  // Conservative over-detection: document actual behavior to catch regressions
+  // Conservative over-detection: document actual semantics to catch regressions
   test("brew list IS detected (brew prefix is in deny list — conservative)", () => {
     expect(isDirectPackageInstallCommand("brew list")).toBe(true);
   });

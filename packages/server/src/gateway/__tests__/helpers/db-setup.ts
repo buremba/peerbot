@@ -168,8 +168,8 @@ export async function seedGithubConnectorDef(orgId: string): Promise<void> {
       ],
     },
     traits: {
-      github_login: { eventPath: "metadata.author_login", behavior: "prefer_non_empty" },
-      last_authored_at: { eventPath: "occurred_at", behavior: "overwrite" },
+      github_login: { eventPath: "metadata.author_login", mergeStrategy: "prefer_non_empty" },
+      last_authored_at: { eventPath: "occurred_at", mergeStrategy: "overwrite" },
     },
   };
   const kind = (k: string) => ({ eventKinds: { [k]: { attributions: [personAttribution] } } });

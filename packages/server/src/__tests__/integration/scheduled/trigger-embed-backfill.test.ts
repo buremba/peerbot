@@ -4,7 +4,7 @@
  * The scanner was changed from a `current_event_records` view + LEFT JOIN form
  * to a base-`events` correlated-NOT EXISTS form, ordered newest-first, so the
  * partial index idx_events_missing_embedding_backfill drives it (prod: ~1.4s →
- * ~4ms). This locks in the BEHAVIOUR that rewrite must preserve:
+ * ~4ms). This locks in the SEMANTICS that rewrite must preserve:
  *   - events with a current-model embedding are NOT enqueued
  *   - events with no embedding ARE enqueued
  *   - superseded events are NOT enqueued (the view's mask)

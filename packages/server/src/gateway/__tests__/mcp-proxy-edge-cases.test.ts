@@ -202,7 +202,7 @@ describe("SSRF guard", () => {
   }
 
   // IPv6 bracket literal — isReservedIp("::1") === true (the URL class strips brackets)
-  // Bun/Node URL behaviour: new URL("http://[::1]:9000").hostname === "::1" (no brackets)
+  // Bun/Node URL semantics: new URL("http://[::1]:9000").hostname === "::1" (no brackets)
   // so the SSRF guard catches it correctly. If the environment strips brackets differently,
   // this test documents the intended contract: no successful 200 response for loopback.
   test("does not return a successful 200 for IPv6 loopback http://[::1]:9000/mcp", async () => {

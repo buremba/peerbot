@@ -220,7 +220,7 @@ export function checkToolAccess(toolName: string, args: unknown, authCtx: AuthCo
   }
 
   // No `writeRole` message: missing-membership writes are already rejected by
-  // the public-readability branch above, matching the historical behavior.
+  // the public-readability branch above, matching the historical semantics.
   enforceRoleScopeAccess(requiredAccess, role, authCtx.scopes, {
     adminRole:
       'This action requires admin or owner access. Ask an organization owner to grant elevated access.',

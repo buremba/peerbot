@@ -92,7 +92,7 @@ describe("normalizeDomainPattern", () => {
   // Star-only wildcard (edge)
   test("star-only becomes empty dot prefix (.)", () => {
     // "*.".slice(2) = "" → "." + "" = "."
-    // This is an edge-case; document the actual behavior
+    // This is an edge-case; document the actual semantics
     const result = normalizeDomainPattern("*.");
     expect(result).toBe(".");
   });

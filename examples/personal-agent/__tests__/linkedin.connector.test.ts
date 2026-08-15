@@ -1473,7 +1473,7 @@ describe("LinkedInConnector takeout identity attributions", () => {
     ).toBe(false);
     expect(attr.traits.linkedin_url).toMatchObject({
       eventPath: "metadata.linkedin_url",
-      behavior: "prefer_non_empty",
+      mergeStrategy: "prefer_non_empty",
     });
   });
 

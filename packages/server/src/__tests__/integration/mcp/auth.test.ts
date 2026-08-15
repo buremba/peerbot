@@ -1315,6 +1315,15 @@ describe('MCP Authentication', () => {
 
       expect(result.tools).toBeInstanceOf(Array);
 
+      const serializedTools = JSON.stringify(result.tools).toLowerCase();
+      for (const retiredTerm of [
+        'wat' + 'cher',
+        'behav' + 'ior',
+        'behav' + 'iour',
+      ]) {
+        expect(serializedTools).not.toContain(retiredTerm);
+      }
+
       // MCP tools/list is the agent surface only — admin flat tools dispatch
       // via REST and tools/call by name but are not advertised here.
       const toolNames = result.tools.map((t: any) => t.name);
@@ -1416,7 +1425,7 @@ describe('MCP Authentication', () => {
       expect(body.organizations[0]).toHaveProperty('slug');
     });
 
-    it('should use resource org slug when present (existing behavior)', async () => {
+    it('should use resource org slug when present (existing semantics)', async () => {
       const dc = await createTestDeviceCode(deviceClient.client_id, {
         resource: `http://localhost/mcp/${org.slug}`,
       });

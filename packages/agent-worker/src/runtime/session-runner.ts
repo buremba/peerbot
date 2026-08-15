@@ -3,7 +3,7 @@
  *
  * This module contains the core AI session run logic, extracted from
  * LobuAgentWorker to keep worker.ts focused on lifecycle (execute/cleanup/
- * transport). All behaviour, event handling, heartbeat, memory-flush, and
+ * transport). All semantics, event handling, heartbeat, memory-flush, and
  * plugin-hook ordering is identical to the original implementation.
  */
 
@@ -72,7 +72,7 @@ const logger = createLogger("worker");
 
 /**
  * Built-in tool names that Lobu rebuilds itself (via createLobuTools).
- * These carry the security-sensitive behavior — most importantly the bash
+ * These carry the security-sensitive semantics — most importantly the bash
  * spawnHook that builds the env from the worker allowlist and the embedded
  * BashOperations that route MCP/just-bash through the gateway. They must be
  * the instances the agent actually runs.

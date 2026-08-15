@@ -145,7 +145,7 @@ export interface ConnectionSettings {
    * non-DM) channel message is still recorded to `channel_messages` but does
    * NOT trigger an agent turn — so the bot can mirror a whole channel it's
    * subscribed to (Slack `message.channels`) without responding to everything.
-   * Mentions and DMs still get a response. Default off: behaviour unchanged, and
+   * Mentions and DMs still get a response. Default off: semantics unchanged, and
    * actually receiving every channel message also requires the platform app to
    * be subscribed to channel-message events (an ops/app-config step).
    */

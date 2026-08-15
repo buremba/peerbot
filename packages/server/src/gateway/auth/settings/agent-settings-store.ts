@@ -42,7 +42,7 @@ export class EphemeralAuthProfileRegistry {
  * Per-agent settings reader/writer.
  *
  * Thin overlay over the host's `AgentConfigStore` — the latter owns all
- * Postgres I/O. This class adds two pieces of behaviour the storage layer
+ * Postgres I/O. This class adds two pieces of semantics the storage layer
  * doesn't need to know about:
  *
  *   1. Declared (SDK-embedded) agents bypass storage entirely; their settings

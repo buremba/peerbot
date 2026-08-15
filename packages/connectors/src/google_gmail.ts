@@ -228,11 +228,11 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
                 traits: {
                   from_name: {
                     eventPath: 'metadata.from_name',
-                    behavior: 'prefer_non_empty',
+                    mergeStrategy: 'prefer_non_empty',
                   },
                   last_email_at: {
                     eventPath: 'occurred_at',
-                    behavior: 'overwrite',
+                    mergeStrategy: 'overwrite',
                   },
                 },
               },
@@ -254,11 +254,11 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
                 traits: {
                   from_name: {
                     eventPath: 'metadata.from_name',
-                    behavior: 'prefer_non_empty',
+                    mergeStrategy: 'prefer_non_empty',
                   },
                   last_email_at: {
                     eventPath: 'occurred_at',
-                    behavior: 'overwrite',
+                    mergeStrategy: 'overwrite',
                   },
                 },
               },

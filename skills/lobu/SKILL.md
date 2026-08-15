@@ -78,7 +78,7 @@ After the local proof, ask the user whether to keep running locally or deploy to
 
 - **Lobu** is the agent framework, runtime, deployment layer, and memory surface.
 - Keep framework configuration in `lobu.config.ts` (TypeScript, `defineConfig` from `@lobu/cli/config`).
-- Keep agent identity and behavior in `IDENTITY.md`, `SOUL.md`, and `USER.md`.
+- Keep agent identity and instructions in `IDENTITY.md`, `SOUL.md`, and `USER.md`.
 - Keep reusable capability bundles in `skills/<name>/SKILL.md` or `agents/<agent>/skills/<name>/SKILL.md`.
 - Use `lobu login` for CLI authentication. Do not use a separate memory login command.
 - Use `lobu memory ...` for memory operations, MCP client wiring, seeding, direct tool calls, and browser-auth capture.

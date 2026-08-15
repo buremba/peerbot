@@ -147,7 +147,7 @@ async function main(): Promise<void> {
 				// resolveMigrationsDir covers the published CLI (migrations live next
 				// to the bundle, where the repo-root-relative path resolved to
 				// node_modules/db/migrations → ENOENT warning); the PACKAGE_REPO_ROOT
-				// fallback preserves the previous behaviour everywhere else.
+				// fallback preserves the previous semantics everywhere else.
 				const migrationsDir =
 					process.env.LOBU_MIGRATIONS_DIR?.trim() ||
 					resolveMigrationsDir() ||

@@ -9,7 +9,7 @@
     "simplicity",
     "blockers",
     "change_type",
-    "behavior_change_risk",
+    "runtime_change_risk",
     "tests_adequate",
     "suggested_fixes",
     "notes",
@@ -48,13 +48,13 @@
       "type": "string",
       "enum": ["feat", "fix", "refactor", "docs", "chore", "test", "deps"]
     },
-    "behavior_change_risk": {
+    "runtime_change_risk": {
       "type": "string",
       "enum": ["none", "low", "medium", "high"]
     },
     "tests_adequate": {
       "type": "boolean",
-      "description": "Whether changed behavior has adequate automated coverage."
+      "description": "Whether runtime changes have adequate automated coverage."
     },
     "suggested_fixes": {
       "type": "array",

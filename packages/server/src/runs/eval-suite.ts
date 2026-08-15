@@ -63,7 +63,7 @@ export interface RunEvalSuiteResult {
  * Load an Automation's ACTIVE eval cases.
  *
  * Retired cases are excluded here rather than at the call site: a retired case
- * is one a human decided no longer describes desired behaviour, and silently
+ * is one a human decided no longer describes desired semantics, and silently
  * continuing to run it would make the suite report failures nobody wants fixed.
  */
 async function listActiveCases(

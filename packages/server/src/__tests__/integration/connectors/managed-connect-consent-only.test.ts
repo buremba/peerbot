@@ -13,7 +13,7 @@
  *   1. PUBLIC org + managed oauth_app → the new connection carries
  *      `config.consent_only = true` and has zero feeds.
  *   2. PRIVATE org with the same setup → an ordinary connection (no
- *      consent_only), so the managed-only behavior is scoped to public orgs.
+ *      consent_only), so the managed-only rule is scoped to public orgs.
  *   3. The feed guard holds end-to-end: creating a feed on the resulting
  *      consent-only connection is rejected.
  */

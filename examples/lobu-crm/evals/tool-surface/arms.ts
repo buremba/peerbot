@@ -396,7 +396,7 @@ export async function buildArmB(
  * Mirrors createEmbeddedBashOps' wiring (ReadWriteFs root = workspace, exec
  * limits) but injects pre-built CLI commands so we control the callTool dep.
  * Reuses the same just-bash primitives the worker uses, so the parsing /
- * heredoc / quoting behaviour the model has to navigate is identical.
+ * heredoc / quoting semantics the model has to navigate is identical.
  */
 async function buildEmbeddedBashWithCliCommands(
   workspaceDir: string,

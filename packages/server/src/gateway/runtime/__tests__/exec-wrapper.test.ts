@@ -42,7 +42,7 @@ function wrapped(cwd: string, command: string): { out: string; code: number } {
   }
 }
 
-/** The same command under a plain login shell — the behaviour to match. */
+/** The same command under a plain login shell — the semantics to match. */
 function direct(command: string): { out: string; code: number } {
   try {
     const out = execFileSync("/bin/bash", ["-lc", command], {

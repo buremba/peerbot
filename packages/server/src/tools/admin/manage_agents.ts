@@ -866,7 +866,7 @@ async function dispatchAgentWrite(
   // ctx.actingAutomationId but no agentId) binds its owning agent's `agent_config`
   // envelope — otherwise it would gate as a null-id agent and skip the owner's
   // approval/deny override. manage_agents has no automation_source arg, so only the
-  // trusted session behavior applies.
+  // trusted session rules apply.
   const actor = await actingPrincipalFor(ctx);
   // update/delete name the target agent; create has no target (blanket only).
   const targetAgentId =

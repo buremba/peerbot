@@ -662,7 +662,7 @@ export async function createTestConnection(options: {
   /** Persisted into the connection `config` JSONB (e.g. `{ managedBy: { org } }`). */
   config?: Record<string, unknown>;
   /**
-   * Whether to create the default feed (true = the historical behavior). Pass
+   * Whether to create the default feed (true = the historical semantics). Pass
    * `false` for consent-only / managed-grant connections, which must have no
    * feeds.
    */

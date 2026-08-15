@@ -117,7 +117,7 @@ function makePayload(): MessagePayload {
  * returning silently) is load-bearing: the negative assertions below
  * ("trackFailedDeployment never called") would pass spuriously if the awaited
  * background path simply never ran — a timeout must fail the test, not be
- * mistaken for the expected behavior.
+ * mistaken for the expected semantics.
  */
 async function waitFor(
   pred: () => boolean,

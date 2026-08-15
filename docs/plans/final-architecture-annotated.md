@@ -114,7 +114,7 @@ The design should be reviewed as a clean end state. Manual database and API migr
 
 ## 1.1 Reuse existing Lobu infrastructure
 
-The implementation must reuse: existing embedded Bash execution; existing remote runtime-provider execution; existing Vercel Sandbox integration; existing persistent filesystem behaviour; existing secret store; existing auth-profile flows; existing OAuth and device-code flows; existing generic `runs` infrastructure; existing approval cards and operation approval logic; existing append-only events; existing run permalinks; existing environment and inference-provider forms; existing GitHub connector.
+The implementation must reuse: existing embedded Bash execution; existing remote runtime-provider execution; existing Vercel Sandbox integration; existing persistent filesystem semantics; existing secret store; existing auth-profile flows; existing OAuth and device-code flows; existing generic `runs` infrastructure; existing approval cards and operation approval logic; existing append-only events; existing run permalinks; existing environment and inference-provider forms; existing GitHub connector.
 
 Do not create parallel implementations for the same concern.
 
@@ -192,7 +192,7 @@ RuntimeProvider · RuntimeConnection · Sandbox · Run · InferenceProvider · A
 
 # 3. RuntimeProvider
 
-A `RuntimeProvider` is a read-only implementation of an execution backend. Examples: builtin, vercel, e2b, daytona, cloudflare, device. It defines credential fields, capabilities, sandbox create/lookup, persistent-filesystem behaviour, command execution, resource config, network-policy translation, stop/resume/delete, and diagnostics. Users do not create runtime providers.
+A `RuntimeProvider` is a read-only implementation of an execution backend. Examples: builtin, vercel, e2b, daytona, cloudflare, device. It defines credential fields, capabilities, sandbox create/lookup, persistent-filesystem semantics, command execution, resource config, network-policy translation, stop/resume/delete, and diagnostics. Users do not create runtime providers.
 
 ## Required consistency
 

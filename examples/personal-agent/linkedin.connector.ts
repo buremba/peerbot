@@ -161,12 +161,15 @@ const LINKEDIN_CONNECTION_ATTRIBUTIONS: EventAttributionRule[] = [
     traits: {
       linkedin_url: {
         eventPath: "metadata.linkedin_url",
-        behavior: "prefer_non_empty",
+        mergeStrategy: "prefer_non_empty",
       },
-      company: { eventPath: "metadata.company", behavior: "prefer_non_empty" },
+      company: {
+        eventPath: "metadata.company",
+        mergeStrategy: "prefer_non_empty",
+      },
       position: {
         eventPath: "metadata.position",
-        behavior: "prefer_non_empty",
+        mergeStrategy: "prefer_non_empty",
       },
     },
   },
@@ -194,11 +197,11 @@ const LINKEDIN_MESSAGE_ATTRIBUTIONS: EventAttributionRule[] = [
     traits: {
       linkedin_url: {
         eventPath: "metadata.sender_profile_url",
-        behavior: "prefer_non_empty",
+        mergeStrategy: "prefer_non_empty",
       },
       last_linkedin_message_at: {
         eventPath: "occurred_at",
-        behavior: "overwrite",
+        mergeStrategy: "overwrite",
       },
     },
   },
@@ -241,11 +244,11 @@ const LINKEDIN_POST_AUTHOR_ATTRIBUTIONS: EventAttributionRule[] = [
     traits: {
       linkedin_headline: {
         eventPath: "metadata.author_headline",
-        behavior: "prefer_non_empty",
+        mergeStrategy: "prefer_non_empty",
       },
       last_linkedin_post_at: {
         eventPath: "occurred_at",
-        behavior: "overwrite",
+        mergeStrategy: "overwrite",
       },
     },
   },
@@ -275,7 +278,7 @@ const LINKEDIN_HOME_FEED_ATTRIBUTIONS: EventAttributionRule[] = [
     traits: {
       linkedin_url: {
         eventPath: "metadata.author_profile_url",
-        behavior: "prefer_non_empty",
+        mergeStrategy: "prefer_non_empty",
       },
     },
   },
@@ -295,7 +298,7 @@ const LINKEDIN_HOME_FEED_ATTRIBUTIONS: EventAttributionRule[] = [
     traits: {
       linkedin_url: {
         eventPath: "metadata.social_actor_profile_url",
-        behavior: "prefer_non_empty",
+        mergeStrategy: "prefer_non_empty",
       },
     },
   },

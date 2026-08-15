@@ -92,7 +92,7 @@ export const WRITE_ACTION_MANIFEST: Readonly<
 		actions: ["execute"],
 		effects: ["auto", "approval", "deny", "disabled"],
 		// No org connector-action policy → auto, so the per-connection action_modes
-		// alone decide (today's behavior). A row only ever tightens.
+		// alone decide (today's semantics). A row only ever tightens.
 		defaultEffect: {
 			execute: "auto",
 			read: "deny",

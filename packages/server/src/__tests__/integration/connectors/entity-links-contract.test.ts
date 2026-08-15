@@ -52,7 +52,7 @@ async function seedConnector() {
                 traits: {
                   push_name: {
                     eventPath: 'metadata.push_name',
-                    behavior: 'prefer_non_empty',
+                    mergeStrategy: 'prefer_non_empty',
                   },
                 },
               },

@@ -46,7 +46,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
  *
  * Inference rules:
  * - ids_field only → IDs-only (no excerpts stored)
- * - excerpts_field only → Full excerpts (current behavior)
+ * - excerpts_field only → Full excerpts (current semantics)
  * - ids_field + excerpts_field → Hybrid (merge IDs, store excerpts)
  * - excerpts_field + anchor_key → Anchor (fuzzy match anchor to content)
  */

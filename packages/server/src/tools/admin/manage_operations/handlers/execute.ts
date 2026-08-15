@@ -516,7 +516,7 @@ export async function handleExecute(
 	// restrictive-wins: a `deny` blocks outright; an `approval` upgrades a
 	// connection that would auto-run to queued. A human applies immediately (the
 	// policy governs non-human principals); with no policy row, the class default
-	// is auto, so the connection mode alone decides — today's behavior is intact.
+	// is auto, so the connection mode alone decides — existing semantics remain intact.
 	// Resolve WHO is acting through the single seam — merges the explicit
 	// automation_source and the reaction session's own automation, looks up the owning
 	// agent, and pins autonomous mode for an automation. Persisted with the run so the

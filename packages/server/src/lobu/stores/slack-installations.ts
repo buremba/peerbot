@@ -157,7 +157,7 @@ export async function upsertSlackInstallByTeam(
      * ACTIVE in a different org, the activation aborts
      * ({@link CrossOrgTransferBlockedError}) instead of stealing the slot. Set on
      * the claim path so a second-org claim must be a deliberate, confirmed move.
-     * Absent on the OAuth reinstall path (transfer is the intended behavior there).
+     * Absent on the OAuth reinstall path (transfer is the intended semantics there).
      */
     blockCrossOrgTransfer?: boolean;
   }

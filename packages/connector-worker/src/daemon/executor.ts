@@ -852,7 +852,7 @@ function toContentItem(event: EventEnvelope): ContentItem {
  * pass) instead of one per event. Vectors are mapped back to their source
  * event by index; events with empty text get no embedding. A batch failure is
  * logged and the items stream through without embeddings (same fail-open
- * behaviour as the previous per-event path).
+ * semantics as the previous per-event path).
  */
 async function processEventChunk(
   events: EventEnvelope[],

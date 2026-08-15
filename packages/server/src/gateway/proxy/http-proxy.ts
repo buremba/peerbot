@@ -462,7 +462,7 @@ async function validateProxyAuth(
 
   // Revocation check. The hot path is the synchronous in-memory cache so a
   // slow/unavailable DB never blocks egress. On a cache miss we allow this
-  // request (the pre-existing behavior) but kick off a background DB refresh, so
+  // request (the pre-existing semantics) but kick off a background DB refresh, so
   // a jti revoked on ANOTHER replica is pulled into this pod's cache and denied
   // on the next request — closing the cross-pod gap within one request instead of
   // waiting out the cache TTL (or the token's lifetime). `isRevoked` fails open
@@ -1031,7 +1031,7 @@ async function handleConnectRequestFallback(
  * @param host - Bind address (default "::" for all interfaces)
  * @param config - Network allow/deny config for this server. Defaults to a fresh
  *   snapshot resolved from the environment; tests pass one explicitly so the
- *   server's behavior is fully determined by its arguments, not ambient state.
+ *   server's result is fully determined by its arguments, not ambient state.
  * @returns Promise that resolves with the server once listening, or rejects on error
  */
 export function startHttpProxy(

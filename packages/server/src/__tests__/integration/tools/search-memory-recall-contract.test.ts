@@ -23,7 +23,7 @@
  * `origin/main`, and the "red" run that appeared to prove it actually failed on
  * an uninitialized WorkspaceProvider in the harness, not on the ordering. The
  * ordering test below is retained as a genuine regression guard (nothing else
- * pins that `sort_by`), but it guards behaviour that was never broken and must
+ * pins that `sort_by`), but it guards semantics that was never broken and must
  * not be described as a fix.
  */
 
@@ -174,7 +174,7 @@ describe('search_memory > recall contract', () => {
     expect(result.suggestion ?? '').not.toContain('entities.create');
   });
 
-  // ── ORDERING GUARD (never-broken behaviour, pinned) ──────────────────────
+  // ── ORDERING GUARD (never-broken semantics, pinned) ──────────────────────
   it('sorts content by similarity DESC so content_limit truncates the WORST, not the best', async () => {
     const result = await search(
       {

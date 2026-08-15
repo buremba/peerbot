@@ -190,7 +190,7 @@ describe("validateRedirectUri", () => {
 
   test("http://::1 bare (no brackets) is rejected — not a valid URL", () => {
     // The URL parser requires brackets for IPv6: http://[::1]/ is valid,
-    // http://::1/ is not. This documents the code's actual behavior.
+    // http://::1/ is not. This documents the code's actual semantics.
     expect(validateRedirectUri("http://::1/callback")).toBe(false);
   });
 

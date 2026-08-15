@@ -1525,6 +1525,14 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         results: expect.any(Array),
       })
     );
+    const serializedDiscovery = JSON.stringify(body.result?.structuredContent).toLowerCase();
+    for (const retiredTerm of [
+      'wat' + 'cher',
+      'behav' + 'ior',
+      'behav' + 'iour',
+    ]) {
+      expect(serializedDiscovery).not.toContain(retiredTerm);
+    }
     // The text content is still present (clients that ignore structuredContent
     // get the same data as text).
     expect(typeof body.result?.content?.[0]?.text).toBe('string');

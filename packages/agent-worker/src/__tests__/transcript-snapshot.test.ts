@@ -9,7 +9,7 @@
  *  - Hydrate handles 404 (no completed snapshot) → returns false, leaves
  *    the local file untouched.
  *  - Hydrate failures are non-fatal at the caller's discretion (we re-throw,
- *    caller logs+continues; behaviour verified in worker.ts but we assert
+ *    caller logs+continues; semantics verified in worker.ts but we assert
  *    the throw shape here).
  *  - writeSnapshot reads the session file, POSTs body, refuses to acknowledge
  *    409 conflicts, and skips missing or empty session files.

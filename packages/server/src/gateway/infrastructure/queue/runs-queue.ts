@@ -890,7 +890,7 @@ export async function sweepCompletedRuns(): Promise<number> {
   // them at least as long as completed runs, but allow a longer, independent
   // window via FAILED_RUNS_RETENTION_DAYS so the dead-letter lane isn't pruned
   // at the same cadence as routine completions. Defaults to retentionDays, so
-  // behavior is unchanged unless an operator opts into a longer window.
+  // execution is unchanged unless an operator opts into a longer window.
   const failedRetentionDays = (() => {
     const raw = Number(process.env.FAILED_RUNS_RETENTION_DAYS);
     return Number.isFinite(raw) && raw > 0

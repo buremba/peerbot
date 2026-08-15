@@ -160,7 +160,7 @@ Distills to: **a per-dimension running spend counter over a sliding window, gate
 6. **PR-5 (soft caps):** threshold sweep + `budget-trip` events + notify at 85/95% for org + automation.
 7. **PR-6 (hard caps):** reserve→reconcile gate at claim seams + `message-consumer` admission; orphan-reservation settlement in the stale sweep; fail-open/fail-closed wired; enforce automation `max_budget_usd` + org cap; over-budget terminal error + chat reply.
 
-Each PR: `make review BASE=origin/main` in a worktree (`make task-setup NAME=<slug>` first); **E2E before merge is a hard gate** for the behavioral PRs (red→green reproducer in the body).
+Each PR: `make review BASE=origin/main` in a worktree (`make task-setup NAME=<slug>` first); **E2E before merge is a hard gate** for the runtime-affecting PRs (red→green reproducer in the body).
 
 ## 12. Risks & open items
 

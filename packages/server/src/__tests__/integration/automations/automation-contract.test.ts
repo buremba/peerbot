@@ -1939,7 +1939,7 @@ describe("automation contract", () => {
 		it("respects a per-automation finalize_nudges=0 override (fails immediately, no re-dispatch)", async () => {
 			// The per-automation budget (execution_config.finalize_nudges) overrides the
 			// global default. 0 = no nudge → the first miss fails immediately, the
-			// opposite of the default behavior, proving the override is read.
+			// opposite of the default semantics, proving the override is read.
 			const messageId = randomUUID();
 			const { sql, runId, automationId } = await makeRunningAutomationRun(messageId);
 			await sql`

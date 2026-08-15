@@ -585,11 +585,11 @@ async function applyTraits(
   const preferNonEmpty: Record<string, unknown> = {};
   for (const [key, value] of params.traits) {
     const spec = params.rule.traits[key];
-    if (!spec || spec.behavior === 'init_only') continue;
+    if (!spec || spec.mergeStrategy === 'init_only') continue;
     if (value === undefined) continue;
-    if (spec.behavior === 'overwrite') {
+    if (spec.mergeStrategy === 'overwrite') {
       overwrite[key] = value;
-    } else if (spec.behavior === 'prefer_non_empty') {
+    } else if (spec.mergeStrategy === 'prefer_non_empty') {
       const empty = value === null || value === '';
       if (!empty) preferNonEmpty[key] = value;
     }

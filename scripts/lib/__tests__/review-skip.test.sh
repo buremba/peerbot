@@ -270,7 +270,7 @@ commit_all
 assert_review "raster-asset-only" "logo.png"
 
 # A model identifier swap in a Lobu config is declarative routing, not source
-# behavior. Only the exact literal may change; companion config edits escalate.
+# semantics. Only the exact literal may change; companion config edits escalate.
 new_repo
 write_change examples/personal-agent/lobu.config.ts $'export default {\n  model: "qwen/old",\n};'
 commit_all
@@ -303,7 +303,7 @@ commit_all
 git -C "$tmp_repo" branch -f main
 write_change examples/personal-agent/lobu.config.ts $'export default {\n  model: "hetzner/new",\n  prompt: "new",\n};'
 commit_all
-assert_review "model plus behavior config" "lobu.config.ts"
+assert_review "model plus runtime config" "lobu.config.ts"
 
 # review-fix runs before commit, so the same classifier must include tracked
 # staged/unstaged changes. Untracked paths fail closed instead of disappearing.

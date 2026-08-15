@@ -16,7 +16,7 @@
  *
  * ABSENT-BLOCK SEMANTICS: `resolve` returns `null` when the org has no live
  * `inference_providers` row for `slug`, OR that row has no `capabilities.<modality>`
- * block. A `null` return means "fall back to today's static/hardcoded behavior"
+ * block. A `null` return means "fall back to today's static/hardcoded semantics"
  * — so existing orgs are byte-identical at cutover. A present block with no
  * `base_url` still resolves (baseUrl undefined) so `model`/`modelsEndpoint`
  * overrides apply against the static URL.

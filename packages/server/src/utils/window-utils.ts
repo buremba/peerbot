@@ -236,7 +236,7 @@ export function automationOutputOccurredAt(windowEnd: string | Date): string {
  * preserved and only its edges move.
  *
  * The end is aligned UP to the next period start, making it EXCLUSIVE. The
- * previous behaviour ran `until` through `toEndOfDay`, storing an inclusive
+ * previous semantics ran `until` through `toEndOfDay`, storing an inclusive
  * `23:59:59.999`; that is the second boundary convention `computePendingWindow`
  * documents as the source of prod's zero-length windows, and it disagrees with
  * the `>= start AND < end` filter `executeDataSources` applies. An agent-written

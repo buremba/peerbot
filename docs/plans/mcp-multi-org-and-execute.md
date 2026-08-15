@@ -68,9 +68,9 @@ Public-workspace callers (`role: null`) can use `search` and public-read tools b
 Drop the "org-switching tools only on /mcp" rule in `src/tools/execute.ts` (`ORG_AGNOSTIC_TOOLS`). Expose `list_organizations` + `switch_organization` on `/mcp/{slug}` too. Reasons:
 
 - On a scoped URL the default org is the pinned one, but nothing is actually at risk by letting the user list memberships or switch mid-session. The pin is ergonomic, not a hard wall.
-- Drop `join_organization` entirely. For already-authenticated users on a scoped URL, "join" is a misnomer — they're either already a member (no-op), or not (should fail with a "not a member" error, identical to `switch_organization`'s behavior). One tool, one semantic.
+- Drop `join_organization` entirely. For already-authenticated users on a scoped URL, "join" is a misnomer — they're either already a member (no-op), or not (should fail with a "not a member" error, identical to `switch_organization`). One tool, one contract.
 
-Session-resume behavior in `recoverSessionAuthContext` still rejects cross-scope recovery (scoped ↔ unscoped mismatch). Unchanged — that's correct.
+Session-resume logic in `recoverSessionAuthContext` still rejects cross-scope recovery (scoped ↔ unscoped mismatch). Unchanged — that's correct.
 
 ## Authoring affordances
 

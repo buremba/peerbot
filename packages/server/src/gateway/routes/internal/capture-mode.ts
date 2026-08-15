@@ -14,7 +14,7 @@
  * no re-derivation from the conversationId — and, when the run is a capture
  * run, records the attempt and answers with a success-shaped body so the agent
  * continues its turn normally. A capture run that got an error back would
- * mostly be measuring its own retry logic, which is not the behaviour we want
+ * mostly be measuring its own retry logic, which is not the semantics we want
  * to score.
  */
 

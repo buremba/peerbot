@@ -24,7 +24,7 @@ any connected MCP client may execute and complete them).
 ## 2. Context — the silent failure class this replaces
 
 #2499 centralized executor resolution in `resolveAutomationExecutor` with
-device-pin-first precedence — deliberately preserving the legacy behaviour
+device-pin-first precedence — deliberately preserving the legacy execution rules
 where dual rows always ran on the device lane (#802). An Automation row carrying
 BOTH `agent_id` and `device_worker_id` silently runs on the device and
 ignores the managed agent entirely. Nothing rejects the combination at
@@ -38,7 +38,7 @@ pin) both died with
 at the moment the failing runs fired (the pins were added later the same
 day), even though a point-in-time row count had earlier suggested dual
 rows "don't exist". Lesson recorded: row counts of a mutable
-config table cannot retire a behavioural risk. `b2` (`hn-engagement`,
+config table cannot retire a runtime risk. `b2` (`hn-engagement`,
 org_lobucrm) is still an active dual row.
 
 A rejection guard was prototyped (worktree `reject-dual-executors`,
@@ -134,7 +134,7 @@ reintroduced in one small commit.
    runtime and is a much larger surface.
 2. Which `agent_kind` values can host a managed agent, and does
    `agent_kind` remain user-settable when `agent_id` is present?
-3. Device offline: queue-and-wait (today's device-pin behaviour) vs a
+3. Device offline: queue-and-wait (today's device-pin policy) vs a
    per-Automation fallback policy. Leaning: keep queue-and-wait; a pin is a
    deliberate placement.
 4. Lease duration on a device that may sleep: lease refresh protocol or a

@@ -146,8 +146,8 @@ echo "review reviewer selection tests passed"
 
 # --- pi-review gate matrix -------------------------------------------------
 # Extract the verdict→status block from review.sh and evaluate it directly, so
-# the gate SET is asserted behaviourally rather than by grepping for a line.
-# behavior_change_risk is reported in the headline but must never fail the
+# the gate SET is asserted semantically rather than by grepping for a line.
+# runtime_change_risk is reported in the headline but must never fail the
 # status; every defect/quality axis must still fail it.
 gate_block="$(sed -n '/^HEADLINE="bug_free /,/^fi$/p' "$review_script")"
 [ -n "$gate_block" ] ||
@@ -175,7 +175,7 @@ case "$clean_high_risk" in
 esac
 
 # Every defect/quality axis must still gate. Guards the removal from widening
-# past behavior_change_risk.
+# past runtime_change_risk.
 assert_gate_fails() {
   local label="$1" result="$2" expected="$3"
   case "$result" in

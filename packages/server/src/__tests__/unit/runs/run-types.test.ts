@@ -30,7 +30,7 @@ describe("executionModeForRunType", () => {
 	});
 
 	test("only the exact literal is live — no prefix or case slack", () => {
-		for (const near of ["Automation", "automation ", " automation", "behaviour"]) {
+		for (const near of ["Automation", "automation ", " automation", "semantics"]) {
 			expect(executionModeForRunType(near)).toBe("capture");
 		}
 	});

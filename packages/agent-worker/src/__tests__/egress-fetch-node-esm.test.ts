@@ -39,7 +39,7 @@ describe("egress-fetch under node ESM (the published worker's runtime)", () => {
     const node = findNode();
     if (!node) {
       throw new Error(
-        "no `node` on PATH — this test asserts node-ESM behaviour and cannot be skipped silently"
+        "no `node` on PATH — this test asserts node-ESM semantics and cannot be skipped silently"
       );
     }
 

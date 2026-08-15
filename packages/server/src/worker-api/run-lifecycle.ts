@@ -583,7 +583,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 		};
 
 		// The real path: singleton handle, autocommit per statement, byte-for-byte
-		// the behaviour that shipped before dry runs existed.
+		// the semantics that shipped before dry runs existed.
 		//
 		// The dry path: the same closure against a transaction, then an unconditional
 		// rollback. postgres.js rolls back when the `begin` callback throws, so the
@@ -1455,7 +1455,7 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 	//
 	// A device that omits the field (a build older than this endpoint's resume
 	// contract) reads as "reporting the attempt the server has", i.e. the
-	// pre-existing behavior — the field is what makes a retry safe, so the Mac
+	// pre-existing semantics — the field is what makes a retry safe, so the Mac
 	// retry loop and this guard ship together.
 	const reportedAttempt =
 		typeof body.finalize_attempt === "number" &&

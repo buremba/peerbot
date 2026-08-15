@@ -575,7 +575,7 @@ const RECALL_STOPWORDS = new Set([
  * is materialized + fresh, a channel survives only if the user is `member_of`
  * it, so an agent acting for a user never surfaces a channel the user isn't in.
  * Connections without a fresh ACL graph pass through on the per-agent fence
- * alone (no behavior change). See authz/channel-visibility.
+ * alone (no runtime change). See authz/channel-visibility.
  *
  * Distinctive terms are AND-matched (ILIKE). A prompt with NO distinctive term
  * ("what did we talk about earlier") falls back to the most recent messages in
@@ -1307,7 +1307,7 @@ async function queryEntities(
       // rather than a hardcoded constant. Clamped to [0,1] (an out-of-range
       // value would make the arm always-true / always-false) and defaulted to
       // the SAME 0.3 the schema advertises, so an omitted value keeps today's
-      // behaviour exactly.
+      // query contract exactly.
       //
       // Bound as a param with an explicit `::numeric` cast, mirroring
       // content-search/search-path.ts: `packages/server` runs `fetch_types:

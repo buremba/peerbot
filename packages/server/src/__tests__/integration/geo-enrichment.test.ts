@@ -29,7 +29,7 @@ import { createTestOrganization } from '../setup/test-fixtures';
 // Probe once at module load that the geo migration created `geo_lookup`, and
 // gate the suite on it (defensive — a stripped-down DB without the geo
 // migration just skips, rather than erroring). Unit tests in
-// utils/__tests__/geo-enrichment cover the fail-open behaviour with stubs.
+// utils/__tests__/geo-enrichment cover the fail-open semantics with stubs.
 //
 // The probe deliberately does NOT swallow query errors: a real DB
 // connection / setup failure should fail the run, not silently skip

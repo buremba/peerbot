@@ -17,7 +17,7 @@ const logger = createLogger("provider-registry-service");
  * Tries, first-that-exists:
  *  1. `LOBU_PROVIDER_REGISTRY_PATH` — always wins. `http(s)://` URLs pass
  *     through untouched (loadConfig fetches them).
- *  2. `<cwd>/config/providers.json` — preserves the historical behavior of
+ *  2. `<cwd>/config/providers.json` — preserves the historical semantics of
  *     invoking the gateway from the monorepo root.
  *  3. Bundle-relative `providers.json` — sits next to `server.bundle.mjs` /
  *     `start-local.bundle.mjs` (also copied into `packages/cli/dist/`).

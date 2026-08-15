@@ -832,7 +832,7 @@ export class ApplyClient {
     }
     // Facets are declared-only, with an explicit clear when the diff flagged
     // them (prune removal / derived-revert / metric removal). Sending `null`
-    // unconditionally — the old behavior — wiped out-of-band values whenever
+    // unconditionally — the old semantics — wiped out-of-band values whenever
     // ANY field changed; the server clears a facet only when its key is present.
     if (eventKinds !== undefined || clearFacets?.has("eventKinds")) {
       payload.event_kinds = eventKinds ?? null;

@@ -285,7 +285,7 @@ export function assertAutomationOutputsUseWindowExecution(
  * Either source satisfies the requirement on its own. They are no longer the
  * same field: skills used to be concatenated into `prompt` at save time, so one
  * check covered both, but pinned skills now remain separate from the stored
- * prompt. Requiring both would be stricter than the behaviour this replaced —
+ * prompt. Requiring both would be stricter than the prior contract —
  * an Automation whose whole job is "run this skill" has nothing to put in a task
  * statement, and one that spells its task out inline needs no skill.
  */

@@ -7,7 +7,7 @@
  * phrasing as too conversational/underspecified, expands it into LLM-rewritten
  * keyword variants, and fuses their hits. The rescue fires ONLY on a total
  * miss, so any query that already found something pays no extra LLM call — that
- * is the behaviour this file pins down:
+ * is the contract this file pins down:
  *   - miss  → rewriter consulted, variant hits recovered
  *   - hit   → rewriter NEVER consulted (no fetch), result unchanged
  *   - no provider row / date sort / offset>0 → rescue skipped, graceful

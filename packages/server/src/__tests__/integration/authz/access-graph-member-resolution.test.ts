@@ -9,7 +9,7 @@
  *      writes edges to a dead entity and never mints a replacement, so the member
  *      silently drops out of the audience.
  *   2. A member whose identities match DIFFERENT entities is ambiguous. Picking
- *      by identity-array order is undefined behaviour on an access-control path:
+ *      by identity-array order is undefined semantics on an access-control path:
  *      a stale or shared secondary claim (an old email, a recycled login) would
  *      hand one person another person's channel access. The source's `primary`
  *      namespace is its own stable per-account key, so it governs alone — it

@@ -302,11 +302,11 @@ const GITHUB_PERSON_ATTRIBUTION: EventAttributionRule = {
   traits: {
     github_login: {
       eventPath: 'metadata.author_login',
-      behavior: 'prefer_non_empty',
+      mergeStrategy: 'prefer_non_empty',
     },
     last_authored_at: {
       eventPath: 'occurred_at',
-      behavior: 'overwrite',
+      mergeStrategy: 'overwrite',
     },
   },
 };

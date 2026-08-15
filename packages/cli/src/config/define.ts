@@ -567,7 +567,7 @@ export type InferenceModality = "text" | "image" | "stt" | "tts" | "embedding";
 
 /**
  * Per-modality upstream override for an {@link OrgProvider}. Omit a modality
- * entirely to keep the provider's static (built-in) behavior for it. All fields
+ * entirely to keep the provider's static (built-in) semantics for it. All fields
  * are optional; the server validates them (base_url must be https:// with no
  * userinfo/query/fragment, models_endpoint a relative path).
  */
@@ -597,7 +597,7 @@ export interface OrgProvider {
   key: string | SecretRef;
   /** Optional human-readable display name. */
   displayName?: string;
-  /** Optional per-modality upstream overrides. Omit ⇒ static behavior. */
+  /** Optional per-modality upstream overrides. Omit ⇒ static semantics. */
   capabilities?: Partial<Record<InferenceModality, InferenceCapabilityBlock>>;
 }
 

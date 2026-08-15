@@ -105,7 +105,7 @@ describe("review output schema stays loadable by both reviewer CLIs", () => {
       "simplicity",
       "blockers",
       "change_type",
-      "behavior_change_risk",
+      "runtime_change_risk",
       "tests_adequate",
       "suggested_fixes",
       "notes",

@@ -3,7 +3,7 @@
  * eager boot loop in ChatInstanceManager.initialize() and now owned by the
  * single-claimant `connection-health` sweep (sweepConnectionHealth).
  *
- * Pins the behaviour that prod regressed against on 2026-05-13 (#692): an
+ * Pins the semantics that prod regressed against on 2026-05-13 (#692): an
  * encryption-key parser tightening made every connection's secret resolution
  * throw, rows were marked `status='error'` — and the followup fix did not
  * recover them because nothing retried `error` rows. The sweep must:

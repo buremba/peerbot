@@ -198,7 +198,7 @@ describe("listAgentThreads scope=all", () => {
 			},
 		);
 		// A platform row predating the column: is_direct unknown. Must keep the
-		// old fail-closed behaviour rather than riding in on the DM rule.
+		// old fail-closed semantics rather than riding in on the DM rule.
 		await insertSnapshot(
 			TELEGRAM_LEGACY_CONV,
 			"legacy row with unknown surface",

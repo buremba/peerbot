@@ -149,7 +149,7 @@ describe('resolveCompletionTarget protocol gating', () => {
    * SCOPE: this simulates the two registry states directly; it does not import
    * core-services, so reordering the real registrations there would NOT fail
    * here. What it pins is the consequence — that whichever module wins the
-   * providerId lookup decides the protocol — so the resolver's behaviour under
+   * providerId lookup decides the protocol — so the resolver's semantics under
    * each state is locked even though the wiring that produces them is not.
    */
   it('the specialized module wins over the config entry, and only because it registers first', async () => {

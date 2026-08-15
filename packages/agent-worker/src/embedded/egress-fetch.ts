@@ -102,7 +102,7 @@ function forProxy(proxyUrl) {
   if (!d) {
     // proxyTunnel:false sends plaintext HTTP as absolute-form requests so the
     // gateway sees method + full path (matching native curl's posture and
-    // Bun's behavior); HTTPS still uses CONNECT as it must.
+    // Bun's semantics); HTTPS still uses CONNECT as it must.
     const plain = new undici.ProxyAgent({ uri: proxyUrl, proxyTunnel: false });
     d = {
       plain,

@@ -21,7 +21,7 @@
  *      count = count + 1 RETURNING count`) in the background and folds the
  *      returned cluster-wide count back into the cache.
  * Cross-pod counts therefore apply with ~one DB round-trip of lag; within a
- * single pod enforcement is exact and immediate (matching the old behavior).
+ * single pod enforcement is exact and immediate (matching the old semantics).
  *
  * Failure policy: FAIL OPEN on any Postgres error (same philosophy as
  * guardrails). A DB outage degrades to the old per-pod in-memory enforcement

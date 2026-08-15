@@ -284,7 +284,7 @@ export interface DesiredOrgProvider {
   displayName?: string;
   /** Resolved API key value (never the `$VAR` placeholder). */
   apiKey: string;
-  /** Per-modality upstream overrides; empty ⇒ static behavior. */
+  /** Per-modality upstream overrides; empty ⇒ static semantics. */
   capabilities: Partial<Record<InferenceModality, InferenceCapabilityBlock>>;
 }
 
@@ -862,7 +862,7 @@ interface LoadDesiredStateOptions {
  * (the platform indexes on them statically), declared as the first `key:` in
  * the `definition` object — e.g. `readonly definition: ConnectorDefinition = {
  * key: "linkedin", ...`. Returns `null` when the shape can't be matched with
- * confidence, preserving the prior null-key behavior (the server remains the
+ * confidence, preserving the prior null-key semantics (the server remains the
  * authoritative source of the compiled key; this hint only affects which
  * connectors the pre-diff pass treats as locally-declared).
  */

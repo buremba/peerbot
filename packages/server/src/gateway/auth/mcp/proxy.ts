@@ -621,7 +621,7 @@ export class McpProxy {
 			token,
 		);
 		// Fail closed: when tool annotations can't be fetched (upstream error,
-		// SSRF block, timeout, etc.), `found` is false. The previous behaviour
+		// SSRF block, timeout, etc.), `found` is false. The previous semantics
 		// returned "allow" here, which let destructive tools bypass approval
 		// whenever discovery failed. Require approval unless we have annotations
 		// that explicitly say the tool is safe.

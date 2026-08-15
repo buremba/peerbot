@@ -23,7 +23,7 @@ export PI_REVIEW_MODEL=gpt-5.6-terra PI_REVIEW_PROVIDER=openai-codex
 sig="$(review_reviewer_signature)"
 [ -n "$sig" ] || fail "empty reviewer signature"
 
-verdict='{"bug_free_confidence":88,"bugs":0,"slop":0,"simplicity":92,"blockers":[],"change_type":"fix","behavior_change_risk":"low","tests_adequate":true,"suggested_fixes":[],"notes":"ok","categories":{"src":5}}'
+verdict='{"bug_free_confidence":88,"bugs":0,"slop":0,"simplicity":92,"blockers":[],"change_type":"fix","runtime_change_risk":"low","tests_adequate":true,"suggested_fixes":[],"notes":"ok","categories":{"src":5}}'
 
 review_cache_store "hash-a" "$sig" "origin/main" "deadbeef" "$verdict"
 

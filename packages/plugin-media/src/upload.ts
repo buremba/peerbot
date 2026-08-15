@@ -81,7 +81,7 @@ async function formDataToBuffer(formData: FormData): Promise<Buffer> {
  * `Response` on success and a `timedOut` flag instead of a `TextResult`.
  *
  * The `FormData` body is built by the caller (buffer vs. read-stream), so the
- * streaming behaviour of generated-file uploads is preserved exactly.
+ * streaming semantics of generated-file uploads is preserved exactly.
  */
 async function uploadMultipart(
   gw: GatewayParams,

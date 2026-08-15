@@ -164,7 +164,7 @@ specific entities still only sees trigger inputs linked to those entities.
   but retain separate provenance values and internal activation paths because
   they cross different trust boundaries.
 - External actions retain their connector authorization, approval, and
-  idempotency behavior. Chaining does not make a side effect exactly-once.
+  idempotency semantics. Chaining does not make a side effect exactly-once.
 - If an output is superseded before its activation task runs, the stale output
   is skipped without activating subscribers or consuming retry attempts.
 

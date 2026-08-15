@@ -61,7 +61,7 @@ describe('connector source_url install guard', () => {
 
 // Redirect re-validation + body cap need a mocked fetch. `.invalid` hosts are
 // RFC-2606 guaranteed-NXDOMAIN, so the initial SSRF/DNS check passes fast and
-// deterministically without real network, then our mock drives the behavior.
+// deterministically without real network, then our mock drives the semantics.
 describe('connector source_url fetch: redirect validation + body cap', () => {
   const prev = process.env.CONNECTOR_SOURCE_ALLOWLIST;
   beforeEach(() => {

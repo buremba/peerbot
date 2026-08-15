@@ -55,11 +55,11 @@ const IG_CONNECTION_ATTRIBUTIONS: EventAttributionRule[] = [
     traits: {
       ig_username: {
         eventPath: "metadata.username",
-        behavior: "prefer_non_empty",
+        mergeStrategy: "prefer_non_empty",
       },
       instagram_profile_url: {
         eventPath: "metadata.profile_url",
-        behavior: "prefer_non_empty",
+        mergeStrategy: "prefer_non_empty",
       },
     },
   },

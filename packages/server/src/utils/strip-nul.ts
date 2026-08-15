@@ -7,7 +7,7 @@
  *
  * stripNul handles one string; stripNulDeep walks plain objects/arrays (keys
  * included) and is the reusable chokepoint. Class instances and Dates pass
- * through untouched so callers do not lose prototype behavior.
+ * through untouched so callers do not lose prototype semantics.
  */
 export const stripNul = (str: string): string =>
   str.indexOf("\u0000") === -1 ? str : str.replace(/\u0000/g, "");

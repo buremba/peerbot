@@ -38,7 +38,7 @@ promptfoo view
 
 ## Multi-turn evals
 
-Some behaviours only show up after a sequential exchange — the agent has to refuse a follow-up that pressures it to fabricate, or compute a figure that depends on context established two turns earlier. Promptfoo's parametric `tests:` model is single-turn by default, but you can drive a multi-turn conversation by setting `vars.transcript` to a `string[]`. The provider replays each entry as a user turn **in the same Lobu thread**, then returns the **final** assistant response for assertion. Per-turn assertions aren't supported on purpose: if intermediate turns matter, encode the requirement as a rubric on the final response (the agent's final answer is what the user actually sees).
+Some semantics only show up after a sequential exchange — the agent has to refuse a follow-up that pressures it to fabricate, or compute a figure that depends on context established two turns earlier. Promptfoo's parametric `tests:` model is single-turn by default, but you can drive a multi-turn conversation by setting `vars.transcript` to a `string[]`. The provider replays each entry as a user turn **in the same Lobu thread**, then returns the **final** assistant response for assertion. Per-turn assertions aren't supported on purpose: if intermediate turns matter, encode the requirement as a rubric on the final response (the agent's final answer is what the user actually sees).
 
 ```yaml
 prompts:
@@ -64,7 +64,7 @@ tests:
           (or equivalent evidence: payslips, P45, HMRC personal tax account).
 ```
 
-If `vars.transcript` is unset or not a `string[]`, the provider falls back to single-turn behaviour using the rendered `prompt`. Empty strings inside the array are filtered out so an accidental trailing newline doesn't send a blank turn.
+If `vars.transcript` is unset or not a `string[]`, the provider falls back to single-turn semantics using the rendered `prompt`. Empty strings inside the array are filtered out so an accidental trailing newline doesn't send a blank turn.
 
 ## Config
 

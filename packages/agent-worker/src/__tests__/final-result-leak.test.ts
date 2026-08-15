@@ -86,7 +86,7 @@ const LEAKY_OUTPUT =
   "Here is your report: [report](/app/workspaces/abc/report.pdf)";
 
 describe("sandbox-leak redaction wiring (Finding #18)", () => {
-  test("redaction is dead when the final result is never set (old behavior)", async () => {
+  test("redaction is dead when the final result is never set (old semantics)", async () => {
     const { sent, processor, deliverFinalResult } = buildWorkerWithRecorder();
     streamLeakyAssistantText(processor, LEAKY_OUTPUT);
 

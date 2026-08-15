@@ -12,7 +12,7 @@
  *
  * Sibling of the background-poll instance fixed in #2286; that one degrades to
  * NULL because a poll has no user to talk to. This is user-initiated, so the
- * correct behaviour is a clean error — silently unpinning someone else's
+ * correct result is a clean error — silently unpinning someone else's
  * connection would be wrong here.
  */
 

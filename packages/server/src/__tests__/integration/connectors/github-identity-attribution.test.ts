@@ -49,8 +49,8 @@ const githubPersonAttribution = {
     ],
   },
   traits: {
-    github_login: { eventPath: 'metadata.author_login', behavior: 'prefer_non_empty' },
-    last_authored_at: { eventPath: 'occurred_at', behavior: 'overwrite' },
+    github_login: { eventPath: 'metadata.author_login', mergeStrategy: 'prefer_non_empty' },
+    last_authored_at: { eventPath: 'occurred_at', mergeStrategy: 'overwrite' },
   },
 };
 

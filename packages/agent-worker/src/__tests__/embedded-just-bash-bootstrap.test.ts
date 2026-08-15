@@ -47,7 +47,7 @@ function restoreEnv(name: keyof typeof originalEnv): void {
  * these tests used to break CI.
  *
  * The opt-in flips registration on without touching discovery, which is the
- * behaviour the tests below pin. The sandbox gate itself is pinned separately by
+ * semantics the tests below pin. The sandbox gate itself is pinned separately by
  * the SECURITY test in this file.
  */
 function registerWithoutOsSandbox(): void {

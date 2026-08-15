@@ -202,11 +202,11 @@ export default class WhatsAppConnector extends ConnectorRuntime {
                 traits: {
                   push_name: {
                     eventPath: "metadata.push_name",
-                    behavior: "prefer_non_empty",
+                    mergeStrategy: "prefer_non_empty",
                   },
                   last_seen_at: {
                     eventPath: "occurred_at",
-                    behavior: "overwrite",
+                    mergeStrategy: "overwrite",
                   },
                 },
               },

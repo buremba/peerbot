@@ -45,6 +45,7 @@ const GENERIC_BEHAVIOR_PROBE_FILE = join(
   REPO_ROOT,
   "packages/core/src/guard-probe.json"
 );
+const ROOT_AGENT_FILE = join(REPO_ROOT, "AGENTS.md");
 
 const touched: string[] = [];
 const created: string[] = [];
@@ -88,8 +89,8 @@ describe("check-exposed-surface-naming", () => {
     expect(runGuard()).toBe(0);
   });
 
-  it("allows the generic merge-strategy behavior option", () => {
-    create(GENERIC_BEHAVIOR_PROBE_FILE, '{"behavior":"overwrite"}\n');
+  it("allows an exact external platform behavior option", () => {
+    create(GENERIC_BEHAVIOR_PROBE_FILE, '{"behavior":"smooth"}\n');
     expect(runGuard()).toBe(0);
   });
 
@@ -102,6 +103,23 @@ describe("check-exposed-surface-naming", () => {
     create(
       GENERIC_BEHAVIOR_PROBE_FILE,
       '{"description":"Two Behaviour runs are racing"}\n'
+    );
+    expect(runGuard()).toBe(1);
+  });
+
+  it("fails on generic lowercase prose in owned live files", () => {
+    create(
+      GENERIC_BEHAVIOR_PROBE_FILE,
+      '{"description":"Preserve the existing behavior"}\n'
+    );
+    expect(runGuard()).toBe(1);
+  });
+
+  it("scans live agent instructions for retired product prose", () => {
+    mutate(
+      ROOT_AGENT_FILE,
+      "## Repo map",
+      "A Behavior run is still documented here.\n\n"
     );
     expect(runGuard()).toBe(1);
   });

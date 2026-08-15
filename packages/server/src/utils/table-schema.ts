@@ -803,7 +803,7 @@ export function buildColumnList(
       if (c.expr) {
         // `$COL$` marks every reference to the source column, so an expression
         // may use it more than once (the redaction CASE reads `config` three
-        // times). Legacy expressions with no marker keep the old behavior:
+        // times). Legacy expressions with no marker keep the old semantics:
         // alias-prefix the leading identifier.
         const ref = alias ? `${alias}."${c.name}"` : `"${c.name}"`;
         let prefixed = c.expr.includes(COLUMN_REF)

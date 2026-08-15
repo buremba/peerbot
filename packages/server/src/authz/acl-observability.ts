@@ -13,22 +13,25 @@ const ACL_ERROR_MESSAGE_PREFIX = "acl: ";
 const ACL_ERROR_MESSAGE_MAX_LENGTH = 500;
 
 export function isAclErrorMessage(message: string | null | undefined): boolean {
-  return typeof message === "string" && message.startsWith(ACL_ERROR_MESSAGE_PREFIX);
+	return (
+		typeof message === "string" && message.startsWith(ACL_ERROR_MESSAGE_PREFIX)
+	);
 }
 
 export function formatAclErrorMessage(reason: string): string {
-  const maxReasonLength = ACL_ERROR_MESSAGE_MAX_LENGTH - ACL_ERROR_MESSAGE_PREFIX.length;
-  const body =
-    reason.length > maxReasonLength
-      ? `${reason.slice(0, maxReasonLength - 1)}…`
-      : reason;
-  return `${ACL_ERROR_MESSAGE_PREFIX}${body}`;
+	const maxReasonLength =
+		ACL_ERROR_MESSAGE_MAX_LENGTH - ACL_ERROR_MESSAGE_PREFIX.length;
+	const body =
+		reason.length > maxReasonLength
+			? `${reason.slice(0, maxReasonLength - 1)}…`
+			: reason;
+	return `${ACL_ERROR_MESSAGE_PREFIX}${body}`;
 }
 
 /** The exact `authz_source_acl_state.connection_id` for a connections row. */
 export function aclConnectionIdSql(tableAlias?: "c"): string {
-  const prefix = tableAlias ? `${tableAlias}.` : "";
-  return `CASE
+	const prefix = tableAlias ? `${tableAlias}.` : "";
+	return `CASE
     WHEN ${prefix}credential_mode IS NULL THEN ${prefix}id::text
     WHEN left(${prefix}slug, length('agentconn-')) = 'agentconn-'
       THEN substr(${prefix}slug, length('agentconn-') + 1)
@@ -43,23 +46,30 @@ export function aclConnectionIdSql(tableAlias?: "c"): string {
  *
  * Both writes commit in one transaction so the persisted reason cannot be lost
  * between the state flip and the column write.
+ *
+ * An unchanged reason does not rewrite `connections.updated_at`. ACL sync
+ * retries on a fixed tick, and that column is the memo key
+ * `ChatInstanceManager` hydrates chat adapters against (`rowVersion`), so a
+ * repeated identical failure would otherwise tear down and rehydrate
+ * otherwise-working Slack instances for the length of the outage. The ACL
+ * state's own timestamp still advances on every failure: `markAclFresh` uses it
+ * as a fence so an older in-flight snapshot cannot overwrite a newer failure.
  */
 export async function markConnectionAclFailed(
-  organizationId: string,
-  connectionId: string,
-  reason: string,
+	organizationId: string,
+	connectionId: string,
+	reason: string,
 ): Promise<void> {
-  const sql = getDb();
-  await sql.begin(async (tx) => {
-    await tx`
-      UPDATE authz_source_acl_state
-      SET freshness_state = 'failed', updated_at = current_timestamp
-      WHERE organization_id = ${organizationId}
-        AND connection_id = ${connectionId}
-    `;
-    await tx`
+	const sql = getDb();
+	const message = formatAclErrorMessage(reason);
+	await sql.begin(async (tx) => {
+		// Lock order is connections → ACL state, matching connection deletion and
+		// fresh-state stamping. Reversing it can deadlock a failing sync against a
+		// concurrent delete (each transaction would hold one row and wait on the
+		// other).
+		await tx`
       UPDATE connections
-      SET error_message = ${formatAclErrorMessage(reason)}, updated_at = current_timestamp
+      SET error_message = ${message}, updated_at = current_timestamp
       WHERE organization_id = ${organizationId}
         AND deleted_at IS NULL
         AND ${tx.unsafe(aclConnectionIdSql())} = ${connectionId}
@@ -67,26 +77,42 @@ export async function markConnectionAclFailed(
           error_message IS NULL
           OR left(error_message, ${ACL_ERROR_MESSAGE_PREFIX.length}) = ${ACL_ERROR_MESSAGE_PREFIX}
         )
+        AND error_message IS DISTINCT FROM ${message}
     `;
-  });
+		await tx`
+      UPDATE authz_source_acl_state
+      SET freshness_state = 'failed', updated_at = clock_timestamp()
+      WHERE organization_id = ${organizationId}
+        AND connection_id = ${connectionId}
+    `;
+	});
 }
 
 /**
  * Clear the persisted ACL failure reason once a sync succeeds without removing
- * another subsystem's error.
+ * another subsystem's error. The state must still be `fresh`: an older sync
+ * whose freshness stamp lost to a newer failure must not clear that failure's
+ * reason afterward.
  */
 export async function clearConnectionAclError(
-  organizationId: string,
-  connectionId: string,
+	organizationId: string,
+	connectionId: string,
 ): Promise<void> {
-  const sql = getDb();
-  await sql`
+	const sql = getDb();
+	await sql`
     UPDATE connections
     SET error_message = NULL, updated_at = current_timestamp
     WHERE organization_id = ${organizationId}
       AND deleted_at IS NULL
       AND left(error_message, ${ACL_ERROR_MESSAGE_PREFIX.length}) = ${ACL_ERROR_MESSAGE_PREFIX}
       AND ${sql.unsafe(aclConnectionIdSql())} = ${connectionId}
+      AND EXISTS (
+        SELECT 1
+        FROM authz_source_acl_state a
+        WHERE a.organization_id = ${organizationId}
+          AND a.connection_id = ${connectionId}
+          AND a.freshness_state = 'fresh'
+      )
   `;
 }
 
@@ -101,13 +127,13 @@ export async function clearConnectionAclError(
  * from deleting another connection's state through a colliding slug.
  */
 export async function deleteConnectionAclRow(
-  sql: DbClient,
-  params: {
-    organizationId: string;
-    connectionId: string | number;
-  },
+	sql: DbClient,
+	params: {
+		organizationId: string;
+		connectionId: string | number;
+	},
 ): Promise<void> {
-  await sql`
+	await sql`
     DELETE FROM authz_source_acl_state a
     USING connections c
     WHERE c.id = ${params.connectionId}

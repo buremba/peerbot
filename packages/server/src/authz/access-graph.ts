@@ -31,46 +31,47 @@
  * data-shaped problem (the CALLER's fetch layer owns fail-closed-on-error).
  */
 
-import { createLogger } from '@lobu/core';
 import {
-  ACL_RESOURCE_TYPE_SLUG,
-  type AccessIdentitySpec,
-  type AccessMember,
-  type AccessResource,
-} from '@lobu/connector-sdk';
-import { getDb, pgBigintArray, pgTextArray } from '../db/client.js';
-import { runtimeConnectionIdToSlug } from '../lobu/stores/connections-projection.js';
-import { resolveEventAttributionsForItems } from '../utils/entity-link-upsert.js';
-import { ensureResourceEntityType } from './acl-resource-type.js';
+	ACL_RESOURCE_TYPE_SLUG,
+	type AccessIdentitySpec,
+	type AccessMember,
+	type AccessResource,
+} from "@lobu/connector-sdk";
+import { createLogger } from "@lobu/core";
+import { getDb, pgBigintArray, pgTextArray } from "../db/client.js";
+import { runtimeConnectionIdToSlug } from "../lobu/stores/connections-projection.js";
+import { resolveEventAttributionsForItems } from "../utils/entity-link-upsert.js";
+import { aclConnectionIdSql } from "./acl-observability.js";
+import { ensureResourceEntityType } from "./acl-resource-type.js";
 
-const logger = createLogger('access-graph');
+const logger = createLogger("access-graph");
 
-const MEMBER_OF_TYPE_SLUG = 'member_of';
+const MEMBER_OF_TYPE_SLUG = "member_of";
 
+export { ensureResourceEntityType } from "./acl-resource-type.js";
 export type { AccessIdentitySpec, AccessMember, AccessResource };
-export { ensureResourceEntityType } from './acl-resource-type.js';
 
 export interface AccessGraphResult {
-  /** Resource key → the entity id that now represents it. */
-  resourceEntityIds: Record<string, number>;
-  /** Distinct member entity ids that gained a `member_of` edge. */
-  memberEntityIds: number[];
-  createdEdges: number;
-  removedEdges: number;
+	/** Resource key → the entity id that now represents it. */
+	resourceEntityIds: Record<string, number>;
+	/** Distinct member entity ids that gained a `member_of` edge. */
+	memberEntityIds: number[];
+	createdEdges: number;
+	removedEdges: number;
 }
 
 const EMPTY_RESULT: AccessGraphResult = {
-  resourceEntityIds: {},
-  memberEntityIds: [],
-  createdEdges: 0,
-  removedEdges: 0,
+	resourceEntityIds: {},
+	memberEntityIds: [],
+	createdEdges: 0,
+	removedEdges: 0,
 };
 
 /** Resolve an org owner/admin as `entities.created_by` / edge `created_by`
  * (NOT NULL). Same query both source builders used. */
 async function resolveOrgCreator(orgId: string): Promise<string | null> {
-  const sql = getDb();
-  const rows = await sql<{ userId: string }>`
+	const sql = getDb();
+	const rows = await sql<{ userId: string }>`
 		SELECT "userId"
 		FROM "member"
 		WHERE "organizationId" = ${orgId}
@@ -78,7 +79,7 @@ async function resolveOrgCreator(orgId: string): Promise<string | null> {
 		         "createdAt" ASC
 		LIMIT 1
 	`;
-  return rows.length > 0 ? rows[0].userId : null;
+	return rows.length > 0 ? rows[0].userId : null;
 }
 
 /** Ensure the org has a `person` entity type — the type new (genuinely-unknown)
@@ -87,8 +88,8 @@ async function resolveOrgCreator(orgId: string): Promise<string | null> {
  * silently fail to resolve while the connection is still stamped enforced (their
  * recall would then fail closed). */
 async function ensurePersonEntityType(orgId: string): Promise<void> {
-  const sql = getDb();
-  await sql`
+	const sql = getDb();
+	await sql`
 		INSERT INTO entity_types (slug, name, organization_id, created_at, updated_at)
 		VALUES ('person', 'Person', ${orgId}, current_timestamp, current_timestamp)
 		ON CONFLICT (organization_id, slug) WHERE organization_id IS NOT NULL AND deleted_at IS NULL
@@ -98,8 +99,8 @@ async function ensurePersonEntityType(orgId: string): Promise<void> {
 
 /** Find-or-create the org-scoped `member_of` relationship type. */
 async function ensureMemberOfType(orgId: string): Promise<number> {
-  const sql = getDb();
-  const rows = await sql`
+	const sql = getDb();
+	const rows = await sql`
 		INSERT INTO entity_relationship_types
 			(slug, name, description, organization_id, is_symmetric, created_by, created_at, updated_at)
 		VALUES
@@ -109,7 +110,7 @@ async function ensureMemberOfType(orgId: string): Promise<number> {
 		DO UPDATE SET updated_at = EXCLUDED.updated_at
 		RETURNING id
 	`;
-  return Number(rows[0].id);
+	return Number(rows[0].id);
 }
 
 /**
@@ -135,20 +136,42 @@ async function ensureMemberOfType(orgId: string): Promise<number> {
  * pre-revocation edges.
  */
 export async function markAclFresh(
-  orgId: string,
-  connectionId: string,
-  syncStartedAt: string,
+	orgId: string,
+	connectionId: string,
+	syncStartedAt: string,
 ): Promise<void> {
-  const sql = getDb();
-  await sql`
-		INSERT INTO authz_source_acl_state
-			(organization_id, connection_id, acl_support, freshness_state, last_synced_at, created_at, updated_at)
-		VALUES (${orgId}, ${connectionId}, 'full', 'fresh', current_timestamp, current_timestamp, current_timestamp)
-		ON CONFLICT (organization_id, connection_id)
-		DO UPDATE SET acl_support = 'full', freshness_state = 'fresh',
-		              last_synced_at = clock_timestamp(), updated_at = clock_timestamp()
-		WHERE authz_source_acl_state.updated_at < ${syncStartedAt}::timestamptz
-	`;
+	const sql = getDb();
+	await sql.begin(async (tx) => {
+		// Serialize the state stamp with the connection tombstone. A sync can spend
+		// seconds fetching a remote membership snapshot after the scheduler selected
+		// the row; without this lock, deletion can remove the old ACL state and the
+		// in-flight sync can recreate it after the delete commits. Standalone graph
+		// tests intentionally use synthetic connection ids, so no matching row keeps
+		// the historical materializer behavior; a matching tombstoned row skips the
+		// stamp.
+		const connections = await tx<{ deleted_at: Date | string | null }>`
+      SELECT c.deleted_at
+      FROM connections c
+      WHERE c.organization_id = ${orgId}
+        AND ${tx.unsafe(aclConnectionIdSql("c"))} = ${connectionId}
+      FOR UPDATE
+    `;
+		if (
+			connections.length > 0 &&
+			connections.every((row) => row.deleted_at != null)
+		)
+			return;
+
+		await tx`
+		  INSERT INTO authz_source_acl_state
+			  (organization_id, connection_id, acl_support, freshness_state, last_synced_at, created_at, updated_at)
+		  VALUES (${orgId}, ${connectionId}, 'full', 'fresh', current_timestamp, current_timestamp, current_timestamp)
+		  ON CONFLICT (organization_id, connection_id)
+		  DO UPDATE SET acl_support = 'full', freshness_state = 'fresh',
+		                last_synced_at = clock_timestamp(), updated_at = clock_timestamp()
+		  WHERE authz_source_acl_state.updated_at < ${syncStartedAt}::timestamptz
+	  `;
+	});
 }
 
 /**
@@ -158,38 +181,38 @@ export async function markAclFresh(
  * a freshly-created `person`. Returns a map member.key → entity id.
  */
 async function resolveMembers(
-  orgId: string,
-  connectorKey: string,
-  connectionId: number | null,
-  members: AccessMember[],
-  memberIdentities: AccessIdentitySpec[],
+	orgId: string,
+	connectorKey: string,
+	connectionId: number | null,
+	members: AccessMember[],
+	memberIdentities: AccessIdentitySpec[],
 ): Promise<Map<string, number>> {
-  const byKey = new Map<string, number>();
-  if (members.length === 0) return byKey;
+	const byKey = new Map<string, number>();
+	if (members.length === 0) return byKey;
 
-  // Gather identity values per namespace and look up existing owners (any type).
-  const valuesByNamespace = new Map<string, Set<string>>();
-  for (const m of members) {
-    for (const id of m.identities) {
-      if (!id.value) continue;
-      const set = valuesByNamespace.get(id.namespace) ?? new Set<string>();
-      set.add(id.value);
-      valuesByNamespace.set(id.namespace, set);
-    }
-  }
-  const existing = new Map<string, number>(); // `${namespace}|${value}` → entity id
-  const sql = getDb();
-  for (const [namespace, values] of valuesByNamespace) {
-    const list = [...values];
-    if (list.length === 0) continue;
-    // The JOIN is load-bearing: an ordinary entity delete soft-deletes the
-    // ENTITY but leaves its `entity_identities` rows live, still pointing at
-    // it (only a merge or sign-in adoption repoints them). Matching on the
-    // identity alone therefore resolves onto a dead entity, writes `member_of`
-    // to it, and never mints a replacement — so the member silently vanishes
-    // from the audience of every channel they are in. `lookupMatches` in
-    // entity-link-upsert already joins for this reason; this matcher did not.
-    const rows = await sql<{ identifier: string; entity_id: number }>`
+	// Gather identity values per namespace and look up existing owners (any type).
+	const valuesByNamespace = new Map<string, Set<string>>();
+	for (const m of members) {
+		for (const id of m.identities) {
+			if (!id.value) continue;
+			const set = valuesByNamespace.get(id.namespace) ?? new Set<string>();
+			set.add(id.value);
+			valuesByNamespace.set(id.namespace, set);
+		}
+	}
+	const existing = new Map<string, number>(); // `${namespace}|${value}` → entity id
+	const sql = getDb();
+	for (const [namespace, values] of valuesByNamespace) {
+		const list = [...values];
+		if (list.length === 0) continue;
+		// The JOIN is load-bearing: an ordinary entity delete soft-deletes the
+		// ENTITY but leaves its `entity_identities` rows live, still pointing at
+		// it (only a merge or sign-in adoption repoints them). Matching on the
+		// identity alone therefore resolves onto a dead entity, writes `member_of`
+		// to it, and never mints a replacement — so the member silently vanishes
+		// from the audience of every channel they are in. `lookupMatches` in
+		// entity-link-upsert already joins for this reason; this matcher did not.
+		const rows = await sql<{ identifier: string; entity_id: number }>`
 			SELECT ei.identifier, ei.entity_id
 			FROM entity_identities ei
 			JOIN entities e ON e.id = ei.entity_id
@@ -199,102 +222,102 @@ async function resolveMembers(
 			  AND ei.deleted_at IS NULL
 			  AND e.deleted_at IS NULL
 		`;
-    for (const r of rows) {
-      existing.set(`${namespace}|${String(r.identifier)}`, Number(r.entity_id));
-    }
-  }
+		for (const r of rows) {
+			existing.set(`${namespace}|${String(r.identifier)}`, Number(r.entity_id));
+		}
+	}
 
-  // Which entity a member's claims resolve to follows the tier semantics the
-  // create path below (`resolveEventAttributionsForItems`) already implements —
-  // see `primary` in connector-types.ts. Stopping at the first array hit made
-  // the answer depend on the order a connector pushed its identities, and
-  // `member_of` is a read ACL, so that was a mis-grant waiting to happen: a
-  // stale or recycled secondary claim (an old email, a reused login) would hand
-  // one person another person's channel access. A PRESENT primary identity —
-  // the source's stable per-account key — therefore governs alone and never
-  // falls through to a secondary match: a fresh primary means a distinct
-  // account even when a recycled secondary still points at the old person.
-  // This fast path only claims a member when its answer matches what the
-  // create-path engine would decide; every other case (primary present but
-  // unmatched, a same-tier conflict) falls through to `toCreate`, where that
-  // engine mints a new entity keyed on the primary or refuses the ambiguous
-  // match outright (no edge — fail closed) with its 'merge candidate' warning.
-  const primaryNamespaces = new Set(
-    memberIdentities.filter((s) => s.primary).map((s) => s.namespace)
-  );
-  const toCreate: AccessMember[] = [];
-  for (const m of members) {
-    const primaryHits = new Set<number>();
-    const secondaryHits = new Set<number>();
-    let primaryPresent = false;
-    for (const id of m.identities) {
-      if (!id.value) continue;
-      const isPrimary = primaryNamespaces.has(id.namespace);
-      if (isPrimary) primaryPresent = true;
-      const found = existing.get(`${id.namespace}|${id.value}`);
-      if (found === undefined) continue;
-      (isPrimary ? primaryHits : secondaryHits).add(found);
-    }
-    let hit: number | undefined;
-    if (primaryPresent) {
-      if (primaryHits.size === 1) {
-        hit = [...primaryHits][0];
-        const overridden = [...secondaryHits].filter((id) => id !== hit);
-        if (overridden.length > 0) {
-          logger.warn(
-            {
-              organization_id: orgId,
-              connector_key: connectorKey,
-              member_key: m.key,
-              resolved_to: hit,
-              overridden_entity_ids: overridden,
-            },
-            'access-graph: member matched multiple entities — resolved via the primary identity'
-          );
-        }
-      }
-    } else if (secondaryHits.size === 1) {
-      hit = [...secondaryHits][0];
-    }
-    if (hit !== undefined) byKey.set(m.key, hit);
-    else toCreate.push(m);
-  }
+	// Which entity a member's claims resolve to follows the tier semantics the
+	// create path below (`resolveEventAttributionsForItems`) already implements —
+	// see `primary` in connector-types.ts. Stopping at the first array hit made
+	// the answer depend on the order a connector pushed its identities, and
+	// `member_of` is a read ACL, so that was a mis-grant waiting to happen: a
+	// stale or recycled secondary claim (an old email, a reused login) would hand
+	// one person another person's channel access. A PRESENT primary identity —
+	// the source's stable per-account key — therefore governs alone and never
+	// falls through to a secondary match: a fresh primary means a distinct
+	// account even when a recycled secondary still points at the old person.
+	// This fast path only claims a member when its answer matches what the
+	// create-path engine would decide; every other case (primary present but
+	// unmatched, a same-tier conflict) falls through to `toCreate`, where that
+	// engine mints a new entity keyed on the primary or refuses the ambiguous
+	// match outright (no edge — fail closed) with its 'merge candidate' warning.
+	const primaryNamespaces = new Set(
+		memberIdentities.filter((s) => s.primary).map((s) => s.namespace),
+	);
+	const toCreate: AccessMember[] = [];
+	for (const m of members) {
+		const primaryHits = new Set<number>();
+		const secondaryHits = new Set<number>();
+		let primaryPresent = false;
+		for (const id of m.identities) {
+			if (!id.value) continue;
+			const isPrimary = primaryNamespaces.has(id.namespace);
+			if (isPrimary) primaryPresent = true;
+			const found = existing.get(`${id.namespace}|${id.value}`);
+			if (found === undefined) continue;
+			(isPrimary ? primaryHits : secondaryHits).add(found);
+		}
+		let hit: number | undefined;
+		if (primaryPresent) {
+			if (primaryHits.size === 1) {
+				hit = [...primaryHits][0];
+				const overridden = [...secondaryHits].filter((id) => id !== hit);
+				if (overridden.length > 0) {
+					logger.warn(
+						{
+							organization_id: orgId,
+							connector_key: connectorKey,
+							member_key: m.key,
+							resolved_to: hit,
+							overridden_entity_ids: overridden,
+						},
+						"access-graph: member matched multiple entities — resolved via the primary identity",
+					);
+				}
+			}
+		} else if (secondaryHits.size === 1) {
+			hit = [...secondaryHits][0];
+		}
+		if (hit !== undefined) byKey.set(m.key, hit);
+		else toCreate.push(m);
+	}
 
-  if (toCreate.length === 0) return byKey;
+	if (toCreate.length === 0) return byKey;
 
-  // Auto-create a `person` for each genuinely-new member, carrying ALL their
-  // declared identities so a later source (or login) collapses onto them.
-  const items = toCreate.map((m) => {
-    const metadata: Record<string, unknown> = { display_name: m.name ?? m.key };
-    for (const id of m.identities) metadata[id.namespace] = id.value;
-    return { origin_type: 'access_member', metadata };
-  });
-  const resolved = await resolveEventAttributionsForItems({
-    connectorKey,
-    connectionId,
-    orgId,
-    items,
-    rules: {
-      access_member: [
-        {
-          role: 'authored_by',
-          entityType: 'person',
-          autoCreate: true,
-          titlePath: 'metadata.display_name',
-          identities: memberIdentities.map((spec) => ({
-            namespace: spec.namespace,
-            eventPath: `metadata.${spec.namespace}`,
-            primary: spec.primary,
-          })),
-        },
-      ],
-    },
-  });
-  for (let i = 0; i < toCreate.length; i++) {
-    const ids = resolved.get(i);
-    if (ids && ids.length > 0) byKey.set(toCreate[i].key, ids[0]);
-  }
-  return byKey;
+	// Auto-create a `person` for each genuinely-new member, carrying ALL their
+	// declared identities so a later source (or login) collapses onto them.
+	const items = toCreate.map((m) => {
+		const metadata: Record<string, unknown> = { display_name: m.name ?? m.key };
+		for (const id of m.identities) metadata[id.namespace] = id.value;
+		return { origin_type: "access_member", metadata };
+	});
+	const resolved = await resolveEventAttributionsForItems({
+		connectorKey,
+		connectionId,
+		orgId,
+		items,
+		rules: {
+			access_member: [
+				{
+					role: "authored_by",
+					entityType: "person",
+					autoCreate: true,
+					titlePath: "metadata.display_name",
+					identities: memberIdentities.map((spec) => ({
+						namespace: spec.namespace,
+						eventPath: `metadata.${spec.namespace}`,
+						primary: spec.primary,
+					})),
+				},
+			],
+		},
+	});
+	for (let i = 0; i < toCreate.length; i++) {
+		const ids = resolved.get(i);
+		if (ids && ids.length > 0) byKey.set(toCreate[i].key, ids[0]);
+	}
+	return byKey;
 }
 
 /**
@@ -304,56 +327,61 @@ async function resolveMembers(
  * this body is source-agnostic.
  */
 export async function buildAccessGraph(params: {
-  organizationId: string;
-  connectionId: string;
-  connectorKey: string;
-  /** Identity namespace for resource keys (e.g. `slack_channel_id`). */
-  resourceNamespace: string;
-  memberIdentities: AccessIdentitySpec[];
-  resources: AccessResource[];
-  /**
-   * Database time captured before the source snapshot began. A newer ACL-state
-   * write means that snapshot lost a revocation race and must not mark the
-   * connection fresh.
-   */
-  syncStartedAt?: string;
-  /**
-   * Whether this build may stamp the connection fresh. Default true — one build
-   * IS the whole connection for a single-scope source (GitHub). A caller that
-   * loops several scopes over one connection passes false and calls
-   * `markAclFresh` itself after the last scope; see that function.
-   */
-  markFresh?: boolean;
+	organizationId: string;
+	connectionId: string;
+	connectorKey: string;
+	/** Identity namespace for resource keys (e.g. `slack_channel_id`). */
+	resourceNamespace: string;
+	memberIdentities: AccessIdentitySpec[];
+	resources: AccessResource[];
+	/**
+	 * Database time captured before the source snapshot began. A newer ACL-state
+	 * write means that snapshot lost a revocation race and must not mark the
+	 * connection fresh.
+	 */
+	syncStartedAt?: string;
+	/**
+	 * Whether this build may stamp the connection fresh. Default true — one build
+	 * IS the whole connection for a single-scope source (GitHub). A caller that
+	 * loops several scopes over one connection passes false and calls
+	 * `markAclFresh` itself after the last scope; see that function.
+	 */
+	markFresh?: boolean;
 }): Promise<AccessGraphResult> {
-  const { organizationId, connectionId, connectorKey, resourceNamespace, memberIdentities } =
-    params;
-  const resources = params.resources.filter((r) => r.key);
-  if (resources.length === 0) return EMPTY_RESULT;
+	const {
+		organizationId,
+		connectionId,
+		connectorKey,
+		resourceNamespace,
+		memberIdentities,
+	} = params;
+	const resources = params.resources.filter((r) => r.key);
+	if (resources.length === 0) return EMPTY_RESULT;
 
-  const syncStartedAt =
-    params.syncStartedAt ??
-    (
-      await getDb()<{ sync_started_at: string }>`
+	const syncStartedAt =
+		params.syncStartedAt ??
+		(
+			await getDb()<{ sync_started_at: string }>`
         SELECT clock_timestamp()::text AS sync_started_at
       `
-    )[0].sync_started_at;
+		)[0].sync_started_at;
 
-  const creatorUserId = await resolveOrgCreator(organizationId);
-  if (!creatorUserId) {
-    logger.warn(
-      { organization_id: organizationId, connector: connectorKey },
-      'Access graph skipped: org has no member to attribute as entity creator',
-    );
-    return EMPTY_RESULT;
-  }
+	const creatorUserId = await resolveOrgCreator(organizationId);
+	if (!creatorUserId) {
+		logger.warn(
+			{ organization_id: organizationId, connector: connectorKey },
+			"Access graph skipped: org has no member to attribute as entity creator",
+		);
+		return EMPTY_RESULT;
+	}
 
-  await ensureResourceEntityType(organizationId);
-  await ensurePersonEntityType(organizationId);
+	await ensureResourceEntityType(organizationId);
+	await ensurePersonEntityType(organizationId);
 
-  // ACL state uses a runtime connection id, while identity provenance references
-  // the stored numeric row. Resolve by slug (chat connections) or id text (data
-  // connectors) without assuming the runtime id itself is numeric.
-  const [storedConnection] = await getDb()<{ id: number }>`
+	// ACL state uses a runtime connection id, while identity provenance references
+	// the stored numeric row. Resolve by slug (chat connections) or id text (data
+	// connectors) without assuming the runtime id itself is numeric.
+	const [storedConnection] = await getDb()<{ id: number }>`
     SELECT id
     FROM connections
     WHERE organization_id = ${organizationId}
@@ -365,78 +393,78 @@ export async function buildAccessGraph(params: {
       )
     LIMIT 1
   `;
-  const identityConnectionId = storedConnection
-    ? Number(storedConnection.id)
-    : null;
+	const identityConnectionId = storedConnection
+		? Number(storedConnection.id)
+		: null;
 
-  // 1) Resolve every resource to its entity, keyed on the source identity namespace.
-  const resourceItems = resources.map((r) => ({
-    origin_type: 'access_resource',
-    metadata: { resource_key: r.key, resource_name: r.name ?? r.key },
-  }));
-  const resolvedResources = await resolveEventAttributionsForItems({
-    connectorKey,
-    connectionId: identityConnectionId,
-    orgId: organizationId,
-    items: resourceItems,
-    rules: {
-      access_resource: [
-        {
-          role: 'belongs_to',
-          entityType: ACL_RESOURCE_TYPE_SLUG,
-          autoCreate: true,
-          titlePath: 'metadata.resource_name',
-          identities: [
-            {
-              namespace: resourceNamespace,
-              eventPath: 'metadata.resource_key',
-              primary: true,
-            },
-          ],
-        },
-      ],
-    },
-  });
-  const resourceEntityIds: Record<string, number> = {};
-  const resourceEntityIdByIndex = new Map<number, number>();
-  for (let i = 0; i < resources.length; i++) {
-    const ids = resolvedResources.get(i);
-    if (ids && ids.length > 0) {
-      resourceEntityIds[resources[i].key] = ids[0];
-      resourceEntityIdByIndex.set(i, ids[0]);
-    }
-  }
+	// 1) Resolve every resource to its entity, keyed on the source identity namespace.
+	const resourceItems = resources.map((r) => ({
+		origin_type: "access_resource",
+		metadata: { resource_key: r.key, resource_name: r.name ?? r.key },
+	}));
+	const resolvedResources = await resolveEventAttributionsForItems({
+		connectorKey,
+		connectionId: identityConnectionId,
+		orgId: organizationId,
+		items: resourceItems,
+		rules: {
+			access_resource: [
+				{
+					role: "belongs_to",
+					entityType: ACL_RESOURCE_TYPE_SLUG,
+					autoCreate: true,
+					titlePath: "metadata.resource_name",
+					identities: [
+						{
+							namespace: resourceNamespace,
+							eventPath: "metadata.resource_key",
+							primary: true,
+						},
+					],
+				},
+			],
+		},
+	});
+	const resourceEntityIds: Record<string, number> = {};
+	const resourceEntityIdByIndex = new Map<number, number>();
+	for (let i = 0; i < resources.length; i++) {
+		const ids = resolvedResources.get(i);
+		if (ids && ids.length > 0) {
+			resourceEntityIds[resources[i].key] = ids[0];
+			resourceEntityIdByIndex.set(i, ids[0]);
+		}
+	}
 
-  // 2) Resolve every DISTINCT member (identity-first, type-agnostic).
-  const distinctMembers = new Map<string, AccessMember>();
-  for (const r of resources) {
-    for (const m of r.members) {
-      if (m.key && !distinctMembers.has(m.key)) distinctMembers.set(m.key, m);
-    }
-  }
-  const memberEntityByKey = await resolveMembers(
-    organizationId,
-    connectorKey,
-    identityConnectionId,
-    [...distinctMembers.values()],
-    memberIdentities,
-  );
+	// 2) Resolve every DISTINCT member (identity-first, type-agnostic).
+	const distinctMembers = new Map<string, AccessMember>();
+	for (const r of resources) {
+		for (const m of r.members) {
+			if (m.key && !distinctMembers.has(m.key)) distinctMembers.set(m.key, m);
+		}
+	}
+	const memberEntityByKey = await resolveMembers(
+		organizationId,
+		connectorKey,
+		identityConnectionId,
+		[...distinctMembers.values()],
+		memberIdentities,
+	);
 
-  // 3) Write member → resource `member_of` edges, idempotent on the live-triple
-  // unique index. Accumulate the CURRENT member set per resource for reconcile.
-  const typeId = await ensureMemberOfType(organizationId);
-  const sql = getDb();
+	// 3) Write member → resource `member_of` edges, idempotent on the live-triple
+	// unique index. Accumulate the CURRENT member set per resource for reconcile.
+	const typeId = await ensureMemberOfType(organizationId);
+	const sql = getDb();
 
-  // Keep each resource entity's display name fresh. `titlePath` only sets the
-  // name on auto-CREATE, so a name that wasn't available at first graph (or a
-  // later channel/repo RENAME) would otherwise stick to the stale value / the
-  // raw id. Refresh from the source-provided name here. Scoped to the resources
-  // in this build; idempotent (the `name <>` guard no-ops when unchanged).
-  for (let i = 0; i < resources.length; i++) {
-    const id = resourceEntityIdByIndex.get(i);
-    const name = resources[i].name;
-    if (id && name) {
-      await sql`
+	// Keep each resource entity's display name fresh. `titlePath` only sets the
+	// name on auto-CREATE, so a name that wasn't available at first graph (or a
+	// later channel/repo RENAME) would otherwise stick to the stale value / the
+	// raw id. Refresh from the source-provided name here. Scoped to the resources
+	// in this build; idempotent (the `name <>` guard no-ops when unchanged).
+	for (let i = 0; i < resources.length; i++) {
+		const id = resourceEntityIdByIndex.get(i);
+		const name = resources[i].name;
+		if (id && name) {
+			await sql`
         UPDATE entities
         SET name = ${name}, updated_at = current_timestamp
         WHERE id = ${id}
@@ -444,23 +472,24 @@ export async function buildAccessGraph(params: {
           AND name <> ${name}
           AND deleted_at IS NULL
       `;
-    }
-  }
+		}
+	}
 
-  const memberEntityIds = new Set<number>();
-  const currentMembersByResource = new Map<number, Set<number>>();
-  let createdEdges = 0;
-  for (let i = 0; i < resources.length; i++) {
-    const resourceEntityId = resourceEntityIdByIndex.get(i);
-    if (resourceEntityId === undefined) continue;
-    const resourceMembers = currentMembersByResource.get(resourceEntityId) ?? new Set<number>();
-    currentMembersByResource.set(resourceEntityId, resourceMembers);
-    for (const m of resources[i].members) {
-      const memberEntityId = memberEntityByKey.get(m.key);
-      if (memberEntityId === undefined) continue;
-      memberEntityIds.add(memberEntityId);
-      resourceMembers.add(memberEntityId);
-      const inserted = await sql<{ id: number }[]>`
+	const memberEntityIds = new Set<number>();
+	const currentMembersByResource = new Map<number, Set<number>>();
+	let createdEdges = 0;
+	for (let i = 0; i < resources.length; i++) {
+		const resourceEntityId = resourceEntityIdByIndex.get(i);
+		if (resourceEntityId === undefined) continue;
+		const resourceMembers =
+			currentMembersByResource.get(resourceEntityId) ?? new Set<number>();
+		currentMembersByResource.set(resourceEntityId, resourceMembers);
+		for (const m of resources[i].members) {
+			const memberEntityId = memberEntityByKey.get(m.key);
+			if (memberEntityId === undefined) continue;
+			memberEntityIds.add(memberEntityId);
+			resourceMembers.add(memberEntityId);
+			const inserted = await sql<{ id: number }[]>`
 				INSERT INTO entity_relationships (
 					organization_id, from_entity_id, to_entity_id, relationship_type_id,
 					confidence, source, created_by, updated_by, created_at, updated_at
@@ -474,21 +503,21 @@ export async function buildAccessGraph(params: {
 				DO NOTHING
 				RETURNING id
 			`;
-      if (inserted.length > 0) createdEdges += 1;
-    }
-  }
+			if (inserted.length > 0) createdEdges += 1;
+		}
+	}
 
-  // 4) Reconcile DEPARTURES — the build is a full re-sync of each resource's
-  // membership, so a `member_of` edge to a synced resource whose member is NOT
-  // in the current set means that person left: soft-delete it so they lose
-  // access immediately. Scoped to `to_entity_id` = a resource we just synced, so
-  // edges to OTHER resource types (a different source's graph) are never touched.
-  // An empty member set deletes all of that resource's edges — the caller must
-  // not pass empty-on-fetch-error.
-  let removedEdges = 0;
-  for (const [resourceEntityId, resourceMembers] of currentMembersByResource) {
-    const keep = [...resourceMembers];
-    const removed = await sql<{ id: number }[]>`
+	// 4) Reconcile DEPARTURES — the build is a full re-sync of each resource's
+	// membership, so a `member_of` edge to a synced resource whose member is NOT
+	// in the current set means that person left: soft-delete it so they lose
+	// access immediately. Scoped to `to_entity_id` = a resource we just synced, so
+	// edges to OTHER resource types (a different source's graph) are never touched.
+	// An empty member set deletes all of that resource's edges — the caller must
+	// not pass empty-on-fetch-error.
+	let removedEdges = 0;
+	for (const [resourceEntityId, resourceMembers] of currentMembersByResource) {
+		const keep = [...resourceMembers];
+		const removed = await sql<{ id: number }[]>`
 			UPDATE entity_relationships
 			SET deleted_at = current_timestamp, updated_at = current_timestamp
 			WHERE organization_id = ${organizationId}
@@ -498,32 +527,32 @@ export async function buildAccessGraph(params: {
 			  AND from_entity_id <> ALL(${pgBigintArray(keep)}::bigint[])
 			RETURNING id
 		`;
-    removedEdges += removed.length;
-  }
+		removedEdges += removed.length;
+	}
 
-  if (params.markFresh !== false) {
-    await markAclFresh(organizationId, connectionId, syncStartedAt);
-  }
+	if (params.markFresh !== false) {
+		await markAclFresh(organizationId, connectionId, syncStartedAt);
+	}
 
-  logger.info(
-    {
-      organization_id: organizationId,
-      connection_id: connectionId,
-      connector: connectorKey,
-      resource_type: ACL_RESOURCE_TYPE_SLUG,
-      resource_namespace: resourceNamespace,
-      resources: Object.keys(resourceEntityIds).length,
-      members: memberEntityIds.size,
-      created_edges: createdEdges,
-      removed_edges: removedEdges,
-    },
-    'Built access graph',
-  );
+	logger.info(
+		{
+			organization_id: organizationId,
+			connection_id: connectionId,
+			connector: connectorKey,
+			resource_type: ACL_RESOURCE_TYPE_SLUG,
+			resource_namespace: resourceNamespace,
+			resources: Object.keys(resourceEntityIds).length,
+			members: memberEntityIds.size,
+			created_edges: createdEdges,
+			removed_edges: removedEdges,
+		},
+		"Built access graph",
+	);
 
-  return {
-    resourceEntityIds,
-    memberEntityIds: [...memberEntityIds],
-    createdEdges,
-    removedEdges,
-  };
+	return {
+		resourceEntityIds,
+		memberEntityIds: [...memberEntityIds],
+		createdEdges,
+		removedEdges,
+	};
 }

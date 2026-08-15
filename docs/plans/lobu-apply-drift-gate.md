@@ -206,7 +206,7 @@ Boot local cloud (bootstrap path per `lobu-apply.md` E2E). Reference project: `e
 - **Auth / org**: blocked deployment POST uses the existing apply-id threading and `requireSessionOrAdminPat`; attribution reads org-scoped deployment events only.
 - **Append-only**: a blocked apply is one append-only deployment event; never tombstone or supersede it. A future reconciler watches `status: "blocked"` rows.
 - **Multi-replica**: no new shared mutable state. Manifest reads are org-scoped single-row lookups (bounded, not a history aggregation). The narrowed contract explicitly does not serialize concurrent applies (documented residual risk); the future reconciler assumes a single path.
-- **Naming**: user/agent-facing surface says **Automation**, never `automation`. The deferred `--confirm-deletes` flow covers both delete (definition) and revert (field); its token decode names each item's action.
+- **Naming**: user/agent-facing surface says **Automation**. The deferred `--confirm-deletes` flow covers both delete (definition) and revert (field); its token decode names each item's action.
 
 ## Stacking & ordering
 

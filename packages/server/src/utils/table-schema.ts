@@ -221,7 +221,7 @@ export function feedDeclaredSecretKeysExpr(alias: string): string {
  * keeps the generated CTE reasonable.
  *
  * BELOW this depth a still-nested object/array is emitted WHOLLY REDACTED
- * rather than passed through. That is deliberate fail-closed automation: an
+ * rather than passed through. That is deliberately fail-closed: an
  * unexpectedly deep blob is rendered useless rather than leaked. It is also
  * why raising this number is safe but lowering it is not.
  */

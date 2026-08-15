@@ -188,13 +188,15 @@ export const SOURCE_KIND_TO_MODE: Readonly<Record<string, string>> = {
 
 /** Slugify a label into a safe output-field name. */
 function sourceFieldName(value: string): string {
-  return (
-    value
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9_]+/g, "_")
-      .replace(/^_+|_+$/g, "") || "source"
-  );
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_");
+  let start = 0;
+  let end = slug.length;
+  while (slug.charCodeAt(start) === 95) start += 1;
+  while (end > start && slug.charCodeAt(end - 1) === 95) end -= 1;
+  return slug.slice(start, end) || "source";
 }
 
 /**

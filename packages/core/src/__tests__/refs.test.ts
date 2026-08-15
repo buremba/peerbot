@@ -102,6 +102,21 @@ describe("automationSourcesFromPrompt", () => {
     ]);
   });
 
+  it("trims repeated separators from generated source names", () => {
+    expect(automationSourcesFromPrompt("@[feed:k1:___Issues___](/a)")).toEqual([
+      { name: "issues", query: "@feed:k1" },
+    ]);
+  });
+
+  it("trims long underscore runs from generated source names", () => {
+    const underscores = "_".repeat(100_000);
+    expect(
+      automationSourcesFromPrompt(
+        `@[feed:issues:${underscores}issues${underscores}](/a)`
+      )
+    ).toEqual([{ name: "issues", query: "@feed:issues" }]);
+  });
+
   it("never treats a skill chip as a source", () => {
     expect(automationSourcesFromPrompt("@[skill:triage:triage](/a)")).toEqual(
       []

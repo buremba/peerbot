@@ -213,7 +213,7 @@ export async function resolvePinnedSelection(args: {
 	// live dual-write excludes them via isAutomationConversationId). Honor the same
 	// exclusion here: never pin and never materialize a listing row for an automation —
 	// resolve the agent's current selection live. A repointed automation just picks up
-	// the new realm on its next run, which is the desired automation for automations.
+	// the new realm on its next run, which is what we want for automations.
 	if (isAutomationConversationId(conversationId)) {
 		return resolveAgentRuntimeSelection(agentId, organizationId);
 	}

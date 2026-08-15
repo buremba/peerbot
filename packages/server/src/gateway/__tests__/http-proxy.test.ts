@@ -203,6 +203,32 @@ describe("HTTP Proxy Authentication", () => {
       expect(res.statusCode).toBe(407);
     });
 
+    // Credentials that would otherwise authenticate, so the 407 can only come
+    // from the missing scheme separator — not from an invalid token.
+    test("rejects Basic credentials without a whitespace separator (407)", async () => {
+      const deploymentName = "test-worker-http-no-separator";
+      const token = createValidToken(deploymentName);
+      const encoded = Buffer.from(`${deploymentName}:${token}`).toString(
+        "base64"
+      );
+      const res = await rawProxyRequest("http://example.com/test", {
+        proxyAuth: `Basic${encoded}`,
+      });
+      expect(res.statusCode).toBe(407);
+    });
+
+    test("accepts a case-insensitive Basic scheme with extra whitespace", async () => {
+      const deploymentName = "test-worker-http-whitespace";
+      const token = createValidToken(deploymentName);
+      const encoded = Buffer.from(`${deploymentName}:${token}`).toString(
+        "base64"
+      );
+      const res = await rawProxyRequest("http://example.com/", {
+        proxyAuth: `bAsIc   ${encoded}`,
+      });
+      expect(res.statusCode).not.toBe(407);
+    });
+
     test("accepts request with valid token", async () => {
       const deploymentName = "test-worker-http";
       const token = createValidToken(deploymentName);

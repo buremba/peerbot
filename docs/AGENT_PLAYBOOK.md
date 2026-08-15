@@ -82,6 +82,8 @@ The chain must exit zero **and** print nothing before merge. Nonzero does not me
 
 **`make review` skip rule.** Small safe-class diffs (docs, renames, generated, additive tests, or a pure `packages/owletto` pointer bump; under 100 lines) skip the cross-harness reviewer by default. An Owletto bump mixed with any parent change still runs the reviewer. `REVIEWER_MODE=full make review` forces the independent review; `REVIEWER_SHADOW=1` measures the skip rule instead of trusting it.
 
+**Pure pointer shortcut.** Use `make bump SUBMODULE=packages/owletto [TARGET=<ref>] [ARTIFACT=<url>]` instead of a full task worktree. It creates a lightweight isolated worktree, commits and pushes the pointer, opens the PR, posts the safe-class `pi-review`, runs `ui-review` (reusing exact proof or accepting `ARTIFACT`), and enables squash auto-merge. It stops with the PR open if either required local status cannot be posted.
+
 **UI proof.** `gh` cannot upload images inline. Capture before shots from the unmodified branch and after shots from the same booted app (auth recipe in `docs/BROWSER_TESTING.md`), base64-embed the PNGs into one self-contained HTML comparison page, host it at an HTTPS URL, and pass that URL as `ARTIFACT` to `make ui-review`. The gate records it on the exact merged Owletto PR, links it from the parent, and binds the evidence to that parent-base and Owletto-pointer pair for normal PR review. A rerun may reuse an exact proof already recorded for that pointer pair. Complete, forward-only endpoint diffs confined to `deploy/` pass as not applicable; every other pointer change needs reusable exact proof or an `ARTIFACT`.
 
 ## Post-merge rollout verification

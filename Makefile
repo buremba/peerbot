@@ -25,7 +25,7 @@ help:
 	@echo "  make task-setup NAME=<name> [CONTEXT=1]    - Create a paired worktree at .claude/worktrees/<name> (lobu + submodule, .env/ports; CONTEXT=1 registers Lobu CLI context)"
 	@echo "  make task-clean NAME=<name> [FORCE=1]      - Remove the worktree, both branches, and the Lobu context (refuses if there's uncommitted/unpushed work unless FORCE=1)"
 	@echo "  make e2e-browser [RESTART=1]               - Launch/reuse the stable 'owletto' Chrome harness (extension from this worktree) for Chrome e2e"
-	@echo "  make bump SUBMODULE=<path> [TARGET=<ref>]  - Lightweight worktree + commit + PR for a trivial submodule pointer bump (skips bun install, .env, ports)"
+	@echo "  make bump SUBMODULE=<path> [TARGET=<ref>] [ARTIFACT=<url>] - Lightweight pointer PR + required statuses (skips bun install, .env, ports)"
 	@echo "  make review [BASE=<branch>]                - Run the cross-harness LLM reviewer against the local diff (deterministic suites run in CI); posts pi-review status and PR comment"
 	@echo "  make review-fix [BASE=<branch>]            - Pre-review fixer: reviewer CLI with write access fixes review-grade findings in the tree; posts nothing"
 	@echo "  make ui-review [ARTIFACT=<https-url>]       - Record Owletto UI proof; complete forward deploy-only pointer diffs pass as not applicable; OPEN=1 opens the merged PR"
@@ -157,10 +157,11 @@ e2e-browser:
 
 # Lightweight shortcut for "trivial submodule pointer bump" work. Creates a
 # minimal worktree (no bun install, no .env copy, no port allocation), advances
-# the submodule, opens an auto-merge PR. For agent work that also touches
-# submodule *code*, use `make task-setup` instead — it sets up the full env.
+# the submodule, posts both required local statuses, and opens an auto-merge PR.
+# For agent work that also touches submodule *code*, use `make task-setup`
+# instead — it sets up the full env.
 bump:
-	@: $${SUBMODULE?Usage: make bump SUBMODULE=<path> [TARGET=<sha-or-ref>] [NAME=<slug>]}
+	@: $${SUBMODULE?Usage: make bump SUBMODULE=<path> [TARGET=<sha-or-ref>] [NAME=<slug>] [ARTIFACT=<url>]}
 	@NAME="$(NAME)" ./scripts/bump-submodule.sh "$(SUBMODULE)" "$(TARGET)"
 
 # --- Test pipelines ---------------------------------------------------------

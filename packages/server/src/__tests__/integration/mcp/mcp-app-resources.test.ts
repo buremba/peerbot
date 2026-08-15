@@ -333,7 +333,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(resource._meta?.ui?.domain).toBeUndefined();
   });
 
-  it('links only view-producing tools to the App resource and keeps helpers app-only', async () => {
+  it('links direct saves and explicit view-producing tools to the App resource and keeps helpers app-only', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const response = await post(`/mcp/${org.slug}`, {
       body: { jsonrpc: '2.0', id: 1, method: 'tools/list' },
@@ -366,13 +366,28 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       })
     );
 
-    // Data and action tools stay headless so multi-step SDK/memory work does
-    // not mount an iframe for every intermediate call. The model explicitly
-    // calls render_lobu_view once it has selected the final content a person
-    // should inspect, edit, or approve.
+    const saveMemory = body.result?.tools?.find(
+      (entry: { name?: string }) => entry.name === 'save_memory'
+    );
+    expect(saveMemory).toEqual(
+      expect.objectContaining({
+        securitySchemes: [{ type: 'oauth2', scopes: ['mcp:write'] }],
+        _meta: expect.objectContaining({
+          securitySchemes: [{ type: 'oauth2', scopes: ['mcp:write'] }],
+          ui: expect.objectContaining({
+            resourceUri: 'ui://lobu/interaction/v12.html',
+            visibility: ['model', 'app'],
+          }),
+          'openai/outputTemplate': 'ui://lobu/interaction/v12.html',
+        }),
+      })
+    );
+
+    // Reads and general SDK actions stay headless so multi-step work does not
+    // mount an iframe for every intermediate call. save_memory is the narrow
+    // exception: its one durable write is itself the final inspectable result.
     for (const name of [
       'search_memory',
-      'save_memory',
       'search_sdk',
       'query_sdk',
       'query_sql',
@@ -457,6 +472,64 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         visibility: ['model', 'app'],
       })
     );
+  });
+
+  it('returns the exact saved event payload for the save_memory App card', async () => {
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const payloadTemplate = {
+      root: {
+        type: 'bar-chart',
+        data: '{{points}}',
+        labelField: 'label',
+        valueField: 'value',
+      },
+    };
+    const payloadData = {
+      points: [
+        { label: 'Saved', value: 12 },
+        { label: 'Rendered', value: 7 },
+      ],
+    };
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'save-memory-app-result',
+        method: 'tools/call',
+        params: {
+          name: 'save_memory',
+          arguments: {
+            title: 'Saved chart',
+            semantic_type: 'content',
+            payload_type: 'json_template',
+            payload_template: payloadTemplate,
+            payload_data: payloadData,
+            metadata: {},
+            idempotency_key: 'mcp-app-save-memory-render-result',
+          },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    expect(body.result?.structuredContent).toEqual(
+      expect.objectContaining({
+        title: 'Saved chart',
+        payload_type: 'json_template',
+        payload_data: payloadData,
+        payload_template: payloadTemplate,
+        payload_text: null,
+        attachments: [],
+        source_url: null,
+        view_url: expect.stringContaining('content_ids='),
+      })
+    );
+    expect(body.result?.content?.[0]?.text).toContain('"title": "Saved chart"');
+    expect(body.result?.content?.[0]?.text).not.toContain('payload_data');
+    expect(body.result?.content?.[0]?.text).not.toContain('payload_template');
   });
 
   it('returns a validated LobuViewV1 with a safe text fallback', async () => {

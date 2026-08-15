@@ -343,6 +343,16 @@ export type SaveMemoryResponses = {
     entity_ids: Array<number>;
     title: string | null;
     semantic_type: string;
+    payload_type: "text" | "markdown" | "json_template" | "media" | "empty";
+    payload_text: string | null;
+    payload_data: {
+      [key: string]: unknown;
+    };
+    payload_template: {
+      [key: string]: unknown;
+    } | null;
+    attachments: Array<unknown>;
+    source_url: string | null;
     created_at: string;
     supersedes_event_id?: number;
     view_url?: string;

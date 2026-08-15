@@ -198,7 +198,7 @@ export const searchMemory = <ThrowOnError extends boolean = false>(
 /**
  * Save user-shared facts, preferences, decisions, observations, and notes to workspace memory
  *
- * Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The write is immediately readable by returned event id via `client.knowledge.read({ content_ids: [id] })`; semantic search indexing is asynchronous and reported as `indexing_status`.
+ * Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The write is immediately readable by returned event id via `client.knowledge.read({ content_ids: [id] })`; the result echoes the stored payload, so showing what was saved needs no follow-up read.
  */
 export const saveMemory = <ThrowOnError extends boolean = false>(
   options: Options<SaveMemoryData, ThrowOnError>,

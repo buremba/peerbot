@@ -196,6 +196,21 @@ export const SaveContentResultSchema = Type.Object({
   entity_ids: Type.Array(Type.Integer()),
   title: Type.Union([Type.String(), Type.Null()]),
   semantic_type: Type.String(),
+  payload_type: Type.Union([
+    Type.Literal('text'),
+    Type.Literal('markdown'),
+    Type.Literal('json_template'),
+    Type.Literal('media'),
+    Type.Literal('empty'),
+  ]),
+  payload_text: Type.Union([Type.String(), Type.Null()]),
+  payload_data: Type.Record(Type.String(), Type.Unknown()),
+  payload_template: Type.Union([
+    Type.Record(Type.String(), Type.Unknown()),
+    Type.Null(),
+  ]),
+  attachments: Type.Array(Type.Unknown()),
+  source_url: Type.Union([Type.String(), Type.Null()]),
   created_at: Type.String(),
   supersedes_event_id: Type.Optional(Type.Integer()),
   view_url: Type.Optional(Type.String()),
@@ -215,6 +230,12 @@ interface SaveContentResult {
   entity_ids: number[];
   title: string | null;
   semantic_type: string;
+  payload_type: 'text' | 'markdown' | 'json_template' | 'media' | 'empty';
+  payload_text: string | null;
+  payload_data: Record<string, unknown>;
+  payload_template: Record<string, unknown> | null;
+  attachments: unknown[];
+  source_url: string | null;
   created_at: string;
   supersedes_event_id?: number;
   view_url?: string;
@@ -652,24 +673,48 @@ async function saveContentImpl(
     });
   }
 
-  // Probe real semantic-index readiness for this specific event rather than
-  // asserting a fixed 'pending'. `needsEmbeddingSql` is the same predicate the
-  // embed backfill and worker use, so callers can never disagree with the
+  // Read the durable row back: the persisted payload echoed in the result
+  // below, plus real semantic-index readiness for this specific event rather
+  // than asserting a fixed 'pending'. `needsEmbeddingSql` is the same predicate
+  // the embed backfill and worker use, so callers can never disagree with the
   // pipeline on what "indexed" means. Embeddings are usually produced by the
   // async backfill (so this is 'pending'), but when one is supplied inline the
   // row is already searchable — reporting a hardcoded 'pending' would be wrong.
   const savedId = Number(row.id);
-  const [readiness] = await sql`
-    SELECT ${sql.unsafe(needsEmbeddingSql('e', getConfiguredEmbeddingModel()))} AS needs_embedding
+  const [savedEvent] = await sql`
+    SELECT
+      e.payload_type,
+      e.payload_text,
+      e.payload_data,
+      e.payload_template,
+      e.attachments,
+      e.source_url,
+      ${sql.unsafe(needsEmbeddingSql('e', getConfiguredEmbeddingModel()))} AS needs_embedding
     FROM events e WHERE e.id = ${savedId}
   `;
-  const searchable = readiness ? !readiness.needs_embedding : false;
+  if (!savedEvent) {
+    throw new Error(`Saved event ${savedId} was not readable after commit`);
+  }
+  const searchable = !savedEvent.needs_embedding;
 
   const result: SaveContentResult = {
     id: savedId,
     entity_ids: Array.isArray(row.entity_ids) ? row.entity_ids.map(Number) : finalEntityIds,
     title: row.title as string | null,
     semantic_type: semanticType,
+    // Return the exact durable payload, not the caller's arguments. This keeps
+    // idempotent retries honest and gives MCP App hosts the same event that the
+    // Lobu Activity UI reads from Postgres.
+    payload_type: String(savedEvent.payload_type) as SaveContentResult['payload_type'],
+    payload_text:
+      savedEvent.payload_text == null ? null : String(savedEvent.payload_text),
+    payload_data: (savedEvent.payload_data ?? {}) as Record<string, unknown>,
+    payload_template:
+      savedEvent.payload_template == null
+        ? null
+        : (savedEvent.payload_template as Record<string, unknown>),
+    attachments: Array.isArray(savedEvent.attachments) ? savedEvent.attachments : [],
+    source_url: savedEvent.source_url == null ? null : String(savedEvent.source_url),
     created_at: String(row.created_at),
     // Row is committed by now; exact reads by id are available from this instant.
     durable_at: String(row.created_at),

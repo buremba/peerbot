@@ -247,9 +247,11 @@ const LOBU_VIEW_MCP_META = {
 
 /**
  * Data and action tools advertised on MCP `tools/list` and external OpenAPI.
- * These deliberately have no Apps UI resource: agents can chain them without
- * mounting an iframe for every intermediate result, then call
- * `render_lobu_view` once for the final user-facing view or approval.
+ * These deliberately have no Apps UI resource except save_memory: agents can
+ * chain reads and general SDK actions without mounting an iframe for every
+ * intermediate result, while a direct save mounts one card for the durable
+ * event it just created. Other final user-facing views still use
+ * render_lobu_view.
  */
 const AGENT_TOOLS: ToolDefinition[] = [
   // ─── Memory hot path — read ───────────────────────────────────────────────
@@ -271,11 +273,12 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'save_memory',
     description:
-      'Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The write is immediately readable by returned event id via `client.knowledge.read({ content_ids: [id] })`; semantic search indexing is asynchronous and reported as `indexing_status`. Storage is append-only — pass `supersedes_event_id` to replace an existing fact (the old event is hidden from future searches without losing history). Use a stable `idempotency_key` when a write may be retried. Optionally attach to entities via `entity_ids`. Always search first to avoid duplicates.',
+      'Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The write is immediately readable by returned event id via `client.knowledge.read({ content_ids: [id] })`; the result echoes the stored payload, so showing what was saved needs no follow-up read. Semantic search indexing is asynchronous and reported as `indexing_status`. Storage is append-only — pass `supersedes_event_id` to replace an existing fact (the old event is hidden from future searches without losing history). Use a stable `idempotency_key` when a write may be retried. Optionally attach to entities via `entity_ids`. Always search first to avoid duplicates.',
     inputSchema: SaveContentSchema,
     outputSchema: SaveContentResultSchema,
     annotations: { ...WRITE_WITHOUT_CONFIRM, title: 'Save memory' },
     securityScopes: ['mcp:write'],
+    mcpMeta: LOBU_VIEW_MCP_META,
     handler: saveContent,
   },
   {

@@ -75,6 +75,17 @@ describe('saveContent > honest indexing status', () => {
     expect(result.durable_at).toBe(result.created_at);
     expect(result.exact_read.content_ids).toEqual([result.id]);
 
+    // The result echoes the persisted row, so the ordinary text save — not just
+    // the json_template one — carries its own body back with no second read.
+    expect(result.payload_type).toBe('text');
+    expect(result.payload_text).toBe(
+      'A memory whose embedding the async backfill has not produced yet.'
+    );
+    expect(result.payload_data).toEqual({});
+    expect(result.payload_template).toBeNull();
+    expect(result.attachments).toEqual([]);
+    expect(result.source_url).toBeNull();
+
     // No current-model embedding was written inline and no embed service ran,
     // so this content is genuinely not yet searchable.
     expect(result.indexing_status).toBe('pending');

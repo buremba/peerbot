@@ -289,6 +289,7 @@ export function formatToolResult(
 ): string {
   const formatters: Record<string, (result: any, options: FormatterOptions) => string> = {
     search_memory: formatSearchResult,
+    save_memory: formatSaveMemoryResult,
     get_behavior: formatGetBehaviorResult,
     read_knowledge: formatGetContentResult,
     manage_behaviors: formatManageBehaviorsResult,
@@ -310,6 +311,25 @@ export function formatToolResult(
 
   // Fallback: pretty-print JSON
   return `\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``;
+}
+
+function formatSaveMemoryResult(result: Record<string, unknown>): string {
+  // The App card reads these fields off structuredContent, which carries them
+  // already. Keep the text fallback as the compact receipt save_memory returned
+  // before it gained an inline App, otherwise a large note or template is
+  // echoed twice to the model (once here and once in structuredContent).
+  const receipt = { ...result };
+  for (const key of [
+    'payload_type',
+    'payload_text',
+    'payload_data',
+    'payload_template',
+    'attachments',
+    'source_url',
+  ]) {
+    delete receipt[key];
+  }
+  return `\`\`\`json\n${JSON.stringify(receipt, null, 2)}\n\`\`\``;
 }
 
 function escapeLobuViewMarkdown(value: unknown, singleLine = false): string {

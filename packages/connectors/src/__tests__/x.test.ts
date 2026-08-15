@@ -1101,6 +1101,57 @@ describe("prepareXReply", () => {
 		).rejects.toThrow(/could not locate the reply composer/);
 	});
 
+	// X re-renders the timeline in place, so a ref captured before a render can
+	// go stale between get_accessibility_tree and click_ref. The action must
+	// re-extract and retry the click once instead of failing on a transient race.
+	test("retries once when the composer click hits a stale a11y ref", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+		let clickAttempts = 0;
+		const result = await prepareXReply(
+			{
+				dispatch: async (action, input) => {
+					if (action === "click_ref") {
+						clickAttempts += 1;
+						if (clickAttempts === 1) {
+							throw new Error("click_ref: stale ref (epoch 3)");
+						}
+					}
+					return dispatcher.dispatch(action, input);
+				},
+			},
+			{ tweetUrl: "2083959735481716957", body: "hi" },
+		);
+
+		expect(result.prepared).toBe(true);
+		expect(clickAttempts).toBe(2);
+		// The tree was re-extracted (fresh epoch) so the retry click had a valid
+		// ref; the second click_ref recorded against the healthy dispatcher.
+		const trees = calls.filter((c) => c.action === "get_accessibility_tree");
+		expect(trees.length).toBeGreaterThanOrEqual(2);
+		const clicks = calls.filter((c) => c.action === "click_ref");
+		expect(clicks).toHaveLength(1);
+		// The type uses the retry's ref — the one that actually succeeded.
+		const typed = calls.find((c) => c.action === "type_ref");
+		expect(typed?.input.ref).toEqual({ ref_id: 36, document_epoch: 3 });
+	});
+
+	test("fails when the composer click stays stale across the retry", async () => {
+		const { dispatcher } = stagingDispatcher();
+		await expect(
+			prepareXReply(
+				{
+					dispatch: async (action, input) => {
+						if (action === "click_ref") {
+							throw new Error("click_ref: stale ref (epoch 3)");
+						}
+						return dispatcher.dispatch(action, input);
+					},
+				},
+				{ tweetUrl: "2083959735481716957", body: "hi" },
+			),
+		).rejects.toThrow(/stale ref/);
+	});
+
 	test("refuses when the located node is a submit control", async () => {
 		const { dispatcher } = stagingDispatcher({ composerName: "Reply" });
 		await expect(

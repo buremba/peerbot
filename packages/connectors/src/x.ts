@@ -2098,6 +2098,12 @@ interface XA11yNode {
 	name?: string;
 }
 
+/** A captured accessibility-tree ref: valid only for the tab + document epoch. */
+interface XA11yRef {
+	ref_id: number;
+	document_epoch: number;
+}
+
 /**
  * Read back what actually landed in the composer, so the caller can fail loudly
  * instead of reporting a staged draft that is not there.
@@ -2223,42 +2229,67 @@ export async function prepareXReply(
 		allowed_origins: X_ALLOWED_ORIGINS,
 	});
 
-	const tree = await safeDispatch.dispatch<{
-		tree?: XA11yNode[];
-		document_epoch?: number;
-	}>("get_accessibility_tree", {
-		tab_id: tabId,
-		filter: "interactive",
-		allowed_origins: X_ALLOWED_ORIGINS,
-	});
-	const nodes = Array.isArray(tree.tree) ? tree.tree : [];
-	// X labels the reply box "Post text" today. Prefer that, but fall back to the
-	// first textbox so a relabel degrades instead of breaking — the submit-label
-	// check below is what keeps the fallback safe.
-	const textboxes = nodes.filter((n) => n.role === "textbox");
-	const composer =
-		textboxes.find((n) => /post text/i.test(n.name ?? "")) ?? textboxes[0];
-	if (!composer || typeof tree.document_epoch !== "number") {
-		throw new Error(
-			"prepare_reply: could not locate the reply composer in the accessibility tree",
-		);
-	}
-	// Belt and braces: the a11y name is X's, not ours. If a relabelled node ever
-	// matches the textbox lookup, refuse rather than click a submit control.
-	if (isReplySubmitLabel(composer.name)) {
-		throw new Error(
-			`prepare_reply: refusing to click "${composer.name}" — that is a submit control, not the composer`,
-		);
-	}
-	// The ref is only valid for this tab + document snapshot.
-	const ref = { ref_id: composer.ref_id, document_epoch: tree.document_epoch };
+	// Focus the reply composer, retrying the a11y ref once on a stale snapshot.
+	// X re-renders the timeline in place, so a ref captured before a render can
+	// go stale between get_accessibility_tree and click_ref ("stale ref (epoch
+	// N)"). Re-extracting and retrying once clears a transient render race;
+	// two stale refs in a row mean the page is genuinely unstable, so we fail
+	// loudly rather than type into the wrong element.
+	const focusComposer = async (): Promise<XA11yRef> => {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const tree = await safeDispatch.dispatch<{
+				tree?: XA11yNode[];
+				document_epoch?: number;
+			}>("get_accessibility_tree", {
+				tab_id: tabId,
+				filter: "interactive",
+				allowed_origins: X_ALLOWED_ORIGINS,
+			});
+			const nodes = Array.isArray(tree.tree) ? tree.tree : [];
+			// X labels the reply box "Post text" today. Prefer that, but fall back to
+			// the first textbox so a relabel degrades instead of breaking — the
+			// submit-label check below is what keeps the fallback safe.
+			const textboxes = nodes.filter((n) => n.role === "textbox");
+			const composer =
+				textboxes.find((n) => /post text/i.test(n.name ?? "")) ??
+				textboxes[0];
+			if (!composer || typeof tree.document_epoch !== "number") {
+				throw new Error(
+					"prepare_reply: could not locate the reply composer in the accessibility tree",
+				);
+			}
+			// Belt and braces: the a11y name is X's, not ours. If a relabelled node
+			// ever matches the textbox lookup, refuse rather than click a submit
+			// control.
+			if (isReplySubmitLabel(composer.name)) {
+				throw new Error(
+					`prepare_reply: refusing to click "${composer.name}" — that is a submit control, not the composer`,
+				);
+			}
+			// The ref is only valid for this tab + document snapshot.
+			const freshRef: XA11yRef = {
+				ref_id: composer.ref_id,
+				document_epoch: tree.document_epoch,
+			};
+			try {
+				await safeDispatch.dispatch("click_ref", {
+					tab_id: tabId,
+					ref: freshRef,
+					allowed_click: "reply_open",
+					allowed_origins: X_ALLOWED_ORIGINS,
+				});
+				return freshRef;
+			} catch (error) {
+				const message =
+					error instanceof Error ? error.message : String(error);
+				if (/stale ref/.test(message) && attempt === 0) continue;
+				throw error;
+			}
+		}
+		throw new Error("prepare_reply: could not focus the reply composer");
+	};
+	const ref = await focusComposer();
 
-	await safeDispatch.dispatch("click_ref", {
-		tab_id: tabId,
-		ref,
-		allowed_click: "reply_open",
-		allowed_origins: X_ALLOWED_ORIGINS,
-	});
 	await safeDispatch.dispatch("type_ref", {
 		tab_id: tabId,
 		ref,

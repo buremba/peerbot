@@ -729,6 +729,10 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
       ? { reactionsGuidance: watcher.reactionsGuidance }
       : {}),
     ...(watcher.agentKind ? { agentKind: watcher.agentKind } : {}),
+    ...(watcher.deviceWorkerId !== undefined
+      ? { deviceWorkerId: watcher.deviceWorkerId }
+      : {}),
+    ...(watcher.model !== undefined ? { model: watcher.model } : {}),
   };
 }
 

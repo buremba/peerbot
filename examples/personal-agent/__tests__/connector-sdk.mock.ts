@@ -105,6 +105,25 @@ export function connectorSdkMock() {
     },
     ConnectorRuntime: class {},
     calculateEngagementScore: () => 0,
+    sleep: async () => {
+      // No-op in tests — real sleep is used for rate-limit pacing.
+    },
+    validatePublicUrl: (url: string) => {
+      // Throws on non-public URLs, like the real guard. Accept http(s) only.
+      const parsed = new URL(url);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error("URL is not publicly reachable");
+      }
+      const host = parsed.hostname.toLowerCase();
+      if (
+        host === "localhost" ||
+        host === "127.0.0.1" ||
+        host.endsWith(".local") ||
+        /^10\.|^192\.168\.|^172\.(1[6-9]|2\d|3[01])\./.test(host)
+      ) {
+        throw new Error("URL is not publicly reachable");
+      }
+    },
     extensionDomScrape: async (opts: DomScrapeOpts) => {
       const observation = await opts.dispatcher.dispatch("navigate", {
         cs_scrape: true,

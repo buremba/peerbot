@@ -419,4 +419,142 @@ describe("page-activated operation runs", () => {
 		});
 		expect(activity.items[0]?.browser_url).toBe("https://x.com/ada/status/123");
 	});
+
+	it("keeps an undismissed browser-handoff draft beyond the recent-window cap", async () => {
+		const seeded = await seed();
+		// An older undismissed draft that predates 55 newer notifications: the
+		// recent-window slice would drop it, but the "stays until Done" contract
+		// must keep it in the lens regardless.
+		await createNotificationForUsers([seeded.user.id], {
+			organizationId: seeded.org.id,
+			type: "agent_message",
+			title: "Draft ready for Ada on X",
+			body: "Draft: Hello",
+			resourceUrl: `/${seeded.org.slug}/memory?content_ids=1`,
+			browserUrl: "https://x.com/ada/status/123",
+		});
+		const [draft] = await sql<{ id: number }>`
+			SELECT id FROM events ORDER BY id ASC LIMIT 1
+		`;
+		for (let i = 0; i < 55; i++) {
+			await createNotificationForUsers([seeded.user.id], {
+				organizationId: seeded.org.id,
+				type: "agent_message",
+				title: `Newer notification ${i}`,
+				body: "noise",
+				resourceUrl: `/${seeded.org.slug}/memory?content_ids=99`,
+			});
+		}
+		// Backdate the draft below the recent window (newest 50), still undismissed.
+		await sql`
+			UPDATE events
+			SET created_at = created_at - interval '7 days'
+			WHERE id = ${draft.id}
+		`;
+		const activity = await listOrgActivity({
+			organizationId: seeded.org.id,
+			userId: seeded.user.id,
+			ownerSlug: seeded.org.slug,
+			includeRuns: false,
+			limit: 50,
+		});
+		expect(activity.items.some((item) => item.browser_url === "https://x.com/ada/status/123")).toBe(
+			true,
+		);
+		// Respects the declared limit even when the undismissed draft is pinned.
+		expect(activity.items.length).toBeLessThanOrEqual(50);
+		// Items stay in chronological order (oldest first).
+		const ats = activity.items.map((item) => new Date(item.at).getTime());
+		expect([...ats].sort((a, b) => a - b)).toEqual(ats);
+		// RawCard-only fields never leak to the public shape.
+		for (const item of activity.items) {
+			expect(item).not.toHaveProperty("atMs");
+			expect(item).not.toHaveProperty("collapseKey");
+			expect(item).not.toHaveProperty("itemsCollected");
+		}
+	});
+
+	it("excludes browser-handoff drafts when the kind filter omits notifications", async () => {
+		const seeded = await seed();
+		await createNotificationForUsers([seeded.user.id], {
+			organizationId: seeded.org.id,
+			type: "agent_message",
+			title: "Draft ready for Ada on X",
+			body: "Draft: Hello",
+			resourceUrl: `/${seeded.org.slug}/memory?content_ids=1`,
+			browserUrl: "https://x.com/ada/status/123",
+		});
+		const activity = await listOrgActivity({
+			organizationId: seeded.org.id,
+			userId: seeded.user.id,
+			ownerSlug: seeded.org.slug,
+			includeRuns: false,
+			kinds: ["sync"],
+			limit: 50,
+		});
+		expect(activity.items.some((item) => item.browser_url === "https://x.com/ada/status/123")).toBe(
+			false,
+		);
+	});
+
+	it("pins a draft that sits inside the window but outside the final limit", async () => {
+		const seeded = await seed();
+		// 30 newer notifications then one draft: with limit 24 the draft is
+		// inside the 60-card merge window but outside the final slice, so it
+		// must still be pinned and survive.
+		for (let i = 0; i < 30; i++) {
+			await createNotificationForUsers([seeded.user.id], {
+				organizationId: seeded.org.id,
+				type: "agent_message",
+				title: `Newer notification ${i}`,
+				body: "noise",
+				resourceUrl: `/${seeded.org.slug}/memory?content_ids=99`,
+			});
+		}
+		await createNotificationForUsers([seeded.user.id], {
+			organizationId: seeded.org.id,
+			type: "agent_message",
+			title: "Draft ready for Ada on X",
+			body: "Draft: Hello",
+			resourceUrl: `/${seeded.org.slug}/memory?content_ids=1`,
+			browserUrl: "https://x.com/ada/status/123",
+		});
+		const activity = await listOrgActivity({
+			organizationId: seeded.org.id,
+			userId: seeded.user.id,
+			ownerSlug: seeded.org.slug,
+			includeRuns: false,
+			limit: 24,
+		});
+		expect(activity.items.some((item) => item.browser_url === "https://x.com/ada/status/123")).toBe(
+			true,
+		);
+		expect(activity.items.length).toBeLessThanOrEqual(24);
+	});
+
+	it("caps pinned drafts at the declared limit", async () => {
+		const seeded = await seed();
+		// More undismissed drafts than the limit: the response must stay bounded.
+		for (let i = 0; i < 12; i++) {
+			await createNotificationForUsers([seeded.user.id], {
+				organizationId: seeded.org.id,
+				type: "agent_message",
+				title: `Draft ${i}`,
+				body: "Draft: Hello",
+				resourceUrl: `/${seeded.org.slug}/memory?content_ids=${i}`,
+				browserUrl: `https://x.com/ada/status/${1000 + i}`,
+			});
+		}
+		const activity = await listOrgActivity({
+			organizationId: seeded.org.id,
+			userId: seeded.user.id,
+			ownerSlug: seeded.org.slug,
+			includeRuns: false,
+			limit: 5,
+		});
+		expect(activity.items.length).toBe(5);
+		expect(
+			activity.items.filter((item) => item.browser_url != null).length,
+		).toBe(5);
+	});
 });

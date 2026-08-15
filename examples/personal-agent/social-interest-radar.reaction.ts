@@ -70,7 +70,10 @@ export const input = {
           metadata: {
             type: "object",
             properties: {
-              platform: { type: "string", enum: ["x", "linkedin"] },
+              platform: {
+                type: "string",
+                enum: ["x", "linkedin", "hackernews"],
+              },
               why: { type: "string" },
               priority: {
                 type: "string",
@@ -127,15 +130,34 @@ interface PersistedDraft {
   };
 }
 
-function producerRunKey(ctx: ReactionContext): string {
-  return ctx.window.run_id != null
-    ? `run:${ctx.window.run_id}`
-    : `window:${ctx.window.id}:version:${ctx.behavior.version}`;
-}
-
 function notificationBody(lines: string[]): string {
   const body = lines.join("\n");
   return body.length <= 1000 ? body : `${body.slice(0, 997)}...`;
+}
+
+/**
+ * Normalize an HN item URL/id to its canonical item-page URL (`/item?id=`).
+ * HN's story comment box lives on the item page. Only rewrites a genuine HN
+ * item URL or a bare numeric id; any other URL is returned unchanged so a
+ * mislabeled draft can never be pointed at an unrelated HN story.
+ */
+export function hnItemUrl(value: string): string {
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) {
+    return `https://news.ycombinator.com/item?id=${trimmed}`;
+  }
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase().replace(/^www\./, "");
+    if (host !== "news.ycombinator.com") return value;
+    const id = url.searchParams.get("id");
+    if (id && /^\d+$/.test(id)) {
+      return `https://news.ycombinator.com/item?id=${id}`;
+    }
+  } catch {
+    return value;
+  }
+  return value;
 }
 
 function isReviewableLinkedInPostUrl(value: string): boolean {
@@ -189,46 +211,11 @@ export default async (
      ORDER BY id`
   )) as PersistedDraft[];
 
-  const producerKey = producerRunKey(ctx);
-  const deliveryNotes: string[] = [];
-
-  const sendDigest = async (
-    signals: PersistedSignal[] = deliveredSignals,
-    includeDrafts = true
-  ): Promise<void> => {
-    if (signals.length === 0) return;
-    const contentIds = signals.flatMap((signal) => {
-      const sourceId = Number(signal.metadata.source_event_id);
-      return Number.isInteger(sourceId) && sourceId > 0
-        ? [sourceId, signal.id]
-        : [signal.id];
-    });
-    if (includeDrafts) {
-      for (const draft of deliveredDrafts) contentIds.push(draft.id);
-    }
-    const lines = signals.map(
-      ({ author_name, metadata }) =>
-        `[${metadata.priority ?? "normal"}] ${author_name ?? "Someone"} (${metadata.platform ?? "social"}) — ${metadata.why ?? "New signal"}`
-    );
-    if (deliveryNotes.length > 0) lines.push("", ...deliveryNotes);
-    const body = notificationBody(lines);
-    await client.notifications.send({
-      title: "Social interest radar",
-      body,
-      recipients: "admins",
-      resource_url: `/${encodeURIComponent(ctx.organization_slug)}/memory?content_ids=${[
-        ...new Set(contentIds),
-      ].join(",")}`,
-      idempotency_key: `social-radar:notification:${producerKey}`,
-      behavior_source: {
-        behavior_id: ctx.behavior.id,
-        window_id: ctx.window.id,
-      },
-    });
-  };
-
+  // Only draft-ready notifications are delivered. The "everything I noticed"
+  // digest added a raw timeline dump (source tweets + signals) as a second
+  // notification; the draft-ready cards already surface the curated, actionable
+  // items, so a run with no drafts notifies nothing.
   if (deliveredDrafts.length === 0) {
-    await sendDigest();
     return;
   }
 
@@ -236,7 +223,6 @@ export default async (
     behavior_id: ctx.behavior.id,
     window_id: ctx.window.id,
   };
-  const notifiedSourceEventIds = new Set<number>();
   for (const draft of deliveredDrafts) {
     const connectionId = Number(draft.metadata.source_connection_id);
     const body = draft.payload_text?.trim();
@@ -247,16 +233,13 @@ export default async (
       connectionId <= 0 ||
       !body ||
       !sourceUrl ||
-      (platform !== "x" && platform !== "linkedin")
+      (platform !== "x" && platform !== "linkedin" && platform !== "hackernews")
     ) {
       client.log(
         "Saved social draft is missing a valid source connection, URL, or body.",
         {
           draft_event_id: draft.id,
         }
-      );
-      deliveryNotes.push(
-        "Draft not scheduled: its saved handoff data is incomplete."
       );
       continue;
     }
@@ -265,33 +248,56 @@ export default async (
         "Saved LinkedIn draft has only the generic feed URL; a durable post permalink is required before scheduling.",
         { draft_event_id: draft.id, source_url: sourceUrl }
       );
-      deliveryNotes.push(
-        "LinkedIn draft not scheduled: the post did not expose a durable link."
-      );
+      continue;
+    }
+
+    // HN's story comment box lives on the item page, so the activation target
+    // AND the notification's browser_url must be the same item URL — the user
+    // clicks the notification and lands on the page where the comment box is.
+    // Computed once so the two cannot drift apart.
+    const targetUrl =
+      platform === "hackernews" ? hnItemUrl(sourceUrl) : sourceUrl;
+    // HN drafts must reference a real item page — a mislabeled URL would
+    // otherwise become the page-activation target and fail later in the
+    // connector. Skip like the LinkedIn durable-link guard.
+    if (
+      platform === "hackernews" &&
+      !/^https:\/\/news\.ycombinator\.com\/item\?id=\d+$/.test(targetUrl)
+    ) {
+      client.log("Saved Hacker News draft has no durable item URL; skipping.", {
+        draft_event_id: draft.id,
+        source_url: sourceUrl,
+      });
       continue;
     }
 
     let result: Awaited<ReturnType<ReactionClient["operations"]["execute"]>>;
     try {
-      result = await client.operations.execute({
-        connection_id: connectionId,
-        operation_key: platform === "x" ? "prepare_reply" : "prepare_comment",
-        idempotency_key: `social-radar:draft:${draft.id}`,
-        input:
-          platform === "x"
+      const input =
+        platform === "x"
+          ? {
+              tweet_url: sourceUrl,
+              body,
+              reason: draft.metadata.why,
+            }
+          : platform === "hackernews"
             ? {
-                tweet_url: sourceUrl,
+                item_url: targetUrl,
                 body,
-                reason: draft.metadata.why,
               }
             : {
                 post_url: sourceUrl,
                 body,
                 reason: draft.metadata.why,
-              },
+              };
+      result = await client.operations.execute({
+        connection_id: connectionId,
+        operation_key: platform === "x" ? "prepare_reply" : "prepare_comment",
+        idempotency_key: `social-radar:draft:${draft.id}`,
+        input,
         activation: {
           kind: "page_visit",
-          urls: [sourceUrl],
+          urls: [targetUrl],
           expires_in_seconds: 86_400,
         },
         behavior_source: behaviorSource,
@@ -315,9 +321,6 @@ export default async (
           error: result.error_message,
         }
       );
-      deliveryNotes.push(
-        `${platform === "linkedin" ? "LinkedIn" : "X"} draft not scheduled.`
-      );
       continue;
     }
 
@@ -330,7 +333,7 @@ export default async (
       matchingSignal?.author_name?.trim() ||
       "this post";
     await client.notifications.send({
-      title: `Draft ready for ${author} on ${platform === "x" ? "X" : "LinkedIn"}`,
+      title: `Draft ready for ${author} on ${platform === "x" ? "X" : platform === "hackernews" ? "Hacker News" : "LinkedIn"}`,
       body: notificationBody([
         `Why: ${draft.metadata.why ?? "Relevant social signal"}`,
         "",
@@ -345,20 +348,9 @@ export default async (
       ]
         .filter((id) => Number.isSafeInteger(id) && id > 0)
         .join(",")}`,
-      browser_url: sourceUrl,
+      browser_url: targetUrl,
       idempotency_key: `social-radar:draft-ready:${draft.id}`,
       behavior_source: behaviorSource,
     });
-    if (Number.isSafeInteger(sourceEventId) && sourceEventId > 0) {
-      notifiedSourceEventIds.add(sourceEventId);
-    }
   }
-
-  // A draft-ready notification replaces the duplicate digest entry for its
-  // source; unrelated observations from the same firing still get the digest.
-  const undeliveredSignals = deliveredSignals.filter(
-    (signal) =>
-      !notifiedSourceEventIds.has(Number(signal.metadata.source_event_id))
-  );
-  await sendDigest(undeliveredSignals, notifiedSourceEventIds.size === 0);
 };

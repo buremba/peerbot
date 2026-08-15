@@ -1,6 +1,32 @@
 import { describe, expect, it } from "bun:test";
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
-import runReaction from "../social-interest-radar.reaction";
+import runReaction, { hnItemUrl } from "../social-interest-radar.reaction";
+
+describe("hnItemUrl", () => {
+  it("canonicalizes a bare numeric id", () => {
+    expect(hnItemUrl("49296627")).toBe(
+      "https://news.ycombinator.com/item?id=49296627"
+    );
+  });
+
+  it("canonicalizes an HN item URL", () => {
+    expect(hnItemUrl("https://news.ycombinator.com/item?id=49296627")).toBe(
+      "https://news.ycombinator.com/item?id=49296627"
+    );
+  });
+
+  it("leaves a non-HN URL unchanged", () => {
+    expect(hnItemUrl("https://x.com/ada/status/1234567890")).toBe(
+      "https://x.com/ada/status/1234567890"
+    );
+  });
+
+  it("leaves an HN non-item URL unchanged", () => {
+    expect(hnItemUrl("https://news.ycombinator.com/jobs")).toBe(
+      "https://news.ycombinator.com/jobs"
+    );
+  });
+});
 
 const signalMetadata = {
   platform: "linkedin",
@@ -36,7 +62,7 @@ function context(): ReactionContext {
 }
 
 function fixture(options?: {
-  platform?: "x" | "linkedin";
+  platform?: "x" | "linkedin" | "hackernews";
   operationResult?: Record<string, unknown>;
   operationErrorOnce?: Error;
   includeSignal?: boolean;
@@ -47,12 +73,15 @@ function fixture(options?: {
   const sourceUrl =
     platform === "x"
       ? "https://x.com/ada/status/123?ref=home"
-      : "https://www.linkedin.com/feed/update/urn:li:activity:123";
+      : platform === "hackernews"
+        ? "https://news.ycombinator.com/item?id=42954035"
+        : "https://www.linkedin.com/feed/update/urn:li:activity:123";
   const metadata = {
     ...draftMetadata,
     platform,
     why: options?.signalWhy ?? draftMetadata.why,
-    source_connection_id: platform === "x" ? 411 : 410,
+    source_connection_id:
+      platform === "x" ? 411 : platform === "hackernews" ? 412 : 410,
   };
   const signals =
     options?.includeSignal === false
@@ -170,6 +199,28 @@ describe("social interest radar reaction", () => {
     expect(f.operations[0]?.input).not.toHaveProperty("browser_connection_id");
   });
 
+  it("stages a Hacker News draft via prepare_comment with the item-page url", async () => {
+    const f = fixture({ platform: "hackernews", includeSignal: false });
+    await runReaction(context(), f.client);
+
+    expect(f.connectionListCalls).toBe(0);
+    expect(f.operations[0]).toMatchObject({
+      connection_id: 412,
+      operation_key: "prepare_comment",
+      input: {
+        item_url: "https://news.ycombinator.com/item?id=42954035",
+      },
+      activation: {
+        kind: "page_visit",
+        urls: ["https://news.ycombinator.com/item?id=42954035"],
+      },
+    });
+    expect(f.notifications[0]).toMatchObject({
+      title: "Draft ready for Ada on Hacker News",
+      browser_url: "https://news.ycombinator.com/item?id=42954035",
+    });
+  });
+
   it("accepts an idempotent completed run and still retries the draft notification", async () => {
     const f = fixture({
       operationResult: { status: "completed", run_id: 900 },
@@ -178,7 +229,7 @@ describe("social interest radar reaction", () => {
     expect(f.notifications).toHaveLength(1);
   });
 
-  it("retries an ambiguous scheduling error instead of completing with a misleading digest", async () => {
+  it("retries an ambiguous scheduling error instead of completing without a draft card", async () => {
     const f = fixture({
       operationErrorOnce: new Error(
         "reaction tracking temporarily unavailable"
@@ -199,7 +250,7 @@ describe("social interest radar reaction", () => {
     );
   });
 
-  it("keeps the ordinary digest when scheduling fails terminally", async () => {
+  it("sends no digest when scheduling fails terminally — only draft-ready cards", async () => {
     const f = fixture({
       operationResult: {
         status: "failed",
@@ -207,9 +258,8 @@ describe("social interest radar reaction", () => {
       },
     });
     await runReaction(context(), f.client);
-    expect(f.notifications).toHaveLength(1);
-    expect(f.notifications[0]?.title).toBe("Social interest radar");
-    expect(String(f.notifications[0]?.body)).toContain("draft not scheduled");
+    // No digest fallback: a failed scheduling run notifies nothing.
+    expect(f.notifications).toHaveLength(0);
   });
 
   it("refuses a generic LinkedIn feed URL because it cannot match one post", async () => {
@@ -229,14 +279,12 @@ describe("social interest radar reaction", () => {
     expect(f.operations).toHaveLength(0);
   });
 
-  it("delivers an observation-only run as the ordinary digest", async () => {
+  it("does not notify an observation-only run — only drafts get cards", async () => {
     const f = fixture({ includeDraft: false });
     await runReaction(context(), f.client);
     expect(f.operations).toHaveLength(0);
-    expect(f.notifications).toHaveLength(1);
-    expect(f.notifications[0]?.body).toBe(
-      "[high] Ada (linkedin) — Directly relevant to Lobu's delivery model."
-    );
+    // The "Social interest radar" digest is gone; signals alone notify nothing.
+    expect(f.notifications).toHaveLength(0);
   });
 
   it("does not notify when the persisted run owns no new output", async () => {
@@ -246,10 +294,11 @@ describe("social interest radar reaction", () => {
     expect(f.notifications).toHaveLength(0);
   });
 
-  it("keeps digest bodies within the notification service limit", async () => {
-    const f = fixture({ includeDraft: false, signalWhy: "x".repeat(1_200) });
+  it("does not truncate a draft-ready body below the service limit", async () => {
+    const f = fixture({ signalWhy: "x".repeat(1_200) });
     await runReaction(context(), f.client);
-    expect(String(f.notifications[0]?.body).length).toBe(1000);
+    expect(f.notifications).toHaveLength(1);
+    expect(String(f.notifications[0]?.body).length).toBeLessThanOrEqual(1000);
   });
 
   it("uses stable operation and notification keys across reaction retries", async () => {

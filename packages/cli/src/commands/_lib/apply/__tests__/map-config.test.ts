@@ -727,6 +727,24 @@ describe("mapProjectToDesiredState", () => {
     expect(dw?.agentKind).toBe("notifier");
   });
 
+  test("maps watcher deviceWorkerId + model for device-pinned runs", () => {
+    const crm = defineAgent({ id: "crm" });
+    const watcher = defineBehavior({
+      agent: crm,
+      slug: "w",
+      prompt: "do the thing",
+      deviceWorkerId: "11111111-1111-1111-1111-111111111111",
+      agentKind: "opencode",
+      model: "opencode-go/deepseek-v4-flash",
+    });
+    const dw = mapProjectToDesiredState(
+      defineConfig({ agents: [crm], behaviors: [watcher] })
+    ).watchers[0];
+    expect(dw?.deviceWorkerId).toBe("11111111-1111-1111-1111-111111111111");
+    expect(dw?.agentKind).toBe("opencode");
+    expect(dw?.model).toBe("opencode-go/deepseek-v4-flash");
+  });
+
   test("maps entity handles and event outputs to the server contract", () => {
     const crm = defineAgent({ id: "crm" });
     const price = defineEntityType({ key: "price" });

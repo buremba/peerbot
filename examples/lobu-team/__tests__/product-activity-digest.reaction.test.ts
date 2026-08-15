@@ -6,7 +6,7 @@ import productActivityDigest, {
 } from "../product-activity-digest.reaction.ts";
 
 const context = {
-  extracted_data: { run: true },
+  extracted_data: { run: true, exclude_email: "emrekabakci@gmail.com" },
   entities: [],
   window: {
     id: 99,
@@ -124,6 +124,12 @@ describe("Lobu Team product activity digest reaction", () => {
     expect(queryText).toContain("e.created_at");
     expect(queryText).toContain("FROM events e");
     expect(queryText).toContain("e.payload_text");
+    // Excluded operator rows are handled in memory (no leading-wildcard LIKE
+    // over events), and the window is read in bounded keyset pages so excluded
+    // rows cannot consume a fixed LIMIT budget.
+    expect(queryText).not.toContain("LIKE '%emrekabakci@gmail.com%'");
+    expect(queryText).toContain("ORDER BY e.created_at ASC, e.id ASC");
+    expect(queryText).toContain("LIMIT 1000");
   });
 
   it("deduplicates online users while retaining every activity section", () => {
@@ -148,6 +154,108 @@ describe("Lobu Team product activity digest reaction", () => {
       '"label":"Online users","value":"1"'
     );
     expect(JSON.stringify(card)).toContain("Active MCP conversations (1)");
+  });
+
+  it("excludes the operator's own login and MCP rows from presence", () => {
+    const digest = collectProductActivityDigest(
+      [
+        {
+          connection_slug: "lobu-product-activity-db",
+          title: "User login",
+          payload_text: "Burak · emrekabakci@gmail.com",
+        },
+        {
+          connection_slug: "lobu-product-activity-db",
+          title: "MCP activity",
+          payload_text: "lobu-cli · Burak · emrekabakci@gmail.com",
+        },
+        {
+          connection_slug: "lobu-product-activity-db",
+          title: "User login",
+          payload_text: "Ada · ada@example.com",
+        },
+      ],
+      "emrekabakci@gmail.com"
+    );
+    const card = buildProductActivityCard(digest, {
+      start: context.window.window_start,
+      end: context.window.window_end,
+    });
+
+    expect(digest.logins).toEqual(["Ada · ada@example.com"]);
+    expect(digest.mcp_conversations).toHaveLength(0);
+    expect(JSON.stringify(card)).toContain(
+      '"label":"Online users","value":"1"'
+    );
+    expect(JSON.stringify(card)).toContain("ada@example.com");
+    expect(JSON.stringify(card)).not.toContain("emrekabakci");
+  });
+
+  it("stays silent when the operator is the only online user", async () => {
+    const rows = [
+      {
+        connection_slug: "lobu-product-activity-db",
+        title: "User login",
+        payload_text: "Burak · emrekabakci@gmail.com",
+      },
+      {
+        connection_slug: "lobu-product-activity-db",
+        title: "MCP activity",
+        payload_text: "lobu-cli · Burak · emrekabakci@gmail.com",
+      },
+    ];
+    const send = mock();
+    const query = mock()
+      .mockResolvedValueOnce([{ created_at: "2026-08-13T12:00:00.000Z" }])
+      .mockResolvedValueOnce(rows);
+    const client = {
+      query,
+      notifications: { send },
+      log: mock(),
+    } as unknown as ReactionClient;
+
+    await productActivityDigest(context, client);
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("keeps paginating past a full page of excluded rows to report later activity", async () => {
+    // Page 1: exactly PAGE_SIZE excluded presence rows (the operator's own).
+    // Page 2: one valid login for Ada. The digest must page past page 1 and
+    // still report Ada instead of starving on the fixed-budget problem.
+    const excludedPage = Array.from({ length: 1000 }, (_, i) => ({
+      connection_slug: "lobu-product-activity-db",
+      title: "User login",
+      payload_text: `Burak · emrekabakci@gmail.com · org ${i}`,
+      _created_at: "2026-08-13T12:01:00.000Z",
+      _id: 1000 + i,
+    }));
+    const validRows = [
+      {
+        connection_slug: "lobu-product-activity-db",
+        title: "User login",
+        payload_text: "Ada · ada@example.com",
+        _created_at: "2026-08-13T12:02:00.000Z",
+        _id: 2000,
+      },
+    ];
+    const send = mock().mockResolvedValue({ notified_count: 1 });
+    const query = mock()
+      .mockResolvedValueOnce([{ created_at: "2026-08-13T12:00:00.000Z" }])
+      .mockResolvedValueOnce(excludedPage)
+      .mockResolvedValueOnce(validRows);
+    const client = {
+      query,
+      notifications: { send },
+      log: mock(),
+    } as unknown as ReactionClient;
+
+    await productActivityDigest(context, client);
+
+    expect(query.mock.calls).toHaveLength(3);
+    const serializedCard = JSON.stringify(send.mock.calls[0]?.[0]?.card);
+    expect(serializedCard).toContain("ada@example.com");
+    expect(serializedCard).not.toContain("emrekabakci");
   });
 
   it("requires the run id used to deduplicate retries", async () => {

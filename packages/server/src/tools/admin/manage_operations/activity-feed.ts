@@ -114,6 +114,120 @@ function isFailedStatus(status: string | null | undefined): boolean {
 	);
 }
 
+/**
+ * Build an attention card from a notification row (listNotifications shape).
+ * Shared by the recent-window feed and the undismissed browser-handoff fetch.
+ * Returns null when the row has no usable id.
+ */
+function buildNotificationCard(
+	ownerSlug: string,
+	n: Record<string, unknown>,
+): RawCard | null {
+	const id = Number(n.id);
+	if (!Number.isSafeInteger(id) || id <= 0) return null;
+	const type = String(n.type ?? "generic");
+	const created = String(n.created_at ?? new Date().toISOString());
+	const atMs = new Date(created).getTime();
+	const approvalRunId = n.approval_run_id != null ? Number(n.approval_run_id) : NaN;
+	const interactionType =
+		typeof n.interaction_type === "string" && n.interaction_type !== ""
+			? n.interaction_type
+			: undefined;
+	// Per-type live-state resolution: 'approval' reads the run's state
+	// machine. A future interaction kind plugs its own source in here —
+	// the card contract (interaction_*) does not change.
+	const interactionStatus =
+		interactionType === "approval" &&
+		typeof n.approval_status === "string" &&
+		n.approval_status !== ""
+			? n.approval_status
+			: undefined;
+	// Settling from a row needs TWO independent things to be true, and
+	// conflating them is a security bug in one direction and a dead
+	// control in the other:
+	//
+	//   1. POLICY — is this family safe to decide without opening the
+	//      review page? Entity changes are (the diff is in the card);
+	//      a Behavior definition write deliberately is NOT. An ask is,
+	//      because the answer IS the outcome — there is no held
+	//      mutation being applied sight-unseen.
+	//   2. SHAPE — can the answer be given without typing? That is a
+	//      question about the schema, not the family.
+	//
+	// A form-shaped ask in a one-click family still must not render
+	// buttons (they would discard the input), and a schemaless write in
+	// an unsafe family still must not (it would apply blind).
+	const familyAllowsInline = getInlineDecidableActionKeys().includes(
+		String(n.approval_action_key ?? ""),
+	);
+	const affordance =
+		interactionType === "approval" && interactionStatus != null
+			? resolveAskAffordance(
+					n.interaction_input_schema as Record<string, unknown> | null,
+				)
+			: null;
+	const interactionInline =
+		familyAllowsInline && affordance != null && affordance.kind !== "form";
+	return {
+		id: `n:${id}`,
+		kind: "notification",
+		title: String(n.title ?? "Notification"),
+		body: n.body != null ? String(n.body) : null,
+		at: created,
+		atMs: Number.isFinite(atMs) ? atMs : 0,
+		status: type,
+		count: 1,
+		href: resolveNotifHref(ownerSlug, n),
+		unread: n.is_read === false || n.is_read === "f",
+		notification_id: id,
+		browser_url:
+			typeof n.browser_url === "string" ? n.browser_url : undefined,
+		platform: typeof n.platform === "string" ? n.platform : undefined,
+		connection_id:
+			typeof n.connection_id === "number" ? n.connection_id : undefined,
+		connection_name:
+			typeof n.connection_name === "string"
+				? n.connection_name
+				: undefined,
+		feed_id: typeof n.feed_id === "number" ? n.feed_id : undefined,
+		feed_key: typeof n.feed_key === "string" ? n.feed_key : undefined,
+		feed_name: typeof n.feed_name === "string" ? n.feed_name : undefined,
+		behavior_id:
+			typeof n.behavior_id === "number" ? n.behavior_id : undefined,
+		behavior_name:
+			typeof n.behavior_name === "string" ? n.behavior_name : undefined,
+		agent_id: typeof n.agent_id === "string" ? n.agent_id : undefined,
+		agent_name:
+			typeof n.agent_name === "string" ? n.agent_name : undefined,
+		client_id: typeof n.client_id === "string" ? n.client_id : undefined,
+		client_name:
+			typeof n.client_name === "string" ? n.client_name : undefined,
+		device_worker_id:
+			typeof n.device_worker_id === "string"
+				? n.device_worker_id
+				: undefined,
+		device_label:
+			typeof n.device_label === "string" ? n.device_label : undefined,
+		device_platform:
+			typeof n.device_platform === "string"
+				? n.device_platform
+				: undefined,
+		run_id: Number.isFinite(approvalRunId) ? approvalRunId : undefined,
+		interaction_type: interactionStatus != null ? interactionType : undefined,
+		interaction_status: interactionStatus,
+		interaction_inline: interactionInline || undefined,
+		// Present only for a one-click multi-option decision. The field
+		// name travels with the options so the caller can send back
+		// `{ [field]: value }` without re-reading the schema.
+		interaction_choice_field:
+			affordance?.kind === "choice" ? affordance.field : undefined,
+		interaction_choices:
+			affordance?.kind === "choice" ? affordance.choices : undefined,
+		collapseKey: null,
+		itemsCollected: null,
+	};
+}
+
 function resolveNotifHref(
 	ownerSlug: string,
 	n: {
@@ -369,108 +483,8 @@ export async function listOrgActivity(opts: {
 				limit: 60,
 			});
 			for (const n of notifications) {
-				const type = String(n.type ?? "generic");
-				const created = String(n.created_at ?? new Date().toISOString());
-				const atMs = new Date(created).getTime();
-				const approvalRunId =
-					n.approval_run_id != null ? Number(n.approval_run_id) : NaN;
-				const interactionType =
-					typeof n.interaction_type === "string" && n.interaction_type !== ""
-						? n.interaction_type
-						: undefined;
-				// Per-type live-state resolution: 'approval' reads the run's state
-				// machine. A future interaction kind plugs its own source in here —
-				// the card contract (interaction_*) does not change.
-				const interactionStatus =
-					interactionType === "approval" &&
-					typeof n.approval_status === "string" &&
-					n.approval_status !== ""
-						? n.approval_status
-						: undefined;
-				// Settling from a row needs TWO independent things to be true, and
-				// conflating them is a security bug in one direction and a dead
-				// control in the other:
-				//
-				//   1. POLICY — is this family safe to decide without opening the
-				//      review page? Entity changes are (the diff is in the card);
-				//      a Behavior definition write deliberately is NOT. An ask is,
-				//      because the answer IS the outcome — there is no held
-				//      mutation being applied sight-unseen.
-				//   2. SHAPE — can the answer be given without typing? That is a
-				//      question about the schema, not the family.
-				//
-				// A form-shaped ask in a one-click family still must not render
-				// buttons (they would discard the input), and a schemaless write in
-				// an unsafe family still must not (it would apply blind).
-				const familyAllowsInline = getInlineDecidableActionKeys().includes(
-					String(n.approval_action_key ?? ""),
-				);
-				const affordance =
-					interactionType === "approval" && interactionStatus != null
-						? resolveAskAffordance(
-								n.interaction_input_schema as Record<string, unknown> | null,
-							)
-						: null;
-				const interactionInline =
-					familyAllowsInline && affordance != null && affordance.kind !== "form";
-				raw.push({
-					id: `n:${n.id}`,
-					kind: "notification",
-					title: String(n.title ?? "Notification"),
-					body: n.body != null ? String(n.body) : null,
-					at: created,
-					atMs: Number.isFinite(atMs) ? atMs : 0,
-					status: type,
-					count: 1,
-					href: resolveNotifHref(opts.ownerSlug, n),
-					unread: n.is_read === false || n.is_read === "f",
-					notification_id: Number(n.id),
-					browser_url:
-						typeof n.browser_url === "string" ? n.browser_url : undefined,
-					platform: typeof n.platform === "string" ? n.platform : undefined,
-					connection_id:
-						typeof n.connection_id === "number" ? n.connection_id : undefined,
-					connection_name:
-						typeof n.connection_name === "string"
-							? n.connection_name
-							: undefined,
-					feed_id: typeof n.feed_id === "number" ? n.feed_id : undefined,
-					feed_key: typeof n.feed_key === "string" ? n.feed_key : undefined,
-					feed_name: typeof n.feed_name === "string" ? n.feed_name : undefined,
-					behavior_id:
-						typeof n.behavior_id === "number" ? n.behavior_id : undefined,
-					behavior_name:
-						typeof n.behavior_name === "string" ? n.behavior_name : undefined,
-					agent_id: typeof n.agent_id === "string" ? n.agent_id : undefined,
-					agent_name:
-						typeof n.agent_name === "string" ? n.agent_name : undefined,
-					client_id: typeof n.client_id === "string" ? n.client_id : undefined,
-					client_name:
-						typeof n.client_name === "string" ? n.client_name : undefined,
-					device_worker_id:
-						typeof n.device_worker_id === "string"
-							? n.device_worker_id
-							: undefined,
-					device_label:
-						typeof n.device_label === "string" ? n.device_label : undefined,
-					device_platform:
-						typeof n.device_platform === "string"
-							? n.device_platform
-							: undefined,
-					run_id: Number.isFinite(approvalRunId) ? approvalRunId : undefined,
-					interaction_type: interactionStatus != null ? interactionType : undefined,
-					interaction_status: interactionStatus,
-					interaction_inline: interactionInline || undefined,
-					// Present only for a one-click multi-option decision. The field
-					// name travels with the options so the caller can send back
-					// `{ [field]: value }` without re-reading the schema.
-					interaction_choice_field:
-						affordance?.kind === "choice" ? affordance.field : undefined,
-					interaction_choices:
-						affordance?.kind === "choice" ? affordance.choices : undefined,
-					collapseKey: null,
-					itemsCollected: null,
-				});
+				const card = buildNotificationCard(opts.ownerSlug, n);
+				if (card) raw.push(card);
 			}
 		}
 	}
@@ -566,10 +580,80 @@ export async function listOrgActivity(opts: {
 	raw.sort((a, b) => b.atMs - a.atMs);
 	const windowed = raw.slice(0, 60);
 	windowed.reverse();
-	const collapsed = aggregate
-		? collapseAdjacentActivityCards(windowed)
-		: windowed;
-	const items = collapsed.slice(-limit).map(({ collapseKey, itemsCollected, atMs, ...card }) => card);
+
+	// Browser-handoff drafts (a browser_url on the notification) must stay in
+	// the attention lens until the user hits Done, regardless of how many newer
+	// cards arrived. Fetch undismissed browser-handoff notifications — only when
+	// the kind filter permits notifications — merge them chronologically, and
+	// pin them so the cap below evicts non-handoff cards instead of the draft.
+	// Bounded, read-only, multi-replica safe.
+	let collapsed: RawCard[];
+	const pinnedHandoffIds = new Set<number>();
+	if (
+		includeNotifications &&
+		opts.userId &&
+		(!kindFilter || kindFilter.has("notification"))
+	) {
+		const { notifications: handoffNotifications } = await listNotifications({
+			organizationId: opts.organizationId,
+			userId: opts.userId,
+			limit: 50,
+			browserUrlOnly: true,
+		});
+		const merged = [...windowed];
+		const present = new Set(
+			merged.flatMap((c) =>
+				c.notification_id != null ? [Number(c.notification_id)] : [],
+			),
+		);
+		for (const n of handoffNotifications) {
+			const card = buildNotificationCard(opts.ownerSlug, n);
+			if (!card || card.notification_id == null) continue;
+			// Pin by id regardless of whether this handoff is already in the
+			// merge window: a draft inside the 60-card window but outside the
+			// final limit would otherwise be sliced away un-pinned.
+			pinnedHandoffIds.add(card.notification_id);
+			if (present.has(card.notification_id)) continue;
+			merged.push(card);
+			present.add(card.notification_id);
+		}
+		merged.sort((a, b) => a.atMs - b.atMs);
+		collapsed = aggregate ? collapseAdjacentActivityCards(merged) : merged;
+	} else {
+		collapsed = aggregate
+			? collapseAdjacentActivityCards(windowed)
+			: windowed;
+	}
+
+	// Keep every pinned handoff card and fill the rest of the budget with the
+	// newest non-handoff cards, then project to the public ActivityCard shape
+	// (dropping the RawCard-only fields).
+	let items: ActivityCard[];
+	if (pinnedHandoffIds.size > 0) {
+		const handoffCards = collapsed
+			.filter(
+				(c) =>
+					c.notification_id != null &&
+					pinnedHandoffIds.has(c.notification_id),
+			)
+			// collapsed is chronological (oldest first); keep only the newest
+			// `limit` pinned drafts so the response never exceeds the declared
+			// bound even when undismissed drafts outnumber it.
+			.slice(-limit);
+		const otherCards = collapsed.filter(
+			(c) =>
+				c.notification_id == null ||
+				!pinnedHandoffIds.has(c.notification_id),
+		);
+		const fill = otherCards.slice(-Math.max(0, limit - handoffCards.length));
+		items = [...handoffCards, ...fill]
+			.sort((a, b) => a.atMs - b.atMs)
+			.map(({ collapseKey, itemsCollected, atMs, ...card }) => card);
+	} else {
+		items = collapsed
+			.slice(-limit)
+			.map(({ collapseKey, itemsCollected, atMs, ...card }) => card);
+	}
 
 	return { items, total: items.length, limit };
 }

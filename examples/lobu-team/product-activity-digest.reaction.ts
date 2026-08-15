@@ -12,6 +12,10 @@ export const input = {
   type: "object",
   properties: {
     run: { type: "boolean" },
+    // Presence rows (logins / MCP conversations) for this email are excluded
+    // from the "Online users" list, and a window whose only activity is that
+    // email reports nothing. Optional — default is no exclusion.
+    exclude_email: { type: "string", format: "email" },
   },
   required: ["run"],
 };
@@ -22,6 +26,9 @@ interface ActivityRow {
   payload_text?: string | null;
   metadata?: unknown;
   source_url?: string | null;
+  /** Keyset-pagination cursor columns; stripped before digesting. */
+  _created_at?: string | Date | null;
+  _id?: number | null;
 }
 
 interface PreviousDigestRow {
@@ -48,7 +55,8 @@ export interface ProductActivityDigest {
 }
 
 export function collectProductActivityDigest(
-  rows: ActivityRow[]
+  rows: ActivityRow[],
+  excludedEmail?: string | null
 ): ProductActivityDigest {
   const digest: ProductActivityDigest = {
     signups: [],
@@ -66,6 +74,16 @@ export function collectProductActivityDigest(
     if (row.connection_slug === PRODUCT_ACTIVITY_CONNECTION) {
       const text = row.payload_text?.trim();
       if (!text) continue;
+      // Presence rows carry the acting user's email; drop the excluded one
+      // (typically the operator's own) so "online users" reflects the rest of
+      // the team and a window where only that email was active reports nothing.
+      if (
+        excludedEmail &&
+        (row.title === "User login" || row.title === "MCP activity") &&
+        belongsToEmail(text, excludedEmail)
+      ) {
+        continue;
+      }
       if (row.title === "New signup") digest.signups.push(text);
       if (row.title === "User login") digest.logins.push(text);
       if (row.title === "New connection") digest.connections.push(text);
@@ -184,6 +202,15 @@ function chunkText(value: string): string[] {
   return chunks;
 }
 
+/** True when a presence payload belongs to the given email address. */
+function belongsToEmail(payload: string, email: string): boolean {
+  const want = email.toLowerCase();
+  const match = payload.match(
+    /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i
+  )?.[0];
+  return match != null && match.toLowerCase() === want;
+}
+
 function uniqueUsers(rows: string[]): string[] {
   const users = new Map<string, string>();
   for (const row of rows) {
@@ -292,22 +319,62 @@ export default async (
     ? previous
     : new Date(end.getTime() - 20 * 60 * 1000);
 
-  const rows = (await client.query(`
-    SELECT
-      c.slug AS connection_slug,
-      e.title,
-      e.payload_text,
-      e.metadata,
-      e.source_url
-    FROM events e
-    JOIN connections c ON c.id = e.connection_id
-    WHERE c.slug IN ('${PRODUCT_ACTIVITY_CONNECTION}', '${LOG_ACTIVITY_CONNECTION}')
-      AND e.created_at > '${start.toISOString()}'::timestamptz
-      AND e.created_at <= '${end.toISOString()}'::timestamptz
-    ORDER BY e.created_at ASC, e.id ASC
-    LIMIT 5000
-  `)) as ActivityRow[];
-  const digest = collectProductActivityDigest(rows);
+  const excludedEmail =
+    ctx.extracted_data &&
+    typeof ctx.extracted_data === "object" &&
+    "exclude_email" in ctx.extracted_data &&
+    typeof (ctx.extracted_data as Record<string, unknown>).exclude_email ===
+      "string"
+      ? String(
+          (ctx.extracted_data as Record<string, unknown>).exclude_email
+        ).trim() || null
+      : null;
+
+  // Read the window in bounded keyset pages ordered by (created_at, id) and
+  // exclude the operator's presence rows in memory. No leading-wildcard LIKE
+  // over events, and excluded rows cannot consume a fixed LIMIT budget: the
+  // cursor keeps advancing past them until the window is exhausted or the
+  // safety cap is hit, so later valid activity is never starved.
+  const rows: ActivityRow[] = [];
+  let lastCreatedAt: string | null = null;
+  let lastId = 0;
+  const PAGE_SIZE = 1000;
+  const MAX_ROWS = 20_000;
+  let sawPartialPage = true;
+  while (sawPartialPage && rows.length < MAX_ROWS) {
+    const page = (await client.query(`
+      SELECT
+        c.slug AS connection_slug,
+        e.title,
+        e.payload_text,
+        e.metadata,
+        e.source_url,
+        e.created_at AS _created_at,
+        e.id AS _id
+      FROM events e
+      JOIN connections c ON c.id = e.connection_id
+      WHERE c.slug IN ('${PRODUCT_ACTIVITY_CONNECTION}', '${LOG_ACTIVITY_CONNECTION}')
+        AND e.created_at > '${start.toISOString()}'::timestamptz
+        AND e.created_at <= '${end.toISOString()}'::timestamptz
+        AND (
+          ${
+            lastCreatedAt == null
+              ? "TRUE"
+              : `(e.created_at > '${lastCreatedAt}'::timestamptz
+              OR (e.created_at = '${lastCreatedAt}'::timestamptz AND e.id > ${lastId}))`
+          }
+        )
+      ORDER BY e.created_at ASC, e.id ASC
+      LIMIT ${PAGE_SIZE}
+    `)) as ActivityRow[];
+    sawPartialPage = page.length === PAGE_SIZE;
+    for (const row of page) {
+      rows.push(row);
+      if (typeof row._created_at === "string") lastCreatedAt = row._created_at;
+      if (typeof row._id === "number") lastId = row._id;
+    }
+  }
+  const digest = collectProductActivityDigest(rows, excludedEmail);
   if (!hasProductActivity(digest)) {
     client.log("No production activity; Slack digest skipped", {
       window_start: start.toISOString(),

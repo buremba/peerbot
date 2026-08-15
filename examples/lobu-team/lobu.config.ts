@@ -362,7 +362,7 @@ const productActivityDigest = defineBehavior({
   minCooldownSeconds: 60,
   tags: ["product-ops", "production", "slack"],
   prompt:
-    'The reaction sends the exact activity rows for this window. Return exactly {"run":true}.',
+    'The reaction sends the exact activity rows for this window. Return exactly {"run":true,"exclude_email":"emrekabakci@gmail.com"} — the digest excludes this operator email from presence counts.',
   reactionsGuidance:
     "Send one rich digest containing every user email and activity detail in the window. Send nothing when both sources are empty.",
   reaction: reactionFromFile<typeof productActivityDigestReaction>(

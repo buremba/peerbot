@@ -267,7 +267,7 @@ describe('Automation schema vocabulary', () => {
     await sql.unsafe(bridge);
     await sql.unsafe(bridge);
 
-    const [canonical] = await sql<
+    const bridged = await sql<
       {
         id: number;
         supersedes_event_id: number;
@@ -280,6 +280,8 @@ describe('Automation schema vocabulary', () => {
       FROM events
       WHERE supersedes_event_id = ${legacy.id}
     `;
+    expect(bridged).toHaveLength(1);
+    const canonical = bridged[0]!;
     expect(canonical).toMatchObject({
       supersedes_event_id: legacy.id,
       identity_ns: AUTOMATION_EVENT_IDENTITY_NS,

@@ -108,37 +108,35 @@ WHERE run_type IN ('behavior', 'behavior_eval');
 
 UPDATE public.runs
 SET policy_principal_kind = 'automation'
-WHERE policy_principal_kind IN ('watcher', 'behavior');
+WHERE policy_principal_kind = 'watcher';
 
 UPDATE public.runs
 SET policy_principal_id = regexp_replace(
   policy_principal_id,
-  '^(watcher|behavior):',
+  '^watcher:',
   'automation:'
 )
-WHERE policy_principal_id ~ '^(watcher|behavior):';
+WHERE policy_principal_id ~ '^watcher:';
 
 UPDATE public.entity_identities
 SET namespace = CASE namespace
   WHEN 'watcher_canvas' THEN 'automation_canvas'
-  WHEN 'behavior_canvas' THEN 'automation_canvas'
   WHEN 'watcher_key' THEN 'automation_key'
-  WHEN 'behavior_key' THEN 'automation_key'
   ELSE namespace
 END
-WHERE namespace IN ('watcher_canvas', 'behavior_canvas', 'watcher_key', 'behavior_key');
+WHERE namespace IN ('watcher_canvas', 'watcher_key');
 
 UPDATE public.entity_identities
 SET source_connector = 'automation'
-WHERE source_connector IN ('watcher', 'behavior');
+WHERE source_connector = 'watcher';
 
 UPDATE public.write_approval_policies
 SET principal_kind = 'automation'
-WHERE principal_kind IN ('watcher', 'behavior');
+WHERE principal_kind = 'watcher';
 
 UPDATE public.write_approval_policies
-SET principal_id = regexp_replace(principal_id, '^(watcher|behavior):', 'automation:')
-WHERE principal_id ~ '^(watcher|behavior):';
+SET principal_id = regexp_replace(principal_id, '^watcher:', 'automation:')
+WHERE principal_id ~ '^watcher:';
 
 -- entity-metadata-cutover:start
 -- Entity metadata is user-extensible. Only rewrite rows whose live identity

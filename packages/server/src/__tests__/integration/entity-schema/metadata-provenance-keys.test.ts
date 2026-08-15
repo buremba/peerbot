@@ -42,8 +42,10 @@ describe('entity metadata validation > watcher provenance keys', () => {
         properties: {
           action: { type: 'string' },
           status: { type: 'string', enum: ['backlog', 'active', 'done'] },
+          effort: { type: 'number' },
           source: { type: 'string' },
         },
+        required: ['action'],
       },
     } as never);
   });
@@ -94,5 +96,84 @@ describe('entity metadata validation > watcher provenance keys', () => {
       .catch((e: unknown) => e as Error);
     expect(err).not.toBeNull();
     expect(err?.message).toContain("unknown property 'bogus_field'");
+  });
+
+  /**
+   * The entity form sends the whole object, because the server validates the
+   * patch as a document rather than the merge (owletto#845). So a cleared
+   * optional field arrives as `status: null` alongside its surviving siblings —
+   * and the schema types `status` as a string enum, which the raw patch fails.
+   */
+  it('preserves an optional null clear and non-null schema coercions', async () => {
+    const created = (await owner.entities.create({
+      type: 'strict-task',
+      name: 'Clear optional status',
+      metadata: { action: 'Keep this', status: 'backlog' },
+    })) as { entity: { id: number } };
+
+    await owner.entities.update({
+      entity_id: created.entity.id,
+      metadata: { action: 'Keep this', status: null, effort: '5' },
+    });
+
+    const got = (await owner.entities.get({ entity_id: created.entity.id })) as {
+      entity?: { metadata?: Record<string, unknown> };
+    };
+    expect(got.entity?.metadata).toMatchObject({
+      action: 'Keep this',
+      status: null,
+      effort: 5,
+    });
+  });
+
+  /**
+   * Filtering the clear sentinels out of the VALIDATED copy must not shrink the
+   * patch out of the size guard's view: the merge still persists every null, so
+   * a null-only patch above `maxNodes` has to be refused rather than written.
+   */
+  it('rejects an oversized null-only metadata patch', async () => {
+    const created = (await owner.entities.create({
+      type: 'strict-task',
+      name: 'Bounded null patch',
+      metadata: { action: 'Stay bounded' },
+    })) as { entity: { id: number } };
+
+    const oversized: Record<string, null> = {};
+    for (let i = 0; i < 10_001; i++) {
+      oversized[`k${i}`] = null;
+    }
+
+    await expect(
+      owner.entities.update({
+        entity_id: created.entity.id,
+        metadata: oversized,
+      })
+    ).rejects.toThrow(/exceeds size\/nesting limits/);
+
+    const got = (await owner.entities.get({ entity_id: created.entity.id })) as {
+      entity?: { metadata?: Record<string, unknown> };
+    };
+    expect(got.entity?.metadata).toEqual({ action: 'Stay bounded' });
+  });
+
+  /**
+   * The complement, so the fix cannot degenerate into "ignore every null".
+   * `{ action: null }` alone is the hard case: it filters down to `{}`, which
+   * only reaches the schema because `validateEntityMetadata` no longer treats
+   * an explicit empty object as trivially valid.
+   */
+  it('rejects an explicit null clear for a required schema field', async () => {
+    const created = (await owner.entities.create({
+      type: 'strict-task',
+      name: 'Keep required action',
+      metadata: { action: 'Cannot clear this', status: 'backlog' },
+    })) as { entity: { id: number } };
+
+    await expect(
+      owner.entities.update({
+        entity_id: created.entity.id,
+        metadata: { action: null },
+      })
+    ).rejects.toThrow(/required field: action/);
   });
 });

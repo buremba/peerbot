@@ -69,6 +69,10 @@ import {
 	validateSource,
 	validateTypeRule,
 } from "../../utils/relationship-validation";
+import {
+	exceedsValidationLimits,
+	isEmptyObject,
+} from "../../utils/metadata-limits";
 import { validateEntityMetadata } from "../../utils/schema-validation";
 import { buildEntityUrl } from "../../utils/url-builder";
 import { trackWatcherReaction } from "../../utils/watcher-reactions";
@@ -270,7 +274,7 @@ async function handleCreate(
 	// also resolves public-catalog types.)
 
 	// Validate metadata against entity type's JSON schema (if defined)
-	if (args.metadata && Object.keys(args.metadata).length > 0) {
+	if (args.metadata && !isEmptyObject(args.metadata)) {
 		const validation = await validateEntityMetadata(
 			args.entity_type,
 			args.metadata,
@@ -430,10 +434,32 @@ async function handleUpdate(
 	const before = beforeRows[0];
 
 	// Validate metadata against entity type's JSON schema (if being updated)
-	if (args.metadata !== undefined && Object.keys(args.metadata).length > 0) {
+	if (args.metadata !== undefined && !isEmptyObject(args.metadata)) {
+		/*
+		 * Bound the WHOLE patch before filtering. `validateEntityMetadata` applies
+		 * the size/nesting guard to whatever it is handed, and what it is handed
+		 * below is the null-free copy — but the merge persists the original, so a
+		 * patch of a hundred thousand null keys would shrink to `{}`, sail past
+		 * the guard, and be written. The guard has to see what gets stored.
+		 */
+		if (exceedsValidationLimits(args.metadata)) {
+			throw new ToolUserError(
+				"Metadata validation failed: metadata exceeds size/nesting limits",
+				400,
+			);
+		}
+		/*
+		 * Null is a clear sentinel, so validate a copy without cleared properties:
+		 * an optional clear then reads as an absent property and passes, while a
+		 * required clear fails as a missing one instead of being coerced to "".
+		 * AJV mutates the copy; propagate its coercions without dropping sentinels.
+		 */
+		const metadataForValidation = Object.fromEntries(
+			Object.entries(args.metadata).filter(([, value]) => value !== null),
+		);
 		const validation = await validateEntityMetadata(
 			before.entity_type as string,
-			args.metadata,
+			metadataForValidation,
 			ctx,
 		);
 		if (!validation.valid) {
@@ -442,6 +468,7 @@ async function handleUpdate(
 				"Invalid metadata";
 			throw new ToolUserError(`Metadata validation failed: ${errorMessages}`, 400);
 		}
+		Object.assign(args.metadata, metadataForValidation);
 	}
 
 	// Build update data (only include fields that are present)

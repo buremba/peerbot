@@ -8,7 +8,7 @@
 import { getDb } from '../db/client';
 import type { ToolContext } from '../tools/registry';
 import { formatAjvError, getAjv } from './ajv-singleton';
-import { exceedsValidationLimits, isEmptyObject } from './metadata-limits';
+import { exceedsValidationLimits } from './metadata-limits';
 
 // ============================================
 // Types
@@ -89,7 +89,7 @@ function withoutWatcherProvenanceKeys(
  * Returns { valid: true } if:
  * - Metadata passes schema validation
  * - No schema is defined for the entity type (allows any metadata)
- * - Metadata is empty/undefined
+ * - Metadata is undefined/null
  *
  * Returns { valid: false, errors: [...] } if validation fails.
  */
@@ -98,10 +98,9 @@ export async function validateEntityMetadata(
   metadata: Record<string, unknown> | undefined | null,
   ctx: ToolContext
 ): Promise<ValidationResult> {
-  // No metadata provided - valid (defaults to empty object). Allocation-free
-  // emptiness check so a huge untrusted object isn't materialized via
-  // Object.keys before the size guard below runs.
-  if (!metadata || isEmptyObject(metadata)) {
+  // No metadata provided - valid (defaults to empty object). An explicit empty
+  // object still needs schema validation because the schema may require fields.
+  if (!metadata) {
     return { valid: true };
   }
 

@@ -117,6 +117,47 @@ describe("acl observability", () => {
 			expect(row?.error_message).toContain("401 Unauthorized");
 		});
 
+		it("marks an existing ACL graph failed when its repository feeds drop to zero", async () => {
+			const sql = getTestDb();
+			const org = await createTestOrganization({ name: "Acl Empty Repos Org" });
+			const conn = await createTestConnection({
+				organization_id: org.id,
+				connector_key: "github",
+				visibility: "org",
+				createDefaultFeed: false,
+			});
+			await sql`
+        INSERT INTO authz_source_acl_state (organization_id, connection_id, acl_support, freshness_state, last_synced_at)
+        VALUES (${org.id}, ${String(conn.id)}, 'full', 'fresh', now())
+      `;
+
+			const result = await syncGithubConnectionAcl(
+				{
+					listRepos: async () => [],
+					fetchCollaborators: async () => {
+						throw new Error("must not fetch collaborators without repository feeds");
+					},
+				},
+				{ connectionId: String(conn.id), organizationId: org.id },
+			);
+
+			expect(result).toEqual({ ok: false, reposSynced: 0 });
+			const [state] = await sql`
+        SELECT freshness_state FROM authz_source_acl_state
+        WHERE organization_id = ${org.id} AND connection_id = ${String(conn.id)}
+      `;
+			expect(state?.freshness_state).toBe("failed");
+
+			const [row] = await sql`
+        SELECT error_message FROM connections WHERE id = ${conn.id}
+      `;
+			expect(row?.error_message).toBe(
+				formatAclErrorMessage(
+					"GitHub ACL sync unavailable: no repository feeds configured",
+				),
+			);
+		});
+
 		it("caps the complete persisted failure message at 500 characters", () => {
 			expect(formatAclErrorMessage("x".repeat(1_000))).toHaveLength(500);
 		});

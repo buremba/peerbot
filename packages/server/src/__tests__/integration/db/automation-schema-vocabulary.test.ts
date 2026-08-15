@@ -5,7 +5,7 @@ import { loadMigrationUpSection } from '../../../db/migration-loader';
 import { getTestDb } from '../../setup/test-db';
 import { createTestOrganization, createTestUser } from '../../setup/test-fixtures';
 
-const CUTOVER_MIGRATION = '20260816000000_automation_vocabulary.sql';
+const CUTOVER_MIGRATION = '20260816000010_automation_vocabulary.sql';
 const TRAIT_REWRITE_START = '-- connector-trait-merge-strategy:start';
 const TRAIT_REWRITE_END = '-- connector-trait-merge-strategy:end';
 

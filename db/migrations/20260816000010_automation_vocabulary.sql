@@ -1,5 +1,7 @@
 -- migrate:up
 
+-- Version 20260816000010 follows the ACL cleanup migration merged during the cutover.
+
 -- One atomic breaking cutover. The Helm migration hook scales every application
 -- and worker replica to zero before this file runs, so there is no mixed-schema
 -- window and no compatibility view, alias, or dual-write period.

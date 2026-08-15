@@ -1917,6 +1917,40 @@ describe("apply diff — prune", () => {
     expect(verbOf("watcher", "$system-watcher")).toBe("drift");
   });
 
+  test("prune never deletes or blocks a system-tagged (non-$ slug) Behavior", () => {
+    // chat-link bindings (e.g. chat-slack-97) are system-created with a
+    // `system:chat-link` tag and a plain slug — they are NOT config-owned, so
+    // they must be ignored (drift), not pruned or made to block the apply.
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      watchers: [
+        {
+          slug: "chat-slack-97",
+          behavior_id: "97",
+          tags: ["system:chat-link"],
+        },
+      ],
+    };
+    const plan = computeDiff(desiredKeepingLead(), remote, {
+      prune: true,
+      orgId: "org_self",
+    });
+    const row = plan.rows.find(
+      (r) => r.kind === "watcher" && r.id === "chat-slack-97"
+    );
+    expect(row?.verb).toBe("drift");
+    expect(plan.counts.delete).toBe(0);
+    // No blocking drift rows → the apply is not stalled by it.
+    expect(
+      plan.rows.some(
+        (r) =>
+          r.verb === "drift" &&
+          "blocking" in r &&
+          (r as { blocking: boolean }).blocking
+      )
+    ).toBe(false);
+  });
+
   test("matching prefers the org's own type over a foreign public type with the same slug", () => {
     // Server returns the org's own row first, then a public row with the same
     // slug. Matching must compare desired against the org-owned row (noop), not

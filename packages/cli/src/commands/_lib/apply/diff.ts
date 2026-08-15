@@ -1829,6 +1829,14 @@ export function computeDiff(
     definitionOrgId === orgId;
   // Platform-owned entity types must NEVER be pruned (`$` slug prefix).
   const isSystemSlug = (slug: string): boolean => slug.startsWith("$");
+  // Behaviors the platform/connectors create outside the config (e.g. Slack
+  // chat-link bindings) carry a `system:<kind>` tag and are NOT config-owned.
+  // They must never block an apply or be pruned — like Terraform, unmanaged
+  // resources are ignored, not fought.
+  const isSystemTagged = (tags: string[] | null | undefined): boolean =>
+    (tags ?? []).some((t) => t.startsWith("system:"));
+  const isSystemWatcher = (w: RemoteBehavior): boolean =>
+    isSystemSlug(w.slug) || isSystemTagged(w.tags);
 
   if (only !== "memory") {
     const remoteByAgent = new Map(remote.agents.map((a) => [a.agentId, a]));
@@ -2001,7 +2009,7 @@ export function computeDiff(
     }
     for (const remoteWatcher of remote.watchers) {
       if (!desiredWatcherSlugs.has(remoteWatcher.slug)) {
-        if (isSystemSlug(remoteWatcher.slug)) {
+        if (isSystemWatcher(remoteWatcher)) {
           rows.push({
             kind: "watcher",
             verb: "drift",

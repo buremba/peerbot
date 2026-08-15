@@ -41,6 +41,7 @@ import {
 import { getDb, pgBigintArray, pgTextArray } from '../db/client.js';
 import { runtimeConnectionIdToSlug } from '../lobu/stores/connections-projection.js';
 import { resolveEventAttributionsForItems } from '../utils/entity-link-upsert.js';
+import { aclConnectionIdSql } from './acl-observability.js';
 import { ensureResourceEntityType } from './acl-resource-type.js';
 
 const logger = createLogger('access-graph');
@@ -140,7 +141,24 @@ export async function markAclFresh(
   syncStartedAt: string,
 ): Promise<void> {
   const sql = getDb();
-  await sql`
+  await sql.begin(async (tx) => {
+    // Serialize the state stamp with the connection tombstone. A sync can spend
+    // seconds fetching a remote membership snapshot after the scheduler selected
+    // the row; without this lock, deletion can remove the old ACL state and the
+    // in-flight sync can recreate it after the delete commits. Standalone graph
+    // tests intentionally use synthetic connection ids, so no matching row keeps
+    // the historical materializer behavior; a matching tombstoned row skips the
+    // stamp.
+    const connections = await tx<{ deleted_at: Date | string | null }>`
+      SELECT c.deleted_at
+      FROM connections c
+      WHERE c.organization_id = ${orgId}
+        AND ${tx.unsafe(aclConnectionIdSql('c'))} = ${connectionId}
+      FOR UPDATE
+    `;
+    if (connections.length > 0 && connections.every((row) => row.deleted_at != null)) return;
+
+    await tx`
 		INSERT INTO authz_source_acl_state
 			(organization_id, connection_id, acl_support, freshness_state, last_synced_at, created_at, updated_at)
 		VALUES (${orgId}, ${connectionId}, 'full', 'fresh', current_timestamp, current_timestamp, current_timestamp)
@@ -149,6 +167,7 @@ export async function markAclFresh(
 		              last_synced_at = clock_timestamp(), updated_at = clock_timestamp()
 		WHERE authz_source_acl_state.updated_at < ${syncStartedAt}::timestamptz
 	`;
+  });
 }
 
 /**

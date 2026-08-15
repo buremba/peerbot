@@ -259,7 +259,7 @@ describe("slack-installations projection over app_installations", () => {
     expect(await slack.getSlackInstallByTeamId(store, "T500")).toBeNull();
   });
 
-  test("delete removes the row and purges the secret", async () => {
+  test("delete removes the row, ACL state, and secret", async () => {
     const { orgContext } = await import("../../../lobu/stores/org-context.js");
     const { resolveSecretValue } = await import("../../secrets/index.js");
     await seedAgentRow("throwaway", { organizationId: "org-inst" });
@@ -271,16 +271,26 @@ describe("slack-installations projection over app_installations", () => {
       "T400",
       { botToken: "xoxb-doomed" }
     );
+    const sql = getDb();
+    await sql`
+      INSERT INTO authz_source_acl_state (
+        organization_id, connection_id, acl_support, freshness_state
+      ) VALUES ('org-inst', ${row.id}, 'full', 'failed')
+    `;
 
     await slack.deleteSlackInstall(store, secretStore, row.id);
 
     expect(await slack.getSlackInstallById(store, row.id)).toBeNull();
-    const sql = getDb();
     const appRows = await sql`
       SELECT id FROM app_installations
       WHERE provider = 'slack' AND metadata ->> 'external_id' = ${row.id}
     `;
     expect(appRows).toHaveLength(0);
+    const aclRows = await sql`
+      SELECT connection_id FROM authz_source_acl_state
+      WHERE organization_id = 'org-inst' AND connection_id = ${row.id}
+    `;
+    expect(aclRows).toHaveLength(0);
     const resolved = await orgContext.run({ organizationId: "org-inst" }, () =>
       resolveSecretValue(secretStore, row.config.botToken)
     );

@@ -49,6 +49,7 @@ import {
 	effectiveConnectionErrorMessage,
 	isDevicePinTombstone,
 } from "../../../../utils/device-pin-tombstones";
+import { deleteConnectionAclRow } from "../../../../authz/acl-observability";
 import {
   ConnectionSlugConflictError,
   connectionSlugFormatError,
@@ -2122,7 +2123,7 @@ export async function handleDelete(
   const sql = getDb();
   const { organizationId } = ctx;
 	const targets = await sql`
-		SELECT id, slug, display_name, connector_key, credential_mode
+		SELECT credential_mode
 		FROM connections
 		WHERE id = ${args.connection_id}
 			AND organization_id = ${organizationId}
@@ -2133,10 +2134,6 @@ export async function handleDelete(
 		return { error: "Connection not found or already deleted" };
 	}
 	const target = targets[0] as {
-		id: number;
-		slug: string;
-		display_name: string | null;
-		connector_key: string;
 		credential_mode: string | null;
 	};
 
@@ -2275,6 +2272,11 @@ export async function handleDelete(
       WHERE feed_id IN (SELECT id FROM feeds WHERE connection_id = ${args.connection_id})
         AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
     `;
+
+    await deleteConnectionAclRow(tx, {
+      organizationId,
+      connectionId: args.connection_id,
+    });
 
     return tombstoned;
   });

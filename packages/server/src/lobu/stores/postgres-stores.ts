@@ -538,7 +538,9 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 			const orgId = tryGetOrgId();
 			// `connections` is the sole source of truth — soft-delete (`deleted_at`)
 			// the chat projection (kept for audit; getConnection filters it out).
-			await softDeleteChatConnectionProjection(sql, orgId, connectionId);
+			await sql.begin((tx) =>
+				softDeleteChatConnectionProjection(tx, orgId, connectionId),
+			);
 		},
 	};
 }

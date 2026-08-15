@@ -1222,7 +1222,7 @@ const voiceProfileSynthesis = defineBehavior({
 const socialInterestRadar = defineBehavior({
   agent: personalAgent,
   slug: "social-interest-radar-v2",
-  name: "Social interest radar (X + LinkedIn + Hacker News)",
+  name: "Social interest radar",
   tags: ["social", "x", "linkedin", "notifications"],
   triggers: [
     { kind: "schedule", cron: "25 * * * *", skip_if_unchanged: false },

@@ -364,6 +364,29 @@ export type AutomationExecutionConfig = Static<
   typeof AutomationExecutionConfigSchema
 >;
 
+export const AutomationDeliveryTargetSchema = Type.Object(
+  {
+    connection_id: Type.Integer({
+      minimum: 1,
+      description:
+        "Numeric ID of the active chat connection that owns the bound channel.",
+    }),
+    channel_id: Type.String({
+      minLength: 1,
+      description:
+        'Bound channel key, preferably platform-prefixed (for example "slack:C0123ABCD").',
+    }),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Strict destination for notifications emitted by this Automation. The channel must already be bound to the Automation's agent. Null clears the destination.",
+  }
+);
+export type AutomationDeliveryTarget = Static<
+  typeof AutomationDeliveryTargetSchema
+>;
+
 /**
  * Local CLI runtimes a device-pinned Automation can name in `agent_kind`.
  *
@@ -700,6 +723,12 @@ export const ManageAutomationsSchema = Type.Object(
         }
       )
     ),
+    delivery_target: Type.Optional(
+      Type.Union([Type.Null(), AutomationDeliveryTargetSchema], {
+        description:
+          "[create/update] Strict bound chat channel for this Automation's notifications. Null clears it; omitted keeps the current destination on update.",
+      })
+    ),
     min_cooldown_seconds: Type.Optional(
       Type.Number({
         description:
@@ -896,6 +925,7 @@ export type AutomationUpdatePatch = Pick<
   | "agent_kind"
   | "notification_channel"
   | "notification_priority"
+  | "delivery_target"
   | "min_cooldown_seconds"
 >;
 
@@ -933,9 +963,9 @@ export function normalizeAutomationTags(values: unknown): string[] {
  *   - tags → normalizeAutomationTags (trim/drop-empty/dedupe)
  *   - notification_channel ?? 'canvas', notification_priority ?? 'normal',
  *     min_cooldown_seconds ?? 0
- *   - null-clearable scalars (agent_id/
- *     device_worker_id/agent_kind) and execution_config keep null (a real clear
- *     the write applies) — NOT coerced to undefined, which would hide the clear.
+ *   - null-clearable fields (agent_id/device_worker_id/agent_kind,
+ *     delivery_target, and execution_config) keep null (a real clear the write
+ *     applies) — NOT coerced to undefined, which would hide the clear.
  */
 export function normalizeAutomationUpdatePatch(
   args: ManageAutomationsArgs
@@ -957,6 +987,8 @@ export function normalizeAutomationUpdatePatch(
     patch.notification_channel = args.notification_channel ?? "canvas";
   if (args.notification_priority !== undefined)
     patch.notification_priority = args.notification_priority ?? "normal";
+  if (args.delivery_target !== undefined)
+    patch.delivery_target = args.delivery_target ?? null;
   if (args.min_cooldown_seconds !== undefined)
     patch.min_cooldown_seconds = args.min_cooldown_seconds ?? 0;
   return patch;

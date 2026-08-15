@@ -22,8 +22,9 @@
  *
  * `agentId` (optional) scopes BOTH branches to one agent — set for the
  * conversation tools (an agent may only address ITS OWN bindings), omitted for
- * org-wide notification delivery. `connectionId` (optional) narrows to a single
- * connection (used by targeted notify).
+ * org-wide notification delivery. `connectionId` (optional) narrows by runtime
+ * id (used by targeted notify); `connectionDbId` narrows by the exact stored row
+ * id for contracts that persist that identity.
  *
  * The preview connection's first-class tenant id is useful routing scope, not a
  * reason to disable hosted delivery. A legacy tenantless preview connection may
@@ -49,9 +50,10 @@ export async function resolveBoundChannelRows(
     organizationId: string;
     agentId?: string | null;
     connectionId?: string | null;
+    connectionDbId?: number | null;
   }
 ): Promise<BoundChannelRow[]> {
-  const { organizationId, agentId, connectionId } = opts;
+  const { organizationId, agentId, connectionId, connectionDbId } = opts;
   const slugFilter = connectionId ? runtimeConnectionIdToSlug(connectionId) : null;
   // Agent scope is BINDING ownership (`b.agent_id`), NOT the connection's
   // agent_id — a managed Slack install has agent_id NULL but its bindings still
@@ -65,6 +67,12 @@ export async function resolveBoundChannelRows(
     : sql``;
   const connFilterB = slugFilter
     ? sql`AND b.connection_slug = ${slugFilter}`
+    : sql``;
+  const connDbFilterA = connectionDbId != null
+    ? sql`AND b.connection_id = ${connectionDbId}`
+    : sql``;
+  const connDbFilterB = connectionDbId != null
+    ? sql`AND b.connection_id = ${connectionDbId}`
     : sql``;
 
   // `connections` keys chat rows by `slug` (`agentconn-<id>` for BYO,
@@ -89,6 +97,7 @@ export async function resolveBoundChannelRows(
           AND b.credential_mode IS NOT NULL
           ${agentFilterA}
           ${connFilterA}
+          ${connDbFilterA}
 
         UNION ALL
 
@@ -110,6 +119,7 @@ export async function resolveBoundChannelRows(
           )
           ${agentFilterB}
           ${connFilterB}
+          ${connDbFilterB}
           -- Skip channels the org/agent already owns via branch A.
           AND NOT EXISTS (
             SELECT 1

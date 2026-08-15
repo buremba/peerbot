@@ -479,15 +479,15 @@ export const QUERYABLE_SCHEMA = {
         'reaction_script_compiled',
         'reaction_input_schema',
         'connection_id',
-		{ name: 'source_automation_id', type: 'text' },
-		{ name: 'automation_group_id', type: 'text' },
-        // Scalar columns added in earlier features (device pinning, notification
-        // routing, run rate-limiting) that were missing from this list — drift
-        // test caught it.
+        { name: 'source_automation_id', type: 'text' },
+        { name: 'automation_group_id', type: 'text' },
+        // Runtime columns for device pinning, notification routing, and run
+        // rate-limiting; query_sql exposes them so those settings are auditable.
         'device_worker_id',
         'agent_kind',
         'notification_channel',
         'notification_priority',
+        'delivery_target',
         'min_cooldown_seconds',
         'last_fired_at',
         // Dispatch-time cursor for the min_cooldown_seconds debounce. Distinct

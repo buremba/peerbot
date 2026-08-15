@@ -440,7 +440,8 @@ async function fetchCurrentAutomation(
   if (args.automation_id == null) return null;
   const sql = getDb();
   const rows = await sql`
-    SELECT id, slug, name, description, agent_id, schedule, timezone, triggers, status
+    SELECT id, slug, name, description, agent_id, schedule, timezone, triggers,
+           delivery_target, status
     FROM automations
     WHERE organization_id = ${organizationId} AND id = ${Number(args.automation_id)}
     LIMIT 1
@@ -544,6 +545,7 @@ const AUTOMATION_PATCHABLE_FIELDS = [
   'agent_kind',
   'notification_channel',
   'notification_priority',
+  'delivery_target',
   'min_cooldown_seconds',
 ] as const;
 
@@ -646,6 +648,7 @@ const AUTOMATION_APPROVAL_FIELD_TITLES: Record<string, string> = {
   reactions_guidance: 'Reactions guidance',
   notification_channel: 'Notification channel',
   notification_priority: 'Notification priority',
+  delivery_target: 'Delivery channel',
   min_cooldown_seconds: 'Min cooldown (seconds)',
   name_pattern: 'Name pattern',
 };

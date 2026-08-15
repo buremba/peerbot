@@ -141,6 +141,22 @@ events are included even when those sources return nothing. They are read
 through the same governed `events` scope as any source, so an Automation bound to
 specific entities still only sees trigger inputs linked to those entities.
 
+## Notification routing
+
+An Automation may set `delivery_target` to one active chat channel already bound
+to its agent: `{ connection_id, channel_id }`. Notifications emitted by that
+Automation then go only to that channel. The server resolves the stored binding
+from the Automation ID on the run; worker-supplied notification arguments cannot
+override it.
+
+The target is strict. If the channel is unlinked, archived, moved to another
+agent, or its connection becomes inactive, the send fails closed and does not
+fall back to other linked channels. When the durable notification already
+exists, the delivery error is recorded on it. A null target preserves the legacy
+default of delivering to all linked channels. This setting routes notifications;
+it does not change trigger sources, durable outputs, or replies to an inbound
+chat message.
+
 ## Delivery and safety semantics
 
 - Exact metadata matching supports scalar string, number, boolean, and null
@@ -215,6 +231,7 @@ map when changing the system:
 | Queue, dedupe, coalescing, cooldown | `packages/server/src/runs/queue-service.ts` |
 | Atomic output-to-task handoff | `packages/server/src/tools/admin/manage_automations/complete-window.ts` |
 | Exact governed input reads | `packages/server/src/tools/get_content/` |
+| Automation notification routing | `packages/server/src/automations/delivery-target.ts`, `packages/server/src/notifications/service.ts` |
 | Server/device dispatch | `packages/server/src/automations/automation.ts`, `packages/server/src/worker-api/poll.ts`, Owletto Mac `AutomationDispatcher.swift` |
 | Web authoring and projection | Owletto `automation-trigger-editor.tsx`, `lib/automations/model.ts` |
 | Generated public client | `packages/client/src/generated/` |

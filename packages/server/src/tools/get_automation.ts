@@ -219,6 +219,10 @@ interface AutomationQueryRow {
   triggers: AutomationTrigger[] | null;
   next_run_at: string | null;
   agent_id: string | null;
+  delivery_target: {
+    connection_id: number;
+    channel_id: string;
+  } | null;
   device_worker_id: string | null;
   agent_kind: string | null;
   version: number;
@@ -548,6 +552,7 @@ async function getAutomationImpl(
         i.triggers,
         i.next_run_at,
         i.agent_id,
+        i.delivery_target,
         i.device_worker_id,
         i.agent_kind,
         i.version,
@@ -794,6 +799,7 @@ async function getAutomationImpl(
       triggers: automationRow.triggers ?? [],
       next_run_at: automationRow.next_run_at,
       agent_id: automationRow.agent_id,
+      delivery_target: automationRow.delivery_target ?? null,
       device_worker_id: automationRow.device_worker_id ?? null,
       agent_kind: automationRow.agent_kind ?? null,
       version: pinnedVersion,

@@ -603,6 +603,8 @@ COMMENT ON COLUMN public.automations.triggers IS
   'Automation activation definitions.';
 COMMENT ON COLUMN public.automations.execution_config IS
   'Per-Automation device-worker CLI execution settings. NULL uses defaults.';
+COMMENT ON COLUMN public.automations.delivery_target IS
+  'Strict bound chat destination for Automation notifications: {connection_id, channel_id}. NULL keeps org-wide delivery.';
 COMMENT ON COLUMN public.automations.latest_eval_run_id IS
   'The automation_eval run that produced latest_eval_score. Deliberately no FK because runs are prunable.';
 COMMENT ON COLUMN public.automation_versions.outputs IS

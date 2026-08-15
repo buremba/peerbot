@@ -44,6 +44,7 @@ type PendingApproval = {
 	event_id?: number;
 	action: string;
 	proposal?: { args?: { action?: string; slug?: string } };
+	current?: Record<string, unknown> | null;
 };
 
 async function automationExists(orgId: string, slug: string): Promise<boolean> {
@@ -251,6 +252,48 @@ describe("manage_automations — builder gate e2e", () => {
 		expect(res.status).toBe("pending_approval");
 		expect(res.proposal?.args?.slug).toBe("agent-proposed-skills-only");
 		expect(await automationExists(orgId, "agent-proposed-skills-only")).toBe(false);
+	});
+
+	it("includes the existing delivery target in an update approval snapshot", async () => {
+		const created = (await executeTool(
+			"manage_automations",
+			{
+				action: "create",
+				slug: "delivery-target-approval",
+				name: "Delivery Target Approval",
+				prompt: "Track routed notifications.",
+				agent_id: agentId,
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { automation_id?: string };
+		const automationId = created.automation_id!;
+		const sql = getTestDb();
+		await sql`
+			UPDATE automations
+			SET delivery_target = ${sql.json({
+				connection_id: 541,
+				channel_id: "slack:C_TASKS",
+			})}
+			WHERE organization_id = ${orgId} AND id = ${Number(automationId)}
+		`;
+
+		const pending = (await executeTool(
+			"manage_automations",
+			{
+				action: "update",
+				automation_id: automationId,
+				tags: ["routed"],
+			},
+			TEST_ENV,
+			agentCtx
+		)) as PendingApproval;
+
+		expect(pending.status).toBe("pending_approval");
+		expect(pending.current?.delivery_target).toEqual({
+			connection_id: 541,
+			channel_id: "slack:C_TASKS",
+		});
 	});
 
 	it("approve applies the held create: automation exists, run completed, event superseded", async () => {

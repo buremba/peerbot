@@ -12,7 +12,7 @@ import {
 } from '../../../utils/stable-keys';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity, createTestOrganization, createTestUser } from '../../setup/test-fixtures';
-import { TestApiClient, TestWorkspace } from '../../setup/test-mcp-client';
+import { TestWorkspace } from '../../setup/test-mcp-client';
 
 const CUTOVER_MIGRATION = '20260816000010_automation_vocabulary.sql';
 const TRAIT_REWRITE_START = '-- connector-trait-merge-strategy:start';
@@ -219,20 +219,21 @@ describe('Automation schema vocabulary', () => {
       ownerUserId,
       agentId: 'identity-bridge-agent',
     });
-    const api = await TestApiClient.for({
-      organizationId: workspace.org.id,
-      userId: ownerUserId,
-      memberRole: 'owner',
-    });
-    const created = (await api.automations.create({
-      entity_id: parent.id,
-      slug: 'identity-bridge-automation',
-      prompt: 'Emit a refined profile.',
-      triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
-      outputs: { profiles: { event: 'observation', key: ['channel', 'mode'] } },
-      agent_id: agent.agentId,
-    })) as { automation_id: string };
-    const automationId = Number(created.automation_id);
+    const [created] = await sql<{ id: number }[]>`
+      WITH next_id AS (
+        SELECT nextval('automations_id_seq')::int AS id
+      )
+      INSERT INTO automations (
+        id, organization_id, created_by, agent_id, automation_group_id,
+        name, slug, entity_ids
+      )
+      SELECT
+        id, ${workspace.org.id}, ${ownerUserId}, ${agent.agentId}, id,
+        'Identity bridge Automation', 'identity-bridge-automation', ARRAY[${parent.id}]::bigint[]
+      FROM next_id
+      RETURNING id
+    `;
+    const automationId = Number(created.id);
     const identityKey = formatAutomationEventIdentity(
       'observation',
       computeStableKey({ channel: 'z', mode: 'voice' }, ['channel', 'mode'])
@@ -320,18 +321,21 @@ describe('Automation schema vocabulary', () => {
       ownerUserId,
       agentId: 'canvas-attribution-agent',
     });
-    const api = await TestApiClient.for({
-      organizationId: workspace.org.id,
-      userId: ownerUserId,
-      memberRole: 'owner',
-    });
-    const created = (await api.automations.create({
-      slug: 'canvas-attribution-automation',
-      prompt: 'Summarize historical activity.',
-      triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
-      agent_id: agent.agentId,
-    })) as { automation_id: string };
-    const automationId = Number(created.automation_id);
+    const [created] = await sql<{ id: number }[]>`
+      WITH next_id AS (
+        SELECT nextval('automations_id_seq')::int AS id
+      )
+      INSERT INTO automations (
+        id, organization_id, created_by, agent_id, automation_group_id,
+        name, slug, entity_ids
+      )
+      SELECT
+        id, ${workspace.org.id}, ${ownerUserId}, ${agent.agentId}, id,
+        'Canvas attribution Automation', 'canvas-attribution-automation', '{}'::bigint[]
+      FROM next_id
+      RETURNING id
+    `;
+    const automationId = Number(created.id);
     const period = {
       automationId,
       granularity: 'daily',

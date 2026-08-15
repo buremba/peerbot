@@ -12,6 +12,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
 	createNotificationForUsers,
 	resolveBotDeliveryTargets,
+	resolveNotificationDeliveryPlan,
 } from "../../../notifications/service";
 import { notify } from "../../../tools/admin/notify";
 import type { ToolContext } from "../../../tools/registry";
@@ -56,7 +57,9 @@ async function seedBinding(opts: {
   await createTestAutomationSubscription({
     organizationId: opts.organizationId,
     agentId: opts.agentId,
-    connectionSlug: `agentconn-${opts.connectionId}`,
+    connectionSlug: opts.connectionId.startsWith("slackinst-")
+      ? opts.connectionId
+      : `agentconn-${opts.connectionId}`,
     platform: "slack",
     channelId: opts.channelId,
     teamId: opts.teamId ?? "T_TEST",
@@ -352,6 +355,134 @@ describe("resolveBotDeliveryTargets", () => {
 		const targets = await resolveBotDeliveryTargets(org.id, "conn-2");
 		expect(targets.map((t) => t.connectionId)).toEqual(["conn-2"]);
   });
+
+	it("routes an Automation only to its configured channel and fails closed when that binding disappears", async () => {
+		const org = await createTestOrganization();
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			agentId: "personal-agent",
+		});
+		await seedSlackConnection({
+			organizationId: org.id,
+			agentId: agent.agentId,
+			connectionId: "slackinst-routing",
+			metadata: { teamId: "T_ROUTING" },
+		});
+		await seedBinding({
+			organizationId: org.id,
+			agentId: agent.agentId,
+			connectionId: "slackinst-routing",
+			channelId: "slack:C_TASKS",
+			teamId: "T_ROUTING",
+		});
+		await seedBinding({
+			organizationId: org.id,
+			agentId: agent.agentId,
+			connectionId: "slackinst-routing",
+			channelId: "slack:C_FINANCE",
+			teamId: "T_ROUTING",
+		});
+
+		const sql = getTestDb();
+		const [connection] = await sql<{ id: number }>`
+			SELECT id FROM connections
+			WHERE organization_id = ${org.id}
+			  AND slug = 'slackinst-routing'
+		`;
+		const subscriptions = await sql<{
+			automation_id: number;
+			channel_id: string;
+		}>`
+			SELECT automation_id, channel_id
+			FROM automation_message_subscriptions
+			WHERE organization_id = ${org.id}
+			ORDER BY automation_id
+		`;
+		const tasks = subscriptions.find((row) => row.channel_id === "slack:C_TASKS")!;
+		const finance = subscriptions.find((row) => row.channel_id === "slack:C_FINANCE")!;
+		await sql`
+			UPDATE automations
+			SET delivery_target = ${sql.json({
+				connection_id: Number(connection.id),
+				channel_id: "slack:C_TASKS",
+			})}
+			WHERE id = ${finance.automation_id}
+		`;
+
+		const targeted = await resolveNotificationDeliveryPlan({
+			organizationId: org.id,
+			automationId: finance.automation_id,
+			// A worker-supplied target cannot override the server-owned Automation route.
+			connectionId: "slackinst-routing",
+			channelId: "slack:C_FINANCE",
+		});
+		expect(targeted).toEqual({
+			strictAutomationTarget: true,
+			targets: [
+				{
+					connectionId: "slackinst-routing",
+					platform: "slack",
+					channelKey: "slack:C_TASKS",
+					teamId: "T_ROUTING",
+				},
+			],
+		});
+
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const automationCtx = {
+			organizationId: org.id,
+			userId: user.id,
+			memberRole: "owner",
+			isAuthenticated: true,
+			tokenType: "oauth",
+			scopedToOrg: false,
+			allowCrossOrg: true,
+			scopes: ["mcp:admin"],
+			sourceContext: null,
+			actingAutomationId: finance.automation_id,
+		} as ToolContext;
+		const repeatArgs = {
+			action: "send" as const,
+			title: "Strict Automation delivery",
+			idempotency_key: "strict-automation-delivery",
+		};
+		const first = (await notify(
+			repeatArgs,
+			{} as never,
+			automationCtx,
+		)) as { event_id: number | null };
+
+		await sql`UPDATE automations SET status = 'archived' WHERE id = ${tasks.automation_id}`;
+		const unavailable = await resolveNotificationDeliveryPlan({
+			organizationId: org.id,
+			automationId: finance.automation_id,
+		});
+		// #finance is still bound, but a stale strict #tasks target must never fan
+		// out there as a fallback.
+		expect(unavailable).toEqual({
+			strictAutomationTarget: true,
+			targets: [],
+		});
+
+		const retry = (await notify(
+			repeatArgs,
+			{} as never,
+			automationCtx,
+		)) as { event_id: number | null; notified_count: number };
+		expect(retry).toMatchObject({
+			event_id: first.event_id,
+			notified_count: 0,
+		});
+
+		await expect(
+			notify(
+				{ action: "send", title: "New strict Automation delivery" },
+				{} as never,
+				automationCtx,
+			),
+		).rejects.toThrow(/delivery channel is no longer available/);
+	});
 
   // --- Hosted-preview cross-org delivery (the proactive-notification bug) ---
   // The shared preview bot is ONE connection, in its OWN org, under a placeholder

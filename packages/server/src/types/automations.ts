@@ -11,6 +11,7 @@ import { type Static, Type } from '@sinclair/typebox';
 import {
   AutomationTriggerSchema,
   type AutomationTrigger,
+  AutomationDeliveryTargetSchema,
   AutomationSourceSchema,
   type AutomationSource,
   AutomationOutputsSchema,
@@ -132,6 +133,9 @@ export const AutomationMetadataSchema = Type.Object({
   triggers: Type.Optional(Type.Array(AutomationTriggerSchema)),
   next_run_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   agent_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  delivery_target: Type.Optional(
+    Type.Union([AutomationDeliveryTargetSchema, Type.Null()])
+  ),
   /**
    * Optional FK into `device_workers.id` pinning this automation (and its run)
    * to a specific device worker. NULL/undefined means any worker can claim.

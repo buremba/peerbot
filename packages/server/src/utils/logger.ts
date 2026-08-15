@@ -1,4 +1,5 @@
 import * as Sentry from '@sentry/node';
+import { isSecretKey } from '@lobu/core';
 import pino from 'pino';
 
 /**
@@ -34,13 +35,21 @@ const getLogLevel = (): pino.Level => {
 // and hid `column "events.search_tsv" does not exist`.
 const errSerializer = pino.stdSerializers.err;
 
-const HTTP_SECRET_HEADER_PATHS = [
-  'req.headers.authorization',
-  'req.headers.cookie',
-  'req.headers["proxy-authorization"]',
-  'req.headers["x-api-key"]',
+// Connector definitions may declare provider-specific signature headers, so
+// filter header names at runtime instead of maintaining a finite path list.
+const SIGNATURE_HTTP_HEADER_NAME_PATTERN = /(^|[-_])signature($|[-_])/i;
+
+const HTTP_HEADER_PATHS = [
+  'req.headers.*',
   'res.headers["set-cookie"]',
 ] as const;
+
+function censorHttpHeader(value: unknown, path: string[]): unknown {
+  const headerName = path[path.length - 1];
+  return isSecretKey(headerName) || SIGNATURE_HTTP_HEADER_NAME_PATTERN.test(headerName)
+    ? '[redacted]'
+    : value;
+}
 
 /**
  * Sentry forwarding for logger.error() and logger.fatal().
@@ -183,8 +192,8 @@ const logger = pino(
       },
     },
     redact: {
-      paths: [...HTTP_SECRET_HEADER_PATHS],
-      censor: '[redacted]',
+      paths: [...HTTP_HEADER_PATHS],
+      censor: censorHttpHeader,
     },
     serializers: {
       err: errSerializer,

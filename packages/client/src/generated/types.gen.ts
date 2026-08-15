@@ -4425,6 +4425,19 @@ export type ManageAutomationsData = {
      */
     notification_priority?: "low" | "normal" | "high";
     /**
+     * [create/update] Strict bound chat channel for this Automation's notifications. Null clears it; omitted keeps the current destination on update.
+     */
+    delivery_target?: null | {
+      /**
+       * Numeric ID of the active chat connection that owns the bound channel.
+       */
+      connection_id: number;
+      /**
+       * Bound channel key, preferably platform-prefixed (for example "slack:C0123ABCD").
+       */
+      channel_id: string;
+    };
+    /**
      * [create/update] Minimum seconds between two firings of this Automation (0 = no cooldown).
      */
     min_cooldown_seconds?: number;
@@ -4941,6 +4954,16 @@ export type GetAutomationResponses = {
       >;
       next_run_at?: string | null;
       agent_id?: string | null;
+      delivery_target?: {
+        /**
+         * Numeric ID of the active chat connection that owns the bound channel.
+         */
+        connection_id: number;
+        /**
+         * Bound channel key, preferably platform-prefixed (for example "slack:C0123ABCD").
+         */
+        channel_id: string;
+      } | null;
       device_worker_id?: string | null;
       agent_kind?: string | null;
       version: number;

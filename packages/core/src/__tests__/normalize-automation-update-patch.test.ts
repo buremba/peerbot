@@ -57,6 +57,23 @@ describe("normalizeAutomationUpdatePatch", () => {
     expect(p.execution_config).toBeNull();
   });
 
+  it("delivery_target is patchable and null clears it", () => {
+    const target = {
+      connection_id: 541,
+      channel_id: "slack:C0BQEB5JPU6",
+    };
+    const setPatch = normalizeAutomationUpdatePatch(
+      update({ delivery_target: target } as never)
+    );
+    expect(setPatch).toMatchObject({ delivery_target: target });
+
+    const clearPatch = normalizeAutomationUpdatePatch(
+      update({ delivery_target: null } as never)
+    );
+    expect("delivery_target" in clearPatch).toBe(true);
+    expect((clearPatch as Record<string, unknown>).delivery_target).toBeNull();
+  });
+
   it("notification defaults: channel→'canvas', priority→'normal', cooldown→0", () => {
     const p = normalizeAutomationUpdatePatch(
       update({

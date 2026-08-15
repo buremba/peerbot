@@ -255,8 +255,13 @@ export async function syncSlackConnectionAcl(
             // errors (ratelimit/auth) fall through to `throw` → whole connection
             // fails closed, so we never wipe edges on a flaky fetch.
             logger.warn(
-              { organization_id: organizationId, channel_id: channelId, error: msg },
               'Slack conversations.members: channel unreadable (stale binding) — reconciling to no members',
+              {
+                organization_id: organizationId,
+                connection_id: connectionId,
+                channel_id: channelId,
+                error: msg,
+              },
             );
             channels.push({ channelId, memberSlackUserIds: [] });
             continue;
@@ -282,8 +287,13 @@ export async function syncSlackConnectionAcl(
           isPrivate = info.isPrivate;
         } catch (error) {
           logger.warn(
-            { organization_id: organizationId, channel_id: channelId, error: String(error) },
             'Slack conversations.info failed — syncing channel without a name',
+            {
+              organization_id: organizationId,
+              connection_id: connectionId,
+              channel_id: channelId,
+              error: String(error),
+            },
           );
         }
         channels.push({ channelId, name, isPrivate, memberSlackUserIds });
@@ -317,12 +327,12 @@ export async function syncSlackConnectionAcl(
     return { ok: true, teamsSynced, channelsSynced };
   } catch (error) {
     logger.error(
+      'Slack ACL sync failed — marking connection fail-closed',
       {
         organization_id: organizationId,
         connection_id: connectionId,
         error: String(error),
       },
-      'Slack ACL sync failed — marking connection fail-closed',
     );
     await markConnectionAclFailed(
       organizationId,
@@ -449,8 +459,13 @@ export async function resolveSlackBotIdentity(
       // (leave the connection ungraphed rather than risk wiping a foreign
       // team's edges). Transient failures retry on the next tick.
       logger.warn(
-        { connectionId, teamId, error: String(error) },
         'Slack auth.test failed resolving BYO connection team; skipping',
+        {
+          organization_id: organizationId,
+          connection_id: connectionId,
+          team_id: teamId,
+          error: String(error),
+        },
       );
       return null;
     }
@@ -463,8 +478,12 @@ export async function resolveSlackBotIdentity(
 			  AND external_tenant_id IS NULL
 		`;
     logger.info(
-      { connectionId, teamId: realTeamId },
       'Backfilled teamId onto BYO Slack connection from auth.test',
+      {
+        organization_id: organizationId,
+        connection_id: connectionId,
+        team_id: realTeamId,
+      },
     );
     // Only hand back the token when the confirmed team is the one being graphed;
     // a token for a different workspace must not touch this team's edges.
@@ -523,5 +542,5 @@ export async function runSlackAclSyncTick(coreServices: CoreServices): Promise<v
     if (result.ok) ok += 1;
     else failed += 1;
   }
-  logger.info({ connections: connections.length, ok, failed }, 'Slack ACL sync tick complete');
+  logger.info('Slack ACL sync tick complete', { connections: connections.length, ok, failed });
 }

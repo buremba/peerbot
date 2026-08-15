@@ -317,25 +317,28 @@ ui-review:
 # NOT a substitute for the DB-backed suites (make test-integration) when you
 # touch server/runtime code — but it catches the cheap, common misses.
 pre-pr:
-	@echo "🔎 [1/6] Build workspace packages (fresh dist)..."
+	@echo "🔎 [1/7] Build workspace packages (fresh dist)..."
 	@# Typecheck resolves @lobu/* against built dist, not src. Without this a
 	@# stale core dist yields PHANTOM errors on any contract change (e.g. a new
 	@# field the dist predates) — the exact trap CI avoids by building first.
 	@make build-packages
-	@echo "🔎 [2/6] Strict typecheck (root + excluded packages)..."
+	@echo "🔎 [2/7] Strict typecheck (root + excluded packages)..."
 	@bun run typecheck
 	@for pkg in server connector-worker connector-sdk plugin-api plugin-host plugin-toolkit plugin-memory plugin-conversations plugin-media plugin-mcp embeddings cli; do \
 		echo "   typecheck packages/$$pkg..."; \
 		( cd "packages/$$pkg" && bunx tsc --noEmit ) || exit $$?; \
 	done
-	@echo "🔎 [3/6] Dead-code gate (knip --include files)..."
+	@echo "🔎 [3/7] Dead-code gate (knip --include files)..."
 	@bun run knip --include files
-	@echo "🔎 [4/6] Lint/format (biome)..."
+	@echo "🔎 [4/7] Lint/format (biome)..."
 	@bun run check
-	@echo "🔎 [5/6] Exposed surface naming (no agent-facing 'watcher')..."
+	@echo "🔎 [5/7] Exposed surface naming (no agent-facing 'watcher')..."
 	@bun scripts/check-exposed-surface-naming.ts
-	@echo "🔎 [6/6] Gateway LLM calls (no unapproved one-off clients)..."
+	@echo "🔎 [6/7] Gateway LLM calls (no unapproved one-off clients)..."
 	@node scripts/check-gateway-llm-calls.mjs
+	@echo "🔎 [7/7] Entity writes (no unapproved funnel bypasses)..."
+	@bun scripts/check-entity-write-funnel.mjs
+	@bun test scripts/__tests__/check-entity-write-funnel.test.ts --timeout 30000
 	@echo "✅ pre-pr gates clean. NOTE: confirm your fix is in 'git show HEAD:<file>',"
 	@echo "   not just the working tree — a fix that isn't committed won't reach CI."
 

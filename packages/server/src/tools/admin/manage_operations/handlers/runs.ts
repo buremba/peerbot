@@ -1,3 +1,4 @@
+import { deepRedactSecrets } from "@lobu/core";
 import {
 	GetRunAction,
 	LIST_RUNS_DEFAULT_EXCLUDED_RUN_TYPES,
@@ -63,7 +64,7 @@ function publicBehaviorFields(value: unknown): unknown {
 function publicRunRecord(
 	row: Record<string, unknown>,
 ): Record<string, unknown> {
-	return {
+	const publicRecord: Record<string, unknown> = {
 		...row,
 		input:
 			row.run_type === "internal" &&
@@ -76,6 +77,12 @@ function publicRunRecord(
 			row.initiator_kind === "behavior"
 				? publicBehaviorFields(row.initiator_ref)
 				: row.initiator_ref,
+	};
+	const { created_at, completed_at, ...redactable } = publicRecord;
+	return {
+		...(deepRedactSecrets(redactable) as Record<string, unknown>),
+		created_at,
+		completed_at,
 	};
 }
 

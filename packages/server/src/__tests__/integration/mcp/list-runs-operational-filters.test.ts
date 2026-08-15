@@ -10,6 +10,7 @@
  * Proves:
  *  - default list EXCLUDES 'chat_message' transport runs;
  *  - explicit run_types:['chat_message'] still returns them (trace view);
+ *  - trace input secrets are redacted without corrupting run timestamps;
  *  - new connector_key filter narrows to one connector;
  *  - new created_after / created_before date-range filters work;
  *  - invalid date input is a clean error, not a SQL failure.
@@ -48,15 +49,17 @@ describe("manage_operations list_runs — operational filters (#2051)", () => {
 		connection_id?: number | null;
 		connector_key?: string | null;
 		action_key?: string | null;
+		action_input?: Record<string, unknown> | null;
 		status?: string;
 		created_at?: string;
 	}): Promise<number> => {
 		const db = getTestDb();
 		const [row] = (await db`
-      INSERT INTO runs (organization_id, run_type, connection_id, connector_key, action_key, status, created_at, run_at)
+      INSERT INTO runs (organization_id, run_type, connection_id, connector_key, action_key, action_input, status, created_at, run_at)
       VALUES (
         ${orgId}, ${opts.run_type}, ${opts.connection_id ?? null},
         ${opts.connector_key ?? null}, ${opts.action_key ?? null},
+        ${opts.action_input ? db.json(opts.action_input) : null},
         ${opts.status ?? "completed"},
         ${opts.created_at ?? new Date().toISOString()},
         ${opts.created_at ?? new Date().toISOString()}
@@ -117,6 +120,14 @@ describe("manage_operations list_runs — operational filters (#2051)", () => {
 			await insertRun({
 				run_type: "chat_message",
 				action_key: "thread_response",
+				action_input:
+					i === 0
+						? {
+								runJobToken: "live-worker-bearer",
+								nested: { authorization: "Bearer live-worker-bearer" },
+								safe: "trace context",
+							}
+						: null,
 				created_at: `2026-07-15T12:00:0${i}Z`,
 			});
 		}
@@ -141,6 +152,26 @@ describe("manage_operations list_runs — operational filters (#2051)", () => {
 		const { runs, total } = await listRuns({ run_types: ["chat_message"] });
 		expect(total).toBe(5);
 		expect(runs.every((r) => r.run_type === "chat_message")).toBe(true);
+	});
+
+	it("redacts bearer credentials from the explicit trace view", async () => {
+		const { runs } = await listRuns({ run_types: ["chat_message"] });
+		const credentialBearing = runs.find(
+			(run) =>
+				(run.input as { safe?: string } | null)?.safe === "trace context",
+		);
+		expect(credentialBearing?.input).toEqual({
+			runJobToken: "__LOBU_REDACTED__",
+			nested: { authorization: "__LOBU_REDACTED__" },
+			safe: "trace context",
+		});
+		expect(JSON.stringify(credentialBearing)).not.toContain(
+			"live-worker-bearer",
+		);
+		expect(credentialBearing?.created_at).toBeInstanceOf(Date);
+		expect((credentialBearing?.created_at as Date).toISOString()).toBe(
+			"2026-07-15T12:00:00.000Z",
+		);
 	});
 
 	it("filters by connector_key", async () => {

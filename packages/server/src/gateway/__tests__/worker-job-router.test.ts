@@ -6,7 +6,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import {
   __resetEncryptionKeyCacheForTests,
-  encrypt,
   verifyWorkerToken,
 } from "@lobu/core";
 import { WorkerConnectionManager } from "../worker-dispatch/connection-manager.js";
@@ -90,22 +89,7 @@ describe("WorkerJobRouter", () => {
       expect(queue.getQueue("thread_message_worker-3")).toBeDefined();
     });
 
-    test("re-enqueues durable pending inputs with a freshly minted run token", async () => {
-      const agedToken = encrypt(
-        JSON.stringify({
-          userId: "user",
-          conversationId: "conversation",
-          channelId: "channel",
-          agentId: "agent",
-          organizationId: "org",
-          deploymentName: "worker-1",
-          platform: "api",
-          runId: 42,
-          messageId: "durable-message",
-          timestamp: Date.now() - 3 * 60 * 60 * 1000,
-        }),
-      );
-      expect(verifyWorkerToken(agedToken)).toBeNull();
+    test("re-enqueues durable pending inputs without persisting a bearer token", async () => {
       const payload = {
         botId: "bot",
         userId: "user",
@@ -119,7 +103,6 @@ describe("WorkerJobRouter", () => {
         platformMetadata: {},
         agentOptions: {},
         runId: 42,
-        runJobToken: agedToken,
       };
       const input = {
         payload,
@@ -147,17 +130,11 @@ describe("WorkerJobRouter", () => {
       await router.registerWorker("worker-1");
 
       expect(send).toHaveBeenCalledTimes(1);
-      const replayed = send.mock.calls[0]?.[1] as typeof payload;
-      expect(replayed.runJobToken).not.toBe(agedToken);
-      expect(verifyWorkerToken(replayed.runJobToken)).toEqual(
-        expect.objectContaining({
-          userId: payload.userId,
-          organizationId: payload.organizationId,
-          deploymentName: "worker-1",
-          runId: payload.runId,
-          messageId: payload.messageId,
-        }),
-      );
+      const replayed = send.mock.calls[0]?.[1] as typeof payload & {
+        __lobuDurableReplay?: boolean;
+      };
+      expect(replayed).toEqual({ ...payload, __lobuDurableReplay: true });
+      expect("runJobToken" in replayed).toBe(false);
       expect(send).toHaveBeenCalledWith(
         "thread_message_worker-1",
         replayed,
@@ -174,6 +151,119 @@ describe("WorkerJobRouter", () => {
   });
 
   describe("Job Routing", () => {
+    test("mints the replay token only after the tokenless queue row is claimed", async () => {
+      const payload = {
+        botId: "bot",
+        userId: "user",
+        organizationId: "org",
+        agentId: "agent",
+        conversationId: "conversation",
+        platform: "api",
+        channelId: "channel",
+        messageId: "durable-message",
+        messageText: "steer this run",
+        platformMetadata: {},
+        agentOptions: {},
+        runId: 42,
+      };
+      const input = {
+        payload,
+        tokenClaims: {
+          userId: payload.userId,
+          conversationId: payload.conversationId,
+          channelId: payload.channelId,
+          agentId: payload.agentId,
+          organizationId: payload.organizationId,
+          deploymentName: "worker-1",
+          platform: payload.platform,
+          runId: payload.runId,
+          messageId: payload.messageId,
+        },
+      };
+      const loadPendingInput = mock(async () => input);
+      router.shutdown();
+      router = new WorkerJobRouter(
+        queue as any,
+        connectionManager,
+        async () => [],
+        loadPendingInput,
+      );
+      const res = new MockResponse() as any;
+      connectionManager.addConnection(
+        "worker-1",
+        "user",
+        "conversation",
+        "agent",
+        res,
+      );
+      await router.registerWorker("worker-1");
+      res.clearWrites();
+
+      const routePromise = queue.addJob("thread_message_worker-1", {
+        id: "replay-job",
+        data: { ...payload, __lobuDurableReplay: true },
+      });
+      await TestHelpers.delay(0);
+      const jobEvent = TestHelpers.parseSSE(res.getAllWrites()).find(
+        (event) => event.event === "job",
+      );
+      const delivered = jobEvent?.data?.payload as
+        | (typeof payload & { runJobToken?: string })
+        | undefined;
+      expect(loadPendingInput).toHaveBeenCalledWith({
+        organizationId: "org",
+        deploymentName: "worker-1",
+        messageId: "durable-message",
+        runId: 42,
+      });
+      expect(typeof delivered?.runJobToken).toBe("string");
+      expect(delivered).not.toHaveProperty("__lobuDurableReplay");
+      expect(verifyWorkerToken(delivered?.runJobToken ?? "")).toEqual(
+        expect.objectContaining({
+          organizationId: "org",
+          deploymentName: "worker-1",
+          messageId: "durable-message",
+          runId: 42,
+        }),
+      );
+      router.acknowledgeJob("replay-job");
+      await routePromise;
+    });
+
+    test("fails closed when a tokenless replay has no pending durable input", async () => {
+      const loadPendingInput = mock(async () => null);
+      router.shutdown();
+      router = new WorkerJobRouter(
+        queue as any,
+        connectionManager,
+        async () => [],
+        loadPendingInput,
+      );
+      const res = new MockResponse() as any;
+      connectionManager.addConnection(
+        "worker-1",
+        "user",
+        "conversation",
+        "agent",
+        res,
+      );
+      await router.registerWorker("worker-1");
+      res.clearWrites();
+
+      await expect(
+        queue.addJob("thread_message_worker-1", {
+          id: "missing-replay-job",
+          data: {
+            organizationId: "org",
+            messageId: "durable-message",
+            runId: 42,
+            __lobuDurableReplay: true,
+          },
+        }),
+      ).rejects.toThrow("Durable agent input missing for replayed run 42");
+      expect(res.getAllWrites()).toBe("");
+    });
+
     test("routes job to connected worker via SSE", async () => {
       const res = new MockResponse() as any;
       connectionManager.addConnection(

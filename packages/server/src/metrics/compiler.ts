@@ -11,15 +11,22 @@
  * differs (here a resolved/deduped CTE over events; there a connector's
  * SEMANTIC_VIEW). That step is the Malloy-swappable seam.
  *
- * v1 scope: `eventSet.by: "alias"` + `reads: "current"` only. window/link,
- * raw/asOf reads, and cross-entity joins are deferred (NotImplemented).
+ * v1 scope: `eventSet.by: "alias"`, with `reads: "current"` or `{ asOf }`.
+ * window/link, `raw` reads, and cross-entity joins are deferred
+ * (NotImplemented).
+ *
+ * On the "request paths never aggregate history" invariant: `asOf` adds only a
+ * range predicate on `occurred_at` to the SAME filtered-events relation the
+ * `current` read already scans, so it strictly narrows an existing shape rather
+ * than introducing a new history walk. Reconstructing SYSTEM-time state ("what
+ * we believed then") WOULD need a per-row supersede-chain walk — that is why
+ * `read-mode.ts` refuses it instead of compiling it.
  */
 
 import type { EntityMetrics } from "@lobu/connector-sdk";
 import { inferColumns } from "../utils/infer-measures";
-
-class MetricCompileError extends Error {}
-class MetricNotImplementedError extends MetricCompileError {}
+import { MetricCompileError, MetricNotImplementedError } from "./errors";
+import { compileReadModePredicate } from "./read-mode";
 
 interface CompileMetricInput {
   /** entity_types.id, for the alias-resolution join. */
@@ -69,12 +76,7 @@ export function compileMetricSql(input: CompileMetricInput): string {
       `eventSet resolver "${eventSet.by}" is not implemented in v1 (alias only)`,
     );
   }
-  const reads = eventSet.reads ?? "current";
-  if (reads !== "current") {
-    throw new MetricNotImplementedError(
-      `reads mode "${JSON.stringify(reads)}" is not implemented in v1 ("current" only)`,
-    );
-  }
+  const readsWhere = compileReadModePredicate(eventSet.reads, measure.eventSet);
   if (!eventSet.field) {
     throw new MetricCompileError(`alias eventSet "${measure.eventSet}" needs a "field"`);
   }
@@ -98,6 +100,10 @@ export function compileMetricSql(input: CompileMetricInput): string {
   // ── Inner: filtered events (single table → `metadata` is unambiguous, no
   //    qualifier needed for the config-authored predicates). ─────────────────
   const innerWhere = [
+    // The read-mode cut goes first: it's the most selective predicate available
+    // and it must narrow the set BEFORE dedupe, so a point-in-time answer
+    // dedupes only the rows that existed by then.
+    readsWhere ? `(${readsWhere})` : null,
     eventSet.where ? `(${eventSet.where})` : null,
     measure.where ? `(${measure.where})` : null,
     ...segWheres,

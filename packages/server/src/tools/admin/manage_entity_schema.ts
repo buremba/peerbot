@@ -21,6 +21,7 @@ import {
 } from '@lobu/core/contracts/tools/manage-entity-schema';
 import { validateEntityMetrics } from '@lobu/connector-sdk';
 import { type DbClient, getDb } from '../../db/client';
+import { validateMetricReadModes } from '../../metrics/read-mode';
 import { recordToolConfigChange } from './helpers/config-audit';
 import {
   type DataSourceContext,
@@ -146,10 +147,18 @@ function invalidSchema(message: string): ToolUserError {
  * the referential/shape errors the CLI also checks (a measure naming a missing
  * eventSet/segment, a non-`count` measure without `expr`), so a non-CLI writer
  * (SDK / API) cannot persist a broken metric contract. No-op for null/omitted.
+ *
+ * `reads` modes are checked here rather than inside `validateEntityMetrics`
+ * because their lowering — and therefore what counts as a valid `asOf` — belongs
+ * to the server's metric compiler, not to the shared contract types. A malformed
+ * `asOf` must fail at apply, not at the first query.
  */
 function assertValidMetricsConfig(metricsConfig: unknown): void {
   if (metricsConfig == null) return;
-  const errors = validateEntityMetrics(metricsConfig);
+  const errors = [
+    ...validateEntityMetrics(metricsConfig),
+    ...validateMetricReadModes(metricsConfig),
+  ];
   if (errors.length > 0) {
     throw invalidSchema(`invalid metrics_config: ${errors.join('; ')}`);
   }

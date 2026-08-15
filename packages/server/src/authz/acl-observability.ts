@@ -63,10 +63,20 @@ export async function markConnectionAclFailed(
 	const sql = getDb();
 	const message = formatAclErrorMessage(reason);
 	await sql.begin(async (tx) => {
-		// Lock order is connections → ACL state, matching connection deletion and
-		// fresh-state stamping. Reversing it can deadlock a failing sync against a
-		// concurrent delete (each transaction would hold one row and wait on the
-		// other).
+		// Lock the live connection row FIRST and UNCONDITIONALLY. Two reasons:
+		// (1) lock order is connections → ACL state, matching connection deletion
+		// and fresh-state stamping, so a failing sync cannot deadlock against a
+		// concurrent delete; (2) the message UPDATE below is conditional, so a
+		// repeated identical failure would take no row lock at all and could
+		// interleave with `clearConnectionAclError`.
+		await tx`
+      SELECT 1
+      FROM connections
+      WHERE organization_id = ${organizationId}
+        AND deleted_at IS NULL
+        AND ${tx.unsafe(aclConnectionIdSql())} = ${connectionId}
+      FOR UPDATE
+    `;
 		await tx`
       UPDATE connections
       SET error_message = ${message}, updated_at = current_timestamp
@@ -99,21 +109,41 @@ export async function clearConnectionAclError(
 	connectionId: string,
 ): Promise<void> {
 	const sql = getDb();
-	await sql`
-    UPDATE connections
-    SET error_message = NULL, updated_at = current_timestamp
-    WHERE organization_id = ${organizationId}
-      AND deleted_at IS NULL
-      AND left(error_message, ${ACL_ERROR_MESSAGE_PREFIX.length}) = ${ACL_ERROR_MESSAGE_PREFIX}
-      AND ${sql.unsafe(aclConnectionIdSql())} = ${connectionId}
-      AND EXISTS (
-        SELECT 1
-        FROM authz_source_acl_state a
-        WHERE a.organization_id = ${organizationId}
-          AND a.connection_id = ${connectionId}
-          AND a.freshness_state = 'fresh'
-      )
-  `;
+	await sql.begin(async (tx) => {
+		// Take the connection lock BEFORE reading freshness, in the same order as
+		// `markConnectionAclFailed`. Without it these two can interleave: under
+		// READ COMMITTED a single UPDATE evaluates its freshness subquery against
+		// the snapshot taken when the statement began, and re-checking a blocked
+		// row does NOT re-run that subquery against the newer snapshot. A clear
+		// could therefore observe `fresh`, wait behind a failure that then
+		// commits, and erase the newly recorded reason — leaving
+		// `freshness_state='failed'` with no cause, which is exactly the blindness
+		// this module exists to remove. Locking first forces the freshness read
+		// into a statement that begins after the failure has committed.
+		await tx`
+      SELECT 1
+      FROM connections
+      WHERE organization_id = ${organizationId}
+        AND deleted_at IS NULL
+        AND ${tx.unsafe(aclConnectionIdSql())} = ${connectionId}
+      FOR UPDATE
+    `;
+		await tx`
+      UPDATE connections
+      SET error_message = NULL, updated_at = current_timestamp
+      WHERE organization_id = ${organizationId}
+        AND deleted_at IS NULL
+        AND left(error_message, ${ACL_ERROR_MESSAGE_PREFIX.length}) = ${ACL_ERROR_MESSAGE_PREFIX}
+        AND ${tx.unsafe(aclConnectionIdSql())} = ${connectionId}
+        AND EXISTS (
+          SELECT 1
+          FROM authz_source_acl_state a
+          WHERE a.organization_id = ${organizationId}
+            AND a.connection_id = ${connectionId}
+            AND a.freshness_state = 'fresh'
+        )
+    `;
+	});
 }
 
 /**

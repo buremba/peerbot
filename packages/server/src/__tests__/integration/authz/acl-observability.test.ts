@@ -278,6 +278,71 @@ describe("acl observability", () => {
 			expect(changedConn?.error_message).toContain("403 Forbidden");
 			expect(changedConn?.updated_at).not.toEqual(new Date(SENTINEL));
 		});
+
+		it("does not erase a failure that commits while a clear is already waiting", async () => {
+			const sql = getTestDb();
+			const org = await createTestOrganization({ name: "Acl Clear Race Org" });
+			const conn = await createTestConnection({
+				organization_id: org.id,
+				connector_key: "github",
+				visibility: "org",
+				createDefaultFeed: false,
+			});
+			await sql`
+        INSERT INTO authz_source_acl_state (organization_id, connection_id, acl_support, freshness_state, last_synced_at)
+        VALUES (${org.id}, ${String(conn.id)}, 'full', 'fresh', now())
+      `;
+			await sql`
+        UPDATE connections SET error_message = ${formatAclErrorMessage("older failure")}
+        WHERE id = ${conn.id}
+      `;
+
+			let signalLocked!: () => void;
+			let releaseFailure!: () => void;
+			const locked = new Promise<void>((resolve) => {
+				signalLocked = resolve;
+			});
+			const release = new Promise<void>((resolve) => {
+				releaseFailure = resolve;
+			});
+
+			// An in-flight failure that already holds the connection lock but has
+			// not yet written. This is the window the clear must not slip through.
+			const failing = sql.begin(async (tx) => {
+				await tx`SELECT 1 FROM connections WHERE id = ${conn.id} FOR UPDATE`;
+				signalLocked();
+				await release;
+				await tx`
+          UPDATE connections SET error_message = ${formatAclErrorMessage("newer failure")}
+          WHERE id = ${conn.id}
+        `;
+				await tx`
+          UPDATE authz_source_acl_state SET freshness_state = 'failed', updated_at = clock_timestamp()
+          WHERE organization_id = ${org.id} AND connection_id = ${String(conn.id)}
+        `;
+			});
+
+			await locked;
+			// Start the clear while the failure holds the lock, so it blocks with a
+			// pre-failure view of freshness, then let the failure commit under it.
+			const clearing = clearConnectionAclError(org.id, String(conn.id));
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			releaseFailure();
+			await failing;
+			await clearing;
+
+			const [state] = await sql`
+        SELECT freshness_state FROM authz_source_acl_state
+        WHERE organization_id = ${org.id} AND connection_id = ${String(conn.id)}
+      `;
+			const [row] = await sql`
+        SELECT error_message FROM connections WHERE id = ${conn.id}
+      `;
+			// A failed state with no recorded reason is precisely the blindness this
+			// module exists to remove, so the reason must survive the losing clear.
+			expect(state?.freshness_state).toBe("failed");
+			expect(row?.error_message).toBe(formatAclErrorMessage("newer failure"));
+		});
 	});
 
 	describe("connector-health alerting", () => {

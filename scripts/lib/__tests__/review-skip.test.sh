@@ -37,6 +37,20 @@ write_change() {
   printf '%s\n' "$content" > "$tmp_repo/$path"
 }
 
+seed_gitlink() {
+  local path="${1:-packages/owletto}" target
+  target="$(git -C "$tmp_repo" rev-parse HEAD)"
+  git -C "$tmp_repo" update-index --add --cacheinfo "160000,$target,$path"
+  git -C "$tmp_repo" commit -q -m baseline-submodule
+  git -C "$tmp_repo" branch -f main
+}
+
+bump_gitlink() {
+  local path="${1:-packages/owletto}" target
+  target="$(git -C "$tmp_repo" rev-parse HEAD)"
+  git -C "$tmp_repo" update-index --cacheinfo "160000,$target,$path"
+}
+
 # classify: run the classifier in the fixture repo in the CURRENT shell so the
 # global REVIEW_SKIP_REASON is visible to the assertions. Must be called under
 # `set +e` (the assert helpers do) and must not touch errexit itself.
@@ -99,13 +113,57 @@ write_change packages/foo/src/bar.ts "export const y = 2;"
 commit_all
 assert_review "tiny src change" "packages/foo/src/bar.ts"
 
-# submodule pointer bump → full review (unbounded blast radius)
+# Owletto pointer bump ALONE → skip. Owletto owns review of its content, and
+# check-drift limits the parent to on-main SHAs, so the parent gate need not
+# duplicate that semantic review for a pointer-only diff.
+new_repo
+seed_gitlink
+bump_gitlink
+git -C "$tmp_repo" commit -q -m change
+assert_skip "pure submodule pointer bump"
+[ "$REVIEW_SKIP_REASON" = "pure packages/owletto submodule pointer bump" ] \
+  || fail "pure submodule pointer bump: unexpected reason '$REVIEW_SKIP_REASON'"
+
+# A newly introduced gitlink is not a pointer bump and must receive full review.
 new_repo
 sub_sha="$(git -C "$tmp_repo" rev-parse HEAD)"
 git -C "$tmp_repo" update-index --add --cacheinfo "160000,$sub_sha,packages/owletto"
-# `git add -A` would prune the gitlink (no on-disk dir); commit the staged index
 git -C "$tmp_repo" commit -q -m change
-assert_review "submodule pointer" "packages/owletto"
+assert_review "new submodule gitlink" "packages/owletto"
+
+# Removing a submodule is also not a pointer bump.
+new_repo
+seed_gitlink
+git -C "$tmp_repo" update-index --force-remove packages/owletto
+git -C "$tmp_repo" commit -q -m change
+assert_review "removed submodule gitlink" "packages/owletto"
+
+# Only Owletto has the check-drift protection that makes pointer-only changes
+# safe to skip. Other submodules must still receive full review, even when
+# their path would otherwise look like a safe-class documentation file.
+new_repo
+seed_gitlink vendor/other.md
+bump_gitlink vendor/other.md
+git -C "$tmp_repo" commit -q -m change
+assert_review "unprotected submodule pointer bump" "vendor/other.md"
+
+# A submodule pointer bump mixed with any parent change is not pure, even when
+# the other path would independently be safe-class.
+new_repo
+seed_gitlink
+bump_gitlink
+write_change README.md "docs"
+git -C "$tmp_repo" add README.md
+git -C "$tmp_repo" commit -q -m change
+assert_review "submodule bump + docs" "mixed with other changes"
+
+new_repo
+seed_gitlink
+bump_gitlink
+write_change packages/server/src/index.ts "export const z = 3;"
+git -C "$tmp_repo" add packages/server/src/index.ts
+git -C "$tmp_repo" commit -q -m change
+assert_review "submodule bump + src change" "mixed with other changes"
 
 # lockfile → full review
 new_repo

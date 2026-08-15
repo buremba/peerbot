@@ -4,10 +4,11 @@
 # REVIEWER_MODE=light (default) skips the cross-harness reviewer when the diff
 # is small AND every changed file is in a class where an independent LLM review
 # adds near-zero signal: docs, CI-verified generated output, exact renames
-# between safe-class paths, or additive-only test changes. Everything else —
-# non-test source, migrations,
-# lockfiles, config, submodule pointer bumps, and the gate/CI machinery
-# itself — forces the full review regardless of size.
+# between safe-class paths, additive-only test changes, or a pure
+# packages/owletto pointer bump (Owletto owns review of its content). Everything
+# else — non-test source, migrations, lockfiles, config, and the gate/CI
+# machinery itself — forces the full review regardless of size. An Owletto
+# pointer bump mixed with any parent change also forces the full review.
 #
 # The classifier is deterministic and path-gated. The driving agent may only
 # escalate (REVIEWER_MODE=full), never skip on self-assessed confidence: the
@@ -19,12 +20,16 @@
 REVIEW_SKIP_REASON=""
 
 # Any diff that touches these paths must run the full review, no matter how
-# small. Submodule pointer bumps are escalated because a 2-line SHA delta can
-# import an unbounded amount of behavior; lockfiles and config control the same
-# subsystems (auth, queues, deps) that a src change would escalate on; and the
-# gate machinery itself must never be reviewed by its own skip rule.
+# small. Lockfiles and config control the same subsystems (auth, queues, deps)
+# that a src change would escalate on; and the gate machinery itself must never
+# be reviewed by its own skip rule.
+#
+# The packages/owletto pointer is handled below: Owletto owns semantic review
+# of its content, and `check-drift` forbids pinning anything not on its main
+# branch. Only a pointer-to-pointer change with no companion path is safe;
+# additions, removals, type changes, and every other submodule still escalate.
 review_skip_hard_escalate() {
-  local path="$1" mode
+  local path="$1"
   case "$path" in
     scripts/review*|scripts/lib/review*|Makefile|makefile|.github/*) return 0 ;;
     db/migrations/*|db/schema.sql) return 0 ;;
@@ -32,12 +37,6 @@ review_skip_hard_escalate() {
     package.json) return 0 ;;
     *.toml|*.yaml|*.yml|config/*|.env*|.gitmodules) return 0 ;;
   esac
-  # Submodule pointer: the stage entry carries mode 160000. git diff reports the
-  # submodule path like any other file, so classify it from the index.
-  mode="$(git ls-files --stage -- "$path" 2>/dev/null | awk 'NR==1 {print $1}')"
-  if [ "$mode" = "160000" ]; then
-    return 0
-  fi
   return 1
 }
 
@@ -58,9 +57,11 @@ review_skip_is_test_path() {
 # Returns 0 when the cross-harness review may be skipped, setting
 # REVIEW_SKIP_REASON; returns 1 when the full review is required.
 review_classify_diff() {
-  local base="$1" total status p1 p2 path del saw_file exact_rename
+  local base="$1" total changed_paths status p1 p2 path
+  local base_mode head_mode del saw_file saw_submodule exact_rename
   REVIEW_SKIP_REASON=""
   saw_file=0
+  saw_submodule=0
 
   # -M100% pins rename detection to exact content matches regardless of the
   # user's diff.renames config, so the line count is deterministic.
@@ -70,6 +71,8 @@ review_classify_diff() {
     REVIEW_SKIP_REASON="diff too large ($total lines)"
     return 1
   fi
+
+  changed_paths="$(git diff --name-only -M100% "$base"...HEAD 2>/dev/null | awk 'END {print NR + 0}')"
 
   # --name-status with exact-only rename detection (-M100%): a rename reports
   # BOTH sides, and both must be safe-class — otherwise `git mv src/x.ts x.md`
@@ -89,6 +92,26 @@ review_classify_diff() {
       if review_skip_hard_escalate "$path"; then
         REVIEW_SKIP_REASON="touches '$path'"
         return 1
+      fi
+
+      # Inspect both trees before extension-based safe classes: a gitlink can
+      # have a docs-looking name. Only an existing Owletto pointer changing SHA
+      # as the sole path may skip; all other gitlink changes receive review.
+      base_mode="$(git ls-tree "$base" -- "$path" 2>/dev/null | awk 'NR==1 {print $1}')"
+      head_mode="$(git ls-tree HEAD -- "$path" 2>/dev/null | awk 'NR==1 {print $1}')"
+      if [ "$base_mode" = "160000" ] || [ "$head_mode" = "160000" ]; then
+        if [ "$path" != "packages/owletto" ] \
+          || [ "$base_mode" != "160000" ] \
+          || [ "$head_mode" != "160000" ]; then
+          REVIEW_SKIP_REASON="touches submodule path '$path'"
+          return 1
+        fi
+        if [ "$changed_paths" -ne 1 ]; then
+          REVIEW_SKIP_REASON="submodule pointer bump is mixed with other changes"
+          return 1
+        fi
+        saw_submodule=1
+        continue
       fi
 
       case "$path" in
@@ -116,6 +139,8 @@ review_classify_diff() {
 
   if [ "$saw_file" = "0" ]; then
     REVIEW_SKIP_REASON="no diff against $base"
+  elif [ "$saw_submodule" = "1" ]; then
+    REVIEW_SKIP_REASON="pure packages/owletto submodule pointer bump"
   else
     REVIEW_SKIP_REASON="small safe-class diff ($total lines, docs/renames/generated/additive-tests only)"
   fi

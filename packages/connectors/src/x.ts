@@ -2223,49 +2223,65 @@ export async function prepareXReply(
 		allowed_origins: X_ALLOWED_ORIGINS,
 	});
 
-	const tree = await safeDispatch.dispatch<{
-		tree?: XA11yNode[];
-		document_epoch?: number;
-	}>("get_accessibility_tree", {
-		tab_id: tabId,
-		filter: "interactive",
-		allowed_origins: X_ALLOWED_ORIGINS,
-	});
-	const nodes = Array.isArray(tree.tree) ? tree.tree : [];
-	// X labels the reply box "Post text" today. Prefer that, but fall back to the
-	// first textbox so a relabel degrades instead of breaking — the submit-label
-	// check below is what keeps the fallback safe.
-	const textboxes = nodes.filter((n) => n.role === "textbox");
-	const composer =
-		textboxes.find((n) => /post text/i.test(n.name ?? "")) ?? textboxes[0];
-	if (!composer || typeof tree.document_epoch !== "number") {
-		throw new Error(
-			"prepare_reply: could not locate the reply composer in the accessibility tree",
-		);
+	// Both click_ref and type_ref reject an accessibility ref after X re-renders
+	// the document. Re-extract and retry the whole focus-and-type sequence once;
+	// a second stale ref still fails loudly.
+	const stageDraftOnce = async () => {
+		const tree = await safeDispatch.dispatch<{
+			tree?: XA11yNode[];
+			document_epoch?: number;
+		}>("get_accessibility_tree", {
+			tab_id: tabId,
+			filter: "interactive",
+			allowed_origins: X_ALLOWED_ORIGINS,
+		});
+		const nodes = Array.isArray(tree.tree) ? tree.tree : [];
+		// X labels the reply box "Post text" today. Prefer that, but fall back to
+		// the first textbox so a relabel degrades instead of breaking — the
+		// submit-label check below is what keeps the fallback safe.
+		const textboxes = nodes.filter((n) => n.role === "textbox");
+		const composer =
+			textboxes.find((n) => /post text/i.test(n.name ?? "")) ?? textboxes[0];
+		if (!composer || typeof tree.document_epoch !== "number") {
+			throw new Error(
+				"prepare_reply: could not locate the reply composer in the accessibility tree",
+			);
+		}
+		// Belt and braces: the a11y name is X's, not ours. If a relabelled node
+		// ever matches the textbox lookup, refuse rather than click a submit
+		// control.
+		if (isReplySubmitLabel(composer.name)) {
+			throw new Error(
+				`prepare_reply: refusing to click "${composer.name}" — that is a submit control, not the composer`,
+			);
+		}
+		const ref = {
+			ref_id: composer.ref_id,
+			document_epoch: tree.document_epoch,
+		};
+		await safeDispatch.dispatch("click_ref", {
+			tab_id: tabId,
+			ref,
+			allowed_click: "reply_open",
+			allowed_origins: X_ALLOWED_ORIGINS,
+		});
+		await safeDispatch.dispatch("type_ref", {
+			tab_id: tabId,
+			ref,
+			text: body,
+			clear_first: true,
+			allowed_origins: X_ALLOWED_ORIGINS,
+		});
+	};
+	try {
+		await stageDraftOnce();
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		if (!/^(?:click_ref|type_ref): stale ref \(epoch \d+\)$/.test(message)) {
+			throw error;
+		}
+		await stageDraftOnce();
 	}
-	// Belt and braces: the a11y name is X's, not ours. If a relabelled node ever
-	// matches the textbox lookup, refuse rather than click a submit control.
-	if (isReplySubmitLabel(composer.name)) {
-		throw new Error(
-			`prepare_reply: refusing to click "${composer.name}" — that is a submit control, not the composer`,
-		);
-	}
-	// The ref is only valid for this tab + document snapshot.
-	const ref = { ref_id: composer.ref_id, document_epoch: tree.document_epoch };
-
-	await safeDispatch.dispatch("click_ref", {
-		tab_id: tabId,
-		ref,
-		allowed_click: "reply_open",
-		allowed_origins: X_ALLOWED_ORIGINS,
-	});
-	await safeDispatch.dispatch("type_ref", {
-		tab_id: tabId,
-		ref,
-		text: body,
-		clear_first: true,
-		allowed_origins: X_ALLOWED_ORIGINS,
-	});
 
 	const read = await safeDispatch.dispatch<{
 		value?: {
@@ -2342,7 +2358,7 @@ export default class XConnector extends ConnectorRuntime {
 		name: "X (Twitter)",
 		description:
 			"Fetches tweets, likes, bookmarks, and DMs via the X API v2 or the paired Owletto Chrome extension. Links authors and DM counterparts into the person identity graph.",
-		version: "3.12.0",
+		version: "3.12.1",
 		faviconDomain: "x.com",
 		authSchema: {
 			methods: [

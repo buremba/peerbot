@@ -885,10 +885,15 @@ function stagingDispatcher(
 		stagedText?: string;
 		currentUrl?: string;
 		submitEnabled?: boolean;
+		a11ySnapshots?: readonly [
+			{ refId: number; documentEpoch: number },
+			...Array<{ refId: number; documentEpoch: number }>,
+		];
 	} = {},
 ) {
 	const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
 	let typedText = "";
+	let treeReadCount = 0;
 	const dispatcher = {
 		dispatch: async (action: string, input: Record<string, unknown>) => {
 			calls.push({ action, input });
@@ -900,18 +905,25 @@ function stagingDispatcher(
 					};
 				case "wait_for_selector":
 					return { found: true };
-				case "get_accessibility_tree":
+				case "get_accessibility_tree": {
+					const snapshots =
+						overrides.a11ySnapshots ??
+						([{ refId: 36, documentEpoch: 3 }] as const);
+					const snapshot =
+						snapshots[Math.min(treeReadCount, snapshots.length - 1)];
+					treeReadCount += 1;
 					return {
-						document_epoch: 3,
+						document_epoch: snapshot.documentEpoch,
 						tree: [
 							{ ref_id: 29, role: "button", name: "5 Replies. Reply" },
 							{
-								ref_id: 36,
+								ref_id: snapshot.refId,
 								role: "textbox",
 								name: overrides.composerName ?? "Post text",
 							},
 						],
 					};
+				}
 				case "type_ref":
 					typedText = input.text as string;
 					return { ok: true };
@@ -999,7 +1011,7 @@ describe("isReplySubmitLabel", () => {
 
 describe("prepare_reply action contract", () => {
 	test("pins the connector version for catalog upgrades", () => {
-		expect(new XConnector().definition.version).toBe("3.12.0");
+		expect(new XConnector().definition.version).toBe("3.12.1");
 	});
 
 	// This is a deliberate design decision, not an oversight. Publishing is
@@ -1099,6 +1111,92 @@ describe("prepareXReply", () => {
 				{ tweetUrl: "2083959735481716957", body: "hi" },
 			),
 		).rejects.toThrow(/could not locate the reply composer/);
+	});
+
+	// X re-renders the timeline in place, so a ref captured before a render can
+	// go stale between get_accessibility_tree and click_ref. The action must
+	// re-extract and retry the click once instead of failing on a transient race.
+	test("retries once when the composer click hits a stale a11y ref", async () => {
+		const { dispatcher, calls } = stagingDispatcher({
+			a11ySnapshots: [
+				{ refId: 36, documentEpoch: 3 },
+				{ refId: 47, documentEpoch: 4 },
+			],
+		});
+		let clickAttempts = 0;
+		const result = await prepareXReply(
+			{
+				dispatch: async (action, input) => {
+					if (action === "click_ref") {
+						clickAttempts += 1;
+						if (clickAttempts === 1) {
+							throw new Error("click_ref: stale ref (epoch 3)");
+						}
+					}
+					return dispatcher.dispatch(action, input);
+				},
+			},
+			{ tweetUrl: "2083959735481716957", body: "hi" },
+		);
+
+		expect(result.prepared).toBe(true);
+		expect(clickAttempts).toBe(2);
+		const trees = calls.filter((c) => c.action === "get_accessibility_tree");
+		expect(trees).toHaveLength(2);
+		const clicks = calls.filter((c) => c.action === "click_ref");
+		expect(clicks).toHaveLength(1);
+		const typed = calls.find((c) => c.action === "type_ref");
+		expect(typed?.input.ref).toEqual({ ref_id: 47, document_epoch: 4 });
+	});
+
+	test("retries the focus and type once when typing hits a stale a11y ref", async () => {
+		const { dispatcher, calls } = stagingDispatcher({
+			a11ySnapshots: [
+				{ refId: 36, documentEpoch: 3 },
+				{ refId: 47, documentEpoch: 4 },
+			],
+		});
+		let typeAttempts = 0;
+		const result = await prepareXReply(
+			{
+				dispatch: async (action, input) => {
+					if (action === "type_ref") {
+						typeAttempts += 1;
+						if (typeAttempts === 1) {
+							throw new Error("type_ref: stale ref (epoch 3)");
+						}
+					}
+					return dispatcher.dispatch(action, input);
+				},
+			},
+			{ tweetUrl: "2083959735481716957", body: "hi" },
+		);
+
+		expect(result.prepared).toBe(true);
+		expect(typeAttempts).toBe(2);
+		expect(
+			calls.filter((c) => c.action === "get_accessibility_tree"),
+		).toHaveLength(2);
+		expect(calls.filter((c) => c.action === "click_ref")).toHaveLength(2);
+		const typed = calls.find((c) => c.action === "type_ref");
+		expect(typed?.input.ref).toEqual({ ref_id: 47, document_epoch: 4 });
+	});
+
+	test("fails when the composer click stays stale across the retry", async () => {
+		const { dispatcher } = stagingDispatcher();
+		await expect(
+			prepareXReply(
+				{
+					dispatch: async (action, input) => {
+						if (action === "click_ref") {
+							throw new Error("click_ref: stale ref (epoch 3)");
+						}
+						return dispatcher.dispatch(action, input);
+					},
+				},
+				{ tweetUrl: "2083959735481716957", body: "hi" },
+			),
+		).rejects.toThrow(/stale ref/);
 	});
 
 	test("refuses when the located node is a submit control", async () => {

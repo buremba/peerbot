@@ -4,8 +4,10 @@ import { createLogger } from "@lobu/core";
 import type { IMessageQueue } from "../infrastructure/queue/index.js";
 import {
   attachFreshRunJobToken,
+  getPendingAgentRunInput,
   listPendingAgentRunInputs,
   type PendingAgentRunInput,
+  type PendingAgentRunInputRef,
 } from "../orchestration/agent-run-input.js";
 import type { WorkerConnectionManager } from "./connection-manager.js";
 import {
@@ -47,6 +49,9 @@ export class WorkerJobRouter {
     private loadPendingInputs: (
       deploymentName: string
     ) => Promise<PendingAgentRunInput[]> = listPendingAgentRunInputs,
+    private loadPendingInput: (
+      ref: PendingAgentRunInputRef
+    ) => Promise<PendingAgentRunInput | null> = getPendingAgentRunInput,
   ) {}
 
   /**
@@ -92,7 +97,8 @@ export class WorkerJobRouter {
 
     const pendingInputs = await this.loadPendingInputs(deploymentName);
     for (const input of pendingInputs) {
-      const payload = attachFreshRunJobToken(input);
+      const payload = { ...input.payload, __lobuDurableReplay: true as const };
+      delete payload.runJobToken;
       await this.queue.send(queueName, payload, {
         // Genuine-failure budget only: a replayed input claimed while the
         // reconnected worker is stale/mid-turn is deferred by the dispatch
@@ -184,11 +190,38 @@ export class WorkerJobRouter {
       (job as { id?: string }).id ||
       `job-${Date.now()}-${Math.random().toString(36).substring(7)}`;
 
+    let deliveryData = jobData;
+    if (jobData && typeof jobData === "object") {
+      const replay = jobData as Record<string, unknown>;
+      if (
+        replay.__lobuDurableReplay === true &&
+        !(typeof replay.runJobToken === "string" && replay.runJobToken.length > 0) &&
+        typeof replay.organizationId === "string" &&
+        typeof replay.messageId === "string" &&
+        typeof replay.runId === "number" &&
+        Number.isInteger(replay.runId) &&
+        replay.runId > 0
+      ) {
+        const pendingInput = await this.loadPendingInput({
+          organizationId: replay.organizationId,
+          deploymentName,
+          messageId: replay.messageId,
+          runId: replay.runId,
+        });
+        if (!pendingInput) {
+          throw new Error(
+            `Durable agent input missing for replayed run ${replay.runId}`,
+          );
+        }
+        deliveryData = attachFreshRunJobToken(pendingInput);
+      }
+    }
+
     // Send job to worker via SSE with jobId wrapped in payload
     const jobPayload =
-      typeof jobData === "object" && jobData !== null
-        ? { payload: jobData, jobId: jobId }
-        : { payload: { data: jobData }, jobId: jobId };
+      typeof deliveryData === "object" && deliveryData !== null
+        ? { payload: deliveryData, jobId: jobId }
+        : { payload: { data: deliveryData }, jobId: jobId };
 
     const sent = this.connectionManager.sendSSE(
       connection.writer,

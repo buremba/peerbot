@@ -16,6 +16,13 @@ export interface PendingAgentRunInput {
   tokenClaims: DurableRunTokenClaims;
 }
 
+export interface PendingAgentRunInputRef {
+  organizationId: string;
+  deploymentName: string;
+  messageId: string;
+  runId: number;
+}
+
 function durableClaims(token: WorkerTokenData): DurableRunTokenClaims {
   return {
     userId: token.userId,
@@ -206,6 +213,34 @@ export async function listPendingAgentRunInputs(
     payload: row.payload,
     tokenClaims: row.token_claims,
   }));
+}
+
+/**
+ * Resolve one replay input by its durable primary-key scope. Worker queue rows
+ * deliberately omit the bearer token; the owner pod re-mints it only after
+ * claiming the row, immediately before SSE delivery.
+ */
+export async function getPendingAgentRunInput(
+  ref: PendingAgentRunInputRef,
+): Promise<PendingAgentRunInput | null> {
+  const sql = getDb();
+  const rows = await sql<{
+    payload: MessagePayload;
+    token_claims: DurableRunTokenClaims;
+  }>`
+    SELECT payload, token_claims
+    FROM public.agent_run_input
+    WHERE organization_id = ${ref.organizationId}
+      AND deployment_name = ${ref.deploymentName}
+      AND message_id = ${ref.messageId}
+      AND run_id = ${ref.runId}
+      AND status = 'pending'
+    LIMIT 1
+  `;
+  const row = rows[0];
+  return row
+    ? { payload: row.payload, tokenClaims: row.token_claims }
+    : null;
 }
 
 export async function completeAgentRunInputs(

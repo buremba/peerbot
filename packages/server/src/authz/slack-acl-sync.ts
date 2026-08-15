@@ -220,6 +220,15 @@ export async function syncSlackConnectionAcl(
 
   let teamsSynced = 0;
   let channelsSynced = 0;
+  /*
+   * One cutoff for the whole sync, deliberately shared across the per-team
+   * builds below. The ACL state row is keyed by (org, connection), not by team,
+   * so the freshness fence is a single connection-level decision: either no
+   * revocation landed after this sync began and the connection may be blessed
+   * fresh, or one did and none of its teams may bless it. Capturing a fresh
+   * cutoff per team would let a late team re-bless a connection an earlier
+   * team's window had already lost the race for.
+   */
   const [{ sync_started_at: syncStartedAt }] = await sql<{
     sync_started_at: string;
   }>`

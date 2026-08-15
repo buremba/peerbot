@@ -533,8 +533,8 @@ export async function createNotificationForUsers(
 			);
 
 			await tx`
-      INSERT INTO notification_targets (event_id, user_id)
-      SELECT ${event.id}, uid
+      INSERT INTO notification_targets (event_id, user_id, browser_url)
+      SELECT ${event.id}, uid, ${params.browserUrl ?? null}
       FROM unnest(${pgTextArray(userIds)}::text[]) AS u(uid)
       ON CONFLICT DO NOTHING
     `;
@@ -606,7 +606,7 @@ export async function listNotifications(opts: {
       e.metadata->>'resource_type' AS resource_type,
       e.metadata->>'resource_id' AS resource_id,
       e.metadata->>'resource_url' AS resource_url,
-      e.metadata->>'browser_url' AS browser_url,
+      t.browser_url AS browser_url,
       e.connector_key AS platform,
       e.connection_id,
       source_connection.display_name AS connection_name,
@@ -700,7 +700,7 @@ export async function listNotifications(opts: {
       AND t.user_id = ${opts.userId}
       AND (${cursor}::bigint IS NULL OR e.id < ${cursor})
       AND (${!unreadOnly} OR t.read_at IS NULL)
-      ${browserUrlOnly ? sql`AND COALESCE(e.metadata->>'browser_url', '') <> ''` : sql``}
+      ${browserUrlOnly ? sql`AND t.browser_url IS NOT NULL` : sql``}
 			${clientIds
 				? sql`AND e.client_id = ANY(${pgTextArray(clientIds)}::text[])`
 				: sql``}

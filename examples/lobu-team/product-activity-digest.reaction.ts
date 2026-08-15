@@ -8,11 +8,6 @@ const PRODUCT_ACTIVITY_CONNECTION = "lobu-product-activity-db";
 const LOG_ACTIVITY_CONNECTION = "lobu-production-logs";
 const CARD_TEXT_LIMIT = 2_800;
 
-/** `true` for SQL text — used to keep the keyset-pagination first page unclaused. */
-function sqlTrue(): string {
-  return "TRUE";
-}
-
 export const input = {
   type: "object",
   properties: {
@@ -364,7 +359,7 @@ export default async (
         AND (
           ${
             lastCreatedAt == null
-              ? sqlTrue()
+              ? "TRUE"
               : `(e.created_at > '${lastCreatedAt}'::timestamptz
               OR (e.created_at = '${lastCreatedAt}'::timestamptz AND e.id > ${lastId}))`
           }

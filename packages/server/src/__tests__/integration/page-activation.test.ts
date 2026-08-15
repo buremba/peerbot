@@ -461,5 +461,39 @@ describe("page-activated operation runs", () => {
 		expect(activity.items.some((item) => item.browser_url === "https://x.com/ada/status/123")).toBe(
 			true,
 		);
+		// Respects the declared limit even when the undismissed draft is pinned.
+		expect(activity.items.length).toBeLessThanOrEqual(50);
+		// Items stay in chronological order (oldest first).
+		const ats = activity.items.map((item) => new Date(item.at).getTime());
+		expect([...ats].sort((a, b) => a - b)).toEqual(ats);
+		// RawCard-only fields never leak to the public shape.
+		for (const item of activity.items) {
+			expect(item).not.toHaveProperty("atMs");
+			expect(item).not.toHaveProperty("collapseKey");
+			expect(item).not.toHaveProperty("itemsCollected");
+		}
+	});
+
+	it("excludes browser-handoff drafts when the kind filter omits notifications", async () => {
+		const seeded = await seed();
+		await createNotificationForUsers([seeded.user.id], {
+			organizationId: seeded.org.id,
+			type: "agent_message",
+			title: "Draft ready for Ada on X",
+			body: "Draft: Hello",
+			resourceUrl: `/${seeded.org.slug}/memory?content_ids=1`,
+			browserUrl: "https://x.com/ada/status/123",
+		});
+		const activity = await listOrgActivity({
+			organizationId: seeded.org.id,
+			userId: seeded.user.id,
+			ownerSlug: seeded.org.slug,
+			includeRuns: false,
+			kinds: ["sync"],
+			limit: 50,
+		});
+		expect(activity.items.some((item) => item.browser_url === "https://x.com/ada/status/123")).toBe(
+			false,
+		);
 	});
 });

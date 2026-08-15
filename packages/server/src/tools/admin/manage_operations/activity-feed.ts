@@ -580,36 +580,71 @@ export async function listOrgActivity(opts: {
 	raw.sort((a, b) => b.atMs - a.atMs);
 	const windowed = raw.slice(0, 60);
 	windowed.reverse();
-	const collapsed = aggregate
-		? collapseAdjacentActivityCards(windowed)
-		: windowed;
-	const items = collapsed.slice(-limit).map(({ collapseKey, itemsCollected, atMs, ...card }) => card);
 
 	// Browser-handoff drafts (a browser_url on the notification) must stay in
 	// the attention lens until the user hits Done, regardless of how many newer
-	// cards arrived. The recent-window cap above can drop an undismissed draft,
-	// so fetch undismissed browser-handoff notifications separately and append
-	// any not already included. Bounded, read-only, multi-replica safe.
-	if (includeNotifications && opts.userId) {
+	// cards arrived. Fetch undismissed browser-handoff notifications — only when
+	// the kind filter permits notifications — merge them chronologically, and
+	// pin them so the cap below evicts non-handoff cards instead of the draft.
+	// Bounded, read-only, multi-replica safe.
+	let collapsed: RawCard[];
+	const pinnedHandoffIds = new Set<number>();
+	if (
+		includeNotifications &&
+		opts.userId &&
+		(!kindFilter || kindFilter.has("notification"))
+	) {
 		const { notifications: handoffNotifications } = await listNotifications({
 			organizationId: opts.organizationId,
 			userId: opts.userId,
 			limit: 50,
 			browserUrlOnly: true,
 		});
+		const merged = [...windowed];
 		const present = new Set(
-			items.flatMap((c) =>
+			merged.flatMap((c) =>
 				c.notification_id != null ? [Number(c.notification_id)] : [],
 			),
 		);
 		for (const n of handoffNotifications) {
-			const id = Number(n.id);
-			if (present.has(id)) continue;
 			const card = buildNotificationCard(opts.ownerSlug, n);
-			if (!card) continue;
-			items.push(card);
-			present.add(id);
+			if (!card || card.notification_id == null) continue;
+			if (present.has(card.notification_id)) continue;
+			merged.push(card);
+			present.add(card.notification_id);
+			pinnedHandoffIds.add(card.notification_id);
 		}
+		merged.sort((a, b) => a.atMs - b.atMs);
+		collapsed = aggregate ? collapseAdjacentActivityCards(merged) : merged;
+	} else {
+		collapsed = aggregate
+			? collapseAdjacentActivityCards(windowed)
+			: windowed;
+	}
+
+	// Keep every pinned handoff card and fill the rest of the budget with the
+	// newest non-handoff cards, then project to the public ActivityCard shape
+	// (dropping the RawCard-only fields).
+	let items: ActivityCard[];
+	if (pinnedHandoffIds.size > 0) {
+		const handoffCards = collapsed.filter(
+			(c) =>
+				c.notification_id != null &&
+				pinnedHandoffIds.has(c.notification_id),
+		);
+		const otherCards = collapsed.filter(
+			(c) =>
+				c.notification_id == null ||
+				!pinnedHandoffIds.has(c.notification_id),
+		);
+		const fill = otherCards.slice(-Math.max(0, limit - handoffCards.length));
+		items = [...handoffCards, ...fill]
+			.sort((a, b) => a.atMs - b.atMs)
+			.map(({ collapseKey, itemsCollected, atMs, ...card }) => card);
+	} else {
+		items = collapsed
+			.slice(-limit)
+			.map(({ collapseKey, itemsCollected, atMs, ...card }) => card);
 	}
 
 	return { items, total: items.length, limit };

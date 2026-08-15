@@ -33,7 +33,7 @@ permissions:
 # names this block rather than any Depot-side limit. Two dispatchers that each
 # retry on cancellation then deadlock, neither ever attesting. Falling back to
 # the run id gives each local dispatch its own group. GitHub keeps the per-ref
-      # semantics unchanged: `github.ref` is always set for push and pull_request.
+# semantics unchanged: `github.ref` is always set for push and pull_request.
 concurrency:
   group: ci-${{ github.ref || github.run_id }}
   cancel-in-progress: true

@@ -13,22 +13,51 @@ import type {
   DeleteApiV1AgentsByAgentIdData,
   DeleteApiV1AgentsByAgentIdErrors,
   DeleteApiV1AgentsByAgentIdResponses,
+  GetApiBedrockHealthData,
+  GetApiBedrockHealthResponses,
+  GetApiBedrockOpenaiAByAgentIdV1ModelsData,
+  GetApiBedrockOpenaiAByAgentIdV1ModelsResponses,
+  GetApiV1AgentsByAgentIdConfigData,
+  GetApiV1AgentsByAgentIdConfigErrors,
+  GetApiV1AgentsByAgentIdConfigGrantsData,
+  GetApiV1AgentsByAgentIdConfigGrantsResponses,
+  GetApiV1AgentsByAgentIdConfigResponses,
   GetApiV1AgentsByAgentIdData,
   GetApiV1AgentsByAgentIdErrors,
   GetApiV1AgentsByAgentIdEventsData,
   GetApiV1AgentsByAgentIdEventsErrors,
   GetApiV1AgentsByAgentIdEventsResponse,
   GetApiV1AgentsByAgentIdEventsResponses,
+  GetApiV1AgentsByAgentIdHistoryAutomationsByAutomationIdThreadData,
+  GetApiV1AgentsByAgentIdHistoryAutomationsByAutomationIdThreadResponses,
+  GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesData,
+  GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesResponses,
+  GetApiV1AgentsByAgentIdHistorySessionMessagesData,
+  GetApiV1AgentsByAgentIdHistorySessionMessagesResponses,
+  GetApiV1AgentsByAgentIdHistorySessionStatsData,
+  GetApiV1AgentsByAgentIdHistorySessionStatsResponses,
+  GetApiV1AgentsByAgentIdHistoryStatusData,
+  GetApiV1AgentsByAgentIdHistoryStatusResponses,
+  GetApiV1AgentsByAgentIdHistoryThreadsByThreadIdMessagesData,
+  GetApiV1AgentsByAgentIdHistoryThreadsByThreadIdMessagesResponses,
+  GetApiV1AgentsByAgentIdHistoryThreadsData,
+  GetApiV1AgentsByAgentIdHistoryThreadsResponses,
   GetApiV1AgentsByAgentIdPendingApprovalsData,
   GetApiV1AgentsByAgentIdPendingApprovalsResponses,
   GetApiV1AgentsByAgentIdResponses,
   GetApiV1AgentsData,
   GetApiV1AgentsResponses,
+  GetApiV1FilesByArtifactIdData,
+  GetApiV1FilesByArtifactIdResponses,
   GetAutomationData,
   GetAutomationErrors,
   GetAutomationResponses,
   GetConnectClaimData,
   GetConnectClaimResponses,
+  GetGithubAppInstallCallbackData,
+  GetGithubAppInstallCallbackResponses,
+  GetGithubAppInstallData,
+  GetGithubAppInstallResponses,
   ListMetricsData,
   ListMetricsErrors,
   ListMetricsResponses,
@@ -82,6 +111,8 @@ import type {
   NotifyResponses,
   PatchApiV1AgentsByAgentIdData,
   PatchApiV1AgentsByAgentIdResponses,
+  PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsData,
+  PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsResponses,
   PostApiV1AgentsApproveData,
   PostApiV1AgentsApproveResponses,
   PostApiV1AgentsByAgentIdMessagesData,
@@ -90,6 +121,12 @@ import type {
   PostApiV1AgentsData,
   PostApiV1AgentsErrors,
   PostApiV1AgentsResponses,
+  PostApiV1AppWebhooksByProviderData,
+  PostApiV1AppWebhooksByProviderResponses,
+  PostApiV1AuthByProviderLogoutData,
+  PostApiV1AuthByProviderLogoutResponses,
+  PostApiV1AuthByProviderSaveKeyData,
+  PostApiV1AuthByProviderSaveKeyResponses,
   QueryMetricData,
   QueryMetricErrors,
   QueryMetricResponses,
@@ -737,6 +774,69 @@ export const resolvePath = <ThrowOnError extends boolean = false>(
   });
 
 /**
+ * GET /api/bedrock/health
+ */
+export const getApiBedrockHealth = <ThrowOnError extends boolean = false>(
+  options?: Options<GetApiBedrockHealthData, ThrowOnError>,
+): RequestResult<GetApiBedrockHealthResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).get<
+    GetApiBedrockHealthResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/bedrock/health", ...options });
+
+/**
+ * GET /api/bedrock/openai/a/{agentId}/v1/models
+ */
+export const getApiBedrockOpenaiAByAgentIdV1Models = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<GetApiBedrockOpenaiAByAgentIdV1ModelsData, ThrowOnError>,
+): RequestResult<
+  GetApiBedrockOpenaiAByAgentIdV1ModelsResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    GetApiBedrockOpenaiAByAgentIdV1ModelsResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/bedrock/openai/a/{agentId}/v1/models", ...options });
+
+/**
+ * POST /api/bedrock/openai/a/{agentId}/v1/chat/completions
+ */
+export const postApiBedrockOpenaiAByAgentIdV1ChatCompletions = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsData,
+    ThrowOnError
+  >,
+): RequestResult<
+  PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/bedrock/openai/a/{agentId}/v1/chat/completions", ...options });
+
+/**
+ * GET /api/v1/files/{artifactId}
+ */
+export const getApiV1FilesByArtifactId = <ThrowOnError extends boolean = false>(
+  options: Options<GetApiV1FilesByArtifactIdData, ThrowOnError>,
+): RequestResult<GetApiV1FilesByArtifactIdResponses, unknown, ThrowOnError> =>
+  (options.client ?? client).get<
+    GetApiV1FilesByArtifactIdResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/files/{artifactId}", ...options });
+
+/**
  * List user agents
  */
 export const getApiV1Agents = <ThrowOnError extends boolean = false>(
@@ -907,3 +1007,268 @@ export const getConnectClaim = <ThrowOnError extends boolean = false>(
     unknown,
     ThrowOnError
   >({ url: "/connect/claim", ...options });
+
+/**
+ * GET /api/v1/agents/{agentId}/history/threads
+ */
+export const getApiV1AgentsByAgentIdHistoryThreads = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<GetApiV1AgentsByAgentIdHistoryThreadsData, ThrowOnError>,
+): RequestResult<
+  GetApiV1AgentsByAgentIdHistoryThreadsResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    GetApiV1AgentsByAgentIdHistoryThreadsResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/agents/{agentId}/history/threads", ...options });
+
+/**
+ * GET /api/v1/agents/{agentId}/history/threads/{threadId}/messages
+ */
+export const getApiV1AgentsByAgentIdHistoryThreadsByThreadIdMessages = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    GetApiV1AgentsByAgentIdHistoryThreadsByThreadIdMessagesData,
+    ThrowOnError
+  >,
+): RequestResult<
+  GetApiV1AgentsByAgentIdHistoryThreadsByThreadIdMessagesResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    GetApiV1AgentsByAgentIdHistoryThreadsByThreadIdMessagesResponses,
+    unknown,
+    ThrowOnError
+  >({
+    url: "/api/v1/agents/{agentId}/history/threads/{threadId}/messages",
+    ...options,
+  });
+
+/**
+ * GET /api/v1/agents/{agentId}/history/conversations/{conversationId}/messages
+ */
+export const getApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessages =
+  <ThrowOnError extends boolean = false>(
+    options: Options<
+      GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesData,
+      ThrowOnError
+    >,
+  ): RequestResult<
+    GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesResponses,
+    unknown,
+    ThrowOnError
+  > =>
+    (options.client ?? client).get<
+      GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/api/v1/agents/{agentId}/history/conversations/{conversationId}/messages",
+      ...options,
+    });
+
+/**
+ * GET /api/v1/agents/{agentId}/history/automations/{automationId}/thread
+ */
+export const getApiV1AgentsByAgentIdHistoryAutomationsByAutomationIdThread = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    GetApiV1AgentsByAgentIdHistoryAutomationsByAutomationIdThreadData,
+    ThrowOnError
+  >,
+): RequestResult<
+  GetApiV1AgentsByAgentIdHistoryAutomationsByAutomationIdThreadResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    GetApiV1AgentsByAgentIdHistoryAutomationsByAutomationIdThreadResponses,
+    unknown,
+    ThrowOnError
+  >({
+    url: "/api/v1/agents/{agentId}/history/automations/{automationId}/thread",
+    ...options,
+  });
+
+/**
+ * Get agent connection status
+ */
+export const getApiV1AgentsByAgentIdHistoryStatus = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<GetApiV1AgentsByAgentIdHistoryStatusData, ThrowOnError>,
+): RequestResult<
+  GetApiV1AgentsByAgentIdHistoryStatusResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    GetApiV1AgentsByAgentIdHistoryStatusResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/agents/{agentId}/history/status", ...options });
+
+/**
+ * Get session messages
+ */
+export const getApiV1AgentsByAgentIdHistorySessionMessages = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    GetApiV1AgentsByAgentIdHistorySessionMessagesData,
+    ThrowOnError
+  >,
+): RequestResult<
+  GetApiV1AgentsByAgentIdHistorySessionMessagesResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    GetApiV1AgentsByAgentIdHistorySessionMessagesResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/agents/{agentId}/history/session/messages", ...options });
+
+/**
+ * Get session stats
+ */
+export const getApiV1AgentsByAgentIdHistorySessionStats = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<
+    GetApiV1AgentsByAgentIdHistorySessionStatsData,
+    ThrowOnError
+  >,
+): RequestResult<
+  GetApiV1AgentsByAgentIdHistorySessionStatsResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    GetApiV1AgentsByAgentIdHistorySessionStatsResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/agents/{agentId}/history/session/stats", ...options });
+
+/**
+ * Get agent configuration
+ */
+export const getApiV1AgentsByAgentIdConfig = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<GetApiV1AgentsByAgentIdConfigData, ThrowOnError>,
+): RequestResult<
+  GetApiV1AgentsByAgentIdConfigResponses,
+  GetApiV1AgentsByAgentIdConfigErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    GetApiV1AgentsByAgentIdConfigResponses,
+    GetApiV1AgentsByAgentIdConfigErrors,
+    ThrowOnError
+  >({ url: "/api/v1/agents/{agentId}/config", ...options });
+
+/**
+ * List domain grants
+ */
+export const getApiV1AgentsByAgentIdConfigGrants = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<GetApiV1AgentsByAgentIdConfigGrantsData, ThrowOnError>,
+): RequestResult<
+  GetApiV1AgentsByAgentIdConfigGrantsResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    GetApiV1AgentsByAgentIdConfigGrantsResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/agents/{agentId}/config/grants", ...options });
+
+/**
+ * POST /api/v1/auth/{provider}/save-key
+ */
+export const postApiV1AuthByProviderSaveKey = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<PostApiV1AuthByProviderSaveKeyData, ThrowOnError>,
+): RequestResult<
+  PostApiV1AuthByProviderSaveKeyResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    PostApiV1AuthByProviderSaveKeyResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/auth/{provider}/save-key", ...options });
+
+/**
+ * POST /api/v1/auth/{provider}/logout
+ */
+export const postApiV1AuthByProviderLogout = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<PostApiV1AuthByProviderLogoutData, ThrowOnError>,
+): RequestResult<
+  PostApiV1AuthByProviderLogoutResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    PostApiV1AuthByProviderLogoutResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/auth/{provider}/logout", ...options });
+
+/**
+ * POST /api/v1/app-webhooks/{provider}
+ */
+export const postApiV1AppWebhooksByProvider = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<PostApiV1AppWebhooksByProviderData, ThrowOnError>,
+): RequestResult<
+  PostApiV1AppWebhooksByProviderResponses,
+  unknown,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    PostApiV1AppWebhooksByProviderResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/api/v1/app-webhooks/{provider}", ...options });
+
+/**
+ * GET /github/app/install
+ */
+export const getGithubAppInstall = <ThrowOnError extends boolean = false>(
+  options?: Options<GetGithubAppInstallData, ThrowOnError>,
+): RequestResult<GetGithubAppInstallResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).get<
+    GetGithubAppInstallResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/github/app/install", ...options });
+
+/**
+ * GET /github/app/install/callback
+ */
+export const getGithubAppInstallCallback = <
+  ThrowOnError extends boolean = false,
+>(
+  options?: Options<GetGithubAppInstallCallbackData, ThrowOnError>,
+): RequestResult<GetGithubAppInstallCallbackResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).get<
+    GetGithubAppInstallCallbackResponses,
+    unknown,
+    ThrowOnError
+  >({ url: "/github/app/install/callback", ...options });

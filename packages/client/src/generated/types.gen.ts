@@ -6060,6 +6060,68 @@ export type ResolvePathResponses = {
 export type ResolvePathResponse =
   ResolvePathResponses[keyof ResolvePathResponses];
 
+export type GetApiBedrockHealthData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/api/bedrock/health";
+};
+
+export type GetApiBedrockHealthResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type GetApiBedrockOpenaiAByAgentIdV1ModelsData = {
+  body?: never;
+  path: {
+    agentId: string;
+  };
+  query?: never;
+  url: "/api/bedrock/openai/a/{agentId}/v1/models";
+};
+
+export type GetApiBedrockOpenaiAByAgentIdV1ModelsResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsData = {
+  body?: never;
+  path: {
+    agentId: string;
+  };
+  query?: never;
+  url: "/api/bedrock/openai/a/{agentId}/v1/chat/completions";
+};
+
+export type PostApiBedrockOpenaiAByAgentIdV1ChatCompletionsResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type GetApiV1FilesByArtifactIdData = {
+  body?: never;
+  path: {
+    artifactId: string;
+  };
+  query?: never;
+  url: "/api/v1/files/{artifactId}";
+};
+
+export type GetApiV1FilesByArtifactIdResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
 export type GetApiV1AgentsData = {
   body?: never;
   path?: never;
@@ -6441,6 +6503,247 @@ export type GetConnectClaimData = {
 };
 
 export type GetConnectClaimResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type GetApiV1AgentsByAgentIdHistoryThreadsData = {
+  body?: never;
+  path: {
+    agentId: string;
+  };
+  query?: never;
+  url: "/api/v1/agents/{agentId}/history/threads";
+};
+
+export type GetApiV1AgentsByAgentIdHistoryThreadsResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type GetApiV1AgentsByAgentIdHistoryThreadsByThreadIdMessagesData = {
+  body?: never;
+  path: {
+    agentId: string;
+    threadId: string;
+  };
+  query?: never;
+  url: "/api/v1/agents/{agentId}/history/threads/{threadId}/messages";
+};
+
+export type GetApiV1AgentsByAgentIdHistoryThreadsByThreadIdMessagesResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesData =
+  {
+    body?: never;
+    path: {
+      agentId: string;
+      conversationId: string;
+    };
+    query?: never;
+    url: "/api/v1/agents/{agentId}/history/conversations/{conversationId}/messages";
+  };
+
+export type GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesResponses =
+  {
+    /**
+     * OK
+     */
+    200: unknown;
+  };
+
+export type GetApiV1AgentsByAgentIdHistoryAutomationsByAutomationIdThreadData =
+  {
+    body?: never;
+    path: {
+      agentId: string;
+      automationId: string;
+    };
+    query?: never;
+    url: "/api/v1/agents/{agentId}/history/automations/{automationId}/thread";
+  };
+
+export type GetApiV1AgentsByAgentIdHistoryAutomationsByAutomationIdThreadResponses =
+  {
+    /**
+     * OK
+     */
+    200: unknown;
+  };
+
+export type GetApiV1AgentsByAgentIdHistoryStatusData = {
+  body?: never;
+  path: {
+    agentId: string;
+  };
+  query?: never;
+  url: "/api/v1/agents/{agentId}/history/status";
+};
+
+export type GetApiV1AgentsByAgentIdHistoryStatusResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type GetApiV1AgentsByAgentIdHistorySessionMessagesData = {
+  body?: never;
+  path: {
+    agentId: string;
+  };
+  query?: never;
+  url: "/api/v1/agents/{agentId}/history/session/messages";
+};
+
+export type GetApiV1AgentsByAgentIdHistorySessionMessagesResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type GetApiV1AgentsByAgentIdHistorySessionStatsData = {
+  body?: never;
+  path: {
+    agentId: string;
+  };
+  query?: never;
+  url: "/api/v1/agents/{agentId}/history/session/stats";
+};
+
+export type GetApiV1AgentsByAgentIdHistorySessionStatsResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type GetApiV1AgentsByAgentIdConfigData = {
+  body?: never;
+  path: {
+    agentId: string;
+  };
+  query?: {
+    token?: string;
+  };
+  url: "/api/v1/agents/{agentId}/config";
+};
+
+export type GetApiV1AgentsByAgentIdConfigErrors = {
+  /**
+   * Unauthorized
+   */
+  401: {
+    error: string;
+  };
+};
+
+export type GetApiV1AgentsByAgentIdConfigError =
+  GetApiV1AgentsByAgentIdConfigErrors[keyof GetApiV1AgentsByAgentIdConfigErrors];
+
+export type GetApiV1AgentsByAgentIdConfigResponses = {
+  /**
+   * Configuration
+   */
+  200: unknown;
+};
+
+export type GetApiV1AgentsByAgentIdConfigGrantsData = {
+  body?: never;
+  path: {
+    agentId: string;
+  };
+  query?: never;
+  url: "/api/v1/agents/{agentId}/config/grants";
+};
+
+export type GetApiV1AgentsByAgentIdConfigGrantsResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type PostApiV1AuthByProviderSaveKeyData = {
+  body?: never;
+  path: {
+    provider: string;
+  };
+  query?: never;
+  url: "/api/v1/auth/{provider}/save-key";
+};
+
+export type PostApiV1AuthByProviderSaveKeyResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type PostApiV1AuthByProviderLogoutData = {
+  body?: never;
+  path: {
+    provider: string;
+  };
+  query?: never;
+  url: "/api/v1/auth/{provider}/logout";
+};
+
+export type PostApiV1AuthByProviderLogoutResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type PostApiV1AppWebhooksByProviderData = {
+  body?: never;
+  path: {
+    provider: string;
+  };
+  query?: never;
+  url: "/api/v1/app-webhooks/{provider}";
+};
+
+export type PostApiV1AppWebhooksByProviderResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type GetGithubAppInstallData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/github/app/install";
+};
+
+export type GetGithubAppInstallResponses = {
+  /**
+   * OK
+   */
+  200: unknown;
+};
+
+export type GetGithubAppInstallCallbackData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/github/app/install/callback";
+};
+
+export type GetGithubAppInstallCallbackResponses = {
   /**
    * OK
    */

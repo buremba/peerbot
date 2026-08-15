@@ -83,22 +83,6 @@ const ALLOWED_BYPASSES = [
     reason: "suite-trials projection",
   },
 
-  // Pre-authorized field application.
-  {
-    file: "packages/server/src/tools/admin/entity-field-approval.ts",
-    operation: "update",
-    dynamic: false,
-    fingerprint: "fafff2cf303a2897",
-    reason: "approved field application",
-  },
-  {
-    file: "packages/server/src/utils/entity-field-merge.ts",
-    operation: "update",
-    dynamic: false,
-    fingerprint: "faba984f6f828f86",
-    reason: "owned field merge in caller transaction",
-  },
-
   // Canvas materialization and provisional cleanup.
   {
     file: "packages/server/src/utils/canvas-events.ts",

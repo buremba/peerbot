@@ -39,14 +39,13 @@ import {
 	formatLabel,
 	notifyActionApprovalNeeded,
 } from "../../notifications/triggers";
-import {
-	type FieldMergeResult,
-	mergeEntityFields,
-} from "../../utils/entity-field-merge";
+import type { FieldMergeResult } from "../../utils/entity-field-merge";
 import {
 	createEntity,
 	deleteEntity,
 	type EntityData,
+	mergeEntityFields,
+	patchEntityRows,
 } from "../../utils/entity-management";
 import { applyMergeGroupInTransaction } from "../../utils/entity-merge";
 import { ToolUserError } from "../../utils/errors";
@@ -1159,18 +1158,19 @@ export async function applyEntityFieldChangeProposal(
 			if (Object.keys(apply).length > 0) {
 				const nextName =
 					"$name" in apply ? String(apply.$name ?? "") || null : null;
-				await tx`
-          UPDATE entities SET
-            name = COALESCE(${nextName}, name),
-            parent_id = CASE WHEN ${"$parent_id" in apply} THEN ${
-							("$parent_id" in apply ? apply.$parent_id : null) as number | null
-						}::bigint ELSE parent_id END,
-            content = CASE WHEN ${"$content" in apply} THEN ${
-							"$content" in apply ? (apply.$content as string | null) : null
-						} ELSE content END,
-            updated_at = current_timestamp
-          WHERE id = ${proposal.entity_id} AND deleted_at IS NULL
-        `;
+				await patchEntityRows({
+					tx,
+					ids: [proposal.entity_id],
+					patch: {
+						...(nextName !== null ? { name: nextName } : {}),
+						...("$parent_id" in apply
+							? { parentId: apply.$parent_id as number | null }
+							: {}),
+						...("$content" in apply
+							? { content: apply.$content as string | null }
+							: {}),
+					},
+				});
 			}
 		}
 		return merge;

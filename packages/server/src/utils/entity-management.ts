@@ -30,7 +30,12 @@ import type { Env } from "../index";
 import { querySqlImpl } from "../tools/admin/query_sql";
 import type { ToolContext } from "../tools/registry";
 import { entityLinkMatchSql } from "./content-search";
-import { computeFieldMerge, type FieldControl } from "./entity-field-merge";
+import {
+	computeFieldMerge,
+	type FieldControl,
+	type FieldMergeResult,
+	type FieldWriteSource,
+} from "./entity-field-merge";
 import { type EntityHookContext, getEntityHooks } from "./entity-hooks";
 import { ToolUserError } from "./errors";
 import logger from "./logger";
@@ -464,6 +469,80 @@ export async function hardDeleteEntityRows(params: {
     RETURNING id
   `;
 	return rows.map((row) => Number(row.id)).sort((a, b) => a - b);
+}
+
+/**
+ * Lock one live entity in the caller's transaction, apply the pure ownership
+ * merge, and persist the resulting metadata and controls through the physical
+ * row kernel. Callers remain responsible for audit events or approval delivery.
+ */
+export async function mergeEntityFields(params: {
+	tx: DbClient;
+	entityId: number;
+	fields: Record<string, unknown>;
+	source: FieldWriteSource;
+	/** User id for a human edit; null/system otherwise. */
+	actorId: string | null;
+	note?: string | null;
+	/** Snapshot the proposal was built on (deferred-apply staleness guard). */
+	expectedCurrent?: Record<string, unknown> | null;
+	/** Fields (human source) whose current value is approved as-is, claiming
+	 * ownership without a value change. */
+	affirm?: string[];
+	/** Additional fields a non-human policy decision requires approval for. */
+	requireApproval?: string[] | Set<string>;
+}): Promise<FieldMergeResult> {
+	const { tx, entityId, fields, source, actorId } = params;
+	const rows = await tx<{ metadata: unknown; field_controls: unknown }>`
+    SELECT metadata, field_controls FROM entities
+    WHERE id = ${entityId} AND deleted_at IS NULL
+    FOR UPDATE
+  `;
+	if (rows.length === 0) {
+		throw new Error(`Entity ${entityId} not found`);
+	}
+
+	const metadata = parseEntityJsonObject(rows[0].metadata);
+	const controls = parseEntityJsonObject(rows[0].field_controls) as Record<
+		string,
+		FieldControl
+	>;
+	const merge = computeFieldMerge({
+		metadata,
+		controls,
+		fields,
+		source,
+		actorId,
+		note: params.note ?? null,
+		nowIso: new Date().toISOString(),
+		expectedCurrent: params.expectedCurrent ?? null,
+		affirm: params.affirm,
+		requireApproval: params.requireApproval,
+	});
+
+	if (merge.changed) {
+		await patchEntityRows({
+			tx,
+			ids: [entityId],
+			patch: {
+				metadata: merge.nextMetadata,
+				fieldControls: merge.nextControls,
+			},
+		});
+	}
+	return merge;
+}
+
+function parseEntityJsonObject(value: unknown): Record<string, unknown> {
+	if (value == null) return {};
+	if (typeof value === "string") {
+		try {
+			return JSON.parse(value) as Record<string, unknown>;
+		} catch {
+			return {};
+		}
+	}
+	return value as Record<string, unknown>;
 }
 
 // ============================================

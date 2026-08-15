@@ -3,12 +3,12 @@
 #
 # REVIEWER_MODE=light (default) skips the cross-harness reviewer when the diff
 # is small AND every changed file is in a class where an independent LLM review
-# adds near-zero signal: docs, CI-verified generated output, exact renames
-# between safe-class paths, additive-only test changes, or a pure
-# packages/owletto pointer bump (Owletto owns review of its content). Everything
-# else — non-test source, migrations, lockfiles, config, and the gate/CI
-# machinery itself — forces the full review regardless of size. An Owletto
-# pointer bump mixed with any parent change also forces the full review.
+# adds near-zero signal: docs, CI-verified generated output, the root Bun
+# lockfile, snapshots, exact renames between safe-class paths, additive-only
+# test changes, exact model-literal swaps in lobu.config.ts, or a pure
+# packages/owletto pointer bump. Everything else — non-test source, migrations,
+# behavioral config, static assets, other/mixed submodule changes, and the
+# gate/CI machinery itself — forces the full review regardless of size.
 #
 # The classifier is deterministic and path-gated. The driving agent may only
 # escalate (REVIEWER_MODE=full), never skip on self-assessed confidence: the
@@ -20,9 +20,9 @@
 REVIEW_SKIP_REASON=""
 
 # Any diff that touches these paths must run the full review, no matter how
-# small. Lockfiles and config control the same subsystems (auth, queues, deps)
-# that a src change would escalate on; and the gate machinery itself must never
-# be reviewed by its own skip rule.
+# small. Package manifests and behavioral config control the same subsystems
+# (auth, queues, deps) that a src change would escalate on; and the gate
+# machinery itself must never be reviewed by its own skip rule.
 #
 # The packages/owletto pointer is handled below: Owletto owns semantic review
 # of its content, and `check-drift` forbids pinning anything not on its main
@@ -31,13 +31,64 @@ REVIEW_SKIP_REASON=""
 review_skip_hard_escalate() {
   local path="$1"
   case "$path" in
-    scripts/review*|scripts/lib/review*|Makefile|makefile|.github/*) return 0 ;;
+    scripts/review*|scripts/lib/review*|prompts/review-*|docs/REVIEW_SCHEMA.md|Makefile|makefile|.github/*) return 0 ;;
     db/migrations/*|db/schema.sql) return 0 ;;
-    bun.lock|package-lock.json|yarn.lock|pnpm-lock.yaml|*.lock) return 0 ;;
     package.json) return 0 ;;
-    *.toml|*.yaml|*.yml|config/*|.env*|.gitmodules) return 0 ;;
+    config/*|.env*|.gitmodules) return 0 ;;
+    bun.lock) return 1 ;;
+    *.toml|*.yaml|*.yml) return 0 ;;
   esac
   return 1
+}
+
+# A model route literal swap is a narrow declarative change. Keep this
+# deliberately strict: both sides must be quoted model literals, and any
+# companion prompt, trigger, notification, or structural edit makes the whole
+# file require review.
+review_skip_is_model_only_change() {
+  local diff_spec="$1" path="$2"
+  git diff --unified=0 --no-color "$diff_spec" -- "$path" 2>/dev/null | awk '
+    function model_shape(value, quote_pos, quote_char, tail, close_pos) {
+      quote_pos = match(value, /["\047]/)
+      quote_char = substr(value, quote_pos, 1)
+      tail = substr(value, quote_pos + 1)
+      close_pos = index(tail, quote_char)
+      return substr(value, 1, quote_pos) "<model>" substr(tail, close_pos)
+    }
+    /^--- / || /^\+\+\+ / { next }
+    /^@@ / {
+      hunk++
+      next
+    }
+    /^[+-]/ {
+      line = substr($0, 2)
+      if (line !~ /^[[:space:]]*model:[[:space:]]*["\047][^"\047]+["\047][[:space:]]*,?[[:space:]]*$/) {
+        bad = 1
+        next
+      }
+      shape = model_shape(line)
+      if (substr($0, 1, 1) == "+") {
+        added[hunk]++
+        added_shapes[hunk, shape]++
+      } else {
+        removed[hunk]++
+        removed_shapes[hunk, shape]++
+      }
+    }
+    END {
+      if (hunk == 0 || bad != 0) exit 1
+      for (current = 1; current <= hunk; current++) {
+        if (added[current] == 0 || removed[current] == 0 || added[current] != removed[current]) exit 1
+      }
+      for (key in added_shapes) {
+        if (added_shapes[key] != removed_shapes[key]) exit 1
+      }
+      for (key in removed_shapes) {
+        if (removed_shapes[key] != added_shapes[key]) exit 1
+      }
+      exit 0
+    }
+  '
 }
 
 review_skip_is_test_path() {
@@ -53,26 +104,50 @@ review_skip_is_test_path() {
   return 1
 }
 
-# review_classify_diff <base>
+# review_classify_diff <base> [head|worktree]
 # Returns 0 when the cross-harness review may be skipped, setting
 # REVIEW_SKIP_REASON; returns 1 when the full review is required.
 review_classify_diff() {
-  local base="$1" total changed_paths status p1 p2 path
-  local base_mode head_mode del saw_file saw_submodule exact_rename
+  local base="$1" scope="${2:-head}" merge_base diff_spec total changed_paths status p1 p2 path
+  local base_mode head_mode del saw_file saw_submodule exact_rename untracked submodule_dirty
   REVIEW_SKIP_REASON=""
   saw_file=0
   saw_submodule=0
 
+  merge_base="$(git merge-base "$base" HEAD 2>/dev/null)"
+  if [ -z "$merge_base" ]; then
+    REVIEW_SKIP_REASON="no merge base between '$base' and HEAD"
+    return 1
+  fi
+
+  case "$scope" in
+    head) diff_spec="$merge_base..HEAD" ;;
+    worktree)
+      # Compare the prospective committed tree to the same merge base used by
+      # the posted review. Base-only commits are not part of this branch.
+      diff_spec="$merge_base"
+      untracked="$(git ls-files --others --exclude-standard | head -n 1)"
+      if [ -n "$untracked" ]; then
+        REVIEW_SKIP_REASON="untracked file '$untracked'"
+        return 1
+      fi
+      ;;
+    *)
+      REVIEW_SKIP_REASON="invalid classification scope '$scope'"
+      return 1
+      ;;
+  esac
+
   # -M100% pins rename detection to exact content matches regardless of the
   # user's diff.renames config, so the line count is deterministic.
-  total="$(git diff --numstat -M100% "$base"...HEAD 2>/dev/null | awk '{a+=$1; d+=$2} END {print a+d}')"
+  total="$(git diff --numstat -M100% "$diff_spec" 2>/dev/null | awk '{a+=$1; d+=$2} END {print a+d}')"
   [ -n "$total" ] || total=0
   if [ "$total" -ge 100 ]; then
     REVIEW_SKIP_REASON="diff too large ($total lines)"
     return 1
   fi
 
-  changed_paths="$(git diff --name-only -M100% "$base"...HEAD 2>/dev/null | awk 'END {print NR + 0}')"
+  changed_paths="$(git diff --name-only -M100% "$diff_spec" 2>/dev/null | awk 'END {print NR + 0}')"
 
   # --name-status with exact-only rename detection (-M100%): a rename reports
   # BOTH sides, and both must be safe-class — otherwise `git mv src/x.ts x.md`
@@ -97,8 +172,23 @@ review_classify_diff() {
       # Inspect both trees before extension-based safe classes: a gitlink can
       # have a docs-looking name. Only an existing Owletto pointer changing SHA
       # as the sole path may skip; all other gitlink changes receive review.
-      base_mode="$(git ls-tree "$base" -- "$path" 2>/dev/null | awk 'NR==1 {print $1}')"
-      head_mode="$(git ls-tree HEAD -- "$path" 2>/dev/null | awk 'NR==1 {print $1}')"
+      base_mode="$(git ls-tree "$merge_base" -- "$path" 2>/dev/null | awk 'NR==1 {print $1}')"
+      if [ "$scope" = "worktree" ]; then
+        head_mode="$(git ls-files --stage -- "$path" 2>/dev/null | awk 'NR==1 {print $1}')"
+        if [ "$head_mode" = "160000" ] \
+          && git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+          if ! submodule_dirty="$(git -C "$path" status --porcelain --untracked-files=normal 2>/dev/null)"; then
+            REVIEW_SKIP_REASON="could not inspect submodule path '$path'"
+            return 1
+          fi
+          if [ -n "$submodule_dirty" ]; then
+            REVIEW_SKIP_REASON="submodule path '$path' has uncommitted content"
+            return 1
+          fi
+        fi
+      else
+        head_mode="$(git ls-tree HEAD -- "$path" 2>/dev/null | awk 'NR==1 {print $1}')"
+      fi
       if [ "$base_mode" = "160000" ] || [ "$head_mode" = "160000" ]; then
         if [ "$path" != "packages/owletto" ] \
           || [ "$base_mode" != "160000" ] \
@@ -117,6 +207,15 @@ review_classify_diff() {
       case "$path" in
         *.md|README*|LICENSE|docs/*) continue ;;                               # docs: safe
         packages/owletto/src/routeTree.gen.ts|*/dist/*) continue ;;            # generated: safe
+        bun.lock) continue ;;                                                   # workspace lockfile: CI-installed
+        */__snapshots__/*|*.snap) continue ;;                                  # snapshots: CI-checked
+      esac
+      case "$path" in
+        lobu.config.ts|*/lobu.config.ts)
+          if review_skip_is_model_only_change "$diff_spec" "$path"; then
+            continue
+          fi
+          ;;
       esac
       if review_skip_is_test_path "$path"; then
         # An exact rename changes no content, so no assertion can have moved.
@@ -125,7 +224,7 @@ review_classify_diff() {
         fi
         # Additive-only tests are safe; a test change that deletes or rewrites
         # assertions is exactly where regressions hide, so it escalates.
-        del="$(git diff --numstat "$base"...HEAD -- "$path" 2>/dev/null | awk 'NR==1 {print $2}')"
+        del="$(git diff --numstat "$diff_spec" -- "$path" 2>/dev/null | awk 'NR==1 {print $2}')"
         if [ "${del:-0}" -eq 0 ]; then
           continue
         fi
@@ -135,14 +234,14 @@ review_classify_diff() {
       REVIEW_SKIP_REASON="unclassified file '$path'"
       return 1
     done
-  done < <(git diff --name-status -M100% "$base"...HEAD 2>/dev/null)
+  done < <(git diff --name-status -M100% "$diff_spec" 2>/dev/null)
 
   if [ "$saw_file" = "0" ]; then
     REVIEW_SKIP_REASON="no diff against $base"
   elif [ "$saw_submodule" = "1" ]; then
     REVIEW_SKIP_REASON="pure packages/owletto submodule pointer bump"
   else
-    REVIEW_SKIP_REASON="small safe-class diff ($total lines, docs/renames/generated/additive-tests only)"
+    REVIEW_SKIP_REASON="small path/content-gated safe-class diff ($total lines)"
   fi
   return 0
 }

@@ -94,8 +94,8 @@ PI_REVIEW_MODEL="${PI_REVIEW_MODEL:-gpt-5.6-terra}"
 PI_REVIEW_PROVIDER="${PI_REVIEW_PROVIDER:-openai-codex}"
 REVIEWER_CLI="${REVIEWER_CLI:-auto}"
 # light (default): skip the cross-harness reviewer for small safe-class diffs
-# (docs/renames/generated/additive-tests or a pure Owletto pointer bump, <100
-# lines). full: always run it.
+# (docs/renames/generated/root bun.lock/snapshots/additive-tests, exact model
+# route swaps, or a pure Owletto pointer bump; <100 lines). full: always run it.
 # REVIEWER_SHADOW=1 runs the full reviewer on a would-be-skipped diff and logs
 # the skip decision alongside the real verdict for measuring the false-skip rate.
 REVIEWER_MODE="${REVIEWER_MODE:-light}"
@@ -423,8 +423,7 @@ REVIEW_RUN_DIR="$(mktemp -d /tmp/lobu-review.XXXXXX)"
 
 # --- safe-class skip ---------------------------------------------------------
 # REVIEWER_MODE=light (default) skips the cross-harness reviewer for small
-# diffs confined to docs / pure renames / CI-verified generated output /
-# additive-only tests, plus pure packages/owletto pointer bumps. The
+# diffs confined to the path/content-gated safe classes in review-skip.sh. The
 # deterministic CI suites still run as their own required checks; only the
 # independent LLM verdict is skipped, and it is posted under its own marker so
 # a skipped merge is auditable. The driving agent can force the full review

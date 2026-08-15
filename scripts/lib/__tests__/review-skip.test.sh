@@ -13,10 +13,11 @@ fail() {
 }
 
 tmp_repo="$(mktemp -d /tmp/lobu-review-skip.XXXXXX)"
-trap 'rm -rf "$tmp_repo"' EXIT
+sub_repo="${tmp_repo}.sub"
+trap 'rm -rf "$tmp_repo" "$sub_repo"' EXIT
 
 new_repo() {
-  rm -rf "$tmp_repo"
+  rm -rf "$tmp_repo" "$sub_repo"
   mkdir -p "$tmp_repo"
   git -C "$tmp_repo" init -q
   git -C "$tmp_repo" config user.email test@test
@@ -64,6 +65,16 @@ classify() {
   return "$rc"
 }
 
+classify_worktree() {
+  local prev rc
+  prev="$(pwd)"
+  cd "$tmp_repo"
+  review_classify_diff main worktree
+  rc=$?
+  cd "$prev"
+  return "$rc"
+}
+
 # assert_skip <label>: classifier must return 0 (skip eligible)
 assert_skip() {
   local label="$1" rc
@@ -83,6 +94,29 @@ assert_review() {
   rc=$?
   set -e
   [ "$rc" -eq 1 ] || fail "$label: expected review (rc 1), got rc $rc"
+  case "${REVIEW_SKIP_REASON:-}" in
+    *"$fragment"*) ;;
+    *) fail "$label: expected reason to contain '$fragment', got '${REVIEW_SKIP_REASON}'" ;;
+  esac
+}
+
+assert_worktree_skip() {
+  local label="$1" rc
+  set +e
+  classify_worktree
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "$label: expected worktree skip (rc 0), got rc $rc"
+  [ -n "$REVIEW_SKIP_REASON" ] || fail "$label: skip with no REVIEW_SKIP_REASON"
+}
+
+assert_worktree_review() {
+  local label="$1" fragment="$2" rc
+  set +e
+  classify_worktree
+  rc=$?
+  set -e
+  [ "$rc" -eq 1 ] || fail "$label: expected worktree review (rc 1), got rc $rc"
   case "${REVIEW_SKIP_REASON:-}" in
     *"$fragment"*) ;;
     *) fail "$label: expected reason to contain '$fragment', got '${REVIEW_SKIP_REASON}'" ;;
@@ -123,6 +157,24 @@ git -C "$tmp_repo" commit -q -m change
 assert_skip "pure submodule pointer bump"
 [ "$REVIEW_SKIP_REASON" = "pure packages/owletto submodule pointer bump" ] \
   || fail "pure submodule pointer bump: unexpected reason '$REVIEW_SKIP_REASON'"
+
+new_repo
+seed_gitlink
+bump_gitlink
+assert_worktree_skip "uncommitted pure submodule pointer bump"
+
+new_repo
+git init -q "$sub_repo"
+git -C "$sub_repo" config user.email test@test
+git -C "$sub_repo" config user.name test
+printf 'baseline\n' > "$sub_repo/tracked.txt"
+git -C "$sub_repo" add tracked.txt
+git -C "$sub_repo" commit -q -m baseline
+git -c protocol.file.allow=always -C "$tmp_repo" submodule add -q "$sub_repo" packages/owletto
+git -C "$tmp_repo" commit -q -m baseline-submodule
+git -C "$tmp_repo" branch -f main
+printf 'dirty\n' >> "$tmp_repo/packages/owletto/tracked.txt"
+assert_worktree_review "dirty submodule is not a pointer bump" "uncommitted content"
 
 # A newly introduced gitlink is not a pointer bump and must receive full review.
 new_repo
@@ -165,11 +217,125 @@ git -C "$tmp_repo" add packages/server/src/index.ts
 git -C "$tmp_repo" commit -q -m change
 assert_review "submodule bump + src change" "mixed with other changes"
 
-# lockfile → full review
+# The root Bun lockfile is installed and built by deterministic CI, so a small
+# lock-only change does not need an LLM pass.
 new_repo
 write_change bun.lock "{}"
 commit_all
-assert_review "lockfile" "bun.lock"
+assert_skip "lockfile-only"
+
+# Foreign and arbitrary *.lock files are not consumed by this Bun workspace's
+# dependency gates, so a suffix alone must not suppress review.
+new_repo
+write_change pnpm-lock.yaml "lockfileVersion: 9"
+commit_all
+assert_review "foreign yaml lockfile" "pnpm-lock.yaml"
+
+new_repo
+write_change package-lock.json '{}'
+commit_all
+assert_review "foreign json lockfile" "package-lock.json"
+
+new_repo
+write_change runtime.lock "placeholder"
+commit_all
+assert_review "arbitrary lock suffix" "runtime.lock"
+
+# A lockfile suffix must not override paths that are configuration by contract.
+new_repo
+write_change config/runtime.lock "placeholder"
+commit_all
+assert_review "config lockfile" "config/runtime.lock"
+
+new_repo
+write_change .env.lock "placeholder"
+commit_all
+assert_review "environment lockfile" ".env.lock"
+
+# Snapshots are checked against deterministic test output. Static assets can be
+# production content or unused additions, so they still need semantic review.
+new_repo
+write_change packages/foo/src/__tests__/__snapshots__/view.test.ts.snap $'exports[`view 1`] = `updated`;'
+commit_all
+assert_skip "snapshot-only"
+
+new_repo
+write_change packages/foo/assets/logo.svg '<svg viewBox="0 0 1 1"></svg>'
+commit_all
+assert_review "static-asset-only" "logo.svg"
+
+new_repo
+write_change packages/foo/assets/logo.png "binary-placeholder"
+commit_all
+assert_review "raster-asset-only" "logo.png"
+
+# A model identifier swap in a Lobu config is declarative routing, not source
+# behavior. Only the exact literal may change; companion config edits escalate.
+new_repo
+write_change examples/personal-agent/lobu.config.ts $'export default {\n  model: "qwen/old",\n};'
+commit_all
+git -C "$tmp_repo" branch -f main
+write_change examples/personal-agent/lobu.config.ts $'export default {\n  model: "hetzner/new",\n};'
+commit_all
+assert_skip "model-only config"
+
+new_repo
+write_change examples/personal-agent/lobu.config.ts $'export default {\n  model: "qwen/old",\n};'
+commit_all
+git -C "$tmp_repo" branch -f main
+write_change examples/personal-agent/lobu.config.ts $'export default {\n  model: "hetzner/new",\n  model: "hetzner/duplicate",\n};'
+commit_all
+assert_review "model structural edit" "lobu.config.ts"
+
+# A model literal moved between Behavior blocks changes which Behavior uses the
+# route. The delete-only and add-only hunks must not cancel out globally.
+new_repo
+write_change examples/personal-agent/lobu.config.ts $'export default {\n  behaviors: [\n    {\n      name: "first",\n      model: "qwen/old",\n      prompt: "first",\n    },\n    {\n      name: "second",\n      prompt: "second",\n    },\n  ],\n};'
+commit_all
+git -C "$tmp_repo" branch -f main
+write_change examples/personal-agent/lobu.config.ts $'export default {\n  behaviors: [\n    {\n      name: "first",\n      prompt: "first",\n    },\n    {\n      name: "second",\n      model: "qwen/old",\n      prompt: "second",\n    },\n  ],\n};'
+commit_all
+assert_review "model moved between behaviors" "lobu.config.ts"
+
+new_repo
+write_change examples/personal-agent/lobu.config.ts $'export default {\n  model: "qwen/old",\n  prompt: "old",\n};'
+commit_all
+git -C "$tmp_repo" branch -f main
+write_change examples/personal-agent/lobu.config.ts $'export default {\n  model: "hetzner/new",\n  prompt: "new",\n};'
+commit_all
+assert_review "model plus behavior config" "lobu.config.ts"
+
+# review-fix runs before commit, so the same classifier must include tracked
+# staged/unstaged changes. Untracked paths fail closed instead of disappearing.
+new_repo
+write_change examples/personal-agent/lobu.config.ts $'export default {\n  model: "qwen/old",\n};'
+commit_all
+git -C "$tmp_repo" branch -f main
+write_change examples/personal-agent/lobu.config.ts $'export default {\n  model: "hetzner/new",\n};'
+assert_worktree_skip "uncommitted model-only config"
+
+new_repo
+write_change examples/personal-agent/lobu.config.ts $'export default {\n  model: "qwen/old",\n};'
+commit_all
+git -C "$tmp_repo" branch -f main
+write_change examples/personal-agent/lobu.config.ts $'export default {\n  model: "hetzner/new",\n};'
+git -C "$tmp_repo" add examples/personal-agent/lobu.config.ts
+assert_worktree_skip "staged model-only config"
+
+# The fixer reviews the prospective branch tree against the merge base. Changes
+# made only on an advancing base branch are not part of that tree's feature diff.
+new_repo
+write_change README.md "feature docs"
+commit_all
+git -C "$tmp_repo" checkout -q main
+write_change packages/foo/src/base-only.ts "export const baseOnly = true;"
+commit_all
+git -C "$tmp_repo" checkout -q work
+assert_worktree_skip "base-only source change"
+
+new_repo
+write_change packages/foo/src/index.ts "export const x = 1;"
+assert_worktree_review "untracked source" "untracked file"
 
 # config → full review
 new_repo
@@ -182,6 +348,16 @@ new_repo
 write_change scripts/review.sh "echo hi"
 commit_all
 assert_review "review.sh edit" "scripts/review.sh"
+
+new_repo
+write_change prompts/review-prompt.md "weakened rubric"
+commit_all
+assert_review "review prompt edit" "prompts/review-prompt.md"
+
+new_repo
+write_change docs/REVIEW_SCHEMA.md "weakened rubric"
+commit_all
+assert_review "review rubric edit" "docs/REVIEW_SCHEMA.md"
 
 # CI workflow edit → full review
 new_repo

@@ -24,6 +24,10 @@ import {
   githubAclSource,
   githubReposToResources,
 } from '@lobu/connectors/github-identity';
+import {
+  clearConnectionAclError,
+  markConnectionAclFailed,
+} from './acl-observability.js';
 import { buildAccessGraph } from './access-graph.js';
 
 const logger = createLogger('github-acl-sync');
@@ -49,21 +53,6 @@ export interface GithubAclSyncDeps {
 export interface GithubAclSyncResult {
   ok: boolean;
   reposSynced: number;
-}
-
-/** Downgrade an EXISTING ACL row to `failed` so the gate fails closed. No-op
- * when the connection was never graphed (it stays on the legacy fence). */
-async function markConnectionAclFailed(
-  organizationId: string,
-  connectionId: string,
-): Promise<void> {
-  const sql = getDb();
-  await sql`
-		UPDATE authz_source_acl_state
-		SET freshness_state = 'failed', updated_at = current_timestamp
-		WHERE organization_id = ${organizationId}
-		  AND connection_id = ${connectionId}
-	`;
 }
 
 /**
@@ -96,13 +85,20 @@ export async function syncGithubConnectionAcl(
       memberIdentities: githubAclSource.memberIdentities,
       resources: githubReposToResources(repoInputs),
     });
+    // The sync recovered — drop the persisted `acl:` reason. Only clears
+    // ACL-owned text (see acl-observability.ts).
+    await clearConnectionAclError(organizationId, connectionId);
     return { ok: true, reposSynced: repoInputs.length };
   } catch (error) {
     logger.error(
       { organization_id: organizationId, connection_id: connectionId, error: String(error) },
       'GitHub ACL sync failed — marking connection fail-closed',
     );
-    await markConnectionAclFailed(organizationId, connectionId);
+    await markConnectionAclFailed(
+      organizationId,
+      connectionId,
+      `GitHub ACL sync failed: ${String(error)}`,
+    );
     return { ok: false, reposSynced: 0 };
   }
 }

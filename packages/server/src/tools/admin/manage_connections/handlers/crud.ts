@@ -49,6 +49,7 @@ import {
 	effectiveConnectionErrorMessage,
 	isDevicePinTombstone,
 } from "../../../../utils/device-pin-tombstones";
+import { deleteConnectionAclRows } from "../../../../authz/acl-observability";
 import {
   ConnectionSlugConflictError,
   connectionSlugFormatError,
@@ -2275,6 +2276,17 @@ export async function handleDelete(
       WHERE feed_id IN (SELECT id FROM feeds WHERE connection_id = ${args.connection_id})
         AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
     `;
+
+    // Delete the connection's ACL-enforcement row in the same commit. Nothing
+    // else ever removes `authz_source_acl_state` rows, so without this a deleted
+    // connection's row lingers forever as `full`/`failed`, inflating any
+    // "failed connections" count. It is a pure materialization (the next ACL
+    // sync rebuilds it) and nothing references it, so deleting is safe.
+    await deleteConnectionAclRows(tx, {
+      organizationId,
+      slug: target.slug,
+      connectionId: args.connection_id,
+    });
 
     return tombstoned;
   });

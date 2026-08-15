@@ -15,6 +15,7 @@
 import type { StoredConnection } from "@lobu/core";
 import { createLogger } from "@lobu/core";
 import { type DbClient, tsTime } from "../../db/client";
+import { deleteConnectionAclRows } from "../../authz/acl-observability";
 
 const logger = createLogger("connections-projection");
 
@@ -444,7 +445,12 @@ export async function resolveActiveChatConnectionTenant(
 }
 
 /** Soft-delete the `connections` projection for a chat connection (by slug),
- *  inside the caller's transaction. Mirrors the legacy hard delete. */
+ *  inside the caller's transaction. Mirrors the legacy hard delete. Also
+ *  removes the connection's `authz_source_acl_state` row — it is a pure
+ *  materialization that nothing else ever cleans up, so a tombstoned connection
+ *  would otherwise leave its ACL row orphaned forever (see acl-observability.ts).
+ *  The org-less branch (no org context) cannot scope the ACL delete by
+ *  organization, so it only tombstones the projection row. */
 export async function softDeleteChatConnectionProjection(
   sql: any,
   orgId: string | null | undefined,
@@ -456,6 +462,11 @@ export async function softDeleteChatConnectionProjection(
       UPDATE connections SET deleted_at = now(), updated_at = now()
       WHERE organization_id = ${orgId} AND slug = ${slug} AND deleted_at IS NULL
     `;
+    await deleteConnectionAclRows(sql, {
+      organizationId: orgId,
+      slug,
+      connectionId,
+    });
   } else {
     await sql`
       UPDATE connections SET deleted_at = now(), updated_at = now()

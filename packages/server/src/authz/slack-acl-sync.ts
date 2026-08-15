@@ -46,6 +46,10 @@ import {
   slackAclSource,
   slackChannelsToResources,
 } from '@lobu/connectors/slack-identity';
+import {
+  clearConnectionAclError,
+  markConnectionAclFailed,
+} from './acl-observability.js';
 import { buildAccessGraph, markAclFresh } from './access-graph.js';
 
 const logger = createLogger('slack-acl-sync');
@@ -135,22 +139,6 @@ export interface SlackAclSyncResult {
   ok: boolean;
   teamsSynced: number;
   channelsSynced: number;
-}
-
-/** Downgrade an EXISTING ACL row to `failed` so the gate fails closed. A no-op
- * when the connection was never graphed (no row) — it stays on the legacy
- * fence rather than flipping to drop-everything on its first failure. */
-async function markConnectionAclFailed(
-  organizationId: string,
-  connectionId: string,
-): Promise<void> {
-  const sql = getDb();
-  await sql`
-		UPDATE authz_source_acl_state
-		SET freshness_state = 'failed', updated_at = current_timestamp
-		WHERE organization_id = ${organizationId}
-		  AND connection_id = ${connectionId}
-	`;
 }
 
 /**
@@ -325,6 +313,10 @@ export async function syncSlackConnectionAcl(
      * instead, so a partial reconcile can never be blessed fresh.
      */
     await markAclFresh(organizationId, connectionId, syncStartedAt);
+    // The sync recovered — drop the persisted `acl:` reason so a healthy
+    // connection does not keep showing last failure's text. Only clears
+    // ACL-owned text (see acl-observability.ts).
+    await clearConnectionAclError(organizationId, connectionId);
     return { ok: true, teamsSynced, channelsSynced };
   } catch (error) {
     logger.error(
@@ -335,7 +327,11 @@ export async function syncSlackConnectionAcl(
       },
       'Slack ACL sync failed — marking connection fail-closed',
     );
-    await markConnectionAclFailed(organizationId, connectionId);
+    await markConnectionAclFailed(
+      organizationId,
+      connectionId,
+      `Slack ACL sync failed: ${String(error)}`,
+    );
     return { ok: false, teamsSynced, channelsSynced };
   }
 }

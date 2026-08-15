@@ -14,6 +14,7 @@ import {
   CrossOrgTransferBlockedError,
 } from "./app-installation-store.js";
 import { upsertChatConnectionProjection } from "./connections-projection.js";
+import { deleteConnectionAclRows } from "../../authz/acl-observability.js";
 import { orgContext } from "./org-context.js";
 
 /**
@@ -729,6 +730,15 @@ export async function deleteSlackInstall(
       UPDATE connections SET deleted_at = now(), updated_at = now()
       WHERE slug = ${id} AND deleted_at IS NULL AND credential_mode = 'managed'
     `;
+    // Remove the install's ACL-enforcement row with the tombstone — a pure
+    // materialization that nothing else cleans up (see acl-observability.ts).
+    if (orgId) {
+      await deleteConnectionAclRows(getDb(), {
+        organizationId: orgId,
+        slug: id,
+        connectionId: id,
+      });
+    }
   }
   const purge = () =>
     deleteSecretsByPrefix(secretStore, `installations/${id}/`);

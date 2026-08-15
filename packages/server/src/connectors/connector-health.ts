@@ -15,6 +15,13 @@
  * `logger.error` is forwarded by the pino→Sentry bridge (`utils/logger.ts`) to
  * the existing Sentry→Slack alert path — no new alerting infra.
  *
+ * ACL sync failures ride this same path: a connection whose ACL graph is
+ * fail-closed (`authz_source_acl_state.freshness_state='failed'` — the ACL sync
+ * cannot refresh membership, e.g. a dead token) is classified `acl_failed` and
+ * alerts exactly once per episode under the same `unhealthy_alerted_at` claim.
+ * The persisted reason (`connections.error_message`, `acl: …`) rides along as
+ * `last_error`.
+ *
  * Multi-replica safety: registered as a single-claimant scheduled job (one
  * claimant per tick via the runs-queue), AND the per-connection dedupe is
  * Postgres-mediated — `connections.unhealthy_alerted_at` is flipped NULL→now()
@@ -76,6 +83,7 @@
 import { type DbClient, getDb, tsTimeOrNull } from '../db/client';
 import { notifyBrowserAuthExpired } from '../notifications/triggers';
 import logger from '../utils/logger';
+import { ACL_ROW_CONNECTION_ALIVE_SQL, isAclErrorMessage } from '../authz/acl-observability';
 import { deriveFeedHealthSemantics } from './feed-health-semantics';
 
 /**
@@ -202,7 +210,8 @@ export type UnhealthyReason =
   | 'all_feeds_failing'
   | 'feeds_degraded'
   | 'zero_feeds'
-  | 'no_recent_sync';
+  | 'no_recent_sync'
+  | 'acl_failed';
 
 export interface UnhealthyConnection {
   connectionId: number;
@@ -269,6 +278,13 @@ interface FeedHealthRow {
   last_sync_at: Date | string | null;
   consecutive_failures: string;
   last_error: string | null;
+  /** The connection's ACL graph is fail-closed (`authz_source_acl_state`
+   *  `freshness_state='failed'`) — the ACL sync cannot refresh membership.
+   *  NULL when the connection has no failed ACL row. */
+  acl_state_failed: boolean | null;
+  /** `connections.error_message` — for `acl_failed` carries the persisted
+   *  `acl: …` failure reason when the ACL writer set it. */
+  connection_error_message: string | null;
 }
 
 /**
@@ -316,7 +332,21 @@ async function loadConnectionHealthRows(
       f.last_sync_status,
       f.last_sync_at,
       f.consecutive_failures,
-      f.last_error
+      f.last_error,
+      -- Fails CLOSED: the connection's ACL graph is fail-closed. The ACL sync
+      -- stamps freshness_state='failed' on authz_source_acl_state when it cannot
+      -- refresh membership (dead token, OAuth consent never completed) — a
+      -- failure mode with NO feed symptom, which is why two GitHub connections
+      -- could fail every tick for months unseen. The runtime-id match is the
+      -- same shape the ACL sync writes (see acl-observability.ts).
+      EXISTS (
+        SELECT 1
+        FROM public.authz_source_acl_state a
+        WHERE a.organization_id = c.organization_id
+          AND a.freshness_state = 'failed'
+          AND ${sql.unsafe(ACL_ROW_CONNECTION_ALIVE_SQL)}
+      ) AS acl_state_failed,
+      c.error_message AS connection_error_message
     FROM connections c
     LEFT JOIN feeds f
       ON f.connection_id = c.id
@@ -429,6 +459,24 @@ function classify(
 } | null {
   const feeds = rows.filter((r) => r.feed_id != null);
   const feedCount = feeds.length;
+
+  // Rule E: the connection's ACL graph is fail-closed
+  // (`authz_source_acl_state.freshness_state='failed'`) — the ACL sync cannot
+  // refresh membership. This has NO feed symptom (the prod GitHub AUTH_MISSING
+  // shape: two connections failed every tick for months while their feeds
+  // stayed healthy), so it is checked BEFORE the feed rules and wins over them.
+  if (rows[0]?.acl_state_failed === true) {
+    const lastError = isAclErrorMessage(rows[0].connection_error_message)
+      ? rows[0].connection_error_message
+      : null;
+    return {
+      reason: 'acl_failed',
+      feedCount,
+      failingFeedCount: 0,
+      newestSyncAt: null,
+      lastError,
+    };
+  }
 
   // Rule B: active connection that should have an automatically-created
   // collector feed but has zero non-deleted feeds after the longer zero-feed

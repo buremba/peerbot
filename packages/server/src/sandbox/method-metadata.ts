@@ -565,7 +565,7 @@ export default async (_ctx, client) => {
 	},
 	"behaviors.update": {
 		summary:
-			"Update runtime config only: triggers, agent_id, model_config, execution_config, device_worker_id, agent_kind, notification_channel, notification_priority, min_cooldown_seconds, tags. Version-owned fields (name, description, prompt, sources) are immutable here — use createVersion. Status is not patchable here (a Behavior is retired via delete → archived).",
+			"Update runtime config only: triggers, agent_id, model_config, execution_config, device_worker_id, agent_kind, notification_channel, notification_priority, delivery_target, min_cooldown_seconds, tags. delivery_target is a strict bound chat destination `{ connection_id, channel_id }`; null clears it. Version-owned fields (name, description, prompt, sources) are immutable here — use createVersion. Status is not patchable here (a Behavior is retired via delete → archived).",
 		access: "admin",
 	},
 	"behaviors.createVersion": {

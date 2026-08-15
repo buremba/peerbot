@@ -360,6 +360,29 @@ export type BehaviorExecutionConfig = Static<
   typeof BehaviorExecutionConfigSchema
 >;
 
+export const BehaviorDeliveryTargetSchema = Type.Object(
+  {
+    connection_id: Type.Integer({
+      minimum: 1,
+      description:
+        "Numeric ID of the active chat connection that owns the bound channel.",
+    }),
+    channel_id: Type.String({
+      minLength: 1,
+      description:
+        'Bound channel key, preferably platform-prefixed (for example "slack:C0123ABCD").',
+    }),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Strict destination for notifications emitted by this Behavior. The channel must already be bound to the Behavior's agent. Null clears the destination.",
+  }
+);
+export type BehaviorDeliveryTarget = Static<
+  typeof BehaviorDeliveryTargetSchema
+>;
+
 /**
  * Local CLI runtimes a device-pinned Behavior can name in `agent_kind`.
  *
@@ -696,6 +719,12 @@ export const ManageBehaviorsSchema = Type.Object(
         }
       )
     ),
+    delivery_target: Type.Optional(
+      Type.Union([Type.Null(), BehaviorDeliveryTargetSchema], {
+        description:
+          "[create/update] Strict bound chat channel for this Behavior's notifications. Null clears it; omitted keeps the current destination on update.",
+      })
+    ),
     min_cooldown_seconds: Type.Optional(
       Type.Number({
         description:
@@ -892,6 +921,7 @@ export type BehaviorUpdatePatch = Pick<
   | "agent_kind"
   | "notification_channel"
   | "notification_priority"
+  | "delivery_target"
   | "min_cooldown_seconds"
 >;
 
@@ -929,9 +959,9 @@ export function normalizeBehaviorTags(values: unknown): string[] {
  *   - tags → normalizeBehaviorTags (trim/drop-empty/dedupe)
  *   - notification_channel ?? 'canvas', notification_priority ?? 'normal',
  *     min_cooldown_seconds ?? 0
- *   - null-clearable scalars (agent_id/
- *     device_worker_id/agent_kind) and execution_config keep null (a real clear
- *     the write applies) — NOT coerced to undefined, which would hide the clear.
+ *   - null-clearable fields (agent_id/device_worker_id/agent_kind,
+ *     delivery_target, and execution_config) keep null (a real clear the write
+ *     applies) — NOT coerced to undefined, which would hide the clear.
  */
 export function normalizeBehaviorUpdatePatch(
   args: ManageBehaviorsArgs
@@ -953,6 +983,8 @@ export function normalizeBehaviorUpdatePatch(
     patch.notification_channel = args.notification_channel ?? "canvas";
   if (args.notification_priority !== undefined)
     patch.notification_priority = args.notification_priority ?? "normal";
+  if (args.delivery_target !== undefined)
+    patch.delivery_target = args.delivery_target ?? null;
   if (args.min_cooldown_seconds !== undefined)
     patch.min_cooldown_seconds = args.min_cooldown_seconds ?? 0;
   return patch;

@@ -25,6 +25,7 @@ import { validateSaveContentSemanticType } from '../../utils/event-kind-validati
 import logger from '../../utils/logger';
 import { buildResourcePermalink } from '../../utils/url-builder';
 import { trackWatcherReaction } from '../../utils/watcher-reactions';
+import { loadConfiguredBehaviorDeliveryTarget } from '../../behaviors/delivery-target';
 import type { ToolContext } from '../registry';
 import { action, defineActionTool } from './action-tool';
 
@@ -252,6 +253,28 @@ async function handleSend(
   // already makes.
   const actingBehaviorId = ctx.actingWatcherId ?? null;
   const actingRunId = ctx.actingRunId ?? null;
+  // A repeat performs no new delivery, so resolve it before rejecting a route
+  // that may have become stale after the original notification was created.
+  const priorNotificationId =
+    args.idempotency_key && (args.input_schema || actingBehaviorId !== null)
+      ? await findNotificationByIdempotencyKey(
+          ctx.organizationId,
+          args.idempotency_key
+        )
+      : null;
+  if (actingBehaviorId !== null && priorNotificationId === null) {
+    const configuredDelivery = await loadConfiguredBehaviorDeliveryTarget(
+      getDb(),
+      ctx.organizationId,
+      actingBehaviorId
+    );
+    if (configuredDelivery.configured && !configuredDelivery.target) {
+      throw new ToolUserError(
+        'This Behavior\'s delivery channel is no longer available. Re-link the private channel or choose another delivery channel before retrying.',
+        422
+      );
+    }
+  }
   const actingVersionRows =
     actingBehaviorId && actingRunId
       ? await getDb()<{ version_id: string | null }>`
@@ -294,27 +317,27 @@ async function handleSend(
   // the notification insert dedupe would strand an orphan pending run — and
   // hand the agent a run_id no inbox points at, which it would poll forever
   // while the human answers the original.
-  if (args.input_schema && args.idempotency_key) {
-    const prior = await findNotificationByIdempotencyKey(
+  if (args.input_schema && priorNotificationId !== null) {
+    const priorRunId = await findAskRunForNotification(
       ctx.organizationId,
-      args.idempotency_key
+      priorNotificationId
     );
-    if (prior !== null) {
-      const priorRunId = await findAskRunForNotification(ctx.organizationId, prior);
-      if (priorRunId !== null) {
-        // The notification can commit before this feedback edge. A failed first
-        // attempt therefore reconciles here on retry instead of returning early
-        // forever with an ask the Behavior cannot learn from.
-        await trackNotificationReaction(priorRunId);
-      }
-      return {
-        notified_count: 0,
-        event_id: prior,
-        url:
-          buildResourcePermalink(orgSlug, { kind: 'event', eventId: prior }) ?? null,
-        ...(priorRunId !== null ? { run_id: priorRunId } : {}),
-      };
+    if (priorRunId !== null) {
+      // The notification can commit before this feedback edge. A failed first
+      // attempt therefore reconciles here on retry instead of returning early
+      // forever with an ask the Behavior cannot learn from.
+      await trackNotificationReaction(priorRunId);
     }
+    return {
+      notified_count: 0,
+      event_id: priorNotificationId,
+      url:
+        buildResourcePermalink(orgSlug, {
+          kind: 'event',
+          eventId: priorNotificationId,
+        }) ?? null,
+      ...(priorRunId !== null ? { run_id: priorRunId } : {}),
+    };
   }
 
   // An `input_schema` turns this from an FYI into a QUESTION: queue the pending

@@ -44,6 +44,7 @@ type PendingApproval = {
 	event_id?: number;
 	action: string;
 	proposal?: { args?: { action?: string; slug?: string } };
+	current?: Record<string, unknown> | null;
 };
 
 async function watcherExists(orgId: string, slug: string): Promise<boolean> {
@@ -251,6 +252,48 @@ describe("manage_behaviors — builder gate e2e", () => {
 		expect(res.status).toBe("pending_approval");
 		expect(res.proposal?.args?.slug).toBe("agent-proposed-skills-only");
 		expect(await watcherExists(orgId, "agent-proposed-skills-only")).toBe(false);
+	});
+
+	it("includes the existing delivery target in an update approval snapshot", async () => {
+		const created = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create",
+				slug: "delivery-target-approval",
+				name: "Delivery Target Approval",
+				prompt: "Track routed notifications.",
+				agent_id: agentId,
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { behavior_id?: string };
+		const behaviorId = created.behavior_id!;
+		const sql = getTestDb();
+		await sql`
+			UPDATE watchers
+			SET delivery_target = ${sql.json({
+				connection_id: 541,
+				channel_id: "slack:C_TASKS",
+			})}
+			WHERE organization_id = ${orgId} AND id = ${Number(behaviorId)}
+		`;
+
+		const pending = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "update",
+				behavior_id: behaviorId,
+				tags: ["routed"],
+			},
+			TEST_ENV,
+			agentCtx
+		)) as PendingApproval;
+
+		expect(pending.status).toBe("pending_approval");
+		expect(pending.current?.delivery_target).toEqual({
+			connection_id: 541,
+			channel_id: "slack:C_TASKS",
+		});
 	});
 
 	it("approve applies the held create: watcher exists, run completed, event superseded", async () => {

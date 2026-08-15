@@ -13,6 +13,7 @@
 import { normalizeSlackUserId } from "@lobu/connectors/slack-identity";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
+	invalidateSlackConnectionAcl,
 	resolveSlackBotIdentity,
 	syncSlackConnectionAcl,
 } from "../../../authz/slack-acl-sync";
@@ -328,6 +329,117 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
 		expect(channels).toContain("C01ENG");
 		expect(channels).not.toContain("C01SEC");
   });
+
+	it("does not let an older in-flight sync clear a membership-removal invalidation", async () => {
+		const { org } = await setupWorkspace();
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO authz_source_acl_state
+				(organization_id, connection_id, acl_support, freshness_state, last_synced_at)
+			VALUES (${org.id}, ${CONN}, 'full', 'fresh', current_timestamp)
+		`;
+
+		let releaseMembers!: (members: string[]) => void;
+		const members = new Promise<string[]>((resolve) => {
+			releaseMembers = resolve;
+		});
+		let fetchStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			fetchStarted = resolve;
+		});
+		const syncing = syncSlackConnectionAcl(
+			{
+				slackWeb: {
+					conversationMembers: async () => {
+						fetchStarted();
+						return members;
+					},
+				},
+				resolveBotIdentity: async () => ({
+					token: "xoxb-test-token",
+					botUserId: null,
+				}),
+			},
+			{ connectionId: CONN, organizationId: org.id },
+		);
+		await started;
+		await invalidateSlackConnectionAcl({
+			organizationId: org.id,
+			connectionId: CONN,
+		});
+		releaseMembers(["U01ALICE"]);
+		expect((await syncing).ok).toBe(true);
+
+		const [state] = await sql<{ freshness_state: string }>`
+			SELECT freshness_state
+			FROM authz_source_acl_state
+			WHERE organization_id = ${org.id}
+				AND connection_id = ${CONN}
+		`;
+		expect(state?.freshness_state).toBe("stale");
+	});
+
+	/**
+	 * The same race on a connection that has NEVER been graphed, which is where a
+	 * plain UPDATE silently lost: no row to flip, so the first sync's
+	 * pre-departure snapshot would be blessed as `fresh` and the departed member
+	 * would keep recall. The sentinel records onboarding without claiming a graph
+	 * it does not have, so `acl_support` stays `'none'` — which, per
+	 * `acl-state.ts`, means the connection is onboarded-but-stale and fails
+	 * closed until the next sync actually builds the graph.
+	 */
+	it("does not let a FIRST sync bless a snapshot taken before the departure", async () => {
+		const { org } = await setupWorkspace();
+		const sql = getTestDb();
+		await sql`
+			DELETE FROM authz_source_acl_state
+			WHERE organization_id = ${org.id} AND connection_id = ${CONN}
+		`;
+
+		let releaseMembers!: (members: string[]) => void;
+		const members = new Promise<string[]>((resolve) => {
+			releaseMembers = resolve;
+		});
+		let fetchStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			fetchStarted = resolve;
+		});
+		const syncing = syncSlackConnectionAcl(
+			{
+				slackWeb: {
+					conversationMembers: async () => {
+						fetchStarted();
+						return members;
+					},
+				},
+				resolveBotIdentity: async () => ({
+					token: "xoxb-test-token",
+					botUserId: null,
+				}),
+			},
+			{ connectionId: CONN, organizationId: org.id },
+		);
+		await started;
+		const { aclSupport } = await invalidateSlackConnectionAcl({
+			organizationId: org.id,
+			connectionId: CONN,
+		});
+		expect(aclSupport).toBe("none");
+		releaseMembers(["U01ALICE"]);
+		expect((await syncing).ok).toBe(true);
+
+		const [state] = await sql<{
+			freshness_state: string;
+			acl_support: string;
+		}>`
+			SELECT freshness_state, acl_support
+			FROM authz_source_acl_state
+			WHERE organization_id = ${org.id}
+				AND connection_id = ${CONN}
+		`;
+		expect(state?.freshness_state).toBe("stale");
+		expect(state?.acl_support).toBe("none");
+	});
 
 	it("org-wide Grid install (conn tenant = E…, bindings carry T…) STILL graphs and stays ENFORCED", async () => {
     // Regression guard for the codex finding: once bindings carry the real
@@ -848,6 +960,90 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
     const after = await searchAs(org.id, alice.id, agent.agentId);
     expect(after.conversation_messages ?? []).toHaveLength(0);
   });
+
+	/**
+	 * GRID regression: one connection, two workspaces, ONE connection-wide ACL
+	 * state row. The stamp must not land until every workspace is reconciled.
+	 *
+	 * Pre-fix, `buildAccessGraph` stamped inside the per-team loop, so finishing
+	 * workspace 1 flipped the connection to `fresh` while workspace 2 still held
+	 * its pre-revocation edges — reopening the gate over a membership Slack had
+	 * already contradicted. Asserted from INSIDE workspace 2's fetch, which is
+	 * exactly the window that was open.
+	 */
+	it("does not mark a Grid connection fresh until every workspace is reconciled", async () => {
+		const { org, alice, agent } = await setupWorkspace();
+		const sql = getTestDb();
+		const TEAM_B = "T02SIBLING";
+
+		// A second workspace on the SAME connection, bound to its own channel.
+		await createTestBehaviorSubscription({
+			organizationId: org.id,
+			agentId: agent.agentId,
+			connectionSlug: `agentconn-${CONN}`,
+			platform: "slack",
+			channelId: "C02OPS",
+			teamId: TEAM_B,
+		});
+
+		// The connection starts invalidated, as a `member_left_channel` webhook
+		// would leave it: onboarded but not enforcing, so recall fails closed.
+		await invalidateSlackConnectionAcl({
+			organizationId: org.id,
+			connectionId: CONN,
+		});
+
+		// Observed at the moment workspace 2's membership is fetched — i.e. after
+		// workspace 1's graph build has fully completed.
+		const seen: { team: string; state: string | null }[] = [];
+		const teamsFetched: string[] = [];
+
+		const result = await syncSlackConnectionAcl(
+			{
+				slackWeb: {
+					conversationMembers: async (token, channelId) => {
+						const rows = await sql<{ freshness_state: string }[]>`
+							SELECT freshness_state FROM authz_source_acl_state
+							WHERE organization_id = ${org.id} AND connection_id = ${CONN}
+						`;
+						seen.push({
+							team: token,
+							state: rows[0]?.freshness_state ?? null,
+						});
+						return channelId === "C01SEC" ? ["U01BOB"] : ["U01ALICE"];
+					},
+				},
+				resolveBotIdentity: async ({ teamId }) => {
+					teamsFetched.push(teamId);
+					return { token: teamId, botUserId: null };
+				},
+			},
+			{ connectionId: CONN, organizationId: org.id },
+		);
+
+		expect(result.ok).toBe(true);
+		// Both workspaces really were synced — otherwise the assertion below is
+		// vacuous (a single-workspace sync can't exhibit the mid-loop stamp).
+		expect(new Set(teamsFetched)).toEqual(new Set([TEAM, TEAM_B]));
+		const secondWorkspaceReads = seen.filter((s) => s.team === TEAM_B);
+		expect(secondWorkspaceReads.length).toBeGreaterThan(0);
+		// THE REGRESSION: not one fetch, in either workspace, may observe the
+		// connection already blessed fresh.
+		expect(seen.every((s) => s.state !== "fresh")).toBe(true);
+
+		// And the stamp does land once the loop completes, so this is proving
+		// ordering — not that the stamp was lost.
+		const finalState = await sql<{ freshness_state: string }[]>`
+			SELECT freshness_state FROM authz_source_acl_state
+			WHERE organization_id = ${org.id} AND connection_id = ${CONN}
+		`;
+		expect(finalState[0]?.freshness_state).toBe("fresh");
+		const recalled = (
+			await searchAs(org.id, alice.id, agent.agentId)
+		).conversation_messages?.map((m) => m.channel_id);
+		expect(recalled).toContain("C01ENG");
+		expect(recalled).not.toContain("C01SEC");
+	});
 
 	it("resolves an in-Slack requester via slack_user_id when they have no auth identity", async () => {
     const { org, agent } = await setupWorkspace();

@@ -112,8 +112,33 @@ async function ensureMemberOfType(orgId: string): Promise<number> {
   return Number(rows[0].id);
 }
 
-/** Stamp the connection's ACL state so the gate begins enforcing it. */
-async function markAclEnforced(orgId: string, connectionId: string): Promise<void> {
+/**
+ * Stamp the connection fresh only if its ACL state did not change mid-snapshot.
+ *
+ * The case this exists for: a `member_left_channel` webhook marks the
+ * connection `stale` while this snapshot was in flight. That departure is not
+ * in the snapshot, so blessing it `fresh` would re-trust a membership Slack has
+ * already contradicted. Skipping the stamp leaves the row `stale`, the gate
+ * fails closed, and the next sync rebuilds from current membership.
+ *
+ * NOT a general concurrency fix: overlapping syncs can still interleave their
+ * EDGE writes, which this cannot see. That race predates this fence (on
+ * `origin/main` the stamp was unconditional) and closing it properly needs one
+ * graph build per connection plus a real snapshot generation — a separate
+ * change, deliberately not smuggled in here.
+ *
+ * Exported because the stamp is CONNECTION-wide while a build is per-resource-
+ * set: a caller that reconciles one connection across several source scopes
+ * (Slack Grid — one connection, many workspaces) must pass `markFresh: false`
+ * and call this once, after every scope has been reconciled. Stamping inside
+ * such a loop reopens the connection-wide gate while later scopes still hold
+ * pre-revocation edges.
+ */
+export async function markAclFresh(
+  orgId: string,
+  connectionId: string,
+  syncStartedAt: string,
+): Promise<void> {
   const sql = getDb();
   await sql`
 		INSERT INTO authz_source_acl_state
@@ -121,7 +146,8 @@ async function markAclEnforced(orgId: string, connectionId: string): Promise<voi
 		VALUES (${orgId}, ${connectionId}, 'full', 'fresh', current_timestamp, current_timestamp, current_timestamp)
 		ON CONFLICT (organization_id, connection_id)
 		DO UPDATE SET acl_support = 'full', freshness_state = 'fresh',
-		              last_synced_at = current_timestamp, updated_at = current_timestamp
+		              last_synced_at = clock_timestamp(), updated_at = clock_timestamp()
+		WHERE authz_source_acl_state.updated_at < ${syncStartedAt}::timestamptz
 	`;
 }
 
@@ -285,11 +311,32 @@ export async function buildAccessGraph(params: {
   resourceNamespace: string;
   memberIdentities: AccessIdentitySpec[];
   resources: AccessResource[];
+  /**
+   * Database time captured before the source snapshot began. A newer ACL-state
+   * write means that snapshot lost a revocation race and must not mark the
+   * connection fresh.
+   */
+  syncStartedAt?: string;
+  /**
+   * Whether this build may stamp the connection fresh. Default true — one build
+   * IS the whole connection for a single-scope source (GitHub). A caller that
+   * loops several scopes over one connection passes false and calls
+   * `markAclFresh` itself after the last scope; see that function.
+   */
+  markFresh?: boolean;
 }): Promise<AccessGraphResult> {
   const { organizationId, connectionId, connectorKey, resourceNamespace, memberIdentities } =
     params;
   const resources = params.resources.filter((r) => r.key);
   if (resources.length === 0) return EMPTY_RESULT;
+
+  const syncStartedAt =
+    params.syncStartedAt ??
+    (
+      await getDb()<{ sync_started_at: string }>`
+        SELECT clock_timestamp()::text AS sync_started_at
+      `
+    )[0].sync_started_at;
 
   const creatorUserId = await resolveOrgCreator(organizationId);
   if (!creatorUserId) {
@@ -454,7 +501,9 @@ export async function buildAccessGraph(params: {
     removedEdges += removed.length;
   }
 
-  await markAclEnforced(organizationId, connectionId);
+  if (params.markFresh !== false) {
+    await markAclFresh(organizationId, connectionId, syncStartedAt);
+  }
 
   logger.info(
     {

@@ -1297,6 +1297,7 @@ const hourlyTaskCollaborator = defineBehavior({
   agent: personalAgent,
   slug: "hourly-task-collaborator",
   name: "Hourly Task Collaborator",
+  model: "hetzner/DeepSeek-V4-Flash-0731",
   triggers: [{ kind: "schedule", cron: "0 * * * *" }],
   notification: { channel: "both", priority: "normal" },
   minCooldownSeconds: 300,

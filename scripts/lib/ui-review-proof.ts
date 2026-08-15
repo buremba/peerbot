@@ -81,7 +81,7 @@ Visual evidence for the Owletto version proposed by ${proof.lobu_repo}#${proof.l
 - Visual comparison: ${proof.artifact_url}
 
 The comparison is captured from one booted instance against the same data on
-both sides. A changed Owletto pointer republishes it.`;
+both sides. A later pointer change that needs visual proof republishes it.`;
 }
 
 export function parseProof(body: string): UiReviewProof | null {
@@ -141,6 +141,26 @@ export function selectOwlettoPullRequest(
     pulls.find(
       (pull) => pull.merged_at !== null && pull.merge_commit_sha === owlettoSha
     ) ?? null
+  );
+}
+
+/**
+ * The pointer can span several merged PRs, so inspect its endpoint diff rather
+ * than only the head PR. GitHub caps comparison files at COMPARE_FILE_CAP and
+ * reports no total, so empty and cap-sized responses fail closed. Renames must
+ * stay under `deploy/` at both ends.
+ */
+export const COMPARE_FILE_CAP = 300;
+
+export function isDeployOnlyRange(
+  files: Array<{ filename: string; previous_filename?: string }>
+): boolean {
+  if (files.length === 0 || files.length >= COMPARE_FILE_CAP) return false;
+  return files.every(
+    (file) =>
+      file.filename.startsWith("deploy/") &&
+      (file.previous_filename === undefined ||
+        file.previous_filename.startsWith("deploy/"))
   );
 }
 

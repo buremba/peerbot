@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import {
   buildProofBody,
   findProofComment,
+  isDeployOnlyRange,
   isHttpsArtifact,
   permittedFluxTailParent,
   type OwlettoPullRequest,
@@ -300,6 +301,35 @@ function main(): number {
     throw new Error(
       `Owletto ${headPointer} is neither a merged ${owlettoRepo} PR squash commit nor a permitted Flux deploy-only tail`
     );
+  }
+
+  const comparison = ghApi<{
+    status?: string;
+    files?: Array<{ filename: string; previous_filename?: string }>;
+  }>(`repos/${owlettoRepo}/compare/${basePointer}...${headPointer}`);
+  const rangeFiles = comparison.files ?? [];
+  if (comparison.status === "ahead" && isDeployOnlyRange(rangeFiles)) {
+    const parentComment = findComment(lobuRepo, parentPr.number, PARENT_MARKER);
+    if (parentComment) {
+      ghApi(`repos/${lobuRepo}/issues/comments/${parentComment.id}`, "PATCH", {
+        body: `${PARENT_MARKER}
+**UI review not applicable** for Lobu head \`${localHead}\`.
+
+\`${basePointer}...${headPointer}\` changes only \`deploy/\` (${rangeFiles.length} files, through Owletto #${owlettoPr.number}).`,
+      });
+    }
+    postStatus(
+      lobuRepo,
+      localHead,
+      "success",
+      `Owletto ${basePointer.slice(0, 9)}...${headPointer.slice(0, 9)} is deploy-only; no UI to prove`,
+      owlettoPr.html_url
+    );
+    console.log(
+      `ui-review: not applicable; Owletto ${basePointer.slice(0, 9)}...${headPointer.slice(0, 9)} changes only deploy/ (${rangeFiles.length} files)`
+    );
+    if (options.open) openPullRequest(owlettoPr.html_url);
+    return 0;
   }
 
   const comments = ghApiPages<ApiComment>(

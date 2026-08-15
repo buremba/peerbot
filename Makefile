@@ -28,7 +28,7 @@ help:
 	@echo "  make bump SUBMODULE=<path> [TARGET=<ref>]  - Lightweight worktree + commit + PR for a trivial submodule pointer bump (skips bun install, .env, ports)"
 	@echo "  make review [BASE=<branch>]                - Run the cross-harness LLM reviewer against the local diff (deterministic suites run in CI); posts pi-review status and PR comment"
 	@echo "  make review-fix [BASE=<branch>]            - Pre-review fixer: reviewer CLI with write access fixes review-grade findings in the tree; posts nothing"
-	@echo "  make ui-review [ARTIFACT=<https-url>]       - Publish exact-SHA visual proof for an Owletto pointer on its merged PR; OPEN=1 opens that PR"
+	@echo "  make ui-review [ARTIFACT=<https-url>]       - Record Owletto UI proof; complete forward deploy-only pointer diffs pass as not applicable; OPEN=1 opens the merged PR"
 	@echo "  make pre-pr-remote-fast                    - Run required Linux merge jobs on Depot (broad iteration; no attestation)"
 	@echo "  make pre-pr-remote [REMOTE_JOBS='unit …']  - Run staged full Linux CI on Depot (default final gate; no local CPU)"
 	@echo "  make pre-pr                                - Run the CPU-heavy deterministic gate locally (explicit fallback)"
@@ -299,12 +299,12 @@ review:
 review-fix:
 	@./scripts/review-fix.sh $(if $(BASE),--base $(BASE),)
 
-# Visual counterpart to `make review`: non-Owletto PRs pass as not applicable.
-# Pointer PRs post/update proof on the exact merged Owletto PR, link it from
-# this Lobu PR, and attach a passing `ui-review` status. Publishing the proof is
-# what the gate asserts, so no ARTIFACT means no proof and no pass. ARTIFACT and
-# OPEN are read directly by scripts/ui-review.ts, avoiding shell interpolation
-# of URLs.
+# Visual counterpart to `make review`: non-Owletto PRs and complete,
+# forward-only pointer diffs confined to deploy/ pass as not applicable. Other
+# pointer PRs post/update proof on the exact merged Owletto PR, link it from this
+# Lobu PR, and attach a passing `ui-review` status. Without reusable exact proof,
+# they need ARTIFACT. ARTIFACT and OPEN are read directly by scripts/ui-review.ts
+# to avoid shell interpolation of URLs.
 ui-review:
 	@bun scripts/ui-review.ts
 

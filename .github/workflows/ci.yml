@@ -903,6 +903,14 @@ jobs:
         # gate: a value whose static type is a JS array, bound as a SQL param, fails.
         run: bun scripts/check-raw-array-params.mjs
 
+      - name: Entity-write funnel gate
+        # Production entity-row writes must converge on entity-management.ts.
+        # Historical bypasses are fingerprinted as a shrinking allowlist; both a
+        # new literal write and a dynamic table target fail this required lane.
+        run: |
+          bun scripts/check-entity-write-funnel.mjs
+          bun test scripts/__tests__/check-entity-write-funnel.test.ts --timeout 30000
+
       - name: Connection-visibility compiler gate
         # The per-user connection-visibility READ-SEAM gate (connection_id IN
         # (SELECT ... FROM connections ... visibility ...)) must come from the one

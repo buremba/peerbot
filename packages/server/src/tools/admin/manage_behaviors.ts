@@ -440,7 +440,8 @@ async function fetchCurrentWatcher(
   if (args.behavior_id == null) return null;
   const sql = getDb();
   const rows = await sql`
-    SELECT id, slug, name, description, agent_id, schedule, timezone, triggers, status
+    SELECT id, slug, name, description, agent_id, schedule, timezone, triggers,
+           delivery_target, status
     FROM watchers
     WHERE organization_id = ${organizationId} AND id = ${Number(args.behavior_id)}
     LIMIT 1

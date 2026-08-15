@@ -146,6 +146,8 @@ PLAYWRIGHT_BROWSERS_PATH=/ms-playwright node -e "const p=require('playwright').c
 git -C packages/owletto checkout <squash-sha> && git add packages/owletto && git commit --no-edit
 ```
 
+**Owletto drift does not serialize unrelated PRs.** On a pull request, `check-drift` hard-fails only for an off-main pointer, a backward/sideways pointer move, or an unauthorized fork pointer change. If non-bot Owletto commits land past an unchanged parent pin, the PR passes with a warning; deploy-only Flux commits remain exempt. A forward pointer PR also remains policy-valid when main advances after it opened; Git may carry the newer descendant into the merge result, so the check accepts that synthetic pointer only when it contains the PR head pointer. Push and scheduled runs remain strict so missing parent bumps stay visible without making every Lobu PR chase a moving submodule head.
+
 **Never fold a private repo into public `lobu`.** Check `gh repo view --json visibility` on both sides before any "consolidate into the monorepo" move — a past fold leaked a large private frontend publicly.
 
 ## Prod safety

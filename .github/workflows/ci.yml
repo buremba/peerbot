@@ -947,6 +947,11 @@ jobs:
           cmp -s .github/actions/setup-submodule/action.yml .depot/actions/setup-submodule/action.yml
           bash scripts/lib/__tests__/remote-ci.test.sh
 
+      - name: Submodule drift policy tests
+        run: |
+          bash scripts/lib/__tests__/submodule-drift.test.sh
+          bash scripts/lib/__tests__/submodule-bump.test.sh
+
   typecheck:
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 20

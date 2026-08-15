@@ -5,6 +5,7 @@
 #   make bump SUBMODULE=packages/owletto                       # bump to origin/main
 #   make bump SUBMODULE=packages/owletto TARGET=abc123def      # bump to specific SHA / ref
 #   make bump SUBMODULE=packages/owletto NAME=cancel-button    # custom slug
+#   make bump SUBMODULE=packages/owletto ARTIFACT=https://...  # attach UI proof when required
 #
 # This is the cheap shortcut for the trivial "bump a submodule pointer" case.
 # For agent work that also touches submodule code, use `make task-setup` instead,
@@ -16,8 +17,9 @@
 #   - port allocation        (no listener)
 #   - Lobu CLI context       (nothing to talk to)
 #
-# It just creates a worktree off origin/main, advances the submodule pointer,
-# commits, pushes, and opens an auto-merge PR.
+# It creates a worktree off origin/main, advances the submodule pointer,
+# commits, pushes, opens a PR, posts the safe-class review status, records UI
+# proof when reusable/provided, and enables auto-merge.
 #
 # Why this exists: the convention is `~/Code/lobu` is read-only for agents
 # (see AGENTS.md "Scope discipline"). Without this shortcut, agents reach
@@ -71,7 +73,7 @@ cleanup_worktree() {
     git branch -D "$BRANCH" 2>/dev/null || true
 }
 
-if ! TARGET_SHA=$(git -C "$WT/$SUBMODULE" rev-parse "$TARGET" 2>/dev/null); then
+if ! TARGET_SHA=$(git -C "$WT/$SUBMODULE" rev-parse "$TARGET^{commit}" 2>/dev/null); then
     echo "error: can't resolve $TARGET inside $SUBMODULE" >&2
     cleanup_worktree
     exit 1
@@ -82,6 +84,16 @@ if [[ "$BEFORE_SHA" == "$TARGET_SHA" ]]; then
     cleanup_worktree
     exit 0
 fi
+if ! git -C "$WT/$SUBMODULE" merge-base --is-ancestor "$TARGET_SHA" origin/main; then
+    echo "error: target $TARGET_SHA is not reachable from $SUBMODULE origin/main" >&2
+    cleanup_worktree
+    exit 1
+fi
+if ! git -C "$WT/$SUBMODULE" merge-base --is-ancestor "$BEFORE_SHA" "$TARGET_SHA"; then
+    echo "error: target would move $SUBMODULE backwards or sideways" >&2
+    cleanup_worktree
+    exit 1
+fi
 
 SHORT_BEFORE=$(git -C "$WT/$SUBMODULE" rev-parse --short "$BEFORE_SHA")
 SHORT_AFTER=$(git -C "$WT/$SUBMODULE" rev-parse --short "$TARGET_SHA")
@@ -89,6 +101,27 @@ TARGET_SUBJECT=$(git -C "$WT/$SUBMODULE" log -1 --format='%s' "$TARGET_SHA")
 
 echo "→ advancing $SUBMODULE: $SHORT_BEFORE → $SHORT_AFTER"
 git -C "$WT/$SUBMODULE" checkout --detach "$TARGET_SHA" >/dev/null 2>&1
+
+echo "→ checking the safe-class pre-review fixer"
+if ! (cd "$WT" && make review-fix); then
+    echo "error: review-fix failed; inspect the retained worktree at $WT" >&2
+    exit 1
+fi
+
+# The fixer runs before the snapshot. Never let an unexpected parent edit or
+# nested submodule edit turn this pointer-only shortcut into a mixed commit.
+CHANGED_PATHS=$(git -C "$WT" diff --name-only HEAD)
+UNTRACKED_PATHS=$(git -C "$WT" ls-files --others --exclude-standard)
+if [[ "$CHANGED_PATHS" != "$SUBMODULE" || -n "$UNTRACKED_PATHS" ]]; then
+    echo "error: review-fix left changes beyond the $SUBMODULE pointer; inspect $WT" >&2
+    git -C "$WT" status --short >&2
+    exit 1
+fi
+if [[ -n "$(git -C "$WT/$SUBMODULE" status --porcelain)" ]] \
+    || [[ "$(git -C "$WT/$SUBMODULE" rev-parse HEAD)" != "$TARGET_SHA" ]]; then
+    echo "error: review-fix changed $SUBMODULE contents or target; inspect $WT" >&2
+    exit 1
+fi
 
 echo "→ committing pointer bump"
 git -C "$WT" add "$SUBMODULE"
@@ -115,11 +148,34 @@ After:  $SHORT_AFTER
 
 Picks up: $TARGET_SUBJECT" 2>&1 | tail -1)
     echo "  $PR_URL"
+
+    echo "→ posting required review status"
+    if ! (cd "$WT" && make review); then
+        echo "error: pi-review failed; PR remains open at $PR_URL" >&2
+        exit 1
+    fi
+
+    echo "→ recording Owletto UI review"
+    if [[ -n "${ARTIFACT:-}" ]]; then
+        if ! (cd "$WT" && make ui-review ARTIFACT="$ARTIFACT"); then
+            echo "error: ui-review failed; PR remains open at $PR_URL" >&2
+            exit 1
+        fi
+    elif ! (cd "$WT" && make ui-review); then
+        echo "error: UI proof is required; rerun in $WT with: make ui-review ARTIFACT=<https-url>" >&2
+        exit 1
+    fi
+
     echo "→ enabling auto-merge (squash)"
-    gh pr merge "$PR_URL" --auto --squash >/dev/null 2>&1 || \
-        echo "  (auto-merge enable failed — admin-merge with: gh pr merge $PR_URL --squash --admin)"
+    if ! gh pr merge "$PR_URL" --auto --squash >/dev/null 2>&1; then
+        echo "error: auto-merge could not be enabled; PR remains open at $PR_URL" >&2
+        echo "run after required checks pass: gh pr merge $PR_URL --squash --admin" >&2
+        exit 1
+    fi
 else
-    echo "→ gh CLI not available; open the PR manually for branch $BRANCH"
+    echo "error: gh CLI is required to open the PR and post its required statuses" >&2
+    echo "branch $BRANCH was pushed and remains available" >&2
+    exit 1
 fi
 
 echo

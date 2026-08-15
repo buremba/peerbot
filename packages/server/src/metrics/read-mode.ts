@@ -89,6 +89,30 @@ export function compileReadModePredicate(
 }
 
 /**
+ * `Date.parse` ROLLS OVER an impossible calendar date instead of failing:
+ * `2026-02-30` parses happily and lands on 2 March, so a successful parse is
+ * not proof the date exists. Matching {@link DATE_ONLY} is not proof either —
+ * it only checks the shape. Compare the parsed UTC components back against the
+ * digits that were written; a rollover changes at least one of them.
+ *
+ * Without this, a typo'd close date silently answers as of a different day, and
+ * apply-time validation reports no error.
+ *
+ * @param date the `YYYY-MM-DD` head of an asOf value (already shape-checked).
+ */
+function isRealCalendarDate(date: string): boolean {
+  const year = Number(date.slice(0, 4));
+  const month = Number(date.slice(5, 7));
+  const day = Number(date.slice(8, 10));
+  const back = new Date(Date.UTC(year, month - 1, day));
+  return (
+    back.getUTCFullYear() === year &&
+    back.getUTCMonth() === month - 1 &&
+    back.getUTCDate() === day
+  );
+}
+
+/**
  * The half-open bound an `asOf` string denotes.
  *
  * A date-only `2026-03-31` means "the state at the END of 31 March" — the
@@ -99,14 +123,14 @@ export function compileReadModePredicate(
  */
 function asOfBound(asOf: string, label: string): { op: "<" | "<="; literal: string } {
   if (DATE_ONLY.test(asOf)) {
-    const start = Date.parse(`${asOf}T00:00:00Z`);
-    if (Number.isNaN(start)) {
+    if (!isRealCalendarDate(asOf)) {
       throw new MetricCompileError(`eventSet "${label}": asOf "${asOf}" is not a real date`);
     }
+    const start = Date.parse(`${asOf}T00:00:00Z`);
     const next = new Date(start + 24 * 60 * 60 * 1000).toISOString();
     return { op: "<", literal: next };
   }
-  if (INSTANT.test(asOf) && !Number.isNaN(Date.parse(asOf))) {
+  if (INSTANT.test(asOf) && isRealCalendarDate(asOf.slice(0, 10)) && !Number.isNaN(Date.parse(asOf))) {
     return { op: "<=", literal: asOf };
   }
   throw new MetricCompileError(

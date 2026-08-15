@@ -259,6 +259,32 @@ describe("metric compiler — asOf point-in-time reads", () => {
       );
     });
 
+    // `Date.parse("2026-02-30T00:00:00Z")` succeeds and rolls over to 2 March,
+    // so shape-matching plus a NaN check accepts a date that does not exist and
+    // silently answers as of a different day. Caught by pi-review on #2766.
+    it("refuses an impossible calendar date instead of rolling it over", () => {
+      for (const bad of ["2026-02-30", "2026-04-31", "2026-13-01", "2026-02-29"]) {
+        expect(() => compileReadModePredicate({ asOf: bad }, "c")).toThrow(/is not a real date/);
+        expect(
+          validateMetricReadModes({
+            eventSets: { c: { by: "alias", reads: { asOf: bad } } },
+          }),
+        ).toHaveLength(1);
+      }
+    });
+
+    it("refuses an impossible calendar date in the instant form too", () => {
+      expect(() => compileReadModePredicate({ asOf: "2026-02-30T12:00:00Z" }, "c")).toThrow(
+        /must be an ISO-8601 date/,
+      );
+    });
+
+    it("still accepts a real leap day", () => {
+      expect(compileReadModePredicate({ asOf: "2024-02-29" }, "c")).toBe(
+        "occurred_at < '2024-03-01T00:00:00.000Z'::timestamptz",
+      );
+    });
+
     it("refuses an injected literal", () => {
       expect(() => compileReadModePredicate({ asOf: "2026-03-31' OR '1'='1" }, "c")).toThrow(
         /must be an ISO-8601 date/,

@@ -451,7 +451,7 @@ export class ChatResponseBridge implements ResponseRenderer {
     // replica, so the authoritative finalText must be delivered here even for a
     // live-streaming strategy — its own handleCompletion returns early without a
     // local stream. (For non-guardrail agents this is false, preserving the
-    // existing cross-pod no-double-post automation.)
+    // existing cross-pod no-double-post semantics.)
     const deliverWithheldFinalText =
       !strategy.deliversAtCompletion &&
       !stream &&

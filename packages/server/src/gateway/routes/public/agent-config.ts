@@ -284,7 +284,7 @@ async function buildResolvedConfigResponse(
 			configManaged: [] as string[],
 		},
 		// The agent's ordered EXACT model allow-list (`<slug>/<model>` refs).
-		// models[0] is the default (middle of the layered fallback automation →
+		// models[0] is the default (middle of the layered fallback Automation →
 		// agent → org default); the rest are alternates. Empty/absent ⇒ inherit
 		// the org default + allow all org providers.
 		models: settings?.models ?? [],

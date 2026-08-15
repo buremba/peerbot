@@ -159,7 +159,7 @@ M1a (deploy-safe, additive): ADD `resource_class DEFAULT 'entity'`, `target_scop
 table; widen mode CHECK. **No rename, no column drop** — old pods keep working (§6e.1).
 Thread principal identity (agent → agentId, automation → automationId, system → NULL; §6d.1)
 through the gate request + the 3 call sites (`manage_entity`, `promote-keyed-entities`,
-`entity-management`). Automation identical (defaults preserve today's decisions).
+`entity-management`). Runtime semantics are identical (defaults preserve today's decisions).
 
 **Commit 2 — per-principal policy for entities (the new capability; backend + tests).**
 Resolver consumes `principal_kind`/`principal_id`; add the second specificity axis +

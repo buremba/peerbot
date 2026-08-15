@@ -307,7 +307,7 @@ export async function handleCreateVersion(
     // shared version row would let one assignment's source list override
     // every other assignment's sources via get_content's preference order.
     // get_content falls through to automations.sources when version_sources is
-    // empty, which is the right per-assignment automation.
+    // empty, which is the right per-assignment semantics.
     await tx`
       INSERT INTO automation_versions (
         id, automation_id, version, name, description,

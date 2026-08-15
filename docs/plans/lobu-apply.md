@@ -108,7 +108,7 @@ Today `agent-routes.ts:POST /` returns 409 on same-org duplicate (`agent-routes.
 
 Scope:
 - **Modify `POST /` in agent-routes.ts** (around line 293): same-org duplicate returns `200` with the existing agent payload instead of `409`. Cross-org duplicate keeps the existing 409 (separate concern, will be fixed by future org-scoped IDs work). The Lobu-MCP auto-injection in `saveSettings` (line 339-344) must be preserved on first create but skipped on the idempotent-return path.
-- **New route** `PUT /:agentId/platforms/by-stable-id/:stableId` mounted in agent-routes.ts. Uses `buildStablePlatformId(agentId, type, name)` from `gateway/config/file-loader.ts:56` for ID generation client-side; route receives the stable ID in URL. Body shape mirrors `POST /:agentId/platforms`. Automation:
+- **New route** `PUT /:agentId/platforms/by-stable-id/:stableId` mounted in agent-routes.ts. Uses `buildStablePlatformId(agentId, type, name)` from `gateway/config/file-loader.ts:56` for ID generation client-side; route receives the stable ID in URL. Body shape mirrors `POST /:agentId/platforms`. Rules:
   - If stable ID exists: update config in place. If config materially changes, return `{ updated: true, willRestart: true }`. If unchanged, return `{ noop: true }`.
   - If stable ID doesn't exist: create with that ID (skip the random-ID path).
   - Reuses existing `ChatInstanceManager.addConnection` / equivalent — does **not** duplicate connection-creation logic.

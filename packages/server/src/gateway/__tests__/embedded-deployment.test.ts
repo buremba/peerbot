@@ -443,9 +443,9 @@ describe("DeploymentManager", () => {
   });
 
   // =========================================================================
-  // Subprocess-specific automation
+  // Subprocess-specific execution
   // =========================================================================
-  describe("subprocess automation", () => {
+  describe("subprocess execution", () => {
     test("does not mutate gateway process.env", async () => {
       const envBefore = { ...process.env };
       const msg = createTestMessagePayload();

@@ -46,7 +46,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { computePendingWindow, nextAutomationWindowStart } from '../window-utils';
 import { cleanupTestDatabase, getTestDb } from '../../__tests__/setup/test-db';
-import { createTestOrganization, createTestUser } from '../../__tests__/setup/test-fixtures';
+import {
+  createTestAgent,
+  createTestOrganization,
+  createTestUser,
+} from '../../__tests__/setup/test-fixtures';
 
 /**
  * Insert a canvas ROOT event for `automationId` covering [start, end).
@@ -64,14 +68,28 @@ async function seedWindow(opts: {
   end: string;
 }): Promise<void> {
   const sql = getTestDb();
+  const agent = await createTestAgent({
+    organizationId: opts.orgId,
+    ownerUserId: opts.userId,
+  });
+  await sql`
+    INSERT INTO automations (
+      id, name, slug, created_by, organization_id, agent_id, automation_group_id
+    ) VALUES (
+      ${opts.automationId}, ${`Window ${opts.automationId}`},
+      ${`window-${opts.automationId}`}, ${opts.userId}, ${opts.orgId},
+      ${agent.agentId}, ${opts.automationId}
+    )
+    ON CONFLICT (id) DO NOTHING
+  `;
   await sql`
     INSERT INTO events (
       organization_id, origin_id, semantic_type, payload_type, payload_data,
-      occurred_at, created_by, metadata
+      occurred_at, created_by, automation_id, metadata
     ) VALUES (
       ${opts.orgId}, ${`canvas_${opts.automationId}_${opts.start}`}, 'canvas_state',
       'json_template', ${sql.json({ items: [] } as never)},
-      ${opts.end}, ${opts.userId},
+      ${opts.end}, ${opts.userId}, ${opts.automationId},
       ${sql.json({
         automation_id: opts.automationId,
         granularity: opts.granularity,

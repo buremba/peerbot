@@ -891,8 +891,9 @@ export async function createTestDeviceCode(
 /**
  * Insert a canvas_state ROOT event (an automation "window" in canvas-on-events) and
  * return its event id — the value the read/write paths treat as `window_id`.
- * Mirrors the complete_window write path: metadata carries canonical UTC ISO
- * window_start/window_end (matching Date.toISOString()) so the row collides on
+ * Mirrors the complete_window write path: the physical automation_id column
+ * carries ownership, while metadata carries canonical UTC ISO window_start /
+ * window_end (matching Date.toISOString()) so the row collides on
  * idx_canvas_chain_root and period reads resolve it. Optionally links the
  * event's provenance run and stamps model/run_metadata on that run.
  */
@@ -922,7 +923,7 @@ export async function createCanvasWindow(options: {
   const [row] = await sql`
     INSERT INTO events (
       entity_ids, organization_id, origin_id, payload_type, payload_data,
-      semantic_type, metadata, occurred_at, created_by, created_at, run_id, client_id
+      semantic_type, automation_id, metadata, occurred_at, created_by, created_at, run_id, client_id
     ) VALUES (
       ${entityIdsLiteral}::bigint[],
       ${options.organizationId},
@@ -930,6 +931,7 @@ export async function createCanvasWindow(options: {
       'json_template',
       ${sql.json(options.extractedData ?? {})},
       'canvas_state',
+      ${options.automationId},
       ${sql.json({
         automation_id: options.automationId,
         granularity,

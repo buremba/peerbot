@@ -32,9 +32,9 @@ const logger = createLogger("http-proxy");
  * through the request handlers — there is deliberately NO process-wide mutable
  * cache. A lazily-populated module global (the previous design) read `process.env`
  * at whatever moment the first request happened to fire and then froze that value
- * for the life of the process, which made automation order-dependent (and, in the
- * test runner where the module + env are shared across files, leaked one file's
- * env into another's). Resolving per-server removes that coupling entirely.
+ * for the life of the process, which made initialization order-dependent (and,
+ * in the test runner where the module + env are shared across files, leaked one
+ * file's env into another's). Resolving per-server removes that coupling entirely.
  */
 export interface ResolvedNetworkConfig {
   allowedDomains: string[];
@@ -400,18 +400,14 @@ function extractProxyCredentials(
     return null;
   }
 
-  // Parse Basic auth without a backtracking expression over an untrusted
-  // header. RFC 7235 permits one or more spaces between the scheme and token.
-  if (authHeader.slice(0, 6).toLowerCase() !== "basic ") {
+  // Parse Basic auth: "Basic base64(username:password)"
+  const match = authHeader.match(/^Basic\s+(.+)$/i);
+  if (!match?.[1]) {
     return null;
   }
-  let tokenStart = 6;
-  while (authHeader.charCodeAt(tokenStart) === 0x20) tokenStart += 1;
-  const encodedCredentials = authHeader.slice(tokenStart);
-  if (!encodedCredentials) return null;
 
   try {
-    const decoded = Buffer.from(encodedCredentials, "base64").toString("utf-8");
+    const decoded = Buffer.from(match[1], "base64").toString("utf-8");
     const colonIndex = decoded.indexOf(":");
     if (colonIndex === -1) {
       return null;

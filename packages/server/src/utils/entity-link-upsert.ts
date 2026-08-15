@@ -10,7 +10,7 @@
  *   3) Links to the matched entity, creates on miss (when autoCreate=true),
  *      logs a merge candidate when one event's identifiers resolve to
  *      multiple distinct entities.
- *   4) Merges declared `traits` onto entities.metadata per automation.
+ *   4) Merges declared `traits` onto entities.metadata per merge strategy.
  *
  * Never mutates `events.entity_ids` — events stay immutable, JOIN-at-read
  * recovers the relationship via entity_identities.
@@ -376,7 +376,7 @@ async function lookupMatches(
  * authoritative: it governs even when it matches nothing (a new account), so a
  * stale non-primary like a reused `github_login` can't merge a fresh account
  * into the old person. Without a primary, identities match equal-weight (the
- * cross-channel automation whatsapp/email rely on).
+ * cross-channel WhatsApp/email matching relies on this).
  *
  * This is the single definition of that rule. It is deliberately shared by both
  * resolution sites: the ordinary lookup AND the orphan-recovery re-resolution

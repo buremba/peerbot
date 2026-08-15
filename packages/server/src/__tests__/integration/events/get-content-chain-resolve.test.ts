@@ -8,7 +8,7 @@
  * `fetchByContentIds` read the masked view directly, so the frozen permalink id
  * returned zero rows → the UI's "not found".
  *
- * Pinned automation after the fix (get_content/query.ts):
+ * Pinned contract after the fix (get_content/query.ts):
  *   - Requesting a superseded id returns its WHOLE lineage (pending → executing
  *     → completed), not a 404 and not just the head — the caller sees what
  *     happened.

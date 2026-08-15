@@ -17,7 +17,7 @@ import {
 import * as workspaceModule from '../../workspace';
 
 /**
- * Automation contract for `getPublicWebUrl`:
+ * Contract for `getPublicWebUrl`:
  *   1. Explicit `baseUrl` argument wins.
  *   2. `PUBLIC_GATEWAY_URL` env wins next.
  *   3. With no local frontend bundled, fall back to the hosted-UI origin

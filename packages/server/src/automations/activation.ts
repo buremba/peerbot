@@ -269,7 +269,7 @@ export async function activateAutomationSignal(args: {
 /**
  * Start newly durable Automation runs without failing an already-committed
  * connector delivery if the immediate dispatcher itself throws. The periodic
- * automation tick recovers any claim stranded by that failure.
+ * Automation scheduler tick recovers any claim stranded by that failure.
  */
 export async function dispatchAutomationRunsBestEffort(
   results: Array<{ runId: number; status: string }>,

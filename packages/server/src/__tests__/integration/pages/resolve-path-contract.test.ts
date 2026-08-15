@@ -1,7 +1,7 @@
 /**
  * Compact resolve_path route contract.
  *
- * Keeps the important automation from the old broad page tests while using the
+ * Keeps the important coverage from the old broad page tests while using the
  * reusable MCP client/session helper introduced in this PR.
  */
 

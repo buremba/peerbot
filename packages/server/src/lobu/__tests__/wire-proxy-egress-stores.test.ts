@@ -12,7 +12,7 @@
  * `wireProxyEgressStores` is the extracted boot step. These tests prove, in the
  * red→green sense, that:
  *   - WITHOUT it, a per-agent grant / judged-domain rule has no effect (the
- *     exact regression automation); and
+ *     exact regression); and
  *   - WITH it, the grant is honored and the judged domain reaches the judge.
  */
 
@@ -70,7 +70,7 @@ describe("wireProxyEgressStores — boot wiring of the HTTP egress proxy", () =>
     __testOnly.reset();
   });
 
-  test("UNWIRED: a per-agent grant has no effect (regression automation)", async () => {
+  test("UNWIRED: a per-agent grant has no effect (regression baseline)", async () => {
     const config = denyAllConfig();
     const decision = await __testOnly.checkDomainAccess(
       config,

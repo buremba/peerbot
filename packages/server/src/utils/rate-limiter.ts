@@ -161,7 +161,7 @@ export class RateLimiter {
   /**
    * Background increment of the cluster-wide counter. Never throws; any DB
    * failure logs (throttled) and leaves the local counter as the only
-   * enforcement — i.e. fail open to the old per-pod automation.
+   * enforcement — i.e. fail open to the old per-pod semantics.
    */
   private persistIncrement(key: string, windowStartSec: number): void {
     if (Date.now() < this.dbBackoffUntilMs) return;

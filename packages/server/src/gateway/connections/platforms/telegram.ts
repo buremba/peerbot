@@ -1,5 +1,5 @@
 /**
- * Telegram capability descriptor. Holds every Telegram-specific automation that
+ * Telegram capability descriptor. Holds every Telegram-specific implementation that
  * used to be hardcoded in `ChatInstanceManager`: config helpers, the
  * cloud-mode polling guard, webhook-secret generation/backfill, webhook +
  * command registration against the Bot API, body routing extraction, and the

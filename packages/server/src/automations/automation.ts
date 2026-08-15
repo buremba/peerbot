@@ -168,7 +168,7 @@ export function parseAutomationRunPayload(
 	// version_id was added when the automation group-edit refactor introduced
 	// a per-run version snapshot. Older runs (queued before the change) have
 	// no version_id in approved_input — coerce to null and the agent loop
-	// falls back to current_version_id, matching pre-refactor automation.
+	// falls back to current_version_id, matching pre-refactor semantics.
 	const rawVersionId = payload.version_id;
 	const versionId =
 		typeof rawVersionId === "number" && Number.isFinite(rawVersionId)
@@ -632,7 +632,7 @@ export async function sweepStaleAutomationRuns(
  * dispatchers, and materializers therefore converge on one transition:
  * either a dispatcher claims the row first, or one sweeper marks it timeout
  * and (for scheduled deliveries only) advances the schedule. Advancing inside
- * the same transaction prevents the next automation tick from immediately
+ * the same transaction prevents the next Automation scheduler tick from immediately
  * recreating the missed run.
  *
  * Manual runs are intentionally excluded: a manual caller owns retry policy.
@@ -713,7 +713,7 @@ async function finalizeStalePendingAutomationRuns(
 /**
  * Recover server-dispatched Automation runs that were claimed by the dispatcher
  * but never transitioned to `running` (process crashed between claim and POST).
- * Run every automation tick — the staleness threshold means the
+ * Run on every Automation scheduler tick — the staleness threshold means the
  * UPDATE is a no-op for rows currently being dispatched, so cross-pod
  * coordination via the runs-queue claim path is sufficient.
  *
@@ -946,7 +946,7 @@ interface AutomationTickResult {
 }
 
 /**
- * One automation tick: reset orphaned runs → reconcile in-flight →
+ * One Automation scheduler tick: reset orphaned runs → reconcile in-flight →
  * materialize newly-due → dispatch pending. Each phase is isolated so a throw in
  * one cannot abort the others — the regression that wedged prod (lobu#1046) was a
  * throw in `reconcile` taking down `materialize`+`dispatch` for 12 days. Returns

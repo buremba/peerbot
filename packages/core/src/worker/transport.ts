@@ -48,7 +48,7 @@ export interface WorkerTransport {
    * @param error - The error that occurred. Provider messages reach the gateway
    *                unchanged; the renderer uses context to label/unwrap them.
    * @param errorCode - Classified `AgentErrorCode` (see @lobu/core errors);
-   *                    selects the catalog text/CTA automation.
+   *                    selects the catalog text and CTA.
    * @param context - Non-secret provider/model targeting for the error CTA.
    */
   signalError(

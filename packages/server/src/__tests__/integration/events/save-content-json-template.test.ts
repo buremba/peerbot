@@ -5,7 +5,7 @@
  * handler level after `ensureMemberEntityType` (a DB write), so this is
  * necessarily a DB-backed test rather than a pure unit test.
  *
- * Pinned automation:
+ * Pinned contract:
  *   - payload_type='json_template' with NO payload_template → ToolUserError
  *     ("payload_template is required when payload_type is 'json_template'").
  *   - payload_type='json_template' WITH a payload_template that lacks a `root`

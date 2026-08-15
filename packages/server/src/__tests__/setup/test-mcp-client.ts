@@ -159,7 +159,7 @@ export class TestMcpClient {
 
   /**
    * Issue a raw JSON-RPC method (e.g. `tools/list`). Most callers don't
-   * need this — it exists for tests that assert wire-level automation.
+   * need this — it exists for tests that assert wire-level protocol details.
    */
   async raw<T = unknown>(method: string, params?: Record<string, unknown>) {
     return mcpRequest<T>(method, params, this.opts);

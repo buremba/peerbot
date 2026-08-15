@@ -588,7 +588,7 @@ routes.get("/inference-providers/catalog", async (c) => {
 //
 // Generic start/complete for every providers.json entry with an `oauth` block.
 // Profiles land in the per-user ORG BUCKET so one sign-in covers all of this
-// user's agents in the org. Automation is dispatched by config.grant via
+// user's agents in the org. Grant handling is dispatched by config.grant via
 // grantStrategyFor.
 //
 // Auth: interactive session only.

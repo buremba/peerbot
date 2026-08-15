@@ -948,7 +948,7 @@ describe('McpProxy — wired pre-tool guardrail', () => {
 
   it('blocks a forbidden tool with generic policy text and audits the trip', async () => {
     // Minimal McpConfigSource that always returns an HTTP server config —
-    // we don't need real upstream automation, only the gate before forwardRequest.
+    // we don't need real upstream execution, only the gate before forwardRequest.
     const fakeConfigService = {
       getHttpServer: async () => ({
         url: 'http://upstream.invalid/mcp',

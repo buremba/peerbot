@@ -15,7 +15,7 @@
  *   4. Refuse to delete events the caller does not own (other org).
  *   5. Report already-superseded targets without inserting another tombstone.
  *
- * Vitest CI gap: this file documents the automation and runs locally; CI
+ * Vitest CI gap: this file documents the contract and runs locally; CI
  * does not currently exercise it.
  */
 

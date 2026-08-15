@@ -244,7 +244,7 @@ function checkAgainst(toolName: string, schema: TSchema, args: unknown): unknown
   // coercion would satisfy the validator but the handler would still see the
   // raw value. Deliberately NO `Value.Default`: schema `default:` annotations
   // are client-facing documentation, and handlers apply their own defaults
-  // via `??`. Materializing them here changes automation — e.g. read_knowledge
+  // via `??`. Materializing them here changes semantics — e.g. read_knowledge
   // declares `sort_by: { default: 'score' }` while its include_superseded
   // path requires sort_by to be UNSET; injecting the default broke it.
   const coerced = Value.Convert(schema, normalizeArgs(args));

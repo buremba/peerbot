@@ -1,5 +1,5 @@
 /**
- * Tier B: claim atomicity, scoping, and sweep automation for the PG-backed
+ * Tier B: claim atomicity, scoping, and sweep semantics for the PG-backed
  * pending-interaction store that backs the chat interaction bridge.
  *
  * The store backs the bridge's `Map<questionId, PendingQuestionEntry>`

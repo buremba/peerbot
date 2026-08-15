@@ -94,7 +94,7 @@ export interface ContentSearchOptions {
 
   // Ranking tuning. combined_score = vector_weight*cosine + (1-vector_weight)*text_rank
   // when both signals are available. Defaults to 0.6 (60% vector, 40% text) which
-  // matches the prior hard-coded automation. Raise toward 1.0 for noisy/long-form content
+  // matches the prior hard-coded weighting. Raise toward 1.0 for noisy/long-form content
   // where text rank is dominated by stopword-like matches (e.g. conversational logs).
   vector_weight?: number;
 

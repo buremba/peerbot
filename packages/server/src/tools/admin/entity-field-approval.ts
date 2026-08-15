@@ -91,7 +91,7 @@ export interface EntityFieldChangeProposal {
 	 * The ONE human who owns every gated field (distinct
 	 * `field_controls[field].set_by`), resolved at propose time. Drives
 	 * owner-routed delivery (Slack DM tier) and lets that owner approve the run
-	 * without an admin role. Absent for mixed/no owners — admin-only automation.
+	 * without an admin role. Absent for mixed/no owners — admin-only handling.
 	 * Lives in action_input (not run_metadata) because the approve path and the
 	 * Slack bridge already load action_input for the proposal; the dedupe SELECT
 	 * compares the canonical change identity, so replays still collapse.

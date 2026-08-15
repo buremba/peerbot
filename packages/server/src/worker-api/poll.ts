@@ -414,7 +414,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // connectors auto-wire) — the set is computed in the /api/workers/* auth
   // middleware. Trusted workers (matched WORKER_API_TOKEN) and anonymous
   // local-dev requests see all pending runs — preserving the existing
-  // server-side worker fleet automation.
+  // server-side worker fleet semantics.
   //
   // Cross-org device pins: also let the device claim runs in any org where it
   // has a pinned automation/connection AND its owner is still a member of that

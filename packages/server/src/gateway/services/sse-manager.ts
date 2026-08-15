@@ -255,7 +255,7 @@ export class SseManager {
   /**
    * Close every connection for `agentId`, emitting a `closed` event with
    * `reason` first (best-effort — write errors are swallowed, matching the
-   * previous inline DELETE /agents automation). Also drops the backlog so a
+   * previous inline DELETE /agents implementation). Also drops the backlog so a
    * later connection with the same key cannot replay stale completion
    * events from the deleted session, and tells peer replicas to do the same
    * (their backlogs are seeded by fan-out).

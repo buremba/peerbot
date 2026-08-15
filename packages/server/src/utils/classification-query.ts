@@ -560,7 +560,7 @@ export async function upsertClassifications(
   if (classifications.length === 0) return [];
 
   // Deduplicate: for each (content_id, classifier_id), keep the one with highest confidence
-  // and merge values/confidences (matches the old ON CONFLICT automation)
+  // and merge values/confidences (matches the old ON CONFLICT logic)
   const deduped = new Map<string, AllClassification & { merged_values: string[] }>();
   for (const c of classifications) {
     const key = `${c.content_id}:${c.classifier_id}`;

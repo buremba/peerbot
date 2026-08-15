@@ -61,6 +61,13 @@ describe('Automation schema vocabulary', () => {
     expect(up).toMatch(/legacy\.id,\s*'automation_event',\s*legacy\.identity_key/i);
   });
 
+  it('replays the complete migration up-side against the canonical schema', async () => {
+    const sql = getTestDb();
+    const up = loadMigrationUpSection(resolveMigrationsDir(), CUTOVER_MIGRATION);
+    await sql.unsafe(up);
+    await sql.unsafe(up);
+  });
+
   it('does not globally rewrite user-authored SQL, templates, or opaque run JSON', () => {
     const up = loadMigrationUpSection(resolveMigrationsDir(), CUTOVER_MIGRATION);
     expect(up).not.toMatch(/UPDATE\s+public\.(?:watchers|watcher_versions|view_template_versions)\b/i);

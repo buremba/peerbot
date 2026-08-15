@@ -474,7 +474,7 @@ export function createAgentHistoryRoutes(deps: {
 	 * user who owns the agent. The outer Lobu middleware establishes this
 	 * ambient org only after verifying Better Auth membership (and pins PATs),
 	 * then the route intersects the agent's channel bindings with the source ACL.
-	 * Agent owners retain the legacy bound-channel automation; everyone else needs
+	 * Agent owners retain the legacy bound-channel access semantics; everyone else needs
 	 * a fresh enforced ACL that proves channel membership.
 	 * Keep the owner resolver above for every other history surface.
 	 */

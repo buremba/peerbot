@@ -58,7 +58,7 @@ describe("RunsQueue — SKIP LOCKED claim concurrency", () => {
 
     // Inside one RunsQueue instance, a queue name has one active worker loop.
     // This still exercises the production SKIP LOCKED claim SQL against real
-    // Postgres, without mocking the row-lock automation.
+    // Postgres, without mocking the row-lock semantics.
     await queue.work("test-skip-locked", handler);
 
     // Drain — poll until all claimed.

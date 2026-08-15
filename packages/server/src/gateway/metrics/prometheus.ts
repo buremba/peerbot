@@ -124,8 +124,8 @@ function initializeMetrics() {
     "counter"
   );
 
-  // Scheduler + automation health. These back the prod alerting rules
-  // (charts/lobu PrometheusRule): a silent scheduler / failing automation tick is
+  // Scheduler + Automation health. These back the prod alerting rules
+  // (charts/lobu PrometheusRule): a silent scheduler / failing Automation tick is
   // exactly the failure mode that went undetected for 12 days (lobu#1046).
   // Per-pod in-memory counters are the correct Prometheus model — each pod's
   // /metrics is scraped and summed across pods; counter resets on restart are

@@ -283,7 +283,7 @@ describe("InteractionService — connectionId is required", () => {
     ).toBe(false);
 
     // Same-platform events without a connectionId still fall through to the
-    // bridge (pre-existing chat automation, unchanged).
+    // bridge (pre-existing chat routing, unchanged).
     expect(
       shouldHandle(
         { channelId: "C1", platform: "slack" },

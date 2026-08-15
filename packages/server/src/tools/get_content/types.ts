@@ -61,7 +61,7 @@ export const GetContentResultSchema = Type.Object({
    * Permalink for the entity-scoped events listing in the public web app.
    * LLM agents calling `read_knowledge` over MCP read this from the response
    * and format it into chat replies; there is no programmatic consumer in
-   * this repo, but removing the field breaks that user-facing automation.
+   * this repo, but removing the field breaks that user-facing contract.
    */
   view_url: Type.Optional(Type.String()),
   // Automation-mode fields (only present when automation_id is provided)

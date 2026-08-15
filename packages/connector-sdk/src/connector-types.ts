@@ -614,7 +614,7 @@ export interface EntityIdentitySpec {
    *     stale, since-reused secondary identifier like a renamed login must not
    *     conflate the two). A new entity is created keyed on the primary id.
    * Defaults to false: non-primary identities match equal-weight (a person is
-   * matched by ANY of them — the cross-channel automation whatsapp/email rely on).
+   * matched by ANY of them — cross-channel WhatsApp/email matching relies on this).
    */
   primary?: boolean;
 }

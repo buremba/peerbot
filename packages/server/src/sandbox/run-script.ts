@@ -8,7 +8,7 @@
  * host↔guest bridge message (SDK payload, SDK result, or return envelope) is
  * capped at 4 MB — a larger message, or exhausting the 200-call quota,
  * terminates the run by disposing the isolate (uncatchable by the guest).
- * Extracted named exports keep the old hard-fail automation because a partial
+ * Extracted named exports keep the old hard-fail semantics because a partial
  * schema would be worse than none. Other caps: 180s wall-clock max
  * (device-bound operations may wait up to ~155s), and 30s per `ctx.sleep()`.
  * `client.org()` is stateless — each guest call carries

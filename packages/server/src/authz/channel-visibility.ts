@@ -14,7 +14,7 @@
  * Enforcement is per-connection and OFF by default: a connection's rows are
  * gated only once it has a fresh `authz_source_acl_state` row (`acl_support
  * = 'full'` AND `freshness_state = 'fresh'`). A connection that was NEVER graphed
- * (no `authz_source_acl_state` row) keeps the existing per-agent automation, so an
+ * (no `authz_source_acl_state` row) keeps the existing per-agent access semantics, so an
  * absent graph never silently hides a channel. But once a row exists, anything
  * short of full+fresh — partial/none support, stale/failed freshness, or a fresh
  * row aged past the window — fails CLOSED rather than passing through, so a

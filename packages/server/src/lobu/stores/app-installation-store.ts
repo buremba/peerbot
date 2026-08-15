@@ -96,7 +96,7 @@ export interface AppInstallationUpsert extends AppInstallationTenantKey {
    * the fence for a claim that must be a deliberate move, not a silent slot
    * steal. Checked INSIDE the advisory-locked transaction, so it holds across
    * replicas even against a concurrent activation of the same tuple. Default
-   * false (transfer proceeds, preserving the historical one-active-owner automation
+   * false (transfer proceeds, preserving the historical one-active-owner semantics
    * for reinstall/OAuth paths).
    */
   blockCrossOrgTransfer?: boolean;

@@ -191,7 +191,7 @@ async function manageAutomationsImpl(
   // (resolveEffectiveAutomationOwners) and the mutation writes them, but on SEPARATE
   // pooled connections. A concurrent reassign of the target automation's agent_id
   // could slip between the check and the write, so the guard would pass on owner A
-  // while the automation lands on a now-B-owned automation. We serialize both the guard
+  // while the write lands on a now-B-owned Automation. We serialize both the guard
   // AND the mutation under ONE session-level advisory lock keyed by the target's
   // automation_group_id. EVERY mutating action that has a resolvable target group
   // takes the lock — human or non-human — because the racing reassign is itself an

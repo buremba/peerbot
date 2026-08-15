@@ -810,7 +810,7 @@ describe("agent_transcript_snapshot — schema", () => {
 
 describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
   test("P1#1 run-binding race: late POST attributes to the worker's claimed run, not the latest one", async () => {
-    // PRE-FIX automation: worker A finished execute() for run 100, started
+    // PRE-FIX sequence: worker A finished execute() for run 100, started
     // cleanup() POST; run 101 was enqueued for the same conv before A's
     // POST arrived; the route's resolveLatestRunId() picked 101; A's
     // snapshot was stored under run_id=101; worker B's later POST for
@@ -931,7 +931,7 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
   });
 
   test("P1#2 lock released on pre-spawn throw: spawnDeployment wraps spawn-prep in try/catch with release", async () => {
-    // PRE-FIX automation: lock acquired ~line 465, then several throwing
+    // PRE-FIX sequence: lock acquired ~line 465, then several throwing
     // operations (generateEnvironmentVariables at ~494, nix package
     // validation, synchronous spawn() failure) had no release in their
     // error paths — the reserved connection and advisory lock leaked
@@ -977,7 +977,7 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
   });
 
   test("P1#3 lock released on child exit, not on killWorker entry: killWorker no longer references the release", async () => {
-    // PRE-FIX automation: killWorker released the conv lock BEFORE SIGTERM
+    // PRE-FIX sequence: killWorker released the conv lock BEFORE SIGTERM
     // and BEFORE awaiting exit. During the SIGTERM → exit window the
     // worker was still flushing its snapshot, but a sibling pod could
     // already claim the same conv lock, hydrate from a stale snapshot,
@@ -1013,7 +1013,7 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
   });
 
   test("P2 tenant isolation: /api/v1/agents/:id/history/threads/:threadId/messages reads orgA's snapshot only, not orgB's, when both share the agentId", async () => {
-    // PRE-FIX (round 1) automation: `verifyOwnedAgentAccess` ran a fresh
+    // PRE-FIX (round 1) sequence: `verifyOwnedAgentAccess` ran a fresh
     // `SELECT organization_id FROM public.agents WHERE id=? AND
     // owner_platform=? AND owner_user_id=? LIMIT 1` — owner_platform +
     // owner_user_id can BOTH match in two orgs simultaneously (same

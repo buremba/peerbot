@@ -424,7 +424,7 @@ async function handleSend(
     await trackNotificationReaction(askRunId);
   } else if (notification.created) {
     // Plain FYI notifications have no run handle to use as a durable dedupe
-    // key, so retain their historical best-effort tracking automation.
+    // key, so retain their historical best-effort tracking semantics.
     await trackNotificationReaction().catch((err) => {
       logger.warn(
         { err, automationId: reactionAutomationId, windowId: reactionWindowId },

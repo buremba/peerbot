@@ -814,7 +814,7 @@ describe("automation contract", () => {
 			// This test pins the gate + the log surface, not the sandbox itself:
 			// runtimes without an isolated-vm build report 'failed' (the sandbox
 			// suite covers executor health), so assert "attempted", never
-			// 'skipped' — the pre-fix automation this test exists to prevent.
+			// 'skipped' — the pre-fix outcome this test exists to prevent.
 			expect(completion.content_linked).toBe(0);
 			expect(completion.reaction_status).not.toBe("skipped");
 
@@ -2043,7 +2043,7 @@ describe("automation contract", () => {
 		expect(result.reconciled).toBe(0);
 	});
 
-	describe("automation tick orchestration", () => {
+	describe("Automation scheduler tick orchestration", () => {
 		it("recovers an orphaned event-delivery claim for durable retry", async () => {
 			const { sql, automationId } = await createAutomatedAutomation();
 			const materialized = await materializeDueAutomationRuns({} as Env);

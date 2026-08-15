@@ -240,7 +240,7 @@ describe("write-policy action/effect decision parity", () => {
 	it("connector_action: org disabled + exact-agent deny resolves deny deterministically (codex-7)", async () => {
 		// deny and disabled are equally restrictive; the fold must pick ONE regardless
 		// of candidate/scope order, or the resolved effect (and list_available's
-		// hide-vs-surface automation) becomes order-dependent and diverges from the UI.
+		// hide-vs-surface decision) becomes order-dependent and diverges from the UI.
 		// We break the tie toward deny — it still SURFACES the op and gates it.
 		await seedPolicy({
 			orgId,

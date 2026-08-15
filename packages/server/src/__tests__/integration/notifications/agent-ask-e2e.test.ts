@@ -118,9 +118,10 @@ describe("notify input_schema — agent asks a human", () => {
 		const [window] = await sql`
 			INSERT INTO events (
 				organization_id, semantic_type, payload_type, payload_data,
-				metadata, occurred_at, created_at, created_by
+				automation_id, metadata, occurred_at, created_at, created_by
 			) VALUES (
 				${org.id}, 'canvas_state', 'json_template', '{}'::jsonb,
+				${automationId},
 				${sql.json({
 					automation_id: automationId,
 					granularity: "hour",
@@ -1090,9 +1091,10 @@ describe("notify input_schema — agent asks a human", () => {
 		const [victimWindow] = await sql`
 			INSERT INTO events (
 				organization_id, semantic_type, payload_type, payload_data,
-				metadata, occurred_at, created_at, created_by
+				automation_id, metadata, occurred_at, created_at, created_by
 			) VALUES (
 				${victimOrg.id}, 'canvas_state', 'json_template', '{}'::jsonb,
+				${victimAutomationId},
 				${sql.json({ automation_id: victimAutomationId })},
 				NOW(), NOW(), ${victimOwner.id}
 			)

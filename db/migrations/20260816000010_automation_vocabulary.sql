@@ -215,39 +215,128 @@ WHERE metadata->>'resource_kind' IN ('watcher', 'behavior')
 -- never updated. The two attribution columns below are metadata-only catalog
 -- renames and preserve every stored value and event id.
 
--- squawk-ignore renaming-table,prefer-robust-stmts -- intentional quiesced hard cutover
-ALTER TABLE public.watchers RENAME TO automations;
--- squawk-ignore renaming-table,prefer-robust-stmts -- intentional quiesced hard cutover
-ALTER TABLE public.watcher_versions RENAME TO automation_versions;
--- squawk-ignore renaming-table,prefer-robust-stmts -- intentional quiesced hard cutover
-ALTER TABLE public.watcher_reactions RENAME TO automation_reactions;
--- squawk-ignore renaming-table,prefer-robust-stmts -- intentional quiesced hard cutover
-ALTER TABLE public.watcher_window_events RENAME TO automation_window_events;
+-- Keep the hard cutover replayable for manual recovery after a missing ledger
+-- write. A fully retired or fully canonical name is accepted; both or neither
+-- fail closed because they indicate an ambiguous partial schema.
+CREATE OR REPLACE FUNCTION pg_temp.rename_relation_if_present(
+  relation_kind text,
+  retired_name text,
+  canonical_name text
+)
+RETURNS void
+LANGUAGE plpgsql
+AS $rename_relation$
+DECLARE
+  retired_relation regclass := to_regclass(format('%I.%I', 'public', retired_name));
+  canonical_relation regclass := to_regclass(format('%I.%I', 'public', canonical_name));
+BEGIN
+  IF relation_kind NOT IN ('TABLE', 'VIEW') THEN
+    RAISE EXCEPTION 'unsupported relation kind: %', relation_kind;
+  END IF;
+  IF retired_relation IS NULL THEN
+    IF canonical_relation IS NULL THEN
+      RAISE EXCEPTION 'neither public.% nor public.% exists', retired_name, canonical_name;
+    END IF;
+    RETURN;
+  END IF;
+  IF canonical_relation IS NOT NULL THEN
+    RAISE EXCEPTION 'both public.% and public.% exist', retired_name, canonical_name;
+  END IF;
+  EXECUTE format(
+    'ALTER %s %I.%I RENAME TO %I',
+    relation_kind,
+    'public',
+    retired_name,
+    canonical_name
+  );
+END
+$rename_relation$;
 
--- squawk-ignore renaming-column,prefer-robust-stmts -- same atomic cutover
-ALTER TABLE public.automations RENAME COLUMN source_watcher_id TO source_automation_id;
--- squawk-ignore renaming-column,prefer-robust-stmts -- same atomic cutover
-ALTER TABLE public.automations RENAME COLUMN watcher_group_id TO automation_group_id;
--- squawk-ignore renaming-column,prefer-robust-stmts -- same atomic cutover
-ALTER TABLE public.automation_versions RENAME COLUMN watcher_id TO automation_id;
--- squawk-ignore renaming-column,prefer-robust-stmts -- same atomic cutover
-ALTER TABLE public.automation_reactions RENAME COLUMN watcher_id TO automation_id;
--- squawk-ignore renaming-column,prefer-robust-stmts -- same atomic cutover
-ALTER TABLE public.automation_window_events RENAME COLUMN watcher_id TO automation_id;
--- squawk-ignore renaming-column,prefer-robust-stmts -- same atomic cutover
-ALTER TABLE public.classify_facet RENAME COLUMN watcher_id TO automation_id;
--- squawk-ignore renaming-column,prefer-robust-stmts -- same atomic cutover
-ALTER TABLE public.entity_merge_operations RENAME COLUMN watcher_id TO automation_id;
--- squawk-ignore renaming-column,prefer-robust-stmts -- same atomic cutover
-ALTER TABLE public.event_classifications RENAME COLUMN watcher_id TO automation_id;
--- squawk-ignore renaming-column,prefer-robust-stmts -- same atomic cutover
-ALTER TABLE public.runs RENAME COLUMN watcher_id TO automation_id;
--- squawk-ignore renaming-column,prefer-robust-stmts -- same atomic cutover
-ALTER TABLE public.events RENAME COLUMN behavior_id TO automation_id;
--- squawk-ignore renaming-column,prefer-robust-stmts -- same atomic cutover
-ALTER TABLE public.events RENAME COLUMN behavior_version_id TO automation_version_id;
--- squawk-ignore renaming-column,prefer-robust-stmts -- same atomic cutover
-ALTER TABLE public.connector_definitions RENAME COLUMN behavior_events TO automation_events;
+CREATE OR REPLACE FUNCTION pg_temp.rename_column_if_present(
+  relation_kind text,
+  relation_name text,
+  retired_name text,
+  canonical_name text
+)
+RETURNS void
+LANGUAGE plpgsql
+AS $rename_column$
+DECLARE
+  relation regclass := to_regclass(format('%I.%I', 'public', relation_name));
+  retired_exists boolean;
+  canonical_exists boolean;
+BEGIN
+  IF relation_kind NOT IN ('TABLE', 'VIEW') THEN
+    RAISE EXCEPTION 'unsupported relation kind: %', relation_kind;
+  END IF;
+  IF relation IS NULL THEN
+    RAISE EXCEPTION 'public.% does not exist', relation_name;
+  END IF;
+  SELECT EXISTS (
+    SELECT 1 FROM pg_attribute
+    WHERE attrelid = relation AND attname = retired_name AND NOT attisdropped
+  ) INTO retired_exists;
+  SELECT EXISTS (
+    SELECT 1 FROM pg_attribute
+    WHERE attrelid = relation AND attname = canonical_name AND NOT attisdropped
+  ) INTO canonical_exists;
+  IF NOT retired_exists THEN
+    IF NOT canonical_exists THEN
+      RAISE EXCEPTION 'neither %.% nor %.% exists',
+        relation_name, retired_name, relation_name, canonical_name;
+    END IF;
+    RETURN;
+  END IF;
+  IF canonical_exists THEN
+    RAISE EXCEPTION 'both %.% and %.% exist',
+      relation_name, retired_name, relation_name, canonical_name;
+  END IF;
+  EXECUTE format(
+    'ALTER %s %I.%I RENAME COLUMN %I TO %I',
+    relation_kind,
+    'public',
+    relation_name,
+    retired_name,
+    canonical_name
+  );
+END
+$rename_column$;
+
+SELECT pg_temp.rename_relation_if_present('TABLE', 'watchers', 'automations');
+SELECT pg_temp.rename_relation_if_present('TABLE', 'watcher_versions', 'automation_versions');
+SELECT pg_temp.rename_relation_if_present('TABLE', 'watcher_reactions', 'automation_reactions');
+SELECT pg_temp.rename_relation_if_present('TABLE', 'watcher_window_events', 'automation_window_events');
+
+SELECT pg_temp.rename_column_if_present(
+  'TABLE', 'automations', 'source_watcher_id', 'source_automation_id'
+);
+SELECT pg_temp.rename_column_if_present(
+  'TABLE', 'automations', 'watcher_group_id', 'automation_group_id'
+);
+SELECT pg_temp.rename_column_if_present(
+  'TABLE', 'automation_versions', 'watcher_id', 'automation_id'
+);
+SELECT pg_temp.rename_column_if_present(
+  'TABLE', 'automation_reactions', 'watcher_id', 'automation_id'
+);
+SELECT pg_temp.rename_column_if_present(
+  'TABLE', 'automation_window_events', 'watcher_id', 'automation_id'
+);
+SELECT pg_temp.rename_column_if_present('TABLE', 'classify_facet', 'watcher_id', 'automation_id');
+SELECT pg_temp.rename_column_if_present(
+  'TABLE', 'entity_merge_operations', 'watcher_id', 'automation_id'
+);
+SELECT pg_temp.rename_column_if_present(
+  'TABLE', 'event_classifications', 'watcher_id', 'automation_id'
+);
+SELECT pg_temp.rename_column_if_present('TABLE', 'runs', 'watcher_id', 'automation_id');
+SELECT pg_temp.rename_column_if_present('TABLE', 'events', 'behavior_id', 'automation_id');
+SELECT pg_temp.rename_column_if_present(
+  'TABLE', 'events', 'behavior_version_id', 'automation_version_id'
+);
+SELECT pg_temp.rename_column_if_present(
+  'TABLE', 'connector_definitions', 'behavior_events', 'automation_events'
+);
 
 -- automation-event-identity-bridge:start
 -- Keyed Automation output heads written before the cutover use the retired
@@ -312,16 +401,21 @@ ON CONFLICT (event_id, embedding_model, chunk_index) DO NOTHING;
 -- Views retain their output-column names across underlying relation renames.
 -- Rename those output contracts explicitly, then replace the canvas view so
 -- ownership comes from the preserved physical attribution column.
--- squawk-ignore renaming-table,prefer-robust-stmts -- same atomic cutover
-ALTER VIEW public.behavior_message_subscriptions RENAME TO automation_message_subscriptions;
--- squawk-ignore renaming-column,prefer-robust-stmts -- same atomic cutover
-ALTER VIEW public.automation_message_subscriptions RENAME COLUMN behavior_id TO automation_id;
--- squawk-ignore renaming-column,prefer-robust-stmts -- same atomic cutover
-ALTER VIEW public.current_event_records RENAME COLUMN behavior_id TO automation_id;
--- squawk-ignore renaming-column,prefer-robust-stmts -- same atomic cutover
-ALTER VIEW public.current_event_records RENAME COLUMN behavior_version_id TO automation_version_id;
--- squawk-ignore renaming-column,prefer-robust-stmts -- same atomic cutover
-ALTER VIEW public.canvas_windows RENAME COLUMN watcher_id TO automation_id;
+SELECT pg_temp.rename_relation_if_present(
+  'VIEW', 'behavior_message_subscriptions', 'automation_message_subscriptions'
+);
+SELECT pg_temp.rename_column_if_present(
+  'VIEW', 'automation_message_subscriptions', 'behavior_id', 'automation_id'
+);
+SELECT pg_temp.rename_column_if_present(
+  'VIEW', 'current_event_records', 'behavior_id', 'automation_id'
+);
+SELECT pg_temp.rename_column_if_present(
+  'VIEW', 'current_event_records', 'behavior_version_id', 'automation_version_id'
+);
+SELECT pg_temp.rename_column_if_present(
+  'VIEW', 'canvas_windows', 'watcher_id', 'automation_id'
+);
 
 -- squawk-ignore require-concurrent-index-deletion -- replicas are quiesced
 DROP INDEX IF EXISTS public.idx_canvas_chain_root;
@@ -473,6 +567,7 @@ BEGIN
 END
 $archive$;
 
+DROP TRIGGER IF EXISTS archive_chat_automations_for_deleted_connection ON public.connections;
 CREATE TRIGGER archive_chat_automations_for_deleted_connection
 AFTER UPDATE OF deleted_at ON public.connections
 FOR EACH ROW
@@ -493,6 +588,7 @@ BEGIN
 END
 $archive$;
 
+DROP TRIGGER IF EXISTS archive_automations_for_deleted_agent ON public.agents;
 CREATE TRIGGER archive_automations_for_deleted_agent
 AFTER DELETE ON public.agents
 FOR EACH ROW
@@ -514,6 +610,7 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS stamp_automation_last_run_completed_at ON public.runs;
 CREATE TRIGGER stamp_automation_last_run_completed_at
   AFTER INSERT OR UPDATE OF
     status, completed_at, automation_id, run_type, organization_id

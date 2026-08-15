@@ -3,7 +3,7 @@
  *
  * Same semantics as scheduled_jobs.timezone (#1866): the cron's wall-clock
  * fields are evaluated in the stored IANA zone, DST included; NULL keeps the
- * pre-existing server-time automation. Asia/Taipei (UTC+8, no DST) makes the
+ * pre-existing server-time scheduling semantics. Asia/Taipei (UTC+8, no DST) makes the
  * expected UTC instants deterministic: 9am Taipei is always 01:00Z.
  */
 

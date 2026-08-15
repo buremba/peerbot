@@ -663,7 +663,7 @@ export class WorkerGateway {
       // ANOTHER org's identity/soul/skills/MCP-slug and ship it to the worker.
       // Declared (SDK-embedded) agents are org-agnostic, so they resolve without
       // an org. When `!orgScopedOk` for a DB-backed agent we deny ALL agent-scoped
-      // reads (fail closed to generic/no-agent automation).
+      // reads (fail closed to generic/no-agent access semantics).
       const tokenOrgId = auth.tokenData.organizationId;
       // ORG-AWARE declared check: a declared id that ALSO has a real DB row in
       // the token's org is DB-backed (the DB row wins), so a collision cannot

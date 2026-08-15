@@ -856,7 +856,7 @@ import {
 //      reach into org B.
 //
 // In dev (no WORKER_API_TOKEN configured) and with no user auth, requests pass
-// through unauthenticated — the existing local-dev automation.
+// through unauthenticated — the existing local-dev access semantics.
 app.use("/api/workers/*", async (c, next) => {
 	const expected = c.env.WORKER_API_TOKEN;
 	const provided = c.req.header("Authorization")?.replace("Bearer ", "");

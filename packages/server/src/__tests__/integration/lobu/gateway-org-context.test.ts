@@ -149,7 +149,7 @@ describe("Lobu embedded Agent API org-context middleware (x-lobu-org)", () => {
   });
 
   describe("PAT auth (org-pinned)", () => {
-    it("no x-lobu-org header → resolves to the PAT-bound org (pre-flag automation)", async () => {
+    it("no x-lobu-org header → resolves to the PAT-bound org (pre-flag semantics)", async () => {
       const { token } = await createTestPAT(user.id, patOrg.id);
       const { status, body } = await fetchTest(patApp, { token });
       expect(status).toBe(200);

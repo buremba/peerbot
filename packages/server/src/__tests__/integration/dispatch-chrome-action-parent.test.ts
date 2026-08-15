@@ -258,9 +258,10 @@ describe('dispatchChromeAction target browser routing', () => {
     const [window] = await sql`
       INSERT INTO events (
         organization_id, semantic_type, payload_type, payload_data,
-        metadata, occurred_at, created_at, created_by
+        automation_id, metadata, occurred_at, created_at, created_by
       ) VALUES (
         ${org.id}, 'canvas_state', 'json_template', '{}'::jsonb,
+        ${Number(automation.id)},
         ${sql.json({ automation_id: Number(automation.id) })}, NOW(), NOW(), ${creator.id}
       )
       RETURNING id

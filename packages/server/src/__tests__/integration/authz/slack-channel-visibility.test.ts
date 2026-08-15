@@ -7,7 +7,7 @@
  * never reaches a user beyond their access in the source system. Also proves the
  * two fail-closed edges (unresolved requester sees nothing of an enforced
  * connection) and that a connection WITHOUT a materialized ACL graph keeps the
- * legacy per-agent automation (no regression until a workspace is graphed).
+ * legacy per-agent access semantics (no regression until a workspace is graphed).
  */
 
 import { normalizeSlackUserId } from "@lobu/connectors/slack-identity";

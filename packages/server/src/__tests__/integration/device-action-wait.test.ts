@@ -79,7 +79,7 @@ async function insertPendingActionRun(
 }
 
 // Mirror of waitForDeviceActionRun, with shrunk budgets so tests run
-// in milliseconds instead of minutes. Automation is identical to the
+// in milliseconds instead of minutes. Control flow is identical to the
 // production helper.
 async function waitForDeviceActionRunForTest(
   runId: number,

@@ -1,7 +1,7 @@
 /**
  * Channels as streaming feeds (the feeds-channel consolidation).
  *
- * Pins the productionized automation:
+ * Pins the productionized contract:
  *   1. ensureStreamingChannelFeed materializes a channel as a kind='streaming'
  *      feed with the scheduler guards (virtual=false + sync-lifecycle columns
  *      NULL), is idempotent, and soft-deletes cleanly.

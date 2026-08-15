@@ -282,7 +282,7 @@ describe("ingestInboundAttachments", () => {
  * thread-history backfill bug — bot mentioned mid-thread had no context —
  * lived here undetected because no test exercised this path.
  *
- * These tests pin the backfill automation so future regressions trip CI.
+ * These tests pin the backfill semantics so future regressions trip CI.
  */
 
 const CONN_ID = "conn-test";

@@ -1,6 +1,6 @@
 /**
  * Tests for SseManager — backlog pruning, dead-connection sweep, and
- * broadcast semantics. Covers automation previously inlined in
+ * broadcast semantics. Covers logic previously inlined in
  * `routes/public/agent.ts` so we don't regress on extraction.
  */
 

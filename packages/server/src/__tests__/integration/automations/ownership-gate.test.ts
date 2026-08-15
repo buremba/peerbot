@@ -9,7 +9,7 @@
  * normally, owned fields are BLOCKED and queued as a human approval, and the
  * tool result reports what happened so the agent can tell the user.
  *
- * These contracts pin that automation end-to-end through `executeTool` (the real
+ * These contracts pin that ownership gate end-to-end through `executeTool` (the real
  * access-controlled path) so the post-commit approval proposal is exercised.
  */
 

@@ -33,7 +33,7 @@ export interface ChannelAboutTarget {
 	 *  enterprise `E…`). Resolved connector-side (`resolveSubscriptionTeam`) and threaded
 	 *  in so the about edge attaches to the SAME channel resource entity the ACL
 	 *  graph + subscription own. `null`/undefined = unknown yet (skip, heal from inbound)
-	 *  for a team-scoped connector, mirroring the subscription's null-team automation. */
+	 *  for a team-scoped connector, mirroring the subscription's null-team semantics. */
 	teamId: string | null | undefined;
 	/** Resolved business-entity ids to link (channel --about--> each). */
 	aboutEntityIds: number[];

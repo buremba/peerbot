@@ -4,8 +4,12 @@ import { join } from 'node:path';
 import { MCP_PROTOCOL_VERSION } from '@lobu/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { getDb } from '../../../db/client';
+import type { Env } from '../../../index';
 import { clearInMemoryMcpSessionsForTests } from '../../../mcp-handler';
+import { buildClientSDK } from '../../../sandbox/client-sdk';
+import type { ToolContext } from '../../../tools/registry';
 import { insertEvent } from '../../../utils/insert-event';
+import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -630,6 +634,52 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(body.result?.content?.[0]?.text).not.toContain(
       'body-visible-only-to-app-hosts'
     );
+  });
+
+  it('keeps ClientSDK saves headless when their source session supports Apps', async () => {
+    // run_sdk builds this same in-process SDK from the outer MCP session. The
+    // direct SDK call keeps the boundary test independent of isolated-vm.
+    await initWorkspaceProvider();
+    const ctx: ToolContext = {
+      organizationId: org.id,
+      userId: owner.id,
+      memberRole: 'owner',
+      isAuthenticated: true,
+      tokenType: 'oauth',
+      scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
+      scopedToOrg: true,
+      allowCrossOrg: false,
+      mcpAppsSupported: true,
+    };
+    const sdk = buildClientSDK(ctx, {
+      ENVIRONMENT: 'test',
+      DATABASE_URL: process.env.DATABASE_URL,
+    } as Env);
+    const receipt = await sdk.knowledge.save({
+      title: 'Nested SDK save',
+      semantic_type: 'content',
+      content: 'nested-sdk-save-body-must-stay-headless',
+      metadata: {},
+      idempotency_key: 'mcp-app-nested-sdk-save-headless',
+    });
+
+    expect(receipt).toEqual(
+      expect.objectContaining({
+        title: 'Nested SDK save',
+        exact_read: expect.objectContaining({ method: 'client.knowledge.read' }),
+      })
+    );
+    for (const key of [
+      'payload_type',
+      'payload_text',
+      'payload_data',
+      'payload_template',
+      'attachments',
+      'source_url',
+    ]) {
+      expect(receipt).not.toHaveProperty(key);
+    }
+    expect(JSON.stringify(receipt)).not.toContain('nested-sdk-save-body-must-stay-headless');
   });
 
   it('returns a validated LobuViewV1 with a safe text fallback', async () => {

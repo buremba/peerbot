@@ -180,10 +180,15 @@ export function buildClientSDK(
 ): ClientSDK {
 	const mode: SDKMode = opts?.mode ?? "full";
 	const allowCrossOrg = opts?.allowCrossOrg ?? ctx.allowCrossOrg ?? false;
-	const ctxWithSignal: ToolContext = opts?.abortSignal
-		? { ...ctx, abortSignal: opts.abortSignal }
-		: ctx;
-	ctx = ctxWithSignal;
+	// ClientSDK calls are headless even when the outer MCP session supports
+	// Apps. Only the directly advertised save_memory tool owns an inline result
+	// card; a nested client.knowledge.save inside run_sdk must keep the
+	// compact SDK receipt instead of echoing the saved payload into a headless
+	// result.
+	const headlessCtx: ToolContext = { ...ctx, mcpAppsSupported: false };
+	ctx = opts?.abortSignal
+		? { ...headlessCtx, abortSignal: opts.abortSignal }
+		: headlessCtx;
 
 	const namespaces = {
 		agents: buildAgentsNamespace(ctx, env),

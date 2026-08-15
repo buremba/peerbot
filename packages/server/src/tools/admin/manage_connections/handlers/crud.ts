@@ -49,7 +49,7 @@ import {
 	effectiveConnectionErrorMessage,
 	isDevicePinTombstone,
 } from "../../../../utils/device-pin-tombstones";
-import { deleteConnectionAclRows } from "../../../../authz/acl-observability";
+import { deleteConnectionAclRow } from "../../../../authz/acl-observability";
 import {
   ConnectionSlugConflictError,
   connectionSlugFormatError,
@@ -2123,7 +2123,7 @@ export async function handleDelete(
   const sql = getDb();
   const { organizationId } = ctx;
 	const targets = await sql`
-		SELECT id, slug, display_name, connector_key, credential_mode
+		SELECT credential_mode
 		FROM connections
 		WHERE id = ${args.connection_id}
 			AND organization_id = ${organizationId}
@@ -2134,10 +2134,6 @@ export async function handleDelete(
 		return { error: "Connection not found or already deleted" };
 	}
 	const target = targets[0] as {
-		id: number;
-		slug: string;
-		display_name: string | null;
-		connector_key: string;
 		credential_mode: string | null;
 	};
 
@@ -2277,14 +2273,8 @@ export async function handleDelete(
         AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
     `;
 
-    // Delete the connection's ACL-enforcement row in the same commit. Nothing
-    // else ever removes `authz_source_acl_state` rows, so without this a deleted
-    // connection's row lingers forever as `full`/`failed`, inflating any
-    // "failed connections" count. It is a pure materialization (the next ACL
-    // sync rebuilds it) and nothing references it, so deleting is safe.
-    await deleteConnectionAclRows(tx, {
+    await deleteConnectionAclRow(tx, {
       organizationId,
-      slug: target.slug,
       connectionId: args.connection_id,
     });
 

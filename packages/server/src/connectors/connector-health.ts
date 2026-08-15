@@ -83,7 +83,7 @@
 import { type DbClient, getDb, tsTimeOrNull } from '../db/client';
 import { notifyBrowserAuthExpired } from '../notifications/triggers';
 import logger from '../utils/logger';
-import { ACL_ROW_CONNECTION_ALIVE_SQL, isAclErrorMessage } from '../authz/acl-observability';
+import { aclConnectionIdSql, isAclErrorMessage } from '../authz/acl-observability';
 import { deriveFeedHealthSemantics } from './feed-health-semantics';
 
 /**
@@ -278,12 +278,7 @@ interface FeedHealthRow {
   last_sync_at: Date | string | null;
   consecutive_failures: string;
   last_error: string | null;
-  /** The connection's ACL graph is fail-closed (`authz_source_acl_state`
-   *  `freshness_state='failed'`) — the ACL sync cannot refresh membership.
-   *  NULL when the connection has no failed ACL row. */
-  acl_state_failed: boolean | null;
-  /** `connections.error_message` — for `acl_failed` carries the persisted
-   *  `acl: …` failure reason when the ACL writer set it. */
+  acl_state_failed: boolean;
   connection_error_message: string | null;
 }
 
@@ -336,15 +331,15 @@ async function loadConnectionHealthRows(
       -- Fails CLOSED: the connection's ACL graph is fail-closed. The ACL sync
       -- stamps freshness_state='failed' on authz_source_acl_state when it cannot
       -- refresh membership (dead token, OAuth consent never completed) — a
-      -- failure mode with NO feed symptom, which is why two GitHub connections
-      -- could fail every tick for months unseen. The runtime-id match is the
-      -- same shape the ACL sync writes (see acl-observability.ts).
+      -- failure mode with no feed symptom. Select the connection's actual ACL
+      -- id shape so a data slug cannot collide with a chat runtime id. The
+      -- cleanup migration mirrors this predicate.
       EXISTS (
         SELECT 1
         FROM public.authz_source_acl_state a
         WHERE a.organization_id = c.organization_id
           AND a.freshness_state = 'failed'
-          AND ${sql.unsafe(ACL_ROW_CONNECTION_ALIVE_SQL)}
+          AND a.connection_id = ${sql.unsafe(aclConnectionIdSql('c'))}
       ) AS acl_state_failed,
       c.error_message AS connection_error_message
     FROM connections c
@@ -460,11 +455,7 @@ function classify(
   const feeds = rows.filter((r) => r.feed_id != null);
   const feedCount = feeds.length;
 
-  // Rule E: the connection's ACL graph is fail-closed
-  // (`authz_source_acl_state.freshness_state='failed'`) — the ACL sync cannot
-  // refresh membership. This has NO feed symptom (the prod GitHub AUTH_MISSING
-  // shape: two connections failed every tick for months while their feeds
-  // stayed healthy), so it is checked BEFORE the feed rules and wins over them.
+  // ACL failure has no feed symptom, so it takes precedence over feed rules.
   if (rows[0]?.acl_state_failed === true) {
     const lastError = isAclErrorMessage(rows[0].connection_error_message)
       ? rows[0].connection_error_message
@@ -684,7 +675,7 @@ export async function runConnectorHealthCheck(
     // to re-login — the operator alert above can't reach the person who has to
     // sign in. Deduped by the same unhealthy_alerted_at claim, so it fires once
     // per episode. Best-effort: a notification failure must not break the scan.
-    if (isBrowserAuthExpiredError(detail.lastError)) {
+    if (reason !== 'acl_failed' && isBrowserAuthExpiredError(detail.lastError)) {
       try {
         await notifyAuthExpired({
           orgId: first.organization_id,

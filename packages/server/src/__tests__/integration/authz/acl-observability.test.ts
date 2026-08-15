@@ -2,9 +2,9 @@
  * ACL observability — integration tests against real Postgres.
  *
  * Pins the three surfaces of ACL-failure observability:
- *  1. a failing ACL sync PERSISTS WHY on `connections.error_message` under the
- *     `acl: ` prefix, never clobbers another subsystem's text (the collision
- *     rule), and clears only ACL-owned text once the sync recovers;
+ *  1. a failing ACL sync persists its reason on `connections.error_message`
+ *     under the `acl: ` prefix, never clobbers another subsystem's text, and
+ *     clears only ACL-owned text once the sync recovers;
  *  2. a connection whose ACL graph is fail-closed
  *     (`authz_source_acl_state.freshness_state='failed'`) is flagged
  *     `acl_failed` by the connector-health alerter, alerting exactly once per
@@ -12,7 +12,7 @@
  *  3. deleting a connection removes its `authz_source_acl_state` row.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   clearConnectionAclError,
   formatAclErrorMessage,
@@ -31,21 +31,16 @@ import { TestApiClient } from '../../setup/test-mcp-client';
 
 // The connector-health scan skips connections younger than
 // minConnectionAgeHours (24h default); backdate fixtures so the ACL rule runs.
-const OLD = () => sqlDate(new Date(Date.now() - 2 * 24 * 60 * 60 * 1000));
-
-function sqlDate(d: Date): string {
-  return d.toISOString();
-}
+const OLD = () => new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
 
 async function seedAclFailedConnection(opts: {
   orgId: string;
-  connectorKey?: string;
-  errorMessage?: string | null;
-}): Promise<{ id: number; slug: string }> {
+  errorMessage: string;
+}): Promise<{ id: number }> {
   const sql = getTestDb();
   const conn = await createTestConnection({
     organization_id: opts.orgId,
-    connector_key: opts.connectorKey ?? 'github',
+    connector_key: 'github',
     visibility: 'org',
     createDefaultFeed: false,
   });
@@ -67,21 +62,13 @@ async function seedAclFailedConnection(opts: {
     INSERT INTO authz_source_acl_state (organization_id, connection_id, acl_support, freshness_state, last_synced_at)
     VALUES (${opts.orgId}, ${String(conn.id)}, 'full', 'failed', now() - interval '1 hour')
   `;
-  if (opts.errorMessage != null) {
-    await sql`
-      UPDATE connections SET error_message = ${opts.errorMessage} WHERE id = ${conn.id}
-    `;
-  }
-  const [{ slug }] = await sql<{ slug: string }>`
-    SELECT slug FROM connections WHERE id = ${conn.id}
+  await sql`
+    UPDATE connections SET error_message = ${opts.errorMessage} WHERE id = ${conn.id}
   `;
-  return { id: conn.id, slug };
+  return { id: conn.id };
 }
 
 describe('acl observability', () => {
-  beforeAll(async () => {
-    await cleanupTestDatabase();
-  });
   afterAll(async () => {
     await cleanupTestDatabase();
   });
@@ -93,8 +80,6 @@ describe('acl observability', () => {
     it('persists an acl:-prefixed failure reason when a sync fails', async () => {
       const sql = getTestDb();
       const org = await createTestOrganization({ name: 'Acl Reason Org' });
-      const user = await createTestUser({ name: 'Owner', email: 'acl-reason@example.com' });
-      await addUserToOrganization(user.id, org.id, 'owner');
       const conn = await createTestConnection({
         organization_id: org.id,
         connector_key: 'github',
@@ -106,8 +91,7 @@ describe('acl observability', () => {
         VALUES (${org.id}, ${String(conn.id)}, 'full', 'fresh', now())
       `;
 
-      // Drive the REAL production sync with a GitHub call that fails — the
-      // exact shape that ran silently for months in prod (AUTH_MISSING token).
+      // Drive the production sync path with a failing GitHub call.
       const result = await syncGithubConnectionAcl(
         {
           listRepos: async () => [{ owner: 'acme', repo: 'repo-a' }],
@@ -133,11 +117,13 @@ describe('acl observability', () => {
       expect(row?.error_message).toContain('401 Unauthorized');
     });
 
+    it('caps the complete persisted failure message at 500 characters', () => {
+      expect(formatAclErrorMessage('x'.repeat(1_000))).toHaveLength(500);
+    });
+
     it('never clobbers a non-ACL error_message when an ACL sync fails', async () => {
       const sql = getTestDb();
       const org = await createTestOrganization({ name: 'Acl Collision Org' });
-      const user = await createTestUser({ name: 'Owner', email: 'acl-collision@example.com' });
-      await addUserToOrganization(user.id, org.id, 'owner');
       const conn = await createTestConnection({
         organization_id: org.id,
         connector_key: 'github',
@@ -217,11 +203,55 @@ describe('acl observability', () => {
       expect(detail?.reason).toBe('acl_failed');
       expect(detail?.lastError).toContain('GitHub ACL sync failed');
       expect(result.newlyAlerted).toBeGreaterThan(0);
+      expect(result.authNotified).toBe(0);
 
       const [row] = await sql`
         SELECT unhealthy_alerted_at FROM connections WHERE id = ${conn.id}
       `;
       expect(row?.unhealthy_alerted_at).not.toBeNull();
+    });
+
+    it('does not attribute a chat runtime ACL failure to a colliding data slug', async () => {
+      const sql = getTestDb();
+      const org = await createTestOrganization({ name: 'Acl Collision Health Org' });
+      const data = await createTestConnection({
+        organization_id: org.id,
+        connector_key: 'github',
+        slug: 'shared-runtime-id',
+        createDefaultFeed: false,
+      });
+      const chat = await createTestConnection({
+        organization_id: org.id,
+        connector_key: 'slack',
+        slug: 'agentconn-shared-runtime-id',
+        createDefaultFeed: false,
+      });
+      await sql`
+        UPDATE connections
+        SET created_at = ${OLD()}, updated_at = ${OLD()},
+            credential_mode = CASE WHEN id = ${chat.id} THEN 'byo' ELSE credential_mode END
+        WHERE id IN (${data.id}, ${chat.id})
+      `;
+      await sql`
+        INSERT INTO feeds (
+          organization_id, connection_id, feed_key, status, kind, virtual,
+          last_sync_status, last_sync_at, consecutive_failures, created_at, updated_at
+        ) VALUES (
+          ${org.id}, ${data.id}, 'ok', 'active', 'collected', false,
+          'success', now(), 0, now(), now()
+        )
+      `;
+      await sql`
+        INSERT INTO authz_source_acl_state (
+          organization_id, connection_id, acl_support, freshness_state
+        ) VALUES (${org.id}, 'shared-runtime-id', 'full', 'failed')
+      `;
+
+      const result = await runConnectorHealthCheck();
+      expect(result.details.find((detail) => detail.connectionId === data.id)).toBeUndefined();
+      expect(result.details.find((detail) => detail.connectionId === chat.id)?.reason).toBe(
+        'acl_failed',
+      );
     });
 
     it('does not double-alert while still acl_failed, and re-alerts after recovery', async () => {
@@ -266,7 +296,7 @@ describe('acl observability', () => {
   });
 
   describe('orphan cleanup', () => {
-    it('deleting a connection removes its ACL rows', async () => {
+    it('deleting a connection removes only its ACL row', async () => {
       const sql = getTestDb();
       const org = await createTestOrganization({ name: 'Acl Delete Org' });
       const user = await createTestUser({ name: 'Owner', email: 'acl-delete@example.com' });
@@ -274,14 +304,15 @@ describe('acl observability', () => {
       const conn = await createTestConnection({
         organization_id: org.id,
         connector_key: 'github',
+        slug: 'unrelated-chat-runtime',
         visibility: 'org',
         createDefaultFeed: false,
       });
       const [{ slug }] = await sql<{ slug: string }>`
         SELECT slug FROM connections WHERE id = ${conn.id}
       `;
-      // Both runtime-id shapes the ACL sync may have stamped: the numeric
-      // `id::text` (GitHub) and the slug (managed Slack / BYO-slug).
+      // The numeric key belongs to this data connection. The slug-shaped key
+      // simulates a different chat runtime id and must survive this deletion.
       await sql`
         INSERT INTO authz_source_acl_state (organization_id, connection_id, acl_support, freshness_state)
         VALUES
@@ -307,7 +338,8 @@ describe('acl observability', () => {
         WHERE organization_id = ${org.id}
           AND connection_id IN (${String(conn.id)}, ${slug})
       `;
-      expect(remaining.length).toBe(0);
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0]?.connection_id).toBe(slug);
     });
   });
 });

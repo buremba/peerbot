@@ -85,8 +85,6 @@ export async function syncGithubConnectionAcl(
       memberIdentities: githubAclSource.memberIdentities,
       resources: githubReposToResources(repoInputs),
     });
-    // The sync recovered — drop the persisted `acl:` reason. Only clears
-    // ACL-owned text (see acl-observability.ts).
     await clearConnectionAclError(organizationId, connectionId);
     return { ok: true, reposSynced: repoInputs.length };
   } catch (error) {

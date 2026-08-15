@@ -15,7 +15,7 @@
 import type { StoredConnection } from "@lobu/core";
 import { createLogger } from "@lobu/core";
 import { type DbClient, tsTime } from "../../db/client";
-import { deleteConnectionAclRows } from "../../authz/acl-observability";
+import { deleteConnectionAclRow } from "../../authz/acl-observability";
 
 const logger = createLogger("connections-projection");
 
@@ -296,7 +296,7 @@ export async function upsertChatConnectionProjection(
               AND ai.metadata->>'external_id' = connections.slug
               AND ai.status = 'active'
           )
-        RETURNING slug, agent_id
+        RETURNING id, slug, agent_id
       `;
       if (supersededEnterprise.length > 0) {
         if (opts?.preserveAgentId) {
@@ -311,6 +311,14 @@ export async function upsertChatConnectionProjection(
           supersededEnterprise.some(
             (r: { agent_id: string | null }) => r.agent_id != null,
           );
+        for (const retired of supersededEnterprise as Array<{
+          id: string;
+        }>) {
+          await deleteConnectionAclRow(sql, {
+            organizationId: orgId,
+            connectionId: retired.id,
+          });
+        }
         logger.info(
           {
             orgId,
@@ -445,12 +453,8 @@ export async function resolveActiveChatConnectionTenant(
 }
 
 /** Soft-delete the `connections` projection for a chat connection (by slug),
- *  inside the caller's transaction. Mirrors the legacy hard delete. Also
- *  removes the connection's `authz_source_acl_state` row — it is a pure
- *  materialization that nothing else ever cleans up, so a tombstoned connection
- *  would otherwise leave its ACL row orphaned forever (see acl-observability.ts).
- *  The org-less branch (no org context) cannot scope the ACL delete by
- *  organization, so it only tombstones the projection row. */
+ *  inside the caller's transaction. Mirrors the legacy hard delete and removes
+ *  the derived `authz_source_acl_state` row. */
 export async function softDeleteChatConnectionProjection(
   sql: any,
   orgId: string | null | undefined,
@@ -458,19 +462,28 @@ export async function softDeleteChatConnectionProjection(
 ): Promise<void> {
   const slug = runtimeConnectionIdToSlug(connectionId);
   if (orgId) {
-    await sql`
+    const tombstoned = (await sql`
       UPDATE connections SET deleted_at = now(), updated_at = now()
       WHERE organization_id = ${orgId} AND slug = ${slug} AND deleted_at IS NULL
-    `;
-    await deleteConnectionAclRows(sql, {
-      organizationId: orgId,
-      slug,
-      connectionId,
-    });
+      RETURNING id::text AS id
+    `) as Array<{ id: string }>;
+    for (const row of tombstoned) {
+      await deleteConnectionAclRow(sql, {
+        organizationId: orgId,
+        connectionId: row.id,
+      });
+    }
   } else {
-    await sql`
+    const tombstoned = (await sql`
       UPDATE connections SET deleted_at = now(), updated_at = now()
       WHERE slug = ${slug} AND deleted_at IS NULL
-    `;
+      RETURNING id::text AS id, organization_id
+    `) as Array<{ id: string; organization_id: string }>;
+    for (const row of tombstoned) {
+      await deleteConnectionAclRow(sql, {
+        organizationId: row.organization_id,
+        connectionId: row.id,
+      });
+    }
   }
 }

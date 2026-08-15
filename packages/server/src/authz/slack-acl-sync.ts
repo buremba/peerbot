@@ -313,9 +313,6 @@ export async function syncSlackConnectionAcl(
      * instead, so a partial reconcile can never be blessed fresh.
      */
     await markAclFresh(organizationId, connectionId, syncStartedAt);
-    // The sync recovered — drop the persisted `acl:` reason so a healthy
-    // connection does not keep showing last failure's text. Only clears
-    // ACL-owned text (see acl-observability.ts).
     await clearConnectionAclError(organizationId, connectionId);
     return { ok: true, teamsSynced, channelsSynced };
   } catch (error) {

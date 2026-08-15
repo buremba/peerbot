@@ -609,10 +609,13 @@ export async function listOrgActivity(opts: {
 		for (const n of handoffNotifications) {
 			const card = buildNotificationCard(opts.ownerSlug, n);
 			if (!card || card.notification_id == null) continue;
+			// Pin by id regardless of whether this handoff is already in the
+			// merge window: a draft inside the 60-card window but outside the
+			// final limit would otherwise be sliced away un-pinned.
+			pinnedHandoffIds.add(card.notification_id);
 			if (present.has(card.notification_id)) continue;
 			merged.push(card);
 			present.add(card.notification_id);
-			pinnedHandoffIds.add(card.notification_id);
 		}
 		merged.sort((a, b) => a.atMs - b.atMs);
 		collapsed = aggregate ? collapseAdjacentActivityCards(merged) : merged;

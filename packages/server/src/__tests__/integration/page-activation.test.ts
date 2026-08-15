@@ -496,4 +496,39 @@ describe("page-activated operation runs", () => {
 			false,
 		);
 	});
+
+	it("pins a draft that sits inside the window but outside the final limit", async () => {
+		const seeded = await seed();
+		// 30 newer notifications then one draft: with limit 24 the draft is
+		// inside the 60-card merge window but outside the final slice, so it
+		// must still be pinned and survive.
+		for (let i = 0; i < 30; i++) {
+			await createNotificationForUsers([seeded.user.id], {
+				organizationId: seeded.org.id,
+				type: "agent_message",
+				title: `Newer notification ${i}`,
+				body: "noise",
+				resourceUrl: `/${seeded.org.slug}/memory?content_ids=99`,
+			});
+		}
+		await createNotificationForUsers([seeded.user.id], {
+			organizationId: seeded.org.id,
+			type: "agent_message",
+			title: "Draft ready for Ada on X",
+			body: "Draft: Hello",
+			resourceUrl: `/${seeded.org.slug}/memory?content_ids=1`,
+			browserUrl: "https://x.com/ada/status/123",
+		});
+		const activity = await listOrgActivity({
+			organizationId: seeded.org.id,
+			userId: seeded.user.id,
+			ownerSlug: seeded.org.slug,
+			includeRuns: false,
+			limit: 24,
+		});
+		expect(activity.items.some((item) => item.browser_url === "https://x.com/ada/status/123")).toBe(
+			true,
+		);
+		expect(activity.items.length).toBeLessThanOrEqual(24);
+	});
 });

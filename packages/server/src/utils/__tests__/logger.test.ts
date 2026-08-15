@@ -21,16 +21,28 @@ describe('HTTP secret redaction', () => {
     let output = '';
 
     try {
-      logger.info(
-        {
-          req: {
-            headers: {
-              authorization: 'Bearer request-secret',
-              cookie: 'session=request-cookie',
-              'proxy-authorization': 'Basic proxy-secret',
-              'x-api-key': 'api-key-secret',
-            },
+      const requestLogger = logger.child({
+        req: {
+          headers: {
+            authorization: 'Bearer request-secret',
+            cookie: 'session=request-cookie',
+            'proxy-authorization': 'Basic proxy-secret',
+            'x-api-key': 'api-key-secret',
+            'x-lobu-worker-token': 'lobu-worker-secret',
+            'x-custom-signature': 'custom-signature-secret',
+            'x-slack-signature': 'v0=slack-signature-secret',
+            'x-hub-signature-256': 'sha256=hub-signature-secret',
+            'content-type': 'application/json',
+            'idempotency-key': 'request-123',
+            'authorization-mode': 'oauth',
+            'cookie-policy': 'strict',
+            'x-keyboard-layout': 'qwerty',
+            'x-tokenizer-version': 'v1',
           },
+        },
+      });
+      requestLogger.info(
+        {
           res: {
             headers: {
               'set-cookie': 'session=response-cookie',
@@ -44,13 +56,25 @@ describe('HTTP secret redaction', () => {
       write.mockRestore();
     }
 
-    expect(output).toContain('request completed');
-    expect(output).not.toContain('request-secret');
-    expect(output).not.toContain('request-cookie');
-    expect(output).not.toContain('proxy-secret');
-    expect(output).not.toContain('api-key-secret');
-    expect(output).not.toContain('response-cookie');
-    expect(output).toContain('[redacted]');
+    const entry = JSON.parse(output);
+    expect(entry.msg).toBe('request completed');
+    expect(entry.req.headers).toEqual({
+      authorization: '[redacted]',
+      cookie: '[redacted]',
+      'proxy-authorization': '[redacted]',
+      'x-api-key': '[redacted]',
+      'x-lobu-worker-token': '[redacted]',
+      'x-custom-signature': '[redacted]',
+      'x-slack-signature': '[redacted]',
+      'x-hub-signature-256': '[redacted]',
+      'content-type': 'application/json',
+      'idempotency-key': 'request-123',
+      'authorization-mode': 'oauth',
+      'cookie-policy': 'strict',
+      'x-keyboard-layout': 'qwerty',
+      'x-tokenizer-version': 'v1',
+    });
+    expect(entry.res.headers['set-cookie']).toBe('[redacted]');
   });
 });
 

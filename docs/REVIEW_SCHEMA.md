@@ -281,14 +281,16 @@ explicit escape hatch for intentional exceptions.
 `make review` skips the cross-harness reviewer for diffs that are small
 (<100 lines) **and** confined to classes where an independent LLM review adds
 near-zero signal: docs, CI-verified generated output, exact renames between
-safe-class paths, or additive-only test changes. Everything else — non-test `src/`, migrations,
-lockfiles, config, submodule pointer bumps, and the gate/CI machinery itself —
-always runs the full reviewer regardless of size. The skip is deterministic
-and path-gated: the driving agent may only escalate, never skip on
-self-assessed confidence. A skipped review posts the same `pi-review` status as
-green under a distinct `<!-- pi-review-skipped -->` PR marker so the skip is
-auditable; CI suites remain required checks either way. `REVIEWER_MODE=full
-make review` (or `./scripts/review.sh --full`) forces the full review.
+safe-class paths, additive-only test changes, or a pure `packages/owletto`
+pointer bump. Everything else — non-test `src/`, migrations, lockfiles, config,
+other submodule changes, an Owletto bump mixed with any other path, and the
+gate/CI machinery itself — always runs the full reviewer regardless of size.
+The skip is deterministic and path-gated: the driving agent may only escalate,
+never skip on self-assessed confidence. A skipped review posts the same
+`pi-review` status as green under a distinct `<!-- pi-review-skipped -->` PR
+marker so the skip is auditable; CI suites remain required checks either way.
+`REVIEWER_MODE=full make review` (or `./scripts/review.sh --full`) forces the
+full review.
 
 The verdict is cached keyed on the exact diff content + reviewer identity, so
 an unchanged diff is never re-reviewed: the reviewer is non-deterministic, and

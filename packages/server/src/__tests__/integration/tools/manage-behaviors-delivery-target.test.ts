@@ -83,7 +83,9 @@ describe("manage_behaviors delivery_target", () => {
 			agentId,
 			connectionId,
 			platform: "slack",
-			channelId: "slack:C_TASKS",
+			// Legacy bindings may store the native channel id without a platform
+			// prefix. The public target still uses the recommended canonical key.
+			channelId: "C_TASKS",
 			teamId: "T_DELIVERY",
 			configuredBy: owner.id,
 		});
@@ -100,7 +102,7 @@ describe("manage_behaviors delivery_target", () => {
 				agent_id: agentId,
 				delivery_target: {
 					connection_id: connectionId,
-					channel_id: "C_TASKS",
+					channel_id: "slack:C_TASKS",
 				},
 			},
 			TEST_ENV,

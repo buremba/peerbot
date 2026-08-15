@@ -37,17 +37,24 @@ async function resolveBehaviorDeliveryTarget(
     agentId,
     connectionDbId: target.connection_id,
   });
-  const row = rows.find(
-    (candidate) =>
-      candidate.channel_id === target.channel_id ||
-      (!target.channel_id.includes(':') &&
-        stripPlatformPrefix(candidate.platform, candidate.channel_id) ===
-          target.channel_id)
-  );
+  const row = rows.find((candidate) => {
+    const candidateNativeId = stripPlatformPrefix(
+      candidate.platform,
+      candidate.channel_id
+    );
+    const targetNativeId = stripPlatformPrefix(
+      candidate.platform,
+      target.channel_id
+    );
+    return candidateNativeId === targetNativeId;
+  });
   if (!row) return null;
   return {
     connectionId: row.id,
-    channelId: row.channel_id,
+    channelId: `${row.platform}:${stripPlatformPrefix(
+      row.platform,
+      row.channel_id
+    )}`,
     teamId: row.team_id,
   };
 }

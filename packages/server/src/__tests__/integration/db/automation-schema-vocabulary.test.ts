@@ -1,13 +1,26 @@
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
+import type { DbClient } from '../../../db/client';
 import { loadMigrationUpSection } from '../../../db/migration-loader';
-import { getTestDb } from '../../setup/test-db';
-import { createTestOrganization, createTestUser } from '../../setup/test-fixtures';
+import { findCanvasHead } from '../../../utils/canvas-events';
+import { persistAutomationEventOutput } from '../../../utils/persist-automation-event-output';
+import {
+  AUTOMATION_EVENT_IDENTITY_NS,
+  computeStableKey,
+  formatAutomationEventIdentity,
+} from '../../../utils/stable-keys';
+import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
+import { createTestAgent, createTestEntity, createTestOrganization, createTestUser } from '../../setup/test-fixtures';
+import { TestApiClient, TestWorkspace } from '../../setup/test-mcp-client';
 
 const CUTOVER_MIGRATION = '20260816000010_automation_vocabulary.sql';
 const TRAIT_REWRITE_START = '-- connector-trait-merge-strategy:start';
 const TRAIT_REWRITE_END = '-- connector-trait-merge-strategy:end';
+const ENTITY_REWRITE_START = '-- entity-metadata-cutover:start';
+const ENTITY_REWRITE_END = '-- entity-metadata-cutover:end';
+const IDENTITY_BRIDGE_START = '-- automation-event-identity-bridge:start';
+const IDENTITY_BRIDGE_END = '-- automation-event-identity-bridge:end';
 
 class Rollback extends Error {}
 
@@ -23,18 +36,29 @@ function resolveMigrationsDir(): string {
   throw new Error('Could not locate db/migrations from the test directory');
 }
 
-function loadTraitRewrite(): string {
+function loadMarkedSection(startMarker: string, endMarker: string, label: string): string {
   const up = loadMigrationUpSection(resolveMigrationsDir(), CUTOVER_MIGRATION);
-  const start = up.indexOf(TRAIT_REWRITE_START);
-  const end = up.indexOf(TRAIT_REWRITE_END);
-  if (start < 0 || end < start) throw new Error('Could not locate connector trait rewrite');
-  return up.slice(start + TRAIT_REWRITE_START.length, end);
+  const start = up.indexOf(startMarker);
+  const end = up.indexOf(endMarker);
+  if (start < 0 || end < start) throw new Error(`Could not locate ${label}`);
+  return up.slice(start + startMarker.length, end);
+}
+
+function loadTraitRewrite(): string {
+  return loadMarkedSection(TRAIT_REWRITE_START, TRAIT_REWRITE_END, 'connector trait rewrite');
 }
 
 describe('Automation schema vocabulary', () => {
-  it('does not mutate or copy append-only event rows during the cutover', () => {
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+  });
+
+  it('bridges keyed event identity without rewriting or deleting authored event history', () => {
     const up = loadMigrationUpSection(resolveMigrationsDir(), CUTOVER_MIGRATION);
-    expect(up).not.toMatch(/\b(?:UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+(?:public\.)?events\b/i);
+    expect(up).not.toMatch(/\bDELETE\s+FROM\s+(?:public\.)?events\b/i);
+    expect(up).not.toMatch(/UPDATE\s+(?:public\.)?events[^;]*SET\s+(?:payload_|metadata|attachments|identity_)/i);
+    expect(up).toMatch(/SET\s+superseded_by\s*=\s*canonical\.id/i);
+    expect(up).toMatch(/legacy\.id,\s*'automation_event',\s*legacy\.identity_key/i);
   });
 
   it('does not globally rewrite user-authored SQL, templates, or opaque run JSON', () => {
@@ -115,6 +139,226 @@ describe('Automation schema vocabulary', () => {
     } catch (error) {
       if (!(error instanceof Rollback)) throw error;
     }
+  });
+
+  it('rewrites only entity metadata claimed by Automation identities', async () => {
+    const sql = getTestDb();
+    const org = await createTestOrganization();
+    const user = await createTestUser();
+    const owned = await createTestEntity({
+      name: 'Owned Automation entity',
+      organization_id: org.id,
+      created_by: user.id,
+    });
+    const authored = await createTestEntity({
+      name: 'Customer-authored entity',
+      organization_id: org.id,
+      created_by: user.id,
+    });
+    const legacyMetadata = {
+      watcher_id: 42,
+      source: 'watcher_promotion',
+      resourceKind: 'behavior',
+      resource_kind: 'watcher',
+      note: 'customer text remains byte-for-byte',
+    };
+
+    try {
+      await sql.begin(async (tx: typeof sql) => {
+        await tx`
+          UPDATE entities
+          SET metadata = ${tx.json(legacyMetadata)}
+          WHERE id IN (${owned.id}, ${authored.id})
+        `;
+        await tx`
+          INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier)
+          VALUES (${org.id}, ${owned.id}, 'automation_key', 'owned-automation-key')
+        `;
+
+        const rewrite = loadMarkedSection(ENTITY_REWRITE_START, ENTITY_REWRITE_END, 'entity metadata cutover');
+        await tx.unsafe(rewrite);
+        await tx.unsafe(rewrite);
+
+        const rows = await tx<{ id: number; metadata: Record<string, unknown> }[]>`
+          SELECT id, metadata
+          FROM entities
+          WHERE id IN (${owned.id}, ${authored.id})
+          ORDER BY id
+        `;
+        const ownedRow = rows.find((row) => Number(row.id) === owned.id);
+        const authoredRow = rows.find((row) => Number(row.id) === authored.id);
+        expect(ownedRow?.metadata).toEqual({
+          automation_id: 42,
+          source: 'automation_promotion',
+          resourceKind: 'automation',
+          resource_kind: 'automation',
+          note: 'customer text remains byte-for-byte',
+        });
+        expect(authoredRow?.metadata).toEqual(legacyMetadata);
+
+        throw new Rollback();
+      });
+    } catch (error) {
+      if (!(error instanceof Rollback)) throw error;
+    }
+  });
+
+  it('keeps pre-cutover keyed output heads in the post-cutover supersede chain', async () => {
+    const sql = getTestDb();
+    const workspace = await TestWorkspace.create({
+      name: 'Identity bridge upgrade org',
+    });
+    const ownerUserId = workspace.users.owner.id;
+    const parent = await createTestEntity({
+      name: 'Identity bridge subject',
+      organization_id: workspace.org.id,
+      created_by: ownerUserId,
+    });
+    const agent = await createTestAgent({
+      organizationId: workspace.org.id,
+      ownerUserId,
+      agentId: 'identity-bridge-agent',
+    });
+    const api = await TestApiClient.for({
+      organizationId: workspace.org.id,
+      userId: ownerUserId,
+      memberRole: 'owner',
+    });
+    const created = (await api.automations.create({
+      entity_id: parent.id,
+      slug: 'identity-bridge-automation',
+      prompt: 'Emit a refined profile.',
+      triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
+      outputs: { profiles: { event: 'observation', key: ['channel', 'mode'] } },
+      agent_id: agent.agentId,
+    })) as { automation_id: string };
+    const automationId = Number(created.automation_id);
+    const identityKey = formatAutomationEventIdentity(
+      'observation',
+      computeStableKey({ channel: 'z', mode: 'voice' }, ['channel', 'mode'])
+    );
+    const [legacy] = await sql<{ id: number }[]>`
+      INSERT INTO events (
+        organization_id, origin_id, title, payload_text, semantic_type, client_id,
+        metadata, identity_ns, identity_key, automation_id
+      ) VALUES (
+        ${workspace.org.id}, 'pre-cutover-keyed-head', 'Pre-cutover profile',
+        'Z voice legacy', 'observation', NULL,
+        ${sql.json({
+          channel: 'z',
+          mode: 'voice',
+          automation_output: 'profiles',
+          _lobu_idempotency_key: 'pre-cutover-keyed-head',
+        })},
+        'behavior_event', ${identityKey}, ${automationId}
+      )
+      RETURNING id
+    `;
+
+    const bridge = loadMarkedSection(IDENTITY_BRIDGE_START, IDENTITY_BRIDGE_END, 'Automation event identity bridge');
+    await sql.unsafe(bridge);
+    await sql.unsafe(bridge);
+
+    const [canonical] = await sql<
+      {
+        id: number;
+        supersedes_event_id: number;
+        identity_ns: string;
+        payload_text: string;
+        metadata: Record<string, unknown>;
+      }[]
+    >`
+      SELECT id, supersedes_event_id, identity_ns, payload_text, metadata
+      FROM events
+      WHERE supersedes_event_id = ${legacy.id}
+    `;
+    expect(canonical).toMatchObject({
+      supersedes_event_id: legacy.id,
+      identity_ns: AUTOMATION_EVENT_IDENTITY_NS,
+      payload_text: 'Z voice legacy',
+    });
+    expect(canonical.metadata).not.toHaveProperty('_lobu_idempotency_key');
+    const [legacyAfterBridge] = await sql<{ superseded_by: number | null }[]>`
+      SELECT superseded_by FROM events WHERE id = ${legacy.id}
+    `;
+    expect(legacyAfterBridge.superseded_by).toBe(canonical.id);
+
+    await sql.begin((tx) =>
+      persistAutomationEventOutput({
+        tx: tx as unknown as DbClient,
+        rows: [{ content: 'Z voice v1', metadata: { channel: 'z', mode: 'voice' } }],
+        outputName: 'profiles',
+        output: { event: 'observation', key: ['channel', 'mode'] },
+        automationId,
+        versionId: null,
+        organizationId: workspace.org.id,
+        windowId: 9007,
+        canvasRevisionId: 9007,
+        runId: null,
+        boundEntityIds: [parent.id],
+        validContentIds: new Set<number>(),
+        occurredAt: new Date().toISOString(),
+        createdBy: ownerUserId,
+      })
+    );
+    const [postCutover] = await sql<{ supersedes_event_id: number | null }[]>`
+      SELECT supersedes_event_id
+      FROM events
+      WHERE organization_id = ${workspace.org.id} AND payload_text = 'Z voice v1'
+    `;
+    expect(postCutover.supersedes_event_id).toBe(canonical.id);
+  });
+
+  it('finds pre-cutover canvas rows through preserved physical attribution', async () => {
+    const sql = getTestDb();
+    const workspace = await TestWorkspace.create({
+      name: 'Canvas attribution upgrade org',
+    });
+    const ownerUserId = workspace.users.owner.id;
+    const agent = await createTestAgent({
+      organizationId: workspace.org.id,
+      ownerUserId,
+      agentId: 'canvas-attribution-agent',
+    });
+    const api = await TestApiClient.for({
+      organizationId: workspace.org.id,
+      userId: ownerUserId,
+      memberRole: 'owner',
+    });
+    const created = (await api.automations.create({
+      slug: 'canvas-attribution-automation',
+      prompt: 'Summarize historical activity.',
+      triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
+      agent_id: agent.agentId,
+    })) as { automation_id: string };
+    const automationId = Number(created.automation_id);
+    const period = {
+      automationId,
+      granularity: 'daily',
+      windowStart: '2026-08-14T00:00:00.000Z',
+    };
+    const [legacyCanvas] = await sql<{ id: number }[]>`
+      INSERT INTO events (
+        organization_id, automation_id, semantic_type, payload_data, metadata
+      ) VALUES (
+        ${workspace.org.id}, ${automationId}, 'canvas_state',
+        ${sql.json({ summary: 'historical canvas remains visible' })},
+        ${sql.json({
+          watcher_id: automationId,
+          granularity: period.granularity,
+          window_start: period.windowStart,
+          window_end: '2026-08-15T00:00:00.000Z',
+        })}
+      )
+      RETURNING id
+    `;
+
+    const head = await findCanvasHead(sql as unknown as DbClient, period);
+    expect(head).toMatchObject({
+      id: legacyCanvas.id,
+      rootEventId: legacyCanvas.id,
+      payloadData: { summary: 'historical canvas remains visible' },
+    });
   });
 
   it('contains no live schema identifiers or definitions using retired product names', async () => {

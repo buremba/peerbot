@@ -207,7 +207,7 @@ describe('an eval replay cannot overwrite the Automation it is scoring', () => {
     const [{ count }] = await sql<{ count: string }[]>`
       SELECT count(*) AS count FROM events
       WHERE semantic_type = 'canvas_state'
-        AND (metadata->>'automation_id')::bigint = ${automationId}
+        AND automation_id = ${automationId}
         AND superseded_by IS NULL
     `;
     expect(Number(count)).toBe(1);

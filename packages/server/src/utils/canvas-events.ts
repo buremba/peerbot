@@ -195,7 +195,7 @@ export async function findCanvasHead(
            e.client_id, e.run_id
     FROM events e
     WHERE e.semantic_type = 'canvas_state'
-      AND (e.metadata->>'automation_id')::bigint = ${period.automationId}
+      AND e.automation_id = ${period.automationId}
       AND (e.metadata->>'granularity') = ${period.granularity}
       AND (e.metadata->>'window_start')::timestamptz = ${period.windowStart}
       AND e.superseded_by IS NULL

@@ -140,29 +140,69 @@ UPDATE public.write_approval_policies
 SET principal_id = regexp_replace(principal_id, '^(watcher|behavior):', 'automation:')
 WHERE principal_id ~ '^(watcher|behavior):';
 
-UPDATE public.entities
+-- entity-metadata-cutover:start
+-- Entity metadata is user-extensible. Only rewrite rows whose live identity
+-- proves they belong to the Automation canvas/key protocols; exact-looking
+-- keys on ordinary entities are customer data and must remain untouched.
+UPDATE public.entities AS entity
 SET metadata = (metadata - 'watcher_id' - 'behavior_id')
   || jsonb_build_object(
     'automation_id',
     COALESCE(metadata->'automation_id', metadata->'behavior_id', metadata->'watcher_id')
   )
-WHERE metadata ? 'watcher_id' OR metadata ? 'behavior_id';
+WHERE (metadata ? 'watcher_id' OR metadata ? 'behavior_id')
+  AND EXISTS (
+    SELECT 1
+    FROM public.entity_identities identity
+    WHERE identity.entity_id = entity.id
+      AND identity.deleted_at IS NULL
+      AND identity.namespace IN ('automation_canvas', 'automation_key')
+  );
 
-UPDATE public.entities
+UPDATE public.entities AS entity
 SET metadata = jsonb_set(metadata, '{source}', '"automation_canvas"'::jsonb)
-WHERE metadata->>'source' IN ('watcher_canvas', 'behavior_canvas');
+WHERE metadata->>'source' IN ('watcher_canvas', 'behavior_canvas')
+  AND EXISTS (
+    SELECT 1
+    FROM public.entity_identities identity
+    WHERE identity.entity_id = entity.id
+      AND identity.deleted_at IS NULL
+      AND identity.namespace = 'automation_canvas'
+  );
 
-UPDATE public.entities
+UPDATE public.entities AS entity
 SET metadata = jsonb_set(metadata, '{source}', '"automation_promotion"'::jsonb)
-WHERE metadata->>'source' IN ('watcher_promotion', 'behavior_promotion');
+WHERE metadata->>'source' IN ('watcher_promotion', 'behavior_promotion')
+  AND EXISTS (
+    SELECT 1
+    FROM public.entity_identities identity
+    WHERE identity.entity_id = entity.id
+      AND identity.deleted_at IS NULL
+      AND identity.namespace = 'automation_key'
+  );
 
-UPDATE public.entities
+UPDATE public.entities AS entity
 SET metadata = jsonb_set(metadata, '{resourceKind}', '"automation"'::jsonb)
-WHERE metadata->>'resourceKind' IN ('watcher', 'behavior');
+WHERE metadata->>'resourceKind' IN ('watcher', 'behavior')
+  AND EXISTS (
+    SELECT 1
+    FROM public.entity_identities identity
+    WHERE identity.entity_id = entity.id
+      AND identity.deleted_at IS NULL
+      AND identity.namespace IN ('automation_canvas', 'automation_key')
+  );
 
-UPDATE public.entities
+UPDATE public.entities AS entity
 SET metadata = jsonb_set(metadata, '{resource_kind}', '"automation"'::jsonb)
-WHERE metadata->>'resource_kind' IN ('watcher', 'behavior');
+WHERE metadata->>'resource_kind' IN ('watcher', 'behavior')
+  AND EXISTS (
+    SELECT 1
+    FROM public.entity_identities identity
+    WHERE identity.entity_id = entity.id
+      AND identity.deleted_at IS NULL
+      AND identity.namespace IN ('automation_canvas', 'automation_key')
+  );
+-- entity-metadata-cutover:end
 
 -- User-authored SQL, prompts, templates, scripts, error text, and arbitrary JSON
 -- are data rather than vocabulary-bearing contracts. Preserve them byte-for-byte:
@@ -171,9 +211,9 @@ WHERE metadata->>'resource_kind' IN ('watcher', 'behavior');
 -- explicitly above; no alias is installed for authored references to retired
 -- physical relations.
 
--- Events are append-only. Their rows and JSON payloads are intentionally not
--- updated or copied. The two attribution columns below are metadata-only
--- catalog renames and preserve every stored value and event id.
+-- Events are append-only. Their authored payloads and JSON are intentionally
+-- never updated. The two attribution columns below are metadata-only catalog
+-- renames and preserve every stored value and event id.
 
 -- squawk-ignore renaming-table,prefer-robust-stmts -- intentional quiesced hard cutover
 ALTER TABLE public.watchers RENAME TO automations;
@@ -209,9 +249,69 @@ ALTER TABLE public.events RENAME COLUMN behavior_version_id TO automation_versio
 -- squawk-ignore renaming-column,prefer-robust-stmts -- same atomic cutover
 ALTER TABLE public.connector_definitions RENAME COLUMN behavior_events TO automation_events;
 
+-- automation-event-identity-bridge:start
+-- Keyed Automation output heads written before the cutover use the retired
+-- identity namespace. Extend each live chain with a canonical successor so the
+-- new writer discovers and supersedes it without mutating authored history.
+-- The predecessor receives only the normal same-transaction lineage stamp.
+-- Strip the reserved idempotency marker from the successor because its
+-- organization-scoped unique index deliberately continues to resolve retries
+-- to the original write.
+WITH canonical_heads AS (
+  INSERT INTO public.events (
+    organization_id, entity_ids, origin_id, title,
+    payload_type, payload_text, payload_data, payload_template, attachments, metadata,
+    score, author_name, source_url, occurred_at, created_at, origin_parent_id, origin_type,
+    connector_key, connection_id, feed_key, feed_id, run_id,
+    automation_id, automation_version_id,
+    semantic_type, client_id, created_by,
+    interaction_type, interaction_status, interaction_input_schema, interaction_input,
+    interaction_output, interaction_error, supersedes_event_id,
+    identity_ns, identity_key, linked_org_ids
+  )
+  SELECT
+    legacy.organization_id, legacy.entity_ids, legacy.origin_id, legacy.title,
+    legacy.payload_type, legacy.payload_text, legacy.payload_data, legacy.payload_template,
+    legacy.attachments, legacy.metadata - '_lobu_idempotency_key',
+    legacy.score, legacy.author_name, legacy.source_url, legacy.occurred_at,
+    legacy.created_at, legacy.origin_parent_id, legacy.origin_type,
+    legacy.connector_key, legacy.connection_id, legacy.feed_key, legacy.feed_id, legacy.run_id,
+    legacy.automation_id, legacy.automation_version_id,
+    legacy.semantic_type, legacy.client_id, legacy.created_by,
+    legacy.interaction_type, legacy.interaction_status, legacy.interaction_input_schema,
+    legacy.interaction_input, legacy.interaction_output, legacy.interaction_error,
+    legacy.id, 'automation_event', legacy.identity_key, legacy.linked_org_ids
+  FROM public.events AS legacy
+  WHERE legacy.identity_ns = 'behavior_event'
+    AND legacy.identity_key IS NOT NULL
+    AND legacy.superseded_by IS NULL
+  RETURNING id, supersedes_event_id
+)
+UPDATE public.events AS legacy
+SET superseded_by = canonical.id
+FROM canonical_heads AS canonical
+WHERE legacy.id = canonical.supersedes_event_id;
+
+-- Preserve semantic-search coverage for the canonical successor. The bridge is
+-- idempotent: after the first statement there is no live retired head, and the
+-- embedding primary key makes this copy safe to replay in an isolated fixture.
+INSERT INTO public.event_embeddings (
+  event_id, chunk_index, embedding, embedding_model, created_at
+)
+SELECT
+  canonical.id, embedding.chunk_index, embedding.embedding,
+  embedding.embedding_model, embedding.created_at
+FROM public.events AS canonical
+JOIN public.events AS legacy ON legacy.id = canonical.supersedes_event_id
+JOIN public.event_embeddings AS embedding ON embedding.event_id = legacy.id
+WHERE canonical.identity_ns = 'automation_event'
+  AND legacy.identity_ns = 'behavior_event'
+ON CONFLICT (event_id, embedding_model, chunk_index) DO NOTHING;
+-- automation-event-identity-bridge:end
+
 -- Views retain their output-column names across underlying relation renames.
--- Rename those output contracts explicitly, then replace the one view whose
--- identity is encoded in append-only event metadata.
+-- Rename those output contracts explicitly, then replace the canvas view so
+-- ownership comes from the preserved physical attribution column.
 -- squawk-ignore renaming-table,prefer-robust-stmts -- same atomic cutover
 ALTER VIEW public.behavior_message_subscriptions RENAME TO automation_message_subscriptions;
 -- squawk-ignore renaming-column,prefer-robust-stmts -- same atomic cutover
@@ -230,21 +330,21 @@ DROP INDEX IF EXISTS public.idx_canvas_state_listing;
 -- squawk-ignore require-concurrent-index-creation -- replicas are quiesced
 CREATE UNIQUE INDEX IF NOT EXISTS idx_canvas_chain_root
   ON public.events (
-    ((metadata->>'automation_id')::bigint),
+    automation_id,
     (metadata->>'granularity'),
     (metadata->>'window_start')
   )
   WHERE semantic_type = 'canvas_state'
     AND supersedes_event_id IS NULL
-    AND metadata ? 'automation_id';
+    AND automation_id IS NOT NULL;
 -- squawk-ignore require-concurrent-index-creation -- replicas are quiesced
 CREATE INDEX IF NOT EXISTS idx_canvas_state_listing
   ON public.events (
-    ((metadata->>'automation_id')::bigint),
+    automation_id,
     (metadata->>'granularity'),
     (metadata->>'window_start') DESC
   )
-  WHERE semantic_type = 'canvas_state' AND metadata ? 'automation_id';
+  WHERE semantic_type = 'canvas_state' AND automation_id IS NOT NULL;
 
 -- Partial-index predicates store literal protocol values; relation and column
 -- renames cannot update them. Rebuild the four affected indexes against the
@@ -288,7 +388,7 @@ CREATE OR REPLACE VIEW public.canvas_windows AS
 SELECT
   root.id,
   root.organization_id,
-  (root.metadata->>'automation_id')::bigint AS automation_id,
+  root.automation_id::bigint AS automation_id,
   root.metadata->>'granularity' AS granularity,
   (root.metadata->>'window_start')::timestamptz AS window_start,
   (root.metadata->>'window_end')::timestamptz AS window_end,
@@ -313,7 +413,7 @@ LEFT JOIN LATERAL (
   SELECT e.payload_data, e.metadata, e.client_id, e.run_id
   FROM public.events e
   WHERE e.semantic_type = 'canvas_state'
-    AND (e.metadata->>'automation_id')::bigint = (root.metadata->>'automation_id')::bigint
+    AND e.automation_id = root.automation_id
     AND e.metadata->>'granularity' = root.metadata->>'granularity'
     AND e.metadata->>'window_start' = root.metadata->>'window_start'
     AND e.superseded_by IS NULL
@@ -322,7 +422,7 @@ LEFT JOIN LATERAL (
 LEFT JOIN public.runs run ON run.id = head.run_id
 WHERE root.semantic_type = 'canvas_state'
   AND root.supersedes_event_id IS NULL
-  AND root.metadata ? 'automation_id';
+  AND root.automation_id IS NOT NULL;
 
 ALTER TABLE public.runs
   ADD CONSTRAINT runs_run_type_check CHECK (

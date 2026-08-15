@@ -532,6 +532,105 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(body.result?.content?.[0]?.text).not.toContain('payload_template');
   });
 
+  it('keeps oversized saved payloads out of the App response', async () => {
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'save-memory-oversized-result',
+        method: 'tools/call',
+        params: {
+          name: 'save_memory',
+          arguments: {
+            title: 'Large durable note',
+            semantic_type: 'content',
+            payload_type: 'json_template',
+            payload_template: { root: { type: 'data', path: 'body' } },
+            payload_data: { body: 'x'.repeat(600 * 1024) },
+            metadata: {},
+            idempotency_key: 'mcp-app-save-memory-oversized-result',
+          },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    expect(body.result?.structuredContent).toEqual(
+      expect.objectContaining({
+        title: 'Large durable note',
+        view_url: expect.stringContaining('content_ids='),
+        exact_read: expect.objectContaining({
+          method: 'client.knowledge.read',
+        }),
+      })
+    );
+    for (const key of [
+      'payload_type',
+      'payload_text',
+      'payload_data',
+      'payload_template',
+      'attachments',
+      'source_url',
+    ]) {
+      expect(body.result?.structuredContent).not.toHaveProperty(key);
+    }
+    expect(body.result?.content?.[0]?.text.length).toBeLessThan(10_000);
+  });
+
+  it('omits the saved payload when the client does not advertise MCP Apps', async () => {
+    const sessionId = await initSession(`/mcp/${org.slug}`, {
+      advertiseMcpApps: false,
+    });
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'save-memory-no-app-result',
+        method: 'tools/call',
+        params: {
+          name: 'save_memory',
+          arguments: {
+            title: 'Plain note',
+            semantic_type: 'content',
+            content: 'body-visible-only-to-app-hosts',
+            metadata: {},
+            idempotency_key: 'mcp-app-save-memory-no-app-result',
+          },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    // The write still succeeds and stays exactly readable by id — only the
+    // inline render payload, which this client cannot render, is withheld.
+    expect(body.result?.structuredContent).toEqual(
+      expect.objectContaining({
+        title: 'Plain note',
+        exact_read: expect.objectContaining({ method: 'client.knowledge.read' }),
+      })
+    );
+    for (const key of [
+      'payload_type',
+      'payload_text',
+      'payload_data',
+      'payload_template',
+      'attachments',
+      'source_url',
+    ]) {
+      expect(body.result?.structuredContent).not.toHaveProperty(key);
+    }
+    expect(body.result?.content?.[0]?.text).not.toContain(
+      'body-visible-only-to-app-hosts'
+    );
+  });
+
   it('returns a validated LobuViewV1 with a safe text fallback', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const response = await post(`/mcp/${org.slug}`, {

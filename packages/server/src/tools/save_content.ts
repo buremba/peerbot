@@ -42,6 +42,20 @@ import { buildEventViewUrl } from './view-urls';
 const SAVE_MEMORY_INLINE_PAYLOAD_MAX_BYTES = 480 * 1024;
 
 /**
+ * Result fields that carry the saved event's render payload, as opposed to the
+ * compact receipt. The text fallback strips exactly these (see
+ * `formatToolResult`), so both sides must move together when one is added.
+ */
+export const SAVE_MEMORY_RENDER_PAYLOAD_KEYS = [
+  'payload_type',
+  'payload_text',
+  'payload_data',
+  'payload_template',
+  'attachments',
+  'source_url',
+] as const;
+
+/**
  * True when a Postgres error is the unique-violation (23505) on the partial
  * index that guards "at most one event supersedes a given target". The loser
  * of a concurrent-supersede race hits this; postgres.js exposes the SQLSTATE
@@ -682,7 +696,9 @@ async function saveContentImpl(
 
   // Read real semantic-index readiness for this specific event rather than
   // asserting a fixed 'pending'. For MCP App callers, also read the persisted
-  // payload for the inline card; other surfaces keep their compact receipt.
+  // payload for the inline card; other surfaces keep their compact receipt. The
+  // per-column CASE keeps that a single round trip — a caller that cannot render
+  // the payload never pays to ship it.
   // `needsEmbeddingSql` is the same predicate the embed backfill and worker use,
   // so callers can never disagree with the pipeline on what "indexed" means.
   // Embeddings are usually produced by the async backfill (so this is 'pending'),

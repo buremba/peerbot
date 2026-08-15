@@ -6,6 +6,7 @@
  * Includes content formatting with proper thread hierarchy (Reddit/HN/X style).
  */
 
+import { SAVE_MEMORY_RENDER_PAYLOAD_KEYS } from '../tools/save_content.js';
 import type { Entity } from '../tools/search.js';
 
 // ============================================
@@ -319,14 +320,7 @@ function formatSaveMemoryResult(result: Record<string, unknown>): string {
   // before it gained an inline App, otherwise a large note or template is
   // echoed twice to the model (once here and once in structuredContent).
   const receipt = { ...result };
-  for (const key of [
-    'payload_type',
-    'payload_text',
-    'payload_data',
-    'payload_template',
-    'attachments',
-    'source_url',
-  ]) {
+  for (const key of SAVE_MEMORY_RENDER_PAYLOAD_KEYS) {
     delete receipt[key];
   }
   return `\`\`\`json\n${JSON.stringify(receipt, null, 2)}\n\`\`\``;

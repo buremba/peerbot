@@ -143,14 +143,14 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     return sessionId!;
   }
 
-  it('serves the self-contained v12 interaction bundle over resources/read', async () => {
+  it('serves the self-contained v13 interaction bundle over resources/read', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const response = await post(`/mcp/${org.slug}`, {
       body: {
         jsonrpc: '2.0',
         id: 1,
         method: 'resources/read',
-        params: { uri: 'ui://lobu/interaction/v12.html' },
+        params: { uri: 'ui://lobu/interaction/v13.html' },
       },
       headers: { 'mcp-session-id': sessionId },
       token,
@@ -159,7 +159,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const content = body.result?.contents?.[0];
-    expect(content?.uri).toBe('ui://lobu/interaction/v12.html');
+    expect(content?.uri).toBe('ui://lobu/interaction/v13.html');
     expect(content?.mimeType).toBe('text/html;profile=mcp-app');
     expect(content?.text).toContain('mcp-app-embedded-stub');
     expect(content?.text).not.toContain('mcp-app-external-stub');
@@ -268,7 +268,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     }
   });
 
-  it('keeps the v7 through v11 aliases on the packed, network-free template', async () => {
+  it('keeps the v7 through v12 aliases on the packed, network-free template', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     for (const uri of [
       'ui://lobu/interaction/v7.html',
@@ -276,6 +276,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       'ui://lobu/interaction/v9.html',
       'ui://lobu/interaction/v10.html',
       'ui://lobu/interaction/v11.html',
+      'ui://lobu/interaction/v12.html',
     ]) {
       const response = await post(`/mcp/${org.slug}`, {
         body: {
@@ -310,7 +311,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const resource = body.result?.resources?.find(
-      (r: { uri: string }) => r.uri === 'ui://lobu/interaction/v12.html'
+      (r: { uri: string }) => r.uri === 'ui://lobu/interaction/v13.html'
     );
     expect(resource).toBeDefined();
     expect(
@@ -358,10 +359,10 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         _meta: expect.objectContaining({
           securitySchemes: [{ type: 'oauth2', scopes: ['mcp:read'] }],
           ui: expect.objectContaining({
-            resourceUri: 'ui://lobu/interaction/v12.html',
+            resourceUri: 'ui://lobu/interaction/v13.html',
             visibility: ['model', 'app'],
           }),
-          'openai/outputTemplate': 'ui://lobu/interaction/v12.html',
+          'openai/outputTemplate': 'ui://lobu/interaction/v13.html',
         }),
       })
     );
@@ -375,10 +376,10 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         _meta: expect.objectContaining({
           securitySchemes: [{ type: 'oauth2', scopes: ['mcp:write'] }],
           ui: expect.objectContaining({
-            resourceUri: 'ui://lobu/interaction/v12.html',
+            resourceUri: 'ui://lobu/interaction/v13.html',
             visibility: ['model', 'app'],
           }),
-          'openai/outputTemplate': 'ui://lobu/interaction/v12.html',
+          'openai/outputTemplate': 'ui://lobu/interaction/v13.html',
         }),
       })
     );
@@ -417,10 +418,10 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         securitySchemes: [{ type: 'oauth2', scopes: ['mcp:write'] }],
         _meta: expect.objectContaining({
           ui: expect.objectContaining({
-            resourceUri: 'ui://lobu/interaction/v12.html',
+            resourceUri: 'ui://lobu/interaction/v13.html',
             visibility: ['app'],
           }),
-          'openai/outputTemplate': 'ui://lobu/interaction/v12.html',
+          'openai/outputTemplate': 'ui://lobu/interaction/v13.html',
         }),
       })
     );
@@ -468,7 +469,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     );
     expect(tool?._meta?.ui).toEqual(
       expect.objectContaining({
-        resourceUri: 'ui://lobu/interaction/v12.html',
+        resourceUri: 'ui://lobu/interaction/v13.html',
         visibility: ['model', 'app'],
       })
     );

@@ -196,9 +196,9 @@ export const searchMemory = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Save facts, preferences, decisions, observations, and notes to workspace memory
+ * Save user-shared facts, preferences, decisions, observations, and notes to workspace memory
  *
- * Save facts, preferences, decisions, observations, and notes to workspace memory. The returned id is immediately readable with `client.knowledge.read`; MCP App calls also echo bounded payloads for inline display. Semantic search indexing is asynchronous and reported as `indexing_status`.
+ * Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The returned id is immediately readable with `client.knowledge.read`; MCP App calls also echo bounded payloads for inline display. Semantic search indexing is asynchronous and reported as `indexing_status`.
  */
 export const saveMemory = <ThrowOnError extends boolean = false>(
   options: Options<SaveMemoryData, ThrowOnError>,

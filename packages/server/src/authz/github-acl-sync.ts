@@ -68,7 +68,13 @@ export async function syncGithubConnectionAcl(
 
   const repos = await deps.listRepos({ organizationId, connectionId });
   if (repos.length === 0) {
-    return { ok: true, reposSynced: 0 };
+    const reason = 'GitHub ACL sync unavailable: no repository feeds configured';
+    logger.error(
+      `${reason} — downgrading any existing ACL graph`,
+      { organization_id: organizationId, connection_id: connectionId },
+    );
+    await markConnectionAclFailed(organizationId, connectionId, reason);
+    return { ok: false, reposSynced: 0 };
   }
 
   try {
@@ -89,8 +95,8 @@ export async function syncGithubConnectionAcl(
     return { ok: true, reposSynced: repoInputs.length };
   } catch (error) {
     logger.error(
-      { organization_id: organizationId, connection_id: connectionId, error: String(error) },
       'GitHub ACL sync failed — marking connection fail-closed',
+      { organization_id: organizationId, connection_id: connectionId, error: String(error) },
     );
     await markConnectionAclFailed(
       organizationId,
@@ -196,7 +202,7 @@ export async function runGithubAclSyncTick(coreServices: CoreServices): Promise<
     if (result.ok) ok += 1;
     else failed += 1;
   }
-  logger.info({ connections: connections.length, ok, failed }, 'GitHub ACL sync tick complete');
+  logger.info('GitHub ACL sync tick complete', { connections: connections.length, ok, failed });
 }
 
 /** Resolve an org's GitHub App installation token (collaborator-capable), minted

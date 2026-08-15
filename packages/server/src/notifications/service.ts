@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { CardElement } from "chat";
+import { loadConfiguredBehaviorDeliveryTarget } from "../behaviors/delivery-target";
 import { getDb, pgTextArray } from "../db/client";
 import { resolveBoundChannelRows } from "../gateway/channels/bound-channels";
 import { getChatInstanceManager, isLobuGatewayRunning } from "../lobu/gateway";
@@ -191,6 +192,58 @@ export async function resolveBotDeliveryTargets(
 		}));
 }
 
+export async function resolveNotificationDeliveryPlan(params: {
+	organizationId: string;
+	behaviorId?: number | null;
+	connectionId?: string | null;
+	channelId?: string | null;
+	teamId?: string | null;
+}): Promise<{ strictBehaviorTarget: boolean; targets: BotDeliveryTarget[] }> {
+	const configuredBehaviorTarget =
+		params.behaviorId == null
+			? { configured: false, target: null }
+			: await loadConfiguredBehaviorDeliveryTarget(
+					getDb(),
+					params.organizationId,
+					params.behaviorId,
+				);
+	if (configuredBehaviorTarget.configured) {
+		if (!configuredBehaviorTarget.target) {
+			return { strictBehaviorTarget: true, targets: [] };
+		}
+		return {
+			strictBehaviorTarget: true,
+			targets: await resolveBotDeliveryTargets(params.organizationId, {
+				connectionId: configuredBehaviorTarget.target.connectionId,
+				channelId: configuredBehaviorTarget.target.channelId,
+				teamId: configuredBehaviorTarget.target.teamId,
+			}),
+		};
+	}
+
+	let targets = await resolveBotDeliveryTargets(params.organizationId, {
+		connectionId: params.connectionId,
+		channelId: params.channelId,
+		teamId: params.teamId,
+	});
+	if (
+		targets.length === 0 &&
+		(params.connectionId || params.channelId || params.teamId)
+	) {
+		logger.warn(
+			{
+				organizationId: params.organizationId,
+				connectionId: params.connectionId,
+				channelId: params.channelId,
+				teamId: params.teamId,
+			},
+			"[Notifications] Configured delivery target resolved to no bound channels — falling back to org-wide delivery",
+		);
+		targets = await resolveBotDeliveryTargets(params.organizationId, null);
+	}
+	return { strictBehaviorTarget: false, targets };
+}
+
 /**
  * Owner-routed delivery target: the Slack identity of `ownerUserId` in a
  * workspace one of the org's bot connections lives in. Reverse-looks-up
@@ -327,6 +380,29 @@ async function recordDelivery(
 	}
 }
 
+async function recordDeliveryError(
+	eventId: number,
+	code: "behavior_target_unavailable" | "behavior_target_post_failed",
+): Promise<void> {
+	try {
+		const sql = getDb();
+		await sql`
+      UPDATE events
+      SET metadata = coalesce(metadata, '{}'::jsonb)
+        || jsonb_build_object(
+          'delivery_error',
+          jsonb_build_object('code', ${code}, 'recorded_at', NOW())
+        )
+      WHERE id = ${eventId}
+    `;
+	} catch (err) {
+		logger.warn(
+			{ err, eventId, code },
+			"[Notifications] Failed to record delivery error",
+		);
+	}
+}
+
 async function deliverToBotConnections(
 	params: Omit<CreateNotificationParams, "userId">,
 	eventId: number,
@@ -338,13 +414,31 @@ async function deliverToBotConnections(
 	const text = params.body ? `${params.title}\n\n${params.body}` : params.title;
 	// A rich card takes precedence over the markdown body for the channel post.
 	const content = params.card ? { card: params.card } : { markdown: text };
+	const deliveryPlan = await resolveNotificationDeliveryPlan({
+		organizationId: params.organizationId,
+		behaviorId: params.behaviorId,
+		connectionId: params.connectionId,
+		channelId: params.channelId,
+		teamId: params.teamId,
+	});
+	if (deliveryPlan.strictBehaviorTarget && deliveryPlan.targets.length === 0) {
+		logger.error(
+			{
+				organizationId: params.organizationId,
+				behaviorId: params.behaviorId,
+			},
+			"[Notifications] Behavior delivery target is unavailable — refusing org-wide fallback",
+		);
+		await recordDeliveryError(eventId, "behavior_target_unavailable");
+		return;
+	}
 
 	// Owner-routed tier: an approval whose gated fields have ONE human owner
 	// goes to that owner's Slack DM first (same card, same approve/reject
 	// buttons — the interaction bridge is connection-scoped, so clicks route
 	// identically). Any miss — no identity row, DM open/post failure — logs and
 	// falls through to the configured-target/org-wide chain unchanged.
-	if (params.ownerUserId) {
+	if (params.ownerUserId && !deliveryPlan.strictBehaviorTarget) {
 		try {
 			const dm = await resolveOwnerDmTarget(
 				params.organizationId,
@@ -384,30 +478,7 @@ async function deliverToBotConnections(
 	}
 
 	try {
-		let targets = await resolveBotDeliveryTargets(params.organizationId, {
-			connectionId: params.connectionId,
-			channelId: params.channelId,
-			teamId: params.teamId,
-		});
-		// A configured target that no longer resolves (channel unbound, connection
-		// removed, team drifted) must not silently swallow the notification — the
-		// admin explicitly asked for Slack review. Fall back to org-wide delivery
-		// and say so, instead of nothing arriving anywhere.
-		if (
-			targets.length === 0 &&
-			(params.connectionId || params.channelId || params.teamId)
-		) {
-			logger.warn(
-				{
-					organizationId: params.organizationId,
-					connectionId: params.connectionId,
-					channelId: params.channelId,
-					teamId: params.teamId,
-				},
-				"[Notifications] Configured delivery target resolved to no bound channels — falling back to org-wide delivery",
-			);
-			targets = await resolveBotDeliveryTargets(params.organizationId, null);
-		}
+		const targets = deliveryPlan.targets;
 		if (targets.length === 0) return;
 
 		const posted = await Promise.allSettled(
@@ -446,6 +517,9 @@ async function deliverToBotConnections(
 			);
 		});
 		await recordDelivery(eventId, delivered);
+		if (deliveryPlan.strictBehaviorTarget && delivered.length === 0) {
+			await recordDeliveryError(eventId, "behavior_target_post_failed");
+		}
 	} catch (err) {
 		logger.warn(
 			{ err },

@@ -76,6 +76,7 @@ export async function handleList(
       to_jsonb(i.tags) AS tags,
       i.notification_channel,
       i.notification_priority,
+      i.delivery_target,
       i.min_cooldown_seconds,
       i.agent_kind,
       i.watcher_group_id::text AS behavior_group_id,

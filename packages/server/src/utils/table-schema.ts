@@ -494,13 +494,13 @@ export const QUERYABLE_SCHEMA = {
           type: 'text',
           expr: `${ROW_REF}"watcher_group_id"`,
         },
-        // Scalar columns added in earlier features (device pinning, notification
-        // routing, run rate-limiting) that were missing from this list — drift
-        // test caught it.
+        // Runtime columns for device pinning, notification routing, and run
+        // rate-limiting; query_sql exposes them so those settings are auditable.
         'device_worker_id',
         'agent_kind',
         'notification_channel',
         'notification_priority',
+        'delivery_target',
         'min_cooldown_seconds',
         'last_fired_at',
         // Dispatch-time cursor for the min_cooldown_seconds debounce. Distinct

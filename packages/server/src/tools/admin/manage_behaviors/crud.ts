@@ -65,6 +65,7 @@ import {
   syncBehaviorChannelFeeds,
   syncBehaviorChannelFeedsBestEffort,
 } from '../../../behaviors/channel-subscriptions';
+import { assertBehaviorDeliveryTarget } from '../../../behaviors/delivery-target';
 
 /**
  * Drop chat-link style triggers when cloning a Behavior onto an entity.
@@ -242,6 +243,14 @@ export async function handleCreate(
     executorDefaults,
     ctx
   );
+  const deliveryTarget = args.delivery_target
+    ? await assertBehaviorDeliveryTarget(
+        sql,
+        organizationId,
+        args.agent_id ?? null,
+        args.delivery_target
+      )
+    : null;
   const skills = args.skills ?? [];
   assertBehaviorInstructions(triggerWrite.triggers, args.prompt, skills);
   assertPromptSkillTokensPinned(args.prompt, skills);
@@ -308,7 +317,7 @@ export async function handleCreate(
         watcher_group_id,
         device_worker_id, agent_kind,
         notification_channel, notification_priority, min_cooldown_seconds,
-        execution_config,
+        delivery_target, execution_config,
         reaction_script, reaction_script_compiled, reaction_input_schema
       ) VALUES (
         ${watcherId}, ${args.name ?? args.slug}, ${args.slug}, ${organizationId},
@@ -323,6 +332,7 @@ export async function handleCreate(
         ${args.notification_channel ?? 'canvas'},
         ${args.notification_priority ?? 'normal'},
         ${args.min_cooldown_seconds ?? 0},
+        ${toJsonParam(tx, deliveryTarget)},
         ${toJsonParam(tx, args.execution_config)},
         ${reactionScript}, ${reactionScriptCompiled},
         ${reactionInputSchema ? tx.json(reactionInputSchema) : null}
@@ -441,6 +451,7 @@ export async function handleCreate(
         tags: args.tags ?? [],
         notification_channel: args.notification_channel ?? 'canvas',
         notification_priority: args.notification_priority ?? 'normal',
+        delivery_target: deliveryTarget,
         min_cooldown_seconds: args.min_cooldown_seconds ?? 0,
         prompt: args.prompt ?? '',
         description: args.description ?? null,
@@ -487,6 +498,7 @@ export async function handleUpdate(
   const currentRows = await sql`
     SELECT w.organization_id, w.agent_id, w.schedule, w.timezone, w.triggers,
            w.device_worker_id::text AS device_worker_id, w.agent_kind,
+           w.delivery_target,
            cv.prompt AS current_prompt, cv.skills AS current_skills,
            cv.outputs AS current_outputs
     FROM watchers w
@@ -502,6 +514,7 @@ export async function handleUpdate(
     schedule: string | null;
     timezone: string | null;
     triggers: ManageBehaviorsArgs['triggers'];
+    delivery_target: ManageBehaviorsArgs['delivery_target'];
     current_prompt: string | null;
     current_skills: Array<{ name: string; content: string }> | null;
     current_outputs: Record<string, unknown> | null;
@@ -557,6 +570,27 @@ export async function handleUpdate(
     ctx
   );
 
+  let normalizedDeliveryTarget = args.delivery_target ?? null;
+  if (args.delivery_target) {
+    normalizedDeliveryTarget = await assertBehaviorDeliveryTarget(
+      sql,
+      currentRow.organization_id,
+      effectiveDefaults.agentId ?? null,
+      args.delivery_target
+    );
+  } else if (
+    args.agent_id !== undefined &&
+    args.delivery_target === undefined &&
+    currentRow.delivery_target
+  ) {
+    await assertBehaviorDeliveryTarget(
+      sql,
+      currentRow.organization_id,
+      effectiveDefaults.agentId ?? null,
+      currentRow.delivery_target
+    );
+  }
+
   const updatedFields: string[] = [];
   if (args.model_config !== undefined) updatedFields.push('model_config');
   if (args.execution_config !== undefined) updatedFields.push('execution_config');
@@ -567,6 +601,7 @@ export async function handleUpdate(
   if (args.agent_kind !== undefined) updatedFields.push('agent_kind');
   if (args.notification_channel !== undefined) updatedFields.push('notification_channel');
   if (args.notification_priority !== undefined) updatedFields.push('notification_priority');
+  if (args.delivery_target !== undefined) updatedFields.push('delivery_target');
   if (args.min_cooldown_seconds !== undefined) updatedFields.push('min_cooldown_seconds');
 
   if (updatedFields.length === 0) {
@@ -585,6 +620,9 @@ export async function handleUpdate(
   const patch = normalizeBehaviorUpdatePatch(args);
   if (args.triggers !== undefined) {
     patch.triggers = triggerWrite.triggers;
+  }
+  if (args.delivery_target !== undefined) {
+    patch.delivery_target = normalizedDeliveryTarget;
   }
   const has = (k: keyof BehaviorUpdatePatch) => k in patch;
   // Recompute next_run_at when the cadence OR its zone changes; the effective
@@ -613,6 +651,7 @@ export async function handleUpdate(
       agent_kind = CASE WHEN ${has('agent_kind')} THEN ${patch.agent_kind ?? null} ELSE agent_kind END,
       notification_channel = CASE WHEN ${has('notification_channel')} THEN ${patch.notification_channel ?? 'canvas'} ELSE notification_channel END,
       notification_priority = CASE WHEN ${has('notification_priority')} THEN ${patch.notification_priority ?? 'normal'} ELSE notification_priority END,
+      delivery_target = CASE WHEN ${has('delivery_target')} THEN ${toJsonParam(sql, patch.delivery_target)} ELSE delivery_target END,
       min_cooldown_seconds = CASE WHEN ${has('min_cooldown_seconds')} THEN ${patch.min_cooldown_seconds ?? 0} ELSE min_cooldown_seconds END
     WHERE id = ${args.behavior_id} AND organization_id = ${ctx.organizationId}
     RETURNING *

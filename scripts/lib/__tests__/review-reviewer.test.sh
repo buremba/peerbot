@@ -122,6 +122,10 @@ fi
 review_fix_script="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/review-fix.sh"
 grep -Fq '. "$SCRIPT_DIR/lib/review-reviewer.sh"' "$review_fix_script" ||
   fail "review-fix.sh must source the shared reviewer lib"
+grep -Fq '. "$SCRIPT_DIR/lib/review-skip.sh"' "$review_fix_script" ||
+  fail "review-fix.sh must source the shared skip classifier"
+grep -Fq 'review_classify_diff "$BASE_BRANCH" worktree' "$review_fix_script" ||
+  fail "review-fix.sh must skip safe worktree diffs before selecting a reviewer"
 grep -Fq 'FIXER_CLI="$(review_select_reviewer' "$review_fix_script" ||
   fail "review-fix.sh must pick its CLI through review_select_reviewer"
 grep -Fq 'review_validate_claude_model "$CLAUDE_REVIEW_MODEL"' "$review_fix_script" ||

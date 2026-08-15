@@ -278,19 +278,21 @@ explicit escape hatch for intentional exceptions.
 
 ## Safe-class skip, verdict cache, and shadow sampling
 
-`make review` skips the cross-harness reviewer for diffs that are small
-(<100 lines) **and** confined to classes where an independent LLM review adds
-near-zero signal: docs, CI-verified generated output, exact renames between
-safe-class paths, additive-only test changes, or a pure `packages/owletto`
-pointer bump. Everything else — non-test `src/`, migrations, lockfiles, config,
-other submodule changes, an Owletto bump mixed with any other path, and the
-gate/CI machinery itself — always runs the full reviewer regardless of size.
+`make review-fix` and `make review` skip their cross-harness LLM pass for diffs
+that are small (<100 lines) **and** confined to classes where it adds near-zero
+signal: docs, CI-verified generated output, the root `bun.lock`, snapshots,
+exact renames between safe-class paths, additive-only tests, exact `model:`
+literal swaps in `lobu.config.ts`, or a pure `packages/owletto` pointer bump.
+Everything else — non-test `src/`, migrations, package manifests, behavioral
+config, other lockfiles, static assets, other submodule changes, an Owletto bump
+mixed with any other path, and the gate/CI machinery itself — always runs the
+LLM pass regardless of size.
 The skip is deterministic and path-gated: the driving agent may only escalate,
-never skip on self-assessed confidence. A skipped review posts the same
+never skip on self-assessed confidence. A skipped `make review` posts the same
 `pi-review` status as green under a distinct `<!-- pi-review-skipped -->` PR
 marker so the skip is auditable; CI suites remain required checks either way.
-`REVIEWER_MODE=full make review` (or `./scripts/review.sh --full`) forces the
-full review.
+`REVIEWER_MODE=full make review-fix`, `REVIEWER_MODE=full make review`, or
+`./scripts/review.sh --full` forces the corresponding LLM pass.
 
 The verdict is cached keyed on the exact diff content + reviewer identity, so
 an unchanged diff is never re-reviewed: the reviewer is non-deterministic, and

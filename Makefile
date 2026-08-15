@@ -287,17 +287,18 @@ clean-test-pg:
 # verdict on the last line. If
 # GitHub auth is available, posts a pi-review commit status; if the current
 # branch has an open PR, also posts/updates a PR comment. See docs/REVIEW_SCHEMA.md.
-# Small safe-class diffs (docs/renames/generated/additive-tests or a pure
-# Owletto pointer bump, <100 lines) skip the cross-harness reviewer by default;
-# REVIEWER_MODE=full forces it.
+# Small path/content-gated safe-class diffs skip both LLM passes by default while
+# still posting pi-review and running deterministic CI. REVIEWER_MODE=full
+# forces them.
 
 review:
 	@./scripts/review.sh $(if $(BASE),--base $(BASE),)
 
 # Pre-review fixer: the reviewer CLI with WRITE access + the review rubrics,
 # fixing review-grade findings (bugs, slop, stale claims) in the working tree
-# BEFORE `make review` posts a status. Posts nothing, commits nothing —
-# inspect its diff, commit, then run `make review` once on the settled HEAD.
+# BEFORE `make review` posts a status. Uses the same safe-class skip as review;
+# otherwise posts nothing and commits nothing — inspect its diff, commit, then
+# run `make review` once on the settled HEAD.
 review-fix:
 	@./scripts/review-fix.sh $(if $(BASE),--base $(BASE),)
 

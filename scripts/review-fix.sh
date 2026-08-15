@@ -15,6 +15,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/review-reviewer.sh
 . "$SCRIPT_DIR/lib/review-reviewer.sh"
+# shellcheck source=scripts/lib/review-skip.sh
+. "$SCRIPT_DIR/lib/review-skip.sh"
 
 cd "$(dirname "$0")/.."
 
@@ -48,8 +50,21 @@ git merge-base "$BASE_BRANCH" HEAD >/dev/null 2>&1 \
 PROMPT_FILE="prompts/review-fix-prompt.md"
 [ -f "$PROMPT_FILE" ] || { echo ">> missing $PROMPT_FILE" >&2; exit 1; }
 
-if git diff --quiet "$BASE_BRANCH...HEAD" 2>/dev/null && git diff --quiet && git diff --cached --quiet; then
+if git diff --quiet "$BASE_BRANCH...HEAD" 2>/dev/null \
+  && git diff --quiet \
+  && git diff --cached --quiet \
+  && [ -z "$(git ls-files --others --exclude-standard | head -n 1)" ]; then
   echo ">> no diff against $BASE_BRANCH and no local changes; nothing to fix"
+  exit 0
+fi
+
+# The fixer and posted review share one path/content classifier. A trivial diff
+# should not pay for an unposted LLM pass only to self-skip at `make review`.
+REVIEWER_MODE="${REVIEWER_MODE:-light}"
+if [ "$REVIEWER_MODE" != "full" ] \
+  && review_classify_diff "$BASE_BRANCH" worktree; then
+  echo ">> pre-review fixer skipped: $REVIEW_SKIP_REASON"
+  echo ">> deterministic CI and make review remain required"
   exit 0
 fi
 

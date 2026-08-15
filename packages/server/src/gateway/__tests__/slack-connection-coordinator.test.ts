@@ -261,6 +261,7 @@ describe("SlackConnectionCoordinator", () => {
       VALUES ('org-acme', 'Acme', 'org-acme') ON CONFLICT DO NOTHING
     `;
     await getDb()`DELETE FROM connections WHERE organization_id = 'org-acme'`;
+    await getDb()`DELETE FROM authz_source_acl_state WHERE organization_id = 'org-acme'`;
   });
 
   afterEach(async () => {
@@ -268,6 +269,7 @@ describe("SlackConnectionCoordinator", () => {
       if (savedEnv[key] === undefined) delete process.env[key];
       else process.env[key] = savedEnv[key];
     }
+    await getDb()`DELETE FROM authz_source_acl_state WHERE organization_id = 'org-acme'`;
     await getDb()`DELETE FROM connections WHERE organization_id = 'org-acme'`;
   });
 
@@ -306,6 +308,130 @@ describe("SlackConnectionCoordinator", () => {
 
     expect(response.status).toBe(200);
     expect(forwarded).toEqual([seeded.id]);
+  });
+
+  /**
+   * The delivery reaching the coordinator is already `v0`-verified at the edge
+   * (`routes/public/app-webhooks.ts` 401s before delegating here), so the
+   * revocation must land regardless of what happens downstream: an unavailable
+   * connection (503) and a failed adapter delivery (401) must BOTH still leave
+   * the ACL stale. Anything else lets an availability blip preserve a departed
+   * member's recall until the next periodic sync.
+   */
+  test("handleAppWebhook invalidates a verified leave even when delivery fails", async () => {
+    await getDb()`
+      INSERT INTO authz_source_acl_state
+        (organization_id, connection_id, acl_support, freshness_state, last_synced_at)
+      VALUES ('org-acme', 'conn-team', 'full', 'fresh', current_timestamp)
+    `;
+    for (const [running, forwardedStatus, expectedStatus, expectedFreshness] of [
+      [true, 200, 200, "stale"],
+      [true, 401, 401, "stale"],
+      [false, 200, 503, "stale"],
+    ] as const) {
+      await getDb()`
+        UPDATE authz_source_acl_state
+        SET freshness_state = 'fresh', updated_at = current_timestamp
+        WHERE organization_id = 'org-acme'
+          AND connection_id = 'conn-team'
+      `;
+      const coordinator = new SlackConnectionCoordinator(
+        makeDeps({
+          listSlackConnections: async () => [
+            {
+              ...createSlackConnection("conn-team", { teamId: "T123" }),
+              organizationId: "org-acme",
+            },
+          ],
+          ensureConnectionRunning: async () => running,
+          forwardWebhook: async () =>
+            new Response(forwardedStatus === 200 ? "ok" : "unauthorized", {
+              status: forwardedStatus,
+            }),
+        }),
+      );
+
+      const response = await coordinator.handleAppWebhook(
+        new Request("https://gateway.example.com/slack/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            type: "event_callback",
+            team_id: "T123",
+            event: {
+              type: "member_left_channel",
+              user: "U123",
+              channel: "C123",
+            },
+          }),
+        }),
+      );
+
+      const [state] = await getDb()<{
+        freshness_state: string;
+      }[]>`
+        SELECT freshness_state
+        FROM authz_source_acl_state
+        WHERE organization_id = 'org-acme'
+          AND connection_id = 'conn-team'
+      `;
+      expect(response.status).toBe(expectedStatus);
+      expect(state?.freshness_state).toBe(expectedFreshness);
+    }
+  });
+
+  test("handleAppWebhook requires an exact workspace before invalidating preview", async () => {
+    for (const [connectionId, metadata] of [
+      ["conn-preview-other", { teamId: "THOST" }],
+      ["conn-preview-unscoped", {}],
+    ] as const) {
+      await getDb()`
+        INSERT INTO authz_source_acl_state
+          (organization_id, connection_id, acl_support, freshness_state, last_synced_at)
+        VALUES ('org-acme', ${connectionId}, 'full', 'fresh', current_timestamp)
+      `;
+      const coordinator = new SlackConnectionCoordinator(
+        makeDeps({
+          listSlackConnections: async () => [
+            {
+              ...createSlackConnection(
+                connectionId,
+                metadata,
+                {},
+                { allowGroups: true, previewMode: true },
+              ),
+              organizationId: "org-acme",
+            },
+          ],
+        }),
+      );
+
+      await coordinator.handleAppWebhook(
+        new Request("https://gateway.example.com/slack/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            type: "event_callback",
+            team_id: "TFOREIGN",
+            event: {
+              type: "member_left_channel",
+              user: "U123",
+              channel: "C123",
+            },
+          }),
+        }),
+      );
+
+      const [state] = await getDb()<{
+        freshness_state: string;
+      }[]>`
+        SELECT freshness_state
+        FROM authz_source_acl_state
+        WHERE organization_id = 'org-acme'
+          AND connection_id = ${connectionId}
+      `;
+      expect(state?.freshness_state).toBe("fresh");
+    }
   });
 
   test("handleAppWebhook revokes the install on an app_uninstalled event (per-workspace)", async () => {

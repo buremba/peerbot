@@ -1,6 +1,7 @@
 import { createLogger } from "@lobu/core";
 import { Chat } from "chat";
 import { parseSlackUserMessageEvent } from "@lobu/connectors/slack-behavior-events";
+import { invalidateSlackConnectionAcl } from "../../authz/slack-acl-sync.js";
 import type { AppInstallationStore } from "../../lobu/stores/app-installation-store.js";
 import {
   claimSlackWelcomeDm,
@@ -26,8 +27,10 @@ import {
 } from "../installation/app-install-credentials.js";
 import type { PlatformAdapterConfig, PlatformConnection } from "./types.js";
 import {
+  parseSlackMemberLeftEvent,
   parseSlackTeamJoinEvent,
   postSlackTeamJoinWelcome,
+  type ParsedSlackMemberLeftEvent,
   type ParsedSlackTeamJoinEvent,
 } from "./slack-platform-bridge.js";
 
@@ -394,6 +397,10 @@ export class SlackConnectionCoordinator {
     const body = await request.text();
     const contentType = request.headers.get("content-type") || "";
     const teamJoinEvent = parseSlackTeamJoinEvent(body, contentType);
+    const memberLeftEvent = parseSlackMemberLeftEvent(
+      body,
+      contentType,
+    );
     const teamId = this.extractTeamId(body, contentType);
     // Grid: events for a workspace inside an Enterprise Grid arrive stamped with
     // a SIBLING workspace's `team_id` (not the install's), but carry the shared
@@ -424,17 +431,13 @@ export class SlackConnectionCoordinator {
       //    the UI with its own bot token) — unchanged legacy path.
       const connection = await this.findConnectionByTeamId(teamId);
       if (connection) {
-        if (!(await this.deps.ensureConnectionRunning(connection.id))) {
-          return new Response("Slack connection unavailable", { status: 503 });
-        }
-        const response = await this.deps.forwardWebhook(
-          connection.id,
-          this.cloneRequestWithBody(request, body)
+        return await this.forwardRoutedWebhook(
+          connection,
+          request,
+          body,
+          teamJoinEvent,
+          memberLeftEvent,
         );
-        if (response.ok && teamJoinEvent) {
-          await this.handleTeamJoinWelcome(connection.id, teamJoinEvent);
-        }
-        return response;
       }
     }
 
@@ -468,17 +471,13 @@ export class SlackConnectionCoordinator {
             (await getSlackInstallByEnterpriseId(store, enterpriseId)))
           : null);
       if (installation && installation.status !== "stopped") {
-        if (!(await this.deps.ensureConnectionRunning(installation.id))) {
-          return new Response("Slack connection unavailable", { status: 503 });
-        }
-        const response = await this.deps.forwardWebhook(
-          installation.id,
-          this.cloneRequestWithBody(request, body)
+        return await this.forwardRoutedWebhook(
+          installation,
+          request,
+          body,
+          teamJoinEvent,
+          memberLeftEvent,
         );
-        if (response.ok && teamJoinEvent) {
-          await this.handleTeamJoinWelcome(installation.id, teamJoinEvent);
-        }
-        return response;
       }
 
       // 3) A workspace that installed Lobu but hasn't been CLAIMED into a Lobu
@@ -505,22 +504,20 @@ export class SlackConnectionCoordinator {
 
     const fallbackConnection = await this.getDefaultConnection();
     if (fallbackConnection) {
-      if (!(await this.deps.ensureConnectionRunning(fallbackConnection.id))) {
-        return new Response("Slack connection unavailable", { status: 503 });
-      }
-      const response = await this.deps.forwardWebhook(
-        fallbackConnection.id,
-        this.cloneRequestWithBody(request, body)
-      );
-      if (
-        response.ok &&
+      return await this.forwardRoutedWebhook(
+        fallbackConnection,
+        request,
+        body,
         teamJoinEvent &&
-        (!fallbackConnection.metadata?.teamId ||
-          fallbackConnection.metadata.teamId === teamJoinEvent.teamId)
-      ) {
-        await this.handleTeamJoinWelcome(fallbackConnection.id, teamJoinEvent);
-      }
-      return response;
+          (!fallbackConnection.metadata?.teamId ||
+            fallbackConnection.metadata.teamId === teamJoinEvent.teamId)
+          ? teamJoinEvent
+          : null,
+        memberLeftEvent &&
+          fallbackConnection.metadata?.teamId === memberLeftEvent.teamId
+          ? memberLeftEvent
+          : null,
+      );
     }
 
     const { chat, adapter } = await this.createOAuthChat();
@@ -735,6 +732,67 @@ export class SlackConnectionCoordinator {
           ? undefined
           : body,
     });
+  }
+
+  /**
+   * The shared path for every routed Slack connection, reached only AFTER the
+   * app-webhook router has verified Slack's `v0` signature at the edge
+   * (`routes/public/app-webhooks.ts` — `provider.verify(...)` returns 401 before
+   * the Slack takeover delegates here). So the departure this invalidates is
+   * authenticated evidence, not an anonymous claim.
+   *
+   * Ordering is load-bearing: invalidation runs BEFORE hydration and delivery.
+   * An unavailable adapter (503) or a downstream delivery failure must not
+   * swallow a revocation — that would leave the departed member's recall intact
+   * until the next periodic sync, which is exactly the window this change
+   * exists to close. Only the welcome DM stays success-only.
+   */
+  private async forwardRoutedWebhook(
+    connection: Pick<PlatformConnection, "id" | "organizationId">,
+    request: Request,
+    body: string,
+    teamJoinEvent: ParsedSlackTeamJoinEvent | null,
+    memberLeftEvent: ParsedSlackMemberLeftEvent | null,
+  ): Promise<Response> {
+    if (memberLeftEvent) {
+      if (!connection.organizationId) {
+        throw new Error(
+          `Slack membership removal for ${connection.id} has no organization scope`,
+        );
+      }
+      const { aclSupport } = await invalidateSlackConnectionAcl({
+        organizationId: connection.organizationId,
+        connectionId: connection.id,
+      });
+      logger.info(
+        {
+          organizationId: connection.organizationId,
+          connectionId: connection.id,
+          teamId: memberLeftEvent.teamId,
+          channelId: memberLeftEvent.channelId,
+          userId: memberLeftEvent.userId,
+          // 'full' = an enforcing connection went stale; 'none' = this
+          // revocation is what onboarded it into the fail-closed gate.
+          aclSupport,
+        },
+        "Slack channel membership revoked — invalidated ACL freshness",
+      );
+    }
+
+    if (!(await this.deps.ensureConnectionRunning(connection.id))) {
+      return new Response("Slack connection unavailable", { status: 503 });
+    }
+
+    const response = await this.deps.forwardWebhook(
+      connection.id,
+      this.cloneRequestWithBody(request, body),
+    );
+    if (!response.ok) return response;
+
+    if (teamJoinEvent) {
+      await this.handleTeamJoinWelcome(connection.id, teamJoinEvent);
+    }
+    return response;
   }
 
   private async handleTeamJoinWelcome(

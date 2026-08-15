@@ -38,7 +38,7 @@ import {
   type AccessMember,
   type AccessResource,
 } from '@lobu/connector-sdk';
-import { getDb, pgBigintArray, pgTextArray } from '../db/client.js';
+import { type DbClient, getDb, pgBigintArray, pgTextArray } from '../db/client.js';
 import { runtimeConnectionIdToSlug } from '../lobu/stores/connections-projection.js';
 import { resolveEventAttributionsForItems } from '../utils/entity-link-upsert.js';
 import { ensureResourceEntityType } from './acl-resource-type.js';
@@ -112,16 +112,37 @@ async function ensureMemberOfType(orgId: string): Promise<number> {
   return Number(rows[0].id);
 }
 
-/** Stamp the connection's ACL state so the gate begins enforcing it. */
-async function markAclEnforced(orgId: string, connectionId: string): Promise<void> {
-  const sql = getDb();
+/**
+ * Advisory-lock namespace for per-connection access-graph builds ('aclg').
+ * The second key is `hashtext(org:connection)`, so distinct connections never
+ * contend with each other.
+ */
+const ACL_GRAPH_LOCK_NAMESPACE = 0x61636c67;
+
+/**
+ * Stamp the connection fresh only if its ACL state did not change mid-snapshot.
+ *
+ * The caller already holds the per-connection advisory lock and has checked the
+ * generation, so this guards a narrower case the lock cannot: the revocation
+ * webhook (`invalidateSlackConnectionAcl`) writes WITHOUT taking that lock, so
+ * a departure landing between the check and this stamp must still lose. When it
+ * does, the row keeps its `stale` state and the gate fails closed — the edges
+ * this transaction wrote are then simply not trusted until the next sync.
+ */
+async function markAclEnforced(
+  sql: DbClient,
+  orgId: string,
+  connectionId: string,
+  syncStartedAt: string,
+): Promise<void> {
   await sql`
 		INSERT INTO authz_source_acl_state
 			(organization_id, connection_id, acl_support, freshness_state, last_synced_at, created_at, updated_at)
 		VALUES (${orgId}, ${connectionId}, 'full', 'fresh', current_timestamp, current_timestamp, current_timestamp)
 		ON CONFLICT (organization_id, connection_id)
 		DO UPDATE SET acl_support = 'full', freshness_state = 'fresh',
-		              last_synced_at = current_timestamp, updated_at = current_timestamp
+		              last_synced_at = clock_timestamp(), updated_at = clock_timestamp()
+		WHERE authz_source_acl_state.updated_at < ${syncStartedAt}::timestamptz
 	`;
 }
 
@@ -285,11 +306,25 @@ export async function buildAccessGraph(params: {
   resourceNamespace: string;
   memberIdentities: AccessIdentitySpec[];
   resources: AccessResource[];
+  /**
+   * Database time captured before the source snapshot began. A newer ACL-state
+   * write means that snapshot lost a revocation race and must not mark the
+   * connection fresh.
+   */
+  syncStartedAt?: string;
 }): Promise<AccessGraphResult> {
   const { organizationId, connectionId, connectorKey, resourceNamespace, memberIdentities } =
     params;
   const resources = params.resources.filter((r) => r.key);
   if (resources.length === 0) return EMPTY_RESULT;
+
+  const syncStartedAt =
+    params.syncStartedAt ??
+    (
+      await getDb()<{ sync_started_at: string }>`
+        SELECT clock_timestamp()::text AS sync_started_at
+      `
+    )[0].sync_started_at;
 
   const creatorUserId = await resolveOrgCreator(organizationId);
   if (!creatorUserId) {
@@ -378,7 +413,41 @@ export async function buildAccessGraph(params: {
   // 3) Write member → resource `member_of` edges, idempotent on the live-triple
   // unique index. Accumulate the CURRENT member set per resource for reconcile.
   const typeId = await ensureMemberOfType(organizationId);
-  const sql = getDb();
+
+  /*
+   * Everything that MUTATES the graph runs inside one transaction, serialized
+   * per connection by an advisory lock, and re-checks the generation after
+   * taking that lock.
+   *
+   * Fencing only the final stamp is not enough. Two syncs can overlap (the tick
+   * is a 15-minute cron and a slow workspace outruns its own cadence): the
+   * newer one finishes first and correctly drops a departed member, then the
+   * older one — still holding a pre-departure snapshot — reinserts that
+   * member's edge and skips its own stamp. The connection is left `fresh` from
+   * the newer sync while carrying an edge the newer sync deliberately removed,
+   * so a revoked member keeps recall. Aborting BEFORE any edge write is the
+   * only thing that prevents it; a guard on the stamp alone is too late.
+   */
+  const committed = await getDb().begin(async (sql) => {
+    // Transaction-scoped: released on commit or rollback, so a crashed sync
+    // cannot wedge the connection. Keyed on (org, connection) so syncs of
+    // different connections still run concurrently.
+    await sql`
+			SELECT pg_advisory_xact_lock(
+				${ACL_GRAPH_LOCK_NAMESPACE},
+				hashtext(${`${organizationId}:${connectionId}`})
+			)
+		`;
+
+    const superseded = await sql<{ one: number }[]>`
+			SELECT 1 AS one
+			FROM authz_source_acl_state
+			WHERE organization_id = ${organizationId}
+			  AND connection_id = ${connectionId}
+			  AND updated_at >= ${syncStartedAt}::timestamptz
+			LIMIT 1
+		`;
+    if (superseded.length > 0) return null;
 
   // Keep each resource entity's display name fresh. `titlePath` only sets the
   // name on auto-CREATE, so a name that wasn't available at first graph (or a
@@ -454,7 +523,25 @@ export async function buildAccessGraph(params: {
     removedEdges += removed.length;
   }
 
-  await markAclEnforced(organizationId, connectionId);
+    await markAclEnforced(sql, organizationId, connectionId, syncStartedAt);
+
+    return { memberEntityIds, createdEdges, removedEdges };
+  });
+
+  if (committed === null) {
+    logger.warn(
+      {
+        organization_id: organizationId,
+        connection_id: connectionId,
+        connector: connectorKey,
+        sync_started_at: syncStartedAt,
+      },
+      'Access graph discarded: ACL state changed after this snapshot began',
+    );
+    return EMPTY_RESULT;
+  }
+
+  const { memberEntityIds, createdEdges, removedEdges } = committed;
 
   logger.info(
     {

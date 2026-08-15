@@ -50,6 +50,57 @@ import { buildAccessGraph } from './access-graph.js';
 
 const logger = createLogger('slack-acl-sync');
 
+/**
+ * Fail closed immediately when Slack reports that a member left a channel.
+ * The periodic ACL sync remains the sole graph reconciler; this only flips the
+ * graph out of the trusted `fresh` state until that sync rebuilds it.
+ *
+ * The row is UPSERTED rather than updated, because a plain UPDATE loses the
+ * first-sync race: a connection that has never been graphed has no row, the
+ * revocation matches nothing, and the sync already holding a pre-departure
+ * snapshot then INSERTs `fresh` — blessing exactly the membership Slack just
+ * told us was gone. Writing the row makes the departure visible to
+ * `markAclEnforced`'s freshness fence, which refuses to bless a snapshot older
+ * than it.
+ *
+ * Writing the row DOES change enforcement, and that is the point: any existing
+ * `authz_source_acl_state` row moves the connection from `not-graphed` (legacy
+ * per-agent fence) to `stale`, which fails closed (`acl-state.ts` —
+ * "onboarded-but-stale ... must fail closed"). So a first-ever revocation on an
+ * ungraphed connection denies its channel recall until the first sync completes,
+ * rather than serving a membership Slack has already contradicted. The sentinel
+ * is `acl_support = 'none'` so the row records onboarding without claiming a
+ * `full` graph it does not have; an existing row keeps its own `acl_support`.
+ */
+export async function invalidateSlackConnectionAcl(params: {
+  organizationId: string;
+  connectionId: string;
+}): Promise<{ aclSupport: string }> {
+  /*
+   * `clock_timestamp()`, not `current_timestamp`. The sync's freshness fence
+   * (`markAclEnforced`) refuses to re-mark a connection fresh when this row was
+   * written after the snapshot began, and it captures that cutoff with
+   * `clock_timestamp()`. `current_timestamp` is TRANSACTION start time, so a
+   * revocation whose transaction opened before the cutoff but committed after
+   * it would record an `updated_at` below the cutoff, slip under the fence, and
+   * be overwritten as fresh — the precise race the fence exists to stop. Both
+   * sides have to measure the same clock.
+   */
+  const rows = await getDb()<{ acl_support: string }>`
+		INSERT INTO authz_source_acl_state
+			(organization_id, connection_id, acl_support, freshness_state, updated_at)
+		VALUES (${params.organizationId}, ${params.connectionId}, 'none', 'stale', clock_timestamp())
+		ON CONFLICT (organization_id, connection_id)
+		DO UPDATE SET freshness_state = 'stale', updated_at = clock_timestamp()
+		RETURNING acl_support
+	`;
+  // The upsert always yields a row, so a boolean "did it work" would be a
+  // constant. Report the resulting support level instead — 'full' means an
+  // already-enforcing connection went stale, 'none' means this revocation is
+  // what onboarded it.
+  return { aclSupport: rows[0].acl_support };
+}
+
 /** Injectable seams so tests drive the real graph build + gate with a stubbed
  * Slack API and token resolver, and the live tick wires the real ones. */
 export interface SlackAclSyncDeps {
@@ -169,6 +220,11 @@ export async function syncSlackConnectionAcl(
 
   let teamsSynced = 0;
   let channelsSynced = 0;
+  const [{ sync_started_at: syncStartedAt }] = await sql<{
+    sync_started_at: string;
+  }>`
+		SELECT clock_timestamp()::text AS sync_started_at
+	`;
   try {
     for (const [teamId, channelIds] of byTeam) {
       const identity = await deps.resolveBotIdentity({ organizationId, teamId, connectionId });
@@ -242,6 +298,7 @@ export async function syncSlackConnectionAcl(
         resourceNamespace: slackAclSource.resourceNamespace,
         memberIdentities: slackAclSource.memberIdentities,
         resources: slackChannelsToResources(teamId, channels),
+        syncStartedAt,
       });
       teamsSynced += 1;
       channelsSynced += channels.length;

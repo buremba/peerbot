@@ -13,6 +13,7 @@
 import { normalizeSlackUserId } from "@lobu/connectors/slack-identity";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
+	invalidateSlackConnectionAcl,
 	resolveSlackBotIdentity,
 	syncSlackConnectionAcl,
 } from "../../../authz/slack-acl-sync";
@@ -328,6 +329,182 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
 		expect(channels).toContain("C01ENG");
 		expect(channels).not.toContain("C01SEC");
   });
+
+	/**
+	 * The overlapping-sync race, end to end. Fencing only the final stamp is not
+	 * enough: the older sync would still WRITE its pre-departure edges and merely
+	 * skip its own stamp, leaving the connection `fresh` (from the newer sync)
+	 * while carrying the edge the newer sync just removed — so the departed
+	 * member keeps recall.
+	 *
+	 * Deterministic by construction: rather than racing two real syncs, the older
+	 * one is replayed with the `syncStartedAt` it would have captured, which is
+	 * exactly what the generation check compares against.
+	 */
+	it("discards an older overlapping sync instead of resurrecting a departed member", async () => {
+		const { org, alice, agent } = await setupWorkspace();
+		const sql = getTestDb();
+
+		const build = (memberSlackUserIds: string[], syncStartedAt?: string) =>
+			buildAccessGraph({
+				organizationId: org.id,
+				connectionId: CONN,
+				connectorKey: slackAclSource.key,
+				resourceNamespace: slackAclSource.resourceNamespace,
+				memberIdentities: slackAclSource.memberIdentities,
+				resources: slackChannelsToResources(TEAM, [
+					{ channelId: "C01ENG", name: "eng", memberSlackUserIds },
+				]),
+				syncStartedAt,
+			});
+
+		// Alice and Bob are both in #eng.
+		await build(["U01ALICE", "U01BOB"]);
+		expect(
+			((await searchAs(org.id, alice.id, agent.agentId)).conversation_messages ?? [])
+				.map((m) => m.channel_id),
+		).toContain("C01ENG");
+
+		// Sync A begins here, holding a snapshot that still contains Alice.
+		const [{ started_at: syncAStartedAt }] = await sql<{ started_at: string }>`
+			SELECT clock_timestamp()::text AS started_at
+		`;
+
+		// Sync B overtakes it: Alice has left, so B drops her edge and stamps fresh.
+		await build(["U01BOB"]);
+
+		// Sync A finally lands with its stale membership. It must be discarded.
+		const stale = await build(["U01ALICE", "U01BOB"], syncAStartedAt);
+		expect(stale.createdEdges).toBe(0);
+
+		// The decisive assertion: Alice's access is really gone, not just unstamped.
+		expect(
+			((await searchAs(org.id, alice.id, agent.agentId)).conversation_messages ?? [])
+				.map((m) => m.channel_id),
+		).not.toContain("C01ENG");
+
+		const [edge] = await sql<{ n: number }>`
+			SELECT count(*)::int AS n
+			FROM entity_relationships r
+			JOIN entity_identities i ON i.entity_id = r.from_entity_id
+			WHERE r.organization_id = ${org.id}
+			  AND r.deleted_at IS NULL
+			  AND i.identifier = 'U01ALICE'
+			  AND i.deleted_at IS NULL
+		`;
+		expect(edge?.n ?? 0).toBe(0);
+	});
+
+	it("does not let an older in-flight sync clear a membership-removal invalidation", async () => {
+		const { org } = await setupWorkspace();
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO authz_source_acl_state
+				(organization_id, connection_id, acl_support, freshness_state, last_synced_at)
+			VALUES (${org.id}, ${CONN}, 'full', 'fresh', current_timestamp)
+		`;
+
+		let releaseMembers!: (members: string[]) => void;
+		const members = new Promise<string[]>((resolve) => {
+			releaseMembers = resolve;
+		});
+		let fetchStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			fetchStarted = resolve;
+		});
+		const syncing = syncSlackConnectionAcl(
+			{
+				slackWeb: {
+					conversationMembers: async () => {
+						fetchStarted();
+						return members;
+					},
+				},
+				resolveBotIdentity: async () => ({
+					token: "xoxb-test-token",
+					botUserId: null,
+				}),
+			},
+			{ connectionId: CONN, organizationId: org.id },
+		);
+		await started;
+		await invalidateSlackConnectionAcl({
+			organizationId: org.id,
+			connectionId: CONN,
+		});
+		releaseMembers(["U01ALICE"]);
+		expect((await syncing).ok).toBe(true);
+
+		const [state] = await sql<{ freshness_state: string }>`
+			SELECT freshness_state
+			FROM authz_source_acl_state
+			WHERE organization_id = ${org.id}
+				AND connection_id = ${CONN}
+		`;
+		expect(state?.freshness_state).toBe("stale");
+	});
+
+	/**
+	 * The same race on a connection that has NEVER been graphed, which is where a
+	 * plain UPDATE silently lost: no row to flip, so the first sync's
+	 * pre-departure snapshot would be blessed as `fresh` and the departed member
+	 * would keep recall. The sentinel records onboarding without claiming a graph
+	 * it does not have, so `acl_support` stays `'none'` — which, per
+	 * `acl-state.ts`, means the connection is onboarded-but-stale and fails
+	 * closed until the next sync actually builds the graph.
+	 */
+	it("does not let a FIRST sync bless a snapshot taken before the departure", async () => {
+		const { org } = await setupWorkspace();
+		const sql = getTestDb();
+		await sql`
+			DELETE FROM authz_source_acl_state
+			WHERE organization_id = ${org.id} AND connection_id = ${CONN}
+		`;
+
+		let releaseMembers!: (members: string[]) => void;
+		const members = new Promise<string[]>((resolve) => {
+			releaseMembers = resolve;
+		});
+		let fetchStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			fetchStarted = resolve;
+		});
+		const syncing = syncSlackConnectionAcl(
+			{
+				slackWeb: {
+					conversationMembers: async () => {
+						fetchStarted();
+						return members;
+					},
+				},
+				resolveBotIdentity: async () => ({
+					token: "xoxb-test-token",
+					botUserId: null,
+				}),
+			},
+			{ connectionId: CONN, organizationId: org.id },
+		);
+		await started;
+		const { aclSupport } = await invalidateSlackConnectionAcl({
+			organizationId: org.id,
+			connectionId: CONN,
+		});
+		expect(aclSupport).toBe("none");
+		releaseMembers(["U01ALICE"]);
+		expect((await syncing).ok).toBe(true);
+
+		const [state] = await sql<{
+			freshness_state: string;
+			acl_support: string;
+		}>`
+			SELECT freshness_state, acl_support
+			FROM authz_source_acl_state
+			WHERE organization_id = ${org.id}
+				AND connection_id = ${CONN}
+		`;
+		expect(state?.freshness_state).toBe("stale");
+		expect(state?.acl_support).toBe("none");
+	});
 
 	it("org-wide Grid install (conn tenant = E…, bindings carry T…) STILL graphs and stays ENFORCED", async () => {
     // Regression guard for the codex finding: once bindings carry the real

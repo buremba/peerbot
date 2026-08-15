@@ -66,6 +66,7 @@ const SLACK_BOT_EVENTS = [
 	"app_home_opened",
 	"app_mention",
 	"member_joined_channel",
+	"member_left_channel",
 	"message.channels",
 	"message.groups",
 	"message.im",

@@ -35,10 +35,27 @@ type SlackTeamJoinPayload = {
   };
 };
 
+type SlackMemberLeftPayload = {
+  type?: string;
+  team_id?: string;
+  event?: {
+    type?: string;
+    team?: string;
+    user?: string;
+    channel?: string;
+  };
+};
+
 export type ParsedSlackTeamJoinEvent = {
   teamId: string;
   userId: string;
   displayName?: string;
+};
+
+export type ParsedSlackMemberLeftEvent = {
+  teamId: string;
+  userId: string;
+  channelId: string;
 };
 
 function isSlackGroupChannel(channelId: string): boolean {
@@ -577,6 +594,40 @@ export function parseSlackTeamJoinEvent(
     teamId,
     userId: user.id,
     ...(displayName ? { displayName } : {}),
+  };
+}
+
+export function parseSlackMemberLeftEvent(
+  body: string,
+  contentType: string,
+): ParsedSlackMemberLeftEvent | null {
+  if (!contentType.includes("application/json")) {
+    return null;
+  }
+
+  let payload: SlackMemberLeftPayload;
+  try {
+    payload = JSON.parse(body) as SlackMemberLeftPayload;
+  } catch {
+    return null;
+  }
+
+  const event = payload.event;
+  const teamId = payload.team_id || event?.team;
+  if (
+    payload.type !== "event_callback" ||
+    event?.type !== "member_left_channel" ||
+    !teamId ||
+    !event.user ||
+    !event.channel
+  ) {
+    return null;
+  }
+
+  return {
+    teamId,
+    userId: event.user,
+    channelId: event.channel,
   };
 }
 

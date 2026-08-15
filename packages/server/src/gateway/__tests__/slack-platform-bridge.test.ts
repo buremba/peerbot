@@ -1,6 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 
 import {
+  parseSlackMemberLeftEvent,
   parseSlackTeamJoinEvent,
   postSlackTeamJoinWelcome,
   registerSlackAppHome,
@@ -444,5 +445,35 @@ describe("Slack platform bridge", () => {
     expect(post).toHaveBeenCalledWith(
       "Welcome to Lobu, Ada. Mention me in a channel or send me a DM to start a thread. Use `/lobu help` to see the built-in commands."
     );
+  });
+
+  test("parses member_left_channel without treating joins as revocations", () => {
+    const payload = {
+      type: "event_callback",
+      event: { team: "T123", user: "U123", channel: "C123" },
+    };
+
+    expect(
+      parseSlackMemberLeftEvent(
+        JSON.stringify({
+          ...payload,
+          event: { ...payload.event, type: "member_left_channel" },
+        }),
+        "application/json",
+      ),
+    ).toEqual({
+      teamId: "T123",
+      userId: "U123",
+      channelId: "C123",
+    });
+    expect(
+      parseSlackMemberLeftEvent(
+        JSON.stringify({
+          ...payload,
+          event: { ...payload.event, type: "member_joined_channel" },
+        }),
+        "application/json",
+      ),
+    ).toBeNull();
   });
 });

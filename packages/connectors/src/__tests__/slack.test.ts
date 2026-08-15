@@ -13,7 +13,7 @@ beforeAll(async () => {
 });
 
 describe("Slack connector declaration", () => {
-	test("keeps install scopes aligned with the manifest and includes Slackbot MCP", () => {
+	test("keeps install scopes and events aligned with the manifest", () => {
 		const manifest = JSON.parse(
 			readFileSync(
 				new URL(
@@ -30,5 +30,9 @@ describe("Slack connector declaration", () => {
 
 		expect(installMethod?.permissions).toContain("mcp:connect");
 		expect(installMethod?.permissions).toEqual(manifest.oauth_config.scopes.bot);
+		expect(installMethod?.events).toContain("member_left_channel");
+		expect(installMethod?.events).toEqual(
+			manifest.settings.event_subscriptions.bot_events,
+		);
 	});
 });

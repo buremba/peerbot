@@ -1,11 +1,12 @@
 /**
- * Connection delete — pending-approval reconcile.
+ * Connection delete — dependent-work reconcile.
  *
  * Deleting a connection makes its pending approvals unreviewable: the approval
  * card disappears from every content read (connection-visibility predicate), so
  * approve/reject would be blind. The delete must transition those runs terminal
  * (expired/cancelled) instead of leaving them dangling behind a "needs
- * approval" notification with nothing to review.
+ * approval" notification with nothing to review. It must also pause retained
+ * feed rows and clear their queued occurrences.
  */
 
 import { randomUUID } from "node:crypto";
@@ -66,7 +67,7 @@ describe("connection delete expires pending approvals", () => {
 		await cleanupTestDatabase();
 	});
 
-	it("transitions a pending approval run on the deleted connection to expired/cancelled", async () => {
+	it("expires pending approval and pauses queued feed work on delete", async () => {
 		const sql = getTestDb();
 		const org = await createTestOrganization({ name: "Acme" });
 		const user = await createTestUser();
@@ -75,6 +76,17 @@ describe("connection delete expires pending approvals", () => {
 			connector_key: "apple.computer_use",
 			created_by: user.id,
 		});
+		const [feed] = await sql`
+			INSERT INTO feeds (
+				organization_id, connection_id, feed_key, display_name,
+				status, kind, schedule, next_run_at, created_at, updated_at
+			) VALUES (
+				${org.id}, ${conn.id}, 'pending-work', 'Pending work',
+				'active', 'collected', '0 * * * *', NOW() + INTERVAL '30 minutes',
+				NOW(), NOW()
+			)
+			RETURNING id
+		`;
 		const runId = await seedPendingApprovalRun({
 			organizationId: org.id,
 			connectionId: conn.id,
@@ -100,6 +112,14 @@ describe("connection delete expires pending approvals", () => {
 		expect(row?.approval_status).toBe("expired");
 		expect(row?.status).toBe("cancelled");
 		expect(row?.completed_at).not.toBeNull();
+		const [feedAfterDelete] = await sql`
+			SELECT status, schedule, next_run_at
+			FROM feeds
+			WHERE id = ${feed.id}
+		`;
+		expect(feedAfterDelete?.status).toBe("paused");
+		expect(feedAfterDelete?.schedule).toBe("0 * * * *");
+		expect(feedAfterDelete?.next_run_at).toBeNull();
 		const [card] = await sql`
 			SELECT interaction_status, metadata
 			FROM current_event_records

@@ -25,11 +25,18 @@ import {
   type UnhealthyReason,
 } from '../../connectors/connector-health';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
-import { createTestOrganization, createTestUser } from '../setup/test-fixtures';
+import {
+  createTestConnectorDefinition,
+  createTestOrganization,
+  createTestUser,
+} from '../setup/test-fixtures';
 
 const cfg = DEFAULT_CONNECTOR_HEALTH_CONFIG;
-// Created comfortably outside the min-age grace window so age never masks a flag.
-const OLD = new Date(Date.now() - (cfg.minConnectionAgeHours + 24) * 60 * 60 * 1000);
+// Created comfortably outside every connection-age grace window.
+const OLD = new Date(
+  Date.now() -
+    (Math.max(cfg.minConnectionAgeHours, cfg.zeroFeedsGraceHours) + 24) * 60 * 60 * 1000,
+);
 
 interface SeededConn {
   id: number;
@@ -144,6 +151,31 @@ describe('connector-health alerter', () => {
     orgId = org.id;
     const user = await createTestUser({ email: 'health-owner@test.com' });
     userId = user.id;
+
+    await createTestConnectorDefinition({
+      key: 'linkedin',
+      name: 'LinkedIn',
+      organization_id: orgId,
+      feeds_schema: { posts: {} },
+    });
+    await createTestConnectorDefinition({
+      key: 'market.quotes',
+      name: 'Market Quotes',
+      organization_id: orgId,
+      feeds_schema: {},
+    });
+    await createTestConnectorDefinition({
+      key: 'health.virtual-only',
+      name: 'Virtual-only Health Fixture',
+      organization_id: orgId,
+      feeds_schema: { live_query: { virtual: true } },
+    });
+    await createTestConnectorDefinition({
+      key: 'health.user-managed-only',
+      name: 'User-managed Health Fixture',
+      organization_id: orgId,
+      feeds_schema: { folder: { userManaged: true } },
+    });
 
     // 1. all-feeds-failing: two feeds, both last_sync_status='failed'.
     const allFailing = await seedConnection({
@@ -773,6 +805,87 @@ describe('connector-health alerter', () => {
       SELECT unhealthy_alerted_at FROM connections WHERE id = ${chat.id}
     `) as unknown as Array<{ unhealthy_alerted_at: Date | null }>;
     expect(row.unhealthy_alerted_at).toBeNull();
+  });
+
+  it('does not apply the zero-feed rule when the definition has no automatic feeds', async () => {
+    const sql = getTestDb();
+    const operationOnly = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'market.quotes',
+      slug: 'operation-only',
+      createdAt: OLD,
+    });
+    const virtualOnly = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'health.virtual-only',
+      slug: 'definition-virtual-only',
+      createdAt: OLD,
+    });
+    const userManagedOnly = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'health.user-managed-only',
+      slug: 'definition-user-managed-only',
+      createdAt: OLD,
+    });
+    await sql`
+      UPDATE connections
+      SET unhealthy_alerted_at = NOW()
+      WHERE id IN (${operationOnly.id}, ${virtualOnly.id}, ${userManagedOnly.id})
+    `;
+
+    const res = await runConnectorHealthCheck();
+    expect(
+      res.details.some(
+        (detail) =>
+          detail.connectionId === operationOnly.id ||
+          detail.connectionId === virtualOnly.id ||
+          detail.connectionId === userManagedOnly.id,
+      ),
+    ).toBe(false);
+
+    const rows = (await sql`
+      SELECT id, unhealthy_alerted_at
+      FROM connections
+      WHERE id IN (${operationOnly.id}, ${virtualOnly.id}, ${userManagedOnly.id})
+      ORDER BY id
+    `) as unknown as Array<{ id: string; unhealthy_alerted_at: Date | null }>;
+    expect(rows).toHaveLength(3);
+    expect(rows.every((row) => row.unhealthy_alerted_at === null)).toBe(true);
+  });
+
+  it('keeps the zero-feed alert fail-closed when the definition is missing', async () => {
+    const missingDefinition = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'health.missing-definition',
+      slug: 'missing-definition',
+      createdAt: OLD,
+    });
+
+    const res = await runConnectorHealthCheck();
+    expect(reasonFor(res.details, missingDefinition.id)).toBe('zero_feeds');
+  });
+
+  it('waits for the zero-feed grace window even after the general minimum age', async () => {
+    expect(cfg.zeroFeedsGraceHours).toBeGreaterThan(cfg.minConnectionAgeHours);
+    const withinZeroFeedGrace = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'linkedin',
+      slug: 'within-zero-feed-grace',
+      createdAt: new Date(
+        Date.now() -
+          ((cfg.minConnectionAgeHours + cfg.zeroFeedsGraceHours) / 2) * 60 * 60 * 1000,
+      ),
+    });
+
+    const res = await runConnectorHealthCheck();
+    expect(res.details.some((detail) => detail.connectionId === withinZeroFeedGrace.id)).toBe(
+      false,
+    );
   });
 
   // A connection waiting on human sign-in is not an operational incident: the

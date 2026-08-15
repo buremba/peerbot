@@ -2257,8 +2257,19 @@ export async function handleDelete(
 
     await expirePendingApprovalsBeforeDelete(tx);
 
-    // Preserve the existing lifecycle: feed work is cancelled as part of the
-    // same atomic commit, so a deleted connection never leaves active runs.
+    // Pause the connection's existing feeds in the same atomic lifecycle
+    // transition. Keep each schedule as historical configuration, but clear its
+    // queued occurrence so the retained rows no longer look runnable.
+    await tx`
+      UPDATE feeds
+      SET status = 'paused', next_run_at = NULL, updated_at = NOW()
+      WHERE connection_id = ${args.connection_id}
+        AND organization_id = ${organizationId}
+        AND deleted_at IS NULL
+        AND (status <> 'paused' OR next_run_at IS NOT NULL)
+    `;
+
+    // Cancel runs that are active at this point in the same atomic commit.
     await tx`
       UPDATE runs SET status = 'cancelled', completed_at = NOW()
       WHERE feed_id IN (SELECT id FROM feeds WHERE connection_id = ${args.connection_id})

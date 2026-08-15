@@ -249,8 +249,13 @@ interface FeedHealthRow {
   organization_id: string;
   connector_key: string;
   display_name: string | null;
+  connection_created_at: Date | string;
   connection_status: string | null;
   credential_mode: string | null;
+  /** Whether the installed definition declares a non-virtual feed that Lobu
+   *  can create without user-supplied instance config. NULL means no active
+   *  definition was found, preserving the fail-closed zero-feed alert. */
+  connector_has_auto_syncable_feeds: boolean | null;
   auth_profile_status: string | null;
   /** Device pinned but silent for longer than `cfg.deviceOfflineHours`, or its
    *  worker row is gone entirely. */
@@ -286,8 +291,10 @@ async function loadConnectionHealthRows(
       c.organization_id,
       c.connector_key,
       c.display_name,
+      c.created_at AS connection_created_at,
       c.status AS connection_status,
       c.credential_mode,
+      cd.has_auto_syncable_feeds AS connector_has_auto_syncable_feeds,
       ap.status AS auth_profile_status,
       -- Fails CLOSED on a missing/blank worker row: a connection pinned to a
       -- worker that is no longer there is collecting nothing either. (The FK is
@@ -314,6 +321,20 @@ async function loadConnectionHealthRows(
     LEFT JOIN feeds f
       ON f.connection_id = c.id
      AND f.deleted_at IS NULL
+    LEFT JOIN LATERAL (
+      SELECT EXISTS (
+        SELECT 1
+        FROM jsonb_each(COALESCE(definition.feeds_schema, '{}'::jsonb)) AS declared(feed_key, config)
+        WHERE COALESCE((declared.config ->> 'virtual')::boolean, false) = false
+          AND COALESCE((declared.config ->> 'userManaged')::boolean, false) = false
+      ) AS has_auto_syncable_feeds
+      FROM connector_definitions definition
+      WHERE definition.key = c.connector_key
+        AND definition.status = 'active'
+        AND definition.organization_id = c.organization_id
+      ORDER BY definition.updated_at DESC
+      LIMIT 1
+    ) cd ON TRUE
     LEFT JOIN auth_profiles ap ON ap.id = c.auth_profile_id
     LEFT JOIN device_workers dw ON dw.id = c.device_worker_id
     WHERE c.status = 'active'
@@ -409,13 +430,24 @@ function classify(
   const feeds = rows.filter((r) => r.feed_id != null);
   const feedCount = feeds.length;
 
-  // Rule B: active connection, zero non-deleted feeds. (Grace handled by the
-  // query's min-age window — a connection that has existed > min age and still
-  // has no feeds is collecting nothing.)
+  // Rule B: active connection that should have an automatically-created
+  // collector feed but has zero non-deleted feeds after the longer zero-feed
+  // grace window.
   if (feedCount === 0) {
     // Chat rows are transports, not collectors. A channel-less chat connection
     // must not trip the collector-only zero-feed rule.
     if (rows[0]?.credential_mode != null) return null;
+    // Operation-only, virtual-only, and user-managed-only connectors
+    // legitimately have no automatic collector rows. If the definition is
+    // missing, keep the alert fail-closed instead of hiding an install problem.
+    if (rows[0]?.connector_has_auto_syncable_feeds === false) return null;
+    const createdAtMs = tsTimeOrNull(rows[0]?.connection_created_at);
+    if (
+      createdAtMs !== undefined &&
+      nowMs - createdAtMs < cfg.zeroFeedsGraceHours * 60 * 60 * 1000
+    ) {
+      return null;
+    }
     return {
       reason: 'zero_feeds',
       feedCount: 0,

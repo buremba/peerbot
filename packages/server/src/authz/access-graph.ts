@@ -126,8 +126,15 @@ async function ensureMemberOfType(orgId: string): Promise<number> {
  * `origin/main` the stamp was unconditional) and closing it properly needs one
  * graph build per connection plus a real snapshot generation — a separate
  * change, deliberately not smuggled in here.
+ *
+ * Exported because the stamp is CONNECTION-wide while a build is per-resource-
+ * set: a caller that reconciles one connection across several source scopes
+ * (Slack Grid — one connection, many workspaces) must pass `markFresh: false`
+ * and call this once, after every scope has been reconciled. Stamping inside
+ * such a loop reopens the connection-wide gate while later scopes still hold
+ * pre-revocation edges.
  */
-async function markAclEnforced(
+export async function markAclFresh(
   orgId: string,
   connectionId: string,
   syncStartedAt: string,
@@ -310,6 +317,13 @@ export async function buildAccessGraph(params: {
    * connection fresh.
    */
   syncStartedAt?: string;
+  /**
+   * Whether this build may stamp the connection fresh. Default true — one build
+   * IS the whole connection for a single-scope source (GitHub). A caller that
+   * loops several scopes over one connection passes false and calls
+   * `markAclFresh` itself after the last scope; see that function.
+   */
+  markFresh?: boolean;
 }): Promise<AccessGraphResult> {
   const { organizationId, connectionId, connectorKey, resourceNamespace, memberIdentities } =
     params;
@@ -487,7 +501,9 @@ export async function buildAccessGraph(params: {
     removedEdges += removed.length;
   }
 
-  await markAclEnforced(organizationId, connectionId, syncStartedAt);
+  if (params.markFresh !== false) {
+    await markAclFresh(organizationId, connectionId, syncStartedAt);
+  }
 
   logger.info(
     {

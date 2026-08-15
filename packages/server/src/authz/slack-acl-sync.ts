@@ -46,7 +46,7 @@ import {
   slackAclSource,
   slackChannelsToResources,
 } from '@lobu/connectors/slack-identity';
-import { buildAccessGraph } from './access-graph.js';
+import { buildAccessGraph, markAclFresh } from './access-graph.js';
 
 const logger = createLogger('slack-acl-sync');
 
@@ -60,7 +60,7 @@ const logger = createLogger('slack-acl-sync');
  * revocation matches nothing, and the sync already holding a pre-departure
  * snapshot then INSERTs `fresh` — blessing exactly the membership Slack just
  * told us was gone. Writing the row makes the departure visible to
- * `markAclEnforced`'s freshness fence, which refuses to bless a snapshot older
+ * `markAclFresh`'s freshness fence, which refuses to bless a snapshot older
  * than it.
  *
  * Writing the row DOES change enforcement, and that is the point: any existing
@@ -78,7 +78,7 @@ export async function invalidateSlackConnectionAcl(params: {
 }): Promise<{ aclSupport: string }> {
   /*
    * `clock_timestamp()`, not `current_timestamp`. The sync's freshness fence
-   * (`markAclEnforced`) refuses to re-mark a connection fresh when this row was
+   * (`markAclFresh`) refuses to re-mark a connection fresh when this row was
    * written after the snapshot began, and it captures that cutoff with
    * `clock_timestamp()`. `current_timestamp` is TRANSACTION start time, so a
    * revocation whose transaction opened before the cutoff but committed after
@@ -221,13 +221,13 @@ export async function syncSlackConnectionAcl(
   let teamsSynced = 0;
   let channelsSynced = 0;
   /*
-   * One cutoff for the whole sync, deliberately shared across the per-team
-   * builds below. The ACL state row is keyed by (org, connection), not by team,
-   * so the freshness fence is a single connection-level decision: either no
-   * revocation landed after this sync began and the connection may be blessed
-   * fresh, or one did and none of its teams may bless it. Capturing a fresh
-   * cutoff per team would let a late team re-bless a connection an earlier
-   * team's window had already lost the race for.
+   * One cutoff for the whole sync. The ACL state row is keyed by (org,
+   * connection), not by team, so freshness is a single connection-level
+   * decision: either no revocation landed after this sync began and the
+   * connection may be blessed fresh, or one did and it may not. The cutoff is
+   * taken before the FIRST workspace is read, so it covers every workspace's
+   * snapshot — a per-team cutoff would let a late team bless membership the
+   * revocation had already contradicted for an earlier one.
    */
   const [{ sync_started_at: syncStartedAt }] = await sql<{
     sync_started_at: string;
@@ -308,10 +308,23 @@ export async function syncSlackConnectionAcl(
         memberIdentities: slackAclSource.memberIdentities,
         resources: slackChannelsToResources(teamId, channels),
         syncStartedAt,
+        // The stamp is connection-wide; this loop is per-workspace. See below.
+        markFresh: false,
       });
       teamsSynced += 1;
       channelsSynced += channels.length;
     }
+    /*
+     * Stamp ONCE, after every workspace is reconciled — never inside the loop.
+     * A Grid connection is one `authz_source_acl_state` row spanning several
+     * workspaces, so a stamp after workspace 1 reopens the connection-wide gate
+     * while workspaces 2..n still hold their pre-revocation edges, briefly
+     * restoring recall for a member who just left a channel in one of them.
+     * Reaching this line means every workspace succeeded: any failure throws
+     * out of the loop to the catch below, which marks the connection failed
+     * instead, so a partial reconcile can never be blessed fresh.
+     */
+    await markAclFresh(organizationId, connectionId, syncStartedAt);
     return { ok: true, teamsSynced, channelsSynced };
   } catch (error) {
     logger.error(

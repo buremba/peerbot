@@ -12,6 +12,24 @@
 ALTER TABLE public.notification_targets
   ADD COLUMN IF NOT EXISTS browser_url text;
 
+-- Heal an INVALID carcass from a failed CONCURRENTLY build so every retry can
+-- rebuild it (same shape as 20260812010000 / 20260813123000).
+DO $heal$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_index i
+    JOIN pg_class c ON c.oid = i.indexrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relname = 'idx_notification_targets_browser_url'
+      AND NOT i.indisvalid
+  ) THEN
+    EXECUTE 'DROP INDEX public.idx_notification_targets_browser_url';
+  END IF;
+END
+$heal$;
+
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_notification_targets_browser_url
   ON public.notification_targets (user_id, delivered_at DESC)
   WHERE browser_url IS NOT NULL;

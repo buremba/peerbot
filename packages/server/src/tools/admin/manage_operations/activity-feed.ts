@@ -630,11 +630,16 @@ export async function listOrgActivity(opts: {
 	// (dropping the RawCard-only fields).
 	let items: ActivityCard[];
 	if (pinnedHandoffIds.size > 0) {
-		const handoffCards = collapsed.filter(
-			(c) =>
-				c.notification_id != null &&
-				pinnedHandoffIds.has(c.notification_id),
-		);
+		const handoffCards = collapsed
+			.filter(
+				(c) =>
+					c.notification_id != null &&
+					pinnedHandoffIds.has(c.notification_id),
+			)
+			// collapsed is chronological (oldest first); keep only the newest
+			// `limit` pinned drafts so the response never exceeds the declared
+			// bound even when undismissed drafts outnumber it.
+			.slice(-limit);
 		const otherCards = collapsed.filter(
 			(c) =>
 				c.notification_id == null ||

@@ -531,4 +531,30 @@ describe("page-activated operation runs", () => {
 		);
 		expect(activity.items.length).toBeLessThanOrEqual(24);
 	});
+
+	it("caps pinned drafts at the declared limit", async () => {
+		const seeded = await seed();
+		// More undismissed drafts than the limit: the response must stay bounded.
+		for (let i = 0; i < 12; i++) {
+			await createNotificationForUsers([seeded.user.id], {
+				organizationId: seeded.org.id,
+				type: "agent_message",
+				title: `Draft ${i}`,
+				body: "Draft: Hello",
+				resourceUrl: `/${seeded.org.slug}/memory?content_ids=${i}`,
+				browserUrl: `https://x.com/ada/status/${1000 + i}`,
+			});
+		}
+		const activity = await listOrgActivity({
+			organizationId: seeded.org.id,
+			userId: seeded.user.id,
+			ownerSlug: seeded.org.slug,
+			includeRuns: false,
+			limit: 5,
+		});
+		expect(activity.items.length).toBe(5);
+		expect(
+			activity.items.filter((item) => item.browser_url != null).length,
+		).toBe(5);
+	});
 });

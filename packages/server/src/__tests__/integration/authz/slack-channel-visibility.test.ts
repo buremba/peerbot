@@ -11,7 +11,7 @@
  */
 
 import { normalizeSlackUserId } from "@lobu/connectors/slack-identity";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	invalidateSlackConnectionAcl,
 	resolveSlackBotIdentity,
@@ -901,24 +901,34 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
 
 	it("still FAILS CLOSED on a systemic Slack error (not a stale-channel error)", async () => {
     const { org } = await setupWorkspace();
+    const errorLines: string[] = [];
+    const errorLog = vi.spyOn(console, "error").mockImplementation((line) => {
+      errorLines.push(String(line));
+    });
     // A rate-limit / auth error is systemic — it must propagate and fail the
     // connection closed, not be swallowed like a stale-channel error.
-    const result = await syncSlackConnectionAcl(
-      {
-        slackWeb: {
-          conversationMembers: async () => {
-						throw new Error("Slack conversations.members failed: ratelimited");
+    try {
+      const result = await syncSlackConnectionAcl(
+        {
+          slackWeb: {
+            conversationMembers: async () => {
+              throw new Error("Slack conversations.members failed: ratelimited");
+            },
           },
+          resolveBotIdentity: async () => ({
+            token: "xoxb-test-token",
+            botUserId: null,
+          }),
         },
-				resolveBotIdentity: async () => ({
-					token: "xoxb-test-token",
-					botUserId: null,
-				}),
-      },
-      { connectionId: CONN, organizationId: org.id },
-    );
-    expect(result.ok).toBe(false);
-    expect(result.channelsSynced).toBe(0);
+        { connectionId: CONN, organizationId: org.id },
+      );
+      expect(result.ok).toBe(false);
+      expect(result.channelsSynced).toBe(0);
+      expect(errorLines.join("\n")).toContain(`"organization_id":"${org.id}"`);
+      expect(errorLines.join("\n")).toContain(`"connection_id":"${CONN}"`);
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 
 	it("production sync FAILS CLOSED for an already-graphed connection when Slack fetch throws", async () => {

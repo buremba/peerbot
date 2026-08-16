@@ -503,8 +503,9 @@ function emitRelationshipType(
 
 /**
  * Instruction-presence rule, mirrored from `lobu apply` validation: only an
- * event-turn-only Automation may omit both prompt and skills (the built-in
- * default applies).
+ * event-turn-only Automation may omit all instruction sources (the built-in
+ * default applies). Schedule/window/manual shapes need a prompt, a skill, or a
+ * reaction script.
  */
 function automationRequiresInstructions(
   triggers: RemoteAutomation["triggers"]
@@ -971,14 +972,15 @@ function generateProject(
   const agentsById = new Map(
     state.agents.map(({ agent, settings }) => [agent.agentId, settings])
   );
-  for (const { automation } of state.automations) {
+  for (const { automation, reactionScript } of state.automations) {
     if (
       !automation.prompt?.trim() &&
       !automation.skills?.length &&
+      !reactionScript?.trim() &&
       automationRequiresInstructions(automation.triggers)
     ) {
       warnings.push(
-        `Automation "${automation.slug}" has no stored instructions but is not event-turn-only — give it a prompt or attach at least one skill before the next \`lobu apply\`.`
+        `Automation "${automation.slug}" has no stored instructions but is not event-turn-only — give it a prompt, attach at least one skill, or set a reaction script before the next \`lobu apply\`.`
       );
     }
     const library =

@@ -82,4 +82,68 @@ describe("assertAutomationInstructions", () => {
 		).not.toThrow();
 		expect(() => assertAutomationInstructions([], "Manual runbook.")).not.toThrow();
 	});
+
+	test("accepts a reaction script as the sole instruction source", () => {
+		const script =
+			"export default async (ctx, client) => { await client.automations.completeWindow({}); };";
+		for (const triggers of [
+			[schedule],
+			[eventWindow],
+			[workspaceEventDefault],
+			[] as AutomationTrigger[],
+		]) {
+			expect(() =>
+				assertAutomationInstructions(triggers, undefined, null, script)
+			).not.toThrow();
+		}
+	});
+
+	test("rejects a whitespace-only reaction script", () => {
+		expect(() =>
+			assertAutomationInstructions([schedule], undefined, null, "   ")
+		).toThrow(/needs instructions/);
+	});
+
+	test("still rejects the empty schedule/window/manual shape with a reaction absent", () => {
+		for (const triggers of [
+			[schedule],
+			[eventWindow],
+			[workspaceEventDefault],
+			[] as AutomationTrigger[],
+		]) {
+			expect(() =>
+				assertAutomationInstructions(triggers, undefined, null, null)
+			).toThrow(/needs instructions/);
+		}
+	});
+});
+
+describe("validateReactionDefaultExport", () => {
+	// Lazy import to avoid module-level side effects in the test harness.
+	const loadValidator = () =>
+		import("../../automations/reaction-executor").then(
+			(m) => m.validateReactionDefaultExport,
+		);
+
+	test.skip("accepts a script with a default export (requires isolated-vm)", async () => {
+		const validate = await loadValidator();
+		const { compileReactionScript } = await import(
+			"../../automations/reaction-executor",
+		);
+		const source = 'export default async () => { return "ok"; }';
+		const compiled = await compileReactionScript(source);
+		await expect(validate(compiled)).resolves.toBeUndefined();
+	});
+
+	test.skip("rejects a script with only named exports (requires isolated-vm)", async () => {
+		const validate = await loadValidator();
+		const { compileReactionScript } = await import(
+			"../../automations/reaction-executor",
+		);
+		const source = 'export const input = { type: "object" }';
+		const compiled = await compileReactionScript(source);
+		await expect(validate(compiled)).rejects.toThrow(
+			/default async function/,
+		);
+	});
 });

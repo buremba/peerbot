@@ -15,7 +15,10 @@ import {
 import {
   compileReactionScript,
   extractReactionInputSchema,
+  validateReactionDefaultExport,
 } from "../../../automations/reaction-executor";
+import { assertAutomationInstructions } from "../../../automations/triggers";
+import type { AutomationTrigger } from "@lobu/core/contracts/tools/manage-automations";
 import type { ToolContext } from "../../registry";
 import { recordToolConfigChange } from "../helpers/config-audit";
 import { requireExists } from "../helpers/db-helpers";
@@ -97,6 +100,36 @@ export async function handleSetReactionScript(
   const script = args.reaction_script;
 
   if (!script || script.trim() === "") {
+    // Clearing the reaction can orphan a prompt-less Automation: removing the
+    // only instruction source leaves a schedule/window/manual Automation with
+    // nothing to run on. Re-run the instruction rule against every assignment's
+    // final state (triggers per-assignment; prompt/skills group-shared through
+    // the current version) and reject the clear if it would leave any
+    // assignment invalid.
+    const groupState = await sql`
+      SELECT w.id, w.triggers, cv.prompt, cv.skills
+      FROM automations w
+      LEFT JOIN automation_versions cv ON cv.id = w.current_version_id
+      WHERE w.automation_group_id = ${groupId}
+    `;
+    for (const assignment of groupState) {
+      try {
+        assertAutomationInstructions(
+          (assignment.triggers ?? []) as AutomationTrigger[],
+          assignment.prompt as string | null | undefined,
+          (assignment.skills ?? null) as Array<{ name: string; content: string }> | null,
+          null
+        );
+      } catch (err) {
+        if (err instanceof ToolUserError) {
+          throw new ToolUserError(
+            `Cannot remove the reaction script: ${err.message}`,
+            422
+          );
+        }
+        throw err;
+      }
+    }
     await sql`
       UPDATE automations
       SET reaction_script = NULL, reaction_script_compiled = NULL,
@@ -125,6 +158,7 @@ export async function handleSetReactionScript(
   }
 
   const compiledCode = await compileReactionScript(script);
+  await validateReactionDefaultExport(compiledCode);
   // Derive the reaction's extraction contract from its exported `input` schema,
   // so the worker is told the exact shape the reaction will Value.Parse. NULL
   // when the reaction declares no `input` (free-form `{ summary }` fallback).

@@ -424,6 +424,51 @@ describe("authorization edges have one enforcement point", () => {
 		expect(rows).toHaveLength(0);
 	});
 
+	it("an UNMERGE still restores ORDINARY edges to the loser", async () => {
+		// Guards the NULL-safety of the ACL-managed predicate. `purpose` is NULL on
+		// every ordinary type, so writing the negation with `=` instead of
+		// `IS NOT DISTINCT FROM` makes `NOT (NULL = 'authorization' OR …)` evaluate
+		// to NULL — silently dropping ordinary edges from the undo ledger, so an
+		// unmerge would leave them stranded on the winner. Nothing else in the
+		// suite exercises the restore side.
+		const sql = getTestDb();
+		const t = await sql<{ id: number }[]>`
+      INSERT INTO entity_relationship_types
+        (slug, name, organization_id, created_at, updated_at)
+      VALUES ('billed_to', 'Billed to', ${orgId}, current_timestamp, current_timestamp)
+      RETURNING id
+    `;
+		const ordinaryTypeId = Number(t[0].id);
+		const edge = await sql<{ id: number }[]>`
+      INSERT INTO entity_relationships
+        (organization_id, from_entity_id, to_entity_id, relationship_type_id,
+         source, created_at, updated_at)
+      VALUES (${orgId}, ${alice}, ${channel}, ${ordinaryTypeId}, 'feed',
+              current_timestamp, current_timestamp)
+      RETURNING id
+    `;
+
+		await applyMerge(
+			{ orgId, winnerId: bob, loserId: alice, mergedBy: "chokepoint-test" },
+			sql,
+		);
+		const merged = await sql<{ from_entity_id: number }[]>`
+      SELECT from_entity_id FROM entity_relationships WHERE id = ${edge[0].id}
+    `;
+		expect(Number(merged[0].from_entity_id)).toBe(bob);
+
+		await applyUnmerge(
+			{ orgId, loserId: alice, unmergedBy: "chokepoint-test" },
+			sql,
+		);
+
+		const restored = await sql<{ from_entity_id: number }[]>`
+      SELECT from_entity_id FROM entity_relationships
+      WHERE id = ${edge[0].id} AND deleted_at IS NULL
+    `;
+		expect(Number(restored[0].from_entity_id)).toBe(alice);
+	});
+
 	it("does not leave the ACL privilege set for the rest of the transaction", async () => {
 		// Regression: a bare `set_config(...)` with no reset made every later
 		// statement in the merge transaction privileged, so the trigger could no

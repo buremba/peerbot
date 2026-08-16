@@ -26,6 +26,7 @@
 
 import type { DbClient } from '../db/client';
 import { CANVAS_ENTITY_TYPE_SLUG } from '../tools/constants';
+import { hardDeleteEntityRows, tryInsertEntityRow } from './entity-management';
 import { resolveEntityCreator } from './resolve-entity-creator';
 
 /** Namespace for the per-watcher canvas identity claim in `entity_identities`. */
@@ -105,20 +106,20 @@ export async function ensureCanvasEntity(params: {
   //    unique per (org, parent); a collision here is astronomically unlikely
   //    (one canvas per watcher) but tolerate it by suffixing the watcher id.
   const baseSlug = `watcher-canvas-${watcherId}`;
-  const inserted = await tx<{ id: number | string }>`
-    INSERT INTO entities (
-      organization_id, entity_type_id, name, slug, parent_id, metadata,
-      created_by, created_at, updated_at
-    ) VALUES (
-      ${organizationId}, ${entityTypeId}, ${`Canvas · watcher ${watcherId}`}, ${baseSlug},
-      ${parentEntityId}, ${tx.json({ watcher_id: watcherId, source: 'watcher_canvas' })},
-      ${createdBy}, current_timestamp, current_timestamp
-    )
-    ON CONFLICT DO NOTHING
-    RETURNING id
-  `;
+  const inserted = await tryInsertEntityRow({
+    tx,
+    row: {
+      organizationId,
+      entityTypeId,
+      name: `Canvas · watcher ${watcherId}`,
+      slug: baseSlug,
+      parentId: parentEntityId,
+      metadata: { watcher_id: watcherId, source: 'watcher_canvas' },
+      createdBy,
+    },
+  });
 
-  let entityId: number | null = inserted.length > 0 ? Number(inserted[0].id) : null;
+  let entityId: number | null = inserted?.id ?? null;
   if (entityId == null) {
     // Slug collision (pre-existing canvas entity for this watcher). Resolve it.
     const bySlug = await tx<{ id: number | string }>`
@@ -156,11 +157,11 @@ export async function ensureCanvasEntity(params: {
       AND deleted_at IS NULL
     LIMIT 1
   `;
-  if (winner.length > 0 && inserted.length > 0) {
+  if (winner.length > 0 && inserted) {
     // Safe: our entity is brand-new in THIS transaction (no identity, children,
     // events, or relationships) — its only blocking FK is parent_id RESTRICT,
     // which can't fire on a freshly-created leaf.
-    await tx`DELETE FROM entities WHERE id = ${entityId}`;
+    await hardDeleteEntityRows({ tx, ids: [entityId] });
   }
   return winner.length > 0 ? Number(winner[0].entity_id) : entityId;
 }

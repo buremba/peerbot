@@ -11,6 +11,7 @@ import {
 	hardDeleteEntityRows,
 	insertEntityRow,
 	patchEntityRows,
+	tryInsertEntityRow,
 } from "../entity-management";
 
 async function seedEntityType(organizationId: string): Promise<number> {
@@ -128,6 +129,44 @@ describe("entity row write kernel", () => {
 			metadata: { current: true },
 			enabled_classifiers: "{}",
 		});
+	});
+
+	it("returns null without changing the existing row on an insert conflict", async () => {
+		const sql = getTestDb();
+		const organization = await createTestOrganization({
+			name: "Entity kernel conflict",
+		});
+		const user = await createTestUser();
+		const entityTypeId = await seedEntityType(organization.id);
+		const existing = await insertEntityRow({
+			tx: sql,
+			row: {
+				organizationId: organization.id,
+				entityTypeId,
+				name: "Existing",
+				slug: "same-slug",
+				createdBy: user.id,
+			},
+		});
+
+		const conflicted = await tryInsertEntityRow({
+			tx: sql,
+			row: {
+				organizationId: organization.id,
+				entityTypeId,
+				name: "Conflicting",
+				slug: "same-slug",
+				createdBy: user.id,
+			},
+		});
+
+		expect(conflicted).toBeNull();
+		const rows = await sql<{ id: number; name: string }>`
+			SELECT id, name
+			FROM entities
+			WHERE organization_id = ${organization.id}
+		`;
+		expect(rows).toEqual([{ id: existing.id, name: "Existing" }]);
 	});
 
 	it("stamps a tombstone once and then skips the row", async () => {

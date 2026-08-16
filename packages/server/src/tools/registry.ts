@@ -246,10 +246,17 @@ const LOBU_VIEW_MCP_META = {
 } as const;
 
 /**
- * Data and action tools advertised on MCP `tools/list` and external OpenAPI.
- * These deliberately have no Apps UI resource: agents can chain them without
- * mounting an iframe for every intermediate result, then call
- * `render_lobu_view` once for the final user-facing view or approval.
+ * Tools advertised on MCP `tools/list` and external OpenAPI.
+ *
+ * The data and action tools here (search_memory, search_sdk, query_sdk,
+ * query_sql, run_sdk) deliberately have no Apps UI resource: agents can chain
+ * reads and general SDK actions without mounting an iframe for every
+ * intermediate result. save_memory is the one exception among them — its single
+ * durable write is itself the final result a person inspects, so it mounts one
+ * card for the event it just created. The App tools further down
+ * (render_lobu_view, resolve_lobu_approval, restore_lobu_app_result,
+ * save_lobu_app_state) carry the UI resource by definition; any other
+ * final user-facing view still goes through render_lobu_view.
  */
 const AGENT_TOOLS: ToolDefinition[] = [
   // ─── Memory hot path — read ───────────────────────────────────────────────
@@ -271,11 +278,12 @@ const AGENT_TOOLS: ToolDefinition[] = [
   {
     name: 'save_memory',
     description:
-      'Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The write is immediately readable by returned event id via `client.knowledge.read({ content_ids: [id] })`; semantic search indexing is asynchronous and reported as `indexing_status`. Storage is append-only — pass `supersedes_event_id` to replace an existing fact (the old event is hidden from future searches without losing history). Use a stable `idempotency_key` when a write may be retried. Optionally attach to entities via `entity_ids`. Always search first to avoid duplicates.',
+      'Save user-shared facts, preferences, decisions, observations, and notes to workspace memory. The returned id is immediately readable with `client.knowledge.read`; MCP App calls also echo bounded payloads for inline display. Semantic search indexing is asynchronous and reported as `indexing_status`. Storage is append-only — pass `supersedes_event_id` to replace an existing fact (the old event is hidden from future searches without losing history). Use a stable `idempotency_key` when a write may be retried. Optionally attach to entities via `entity_ids`. Always search first to avoid duplicates.',
     inputSchema: SaveContentSchema,
     outputSchema: SaveContentResultSchema,
     annotations: { ...WRITE_WITHOUT_CONFIRM, title: 'Save memory' },
     securityScopes: ['mcp:write'],
+    mcpMeta: LOBU_VIEW_MCP_META,
     handler: saveContent,
   },
   {

@@ -46,11 +46,8 @@ import {
 } from '../authz/entity-policy';
 import type { DbClient } from '../db/client';
 import type { EntityOutput } from '../types/automations';
-import {
-  type AppliedChange,
-  type BlockedChange,
-  mergeEntityFields,
-} from './entity-field-merge';
+import type { AppliedChange, BlockedChange } from './entity-field-merge';
+import { mergeEntityFields } from './entity-management';
 import logger from './logger';
 import { isUniqueViolation } from './pg-errors';
 import { resolveEntityCreator } from './resolve-entity-creator';

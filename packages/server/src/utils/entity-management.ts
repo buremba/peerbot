@@ -30,7 +30,12 @@ import type { Env } from "../index";
 import { querySqlImpl } from "../tools/admin/query_sql";
 import type { ToolContext } from "../tools/registry";
 import { entityLinkMatchSql } from "./content-search";
-import { computeFieldMerge, type FieldControl } from "./entity-field-merge";
+import {
+	computeFieldMerge,
+	type FieldControl,
+	type FieldMergeResult,
+	type FieldWriteSource,
+} from "./entity-field-merge";
 import { type EntityHookContext, getEntityHooks } from "./entity-hooks";
 import { ToolUserError } from "./errors";
 import logger from "./logger";
@@ -331,6 +336,216 @@ export interface FieldMergeInfo {
 }
 
 // ============================================
+// Transaction-bound row writes
+// ============================================
+
+/**
+ * Physical entity-row values accepted by the internal write kernel.
+ *
+ * This is deliberately below the semantic CRUD layer: it performs no access,
+ * policy, hook, schema, or hierarchy checks and never opens a transaction. A
+ * caller must pass the pool/transaction handle that already owns those
+ * decisions. Keeping the handle explicit lets projection writers join their
+ * surrounding transaction without issuing entity SQL outside this module.
+ */
+export interface EntityRowInsert {
+	organizationId: string;
+	entityTypeId: number;
+	name: string;
+	slug: string;
+	parentId?: number | null;
+	metadata?: Record<string, unknown>;
+	enabledClassifiers?: string[] | null;
+	createdBy: string;
+	content?: string | null;
+	embedding?: number[] | null;
+	contentHash?: string | null;
+}
+
+/** Columns the physical kernel may change without making selectors dynamic. */
+export interface EntityRowPatch {
+	name?: string;
+	slug?: string;
+	parentId?: number | null;
+	metadata?: Record<string, unknown> | null;
+	fieldControls?: Record<string, unknown>;
+	enabledClassifiers?: string[] | null;
+	content?: string | null;
+	embedding?: number[] | null;
+	/** true stamps deleted_at. The kernel never clears an existing tombstone. */
+	softDelete?: boolean;
+}
+
+export interface InsertedEntityRow {
+	id: number;
+	name: string;
+	slug: string;
+	parent_id: number | null;
+	metadata: Record<string, unknown> | null;
+	created_at: Date;
+}
+
+/** Insert one physical entity row using exactly the caller's DB handle. */
+export async function insertEntityRow(params: {
+	tx: DbClient;
+	row: EntityRowInsert;
+}): Promise<InsertedEntityRow> {
+	const { tx, row } = params;
+	const embeddingLiteral = toVectorLiteral(row.embedding);
+	const rows = await tx<InsertedEntityRow>`
+    INSERT INTO entities (
+      organization_id, entity_type_id, name, slug, parent_id, metadata,
+      enabled_classifiers, created_by, content, embedding, content_hash,
+      created_at, updated_at
+    ) VALUES (
+      ${row.organizationId}, ${row.entityTypeId}, ${row.name}, ${row.slug},
+      ${row.parentId ?? null}, ${tx.json(row.metadata ?? {})},
+      ${row.enabledClassifiers != null ? pgTextArray(row.enabledClassifiers) : null}::text[],
+      ${row.createdBy}, ${row.content ?? null}, ${embeddingLiteral}::vector,
+      ${row.contentHash ?? null}, current_timestamp, current_timestamp
+    )
+    RETURNING id, name, slug, parent_id, metadata, created_at
+  `;
+	if (rows.length === 0) throw new Error("Failed to create entity");
+	return rows[0];
+}
+
+/**
+ * Patch an explicit, bounded set of entity ids using the caller's DB handle.
+ * Omitted fields remain unchanged; nullable fields distinguish null from
+ * omission. Only live rows are patched — a tombstoned row is skipped, so the
+ * kernel can never resurrect one. Every call touches updated_at, including a
+ * fully blocked update whose patch ends up empty.
+ *
+ * Returns the ids actually written, ascending.
+ */
+export async function patchEntityRows(params: {
+	tx: DbClient;
+	ids: number[];
+	patch: EntityRowPatch;
+}): Promise<number[]> {
+	if (params.ids.length === 0) return [];
+	const { tx, patch } = params;
+	const hasName = patch.name !== undefined;
+	const hasSlug = patch.slug !== undefined;
+	const hasParent = patch.parentId !== undefined;
+	const hasMetadata = patch.metadata !== undefined;
+	const hasFieldControls = patch.fieldControls !== undefined;
+	const hasEnabledClassifiers = patch.enabledClassifiers !== undefined;
+	const hasContent = patch.content !== undefined;
+	const hasEmbedding = patch.embedding !== undefined;
+
+	const idsLiteral = pgBigintArray(params.ids);
+	const embeddingLiteral = toVectorLiteral(patch.embedding);
+	const rows = await tx<{ id: number }>`
+    UPDATE entities SET
+      name = CASE WHEN ${hasName} THEN ${patch.name ?? null} ELSE name END,
+      slug = CASE WHEN ${hasSlug} THEN ${patch.slug ?? null} ELSE slug END,
+      parent_id = CASE WHEN ${hasParent} THEN ${patch.parentId ?? null}::bigint ELSE parent_id END,
+      metadata = CASE WHEN ${hasMetadata} THEN ${patch.metadata == null ? null : tx.json(patch.metadata)} ELSE metadata END,
+      field_controls = CASE WHEN ${hasFieldControls} THEN ${tx.json(patch.fieldControls ?? {})} ELSE field_controls END,
+      enabled_classifiers = CASE WHEN ${hasEnabledClassifiers} THEN ${patch.enabledClassifiers != null ? pgTextArray(patch.enabledClassifiers) : null}::text[] ELSE enabled_classifiers END,
+      content = CASE WHEN ${hasContent} THEN ${patch.content ?? null} ELSE content END,
+      embedding = CASE WHEN ${hasEmbedding} THEN ${embeddingLiteral}::vector ELSE embedding END,
+      deleted_at = CASE WHEN ${patch.softDelete === true} THEN current_timestamp ELSE deleted_at END,
+      updated_at = current_timestamp
+    WHERE id = ANY(${idsLiteral}::bigint[])
+      AND deleted_at IS NULL
+    RETURNING id
+  `;
+	return rows.map((row) => Number(row.id)).sort((a, b) => a - b);
+}
+
+/** Hard-delete an explicit, bounded set of entity ids on the caller's handle. */
+export async function hardDeleteEntityRows(params: {
+	tx: DbClient;
+	ids: number[];
+}): Promise<number[]> {
+	if (params.ids.length === 0) return [];
+	const idsLiteral = pgBigintArray(params.ids);
+	const rows = await params.tx<{ id: number }>`
+    DELETE FROM entities
+    WHERE id = ANY(${idsLiteral}::bigint[])
+    RETURNING id
+  `;
+	return rows.map((row) => Number(row.id)).sort((a, b) => a - b);
+}
+
+/**
+ * Lock one live entity in the caller's transaction, apply the pure ownership
+ * merge, and persist the resulting metadata and controls through the physical
+ * row kernel. Callers remain responsible for audit events or approval delivery.
+ */
+export async function mergeEntityFields(params: {
+	tx: DbClient;
+	entityId: number;
+	fields: Record<string, unknown>;
+	source: FieldWriteSource;
+	/** User id for a human edit; null/system otherwise. */
+	actorId: string | null;
+	note?: string | null;
+	/** Snapshot the proposal was built on (deferred-apply staleness guard). */
+	expectedCurrent?: Record<string, unknown> | null;
+	/** Fields (human source) whose current value is approved as-is, claiming
+	 * ownership without a value change. */
+	affirm?: string[];
+	/** Additional fields a non-human policy decision requires approval for. */
+	requireApproval?: string[] | Set<string>;
+}): Promise<FieldMergeResult> {
+	const { tx, entityId, fields, source, actorId } = params;
+	const rows = await tx<{ metadata: unknown; field_controls: unknown }>`
+    SELECT metadata, field_controls FROM entities
+    WHERE id = ${entityId} AND deleted_at IS NULL
+    FOR UPDATE
+  `;
+	if (rows.length === 0) {
+		throw new Error(`Entity ${entityId} not found`);
+	}
+
+	const metadata = parseEntityJsonObject(rows[0].metadata);
+	const controls = parseEntityJsonObject(rows[0].field_controls) as Record<
+		string,
+		FieldControl
+	>;
+	const merge = computeFieldMerge({
+		metadata,
+		controls,
+		fields,
+		source,
+		actorId,
+		note: params.note ?? null,
+		nowIso: new Date().toISOString(),
+		expectedCurrent: params.expectedCurrent ?? null,
+		affirm: params.affirm,
+		requireApproval: params.requireApproval,
+	});
+
+	if (merge.changed) {
+		await patchEntityRows({
+			tx,
+			ids: [entityId],
+			patch: {
+				metadata: merge.nextMetadata,
+				fieldControls: merge.nextControls,
+			},
+		});
+	}
+	return merge;
+}
+
+function parseEntityJsonObject(value: unknown): Record<string, unknown> {
+	if (value == null) return {};
+	if (typeof value === "string") {
+		try {
+			return JSON.parse(value) as Record<string, unknown>;
+		} catch {
+			return {};
+		}
+	}
+	return value as Record<string, unknown>;
+}
+
+// ============================================
 // Validation Helpers
 // ============================================
 
@@ -486,25 +701,26 @@ export async function createEntity(
 	}
 
 	const contentValue = data.content?.trim() || null;
-	const embeddingLiteral = toVectorLiteral(data.embedding);
 	const contentHash = data.content_hash || null;
 
 	try {
 		const inserted = await sql.begin(async (tx) => {
-			const rows = await tx<Omit<CreatedEntity, "entity_type">>`
-        INSERT INTO entities (
-          organization_id, entity_type_id, name, slug, parent_id, metadata, enabled_classifiers, created_by, content, embedding, content_hash, created_at, updated_at
-        ) VALUES (
-          ${data.organization_id}, ${entityTypeId}, ${data.name.trim()}, ${slug}, ${data.parent_id || null},
-          ${sql.json(metadata)}, ${data.enabled_classifiers ? pgTextArray(data.enabled_classifiers) : null}::text[], ${createdBy},
-          ${contentValue}, ${embeddingLiteral}::vector, ${contentHash}, current_timestamp, current_timestamp
-        )
-        RETURNING id, name, slug, parent_id, metadata, created_at
-      `;
-			if (rows.length === 0) {
-				throw new Error("Failed to create entity");
-			}
-			return rows[0];
+			return insertEntityRow({
+				tx,
+				row: {
+					organizationId: data.organization_id as string,
+					entityTypeId,
+					name: data.name.trim(),
+					slug,
+					parentId: data.parent_id || null,
+					metadata,
+					enabledClassifiers: data.enabled_classifiers,
+					createdBy,
+					content: contentValue,
+					embedding: data.embedding,
+					contentHash,
+				},
+			});
 		});
 
 		// The validator above already resolved data.entity_type → entityTypeId.
@@ -600,7 +816,6 @@ export async function updateEntity(
 	const hasContent = data.content !== undefined;
 	const contentValue = data.content?.trim() || null;
 	const hasEmbedding = data.embedding !== undefined;
-	const embeddingLiteral = toVectorLiteral(data.embedding);
 
 	// An affirm-only edit (approve a value as-is) has no metadata delta but still
 	// must run the merge so it can claim field ownership.
@@ -763,19 +978,21 @@ export async function updateEntity(
 			};
 		}
 
-		await tx`
-      UPDATE entities SET
-        name = COALESCE(${applyName ? (data.name ?? null) : null}, name),
-        slug = COALESCE(${data.slug ?? (applyName ? newSlug : null)}, slug),
-        parent_id = CASE WHEN ${applyParent} THEN ${data.parent_id ?? null}::bigint ELSE parent_id END,
-        metadata = CASE WHEN ${hasMetadataUpdates} THEN ${mergedMetadata ? sql.json(mergedMetadata) : null} ELSE metadata END,
-        field_controls = CASE WHEN ${mergedControls !== null} THEN ${mergedControls ? sql.json(mergedControls) : sql.json({})} ELSE field_controls END,
-        enabled_classifiers = CASE WHEN ${data.enabled_classifiers !== undefined} THEN ${data.enabled_classifiers ? pgTextArray(data.enabled_classifiers) : null}::text[] ELSE enabled_classifiers END,
-        content = CASE WHEN ${applyContent} THEN ${contentValue} ELSE content END,
-        embedding = CASE WHEN ${hasEmbedding && (applyContent || !hasContent)} THEN ${embeddingLiteral}::vector ELSE embedding END,
-        updated_at = current_timestamp
-      WHERE id = ${entityId} AND deleted_at IS NULL
-    `;
+		const rowPatch: EntityRowPatch = {};
+		if (applyName && data.name !== undefined) rowPatch.name = data.name;
+		const slugPatch = data.slug ?? (applyName ? newSlug : null);
+		if (slugPatch !== null) rowPatch.slug = slugPatch;
+		if (applyParent) rowPatch.parentId = data.parent_id ?? null;
+		if (hasMetadataUpdates) rowPatch.metadata = mergedMetadata;
+		if (mergedControls !== null) rowPatch.fieldControls = mergedControls;
+		if (data.enabled_classifiers !== undefined) {
+			rowPatch.enabledClassifiers = data.enabled_classifiers;
+		}
+		if (applyContent) rowPatch.content = contentValue;
+		if (hasEmbedding && (applyContent || !hasContent)) {
+			rowPatch.embedding = data.embedding ?? null;
+		}
+		await patchEntityRows({ tx, ids: [entityId], patch: rowPatch });
 
     const sel = await tx<CreatedEntity>`
       SELECT e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at
@@ -1159,10 +1376,7 @@ export async function deleteEntity(
         if (detached.length < EVENT_DETACH_BATCH) break;
       }
 
-      await tx`
-        DELETE FROM entities
-        WHERE id = ANY(${entityTreeIdsLiteral}::bigint[])
-      `;
+      await hardDeleteEntityRows({ tx, ids: entityTreeIds });
     });
 
     return {
@@ -1182,13 +1396,9 @@ export async function deleteEntity(
       dry_run: true,
     };
   }
-
-  // Soft delete: set deleted_at timestamp
-  await sql`
-    UPDATE entities
-    SET deleted_at = current_timestamp, updated_at = current_timestamp
-    WHERE id = ${entityId} AND deleted_at IS NULL
-  `;
+  // Soft delete: stamp deleted_at. Stays a single pool-level statement, so the
+  // semantic layer's existing transaction boundary is unchanged.
+  await patchEntityRows({ tx: sql, ids: [entityId], patch: { softDelete: true } });
 
   return {
     message: 'Entity soft-deleted successfully',

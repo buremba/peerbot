@@ -52,6 +52,9 @@ describe('saveContent > json_template save-side schema', () => {
       scopedToOrg: false,
       allowCrossOrg: true,
       scopes: ['mcp:write'],
+      // The render-payload echo below is gated on an MCP App caller; without
+      // this the save still succeeds but returns the compact receipt only.
+      mcpAppsSupported: true,
     };
   });
 
@@ -87,6 +90,16 @@ describe('saveContent > json_template save-side schema', () => {
 
     expect(result.id).toBeGreaterThan(0);
     expect(result.semantic_type).toBe('content');
+    expect(result).toEqual(
+      expect.objectContaining({
+        payload_type: 'json_template',
+        payload_text: null,
+        payload_data: { score: 42 },
+        payload_template: { version: 1 },
+        attachments: [],
+        source_url: null,
+      })
+    );
 
     // The rootless template is persisted exactly as given.
     const sql = getTestDb();
@@ -97,6 +110,43 @@ describe('saveContent > json_template save-side schema', () => {
     expect(rows[0].payload_type).toBe('json_template');
     expect(rows[0].payload_template).toMatchObject({ version: 1 });
     expect((rows[0].payload_template as Record<string, unknown>).root).toBeUndefined();
+  });
+
+  it('returns the original persisted render payload on an idempotent replay', async () => {
+    const first = await saveContent(
+      {
+        payload_type: 'json_template',
+        payload_template: { root: { type: 'text', content: 'Original' } },
+        payload_data: { score: 7 },
+        semantic_type: 'content',
+        title: 'Original chart',
+        metadata: {},
+        idempotency_key: 'json-template-render-replay',
+      } as never,
+      {} as never,
+      ctx
+    );
+    const replay = await saveContent(
+      {
+        payload_type: 'json_template',
+        payload_template: { root: { type: 'text', content: 'Different retry' } },
+        payload_data: { score: 99 },
+        semantic_type: 'content',
+        title: 'Different retry',
+        metadata: {},
+        idempotency_key: 'json-template-render-replay',
+      } as never,
+      {} as never,
+      ctx
+    );
+
+    expect(replay.id).toBe(first.id);
+    expect(replay.created).toBe(false);
+    expect(replay.title).toBe('Original chart');
+    expect(replay.payload_data).toEqual({ score: 7 });
+    expect(replay.payload_template).toEqual({
+      root: { type: 'text', content: 'Original' },
+    });
   });
 
   it('rejects a handler prop without an action binding', async () => {

@@ -7,6 +7,7 @@
  * Embeddings are left null for background worker backfill.
  */
 
+import { Buffer } from 'node:buffer';
 import { normalizeAuthUserId, normalizeEmail } from '@lobu/connector-sdk/identity-normalize';
 import { type Static, Type } from '@sinclair/typebox';
 import { hasRequiredMcpScope } from '../auth/tool-access';
@@ -34,6 +35,25 @@ import { MEMBER_ENTITY_TYPE_SLUG } from './constants';
 import type { ToolContext } from './registry';
 import { withValidatedArgs } from './validate-args';
 import { buildEventViewUrl } from './view-urls';
+
+// Leave headroom below the 512 KiB MCP App snapshot ceiling for the receipt,
+// tool name, and snapshot envelope. Larger events remain exactly readable by
+// the returned id instead of being copied into every caller's response.
+const SAVE_MEMORY_INLINE_PAYLOAD_MAX_BYTES = 480 * 1024;
+
+/**
+ * Result fields that carry the saved event's render payload, as opposed to the
+ * compact receipt. The text fallback strips exactly these (see
+ * `formatToolResult`), so both sides must move together when one is added.
+ */
+export const SAVE_MEMORY_RENDER_PAYLOAD_KEYS = [
+  'payload_type',
+  'payload_text',
+  'payload_data',
+  'payload_template',
+  'attachments',
+  'source_url',
+] as const;
 
 /**
  * True when a Postgres error is the unique-violation (23505) on the partial
@@ -196,6 +216,22 @@ export const SaveContentResultSchema = Type.Object({
   entity_ids: Type.Array(Type.Integer()),
   title: Type.Union([Type.String(), Type.Null()]),
   semantic_type: Type.String(),
+  payload_type: Type.Optional(
+    Type.Union([
+      Type.Literal('text'),
+      Type.Literal('markdown'),
+      Type.Literal('json_template'),
+      Type.Literal('media'),
+      Type.Literal('empty'),
+    ])
+  ),
+  payload_text: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  payload_data: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+  payload_template: Type.Optional(
+    Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()])
+  ),
+  attachments: Type.Optional(Type.Array(Type.Unknown())),
+  source_url: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   created_at: Type.String(),
   supersedes_event_id: Type.Optional(Type.Integer()),
   view_url: Type.Optional(Type.String()),
@@ -215,6 +251,12 @@ interface SaveContentResult {
   entity_ids: number[];
   title: string | null;
   semantic_type: string;
+  payload_type?: 'text' | 'markdown' | 'json_template' | 'media' | 'empty';
+  payload_text?: string | null;
+  payload_data?: Record<string, unknown>;
+  payload_template?: Record<string, unknown> | null;
+  attachments?: unknown[];
+  source_url?: string | null;
   created_at: string;
   supersedes_event_id?: number;
   view_url?: string;
@@ -652,24 +694,69 @@ async function saveContentImpl(
     });
   }
 
-  // Probe real semantic-index readiness for this specific event rather than
-  // asserting a fixed 'pending'. `needsEmbeddingSql` is the same predicate the
-  // embed backfill and worker use, so callers can never disagree with the
-  // pipeline on what "indexed" means. Embeddings are usually produced by the
-  // async backfill (so this is 'pending'), but when one is supplied inline the
-  // row is already searchable — reporting a hardcoded 'pending' would be wrong.
+  // Read real semantic-index readiness for this specific event rather than
+  // asserting a fixed 'pending'. For MCP App callers, also read the persisted
+  // payload for the inline card; other surfaces keep their compact receipt. The
+  // per-column CASE keeps that a single round trip — a caller that cannot render
+  // the payload never pays to ship it.
+  // `needsEmbeddingSql` is the same predicate the embed backfill and worker use,
+  // so callers can never disagree with the pipeline on what "indexed" means.
+  // Embeddings are usually produced by the async backfill (so this is 'pending'),
+  // but when one is supplied inline the row is already searchable.
   const savedId = Number(row.id);
-  const [readiness] = await sql`
-    SELECT ${sql.unsafe(needsEmbeddingSql('e', getConfiguredEmbeddingModel()))} AS needs_embedding
+  const shouldReadInlinePayload = ctx.mcpAppsSupported === true;
+  const [savedEvent] = await sql`
+    SELECT
+      CASE WHEN ${shouldReadInlinePayload} THEN e.payload_type END AS payload_type,
+      CASE WHEN ${shouldReadInlinePayload} THEN e.payload_text END AS payload_text,
+      CASE WHEN ${shouldReadInlinePayload} THEN e.payload_data END AS payload_data,
+      CASE WHEN ${shouldReadInlinePayload} THEN e.payload_template END AS payload_template,
+      CASE WHEN ${shouldReadInlinePayload} THEN e.attachments END AS attachments,
+      CASE WHEN ${shouldReadInlinePayload} THEN e.source_url END AS source_url,
+      ${sql.unsafe(needsEmbeddingSql('e', getConfiguredEmbeddingModel()))} AS needs_embedding
     FROM events e WHERE e.id = ${savedId}
   `;
-  const searchable = readiness ? !readiness.needs_embedding : false;
+  // The row is already committed, so a read-back miss must never fail the call:
+  // reporting an error for a durable write invites a retry that appends a
+  // duplicate. Degrade to "not searchable yet" and no inline payload instead.
+  const searchable = savedEvent ? !savedEvent.needs_embedding : false;
+
+  const inlinePayload =
+    shouldReadInlinePayload && savedEvent
+      ? {
+          payload_type: String(savedEvent.payload_type) as NonNullable<
+            SaveContentResult['payload_type']
+          >,
+          payload_text:
+            savedEvent.payload_text == null ? null : String(savedEvent.payload_text),
+          payload_data: (savedEvent.payload_data ?? {}) as Record<string, unknown>,
+          payload_template:
+            savedEvent.payload_template == null
+              ? null
+              : (savedEvent.payload_template as Record<string, unknown>),
+          attachments: Array.isArray(savedEvent.attachments) ? savedEvent.attachments : [],
+          source_url:
+            savedEvent.source_url == null ? null : String(savedEvent.source_url),
+        }
+      : null;
+  const boundedInlinePayload =
+    inlinePayload &&
+    Buffer.byteLength(JSON.stringify(inlinePayload), 'utf8') <=
+      SAVE_MEMORY_INLINE_PAYLOAD_MAX_BYTES
+      ? inlinePayload
+      : null;
 
   const result: SaveContentResult = {
     id: savedId,
     entity_ids: Array.isArray(row.entity_ids) ? row.entity_ids.map(Number) : finalEntityIds,
     title: row.title as string | null,
     semantic_type: semanticType,
+    // When present, this is the exact durable payload, not the caller's
+    // arguments: it keeps idempotent retries honest and gives MCP App hosts the
+    // same event the Lobu Activity UI reads from Postgres. Absent for non-App
+    // callers and for oversized events, which keep the compact receipt and the
+    // exact-read id rather than exceeding the App snapshot limit.
+    ...(boundedInlinePayload ?? {}),
     created_at: String(row.created_at),
     // Row is committed by now; exact reads by id are available from this instant.
     durable_at: String(row.created_at),

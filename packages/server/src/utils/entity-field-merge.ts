@@ -8,13 +8,11 @@
  *   - source='automation': writes only fields that are NOT human-owned; owned fields are
  *     returned in `blocked` (the caller emits an approval) and never overwritten.
  *
- * The risky decision logic is the pure `computeFieldMerge` — unit-tested without a DB.
- * `mergeEntityFields` is the thin DB wrapper: it locks the entity row FOR UPDATE inside
- * the caller's transaction, applies the merge, and persists metadata + field_controls
- * atomically. Callers own the audit `'change'` event (handleUpdate / promotion emit it).
+ * This module is the pure decision engine — unit-testable without a DB. The
+ * transaction-bound persistence wrapper is `mergeEntityFields`, which lives in
+ * entity-management.ts so the write goes through the physical row kernel.
+ * Callers own the audit `'change'` event (handleUpdate / promotion emit it).
  */
-
-import type { DbClient } from "../db/client";
 
 export type FieldWriteSource = "human" | "automation";
 
@@ -175,80 +173,4 @@ export function computeFieldMerge(args: {
 		nextControls,
 		changed: Object.keys(applied).length > 0 || affirmed.length > 0,
 	};
-}
-
-/**
- * DB wrapper: lock the entity row in the caller's transaction, apply the merge, and
- * persist metadata + field_controls atomically. Returns applied/blocked so the caller
- * can emit the audit event (human path) or the approval interactions (automation path).
- */
-export async function mergeEntityFields(params: {
-	tx: DbClient;
-	entityId: number;
-	fields: Record<string, unknown>;
-	source: FieldWriteSource;
-	/** User id for a human edit; null/system otherwise. */
-	actorId: string | null;
-	note?: string | null;
-	/** Snapshot the proposal was built on (deferred-apply staleness guard). */
-	expectedCurrent?: Record<string, unknown> | null;
-	/** Fields (human source) whose current value is approved as-is, claiming
-	 *  ownership without a value change. */
-	affirm?: string[];
-	/** Additional fields a non-human policy decision requires approval for. */
-	requireApproval?: string[] | Set<string>;
-}): Promise<FieldMergeResult> {
-	const { tx, entityId, fields, source, actorId } = params;
-
-	const rows = await tx<{ metadata: unknown; field_controls: unknown }>`
-    SELECT metadata, field_controls FROM entities
-    WHERE id = ${entityId} AND deleted_at IS NULL
-    FOR UPDATE
-  `;
-	if (rows.length === 0) {
-		throw new Error(`Entity ${entityId} not found`);
-	}
-
-	const metadata = parseJsonObject(rows[0].metadata);
-	const controls = parseJsonObject(rows[0].field_controls) as Record<
-		string,
-		FieldControl
-	>;
-
-	const merge = computeFieldMerge({
-		metadata,
-		controls,
-		fields,
-		source,
-		actorId,
-		note: params.note ?? null,
-		nowIso: new Date().toISOString(),
-		expectedCurrent: params.expectedCurrent ?? null,
-		affirm: params.affirm,
-		requireApproval: params.requireApproval,
-	});
-
-	if (merge.changed) {
-		await tx`
-      UPDATE entities
-      SET metadata = ${tx.json(merge.nextMetadata)},
-          field_controls = ${tx.json(merge.nextControls)},
-          updated_at = current_timestamp
-      WHERE id = ${entityId}
-    `;
-	}
-
-	return merge;
-}
-
-function parseJsonObject(value: unknown): Record<string, unknown> {
-	if (value == null) return {};
-	if (typeof value === "string") {
-		try {
-			return JSON.parse(value) as Record<string, unknown>;
-		} catch {
-			return {};
-		}
-	}
-	return value as Record<string, unknown>;
 }

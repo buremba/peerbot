@@ -157,6 +157,33 @@ describe('formatToolResult', () => {
     });
   });
 
+  describe('save_memory tool', () => {
+    it('keeps render payload out of the compact text fallback', () => {
+      const md = formatToolResult('save_memory', {
+        id: 42,
+        title: 'Saved chart',
+        semantic_type: 'observation',
+        payload_type: 'json_template',
+        payload_text: 'large-payload-marker'.repeat(10_000),
+        payload_data: { privateMarker: 'structured-content-only' },
+        payload_template: { root: { type: 'text', content: '{{privateMarker}}' } },
+        attachments: [{ name: 'large.json' }],
+        source_url: 'https://example.com/source',
+        created: true,
+        view_url: 'https://example.com/memory?content_ids=42',
+      });
+
+      expect(md).toContain('"id": 42');
+      expect(md).toContain('"title": "Saved chart"');
+      expect(md).toContain('"created": true');
+      expect(md).toContain('"view_url"');
+      expect(md).not.toContain('large-payload-marker');
+      expect(md).not.toContain('structured-content-only');
+      expect(md).not.toContain('payload_template');
+      expect(md.length).toBeLessThan(1_000);
+    });
+  });
+
   describe('get_automation tool', () => {
     it('should format Automation windows', () => {
       const result = {

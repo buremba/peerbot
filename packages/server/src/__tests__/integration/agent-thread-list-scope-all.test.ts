@@ -627,7 +627,7 @@ describe("listAgentThreads scope=all", () => {
 		);
 	});
 
-	// Production shape, which every other fixture in this file gets wrong: a
+	// Production shape, which every other fixture in this file gets wrong: an
 	// Automation execution writes TWO run rows. The scheduler's `automation` row is
 	// what the thread is built from, but the worker is dispatched under a
 	// separate `chat_message` row and posts its snapshot against THAT run id —

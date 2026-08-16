@@ -1,7 +1,7 @@
 /**
  * Unit coverage for the device-worker ownership gate on automation pins
  * (automations.device_worker_id). A device pin runs the automation's agent CLI on the
- * device owner's machine, so a member-write actor must not be able to pin a
+ * device owner's machine, so a member-write actor must not be able to pin an
  * automation to another user's device. This pins the pure decision matrix
  * (owner/admin/member/system × owned/foreign/missing device); the DB-backed
  * wrapper + persistence is exercised in the integration suite.

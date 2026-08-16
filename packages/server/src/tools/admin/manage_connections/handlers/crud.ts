@@ -1458,7 +1458,7 @@ export async function handleUpdate(
     }
   }
 
-	// Setting/clearing the fallback agent is the same class of authority as a
+	// Setting/clearing the fallback agent is the same class of authority as an
 	// Automation subscription (manage_automations owns the authorization policy),
 	// auth/tool-access.ts): it decides which agent an unbound DM/mention runs.
 	// `update` itself is member-writable, so without this gate a member could

@@ -19,6 +19,8 @@ const TRAIT_REWRITE_START = '-- connector-trait-merge-strategy:start';
 const TRAIT_REWRITE_END = '-- connector-trait-merge-strategy:end';
 const ENTITY_REWRITE_START = '-- entity-metadata-cutover:start';
 const ENTITY_REWRITE_END = '-- entity-metadata-cutover:end';
+const AUTHORED_QUERY_CUTOVER_START = '-- authored-query-cutover:start';
+const AUTHORED_QUERY_CUTOVER_END = '-- authored-query-cutover:end';
 const IDENTITY_BRIDGE_START = '-- automation-event-identity-bridge:start';
 const IDENTITY_BRIDGE_END = '-- automation-event-identity-bridge:end';
 
@@ -72,6 +74,44 @@ describe('Automation schema vocabulary', () => {
     const up = loadMigrationUpSection(resolveMigrationsDir(), CUTOVER_MIGRATION);
     expect(up).not.toMatch(/UPDATE\s+public\.(?:watchers|watcher_versions|view_template_versions)\b/i);
     expect(up).not.toMatch(/SET\s+\w+\s*=\s*replace\s*\(\s*replace\s*\([^;]*::text/is);
+  });
+
+  it('fails the cutover when stored authored SQL still names a retired relation', async () => {
+    const sql = getTestDb();
+    const org = await createTestOrganization();
+    const user = await createTestUser();
+    const agent = await createTestAgent({
+      organizationId: org.id,
+      ownerUserId: user.id,
+      agentId: 'authored-query-cutover-agent',
+    });
+    await sql`
+      WITH next_id AS (
+        SELECT nextval('automations_id_seq')::int AS id
+      )
+      INSERT INTO automations (
+        id, organization_id, created_by, agent_id, automation_group_id,
+        name, slug, sources
+      )
+      SELECT
+        id, ${org.id}, ${user.id}, ${agent.agentId}, id,
+        'Authored query cutover', 'authored-query-cutover',
+        ${sql.json([{ name: 'legacy', query: 'SELECT id FROM behaviors' }])}
+      FROM next_id
+    `;
+
+    const cutover = loadMarkedSection(
+      AUTHORED_QUERY_CUTOVER_START,
+      AUTHORED_QUERY_CUTOVER_END,
+      'authored query cutover'
+    );
+    expect(cutover).toMatch(/FROM public\.automations\b/);
+    expect(cutover).toMatch(/FROM public\.automation_versions\b/);
+    expect(cutover).toMatch(/FROM public\.view_template_versions\b/);
+    expect(cutover).toMatch(/FROM public\.entity_types\b/);
+    await expect(sql.begin((tx) => tx.unsafe(cutover))).rejects.toThrow(
+      /cutover blocked by 1 stored query\/template row/i
+    );
   });
 
   it('hard-renames persisted connector trait merge policies in definitions and device manifests', async () => {

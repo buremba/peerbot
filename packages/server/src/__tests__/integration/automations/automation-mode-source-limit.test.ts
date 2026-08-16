@@ -5,7 +5,7 @@
  * `queryContentData` builds its page descriptor with a hardcoded
  * `sourceName: 'content'`, and `wrapQuery` used to apply the LIMIT only when
  * `sourceName === page.sourceName`. Every other event source therefore ran
- * unbounded — and all of them are returned to the caller under `sources`. So a
+ * unbounded — and all of them are returned to the caller under `sources`. So an
  * Automation with more than one source ignored `limit` entirely: the caller asked
  * for 2 rows and got the whole window back on the secondary source.
  *

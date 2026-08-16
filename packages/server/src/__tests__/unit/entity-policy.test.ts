@@ -150,7 +150,7 @@ describe("classifyMutationPrincipal", () => {
 
 	test("SECURITY: a trusted agentId beats a caller-supplied automation_source", () => {
 		// An agent run cannot demote itself to an automation (and escape its agent
-		// policy) by tagging the write with a automation_source it controls.
+		// policy) by tagging the write with an automation_source it controls.
 		expect(
 			classifyMutationPrincipal({
 				agentId: "agent-A",

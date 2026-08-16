@@ -453,7 +453,7 @@ export async function handleGetFeedback(
  * promotion time.
  *
  * Org-scoped so a member of org A can't enumerate org B's promoted entities by
- * passing a automation_id (auth also gates on requireAutomationAccess 'read').
+ * passing an automation_id (auth also gates on requireAutomationAccess 'read').
  */
 export async function handleListPromoted(
   args: ManageAutomationsArgs,

@@ -1064,7 +1064,7 @@ async function getAutomationImpl(
   // ============================================
   // Step 7: Diagnostic warnings for the no-windows case
   // ============================================
-  // Replaces the previous cold-path block (a automations re-fetch + a
+  // Replaces the previous cold-path block (an `automations` re-fetch + a
   // 5-table-join entity_context aggregate that ran ~20s/call in prod for
   // entities with any volume — measured via pg_stat_statements). Both
   // produced fields (`automation_statuses`, `entity_context`) had zero UI

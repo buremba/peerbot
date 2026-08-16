@@ -905,7 +905,7 @@ export class ChatInstanceManager {
   /**
    * Post a message to a channel as the bot — a one-shot outbound post, NOT an
    * inbound message that triggers an agent run (that's `routePlatformMessage`).
-   * Used by the notification fan-out (`deliverToBotConnections`) to surface a
+   * Used by the notification fan-out (`deliverToBotConnections`) to surface an
    * automation digest / approval in a bound channel.
    *
    * `content` is any `chat` `AdapterPostableMessage` — `{ markdown }` (rendered

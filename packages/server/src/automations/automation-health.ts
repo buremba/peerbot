@@ -21,7 +21,7 @@ export type AutomationHealthStatus = 'healthy' | 'degraded';
  * Grace past `next_run_at` before an active automation is judged as having
  * missed a firing. The automation scheduler (reconcileAutomationRuns) runs on a
  * 5-minute cron, so an automation legitimately sits up to one 5-minute cron
- * period past its `next_run_at` between ticks. We add a 60s buffer on top so a
+ * period past its `next_run_at` between ticks. We add a 60s buffer on top so an
  * automation mid-dispatch (or a tick that just barely slipped) is never
  * false-flagged. Overridable for tests/operators.
  */

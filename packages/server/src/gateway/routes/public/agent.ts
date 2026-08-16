@@ -1523,7 +1523,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
 
       // `!`-bash from web/direct-API chat (the primary `!` surface — ChatGPT-UI
       // style clients driving the conversation's sandbox without the LLM). Gated
-      // to genuine user chat: a automation_run's injected text must stay ordinary
+      // to genuine user chat: an automation_run's injected text must stay ordinary
       // text, never a deterministic shell trigger. The Chat SDK bridge does the
       // same for platform inbound.
       const bangBash =

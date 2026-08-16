@@ -35,7 +35,7 @@ const payload = {
 
 beforeAll(async () => {
 	// Start from an empty schema. Automation ids are handed out by a MAX(id)+1
-	// helper, not by `automations_id_seq`, so any earlier file that created a
+	// helper, not by `automations_id_seq`, so any earlier file that created an
 	// Automation leaves the sequence BEHIND the table — and the explicit
 	// `nextval` below then collides on `insights_pkey`. Truncating first keeps
 	// this suite independent of what ran before it.

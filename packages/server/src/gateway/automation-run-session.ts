@@ -21,7 +21,7 @@
  * excluded for the same reason even when an Automation is listening on the
  * conversation — a human is in that thread and the library is theirs.
  *
- * Why the worker's 5-minute session-context cache needs no isolation key: a
+ * Why the worker's 5-minute session-context cache needs no isolation key: an
  * Automation run opens its own session (`thread: automation-<runId>`, `forceNew`,
  * see `automations/automation.ts`), and the deployment name hashes the
  * conversation id — so a run's worker process is never the process that also

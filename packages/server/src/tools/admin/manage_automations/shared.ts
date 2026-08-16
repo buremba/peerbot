@@ -412,7 +412,7 @@ export async function assertAutomationSourcesResolve(
  * Resolve `agent_id` against the caller's org before it is persisted.
  *
  * `automations.agent_id` is NOT NULL but carries NO foreign key to `agents`, so a
- * typo'd or cross-org id is accepted by the database and only surfaces as a
+ * typo'd or cross-org id is accepted by the database and only surfaces as an
  * Automation that reports status 'active' / health 'healthy' and never runs — the
  * scheduler joins automations to agents on `agent_id` (see automations/automation.ts),
  * so an unresolvable owner silently drops the row out of every scheduling pass.

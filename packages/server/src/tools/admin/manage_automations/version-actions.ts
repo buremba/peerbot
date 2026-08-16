@@ -156,8 +156,8 @@ export async function handleCreateVersion(
     parseJsonInput<unknown[]>(args.classifiers, 'classifiers') ??
     normalizeStoredJsonField(prev.classifiers, undefined as unknown[] | undefined);
 
-  // Validate. The output contract is not authored on the automation: an
-  // declared outputs derive it from entity/event contracts at runtime; a
+  // Validate. The output contract is not authored on the automation: the
+  // declared outputs derive it from entity/event contracts at runtime; an
   // Automation without outputs or a reaction uses the free-form summary fallback.
   assertAutomationVersionConfigValid({ prompt, classifiers, sources });
 

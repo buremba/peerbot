@@ -83,7 +83,7 @@ describe("assertAutomationExecutorsResolve", () => {
 });
 
 // `agent_kind` names the local CLI the device spawns. It was a free-text
-// column with no FK and a free-text schema, so an unknown value wrote a
+// column with no FK and a free-text schema, so an unknown value wrote an
 // Automation that resolved to no executor on the device and failed at dispatch
 // — the write path never objected (#2504). Worse, the schema's own examples
 // were "background" and "notifier", neither of which has ever had an

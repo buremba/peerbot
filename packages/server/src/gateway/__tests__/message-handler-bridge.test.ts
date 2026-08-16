@@ -1241,7 +1241,7 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
   });
 
   test("telegram linked mention-only channel: ordinary chatter gets no notice spam", async () => {
-    // Mirror of the Slack loop-prevention semantics: a channel that HAS a
+    // Mirror of the Slack loop-prevention semantics: a channel that HAS an
     // Automation subscription but whose trigger filters rejected this message
     // must stay silent — the notice is only for genuinely unlinked chats.
     const { bridge, enqueueMessage } = makePreviewHarness({

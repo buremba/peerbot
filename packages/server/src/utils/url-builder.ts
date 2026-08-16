@@ -372,7 +372,7 @@ export function buildConnectionUrl(
  * hand-assembles `?content_ids=`/`?run_ids=`/`?feed_ids=` strings.
  *
  * Which kind to use:
- *  - `run`   — the link's identity is one execution (an operation approval, a
+ *  - `run`   — the link's identity is one execution (an operation approval, an
  *    automation/scheduled run). Survives the supersede chain by construction: a
  *    run's events share one run_id and run-scoped reads were never masked by
  *    `superseded_by IS NULL`.

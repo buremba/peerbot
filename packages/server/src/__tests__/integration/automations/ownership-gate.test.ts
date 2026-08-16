@@ -253,7 +253,7 @@ describe('ownership gate on agent entity writes', () => {
       severity: 'high',
     });
 
-    // The reaction acts as its OWN automation: the explicit automation_source names a
+    // The reaction acts as its OWN automation: the explicit automation_source names an
     // automation owned by this agent, so the tag is honored (an agent can only tag
     // its own automation — a foreign tag is ignored, see resolveActingPrincipal).
     const result = await manageEntityUpdate(

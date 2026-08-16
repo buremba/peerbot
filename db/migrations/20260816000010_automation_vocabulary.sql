@@ -336,6 +336,38 @@ SELECT pg_temp.rename_column_if_present(
   'TABLE', 'connector_definitions', 'behavior_events', 'automation_events'
 );
 
+-- authored-query-cutover:start
+-- Authored SQL is preserved byte-for-byte and no compatibility relation is
+-- installed. Fail the cutover if a stored executable query still names a
+-- retired relation: after the rename, the query compiler would otherwise
+-- interpret that unknown name as an entity-type slug and silently return no
+-- rows. Operators must update the authored query before retrying the migration.
+DO $authored_query_cutover$
+DECLARE
+  blocked_rows bigint;
+  retired_relation_pattern constant text := '\m(behaviors|behavior_versions|watchers|watcher_versions)\M';
+BEGIN
+  SELECT
+    (SELECT count(*) FROM public.automations
+      WHERE sources::text ~* retired_relation_pattern) +
+    (SELECT count(*) FROM public.automation_versions
+      WHERE version_sources::text ~* retired_relation_pattern) +
+    (SELECT count(*) FROM public.view_template_versions
+      WHERE json_template::text ~* retired_relation_pattern) +
+    (SELECT count(*) FROM public.entity_types
+      WHERE backing_sql ~* retired_relation_pattern)
+  INTO blocked_rows;
+
+  IF blocked_rows > 0 THEN
+    RAISE EXCEPTION
+      'Automation vocabulary cutover blocked by % stored query/template row(s) that reference retired relations',
+      blocked_rows
+      USING HINT = 'Update the authored SQL to canonical Automation relations before retrying; no compatibility alias is installed.';
+  END IF;
+END
+$authored_query_cutover$;
+-- authored-query-cutover:end
+
 -- automation-event-identity-bridge:start
 -- Keyed Automation output heads written before the cutover use the retired
 -- identity namespace. Extend each live chain with a canonical successor so the

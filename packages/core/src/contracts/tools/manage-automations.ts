@@ -493,7 +493,7 @@ export const ManageAutomationsSchema = Type.Object(
       [
         Type.Literal("create", {
           description:
-            "Create an Automation. Put the task statement in `prompt` and reusable know-how in `skills`; either satisfies the instruction requirement, and an event trigger with execution 'turn' may omit both.",
+            "Create an Automation. Put the task statement in `prompt`, reusable know-how in `skills`, and/or a deterministic processing step in `reaction_script`; any one satisfies the instruction requirement, and an event trigger with execution 'turn' may omit all of them.",
         }),
         Type.Literal("list", { description: "List Automations." }),
         Type.Literal("update", { description: "Patch Automation config." }),
@@ -592,7 +592,7 @@ export const ManageAutomationsSchema = Type.Object(
     prompt: Type.Optional(
       Type.String({
         description:
-          "[create/create_version] Literal LLM instruction text for the Automation — the task statement, frozen into the version. No template expansion happens: the text is delivered to the agent verbatim, and the window's data (content, sources, entities, extraction_schema) arrives alongside it in the knowledge-read payload. Reusable know-how belongs in `skills` instead, which is delivered as readable files rather than pasted in here. A schedule trigger, an event trigger with execution 'window', and an Automation with no triggers each need an instruction source — supply `prompt`, `skills`, or both; an event trigger with execution 'turn' may omit both and use the built-in default.",
+          "[create/create_version] Literal LLM instruction text for the Automation — the task statement, frozen into the version. No template expansion happens: the text is delivered to the agent verbatim, and the window's data (content, sources, entities, extraction_schema) arrives alongside it in the knowledge-read payload. Reusable know-how belongs in `skills` instead, which is delivered as readable files rather than pasted in here. A schedule trigger, an event trigger with execution 'window', and an Automation with no triggers each need an instruction source — supply `prompt`, `skills`, or `reaction_script`; an event trigger with execution 'turn' may omit all three and use the built-in default.",
       })
     ),
     skills: Type.Optional(

@@ -138,11 +138,10 @@ COPY --from=preview-deps /app/packages/server ./packages/server
 COPY --from=preview-deps /app/packages/cli ./packages/cli
 COPY --from=preview-deps /app/packages/owletto ./packages/owletto
 
-# Create vendored pgvector-embedded symlink so the server bundle can resolve
-# the fallback import path (./vendor/pgvector-embedded/dist/index.js) used in
-# embedded mode (DATABASE_URL=file://...).
-RUN mkdir -p packages/server/dist/vendor/pgvector-embedded \
-    && ln -s /app/node_modules/@lobu/pgvector-embedded/dist packages/server/dist/vendor/pgvector-embedded/dist
+# Create vendored pgvector-embedded fallback so the server bundle can resolve
+# the import path (./vendor/pgvector-embedded/dist/index.js) used in embedded
+# mode (DATABASE_URL=file://...).
+COPY --from=preview-deps /app/packages/pgvector-embedded/dist packages/server/dist/vendor/pgvector-embedded/dist
 
 COPY db/migrations ./db/migrations
 COPY scripts/migrate-up.mjs ./scripts/migrate-up.mjs

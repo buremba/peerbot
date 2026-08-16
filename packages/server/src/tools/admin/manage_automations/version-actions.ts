@@ -70,7 +70,8 @@ export async function handleCreateVersion(
   const automationRows = await sql`
     SELECT i.id, i.version, i.current_version_id, i.automation_group_id, i.sources, i.organization_id,
            i.entity_ids, i.schedule, i.timezone, i.triggers, i.agent_id,
-           i.device_worker_id::text AS device_worker_id, i.agent_kind
+           i.device_worker_id::text AS device_worker_id, i.agent_kind,
+           i.reaction_script
     FROM automations i WHERE i.id = ${args.automation_id}
   `;
   if (automationRows.length === 0) {
@@ -253,23 +254,26 @@ export async function handleCreateVersion(
     );
   }
 
-  // Final-state instruction rule. The prompt version is group-shared
-  // (cascades to every assignment), while triggers are per-assignment — so
-  // when set_as_current, validate the new prompt against every sibling's
-  // final trigger set (the targeted row uses triggerWrite.triggers).
+  // Final-state instruction rule. The prompt version and the reaction script
+  // are both group-shared (cascade to every assignment), while triggers are
+  // per-assignment — so when set_as_current, validate the new prompt against
+  // every sibling's final trigger set (the targeted row uses
+  // triggerWrite.triggers). The reaction script is shared, so the same value
+  // satisfies (or fails) every sibling identically.
   const setAsCurrent = args.set_as_current !== false;
+  const reactionScript = automationRows[0].reaction_script as string | null;
   if (setAsCurrent) {
     for (const sibling of siblingRows) {
       const siblingTriggers =
         Number(sibling.id) === Number(args.automation_id)
           ? triggerWrite.triggers
           : ((sibling.triggers ?? []) as typeof triggerWrite.triggers);
-      assertAutomationInstructions(siblingTriggers, prompt, skills);
+      assertAutomationInstructions(siblingTriggers, prompt, skills, reactionScript);
       assertAutomationOutputsUseWindowExecution(siblingTriggers, outputs);
     }
   } else {
     // Draft version only — triggers on the live row do not change.
-    assertAutomationInstructions(previousTriggers, prompt, skills);
+    assertAutomationInstructions(previousTriggers, prompt, skills, reactionScript);
     assertAutomationOutputsUseWindowExecution(previousTriggers, outputs);
   }
   // Both branches above write the SAME resolved prompt+skills pair, so the

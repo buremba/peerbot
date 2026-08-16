@@ -282,23 +282,30 @@ export function assertAutomationOutputsUseWindowExecution(
  * values (inherited prompt/skills when omitted, resolved triggers after
  * write-merge).
  *
- * Either source satisfies the requirement on its own. They are no longer the
- * same field: skills used to be concatenated into `prompt` at save time, so one
- * check covered both, but pinned skills now remain separate from the stored
- * prompt. Requiring both would be stricter than the prior contract —
- * an Automation whose whole job is "run this skill" has nothing to put in a task
- * statement, and one that spells its task out inline needs no skill.
+ * Any one of the three sources satisfies the requirement on its own. Skills
+ * used to be concatenated into `prompt` at save time, so one check covered
+ * both, but pinned skills now remain separate from the stored prompt. A
+ * reaction script is the third independent source: it defines the window's
+ * extraction contract via its exported `input` schema (or falls back to
+ * free-form), and the worker runs the built-in default instruction when no
+ * prompt exists — so a reaction-only Automation is runnable exactly like a
+ * prompt-only one. Requiring any two would be stricter than the contract —
+ * an Automation whose whole job is "run this skill" has nothing to put in a
+ * task statement, one that spells its task out inline needs no skill, and one
+ * that runs entirely as code needs neither.
  */
 export function assertAutomationInstructions(
 	triggers: AutomationTrigger[],
 	instructions: string | null | undefined,
-	skills?: ReadonlyArray<{ name: string; content: string }> | null
+	skills?: ReadonlyArray<{ name: string; content: string }> | null,
+	reactionScript?: string | null
 ): void {
 	if (!automationRequiresInstructions(triggers)) return;
 	if (instructions?.trim()) return;
 	if (skills?.some((skill) => skill.content.trim())) return;
+	if (reactionScript?.trim()) return;
 	throw new ToolUserError(
-		"This Automation runs from a schedule, an analysis window, or manual runs, so it needs instructions: attach at least one skill or provide instruction text. Only event triggers with execution 'turn' may omit both."
+		"This Automation runs from a schedule, an analysis window, or manual runs, so it needs instructions: attach at least one skill, provide instruction text, or set a reaction script. Only event triggers with execution 'turn' may omit all three."
 	);
 }
 

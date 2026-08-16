@@ -543,7 +543,7 @@ export default async (_ctx, client) => {
 	},
 	"automations.create": {
 		summary:
-			"Create an Automation. Requires slug and agent_id; window/manual Automations also need prompt or skills. Declare named outputs as `{ entity, key, name? }` or `{ event }`, or omit outputs for a Canvas/reaction-only Automation. Event output rows are standard drafts with required content and optional title, metadata, author, source_url, occurred_at, parent_event_id, payload_type, and idempotency_key. Outputs require window execution. Each sources[] entry requires `name` and a read-only SELECT/WITH `query` projecting an `id` column; optional `context: true` marks the source as context-only. entity_id is optional for an org-scoped Automation.",
+			"Create an Automation. Requires slug and agent_id; window/manual Automations also need prompt, skills, or a reaction script. Declare named outputs as `{ entity, key, name? }` or `{ event }`, or omit outputs for a Canvas/reaction-only Automation. Event output rows are standard drafts with required content and optional title, metadata, author, source_url, occurred_at, parent_event_id, payload_type, and idempotency_key. Outputs require window execution. Each sources[] entry requires `name` and a read-only SELECT/WITH `query` projecting an `id` column; optional `context: true` marks the source as context-only. entity_id is optional for an org-scoped Automation.",
 		access: "admin",
 		throws: ["EntityNotFound"],
 		example:

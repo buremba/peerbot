@@ -82,4 +82,38 @@ describe("assertAutomationInstructions", () => {
 		).not.toThrow();
 		expect(() => assertAutomationInstructions([], "Manual runbook.")).not.toThrow();
 	});
+
+	test("accepts a reaction script as the sole instruction source", () => {
+		const script =
+			"export default async (ctx, client) => { await client.automations.completeWindow({}); };";
+		for (const triggers of [
+			[schedule],
+			[eventWindow],
+			[workspaceEventDefault],
+			[] as AutomationTrigger[],
+		]) {
+			expect(() =>
+				assertAutomationInstructions(triggers, undefined, null, script)
+			).not.toThrow();
+		}
+	});
+
+	test("rejects a whitespace-only reaction script", () => {
+		expect(() =>
+			assertAutomationInstructions([schedule], undefined, null, "   ")
+		).toThrow(/needs instructions/);
+	});
+
+	test("still rejects the empty schedule/window/manual shape with a reaction absent", () => {
+		for (const triggers of [
+			[schedule],
+			[eventWindow],
+			[workspaceEventDefault],
+			[] as AutomationTrigger[],
+		]) {
+			expect(() =>
+				assertAutomationInstructions(triggers, undefined, null, null)
+			).toThrow(/needs instructions/);
+		}
+	});
 });

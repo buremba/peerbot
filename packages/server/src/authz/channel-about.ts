@@ -17,13 +17,15 @@ import {
 } from "../db/client.js";
 import { resolveEventAttributionsForItems } from "../utils/entity-link-upsert.js";
 import { ensureResourceEntityType } from "./access-graph.js";
+import {
+	EDGE_SOURCE_CONFIG,
+	EDGE_SOURCE_MANUAL,
+} from "../utils/relationship-validation";
 import { aclSourceFor, channelReadIdentityFor } from "./sources.js";
 
 const logger = createLogger("channel-about");
 
 export const ABOUT_RELATIONSHIP_SLUG = "about";
-export const ABOUT_EDGE_SOURCE_CONFIG = "config";
-export const ABOUT_EDGE_SOURCE_MANUAL = "manual";
 
 export interface ChannelAboutTarget {
 	/** Bare or platform-prefixed channel id as stored on the binding. */
@@ -287,7 +289,8 @@ async function upsertAboutEdge(opts: {
 
 /**
  * Upsert config-sourced `about` edges for one connection and reconcile away
- * stale config edges (manual edges are never touched).
+ * stale config edges. A desired pair takes ownership of any existing live edge
+ * for the same relationship triple.
  */
 export async function syncConnectionChannelAboutEdges(opts: {
 	organizationId: string;
@@ -341,7 +344,7 @@ export async function syncConnectionChannelAboutEdges(opts: {
 				organizationId: opts.organizationId,
 				fromChannelEntityId: channelEntityId,
 				toBusinessEntityId: businessEntityId,
-				source: ABOUT_EDGE_SOURCE_CONFIG,
+				source: EDGE_SOURCE_CONFIG,
 				metadata,
 				userId: opts.userId,
 				typeId,
@@ -360,7 +363,7 @@ export async function syncConnectionChannelAboutEdges(opts: {
     FROM entity_relationships r
     WHERE r.organization_id = ${opts.organizationId}
       AND r.relationship_type_id = ${typeId}
-      AND r.source = ${ABOUT_EDGE_SOURCE_CONFIG}
+      AND r.source = ${EDGE_SOURCE_CONFIG}
       AND r.deleted_at IS NULL
       AND r.metadata->>'connection_id' = ${connectionId}
   `;
@@ -380,7 +383,7 @@ export async function syncConnectionChannelAboutEdges(opts: {
 	return { linked, removed };
 }
 
-/** Replace manual `about` edges for one channel (UI picker). */
+/** Replace manual `about` edges for one channel, taking ownership of desired pairs. */
 export async function setManualChannelAboutEdges(opts: {
 	organizationId: string;
 	connectionId: string | number;
@@ -424,7 +427,7 @@ export async function setManualChannelAboutEdges(opts: {
     WHERE r.organization_id = ${opts.organizationId}
       AND r.from_entity_id = ${channelEntityId}
       AND r.relationship_type_id = ${typeId}
-      AND r.source = ${ABOUT_EDGE_SOURCE_MANUAL}
+      AND r.source = ${EDGE_SOURCE_MANUAL}
       AND r.deleted_at IS NULL
       AND r.metadata->>'connection_id' = ${connectionId}
   `;
@@ -447,7 +450,7 @@ export async function setManualChannelAboutEdges(opts: {
 			organizationId: opts.organizationId,
 			fromChannelEntityId: channelEntityId,
 			toBusinessEntityId: businessEntityId,
-			source: ABOUT_EDGE_SOURCE_MANUAL,
+			source: EDGE_SOURCE_MANUAL,
 			metadata,
 			userId: opts.userId,
 			typeId,

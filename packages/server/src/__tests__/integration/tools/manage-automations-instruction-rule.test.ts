@@ -7,9 +7,9 @@
  * An event trigger with execution "turn" carries its own content and may omit
  * all three.
  *
- * create_version and set_reaction_script enforce the same rule when they write
- * instruction text: a version bump is validated against the group's reaction,
- * and clearing a reaction that was the sole instruction source is rejected.
+ * create_version and set_reaction_script enforce the same rule when they mutate
+ * instruction sources: a version bump is validated against the group's
+ * reaction, and clearing a sole-source reaction is rejected.
  */
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Env } from "../../../index";
@@ -264,6 +264,83 @@ export default async function reaction(ctx, client) {
 			ownerCtx
 		)) as { version?: number };
 		expect(versioned.version).toBeGreaterThan(1);
+	});
+
+	it("update accepts a reaction-only Automation when its trigger becomes a schedule", async () => {
+		const created = (await executeTool(
+			"manage_automations",
+			{
+				action: "create",
+				slug: "ir-reaction-updated",
+				agent_id: agentId,
+				reaction_script: REACTION_SCRIPT,
+				triggers: [TURN_TRIGGER],
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { automation_id?: string };
+
+		await expect(
+			executeTool(
+				"manage_automations",
+				{
+					action: "update",
+					automation_id: created.automation_id!,
+					triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
+				},
+				TEST_ENV,
+				ownerCtx
+			)
+		).resolves.toBeTruthy();
+	});
+
+	it("create_from_version preserves a reaction-only schedule Automation", async () => {
+		const rootEntity = await createTestEntity({
+			name: "IR Reaction Root",
+			organization_id: orgId,
+			created_by: ownerCtx.userId!,
+		});
+		const siblingEntity = await createTestEntity({
+			name: "IR Reaction Sibling",
+			organization_id: orgId,
+			created_by: ownerCtx.userId!,
+		});
+		const created = (await executeTool(
+			"manage_automations",
+			{
+				action: "create",
+				slug: "ir-reaction-cloned",
+				agent_id: agentId,
+				entity_id: rootEntity.id,
+				reaction_script: REACTION_SCRIPT,
+				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { automation_id?: string };
+
+		const sql = getTestDb();
+		const [root] = await sql`
+			SELECT current_version_id FROM automations
+			WHERE id = ${Number(created.automation_id)}
+		`;
+		const cloned = (await executeTool(
+			"manage_automations",
+			{
+				action: "create_from_version",
+				version_id: String(root.current_version_id),
+				entity_ids: [siblingEntity.id],
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { created?: Array<{ automation_id: string }> };
+
+		expect(cloned.created?.[0]?.automation_id).toBeTruthy();
+		const siblingId = Number(cloned.created?.[0]?.automation_id);
+		const [sibling] = await sql`
+			SELECT reaction_script FROM automations WHERE id = ${siblingId}
+		`;
+		expect(sibling.reaction_script).toContain("resolve_duplicates");
 	});
 
 	it("rejects clearing the reaction script that was the sole instruction source", async () => {

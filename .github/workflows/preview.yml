@@ -62,7 +62,7 @@ jobs:
             --port=8787
 
           kubectl -n "$PREVIEW_NS" patch deployment "$PREVIEW_NAME" --type='json' -p='[
-            {"op": "replace", "path": "/spec/template/spec/containers/0/command", "value": ["node", "packages/server/dist/index.js"]},
+            {"op": "replace", "path": "/spec/template/spec/containers/0/command", "value": ["node", "packages/server/dist/server.bundle.mjs"]},
             {"op": "add", "path": "/spec/template/spec/containers/0/env", "value": [
               {"name": "PORT", "value": "8787"},
               {"name": "DATABASE_URL", "value": "file:///var/lib/lobu/data/lobu.db"},

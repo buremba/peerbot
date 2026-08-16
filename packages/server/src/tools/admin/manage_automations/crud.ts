@@ -948,7 +948,7 @@ export async function handleCreateFromVersion(
         // cloneTriggers is computed once above (it does not depend on entity).
         // After stripping, the residual trigger shape must still satisfy the
         // instruction rule (chat-link-only sources become manual/empty triggers
-        // and require a non-empty prompt).
+        // and require a non-empty prompt, a pinned skill, or a reaction script).
         // The clone SHARES the source's automation_versions row, so its pinned
         // skills come along with it — they satisfy the rule here exactly as they
         // will at dispatch.

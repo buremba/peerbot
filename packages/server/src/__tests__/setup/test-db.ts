@@ -407,15 +407,54 @@ export async function cleanupTestDatabase(): Promise<void> {
 const TRUNCATE_DEADLOCK_RETRIES = 8;
 
 /**
+ * Ceiling on each cleanup TRUNCATE lock wait (#2818). Deadlock detection does
+ * not help when another session holds a conflicting lock without forming a
+ * cycle. The 8s timeout is far above the measured whole-database truncate cost
+ * (~150ms for 76 tables in `run-gateway-test-lanes.mjs`) and within the 30s
+ * per-test timeout.
+ */
+const TRUNCATE_LOCK_TIMEOUT_MS = 8_000;
+
+/**
+ * Best-effort non-idle session snapshot for an exhausted lock timeout. The
+ * original wait has ended by the time this runs, so the rows are diagnostic
+ * context rather than a guaranteed list of blockers.
+ */
+async function describeNonIdleDbSessions(db: postgres.Sql): Promise<string> {
+  try {
+    const rows = await db.unsafe(`
+      SELECT pid, state, wait_event_type, wait_event,
+             left(regexp_replace(query, '\\s+', ' ', 'g'), 200) AS query
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND pid <> pg_backend_pid()
+        AND state IS DISTINCT FROM 'idle'
+      ORDER BY xact_start NULLS LAST
+      LIMIT 10
+    `);
+    if (rows.length === 0) return 'no non-idle sessions visible in pg_stat_activity';
+    return rows
+      .map(
+        (r) =>
+          `pid=${r.pid} state=${r.state} wait=${r.wait_event_type ?? '-'}/${r.wait_event ?? '-'} query=${r.query}`
+      )
+      .join('\n  ');
+  } catch (err) {
+    return `could not read pg_stat_activity: ${(err as Error)?.message ?? err}`;
+  }
+}
+
+/**
  * Run the (whole-database) cleanup `TRUNCATE … CASCADE`, retrying on deadlock.
  *
  * These bun:test suites co-run many files in ONE process against a SHARED
  * database, and several of them start background DB pollers that are never
- * stopped — e.g. `ChatInstanceManager.initialize()`'s 15s exclusive-lease tick,
- * the task-scheduler, and the stale-run reaper. Those timers keep firing
- * `INSERT`/`UPDATE` statements on the app connection pool AFTER the test that
- * created them has finished, overlapping the NEXT test's `beforeEach`
- * `cleanupTestDatabase()`.
+ * stopped — e.g. `ChatInstanceManager`'s 15s exclusive-lease tick
+ * (`EXCLUSIVE_TICK_MS`, `chat-instance-manager.ts:264`, driven by the
+ * `exclusiveTimer` interval at `:327`), the task-scheduler, and the stale-run
+ * reaper. Those timers keep firing `INSERT`/`UPDATE` statements on the app
+ * connection pool AFTER the test that created them has finished, overlapping
+ * the NEXT test's `beforeEach` `cleanupTestDatabase()`.
  *
  * That overlap is a textbook deadlock cycle:
  *   - `TRUNCATE … CASCADE` grabs `AccessExclusiveLock` on every table, one at a
@@ -433,10 +472,9 @@ const TRUNCATE_DEADLOCK_RETRIES = 8;
  * The conflicting background statement completes in milliseconds, so retrying
  * the begin/TRUNCATE after a short backoff is deterministic recovery (the lock
  * the INSERT held is gone by the next attempt) — NOT a probabilistic
- * odds-lowering hack, and NOT a re-broadening of the 42P01-only catch. We retry
- * ONLY on 40P01, tolerate ONLY 42P01 (a listed table vanished mid-truncate),
- * and re-throw every other error and the final deadlock so a genuinely stuck
- * cleanup still surfaces.
+ * odds-lowering hack. We also bound non-cyclic lock waits below, tolerate
+ * 42P01 when a listed table vanished mid-truncate, and re-throw every other
+ * error and the final deadlock so a genuinely stuck cleanup still surfaces.
  */
 export async function truncateAllTables(
   db: postgres.Sql,
@@ -445,24 +483,27 @@ export async function truncateAllTables(
 ): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     try {
-      if (canDisableTriggers) {
-        // Disable triggers for faster truncation, but ONLY via `SET LOCAL`
-        // inside a single transaction. `SET LOCAL` is scoped to the
-        // transaction and reverts on COMMIT, and the whole `db.begin` callback
-        // runs on ONE reserved connection — so the `replica` role can never
-        // leak back onto a pooled connection (the bug fixed in #1607).
-        //
-        // `session_replication_role` is superuser-only; on a non-superuser test
-        // role (the PG15+ fresh-`createdb` shape from #950) we skip the disable
-        // entirely. `TRUNCATE … CASCADE` respects FK ordering on its own, so
-        // this only forgoes the speedup, never correctness.
-        await db.begin(async (tx) => {
+      // Both branches run inside `db.begin` so `SET LOCAL lock_timeout` applies
+      // to the TRUNCATE and reverts on COMMIT without touching the pooled
+      // connection's session state. TRUNCATE is transactional in Postgres, so
+      // wrapping the non-trigger branch changes nothing about its effect.
+      await db.begin(async (tx) => {
+        await tx.unsafe(`SET LOCAL lock_timeout = ${TRUNCATE_LOCK_TIMEOUT_MS}`);
+        if (canDisableTriggers) {
+          // Disable triggers for faster truncation, but ONLY via `SET LOCAL`.
+          // `SET LOCAL` is scoped to the transaction and reverts on COMMIT, and
+          // the whole `db.begin` callback runs on ONE reserved connection — so
+          // the `replica` role can never leak back onto a pooled connection
+          // (the bug fixed in #1607).
+          //
+          // `session_replication_role` is superuser-only; on a non-superuser
+          // test role (the PG15+ fresh-`createdb` shape from #950) we skip the
+          // disable entirely. `TRUNCATE … CASCADE` respects FK ordering on its
+          // own, so this only forgoes the speedup, never correctness.
           await tx.unsafe(`SET LOCAL session_replication_role = 'replica'`);
-          await tx.unsafe(`TRUNCATE ${quotedTables} CASCADE`);
-        });
-      } else {
-        await db.unsafe(`TRUNCATE ${quotedTables} CASCADE`);
-      }
+        }
+        await tx.unsafe(`TRUNCATE ${quotedTables} CASCADE`);
+      });
       return;
     } catch (err) {
       const code = (err as { code?: string } | null)?.code;
@@ -475,10 +516,23 @@ export async function truncateAllTables(
         await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
         continue;
       }
+      // 55P03 (lock_not_available): our `lock_timeout` fired because another
+      // session holds a conflicting lock without forming a deadlock cycle.
+      // Fail with enough session context to diagnose the holder (#2818).
+      if (code === '55P03') {
+        const activity = await describeNonIdleDbSessions(db);
+        throw Object.assign(
+          new Error(
+            `cleanup TRUNCATE waited ${TRUNCATE_LOCK_TIMEOUT_MS}ms for a conflicting lock. ` +
+              `Non-idle database sessions:\n  ${activity}`
+          ),
+          { code, cause: err }
+        );
+      }
       // Anything else — a permission error, a failed `SET LOCAL`, a transaction
-      // abort, a lock timeout — or a deadlock that survived every retry is a
-      // real cleanup failure that would leave the DB dirty for the next test,
-      // so re-throw rather than silently swallow.
+      // abort — or a deadlock that survived every retry is a real cleanup
+      // failure that would leave the DB dirty for the next test, so re-throw
+      // rather than silently swallow.
       throw err;
     }
   }

@@ -385,13 +385,16 @@ export interface InsertedEntityRow {
 	created_at: Date;
 }
 
-/** Insert one physical entity row using exactly the caller's DB handle. */
-export async function insertEntityRow(params: {
-	tx: DbClient;
-	row: EntityRowInsert;
-}): Promise<InsertedEntityRow> {
+async function insertEntityRowWithConflictMode(
+	params: {
+		tx: DbClient;
+		row: EntityRowInsert;
+	},
+	onConflictDoNothing: boolean,
+): Promise<InsertedEntityRow | null> {
 	const { tx, row } = params;
 	const embeddingLiteral = toVectorLiteral(row.embedding);
+	const conflictClause = onConflictDoNothing ? tx`ON CONFLICT DO NOTHING` : tx``;
 	const rows = await tx<InsertedEntityRow>`
     INSERT INTO entities (
       organization_id, entity_type_id, name, slug, parent_id, metadata,
@@ -404,10 +407,32 @@ export async function insertEntityRow(params: {
       ${row.createdBy}, ${row.content ?? null}, ${embeddingLiteral}::vector,
       ${row.contentHash ?? null}, current_timestamp, current_timestamp
     )
+    ${conflictClause}
     RETURNING id, name, slug, parent_id, metadata, created_at
   `;
-	if (rows.length === 0) throw new Error("Failed to create entity");
-	return rows[0];
+	return rows[0] ?? null;
+}
+
+/** Insert one physical entity row using exactly the caller's DB handle. */
+export async function insertEntityRow(params: {
+	tx: DbClient;
+	row: EntityRowInsert;
+}): Promise<InsertedEntityRow> {
+	const inserted = await insertEntityRowWithConflictMode(params, false);
+	if (!inserted) throw new Error("Failed to create entity");
+	return inserted;
+}
+
+/**
+ * Try one physical entity insert and return null on any uniqueness conflict.
+ * This deliberately mirrors PostgreSQL's untargeted `ON CONFLICT DO NOTHING`;
+ * callers own the domain-specific lookup that resolves the winning row.
+ */
+export function tryInsertEntityRow(params: {
+	tx: DbClient;
+	row: EntityRowInsert;
+}): Promise<InsertedEntityRow | null> {
+	return insertEntityRowWithConflictMode(params, true);
 }
 
 /**

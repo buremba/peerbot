@@ -83,22 +83,6 @@ const ALLOWED_BYPASSES = [
     reason: "suite-trials projection",
   },
 
-  // Canvas materialization and provisional cleanup.
-  {
-    file: "packages/server/src/utils/canvas-events.ts",
-    operation: "insert",
-    dynamic: false,
-    fingerprint: "06945480446c8db9",
-    reason: "canvas entity materialization",
-  },
-  {
-    file: "packages/server/src/utils/canvas-events.ts",
-    operation: "delete",
-    dynamic: false,
-    fingerprint: "e2d8719a612a3712",
-    reason: "provisional canvas cleanup",
-  },
-
   // Connector identity attribution and provisional cleanup.
   {
     file: "packages/server/src/utils/entity-link-upsert.ts",

@@ -8,6 +8,7 @@ import {
   defineAutomation,
   every,
   secret,
+  field,
 } from "@lobu/cli/config";
 import type LinearCyclesConnector from "./linear-cycles.connector.ts";
 
@@ -48,26 +49,10 @@ const decision = defineEntityType({
   description:
     "A leadership decision extracted from a document with its approval status",
   properties: {
-    subject: {
-      type: "string",
-      "x-table-label": "Subject",
-      "x-table-column": true,
-    },
-    status: {
-      type: "string",
-      "x-table-label": "Status",
-      "x-table-column": true,
-    },
-    source_document: {
-      type: "string",
-      "x-table-label": "Source",
-      "x-table-column": true,
-    },
-    decision_date: {
-      type: "string",
-      "x-table-label": "Date",
-      "x-table-column": true,
-    },
+    subject: field("Subject", { optional: true }),
+    status: field("Status", { optional: true }),
+    source_document: field("Source", { optional: true }),
+    decision_date: field("Date", { optional: true }),
   },
 });
 
@@ -77,22 +62,10 @@ const document = defineEntityType({
   description:
     "A source document such as a board memo, strategy brief, or executive report",
   properties: {
-    document_name: {
-      type: "string",
-      "x-table-label": "Document",
-      "x-table-column": true,
-    },
-    document_type: {
-      type: "string",
-      "x-table-label": "Type",
-      "x-table-column": true,
-    },
-    date: { type: "string", "x-table-label": "Date", "x-table-column": true },
-    decisions_count: {
-      type: "string",
-      "x-table-label": "Decisions",
-      "x-table-column": true,
-    },
+    document_name: field("Document", { optional: true }),
+    document_type: field("Type", { optional: true }),
+    date: field("Date", { optional: true }),
+    decisions_count: field("Decisions", { optional: true }),
   },
 });
 
@@ -102,22 +75,10 @@ const region = defineEntityType({
   description:
     "A geographic region referenced in strategic decisions or expansion plans",
   properties: {
-    region_name: {
-      type: "string",
-      "x-table-label": "Region",
-      "x-table-column": true,
-    },
-    decision_context: {
-      type: "string",
-      "x-table-label": "Context",
-      "x-table-column": true,
-    },
-    status: {
-      type: "string",
-      "x-table-label": "Status",
-      "x-table-column": true,
-    },
-    budget_approved: { type: "string", "x-table-label": "Budget" },
+    region_name: field("Region", { optional: true }),
+    decision_context: field("Context", { optional: true }),
+    status: field("Status", { optional: true }),
+    budget_approved: field("Budget", { column: false, optional: true }),
   },
 });
 
@@ -127,18 +88,10 @@ const risk = defineEntityType({
   description:
     "A blocker or dependency that is holding up a decision or initiative",
   properties: {
-    blocker: {
-      type: "string",
-      "x-table-label": "Blocker",
-      "x-table-column": true,
-    },
-    affects: {
-      type: "string",
-      "x-table-label": "Affects",
-      "x-table-column": true,
-    },
-    state: { type: "string", "x-table-label": "State", "x-table-column": true },
-    owner: { type: "string", "x-table-label": "Owner", "x-table-column": true },
+    blocker: field("Blocker", { optional: true }),
+    affects: field("Affects", { optional: true }),
+    state: field("State", { optional: true }),
+    owner: field("Owner", { optional: true }),
   },
 });
 
@@ -148,22 +101,10 @@ const task = defineEntityType({
   description:
     "An assigned follow-up action extracted from a leadership document or meeting",
   properties: {
-    action: {
-      type: "string",
-      "x-table-label": "Action",
-      "x-table-column": true,
-    },
-    owner: { type: "string", "x-table-label": "Owner", "x-table-column": true },
-    deadline: {
-      type: "string",
-      "x-table-label": "Deadline",
-      "x-table-column": true,
-    },
-    source: {
-      type: "string",
-      "x-table-label": "Source",
-      "x-table-column": true,
-    },
+    action: field("Action", { optional: true }),
+    owner: field("Owner", { optional: true }),
+    deadline: field("Deadline", { optional: true }),
+    source: field("Source", { optional: true }),
   },
 });
 

@@ -11,6 +11,8 @@ import {
   reactionFromFile,
   secret,
   skillFromFile,
+  field,
+  Type,
 } from "@lobu/cli/config";
 import type DeliverooConnector from "./deliveroo.connector.ts";
 import type lunchDeliverooReaction from "./lunch-deliveroo.reaction.ts";
@@ -70,62 +72,48 @@ const lunchRun = defineEntityType({
   name: "Lunch run",
   description:
     "One day's office lunch order — who's in, what they ordered, the restaurant, the basket link, and where it ended up",
-  required: ["date", "channel", "status"],
   properties: {
-    date: {
-      type: "string",
+    date: field("Date", {
       description: "ISO date of the run (one run per day)",
-      "x-table-label": "Date",
-      "x-table-column": true,
-    },
-    channel: {
-      type: "string",
+    }),
+    channel: field("Channel", {
       description: "The chat channel/conversation the run happened in",
-      "x-table-label": "Channel",
-    },
-    status: {
-      type: "string",
-      enum: ["collecting", "done", "cancelled"],
-      "x-table-label": "Status",
-      "x-table-column": true,
-    },
-    restaurant: {
-      type: "string",
-      "x-table-label": "Restaurant",
-      "x-table-column": true,
-    },
-    thread_ref: {
-      type: "string",
-      // Adopted verbatim from the live lobu-team schema so `lobu apply`
-      // converges instead of blocking on undeclared drift — "lunch-finalize"
-      // is the remote wording, not a typo for the Automation slug.
-      description:
-        "Reference to the thread/message where the run is happening — lunch-finalize uses this to find the conversation",
-    },
-    items: {
-      type: "array",
-      description: "Per-person order lines",
-      items: {
-        type: "object",
-        properties: {
-          person: { type: "string" },
-          item: { type: "string" },
-          price: { type: "number" },
-          notes: { type: "string" },
+      column: false,
+    }),
+    status: field("Status", { enum: ["collecting", "done", "cancelled"] }),
+    restaurant: field("Restaurant", { optional: true }),
+    thread_ref: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+
+        description:
+          "Reference to the thread/message where the run is happening — lunch-finalize uses this to find the conversation",
+      })
+    ),
+    items: Type.Optional(
+      Type.Unsafe({
+        type: "array",
+        description: "Per-person order lines",
+        items: {
+          type: "object",
+          properties: {
+            person: { type: "string" },
+            item: { type: "string" },
+            price: { type: "number" },
+            notes: { type: "string" },
+          },
         },
-      },
-    },
-    subtotal: {
-      type: "number",
-      "x-table-label": "Subtotal",
-      "x-table-column": true,
-    },
-    basket_url: {
-      type: "string",
-      description:
-        "Deliveroo group-order / basket link handed to a human, or null if placed manually",
-    },
-    notes: { type: "string" },
+      })
+    ),
+    subtotal: Type.Optional(field(Type.Number(), "Subtotal")),
+    basket_url: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          "Deliveroo group-order / basket link handed to a human, or null if placed manually",
+      })
+    ),
+    notes: Type.Optional(Type.Unsafe({ type: "string" })),
   },
 });
 

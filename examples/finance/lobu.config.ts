@@ -8,6 +8,7 @@ import {
   defineAutomation,
   every,
   secret,
+  field,
 } from "@lobu/cli/config";
 import type QuickBooksTransactionsConnector from "./quickbooks-transactions.connector.ts";
 
@@ -48,26 +49,10 @@ const account = defineEntityType({
   description:
     "A financial account that holds balances, transactions, and reconciliation state",
   properties: {
-    account_name: {
-      type: "string",
-      "x-table-label": "Account",
-      "x-table-column": true,
-    },
-    account_type: {
-      type: "string",
-      "x-table-label": "Type",
-      "x-table-column": true,
-    },
-    balance: {
-      type: "string",
-      "x-table-label": "Balance",
-      "x-table-column": true,
-    },
-    reconciliation_status: {
-      type: "string",
-      "x-table-label": "Reconciliation",
-      "x-table-column": true,
-    },
+    account_name: field("Account", { optional: true }),
+    account_type: field("Type", { optional: true }),
+    balance: field("Balance", { optional: true }),
+    reconciliation_status: field("Reconciliation", { optional: true }),
   },
 });
 
@@ -77,26 +62,10 @@ const report = defineEntityType({
   description:
     "A financial report or summary generated from account and transaction data",
   properties: {
-    report_name: {
-      type: "string",
-      "x-table-label": "Report",
-      "x-table-column": true,
-    },
-    period: {
-      type: "string",
-      "x-table-label": "Period",
-      "x-table-column": true,
-    },
-    status: {
-      type: "string",
-      "x-table-label": "Status",
-      "x-table-column": true,
-    },
-    exceptions_count: {
-      type: "string",
-      "x-table-label": "Exceptions",
-      "x-table-column": true,
-    },
+    report_name: field("Report", { optional: true }),
+    period: field("Period", { optional: true }),
+    status: field("Status", { optional: true }),
+    exceptions_count: field("Exceptions", { optional: true }),
   },
 });
 
@@ -105,22 +74,10 @@ const transaction = defineEntityType({
   name: "Transaction",
   description: "A financial transaction that affects account balances",
   properties: {
-    description: {
-      type: "string",
-      "x-table-label": "Description",
-      "x-table-column": true,
-    },
-    amount: {
-      type: "string",
-      "x-table-label": "Amount",
-      "x-table-column": true,
-    },
-    date: { type: "string", "x-table-label": "Date", "x-table-column": true },
-    category: {
-      type: "string",
-      "x-table-label": "Category",
-      "x-table-column": true,
-    },
+    description: field("Description", { optional: true }),
+    amount: field("Amount", { optional: true }),
+    date: field("Date", { optional: true }),
+    category: field("Category", { optional: true }),
   },
 });
 
@@ -130,26 +87,10 @@ const variance = defineEntityType({
   description:
     "A discrepancy or anomaly identified during reconciliation or reporting",
   properties: {
-    variance_type: {
-      type: "string",
-      "x-table-label": "Type",
-      "x-table-column": true,
-    },
-    amount: {
-      type: "string",
-      "x-table-label": "Amount",
-      "x-table-column": true,
-    },
-    source_account: {
-      type: "string",
-      "x-table-label": "Account",
-      "x-table-column": true,
-    },
-    explanation: {
-      type: "string",
-      "x-table-label": "Explanation",
-      "x-table-column": true,
-    },
+    variance_type: field("Type", { optional: true }),
+    amount: field("Amount", { optional: true }),
+    source_account: field("Account", { optional: true }),
+    explanation: field("Explanation", { optional: true }),
   },
 });
 

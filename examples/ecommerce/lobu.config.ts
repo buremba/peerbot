@@ -8,6 +8,7 @@ import {
   defineAutomation,
   every,
   secret,
+  field,
 } from "@lobu/cli/config";
 import type StripeChargesConnector from "./stripe-charges.connector.ts";
 
@@ -48,22 +49,10 @@ const customer = defineEntityType({
   description:
     "A customer with subscriptions, orders, and communication preferences",
   properties: {
-    full_name: {
-      type: "string",
-      "x-table-label": "Name",
-      "x-table-column": true,
-    },
-    status: {
-      type: "string",
-      "x-table-label": "Status",
-      "x-table-column": true,
-    },
-    plan: { type: "string", "x-table-label": "Plan", "x-table-column": true },
-    communication_preference: {
-      type: "string",
-      "x-table-label": "Preference",
-      "x-table-column": true,
-    },
+    full_name: field("Name", { optional: true }),
+    status: field("Status", { optional: true }),
+    plan: field("Plan", { optional: true }),
+    communication_preference: field("Preference", { optional: true }),
   },
 });
 
@@ -72,26 +61,10 @@ const order = defineEntityType({
   name: "Order",
   description: "A customer order with fulfillment status and delivery details",
   properties: {
-    order_number: {
-      type: "string",
-      "x-table-label": "Order",
-      "x-table-column": true,
-    },
-    product: {
-      type: "string",
-      "x-table-label": "Product",
-      "x-table-column": true,
-    },
-    fulfillment_status: {
-      type: "string",
-      "x-table-label": "Status",
-      "x-table-column": true,
-    },
-    customer: {
-      type: "string",
-      "x-table-label": "Customer",
-      "x-table-column": true,
-    },
+    order_number: field("Order", { optional: true }),
+    product: field("Product", { optional: true }),
+    fulfillment_status: field("Status", { optional: true }),
+    customer: field("Customer", { optional: true }),
   },
 });
 
@@ -100,22 +73,10 @@ const product = defineEntityType({
   name: "Product",
   description: "A product in the catalog linked to subscriptions and orders",
   properties: {
-    product_name: {
-      type: "string",
-      "x-table-label": "Product",
-      "x-table-column": true,
-    },
-    plan_tier: {
-      type: "string",
-      "x-table-label": "Tier",
-      "x-table-column": true,
-    },
-    delivery_frequency: {
-      type: "string",
-      "x-table-label": "Delivery",
-      "x-table-column": true,
-    },
-    price: { type: "string", "x-table-label": "Price", "x-table-column": true },
+    product_name: field("Product", { optional: true }),
+    plan_tier: field("Tier", { optional: true }),
+    delivery_frequency: field("Delivery", { optional: true }),
+    price: field("Price", { optional: true }),
   },
 });
 
@@ -125,26 +86,10 @@ const subscription = defineEntityType({
   description:
     "A recurring subscription plan with billing cycle and pending changes",
   properties: {
-    plan_name: {
-      type: "string",
-      "x-table-label": "Plan",
-      "x-table-column": true,
-    },
-    frequency: {
-      type: "string",
-      "x-table-label": "Frequency",
-      "x-table-column": true,
-    },
-    status: {
-      type: "string",
-      "x-table-label": "Status",
-      "x-table-column": true,
-    },
-    pending_changes: {
-      type: "string",
-      "x-table-label": "Pending",
-      "x-table-column": true,
-    },
+    plan_name: field("Plan", { optional: true }),
+    frequency: field("Frequency", { optional: true }),
+    status: field("Status", { optional: true }),
+    pending_changes: field("Pending", { optional: true }),
   },
 });
 

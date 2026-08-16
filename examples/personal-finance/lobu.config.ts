@@ -7,6 +7,8 @@ import {
   defineAutomation,
   every,
   secret,
+  field,
+  Type,
 } from "@lobu/cli/config";
 
 const gmailTxSkill = defineSkill({
@@ -47,16 +49,11 @@ const account = defineEntityType({
   name: "Account",
   description:
     "A bank, savings, brokerage, pension, mortgage, or business account. Owner is always set via the owned_by relationship (or co_owned_by for joint accounts) — never inferred from context.",
-  required: ["provider", "wrapper"],
   properties: {
-    provider: {
-      type: "string",
+    provider: field("Provider", {
       description: 'Bank or broker name (e.g. "Monzo", "Hargreaves Lansdown")',
-      "x-table-label": "Provider",
-      "x-table-column": true,
-    },
-    wrapper: {
-      type: "string",
+    }),
+    wrapper: field("Wrapper", {
       enum: [
         "current",
         "savings",
@@ -75,32 +72,34 @@ const account = defineEntityType({
       ],
       description:
         "Account class. Drives tax treatment (ISA = no SA reporting, GIA = CGT applies, etc.).",
-      "x-table-label": "Wrapper",
-      "x-table-column": true,
-    },
-    currency: {
-      type: "string",
+    }),
+    currency: field("Ccy", {
       description: "ISO 4217 currency code",
       default: "GBP",
-      "x-table-label": "Ccy",
-      "x-table-column": true,
-    },
-    account_number_last4: {
-      type: "string",
-      description: "Last 4 digits, for matching against statements",
-    },
-    sort_code: { type: "string" },
-    iban: {
-      type: "string",
-      description:
-        "For non-UK accounts; preferred over sort_code+account_number when known",
-    },
-    opening_balance: {
-      type: "string",
-      description: 'Decimal string, e.g. "1234.56"',
-    },
-    closing_balance: { type: "string" },
-    notes: { type: "string" },
+      optional: true,
+    }),
+    account_number_last4: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description: "Last 4 digits, for matching against statements",
+      })
+    ),
+    sort_code: Type.Optional(Type.Unsafe({ type: "string" })),
+    iban: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          "For non-UK accounts; preferred over sort_code+account_number when known",
+      })
+    ),
+    opening_balance: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description: 'Decimal string, e.g. "1234.56"',
+      })
+    ),
+    closing_balance: Type.Optional(Type.Unsafe({ type: "string" })),
+    notes: Type.Optional(Type.Unsafe({ type: "string" })),
   },
 });
 
@@ -109,10 +108,8 @@ const allowance_window = defineEntityType({
   name: "Allowance Window",
   description:
     'A materialized accumulator for one tax allowance over one tax year. Lets the agent answer "how much ISA budget left this year?" or "how much pension annual allowance can I still use?" instantly without recomputing across all underlying transactions/contributions every time.',
-  required: ["kind", "cap", "used"],
   properties: {
-    kind: {
-      type: "string",
+    kind: field("Allowance", {
       enum: [
         "isa_subscription",
         "dividend_allowance",
@@ -124,46 +121,42 @@ const allowance_window = defineEntityType({
         "personal_allowance",
       ],
       description: "Which HMRC-defined allowance this window tracks",
-      "x-table-label": "Allowance",
-      "x-table-column": true,
-    },
-    cap: {
-      type: "string",
+    }),
+    cap: field("Cap", {
       description:
         'Decimal GBP. The statutory limit for this allowance in this year (e.g. "20000" for ISA, "60000" for pension AA).',
-      "x-table-label": "Cap",
-      "x-table-column": true,
-    },
-    used: {
-      type: "string",
+    }),
+    used: field("Used", {
       description:
         "Decimal GBP consumed so far. Updated on every relevant transaction/contribution write.",
-      "x-table-label": "Used",
-      "x-table-column": true,
-    },
-    remaining: {
-      type: "string",
+    }),
+    remaining: field("Remaining", {
       description:
         "Decimal GBP. cap minus used minus carry_forward used. May go negative if a tapered allowance applies (the agent surfaces this).",
-      "x-table-label": "Remaining",
-      "x-table-column": true,
-    },
-    carry_forward_in: {
-      type: "string",
-      description:
-        "For pension AA — unused allowance carried in from the prior 3 years.",
-    },
-    carry_forward_out: {
-      type: "string",
-      description:
-        "Unused this year, available to carry forward (subject to the allowance's rules).",
-    },
-    last_recomputed_at: {
-      type: "string",
-      format: "date-time",
-      description:
-        "When the agent last recomputed used/remaining from underlying entities.",
-    },
+      optional: true,
+    }),
+    carry_forward_in: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          "For pension AA — unused allowance carried in from the prior 3 years.",
+      })
+    ),
+    carry_forward_out: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          "Unused this year, available to carry forward (subject to the allowance's rules).",
+      })
+    ),
+    last_recomputed_at: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        format: "date-time",
+        description:
+          "When the agent last recomputed used/remaining from underlying entities.",
+      })
+    ),
   },
 });
 
@@ -172,35 +165,22 @@ const asset_lot = defineEntityType({
   name: "Asset Lot",
   description:
     "An acquisition lot used for s.104 share-pool / matching rules. One lot per buy event.",
-  required: ["acquisition_date", "quantity", "cost_basis"],
   properties: {
-    pool_id: {
-      type: "string",
+    pool_id: field("Pool", {
       description: "Identifier for the s.104 pool (typically the ticker/ISIN)",
-      "x-table-label": "Pool",
-      "x-table-column": true,
-    },
-    acquisition_date: {
-      type: "string",
-      format: "date",
-      "x-table-label": "Acquired",
-      "x-table-column": true,
-    },
-    quantity: {
-      type: "string",
-      "x-table-label": "Quantity",
-      "x-table-column": true,
-    },
-    cost_basis: {
-      type: "string",
+      optional: true,
+    }),
+    acquisition_date: field("Acquired", { format: "date" }),
+    quantity: field("Quantity"),
+    cost_basis: field("Cost", {
       description: "Total cost for this lot, decimal GBP",
-      "x-table-label": "Cost",
-      "x-table-column": true,
-    },
-    quantity_remaining: {
-      type: "string",
-      description: "After partial disposals",
-    },
+    }),
+    quantity_remaining: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description: "After partial disposals",
+      })
+    ),
   },
 });
 
@@ -209,20 +189,9 @@ const cgt_event = defineEntityType({
   name: "CGT Event",
   description:
     "A capital-gains disposal — sale, gift, or other event triggering CGT (SA108).",
-  required: [
-    "asset_description",
-    "asset_class",
-    "disposal_date",
-    "disposal_proceeds",
-  ],
   properties: {
-    asset_description: {
-      type: "string",
-      "x-table-label": "Asset",
-      "x-table-column": true,
-    },
-    asset_class: {
-      type: "string",
+    asset_description: field("Asset"),
+    asset_class: field("Class", {
       enum: [
         "listed_shares",
         "unlisted_shares",
@@ -231,32 +200,27 @@ const cgt_event = defineEntityType({
         "crypto",
         "other",
       ],
-      "x-table-label": "Class",
-      "x-table-column": true,
-    },
-    acquisition_date: { type: "string", format: "date" },
-    acquisition_cost: {
-      type: "string",
-      description: "Total acquisition cost, decimal string GBP",
-    },
-    disposal_date: {
-      type: "string",
-      format: "date",
-      "x-table-label": "Disposal",
-      "x-table-column": true,
-    },
-    disposal_proceeds: {
-      type: "string",
+    }),
+    acquisition_date: Type.Optional(
+      Type.Unsafe({ type: "string", format: "date" })
+    ),
+    acquisition_cost: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description: "Total acquisition cost, decimal string GBP",
+      })
+    ),
+    disposal_date: field("Disposal", { format: "date" }),
+    disposal_proceeds: field("Proceeds", {
       description: "Total proceeds, decimal string GBP",
-      "x-table-label": "Proceeds",
-      "x-table-column": true,
-    },
-    incidental_costs: {
-      type: "string",
-      description: "Legal, broker, SDLT on acquisition, enhancement",
-    },
-    relief_claimed: {
-      type: "string",
+    }),
+    incidental_costs: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description: "Legal, broker, SDLT on acquisition, enhancement",
+      })
+    ),
+    relief_claimed: field("Relief", {
       enum: [
         "none",
         "PRR",
@@ -267,14 +231,15 @@ const cgt_event = defineEntityType({
         "SEIS_deferral",
       ],
       default: "none",
-      "x-table-label": "Relief",
-      "x-table-column": true,
-    },
-    residential_60day_return_ref: {
-      type: "string",
-      description:
-        "HMRC reference if a 60-day residential CGT return was already filed",
-    },
+      optional: true,
+    }),
+    residential_60day_return_ref: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          "HMRC reference if a 60-day residential CGT return was already filed",
+      })
+    ),
   },
 });
 
@@ -283,15 +248,9 @@ const company = defineEntityType({
   name: "Company",
   description:
     "A legal entity that can hold accounts, file tax returns, employ people, or be owned. Covers Ltd, PLC, LLP, sole-trader, partnership, trust, and charity. Discriminate by company_type.",
-  required: ["legal_name", "company_type"],
   properties: {
-    legal_name: {
-      type: "string",
-      "x-table-label": "Name",
-      "x-table-column": true,
-    },
-    company_type: {
-      type: "string",
+    legal_name: field("Name"),
+    company_type: field("Type", {
       enum: [
         "ltd",
         "plc",
@@ -302,43 +261,51 @@ const company = defineEntityType({
         "charity",
         "foreign",
       ],
-      "x-table-label": "Type",
-      "x-table-column": true,
-    },
-    incorporation_date: { type: "string", format: "date" },
-    registered_address: { type: "string" },
-    accounting_period_start: {
-      type: "string",
-      format: "date",
-      description:
-        "Start of the company's accounting reference period (CT600 / SA800 anchor)",
-    },
-    accounting_period_end: { type: "string", format: "date" },
-    vat_registered: {
-      type: "boolean",
-      default: false,
-      "x-table-label": "VAT",
-      "x-table-column": true,
-    },
-    vat_scheme: {
-      type: "string",
-      enum: [
-        "standard",
-        "flat_rate",
-        "cash_accounting",
-        "annual_accounting",
-        "none",
-      ],
-      default: "none",
-    },
-    is_personal_service_company: {
-      type: "boolean",
-      default: false,
-      description: "Marks PSCs (relevant for IR35 / off-payroll-working rules)",
-    },
-    dormant_flag: { type: "boolean", default: false },
-    ceased_date: { type: "string", format: "date" },
-    notes: { type: "string" },
+    }),
+    incorporation_date: Type.Optional(
+      Type.Unsafe({ type: "string", format: "date" })
+    ),
+    registered_address: Type.Optional(Type.Unsafe({ type: "string" })),
+    accounting_period_start: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        format: "date",
+        description:
+          "Start of the company's accounting reference period (CT600 / SA800 anchor)",
+      })
+    ),
+    accounting_period_end: Type.Optional(
+      Type.Unsafe({ type: "string", format: "date" })
+    ),
+    vat_registered: Type.Optional(
+      field(Type.Boolean({ default: false }), "VAT")
+    ),
+    vat_scheme: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        enum: [
+          "standard",
+          "flat_rate",
+          "cash_accounting",
+          "annual_accounting",
+          "none",
+        ],
+        default: "none",
+      })
+    ),
+    is_personal_service_company: Type.Optional(
+      Type.Unsafe({
+        type: "boolean",
+        default: false,
+        description:
+          "Marks PSCs (relevant for IR35 / off-payroll-working rules)",
+      })
+    ),
+    dormant_flag: Type.Optional(
+      Type.Unsafe({ type: "boolean", default: false })
+    ),
+    ceased_date: Type.Optional(Type.Unsafe({ type: "string", format: "date" })),
+    notes: Type.Optional(Type.Unsafe({ type: "string" })),
   },
 });
 
@@ -347,39 +314,22 @@ const contribution = defineEntityType({
   name: "Contribution",
   description:
     "A pension or charitable contribution affecting tax (Gift Aid, SIPP, etc.).",
-  required: ["scheme", "mechanism", "amount", "date"],
   properties: {
-    scheme: {
-      type: "string",
-      description: "Provider/charity name",
-      "x-table-label": "Scheme",
-      "x-table-column": true,
-    },
-    mechanism: {
-      type: "string",
+    scheme: field("Scheme", { description: "Provider/charity name" }),
+    mechanism: field("Mechanism", {
       enum: ["relief_at_source", "net_pay", "salary_sacrifice", "gift_aid"],
       description:
         "Pension relief mechanism, or gift_aid for charitable donations",
-      "x-table-label": "Mechanism",
-      "x-table-column": true,
-    },
-    amount: {
-      type: "string",
-      description: "Net amount paid, decimal GBP",
-      "x-table-label": "Amount",
-      "x-table-column": true,
-    },
-    date: {
-      type: "string",
-      format: "date",
-      "x-table-label": "Date",
-      "x-table-column": true,
-    },
-    carry_back_to_prior_year: {
-      type: "boolean",
-      default: false,
-      description: "Gift Aid carry-back election",
-    },
+    }),
+    amount: field("Amount", { description: "Net amount paid, decimal GBP" }),
+    date: field("Date", { format: "date" }),
+    carry_back_to_prior_year: Type.Optional(
+      Type.Unsafe({
+        type: "boolean",
+        default: false,
+        description: "Gift Aid carry-back election",
+      })
+    ),
   },
 });
 
@@ -388,10 +338,8 @@ const document = defineEntityType({
   name: "Document",
   description:
     "A source document — P60, P45, P11D, SA302, broker contract note, mortgage statement, bank statement — that other entities are parsed from.",
-  required: ["doc_type", "source"],
   properties: {
-    doc_type: {
-      type: "string",
+    doc_type: field("Type", {
       enum: [
         "P60",
         "P45",
@@ -407,25 +355,24 @@ const document = defineEntityType({
         "receipt",
         "other",
       ],
-      "x-table-label": "Type",
-      "x-table-column": true,
-    },
-    source: {
-      type: "string",
-      enum: ["gmail", "whatsapp_upload", "manual"],
-      "x-table-label": "Source",
-      "x-table-column": true,
-    },
-    download_url: {
-      type: "string",
-      format: "uri",
-      description: "Signed gateway artifact URL",
-    },
-    payer_or_employer: {
-      type: "string",
-      description: "Counterparty named on the document",
-    },
-    captured_at: { type: "string", format: "date-time" },
+    }),
+    source: field("Source", { enum: ["gmail", "whatsapp_upload", "manual"] }),
+    download_url: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        format: "uri",
+        description: "Signed gateway artifact URL",
+      })
+    ),
+    payer_or_employer: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description: "Counterparty named on the document",
+      })
+    ),
+    captured_at: Type.Optional(
+      Type.Unsafe({ type: "string", format: "date-time" })
+    ),
   },
 });
 
@@ -433,10 +380,8 @@ const expense = defineEntityType({
   key: "expense",
   name: "Expense",
   description: "An allowable expense against a trade or property.",
-  required: ["category", "amount", "date"],
   properties: {
-    category: {
-      type: "string",
+    category: field("Category", {
       enum: [
         "cost_of_goods",
         "travel",
@@ -452,28 +397,18 @@ const expense = defineEntityType({
         "agent_fees",
         "other",
       ],
-      "x-table-label": "Category",
-      "x-table-column": true,
-    },
-    amount: {
-      type: "string",
-      description: "Decimal GBP",
-      "x-table-label": "Amount",
-      "x-table-column": true,
-    },
-    date: {
-      type: "string",
-      format: "date",
-      "x-table-label": "Date",
-      "x-table-column": true,
-    },
-    notes: { type: "string" },
-    is_capital: {
-      type: "boolean",
-      default: false,
-      description:
-        "Capital vs revenue (capital expenses go to capital_allowances, not expenses)",
-    },
+    }),
+    amount: field("Amount", { description: "Decimal GBP" }),
+    date: field("Date", { format: "date" }),
+    notes: Type.Optional(Type.Unsafe({ type: "string" })),
+    is_capital: Type.Optional(
+      Type.Unsafe({
+        type: "boolean",
+        default: false,
+        description:
+          "Capital vs revenue (capital expenses go to capital_allowances, not expenses)",
+      })
+    ),
   },
 });
 
@@ -482,16 +417,8 @@ const filing_obligation = defineEntityType({
   name: "Filing Obligation",
   description:
     "A required tax return or filing the user (or one of their companies) must submit by a deadline. Captures SA100, CT600, SA800, SA900, VAT101, P11D, etc. Lets the agent surface deadlines proactively and reconcile against actual filings.",
-  required: [
-    "return_form",
-    "period_start",
-    "period_end",
-    "deadline_type",
-    "due_date",
-  ],
   properties: {
-    return_form: {
-      type: "string",
+    return_form: field("Form", {
       enum: [
         "SA100",
         "SA800",
@@ -502,13 +429,10 @@ const filing_obligation = defineEntityType({
         "PAYE_RTI",
         "confirmation_statement",
       ],
-      "x-table-label": "Form",
-      "x-table-column": true,
-    },
+    }),
     period_start: { type: "string", format: "date" },
     period_end: { type: "string", format: "date" },
-    deadline_type: {
-      type: "string",
+    deadline_type: field("Deadline", {
       enum: [
         "paper_filing",
         "online_filing",
@@ -520,27 +444,22 @@ const filing_obligation = defineEntityType({
         "vat_payment",
         "registration",
       ],
-      "x-table-label": "Deadline",
-      "x-table-column": true,
-    },
-    due_date: {
-      type: "string",
-      format: "date",
-      "x-table-label": "Due",
-      "x-table-column": true,
-    },
-    status: {
-      type: "string",
+    }),
+    due_date: field("Due", { format: "date" }),
+    status: field("Status", {
       enum: ["upcoming", "reminded", "overdue", "filed", "paid", "waived"],
       default: "upcoming",
-      "x-table-label": "Status",
-      "x-table-column": true,
-    },
-    completed_date: { type: "string", format: "date" },
-    hmrc_reference: {
-      type: "string",
-      description: "HMRC submission receipt or reference number, once filed.",
-    },
+      optional: true,
+    }),
+    completed_date: Type.Optional(
+      Type.Unsafe({ type: "string", format: "date" })
+    ),
+    hmrc_reference: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description: "HMRC submission receipt or reference number, once filed.",
+      })
+    ),
   },
 });
 
@@ -549,31 +468,19 @@ const goal = defineEntityType({
   name: "Goal",
   description:
     "A personal financial goal (emergency fund, deposit, retirement target, etc.).",
-  required: ["name", "target_amount", "category"],
   properties: {
-    name: { type: "string", "x-table-label": "Goal", "x-table-column": true },
-    target_amount: {
-      type: "string",
-      description: "Decimal GBP",
-      "x-table-label": "Target",
-      "x-table-column": true,
-    },
-    target_date: {
-      type: "string",
-      format: "date",
-      "x-table-label": "By",
-      "x-table-column": true,
-    },
-    category: {
-      type: "string",
+    name: field("Goal"),
+    target_amount: field("Target", { description: "Decimal GBP" }),
+    target_date: field("By", { format: "date", optional: true }),
+    category: field("Category", {
       enum: ["emergency_fund", "deposit", "retirement", "debt_payoff", "other"],
-      "x-table-label": "Category",
-      "x-table-column": true,
-    },
-    current_amount: {
-      type: "string",
-      description: "Optional snapshot, decimal GBP",
-    },
+    }),
+    current_amount: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description: "Optional snapshot, decimal GBP",
+      })
+    ),
   },
 });
 
@@ -581,31 +488,18 @@ const holding = defineEntityType({
   key: "holding",
   name: "Holding",
   description: "A current security position in a brokerage account.",
-  required: ["ticker", "quantity", "as_of_date"],
   properties: {
-    ticker: {
-      type: "string",
-      "x-table-label": "Ticker",
-      "x-table-column": true,
-    },
-    isin: { type: "string" },
-    quantity: {
-      type: "string",
-      description: "Decimal string",
-      "x-table-label": "Quantity",
-      "x-table-column": true,
-    },
-    avg_cost: {
-      type: "string",
-      description: "Average cost per unit (s.104 pool), decimal string",
-    },
-    currency: { type: "string", default: "GBP" },
-    as_of_date: {
-      type: "string",
-      format: "date",
-      "x-table-label": "As of",
-      "x-table-column": true,
-    },
+    ticker: field("Ticker"),
+    isin: Type.Optional(Type.Unsafe({ type: "string" })),
+    quantity: field("Quantity", { description: "Decimal string" }),
+    avg_cost: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description: "Average cost per unit (s.104 pool), decimal string",
+      })
+    ),
+    currency: Type.Optional(Type.Unsafe({ type: "string", default: "GBP" })),
+    as_of_date: field("As of", { format: "date" }),
   },
 });
 
@@ -614,10 +508,8 @@ const income_source = defineEntityType({
   name: "Income Source",
   description:
     "A recurring origin of income (employer, trade, dividend payer, interest payer, rental property, pension, foreign source).",
-  required: ["type"],
   properties: {
-    type: {
-      type: "string",
+    type: field("Type", {
       enum: [
         "employment",
         "self_employment",
@@ -627,39 +519,43 @@ const income_source = defineEntityType({
         "pension",
         "foreign",
       ],
-      "x-table-label": "Type",
-      "x-table-column": true,
-    },
-    payer_name: {
-      type: "string",
-      "x-table-label": "Payer",
-      "x-table-column": true,
-    },
-    country: {
-      type: "string",
-      description: "ISO 3166-1 alpha-2; non-GB triggers SA106",
-    },
-    foreign_tax_paid: {
-      type: "string",
-      description:
-        "Decimal — total foreign tax withheld at source for the tax year, in foreign_tax_currency. Drives Foreign Tax Credit Relief (FTCR) on SA106.",
-    },
-    foreign_tax_currency: {
-      type: "string",
-      description:
-        "ISO 4217 of the foreign_tax_paid amount. Usually matches the income currency.",
-    },
-    withholding_jurisdiction: {
-      type: "string",
-      description:
-        "ISO 3166-1 alpha-2 of the country that withheld the tax. May differ from `country` (e.g. US dividends paid via a UK broker — withheld in US, paid to UK).",
-    },
-    treaty_rate_applied: {
-      type: "string",
-      description:
-        'Decimal — treaty withholding rate already applied at source (e.g. "0.15" for the 15% US/UK treaty rate on dividends). Used to flag over-withholding that may be recoverable from the source country.',
-    },
-    notes: { type: "string" },
+    }),
+    payer_name: field("Payer", { optional: true }),
+    country: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description: "ISO 3166-1 alpha-2; non-GB triggers SA106",
+      })
+    ),
+    foreign_tax_paid: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          "Decimal — total foreign tax withheld at source for the tax year, in foreign_tax_currency. Drives Foreign Tax Credit Relief (FTCR) on SA106.",
+      })
+    ),
+    foreign_tax_currency: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          "ISO 4217 of the foreign_tax_paid amount. Usually matches the income currency.",
+      })
+    ),
+    withholding_jurisdiction: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          "ISO 3166-1 alpha-2 of the country that withheld the tax. May differ from `country` (e.g. US dividends paid via a UK broker — withheld in US, paid to UK).",
+      })
+    ),
+    treaty_rate_applied: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          'Decimal — treaty withholding rate already applied at source (e.g. "0.15" for the 15% US/UK treaty rate on dividends). Used to flag over-withholding that may be recoverable from the source country.',
+      })
+    ),
+    notes: Type.Optional(Type.Unsafe({ type: "string" })),
   },
 });
 
@@ -668,29 +564,12 @@ const payment = defineEntityType({
   name: "Payment",
   description:
     "A payment to or from HMRC — balancing payments, payments on account, corporation tax, VAT remittances, refunds. Distinct from generic transactions because it ties to filing_obligation and tax_assessment for reconciliation.",
-  required: ["amount", "currency", "date", "direction", "kind"],
   properties: {
-    amount: {
-      type: "string",
-      description: "Decimal — always positive",
-      "x-table-label": "Amount",
-      "x-table-column": true,
-    },
+    amount: field("Amount", { description: "Decimal — always positive" }),
     currency: { type: "string", default: "GBP" },
-    date: {
-      type: "string",
-      format: "date",
-      "x-table-label": "Date",
-      "x-table-column": true,
-    },
-    direction: {
-      type: "string",
-      enum: ["to_hmrc", "from_hmrc"],
-      "x-table-label": "Direction",
-      "x-table-column": true,
-    },
-    kind: {
-      type: "string",
+    date: field("Date", { format: "date" }),
+    direction: field("Direction", { enum: ["to_hmrc", "from_hmrc"] }),
+    kind: field("Kind", {
       enum: [
         "balancing_payment",
         "poa1",
@@ -702,24 +581,26 @@ const payment = defineEntityType({
         "penalty",
         "interest",
       ],
-      "x-table-label": "Kind",
-      "x-table-column": true,
-    },
-    reference: {
-      type: "string",
-      description:
-        "HMRC payment reference (UTR + K, or CT-specific accounting reference)",
-    },
-    method: {
-      type: "string",
-      enum: [
-        "bank_transfer",
-        "direct_debit",
-        "debit_card",
-        "cheque",
-        "paye_coding",
-      ],
-    },
+    }),
+    reference: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          "HMRC payment reference (UTR + K, or CT-specific accounting reference)",
+      })
+    ),
+    method: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        enum: [
+          "bank_transfer",
+          "direct_debit",
+          "debit_card",
+          "cheque",
+          "paye_coding",
+        ],
+      })
+    ),
   },
 });
 
@@ -728,21 +609,12 @@ const property = defineEntityType({
   name: "Property",
   description:
     "Real estate. Use for primary residences (PRR on disposal), let properties (SA105/SA106), holiday lets (FHL), and commercial real estate. Owner is set via owned_by or co_owned_by; never put owner in metadata.",
-  required: ["address", "type", "use"],
   properties: {
-    address: {
-      type: "string",
-      "x-table-label": "Address",
-      "x-table-column": true,
-    },
-    type: {
-      type: "string",
+    address: field("Address"),
+    type: field("Type", {
       enum: ["residential", "commercial", "mixed_use", "land"],
-      "x-table-label": "Type",
-      "x-table-column": true,
-    },
-    use: {
-      type: "string",
+    }),
+    use: field("Use", {
       description:
         "How the property is used. Drives tax treatment more than physical type does.",
       enum: [
@@ -753,25 +625,31 @@ const property = defineEntityType({
         "mixed_use",
         "investment_held",
       ],
-      "x-table-label": "Use",
-      "x-table-column": true,
-    },
-    country: {
-      type: "string",
-      description: "ISO 3166-1 alpha-2; non-GB triggers SA106",
-      default: "GB",
-    },
-    rental_income_allowance_claimed: {
-      type: "boolean",
-      default: false,
-      description: "£1,000 property income allowance flag",
-    },
-    purchase_date: { type: "string", format: "date" },
-    purchase_cost: {
-      type: "string",
-      description:
-        "Decimal GBP — useful for PRR calculation on eventual disposal",
-    },
+    }),
+    country: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description: "ISO 3166-1 alpha-2; non-GB triggers SA106",
+        default: "GB",
+      })
+    ),
+    rental_income_allowance_claimed: Type.Optional(
+      Type.Unsafe({
+        type: "boolean",
+        default: false,
+        description: "£1,000 property income allowance flag",
+      })
+    ),
+    purchase_date: Type.Optional(
+      Type.Unsafe({ type: "string", format: "date" })
+    ),
+    purchase_cost: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          "Decimal GBP — useful for PRR calculation on eventual disposal",
+      })
+    ),
   },
 });
 
@@ -780,10 +658,8 @@ const relief_claim = defineEntityType({
   name: "Relief Claim",
   description:
     "A tax relief or allowance claim (Gift Aid, marriage allowance, EIS/SEIS, BADR, PRR).",
-  required: ["type"],
   properties: {
-    type: {
-      type: "string",
+    type: field("Type", {
       enum: [
         "gift_aid",
         "marriage_allowance",
@@ -794,16 +670,12 @@ const relief_claim = defineEntityType({
         "investors_relief",
         "foreign_tax_credit",
       ],
-      "x-table-label": "Type",
-      "x-table-column": true,
-    },
-    amount: {
-      type: "string",
+    }),
+    amount: field("Amount", {
       description: "Decimal GBP if applicable",
-      "x-table-label": "Amount",
-      "x-table-column": true,
-    },
-    notes: { type: "string" },
+      optional: true,
+    }),
+    notes: Type.Optional(Type.Unsafe({ type: "string" })),
   },
 });
 
@@ -812,10 +684,8 @@ const tax_assessment = defineEntityType({
   name: "Tax Assessment",
   description:
     "A computed or HMRC-issued tax position for one tax year, one subject. Captures SA302 outputs (HMRC's view) + agent-computed projections (our view) so we can reconcile and surface differences.",
-  required: ["source", "total_tax_due", "computed_at"],
   properties: {
-    source: {
-      type: "string",
+    source: field("Source", {
       enum: [
         "agent_projection",
         "hmrc_sa302",
@@ -824,34 +694,38 @@ const tax_assessment = defineEntityType({
       ],
       description:
         "Where this assessment came from. agent_projection = our running estimate; hmrc_* = the authority's number.",
-      "x-table-label": "Source",
-      "x-table-column": true,
-    },
-    total_income: {
-      type: "string",
-      description: "Decimal GBP — sum of all income sources before allowances",
-    },
-    total_tax_due: {
-      type: "string",
+    }),
+    total_income: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          "Decimal GBP — sum of all income sources before allowances",
+      })
+    ),
+    total_tax_due: field("Tax due", {
       description: "Decimal GBP — final tax liability for the year",
-      "x-table-label": "Tax due",
-      "x-table-column": true,
-    },
-    tax_paid_at_source: {
-      type: "string",
-      description: "PAYE + dividend tax withheld + foreign tax credit",
-    },
-    balancing_owed: {
-      type: "string",
-      description: "total_tax_due - tax_paid_at_source - poa_paid",
-    },
-    allowances_used: {
-      type: "object",
-      description:
-        "Per-allowance breakdown (personal_allowance, dividend_allowance, psa, cgt_aea, etc.)",
-    },
+    }),
+    tax_paid_at_source: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description: "PAYE + dividend tax withheld + foreign tax credit",
+      })
+    ),
+    balancing_owed: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description: "total_tax_due - tax_paid_at_source - poa_paid",
+      })
+    ),
+    allowances_used: Type.Optional(
+      Type.Unsafe({
+        type: "object",
+        description:
+          "Per-allowance breakdown (personal_allowance, dividend_allowance, psa, cgt_aea, etc.)",
+      })
+    ),
     computed_at: { type: "string", format: "date-time" },
-    hmrc_reference: { type: "string" },
+    hmrc_reference: Type.Optional(Type.Unsafe({ type: "string" })),
   },
 });
 
@@ -860,14 +734,8 @@ const tax_year = defineEntityType({
   name: "Tax Year",
   description:
     "A UK fiscal year (6 April to 5 April) — the container all reportable activity is anchored to.",
-  required: ["year_label", "start", "end"],
   properties: {
-    year_label: {
-      type: "string",
-      description: 'Year label, e.g. "2025-26"',
-      "x-table-label": "Year",
-      "x-table-column": true,
-    },
+    year_label: field("Year", { description: 'Year label, e.g. "2025-26"' }),
     start: {
       type: "string",
       format: "date",
@@ -878,16 +746,15 @@ const tax_year = defineEntityType({
       format: "date",
       description: "Inclusive end, e.g. 2026-04-05",
     },
-    filing_status: {
-      type: "string",
+    filing_status: field("Status", {
       enum: ["in_progress", "assembled", "filed"],
       description: "Where the user is in the cycle",
-      "x-table-label": "Status",
-      "x-table-column": true,
-    },
-    filed_at: { type: "string", format: "date-time" },
-    residence_status: {
-      type: "string",
+      optional: true,
+    }),
+    filed_at: Type.Optional(
+      Type.Unsafe({ type: "string", format: "date-time" })
+    ),
+    residence_status: field("Residence", {
       enum: [
         "uk_resident",
         "non_resident",
@@ -897,19 +764,22 @@ const tax_year = defineEntityType({
       ],
       description:
         "UK tax residence for THIS year. Recorded per-tax_year because residence\ncan change (someone moving in/out of the UK has different status year\nto year). Drives SA109 routing.\n",
-      "x-table-label": "Residence",
-      "x-table-column": true,
-    },
-    arrival_date: {
-      type: "string",
-      format: "date",
-      description: "For split-year arrivers — date residence began",
-    },
-    departure_date: {
-      type: "string",
-      format: "date",
-      description: "For split-year leavers — date residence ended",
-    },
+      optional: true,
+    }),
+    arrival_date: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        format: "date",
+        description: "For split-year arrivers — date residence began",
+      })
+    ),
+    departure_date: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        format: "date",
+        description: "For split-year leavers — date residence ended",
+      })
+    ),
   },
 });
 
@@ -917,64 +787,61 @@ const transaction = defineEntityType({
   key: "transaction",
   name: "Transaction",
   description: "A single debit or credit on an account.",
-  required: ["date", "amount", "currency"],
   properties: {
-    date: {
-      type: "string",
-      format: "date",
-      "x-table-label": "Date",
-      "x-table-column": true,
-    },
-    amount: {
-      type: "string",
+    date: field("Date", { format: "date" }),
+    amount: field("Amount", {
       description: "Decimal string. Positive = credit, negative = debit.",
-      "x-table-label": "Amount",
-      "x-table-column": true,
-    },
+    }),
     currency: { type: "string", default: "GBP" },
-    description: {
-      type: "string",
-      "x-table-label": "Description",
-      "x-table-column": true,
-    },
-    merchant_raw: {
-      type: "string",
-      description:
-        "Verbatim merchant text from the statement; resolved/categorised later.",
-    },
-    tax_relevance: {
-      type: "string",
+    description: field("Description", { optional: true }),
+    merchant_raw: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          "Verbatim merchant text from the statement; resolved/categorised later.",
+      })
+    ),
+    tax_relevance: field("Tax", {
       enum: ["none", "income", "expense", "cgt"],
       description: "Whether this transaction matters for the SA return.",
-      "x-table-label": "Tax",
-      "x-table-column": true,
-    },
-    expense_category: {
-      type: "string",
-      description:
-        "HMRC-aligned category for allowable expenses (cost_of_goods, travel, premises, repairs, admin, advertising, interest, professional_fees, wages, other).",
-    },
-    is_personal: { type: "boolean", default: true },
-    native_amount: {
-      type: "string",
-      description:
-        "Decimal amount in the foreign currency, when currency != GBP. Keep alongside `amount` so the agent can show both numbers and recompute if rates need correcting.",
-    },
-    native_currency: {
-      type: "string",
-      description:
-        'ISO 4217 currency code of native_amount (e.g. "USD", "EUR"). When set, the `currency` field on this transaction is GBP and native_currency is the original.',
-    },
-    fx_rate_to_gbp: {
-      type: "string",
-      description:
-        "Decimal — the FX rate snapshot used to convert native_amount to amount (GBP). Source the rate from the transaction date. Required when native_currency is set so HMRC-aligned conversion is auditable.",
-    },
-    fx_rate_source: {
-      type: "string",
-      description:
-        'Where the FX rate came from (e.g. "hmrc_monthly", "broker_statement", "ecb_daily"). Helps reconcile if HMRC\'s published rate differs.',
-    },
+      optional: true,
+    }),
+    expense_category: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          "HMRC-aligned category for allowable expenses (cost_of_goods, travel, premises, repairs, admin, advertising, interest, professional_fees, wages, other).",
+      })
+    ),
+    is_personal: Type.Optional(Type.Unsafe({ type: "boolean", default: true })),
+    native_amount: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          "Decimal amount in the foreign currency, when currency != GBP. Keep alongside `amount` so the agent can show both numbers and recompute if rates need correcting.",
+      })
+    ),
+    native_currency: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          'ISO 4217 currency code of native_amount (e.g. "USD", "EUR"). When set, the `currency` field on this transaction is GBP and native_currency is the original.',
+      })
+    ),
+    fx_rate_to_gbp: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          "Decimal — the FX rate snapshot used to convert native_amount to amount (GBP). Source the rate from the transaction date. Required when native_currency is set so HMRC-aligned conversion is auditable.",
+      })
+    ),
+    fx_rate_source: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          'Where the FX rate came from (e.g. "hmrc_monthly", "broker_statement", "ecb_daily"). Helps reconcile if HMRC\'s published rate differs.',
+      })
+    ),
   },
 });
 

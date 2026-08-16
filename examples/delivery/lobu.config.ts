@@ -8,6 +8,7 @@ import {
   defineAutomation,
   every,
   secret,
+  field,
 } from "@lobu/cli/config";
 import type ShopifyOrdersConnector from "./shopify-orders.connector.ts";
 
@@ -47,26 +48,10 @@ const blocker = defineEntityType({
   name: "Blocker",
   description: "A dependency or issue that is blocking project progress",
   properties: {
-    blocker_description: {
-      type: "string",
-      "x-table-label": "Blocker",
-      "x-table-column": true,
-    },
-    owned_by: {
-      type: "string",
-      "x-table-label": "Owner",
-      "x-table-column": true,
-    },
-    impact: {
-      type: "string",
-      "x-table-label": "Impact",
-      "x-table-column": true,
-    },
-    status: {
-      type: "string",
-      "x-table-label": "Status",
-      "x-table-column": true,
-    },
+    blocker_description: field("Blocker", { optional: true }),
+    owned_by: field("Owner", { optional: true }),
+    impact: field("Impact", { optional: true }),
+    status: field("Status", { optional: true }),
   },
 });
 
@@ -75,26 +60,10 @@ const document = defineEntityType({
   name: "Document",
   description: "A project artifact, review, or reference document",
   properties: {
-    document_name: {
-      type: "string",
-      "x-table-label": "Document",
-      "x-table-column": true,
-    },
-    document_type: {
-      type: "string",
-      "x-table-label": "Type",
-      "x-table-column": true,
-    },
-    linked_project: {
-      type: "string",
-      "x-table-label": "Project",
-      "x-table-column": true,
-    },
-    last_updated: {
-      type: "string",
-      "x-table-label": "Updated",
-      "x-table-column": true,
-    },
+    document_name: field("Document", { optional: true }),
+    document_type: field("Type", { optional: true }),
+    linked_project: field("Project", { optional: true }),
+    last_updated: field("Updated", { optional: true }),
   },
 });
 
@@ -103,26 +72,10 @@ const milestone = defineEntityType({
   name: "Milestone",
   description: "A key deliverable or phase gate within a project",
   properties: {
-    milestone_name: {
-      type: "string",
-      "x-table-label": "Milestone",
-      "x-table-column": true,
-    },
-    lifecycle_state: {
-      type: "string",
-      "x-table-label": "State",
-      "x-table-column": true,
-    },
-    target_date: {
-      type: "string",
-      "x-table-label": "Target Date",
-      "x-table-column": true,
-    },
-    parent_project: {
-      type: "string",
-      "x-table-label": "Project",
-      "x-table-column": true,
-    },
+    milestone_name: field("Milestone", { optional: true }),
+    lifecycle_state: field("State", { optional: true }),
+    target_date: field("Target Date", { optional: true }),
+    parent_project: field("Project", { optional: true }),
   },
 });
 
@@ -131,10 +84,10 @@ const stakeholder = defineEntityType({
   name: "Stakeholder",
   description: "A person who owns or is responsible for part of a project",
   properties: {
-    name: { type: "string", "x-table-label": "Name", "x-table-column": true },
-    role: { type: "string", "x-table-label": "Role", "x-table-column": true },
-    owns: { type: "string", "x-table-label": "Owns", "x-table-column": true },
-    contact: { type: "string", "x-table-label": "Contact" },
+    name: field("Name", { optional: true }),
+    role: field("Role", { optional: true }),
+    owns: field("Owns", { optional: true }),
+    contact: field("Contact", { column: false, optional: true }),
   },
 });
 

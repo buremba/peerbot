@@ -8,6 +8,8 @@ import {
   defineSkill,
   every,
   secret,
+  field,
+  Type,
 } from "@lobu/cli/config";
 import type ExaNewsFeedConnector from "./exa-news-feed.connector.ts";
 
@@ -57,8 +59,7 @@ const organization = defineEntityType({
   description:
     "Canonical public identity for an organization. Roles are represented by organization_type and relationships, not separate entity types.",
   properties: {
-    organization_type: {
-      type: "string",
+    organization_type: field("Organization Type", {
       enum: [
         "operating_company",
         "investment_firm",
@@ -68,46 +69,57 @@ const organization = defineEntityType({
         "government",
         "other",
       ],
-      "x-table-column": true,
-      "x-table-label": "Organization Type",
-    },
-    domain: {
-      type: "string",
+      optional: true,
+    }),
+    domain: field("Domain", {
       description: "Normalized public domain",
       "x-identity-namespace": {
         namespace: "hosted_domain",
         normalize: "lowercase",
       },
-      "x-table-column": true,
-      "x-table-label": "Domain",
-    },
-    link: { type: "string", format: "uri" },
-    one_liner: { type: "string" },
-    description: { type: "string" },
-    categories: { type: "array", items: { type: "string" } },
-    location: { type: "string" },
-    stage: {
-      type: "string",
-      enum: [
-        "idea",
-        "pre-seed",
-        "seed",
-        "series-a",
-        "series-b",
-        "series-c",
-        "growth",
-        "public",
-      ],
-    },
-    operating_status: {
-      type: "string",
-      enum: ["active", "acquired", "inactive", "closed"],
-    },
-    stage_focus: { type: "array", items: { type: "string" } },
-    sector_focus: { type: "array", items: { type: "string" } },
-    portfolio_url: { type: "string", format: "uri" },
-    canonical_path: { type: "string" },
-    indexability: { type: "string", enum: ["noindex", "index"] },
+      optional: true,
+    }),
+    link: Type.Optional(Type.Unsafe({ type: "string", format: "uri" })),
+    one_liner: Type.Optional(Type.Unsafe({ type: "string" })),
+    description: Type.Optional(Type.Unsafe({ type: "string" })),
+    categories: Type.Optional(
+      Type.Unsafe({ type: "array", items: { type: "string" } })
+    ),
+    location: Type.Optional(Type.Unsafe({ type: "string" })),
+    stage: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        enum: [
+          "idea",
+          "pre-seed",
+          "seed",
+          "series-a",
+          "series-b",
+          "series-c",
+          "growth",
+          "public",
+        ],
+      })
+    ),
+    operating_status: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        enum: ["active", "acquired", "inactive", "closed"],
+      })
+    ),
+    stage_focus: Type.Optional(
+      Type.Unsafe({ type: "array", items: { type: "string" } })
+    ),
+    sector_focus: Type.Optional(
+      Type.Unsafe({ type: "array", items: { type: "string" } })
+    ),
+    portfolio_url: Type.Optional(
+      Type.Unsafe({ type: "string", format: "uri" })
+    ),
+    canonical_path: Type.Optional(Type.Unsafe({ type: "string" })),
+    indexability: Type.Optional(
+      Type.Unsafe({ type: "string", enum: ["noindex", "index"] })
+    ),
   },
 });
 
@@ -117,15 +129,19 @@ const person = defineEntityType({
   description:
     "Canonical public identity for a real-world person. Founder, employee, executive, and investor are relationship roles.",
   properties: {
-    full_name: { type: "string" },
-    headline: { type: "string" },
-    role: { type: "string" },
-    specialties: { type: "array", items: { type: "string" } },
-    background: { type: "string" },
-    linkedin_url: { type: "string", format: "uri" },
-    twitter_handle: { type: "string" },
-    canonical_path: { type: "string" },
-    indexability: { type: "string", enum: ["noindex", "index"] },
+    full_name: Type.Optional(Type.Unsafe({ type: "string" })),
+    headline: Type.Optional(Type.Unsafe({ type: "string" })),
+    role: Type.Optional(Type.Unsafe({ type: "string" })),
+    specialties: Type.Optional(
+      Type.Unsafe({ type: "array", items: { type: "string" } })
+    ),
+    background: Type.Optional(Type.Unsafe({ type: "string" })),
+    linkedin_url: Type.Optional(Type.Unsafe({ type: "string", format: "uri" })),
+    twitter_handle: Type.Optional(Type.Unsafe({ type: "string" })),
+    canonical_path: Type.Optional(Type.Unsafe({ type: "string" })),
+    indexability: Type.Optional(
+      Type.Unsafe({ type: "string", enum: ["noindex", "index"] })
+    ),
   },
 });
 
@@ -135,15 +151,21 @@ const product = defineEntityType({
   description:
     "Distinct product or platform. Pricing plans and commercial offers remain sourced events, not product entities.",
   properties: {
-    product_type: { type: "string" },
-    tagline: { type: "string" },
-    description: { type: "string" },
-    link: { type: "string", format: "uri" },
-    categories: { type: "array", items: { type: "string" } },
-    key_features: { type: "array", items: { type: "string" } },
-    availability: { type: "string" },
-    canonical_path: { type: "string" },
-    indexability: { type: "string", enum: ["noindex", "index"] },
+    product_type: Type.Optional(Type.Unsafe({ type: "string" })),
+    tagline: Type.Optional(Type.Unsafe({ type: "string" })),
+    description: Type.Optional(Type.Unsafe({ type: "string" })),
+    link: Type.Optional(Type.Unsafe({ type: "string", format: "uri" })),
+    categories: Type.Optional(
+      Type.Unsafe({ type: "array", items: { type: "string" } })
+    ),
+    key_features: Type.Optional(
+      Type.Unsafe({ type: "array", items: { type: "string" } })
+    ),
+    availability: Type.Optional(Type.Unsafe({ type: "string" })),
+    canonical_path: Type.Optional(Type.Unsafe({ type: "string" })),
+    indexability: Type.Optional(
+      Type.Unsafe({ type: "string", enum: ["noindex", "index"] })
+    ),
   },
 });
 
@@ -153,8 +175,7 @@ const fundingRound = defineEntityType({
   description:
     "Non-indexed materialized projection of an append-only financing event. Participant and lead roles are represented through participated_in relationships.",
   properties: {
-    round_type: {
-      type: "string",
+    round_type: field("Round Type", {
       enum: [
         "preseed",
         "seed",
@@ -165,30 +186,37 @@ const fundingRound = defineEntityType({
         "growth",
         "ipo",
       ],
-      "x-table-column": true,
-      "x-table-label": "Round Type",
-    },
-    amount_usd: {
-      type: "number",
-      "x-table-column": true,
-      "x-table-label": "Amount (USD)",
-    },
-    currency: { type: "string" },
-    announced_at: { type: "string", format: "date-time" },
-    status: {
-      type: "string",
-      enum: ["announced", "closed", "cancelled", "rumoured"],
-    },
-    source_urls: {
-      type: "array",
-      items: { type: "string", format: "uri" },
-    },
-    projection_kind: { type: "string", enum: ["financing_event"] },
-    projection_status: {
-      type: "string",
-      enum: ["materialized", "superseded", "disputed"],
-    },
-    indexability: { type: "string", enum: ["noindex", "index"] },
+      optional: true,
+    }),
+    amount_usd: Type.Optional(field(Type.Number(), "Amount (USD)")),
+    currency: Type.Optional(Type.Unsafe({ type: "string" })),
+    announced_at: Type.Optional(
+      Type.Unsafe({ type: "string", format: "date-time" })
+    ),
+    status: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        enum: ["announced", "closed", "cancelled", "rumoured"],
+      })
+    ),
+    source_urls: Type.Optional(
+      Type.Unsafe({
+        type: "array",
+        items: { type: "string", format: "uri" },
+      })
+    ),
+    projection_kind: Type.Optional(
+      Type.Unsafe({ type: "string", enum: ["financing_event"] })
+    ),
+    projection_status: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        enum: ["materialized", "superseded", "disputed"],
+      })
+    ),
+    indexability: Type.Optional(
+      Type.Unsafe({ type: "string", enum: ["noindex", "index"] })
+    ),
   },
 });
 
@@ -197,35 +225,49 @@ const jobPosting = defineEntityType({
   name: "Job Posting",
   description: "Public job posting associated with an organization",
   properties: {
-    title: { type: "string", "x-table-column": true, "x-table-label": "Title" },
-    company_id: {
-      type: "integer",
-      description: "FK to Market organization",
-      "x-table-column": true,
-      "x-table-label": "Organization",
-      "x-link-entity-type": "company",
-    },
-    posted_by_person_id: {
-      type: "integer",
-      description: "FK to canonical public person",
-      "x-link-entity-type": "person",
-    },
-    posted_by_member_id: {
-      type: "integer",
-      description: "FK to authenticated workspace member",
-      "x-link-entity-type": "$member",
-    },
-    city_id: {
-      type: "integer",
-      description: "FK to local Market city",
-      "x-table-column": true,
-      "x-table-label": "City",
-      "x-link-entity-type": "city",
-    },
-    description: { type: "string" },
-    status: { type: "string", enum: ["open", "filled", "closed"] },
-    posted_at: { type: "string", format: "date-time" },
-    expires_at: { type: "string", format: "date-time" },
+    title: field("Title", { optional: true }),
+    company_id: Type.Optional(
+      field(
+        Type.Integer({
+          description: "FK to Market organization",
+          "x-link-entity-type": "company",
+        }),
+        "Organization"
+      )
+    ),
+    posted_by_person_id: Type.Optional(
+      Type.Unsafe({
+        type: "integer",
+        description: "FK to canonical public person",
+        "x-link-entity-type": "person",
+      })
+    ),
+    posted_by_member_id: Type.Optional(
+      Type.Unsafe({
+        type: "integer",
+        description: "FK to authenticated workspace member",
+        "x-link-entity-type": "$member",
+      })
+    ),
+    city_id: Type.Optional(
+      field(
+        Type.Integer({
+          description: "FK to local Market city",
+          "x-link-entity-type": "city",
+        }),
+        "City"
+      )
+    ),
+    description: Type.Optional(Type.Unsafe({ type: "string" })),
+    status: Type.Optional(
+      Type.Unsafe({ type: "string", enum: ["open", "filled", "closed"] })
+    ),
+    posted_at: Type.Optional(
+      Type.Unsafe({ type: "string", format: "date-time" })
+    ),
+    expires_at: Type.Optional(
+      Type.Unsafe({ type: "string", format: "date-time" })
+    ),
   },
 });
 
@@ -234,17 +276,21 @@ const industry = defineEntityType({
   name: "Industry",
   description: "Local reference taxonomy for organizations and products",
   properties: {
-    parent_id: {
-      type: "integer",
-      description: "FK to parent Market industry",
-      "x-link-entity-type": "industry",
-    },
-    taxonomy_source: {
-      type: "string",
-      enum: ["NAICS", "BICS", "custom"],
-    },
-    code: { type: "string" },
-    description: { type: "string" },
+    parent_id: Type.Optional(
+      Type.Unsafe({
+        type: "integer",
+        description: "FK to parent Market industry",
+        "x-link-entity-type": "industry",
+      })
+    ),
+    taxonomy_source: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        enum: ["NAICS", "BICS", "custom"],
+      })
+    ),
+    code: Type.Optional(Type.Unsafe({ type: "string" })),
+    description: Type.Optional(Type.Unsafe({ type: "string" })),
   },
 });
 
@@ -253,10 +299,14 @@ const country = defineEntityType({
   name: "Country",
   description: "Local reference identity for a sovereign country",
   properties: {
-    iso2: { type: "string", minLength: 2, maxLength: 2 },
-    iso3: { type: "string", minLength: 3, maxLength: 3 },
-    currency: { type: "string" },
-    official_name: { type: "string" },
+    iso2: Type.Optional(
+      Type.Unsafe({ type: "string", minLength: 2, maxLength: 2 })
+    ),
+    iso3: Type.Optional(
+      Type.Unsafe({ type: "string", minLength: 3, maxLength: 3 })
+    ),
+    currency: Type.Optional(Type.Unsafe({ type: "string" })),
+    official_name: Type.Optional(Type.Unsafe({ type: "string" })),
   },
 });
 
@@ -265,12 +315,14 @@ const region = defineEntityType({
   name: "Region",
   description: "Local reference identity for an administrative region",
   properties: {
-    country_id: {
-      type: "integer",
-      description: "FK to local Market country",
-      "x-link-entity-type": "country",
-    },
-    iso_3166_2: { type: "string" },
+    country_id: Type.Optional(
+      Type.Unsafe({
+        type: "integer",
+        description: "FK to local Market country",
+        "x-link-entity-type": "country",
+      })
+    ),
+    iso_3166_2: Type.Optional(Type.Unsafe({ type: "string" })),
   },
 });
 
@@ -279,17 +331,21 @@ const city = defineEntityType({
   name: "City",
   description: "Local reference identity for a city, town, or metro area",
   properties: {
-    country_id: {
-      type: "integer",
-      description: "FK to local Market country",
-      "x-link-entity-type": "country",
-    },
-    region_id: {
-      type: "integer",
-      description: "FK to local Market region",
-      "x-link-entity-type": "region",
-    },
-    timezone: { type: "string" },
+    country_id: Type.Optional(
+      Type.Unsafe({
+        type: "integer",
+        description: "FK to local Market country",
+        "x-link-entity-type": "country",
+      })
+    ),
+    region_id: Type.Optional(
+      Type.Unsafe({
+        type: "integer",
+        description: "FK to local Market region",
+        "x-link-entity-type": "region",
+      })
+    ),
+    timezone: Type.Optional(Type.Unsafe({ type: "string" })),
   },
 });
 
@@ -299,9 +355,9 @@ const technology = defineEntityType({
   description:
     "Local reference identity for a technology, framework, library, or platform",
   properties: {
-    category: { type: "string" },
-    homepage_url: { type: "string", format: "uri" },
-    open_source: { type: "boolean" },
+    category: Type.Optional(Type.Unsafe({ type: "string" })),
+    homepage_url: Type.Optional(Type.Unsafe({ type: "string", format: "uri" })),
+    open_source: Type.Optional(Type.Unsafe({ type: "boolean" })),
   },
 });
 
@@ -310,17 +366,21 @@ const university = defineEntityType({
   name: "University",
   description: "Local reference identity for a higher-education institution",
   properties: {
-    country_id: {
-      type: "integer",
-      description: "FK to local Market country",
-      "x-link-entity-type": "country",
-    },
-    city_id: {
-      type: "integer",
-      description: "FK to local Market city",
-      "x-link-entity-type": "city",
-    },
-    homepage_url: { type: "string", format: "uri" },
+    country_id: Type.Optional(
+      Type.Unsafe({
+        type: "integer",
+        description: "FK to local Market country",
+        "x-link-entity-type": "country",
+      })
+    ),
+    city_id: Type.Optional(
+      Type.Unsafe({
+        type: "integer",
+        description: "FK to local Market city",
+        "x-link-entity-type": "city",
+      })
+    ),
+    homepage_url: Type.Optional(Type.Unsafe({ type: "string", format: "uri" })),
   },
 });
 

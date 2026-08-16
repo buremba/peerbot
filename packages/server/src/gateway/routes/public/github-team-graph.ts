@@ -36,12 +36,13 @@
 import { getDb } from "../../../db/client.js";
 import { createLogger } from "@lobu/core";
 import { GITHUB_IDENTITY } from "@lobu/connectors/github-identity";
+import { ensureMemberOfType } from "../../../authz/access-graph.js";
+import { upsertEdges } from "../../../utils/edge-writes.js";
 import { resolveEventAttributionsForItems } from "../../../utils/entity-link-upsert.js";
 
 const logger = createLogger("github-team-graph");
 
 const GITHUB_CONNECTOR_KEY = "github";
-const MEMBER_OF_TYPE_SLUG = "member_of";
 
 /** A GitHub org member as the org-members API reports it. */
 export interface GithubOrgMember {
@@ -197,22 +198,6 @@ async function ensureOrgCompany(params: {
 	return ids.length > 0 ? ids[0] : null;
 }
 
-/** Find-or-create the org-scoped `member_of` relationship type. */
-async function ensureMemberOfType(orgId: string): Promise<number> {
-	const sql = getDb();
-	const rows = await sql`
-		INSERT INTO entity_relationship_types
-			(slug, name, description, organization_id, is_symmetric, created_by, created_at, updated_at)
-		VALUES
-			(${MEMBER_OF_TYPE_SLUG}, 'Member of', 'A person is a member of an organization', ${orgId},
-			 false, NULL, current_timestamp, current_timestamp)
-		ON CONFLICT (organization_id, slug) WHERE status = 'active'
-		DO UPDATE SET updated_at = EXCLUDED.updated_at
-		RETURNING id
-	`;
-	return Number(rows[0].id);
-}
-
 /**
  * Build the team graph for a GitHub App install: upsert the org `company`,
  * resolve each member to a `person`, and write `member_of` edges. Injectable
@@ -303,27 +288,22 @@ export async function buildGithubTeamGraph(params: {
 	}
 
 	const typeId = await ensureMemberOfType(params.organizationId);
-	const sql = getDb();
-	let createdEdges = 0;
-	for (const memberId of uniqueMemberIds) {
-		// person -> company. Idempotent on the live-triple unique index; a re-bind
-		// re-affirms the edge without duplicating it.
-		const inserted = await sql<{ id: number }[]>`
-			INSERT INTO entity_relationships (
-				organization_id, from_entity_id, to_entity_id, relationship_type_id,
-				confidence, source, created_by, updated_by, created_at, updated_at
-			) VALUES (
-				${params.organizationId}, ${memberId}, ${companyEntityId}, ${typeId},
-				1.0, 'feed', ${creatorUserId}, ${creatorUserId},
-				current_timestamp, current_timestamp
-			)
-			ON CONFLICT (from_entity_id, to_entity_id, relationship_type_id)
-				WHERE deleted_at IS NULL
-			DO NOTHING
-			RETURNING id
-		`;
-		if (inserted.length > 0) createdEdges += 1;
-	}
+	// person -> company. Idempotent on the live-triple unique index; a re-bind
+	// re-affirms the edge without duplicating it.
+	const created = await upsertEdges({
+		db: getDb(),
+		organizationId: params.organizationId,
+		relationshipTypeId: typeId,
+		pairs: uniqueMemberIds.map((memberId) => ({
+			fromEntityId: memberId,
+			toEntityId: companyEntityId,
+		})),
+		source: "feed",
+		confidence: 1.0,
+		createdBy: creatorUserId,
+		onConflict: "ignore",
+	});
+	const createdEdges = created.length;
 
 	logger.info(
 		{

@@ -45,6 +45,7 @@ import {
   patchEntityRows,
   withEntityWriteTransaction,
 } from '../utils/entity-management.js';
+import { ensureRelationshipType, upsertEdges } from '../utils/edge-writes.js';
 import { aclConnectionIdSql } from './acl-observability.js';
 import { ensureResourceEntityType } from './acl-resource-type.js';
 
@@ -101,20 +102,17 @@ async function ensurePersonEntityType(orgId: string): Promise<void> {
 	`;
 }
 
-/** Find-or-create the org-scoped `member_of` relationship type. */
-async function ensureMemberOfType(orgId: string): Promise<number> {
-  const sql = getDb();
-  const rows = await sql`
-		INSERT INTO entity_relationship_types
-			(slug, name, description, organization_id, is_symmetric, created_by, created_at, updated_at)
-		VALUES
-			(${MEMBER_OF_TYPE_SLUG}, 'Member of', 'A member belongs to an ACL resource (channel, repo, …)', ${orgId},
-			 false, NULL, current_timestamp, current_timestamp)
-		ON CONFLICT (organization_id, slug) WHERE status = 'active'
-		DO UPDATE SET updated_at = EXCLUDED.updated_at
-		RETURNING id
-	`;
-  return Number(rows[0].id);
+/** Shared initializer for the org-scoped `member_of` relationship type.
+ *  Exported because the GitHub team graph writes the SAME slug in the SAME org
+ *  and so always shared this row; it used to keep a second copy of this
+ *  function with a different description. */
+export function ensureMemberOfType(orgId: string): Promise<number> {
+  return ensureRelationshipType({
+    organizationId: orgId,
+    slug: MEMBER_OF_TYPE_SLUG,
+    name: 'Member of',
+    description: 'A member belongs to an ACL resource (channel, repo, org, …)',
+  });
 }
 
 /**
@@ -488,7 +486,7 @@ export async function buildAccessGraph(params: {
 
   const memberEntityIds = new Set<number>();
   const currentMembersByResource = new Map<number, Set<number>>();
-  let createdEdges = 0;
+  const edgePairs: { fromEntityId: number; toEntityId: number }[] = [];
   for (let i = 0; i < resources.length; i++) {
     const resourceEntityId = resourceEntityIdByIndex.get(i);
     if (resourceEntityId === undefined) continue;
@@ -499,23 +497,23 @@ export async function buildAccessGraph(params: {
       if (memberEntityId === undefined) continue;
       memberEntityIds.add(memberEntityId);
       resourceMembers.add(memberEntityId);
-      const inserted = await sql<{ id: number }[]>`
-				INSERT INTO entity_relationships (
-					organization_id, from_entity_id, to_entity_id, relationship_type_id,
-					confidence, source, created_by, updated_by, created_at, updated_at
-				) VALUES (
-					${organizationId}, ${memberEntityId}, ${resourceEntityId}, ${typeId},
-					1.0, 'feed', ${creatorUserId}, ${creatorUserId},
-					current_timestamp, current_timestamp
-				)
-				ON CONFLICT (from_entity_id, to_entity_id, relationship_type_id)
-					WHERE deleted_at IS NULL
-				DO NOTHING
-				RETURNING id
-			`;
-      if (inserted.length > 0) createdEdges += 1;
+      edgePairs.push({ fromEntityId: memberEntityId, toEntityId: resourceEntityId });
     }
   }
+
+  // One statement for the whole build. A resource's membership is re-affirmed
+  // rather than rewritten, so a steady-state resync creates nothing.
+  const created = await upsertEdges({
+    db: sql,
+    organizationId,
+    relationshipTypeId: typeId,
+    pairs: edgePairs,
+    source: 'feed',
+    confidence: 1.0,
+    createdBy: creatorUserId,
+    onConflict: 'ignore',
+  });
+  const createdEdges = created.length;
 
   // 4) Reconcile DEPARTURES — the build is a full re-sync of each resource's
   // membership, so a `member_of` edge to a synced resource whose member is NOT

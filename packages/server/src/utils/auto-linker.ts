@@ -6,6 +6,7 @@
  */
 
 import { getDb } from '../db/client';
+import { ensureRelationshipType, upsertEdges } from './edge-writes';
 import logger from './logger';
 
 interface AutoLinkParams {
@@ -54,19 +55,13 @@ async function getOrgEntities(organizationId: string): Promise<EntityCandidate[]
   return entities;
 }
 
-async function ensureMentionsType(organizationId: string): Promise<number> {
-  const sql = getDb();
-  const rows = await sql`
-    INSERT INTO entity_relationship_types
-      (slug, name, description, organization_id, is_symmetric, created_by, created_at, updated_at)
-    VALUES
-      ('mentions', 'Mentions', 'Auto-discovered content reference', ${organizationId},
-       false, NULL, current_timestamp, current_timestamp)
-    ON CONFLICT (organization_id, slug) WHERE status = 'active'
-    DO UPDATE SET updated_at = EXCLUDED.updated_at
-    RETURNING id
-  `;
-  return Number(rows[0].id);
+function ensureMentionsType(organizationId: string): Promise<number> {
+  return ensureRelationshipType({
+    organizationId,
+    slug: 'mentions',
+    name: 'Mentions',
+    description: 'Auto-discovered content reference',
+  });
 }
 
 /**
@@ -104,36 +99,23 @@ export async function autoLinkEvent(params: AutoLinkParams): Promise<void> {
 
   if (candidates.length === 0) return;
 
-  const sql = getDb();
   const typeId = await ensureMentionsType(organizationId);
-  let created = 0;
 
-  for (const { fromId, toId } of candidates) {
-    const { from, to } = { from: fromId, to: toId };
-
-    // `mentions` is directional. Only skip when the same directional type already exists.
-    const existing = await sql`
-      SELECT id FROM entity_relationships
-      WHERE from_entity_id = ${from} AND to_entity_id = ${to}
-        AND relationship_type_id = ${typeId}
-        AND organization_id = ${organizationId}
-        AND deleted_at IS NULL
-      LIMIT 1
-    `;
-    if (existing.length > 0) continue;
-
-    await sql`
-      INSERT INTO entity_relationships (
-        organization_id, from_entity_id, to_entity_id, relationship_type_id,
-        confidence, source, created_by, updated_by, created_at, updated_at
-      ) VALUES (
-        ${organizationId}, ${from}, ${to}, ${typeId},
-        0.4, 'feed', NULL, NULL,
-        current_timestamp, current_timestamp
-      )
-    `;
-    created++;
-  }
+  // `mentions` is directional, so an existing edge only blocks the same
+  // direction — which is exactly what the live-triple unique index keys on.
+  const createdIds = await upsertEdges({
+    db: getDb(),
+    organizationId,
+    relationshipTypeId: typeId,
+    pairs: candidates.map(({ fromId, toId }) => ({
+      fromEntityId: fromId,
+      toEntityId: toId,
+    })),
+    source: 'feed',
+    confidence: 0.4,
+    onConflict: 'ignore',
+  });
+  const created = createdIds.length;
 
   if (created > 0) {
     logger.debug(

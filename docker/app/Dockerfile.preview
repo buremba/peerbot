@@ -74,8 +74,24 @@ COPY packages/server ./packages/server
 COPY packages/cli ./packages/cli
 COPY packages/owletto ./packages/owletto
 
-# Build all packages first (server depends on them)
-RUN bun run build
+COPY db/migrations db/migrations
+COPY skills/lobu/ skills/lobu/
+COPY packages/owletto packages/owletto
+
+# Build dist for shared workspace packages whose `exports` map points at
+# dist subpaths. server and worker import these packages from their dist barrels.
+RUN cd packages/core && bunx tsc \
+    && cd ../plugin-api && bunx tsc \
+    && cd ../plugin-host && bunx tsc \
+    && cd ../plugin-toolkit && bunx tsc \
+    && cd ../plugin-memory && bunx tsc \
+    && cd ../plugin-conversations && bunx tsc \
+    && cd ../plugin-media && bunx tsc \
+    && cd ../plugin-mcp && bunx tsc \
+    && cd ../connector-sdk && bunx tsc \
+    && cd ../embeddings && bunx tsc \
+    && cd ../connector-worker && bunx tsc \
+    && cd ../pgvector-embedded && bunx tsc
 
 # Build server bundle (keeps embedded-postgres)
 RUN cd packages/server && bun run build:server

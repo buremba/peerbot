@@ -29,7 +29,12 @@ DROP FUNCTION IF EXISTS public.stamp_watcher_last_run_completed_at();
 -- `mergeStrategy`. Rewrite the two durable JSON snapshots that can outlive the
 -- connector source that produced them. This is a hard cutover: application code
 -- reads only the new key.
-CREATE OR REPLACE FUNCTION pg_temp.rename_connector_trait_merge_strategy(node jsonb)
+-- Walk only the typed eventKinds -> attributions -> traits path: configSchema
+-- and other connector-authored JSON may legitimately contain a `behavior` key.
+CREATE OR REPLACE FUNCTION pg_temp.rename_connector_trait_merge_strategy(
+  node jsonb,
+  context text
+)
 RETURNS jsonb
 LANGUAGE plpgsql
 IMMUTABLE
@@ -38,12 +43,14 @@ DECLARE
   rewritten jsonb;
   entry_key text;
   entry_value jsonb;
+  child_context text;
 BEGIN
   CASE jsonb_typeof(node)
     WHEN 'object' THEN
       rewritten := '{}'::jsonb;
       FOR entry_key, entry_value IN SELECT key, value FROM jsonb_each(node) LOOP
-        IF entry_key = 'behavior'
+        IF context = 'trait'
+          AND entry_key = 'behavior'
           AND jsonb_typeof(entry_value) = 'string'
           AND entry_value #>> '{}' IN ('init_only', 'prefer_non_empty', 'overwrite')
         THEN
@@ -51,17 +58,35 @@ BEGIN
             rewritten := rewritten || jsonb_build_object('mergeStrategy', entry_value);
           END IF;
         ELSE
-          rewritten := rewritten || jsonb_build_object(
-            entry_key,
-            pg_temp.rename_connector_trait_merge_strategy(entry_value)
-          );
+          child_context := CASE
+            WHEN context = 'manifest_map' THEN 'stored_manifest'
+            WHEN context = 'stored_manifest' AND entry_key = 'manifest' THEN 'manifest'
+            WHEN context = 'manifest' AND entry_key = 'feeds_schema' THEN 'feeds'
+            WHEN context = 'feeds' THEN 'feed'
+            WHEN context = 'feed' AND entry_key = 'eventKinds' THEN 'event_kinds'
+            WHEN context = 'event_kinds' THEN 'event_kind'
+            WHEN context = 'event_kind' AND entry_key = 'attributions' THEN 'attributions'
+            WHEN context = 'attribution' AND entry_key = 'traits' THEN 'traits'
+            WHEN context = 'traits' THEN 'trait'
+            ELSE NULL
+          END;
+          rewritten := rewritten || jsonb_build_object(entry_key, CASE
+            WHEN child_context IS NULL THEN entry_value
+            ELSE pg_temp.rename_connector_trait_merge_strategy(entry_value, child_context)
+          END);
         END IF;
       END LOOP;
       RETURN rewritten;
     WHEN 'array' THEN
+      IF context <> 'attributions' THEN
+        RETURN node;
+      END IF;
       SELECT COALESCE(
         jsonb_agg(
-          pg_temp.rename_connector_trait_merge_strategy(item.value)
+          pg_temp.rename_connector_trait_merge_strategy(
+            item.value,
+            'attribution'
+          )
           ORDER BY item.ordinality
         ),
         '[]'::jsonb
@@ -76,29 +101,29 @@ END;
 $$;
 
 UPDATE public.connector_definitions
-SET feeds_schema = pg_temp.rename_connector_trait_merge_strategy(feeds_schema),
+SET feeds_schema = pg_temp.rename_connector_trait_merge_strategy(feeds_schema, 'feeds'),
     updated_at = current_timestamp
-WHERE feeds_schema::text ~
-  '"behavior"[[:space:]]*:[[:space:]]*"(init_only|prefer_non_empty|overwrite)"';
+WHERE feeds_schema IS DISTINCT FROM
+  pg_temp.rename_connector_trait_merge_strategy(feeds_schema, 'feeds');
 
 UPDATE public.device_workers
 SET connector_manifests =
-  pg_temp.rename_connector_trait_merge_strategy(connector_manifests)
-WHERE connector_manifests::text ~
-  '"behavior"[[:space:]]*:[[:space:]]*"(init_only|prefer_non_empty|overwrite)"';
+  pg_temp.rename_connector_trait_merge_strategy(connector_manifests, 'manifest_map')
+WHERE connector_manifests IS DISTINCT FROM
+  pg_temp.rename_connector_trait_merge_strategy(connector_manifests, 'manifest_map');
 
 DO $$
 BEGIN
   IF EXISTS (
     SELECT 1
     FROM public.connector_definitions
-    WHERE feeds_schema::text ~
-      '"behavior"[[:space:]]*:[[:space:]]*"(init_only|prefer_non_empty|overwrite)"'
+    WHERE feeds_schema IS DISTINCT FROM
+      pg_temp.rename_connector_trait_merge_strategy(feeds_schema, 'feeds')
   ) OR EXISTS (
     SELECT 1
     FROM public.device_workers
-    WHERE connector_manifests::text ~
-      '"behavior"[[:space:]]*:[[:space:]]*"(init_only|prefer_non_empty|overwrite)"'
+    WHERE connector_manifests IS DISTINCT FROM
+      pg_temp.rename_connector_trait_merge_strategy(connector_manifests, 'manifest_map')
   ) THEN
     RAISE EXCEPTION 'connector trait merge-strategy cutover left a retired key';
   END IF;

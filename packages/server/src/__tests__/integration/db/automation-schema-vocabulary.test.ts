@@ -169,6 +169,10 @@ describe('Automation schema vocabulary', () => {
     };
     const feedsSchema = {
       messages: {
+        configSchema: {
+          type: 'object',
+          default: { behavior: 'overwrite' },
+        },
         eventKinds: {
           message: {
             attributions: [{ role: 'authored_by', traits: { display_name: legacyTrait } }],
@@ -223,8 +227,10 @@ describe('Automation schema vocabulary', () => {
         const manifestText = JSON.stringify(device.connector_manifests);
         expect(definitionText).toContain('"mergeStrategy":"prefer_non_empty"');
         expect(manifestText).toContain('"mergeStrategy":"prefer_non_empty"');
-        expect(definitionText).not.toContain('"behavior"');
-        expect(manifestText).not.toContain('"behavior"');
+        expect(definitionText).toContain('"default":{"behavior":"overwrite"}');
+        expect(manifestText).toContain('"default":{"behavior":"overwrite"}');
+        expect(definitionText).not.toContain('"behavior":"prefer_non_empty"');
+        expect(manifestText).not.toContain('"behavior":"prefer_non_empty"');
 
         throw new Rollback();
       });

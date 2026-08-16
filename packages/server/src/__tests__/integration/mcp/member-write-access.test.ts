@@ -127,7 +127,7 @@ describe('MCP member write access', () => {
         'search_sdk',
         'query_sdk',
         'query_sql',
-        'render_lobu_view',
+        'get_approval',
       ])
     );
   });

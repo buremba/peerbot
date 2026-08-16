@@ -9,7 +9,9 @@ import {
 describe("generateOpenAPISpec", () => {
 	it("uses public Automation terminology throughout ChatGPT metadata", () => {
 		const spec = generateOpenAPISpec("https://example.test");
-		expect(spec.paths["/api/{orgSlug}/render_lobu_view"]).toBeUndefined();
+		// MCP App tools are never REST-dispatched, so they get no OpenAPI path.
+		expect(spec.paths["/api/{orgSlug}/get_approval"]).toBeUndefined();
+		expect(spec.paths["/api/{orgSlug}/resolve_approval"]).toBeUndefined();
 		const saveMemory =
 			spec.paths["/api/{orgSlug}/save_memory"]?.post?.requestBody?.content?.[
 				"application/json"

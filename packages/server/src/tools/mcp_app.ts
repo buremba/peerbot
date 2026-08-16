@@ -18,7 +18,7 @@ import { getOrgUrlContext } from './view-urls';
 
 // The URI is the host cache key for the immutable template. Bump it whenever
 // the shipped HTML changes; ChatGPT caches both successful and failed fetches.
-export const LOBU_INTERACTION_RESOURCE_URI = 'ui://lobu/interaction/v13.html';
+export const LOBU_INTERACTION_RESOURCE_URI = 'ui://lobu/interaction/v14.html';
 
 const TITLE_MAX_LENGTH = 200;
 const BLOCK_MAX_ITEMS = 100;
@@ -114,7 +114,7 @@ const ApprovalToolActionSchema = Type.Union([
     id: Type.Literal('approve'),
     icon: Type.Optional(Type.Literal('check')),
     submitFormAs: Type.Optional(Type.Literal('input')),
-    tool: Type.Literal('resolve_lobu_approval'),
+    tool: Type.Literal('resolve_approval'),
     args: Type.Object({
       run_id: Type.Integer({ minimum: 1 }),
       decision: Type.Literal('approve'),
@@ -124,7 +124,7 @@ const ApprovalToolActionSchema = Type.Union([
     ...ApprovalToolActionBaseFields,
     id: Type.Literal('reject'),
     icon: Type.Optional(Type.Literal('x')),
-    tool: Type.Literal('resolve_lobu_approval'),
+    tool: Type.Literal('resolve_approval'),
     args: Type.Object({
       run_id: Type.Integer({ minimum: 1 }),
       decision: Type.Literal('reject'),
@@ -144,39 +144,17 @@ export const LobuViewSchema = Type.Object({
   }),
 });
 
-export const ResolveLobuApprovalSchema = Type.Object({
+export const ResolveApprovalSchema = Type.Object({
   run_id: Type.Integer({ minimum: 1 }),
   decision: Type.Union([Type.Literal('approve'), Type.Literal('reject')]),
   input: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
   reason: Type.Optional(Type.String({ maxLength: 2_000 })),
 });
 
-const RenderActionSchema = Type.Object({
-  action: Type.Literal('render', {
-    description:
-      'Render a compact final card from model-selected data. Call Lobu data tools first; do not use this for ordinary text answers.',
-  }),
-  title: Type.Optional(Type.String({ maxLength: TITLE_MAX_LENGTH })),
-  tone: Type.Optional(
-    Type.Union([Type.Literal('warning'), Type.Literal('default'), Type.Literal('bare')])
-  ),
-  blocks: Type.Array(LobuViewBlockSchema, {
-    minItems: 1,
-    maxItems: BLOCK_MAX_ITEMS,
-  }),
-});
-
-const ReviewApprovalActionSchema = Type.Object({
-  action: Type.Literal('review_approval', {
-    description:
-      'Render the server-authored review card for one pending Lobu approval run. The card opens Lobu for the human decision.',
-  }),
+export const GetApprovalSchema = Type.Object({
   run_id: Type.Integer({ minimum: 1 }),
 });
 
-export const RenderLobuViewSchema = Type.Union([RenderActionSchema, ReviewApprovalActionSchema]);
-
-type RenderLobuViewArgs = Static<typeof RenderLobuViewSchema>;
 type LobuView = Static<typeof LobuViewSchema>;
 type LobuViewBlock = Static<typeof LobuViewBlockSchema>;
 
@@ -350,47 +328,6 @@ function approvalBlocks(row: {
   return blocks;
 }
 
-function sanitizeBlocks(blocks: LobuViewBlock[]): LobuViewBlock[] {
-  return blocks.slice(0, BLOCK_MAX_ITEMS).map((block) => {
-    if (block.type === 'text') {
-      return {
-        ...block,
-        ...(block.label ? { label: truncate(block.label, TEXT_LABEL_MAX_LENGTH) } : {}),
-        value: displayValue(block.value, TEXT_VALUE_MAX_LENGTH, block.label),
-      };
-    }
-    if (block.type === 'code') {
-      return {
-        type: 'code',
-        value: displayValue(block.value, CODE_VALUE_MAX_LENGTH),
-      };
-    }
-    if (block.type === 'form') {
-      return {
-        type: 'form',
-        schema: sanitizeFormSchema(block.schema) as Record<string, unknown>,
-        ...(block.initialValues
-          ? {
-              initialValues: sanitizeFormInitialValues(block.initialValues),
-            }
-          : {}),
-      };
-    }
-    return {
-      type: 'diff',
-      fields: block.fields.slice(0, DIFF_FIELD_MAX_ITEMS).map((field) => ({
-        label: truncate(field.label, TEXT_LABEL_MAX_LENGTH),
-        ...(field.before !== undefined
-          ? {
-              before: displayValue(field.before, TEXT_VALUE_MAX_LENGTH, field.label),
-            }
-          : {}),
-        after: displayValue(field.after, TEXT_VALUE_MAX_LENGTH, field.label),
-      })),
-    };
-  });
-}
-
 type ApprovalContentItem = {
   id: number;
   run_id: number;
@@ -527,7 +464,7 @@ async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Pro
           icon: 'check',
           resolvedLabel: 'Approved.',
           ...(row.interaction_input_schema ? { submitFormAs: 'input' as const } : {}),
-          tool: 'resolve_lobu_approval',
+          tool: 'resolve_approval',
           args: { run_id: runId, decision: 'approve' },
         },
         {
@@ -538,7 +475,7 @@ async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Pro
           confirm: true,
           confirmPrompt: 'Reject this pending action?',
           resolvedLabel: 'Rejected.',
-          tool: 'resolve_lobu_approval',
+          tool: 'resolve_approval',
           args: { run_id: runId, decision: 'reject' },
         }
       );
@@ -576,31 +513,22 @@ async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Pro
   return view;
 }
 
-const renderLobuViewImpl = async (
-  args: RenderLobuViewArgs,
+const getApprovalImpl = async (
+  args: Static<typeof GetApprovalSchema>,
   env: Env,
   ctx: ToolContext
-): Promise<LobuView> => {
-  if (args.action === 'review_approval') return buildApprovalView(args.run_id, env, ctx);
-  return {
-    version: 1,
-    ...(args.title ? { title: displayValue(args.title, TITLE_MAX_LENGTH) } : {}),
-    ...(args.tone ? { tone: args.tone } : {}),
-    blocks: sanitizeBlocks(args.blocks),
-    actions: [],
-  };
-};
+): Promise<LobuView> => buildApprovalView(args.run_id, env, ctx);
 
-export const renderLobuView = withValidatedArgs(
-  'render_lobu_view',
-  RenderLobuViewSchema,
-  renderLobuViewImpl
+export const getApproval = withValidatedArgs(
+  'get_approval',
+  GetApprovalSchema,
+  getApprovalImpl
 );
 
-type ResolveLobuApprovalArgs = Static<typeof ResolveLobuApprovalSchema>;
+type ResolveApprovalArgs = Static<typeof ResolveApprovalSchema>;
 
-const resolveLobuApprovalImpl = async (
-  args: ResolveLobuApprovalArgs,
+const resolveApprovalImpl = async (
+  args: ResolveApprovalArgs,
   env: Env,
   ctx: ToolContext
 ): Promise<LobuView> => {
@@ -635,7 +563,6 @@ const resolveLobuApprovalImpl = async (
     clientId: null,
     mcpSessionId: null,
     mcpAppApprovalCapability: null,
-    mcpAppSnapshotCapability: null,
   };
   const result = await manageOperations(
     args.decision === 'approve'
@@ -650,8 +577,8 @@ const resolveLobuApprovalImpl = async (
   return buildApprovalView(args.run_id, env, ctx);
 };
 
-export const resolveLobuApproval = withValidatedArgs(
-  'resolve_lobu_approval',
-  ResolveLobuApprovalSchema,
-  resolveLobuApprovalImpl
+export const resolveApproval = withValidatedArgs(
+  'resolve_approval',
+  ResolveApprovalSchema,
+  resolveApprovalImpl
 );

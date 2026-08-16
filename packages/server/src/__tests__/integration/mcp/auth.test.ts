@@ -1331,7 +1331,7 @@ describe('MCP Authentication', () => {
         [
           'query_sdk',
           'query_sql',
-          'render_lobu_view',
+          'get_approval',
           'run_sdk',
           'save_memory',
           'search_memory',

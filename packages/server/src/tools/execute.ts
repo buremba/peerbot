@@ -69,8 +69,6 @@ export interface AuthContext {
   mcpAppsSupported?: boolean | null;
   /** Host-only capability from an MCP App `tools/call` request. Never persisted. */
   mcpAppApprovalCapability?: string | null;
-  /** Host-only single-use result-binding capability. Raw values are never persisted. */
-  mcpAppSnapshotCapability?: string | null;
   /** Host conversation correlation, separate from the transport session. */
   mcpConversationId?: string | null;
   instructions?: string;
@@ -325,20 +323,18 @@ export async function executeTool(
           shouldRetry: (err) => isRetryableToolError(err),
         })
       : await runHandler();
-    if (tool.audit !== false) {
-      await recordToolInvocationAudit({
-        toolName,
-        args,
-        result,
-        durationMs: Date.now() - startTime,
-        ctx: toolContext,
-      });
-      await recordMcpConversationActivity({
-        ctx: toolContext,
-        toolName,
-        failed: isSoftErrorResult(result),
-      });
-    }
+    await recordToolInvocationAudit({
+      toolName,
+      args,
+      result,
+      durationMs: Date.now() - startTime,
+      ctx: toolContext,
+    });
+    await recordMcpConversationActivity({
+      ctx: toolContext,
+      toolName,
+      failed: isSoftErrorResult(result),
+    });
     return result;
   } catch (error) {
     // Stamp the correlation id onto typed errors so the response boundaries can
@@ -346,20 +342,18 @@ export async function executeTool(
     if (error instanceof ToolError || error instanceof ToolUserError) {
       error.callId = callId;
     }
-    if (tool.audit !== false) {
-      await recordToolInvocationAudit({
-        toolName,
-        args,
-        error,
-        durationMs: Date.now() - startTime,
-        ctx: toolContext,
-      });
-      await recordMcpConversationActivity({
-        ctx: toolContext,
-        toolName,
-        failed: true,
-      });
-    }
+    await recordToolInvocationAudit({
+      toolName,
+      args,
+      error,
+      durationMs: Date.now() - startTime,
+      ctx: toolContext,
+    });
+    await recordMcpConversationActivity({
+      ctx: toolContext,
+      toolName,
+      failed: true,
+    });
     throw error;
   }
 }
@@ -412,7 +406,6 @@ export function toToolContext(authCtx: AuthContext): ToolContext {
     mcpSessionId: authCtx.mcpSessionId ?? null,
     mcpAppsSupported: authCtx.mcpAppsSupported ?? false,
     mcpAppApprovalCapability: authCtx.mcpAppApprovalCapability ?? null,
-    mcpAppSnapshotCapability: authCtx.mcpAppSnapshotCapability ?? null,
     mcpConversationId: authCtx.mcpConversationId ?? null,
     executionMode: authCtx.executionMode ?? null,
   };

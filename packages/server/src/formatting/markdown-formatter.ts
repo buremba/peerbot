@@ -295,7 +295,7 @@ export function formatToolResult(
     read_knowledge: formatGetContentResult,
     manage_automations: formatManageAutomationsResult,
     query_sql: formatQuerySqlResult,
-    render_lobu_view: formatLobuViewResult,
+    get_approval: formatLobuViewResult,
   };
 
   const formatter = formatters[toolName];

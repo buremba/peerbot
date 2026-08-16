@@ -25,12 +25,12 @@ import { MetricSeriesSchema, metricSeries } from './admin/metric_series';
 import { QueryMetricSchema, queryMetric } from './admin/query_metric';
 import { QuerySqlResultSchema, QuerySqlSchema, querySql } from './admin/query_sql';
 import {
+  GetApprovalSchema,
   LOBU_INTERACTION_RESOURCE_URI,
   LobuViewSchema,
-  RenderLobuViewSchema,
-  ResolveLobuApprovalSchema,
-  renderLobuView,
-  resolveLobuApproval,
+  ResolveApprovalSchema,
+  getApproval,
+  resolveApproval,
 } from './mcp_app';
 import { ListOrganizationsSchema } from './organizations';
 import { ResolvePathResultSchema, ResolvePathSchema, resolvePath } from './resolve_path';
@@ -44,14 +44,6 @@ import {
 } from './sdk_run';
 import { SdkSearchResultSchema, SdkSearchSchema, sdkSearch } from './sdk_search';
 import { PublicSearchSchema, SearchSchema, search, UnifiedSearchResultSchema } from './search';
-import {
-  RestoreMcpAppResultOutputSchema,
-  RestoreMcpAppResultSchema,
-  SaveMcpAppStateOutputSchema,
-  SaveMcpAppStateSchema,
-  restoreMcpAppResult,
-  saveMcpAppState,
-} from '../mcp-app-result-snapshots';
 
 // ============================================
 // Tool Definitions
@@ -130,8 +122,6 @@ export interface ToolContext {
   mcpAppsSupported?: boolean | null;
   /** Host-only encrypted token supplied by the Lobu MCP App for one approval click. */
   mcpAppApprovalCapability?: string | null;
-  /** Host-only single-use token that binds a result snapshot to its rendered app card. */
-  mcpAppSnapshotCapability?: string | null;
   /**
    * Server-derived side-effect mode for the run driving these tool calls,
    * carried as a signed worker-token claim. `capture` marks an eval replay:
@@ -203,13 +193,6 @@ export interface ToolDefinition<T = any> {
   securityScopes?: string[];
   /** MCP extension metadata, such as an Apps UI resource linkage. */
   mcpMeta?: Record<string, unknown>;
-  /**
-   * Defaults to true. Setting it false suppresses BOTH the invocation
-   * audit/activity record and any MCP App result snapshot, so the derived
-   * app-state helpers neither pollute activity nor snapshot themselves over
-   * the originating result they were called to restore.
-   */
-  audit?: boolean;
   handler: (args: T, env: Env, ctx: ToolContext) => Promise<any>;
 }
 
@@ -253,10 +236,9 @@ const LOBU_VIEW_MCP_META = {
  * reads and general SDK actions without mounting an iframe for every
  * intermediate result. save_memory is the one exception among them — its single
  * durable write is itself the final result a person inspects, so it mounts one
- * card for the event it just created. The App tools further down
- * (render_lobu_view, resolve_lobu_approval, restore_lobu_app_result,
- * save_lobu_app_state) carry the UI resource by definition; any other
- * final user-facing view still goes through render_lobu_view.
+ * card for the event it just created. Approval review is the other explicit UI
+ * surface: get_approval returns the canonical durable approval and its
+ * app-only resolver performs the human's decision.
  */
 const AGENT_TOOLS: ToolDefinition[] = [
   // ─── Memory hot path — read ───────────────────────────────────────────────
@@ -347,75 +329,37 @@ const AGENT_TOOLS: ToolDefinition[] = [
  */
 const MCP_APP_TOOLS: ToolDefinition[] = [
   {
-    name: 'render_lobu_view',
+    name: 'get_approval',
     description:
-      'Render a compact Lobu card after data has been selected, or render the review card for one pending approval run. Use action="render" only when a visual card materially helps; first call Lobu data tools and pass only the final content. Use action="review_approval" with a run_id returned by a pending action. Text-only clients receive the same information as readable text. Rendering does not change workspace content or external systems. OAuth and PAT calls append a private audit/activity record.',
-    inputSchema: RenderLobuViewSchema,
+      'Get the server-authored review card for one approval run returned by a pending action. The card reads the canonical durable approval, exposes in-card controls only when this OAuth app session can resolve it, and always includes a review link while pending. Reading does not change workspace content or external systems. OAuth and PAT calls append a private audit/activity record.',
+    inputSchema: GetApprovalSchema,
     outputSchema: LobuViewSchema,
-    annotations: { ...AUDITED_READ, title: 'Render Lobu view' },
+    annotations: { ...AUDITED_READ, title: 'Get approval' },
     authorizationReadOnly: true,
     securityScopes: ['mcp:read'],
     mcpMeta: LOBU_VIEW_MCP_META,
-    handler: renderLobuView,
+    handler: getApproval,
   },
   {
-    name: 'resolve_lobu_approval',
+    name: 'resolve_approval',
     description:
       'Resolve the exact pending approval represented by this Lobu MCP App. This tool is app-only and requires the hidden, session-bound capability delivered with the review card.',
-    inputSchema: ResolveLobuApprovalSchema,
+    inputSchema: ResolveApprovalSchema,
     outputSchema: LobuViewSchema,
     annotations: {
       readOnlyHint: false,
       destructiveHint: true,
       openWorldHint: true,
       idempotentHint: false,
-      title: 'Resolve Lobu approval',
+      title: 'Resolve approval',
     },
     securityScopes: ['mcp:write'],
     mcpMeta: {
       ui: {
-        resourceUri: LOBU_INTERACTION_RESOURCE_URI,
         visibility: ['app'],
       },
-      'openai/outputTemplate': LOBU_INTERACTION_RESOURCE_URI,
     },
-    handler: resolveLobuApproval,
-  },
-  {
-    name: 'restore_lobu_app_result',
-    description:
-      'Restore the display-only snapshot for the exact Lobu MCP App tool call. This app-only tool never reruns the originating operation.',
-    inputSchema: RestoreMcpAppResultSchema,
-    outputSchema: RestoreMcpAppResultOutputSchema,
-    annotations: { ...READ_ONLY, title: 'Restore Lobu app result' },
-    authorizationReadOnly: true,
-    securityScopes: ['mcp:read'],
-    mcpMeta: { ui: { visibility: ['app'] } },
-    audit: false,
-    handler: restoreMcpAppResult,
-  },
-  {
-    name: 'save_lobu_app_state',
-    description:
-      'Save bounded pagination and disclosure state for the exact Lobu MCP App tool call. This app-only helper never changes workspace data.',
-    inputSchema: SaveMcpAppStateSchema,
-    outputSchema: SaveMcpAppStateOutputSchema,
-    // Persists a row, so it cannot claim `readOnlyHint` — the same bar that
-    // makes an audit-appending read `AUDITED_READ`. Repeating a save converges,
-    // so it stays idempotent, and `authorizationReadOnly` keeps it read-TIER
-    // (as for query_sql) so a member's app can save its own view state.
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      openWorldHint: false,
-      idempotentHint: true,
-      title: 'Save Lobu app state',
-    },
-    authorizationReadOnly: true,
-    securityScopes: ['mcp:read'],
-    mcpMeta: { ui: { visibility: ['app'] } },
-    audit: false,
-    handler: saveMcpAppState,
+    handler: resolveApproval,
   },
 ];
 

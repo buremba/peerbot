@@ -197,6 +197,8 @@ describe('member write access', () => {
   it('should allow members to save memory', () => {
     expect(requiresMemberWrite('save_memory', {}, false)).toBe(true);
     expect(getRequiredAccessLevel('save_memory', {}, false)).toBe('write');
+    expect(requiresMemberWrite('resolve_approval', {}, false)).toBe(true);
+    expect(getRequiredAccessLevel('resolve_approval', {}, false)).toBe('write');
     expect(requiresMemberWrite('run_sdk', {}, false)).toBe(true);
     expect(getRequiredAccessLevel('run_sdk', {}, false)).toBe('write');
   });
@@ -378,6 +380,10 @@ describe('isPublicReadable', () => {
   it('should allow public read for search memory tools', () => {
     expect(isPublicReadable('search_memory', {})).toBe(true);
     expect(isPublicReadable('search_sdk', {})).toBe(true);
+  });
+
+  it('keeps approval details private to workspace members', () => {
+    expect(isPublicReadable('get_approval', {})).toBe(false);
   });
 
   it('should allow public read for read_knowledge', () => {

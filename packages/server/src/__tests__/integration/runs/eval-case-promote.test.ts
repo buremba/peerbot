@@ -90,6 +90,93 @@ beforeAll(async () => {
 });
 
 describe("promoteEvalCase", () => {
+	// Promote writes an entity TYPE, an entity and an identity claim; a failure
+	// at the claim must leave none of them. A trigger that raises on the claim
+	// insert is the only way to fail exactly that step from outside.
+	//
+	// Runs FIRST on purpose: the entity-type assertion is only load-bearing
+	// while no earlier test has already created the `$eval_case` type, because
+	// promote's `ON CONFLICT DO UPDATE` would then insert nothing to roll back.
+	test("rolls the entity back when the identity claim fails", async () => {
+		const caseKey = "rollback-probe";
+		const identifier = `${sourceRunId}:${caseKey}`;
+		// One name for both objects — a trigger and a function do not share a
+		// namespace in Postgres. Pid-scoped so a concurrent suite on a shared
+		// DATABASE_URL cannot drop this one out from under it.
+		const probeName = `eval_case_rollback_${process.pid}`;
+		const beforeTypes = await sql<{ count: number }[]>`
+			SELECT count(*)::int AS count
+			FROM entity_types
+			WHERE organization_id = ${organizationId}
+				AND slug = ${EVAL_CASE_ENTITY_TYPE_SLUG}
+				AND deleted_at IS NULL
+		`;
+
+		await sql.unsafe(
+			`DROP TRIGGER IF EXISTS ${probeName} ON entity_identities`,
+		);
+		await sql.unsafe(`DROP FUNCTION IF EXISTS public.${probeName}()`);
+		try {
+			await sql.unsafe(`
+				CREATE FUNCTION public.${probeName}()
+				RETURNS trigger
+				LANGUAGE plpgsql
+				AS $$
+				BEGIN
+					RAISE EXCEPTION 'eval identity rollback probe';
+				END;
+				$$
+			`);
+			await sql.unsafe(`
+				CREATE TRIGGER ${probeName}
+				BEFORE INSERT ON entity_identities
+				FOR EACH ROW
+				WHEN (
+					NEW.namespace = '${EVAL_CASE_NAMESPACE}'
+					AND NEW.identifier = '${identifier}'
+				)
+				EXECUTE FUNCTION public.${probeName}()
+			`);
+
+			await expect(
+				promoteEvalCase({ sourceRunId, caseKey }),
+			).rejects.toThrow("eval identity rollback probe");
+		} finally {
+			await sql.unsafe(
+				`DROP TRIGGER IF EXISTS ${probeName} ON entity_identities`,
+			);
+			await sql.unsafe(`DROP FUNCTION IF EXISTS public.${probeName}()`);
+		}
+
+		const entities = await sql<{ count: number }[]>`
+			SELECT count(*)::int AS count
+			FROM entities e
+			JOIN entity_types et ON et.id = e.entity_type_id
+			WHERE e.organization_id = ${organizationId}
+				AND et.slug = ${EVAL_CASE_ENTITY_TYPE_SLUG}
+				AND e.metadata->>'case_key' = ${caseKey}
+		`;
+		expect(entities[0].count).toBe(0);
+
+		const claims = await sql<{ count: number }[]>`
+			SELECT count(*)::int AS count
+			FROM entity_identities
+			WHERE organization_id = ${organizationId}
+				AND namespace = ${EVAL_CASE_NAMESPACE}
+				AND identifier = ${identifier}
+		`;
+		expect(claims[0].count).toBe(0);
+
+		const afterTypes = await sql<{ count: number }[]>`
+			SELECT count(*)::int AS count
+			FROM entity_types
+			WHERE organization_id = ${organizationId}
+				AND slug = ${EVAL_CASE_ENTITY_TYPE_SLUG}
+				AND deleted_at IS NULL
+		`;
+		expect(afterTypes[0].count).toBe(beforeTypes[0].count);
+	});
+
 	test("creates a $eval_case entity pointing at the source run", async () => {
 		const result = await promoteEvalCase({
 			sourceRunId,
@@ -174,6 +261,33 @@ describe("promoteEvalCase", () => {
         AND e.deleted_at IS NULL
     `) as unknown as Array<{ n: number }>;
 		expect(entities[0].n).toBe(1);
+	});
+
+	// Guards the transaction wrapper, not the identity index: two promotes now
+	// hold the `$eval_case` entity-type row and the slug index for a whole
+	// transaction each, so the pair could deadlock or commit two entities where
+	// the un-wrapped path committed one.
+	test("concurrent promotes resolve to one entity", async () => {
+		const [first, second] = await Promise.all([
+			promoteEvalCase({ sourceRunId, caseKey: "concurrent" }),
+			promoteEvalCase({ sourceRunId, caseKey: "concurrent" }),
+		]);
+
+		expect(first.ok && second.ok).toBe(true);
+		if (!first.ok || !second.ok) return;
+		expect(second.evalCase.entityId).toBe(first.evalCase.entityId);
+		expect([first.created, second.created].sort()).toEqual([false, true]);
+
+		const entities = await sql<{ count: number }[]>`
+			SELECT count(*)::int AS count
+			FROM entities e
+			JOIN entity_types et ON et.id = e.entity_type_id
+			WHERE e.organization_id = ${organizationId}
+				AND et.slug = ${EVAL_CASE_ENTITY_TYPE_SLUG}
+				AND e.metadata->>'case_key' = 'concurrent'
+				AND e.deleted_at IS NULL
+		`;
+		expect(entities[0].count).toBe(1);
 	});
 
 	test("adopts its own entity when the identity claim is missing", async () => {

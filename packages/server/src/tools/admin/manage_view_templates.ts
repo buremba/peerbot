@@ -13,10 +13,11 @@ import {
   type ManageViewTemplatesResult,
   type ViewTemplateVersionRow,
 } from '@lobu/core/contracts/tools/manage-view-templates';
-import { getDb } from '../../db/client';
+import { type DbClient, getDb } from '../../db/client';
 import { emit } from '../../events/emitter';
 import { recordToolConfigChange } from './helpers/config-audit';
 import { ToolUserError } from '../../utils/errors';
+import { patchEntityRows } from '../../utils/entity-management';
 import { validateDataSourceQuery } from '../../utils/execute-data-sources';
 import { resolveUsernames } from '../../utils/resolve-usernames';
 import { validateJsonTemplate } from '../../utils/validate-json-template';
@@ -77,6 +78,53 @@ function parentTable(resourceType: string): string {
 /** Resolve resource_id to a consistent string for view_template_versions.resource_id */
 function rid(args: ManageViewTemplatesArgs): string {
   return String(args.resource_id);
+}
+
+/**
+ * Point a verified resource at a default template version while rechecking the
+ * mutable parent under the caller's transaction — `verifyAccess` ran outside
+ * it. An entity row is rechecked (and pinned) by a `FOR UPDATE` select before
+ * the physical write kernel patches it; an entity type, a configuration row on
+ * a separate statically selected table, is rechecked by its own UPDATE.
+ */
+async function setCurrentDefaultVersion(
+  tx: DbClient,
+  args: ManageViewTemplatesArgs,
+  ctx: ToolContext,
+  rowId: number,
+  versionId: number | null
+): Promise<void> {
+  if (args.resource_type === 'entity') {
+    const locked = await tx<{ id: number }>`
+      SELECT id
+      FROM entities
+      WHERE id = ${rowId}
+        AND organization_id = ${ctx.organizationId}
+        AND deleted_at IS NULL
+      FOR UPDATE
+    `;
+    if (locked.length === 0) {
+      throw new ToolUserError(`Entity ${rid(args)} not found`, 404);
+    }
+    await patchEntityRows({
+      tx,
+      ids: [rowId],
+      patch: { currentViewTemplateVersionId: versionId },
+    });
+    return;
+  }
+
+  const changed = await tx<{ id: number }>`
+    UPDATE entity_types
+    SET current_view_template_version_id = ${versionId}, updated_at = NOW()
+    WHERE id = ${rowId}
+      AND organization_id = ${ctx.organizationId}
+      AND deleted_at IS NULL
+    RETURNING id
+  `;
+  if (changed.length !== 1) {
+    throw new ToolUserError(`Entity type '${rid(args)}' not found`, 404);
+  }
 }
 
 /**
@@ -146,7 +194,9 @@ async function verifyAccess(
   }
   const rows = await sql`
     SELECT id FROM entities
-    WHERE id = ${numericId} AND organization_id = ${ctx.organizationId}
+    WHERE id = ${numericId}
+      AND organization_id = ${ctx.organizationId}
+      AND deleted_at IS NULL
     LIMIT 1
   `;
   if (rows.length === 0) throw new Error(`Entity ${id} not found`);
@@ -217,12 +267,7 @@ async function handleSet(
     const vid = Number(row.id);
 
     if (tabName === null) {
-      await tx.unsafe(
-        `UPDATE ${parentTable(args.resource_type)}
-         SET current_view_template_version_id = $1, updated_at = NOW()
-         WHERE id = $2`,
-        [vid, rowId]
-      );
+      await setCurrentDefaultVersion(tx, args, ctx, rowId, vid);
     } else {
       await tx`
         INSERT INTO view_template_active_tabs (
@@ -356,12 +401,7 @@ async function handleClear(
   const sql = getDb();
   const rowId = await verifyAccess(sql, args, ctx, true);
 
-  await sql.unsafe(
-    `UPDATE ${parentTable(args.resource_type)}
-     SET current_view_template_version_id = NULL, updated_at = NOW()
-     WHERE id = $1`,
-    [rowId]
-  );
+  await sql.begin((tx) => setCurrentDefaultVersion(tx, args, ctx, rowId, null));
 
   emit(ctx.organizationId, {
     keys: ['resolve-path', 'entity-types', 'view-template-history'],
@@ -411,12 +451,7 @@ async function handleRollback(
     const versionId = Number(row.id);
 
     if (tabName === null) {
-      await tx.unsafe(
-        `UPDATE ${parentTable(args.resource_type)}
-         SET current_view_template_version_id = $1, updated_at = NOW()
-         WHERE id = $2`,
-        [versionId, rowId]
-      );
+      await setCurrentDefaultVersion(tx, args, ctx, rowId, versionId);
     } else {
       const updated = await tx`
         UPDATE view_template_active_tabs

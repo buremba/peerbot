@@ -380,6 +380,7 @@ export interface EntityRowPatch {
 	name?: string;
 	slug?: string;
 	parentId?: number | null;
+	currentViewTemplateVersionId?: number | null;
 	metadata?: Record<string, unknown> | null;
 	fieldControls?: Record<string, unknown>;
 	enabledClassifiers?: string[] | null;
@@ -480,6 +481,7 @@ export async function patchEntityRows(params: {
 	const hasName = patch.name !== undefined;
 	const hasSlug = patch.slug !== undefined;
 	const hasParent = patch.parentId !== undefined;
+	const hasCurrentViewTemplateVersion = patch.currentViewTemplateVersionId !== undefined;
 	const hasMetadata = patch.metadata !== undefined;
 	const hasFieldControls = patch.fieldControls !== undefined;
 	const hasEnabledClassifiers = patch.enabledClassifiers !== undefined;
@@ -493,6 +495,7 @@ export async function patchEntityRows(params: {
       name = CASE WHEN ${hasName} THEN ${patch.name ?? null} ELSE name END,
       slug = CASE WHEN ${hasSlug} THEN ${patch.slug ?? null} ELSE slug END,
       parent_id = CASE WHEN ${hasParent} THEN ${patch.parentId ?? null}::bigint ELSE parent_id END,
+      current_view_template_version_id = CASE WHEN ${hasCurrentViewTemplateVersion} THEN ${patch.currentViewTemplateVersionId ?? null}::bigint ELSE current_view_template_version_id END,
       metadata = CASE WHEN ${hasMetadata} THEN ${patch.metadata == null ? null : tx.json(patch.metadata)} ELSE metadata END,
       field_controls = CASE WHEN ${hasFieldControls} THEN ${tx.json(patch.fieldControls ?? {})} ELSE field_controls END,
       enabled_classifiers = CASE WHEN ${hasEnabledClassifiers} THEN ${patch.enabledClassifiers != null ? pgTextArray(patch.enabledClassifiers) : null}::text[] ELSE enabled_classifiers END,

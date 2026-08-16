@@ -27,7 +27,6 @@ if [ "${K8S:-0}" = "1" ]; then
   done
 
   CI_IMAGE="${CI_IMAGE:-lobu-ci:local}"
-  PG_IMAGE="${PG_IMAGE:-pgvector/pgvector:pg18}"
   K8S_NAMESPACE="${K8S_NAMESPACE:-default}"
   K8S_TIMEOUT="${K8S_TIMEOUT:-900}"
 
@@ -50,7 +49,7 @@ if [ "${K8S:-0}" = "1" ]; then
 
   echo ">> running CI in K8s pod $POD (tree $TREE)"
 
-  # Create pod with CI runner + Postgres sidecar
+  # Create pod with CI runner (embedded Postgres, no sidecar needed)
   kubectl run "$POD" \
     -n "$K8S_NAMESPACE" \
     --image="$CI_IMAGE" \
@@ -63,26 +62,10 @@ if [ "${K8S:-0}" = "1" ]; then
             \"name\": \"ci\",
             \"image\": \"$CI_IMAGE\",
             \"command\": [\"bash\", \"-c\"],
-            \"args\": [\"cd /workspace && bun install && bun run build:packages && for _ in \\\$(seq 1 20); do pg_isready -h localhost -p 5432 -U postgres && break; sleep 1; done && PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d lobu_test -c 'CREATE EXTENSION IF NOT EXISTS vector' && bun test\"],
-            \"env\": [
-              {\"name\": \"DATABASE_URL\", \"value\": \"postgres://postgres:postgres@localhost:5432/lobu_test\"},
-              {\"name\": \"DB_POOL_MAX\", \"value\": \"5\"}
-            ],
+            \"args\": [\"cd /workspace && bun install && bun run build:packages && bun test\"],
             \"resources\": {\"requests\": {\"cpu\": \"2\", \"memory\": \"4Gi\"}, \"limits\": {\"cpu\": \"4\", \"memory\": \"8Gi\"}}
-          },
-          {
-            \"name\": \"postgres\",
-            \"image\": \"$PG_IMAGE\",
-            \"env\": [
-              {\"name\": \"POSTGRES_USER\", \"value\": \"postgres\"},
-              {\"name\": \"POSTGRES_PASSWORD\", \"value\": \"postgres\"},
-              {\"name\": \"POSTGRES_DB\", \"value\": \"lobu_test\"}
-            ],
-            \"ports\": [{\"containerPort\": 5432}],
-            \"resources\": {\"requests\": {\"cpu\": \"1\", \"memory\": \"1Gi\"}, \"limits\": {\"cpu\": \"2\", \"memory\": \"2Gi\"}}
           }
-        ],
-        \"shareProcessNamespace\": true
+        ]
       }
     }"
 

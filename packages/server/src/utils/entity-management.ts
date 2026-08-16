@@ -372,8 +372,20 @@ export interface EntityRowPatch {
 	enabledClassifiers?: string[] | null;
 	content?: string | null;
 	embedding?: number[] | null;
-	/** true stamps deleted_at. The kernel never clears an existing tombstone. */
+	/** true stamps deleted_at. This path never clears an existing tombstone. */
 	softDelete?: boolean;
+}
+
+/**
+ * Fields owned by the merge ledger rather than ordinary entity editing.
+ * `liveness` is explicit because this path may revive a tombstoned loser;
+ * normal `patchEntityRows` deliberately cannot do that.
+ */
+export interface EntityMergeRowTransition {
+	mergedInto?: number | null;
+	metadata?: Record<string, unknown>;
+	fieldControls?: Record<string, unknown>;
+	liveness?: "deleted" | "live";
 }
 
 export interface InsertedEntityRow {
@@ -438,8 +450,9 @@ export function tryInsertEntityRow(params: {
 /**
  * Patch an explicit, bounded set of entity ids using the caller's DB handle.
  * Omitted fields remain unchanged; nullable fields distinguish null from
- * omission. Only live rows are patched — a tombstoned row is skipped, so the
- * kernel can never resurrect one. Every call touches updated_at, including a
+ * omission. Only live rows are patched — a tombstoned row is skipped, so this
+ * path can never resurrect one; reviving a merge loser belongs to
+ * `transitionEntityMergeRows` alone. Every call touches updated_at, including a
  * fully blocked update whose patch ends up empty.
  *
  * Returns the ids actually written, ascending.
@@ -476,6 +489,51 @@ export async function patchEntityRows(params: {
       updated_at = current_timestamp
     WHERE id = ANY(${idsLiteral}::bigint[])
       AND deleted_at IS NULL
+    RETURNING id
+  `;
+	return rows.map((row) => Number(row.id)).sort((a, b) => a - b);
+}
+
+/**
+ * Apply one merge-ledger transition to an explicit, bounded set of rows.
+ *
+ * This is the only physical kernel path that may change `merged_into`, patch a
+ * tombstoned canonical row, or clear `deleted_at`. It does not authorize or
+ * validate a merge: the caller must hold the relevant row locks in a real
+ * transaction and supply the topology value it already proved under lock.
+ * Merge and unmerge are one compound transaction — never run `runMutationGate`
+ * from here.
+ */
+export async function transitionEntityMergeRows(params: {
+	tx: DbClient;
+	organizationId: string;
+	ids: number[];
+	expectedMergedInto: number | null;
+	transition: EntityMergeRowTransition;
+}): Promise<number[]> {
+	if (params.ids.length === 0) return [];
+	const { tx, transition } = params;
+	const hasMergedInto = transition.mergedInto !== undefined;
+	const hasMetadata = transition.metadata !== undefined;
+	const hasFieldControls = transition.fieldControls !== undefined;
+	const markDeleted = transition.liveness === "deleted";
+	const markLive = transition.liveness === "live";
+	const idsLiteral = pgBigintArray(params.ids);
+
+	const rows = await tx<{ id: number }>`
+    UPDATE entities SET
+      merged_into = CASE WHEN ${hasMergedInto} THEN ${transition.mergedInto ?? null}::bigint ELSE merged_into END,
+      metadata = CASE WHEN ${hasMetadata} THEN ${tx.json(transition.metadata ?? {})} ELSE metadata END,
+      field_controls = CASE WHEN ${hasFieldControls} THEN ${tx.json(transition.fieldControls ?? {})} ELSE field_controls END,
+      deleted_at = CASE
+        WHEN ${markDeleted} THEN current_timestamp
+        WHEN ${markLive} THEN NULL
+        ELSE deleted_at
+      END,
+      updated_at = current_timestamp
+    WHERE organization_id = ${params.organizationId}
+      AND id = ANY(${idsLiteral}::bigint[])
+      AND merged_into IS NOT DISTINCT FROM ${params.expectedMergedInto}::bigint
     RETURNING id
   `;
 	return rows.map((row) => Number(row.id)).sort((a, b) => a - b);

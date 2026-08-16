@@ -11,6 +11,7 @@ import {
 	hardDeleteEntityRows,
 	insertEntityRow,
 	patchEntityRows,
+	transitionEntityMergeRows,
 	tryInsertEntityRow,
 } from "../entity-management";
 
@@ -201,8 +202,9 @@ describe("entity row write kernel", () => {
 		)[0].deleted_at;
 		expect(deletedAt).not.toBeNull();
 
-		// A tombstoned row is invisible to the kernel: no further patch lands on
-		// it, so a later write can neither edit nor resurrect a deleted entity.
+		// A tombstoned row is invisible to `patchEntityRows`: no further patch
+		// lands on it, so an ordinary write can neither edit nor resurrect a
+		// deleted entity.
 		expect(
 			await patchEntityRows({
 				tx: sql,
@@ -216,5 +218,105 @@ describe("entity row write kernel", () => {
 		`;
 		expect(rows[0].name).toBe("Delete me");
 		expect(rows[0].deleted_at).toEqual(deletedAt);
+	});
+
+	it("fences merge transitions by organization and locked topology", async () => {
+		const sql = getTestDb();
+		const organization = await createTestOrganization({
+			name: "Entity kernel merge transition",
+		});
+		const otherOrganization = await createTestOrganization({
+			name: "Entity kernel merge transition other org",
+		});
+		const user = await createTestUser();
+		const entityTypeId = await seedEntityType(organization.id);
+		const winner = await insertEntityRow({
+			tx: sql,
+			row: {
+				organizationId: organization.id,
+				entityTypeId,
+				name: "Winner",
+				slug: "winner",
+				createdBy: user.id,
+			},
+		});
+		const loser = await insertEntityRow({
+			tx: sql,
+			row: {
+				organizationId: organization.id,
+				entityTypeId,
+				name: "Loser",
+				slug: "loser",
+				createdBy: user.id,
+			},
+		});
+
+		await sql.begin(async (tx) => {
+			await tx`
+				SELECT id FROM entities
+				WHERE id IN (${winner.id}, ${loser.id})
+				ORDER BY id
+				FOR UPDATE
+			`;
+
+			expect(
+				await transitionEntityMergeRows({
+					tx,
+					organizationId: otherOrganization.id,
+					ids: [loser.id],
+					expectedMergedInto: null,
+					transition: { mergedInto: winner.id, liveness: "deleted" },
+				}),
+			).toEqual([]);
+
+			expect(
+				await transitionEntityMergeRows({
+					tx,
+					organizationId: organization.id,
+					ids: [loser.id],
+					expectedMergedInto: null,
+					transition: { mergedInto: winner.id, liveness: "deleted" },
+				}),
+			).toEqual([loser.id]);
+
+			expect(
+				await transitionEntityMergeRows({
+					tx,
+					organizationId: organization.id,
+					ids: [loser.id],
+					expectedMergedInto: null,
+					transition: { mergedInto: null, liveness: "live" },
+				}),
+			).toEqual([]);
+
+			expect(
+				await transitionEntityMergeRows({
+					tx,
+					organizationId: organization.id,
+					ids: [loser.id],
+					expectedMergedInto: winner.id,
+					transition: {
+						mergedInto: null,
+						metadata: { restored: true },
+						liveness: "live",
+					},
+				}),
+			).toEqual([loser.id]);
+		});
+
+		const rows = await sql<{
+			merged_into: number | null;
+			deleted_at: Date | null;
+			metadata: Record<string, unknown>;
+		}>`
+			SELECT merged_into, deleted_at, metadata
+			FROM entities
+			WHERE id = ${loser.id}
+		`;
+		expect(rows[0]).toEqual({
+			merged_into: null,
+			deleted_at: null,
+			metadata: { restored: true },
+		});
 	});
 });

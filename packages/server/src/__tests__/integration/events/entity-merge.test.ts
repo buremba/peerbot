@@ -442,6 +442,34 @@ describe('entity merge', () => {
     expect(lRow.deleted_at).toBeNull();
   });
 
+  it('restores the loser without resurrecting a canonical entity deleted after merge', async () => {
+    const sql = getTestDb();
+    const org = await createTestOrganization({ name: 'Deleted canonical undo org' });
+    const user = await createTestUser();
+    const winner = await createTestEntity({ name: 'W', entity_type: 'person', organization_id: org.id, created_by: user.id });
+    const loser = await createTestEntity({ name: 'L', entity_type: 'person', organization_id: org.id, created_by: user.id });
+
+    await applyMerge({ orgId: org.id, loserId: loser.id, winnerId: winner.id, mergedBy: user.id });
+    // Undo restores canonical attributes onto a winner that may since have been
+    // tombstoned — it must write through that tombstone without clearing it.
+    await sql`
+      UPDATE entities
+      SET deleted_at = current_timestamp, updated_at = current_timestamp
+      WHERE id = ${winner.id}
+    `;
+
+    await applyUnmerge({ orgId: org.id, loserId: loser.id, unmergedBy: user.id });
+
+    const [winnerAfter] = await sql<{ deleted_at: string | null }>`
+      SELECT deleted_at FROM entities WHERE id = ${winner.id}
+    `;
+    const [loserAfter] = await sql<{ merged_into: number | null; deleted_at: string | null }>`
+      SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}
+    `;
+    expect(winnerAfter.deleted_at).not.toBeNull();
+    expect(loserAfter).toEqual({ merged_into: null, deleted_at: null });
+  });
+
   it('merges complementary attributes and exactly restores metadata plus relationships on undo', async () => {
     const sql = getTestDb();
     const org = await createTestOrganization({ name: 'Exact Undo Org' });

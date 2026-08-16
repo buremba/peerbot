@@ -609,6 +609,45 @@ describe("apply diff — memory schema", () => {
     expect(plan.counts.create).toBe(0);
   });
 
+  test("member_of stays a noop against a RECORDED baseline", () => {
+    // The path a repeat apply actually takes. With a recorded baseline the
+    // desired-side diff never reaches the field-level helper, so a guard placed
+    // only there is dead code here: the platform row has no attribution entry,
+    // its facets differ from the config's, and that combination is blocking
+    // drift — which aborts the whole apply.
+    const desired: DesiredState = {
+      agents: [],
+      memorySchema: {
+        entityTypes: [],
+        relationshipTypes: [
+          { slug: "member_of", name: "Member of", description: "declared" },
+        ],
+      },
+      automations: [],
+      requiredSecrets: [],
+    };
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      relationshipTypes: [
+        { slug: "member_of", name: "Membership", description: "platform" },
+      ],
+    };
+    const plan = computeDiff(desired, remote, {
+      baseline: {
+        recorded: true,
+        attribution: {
+          entityTypes: [],
+          relationshipTypes: [],
+          automations: [],
+        },
+        owned: new Set<string>(),
+      },
+    });
+    expect(plan.rows.some((r) => r.blocking)).toBe(false);
+    expect(plan.counts.update).toBe(0);
+    expect(plan.counts.create).toBe(0);
+  });
+
   test("member_of is neither pruned nor blocking when the config omits it", () => {
     // The platform mints it, so it is absent from config by design. Blocking
     // would stall every apply; deleting would revoke access wholesale.

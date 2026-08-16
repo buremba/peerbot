@@ -542,19 +542,6 @@ function diffRelationshipType(
   desired: DesiredRelationshipType,
   remote: RemoteRelationshipType | undefined
 ): RelationshipTypeDiffRow {
-  if (isPlatformOwnedRelationshipType("relationship-type", desired.slug)) {
-    // The config may declare it — it must, to avoid blocking drift under prune —
-    // but the declaration binds to the platform's row rather than managing it.
-    // Emitting create/update here would fail the apply outright once the server
-    // classifies the type as authorization-bearing.
-    return {
-      kind: "relationship-type",
-      verb: "noop",
-      id: desired.slug,
-      desired,
-      remote,
-    } as RelationshipTypeDiffRow;
-  }
   return buildDiffRow({
     kind: "relationship-type",
     id: desired.slug,
@@ -887,6 +874,25 @@ function diffRelationshipTypeWithBaseline(
   remote: RemoteRelationshipType | undefined,
   baseline: Baseline | undefined
 ): { row: RelationshipTypeDiffRow; blocking: BlockingDriftRow[] } {
+  if (isPlatformOwnedRelationshipType("relationship-type", desired.slug)) {
+    // A config may declare it, but the declaration binds to the platform's row
+    // rather than managing it.
+    // Emitting create/update here would fail the apply outright once the server
+    // classifies the type as authorization-bearing, and a recorded baseline
+    // would otherwise raise blocking drift for a row apply never wrote.
+    // This is the only entry point for the desired-side relationship diff, so
+    // the check belongs here rather than in the field-level helper below.
+    return {
+      row: {
+        kind: "relationship-type",
+        verb: "noop",
+        id: desired.slug,
+        desired,
+        remote,
+      } as RelationshipTypeDiffRow,
+      blocking: [],
+    };
+  }
   if (!remote) {
     return { row: diffRelationshipType(desired, remote), blocking: [] };
   }
@@ -1095,16 +1101,15 @@ export const effectiveRelationshipTypeAfterApply = (
   rules: d.rules ?? [],
 });
 
-/** Classify a remote-only definition without deleting unproven ownership. */
 /**
  * Relationship types whose lifecycle the platform owns, not a config.
  *
  * `member_of` is minted and maintained by the connector ACL syncs. A config may
- * legitimately DECLARE it — `examples/personal-agent/lobu.config.ts` does, and
- * has to, since an undeclared remote type becomes blocking drift under prune —
- * but apply must not create, update, or delete it. Once the server classifies
- * it as authorization-bearing, the schema surfaces refuse those writes outright,
- * so an apply that still attempted them would fail for every such config.
+ * legitimately DECLARE it — `examples/personal-agent/lobu.config.ts` does — but
+ * apply must not create, update, or delete it, declared or not. Once the server
+ * classifies it as authorization-bearing, the schema surfaces refuse those
+ * writes outright, so an apply that still attempted them would fail for every
+ * such config.
  *
  * Keyed on the slug rather than the server's `purpose`, which the apply client
  * does not fetch. That is deliberate: the slug is reserved, and keying on it
@@ -1112,15 +1117,13 @@ export const effectiveRelationshipTypeAfterApply = (
  */
 const PLATFORM_OWNED_RELATIONSHIP_SLUGS = new Set(["member_of"]);
 
-export function isPlatformOwnedRelationshipType(
-  kind: string,
-  slug: string
-): boolean {
+function isPlatformOwnedRelationshipType(kind: string, slug: string): boolean {
   return (
     kind === "relationship-type" && PLATFORM_OWNED_RELATIONSHIP_SLUGS.has(slug)
   );
 }
 
+/** Classify a remote-only definition without deleting unproven ownership. */
 function remoteOnlyDefinitionRow(
   kind: "entity-type" | "relationship-type" | "automation",
   remote: {

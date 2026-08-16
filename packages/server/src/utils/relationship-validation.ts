@@ -132,8 +132,8 @@ export function assertNotAuthorizationType(
  * grants and the backfill would then bless whatever they left behind.
  *
  * Deliberately NOT used on the relationship-TYPE surfaces: configs legitimately
- * declare `member_of` (`examples/personal-agent/lobu.config.ts`) and must, or
- * prune flags it removed and aborts the apply. Declaring a type grants nobody
+ * declare `member_of` (`examples/personal-agent/lobu.config.ts`), and refusing
+ * the declaration would break every such apply. Declaring a type grants nobody
  * access; creating an edge on it does.
  */
 export function assertNotAclManagedEdge(

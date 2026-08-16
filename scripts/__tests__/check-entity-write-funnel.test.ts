@@ -313,7 +313,7 @@ describe("check-entity-write-funnel", () => {
     const guardSource = readFileSync(GUARD, "utf8");
     writeFileSync(
       STALE_GUARD_PROBE,
-      guardSource.replace("28b38f1cbc483794", "0000000000000000")
+      guardSource.replace("6c2d50be50c02a93", "0000000000000000")
     );
 
     const result = Bun.spawnSync(["bun", STALE_GUARD_PROBE], {
@@ -323,7 +323,7 @@ describe("check-entity-write-funnel", () => {
     });
     expect(result.exitCode).toBe(1);
     expect(result.stderr.toString()).toContain(
-      "x2 [lost identity or mint race cleanup]"
+      "x2 [set or rollback default entity view template]"
     );
   });
 

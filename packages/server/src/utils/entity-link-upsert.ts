@@ -26,8 +26,13 @@ import {
 } from '@lobu/connector-sdk';
 import { normalizeIdentifier } from '@lobu/connector-sdk/identity-normalize';
 import { ensureResourceEntityType } from '../authz/acl-resource-type';
-import { type DbClient, getDb, pgTextArray } from '../db/client';
+import { type DbClient, getDb, pgBigintArray, pgTextArray } from '../db/client';
 import { normalizeConnectorIdentityValue } from '../identity/connector-identity-modules';
+import {
+  hardDeleteEntityRows,
+  patchEntityRows,
+  tryInsertEntityRow,
+} from './entity-management';
 import logger from './logger';
 import { getValueAtPath } from './object-path';
 import { TtlCache } from './ttl-cache';
@@ -82,6 +87,24 @@ const RULES_CACHE_TTL_MS = 60_000;
 // Per-pod caches — no cross-replica sharing.
 const rulesCache = new TtlCache<RuleMap>(RULES_CACHE_TTL_MS);
 const creatorCache = new TtlCache<string | null>(RULES_CACHE_TTL_MS);
+
+/**
+ * Connector attribution is one logical entity write: match/create, identity
+ * claim, aliases, traits, and provisional cleanup must commit together. A real
+ * transaction handle exposes savepoint(); a pool handle must open begin().
+ *
+ * Consequence for callers: a write that used to be logged and skipped per item
+ * (a rejected entity insert, an identity claim that trips its connection FK)
+ * now rolls the batch's entity writes back and propagates. On the sync path
+ * that aborts the ingest batch rather than persisting events whose attribution
+ * silently half-landed.
+ */
+async function withEntityWriteTransaction<T>(
+  sql: DbClient,
+  write: (tx: DbClient) => Promise<T>
+): Promise<T> {
+  return typeof sql.savepoint === 'function' ? write(sql) : sql.begin(write);
+}
 
 async function resolveOrgCreator(orgId: string): Promise<string | null> {
   return creatorCache.getOrSet(orgId, async () => {
@@ -240,39 +263,42 @@ function passesCreateWhen(predicate: EntityLinkPredicate | undefined, item: Batc
  * metrics; both must carry a contact's identifiers or its per-entity metrics
  * silently drop.
  *
- * Done as ONE atomic UPDATE that unions the row's existing aliases with the new
- * identifiers in SQL — a JS read-modify-write would let concurrent ingests on
- * the same entity clobber each other's additions. The `@>` guard means the write
- * is skipped (0 rows) when every identifier is already present, so repeat
- * messages from a known, fully-aliased sender cost only a PK lookup. Passing the
- * entity's full identifier set (not just freshly-inserted ones) also repairs a
- * legacy entity whose `entity_identities` predate aliases-on-create.
+ * Lock before merging so concurrent connector transactions cannot clobber one
+ * another's aliases or traits. Passing the entity's full identifier set (not
+ * just freshly-inserted ones) also repairs a legacy entity whose
+ * `entity_identities` predate aliases-on-create.
  */
 async function ensureAliases(
   sql: DbClient,
   params: { orgId: string; entityId: number; identifiers: string[] }
 ): Promise<void> {
   if (params.identifiers.length === 0) return;
-  await sql`
-    UPDATE entities
-    SET metadata = jsonb_set(
-          COALESCE(metadata, '{}'::jsonb),
-          '{aliases}',
-          (
-            SELECT to_jsonb(array_agg(DISTINCT a))
-            FROM (
-              SELECT jsonb_array_elements_text(COALESCE(metadata->'aliases', '[]'::jsonb)) AS a
-              UNION
-              SELECT unnest(${pgTextArray(params.identifiers)}::text[]) AS a
-            ) u
-          )
-        ),
-        updated_at = current_timestamp
+  const rows = await sql<{ metadata: Record<string, unknown> | null }>`
+    SELECT metadata
+    FROM entities
     WHERE id = ${params.entityId}
       AND organization_id = ${params.orgId}
       AND deleted_at IS NULL
-      AND NOT (COALESCE(metadata->'aliases', '[]'::jsonb) @> ${sql.json(params.identifiers)}::jsonb)
+    FOR UPDATE
   `;
+  if (rows.length === 0) return;
+
+  const current = rows[0].metadata ?? {};
+  const aliases = Array.isArray(current.aliases)
+    ? current.aliases.filter((value): value is string => typeof value === 'string')
+    : [];
+  if (params.identifiers.every((identifier) => aliases.includes(identifier))) return;
+
+  await patchEntityRows({
+    tx: sql,
+    ids: [params.entityId],
+    patch: {
+      metadata: {
+        ...current,
+        aliases: [...new Set([...aliases, ...params.identifiers])].sort(),
+      },
+    },
+  });
 }
 
 /**
@@ -408,6 +434,17 @@ function resolveIdentityTier(
   return null;
 }
 
+function firstIdentityHit(
+  identities: ResolvedIdentity[],
+  matches: Map<string, number>
+): number | null {
+  for (const id of identities) {
+    const hit = matches.get(`${id.namespace}\u0000${id.identifier}`);
+    if (hit !== undefined) return hit;
+  }
+  return null;
+}
+
 async function createEntityWithIdentities(
   sql: DbClient,
   params: {
@@ -488,24 +525,18 @@ async function createEntityWithIdentities(
   let entityId: number | null = null;
   for (let attempt = 0; attempt < 3 && entityId === null; attempt++) {
     const slug = randomSlug(params.entityType);
-    try {
-      const rows = await sql<{ id: number | string }>`
-        INSERT INTO entities (
-          organization_id, entity_type_id, name, slug, metadata,
-          created_by, created_at, updated_at
-        )
-        VALUES (
-          ${params.orgId}, ${entityTypeId}, ${name}, ${slug},
-          ${sql.json(metadata)},
-          ${params.creatorUserId}, current_timestamp, current_timestamp
-        )
-        ON CONFLICT DO NOTHING
-        RETURNING id
-      `;
-      if (rows.length > 0) entityId = Number(rows[0].id);
-    } catch (err) {
-      logger.warn({ err, entityType: params.entityType }, 'entity create failed');
-    }
+    const inserted = await tryInsertEntityRow({
+      tx: sql,
+      row: {
+        organizationId: params.orgId,
+        entityTypeId,
+        name,
+        slug,
+        metadata,
+        createdBy: params.creatorUserId,
+      },
+    });
+    if (inserted) entityId = Number(inserted.id);
   }
   if (entityId === null) return null;
 
@@ -546,26 +577,21 @@ async function insertIdentities(
   if (params.identities.length === 0) return [];
   const namespaces = params.identities.map((i) => i.namespace);
   const identifiers = params.identities.map((i) => i.identifier);
-  try {
-    const attached = await sql<{ namespace: string; identifier: string }>`
-      INSERT INTO entity_identities (
-        organization_id, entity_id, namespace, identifier, source_connector, connection_id
-      )
-      SELECT ${params.orgId}, ${params.entityId}, v.ns, v.ident,
-             ${`connector:${params.connectorKey}`}, ${params.connectionId ?? null}
-      FROM unnest(${pgTextArray(namespaces)}::text[], ${pgTextArray(identifiers)}::text[]) AS v(ns, ident)
-      ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
-      DO UPDATE SET connection_id = EXCLUDED.connection_id
-      WHERE entity_identities.entity_id = EXCLUDED.entity_id
-        AND entity_identities.connection_id IS NULL
-        AND EXCLUDED.connection_id IS NOT NULL
-      RETURNING namespace, identifier
-    `;
-    return attached.map((r) => ({ namespace: r.namespace, identifier: r.identifier }));
-  } catch (err) {
-    logger.warn({ err, entityId: params.entityId }, 'entity_identities insert failed');
-    return [];
-  }
+  const attached = await sql<{ namespace: string; identifier: string }>`
+    INSERT INTO entity_identities (
+      organization_id, entity_id, namespace, identifier, source_connector, connection_id
+    )
+    SELECT ${params.orgId}, ${params.entityId}, v.ns, v.ident,
+           ${`connector:${params.connectorKey}`}, ${params.connectionId ?? null}
+    FROM unnest(${pgTextArray(namespaces)}::text[], ${pgTextArray(identifiers)}::text[]) AS v(ns, ident)
+    ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
+    DO UPDATE SET connection_id = EXCLUDED.connection_id
+    WHERE entity_identities.entity_id = EXCLUDED.entity_id
+      AND entity_identities.connection_id IS NULL
+      AND EXCLUDED.connection_id IS NOT NULL
+    RETURNING namespace, identifier
+  `;
+  return attached.map((r) => ({ namespace: r.namespace, identifier: r.identifier }));
 }
 
 async function applyTraits(
@@ -596,17 +622,15 @@ async function applyTraits(
   }
   if (Object.keys(overwrite).length === 0 && Object.keys(preferNonEmpty).length === 0) return;
 
-  // Read-modify-write the metadata jsonb. A single worker processes a given
-  // (connector, run) batch sequentially, so intra-batch races are impossible;
-  // cross-batch races touching the same entity are rare enough to accept
-  // last-writer-wins.
+  // Serialize the metadata read-modify-write with alias and trait projections
+  // from concurrent connector transactions.
   const rows = await sql<{ metadata: Record<string, unknown> | null }>`
     SELECT metadata
     FROM entities
     WHERE id = ${params.entityId}
       AND organization_id = ${params.orgId}
       AND deleted_at IS NULL
-    LIMIT 1
+    FOR UPDATE
   `;
   if (rows.length === 0) return;
   const current = rows[0].metadata ?? {};
@@ -619,14 +643,11 @@ async function applyTraits(
     }
   }
 
-  await sql`
-    UPDATE entities
-    SET metadata = ${sql.json(next)},
-        updated_at = current_timestamp
-    WHERE id = ${params.entityId}
-      AND organization_id = ${params.orgId}
-      AND deleted_at IS NULL
-  `;
+  await patchEntityRows({
+    tx: sql,
+    ids: [params.entityId],
+    patch: { metadata: next },
+  });
 }
 
 /**
@@ -644,10 +665,9 @@ export async function applyEventAttributions(
     items: BatchItem[];
   },
   // Optional transaction handle, same contract the webhook path already uses via
-  // resolveEventAttributionsForItems: the entity match/create/trait writes land
-  // on the caller's tx instead of the singleton. The sync dry-run path threads
-  // its rolled-back tx here so auto-created entities disappear with the events
-  // that referenced them. Omitted → getDb().
+  // resolveEventAttributionsForItems. A supplied tx is joined; a pool or omitted
+  // handle opens a transaction here. The sync dry-run path threads its rolled-
+  // back tx so auto-created entities disappear with their events.
   sql?: DbClient
 ): Promise<void> {
   if (!params.feedKey || params.items.length === 0) return;
@@ -659,15 +679,18 @@ export async function applyEventAttributions(
   });
   if (Object.keys(rulesByKind).length === 0) return;
 
-  await resolveLinksByKind(
-    {
-      connectorKey: params.connectorKey,
-      connectionId: params.connectionId,
-      orgId: params.orgId,
-      items: params.items,
-      rulesByKind,
-    },
-    sql ?? getDb()
+  const db = sql ?? getDb();
+  await withEntityWriteTransaction(db, (tx) =>
+    resolveLinksByKind(
+      {
+        connectorKey: params.connectorKey,
+        connectionId: params.connectionId,
+        orgId: params.orgId,
+        items: params.items,
+        rulesByKind,
+      },
+      tx
+    )
   );
 }
 
@@ -693,19 +716,23 @@ export async function resolveEventAttributionsForItems(
     rules: RuleMap;
   },
   // Optional transaction handle — the webhook winner passes its tx so the actor
-  // graph writes commit atomically with the event insert. Omitted → getDb().
+  // graph writes commit atomically with the event insert. A pool or omitted
+  // handle opens a transaction here.
   sql?: DbClient
 ): Promise<Map<number, number[]>> {
   if (params.items.length === 0) return new Map();
-  return resolveLinksByKind(
-    {
-      connectorKey: params.connectorKey,
-      connectionId: params.connectionId,
-      orgId: params.orgId,
-      items: params.items,
-      rulesByKind: params.rules,
-    },
-    sql ?? getDb()
+  const db = sql ?? getDb();
+  return withEntityWriteTransaction(db, (tx) =>
+    resolveLinksByKind(
+      {
+        connectorKey: params.connectorKey,
+        connectionId: params.connectionId,
+        orgId: params.orgId,
+        items: params.items,
+        rulesByKind: params.rules,
+      },
+      tx
+    )
   );
 }
 
@@ -724,10 +751,9 @@ async function resolveLinksByKind(
     items: BatchItem[];
     rulesByKind: RuleMap;
   },
-  // The DB handle for ALL match/insert/update writes. The webhook winner threads
-  // its transaction here so the event insert + actor graph writes + entity_ids
-  // update are one atomic tx; the poll path passes nothing → getDb() singleton.
-  sql: DbClient = getDb()
+  // A real transaction handle for ALL match/insert/update writes. Public entry
+  // points either join the caller's tx or open one before reaching this core.
+  sql: DbClient
 ): Promise<Map<number, number[]>> {
   const resolvedByItem = new Map<number, number[]>();
   if (Object.keys(params.rulesByKind).length === 0 || params.items.length === 0) {
@@ -766,6 +792,40 @@ async function resolveLinksByKind(
   });
   if (byRule.size === 0) return resolvedByItem;
 
+  // Resolve first, then lock every existing entity in one ascending-id pass.
+  // Without a global lock order, two connector batches containing the same
+  // entities in opposite item order could deadlock after each locked its first
+  // row. Rows that disappeared between lookup and lock are removed from the
+  // match maps so they cannot be returned as live resolutions.
+  const matchesByRule = new Map<ResolvedEventAttributionRule, Map<string, number>>();
+  const matchedEntityIds = new Set<number>();
+  for (const [rule, entries] of byRule) {
+    const matches = await lookupMatches(sql, {
+      orgId: params.orgId,
+      identities: entries.map((entry) => entry.link.identities),
+    });
+    matchesByRule.set(rule, matches);
+    for (const entityId of matches.values()) matchedEntityIds.add(entityId);
+  }
+  if (matchedEntityIds.size > 0) {
+    const ids = [...matchedEntityIds].sort((a, b) => a - b);
+    const lockedRows = await sql<{ id: number | string }>`
+      SELECT id
+      FROM entities
+      WHERE organization_id = ${params.orgId}
+        AND id = ANY(${pgBigintArray(ids)}::bigint[])
+        AND deleted_at IS NULL
+      ORDER BY id
+      FOR UPDATE
+    `;
+    const lockedIds = new Set(lockedRows.map((row) => Number(row.id)));
+    for (const matches of matchesByRule.values()) {
+      for (const [key, entityId] of matches) {
+        if (!lockedIds.has(entityId)) matches.delete(key);
+      }
+    }
+  }
+
   const recordResolved = (index: number, entityId: number): void => {
     const existing = resolvedByItem.get(index);
     if (existing) {
@@ -776,10 +836,7 @@ async function resolveLinksByKind(
   };
 
   for (const [rule, entries] of byRule) {
-    const matches = await lookupMatches(sql, {
-      orgId: params.orgId,
-      identities: entries.map((e) => e.link.identities),
-    });
+    const matches = matchesByRule.get(rule)!;
 
     for (const { index, item, link } of entries) {
       // Tier semantics are defined once in `resolveIdentityTier` and shared
@@ -823,9 +880,9 @@ async function resolveLinksByKind(
         attached = [...fresh];
         // Mirror this link's non-matchOnly identifiers into metadata.aliases for
         // metric resolution. Passing the full set (not just `fresh`) repairs a
-        // legacy entity whose identities predate aliases-on-create; ensureAliases'
-        // `@>` guard makes it a no-op write once the aliases are complete, so a
-        // repeat message from a known sender stays cheap.
+        // legacy entity whose identities predate aliases-on-create; ensureAliases
+        // skips the write once the aliases are complete, so a repeat message from
+        // a known sender stays cheap.
         await ensureAliases(sql, {
           orgId: params.orgId,
           entityId,
@@ -865,10 +922,7 @@ async function resolveLinksByKind(
           // to the winner via ON CONFLICT, so the row we just inserted is an
           // identity-less orphan. Hard-delete it (no events reference a row born
           // this turn) and re-resolve to the winning entity.
-          await sql`
-            DELETE FROM entities
-            WHERE id = ${created.entityId} AND organization_id = ${params.orgId}
-          `;
+          await hardDeleteEntityRows({ tx: sql, ids: [created.entityId] });
           const winner = await lookupMatches(sql, {
             orgId: params.orgId,
             identities: [link.identities],
@@ -905,11 +959,17 @@ async function resolveLinksByKind(
 
       recordResolved(index, entityId);
 
-      // Cache the mapping for later items in the same batch — only for attached
+      // Cache the mapping for the rest of the batch — only for attached
       // identifiers, so an identifier that stayed on another entity (ON CONFLICT
-      // no-op) keeps its existing owner and isn't mis-claimed.
+      // no-op) keeps its existing owner and isn't mis-claimed. EVERY rule's map
+      // is updated, not just this one: all maps are resolved up front for the
+      // prelock, so a later rule can no longer re-read this create from the DB
+      // and would otherwise miss an entity the batch just minted. Sharing the
+      // claim is exactly what that re-read returned — `lookupMatches` is
+      // type-agnostic and an identity belongs to at most one entity org-wide.
       for (const id of attached) {
-        matches.set(`${id.namespace}\u0000${id.identifier}`, entityId);
+        const key = `${id.namespace}\u0000${id.identifier}`;
+        for (const ruleMatches of matchesByRule.values()) ruleMatches.set(key, entityId);
       }
 
       // Stamp metadata slots for attached identifiers only — read-time JOINs key
@@ -950,6 +1010,14 @@ async function resolveLinksByKind(
   return resolvedByItem;
 }
 
+interface SenderIdentityParams {
+  orgId: string;
+  connectorKey: string;
+  mintEntityType: string;
+  identities: ResolvedIdentity[];
+  title?: string | null;
+}
+
 /**
  * Resolve the SENDER of a captured chat message to an entity id — STORE-ONLY
  * attribution for `channel_messages.author_entity_id`. Connector-AGNOSTIC: the
@@ -977,27 +1045,30 @@ async function resolveLinksByKind(
  */
 export async function resolveSenderIdentity(
   sql: DbClient,
-  params: {
-    orgId: string;
-    connectorKey: string;
-    mintEntityType: string;
-    identities: ResolvedIdentity[];
-    title?: string | null;
-  }
+  params: SenderIdentityParams
 ): Promise<number | null> {
   if (params.identities.length === 0) return null;
+  // Every captured message calls this, and the overwhelming majority resolve a
+  // sender that already exists — answer those from a plain read rather than
+  // opening a write transaction per message. Only a miss (which may mint) needs
+  // one, and the in-transaction path re-runs this lookup because a concurrent
+  // mint can land between the two.
+  const existing = firstIdentityHit(
+    params.identities,
+    await lookupMatches(sql, { orgId: params.orgId, identities: [params.identities] })
+  );
+  if (existing !== null) return existing;
+  return withEntityWriteTransaction(sql, (tx) => resolveSenderIdentityInTransaction(tx, params));
+}
 
-  const firstHit = (matches: Map<string, number>): number | null => {
-    for (const id of params.identities) {
-      const hit = matches.get(`${id.namespace}\u0000${id.identifier}`);
-      if (hit !== undefined) return hit;
-    }
-    return null;
-  };
-
+async function resolveSenderIdentityInTransaction(
+  sql: DbClient,
+  params: SenderIdentityParams
+): Promise<number | null> {
   // 1) Any existing entity owning this identity — $member (signed-in human,
   // #1646) or person, resolved by one type-agnostic lookup. No create.
-  const hit = firstHit(
+  const hit = firstIdentityHit(
+    params.identities,
     await lookupMatches(sql, { orgId: params.orgId, identities: [params.identities] })
   );
   if (hit !== null) return hit;
@@ -1021,11 +1092,9 @@ export async function resolveSenderIdentity(
   // Lost the identity create-race (a concurrent ingest minted it first): drop
   // the identity-less orphan and resolve to the winner instead.
   if (created !== null) {
-    await sql`
-      DELETE FROM entities
-      WHERE id = ${created.entityId} AND organization_id = ${params.orgId}
-    `;
-    return firstHit(
+    await hardDeleteEntityRows({ tx: sql, ids: [created.entityId] });
+    return firstIdentityHit(
+      params.identities,
       await lookupMatches(sql, { orgId: params.orgId, identities: [params.identities] })
     );
   }

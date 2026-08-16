@@ -1327,7 +1327,7 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 			// complete_window, so runs it left on the pipeline default get the device
 			// stamp. An explicit model passed by the agent wins. Provenance now lives
 			// on the RUN row (model_used / run_metadata.execution_time_ms), not the
-			// retired automation_windows table — the canvas is the window projection and
+			// retired standalone window table — the canvas is the window projection and
 			// reads pull execution_time_ms from run timestamps / run_metadata.
 			await sql`
         UPDATE runs

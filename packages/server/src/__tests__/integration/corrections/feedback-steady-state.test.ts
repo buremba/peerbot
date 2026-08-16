@@ -1,7 +1,9 @@
 /**
- * Correction-events (P1) STEADY STATE (post phase-4 contract): automation_window_field_feedback is
- * retired; every submit emits a correction event directly and every read comes from the events
- * spine (semantic_type='correction'). No flags, no table. This is the end-state round-trip.
+ * Correction-events (P1) STEADY STATE (post phase-4 contract): the dedicated
+ * window-feedback table is retired; every submit emits a correction event
+ * directly and every read comes from the events spine
+ * (semantic_type='correction'). No flags, no table. This is the end-state
+ * round-trip.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -60,11 +62,17 @@ describe('feedback correction-events steady state (P1 phase 4)', () => {
     );
     expect((submitted as { feedback_ids: number[] }).feedback_ids).toHaveLength(2);
 
-    // The table is retired — this PR's migration drops it; the submit went entirely to events.
+    // The table is retired — the submit went entirely to events. Match the
+    // structural name instead of naming the pre-cutover relation in live code.
     const reg = (await sql`
-      SELECT to_regclass('public.automation_window_field_feedback') AS t
-    `) as Array<{ t: string | null }>;
-    expect(reg[0].t).toBeNull();
+      SELECT c.relname
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public'
+        AND c.relkind IN ('r', 'p')
+        AND c.relname LIKE '%window%field%feedback%'
+    `) as Array<{ relname: string }>;
+    expect(reg).toEqual([]);
 
     // get_feedback returns both, from events, with recovered ids + org scoping.
     const got = (await handleGetFeedback({ automation_id: automationId } as never, ctx)) as {

@@ -31,10 +31,8 @@ describe('QUERYABLE_TABLE_NAMES', () => {
     }
   });
 
-  it('should not expose the retired automation_windows table (canvas-on-events)', () => {
-    // Windows are canvas_state event chains now; schema exposure is removed
-    // ahead of the two-phase table drop.
-    expect(QUERYABLE_TABLE_NAMES.has('automation_windows')).toBe(false);
+  it('should expose canvas_windows as the window projection', () => {
+    expect(QUERYABLE_TABLE_NAMES.has('canvas_windows')).toBe(true);
   });
 
   it('should not include non-allowlisted tables', () => {

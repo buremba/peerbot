@@ -86,8 +86,9 @@ describe('automation feedback contract', () => {
   });
 
   beforeEach(async () => {
-    // Corrections are now append-only 'correction' events; use the documented escape hatch to
-    // isolate each test (automation_window_field_feedback was retired in the P1 consolidation).
+    // Corrections are now append-only 'correction' events; use the documented
+    // escape hatch to isolate each test (the dedicated feedback table was
+    // retired in the P1 consolidation).
     await getTestDb().begin(async (tx) => {
       await tx`SET LOCAL lobu.allow_event_delete = 'on'`;
       await tx`
@@ -147,7 +148,7 @@ describe('automation feedback contract', () => {
   });
 
   it('feedback ids are the correction event ids; historical wwff_ origin_ids still parse', async () => {
-    // Post-3b (automation_window_field_feedback_id_seq dropped): a new correction's
+    // After the dedicated feedback sequence was dropped, a new correction's
     // feedback id IS its event id (origin_id NULL). Historical rows carry
     // origin_id 'wwff_<seq>' and the reader recovers the legacy id from it.
     const sql = getTestDb();

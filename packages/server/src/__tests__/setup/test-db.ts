@@ -509,10 +509,8 @@ async function connectionCanDisableTriggers(db: postgres.Sql): Promise<boolean> 
 async function fixSchemaConstraints(db: postgres.Sql): Promise<void> {
   try {
     // runs.run_type needs the connector lanes plus the lobu-queue lanes. Keep
-    // this in sync with db/migrations/20260429060000_extend_runs_for_lobu_queue.sql,
-    // db/migrations/20260720140000_rename_run_type_watcher_to_behavior.sql
-    // (the 'automation' lane was renamed to 'automation'), and
-    // db/migrations/20260807120000_behavior_eval_run_type.sql.
+    // this in sync with the latest constraint definition in
+    // db/migrations/20260816000010_automation_vocabulary.sql.
     //
     // This runs on every cleanupTestDatabase(), so a lane missing here is
     // re-narrowed away between tests: the migration applies at setup, the first

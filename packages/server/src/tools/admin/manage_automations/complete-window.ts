@@ -959,7 +959,7 @@ export async function handleCompleteWindow(
     let completedDispatchSource: string | null = null;
     if (automationRunId && Number.isFinite(automationRunId)) {
       // Provenance now lives on the RUN row (model_used, run_metadata), not on
-      // the retired automation_windows table. window_id is stamped to the canvas
+      // the retired standalone window table. window_id is stamped to the canvas
       // ROOT event id. Scope by automation_id so a wrong/stale automation_run_id
       // (passed in run_metadata) cannot mark another automation's run completed
       // against this automation's window. Stamp provenance whenever the run is

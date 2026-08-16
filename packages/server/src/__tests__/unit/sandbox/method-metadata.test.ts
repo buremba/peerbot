@@ -53,8 +53,7 @@ describe("method-metadata", () => {
 
 	it("has a runtime method for every namespace metadata entry (no phantom docs)", () => {
 		// The reverse direction: a METHOD_METADATA key without a runtime method is
-		// dead documentation that search_sdk advertises but the sandbox rejects
-		// (e.g. the retired `automations.upgrade`).
+		// dead documentation that search_sdk advertises but the sandbox rejects.
 		const { namespaceMethods, topLevelMethods } = enumerateSdkMethods();
 		const runtime = new Set([...namespaceMethods, ...topLevelMethods]);
 		const phantom = Object.keys(METHOD_METADATA).filter(

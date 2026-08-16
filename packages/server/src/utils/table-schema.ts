@@ -556,7 +556,7 @@ export const QUERYABLE_SCHEMA = {
         'version_sources'
       ),
     },
-    // canvas_windows (VIEW; replaces the retired automation_windows table): one row
+    // canvas_windows (VIEW; replaces the retired standalone window table): one row
     // per automation window = canvas_state chain ROOT; id is the root event id and
     // matches event_classifications/automation_window_events/runs.window_id.
     {

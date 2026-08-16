@@ -1,9 +1,8 @@
 /**
  * Automation CRUD via the post-#348 SDK surface.
  *
- * Replaces the deleted manage_automations integration tests. Covers create,
- * read, update, delete on automations attached to an entity, plus access-control
- * around the destructive actions.
+ * Covers manage_automations create, read, update, and delete on automations
+ * attached to an entity, plus access-control around the destructive actions.
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';

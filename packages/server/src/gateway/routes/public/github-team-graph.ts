@@ -39,6 +39,7 @@ import { GITHUB_IDENTITY } from "@lobu/connectors/github-identity";
 import { ensureMemberOfType } from "../../../authz/access-graph.js";
 import { upsertEdges } from "../../../utils/edge-writes.js";
 import { resolveEventAttributionsForItems } from "../../../utils/entity-link-upsert.js";
+import { withAclEdgeWrite } from "../../../utils/relationship-validation.js";
 
 const logger = createLogger("github-team-graph");
 
@@ -290,19 +291,23 @@ export async function buildGithubTeamGraph(params: {
 	const typeId = await ensureMemberOfType(params.organizationId);
 	// person -> company. Idempotent on the live-triple unique index; a re-bind
 	// re-affirms the edge without duplicating it.
-	const created = await upsertEdges({
-		db: getDb(),
-		organizationId: params.organizationId,
-		relationshipTypeId: typeId,
-		pairs: uniqueMemberIds.map((memberId) => ({
-			fromEntityId: memberId,
-			toEntityId: companyEntityId,
-		})),
-		source: "feed",
-		confidence: 1.0,
-		createdBy: creatorUserId,
-		onConflict: "ignore",
-	});
+	// Set the ACL write flag now; the trigger starts requiring it when the
+	// follow-up deploy classifies `member_of` as authorization-bearing.
+	const created = await withAclEdgeWrite(getDb(), (tx) =>
+		upsertEdges({
+			db: tx,
+			organizationId: params.organizationId,
+			relationshipTypeId: typeId,
+			pairs: uniqueMemberIds.map((memberId) => ({
+				fromEntityId: memberId,
+				toEntityId: companyEntityId,
+			})),
+			source: "feed",
+			confidence: 1.0,
+			createdBy: creatorUserId,
+			onConflict: "ignore",
+		}),
+	);
 	const createdEdges = created.length;
 
 	logger.info(

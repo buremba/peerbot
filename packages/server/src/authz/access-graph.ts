@@ -46,6 +46,7 @@ import {
   withEntityWriteTransaction,
 } from '../utils/entity-management.js';
 import { ensureRelationshipType, upsertEdges } from '../utils/edge-writes.js';
+import { withAclEdgeWrite } from '../utils/relationship-validation.js';
 import { aclConnectionIdSql } from './acl-observability.js';
 import { ensureResourceEntityType } from './acl-resource-type.js';
 
@@ -112,6 +113,12 @@ export function ensureMemberOfType(orgId: string): Promise<number> {
     slug: MEMBER_OF_TYPE_SLUG,
     name: 'Member of',
     description: 'A member belongs to an ACL resource (channel, repo, org, …)',
+    // NOT classified in this deploy, and the omission is load-bearing rather
+    // than an oversight. Stamping `purpose` here would arm the trigger for an
+    // org the moment one new pod ran its sync, while older pods still writing
+    // that org's member_of edges without the flag would start being rejected.
+    // The follow-up deploy adds `purpose: PURPOSE_AUTHORIZATION` here together
+    // with the backfill, once every live pod sets the flag.
   });
 }
 
@@ -501,31 +508,42 @@ export async function buildAccessGraph(params: {
     }
   }
 
-  // One statement for the whole build. A resource's membership is re-affirmed
-  // rather than rewritten, so a steady-state resync creates nothing.
-  const created = await upsertEdges({
-    db: sql,
-    organizationId,
-    relationshipTypeId: typeId,
-    pairs: edgePairs,
-    source: 'feed',
-    confidence: 1.0,
-    createdBy: creatorUserId,
-    onConflict: 'ignore',
-  });
-  const createdEdges = created.length;
+  // A resource's membership is re-affirmed rather than rewritten, so a
+  // steady-state resync creates nothing.
+  // Grants and departures commit together under the ACL write flag. The trigger
+  // starts requiring it once the follow-up deploy classifies `member_of`.
+  // Enforcement lives in the database rather than at each call site because
+  // this table has several writers, and `source='feed'` cannot mark a write as
+  // ours — it is caller-settable too.
+  //
+  // The transaction is also a correctness fix in its own right: these used to be
+  // separate autocommits, so a crash between them left grants written and
+  // departures unreconciled — i.e. access that should have been revoked.
+  const { createdEdges, removedEdges } = await withAclEdgeWrite(
+    sql,
+    async (tx) => {
+      const created = await upsertEdges({
+        db: tx,
+        organizationId,
+        relationshipTypeId: typeId,
+        pairs: edgePairs,
+        source: 'feed',
+        confidence: 1.0,
+        createdBy: creatorUserId,
+        onConflict: 'ignore',
+      });
 
-  // 4) Reconcile DEPARTURES — the build is a full re-sync of each resource's
-  // membership, so a `member_of` edge to a synced resource whose member is NOT
-  // in the current set means that person left: soft-delete it so they lose
-  // access immediately. Scoped to `to_entity_id` = a resource we just synced, so
-  // edges to OTHER resource types (a different source's graph) are never touched.
-  // An empty member set deletes all of that resource's edges — the caller must
-  // not pass empty-on-fetch-error.
-  let removedEdges = 0;
-  for (const [resourceEntityId, resourceMembers] of currentMembersByResource) {
-    const keep = [...resourceMembers];
-    const removed = await sql<{ id: number }[]>`
+      // 4) Reconcile DEPARTURES — the build is a full re-sync of each resource's
+      // membership, so a `member_of` edge to a synced resource whose member is NOT
+      // in the current set means that person left: soft-delete it so they lose
+      // access immediately. Scoped to `to_entity_id` = a resource we just synced, so
+      // edges to OTHER resource types (a different source's graph) are never touched.
+      // An empty member set deletes all of that resource's edges — the caller must
+      // not pass empty-on-fetch-error.
+      let removedEdges = 0;
+      for (const [resourceEntityId, resourceMembers] of currentMembersByResource) {
+        const keep = [...resourceMembers];
+        const removed = await tx<{ id: number }[]>`
 			UPDATE entity_relationships
 			SET deleted_at = current_timestamp, updated_at = current_timestamp
 			WHERE organization_id = ${organizationId}
@@ -535,8 +553,11 @@ export async function buildAccessGraph(params: {
 			  AND from_entity_id <> ALL(${pgBigintArray(keep)}::bigint[])
 			RETURNING id
 		`;
-    removedEdges += removed.length;
-  }
+        removedEdges += removed.length;
+      }
+      return { createdEdges: created.length, removedEdges };
+    },
+  );
 
   if (params.markFresh !== false) {
     await markAclFresh(organizationId, connectionId, syncStartedAt);

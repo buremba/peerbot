@@ -18,6 +18,7 @@
  */
 
 import { type DbClient, getDb, pgBigintArray } from '../db/client';
+import type { RelationshipTypePurpose } from './relationship-validation';
 
 interface EdgePair {
   fromEntityId: number;
@@ -41,22 +42,33 @@ interface UpsertEdgesParams {
  *
  * `description` only lands on first create; an existing type keeps its current
  * description.
+ *
+ * `purpose` classifies the type for the ACL readers. Passing it also REPAIRS an
+ * existing row, which matters because this statement adopts rather than
+ * create-or-fails: without the repair, a row that predates the classification
+ * (or that an older pod created mid-rollout) would stay unclassified forever and
+ * its members would lose access once reads require it. Omitting `purpose` never
+ * clears an existing one — `mentions` and `member_of` share this function, and a
+ * mentions upsert must not strip an authorization stamp.
  */
 export async function ensureRelationshipType(params: {
   organizationId: string;
   slug: string;
   name: string;
   description: string;
+  purpose?: RelationshipTypePurpose;
 }): Promise<number> {
   const sql = getDb();
   const rows = await sql<{ id: number }>`
     INSERT INTO entity_relationship_types
-      (slug, name, description, organization_id, is_symmetric, created_by, created_at, updated_at)
+      (slug, name, description, organization_id, is_symmetric, created_by, purpose, created_at, updated_at)
     VALUES
       (${params.slug}, ${params.name}, ${params.description}, ${params.organizationId},
-       false, NULL, current_timestamp, current_timestamp)
+       false, NULL, ${params.purpose ?? null}, current_timestamp, current_timestamp)
     ON CONFLICT (organization_id, slug) WHERE status = 'active'
-    DO UPDATE SET updated_at = EXCLUDED.updated_at
+    DO UPDATE SET
+      updated_at = EXCLUDED.updated_at,
+      purpose = COALESCE(EXCLUDED.purpose, entity_relationship_types.purpose)
     RETURNING id
   `;
   return Number(rows[0].id);

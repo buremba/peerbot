@@ -29,6 +29,10 @@ import {
   executeDataSources,
 } from '../../utils/execute-data-sources';
 import { isAdminOrOwnerRole, isInProcessSystemCall } from '../access-control';
+import {
+  assertNotAuthorizationType,
+  isAclManagedRelationshipSlug,
+} from '../../utils/relationship-validation';
 import { measureColumns } from '../../utils/infer-measures';
 import type { Env } from '../../index';
 import logger from '../../utils/logger';
@@ -861,12 +865,18 @@ async function requireRelationshipType(
   // unscoped lookup that fell back to a foreign row and threw 'Access denied'
   // leaked the slug's existence in another org. Absent an own row → 'not found'.
   const existing = await sql`
-    SELECT id FROM entity_relationship_types
+    SELECT id, slug, purpose FROM entity_relationship_types
     WHERE slug = ${slug} AND deleted_at IS NULL
       AND organization_id = ${ctx.organizationId}
     LIMIT 1
   `;
   if (existing.length === 0) throw new ToolUserError(`Relationship type "${slug}" not found`, 404);
+
+  // Every write action (update, delete, add_rule, …) funnels through here, so
+  // one guard covers the schema lifecycle. Archiving an authorization type would
+  // revoke an org's access wholesale, and renaming or re-ruling one would move
+  // the boundary the ACL gates read — neither belongs on a caller surface.
+  assertNotAuthorizationType(existing[0], action);
 
   return { typeId: Number(existing[0].id), sql };
 }
@@ -887,7 +897,7 @@ async function resolveInverseType(
   ctx: ToolContext
 ): Promise<{ id: number; ownedByCaller: boolean }> {
   const rows = await sql`
-    SELECT rt.id, (rt.organization_id = ${ctx.organizationId}) AS owned
+    SELECT rt.id, rt.slug, rt.purpose, (rt.organization_id = ${ctx.organizationId}) AS owned
     FROM entity_relationship_types rt
     LEFT JOIN organization o ON o.id = rt.organization_id
     WHERE rt.slug = ${inverseSlug}
@@ -899,6 +909,13 @@ async function resolveInverseType(
   if (rows.length === 0) {
     throw new ToolUserError(`Inverse relationship type "${inverseSlug}" not found`, 404);
   }
+  // Refuse to pair a caller's type with an authorization type. The inverse is a
+  // declared equivalence between two vocabularies, so allowing it would let a
+  // caller attach their own freely-writable type to the one the ACL gates read.
+  assertNotAuthorizationType(
+    { slug: String(rows[0].slug ?? inverseSlug), purpose: rows[0].purpose as string | null },
+    'inverse_type_slug'
+  );
   return { id: Number(rows[0].id), ownedByCaller: Boolean(rows[0].owned) };
 }
 
@@ -1113,6 +1130,21 @@ async function rtHandleUpdate(
 ): Promise<ManageEntitySchemaResult> {
   const { typeId, sql } = await requireRelationshipType(args.slug, 'update', ctx);
 
+  // Before purpose is backfilled, config may still declare member_of and update
+  // its harmless fields. It may not archive the type: the materializer upserts
+  // against active slugs, so archiving would make the next sync create a second
+  // type while existing grants remain attached to the old one and stop being
+  // reconciled.
+  if (
+    isAclManagedRelationshipSlug(args.slug ?? '') &&
+    args.status === 'archived'
+  ) {
+    throw new ToolUserError(
+      `Relationship type '${args.slug}' is ACL-managed and cannot be archived`,
+      403
+    );
+  }
+
   // `is_symmetric` is create-only (contract: `[relationship_type: create]`).
   // It's load-bearing for relationship canonicalization/dedup at write time
   // (manage_entity.ts canonicalizes a→b / b→a as one edge when symmetric), so
@@ -1321,7 +1353,7 @@ async function rtHandleRemoveRule(
   const sql = getDb();
 
   const ruleRows = await sql`
-    SELECT r.id, rt.organization_id, rt.slug AS relationship_type_slug
+    SELECT r.id, rt.organization_id, rt.slug AS relationship_type_slug, rt.purpose
     FROM entity_relationship_type_rules r
     JOIN entity_relationship_types rt ON r.relationship_type_id = rt.id
     WHERE r.id = ${args.rule_id} AND r.deleted_at IS NULL
@@ -1333,6 +1365,18 @@ async function rtHandleRemoveRule(
   if (ruleOrgId && ruleOrgId !== ctx.organizationId) {
     throw new ToolUserError('Access denied: rule belongs to another organization', 403);
   }
+
+  // This handler resolves by rule_id, so unlike add_rule it never passes through
+  // `requireRelationshipType` and needs its own check: the type-pair rules of an
+  // authorization type constrain which entity kinds it may connect, and dropping
+  // them widens the access vocabulary.
+  assertNotAuthorizationType(
+    {
+      slug: String(ruleRows[0].relationship_type_slug ?? ''),
+      purpose: ruleRows[0].purpose as string | null,
+    },
+    'remove_rule'
+  );
 
   await sql`
     UPDATE entity_relationship_type_rules

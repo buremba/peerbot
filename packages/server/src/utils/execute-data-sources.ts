@@ -69,6 +69,7 @@ export interface DataSourceContext {
 
 /** Operations that bypass READ ONLY transactions or have side-effects. */
 const FORBIDDEN_OPS = /\b(COPY|IMPORT|PRAGMA|CALL)\b/i;
+const FORBIDDEN_QUERY_FUNCTIONS = new Set(['set_config']);
 const MAX_ROWS = 1000;
 const QUERY_TIMEOUT_MS = 5000;
 
@@ -96,6 +97,36 @@ function identName(value: unknown): string | null {
     if (o.this) return identName(o.this);
   }
   return null;
+}
+
+/**
+ * Reject functions that mutate the database session even inside a read-only
+ * transaction. `set_config` can persist a custom GUC on a pooled connection;
+ * that would let caller SQL forge server-only transaction flags used by database
+ * triggers on a later request.
+ */
+function assertNoForbiddenFunctions(root: unknown): void {
+  const seen = new Set<object>();
+  const stack: unknown[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node || typeof node !== 'object') continue;
+    if (seen.has(node as object)) continue;
+    seen.add(node as object);
+    if (Array.isArray(node)) {
+      for (const child of node) stack.push(child);
+      continue;
+    }
+
+    const record = node as Record<string, unknown>;
+    const functionNode = record.function as Record<string, unknown> | undefined;
+    const methodNode = record.method_call as Record<string, unknown> | undefined;
+    const name = identName(functionNode?.name) ?? identName(methodNode?.method);
+    if (name && FORBIDDEN_QUERY_FUNCTIONS.has(name.toLowerCase())) {
+      throw new Error(`Function '${name}' is not allowed in read-only queries.`);
+    }
+    for (const child of Object.values(record)) stack.push(child);
+  }
 }
 
 /**
@@ -272,6 +303,8 @@ function extractTableRefs(query: string): string[] {
     throw new Error('Multiple SQL statements are not allowed; provide a single query.');
   }
   const root = statements[0] as SqlNode;
+
+  assertNoForbiddenFunctions(root);
 
   // Reject schema-qualified references anywhere in the tree (joins, subqueries,
   // CTE bodies, UNION branches) — they bypass the org-scoping CTEs.

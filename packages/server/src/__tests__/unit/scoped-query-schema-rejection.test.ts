@@ -9,7 +9,7 @@
  * the @polyglot-sql/sdk migration's first cut used `ast.getTables`, which only
  * returns the first FROM table — a schema-qualified table in a JOIN or subquery
  * slipped past and leaked. These reproducers were RED then; the raw-AST
- * recursion in extractTableRefs makes them GREEN.
+ * walk in extractTableRefs makes them GREEN.
  */
 
 import { describe, expect, it } from 'bun:test';
@@ -133,6 +133,15 @@ describe('validateAndScopeQuery — member table restriction (auth/identity admi
  * prefix guard + the complete (union) table walk + the CTE-collision guard.
  */
 describe('validateAndScopeQuery — parser-bypass regressions', () => {
+  it('rejects session-setting functions even in tableless SELECTs', () => {
+    expect(() => scope("SELECT set_config('lobu.acl_write', 'on', false)")).toThrow(
+      /Function 'set_config'.*not allowed/i
+    );
+    expect(() =>
+      scope("SELECT pg_catalog.\"set_config\"('lobu.acl_write', 'on', false)")
+    ).toThrow(/Function 'set_config'.*not allowed/i);
+  });
+
   it('rejects the PostgreSQL `TABLE <name>` shorthand (member)', () => {
     expect(() => scopeAsMember('TABLE oauth_tokens')).toThrow(/SELECT \/ WITH/i);
   });

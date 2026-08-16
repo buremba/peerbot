@@ -41,6 +41,7 @@ import { ToolUserError } from "./errors";
 import logger from "./logger";
 import { requireWriteAccess } from "./organization-access";
 import { RESERVED_ENTITY_TYPE_SLUGS } from "./reserved";
+import { withAclPrivilege } from "./relationship-validation";
 
 /** Minimal type shape needed to count stored vs derived entity rows. */
 export type EntityTypeCountInput = {
@@ -1341,11 +1342,21 @@ export async function deleteEntity(
     // and lets the GIN index on entity_ids drive the scan instead of a
     // full-table pass.
     await sql.begin(async (tx) => {
-      await tx`
-        DELETE FROM entity_relationships
-        WHERE from_entity_id = ANY(${entityTreeIdsLiteral}::bigint[])
-           OR to_entity_id = ANY(${entityTreeIdsLiteral}::bigint[])
-      `;
+      // Force-delete removes ACL edges along with everything else. That is
+      // correct — the entity is gone, so its membership projection must go too —
+      // but the `entity_relationships` trigger refuses authorization-bearing
+      // writes from outside a sync, so the intent is declared explicitly here
+      // rather than the delete failing. The next sync re-derives membership for
+      // whatever entities remain.
+      // Scoped to this statement: the rest of the delete cascade must not run
+      // with the ACL-write privilege still granted.
+      await withAclPrivilege(tx, async () => {
+        await tx`
+          DELETE FROM entity_relationships
+          WHERE from_entity_id = ANY(${entityTreeIdsLiteral}::bigint[])
+             OR to_entity_id = ANY(${entityTreeIdsLiteral}::bigint[])
+        `;
+      });
 
       // Canvas-on-events: window_id link rows carry canvas root event ids, so
       // key the cleanup on the denormalized automation_id.

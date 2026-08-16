@@ -70,6 +70,7 @@ import {
 } from "../../utils/insert-event";
 import { resolveMemberSchemaFieldsFromSchema } from "../../utils/member-entity-type";
 import {
+	assertNotAclManagedEdge,
 	canonicalizeSymmetricEdge,
 	checkDuplicateEdge,
 	validateConfidence,
@@ -1512,17 +1513,19 @@ interface EdgeAuditRow {
 	confidence: number | null;
 	source: string | null;
 	relationship_type_slug: string | null;
+	purpose: string | null;
 }
 
 async function lockEdgeForMutation(
 	tx: DbClient,
 	relationshipId: number,
 	organizationId: string,
+	action: string,
 ): Promise<EdgeAuditRow> {
 	const rows = await tx<EdgeAuditRow>`
     SELECT r.id, r.organization_id, r.from_entity_id, r.to_entity_id,
            r.relationship_type_id, r.metadata, r.confidence, r.source,
-           rt.slug AS relationship_type_slug
+           rt.slug AS relationship_type_slug, rt.purpose
     FROM entity_relationships r
     LEFT JOIN entity_relationship_types rt ON rt.id = r.relationship_type_id
     WHERE r.id = ${relationshipId} AND r.deleted_at IS NULL
@@ -1538,6 +1541,13 @@ async function lockEdgeForMutation(
 			403,
 		);
 	}
+	// Both callers of this loader (unlink, update_link) mutate the edge, so the
+	// authorization guard belongs here rather than in each of them. Soft-deleting
+	// an ACL edge revokes access exactly as surely as creating one grants it.
+	assertNotAclManagedEdge(
+		{ slug: rows[0].relationship_type_slug, purpose: rows[0].purpose },
+		action,
+	);
 	return rows[0];
 }
 
@@ -1564,7 +1574,7 @@ async function handleLink(
 	// public-uk-finance without registering a local copy. Tenant-local types
 	// win when both exist.
 	const typeRows = await sql`
-    SELECT rt.id, rt.is_symmetric
+    SELECT rt.id, rt.is_symmetric, rt.slug, rt.purpose
     FROM entity_relationship_types rt
     LEFT JOIN organization o ON o.id = rt.organization_id
     WHERE rt.slug = ${args.relationship_type_slug}
@@ -1582,6 +1592,11 @@ async function handleLink(
 			404,
 		);
   }
+  // An authorization-bearing type is what the ACL gates read. Minting one of its
+  // edges here would be minting access, so this surface refuses them outright —
+  // classification is only a trust boundary if the classified rows stop being
+  // generically writable.
+  assertNotAclManagedEdge(typeRows[0], 'link');
   const typeId = Number(typeRows[0].id);
   const isSymmetric = Boolean(typeRows[0].is_symmetric);
 
@@ -1684,6 +1699,7 @@ async function handleUnlink(
 			tx,
 			args.relationship_id!,
 			ctx.organizationId,
+			"unlink",
 		);
 		await tx`
       UPDATE entity_relationships
@@ -1732,6 +1748,7 @@ async function handleUpdateLink(
 			tx,
 			args.relationship_id!,
 			ctx.organizationId,
+			"update_link",
 		);
 		validateConfidence(args.confidence);
 		validateSource(args.source);

@@ -34,6 +34,7 @@ import {
 import { assertResolutionFingerprintCurrent } from "../entity-resolution/staleness";
 import { transitionEntityMergeRows } from "./entity-management";
 import logger from "./logger";
+import { withAclPrivilege } from "./relationship-validation";
 
 export interface MergeResolutionProvenance {
 	decision: "auto_merge" | "human";
@@ -233,13 +234,22 @@ async function applyMergeInTransaction(
 		to_entity_id: number;
 		deleted_at: Date | string | null;
 	}>`
-    SELECT id, from_entity_id, to_entity_id, deleted_at
-    FROM entity_relationships
-    WHERE organization_id = ${orgId}
-      AND deleted_at IS NULL
-      AND (from_entity_id = ${loserId} OR to_entity_id = ${loserId})
-    ORDER BY id
-    FOR UPDATE
+    SELECT r.id, r.from_entity_id, r.to_entity_id, r.deleted_at
+    FROM entity_relationships r
+    JOIN entity_relationship_types rt ON rt.id = r.relationship_type_id
+    WHERE r.organization_id = ${orgId}
+      AND r.deleted_at IS NULL
+      AND (r.from_entity_id = ${loserId} OR r.to_entity_id = ${loserId})
+      -- Authorization edges are deliberately absent from the undo ledger. Step
+      -- 2b drops rather than repoints them, and an unmerge must not put a
+      -- revoked grant back: the ledger replays an exact prior state, but access
+      -- is whatever the provider says NOW. Leaving them out means the next ACL
+      -- sync decides, which is the same fail-closed rule the merge followed.
+      -- It also keeps unmerge's UPDATE off rows the trigger would refuse.
+      AND rt.purpose IS DISTINCT FROM 'authorization'
+      AND rt.slug <> 'member_of'
+    ORDER BY r.id
+    FOR UPDATE OF r
   `;
 
   // 1. Move the loser's LIVE identities to the winner. A live loser↔live winner
@@ -289,6 +299,33 @@ async function applyMergeInTransaction(
 	if (updatedWinnerIds.length !== 1) {
 		throw new Error("applyMerge: canonical entity changed after locking");
 	}
+
+  // 2b. DROP the loser's authorization-bearing edges instead of repointing them.
+  //
+  //     An ACL edge is a projection of the provider's membership, not authored
+  //     data, so "which of these two people keeps the channel grant" has no
+  //     correct answer to guess — repointing silently transfers one person's
+  //     access to another. Tombstoning lets the next sync re-derive the truth,
+  //     which fails closed and self-heals. Once classified, the database trigger
+  //     would reject the repoint anyway; this makes the intent explicit rather
+  //     than crashing the merge.
+  //
+  //     The privilege is dropped again immediately: steps 3 and 4 below repoint
+  //     ordinary edges, and if the flag stayed set for the rest of this
+  //     transaction the trigger could no longer refuse a repoint of an
+  //     authorization edge this statement did not match.
+  await withAclPrivilege(tx, async () => {
+    await tx`
+      UPDATE entity_relationships r
+      SET deleted_at = current_timestamp, updated_at = current_timestamp
+      FROM entity_relationship_types rt
+      WHERE rt.id = r.relationship_type_id
+        AND (rt.purpose = 'authorization' OR rt.slug = 'member_of')
+        AND r.organization_id = ${orgId}
+        AND r.deleted_at IS NULL
+        AND (r.from_entity_id = ${loserId} OR r.to_entity_id = ${loserId})
+    `;
+  });
 
   // 3. Tombstone loser edges that would become self-loops or collide with an
   //    existing winner edge. This must happen before repointing: the live-edge
@@ -657,19 +694,35 @@ export async function applyUnmerge(
 							from_entity_id: number;
 							to_entity_id: number;
 							deleted_at: Date | string | null;
+							acl_managed: boolean;
 						}>`
-            SELECT id, from_entity_id, to_entity_id, deleted_at
-            FROM entity_relationships
-            WHERE organization_id = ${orgId}
-              AND id = ANY(${pgBigintArray(relationshipIds)}::bigint[])
-            ORDER BY id
-            FOR UPDATE
+            SELECT r.id, r.from_entity_id, r.to_entity_id, r.deleted_at,
+                   (rt.purpose = 'authorization' OR rt.slug = 'member_of')
+                     AS acl_managed
+            FROM entity_relationships r
+            JOIN entity_relationship_types rt ON rt.id = r.relationship_type_id
+            WHERE r.organization_id = ${orgId}
+              AND r.id = ANY(${pgBigintArray(relationshipIds)}::bigint[])
+            ORDER BY r.id
+            FOR UPDATE OF r
           `
 					: [];
 			const currentById = new Map(
 				currentRelationships.map((row) => [Number(row.id), row]),
 			);
+			// A ledger written BEFORE this feature can contain `member_of` rows:
+			// back then merge repointed them like any other edge. Restoring one
+			// now would resurrect a revoked grant, and once the type is classified
+			// the trigger would reject the write outright — which would make every
+			// historical merge permanently un-undoable. Skip them in both the
+			// exactness check and the restore; the cleanup below drops them.
+			const aclManagedIds = new Set(
+				currentRelationships
+					.filter((row) => row.acl_managed)
+					.map((row) => Number(row.id)),
+			);
 			for (const item of ledger.relationships) {
+				if (aclManagedIds.has(item.id)) continue;
 				const current = currentById.get(item.id);
 				const currentDeletedAt =
 					current?.deleted_at == null
@@ -688,6 +741,7 @@ export async function applyUnmerge(
 			}
 
 			for (const item of ledger.relationships) {
+				if (aclManagedIds.has(item.id)) continue;
 				await tx`
           UPDATE entity_relationships
           SET from_entity_id = ${item.before.fromEntityId},
@@ -697,6 +751,7 @@ export async function applyUnmerge(
           WHERE organization_id = ${orgId} AND id = ${item.id}
         `;
 			}
+
 			const redirectedEntityIds = ledger.redirectedEntityIds ?? [];
 			if (redirectedEntityIds.length > 0) {
 				const restoredRedirects = await transitionEntityMergeRows({
@@ -728,6 +783,68 @@ export async function applyUnmerge(
 				);
 			}
 		}
+
+		// Authorization edges on EITHER entity are dropped, not restored. This is
+		// required for ledger-backed and legacy merges alike: while the identities
+		// were folded onto the winner, an ACL sync could have resolved the loser's
+		// provider identity there and granted the winner access. Splitting them
+		// again would leave that grant on someone the provider never granted it to.
+		// The only answer that cannot invent access is to drop both sides and let
+		// the next sync re-derive from the provider.
+		await withAclPrivilege(tx, async () => {
+			await tx`
+        UPDATE entity_relationships r
+        SET deleted_at = current_timestamp, updated_at = current_timestamp
+        FROM entity_relationship_types rt
+        WHERE rt.id = r.relationship_type_id
+          AND (rt.purpose = 'authorization' OR rt.slug = 'member_of')
+          AND r.organization_id = ${orgId}
+          AND r.deleted_at IS NULL
+          AND (
+            r.from_entity_id IN (${loserId}, ${winnerId})
+            OR r.to_entity_id IN (${loserId}, ${winnerId})
+          )
+      `;
+		});
+
+		// Dropping the edges is not enough on its own: a sync that resolved the
+		// loser's provider identity to the WINNER before this transaction can
+		// still be in flight and would write that already-resolved grant back
+		// moments after we commit. Marking the ACL state stale closes that race
+		// from both ends — the gate stops trusting the snapshot, and the in-flight
+		// sync's own `fresh` stamp is suppressed because it only applies while
+		// `updated_at < syncStartedAt`, which this write invalidates.
+		//
+		// NOT gated on having dropped anything, which is the subtle part. The race
+		// this exists for is exactly the case where the drop finds nothing: the
+		// sync has already resolved the identity to the winner but has not yet
+		// written the edge, so counting dropped rows would skip the invalidation
+		// in precisely the window that needs it.
+		//
+		// Marking unconditionally is cheap where it does not apply: the statement
+		// matches no rows for an org that has never onboarded an ACL connection,
+		// so an ERP-only tenant pays nothing. Where it does match, `stale` FAILS
+		// CLOSED for every enforced connection until the next sync — an
+		// availability cost taken deliberately on a rare, admin-initiated action,
+		// because the alternative is serving access the provider never granted.
+		//
+		// `clock_timestamp()` rather than `current_timestamp` is load-bearing for
+		// the same reason it is in `slack-acl-sync.ts`: the latter is
+		// transaction-START time, which would record a cutoff below an in-flight
+		// sync's and slip under the fence.
+		//
+		// KNOWN RESIDUAL, narrower than what it replaces: a sync that starts after
+		// this statement executes but before the transaction commits reads the old
+		// identity mapping and can still satisfy `updated_at < syncStartedAt`,
+		// because that predicate orders statement timestamps, not commit
+		// visibility. Closing it needs a generation counter observed at sync start
+		// rather than a timestamp. Today unmerge invalidates nothing at all, so the
+		// winner keeps the grant indefinitely; this is strictly better.
+		await tx`
+      UPDATE authz_source_acl_state
+      SET freshness_state = 'stale', updated_at = clock_timestamp()
+      WHERE organization_id = ${orgId}
+    `;
 
 		// 1. Restore every identity this operation moved, including identities an
 		//    inner merge had already placed on the loser. Legacy operations have no

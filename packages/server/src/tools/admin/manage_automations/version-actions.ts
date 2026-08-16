@@ -254,7 +254,28 @@ export async function handleCreateVersion(
     );
   }
 
+  // Final-state instruction rule. The prompt version and the reaction script
+  // are both group-shared (cascade to every assignment), while triggers are
+  // per-assignment — so when set_as_current, validate the new prompt against
+  // every sibling's final trigger set (the targeted row uses
+  // triggerWrite.triggers). The reaction script is shared, so the same value
+  // satisfies (or fails) every sibling identically.
   const setAsCurrent = args.set_as_current !== false;
+  const reactionScript = automationRows[0].reaction_script as string | null;
+  if (setAsCurrent) {
+    for (const sibling of siblingRows) {
+      const siblingTriggers =
+        Number(sibling.id) === Number(args.automation_id)
+          ? triggerWrite.triggers
+          : ((sibling.triggers ?? []) as typeof triggerWrite.triggers);
+      assertAutomationInstructions(siblingTriggers, prompt, skills, reactionScript);
+      assertAutomationOutputsUseWindowExecution(siblingTriggers, outputs);
+    }
+  } else {
+    // Draft version only — triggers on the live row do not change.
+    assertAutomationInstructions(previousTriggers, prompt, skills, reactionScript);
+    assertAutomationOutputsUseWindowExecution(previousTriggers, outputs);
+  }
   // Both branches above write the SAME resolved prompt+skills pair, so the
   // chip/pin agreement is checked once here rather than inside either arm.
   // Unconditional, unlike the caller-supplied-only gates above: those consult
@@ -272,37 +293,6 @@ export async function handleCreateVersion(
     // tx-scoped (auto-released on commit/rollback) and keyed by group id,
     // so unrelated groups are unaffected.
     await tx`SELECT pg_advisory_xact_lock(hashtext('automation_create_version'), ${groupId})`;
-
-    // Re-read the group-shared reaction script under the lock so we validate
-    // against the current state, not a stale pre-lock snapshot. The reaction
-    // script is shared across every assignment in the group; a concurrent
-    // set_reaction_script could clear it between our pre-lock read and here.
-    const freshReactionRows = await tx`
-      SELECT reaction_script FROM automations
-      WHERE automation_group_id = ${groupId} LIMIT 1
-    `;
-    const freshReactionScript = (freshReactionRows[0]?.reaction_script as string | null) ?? null;
-
-    // Final-state instruction rule. The prompt version and the reaction script
-    // are both group-shared (cascade to every assignment), while triggers are
-    // per-assignment — so when set_as_current, validate the new prompt against
-    // every sibling's final trigger set (the targeted row uses
-    // triggerWrite.triggers). The reaction script is shared, so the same value
-    // satisfies (or fails) every sibling identically.
-    if (setAsCurrent) {
-      for (const sibling of siblingRows) {
-        const siblingTriggers =
-          Number(sibling.id) === Number(args.automation_id)
-            ? triggerWrite.triggers
-            : ((sibling.triggers ?? []) as typeof triggerWrite.triggers);
-        assertAutomationInstructions(siblingTriggers, prompt, skills, freshReactionScript);
-        assertAutomationOutputsUseWindowExecution(siblingTriggers, outputs);
-      }
-    } else {
-      // Draft version only — triggers on the live row do not change.
-      assertAutomationInstructions(previousTriggers, prompt, skills, freshReactionScript);
-      assertAutomationOutputsUseWindowExecution(previousTriggers, outputs);
-    }
 
     // Re-resolve the latest id and version under the lock so we don't race
     // with a call that already committed while we were computing nextVersion.

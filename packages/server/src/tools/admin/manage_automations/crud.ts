@@ -544,23 +544,12 @@ export async function handleUpdate(
     // with an empty current prompt must fail). Callers that need to change both
     // triggers and instructions atomically must use create_version with both
     // fields — lobu apply does that path.
-    //
-    // Wrapped in a TX-scoped advisory lock to re-read the group-shared
-    // reaction_script under the lock, ensuring we validate against the
-    // current state rather than a stale pre-lock snapshot.
-    await sql.begin(async (tx) => {
-      await tx`SELECT pg_advisory_xact_lock(hashtext('automation_create_version'), ${Number(args.automation_id)})`;
-      const freshReactionRows = await tx`
-        SELECT reaction_script FROM automations WHERE id = ${args.automation_id}
-      `;
-      const freshReactionScript = (freshReactionRows[0]?.reaction_script as string | null) ?? null;
-      assertAutomationInstructions(
-        triggerWrite.triggers,
-        currentRow.current_prompt,
-        currentRow.current_skills,
-        freshReactionScript
-      );
-    });
+    assertAutomationInstructions(
+      triggerWrite.triggers,
+      currentRow.current_prompt,
+      currentRow.current_skills,
+      currentRow.reaction_script
+    );
   }
 
   // Executor matrix on the EFFECTIVE state (patch over the current row): an

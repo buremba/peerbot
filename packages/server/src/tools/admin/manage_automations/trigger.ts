@@ -106,45 +106,36 @@ export async function handleSetReactionScript(
     // final state (triggers per-assignment; prompt/skills group-shared through
     // the current version) and reject the clear if it would leave any
     // assignment invalid.
-    //
-    // Wrapped in a TX-scoped advisory lock (same key as create_version) so
-    // the read-validate-update is atomic against concurrent prompt/triggers
-    // mutations. The session-level lock from withAutomationGroupLock already
-    // serializes at the action level; this adds belt-and-suspenders safety
-    // for the instruction-source invariant.
-    await sql.begin(async (tx) => {
-      await tx`SELECT pg_advisory_xact_lock(hashtext('automation_create_version'), ${groupId})`;
-      const groupState = await tx`
-        SELECT w.id, w.triggers, cv.prompt, cv.skills
-        FROM automations w
-        LEFT JOIN automation_versions cv ON cv.id = w.current_version_id
-        WHERE w.automation_group_id = ${groupId}
-      `;
-      for (const assignment of groupState) {
-        try {
-          assertAutomationInstructions(
-            (assignment.triggers ?? []) as AutomationTrigger[],
-            assignment.prompt as string | null | undefined,
-            (assignment.skills ?? null) as Array<{ name: string; content: string }> | null,
-            null
+    const groupState = await sql`
+      SELECT w.id, w.triggers, cv.prompt, cv.skills
+      FROM automations w
+      LEFT JOIN automation_versions cv ON cv.id = w.current_version_id
+      WHERE w.automation_group_id = ${groupId}
+    `;
+    for (const assignment of groupState) {
+      try {
+        assertAutomationInstructions(
+          (assignment.triggers ?? []) as AutomationTrigger[],
+          assignment.prompt as string | null | undefined,
+          (assignment.skills ?? null) as Array<{ name: string; content: string }> | null,
+          null
+        );
+      } catch (err) {
+        if (err instanceof ToolUserError) {
+          throw new ToolUserError(
+            `Cannot remove the reaction script: ${err.message}`,
+            422
           );
-        } catch (err) {
-          if (err instanceof ToolUserError) {
-            throw new ToolUserError(
-              `Cannot remove the reaction script: ${err.message}`,
-              422
-            );
-          }
-          throw err;
         }
+        throw err;
       }
-      await tx`
-        UPDATE automations
-        SET reaction_script = NULL, reaction_script_compiled = NULL,
-            reaction_input_schema = NULL
-        WHERE automation_group_id = ${groupId}
-      `;
-    });
+    }
+    await sql`
+      UPDATE automations
+      SET reaction_script = NULL, reaction_script_compiled = NULL,
+          reaction_input_schema = NULL
+      WHERE automation_group_id = ${groupId}
+    `;
     recordToolConfigChange(ctx, {
       resourceKind: "automation",
       resourceId: args.automation_id,

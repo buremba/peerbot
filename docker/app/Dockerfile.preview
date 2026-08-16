@@ -1,0 +1,131 @@
+# Preview image: same as runtime but KEEPS embedded-postgres so preview
+# environments can use DATABASE_URL=file:///... (embedded mode).
+#
+# Usage:
+#   docker build -f docker/app/Dockerfile.preview -t lobu-preview .
+#   docker run -e DATABASE_URL=file:///tmp/lobu.db -p 8787:8787 lobu-preview
+#
+# This reuses the builder stage from the main Dockerfile. To build, pass:
+#   --build-arg BUN_VERSION=1.3.5
+
+# Rebuild the builder stage from the main Dockerfile
+FROM node:22-slim AS preview-deps
+ARG BUN_VERSION=1.3.5
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git ca-certificates curl unzip \
+      python3 build-essential \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s -- "bun-v${BUN_VERSION}" \
+    && chmod +x /usr/local/bin/bun
+
+ENV PATH="/usr/local/bin:${PATH}"
+
+COPY bun.lock package.json tsconfig.json ./
+COPY patches/ ./patches/
+
+COPY packages/core/package.json packages/core/
+COPY packages/plugin-api/package.json packages/plugin-api/
+COPY packages/plugin-host/package.json packages/plugin-host/
+COPY packages/plugin-toolkit/package.json packages/plugin-toolkit/
+COPY packages/plugin-memory/package.json packages/plugin-memory/
+COPY packages/plugin-conversations/package.json packages/plugin-conversations/
+COPY packages/plugin-media/package.json packages/plugin-media/
+COPY packages/plugin-mcp/package.json packages/plugin-mcp/
+COPY packages/agent-worker/package.json packages/agent-worker/
+COPY packages/server/package.json packages/server/
+COPY packages/connector-sdk/package.json packages/connector-sdk/
+COPY packages/connectors/package.json packages/connectors/
+COPY packages/embeddings/package.json packages/embeddings/
+COPY packages/connector-worker/package.json packages/connector-worker/
+COPY packages/cli/package.json packages/cli/
+COPY packages/pgvector-embedded/package.json packages/pgvector-embedded/
+COPY packages/owletto/package.jso[n] packages/owletto/
+
+RUN mkdir -p packages/lobu-cli packages/browser-extension packages/mcpsandbox \
+    && for p in browser-extension mcpsandbox; do \
+        echo "{\"name\":\"@lobu/$p\",\"version\":\"0.0.0\",\"private\":true}" > "packages/$p/package.json"; \
+      done \
+    && echo '{"name":"lobu","version":"0.0.0","private":true}' > packages/lobu-cli/package.json
+
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
+RUN --mount=type=cache,target=/root/.bun/install/cache bun install --linker=hoisted
+
+COPY tsconfig.json ./
+COPY config ./config
+COPY packages/core ./packages/core
+COPY packages/plugin-api ./packages/plugin-api
+COPY packages/plugin-host ./packages/plugin-host
+COPY packages/plugin-toolkit ./packages/plugin-toolkit
+COPY packages/plugin-memory ./packages/plugin-memory
+COPY packages/plugin-conversations ./packages/plugin-conversations
+COPY packages/plugin-media ./packages/plugin-media
+COPY packages/plugin-mcp ./packages/plugin-mcp
+COPY packages/agent-worker ./packages/agent-worker
+COPY packages/connector-sdk ./packages/connector-sdk
+COPY packages/connectors ./packages/connectors
+COPY packages/embeddings ./packages/embeddings
+COPY packages/connector-worker ./packages/connector-worker
+COPY packages/pgvector-embedded ./packages/pgvector-embedded
+COPY packages/server ./packages/server
+COPY packages/cli ./packages/cli
+COPY packages/owletto ./packages/owletto
+
+# Build all packages first (server depends on them)
+RUN bun run build
+
+# Build server bundle (keeps embedded-postgres)
+RUN cd packages/server && bun run build:server
+
+# ===========================================
+# Runtime (with embedded Postgres)
+# ===========================================
+FROM node:22-slim
+
+ARG BUN_VERSION=1.3.5
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl ca-certificates git gh unzip bubblewrap postgresql-client \
+      libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libdbus-1-3 \
+      libxkbcommon0 libatspi2.0-0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+      libgbm1 libpango-1.0-0 libcairo2 libasound2 libwayland-client0 \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s -- "bun-v${BUN_VERSION}" \
+    && chmod +x /usr/local/bin/bun
+
+ENV PATH="/usr/local/bin:${PATH}"
+
+# Copy installed deps + source from builder
+COPY --from=preview-deps /app/node_modules ./node_modules
+COPY --from=preview-deps /app/package.json ./
+COPY --from=preview-deps /app/tsconfig.json ./
+COPY --from=preview-deps /app/config ./config
+COPY --from=preview-deps /app/packages/core ./packages/core
+COPY --from=preview-deps /app/packages/plugin-api ./packages/plugin-api
+COPY --from=preview-deps /app/packages/plugin-host ./packages/plugin-host
+COPY --from=preview-deps /app/packages/plugin-toolkit ./packages/plugin-toolkit
+COPY --from=preview-deps /app/packages/plugin-memory ./packages/plugin-memory
+COPY --from=preview-deps /app/packages/plugin-conversations ./packages/plugin-conversations
+COPY --from=preview-deps /app/packages/plugin-media ./packages/plugin-media
+COPY --from=preview-deps /app/packages/plugin-mcp ./packages/plugin-mcp
+COPY --from=preview-deps /app/packages/agent-worker ./packages/agent-worker
+COPY --from=preview-deps /app/packages/connector-sdk ./packages/connector-sdk
+COPY --from=preview-deps /app/packages/connectors ./packages/connectors
+COPY --from=preview-deps /app/packages/embeddings ./packages/embeddings
+COPY --from=preview-deps /app/packages/connector-worker ./packages/connector-worker
+COPY --from=preview-deps /app/packages/server ./packages/server
+COPY --from=preview-deps /app/packages/cli ./packages/cli
+COPY --from=preview-deps /app/packages/owletto ./packages/owletto
+
+COPY db/migrations ./db/migrations
+COPY scripts/migrate-up.mjs ./scripts/migrate-up.mjs
+
+ENV NODE_ENV=development
+ENV PORT=8787
+
+EXPOSE 8787

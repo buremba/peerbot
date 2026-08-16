@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
-# Run the Linux CI graph on Depot against local changes. Full preflights
-# require a staged tree and reject untracked files, so their attestation can
-# survive the following commit without using local CPU.
+# Run the Linux CI graph against local changes.
+#
+# Usage:
+#   make pre-pr-remote              # Depot (GitHub Actions)
+#   K8S=1 make pre-pr-remote        # kubectl (local K8s cluster)
+#
+# K8S mode creates a Pod with the CI image + Postgres sidecar, mounts the
+# repo, and runs the test suite directly in the cluster. No Depot, no GitHub
+# Actions — just kubectl.
 
 set -euo pipefail
 
@@ -11,6 +17,114 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 . "$SCRIPT_DIR/lib/remote-ci.sh"
 cd "$REPO_ROOT"
 
+# ── K8S mode: run tests directly in the cluster ──────────────────────────
+if [ "${K8S:-0}" = "1" ]; then
+  for cmd in kubectl docker; do
+    command -v "$cmd" >/dev/null 2>&1 || {
+      echo "$cmd not found on PATH." >&2
+      exit 2
+    }
+  done
+
+  CI_IMAGE="${CI_IMAGE:-lobu-ci:local}"
+  PG_IMAGE="${PG_IMAGE:-pgvector/pgvector:pg18}"
+  K8S_NAMESPACE="${K8S_NAMESPACE:-default}"
+  K8S_TIMEOUT="${K8S_TIMEOUT:-900}"
+
+  # Build CI image if it doesn't exist locally
+  if ! docker image inspect "$CI_IMAGE" >/dev/null 2>&1; then
+    echo ">> building CI image $CI_IMAGE"
+    docker build -t "$CI_IMAGE" -f docker/ci/Dockerfile .
+  fi
+
+  # Stage all changes so the pod sees the current tree
+  if ! git diff --quiet --ignore-submodules=none --; then
+    echo ">> K8S mode requires all changes to be staged." >&2
+    echo "Run: git add -- <paths> && git commit (WIP ok)" >&2
+    exit 1
+  fi
+
+  TREE="$(git write-tree)"
+  POD="lobu-ci-${TREE:0:12}-$$"
+  trap 'kubectl delete pod "$POD" -n "$K8S_NAMESPACE" --ignore-not-found >/dev/null 2>&1' EXIT
+
+  echo ">> running CI in K8s pod $POD (tree $TREE)"
+
+  # Create pod with CI runner + Postgres sidecar
+  kubectl run "$POD" \
+    -n "$K8S_NAMESPACE" \
+    --image="$CI_IMAGE" \
+    --restart=Never \
+    --labels="app=lobu-ci,tree=$TREE" \
+    --overrides="{
+      \"spec\": {
+        \"containers\": [
+          {
+            \"name\": \"ci\",
+            \"image\": \"$CI_IMAGE\",
+            \"command\": [\"bash\", \"-c\"],
+            \"args\": [\"cd /workspace && bun install --frozen-lockfile && bun run build:packages && bun run test:unit && bun run test:integration: bun run test:integration:bun\"],
+            \"env\": [
+              {\"name\": \"DATABASE_URL\", \"value\": \"postgres://postgres:postgres@localhost:5432/lobu_test\"},
+              {\"name\": \"DB_POOL_MAX\", \"value\": \"5\"}
+            ],
+            \"resources\": {\"requests\": {\"cpu\": \"2\", \"memory\": \"4Gi\"}, \"limits\": {\"cpu\": \"4\", \"memory\": \"8Gi\"}}
+          },
+          {
+            \"name\": \"postgres\",
+            \"image\": \"$PG_IMAGE\",
+            \"env\": [
+              {\"name\": \"POSTGRES_USER\", \"value\": \"postgres\"},
+              {\"name\": \"POSTGRES_PASSWORD\", \"value\": \"postgres\"},
+              {\"name\": \"POSTGRES_DB\", \"value\": \"lobu_test\"}
+            ],
+            \"ports\": [{\"containerPort\": 5432}],
+            \"resources\": {\"requests\": {\"cpu\": \"1\", \"memory\": \"1Gi\"}, \"limits\": {\"cpu\": \"2\", \"memory\": \"2Gi\"}}
+          }
+        ],
+        \"shareProcessNamespace\": true
+      }
+    }"
+
+  echo ">> waiting for pod $POD to be ready..."
+  kubectl wait --for=condition=Ready pod/"$POD" -n "$K8S_NAMESPACE" --timeout=120s || {
+    echo ">> pod did not become ready; fetching logs:" >&2
+    kubectl logs "$POD" -n "$K8S_NAMESPACE" --all-containers --tail=100 >&2
+    exit 1
+  }
+
+  echo ">> streaming CI logs (timeout ${K8S_TIMEOUT}s)..."
+  kubectl logs "$POD" -n "$K8S_NAMESPACE" -c ci --follow &
+  LOGPID=$!
+
+  # Wait for completion
+  deadline=$((SECONDS + K8S_TIMEOUT))
+  while :; do
+    phase="$(kubectl get pod "$POD" -n "$K8S_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")"
+    if [ "$phase" = "Succeeded" ]; then
+      break
+    fi
+    if [ "$phase" = "Failed" ] || [ "$phase" = "CrashLoopBackOff" ]; then
+      echo ">> pod $POD failed (phase: $phase)" >&2
+      kill $LOGPID 2>/dev/null || true
+      kubectl logs "$POD" -n "$K8S_NAMESPACE" --all-containers --tail=200 >&2
+      exit 1
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      echo ">> CI timed out after ${K8S_TIMEOUT}s" >&2
+      kill $LOGPID 2>/dev/null || true
+      kubectl logs "$POD" -n "$K8S_NAMESPACE" --all-containers --tail=200 >&2
+      exit 1
+    fi
+    sleep 5
+  done
+
+  kill $LOGPID 2>/dev/null || true
+  echo ">> CI passed in K8s pod $POD"
+  exit 0
+fi
+
+# ── Depot mode (default) ──────────────────────────────────────────────────
 DEPOT_ORG_ID="${DEPOT_ORG_ID:-b9ffw2rv84}"
 REMOTE_CI_TIMEOUT_SECONDS="${REMOTE_CI_TIMEOUT_SECONDS:-2700}"
 REMOTE_CI_POLL_INTERVAL_SECONDS="${REMOTE_CI_POLL_INTERVAL_SECONDS:-5}"

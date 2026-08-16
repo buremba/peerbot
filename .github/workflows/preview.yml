@@ -1,0 +1,202 @@
+name: PR Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: read
+  pull-requests: write
+  packages: write
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number }}
+  PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number }}
+  PREVIEW_IMAGE: ghcr.io/${{ github.repository }}/preview
+  KUBECONFIG: /tmp/kubeconfig
+
+jobs:
+  preview:
+    runs-on: ubuntu-24.04
+    if: github.event.action != 'closed'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push preview image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/app/Dockerfile.preview
+          push: true
+          tags: ${{ env.PREVIEW_IMAGE }}:pr-${{ github.event.pull_request.number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Setup kubeconfig
+        run: |
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > "$KUBECONFIG"
+
+      - name: Create preview namespace
+        run: |
+          kubectl create namespace "$PREVIEW_NS" --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy preview
+        run: |
+          kubectl create deployment "$PREVIEW_NAME" \
+            -n "$PREVIEW_NS" \
+            --image=${{ env.PREVIEW_IMAGE }}:pr-${{ github.event.pull_request.number }} \
+            --port=8787
+
+          kubectl -n "$PREVIEW_NS" patch deployment "$PREVIEW_NAME" --type='json' -p='[
+            {"op": "replace", "path": "/spec/template/spec/containers/0/command", "value": ["node", "packages/server/dist/index.js"]},
+            {"op": "add", "path": "/spec/template/spec/containers/0/env", "value": [
+              {"name": "PORT", "value": "8787"},
+              {"name": "DATABASE_URL", "value": "file:///var/lib/lobu/data/lobu.db"},
+              {"name": "NODE_ENV", "value": "development"}
+            ]},
+            {"op": "add", "path": "/spec/template/spec/containers/0/readinessProbe", "value": {
+              "httpGet": {"path": "/api/health", "port": 8787},
+              "initialDelaySeconds": 30,
+              "periodSeconds": 5,
+              "failureThreshold": 30
+            }},
+            {"op": "add", "path": "/spec/template/spec/containers/0/resources", "value": {
+              "requests": {"cpu": "2", "memory": "4Gi"},
+              "limits": {"cpu": "4", "memory": "8Gi"}
+            }},
+            {"op": "add", "path": "/spec/template/spec/containers/0/volumeMounts", "value": [
+              {"name": "data", "mountPath": "/var/lib/lobu/data"}
+            ]},
+            {"op": "add", "path": "/spec/template/spec/volumes", "value": [
+              {"name": "data", "emptyDir": {}}
+            ]}
+          ]'
+
+          kubectl expose deployment "$PREVIEW_NAME" \
+            -n "$PREVIEW_NS" \
+            --port=80 \
+            --target-port=8787 \
+            --type=ClusterIP
+
+          cat <<EOF | kubectl apply -f -
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: $PREVIEW_NAME
+            namespace: $PREVIEW_NS
+            annotations:
+              tailscale.com/tags: "tag:preview,tag:pr-${{ github.event.pull_request.number }}"
+          spec:
+            ingressClassName: tailscale
+            rules:
+              - host: lobu-pr-${{ github.event.pull_request.number }}.${{ vars.TAILNET_DOMAIN }}
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: $PREVIEW_NAME
+                          port:
+                            number: 80
+          EOF
+
+      - name: Wait for preview to be ready
+        run: |
+          kubectl rollout status deployment/"$PREVIEW_NAME" \
+            -n "$PREVIEW_NS" \
+            --timeout=600s
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const previewUrl = `https://lobu-pr-${prNumber}.${{ vars.TAILNET_DOMAIN }}`;
+
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+
+            const botComment = comments.data.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Preview environment')
+            );
+
+            const body = `## Preview environment ready
+
+            | | |
+            |---|---|
+            | **URL** | [${previewUrl}](${previewUrl}) |
+            | **Namespace** | \`${context.payload.repository.name}-${prNumber}\` |
+            | **Status** | Running |
+
+            _This preview will be automatically deleted when the PR is closed._`;
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body,
+              });
+            }
+
+  cleanup:
+    runs-on: ubuntu-24.04
+    if: github.event.action == 'closed'
+    steps:
+      - name: Setup kubeconfig
+        run: |
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > "$KUBECONFIG"
+
+      - name: Delete preview namespace
+        run: |
+          kubectl delete namespace "$PREVIEW_NS" --ignore-not-found
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+
+            const botComment = comments.data.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Preview environment')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: '## Preview environment cleaned up\n\n_The preview environment for this PR has been deleted._',
+              });
+            }

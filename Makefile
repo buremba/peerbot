@@ -31,6 +31,7 @@ help:
 	@echo "  make ui-review [ARTIFACT=<https-url>]       - Record Owletto UI proof; complete forward deploy-only pointer diffs pass as not applicable; OPEN=1 opens the merged PR"
 	@echo "  make pre-pr-remote-fast                    - Run required Linux merge jobs on Depot (broad iteration; no attestation)"
 	@echo "  make pre-pr-remote [REMOTE_JOBS='unit …']  - Run staged full Linux CI on Depot (default final gate; no local CPU)"
+	@echo "  K8S=1 make pre-pr-remote                   - Run CI in local K8s cluster via kubectl (no Depot)"
 	@echo "  make pre-pr                                - Run the CPU-heavy deterministic gate locally (explicit fallback)"
 	@echo "  make owletto-mac [INSTALL=1] [OPEN=1]      - Build Owletto.app with the Developer ID identity (TCC grants match the notarized release); INSTALL=1 replaces /Applications/Owletto.app, OPEN=1 launches it"
 	@echo "  make owletto-mac-e2e [SKIP_BUILD=1]        - Build/install the signed Owletto.app then probe prod computer_use (permissions + list_windows) via the paired device connection"

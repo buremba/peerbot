@@ -290,9 +290,9 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 		const dryPreview: Array<Record<string, unknown>> = [];
 
 		// The whole batch, parameterised on a DB handle. The real path passes the
-		// singleton and behaves exactly as before (statement-per-autocommit — this
-		// refactor deliberately does not put production's hot path inside one long
-		// transaction). The dry path passes a tx that is rolled back.
+		// singleton: event inserts below remain statement-per-autocommit, while
+		// applyEventAttributions opens one bounded transaction for this batch's
+		// entity attribution writes. The dry path passes a tx that is rolled back.
 		const ingestBatch = async (db: DbClient) => {
 			// Connector-emitted inline attachments (e.g. whatsapp.local voice notes)
 			// come over the wire as base64 in `attachment.data`. Materialize each into

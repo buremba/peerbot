@@ -13,6 +13,7 @@ import {
   applyEventAttributions,
   clearEntityLinkRulesCache,
   resolveEventAttributionsForItems,
+  resolveSenderIdentity,
 } from '../entity-link-upsert';
 import { ensureMemberEntityType } from '../member-entity-type';
 
@@ -260,6 +261,78 @@ describe('applyEventAttributions', () => {
     expect(item.metadata.x_user_id).toBe('111');
   });
 
+  it('a later rule resolves an entity an earlier rule minted in the same batch', async () => {
+    // Match maps are resolved for every rule up front (so the prelock can order
+    // them), which means a later rule can no longer re-read an intra-batch
+    // create from the DB. It must see the mint through the shared claim instead
+    // — otherwise a non-autoCreate rule silently drops the edge and its traits.
+    const { org } = await setupOrg('cross rule mint org');
+    const sql = getTestDb();
+
+    await createTestConnectorDefinition({
+      key: 'self-dm',
+      name: 'self-dm',
+      organization_id: org.id,
+      feeds_schema: {
+        [FEED_KEY]: {
+          eventKinds: {
+            dm: {
+              attributions: [
+                {
+                  role: 'authored_by',
+                  autoCreate: true,
+                  target: {
+                    entityType: '$member',
+                    identities: [{ namespace: 'phone', eventPath: 'metadata.sender_phone' }],
+                  },
+                },
+                {
+                  role: 'about',
+                  autoCreate: false,
+                  target: {
+                    entityType: '$member',
+                    identities: [{ namespace: 'phone', eventPath: 'metadata.subject_phone' }],
+                  },
+                  traits: {
+                    nickname: { eventPath: 'metadata.nickname', mergeStrategy: 'overwrite' },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+    clearEntityLinkRulesCache();
+
+    // Both rules resolve the SAME phone: the author rule mints the entity, the
+    // counterparty rule must land its trait on that same row.
+    await applyEventAttributions({
+      connectorKey: 'self-dm',
+      feedKey: FEED_KEY,
+      orgId: org.id,
+      items: [
+        {
+          origin_type: 'dm',
+          metadata: {
+            sender_phone: '14155559111',
+            subject_phone: '14155559111',
+            nickname: 'Robin',
+          },
+        },
+      ],
+    });
+
+    const rows = await sql<{ metadata: Record<string, unknown> }[]>`
+      SELECT e.metadata
+      FROM entities e
+      JOIN entity_identities ei ON ei.entity_id = e.id
+      WHERE ei.organization_id = ${org.id} AND ei.identifier = '14155559111'
+    `;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].metadata.nickname).toBe('Robin');
+  });
+
   it('reuses an existing entity and accretes a newly-seen identifier', async () => {
     const { org, user } = await setupOrg('reuse org');
 
@@ -498,6 +571,91 @@ describe('applyEventAttributions', () => {
       SELECT metadata FROM entities WHERE id = ${withIdentity[0].id}
     `;
     expect(winner[0].metadata.push_name).toBe('Casey');
+  });
+
+  it('locks existing entities in one order across reversed concurrent batches', async () => {
+    const { org, user } = await setupOrg('concurrent existing batch org');
+    const sql = getTestDb();
+    const [type] = await sql<{ id: number }[]>`
+      SELECT id FROM entity_types
+      WHERE organization_id = ${org.id} AND slug = '$member' AND deleted_at IS NULL
+    `;
+    const entities = await sql<{ id: number; name: string }[]>`
+      INSERT INTO entities (
+        organization_id, entity_type_id, name, slug, metadata, created_by
+      ) VALUES
+        (${org.id}, ${type.id}, 'First', 'deadlock-first', '{"deadlock_probe":true}'::jsonb, ${user.id}),
+        (${org.id}, ${type.id}, 'Second', 'deadlock-second', '{"deadlock_probe":true}'::jsonb, ${user.id})
+      RETURNING id, name
+    `;
+    const byName = new Map(entities.map((entity) => [entity.name, Number(entity.id)]));
+    await sql`
+      INSERT INTO entity_identities (
+        organization_id, entity_id, namespace, identifier, source_connector
+      ) VALUES
+        (${org.id}, ${byName.get('First')!}, 'phone', '14155553001', 'test'),
+        (${org.id}, ${byName.get('Second')!}, 'phone', '14155553002', 'test')
+    `;
+
+    // Hold the first updated row briefly. Without the resolver's ascending-id
+    // prelock, the reversed batches each hold one row and then wait for the
+    // other, producing a real PostgreSQL deadlock.
+    //
+    // Created idempotently: a run killed before the `finally` below would
+    // otherwise leave the function behind and make every later run red.
+    await sql.unsafe(`
+      CREATE OR REPLACE FUNCTION entity_link_deadlock_probe_sleep() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        IF OLD.metadata->>'deadlock_probe' = 'true' THEN
+          PERFORM pg_sleep(0.2);
+        END IF;
+        RETURN NEW;
+      END;
+      $$
+    `);
+    await sql.unsafe('DROP TRIGGER IF EXISTS entity_link_deadlock_probe ON entities');
+    await sql.unsafe(`
+      CREATE TRIGGER entity_link_deadlock_probe
+      BEFORE UPDATE ON entities
+      FOR EACH ROW EXECUTE FUNCTION entity_link_deadlock_probe_sleep()
+    `);
+
+    const rule: TestAttributionRule = {
+      entityType: '$member',
+      identities: [{ namespace: 'phone', eventPath: 'metadata.phone' }],
+    };
+    const first = { origin_type: 'msg', metadata: { phone: '14155553001' } };
+    const second = { origin_type: 'msg', metadata: { phone: '14155553002' } };
+    try {
+      await Promise.all([
+        resolveEventAttributionsForItems({
+          connectorKey: 'whatsapp',
+          orgId: org.id,
+          items: [first, second],
+          rules: { msg: [rule] },
+        }),
+        resolveEventAttributionsForItems({
+          connectorKey: 'whatsapp',
+          orgId: org.id,
+          items: [second, first],
+          rules: { msg: [rule] },
+        }),
+      ]);
+    } finally {
+      await sql.unsafe('DROP TRIGGER IF EXISTS entity_link_deadlock_probe ON entities');
+      await sql.unsafe('DROP FUNCTION IF EXISTS entity_link_deadlock_probe_sleep()');
+    }
+
+    const rows = await sql<{ metadata: { aliases?: string[] } }[]>`
+      SELECT metadata FROM entities
+      WHERE id = ANY(${`{${entities.map((entity) => entity.id).join(',')}}`}::bigint[])
+      ORDER BY id
+    `;
+    expect(rows.map((row) => row.metadata.aliases)).toEqual([
+      ['14155553001'],
+      ['14155553002'],
+    ]);
   });
 
   it('createWhen gates auto-create: group message mints nothing, 1:1 mints a contact', async () => {
@@ -780,6 +938,90 @@ describe('applyEventAttributions', () => {
       WHERE organization_id = ${org.id} AND namespace = 'phone' AND identifier = '14155551111'
     `;
     expect(rows[0].count).toBe('0');
+  });
+
+  it('opens a transaction for a passed pool so a late identity failure rolls back the entity', async () => {
+    const { org } = await setupOrg('pool transaction org');
+    const sql = getTestDb();
+
+    const rule: TestAttributionRule = {
+      entityType: '$member',
+      autoCreate: true,
+      identities: [{ namespace: 'phone', eventPath: 'metadata.phone' }],
+    };
+    // No such connections row, so the identity insert trips the
+    // entity_identities → connections FK — a failure that lands AFTER the
+    // entity row was inserted. Passing the pool (not a tx) is the point: the
+    // resolver has to open its own transaction for the entity to roll back.
+    const missingConnectionId = 2_147_483_647;
+
+    await expect(
+      resolveEventAttributionsForItems(
+        {
+          connectorKey: 'whatsapp',
+          connectionId: missingConnectionId,
+          orgId: org.id,
+          items: [{ origin_type: 'msg', metadata: { phone: '14155552222' } }],
+          rules: { msg: [rule] },
+        },
+        sql
+      )
+    ).rejects.toThrow();
+
+    const rows = await sql<{ entityCount: string; identityCount: string }[]>`
+      SELECT
+        (SELECT COUNT(*)::text FROM entities
+         WHERE organization_id = ${org.id} AND name = '14155552222') AS "entityCount",
+        (SELECT COUNT(*)::text FROM entity_identities
+         WHERE organization_id = ${org.id}
+           AND namespace = 'phone'
+           AND identifier = '14155552222') AS "identityCount"
+    `;
+    expect(rows[0]).toEqual({ entityCount: '0', identityCount: '0' });
+  });
+
+  it('returns an existing sender identity without opening a transaction', async () => {
+    const { org, user } = await setupOrg('sender fast path org');
+    const sql = getTestDb();
+    const [type] = await sql<{ id: number }[]>`
+      SELECT id FROM entity_types
+      WHERE organization_id = ${org.id} AND slug = '$member' AND deleted_at IS NULL
+    `;
+    const [entity] = await sql<{ id: number }[]>`
+      INSERT INTO entities (
+        organization_id, entity_type_id, name, slug, metadata, created_by
+      ) VALUES (
+        ${org.id}, ${type.id}, 'Known sender', 'known-sender', '{}'::jsonb, ${user.id}
+      )
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO entity_identities (
+        organization_id, entity_id, namespace, identifier, source_connector
+      ) VALUES (${org.id}, ${entity.id}, 'phone', '14155554444', 'test')
+    `;
+
+    let beginCalls = 0;
+    const observedSql = new Proxy(sql, {
+      get(target, property, receiver) {
+        if (property === 'begin') {
+          return (...args: Parameters<typeof sql.begin>) => {
+            beginCalls += 1;
+            return sql.begin(...args);
+          };
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+    const resolved = await resolveSenderIdentity(observedSql, {
+      orgId: org.id,
+      connectorKey: 'whatsapp',
+      mintEntityType: '$member',
+      identities: [{ namespace: 'phone', identifier: '14155554444' }],
+    });
+    expect(resolved).toBe(Number(entity.id));
+    expect(beginCalls).toBe(0);
   });
 });
 

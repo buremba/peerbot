@@ -83,37 +83,6 @@ const ALLOWED_BYPASSES = [
     reason: "suite-trials projection",
   },
 
-  // Connector identity attribution and provisional cleanup.
-  {
-    file: "packages/server/src/utils/entity-link-upsert.ts",
-    operation: "update",
-    dynamic: false,
-    fingerprint: "2861920694ec0b57",
-    reason: "atomic connector alias union",
-  },
-  {
-    file: "packages/server/src/utils/entity-link-upsert.ts",
-    operation: "insert",
-    dynamic: false,
-    fingerprint: "53a1d02d941dbf12",
-    reason: "connector-attributed entity create",
-  },
-  {
-    file: "packages/server/src/utils/entity-link-upsert.ts",
-    operation: "update",
-    dynamic: false,
-    fingerprint: "c3df275b1acf2aa4",
-    reason: "connector trait projection",
-  },
-  {
-    file: "packages/server/src/utils/entity-link-upsert.ts",
-    operation: "delete",
-    dynamic: false,
-    fingerprint: "28b38f1cbc483794",
-    count: 2,
-    reason: "lost identity or mint race cleanup",
-  },
-
   // Member lifecycle projections.
   {
     file: "packages/server/src/utils/member-entity.ts",

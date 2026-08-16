@@ -44,7 +44,12 @@ import {
 	RESOLUTION_FINGERPRINT_VERSION,
 } from "../../entity-resolution/policy";
 import { wasResolutionRejected } from "../../entity-resolution/rejection";
-import { getDb, pgBigintArray, pgTextArray } from "../../db/client";
+import {
+	type DbClient,
+	getDb,
+	pgBigintArray,
+	pgTextArray,
+} from "../../db/client";
 import type { Env } from "../../index";
 import {
 	batchLoadRelationships,
@@ -58,7 +63,11 @@ import {
 } from "../../utils/entity-management";
 import { applyMergeGroup, applyUnmerge } from "../../utils/entity-merge";
 import { ToolUserError } from "../../utils/errors";
-import { recordChangeEvent } from "../../utils/insert-event";
+import {
+	recordChangeEvent,
+	recordEdgeChangeEvent,
+	stableJson,
+} from "../../utils/insert-event";
 import { resolveMemberSchemaFieldsFromSchema } from "../../utils/member-entity-type";
 import {
 	canonicalizeSymmetricEdge,
@@ -1487,6 +1496,50 @@ const RELATIONSHIP_JOINS = `
 // Relationship (Link) Action Handlers
 // ============================================
 
+/**
+ * Pre-image of an edge, read before unlink/update_link so the change log can
+ * carry what the row held before the mutation. `RELATIONSHIP_SELECT` is the
+ * caller-facing projection; this is the audit one.
+ */
+interface EdgeAuditRow {
+	id: number | string;
+	organization_id: string;
+	from_entity_id: number | string;
+	to_entity_id: number | string;
+	relationship_type_id: number | string;
+	metadata: unknown;
+	confidence: number | null;
+	source: string | null;
+	relationship_type_slug: string | null;
+}
+
+async function lockEdgeForMutation(
+	tx: DbClient,
+	relationshipId: number,
+	organizationId: string,
+): Promise<EdgeAuditRow> {
+	const rows = await tx<EdgeAuditRow>`
+    SELECT r.id, r.organization_id, r.from_entity_id, r.to_entity_id,
+           r.relationship_type_id, r.metadata, r.confidence, r.source,
+           rt.slug AS relationship_type_slug
+    FROM entity_relationships r
+    LEFT JOIN entity_relationship_types rt ON rt.id = r.relationship_type_id
+    WHERE r.id = ${relationshipId} AND r.deleted_at IS NULL
+    LIMIT 1
+    FOR UPDATE OF r
+  `;
+	if (rows.length === 0) {
+		throw new ToolUserError(`Relationship ${relationshipId} not found`, 404);
+	}
+	if (String(rows[0].organization_id) !== organizationId) {
+		throw new ToolUserError(
+			"Access denied: relationship belongs to another organization",
+			403,
+		);
+	}
+	return rows[0];
+}
+
 async function handleLink(
 	args: ManageEntityArgs,
 	env: Env,
@@ -1595,6 +1648,24 @@ async function handleLink(
 		[relationshipId],
   );
 
+	recordEdgeChangeEvent({
+		organizationId: ctx.organizationId,
+		relationshipId,
+		fromEntityId: fromId,
+		toEntityId: toId,
+		relationshipTypeId: typeId,
+		relationshipTypeSlug: args.relationship_type_slug,
+		op: "link",
+		changes: [
+			{ field: "exists", old: false, new: true },
+			{ field: "metadata", old: null, new: args.metadata ?? null },
+			{ field: "confidence", old: null, new: confidence },
+			{ field: "source", old: null, new: source },
+		],
+		createdBy: ctx.userId,
+		clientId: ctx.clientId,
+	});
+
 	return { action: "link", relationship: created[0] };
 }
 
@@ -1607,26 +1678,37 @@ async function handleUnlink(
 
   const sql = getDb();
 
-  const existing = await sql`
-    SELECT id, organization_id FROM entity_relationships
-    WHERE id = ${args.relationship_id} AND deleted_at IS NULL
-    LIMIT 1
-  `;
-	if (existing.length === 0) {
-		throw new ToolUserError(`Relationship ${args.relationship_id} not found`, 404);
-	}
-	if (String(existing[0].organization_id) !== ctx.organizationId) {
-		throw new ToolUserError(
-			"Access denied: relationship belongs to another organization",
-			403,
+	const before = await sql.begin(async (tx) => {
+		const edge = await lockEdgeForMutation(
+			tx,
+			args.relationship_id!,
+			ctx.organizationId,
 		);
-	}
+		await tx`
+      UPDATE entity_relationships
+      SET deleted_at = current_timestamp, updated_at = current_timestamp, updated_by = ${ctx.userId}
+      WHERE id = ${args.relationship_id} AND deleted_at IS NULL
+    `;
+		return edge;
+	});
 
-	await sql`
-    UPDATE entity_relationships
-    SET deleted_at = current_timestamp, updated_at = current_timestamp, updated_by = ${ctx.userId}
-    WHERE id = ${args.relationship_id}
-  `;
+	recordEdgeChangeEvent({
+		organizationId: ctx.organizationId,
+		relationshipId: Number(before.id),
+		fromEntityId: Number(before.from_entity_id),
+		toEntityId: Number(before.to_entity_id),
+		relationshipTypeId: Number(before.relationship_type_id),
+		relationshipTypeSlug: before.relationship_type_slug,
+		op: "unlink",
+		changes: [
+			{ field: "exists", old: true, new: false },
+			{ field: "metadata", old: before.metadata, new: null },
+			{ field: "confidence", old: before.confidence, new: null },
+			{ field: "source", old: before.source, new: null },
+		],
+		createdBy: ctx.userId,
+		clientId: ctx.clientId,
+	});
 
 	return {
 		action: "unlink",
@@ -1644,46 +1726,66 @@ async function handleUpdateLink(
 
   const sql = getDb();
 
-  const existing = await sql`
-    SELECT id, organization_id FROM entity_relationships
-    WHERE id = ${args.relationship_id} AND deleted_at IS NULL
-    LIMIT 1
-  `;
-	if (existing.length === 0) {
-		throw new ToolUserError(`Relationship ${args.relationship_id} not found`, 404);
-	}
-	if (String(existing[0].organization_id) !== ctx.organizationId) {
-		throw new ToolUserError(
-			"Access denied: relationship belongs to another organization",
-			403,
+	const { before, after, updated } = await sql.begin(async (tx) => {
+		const edge = await lockEdgeForMutation(
+			tx,
+			args.relationship_id!,
+			ctx.organizationId,
 		);
+		validateConfidence(args.confidence);
+		validateSource(args.source);
+		const hasMetadata = args.metadata !== undefined;
+		const metadataJson = hasMetadata ? tx.json(args.metadata) : null;
+		const updatedRows = await tx<{
+			metadata: unknown;
+			confidence: number | null;
+			source: string | null;
+		}>`
+      UPDATE entity_relationships SET
+        metadata = CASE
+          WHEN ${hasMetadata} THEN ${metadataJson}
+          ELSE metadata
+        END,
+        confidence = COALESCE(${args.confidence ?? null}, confidence),
+        source = COALESCE(${args.source ?? null}, source),
+        updated_by = ${ctx.userId},
+        updated_at = current_timestamp
+      WHERE id = ${args.relationship_id} AND deleted_at IS NULL
+      RETURNING metadata, confidence, source
+    `;
+		const relationship = await tx.unsafe<RelationshipRow>(
+			`SELECT ${RELATIONSHIP_SELECT} ${RELATIONSHIP_JOINS} WHERE r.id = $1`,
+			[args.relationship_id],
+		);
+		return {
+			before: edge,
+			after: updatedRows[0],
+			updated: relationship[0],
+		};
+	});
+
+	const changes = [
+		{ field: "metadata", old: before.metadata, new: after.metadata },
+		{ field: "confidence", old: before.confidence, new: after.confidence },
+		{ field: "source", old: before.source, new: after.source },
+	].filter((c) => stableJson(c.old ?? null) !== stableJson(c.new ?? null));
+
+	if (changes.length > 0) {
+		recordEdgeChangeEvent({
+			organizationId: ctx.organizationId,
+			relationshipId: Number(before.id),
+			fromEntityId: Number(before.from_entity_id),
+			toEntityId: Number(before.to_entity_id),
+			relationshipTypeId: Number(before.relationship_type_id),
+			relationshipTypeSlug: before.relationship_type_slug,
+			op: "update_link",
+			changes,
+			createdBy: ctx.userId,
+			clientId: ctx.clientId,
+		});
 	}
 
-	validateConfidence(args.confidence);
-	validateSource(args.source);
-
-	const hasMetadata = args.metadata !== undefined;
-	const metadataJson = hasMetadata ? sql.json(args.metadata) : null;
-
-	await sql`
-    UPDATE entity_relationships SET
-      metadata = CASE
-        WHEN ${hasMetadata} THEN ${metadataJson}
-        ELSE metadata
-      END,
-      confidence = COALESCE(${args.confidence ?? null}, confidence),
-      source = COALESCE(${args.source ?? null}, source),
-      updated_by = ${ctx.userId},
-      updated_at = current_timestamp
-    WHERE id = ${args.relationship_id}
-  `;
-
-  const updated = await sql.unsafe<RelationshipRow>(
-    `SELECT ${RELATIONSHIP_SELECT} ${RELATIONSHIP_JOINS} WHERE r.id = $1`,
-		[args.relationship_id],
-  );
-
-	return { action: "update_link", relationship: updated[0] };
+	return { action: "update_link", relationship: updated };
 }
 
 async function handleListLinks(

@@ -786,6 +786,90 @@ export function recordChangeEvent(params: ChangeEventParams): void {
   });
 }
 
+interface EdgeFieldChange {
+  field: string;
+  old: unknown;
+  new: unknown;
+}
+
+interface EdgeChangeEventParams {
+  organizationId: string;
+  relationshipId: number;
+  fromEntityId: number;
+  toEntityId: number;
+  relationshipTypeId: number;
+  relationshipTypeSlug: string | null;
+  op: 'link' | 'unlink' | 'update_link';
+  changes: EdgeFieldChange[];
+  createdBy?: string | null;
+  clientId?: string | null;
+}
+
+/**
+ * Record a relationship (edge) change for audit.
+ *
+ * Fire-and-forget with the same retry-then-log-and-drop contract as
+ * `recordChangeEvent`, and for the same reason: `entity_relationships` remains
+ * the source of truth for what is currently linked, so a dropped row costs
+ * history, never state.
+ *
+ * Metadata shape (all ids stringified so `metadata->>'...'` comparisons work):
+ *   {
+ *     "op": "update_link",
+ *     "relationshipId": "42",
+ *     "fromEntityId": "10",
+ *     "toEntityId": "11",
+ *     "relationshipTypeId": "3",
+ *     "relationshipTypeSlug": "invoice_customer",
+ *     "changes": [{ "field": "confidence", "old": 0.5, "new": 0.9 }]
+ *   }
+ */
+export function recordEdgeChangeEvent(params: EdgeChangeEventParams): void {
+  // Keep this stable across the retry below, while allowing a relationship
+  // revived by unmerge to record the same operation again later.
+  const originId = `edge:${params.relationshipId}:${params.op}:${crypto.randomUUID()}`;
+  const verb =
+    params.op === 'link' ? 'linked' : params.op === 'unlink' ? 'unlinked' : 'updated';
+
+  retryWithBackoff(
+    () =>
+      insertConnectionlessAuditEvent({
+        organizationId: params.organizationId,
+        // Both endpoints, so the change surfaces on either entity's timeline.
+        entityIds: [params.fromEntityId, params.toEntityId],
+        originId,
+        semanticType: 'change',
+        title: `Relationship ${verb}: ${params.relationshipTypeSlug ?? params.relationshipTypeId}`,
+        metadata: {
+          _lobu_relationship_change: true,
+          category: 'relationship',
+          op: params.op,
+          relationshipId: String(params.relationshipId),
+          fromEntityId: String(params.fromEntityId),
+          toEntityId: String(params.toEntityId),
+          relationshipTypeId: String(params.relationshipTypeId),
+          relationshipTypeSlug: params.relationshipTypeSlug,
+          changes: params.changes,
+        },
+        createdBy: params.createdBy ?? null,
+        clientId: params.clientId ?? null,
+      }),
+    AUDIT_EVENT_RETRY
+  ).catch((err) => {
+    logger.error(
+      {
+        err,
+        originId,
+        organizationId: params.organizationId,
+        relationshipId: params.relationshipId,
+        op: params.op,
+        changes: params.changes,
+      },
+      '[insert-event] edge change audit event DROPPED after retry — edge history is missing this row'
+    );
+  });
+}
+
 // ============================================
 // Lifecycle Event (entity create / update / delete)
 // ============================================

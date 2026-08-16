@@ -21,10 +21,16 @@
  */
 import type { DbClient } from '../db/client';
 import { getDb } from '../db/client';
-import { insertConnectionlessAuditEvent } from './insert-event';
+import { insertConnectionlessAuditEvent, stableJson } from './insert-event';
 
-/** `semantic_type` for an edge change, mirroring the existing `'change'`. */
-export const EDGE_CHANGE_SEMANTIC_TYPE = 'edge_change';
+/**
+ * Edge changes ride the existing `semantic_type='change'` bucket, discriminated
+ * by `metadata.category`, exactly as deployment and lifecycle audits already do.
+ * This matches what shipped in #2807 for the MCP link handlers, so a reader sees
+ * one contract whether a human or a connector moved the edge.
+ */
+export const EDGE_CHANGE_SEMANTIC_TYPE = 'change';
+export const EDGE_CHANGE_CATEGORY = 'relationship';
 
 export type EdgeClaimRef = {
   orgId: string;
@@ -50,11 +56,18 @@ function claimsOf(metadata: unknown): string[] {
 }
 
 /**
- * Append the change to the log. Uses `insertConnectionlessAuditEvent`, which
- * AWAITS and throws — deliberately not `recordChangeEvent`, which is
- * fire-and-forget (retries twice, then logs an error and drops the row). Audit
- * can tolerate a dropped row; a claim log cannot, because a dropped assertion
- * silently becomes a lost edge.
+ * Append the change to the log — but ONLY when the claim set actually moved.
+ *
+ * This guard is what makes the log affordable at connector scale. A sync
+ * re-asserts every edge it still believes in, so without it a 10k-edge feed
+ * would append 10k audit rows per run to an append-only table, for a graph that
+ * did not change. Re-asserting an existing claim is a no-op and records
+ * nothing; a new row, a new co-owner, or a withdrawal all move the set and are
+ * all recorded.
+ *
+ * A dropped row costs history, never state: current ownership lives in the
+ * projection row's claim set, which is the same reason the shipped edge audit
+ * tolerates a drop.
  */
 async function logEdgeChange(params: {
   ref: EdgeClaimRef;
@@ -65,6 +78,7 @@ async function logEdgeChange(params: {
   seq: string;
 }): Promise<void> {
   const { ref } = params;
+  if (stableJson(params.before) === stableJson(params.after)) return;
   await insertConnectionlessAuditEvent({
     organizationId: ref.orgId,
     entityIds: [ref.fromEntityId, ref.toEntityId],
@@ -72,16 +86,18 @@ async function logEdgeChange(params: {
     // batch does not append a second identical history row.
     originId: `edge:${ref.fromEntityId}:${ref.toEntityId}:${ref.relationshipTypeId}:${ref.ownerId}:${params.seq}`,
     semanticType: EDGE_CHANGE_SEMANTIC_TYPE,
-    title: `${params.op} ${ref.fromEntityId}->${ref.toEntityId}`,
+    title: `Relationship ${params.op === 'assert' ? 'claimed' : 'released'}: ${ref.fromEntityId}->${ref.toEntityId}`,
     metadata: {
+      _lobu_relationship_change: true,
+      category: EDGE_CHANGE_CATEGORY,
       op: params.op,
       ownerId: ref.ownerId,
       fromEntityId: String(ref.fromEntityId),
       toEntityId: String(ref.toEntityId),
       relationshipTypeId: String(ref.relationshipTypeId),
       ruleVersion: params.ruleVersion ?? null,
-      // The diff, in the same spirit as `recordChangeEvent`'s
-      // `metadata.changes = [{field, old, new}]`.
+      // The diff, in the same `changes = [{field, old, new}]` shape the MCP
+      // handlers write, so one reader parses both.
       changes: [{ field: 'claims', old: params.before, new: params.after }],
     },
   });
@@ -105,7 +121,7 @@ export async function assertEdgeClaim(params: {
     const { ref } = params;
     const claimValue = { ruleVersion: params.ruleVersion ?? null };
 
-    const before = await sql<{ metadata: unknown }[]>`
+    const before = await sql<{ metadata: unknown }>`
       SELECT metadata FROM entity_relationships
       WHERE organization_id = ${ref.orgId}
         AND from_entity_id = ${ref.fromEntityId}
@@ -116,7 +132,7 @@ export async function assertEdgeClaim(params: {
     `;
     const beforeOwners = before.length > 0 ? claimsOf(before[0].metadata) : [];
 
-    const rows = await sql<{ metadata: unknown }[]>`
+    const rows = await sql<{ metadata: unknown; inserted: number }>`
       INSERT INTO entity_relationships (
         organization_id, from_entity_id, to_entity_id, relationship_type_id,
         metadata, confidence, source, created_by, updated_by, created_at, updated_at
@@ -137,7 +153,12 @@ export async function assertEdgeClaim(params: {
         ),
         updated_by = ${params.createdBy},
         updated_at = current_timestamp
-      RETURNING metadata
+      RETURNING metadata,
+                -- Did THIS statement insert the row, or update an existing one?
+                -- The pre-read cannot answer that: under a race both callers
+                -- read "no row" and both would claim the create. xmax is zero
+                -- only on a genuinely new tuple.
+                (xmax = 0)::int AS inserted
     `;
     const afterOwners = claimsOf(rows[0]?.metadata);
     await logEdgeChange({
@@ -148,7 +169,7 @@ export async function assertEdgeClaim(params: {
       ruleVersion: params.ruleVersion,
       seq: params.seq,
     });
-    return { live: true, owners: afterOwners, flipped: beforeOwners.length === 0 };
+    return { live: true, owners: afterOwners, flipped: Number(rows[0]?.inserted) === 1 };
   };
   return params.sql ? run(params.sql) : (getDb().begin(run) as Promise<ClaimOutcome>);
 }
@@ -165,7 +186,7 @@ export async function retractEdgeClaim(params: {
 }): Promise<ClaimOutcome> {
   const run = async (sql: DbClient): Promise<ClaimOutcome> => {
     const { ref } = params;
-    const before = await sql<{ metadata: unknown }[]>`
+    const before = await sql<{ metadata: unknown }>`
       SELECT metadata FROM entity_relationships
       WHERE organization_id = ${ref.orgId}
         AND from_entity_id = ${ref.fromEntityId}
@@ -180,7 +201,7 @@ export async function retractEdgeClaim(params: {
     // Remove this owner's key, and tombstone in the SAME statement iff nothing
     // remains. Column references on the right-hand side see the pre-update row,
     // so the emptiness test is evaluated against the old claim set.
-    const rows = await sql<{ metadata: unknown; deleted_at: string | null }[]>`
+    const rows = await sql<{ metadata: unknown; deleted_at: string | null }>`
       UPDATE entity_relationships
       SET metadata = jsonb_set(
             coalesce(metadata, '{}'::jsonb),
@@ -240,7 +261,7 @@ export async function readEdgeHistory(params: {
       owner_id: string;
       changes: Array<{ old: string[]; new: string[] }>;
       occurred_at: string;
-    }[]
+    }
   >`
     SELECT metadata ->> 'op' AS op,
            metadata ->> 'ownerId' AS owner_id,
@@ -249,6 +270,8 @@ export async function readEdgeHistory(params: {
     FROM events
     WHERE organization_id = ${params.orgId}
       AND semantic_type = ${EDGE_CHANGE_SEMANTIC_TYPE}
+      AND metadata ? '_lobu_relationship_change'
+      AND metadata ->> 'category' = ${EDGE_CHANGE_CATEGORY}
       AND metadata ->> 'fromEntityId' = ${String(params.fromEntityId)}
       AND metadata ->> 'toEntityId' = ${String(params.toEntityId)}
       AND metadata ->> 'relationshipTypeId' = ${String(params.relationshipTypeId)}

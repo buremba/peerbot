@@ -125,6 +125,7 @@ describe('SPIKE: declared edges under concurrency', () => {
         rules: RULES,
         items: INVOICES,
         createdBy: user.id,
+      syncToken: 'sync-1',
       }),
       materializeDeclaredEdges({
         orgId: org.id,
@@ -133,6 +134,7 @@ describe('SPIKE: declared edges under concurrency', () => {
         rules: RULES,
         items: INVOICES,
         createdBy: user.id,
+      syncToken: 'sync-1',
       }),
     ]);
 
@@ -174,6 +176,7 @@ describe('SPIKE: declared edges under concurrency', () => {
         rules: RULES,
         items: batchA,
         createdBy: user.id,
+      syncToken: 'sync-1',
         reconcile: true,
       }),
       materializeDeclaredEdges({
@@ -183,6 +186,7 @@ describe('SPIKE: declared edges under concurrency', () => {
         rules: RULES,
         items: batchB,
         createdBy: user.id,
+      syncToken: 'sync-1',
         reconcile: true,
       }),
     ]);

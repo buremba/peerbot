@@ -131,6 +131,7 @@ describe('codex finding: resolveEndpoint bypasses identity normalization', () =>
       rules,
       items,
       createdBy: user.id,
+      syncToken: 'sync-1',
     });
 
     // Both entities exist and the declaration is correct, yet the edge is lost:
@@ -227,10 +228,12 @@ describe('codex finding: one row cannot hold two independent claims', () => {
     const a = await materializeDeclaredEdges({
       orgId: org.id, connectionId: connection.id, ruleVersion: 'owner-a',
       rules: [{ ...rules[0], name: 'rule_a' }], items, createdBy: user.id,
+      syncToken: 'sync-1',
     });
     const b = await materializeDeclaredEdges({
       orgId: org.id, connectionId: connection.id, ruleVersion: 'owner-b',
       rules: [{ ...rules[0], name: 'rule_b' }], items, createdBy: user.id,
+      syncToken: 'sync-1',
     });
     expect(a.created).toBe(1);
     expect(b.duplicate).toBe(1);
@@ -245,6 +248,7 @@ describe('codex finding: one row cannot hold two independent claims', () => {
       orgId: org.id,
       relationshipTypeId: Number(typeRow[0].id),
       ruleVersion: 'owner-a',
+      syncToken: 'retract-1',
     });
 
     const live = await sql<{ count: string }[]>`
@@ -344,19 +348,22 @@ describe('codex finding: cross-owner reconcile oscillation', () => {
       await materializeDeclaredEdges({
         orgId: org.id, connectionId: connection.id, ruleVersion: '1',
         rules: [{ ...base, name: 'owner_a' }], items: itemsA,
-        createdBy: user.id, reconcile: true,
+        createdBy: user.id, reconcile: true, syncToken: `a-${round}`,
       });
       await materializeDeclaredEdges({
         orgId: org.id, connectionId: connection.id, ruleVersion: '1',
         rules: [{ ...base, name: 'owner_b' }], items: itemsB,
-        createdBy: user.id, reconcile: true,
+        createdBy: user.id, reconcile: true, syncToken: `b-${round}`,
       });
     }
 
-    const live = await sql<{ owner_id: string }[]>`
-      SELECT metadata -> 'derivedFrom' ->> 'ownerId' AS owner_id
-      FROM entity_relationships
-      WHERE organization_id = ${org.id} AND deleted_at IS NULL
+    // Ownership now lives in the claim SET, so read one row per (edge, owner)
+    // rather than a single derivedFrom owner per edge.
+    const live = await sql<{ owner_id: string }>`
+      SELECT k AS owner_id
+      FROM entity_relationships r,
+           LATERAL jsonb_object_keys(r.metadata -> 'claims') AS k
+      WHERE r.organization_id = ${org.id} AND r.deleted_at IS NULL
       ORDER BY 1
     `;
     expect(live).toHaveLength(2);

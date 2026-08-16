@@ -178,6 +178,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       rules: DECLARED_RELATIONSHIPS,
       items: INVOICES,
       createdBy: user.id,
+      syncToken: 'sync-1',
     });
     expect(first).toEqual({ created: 3, duplicate: 0, unresolved: 0, unknownType: 0, retracted: 0 });
 
@@ -198,6 +199,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       rules: DECLARED_RELATIONSHIPS,
       items: INVOICES,
       createdBy: user.id,
+      syncToken: 'sync-1',
     });
     expect(replay).toEqual({ created: 0, duplicate: 3, unresolved: 0, unknownType: 0, retracted: 0 });
 
@@ -212,6 +214,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       orgId: org.id,
       relationshipTypeId: relTypeId,
       ruleVersion: RULE_VERSION,
+      syncToken: 'retract-1',
     });
     expect(retracted).toBe(3);
     const afterRetract = await sql<{ count: string }[]>`
@@ -251,6 +254,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       rules: [{ ...DECLARED_RELATIONSHIPS[0], type: 'can_read' }],
       items: INVOICES,
       createdBy: user.id,
+      syncToken: 'sync-1',
     });
     expect(result.created).toBe(0);
     expect(result.unknownType).toBe(3);
@@ -288,6 +292,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       rules: DECLARED_RELATIONSHIPS,
       items: INVOICES,
       createdBy: user.id,
+      syncToken: 'sync-1',
     });
     expect(result).toEqual({ created: 0, duplicate: 0, unresolved: 3, unknownType: 0, retracted: 0 });
 
@@ -314,6 +319,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       rules: DECLARED_RELATIONSHIPS,
       items: INVOICES,
       createdBy: user.id,
+      syncToken: 'sync-1',
     });
     expect(second).toEqual({ created: 3, duplicate: 0, unresolved: 0, unknownType: 0, retracted: 0 });
   });
@@ -364,6 +370,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       rules: DECLARED_RELATIONSHIPS,
       items: headless,
       createdBy: user.id,
+      syncToken: 'sync-1',
     });
     expect(result).toEqual({ created: 0, duplicate: 0, unresolved: 1, unknownType: 0, retracted: 0 });
 
@@ -406,6 +413,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       rules: DECLARED_RELATIONSHIPS,
       items: INVOICES,
       createdBy: user.id,
+      syncToken: 'sync-1',
       reconcile: true,
     });
 
@@ -439,6 +447,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       rules: DECLARED_RELATIONSHIPS,
       items: corrected,
       createdBy: user.id,
+      syncToken: 'sync-1',
       reconcile: true,
     });
     expect(result).toEqual({
@@ -505,6 +514,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       rules: DECLARED_RELATIONSHIPS,
       items: [INVOICES[0]],
       createdBy: user.id,
+      syncToken: 'sync-1',
       reconcile: true,
     });
 
@@ -521,15 +531,16 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
         },
       ],
       createdBy: user.id,
+      syncToken: 'sync-1',
       reconcile: true,
     });
     expect(bumped.created).toBe(1);
     expect(bumped.retracted).toBe(1);
 
     const live = await sql<{ rule_version: string }[]>`
-      SELECT metadata -> 'derivedFrom' ->> 'ruleVersion' AS rule_version
-      FROM entity_relationships
-      WHERE organization_id = ${org.id} AND deleted_at IS NULL
+      SELECT c.value ->> 'ruleVersion' AS rule_version
+      FROM entity_relationships r, LATERAL jsonb_each(r.metadata -> 'claims') AS c
+      WHERE r.organization_id = ${org.id} AND r.deleted_at IS NULL
     `;
     expect(live).toHaveLength(1);
     expect(live[0].rule_version).toBe('2');
@@ -589,6 +600,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       rules: DECLARED_RELATIONSHIPS,
       items: [INVOICES[0]],
       createdBy: user.id,
+      syncToken: 'sync-1',
       reconcile: true,
     });
     expect(result.created).toBe(1);
@@ -631,6 +643,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       rules: DECLARED_RELATIONSHIPS,
       items: INVOICES.slice(0, 2),
       createdBy: user.id,
+      syncToken: 'sync-1',
     });
     await materializeDeclaredEdges({
       orgId: org.id,
@@ -639,6 +652,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       rules: DECLARED_RELATIONSHIPS,
       items: INVOICES.slice(2),
       createdBy: user.id,
+      syncToken: 'sync-1',
     });
 
     const before = await sql<{ count: string }[]>`
@@ -651,13 +665,14 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       orgId: org.id,
       relationshipTypeId: relTypeId,
       ruleVersion: '1',
+      syncToken: 'retract-1',
     });
     expect(retracted).toBe(2);
 
     const survivors = await sql<{ rule_version: string }[]>`
-      SELECT metadata -> 'derivedFrom' ->> 'ruleVersion' AS rule_version
-      FROM entity_relationships
-      WHERE organization_id = ${org.id} AND deleted_at IS NULL
+      SELECT c.value ->> 'ruleVersion' AS rule_version
+      FROM entity_relationships r, LATERAL jsonb_each(r.metadata -> 'claims') AS c
+      WHERE r.organization_id = ${org.id} AND r.deleted_at IS NULL
     `;
     expect(survivors).toHaveLength(1);
     expect(survivors[0].rule_version).toBe('2');
@@ -694,6 +709,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
         rules: [{ ...DECLARED_RELATIONSHIPS[0], type }],
         items: INVOICES.slice(0, 2),
         createdBy: user.id,
+      syncToken: 'sync-1',
       });
     }
 
@@ -707,6 +723,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       orgId: org.id,
       relationshipTypeId: relTypeId,
       ruleVersion: RULE_VERSION,
+      syncToken: 'retract-1',
     });
     expect(retracted).toBe(2);
 

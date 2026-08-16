@@ -18,6 +18,7 @@
 import type { EntityIdentitySpec } from '@lobu/connector-sdk';
 import type { DbClient } from '../db/client';
 import { getDb, pgBigintArray } from '../db/client';
+import { assertEdgeClaim, retractEdgeClaim } from './edge-claims-spike';
 import { normalizeIdentityValue } from './entity-link-upsert';
 
 /**
@@ -94,7 +95,7 @@ async function resolveEndpoint(
     // namespace — an email stored lowercase is never found by its raw form.
     const identifier = normalizeIdentityValue(spec.namespace, raw);
     if (!identifier) continue;
-    const rows = await sql<{ entity_id: number }[]>`
+    const rows = await sql<{ entity_id: number }>`
       SELECT entity_id FROM entity_identities
       WHERE organization_id = ${orgId}
         AND namespace = ${spec.namespace}
@@ -117,7 +118,7 @@ async function resolveRelationshipTypeId(
   orgId: string,
   slug: string
 ): Promise<number | null> {
-  const rows = await sql<{ id: number }[]>`
+  const rows = await sql<{ id: number }>`
     SELECT id FROM entity_relationship_types
     WHERE organization_id = ${orgId} AND slug = ${slug}
       AND status = 'active' AND deleted_at IS NULL
@@ -138,10 +139,14 @@ export type MaterializeResult = {
 /**
  * Honour a feed's declared edge rules for a batch of synced items.
  *
- * Runs AFTER the attribution pass, so both endpoints already exist. Writes
- * provenance into `metadata.derivedFrom`, which the baseline already indexes
- * (`idx_entity_relationships_derived_from_rule`) and which nothing else in the
- * repo writes.
+ * Runs AFTER the attribution pass, so both endpoints already exist.
+ *
+ * Writes its provenance as a CLAIM under `metadata.claims[ownerId]` rather than
+ * as a single `metadata.derivedFrom` owner. The single-owner shape could not
+ * represent one edge that two sources both assert, so a connector's reconcile
+ * destroyed edges a human or a second connector still stood behind. The claim
+ * set is bounded by the number of owners, never by history length, so it stays
+ * an indexed read.
  */
 export async function materializeDeclaredEdges(params: {
   orgId: string;
@@ -150,6 +155,12 @@ export async function materializeDeclaredEdges(params: {
   rules: DeclaredEdgeRule[];
   items: Array<Record<string, unknown>>;
   createdBy: string;
+  /**
+   * Identifies THIS sync attempt. Stable across a retry of the same batch (so a
+   * replay appends no duplicate history) and distinct between genuine runs (so
+   * a real later change is not mistaken for a replay of the earlier one).
+   */
+  syncToken: string;
   /**
    * Withdraw edges this rule previously asserted from a from-entity that the
    * CURRENT batch also touches, but no longer points at the same target — the
@@ -197,29 +208,26 @@ export async function materializeDeclaredEdges(params: {
         out.unresolved += 1;
         continue;
       }
-      const derivedFrom = {
-        derivedFrom: {
-          relationshipTypeId: String(typeId),
-          ruleVersion: params.ruleVersion,
-          connectionId: String(params.connectionId),
+      // A claim, not a bare insert. Two owners asserting the same triple share
+      // ONE projection row and each hold their own key in `metadata.claims`,
+      // which is what stops this connector's reconcile from destroying an edge
+      // a human or another connector still asserts.
+      const outcome = await assertEdgeClaim({
+        ref: {
+          orgId: params.orgId,
+          fromEntityId: fromId,
+          toEntityId: toId,
+          relationshipTypeId: typeId,
           ownerId: ownerIdOf(params.connectionId, rule.name),
         },
-      };
-      const inserted = await sql<{ id: number }[]>`
-        INSERT INTO entity_relationships (
-          organization_id, from_entity_id, to_entity_id, relationship_type_id,
-          metadata, confidence, source, created_by, updated_by, created_at, updated_at
-        ) VALUES (
-          ${params.orgId}, ${fromId}, ${toId}, ${typeId},
-          ${sql.json(derivedFrom)}, 1.0, 'feed', ${params.createdBy}, ${params.createdBy},
-          current_timestamp, current_timestamp
-        )
-        ON CONFLICT (from_entity_id, to_entity_id, relationship_type_id)
-          WHERE deleted_at IS NULL
-        DO NOTHING
-        RETURNING id
-      `;
-      if (inserted.length > 0) out.created += 1;
+        ruleVersion: params.ruleVersion,
+        createdBy: params.createdBy,
+        // Stable per sync, so a retried batch re-asserts without appending a
+        // second identical history row.
+        seq: params.syncToken,
+        sql,
+      });
+      if (outcome.flipped) out.created += 1;
       else out.duplicate += 1;
       const set = asserted.get(fromId);
       if (set) set.add(toId);
@@ -243,45 +251,84 @@ export async function materializeDeclaredEdges(params: {
     // A hand-authored (`source='ui'`) edge carries no `derivedFrom` and is
     // therefore never touched, which is the point of keying on it at all.
     for (const [fromId, targets] of asserted) {
-      const stale = await sql<{ id: number }[]>`
-        UPDATE entity_relationships
-        SET deleted_at = current_timestamp, updated_at = current_timestamp
+      // Select what this owner still claims but no longer asserts, then release
+      // each claim individually. A blanket UPDATE ... SET deleted_at would
+      // tombstone the row out from under every co-owner; releasing a claim
+      // tombstones only when it was the last one standing.
+      const stale = await sql<{ to_entity_id: number }>`
+        SELECT to_entity_id
+        FROM entity_relationships
         WHERE organization_id = ${params.orgId}
           AND from_entity_id = ${fromId}
           AND relationship_type_id = ${typeId}
           AND deleted_at IS NULL
-          AND metadata ? 'derivedFrom'
-          AND metadata -> 'derivedFrom' ->> 'ownerId' = ${ownerIdOf(params.connectionId, rule.name)}
+          AND metadata -> 'claims' ? ${ownerIdOf(params.connectionId, rule.name)}
           AND NOT (to_entity_id = ANY (${pgBigintArray([...targets])}::bigint[]))
-        RETURNING id
       `;
-      out.retracted += stale.length;
+      for (const row of stale) {
+        await retractEdgeClaim({
+          ref: {
+            orgId: params.orgId,
+            fromEntityId: fromId,
+            toEntityId: Number(row.to_entity_id),
+            relationshipTypeId: typeId,
+            ownerId: ownerIdOf(params.connectionId, rule.name),
+          },
+          seq: params.syncToken,
+          sql,
+        });
+        out.retracted += 1;
+      }
     }
   }
   return out;
 }
 
 /**
- * Withdraw every edge a rule version asserted. Uses only
- * `idx_entity_relationships_derived_from_rule`; no separate state table is
- * consulted, because none is needed to know what a rule wrote.
+ * Withdraw every claim a rule version asserted, for one relationship type.
+ *
+ * Releases claims rather than tombstoning rows outright: an edge that a human
+ * or a second connector also asserts must survive this rule being withdrawn,
+ * and only the LAST claim going takes the row with it. The relationship type
+ * comes from the column, not from metadata, so the type filter stays indexed.
+ *
+ * Returns the number of claims released, which is not necessarily the number of
+ * edges that disappeared.
  */
 export async function retractDeclaredEdges(params: {
   orgId: string;
   relationshipTypeId: number;
   ruleVersion: string;
+  /** See `materializeDeclaredEdges` — stable across a retry of this withdrawal. */
+  syncToken: string;
   sql?: DbClient;
 }): Promise<number> {
   const sql = params.sql ?? getDb();
-  const rows = await sql<{ id: number }[]>`
-    UPDATE entity_relationships
-    SET deleted_at = current_timestamp, updated_at = current_timestamp
-    WHERE organization_id = ${params.orgId}
-      AND deleted_at IS NULL
-      AND metadata ? 'derivedFrom'
-      AND metadata -> 'derivedFrom' ->> 'relationshipTypeId' = ${String(params.relationshipTypeId)}
-      AND metadata -> 'derivedFrom' ->> 'ruleVersion' = ${params.ruleVersion}
-    RETURNING id
+  const claims = await sql<{
+    from_entity_id: number;
+    to_entity_id: number;
+    owner_id: string;
+  }>`
+    SELECT r.from_entity_id, r.to_entity_id, c.key AS owner_id
+    FROM entity_relationships r,
+         LATERAL jsonb_each(r.metadata -> 'claims') AS c
+    WHERE r.organization_id = ${params.orgId}
+      AND r.deleted_at IS NULL
+      AND r.relationship_type_id = ${params.relationshipTypeId}
+      AND c.value ->> 'ruleVersion' = ${params.ruleVersion}
   `;
-  return rows.length;
+  for (const claim of claims) {
+    await retractEdgeClaim({
+      ref: {
+        orgId: params.orgId,
+        fromEntityId: Number(claim.from_entity_id),
+        toEntityId: Number(claim.to_entity_id),
+        relationshipTypeId: params.relationshipTypeId,
+        ownerId: claim.owner_id,
+      },
+      seq: params.syncToken,
+      sql,
+    });
+  }
+  return claims.length;
 }

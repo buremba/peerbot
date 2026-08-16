@@ -197,22 +197,6 @@ const ALLOWED_BYPASSES = [
     reason: "member soft delete",
   },
 
-  // Automation keyed-entity promotion and provisional cleanup.
-  {
-    file: "packages/server/src/utils/promote-keyed-entities.ts",
-    operation: "insert",
-    dynamic: false,
-    fingerprint: "079c819d8e1848c1",
-    reason: "keyed entity promotion",
-  },
-  {
-    file: "packages/server/src/utils/promote-keyed-entities.ts",
-    operation: "delete",
-    dynamic: false,
-    fingerprint: "8e1babc83c35ebd9",
-    reason: "lost promotion-race cleanup",
-  },
-
   // Automation classifier configuration projection.
   {
     file: "packages/server/src/automations/classifier-extraction.ts",

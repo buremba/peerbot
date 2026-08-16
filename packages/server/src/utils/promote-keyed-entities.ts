@@ -47,7 +47,11 @@ import {
 import type { DbClient } from '../db/client';
 import type { EntityOutput } from '../types/automations';
 import type { AppliedChange, BlockedChange } from './entity-field-merge';
-import { mergeEntityFields } from './entity-management';
+import {
+  hardDeleteEntityRows,
+  insertEntityRow,
+  mergeEntityFields,
+} from './entity-management';
 import logger from './logger';
 import { isUniqueViolation } from './pg-errors';
 import { resolveEntityCreator } from './resolve-entity-creator';
@@ -208,25 +212,26 @@ async function insertEntityWithUniqueSlug(params: {
 }): Promise<number> {
   const { tx } = params;
   const insertWithSlug = (slug: string) =>
-    tx.savepoint(
-      (sp) => sp<{ id: number | string }>`
-        INSERT INTO entities (
-          organization_id, entity_type_id, name, slug, parent_id, metadata,
-          created_by, created_at, updated_at
-        ) VALUES (
-          ${params.organizationId}, ${params.entityTypeId}, ${params.name}, ${slug},
-          ${params.parentEntityId}, ${tx.json(params.metadata)}, ${params.createdBy},
-          current_timestamp, current_timestamp
-        )
-        RETURNING id
-      `
+    tx.savepoint((sp) =>
+      insertEntityRow({
+        tx: sp,
+        row: {
+          organizationId: params.organizationId,
+          entityTypeId: params.entityTypeId,
+          name: params.name,
+          slug,
+          parentId: params.parentEntityId,
+          metadata: params.metadata,
+          createdBy: params.createdBy,
+        },
+      })
     );
 
   for (let attempt = 1; attempt <= SLUG_DISAMBIGUATION_ATTEMPTS; attempt++) {
     const slug = attempt === 1 ? params.baseSlug : `${params.baseSlug}-${attempt}`;
     try {
       const inserted = await insertWithSlug(slug);
-      return Number(inserted[0].id);
+      return Number(inserted.id);
     } catch (err) {
       if (isUniqueViolation(err, 'entities_slug_parent_unique')) continue;
       throw err;
@@ -236,7 +241,7 @@ async function insertEntityWithUniqueSlug(params: {
   // this slug is collision-free among promotions (and effectively so against any
   // sibling). A final failure here propagates to the per-row guard in the loop.
   const inserted = await insertWithSlug(`${params.baseSlug}-${slugify(params.identifier)}`);
-  return Number(inserted[0].id);
+  return Number(inserted.id);
 }
 
 /**
@@ -409,11 +414,10 @@ async function upsertKeyedEntity(params: {
     // Safe hard delete: this entity is brand-new in THIS transaction — nothing
     // references it yet (no identity, children, events, or relationships), and
     // entities' only blocking FK is `parent_id ON DELETE RESTRICT`, which can't
-    // fire on a freshly-created leaf.
-    await tx`
-      DELETE FROM entities
-      WHERE id = ${entityId} AND organization_id = ${organizationId}
-    `;
+    // fire on a freshly-created leaf. The kernel keys on id alone; this id was
+    // minted by our own insert above under `organizationId`, so it cannot
+    // address another tenant's row.
+    await hardDeleteEntityRows({ tx, ids: [entityId] });
     return {
       entityId: Number(winner[0].entity_id),
       created: false,

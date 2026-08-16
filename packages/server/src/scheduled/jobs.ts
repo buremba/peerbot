@@ -405,7 +405,7 @@ function registerMaintenanceTasks(
     { cron: '*/5 * * * *' },
   );
 
-  // Automation automation: reconcile in-flight runs, materialize newly-due runs,
+  // Automation tick: reconcile in-flight runs, materialize newly-due runs,
   // dispatch pending runs. The orphaned-runs reset is bounded and idempotent
   // so it runs every tick — no per-pod first-tick latch needed.
   //

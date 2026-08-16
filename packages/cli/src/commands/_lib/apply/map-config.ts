@@ -622,7 +622,12 @@ function assertAutomationSkills(
   // BEFORE the loader reads the reaction file, so `reactionDeclared` is the
   // config marker (present for `reactionFromFile(path)`); the loader validates
   // the file and the server enforces the final rule on its source.
-  if (requiresSkills && skills.length === 0 && !automation.prompt.trim() && !reactionDeclared) {
+  if (
+    requiresSkills &&
+    skills.length === 0 &&
+    !automation.prompt.trim() &&
+    !reactionDeclared
+  ) {
     throw new ValidationError(
       `Automation "${automation.slug}" needs instructions: schedule triggers, event triggers with execution "window", and Automations with no triggers run on stored instructions alone, so give it a "prompt", at least one skill, or a reaction script. Only event triggers with execution "turn" may omit all three.`
     );

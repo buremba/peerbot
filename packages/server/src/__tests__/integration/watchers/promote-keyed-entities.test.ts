@@ -24,6 +24,7 @@ import type { AuthContext } from '../../../tools/execute';
 import { executeTool } from '../../../tools/execute';
 import { createWatcherRun } from '../../../runs/queue-service';
 import { computePendingWindow } from '../../../utils/window-utils';
+import { promoteBehaviorEntityOutput } from '../../../utils/promote-keyed-entities';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity, createTestEvent } from '../../setup/test-fixtures';
 import { TestApiClient, TestWorkspace } from '../../setup/test-mcp-client';
@@ -70,6 +71,40 @@ const TEST_ENV: Env = {
   JWT_SECRET: 'test-jwt-secret-for-testing-only',
   BETTER_AUTH_SECRET: 'test-auth-secret-for-testing-only',
 };
+
+/**
+ * Block until some backend is waiting on a transaction lock — the state the
+ * losing promotion's INSERT enters while the sibling slug it collides with is
+ * still uncommitted. Polls on a THIRD connection so it observes A and B rather
+ * than participating.
+ *
+ * Releasing A directly instead would be a coin flip, not a race: A usually
+ * commits before B has even acquired its connection, so B's identity probe
+ * finds the committed claim and returns down the ordinary idempotent path,
+ * never reaching the lost-race cleanup this test exists to prove. Throws rather
+ * than hanging, so a future version where the race stops being reachable fails
+ * loudly instead of silently testing nothing.
+ */
+async function waitForBlockedEntityInsert(
+  sql: ReturnType<typeof getTestDb>,
+  timeoutMs = 10_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const rows = await sql<{ count: number }>`
+      SELECT count(*)::int AS count
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND wait_event_type = 'Lock'
+        AND query ILIKE '%INSERT INTO entities%'
+    `;
+    if (Number(rows[0].count) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(
+    'no entity INSERT blocked on the uncommitted sibling slug; the promotion race was not reached'
+  );
+}
 
 /** Owner web-session auth context for invoking manage_operations.approve. */
 function ownerAuthCtx(orgId: string, userId: string): AuthContext {
@@ -579,6 +614,78 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     );
   });
 
+  it('hard-deletes the provisional entity after losing a concurrent identity race', async () => {
+    const ctx = await setupKeyedWatcher();
+    const { sql, workspace, watcherId, parentEntityId } = ctx;
+    const promote = (tx: DbClient, windowId: number) =>
+      promoteBehaviorEntityOutput({
+        tx,
+        extractedData: {
+          problems: [{ category: 'Stability', name: 'App Crashes' }],
+        },
+        outputName: 'problems',
+        output: OUTPUTS.problems,
+        watcherId,
+        organizationId: workspace.org.id,
+        windowId,
+        parentEntityId,
+        createdBy: workspace.users.owner.id,
+        validContentIds: new Set<number>(),
+      });
+
+    let signalAReady!: () => void;
+    const aReady = new Promise<void>((resolve) => {
+      signalAReady = resolve;
+    });
+    let releaseA!: () => void;
+    const aMayCommit = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+
+    // A promotes (entity insert + identity claim) and parks with its
+    // transaction still OPEN, so neither row is visible to B yet.
+    const runA = sql.begin(async (tx) => {
+      const result = await promote(tx as unknown as DbClient, 1001);
+      signalAReady();
+      await aMayCommit;
+      return result;
+    });
+    await aReady;
+
+    // B must NOT be awaited before A is released: B's entity insert blocks on
+    // A's uncommitted sibling slug, so awaiting here deadlocks the test against
+    // itself instead of exercising the race.
+    const runB = sql.begin((tx) => promote(tx as unknown as DbClient, 1002));
+    try {
+      await waitForBlockedEntityInsert(sql);
+    } finally {
+      releaseA();
+    }
+    const [a, b] = await Promise.all([runA, runB]);
+
+    expect(a.created).toBe(1);
+    expect(b.created).toBe(0);
+    const identity = topicIdentity(watcherId, APP_CRASHES_KEY);
+    const rows = await sql`
+      SELECT e.id, e.slug
+      FROM entities e
+      WHERE e.organization_id = ${workspace.org.id}
+        AND e.parent_id = ${parentEntityId}
+        AND e.metadata->>'stable_key' = ${APP_CRASHES_KEY}
+    `;
+    expect(rows).toHaveLength(1);
+    const claims = await sql`
+      SELECT entity_id
+      FROM entity_identities
+      WHERE organization_id = ${workspace.org.id}
+        AND namespace = 'watcher_key'
+        AND identifier = ${identity}
+        AND deleted_at IS NULL
+    `;
+    expect(claims).toHaveLength(1);
+    expect(Number(claims[0].entity_id)).toBe(Number(rows[0].id));
+  });
+
   it('syncs extracted fields into entities and respects a human-owned field on re-run, queuing an approval', async () => {
     const ctx = await setupKeyedWatcher();
     const { sql, workspace } = ctx;
@@ -985,15 +1092,78 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     `;
     expect(identities).toHaveLength(2);
 
-    // The "App Crashes" promotion got a DISAMBIGUATED slug (not the squatter's).
+    // The "App Crashes" promotion took the FIRST readable suffix, not the
+    // squatter's slug and not the identifier fallback.
     const appCrashes = identities.find(
       (r) => String(r.identifier) === topicIdentity(watcherId, APP_CRASHES_KEY)
     );
     expect(appCrashes).toBeDefined();
-    expect(String(appCrashes?.slug)).not.toBe(collidingSlug);
-    expect(String(appCrashes?.slug).startsWith(`${collidingSlug}-`)).toBe(true);
+    expect(String(appCrashes?.slug)).toBe(`${collidingSlug}-2`);
 
-    // The squatter is untouched; the promoted entity carries its origin window.
+    // The promoted entity carries its origin window.
+    const promoted = await sql`SELECT metadata FROM entities WHERE id = ${appCrashes?.entity_id}`;
+    expect(Number((promoted[0].metadata as Record<string, unknown>).window_id)).toBe(windowId);
+  });
+
+  it('uses the identifier fallback after every readable slug suffix collides', async () => {
+    const ctx = await setupKeyedWatcher();
+    const { sql, workspace, parentEntityId, watcherId } = ctx;
+
+    await createTestEvent({
+      entity_id: parentEntityId,
+      organization_id: workspace.org.id,
+      content: 'Users report the app crashing and loading slowly.',
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    // Occupy the base slug and all four readable suffixes. Promotion must reach
+    // the final identifier-derived fallback without poison-pilling the window.
+    const collidingSlug = slugify('Stability · App Crashes');
+    const [topicType] = (await sql`
+      SELECT id FROM entity_types
+      WHERE organization_id = ${workspace.org.id} AND slug = 'topic'
+      LIMIT 1
+    `) as Array<{ id: number }>;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      const occupiedSlug = attempt === 1 ? collidingSlug : `${collidingSlug}-${attempt}`;
+      await sql`
+        INSERT INTO entities (
+          organization_id, entity_type_id, name, slug, parent_id, created_by,
+          created_at, updated_at
+        ) VALUES (
+          ${workspace.org.id}, ${topicType.id}, ${`Squatter ${attempt}`}, ${occupiedSlug},
+          ${parentEntityId}, ${workspace.users.owner.id}, current_timestamp, current_timestamp
+        )
+      `;
+    }
+
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+    // MUST NOT throw — the window completes despite the slug collision.
+    const windowId = await completeWithToken(ctx, token, runId);
+
+    // Both keyed rows promoted: two watcher_key identities exist.
+    const identities = await sql`
+      SELECT ei.identifier, ei.entity_id, e.slug
+      FROM entity_identities ei
+      JOIN entities e ON e.id = ei.entity_id
+      WHERE ei.organization_id = ${workspace.org.id}
+        AND ei.namespace = 'watcher_key'
+      ORDER BY ei.identifier
+    `;
+    expect(identities).toHaveLength(2);
+
+    // The "App Crashes" promotion exhausted the readable suffixes and used its
+    // identity-derived fallback.
+    const appCrashes = identities.find(
+      (r) => String(r.identifier) === topicIdentity(watcherId, APP_CRASHES_KEY)
+    );
+    expect(appCrashes).toBeDefined();
+    expect(String(appCrashes?.slug)).toBe(
+      `${collidingSlug}-${slugify(topicIdentity(watcherId, APP_CRASHES_KEY))}`
+    );
+
+    // The promoted entity carries its origin window.
     const promoted = await sql`SELECT metadata FROM entities WHERE id = ${appCrashes?.entity_id}`;
     expect(Number((promoted[0].metadata as Record<string, unknown>).window_id)).toBe(windowId);
   });

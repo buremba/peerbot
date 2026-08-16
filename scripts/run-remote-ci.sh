@@ -63,7 +63,7 @@ if [ "${K8S:-0}" = "1" ]; then
             \"name\": \"ci\",
             \"image\": \"$CI_IMAGE\",
             \"command\": [\"bash\", \"-c\"],
-            \"args\": [\"cd /workspace && bun install --frozen-lockfile && bun run build:packages && bun test\"],
+            \"args\": [\"cd /workspace && bun install && bun run build:packages && for _ in \\\$(seq 1 20); do pg_isready -h localhost -p 5432 -U postgres && break; sleep 1; done && PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d lobu_test -c 'CREATE EXTENSION IF NOT EXISTS vector' && bun test\"],
             \"env\": [
               {\"name\": \"DATABASE_URL\", \"value\": \"postgres://postgres:postgres@localhost:5432/lobu_test\"},
               {\"name\": \"DB_POOL_MAX\", \"value\": \"5\"}

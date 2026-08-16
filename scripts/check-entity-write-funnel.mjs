@@ -181,15 +181,6 @@ const ALLOWED_BYPASSES = [
     reason: "member soft delete",
   },
 
-  // Automation classifier configuration projection.
-  {
-    file: "packages/server/src/automations/classifier-extraction.ts",
-    operation: "update",
-    dynamic: false,
-    fingerprint: "985025144395f419",
-    reason: "enabled-classifier projection",
-  },
-
   // Per-entity view-template pointer, hidden behind parentTable(resourceType).
   {
     file: "packages/server/src/tools/admin/manage_view_templates.ts",

@@ -12,7 +12,6 @@ import {
 	type DbClient,
 	parsePgTextArray,
 	pgBigintArray,
-	pgTextArray,
 } from "../db/client";
 import type { Env } from "../index";
 import {
@@ -21,6 +20,7 @@ import {
 	isValidEmbedding,
 	validateEmbeddingsService,
 } from "../utils/embeddings";
+import { patchEntityRows } from "../utils/entity-management";
 import logger from "../utils/logger";
 
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -723,15 +723,21 @@ async function updateClassifierValues(
  * Enable classifiers on entity
  */
 export async function enableClassifiersOnEntity(
-	sql: DbClient,
+	tx: DbClient,
 	entityId: number,
 	classifierSlugs: string[],
 ): Promise<void> {
 	if (classifierSlugs.length === 0) return;
 
-	// Get current enabled classifiers
-	const entity = await sql`
-    SELECT enabled_classifiers FROM entities WHERE id = ${entityId}
+	// Lock the live row for the read half, the same way the kernel's other
+	// read-modify-write callers already do: the patch below overwrites the whole
+	// array, so without this two concurrent Automation creation paths read the same
+	// stale base and one silently loses its additions.
+	const entity = await tx`
+    SELECT enabled_classifiers
+    FROM entities
+    WHERE id = ${entityId} AND deleted_at IS NULL
+    FOR UPDATE
   `;
 
 	if (entity.length === 0) {
@@ -749,13 +755,11 @@ export async function enableClassifiersOnEntity(
 
 	// Compute combined array and set directly
 	const combined = [...currentEnabled, ...toAdd];
-	const arrayLiteral = pgTextArray(combined);
-
-	await sql`
-    UPDATE entities
-    SET enabled_classifiers = ${arrayLiteral}::text[]
-    WHERE id = ${entityId}
-  `;
+	await patchEntityRows({
+		tx,
+		ids: [entityId],
+		patch: { enabledClassifiers: combined },
+	});
 
 	logger.info(
 		`[ClassifierExtraction] Enabled ${toAdd.length} classifier(s) on entity ${entityId}`,

@@ -139,7 +139,21 @@ export async function materializeDeclaredEdges(params: {
   reconcile?: boolean;
   sql?: DbClient;
 }): Promise<MaterializeResult> {
-  const sql = params.sql ?? getDb();
+  // Insert and reconcile are ONE logical operation and must be atomic. Run as
+  // separate autocommitted statements, two replicas processing conflicting
+  // batches for the same from-entity destroy each other's work: A inserts, B
+  // inserts, A's reconcile removes B's edge, B's reconcile removes A's, and the
+  // invoice is left with NO customer at all. Silent data loss, reproduced in
+  // `declared-edges-concurrency.test.ts`. Inside a transaction the two
+  // serialize and the later writer simply wins.
+  //
+  // A caller-supplied handle is assumed to already be a transaction (the sync
+  // path threads its own), so we never nest.
+  if (!params.sql) {
+    return getDb().begin((tx) => materializeDeclaredEdges({ ...params, sql: tx as DbClient })) as
+      Promise<MaterializeResult>;
+  }
+  const sql = params.sql;
   const out: MaterializeResult = {
     created: 0,
     duplicate: 0,

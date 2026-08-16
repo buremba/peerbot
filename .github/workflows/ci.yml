@@ -1441,6 +1441,7 @@ jobs:
   # SubprocessExecutor path.
   connector-parity-smoke:
     needs: optional-smoke-filter
+    if: needs.optional-smoke-filter.outputs.connector == 'true'
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 25
     steps:

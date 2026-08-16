@@ -6,6 +6,7 @@ import {
   defineEntityType,
   defineRelationshipType,
   defineAutomation,
+  every,
   secret,
 } from "@lobu/cli/config";
 import type DocuSignEnvelopesConnector from "./docusign-envelopes.connector.ts";
@@ -181,7 +182,7 @@ const contractReviewTracker = defineAutomation({
   agent: legalReview,
   slug: "contract-review-tracker",
   name: "Contract review tracker",
-  triggers: [{ kind: "schedule", cron: "0 8 * * 1-5" }],
+  triggers: [every("0 8 * * 1-5")],
   notification: { priority: "high" },
   tags: ["legal", "contract", "daily"],
   minCooldownSeconds: 1800,

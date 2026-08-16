@@ -530,6 +530,83 @@ export function defineAutomation(config: Omit<Automation, "kind">): Automation {
   return { ...config, kind: "automation" };
 }
 
+/**
+ * Connector event trigger shorthand — *when this happens*. Produces the
+ * canonical authoring form, which `lobu apply` normalizes exactly like the raw
+ * literal so downstream defaults and connector event-catalog validation stay
+ * unchanged.
+ *
+ * Connector key and event type are separate arguments because connector keys
+ * may themselves contain dots (`google.gmail`); a single dotted string would
+ * be ambiguous. Pass an array of event types to listen to several on one
+ * trigger.
+ *
+ * ```ts
+ * defineAutomation({
+ *   slug: "triage",
+ *   agent: ops,
+ *   triggers: [
+ *     on("slack", "message.created", {
+ *       connection: supportChannel,          // optional connection handle/slug
+ *       match: { channel_id: "#support" },   // optional exact-match filters
+ *     }),
+ *     every("0 9 * * 1", { timezone: "Europe/Istanbul" }),
+ *   ],
+ *   prompt: "Triage the incoming request…",
+ * })
+ * ```
+ */
+export function on(
+  connectorKey: string,
+  eventType: string | string[],
+  opts?: Omit<
+    AutomationEventTriggerConfig,
+    "kind" | "source" | "connector_key" | "event_types"
+  >
+): AutomationEventTriggerConfig {
+  return {
+    ...opts,
+    kind: "event",
+    source: "connector",
+    connector_key: connectorKey,
+    event_types: Array.isArray(eventType)
+      ? Array.from(new Set(eventType))
+      : [eventType],
+  };
+}
+
+/**
+ * Schedule trigger shorthand — *on a cadence*. Produces the canonical schedule
+ * trigger object; downstream cron and timezone validation remains unchanged.
+ *
+ * ```ts
+ * every("0 9 * * 1", { timezone: "Europe/Istanbul" })
+ * ```
+ */
+export function every(
+  cron: string,
+  opts?: Omit<AutomationScheduleTrigger, "kind" | "cron">
+): AutomationScheduleTrigger {
+  return { ...opts, kind: "schedule", cron };
+}
+
+/**
+ * Context source shorthand — reference data handed to the agent for reasoning,
+ * never linked into the window's event set. Emits the canonical
+ * `{ query, context: true }` source object, so a projected `id` is not
+ * interpreted as an `events.id`.
+ *
+ * ```ts
+ * sources: {
+ *   recent_events: "SELECT … FROM events …",   // event content (bare string)
+ *   candidates: context("SELECT id, … FROM entities …"),  // reference data
+ * }
+ * ```
+ */
+export function context(query: string): { query: string; context: true } {
+  return { query, context: true };
+}
+
 // ---------------------------------------------------------------------------
 // Agents
 // ---------------------------------------------------------------------------

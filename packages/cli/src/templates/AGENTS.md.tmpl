@@ -73,7 +73,8 @@ install it — don't work around it.
 Author everything in `lobu.config.ts` with helpers from `@lobu/cli/config`:
 `defineConfig`, `defineAgent`, `defineEntityType`, `defineRelationshipType`,
 `defineAutomation`, `defineSkill`, `defineConnection`, `defineAuthProfile`,
-`secret`, plus `connectorFromFile`, `reactionFromFile`, `skillFromFile`.
+`on`, `every`, `context`, `secret`, plus `connectorFromFile`,
+`reactionFromFile`, `skillFromFile`.
 
 Read the complete, working reference before editing:
 https://github.com/lobu-ai/lobu/blob/main/examples/lobu-crm/lobu.config.ts
@@ -307,9 +308,9 @@ const digest = defineAutomation({
   slug: "daily-digest",
   name: "Daily digest",
   triggers: [
-    { kind: "schedule", cron: "0 9 * * *", active_run: "coalesce", skip_if_unchanged: true },
+    every("0 9 * * *", { active_run: "coalesce", skip_if_unchanged: true }),
     // Or react to a connector event:
-    // { kind: "event", source: "connector", connector_key: "github", connection: gh, event_types: ["pull_request.created"] },
+    // on("github", "pull_request.created", { connection: gh }),
     // Or to a declared event output from another Automation:
     // { kind: "event", source: "workspace", event_types: ["observation"], match: { namespace: "account-risk" } },
   ],
@@ -330,7 +331,9 @@ Only newly persisted declared event outputs activate triggers with
 `source: "workspace"`. Ordinary knowledge saves and connector-ingested events
 do not activate workspace-source triggers; connector events activate only
 matching connector-source triggers. SQL sources are reads rather than
-subscriptions. The downstream run reads the exact event pointers plus its
+subscriptions. Wrap reference-only SQL with `context("SELECT …")` so its rows
+reach the agent without being linked into the window's event set. The downstream
+run reads the exact event pointers plus its
 authored sources under the owning agent's ACL. See the complete primitive and limit model at
 https://github.com/lobu-ai/lobu/blob/main/docs/AUTOMATIONS.md.
 For an entity output, `key: ["a", "b"]` is one exact composite identity tuple,

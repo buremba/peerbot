@@ -6,6 +6,7 @@ import {
   defineEntityType,
   defineRelationshipType,
   defineAutomation,
+  every,
   secret,
 } from "@lobu/cli/config";
 import type DiscoursePostsConnector from "./discourse-posts.connector.ts";
@@ -152,7 +153,7 @@ const opportunityMatcher = defineAutomation({
   agent: agentCommunity,
   slug: "opportunity-matcher",
   name: "Opportunity matcher",
-  triggers: [{ kind: "schedule", cron: "0 */12 * * *" }],
+  triggers: [every("0 */12 * * *")],
   notification: { priority: "normal" },
   tags: ["community", "matching"],
   minCooldownSeconds: 300,

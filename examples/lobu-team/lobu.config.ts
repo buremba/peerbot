@@ -3,6 +3,7 @@ import {
   defineAgent,
   defineAuthProfile,
   defineAutomation,
+  every,
   defineConfig,
   defineConnection,
   defineEntityType,
@@ -147,7 +148,7 @@ const lunchOpen = defineAutomation({
   agent: foodOrdering,
   slug: "lobu-team-lunch-open",
   name: "Open the lunch run",
-  triggers: [{ kind: "schedule", cron: "0 11 * * 1-5" }],
+  triggers: [every("0 11 * * 1-5")],
   notification: { priority: "high", channel: "both" },
   tags: ["lunch", "daily"],
   minCooldownSeconds: 600,
@@ -160,7 +161,7 @@ const lunchFinalize = defineAutomation({
   agent: foodOrdering,
   slug: "lobu-team-lunch-finalize",
   name: "Collect orders and hand off",
-  triggers: [{ kind: "schedule", cron: "35 11 * * 1-5" }],
+  triggers: [every("35 11 * * 1-5")],
   notification: { priority: "high" },
   tags: ["lunch", "daily"],
   minCooldownSeconds: 600,
@@ -348,11 +349,9 @@ const productActivityDigest = defineAutomation({
   description:
     "Every 20 minutes, summarize new signups, logins, connections, MCP clients, and Kubernetes log activity; stay silent when nothing happened.",
   triggers: [
-    {
-      kind: "schedule",
-      cron: "5,25,45 * * * *",
+    every("5,25,45 * * * *", {
       skip_if_unchanged: true,
-    },
+    }),
   ],
   sources: {
     product_activity: "@connection:lobu-product-activity-db",

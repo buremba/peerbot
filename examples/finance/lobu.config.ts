@@ -6,6 +6,7 @@ import {
   defineEntityType,
   defineRelationshipType,
   defineAutomation,
+  every,
   secret,
 } from "@lobu/cli/config";
 import type QuickBooksTransactionsConnector from "./quickbooks-transactions.connector.ts";
@@ -177,7 +178,7 @@ const reconciliationMonitor = defineAutomation({
   agent: finance,
   slug: "reconciliation-monitor",
   name: "Reconciliation monitor",
-  triggers: [{ kind: "schedule", cron: "0 6 * * 1-5" }],
+  triggers: [every("0 6 * * 1-5")],
   notification: { priority: "high", channel: "both" },
   tags: ["finance", "reconciliation", "daily"],
   minCooldownSeconds: 3600,

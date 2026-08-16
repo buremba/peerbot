@@ -6,6 +6,7 @@ import {
   defineEntityType,
   defineRelationshipType,
   defineAutomation,
+  every,
   secret,
 } from "@lobu/cli/config";
 import type LinearCyclesConnector from "./linear-cycles.connector.ts";
@@ -191,7 +192,7 @@ const boardActionTracker = defineAutomation({
   agent: leadership,
   slug: "board-action-tracker",
   name: "Board action tracker",
-  triggers: [{ kind: "schedule", cron: "0 8 * * *" }],
+  triggers: [every("0 8 * * *")],
   notification: { priority: "high", channel: "both" },
   tags: ["leadership", "daily", "board"],
   agentKind: "notifier",

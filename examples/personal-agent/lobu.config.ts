@@ -1,5 +1,6 @@
 import {
   connectorFromFile,
+  context,
   defineAgent,
   defineAuthProfile,
   defineAutomation,
@@ -8,6 +9,7 @@ import {
   defineEntityType,
   defineRelationshipType,
   defineSkill,
+  every,
   reactionFromFile,
 } from "@lobu/cli/config";
 import type GoogleTakeoutConnector from "./google-takeout.connector.ts";
@@ -1189,9 +1191,7 @@ const voiceProfileSynthesis = defineAutomation({
   slug: "voice-profile-synth-v2",
   name: "Voice profile synthesis",
   tags: ["voice", "identity", "social"],
-  triggers: [
-    { kind: "schedule", cron: "40 6 * * 1", skip_if_unchanged: false },
-  ],
+  triggers: [every("40 6 * * 1", { skip_if_unchanged: false })],
   notification: { channel: "canvas", priority: "low" },
   minCooldownSeconds: 3600,
   agentKind: "opencode",
@@ -1208,11 +1208,9 @@ const voiceProfileSynthesis = defineAutomation({
       "SELECT id, occurred_at, connector_key, origin_type, left(payload_text, 400) AS payload_text, metadata FROM events WHERE payload_text IS NOT NULL AND length(payload_text) >= 40 AND occurred_at > now() - interval '21 days' AND ((connector_key = 'twitter.takeout' AND origin_type IN ('reply','tweet')) OR (connector_key = 'x' AND origin_type IN ('tweet','reply') AND lower(coalesce(metadata->>'author_handle','')) = 'bu7emba') OR (connector_key IN ('linkedin','linkedin.takeout') AND origin_type = 'message') OR (connector_key = 'hackernews' AND origin_type = 'comment' AND lower(coalesce(author_name,'')) = 'buremba')) ORDER BY occurred_at DESC LIMIT 200",
     engaged_recent:
       "SELECT id, occurred_at, connector_key, origin_type, left(payload_text, 300) AS payload_text, metadata FROM events WHERE payload_text IS NOT NULL AND length(payload_text) >= 20 AND occurred_at > now() - interval '21 days' AND ((connector_key IN ('x','twitter.takeout') AND origin_type IN ('liked_tweet','bookmark')) OR (connector_key = 'instagram.takeout' AND origin_type IN ('like','saved','comment'))) ORDER BY occurred_at DESC LIMIT 200",
-    existing_profiles: {
-      context: true,
-      query:
-        "SELECT NULL::bigint AS id, v.name, v.metadata, v.updated_at FROM entities v WHERE v.entity_type = 'voice-profile' AND v.deleted_at IS NULL ORDER BY v.updated_at DESC LIMIT 20",
-    },
+    existing_profiles: context(
+      "SELECT NULL::bigint AS id, v.name, v.metadata, v.updated_at FROM entities v WHERE v.entity_type = 'voice-profile' AND v.deleted_at IS NULL ORDER BY v.updated_at DESC LIMIT 20"
+    ),
   },
   prompt:
     'Refine Burak\'s voice-profile entities.\nexisting_profiles is historical truth. authored_recent/engaged_recent refine last ~21d only.\nALWAYS re-emit all existing profiles. Return JSON:\n{ "profiles":[{ "name","channel","mode","summary","themes","prefers","avoids","confidence","evidence_count","evidence_from","evidence_to","sample_event_ids" }], "analysis_summary":"..." }\nNever invent channel=core.',
@@ -1225,9 +1223,7 @@ const socialInterestRadar = defineAutomation({
   slug: "social-interest-radar-v2",
   name: "Social interest radar",
   tags: ["social", "x", "linkedin", "notifications"],
-  triggers: [
-    { kind: "schedule", cron: "25 * * * *", skip_if_unchanged: false },
-  ],
+  triggers: [every("25 * * * *", { skip_if_unchanged: false })],
   notification: { channel: "both", priority: "normal" },
   minCooldownSeconds: 1800,
   agentKind: "opencode",
@@ -1236,21 +1232,15 @@ const socialInterestRadar = defineAutomation({
   sources: {
     recent_social:
       "SELECT id, origin_id, connection_id, occurred_at, title, author_name, payload_text, source_url, metadata, connector_key, origin_type FROM events WHERE connector_key IN ('x','linkedin','hackernews') AND ((connector_key='x' AND origin_type IN ('tweet','bookmark')) OR (connector_key='linkedin' AND origin_type='post') OR (connector_key='hackernews' AND origin_type IN ('story','ask_hn','show_hn'))) AND payload_text IS NOT NULL AND origin_id IS NOT NULL AND connection_id IS NOT NULL ORDER BY occurred_at DESC LIMIT 80",
-    already_emitted: {
-      context: true,
-      query:
-        "SELECT id, origin_parent_id AS source_origin_id FROM events WHERE semantic_type = 'observation' AND metadata->>'automation_output' = 'signals' AND occurred_at > now() - interval '7 days' ORDER BY occurred_at DESC LIMIT 400",
-    },
-    voice_profiles: {
-      context: true,
-      query:
-        "SELECT NULL::bigint AS id, v.name, v.metadata, v.updated_at FROM entities v WHERE v.entity_type='voice-profile' AND v.deleted_at IS NULL ORDER BY v.updated_at DESC LIMIT 20",
-    },
-    known_people: {
-      context: true,
-      query:
-        "SELECT id, name, metadata FROM entities WHERE entity_type='person' AND deleted_at IS NULL AND (metadata ? 'x_handle' OR metadata ? 'linkedin_url' OR metadata ? 'company') ORDER BY updated_at DESC LIMIT 40",
-    },
+    already_emitted: context(
+      "SELECT id, origin_parent_id AS source_origin_id FROM events WHERE semantic_type = 'observation' AND metadata->>'automation_output' = 'signals' AND occurred_at > now() - interval '7 days' ORDER BY occurred_at DESC LIMIT 400"
+    ),
+    voice_profiles: context(
+      "SELECT NULL::bigint AS id, v.name, v.metadata, v.updated_at FROM entities v WHERE v.entity_type='voice-profile' AND v.deleted_at IS NULL ORDER BY v.updated_at DESC LIMIT 20"
+    ),
+    known_people: context(
+      "SELECT id, name, metadata FROM entities WHERE entity_type='person' AND deleted_at IS NULL AND (metadata ? 'x_handle' OR metadata ? 'linkedin_url' OR metadata ? 'company') ORDER BY updated_at DESC LIMIT 40"
+    ),
   },
   outputs: {
     signals: { event: "observation" },
@@ -1274,13 +1264,11 @@ const midasNetWorth = defineAutomation({
   description:
     "Consolidates connector positions and current balance-sheet observations into one immutable weekly GBP snapshot with exact change attribution.",
   triggers: [
-    {
-      kind: "schedule",
-      cron: "0 9 * * 1",
+    every("0 9 * * 1", {
       timezone: "Europe/London",
       // Prices change even when the current broker position book does not.
       skip_if_unchanged: false,
-    },
+    }),
   ],
   notification: { channel: "canvas", priority: "low" },
   minCooldownSeconds: 300,
@@ -1299,7 +1287,7 @@ const hourlyTaskCollaborator = defineAutomation({
   slug: "hourly-task-collaborator",
   name: "Hourly Task Collaborator",
   model: "hetzner/DeepSeek-V4-Flash-0731",
-  triggers: [{ kind: "schedule", cron: "0 * * * *" }],
+  triggers: [every("0 * * * *")],
   notification: { channel: "both", priority: "normal" },
   minCooldownSeconds: 300,
   outputs: {
@@ -1337,11 +1325,9 @@ const hourlyTaskCollaborator = defineAutomation({
     upcoming_calendar:
       "SELECT id, id AS source_event_id, COALESCE('connection:' || connection_id::text, 'connector:' || connector_key, 'event') AS source_scope, COALESCE(origin_id, 'event:' || id::text) AS source_origin_id, occurred_at, title, payload_text, semantic_type, connector_key, metadata FROM events WHERE semantic_type = 'calendar_event' AND occurred_at BETWEEN now() - interval '1 day' AND now() + interval '30 days' ORDER BY occurred_at ASC LIMIT 20",
     // context-only: existing tasks are dedup reference data, not window signal
-    task_list: {
-      context: true,
-      query:
-        "SELECT NULL::bigint AS id, t.name, t.metadata, t.updated_at FROM entities t WHERE t.entity_type = 'task' AND t.deleted_at IS NULL AND (COALESCE(t.metadata->>'status', 'backlog') NOT IN ('done', 'dismissed') OR t.updated_at > now() - interval '14 days') ORDER BY t.updated_at DESC LIMIT 100",
-    },
+    task_list: context(
+      "SELECT NULL::bigint AS id, t.name, t.metadata, t.updated_at FROM entities t WHERE t.entity_type = 'task' AND t.deleted_at IS NULL AND (COALESCE(t.metadata->>'status', 'backlog') NOT IN ('done', 'dismissed') OR t.updated_at > now() - interval '14 days') ORDER BY t.updated_at DESC LIMIT 100"
+    ),
   },
   skills: ["hourly-task-collaborator"],
 });
@@ -1354,11 +1340,9 @@ const duplicateEntityResolution = defineAutomation({
   notification: { channel: "canvas", priority: "normal" },
   sources: {
     // context-only: duplicate candidates for analysis (not window body)
-    people: {
-      context: true,
-      query:
-        "SELECT * FROM (SELECT id AS id, name AS name, name_key AS name_key, match_reason AS match_reason, metadata AS metadata, created_at AS created_at, updated_at AS updated_at\nFROM (\n  SELECT id, name, metadata, created_at, updated_at,\n    regexp_replace(lower(trim(name)),'[^a-z0-9]','','g') AS name_key,\n    nullif(lower(trim(metadata->>'email')),'') AS em,\n    nullif(regexp_replace(coalesce(metadata->>'phone',''),'[^0-9]','','g'),'') AS ph,\n    COUNT(*) OVER (PARTITION BY regexp_replace(lower(trim(name)),'[^a-z0-9]','','g')) AS name_grp,\n    COUNT(*) OVER (PARTITION BY nullif(lower(trim(metadata->>'email')),'')) AS email_grp,\n    COUNT(*) OVER (PARTITION BY nullif(regexp_replace(coalesce(metadata->>'phone',''),'[^0-9]','','g'),'')) AS phone_grp,\n    CASE\n      WHEN nullif(lower(trim(metadata->>'email')),'') IS NOT NULL\n           AND COUNT(*) OVER (PARTITION BY nullif(lower(trim(metadata->>'email')),'')) > 1 THEN 'email:' || lower(trim(metadata->>'email'))\n      WHEN length(nullif(regexp_replace(coalesce(metadata->>'phone',''),'[^0-9]','','g'),'')) >= 7\n           AND COUNT(*) OVER (PARTITION BY nullif(regexp_replace(coalesce(metadata->>'phone',''),'[^0-9]','','g'),'')) > 1 THEN 'phone:' || regexp_replace(coalesce(metadata->>'phone',''),'[^0-9]','','g')\n      ELSE 'name:' || regexp_replace(lower(trim(name)),'[^a-z0-9]','','g')\n    END AS match_reason\n  FROM entities\n  WHERE entity_type='person' AND deleted_at IS NULL AND merged_into IS NULL\n    AND trim(coalesce(name,'')) <> ''\n) s\nWHERE (s.name_grp > 1 AND s.name_key <> '')\n   OR (s.em IS NOT NULL AND s.email_grp > 1)\n   OR (s.ph IS NOT NULL AND length(s.ph) >= 7 AND s.phone_grp > 1)\nORDER BY s.match_reason, s.id\nLIMIT 200) real_candidates WHERE COALESCE(metadata->>'email','') NOT LIKE '%@example.test'",
-    },
+    people: context(
+      "SELECT * FROM (SELECT id AS id, name AS name, name_key AS name_key, match_reason AS match_reason, metadata AS metadata, created_at AS created_at, updated_at AS updated_at\nFROM (\n  SELECT id, name, metadata, created_at, updated_at,\n    regexp_replace(lower(trim(name)),'[^a-z0-9]','','g') AS name_key,\n    nullif(lower(trim(metadata->>'email')),'') AS em,\n    nullif(regexp_replace(coalesce(metadata->>'phone',''),'[^0-9]','','g'),'') AS ph,\n    COUNT(*) OVER (PARTITION BY regexp_replace(lower(trim(name)),'[^a-z0-9]','','g')) AS name_grp,\n    COUNT(*) OVER (PARTITION BY nullif(lower(trim(metadata->>'email')),'')) AS email_grp,\n    COUNT(*) OVER (PARTITION BY nullif(regexp_replace(coalesce(metadata->>'phone',''),'[^0-9]','','g'),'')) AS phone_grp,\n    CASE\n      WHEN nullif(lower(trim(metadata->>'email')),'') IS NOT NULL\n           AND COUNT(*) OVER (PARTITION BY nullif(lower(trim(metadata->>'email')),'')) > 1 THEN 'email:' || lower(trim(metadata->>'email'))\n      WHEN length(nullif(regexp_replace(coalesce(metadata->>'phone',''),'[^0-9]','','g'),'')) >= 7\n           AND COUNT(*) OVER (PARTITION BY nullif(regexp_replace(coalesce(metadata->>'phone',''),'[^0-9]','','g'),'')) > 1 THEN 'phone:' || regexp_replace(coalesce(metadata->>'phone',''),'[^0-9]','','g')\n      ELSE 'name:' || regexp_replace(lower(trim(name)),'[^a-z0-9]','','g')\n    END AS match_reason\n  FROM entities\n  WHERE entity_type='person' AND deleted_at IS NULL AND merged_into IS NULL\n    AND trim(coalesce(name,'')) <> ''\n) s\nWHERE (s.name_grp > 1 AND s.name_key <> '')\n   OR (s.em IS NOT NULL AND s.email_grp > 1)\n   OR (s.ph IS NOT NULL AND length(s.ph) >= 7 AND s.phone_grp > 1)\nORDER BY s.match_reason, s.id\nLIMIT 200) real_candidates WHERE COALESCE(metadata->>'email','') NOT LIKE '%@example.test'"
+    ),
   },
   reactionsGuidance:
     "Explain uncertainty; never decide identity from names, aliases, or handles. The server-side entity type policy is the only merge authority.",

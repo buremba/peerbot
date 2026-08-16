@@ -74,6 +74,7 @@ import {
 	checkDuplicateEdge,
 	validateConfidence,
 	validateNoSelfReference,
+	validateReconciledEdgeUpdate,
 	validateScopeRule,
 	validateSource,
 	validateTypeRule,
@@ -1735,6 +1736,11 @@ async function handleUpdateLink(
 		validateConfidence(args.confidence);
 		validateSource(args.source);
 		const hasMetadata = args.metadata !== undefined;
+		const metadataChanged =
+			hasMetadata && stableJson(edge.metadata ?? null) !== stableJson(args.metadata ?? null);
+		// Check the locked pre-image so concurrent updates cannot move a reconciled
+		// edge out of the scope that retires it.
+		validateReconciledEdgeUpdate(edge.source, args.source, metadataChanged);
 		const metadataJson = hasMetadata ? tx.json(args.metadata) : null;
 		const updatedRows = await tx<{
 			metadata: unknown;

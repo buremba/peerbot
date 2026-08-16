@@ -7,19 +7,27 @@
  */
 
 import { type DbClient, getDb } from '../db/client';
+import { ToolUserError } from './errors';
 import type { Env } from '../index';
 import type { ToolContext } from '../tools/registry';
 
-// Valid relationship sources
-const RELATIONSHIP_SOURCES = ['ui', 'llm', 'feed', 'api'] as const;
-type RelationshipSource = (typeof RELATIONSHIP_SOURCES)[number];
+/** Sources accepted from the manage_entity link/update_link surface. */
+const CALLER_SETTABLE_SOURCES = ['ui', 'llm', 'feed', 'api'] as const;
+
+export const EDGE_SOURCE_CONFIG = 'config';
+export const EDGE_SOURCE_MANUAL = 'manual';
+
+/** Source values used to select edges during reconciliation. */
+const RECONCILED_SOURCES = [EDGE_SOURCE_CONFIG, EDGE_SOURCE_MANUAL] as const;
+
+type CallerSettableSource = (typeof CALLER_SETTABLE_SOURCES)[number];
 
 /**
  * Validate that a relationship does not reference itself.
  */
 export function validateNoSelfReference(fromId: number, toId: number): void {
   if (fromId === toId) {
-    throw new Error('Self-referencing relationships are not allowed');
+    throw new ToolUserError('Self-referencing relationships are not allowed', 400);
   }
 }
 
@@ -29,20 +37,42 @@ export function validateNoSelfReference(fromId: number, toId: number): void {
 export function validateConfidence(confidence: number | undefined | null): void {
   if (confidence === undefined || confidence === null) return;
   if (typeof confidence !== 'number' || confidence < 0 || confidence > 1) {
-    throw new Error('Confidence must be a number between 0 and 1');
+    throw new ToolUserError('Confidence must be a number between 0 and 1', 400);
   }
 }
 
 /**
- * Validate source is a known enum value.
+ * Validate a caller-supplied source.
+ *
+ * Reconciled sources are internal: callers may neither create edges in a
+ * reconciler's scope nor move existing edges into it.
  */
 export function validateSource(source: string | undefined | null): void {
   if (source === undefined || source === null) return;
-  if (!RELATIONSHIP_SOURCES.includes(source as RelationshipSource)) {
-    throw new Error(
-      `Invalid source "${source}". Must be one of: ${RELATIONSHIP_SOURCES.join(', ')}`
+  if (!CALLER_SETTABLE_SOURCES.includes(source as CallerSettableSource)) {
+    throw new ToolUserError(
+      `Invalid source "${source}". Must be one of: ${CALLER_SETTABLE_SOURCES.join(', ')}`,
+      400
     );
   }
+}
+
+/**
+ * Refuse to change the source or metadata that identify a reconciled edge.
+ */
+export function validateReconciledEdgeUpdate(
+  current: string | null | undefined,
+  next: string | undefined | null,
+  metadataChanged: boolean
+): void {
+  if (!RECONCILED_SOURCES.includes(current as (typeof RECONCILED_SOURCES)[number])) {
+    return;
+  }
+  if ((next === undefined || next === null) && !metadataChanged) return;
+  throw new ToolUserError(
+    `Cannot change source or metadata of a "${current}"-owned relationship. It is reconciled by the subsystem that created it; edit that configuration instead.`,
+    400
+  );
 }
 
 /**
@@ -87,7 +117,7 @@ export async function validateScopeRule(
   if (rows.length < 2) {
     const foundIds = rows.map((r) => r.id);
     const missingId = [fromEntityId, toEntityId].find((id) => !foundIds.includes(id));
-    throw new Error(`Entity ${missingId} not found`);
+    throw new ToolUserError(`Entity ${missingId} not found`, 404);
   }
 
   const fromEntity = rows.find((r) => Number(r.id) === fromEntityId)!;
@@ -96,7 +126,7 @@ export async function validateScopeRule(
   // Source must always be in the caller's org — you can't author relationships
   // *from* someone else's entity.
   if (String(fromEntity.organization_id) !== ctx.organizationId) {
-    throw new Error(`Entity ${fromEntityId} does not belong to your organization`);
+    throw new ToolUserError(`Entity ${fromEntityId} does not belong to your organization`, 403);
   }
 
   // Target may be same-org OR a public-catalog entity. Anything else (a
@@ -104,8 +134,9 @@ export async function validateScopeRule(
   const toOrgId = String(toEntity.organization_id);
   const toVisibility = String(toEntity.visibility ?? 'private');
   if (toOrgId !== ctx.organizationId && toVisibility !== 'public') {
-    throw new Error(
-      `Entity ${toEntityId} is in a private organization that does not belong to you. Cross-org references are only allowed to entities in public catalogs.`
+    throw new ToolUserError(
+      `Entity ${toEntityId} is in a private organization that does not belong to you. Cross-org references are only allowed to entities in public catalogs.`,
+      403
     );
   }
 }
@@ -128,7 +159,7 @@ export async function validateTypeRule(
       AND deleted_at IS NULL
   `;
   if (typeRows.length === 0) {
-    throw new Error(`Relationship type ${relationshipTypeId} not found`);
+    throw new ToolUserError(`Relationship type ${relationshipTypeId} not found`, 404);
   }
   const isSymmetric = Boolean(typeRows[0].is_symmetric);
 
@@ -164,8 +195,9 @@ export async function validateTypeRule(
   });
 
   if (!matches) {
-    throw new Error(
-      `Relationship type ${relationshipTypeId} does not allow ${fromEntityType} → ${toEntityType}`
+    throw new ToolUserError(
+      `Relationship type ${relationshipTypeId} does not allow ${fromEntityType} → ${toEntityType}`,
+      400
     );
   }
 }
@@ -188,8 +220,9 @@ export async function checkDuplicateEdge(
     LIMIT 1
   `;
   if (existing.length > 0) {
-    throw new Error(
-      `An active relationship of this type already exists between entities ${fromId} and ${toId}`
+    throw new ToolUserError(
+      `An active relationship of this type already exists between entities ${fromId} and ${toId}`,
+      409
     );
   }
 }

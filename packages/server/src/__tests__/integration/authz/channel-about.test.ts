@@ -9,12 +9,12 @@ import {
 	slackChannelsToResources,
 } from "@lobu/connectors/slack-identity";
 import {
-	ABOUT_EDGE_SOURCE_CONFIG,
 	ensureAboutRelationshipType,
 	listChannelEntitiesAboutBusinessEntity,
 	syncConnectionChannelAboutEdges,
 } from "../../../authz/channel-about";
 import { buildAccessGraph } from "../../../authz/access-graph";
+import { EDGE_SOURCE_CONFIG } from "../../../utils/relationship-validation";
 import { clearEntityLinkRulesCache } from "../../../utils/entity-link-upsert";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
@@ -94,7 +94,7 @@ describe("channel about edges", () => {
 		const before = await aboutEdges(org.id);
 		expect(before).toHaveLength(1);
 		expect(Number(before[0].to_entity_id)).toBe(company.id);
-		expect(before[0].source).toBe(ABOUT_EDGE_SOURCE_CONFIG);
+		expect(before[0].source).toBe(EDGE_SOURCE_CONFIG);
 
 		await buildAccessGraph({
 			organizationId: org.id,

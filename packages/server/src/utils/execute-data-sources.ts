@@ -30,9 +30,9 @@ import {
   ADMIN_ONLY_QUERYABLE_TABLES,
   buildColumnList,
   type ColumnDef,
-	formatUnknownTablesError,
-	QUERYABLE_TABLE_NAMES,
-	SAFE_COLUMN_DEFS,
+  formatUnknownTablesError,
+  QUERYABLE_TABLE_NAMES,
+  SAFE_COLUMN_DEFS,
   validateTableQuery,
 } from './table-schema';
 import { getErrorMessage } from "@lobu/core";

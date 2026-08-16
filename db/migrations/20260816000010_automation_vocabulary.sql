@@ -146,7 +146,11 @@ UPDATE public.entities AS entity
 SET metadata = (metadata - 'watcher_id' - 'behavior_id')
   || jsonb_build_object(
     'automation_id',
-    COALESCE(metadata->'automation_id', metadata->'behavior_id', metadata->'watcher_id')
+    COALESCE(
+      NULLIF(metadata->'automation_id', 'null'::jsonb),
+      NULLIF(metadata->'behavior_id', 'null'::jsonb),
+      metadata->'watcher_id'
+    )
   )
 WHERE (metadata ? 'watcher_id' OR metadata ? 'behavior_id')
   AND EXISTS (
@@ -348,12 +352,33 @@ DECLARE
   retired_relation_pattern constant text := '\m(behaviors|behavior_versions|watchers|watcher_versions)\M';
 BEGIN
   SELECT
-    (SELECT count(*) FROM public.automations
-      WHERE sources::text ~* retired_relation_pattern) +
-    (SELECT count(*) FROM public.automation_versions
-      WHERE version_sources::text ~* retired_relation_pattern) +
-    (SELECT count(*) FROM public.view_template_versions
-      WHERE json_template::text ~* retired_relation_pattern) +
+    (SELECT count(*) FROM public.automations AS automation
+      WHERE EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements(
+          CASE WHEN jsonb_typeof(automation.sources) = 'array'
+            THEN automation.sources ELSE '[]'::jsonb END
+        ) AS source(value)
+        WHERE source.value->>'query' ~* retired_relation_pattern
+      )) +
+    (SELECT count(*) FROM public.automation_versions AS version
+      WHERE EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements(
+          CASE WHEN jsonb_typeof(version.version_sources) = 'array'
+            THEN version.version_sources ELSE '[]'::jsonb END
+        ) AS source(value)
+        WHERE source.value->>'query' ~* retired_relation_pattern
+      )) +
+    (SELECT count(*) FROM public.view_template_versions AS version
+      WHERE EXISTS (
+        SELECT 1
+        FROM jsonb_each(
+          CASE WHEN jsonb_typeof(version.json_template->'data_sources') = 'object'
+            THEN version.json_template->'data_sources' ELSE '{}'::jsonb END
+        ) AS source(name, definition)
+        WHERE source.definition->>'query' ~* retired_relation_pattern
+      )) +
     (SELECT count(*) FROM public.entity_types
       WHERE backing_sql ~* retired_relation_pattern)
   INTO blocked_rows;

@@ -1,11 +1,11 @@
 /**
  * Cross-repo wire coverage for the Owletto agent list.
  *
- * The database and internal engine still call these rows automations, but the
- * public AgentItem contract is Automation-facing: owletto declares
- * `automationCount`, so the server has to emit that key. Nothing in owletto reads
- * the field today, so a key mismatch produces no type error and no visibly
- * broken screen — this server-side assertion is the only thing that catches it.
+ * The database and public AgentItem contract both use Automation vocabulary:
+ * owletto declares `automationCount`, so the server has to emit that key.
+ * Nothing in owletto reads the field today, so a key mismatch produces no type
+ * error and no visibly broken screen — this server-side assertion is the only
+ * thing that catches it.
  */
 import { beforeAll, beforeEach, expect, test } from "bun:test";
 import {

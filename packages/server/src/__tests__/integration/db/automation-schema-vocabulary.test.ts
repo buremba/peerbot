@@ -86,6 +86,21 @@ describe('Automation schema vocabulary', () => {
       agentId: 'authored-query-cutover-agent',
     });
     await sql`
+      INSERT INTO view_template_versions (
+        resource_type, resource_id, organization_id, version,
+        json_template, created_by
+      ) VALUES (
+        'entity_type', 'authored-prose', ${org.id}, 1,
+        ${sql.json({
+          type: 'text',
+          content: 'Customer-authored watchers and behaviors prose',
+          data_sources: { rows: { query: 'SELECT id FROM automations' } },
+        })},
+        ${user.id}
+      )
+    `;
+
+    const [authoredAutomation] = await sql<{ id: number }[]>`
       WITH next_id AS (
         SELECT nextval('automations_id_seq')::int AS id
       )
@@ -96,8 +111,30 @@ describe('Automation schema vocabulary', () => {
       SELECT
         id, ${org.id}, ${user.id}, ${agent.agentId}, id,
         'Authored query cutover', 'authored-query-cutover',
-        ${sql.json([{ name: 'legacy', query: 'SELECT id FROM behaviors' }])}
+        ${sql.json([
+          {
+            name: 'canonical',
+            description: 'Customer-authored watchers and behaviors prose',
+            query: 'SELECT id FROM automations',
+          },
+        ])}
       FROM next_id
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO automation_versions (
+        automation_id, version, name, created_by, prompt, version_sources
+      ) VALUES (
+        ${authoredAutomation.id}, 1, 'Authored query cutover', ${user.id},
+        'Customer-authored watchers and behaviors prompt',
+        ${sql.json([
+          {
+            name: 'canonical',
+            description: 'Customer-authored watchers and behaviors prose',
+            query: 'SELECT id FROM automations',
+          },
+        ])}
+      )
     `;
 
     const cutover = loadMarkedSection(
@@ -105,6 +142,14 @@ describe('Automation schema vocabulary', () => {
       AUTHORED_QUERY_CUTOVER_END,
       'authored query cutover'
     );
+    await sql.begin((tx) => tx.unsafe(cutover));
+
+    await sql`
+      UPDATE automations
+      SET sources = ${sql.json([{ name: 'legacy', query: 'SELECT id FROM behaviors' }])}
+      WHERE id = ${authoredAutomation.id}
+    `;
+
     expect(cutover).toMatch(/FROM public\.automations\b/);
     expect(cutover).toMatch(/FROM public\.automation_versions\b/);
     expect(cutover).toMatch(/FROM public\.view_template_versions\b/);
@@ -203,6 +248,8 @@ describe('Automation schema vocabulary', () => {
       created_by: user.id,
     });
     const legacyMetadata = {
+      automation_id: null,
+      behavior_id: null,
       watcher_id: 42,
       source: 'watcher_promotion',
       resourceKind: 'behavior',

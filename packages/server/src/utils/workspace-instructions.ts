@@ -2,7 +2,7 @@
  * Workspace Instructions Builder
  *
  * Generates MCP instructions with workspace schema (entity types, relationship
- * types) and automational guidance so LLMs act as a proactive memory layer.
+ * types) and operating guidance so LLMs act as a proactive memory layer.
  * All entity-level data comes from tool calls at runtime, not from instructions.
  */
 

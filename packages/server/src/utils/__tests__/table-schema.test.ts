@@ -1,8 +1,8 @@
 import { describe, expect, inject, it } from 'vitest';
 import { buildScopedQuery, validateAndScopeQuery } from '../execute-data-sources';
 import {
-	buildColumnList,
-	QUERYABLE_SCHEMA,
+  buildColumnList,
+  QUERYABLE_SCHEMA,
   QUERYABLE_TABLE_NAMES,
   SAFE_COLUMN_DEFS,
   validateTableQuery,
@@ -14,7 +14,7 @@ describe('QUERYABLE_TABLE_NAMES', () => {
       'entities',
       'events',
       'connections',
-			// Canonical Automation relations.
+      // Canonical Automation relations.
       'automations',
       'event_classifications',
       'automation_versions',
@@ -212,7 +212,7 @@ describe('validateAndScopeQuery', () => {
  * projection into the generated CTE, so a schema column that does not exist in
  * the database is injected into every query against that relation — including
  * `SELECT 1 AS one FROM automation_versions`, which references no column at all.
- * `automation_versions` listed `sources` (a `automations` column that has never
+ * `automation_versions` listed `sources` (an `automations` column that has never
  * existed on `automation_versions`) and was therefore 100% unqueryable in prod,
  * with an error naming a column no caller ever wrote, while this gate stayed
  * green. A one-directional drift check is a half gate.
@@ -269,14 +269,7 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
     // Prod has it NULL on every row. Schema exposure is removed ahead of the
     // two-phase column drop, so the physical column outlives its
     // QUERYABLE_SCHEMA entry until the phase-2 migration.
-    // Keyed by the QUERYABLE_SCHEMA entry name (`automations`), not the physical
-    // table (`automations`) — this map is indexed by `t.name` from that schema.
-    automations: new Set([
-      'scheduler_client_id',
-      // Physical storage names replaced by public derived aliases below.
-      'source_automation_id',
-      'automation_group_id',
-    ]),
+    automations: new Set(['scheduler_client_id']),
     user: new Set(['email', 'phoneNumber', 'phoneNumberVerified']),
   };
 
@@ -288,7 +281,6 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
   const DERIVED_COLUMNS: Record<string, Set<string>> = {
     // entities CTE JOINs entity_types and aliases et.slug AS entity_type.
     entities: new Set(['entity_type']),
-    automations: new Set(['source_automation_id', 'automation_group_id']),
   };
 
   /** relation name → physical column set, read once per drift test. */
@@ -296,7 +288,7 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
     const { getDb, pgTextArray } = await import('../../db/client');
     const sql = getDb();
 
-		const physicalNames = QUERYABLE_SCHEMA.tables.map((t) => t.name);
+    const physicalNames = QUERYABLE_SCHEMA.tables.map((t) => t.name);
 
     const rows = await sql`
       SELECT table_name, column_name
@@ -315,7 +307,7 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
 
     const byRelation = new Map<string, Set<string>>();
     for (const t of QUERYABLE_SCHEMA.tables) {
-			const physical = byPhysical.get(t.name);
+      const physical = byPhysical.get(t.name);
       if (physical) byRelation.set(t.name, physical);
     }
     return byRelation;

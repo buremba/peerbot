@@ -950,9 +950,9 @@ describe("PolicyStore.resolve — edge cases", () => {
   });
 });
 
-// ─── EgressJudge — additional automational coverage ────────────────────────────
+// ─── EgressJudge — additional policy coverage ────────────────────────────
 
-describe("EgressJudge — additional automational coverage", () => {
+describe("EgressJudge — additional policy coverage", () => {
   test("uses the configured default model when no per-rule override is set", async () => {
     let capturedModel = "";
     const client: JudgeClient = {

@@ -479,8 +479,8 @@ export const QUERYABLE_SCHEMA = {
         'reaction_script_compiled',
         'reaction_input_schema',
         'connection_id',
-        { name: 'source_automation_id', type: 'text' },
-        { name: 'automation_group_id', type: 'text' },
+        'source_automation_id',
+        'automation_group_id',
         // Runtime columns for device pinning, notification routing, and run
         // rate-limiting; query_sql exposes them so those settings are auditable.
         'device_worker_id',
@@ -787,7 +787,7 @@ export const ADMIN_ONLY_QUERYABLE_TABLES: ReadonlySet<string> = new Set([
 
 /** table name → column definitions for use in CTE SELECT.
  *  Columns with `expr` project a SQL expression instead of the bare column
- *  (JSONB redaction, or a public alias over a physical column). */
+ *  (JSONB redaction or another SQL-side projection). */
 export const SAFE_COLUMN_DEFS = new Map<string, ColumnDef[]>(
   QUERYABLE_SCHEMA.tables.map((t) => [t.name, t.columns])
 );
@@ -885,11 +885,11 @@ export function formatUnknownTablesError(tableNames: Iterable<string>): string {
       ? `Unknown table '${names[0]}'`
       : `Unknown tables ${names.map((name) => `'${name}'`).join(', ')}`;
   const queryableTables = [...QUERYABLE_TABLE_NAMES].sort().join(', ');
-	return (
-		`${subject} — not in the queryable allowlist, so the query did not run. ` +
-		`This is an error, not an empty result. ` +
-		`Queryable tables are: ${queryableTables}.`
-	);
+  return (
+    `${subject} — not in the queryable allowlist, so the query did not run. ` +
+    `This is an error, not an empty result. ` +
+    `Queryable tables are: ${queryableTables}.`
+  );
 }
 
 export function validateTableQuery(sql: string): { valid: boolean; errors: string[] } {

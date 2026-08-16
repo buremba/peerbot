@@ -96,13 +96,13 @@ describe('buildWorkspaceInstructions render fixes', () => {
       VALUES (
         'legacy-automation',
         'Legacy Automation',
-        'A club for bird automations',
+        'A club for bird observers',
         ${sql.json({
           type: 'object',
           properties: {
             window_id: { type: 'number', description: 'Automation window that produced it' },
             automation_id: { type: 'number', description: 'Automation that wrote it' },
-            automation_count: { type: 'number', description: 'Number of bird automations' },
+            observer_count: { type: 'number', description: 'Number of bird observers' },
           },
         })},
         ${org.id}
@@ -163,10 +163,10 @@ describe('buildWorkspaceInstructions render fixes', () => {
     expect(out).toContain('- legacy ("Legacy") — fields: sku, price (Unit price in EUR)');
   });
 
-  it('preserves tenant automation language while hiding exact internal engine fields', async () => {
+  it('preserves tenant-authored language while hiding exact internal fields', async () => {
     const out = await buildWorkspaceInstructions(org.id);
-    expect(out).toContain('A club for bird automations');
-    expect(out).toContain('automation_count (Number of bird automations)');
+    expect(out).toContain('A club for bird observers');
+    expect(out).toContain('observer_count (Number of bird observers)');
     expect(out).not.toContain('automation_id');
     expect(out).toContain('window_id (Automation window that produced it)');
   });

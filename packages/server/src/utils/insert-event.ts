@@ -129,8 +129,9 @@ interface InsertEventParams {
    * heads: this function inserts the successor before stamping the
    * predecessor's `superseded_by`, so both are briefly live and a live-head
    * index would reject every ordinary supersede. Uniqueness is declared per
-   * namespace on purpose: `entity_identities` enforces one blanket index across
-   * every namespace and has carried a dead `uniquePerOrg` knob ever since.
+   * namespace on purpose: `entity_identities` instead enforces one blanket
+   * index across every namespace, so a namespace that should not be unique has
+   * no way to say so.
    *
    * Rows with no stable identity (messages, notes, tombstones, change audits)
    * leave this unset — there is no "current version of" a one-shot event.

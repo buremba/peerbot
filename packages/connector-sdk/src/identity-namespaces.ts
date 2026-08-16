@@ -29,8 +29,6 @@ export interface IdentityNamespaceDefinition {
   normalizer: IdentityNormalizerKind;
   /** Whether read-time event recall may JOIN on events.metadata[namespace]. */
   eventRecallIndexed: boolean;
-  /** Human-review hint: true means a value should identify at most one entity per org. */
-  uniquePerOrg: boolean;
   /** Human-readable notes for connector authors and migration reviewers. */
   notes?: string;
 }
@@ -50,30 +48,26 @@ export const IDENTITY_NAMESPACE_REGISTRY = [
     subjectKind: 'person',
     normalizer: 'email',
     eventRecallIndexed: true,
-    uniquePerOrg: true,
   },
   {
     namespace: IDENTITY.EMAIL_DOMAIN,
     subjectKind: 'person',
     normalizer: 'email_domain',
     eventRecallIndexed: false,
-    uniquePerOrg: false,
     notes:
-      "A person's email domain (the part after @). Many people share a domain, so it is not unique-per-org and is not a recall key — it only ever narrows a candidate set (e.g. everyone at company.domain). Nothing derives it automatically: a connector that wants it must declare it on an entity-link rule like any other identity.",
+      "A person's email domain (the part after @). Many people share a domain, so it is not a recall key — it only ever narrows a candidate set (e.g. everyone at company.domain). Nothing derives it automatically: a connector that wants it must declare it on an entity-link rule like any other identity.",
   },
   {
     namespace: IDENTITY.PHONE,
     subjectKind: 'person',
     normalizer: 'phone',
     eventRecallIndexed: true,
-    uniquePerOrg: true,
   },
   {
     namespace: IDENTITY.AUTH_USER_ID,
     subjectKind: 'account',
     normalizer: 'auth_user_id',
     eventRecallIndexed: true,
-    uniquePerOrg: true,
   },
 ] as const satisfies readonly IdentityNamespaceDefinition[];
 

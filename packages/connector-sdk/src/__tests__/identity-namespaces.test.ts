@@ -46,12 +46,17 @@ describe('identity namespace registry (generic only)', () => {
     expect(new Set(namespaces).size).toBe(namespaces.length);
   });
 
-  it('registers email_domain as a derived, non-recall, non-unique person namespace', () => {
+  it('does not expose unenforced per-organization uniqueness hints', () => {
+    for (const definition of IDENTITY_NAMESPACE_REGISTRY) {
+      expect(definition).not.toHaveProperty('uniquePerOrg');
+    }
+  });
+
+  it('registers email_domain as a derived, non-recall person namespace', () => {
     expect(getIdentityNamespaceDefinition(IDENTITY.EMAIL_DOMAIN)).toMatchObject({
       subjectKind: 'person',
       normalizer: 'email_domain',
       eventRecallIndexed: false,
-      uniquePerOrg: false,
     });
     expect(isEventRecallIdentityNamespace(IDENTITY.EMAIL_DOMAIN)).toBe(false);
   });

@@ -21,6 +21,10 @@
 
 import { type DbClient, getDb } from "../db/client.js";
 import { EVAL_CASE_ENTITY_TYPE_SLUG } from "../tools/constants.js";
+import {
+	patchEntityRows,
+	withEntityWriteTransaction,
+} from "../utils/entity-management.js";
 import logger from "../utils/logger.js";
 import { trialCaseKey } from "./eval-cases.js";
 import { createEvalRun } from "./eval-runs.js";
@@ -120,6 +124,33 @@ async function listActiveCases(
 	return cases;
 }
 
+/** Stamp the queued trial group without clobbering a concurrent score update. */
+async function stampSuiteTrials(
+	db: DbClient,
+	organizationId: string,
+	caseEntityId: number,
+	trials: number,
+): Promise<void> {
+	await withEntityWriteTransaction(db, async (tx) => {
+		const rows = await tx<{ metadata: Record<string, unknown> | null }>`
+      SELECT metadata
+      FROM entities
+      WHERE id = ${caseEntityId}
+        AND organization_id = ${organizationId}
+        AND deleted_at IS NULL
+      FOR UPDATE
+    `;
+		if (rows.length === 0) return;
+		await patchEntityRows({
+			tx,
+			ids: [caseEntityId],
+			patch: {
+				metadata: { ...(rows[0].metadata ?? {}), suite_trials: trials },
+			},
+		});
+	});
+}
+
 /**
  * Replay every active case `trials` times.
  *
@@ -192,16 +223,12 @@ export async function runEvalSuite(
 			// `trials` param. Positional grouping is only exact when the batch
 			// size is known: reading a trials=5 batch with the default 3 mixes one
 			// suite across both groups and reads a false regression out of it.
-			await sql`
-        UPDATE entities
-        SET metadata = jsonb_set(
-              coalesce(metadata, '{}'::jsonb),
-              '{suite_trials}',
-              ${sql.json(trials as never)}::jsonb
-            ),
-            updated_at = current_timestamp
-        WHERE id = ${evalCase.caseId}
-      `;
+			await stampSuiteTrials(
+				sql,
+				params.organizationId,
+				evalCase.caseId,
+				trials,
+			);
 		}
 	}
 

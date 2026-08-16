@@ -53,36 +53,6 @@ const ALLOWED_BYPASSES = [
     reason: "resource rename projection",
   },
 
-  // Evaluation projections.
-  {
-    file: "packages/server/src/runs/eval-cases.ts",
-    operation: "update",
-    dynamic: false,
-    fingerprint: "65e074f820a415f7",
-    reason: "judge-model projection",
-  },
-  {
-    file: "packages/server/src/runs/eval-cases.ts",
-    operation: "insert",
-    dynamic: false,
-    fingerprint: "5851d53b1d3777ee",
-    reason: "eval-case entity projection",
-  },
-  {
-    file: "packages/server/src/runs/eval-scores.ts",
-    operation: "update",
-    dynamic: false,
-    fingerprint: "b53e657432cbb0da",
-    reason: "locked rolling score projection",
-  },
-  {
-    file: "packages/server/src/runs/eval-suite.ts",
-    operation: "update",
-    dynamic: false,
-    fingerprint: "cdb38e54da5ece98",
-    reason: "suite-trials projection",
-  },
-
   // Member lifecycle projections.
   {
     file: "packages/server/src/utils/member-entity.ts",

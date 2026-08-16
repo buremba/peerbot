@@ -340,6 +340,19 @@ export interface FieldMergeInfo {
 // ============================================
 
 /**
+ * Join a caller-owned transaction or open one when the caller only has the
+ * pool. The physical row helpers below deliberately never decide transaction
+ * ownership themselves; entry points use this boundary before check-then-write
+ * projections so every helper receives a real transaction handle.
+ */
+export function withEntityWriteTransaction<T>(
+	db: DbClient,
+	write: (tx: DbClient) => Promise<T>,
+): Promise<T> {
+	return typeof db.savepoint === "function" ? write(db) : db.begin(write);
+}
+
+/**
  * Physical entity-row values accepted by the internal write kernel.
  *
  * This is deliberately below the semantic CRUD layer: it performs no access,

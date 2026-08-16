@@ -32,6 +32,7 @@ import {
   hardDeleteEntityRows,
   patchEntityRows,
   tryInsertEntityRow,
+  withEntityWriteTransaction,
 } from './entity-management';
 import logger from './logger';
 import { getValueAtPath } from './object-path';
@@ -87,24 +88,6 @@ const RULES_CACHE_TTL_MS = 60_000;
 // Per-pod caches — no cross-replica sharing.
 const rulesCache = new TtlCache<RuleMap>(RULES_CACHE_TTL_MS);
 const creatorCache = new TtlCache<string | null>(RULES_CACHE_TTL_MS);
-
-/**
- * Connector attribution is one logical entity write: match/create, identity
- * claim, aliases, traits, and provisional cleanup must commit together. A real
- * transaction handle exposes savepoint(); a pool handle must open begin().
- *
- * Consequence for callers: a write that used to be logged and skipped per item
- * (a rejected entity insert, an identity claim that trips its connection FK)
- * now rolls the batch's entity writes back and propagates. On the sync path
- * that aborts the ingest batch rather than persisting events whose attribution
- * silently half-landed.
- */
-async function withEntityWriteTransaction<T>(
-  sql: DbClient,
-  write: (tx: DbClient) => Promise<T>
-): Promise<T> {
-  return typeof sql.savepoint === 'function' ? write(sql) : sql.begin(write);
-}
 
 async function resolveOrgCreator(orgId: string): Promise<string | null> {
   return creatorCache.getOrSet(orgId, async () => {
@@ -655,6 +638,11 @@ async function applyTraits(
  * item using the normalized entity_identities index, then merges declared
  * traits onto the resolved entity. Rules are loaded from the connector
  * definition (poll/sync path).
+ *
+ * Connector attribution is one logical entity write: match/create, identity
+ * claim, aliases, traits, and provisional cleanup commit together. A rejected
+ * entity or identity write therefore rolls the batch back and propagates; the
+ * sync aborts instead of persisting events whose attribution half-landed.
  */
 export async function applyEventAttributions(
   params: {

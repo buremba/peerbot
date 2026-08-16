@@ -117,6 +117,18 @@ describe("runEvalSuite", () => {
 		});
 		expect(promoted.ok).toBe(true);
 		if (!promoted.ok) return;
+		const [before] = await sql<{ metadata: Record<string, unknown> }[]>`
+			SELECT metadata FROM entities WHERE id = ${promoted.evalCase.entityId}
+		`;
+		await sql`
+			UPDATE entities
+			SET metadata = ${sql.json({
+				...before.metadata,
+				judge_model: "test/judge",
+				recent_scores: [{ run_id: 1, score: 1 }],
+			})}
+			WHERE id = ${promoted.evalCase.entityId}
+		`;
 
 		const suite = await runEvalSuite({
 			organizationId,
@@ -130,6 +142,13 @@ describe("runEvalSuite", () => {
 		expect(suite.cases[0].runIds).toHaveLength(3);
 		expect(new Set(suite.cases[0].runIds).size).toBe(3);
 		expect(suite.skipped).toEqual([]);
+
+		const [after] = await sql<{ metadata: Record<string, unknown> }[]>`
+			SELECT metadata FROM entities WHERE id = ${promoted.evalCase.entityId}
+		`;
+		expect(after.metadata.suite_trials).toBe(3);
+		expect(after.metadata.judge_model).toBe("test/judge");
+		expect(after.metadata.recent_scores).toEqual([{ run_id: 1, score: 1 }]);
 	});
 
 	test("every trial resolves back to its case despite the suffixed key", async () => {

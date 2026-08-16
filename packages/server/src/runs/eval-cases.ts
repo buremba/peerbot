@@ -27,6 +27,12 @@
 
 import { type DbClient, getDb } from "../db/client.js";
 import { EVAL_CASE_ENTITY_TYPE_SLUG } from "../tools/constants.js";
+import {
+	hardDeleteEntityRows,
+	patchEntityRows,
+	tryInsertEntityRow,
+	withEntityWriteTransaction,
+} from "../utils/entity-management.js";
 import logger from "../utils/logger.js";
 import { resolveEntityCreator } from "../utils/resolve-entity-creator.js";
 import {
@@ -166,6 +172,22 @@ export type PromoteEvalCaseResult =
 				| "slug_unavailable";
 	  };
 
+interface PromoteEvalCaseParams {
+	sourceRunId: number;
+	caseKey: string;
+	expectation?: string | null;
+	/** Who is promoting. Falls back to an org owner/admin when absent. */
+	createdBy?: string | null;
+	/**
+	 * Org the caller is authenticated for. Required by every request-path
+	 * caller: the org is resolved from the RUN, so without this a caller who
+	 * knows (or guesses) a run id creates an `$eval_case` entity — and an
+	 * `$eval_case` entity TYPE — inside another tenant's workspace. Checking
+	 * after the fact does not help; by then the row exists.
+	 */
+	organizationId?: string;
+}
+
 /**
  * Promote a real Automation run into a reusable eval case.
  *
@@ -178,24 +200,19 @@ export type PromoteEvalCaseResult =
  * existing case rather than minting a second entity for the same question.
  */
 export async function promoteEvalCase(
-	params: {
-		sourceRunId: number;
-		caseKey: string;
-		expectation?: string | null;
-		/** Who is promoting. Falls back to an org owner/admin when absent. */
-		createdBy?: string | null;
-		/**
-		 * Org the caller is authenticated for. Required by every request-path
-		 * caller: the org is resolved from the RUN, so without this a caller who
-		 * knows (or guesses) a run id creates an `$eval_case` entity — and an
-		 * `$eval_case` entity TYPE — inside another tenant's workspace. Checking
-		 * after the fact does not help; by then the row exists.
-		 */
-		organizationId?: string;
-	},
+	params: PromoteEvalCaseParams,
 	db?: DbClient,
 ): Promise<PromoteEvalCaseResult> {
 	const sql = db ?? getDb();
+	return withEntityWriteTransaction(sql, (tx) =>
+		promoteEvalCaseInTransaction(params, tx),
+	);
+}
+
+async function promoteEvalCaseInTransaction(
+	params: PromoteEvalCaseParams,
+	sql: DbClient,
+): Promise<PromoteEvalCaseResult> {
 	const caseKey = params.caseKey.trim() || "default";
 
 	const loaded = await loadReplayableSource(params.sourceRunId, sql);
@@ -290,6 +307,12 @@ export async function promoteEvalCase(
 			{ lostEntityId: entityId, wonEntityId: winner.entityId, identifier },
 			"[evals] lost the eval-case identity race — reusing the winner",
 		);
+		// Discard only a row THIS transaction inserted. `created: false` means
+		// `insertCaseEntity` adopted a pre-existing row for the same (run, key);
+		// deleting that would destroy a case this call never wrote.
+		if (placed.created) {
+			await hardDeleteEntityRows({ tx: sql, ids: [entityId] });
+		}
 		return { ok: true, evalCase: winner, created: false };
 	}
 
@@ -335,21 +358,26 @@ export async function setEvalCaseJudgeModel(
 	db?: DbClient,
 ): Promise<void> {
 	const sql = db ?? getDb();
-	await sql`
-    UPDATE entities e
-    SET metadata = jsonb_set(
-          coalesce(e.metadata, '{}'::jsonb),
-          '{judge_model}',
-          ${sql.json(judgeModel as never)}::jsonb
-        ),
-        updated_at = current_timestamp
-    FROM entity_types et
-    WHERE e.id = ${entityId}
-      AND e.organization_id = ${organizationId}
-      AND et.id = e.entity_type_id
-      AND et.slug = ${EVAL_CASE_ENTITY_TYPE_SLUG}
-      AND e.deleted_at IS NULL
-  `;
+	await withEntityWriteTransaction(sql, async (tx) => {
+		const rows = await tx<{ metadata: Record<string, unknown> | null }>`
+      SELECT e.metadata
+      FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE e.id = ${entityId}
+        AND e.organization_id = ${organizationId}
+        AND et.slug = ${EVAL_CASE_ENTITY_TYPE_SLUG}
+        AND e.deleted_at IS NULL
+      FOR UPDATE OF e
+    `;
+		if (rows.length === 0) return;
+		await patchEntityRows({
+			tx,
+			ids: [entityId],
+			patch: {
+				metadata: { ...(rows[0].metadata ?? {}), judge_model: judgeModel },
+			},
+		});
+	});
 }
 
 /**
@@ -434,20 +462,19 @@ async function insertCaseEntity(params: {
 	for (let attempt = 1; attempt <= SLUG_DISAMBIGUATION_ATTEMPTS; attempt++) {
 		const slug =
 			attempt === 1 ? params.baseSlug : `${params.baseSlug}-${attempt}`;
-		const inserted = (await sql`
-      INSERT INTO entities (
-        organization_id, entity_type_id, name, slug, metadata,
-        created_by, created_at, updated_at
-      ) VALUES (
-        ${params.organizationId}, ${params.entityTypeId}, ${params.name}, ${slug},
-        ${sql.json(params.metadata as never)}, ${params.createdBy},
-        current_timestamp, current_timestamp
-      )
-      ON CONFLICT DO NOTHING
-      RETURNING id
-    `) as unknown as Array<{ id: number | string }>;
-		if (inserted.length > 0) {
-			return { entityId: Number(inserted[0].id), created: true };
+		const inserted = await tryInsertEntityRow({
+			tx: sql,
+			row: {
+				organizationId: params.organizationId,
+				entityTypeId: params.entityTypeId,
+				name: params.name,
+				slug,
+				metadata: params.metadata,
+				createdBy: params.createdBy,
+			},
+		});
+		if (inserted) {
+			return { entityId: Number(inserted.id), created: true };
 		}
 
 		// Soft-deleted rows still hold the slug (the index is not partial), so look

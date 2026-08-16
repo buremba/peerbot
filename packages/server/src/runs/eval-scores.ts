@@ -38,6 +38,7 @@ import {
 	gatewayCompletion,
 	resolveCompletionTarget,
 } from "../gateway/inference/gateway-completion.js";
+import { patchEntityRows } from "../utils/entity-management.js";
 import { insertEvent } from "../utils/insert-event.js";
 import logger from "../utils/logger.js";
 import { resolveEntityCreator } from "../utils/resolve-entity-creator.js";
@@ -584,8 +585,13 @@ async function pushCaseScore(
 	caseEntityId: number,
 	entry: CaseScoreEntry,
 ): Promise<void> {
+	// Live-only, matching `patchEntityRows`: a deleted case would otherwise be
+	// read, merged and then silently not written by the kernel's own filter.
 	const rows = (await tx`
-    SELECT metadata FROM entities WHERE id = ${caseEntityId} FOR UPDATE
+    SELECT metadata
+    FROM entities
+    WHERE id = ${caseEntityId} AND deleted_at IS NULL
+    FOR UPDATE
   `) as unknown as Array<{ metadata: Record<string, unknown> | null }>;
 	if (rows.length === 0) return;
 
@@ -604,12 +610,11 @@ async function pushCaseScore(
 		.sort((a, b) => Number(b.run_id) - Number(a.run_id))
 		.slice(0, CASE_SCORE_WINDOW);
 
-	await tx`
-    UPDATE entities
-    SET metadata = ${tx.json({ ...metadata, recent_scores: next } as never)},
-        updated_at = current_timestamp
-    WHERE id = ${caseEntityId}
-  `;
+	await patchEntityRows({
+		tx,
+		ids: [caseEntityId],
+		patch: { metadata: { ...metadata, recent_scores: next } },
+	});
 }
 
 /**

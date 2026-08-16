@@ -51,7 +51,6 @@ import {
   executeTool,
   extractAuthContext,
   isSoftErrorResult,
-  toToolContext,
 } from './tools/execute';
 import { LOBU_INTERACTION_RESOURCE_URI } from './tools/mcp_app';
 import { getMcpResultMeta } from './tools/mcp-result-meta';
@@ -59,10 +58,8 @@ import { toMcpPublicSdkScriptResult } from './tools/sdk_run';
 import { getMcpTools, getTool, isAuthorizationReadOnly } from './tools/registry';
 import { validateToolResult } from './tools/validate-args';
 import { readMcpAppBundle, renderMcpAppTemplate } from './utils/mcp-app-bundle';
-import logger from './utils/logger';
 import { resolvePublicOrigin } from './utils/public-origin';
 import { buildWorkspaceInstructions } from './utils/workspace-instructions';
-import { storeMcpAppResultSnapshot } from './mcp-app-result-snapshots';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -123,6 +120,10 @@ const MCP_APP_RESOURCE_ALIASES: ReadonlyMap<
     'ui://lobu/interaction/v12.html',
     { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
   ],
+  [
+    'ui://lobu/interaction/v13.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
+  ],
 ]);
 // ---------------------------------------------------------------------------
 // Session store
@@ -159,14 +160,6 @@ function approvalCapabilityFromMeta(value: unknown): string | null {
   if (typeof token !== 'string') return null;
   const trimmed = token.trim();
   return trimmed && trimmed.length <= 4_096 ? trimmed : null;
-}
-
-function snapshotCapabilityFromMeta(value: unknown): string | null {
-  if (typeof value !== 'object' || value === null) return null;
-  const token = (value as Record<string, unknown>)['lobu/mcp-app-snapshot-capability'];
-  if (typeof token !== 'string') return null;
-  const trimmed = token.trim();
-  return trimmed && trimmed.length <= 512 ? trimmed : null;
 }
 
 // Periodic cleanup of stale IN-MEMORY sessions. This must stay as a per-pod
@@ -235,7 +228,7 @@ const mcpRequestFormat = new AsyncLocalStorage<{ rawJson: boolean }>();
  * MCP Apps UI resources (interactive iframe payloads a host renders in a
  * sandboxed iframe). Keyed by `ui://` uri → the built bundle's app dir under
  * owletto's `dist-mcp-apps/`. Served over `resources/read` + the asset route;
- * the decoupled `render_lobu_view` tool links to the resource and supplies a
+ * a tool that declares the resource (`get_approval`, `save_memory`) supplies a
  * server-authored LobuViewV1 in `structuredContent`. Adding an app = one entry
  * plus its owletto `src/mcp-apps/<dir>` build — no gateway change.
  */
@@ -477,13 +470,12 @@ function createServerForContext(
       mcpAppsSupported,
       mcpConversationId: hostConversationIdFromMeta(request.params._meta),
       mcpAppApprovalCapability: approvalCapabilityFromMeta(request.params._meta),
-      mcpAppSnapshotCapability: snapshotCapabilityFromMeta(request.params._meta),
     };
     const tool = getTool(name);
     // Every App-facing result carries the viewer's org role because the app
     // gates its Debug (raw JSON) disclosure on owner/admin. Data and action
     // tools are deliberately headless; the role therefore rides only on the
-    // explicit render tool and app-only helpers that declare UI metadata.
+    // tools that declare UI metadata (save_memory and the approval pair).
     //
     // The key must be PRESENT on every such result, carrying an explicit null
     // for a non-member reading a public workspace: the app falls back to the
@@ -500,13 +492,6 @@ function createServerForContext(
     const uiMemberRoleMeta: { 'lobu/member-role': string | null } | undefined = tool?.mcpMeta?.ui
       ? { 'lobu/member-role': callAuthCtx.memberRole }
       : undefined;
-    const uiMeta = tool?.mcpMeta?.ui;
-    const rendersMcpApp =
-      uiMeta !== null &&
-      typeof uiMeta === 'object' &&
-      'resourceUri' in uiMeta &&
-      typeof uiMeta.resourceUri === 'string';
-
     // Regular tool execution
     try {
       const result = await executeTool(name, args ?? {}, env, callAuthCtx);
@@ -558,34 +543,10 @@ function createServerForContext(
       if (tool?.outputSchema && result && typeof result === 'object') {
         const structured = validateToolResult(tool.outputSchema, publicResult);
         if (structured !== null) {
-          let snapshotCapability: string | null = null;
-          if (tool.audit !== false && rendersMcpApp) {
-            try {
-              const capability = randomUUID();
-              const stored = await storeMcpAppResultSnapshot({
-                ctx: toToolContext(callAuthCtx),
-                toolCallId: capability,
-                bindingCapability: capability,
-                toolName: name,
-                data: structured as Record<string, unknown>,
-              });
-              if (stored) snapshotCapability = capability;
-            } catch (snapshotError) {
-              logger.warn(
-                { err: snapshotError },
-                '[mcp-app] result snapshot write failed',
-              );
-            }
-          }
           return {
             content: [{ type: 'text' as const, text }],
             structuredContent: structured as Record<string, unknown>,
-            _meta: {
-              ...resultMeta,
-              ...(snapshotCapability
-                ? { 'lobu/mcp-app-snapshot-capability': snapshotCapability }
-                : {}),
-            },
+            _meta: resultMeta,
             ...(softError ? { isError: true } : {}),
           };
         }

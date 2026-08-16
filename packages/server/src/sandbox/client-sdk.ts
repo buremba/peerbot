@@ -182,7 +182,7 @@ export function buildClientSDK(
 	const allowCrossOrg = opts?.allowCrossOrg ?? ctx.allowCrossOrg ?? false;
 	// ClientSDK calls are headless even when the outer MCP session supports
 	// Apps. An inline result card belongs to the directly advertised tool call
-	// that produced it (save_memory, render_lobu_view, …); a nested
+	// that produced it (save_memory, get_approval, …); a nested
 	// client.knowledge.save inside run_sdk has no card of its own, so it must
 	// keep the compact SDK receipt instead of echoing the saved payload into a
 	// headless result.

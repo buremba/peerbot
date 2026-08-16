@@ -65,7 +65,7 @@ describe('MCP query_sdk / run_sdk tool surface', () => {
       query_sql: [false, false, false],
       save_memory: [false, false, false],
       run_sdk: [false, true, true],
-      render_lobu_view: [false, false, false],
+      get_approval: [false, false, false],
     } as const;
 
     for (const [toolName, [readOnlyHint, openWorldHint, destructiveHint]] of Object.entries(
@@ -84,7 +84,7 @@ describe('MCP query_sdk / run_sdk tool surface', () => {
       'search_sdk',
       'query_sdk',
       'query_sql',
-      'render_lobu_view',
+      'get_approval',
     ]) {
       expect(byName.get(name)?.annotations?.idempotentHint, `${name}.idempotentHint`).toBe(
         false

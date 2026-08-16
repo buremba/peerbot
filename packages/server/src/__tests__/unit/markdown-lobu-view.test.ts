@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import { formatToolResult } from '../../formatting/markdown-formatter';
 
-describe('render_lobu_view text fallback', () => {
+describe('get_approval text fallback', () => {
   it('renders model-selected text literally instead of activating injected markdown', () => {
-    const markdown = formatToolResult('render_lobu_view', {
+    const markdown = formatToolResult('get_approval', {
       version: 1,
       title: 'Review [this](https://evil.example)',
       blocks: [
@@ -37,7 +37,7 @@ describe('render_lobu_view text fallback', () => {
   });
 
   it('uses a longer code fence when the code contains backticks', () => {
-    const markdown = formatToolResult('render_lobu_view', {
+    const markdown = formatToolResult('get_approval', {
       version: 1,
       blocks: [{ type: 'code', value: 'before\n```\nafter' }],
       actions: [],

@@ -14,6 +14,13 @@ export type ToolAccessLevel = "read" | "write" | "admin";
 
 export const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 	save_memory: null,
+	// App-only approval decisions are already restricted to one encrypted,
+	// short-lived capability bound to the OAuth user, client, MCP session, org,
+	// run, and current approval event. The resolver then reuses the canonical
+	// human + admin-or-run-owner checks. Requiring mcp:admin at this outer tool
+	// boundary would make the card unusable for normal Apps clients, whose
+	// approval grant is intentionally mcp:write.
+	resolve_approval: null,
 	// `run_sdk` reaches admin handlers inside the script; per-call gates fire
 	// on each SDK method, so the entry-point check is just write-tier.
 	run_sdk: null,
@@ -173,7 +180,6 @@ export const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 export const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
 	resolve_path: null,
 	search_memory: null,
-	render_lobu_view: null,
 	// SDK method discovery — safe to expose; surfaces no data.
 	search_sdk: null,
 	// Internal read-paths — kept for tests that exercise public-readability

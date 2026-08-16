@@ -1,7 +1,9 @@
 /**
  * The entity-write funnel guard is only useful if it rejects both obvious SQL
  * and dynamically selected table names. These probes run in the real scanned
- * tree so the test exercises the same baseline allowlist as CI.
+ * tree so the test exercises the same files as CI. The committed allowance
+ * list is empty, so allowance handling is probed against a patched copy of the
+ * guard rather than against a production entry.
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
@@ -14,9 +16,9 @@ const PROBE = join(
   REPO_ROOT,
   "packages/server/src/utils/entity-write-funnel-probe.ts"
 );
-const STALE_GUARD_PROBE = join(
+const GUARD_COPY = join(
   REPO_ROOT,
-  "scripts/check-entity-write-funnel-stale-probe.mjs"
+  "scripts/check-entity-write-funnel-allowance-probe.mjs"
 );
 const OUTSIDE_SERVER_PROBE = join(
   REPO_ROOT,
@@ -31,16 +33,48 @@ function runGuard() {
   });
 }
 
+/** Run a copy of the guard whose allowance list holds exactly `allowance`. */
+function runGuardWithAllowance(allowance: Record<string, unknown>) {
+  writeFileSync(
+    GUARD_COPY,
+    readFileSync(GUARD, "utf8").replace(
+      "const ALLOWED_BYPASSES = [",
+      `const ALLOWED_BYPASSES = [\n  ${JSON.stringify(allowance)},`
+    )
+  );
+  return Bun.spawnSync(["bun", GUARD_COPY], {
+    cwd: REPO_ROOT,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+}
+
+/** The bypasses the guard currently sees, via its own audit output. */
+function guardInventory(): Record<string, unknown>[] {
+  const result = Bun.spawnSync(["bun", GUARD, "--print-inventory"], {
+    cwd: REPO_ROOT,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(result.exitCode).toBe(0);
+  return result.stdout
+    .toString()
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line));
+}
+
 afterEach(() => {
   rmSync(PROBE, { force: true });
-  rmSync(STALE_GUARD_PROBE, { force: true });
+  rmSync(GUARD_COPY, { force: true });
   rmSync(OUTSIDE_SERVER_PROBE, { force: true });
 });
 
 describe("check-entity-write-funnel", () => {
-  it("passes on the pinned production baseline", () => {
+  it("passes on the production tree with an empty allowance list", () => {
     const result = runGuard();
     expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain("0 pinned bypasses");
   });
 
   it("rejects a new direct entity write", () => {
@@ -293,38 +327,55 @@ describe("check-entity-write-funnel", () => {
     );
   });
 
-  it("rejects a stale bypass allowance", () => {
-    const guardSource = readFileSync(GUARD, "utf8");
+  it("suppresses exactly the bypass its allowance pins", () => {
     writeFileSync(
-      STALE_GUARD_PROBE,
-      guardSource.replace("1280c3ed0fdded46", "0000000000000000")
+      PROBE,
+      `export async function probe(sql: any) {
+  await sql\`UPDATE entities SET name = \${"new"} WHERE id = \${1}\`;
+}
+`
     );
+    expect(runGuard().exitCode).toBe(1);
 
-    const result = Bun.spawnSync(["bun", STALE_GUARD_PROBE], {
-      cwd: REPO_ROOT,
-      stdout: "pipe",
-      stderr: "pipe",
+    const pinned = guardInventory().find((item) =>
+      String(item.file).endsWith("entity-write-funnel-probe.ts")
+    );
+    expect(pinned).toBeDefined();
+
+    const result = runGuardWithAllowance({
+      file: pinned?.file,
+      operation: pinned?.operation,
+      dynamic: pinned?.dynamic,
+      fingerprint: pinned?.fingerprint,
+      reason: "matching allowance probe",
+    });
+    expect(result.stderr.toString()).toBe("");
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("rejects a stale bypass allowance", () => {
+    const result = runGuardWithAllowance({
+      file: "packages/server/src/utils/no-such-entity-writer.ts",
+      operation: "update",
+      dynamic: false,
+      fingerprint: "0000000000000000",
+      reason: "stale allowance probe",
     });
     expect(result.exitCode).toBe(1);
     expect(result.stderr.toString()).toContain("stale allowance(s)");
   });
 
   it("reports the count for a duplicated stale allowance", () => {
-    const guardSource = readFileSync(GUARD, "utf8");
-    writeFileSync(
-      STALE_GUARD_PROBE,
-      guardSource.replace("6c2d50be50c02a93", "0000000000000000")
-    );
-
-    const result = Bun.spawnSync(["bun", STALE_GUARD_PROBE], {
-      cwd: REPO_ROOT,
-      stdout: "pipe",
-      stderr: "pipe",
+    const result = runGuardWithAllowance({
+      file: "packages/server/src/utils/no-such-entity-writer.ts",
+      operation: "update",
+      dynamic: false,
+      fingerprint: "0000000000000000",
+      count: 2,
+      reason: "stale allowance probe",
     });
     expect(result.exitCode).toBe(1);
-    expect(result.stderr.toString()).toContain(
-      "x2 [set or rollback default entity view template]"
-    );
+    expect(result.stderr.toString()).toContain("x2 [stale allowance probe]");
   });
 
   it("does not govern test fixtures", () => {

@@ -41,6 +41,10 @@ import {
 import { getDb, pgBigintArray, pgTextArray } from '../db/client.js';
 import { runtimeConnectionIdToSlug } from '../lobu/stores/connections-projection.js';
 import { resolveEventAttributionsForItems } from '../utils/entity-link-upsert.js';
+import {
+  patchEntityRows,
+  withEntityWriteTransaction,
+} from '../utils/entity-management.js';
 import { aclConnectionIdSql } from './acl-observability.js';
 import { ensureResourceEntityType } from './acl-resource-type.js';
 
@@ -450,20 +454,36 @@ export async function buildAccessGraph(params: {
   // name on auto-CREATE, so a name that wasn't available at first graph (or a
   // later channel/repo RENAME) would otherwise stick to the stale value / the
   // raw id. Refresh from the source-provided name here. Scoped to the resources
-  // in this build; idempotent (the `name <>` guard no-ops when unchanged).
+  // in this build; idempotent (the locked selector skips unchanged names).
+  const resourceNames = new Map<number, string>();
   for (let i = 0; i < resources.length; i++) {
     const id = resourceEntityIdByIndex.get(i);
     const name = resources[i].name;
     if (id && name) {
-      await sql`
-        UPDATE entities
-        SET name = ${name}, updated_at = current_timestamp
-        WHERE id = ${id}
-          AND organization_id = ${organizationId}
-          AND name <> ${name}
-          AND deleted_at IS NULL
-      `;
+      resourceNames.set(id, name);
     }
+  }
+  if (resourceNames.size > 0) {
+    await withEntityWriteTransaction(sql, async (tx) => {
+      // `ORDER BY id` before FOR UPDATE takes the row locks in id order, so
+      // overlapping graph builds over the same resources cannot deadlock.
+      const lockedRows = await tx<{ id: number; name: string }>`
+        SELECT id, name
+        FROM entities
+        WHERE id = ANY(${pgBigintArray([...resourceNames.keys()])}::bigint[])
+          AND organization_id = ${organizationId}
+          AND deleted_at IS NULL
+        ORDER BY id
+        FOR UPDATE
+      `;
+      for (const row of lockedRows) {
+        const id = Number(row.id);
+        const name = resourceNames.get(id);
+        if (name !== undefined && row.name !== name) {
+          await patchEntityRows({ tx, ids: [id], patch: { name } });
+        }
+      }
+    });
   }
 
   const memberEntityIds = new Set<number>();

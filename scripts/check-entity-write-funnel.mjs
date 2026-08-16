@@ -2,11 +2,10 @@
 /**
  * Entity-write funnel gate.
  *
- * Production entity-row mutations belong in entity-management.ts. The
- * remaining historical bypasses are pinned below by a whitespace-normalized
- * source fingerprint. The list is intentionally shrinking: removing or
- * changing a bypass makes this gate fail until the allowance is deleted, and
- * adding a bypass fails because it has no allowance.
+ * Production entity-row mutations belong in entity-management.ts, and as of
+ * the member/resource/view-template migrations every one of them is there:
+ * the allowance list below is empty, so any entity write outside the funnel
+ * fails this gate.
  *
  * A dynamically selected mutation target is treated conservatively because a
  * helper such as `parentTable("entity")` can hide an entity write from a
@@ -39,60 +38,12 @@ const SKIPPED_DIRS = new Set([
 ]);
 
 /**
- * Temporary production bypasses, frozen from origin/main on 2026-08-15.
- * Every entry must continue to match exactly one mutation. Delete entries as
- * callers move into the funnel; never add one merely to make CI green.
+ * Temporary production bypasses, pinned by whitespace-normalized source
+ * fingerprint. Empty — the historical bypasses have all moved into the funnel,
+ * and a stale entry fails this gate just as a new bypass does. An entry must
+ * match exactly one mutation; never add one merely to make CI green.
  */
-const ALLOWED_BYPASSES = [
-  // Access/resource projection.
-  {
-    file: "packages/server/src/authz/access-graph.ts",
-    operation: "update",
-    dynamic: false,
-    fingerprint: "1280c3ed0fdded46",
-    reason: "resource rename projection",
-  },
-
-  // Member lifecycle projections.
-  {
-    file: "packages/server/src/utils/member-entity.ts",
-    operation: "update",
-    dynamic: false,
-    fingerprint: "eda8f87e28c0f602",
-    reason: "member status projection",
-  },
-  {
-    file: "packages/server/src/utils/member-entity.ts",
-    operation: "update",
-    dynamic: false,
-    fingerprint: "1d4a7505da557ec9",
-    reason: "member access projection",
-  },
-  {
-    file: "packages/server/src/utils/member-entity.ts",
-    operation: "update",
-    dynamic: false,
-    fingerprint: "ea1d914a77903682",
-    reason: "member soft delete",
-  },
-
-  // Per-entity view-template pointer, hidden behind parentTable(resourceType).
-  {
-    file: "packages/server/src/tools/admin/manage_view_templates.ts",
-    operation: "update",
-    dynamic: true,
-    fingerprint: "6c2d50be50c02a93",
-    count: 2,
-    reason: "set or rollback default entity view template",
-  },
-  {
-    file: "packages/server/src/tools/admin/manage_view_templates.ts",
-    operation: "update",
-    dynamic: true,
-    fingerprint: "e18b52b5f5dfdd8a",
-    reason: "clear default entity view template",
-  },
-];
+const ALLOWED_BYPASSES = [];
 
 const STATIC_IDENTIFIER = '(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$]*)';
 const ENTITY_TARGET = String.raw`(?:(?:${STATIC_IDENTIFIER}\s*\.\s*)?"?entities"?)`;
@@ -436,5 +387,5 @@ if (violations.length > 0 || staleAllowances.length > 0) {
 
 console.log(
   `✓ entity-write funnel gate: ${files.length} runtime package source files scanned; ` +
-    `${bypasses.length} pinned bypasses, zero new bypasses`
+    `${bypasses.length} pinned bypasses, zero entity writes outside ${CANONICAL_FUNNEL}`
 );

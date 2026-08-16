@@ -241,6 +241,30 @@ describe('slack channel graph', () => {
     expect(await memberOfEdges(org.id)).toHaveLength(2);
   });
 
+  it('refreshes a renamed channel on the existing resource entity', async () => {
+    const { org } = await seedOrg('Channel rename org');
+    const base = {
+      organizationId: org.id,
+      connectionId: 'conn-acme',
+      teamId: TEAM,
+    };
+    const first = await buildSlackChannelGraph({
+      ...base,
+      channels: [{ channelId: 'C01ENG', name: 'eng', memberSlackUserIds: [] }],
+    });
+    const resourceId = first.resourceEntityIds[slackChannelKey(TEAM, 'C01ENG')];
+
+    const second = await buildSlackChannelGraph({
+      ...base,
+      channels: [{ channelId: 'C01ENG', name: 'engineering', memberSlackUserIds: [] }],
+    });
+
+    expect(second.resourceEntityIds[slackChannelKey(TEAM, 'C01ENG')]).toBe(resourceId);
+    expect(await entitiesOfType(org.id, '$resource')).toEqual([
+      { id: resourceId, name: 'engineering' },
+    ]);
+  });
+
   it('revokes a departed member — re-sync without Alice soft-deletes her edge', async () => {
     const { org } = await seedOrg('Revoke Org');
     const base = { organizationId: org.id, connectionId: 'conn-acme', teamId: TEAM };

@@ -7,7 +7,12 @@
  */
 
 import { getDb } from '../db/client';
-import { createEntity, type EntityData } from './entity-management';
+import {
+  createEntity,
+  type EntityData,
+  patchEntityRows,
+  withEntityWriteTransaction,
+} from './entity-management';
 import { ensureMemberEntityType, resolveMemberSchemaFieldsFromSchema } from './member-entity-type';
 
 /**
@@ -155,18 +160,36 @@ export async function updateMemberEntityStatus(
   await ensureMemberEntityType(organizationId);
   const { emailField } = await resolveMemberSchemaFields(organizationId);
   const sql = getDb();
-  await sql`
-    UPDATE entities
-    SET metadata = jsonb_set(metadata, '{status}', to_jsonb(${status}::text)),
-        updated_at = current_timestamp
-    WHERE entity_type_id = (
-        SELECT id FROM entity_types
-        WHERE slug = '$member' AND organization_id = ${organizationId} AND deleted_at IS NULL
-      )
-      AND organization_id = ${organizationId}
-      AND metadata->>${emailField} = ${email}
-      AND deleted_at IS NULL
-  `;
+  await withEntityWriteTransaction(sql, async (tx) => {
+    // `OF e` keeps the lock on the member rows: a bare FOR UPDATE would also
+    // lock the org's shared `$member` entity_types row, serializing unrelated
+    // member writes against each other and against ensureMemberEntityType.
+    const rows = await tx.unsafe<{ id: number; metadata: Record<string, unknown> | null }>(
+      `SELECT e.id, e.metadata
+       FROM entities e
+       JOIN entity_types et ON et.id = e.entity_type_id
+       WHERE et.slug = '$member'
+         AND et.organization_id = $1
+         AND et.deleted_at IS NULL
+         AND e.organization_id = $1
+         AND e.metadata->>$2 = $3
+         AND e.deleted_at IS NULL
+       ORDER BY e.id
+       FOR UPDATE OF e`,
+      [organizationId, emailField, email]
+    );
+
+    // Duplicate live members are legacy-invalid but the old status projection
+    // updated all of them. Preserve that repair-friendly result while each
+    // row's unrelated metadata survives the full-row kernel patch.
+    for (const row of rows) {
+      await patchEntityRows({
+        tx,
+        ids: [Number(row.id)],
+        patch: { metadata: { ...(row.metadata ?? {}), status } },
+      });
+    }
+  });
 }
 
 export async function updateMemberEntityAccess(
@@ -177,29 +200,34 @@ export async function updateMemberEntityAccess(
   await ensureMemberEntityType(organizationId);
   const { emailField } = await resolveMemberSchemaFields(organizationId);
   const sql = getDb();
-  const rows = await sql.unsafe<{ id: number; metadata: Record<string, unknown> }>(
-    `SELECT e.id, e.metadata
-     FROM entities e
-     JOIN entity_types et ON et.id = e.entity_type_id
-     WHERE et.slug = '$member'
-       AND e.organization_id = $1
-       AND e.metadata->>$2 = $3
-       AND e.deleted_at IS NULL
-     LIMIT 1`,
-    [organizationId, emailField, email]
-  );
-  if (rows.length === 0) return;
+  await withEntityWriteTransaction(sql, async (tx) => {
+    const rows = await tx.unsafe<{ id: number; metadata: Record<string, unknown> | null }>(
+      `SELECT e.id, e.metadata
+       FROM entities e
+       JOIN entity_types et ON et.id = e.entity_type_id
+       WHERE et.slug = '$member'
+         AND et.organization_id = $1
+         AND et.deleted_at IS NULL
+         AND e.organization_id = $1
+         AND e.metadata->>$2 = $3
+         AND e.deleted_at IS NULL
+       ORDER BY e.id
+       LIMIT 1
+       FOR UPDATE OF e`,
+      [organizationId, emailField, email]
+    );
+    if (rows.length === 0) return;
 
-  const metadata = { ...(rows[0].metadata ?? {}) } as Record<string, unknown>;
-  if (updates.role !== undefined) metadata.role = updates.role;
-  if (updates.status !== undefined) metadata.status = updates.status;
+    const metadata = { ...(rows[0].metadata ?? {}) } as Record<string, unknown>;
+    if (updates.role !== undefined) metadata.role = updates.role;
+    if (updates.status !== undefined) metadata.status = updates.status;
 
-  await sql`
-    UPDATE entities
-    SET metadata = ${sql.json(metadata)},
-        updated_at = current_timestamp
-    WHERE id = ${rows[0].id}
-  `;
+    await patchEntityRows({
+      tx,
+      ids: [Number(rows[0].id)],
+      patch: { metadata },
+    });
+  });
 }
 
 /**
@@ -209,16 +237,25 @@ export async function deleteMemberEntity(organizationId: string, email: string):
   await ensureMemberEntityType(organizationId);
   const { emailField } = await resolveMemberSchemaFields(organizationId);
   const sql = getDb();
-  await sql.unsafe(
-    `UPDATE entities
-    SET deleted_at = current_timestamp, updated_at = current_timestamp
-    WHERE entity_type_id = (
-        SELECT id FROM entity_types
-        WHERE slug = '$member' AND organization_id = $1 AND deleted_at IS NULL
-      )
-      AND organization_id = $1
-      AND metadata->>$2 = $3
-      AND deleted_at IS NULL`,
-    [organizationId, emailField, email]
-  );
+  await withEntityWriteTransaction(sql, async (tx) => {
+    const rows = await tx.unsafe<{ id: number }>(
+      `SELECT e.id
+       FROM entities e
+       JOIN entity_types et ON et.id = e.entity_type_id
+       WHERE et.slug = '$member'
+         AND et.organization_id = $1
+         AND et.deleted_at IS NULL
+         AND e.organization_id = $1
+         AND e.metadata->>$2 = $3
+         AND e.deleted_at IS NULL
+       ORDER BY e.id
+       FOR UPDATE OF e`,
+      [organizationId, emailField, email]
+    );
+    await patchEntityRows({
+      tx,
+      ids: rows.map((row) => Number(row.id)),
+      patch: { softDelete: true },
+    });
+  });
 }

@@ -5,7 +5,7 @@
  * from the config (see packages/cli/.../apply/diff.ts computeDiff({ prune })).
  * This suite verifies the destructive half the CLI depends on, against a real
  * Postgres:
- *   - definition deletes work (entity/relationship type, watcher);
+ *   - definition deletes work (entity/relationship type, automation);
  *   - an entity-type / relationship-type delete REFUSES while instances exist,
  *     so prune can never cascade into data (data is exempt).
  */
@@ -164,22 +164,22 @@ describe('prune (server gate)', () => {
       expect(foreign?.name).toBe('Foreign Only');
     });
 
-    it('deletes a watcher', async () => {
+    it('deletes an automation', async () => {
       const agent = await createTestAgent({ organizationId: orgId });
-      const created = (await owner.behaviors.create({
-        slug: 'prune-watcher',
+      const created = (await owner.automations.create({
+        slug: 'prune-automation',
         agent_id: agent.agentId,
         prompt: 'Watch for things.',
-      })) as { behavior_id?: string };
-      expect(created.behavior_id).toBeTruthy();
+      })) as { automation_id?: string };
+      expect(created.automation_id).toBeTruthy();
 
-      await owner.behaviors.delete({
-        behavior_ids: [created.behavior_id as string],
+      await owner.automations.delete({
+        automation_ids: [created.automation_id as string],
       });
-      const list = (await owner.behaviors.list({})) as {
-        behaviors?: Array<{ slug: string }>;
+      const list = (await owner.automations.list({})) as {
+        automations?: Array<{ slug: string }>;
       };
-      expect((list.watchers ?? []).some((w) => w.slug === 'prune-watcher')).toBe(false);
+      expect((list.automations ?? []).some((w) => w.slug === 'prune-automation')).toBe(false);
     });
 
     it('re-creates a relationship type with the same slug after delete (prune → re-add)', async () => {

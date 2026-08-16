@@ -124,8 +124,8 @@ function initializeMetrics() {
     "counter"
   );
 
-  // Scheduler + watcher-automation health. These back the prod alerting rules
-  // (charts/lobu PrometheusRule): a silent scheduler / failing watcher tick is
+  // Scheduler + Automation health. These back the prod alerting rules
+  // (charts/lobu PrometheusRule): a silent scheduler / failing Automation tick is
   // exactly the failure mode that went undetected for 12 days (lobu#1046).
   // Per-pod in-memory counters are the correct Prometheus model — each pod's
   // /metrics is scraped and summed across pods; counter resets on restart are
@@ -136,18 +136,18 @@ function initializeMetrics() {
     "counter"
   );
   registerMetric(
-    "lobu_watcher_automation_phase_failures_total",
-    "watcher-automation phases that threw, by phase (reset|reconcile|materialize|dispatch)",
+    "lobu_automation_phase_failures_total",
+    "automation phases that threw, by phase (reset|reconcile|materialize|dispatch)",
     "counter"
   );
   registerMetric(
-    "lobu_watcher_runs_created_total",
-    "Watcher runs materialized (enqueued) by the scheduler",
+    "lobu_automation_runs_created_total",
+    "Automation runs materialized (enqueued) by the scheduler",
     "counter"
   );
   registerMetric(
-    "lobu_watchers_unrunnable",
-    "Due active watchers skipped this tick for lacking a runnable executor (no device pin, no agent row)",
+    "lobu_automations_unrunnable",
+    "Due active automations skipped this tick for lacking a runnable executor (no device pin, no agent row)",
     "gauge"
   );
 

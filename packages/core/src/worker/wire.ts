@@ -79,7 +79,7 @@ export interface MessagePayload {
   agentId: string;
   /**
    * Owning organization of the agent. Plumbed through so child queries
-   * (grants, user-agents, Behavior subscriptions, secrets) can scope by org —
+   * (grants, user-agents, Automation subscriptions, secrets) can scope by org —
    * agent IDs are per-org-unique, so `agent_id = ?` alone is ambiguous.
    */
   organizationId: string;
@@ -95,7 +95,7 @@ export interface MessagePayload {
 
   /**
    * Ephemeral context prepended to the user prompt for this turn only.
-   * Not stored in the transcript snapshot — use for watcher preprompts, etc.
+   * Not stored in the transcript snapshot — use for automation preprompts, etc.
    */
   ephemeralContext?: string;
 

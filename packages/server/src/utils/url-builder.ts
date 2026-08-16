@@ -79,28 +79,28 @@ export async function buildAgentSettingsUrl(
 }
 
 /**
- * Build a Behavior's edit URL —
- * `<webOrigin>/<orgSlug>/agents/<agentId>/behaviors/<behaviorId>` — the
- * review target for a pending `manage_behaviors` update. Mirrors
- * {@link buildAgentSettingsUrl}: `?run_id=<id>` prefills the Behavior edit form
+ * Build an Automation's edit URL —
+ * `<webOrigin>/<orgSlug>/automations/<automationId>` — the
+ * review target for a pending `manage_automations` update. Mirrors
+ * {@link buildAgentSettingsUrl}: `?run_id=<id>` prefills the Automation edit form
  * with the proposed change for Approve/Reject.
  *
- * Behaviors live in the workspace-level Behaviors section (agent-owned and
+ * Automations live in the workspace-level Automations section (agent-owned and
  * agentless alike), so no agent id is needed. Returns null when any required
  * piece is missing; the producer falls back to the run permalink.
  */
-export async function buildBehaviorSettingsUrl(
+export async function buildAutomationSettingsUrl(
   publicGatewayUrl: string | undefined,
   organizationId: string | undefined,
-  behaviorId: string | number | undefined,
+  automationId: string | number | undefined,
   opts?: { runId?: number }
 ): Promise<string | null> {
-  if (!publicGatewayUrl || !organizationId || behaviorId == null) {
+  if (!publicGatewayUrl || !organizationId || automationId == null) {
     return null;
   }
   const slug = await getOrganizationSlug(organizationId).catch(() => null);
   if (!slug) return null;
-  const base = buildBehaviorUrl(slug, behaviorId, publicGatewayUrl);
+  const base = buildAutomationUrl(slug, automationId, publicGatewayUrl);
   return opts?.runId ? `${base}?run_id=${opts.runId}` : base;
 }
 
@@ -317,14 +317,14 @@ export function buildEntityUrl(info: EntityInfo, baseUrl?: string): string {
   return withBaseUrl(normalizeBaseUrl(baseUrl), `/${info.ownerSlug}/${segments.join('/')}`);
 }
 
-/** Build the canonical Behavior detail URL (workspace-level Behaviors section). */
-export function buildBehaviorUrl(
+/** Build the canonical Automation detail URL (workspace-level Automations section). */
+export function buildAutomationUrl(
   ownerSlug: string,
-  behaviorId: string | number,
+  automationId: string | number,
   baseUrl?: string
 ): string {
   const webOrigin = normalizeBaseUrl(baseUrl)?.replace(/\/lobu$/, '');
-  const path = `/${encodeURIComponent(ownerSlug)}/behaviors/${encodeURIComponent(String(behaviorId))}`;
+  const path = `/${encodeURIComponent(ownerSlug)}/automations/${encodeURIComponent(String(automationId))}`;
   return withBaseUrl(webOrigin, path);
 }
 
@@ -372,20 +372,20 @@ export function buildConnectionUrl(
  * hand-assembles `?content_ids=`/`?run_ids=`/`?feed_ids=` strings.
  *
  * Which kind to use:
- *  - `run`   — the link's identity is one execution (an operation approval, a
- *    watcher/scheduled run). Survives the supersede chain by construction: a
+ *  - `run`   — the link's identity is one execution (an operation approval, an
+ *    automation/scheduled run). Survives the supersede chain by construction: a
  *    run's events share one run_id and run-scoped reads were never masked by
  *    `superseded_by IS NULL`.
  *  - `event` — a point in the log (a specific card). Read-side chain resolution
  *    (get_content) resolves a superseded id to its full lineage, so a frozen
  *    event permalink still lands even after it's superseded.
  *  - `feed`  — a channel / conversational stream (all activity in #leads).
- *  - `behavior_run` — one execution scoped to its Behavior drill-down. Requires
- *    both route identifiers: the owning agent and the Behavior.
+ *  - `automation_run` — one execution scoped to its Automation drill-down. Requires
+ *    both route identifiers: the owning agent and the Automation.
  */
 export type MemoryResource =
   | { kind: 'run'; runId: number }
-  | { kind: 'behavior_run'; runId: number; agentId: string; behaviorId: number }
+  | { kind: 'automation_run'; runId: number; agentId: string; automationId: number }
   | { kind: 'event'; eventId: number }
   | { kind: 'feed'; feedId: number };
 
@@ -394,8 +394,8 @@ function memoryResourceQuery(resource: MemoryResource): string {
   switch (resource.kind) {
     case 'run':
       return `run_ids=${resource.runId}`;
-    case 'behavior_run':
-      return `agent=${encodeURIComponent(resource.agentId)}&behavior=${resource.behaviorId}&run_ids=${resource.runId}`;
+    case 'automation_run':
+      return `agent=${encodeURIComponent(resource.agentId)}&automation=${resource.automationId}&run_ids=${resource.runId}`;
     case 'event':
       return `content_ids=${resource.eventId}`;
     case 'feed':

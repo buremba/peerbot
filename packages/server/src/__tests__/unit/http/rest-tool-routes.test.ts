@@ -168,7 +168,7 @@ describe("fixed-action REST route registrations", () => {
 	const indexSrc = readFileSync(join(__dirname, "../../../index.ts"), "utf8");
 	const restApiSrc = readFileSync(join(__dirname, "../../../rest-api.ts"), "utf8");
 
-	it("does not pass retired arguments through the strict Behavior tool boundary", () => {
+	it("does not pass retired arguments through the strict Automation tool boundary", () => {
 		expect(restApiSrc).not.toContain("include_template_details");
 	});
 
@@ -190,10 +190,10 @@ describe("fixed-action REST route registrations", () => {
 
 	it("no longer registers the superseded window/execute REST routes", () => {
 		// Both were replaced by the generic tool-dispatch surface
-		// (`get_behavior` via `/behaviors?behavior_id=…` and the
+		// (`get_automation` via `/automations?automation_id=…` and the
 		// `POST /:orgSlug/:toolName` proxy). Asserting the literals are gone
 		// names exactly what was deleted and stops a re-introduction.
-		expect(indexSrc).not.toContain("behaviors/windows/:windowId");
+		expect(indexSrc).not.toContain("automations/windows/:windowId");
 		expect(indexSrc).not.toContain("actions/execute");
 	});
 

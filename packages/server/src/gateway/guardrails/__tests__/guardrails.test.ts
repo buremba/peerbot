@@ -376,7 +376,7 @@ describe("TextJudge", () => {
       breakerCooldownMs: 60_000,
     });
     // First two calls fail closed and increment the breaker; vary the text so
-    // we don't get a deny cache hit that hides the breaker behavior.
+    // we don't get a deny cache hit that hides the breaker transition.
     const r1 = await judge.decide("p", "t1");
     expect(r1.allow).toBe(false);
     const r2 = await judge.decide("p", "t2");

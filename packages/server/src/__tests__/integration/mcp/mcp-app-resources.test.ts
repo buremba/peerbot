@@ -1732,7 +1732,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         jsonrpc: '2.0',
         id: 3,
         method: 'tools/call',
-        params: { name: 'search_sdk', arguments: { query: 'watchers' } },
+        params: { name: 'search_sdk', arguments: { query: 'automations' } },
       },
       headers: { 'mcp-session-id': sessionId },
       token,
@@ -1743,11 +1743,19 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(body.result?.isError).not.toBe(true);
     expect(body.result?.structuredContent).toEqual(
       expect.objectContaining({
-        query: 'watchers',
+        query: 'automations',
         match_count: expect.any(Number),
         results: expect.any(Array),
       })
     );
+    const serializedDiscovery = JSON.stringify(body.result?.structuredContent).toLowerCase();
+    for (const retiredTerm of [
+      'wat' + 'cher',
+      'behav' + 'ior',
+      'behav' + 'iour',
+    ]) {
+      expect(serializedDiscovery).not.toContain(retiredTerm);
+    }
     // The text content is still present (clients that ignore structuredContent
     // get the same data as text).
     expect(typeof body.result?.content?.[0]?.text).toBe('string');

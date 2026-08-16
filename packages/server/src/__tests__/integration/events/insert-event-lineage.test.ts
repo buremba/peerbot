@@ -21,25 +21,25 @@ import {
   createTestUser,
 } from '../../setup/test-fixtures';
 
-async function insertBehavior(
+async function insertAutomation(
   organizationId: string,
   userId: string,
   slug: string
 ): Promise<{ id: number; versionId: number }> {
   const sql = getDb();
-  const [behavior] = await sql`
-    INSERT INTO watchers (
-      organization_id, created_by, watcher_group_id, name, slug, agent_id
+  const [automation] = await sql`
+    INSERT INTO automations (
+      organization_id, created_by, automation_group_id, name, slug, agent_id
     ) VALUES (
       ${organizationId}, ${userId}, 0, ${slug}, ${slug}, 'lineage-agent'
     )
     RETURNING id
   `;
-  const id = Number(behavior.id);
-  await sql`UPDATE watchers SET watcher_group_id = ${id} WHERE id = ${id}`;
+  const id = Number(automation.id);
+  await sql`UPDATE automations SET automation_group_id = ${id} WHERE id = ${id}`;
   const [version] = await sql`
-    INSERT INTO watcher_versions (
-      watcher_id, version, name, created_by, prompt
+    INSERT INTO automation_versions (
+      automation_id, version, name, created_by, prompt
     ) VALUES (
       ${id}, 1, ${slug}, ${userId}, 'prompt'
     )
@@ -76,8 +76,8 @@ async function insertFeed(
 }
 
 async function lineageOf(eventId: number): Promise<{
-  behavior_id: number | null;
-  behavior_version_id: number | null;
+  automation_id: number | null;
+  automation_version_id: number | null;
   run_id: number | null;
   connection_id: number | null;
   connector_key: string | null;
@@ -88,15 +88,15 @@ async function lineageOf(eventId: number): Promise<{
   origin_parent_id: string | null;
 }> {
   const [row] = await getDb()`
-    SELECT behavior_id, behavior_version_id, run_id, connection_id, connector_key,
+    SELECT automation_id, automation_version_id, run_id, connection_id, connector_key,
            feed_id, feed_key, identity_ns, identity_key, origin_parent_id
     FROM events WHERE id = ${eventId}
   `;
   const r = row as Record<string, unknown>;
   return {
-    behavior_id: r.behavior_id == null ? null : Number(r.behavior_id),
-    behavior_version_id:
-      r.behavior_version_id == null ? null : Number(r.behavior_version_id),
+    automation_id: r.automation_id == null ? null : Number(r.automation_id),
+    automation_version_id:
+      r.automation_version_id == null ? null : Number(r.automation_version_id),
     run_id: r.run_id == null ? null : Number(r.run_id),
     connection_id: r.connection_id == null ? null : Number(r.connection_id),
     connector_key: (r.connector_key as string | null) ?? null,
@@ -116,7 +116,7 @@ describe('insertEvent lineage on supersede', () => {
   it('copies producer and source lineage even when the successor omits them', async () => {
     const org = await createTestOrganization();
     const user = await createTestUser();
-    const behavior = await insertBehavior(org.id, user.id, 'lineage-copy');
+    const automation = await insertAutomation(org.id, user.id, 'lineage-copy');
     const runId = await insertRun(org.id);
     const connection = await createTestConnection({
       organization_id: org.id,
@@ -136,8 +136,8 @@ describe('insertEvent lineage on supersede', () => {
       feedKey: 'front',
       feedId,
       runId,
-      behaviorId: behavior.id,
-      behaviorVersionId: behavior.versionId,
+      automationId: automation.id,
+      automationVersionId: automation.versionId,
       parentOriginId: 'parent-origin',
       identity: { ns: 'test.lineage', key: 'thing-1' },
     });
@@ -153,8 +153,8 @@ describe('insertEvent lineage on supersede', () => {
     });
 
     expect(await lineageOf(Number(next.id))).toEqual({
-      behavior_id: behavior.id,
-      behavior_version_id: behavior.versionId,
+      automation_id: automation.id,
+      automation_version_id: automation.versionId,
       run_id: runId,
       connection_id: Number(connection.id),
       connector_key: 'reddit',
@@ -169,7 +169,7 @@ describe('insertEvent lineage on supersede', () => {
   it('keeps lineage when the successor explicitly passes nulls', async () => {
     const org = await createTestOrganization();
     const user = await createTestUser();
-    const behavior = await insertBehavior(org.id, user.id, 'lineage-nulls');
+    const automation = await insertAutomation(org.id, user.id, 'lineage-nulls');
     const runId = await insertRun(org.id);
     const connection = await createTestConnection({
       organization_id: org.id,
@@ -189,8 +189,8 @@ describe('insertEvent lineage on supersede', () => {
       feedKey: 'front',
       feedId,
       runId,
-      behaviorId: behavior.id,
-      behaviorVersionId: behavior.versionId,
+      automationId: automation.id,
+      automationVersionId: automation.versionId,
       parentOriginId: 'parent-origin',
       identity: { ns: 'test.lineage', key: 'thing-nulls' },
     });
@@ -202,8 +202,8 @@ describe('insertEvent lineage on supersede', () => {
       title: 'next',
       content: 'next',
       semanticType: 'observation',
-      behaviorId: null,
-      behaviorVersionId: null,
+      automationId: null,
+      automationVersionId: null,
       runId: null,
       connectionId: null,
       connectorKey: null,
@@ -215,8 +215,8 @@ describe('insertEvent lineage on supersede', () => {
     });
 
     expect(await lineageOf(Number(next.id))).toEqual({
-      behavior_id: behavior.id,
-      behavior_version_id: behavior.versionId,
+      automation_id: automation.id,
+      automation_version_id: automation.versionId,
       run_id: runId,
       connection_id: Number(connection.id),
       connector_key: 'reddit',
@@ -231,12 +231,12 @@ describe('insertEvent lineage on supersede', () => {
   it('uses explicitly supplied attribution for the new stored version', async () => {
     const org = await createTestOrganization();
     const user = await createTestUser();
-    const firstBehavior = await insertBehavior(
+    const firstAutomation = await insertAutomation(
       org.id,
       user.id,
       'lineage-first-producer'
     );
-    const nextBehavior = await insertBehavior(
+    const nextAutomation = await insertAutomation(
       org.id,
       user.id,
       'lineage-next-producer'
@@ -252,8 +252,8 @@ describe('insertEvent lineage on supersede', () => {
       content: 'root',
       semanticType: 'observation',
       runId: firstRunId,
-      behaviorId: firstBehavior.id,
-      behaviorVersionId: firstBehavior.versionId,
+      automationId: firstAutomation.id,
+      automationVersionId: firstAutomation.versionId,
       parentOriginId: 'first-parent',
     });
 
@@ -265,16 +265,16 @@ describe('insertEvent lineage on supersede', () => {
       content: 'next',
       semanticType: 'observation',
       runId: nextRunId,
-      behaviorId: nextBehavior.id,
-      behaviorVersionId: nextBehavior.versionId,
+      automationId: nextAutomation.id,
+      automationVersionId: nextAutomation.versionId,
       parentOriginId: 'next-parent',
       supersedesEventId: Number(prior.id),
     });
 
     expect(await lineageOf(Number(next.id))).toMatchObject({
       run_id: nextRunId,
-      behavior_id: nextBehavior.id,
-      behavior_version_id: nextBehavior.versionId,
+      automation_id: nextAutomation.id,
+      automation_version_id: nextAutomation.versionId,
       origin_parent_id: 'next-parent',
     });
   });
@@ -341,10 +341,10 @@ describe('insertEvent lineage on supersede', () => {
     ).rejects.toThrow(/cannot supersede event 9000000001/i);
   });
 
-  it('preserves Behavior attribution through an approval successor that does not pass it', async () => {
+  it('preserves Automation attribution through an approval successor that does not pass it', async () => {
     const org = await createTestOrganization();
     const reviewer = await createTestUser({ name: 'Ada Approver' });
-    const behavior = await insertBehavior(org.id, reviewer.id, 'lineage-approval');
+    const automation = await insertAutomation(org.id, reviewer.id, 'lineage-approval');
     const runId = await insertRun(org.id);
     const connection = await createTestConnection({
       organization_id: org.id,
@@ -361,8 +361,8 @@ describe('insertEvent lineage on supersede', () => {
       connectorKey: 'apple.computer_use',
       connectionId: Number(connection.id),
       runId,
-      behaviorId: behavior.id,
-      behaviorVersionId: behavior.versionId,
+      automationId: automation.id,
+      automationVersionId: automation.versionId,
       interactionType: 'approval',
       interactionStatus: 'pending',
       metadata: { status: 'pending_approval' },
@@ -379,8 +379,8 @@ describe('insertEvent lineage on supersede', () => {
     );
 
     expect(await lineageOf(approvedId!)).toMatchObject({
-      behavior_id: behavior.id,
-      behavior_version_id: behavior.versionId,
+      automation_id: automation.id,
+      automation_version_id: automation.versionId,
       run_id: runId,
       connector_key: 'apple.computer_use',
       connection_id: Number(connection.id),
@@ -390,7 +390,7 @@ describe('insertEvent lineage on supersede', () => {
   it('shows a human canvas correction, but not other self-produced rows or its tombstone', async () => {
     const org = await createTestOrganization();
     const user = await createTestUser();
-    const behavior = await insertBehavior(org.id, user.id, 'lineage-visibility');
+    const automation = await insertAutomation(org.id, user.id, 'lineage-visibility');
 
     const output = await insertEvent({
       entityIds: [],
@@ -399,7 +399,7 @@ describe('insertEvent lineage on supersede', () => {
       title: 'produced',
       content: 'produced',
       semanticType: 'observation',
-      behaviorId: behavior.id,
+      automationId: automation.id,
       occurredAt: new Date('2026-08-01T12:00:00Z'),
     });
 
@@ -410,7 +410,7 @@ describe('insertEvent lineage on supersede', () => {
       title: 'still produced',
       content: 'still produced',
       semanticType: 'observation',
-      behaviorId: behavior.id,
+      automationId: automation.id,
       metadata: { correction: true },
       occurredAt: new Date('2026-08-01T12:30:00Z'),
     });
@@ -430,7 +430,7 @@ describe('insertEvent lineage on supersede', () => {
     const sql = getTestDb();
     const afterCorrection = await executeDataSources(
       { stories: { query: 'SELECT id, semantic_type FROM events ORDER BY id' } },
-      { organizationId: org.id, excludeProducedByBehaviorId: behavior.id },
+      { organizationId: org.id, excludeProducedByAutomationId: automation.id },
       sql
     );
     const correctionIds = (afterCorrection.stories ?? []).map((row) =>
@@ -453,7 +453,7 @@ describe('insertEvent lineage on supersede', () => {
 
     const afterTombstone = await executeDataSources(
       { stories: { query: 'SELECT id, semantic_type FROM events ORDER BY id' } },
-      { organizationId: org.id, excludeProducedByBehaviorId: behavior.id },
+      { organizationId: org.id, excludeProducedByAutomationId: automation.id },
       sql
     );
     const tombstoneIds = (afterTombstone.stories ?? []).map((row) =>
@@ -461,7 +461,7 @@ describe('insertEvent lineage on supersede', () => {
     );
     expect(tombstoneIds).not.toContain(Number(tombstone.id));
     expect(await lineageOf(Number(tombstone.id))).toMatchObject({
-      behavior_id: behavior.id,
+      automation_id: automation.id,
     });
   });
 });

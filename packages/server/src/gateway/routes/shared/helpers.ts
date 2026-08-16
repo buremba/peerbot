@@ -105,7 +105,7 @@ interface WithOwnedAgentOptions {
  * Collapse the auth → agentId-param → ownership → try/catch preamble that every
  * agent-scoped CRUD handler reimplements.
  *
- * Behavior contract (preserved byte-for-byte from the inline handlers):
+ * Contract preserved byte-for-byte from the inline handlers:
  *  - missing session → 401 `Unauthorized` (via `requireSession`)
  *  - missing `agentId` path param → 400 `Missing agentId`
  *  - admin sessions BYPASS the ownership check entirely; `access` is then

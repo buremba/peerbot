@@ -5,7 +5,7 @@ import {
   defineSkill,
   defineEntityType,
   defineRelationshipType,
-  defineBehavior,
+  defineAutomation,
   secret,
 } from "@lobu/cli/config";
 import type LinearCyclesConnector from "./linear-cycles.connector.ts";
@@ -187,7 +187,7 @@ const blockedBy = defineRelationshipType({
     "Attach blocked decisions to the dependency that is holding them up.",
 });
 
-const boardActionTracker = defineBehavior({
+const boardActionTracker = defineAutomation({
   agent: leadership,
   slug: "board-action-tracker",
   name: "Board action tracker",
@@ -211,5 +211,5 @@ export default defineConfig({
   agents: [leadership],
   entities: [decision, document, region, risk, task],
   relationships: [approved, assigned, blockedBy],
-  behaviors: [boardActionTracker],
+  automations: [boardActionTracker],
 });

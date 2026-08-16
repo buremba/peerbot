@@ -1,4 +1,4 @@
 interface:
   display_name: "Lobu Builder"
   short_description: "Build and iterate on Lobu agent projects"
-  default_prompt: "Use $lobu-builder to inspect this Lobu project, edit the right prompt, config, skill, or eval files, keep it runnable, and validate the behavior with Lobu chat tests or evals."
+  default_prompt: "Use $lobu-builder to inspect this Lobu project, edit the right prompt, config, skill, or eval files, keep it runnable, and validate the expected result with Lobu chat tests or evals."

@@ -2,13 +2,13 @@
 
 Hierarchy-first: read `CONCEPTS.md` first, then go deep on the surface you are
 touching. `plans/` holds design history rather than the current contract; use the
-docs below for shipped behavior.
+docs below for shipped semantics.
 
 ## Concepts (read first)
 
 - **`CONCEPTS.md`** — entities vs events, identity (`origin_id` vs `events.id`),
   the end-to-end lifecycle, the feature map, webhook connections.
-- **`BEHAVIORS.md`** — the Behavior primitive contract: triggers, sources,
+- **`AUTOMATIONS.md`** — the Automation primitive contract: triggers, sources,
   outputs, chaining, and their safety limits.
 
 ## Build

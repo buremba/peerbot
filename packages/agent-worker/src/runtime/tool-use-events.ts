@@ -29,7 +29,7 @@ interface ToolUseResultSummary {
   snippets?: Array<{ id: number; text: string }>;
   /** Tools may also include a short error string. */
   error?: string;
-  /** Connector action output that can seed the canonical Behavior editor. */
+  /** Connector action output that can seed the canonical Automation editor. */
   subscribable?: {
     connector_key: string;
     resource_type: string;

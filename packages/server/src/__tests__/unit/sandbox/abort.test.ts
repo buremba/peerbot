@@ -115,7 +115,7 @@ describe("AbortSignal cancellation", () => {
   });
 });
 
-describe("watcher reaction default", () => {
+describe("automation reaction default", () => {
   it("runScript without sdkMode keeps the full SDK manifest", async () => {
     const sdk = stubSDK({
       entities: { create: async () => ({ id: 99 }) } as never,

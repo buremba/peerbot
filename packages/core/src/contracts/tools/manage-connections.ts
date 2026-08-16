@@ -227,7 +227,7 @@ export const UpdateAction = Type.Object({
   agent_id: Type.Optional(
     Type.Union([Type.String(), Type.Null()], {
       description:
-        "Fallback agent for a chat connection when no Behavior subscription matches. Null clears the fallback.",
+        "Fallback agent for a chat connection when no Automation subscription matches. Null clears the fallback.",
     })
   ),
   slug: Type.Optional(
@@ -277,7 +277,7 @@ export const ApplyChatConnectionAction = Type.Object({
   agent_id: Type.Optional(
     Type.String({
       description:
-        "Declarative fallback agent. Behavior subscriptions remain authoritative when present.",
+        "Declarative fallback agent. Automation subscriptions remain authoritative when present.",
     })
   ),
   config: Type.Record(Type.String(), Type.Any()),

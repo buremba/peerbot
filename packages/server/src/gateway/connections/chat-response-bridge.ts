@@ -27,7 +27,7 @@ import {
 import {
   advanceScheduleAfterTerminalFailure,
   providerQuotaResetNotBefore,
-} from "../../watchers/schedule-cursor.js";
+} from "../../automations/schedule-cursor.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import {
   OutputGuardrailScanner,
@@ -154,7 +154,7 @@ export class ChatResponseBridge implements ResponseRenderer {
   /**
    * Resolve the turn's owning organization for tenant-scoped output. The
    * authenticated worker gateway stamps it directly on the payload; for a
-   * hosted-preview turn this is the Behavior org and intentionally differs
+   * hosted-preview turn this is the Automation org and intentionally differs
    * from the shared chat connection's org. Gateway-generated responses may not
    * carry that field, so metadata and connection values remain fallbacks.
    */
@@ -172,16 +172,16 @@ export class ChatResponseBridge implements ResponseRenderer {
   }
 
   /**
-   * Park the scheduled side of a reply-to-source Behavior when its event turn
+   * Park the scheduled side of a reply-to-source Automation when its event turn
    * hits a known provider quota boundary. These turns intentionally have no
-   * Behavior run row, so the API run terminalizer cannot move their cursor.
+   * Automation run row, so the API run terminalizer cannot move their cursor.
    *
-   * The gateway-restored Behavior id is still scoped to the authenticated
+   * The gateway-restored Automation id is still scoped to the authenticated
    * organization and agent that own it. Database errors propagate
    * so the durable thread-response job retries instead of delivering an error
-   * while leaving the Behavior immediately due.
+   * while leaving the Automation immediately due.
    */
-  async parkQuotaExhaustedBehavior(
+  async parkQuotaExhaustedAutomation(
     payload: ThreadResponsePayload
   ): Promise<void> {
     const notBefore = providerQuotaResetNotBefore(
@@ -191,11 +191,11 @@ export class ChatResponseBridge implements ResponseRenderer {
     if (!notBefore) return;
 
     const metadata = readPlatformMetadata(payload.platformMetadata);
-    const behaviorId = metadata.behaviorId;
+    const automationId = metadata.automationId;
     if (
-      typeof behaviorId !== "number" ||
-      !Number.isSafeInteger(behaviorId) ||
-      behaviorId < 1
+      typeof automationId !== "number" ||
+      !Number.isSafeInteger(automationId) ||
+      automationId < 1
     ) {
       return;
     }
@@ -208,8 +208,8 @@ export class ChatResponseBridge implements ResponseRenderer {
     await sql.begin(async (tx) => {
       const owned = await tx<{ id: number }>`
         SELECT id
-        FROM watchers
-        WHERE id = ${behaviorId}
+        FROM automations
+        WHERE id = ${automationId}
           AND organization_id = ${organizationId}
           AND agent_id = ${agentId}
           AND status = 'active'
@@ -218,7 +218,7 @@ export class ChatResponseBridge implements ResponseRenderer {
       if (owned.length === 0) return;
       await advanceScheduleAfterTerminalFailure(
         tx,
-        behaviorId,
+        automationId,
         "event",
         notBefore
       );
@@ -451,7 +451,7 @@ export class ChatResponseBridge implements ResponseRenderer {
     // replica, so the authoritative finalText must be delivered here even for a
     // live-streaming strategy — its own handleCompletion returns early without a
     // local stream. (For non-guardrail agents this is false, preserving the
-    // existing cross-pod no-double-post behavior.)
+    // existing cross-pod no-double-post semantics.)
     const deliverWithheldFinalText =
       !strategy.deliversAtCompletion &&
       !stream &&

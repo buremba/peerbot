@@ -33,7 +33,7 @@ export interface ChannelAboutTarget {
 	 *  enterprise `E…`). Resolved connector-side (`resolveSubscriptionTeam`) and threaded
 	 *  in so the about edge attaches to the SAME channel resource entity the ACL
 	 *  graph + subscription own. `null`/undefined = unknown yet (skip, heal from inbound)
-	 *  for a team-scoped connector, mirroring the subscription's null-team behavior. */
+	 *  for a team-scoped connector, mirroring the subscription's null-team semantics. */
 	teamId: string | null | undefined;
 	/** Resolved business-entity ids to link (channel --about--> each). */
 	aboutEntityIds: number[];
@@ -574,7 +574,7 @@ export async function listChannelEntitiesAboutBusinessEntity(opts: {
 /** Channel key stored on `about` edge metadata for a streaming feed row.
  *
  * The team half is the channel's CONCRETE workspace, taken from the streaming
- * feed's Behavior subscription team — the SAME real team the
+ * feed's Automation subscription team — the SAME real team the
  * about-edge writer keyed on. For a Grid org-wide install the connection's
  * `external_tenant_id` is the enterprise `E…`, so it must NOT be used as the
  * team; the subscription holds the real `T…`. The `external_tenant_id` fallback
@@ -589,7 +589,7 @@ export function streamingFeedChannelKeyExpr(
     COALESCE(
       (
         SELECT subscription.trigger_team_id
-        FROM behavior_message_subscriptions subscription
+        FROM automation_message_subscriptions subscription
         WHERE subscription.organization_id = ${feedAlias}.organization_id
           AND subscription.connection_id = ${feedAlias}.connection_id
           AND subscription.channel_id = ${feedAlias}.feed_key

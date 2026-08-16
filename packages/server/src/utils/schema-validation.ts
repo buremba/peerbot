@@ -60,26 +60,26 @@ async function getEntityTypeSchema(
 // ============================================
 
 /**
- * Metadata keys stamped by watcher promotion (`promote-keyed-entities.ts`):
+ * Metadata keys stamped by automation promotion (`promote-keyed-entities.ts`):
  * platform provenance, not part of any entity-type schema. Excluded from
  * validation so a promoted entity's metadata round-trips — read it, edit a
  * domain field, write it back — under an `additionalProperties: false`
  * schema. `source` is deliberately NOT here: it is a plausible domain field,
  * so it stays subject to the type's schema.
  */
-const WATCHER_PROVENANCE_KEYS = [
-  'watcher_id',
+const AUTOMATION_PROVENANCE_KEYS = [
+  'automation_id',
   'stable_key',
   'window_id',
-  'behavior_output',
+  'automation_output',
 ];
 
-function withoutWatcherProvenanceKeys(
+function withoutAutomationProvenanceKeys(
   metadata: Record<string, unknown>
 ): Record<string, unknown> {
-  if (!WATCHER_PROVENANCE_KEYS.some((key) => key in metadata)) return metadata;
+  if (!AUTOMATION_PROVENANCE_KEYS.some((key) => key in metadata)) return metadata;
   return Object.fromEntries(
-    Object.entries(metadata).filter(([key]) => !WATCHER_PROVENANCE_KEYS.includes(key))
+    Object.entries(metadata).filter(([key]) => !AUTOMATION_PROVENANCE_KEYS.includes(key))
   );
 }
 
@@ -125,11 +125,11 @@ export async function validateEntityMetadata(
   }
 
   // Validate metadata against schema, ignoring platform provenance keys —
-  // they are stamped by watcher promotion outside this validator and would
+  // they are stamped by automation promotion outside this validator and would
   // otherwise fail every round-trip under additionalProperties: false.
   const ajv = getAjv();
   const validate = ajv.compile(schema);
-  const candidate = withoutWatcherProvenanceKeys(metadata);
+  const candidate = withoutAutomationProvenanceKeys(metadata);
   const isValid = validate(candidate);
   if (candidate !== metadata) {
     // The AJV singleton runs with coerceTypes, mutating the validated object

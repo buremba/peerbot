@@ -32,9 +32,9 @@ const logger = createLogger("http-proxy");
  * through the request handlers — there is deliberately NO process-wide mutable
  * cache. A lazily-populated module global (the previous design) read `process.env`
  * at whatever moment the first request happened to fire and then froze that value
- * for the life of the process, which made behavior order-dependent (and, in the
- * test runner where the module + env are shared across files, leaked one file's
- * env into another's). Resolving per-server removes that coupling entirely.
+ * for the life of the process, which made initialization order-dependent (and,
+ * in the test runner where the module + env are shared across files, leaked one
+ * file's env into another's). Resolving per-server removes that coupling entirely.
  */
 export interface ResolvedNetworkConfig {
   allowedDomains: string[];
@@ -400,14 +400,22 @@ function extractProxyCredentials(
     return null;
   }
 
-  // Parse Basic auth: "Basic base64(username:password)"
-  const match = authHeader.match(/^Basic\s+(.+)$/i);
-  if (!match?.[1]) {
+  // Parse Basic auth without a backtracking expression over an untrusted
+  // header. RFC 7235 requires at least one space between scheme and token, so
+  // trimming must actually consume something.
+  const credentialPart = authHeader.slice(5);
+  const encodedCredentials = credentialPart.trimStart();
+  const hasSchemeSeparator = encodedCredentials.length < credentialPart.length;
+  if (
+    authHeader.slice(0, 5).toLowerCase() !== "basic" ||
+    !hasSchemeSeparator ||
+    !encodedCredentials
+  ) {
     return null;
   }
 
   try {
-    const decoded = Buffer.from(match[1], "base64").toString("utf-8");
+    const decoded = Buffer.from(encodedCredentials, "base64").toString("utf-8");
     const colonIndex = decoded.indexOf(":");
     if (colonIndex === -1) {
       return null;
@@ -458,7 +466,7 @@ async function validateProxyAuth(
 
   // Revocation check. The hot path is the synchronous in-memory cache so a
   // slow/unavailable DB never blocks egress. On a cache miss we allow this
-  // request (the pre-existing behavior) but kick off a background DB refresh, so
+  // request (the pre-existing semantics) but kick off a background DB refresh, so
   // a jti revoked on ANOTHER replica is pulled into this pod's cache and denied
   // on the next request — closing the cross-pod gap within one request instead of
   // waiting out the cache TTL (or the token's lifetime). `isRevoked` fails open
@@ -1027,7 +1035,7 @@ async function handleConnectRequestFallback(
  * @param host - Bind address (default "::" for all interfaces)
  * @param config - Network allow/deny config for this server. Defaults to a fresh
  *   snapshot resolved from the environment; tests pass one explicitly so the
- *   server's behavior is fully determined by its arguments, not ambient state.
+ *   server's result is fully determined by its arguments, not ambient state.
  * @returns Promise that resolves with the server once listening, or rejects on error
  */
 export function startHttpProxy(

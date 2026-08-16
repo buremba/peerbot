@@ -50,7 +50,7 @@ interface PublicEntityListItem {
   created_at: string;
   total_content: number;
   active_connections: number;
-  behaviors_count: number;
+  automations_count: number;
   children_count: number;
 }
 
@@ -101,7 +101,7 @@ const PUBLIC_XML_CACHE_CONTROL = 'public, max-age=1800, stale-while-revalidate=8
 const PUBLIC_LIST_LIMIT = 50;
 const PUBLIC_APP_ROUTE_PREFIXES = new Set([
   'agents',
-  'behaviors',
+  'automations',
   'connectors',
   'events',
   'members',
@@ -143,7 +143,7 @@ async function resolvePublicPath(
       (type) => !isSystemEntityTypeSlug(type?.slug)
     );
   }
-  // Child links on an entity page — a $canvas hangs off its Behavior's entity.
+  // Child links on an entity page — a $canvas hangs off its Automation's entity.
   if (Array.isArray(resolved.children)) {
     resolved.children = resolved.children.filter(
       (child) => !isSystemEntityTypeSlug(child?.entity_type)
@@ -495,7 +495,7 @@ async function getPublicEntityTypeList(
       created_at: new Date(entity.created_at).toISOString(),
       total_content: Number(entity.total_content) || 0,
       active_connections: Number(entity.active_connections) || 0,
-      behaviors_count: Number(entity.behaviors_count) || 0,
+      automations_count: Number(entity.automations_count) || 0,
       children_count: Number(entity.children_count) || 0,
       ...(relMap.size > 0 && relMap.has(entity.id) ? { relationships: relMap.get(entity.id) } : {}),
     })),
@@ -528,8 +528,8 @@ function buildWorkspaceModel(
         totalContent,
         'knowledge item'
       )}, ${formatCountLabel(counts.connections, 'connector')}, and ${formatCountLabel(
-        counts.behaviors,
-        'behavior'
+        counts.automations,
+        'automation'
       )}.`,
     180
   );
@@ -544,8 +544,8 @@ function buildWorkspaceModel(
           value: formatCountLabel(counts.connections, 'connector'),
         },
         {
-          label: 'Behaviors',
-          value: formatCountLabel(counts.behaviors, 'active behavior'),
+          label: 'Automations',
+          value: formatCountLabel(counts.automations, 'active automation'),
         },
       ]),
     },
@@ -724,8 +724,8 @@ function buildEntityModel(
         entity.total_content,
         'knowledge item'
       )}, ${formatCountLabel(entity.active_connections, 'connector')}, and ${formatCountLabel(
-        entity.behaviors_count,
-        'behavior'
+        entity.automations_count,
+        'automation'
       )}.`,
     180
   );
@@ -750,7 +750,7 @@ function buildEntityModel(
           label: 'Connectors',
           value: formatCountLabel(entity.active_connections, 'active connector'),
         },
-        { label: 'Behaviors', value: formatCountLabel(entity.behaviors_count, 'active behavior') },
+        { label: 'Automations', value: formatCountLabel(entity.automations_count, 'active automation') },
       ]),
     },
     {
@@ -1063,7 +1063,7 @@ export async function buildPublicPageModel(
       }
       // Every even segment is an entity-type slug. A system type anywhere in
       // the path 404s the whole route — the two-segment type lookup alone
-      // doesn't cover deep paths like /org/brand/acme/$canvas/behavior-canvas.
+      // doesn't cover deep paths like /org/brand/acme/$canvas/automation-canvas.
       if (isSystemEntityTypeSlug(entitySegments[i])) {
         return applyBootstrapStrip(
           buildNotFoundModel(organization, requestUrl, normalizedPath),

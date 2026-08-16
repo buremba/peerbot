@@ -1,8 +1,8 @@
 /**
  * Creating eval runs (evals PR 2, lobu#2564).
  *
- * An eval run replays a real Behavior run's frozen dispatch payload — the same
- * window bounds, the same behavior version, the same trigger signal — so the
+ * An eval run replays a real Automation run's frozen dispatch payload — the same
+ * window bounds, the same Automation version, the same trigger signal — so the
  * agent sees what it saw the first time. What differs is only the run type,
  * which the server turns into `executionMode = 'capture'` at session creation:
  * the replay records what the agent tried to do instead of doing it.
@@ -17,16 +17,16 @@
 
 import { type DbClient, getDb } from "../db/client.js";
 import logger from "../utils/logger.js";
-import { BEHAVIOR_EVAL_RUN_TYPE, BEHAVIOR_RUN_TYPE } from "./run-types.js";
+import { AUTOMATION_EVAL_RUN_TYPE, AUTOMATION_RUN_TYPE } from "./run-types.js";
 
 export interface CreateEvalRunResult {
 	runId: number;
 	sourceRunId: number;
-	behaviorId: number;
+	automationId: number;
 	created: boolean;
 }
 
-/** Why a Behavior run cannot be replayed. Stable strings — callers surface them. */
+/** Why an Automation run cannot be replayed. Stable strings — callers surface them. */
 export type ReplaySourceRejection =
 	| "not_found"
 	| "no_frozen_payload"
@@ -35,7 +35,7 @@ export type ReplaySourceRejection =
 export interface ReplayableSource {
 	sourceRunId: number;
 	organizationId: string;
-	behaviorId: number;
+	automationId: number;
 	approvedInput: unknown;
 }
 
@@ -44,7 +44,7 @@ export type LoadReplayableSourceResult =
 	| { ok: false; reason: ReplaySourceRejection };
 
 /**
- * Resolve a Behavior run into something an eval can actually replay.
+ * Resolve an Automation run into something an eval can actually replay.
  *
  * Extracted so promoting a case and minting a run apply the SAME rule. A case
  * that passes promote but fails at replay would be a case set that silently
@@ -57,37 +57,37 @@ export async function loadReplayableSource(
 ): Promise<LoadReplayableSourceResult> {
 	const sql = db ?? getDb();
 	const source = (await sql`
-    SELECT id, organization_id, watcher_id, approved_input
+    SELECT id, organization_id, automation_id, approved_input
     FROM runs
     WHERE id = ${sourceRunId}
-      AND run_type = ${BEHAVIOR_RUN_TYPE}
+      AND run_type = ${AUTOMATION_RUN_TYPE}
     LIMIT 1
   `) as unknown as Array<{
 		id: number | string;
 		organization_id: string | null;
-		watcher_id: number | null;
+		automation_id: number | null;
 		approved_input: unknown;
 	}>;
 
 	if (source.length === 0) {
-		logger.warn({ sourceRunId }, "[evals] No such Behavior run to replay");
+		logger.warn({ sourceRunId }, "[evals] No such Automation run to replay");
 		return { ok: false, reason: "not_found" };
 	}
 	const row = source[0];
-	if (!row.organization_id || !row.watcher_id || !row.approved_input) {
+	if (!row.organization_id || !row.automation_id || !row.approved_input) {
 		logger.warn(
 			{ sourceRunId },
-			"[evals] Behavior run has no frozen dispatch payload — nothing to replay",
+			"[evals] Automation run has no frozen dispatch payload — nothing to replay",
 		);
 		return { ok: false, reason: "no_frozen_payload" };
 	}
 
 	// Refuse a source whose clone no eval lane could ever claim. The cloud
 	// dispatcher skips device-pinned and manual-open runs, and the device poll
-	// lane claims `behavior` only — so such an eval sits `pending` forever, and
+	// lane claims `automation` only — so such an eval sits `pending` forever, and
 	// because the claim guards are same-lane it wedges every later eval of this
-	// Behavior. Nothing reaps a stranded pending eval either
-	// (`finalizeStalePendingWatcherRuns` is behavior-only by design: it advances
+	// Automation. Nothing reaps a stranded pending eval either
+	// (`finalizeStalePendingAutomationRuns` is automation-only by design: it advances
 	// `next_run_at`). Failing loudly at mint beats creating undispatchable work.
 	const payload = row.approved_input as Record<string, unknown>;
 	const agentId =
@@ -103,7 +103,7 @@ export async function loadReplayableSource(
 				devicePinned: Boolean(devicePin),
 				hasAgent: Boolean(agentId),
 			},
-			"[evals] Behavior run is not server-dispatchable — its replay could never be claimed",
+			"[evals] Automation run is not server-dispatchable — its replay could never be claimed",
 		);
 		return { ok: false, reason: "not_dispatchable" };
 	}
@@ -113,14 +113,14 @@ export async function loadReplayableSource(
 		source: {
 			sourceRunId: Number(row.id),
 			organizationId: row.organization_id,
-			behaviorId: row.watcher_id,
+			automationId: row.automation_id,
 			approvedInput: row.approved_input,
 		},
 	};
 }
 
 /**
- * Clone a terminal Behavior run into a pending eval replay.
+ * Clone a terminal Automation run into a pending eval replay.
  *
  * `caseKey` scopes idempotency: re-running with the same (sourceRunId,
  * caseKey) reuses the in-flight eval rather than queueing a second one. Pass a
@@ -128,7 +128,7 @@ export async function loadReplayableSource(
  * several times — which is the point, since a single trial is not a
  * measurement.
  *
- * Returns null when the source run does not exist, is not a Behavior run, or
+ * Returns null when the source run does not exist, is not an Automation run, or
  * carries no frozen payload to replay.
  */
 export async function createEvalRun(
@@ -136,7 +136,7 @@ export async function createEvalRun(
 	db?: DbClient,
 ): Promise<CreateEvalRunResult | null> {
 	const sql = db ?? getDb();
-	const idempotencyKey = `behavior_eval:${params.sourceRunId}:${params.caseKey}`;
+	const idempotencyKey = `automation_eval:${params.sourceRunId}:${params.caseKey}`;
 
 	const loaded = await loadReplayableSource(params.sourceRunId, sql);
 	if (!loaded.ok) return null;
@@ -146,7 +146,7 @@ export async function createEvalRun(
     INSERT INTO runs (
       organization_id,
       run_type,
-      watcher_id,
+      automation_id,
       approval_status,
       status,
       approved_input,
@@ -154,8 +154,8 @@ export async function createEvalRun(
       created_at
     ) VALUES (
       ${row.organizationId},
-      ${BEHAVIOR_EVAL_RUN_TYPE},
-      ${row.behaviorId},
+      ${AUTOMATION_EVAL_RUN_TYPE},
+      ${row.automationId},
       'auto',
       'pending',
       ${sql.json(row.approvedInput as never)},
@@ -179,7 +179,7 @@ export async function createEvalRun(
 		return {
 			runId: Number(existing[0].id),
 			sourceRunId: row.sourceRunId,
-			behaviorId: row.behaviorId,
+			automationId: row.automationId,
 			created: false,
 		};
 	}
@@ -189,7 +189,7 @@ export async function createEvalRun(
 		{
 			runId,
 			sourceRunId: params.sourceRunId,
-			behaviorId: row.behaviorId,
+			automationId: row.automationId,
 			caseKey: params.caseKey,
 		},
 		"[evals] Queued an eval replay",
@@ -197,7 +197,7 @@ export async function createEvalRun(
 	return {
 		runId,
 		sourceRunId: row.sourceRunId,
-		behaviorId: row.behaviorId,
+		automationId: row.automationId,
 		created: true,
 	};
 }

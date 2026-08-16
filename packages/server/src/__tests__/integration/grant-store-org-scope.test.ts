@@ -92,7 +92,7 @@ describe('GrantStore org scoping', () => {
   });
 
   /**
-   * The behavioural core of the change: with no org, these throw instead of
+   * The runtime-affecting core of the change: with no org, these throw instead of
    * running unscoped. Previously each returned an all-tenant answer.
    */
   it('throws rather than running unscoped when no org can be resolved', async () => {

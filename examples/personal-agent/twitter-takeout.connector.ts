@@ -61,11 +61,11 @@ const X_REPLY_TARGET_ATTRIBUTIONS: EventAttributionRule[] = [
     traits: {
       x_handle: {
         eventPath: "metadata.in_reply_to_screen_name",
-        behavior: "prefer_non_empty",
+        mergeStrategy: "prefer_non_empty",
       },
       last_x_interaction_at: {
         eventPath: "occurred_at",
-        behavior: "overwrite",
+        mergeStrategy: "overwrite",
       },
     },
   },
@@ -93,7 +93,7 @@ const X_DM_PARTY_ATTRIBUTIONS: EventAttributionRule[] = [
       ],
     },
     traits: {
-      last_x_dm_at: { eventPath: "occurred_at", behavior: "overwrite" },
+      last_x_dm_at: { eventPath: "occurred_at", mergeStrategy: "overwrite" },
     },
   },
   {
@@ -141,7 +141,10 @@ const X_FOLLOW_ATTRIBUTIONS: EventAttributionRule[] = [
       ],
     },
     traits: {
-      x_handle: { eventPath: "metadata.handle", behavior: "prefer_non_empty" },
+      x_handle: {
+        eventPath: "metadata.handle",
+        mergeStrategy: "prefer_non_empty",
+      },
     },
   },
 ];

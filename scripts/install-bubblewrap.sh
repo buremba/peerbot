@@ -38,7 +38,7 @@ bwrap --version
 # The userns probe is opt-in ($1 == "probe"). Only the unit job runs the escape
 # matrix, and only it probed before this script existed; the deep-smoke job just
 # needs the binary present. Enabling the probe there would newly fail it on any
-# runner where unsharing is restricted — a behaviour change
+# runner where unsharing is restricted — a runtime change
 # this refactor has no business making.
 if [ "${1:-}" = "probe" ]; then
   # Same unshare flags production uses (exec-sandbox.ts), so a runner that can

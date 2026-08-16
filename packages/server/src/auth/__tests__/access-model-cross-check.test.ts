@@ -45,7 +45,7 @@ const TIERED_NAMESPACES = [
 	["authProfiles", "manage_auth_profiles", "../../tools/admin/manage_auth_profiles", "manageAuthProfiles"],
 	["feeds", "manage_feeds", "../../tools/admin/manage_feeds", "manageFeeds"],
 	["operations", "manage_operations", "../../tools/admin/manage_operations", "manageOperations"],
-	["behaviors", "manage_behaviors", "../../tools/admin/manage_behaviors", "manageBehaviors"],
+	["automations", "manage_automations", "../../tools/admin/manage_automations", "manageAutomations"],
 	["classifiers", "manage_classifiers", "../../tools/admin/manage_classifiers", "manageClassifiers"],
 	["viewTemplates", "manage_view_templates", "../../tools/admin/manage_view_templates", "manageViewTemplates"],
 	["catalog", "manage_catalog", "../../tools/admin/manage_catalog", "manageCatalog"],
@@ -71,8 +71,8 @@ const NO_TOOL_ACTION = new Set([
 	// Bypasses the action caller entirely: delegates to the `search` tool, which
 	// carries its own access gate rather than a manage_entity action.
 	"entities.search",
-	// Same shape: delegates to the standalone `get_behavior` tool.
-	"behaviors.get",
+	// Same shape: delegates to the standalone `get_automation` tool.
+	"automations.get",
 ]);
 
 /**
@@ -125,7 +125,7 @@ async function captureActionMap(): Promise<void> {
 		for (const method of Object.keys(ns as object)) {
 			if (method === "manage") continue;
 			// Methods that bypass the action caller reach a REAL tool (search /
-			// get_behavior) that the stub handlers above do not replace, so probing
+			// get_automation) that the stub handlers above do not replace, so probing
 			// them would hit the database. They are declared in NO_TOOL_ACTION and
 			// contribute no mapping — never invoke them.
 			if (NO_TOOL_ACTION.has(`${nsName}.${method}`)) continue;
@@ -287,7 +287,7 @@ describe("access-model cross-check", () => {
 		for (const [path, verb] of Object.entries(AGENTS_SDK_ACTION)) {
 			// Index directly, not `toHaveProperty(path)`: the dotted keys
 			// ("agents.list") are LITERAL keys, but toHaveProperty parses a dotted
-			// string as a nested traversal (METHOD_METADATA.agents.list) — behavior
+			// string as a nested traversal (METHOD_METADATA.agents.list) — automation
 			// that varies across matcher versions. Look up the literal key instead.
 			expect(
 				METHOD_METADATA[path],

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeStableKey, formatBehaviorEntityIdentity } from './stable-keys';
+import { computeStableKey, formatAutomationEntityIdentity } from './stable-keys';
 
 describe('computeStableKey', () => {
   it('encodes an exact, typed composite tuple deterministically', () => {
@@ -49,8 +49,8 @@ describe('computeStableKey', () => {
 
   it('scopes the same tuple to its declared entity type', () => {
     const stableKey = computeStableKey({ id: 'ACME-1' }, ['id']);
-    expect(formatBehaviorEntityIdentity(42, 'records', 'company', stableKey)).not.toBe(
-      formatBehaviorEntityIdentity(42, 'records', 'contact', stableKey)
+    expect(formatAutomationEntityIdentity(42, 'records', 'company', stableKey)).not.toBe(
+      formatAutomationEntityIdentity(42, 'records', 'contact', stableKey)
     );
   });
 
@@ -63,7 +63,7 @@ describe('computeStableKey', () => {
       keyFields.map((field) => [field, '😀'.repeat(64)])
     );
     const stableKey = computeStableKey(row, keyFields);
-    const identifier = formatBehaviorEntityIdentity(
+    const identifier = formatAutomationEntityIdentity(
       42,
       'records',
       'company',
@@ -75,7 +75,7 @@ describe('computeStableKey', () => {
 
     const changedRow = { ...row, [keyFields[3]]: 'different' };
     expect(
-      formatBehaviorEntityIdentity(
+      formatAutomationEntityIdentity(
         42,
         'records',
         'company',

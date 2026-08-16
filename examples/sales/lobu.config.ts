@@ -5,7 +5,7 @@ import {
   defineSkill,
   defineEntityType,
   defineRelationshipType,
-  defineBehavior,
+  defineAutomation,
   secret,
 } from "@lobu/cli/config";
 import type SalesforcePipelineConnector from "./salesforce-pipeline.connector.ts";
@@ -188,7 +188,7 @@ const runs = defineRelationshipType({
     "Link the internal team or customer function to the pilot they own.",
 });
 
-const accountHealthMonitor = defineBehavior({
+const accountHealthMonitor = defineAutomation({
   agent: sales,
   slug: "account-health-monitor",
   name: "Account health monitor",
@@ -213,5 +213,5 @@ export default defineConfig({
   agents: [sales],
   entities: [organization, product, region, renewalRisk, team],
   relationships: [affects, expandedInto, runs],
-  behaviors: [accountHealthMonitor],
+  automations: [accountHealthMonitor],
 });

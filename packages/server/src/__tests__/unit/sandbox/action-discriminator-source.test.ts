@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
 
 /**
- * Class guard, complementing the behavioural
+ * Class guard, complementing the runtime-affecting
  * "pins both entity-schema discriminators against caller input" case in
  * `sdk-signature-contract.test.ts`. That test proves `entitySchema` is fixed;
  * this one stops a NEW namespace reintroducing the shape it was fixed from —

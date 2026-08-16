@@ -1,11 +1,11 @@
 /**
  * Cross-repo wire coverage for the Owletto agent list.
  *
- * The database and internal engine still call these rows watchers, but the
- * public AgentItem contract is Behavior-facing: owletto declares
- * `behaviorCount`, so the server has to emit that key. Nothing in owletto reads
- * the field today, so a key mismatch produces no type error and no visibly
- * broken screen — this server-side assertion is the only thing that catches it.
+ * The database and public AgentItem contract both use Automation vocabulary:
+ * owletto declares `automationCount`, so the server has to emit that key.
+ * Nothing in owletto reads the field today, so a key mismatch produces no type
+ * error and no visibly broken screen — this server-side assertion is the only
+ * thing that catches it.
  */
 import { beforeAll, beforeEach, expect, test } from "bun:test";
 import {
@@ -49,24 +49,24 @@ beforeEach(async () => {
 			'test-user', 'Test User', 'test-user@example.com', true, now(), now()
 		)
 	`;
-	// One active Behavior plus one archived one: the count query filters on
-	// status, so the archived row is what keeps `behaviorCount: 1` from passing
+	// One active Automation plus one archived one: the count query filters on
+	// status, so the archived row is what keeps `automationCount: 1` from passing
 	// on a mere "some rows exist" read.
 	await sql`
-		INSERT INTO watchers (
+		INSERT INTO automations (
 			id, organization_id, slug, name, agent_id, created_by,
-			watcher_group_id, status
+			automation_group_id, status
 		) VALUES (
-			9001, ${ORG}, 'counted-behavior', 'Counted Behavior', ${AGENT},
+			9001, ${ORG}, 'counted-automation', 'Counted Automation', ${AGENT},
 			'test-user', 9001, 'active'
 		), (
-			9002, ${ORG}, 'archived-behavior', 'Archived Behavior', ${AGENT},
+			9002, ${ORG}, 'archived-automation', 'Archived Automation', ${AGENT},
 			'test-user', 9002, 'archived'
 		)
 	`;
 });
 
-test("GET / exposes active watcher rows as behaviorCount", async () => {
+test("GET / exposes active automation rows as automationCount", async () => {
 	const { agentRoutes } = await import("../agent-routes.js");
 	const response = await agentRoutes.request("/");
 	expect(response.status).toBe(200);
@@ -75,6 +75,5 @@ test("GET / exposes active watcher rows as behaviorCount", async () => {
 		agents: Array<Record<string, unknown>>;
 	};
 	const agent = body.agents.find((item) => item.agentId === AGENT);
-	expect(agent).toMatchObject({ agentId: AGENT, behaviorCount: 1 });
-	expect(agent).not.toHaveProperty("watcherCount");
+	expect(agent).toMatchObject({ agentId: AGENT, automationCount: 1 });
 });

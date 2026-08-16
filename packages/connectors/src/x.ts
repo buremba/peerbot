@@ -179,15 +179,15 @@ const X_PERSON_AUTHOR_TARGET: EventAttributionTargetSpec = {
 const X_PERSON_AUTHOR_TRAITS: Record<string, EntityTraitSpec> = {
 	x_handle: {
 		eventPath: "metadata.author_handle",
-		behavior: "prefer_non_empty",
+		mergeStrategy: "prefer_non_empty",
 	},
 	x_display_name: {
 		eventPath: "metadata.author_name",
-		behavior: "prefer_non_empty",
+		mergeStrategy: "prefer_non_empty",
 	},
 	last_x_interaction_at: {
 		eventPath: "occurred_at",
-		behavior: "overwrite",
+		mergeStrategy: "overwrite",
 	},
 };
 
@@ -212,15 +212,15 @@ const X_PERSON_DM_COUNTERPARTY_TARGET: EventAttributionTargetSpec = {
 const X_PERSON_DM_COUNTERPARTY_TRAITS: Record<string, EntityTraitSpec> = {
 	x_handle: {
 		eventPath: "metadata.participant_handle",
-		behavior: "prefer_non_empty",
+		mergeStrategy: "prefer_non_empty",
 	},
 	x_display_name: {
 		eventPath: "metadata.participant_name",
-		behavior: "prefer_non_empty",
+		mergeStrategy: "prefer_non_empty",
 	},
 	last_x_dm_at: {
 		eventPath: "occurred_at",
-		behavior: "overwrite",
+		mergeStrategy: "overwrite",
 	},
 };
 
@@ -246,12 +246,12 @@ const X_DM_COUNTERPARTY_ATTRIBUTIONS: EventAttributionRule[] = [
 			],
 		},
 		traits: {
-			x_handle: { eventPath: "metadata.sender_handle", behavior: "prefer_non_empty" },
+			x_handle: { eventPath: "metadata.sender_handle", mergeStrategy: "prefer_non_empty" },
 			// Same trait key as X_PERSON_AUTHOR_TRAITS / DM counterparty — keep
 			// person metadata vocabulary consistent across X attribution paths.
 			x_display_name: {
 				eventPath: "metadata.sender_name",
-				behavior: "prefer_non_empty",
+				mergeStrategy: "prefer_non_empty",
 			},
 		},
 	},

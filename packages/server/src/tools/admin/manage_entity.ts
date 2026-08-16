@@ -75,7 +75,7 @@ import {
 } from "../../utils/metadata-limits";
 import { validateEntityMetadata } from "../../utils/schema-validation";
 import { buildEntityUrl } from "../../utils/url-builder";
-import { trackWatcherReaction } from "../../utils/watcher-reactions";
+import { trackAutomationReaction } from "../../utils/automation-reactions";
 import { isAdminOrOwnerRole } from "../access-control";
 import { MEMBER_ENTITY_TYPE_SLUG } from "../constants";
 import type { ToolContext } from "../registry";
@@ -101,10 +101,10 @@ function capitalize(value: string): string {
 
 /**
  * The acting principal for an entity mutation, resolved through the shared seam
- * ({@link resolveActingPrincipal}): merges the explicit `behavior_source` and the
- * reaction session's own watcher, looks up the owning agent, and pins autonomous
- * mode for a watcher — so a reaction can't dodge its agent's envelope by omitting
- * behavior_source.
+ * ({@link resolveActingPrincipal}): merges the explicit `automation_source` and the
+ * reaction session's own automation, looks up the owning agent, and pins autonomous
+ * mode for an automation — so a reaction can't dodge its agent's envelope by omitting
+ * automation_source.
  */
 function actingPrincipalFor(
 	args: ManageEntityArgs | undefined,
@@ -114,19 +114,19 @@ function actingPrincipalFor(
 		organizationId: ctx.organizationId,
 		userId: ctx.userId,
 		agentId: ctx.agentId,
-		explicitWatcherId: args?.behavior_source?.behavior_id ?? null,
-		sessionWatcherId: ctx.actingWatcherId ?? null,
+		explicitAutomationId: args?.automation_source?.automation_id ?? null,
+		sessionAutomationId: ctx.actingAutomationId ?? null,
 	});
 }
 
 function attributionFor(actor: ActingPrincipal): ApprovalAttributionType {
-	return actor.kind === "watcher"
-		? ApprovalAttribution.Behavior
+	return actor.kind === "automation"
+		? ApprovalAttribution.Automation
 		: ApprovalAttribution.Agent;
 }
 
 /**
- * Entity read gate for agents/watchers. Humans skip (role ACL is separate).
+ * Entity read gate for agents/automations. Humans skip (role ACL is separate).
  * Default is auto (unrestricted within org); a policy can deny by type.
  */
 async function assertEntityReadAllowed(
@@ -217,8 +217,8 @@ async function manageEntityImpl(
 ): Promise<ManageEntityResult> {
   const result = await runManageEntity(args, env, ctx);
 
-  // Track watcher reaction for mutating actions
-	if (args.behavior_source && "action" in result) {
+  // Track automation reaction for mutating actions
+	if (args.automation_source && "action" in result) {
     const reactionType =
 			result.action === "create"
 				? "entity_created"
@@ -232,10 +232,10 @@ async function manageEntityImpl(
 				result.action === "create" && "entity" in result
           ? (result as any).entity.id
           : args.entity_id;
-      await trackWatcherReaction({
+      await trackAutomationReaction({
         organizationId: ctx.organizationId,
-        watcherId: args.behavior_source.behavior_id,
-        windowId: args.behavior_source.window_id,
+        automationId: args.automation_source.automation_id,
+        windowId: args.automation_source.window_id,
         reactionType,
 				toolName: "manage_entity",
         toolArgs: {
@@ -327,12 +327,12 @@ async function handleCreate(
 		principalKind: actor.kind,
 		sql: getDb(),
 		attribution,
-		// The TRUSTED reaction-session watcher/window WINS (same precedence as
+		// The TRUSTED reaction-session automation/window WINS (same precedence as
 		// resolveActingPrincipal): a reaction can't retag its deferral into another
-		// watcher's approval batch by passing a foreign behavior_source. The
+		// automation's approval batch by passing a foreign automation_source. The
 		// caller-supplied source is only honored OUTSIDE a reaction session.
-		watcherId: ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null,
-		windowId: ctx.actingWindowId ?? args.behavior_source?.window_id ?? null,
+		automationId: ctx.actingAutomationId ?? args.automation_source?.automation_id ?? null,
+		windowId: ctx.actingWindowId ?? args.automation_source?.window_id ?? null,
 		principalId: actor.id,
 		ownerAgentId: actor.ownerAgentId,
 		ownerResolved: actor.ownerResolved,
@@ -379,7 +379,7 @@ async function handleCreate(
 		// Root entity (no parent)
 		nextSteps.push(
 			`Use client.connections.connect({ connector_key: '<connector_key>' }), client.feeds.create({ connection_id: <connection_id>, feed_key: '<feed_key>', entity_ids: [${entity.id}], config: {} }) to target this entity, then client.feeds.trigger({ feed_id: <feed_id> }) to collect now.`,
-			`Use client.behaviors.create({ entity_id: ${entity.id}, slug: '<slug>', agent_id: '<agent_id>', prompt: '<prompt>', sources: [], triggers: [{ kind: 'schedule', cron: '<cron>', timezone: '<IANA timezone>' }] }) to schedule a Behavior.`,
+			`Use client.automations.create({ entity_id: ${entity.id}, slug: '<slug>', agent_id: '<agent_id>', prompt: '<prompt>', sources: [], triggers: [{ kind: 'schedule', cron: '<cron>', timezone: '<IANA timezone>' }] }) to schedule an Automation.`,
 		);
 	} else {
 		// Child entity (has parent)
@@ -509,7 +509,7 @@ async function handleUpdate(
 		attribution: attributionFor(updateActor),
 		principalId: updateActor.id,
 		// Trusted reaction-session window WINS — see the create path.
-		windowId: ctx.actingWindowId ?? args.behavior_source?.window_id ?? null,
+		windowId: ctx.actingWindowId ?? args.automation_source?.window_id ?? null,
 		ownerAgentId: updateActor.ownerAgentId,
 		ownerResolved: updateActor.ownerResolved,
 	});
@@ -655,7 +655,7 @@ function redactMemberEmail(
 
 /**
  * Fold a duplicate entity (`entity_id`, the loser) into the one it really is
- * (`winner_entity_id`). Humans must be admin/owner. Agents and watchers may
+ * (`winner_entity_id`). Humans must be admin/owner. Agents and automations may
  * auto-merge only when the entity type policy proves the match; every other
  * candidate queues human review. The heavy lifting (merge attributes, move
  * identities and edges, tombstone + forward each loser, flatten chains) is in
@@ -785,10 +785,10 @@ async function handleMerge(
 				entity_ids: loserIds,
 				winner_entity_id: winnerId,
 				evidence: resolution.evidence,
-				watcher_id:
-					ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null,
+				automation_id:
+					ctx.actingAutomationId ?? args.automation_source?.automation_id ?? null,
 				window_id:
-					ctx.actingWindowId ?? args.behavior_source?.window_id ?? null,
+					ctx.actingWindowId ?? args.automation_source?.window_id ?? null,
 				source_run_id: ctx.actingRunId ?? null,
 				policy_hash: resolution.policyHash,
 				resolution_fingerprint: resolution.fingerprint,
@@ -842,13 +842,13 @@ async function handleMerge(
 					: {
 							decision: "auto_merge",
 							sourceRunId: ctx.actingRunId ?? null,
-							watcherId:
-								ctx.actingWatcherId ??
-								args.behavior_source?.behavior_id ??
+							automationId:
+								ctx.actingAutomationId ??
+								args.automation_source?.automation_id ??
 								null,
 							windowId:
 								ctx.actingWindowId ??
-								args.behavior_source?.window_id ??
+								args.automation_source?.window_id ??
 								null,
 							policyHash: resolution?.policyHash ?? null,
 							evidence: resolution?.evidence ?? [],
@@ -1146,7 +1146,7 @@ async function handleList(
 				created_at: toIsoStringOrNow(e.created_at),
 				total_content: e.total_content,
 				active_connections: e.active_connections,
-				behaviors_count: e.behaviors_count,
+				automations_count: e.automations_count,
 				children_count: e.children_count,
 				view_url: entityInfo ? buildEntityUrl(entityInfo, baseUrl) : undefined,
 				...(relMap.size > 0 && relMap.has(e.id)
@@ -1380,9 +1380,9 @@ async function handleDelete(
 		principalKind: deleteActor.kind,
 		sql: getDb(),
 		attribution,
-		// Trusted reaction-session watcher/window WINS — see the create path.
-		watcherId: ctx.actingWatcherId ?? args?.behavior_source?.behavior_id ?? null,
-		windowId: ctx.actingWindowId ?? args?.behavior_source?.window_id ?? null,
+		// Trusted reaction-session automation/window WINS — see the create path.
+		automationId: ctx.actingAutomationId ?? args?.automation_source?.automation_id ?? null,
+		windowId: ctx.actingWindowId ?? args?.automation_source?.window_id ?? null,
 		principalId: deleteActor.id,
 		ownerAgentId: deleteActor.ownerAgentId,
 		ownerResolved: deleteActor.ownerResolved,

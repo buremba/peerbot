@@ -52,7 +52,7 @@ interface SeedRunOpts {
 	status: "pending" | "claimed" | "running" | "completed";
 	lastHeartbeatAgoSeconds: number | null;
 	claimedAtAgoSeconds?: number | null;
-	runType?: "sync" | "action" | "embed_backfill" | "auth" | "behavior";
+	runType?: "sync" | "action" | "embed_backfill" | "auth" | "automation";
 	feedId?: number | null;
 	createdAtAgoSeconds?: number;
 	/** Defaults to 'auto' (worker-claimable). Set 'pending' for a human-approval run. */
@@ -578,17 +578,17 @@ describe("reapStaleRuns — connector lanes", () => {
 		expect(await statusOf(id)).toBe("timeout");
 	});
 
-	test("watcher lane is excluded from this reaper", async () => {
-		// Watcher runs have their own dedicated 2h sweep in watchers/automation.ts.
-		const watcherId = await seedRun({
+	test("automation lane is excluded from this reaper", async () => {
+		// Automation runs have their own dedicated 2h sweep in automations/automation.ts.
+		const automationId = await seedRun({
 			status: "running",
 			lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 10,
 			claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 10,
-			runType: "behavior",
+			runType: "automation",
 		});
 		const result = await reapStaleRuns();
 		expect(result.reaped).toBe(0);
-		expect(await statusOf(watcherId)).toBe("running");
+		expect(await statusOf(automationId)).toBe("running");
 	});
 
 	test("back-to-back calls do not double-fail the same row", async () => {

@@ -26,7 +26,7 @@
  * reaches stale credentials — a message arriving while a turn is running is
  * delivered as-is (see step 4), because deciding otherwise needs worker-local
  * knowledge the gateway does not have. That case is left at its pre-gate
- * behaviour rather than guarded by a guess; eliminating it needs
+ * existing handling rather than guarded by a guess; eliminating it needs
  * worker-confirmed delivery disposition, which belongs to the turn-lifecycle
  * consolidation, not here.
  *
@@ -147,7 +147,7 @@ export type DispatchDecision = "deliver" | "drop";
  *    interrupts or withholds from a running turn: it cannot know whether the
  *    worker will steer this message into that turn, cancel it, or queue it as
  *    new work, because those preconditions are worker-local. Delivering leaves
- *    exactly the pre-gate behaviour for this case; withholding would silently
+ *    exactly the pre-gate semantics for this case; withholding would silently
  *    break steering and `/cancel`. The probe counts only DELIVERED turns
  *    (completed `thread_message` row = delivery receipt), so armed-but-
  *    undelivered turns — including THIS one — never count as live.
@@ -235,7 +235,7 @@ export async function gateDispatchOnStaleness(args: {
   //
   // What this costs: a message that arrives mid-turn may start its own turn on
   // credentials inside the recycle margin. That is exactly the pre-gate
-  // behaviour — no regression, just an unfixed case — and the recycle is not
+  // semantics — no regression, just an unfixed case — and the recycle is not
   // lost, it happens on the first claim that finds the worker quiet. A
   // conversation that is NEVER quiet at claim time is never recycled; closing
   // that needs worker-confirmed disposition, which is the consolidation's job.

@@ -174,7 +174,7 @@ describe("provider error bodies are labelled and unwrapped", () => {
 
   it("falls back to the raw body when no provider is known", async () => {
     // errorContext is optional; with no provider there is nothing to label
-    // with, and the old behaviour (relay verbatim) must still hold.
+    // with, and the old semantics (relay verbatim) must still hold.
     const r = await renderAgentError(
       AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED,
       "429 slow down",

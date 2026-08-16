@@ -14,13 +14,13 @@
  * no re-derivation from the conversationId — and, when the run is a capture
  * run, records the attempt and answers with a success-shaped body so the agent
  * continues its turn normally. A capture run that got an error back would
- * mostly be measuring its own retry logic, which is not the behaviour we want
+ * mostly be measuring its own retry logic, which is not the semantics we want
  * to score.
  */
 
 import type { Context } from "hono";
 import { getDb } from "../../../db/client.js";
-import { BEHAVIOR_EVAL_RUN_TYPE } from "../../../runs/run-types.js";
+import { AUTOMATION_EVAL_RUN_TYPE } from "../../../runs/run-types.js";
 import logger from "../../../utils/logger.js";
 import { getVerifiedWorker } from "../shared/helpers.js";
 import type { WorkerContext } from "./types.js";
@@ -97,7 +97,7 @@ export async function captureSideEffect(
 			agentId: worker.agentId,
 			organizationId: worker.organizationId,
 			conversationId: worker.conversationId,
-			behaviorRunId: worker.behaviorRunId,
+			automationRunId: worker.automationRunId,
 		},
 		`[eval-capture] suppressed ${action} for a capture run`,
 	);
@@ -106,7 +106,7 @@ export async function captureSideEffect(
 	// through and perform the side effect. Recording is what needs the id.
 	// `verifyWorkerToken` rejects a capture token that arrives without one, so
 	// in practice this logs nothing; the branch is how that invariant narrows
-	// to `number`, which the token type cannot express (`behaviorRunId` is
+	// to `number`, which the token type cannot express (`automationRunId` is
 	// required only when the mode is capture). It degrades to
 	// suppress-without-record rather than throwing, for the same reason
 	// `recordCapturedSideEffect` swallows its errors: a route error sends a
@@ -114,13 +114,13 @@ export async function captureSideEffect(
 	// Falsy rather than `=== undefined`: the verifier already rejects <= 0 and
 	// non-integers, but a future non-token caller reaching this helper with 0 or
 	// NaN should take the log, not address `WHERE id = 0`.
-	if (!worker.behaviorRunId) {
+	if (!worker.automationRunId) {
 		logger.error(
 			{ action },
-			"[eval-capture] no behaviorRunId on the token — side effect suppressed but NOT recorded",
+			"[eval-capture] no automationRunId on the token — side effect suppressed but NOT recorded",
 		);
 	} else {
-		await recordCapturedSideEffect(worker.behaviorRunId, action, details);
+		await recordCapturedSideEffect(worker.automationRunId, action, details);
 	}
 	return c.json(
 		responseBody ?? {
@@ -145,7 +145,7 @@ export async function captureSideEffect(
  * the side effect would break the guarantee.
  */
 async function recordCapturedSideEffect(
-	behaviorRunId: number,
+	automationRunId: number,
 	action: string,
 	details: Record<string, unknown>,
 ): Promise<void> {
@@ -185,12 +185,12 @@ async function recordCapturedSideEffect(
               ) >= ${MAX_CAPTURED_SIDE_EFFECTS}
             )
           )
-      WHERE id = ${behaviorRunId}
-        AND run_type = ${BEHAVIOR_EVAL_RUN_TYPE}
+      WHERE id = ${automationRunId}
+        AND run_type = ${AUTOMATION_EVAL_RUN_TYPE}
     `;
 	} catch (error) {
 		logger.error(
-			{ error, behaviorRunId, action },
+			{ error, automationRunId, action },
 			"[eval-capture] side effect suppressed but its record could not be written",
 		);
 	}

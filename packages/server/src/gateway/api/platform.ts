@@ -121,8 +121,8 @@ export class ApiPlatform implements PlatformAdapter {
       const toolName =
         event.fields
           ? "manage_entity"
-          : resourceKind === "behavior"
-            ? "manage_behaviors"
+          : resourceKind === "automation"
+            ? "manage_automations"
             : "manage_agents";
       this.enqueueInteractionCard(queue, event, "tool-approval", {
         type: "tool-approval",

@@ -1,7 +1,7 @@
 /**
- * DELETE /api/me/devices/:id must not turn an active Behavior pin into a raw
+ * DELETE /api/me/devices/:id must not turn an active Automation pin into a raw
  * restrictive-FK failure. Device removal is human-owned cleanup: the caller
- * gets the exact blocking Behavior, resolves it explicitly, then retries.
+ * gets the exact blocking Automation, resolves it explicitly, then retries.
  */
 
 import type { Context } from 'hono';
@@ -40,9 +40,9 @@ describe('device management deletion', () => {
   beforeAll(async () => {
     await cleanupTestDatabase();
     const organization = await createTestOrganization({
-      name: 'Device Delete Behavior Pin',
+      name: 'Device Delete Automation Pin',
     });
-    const user = await createTestUser({ email: 'device-delete-behavior@test.example.com' });
+    const user = await createTestUser({ email: 'device-delete-automation@test.example.com' });
     await addUserToOrganization(user.id, organization.id, 'owner');
     const agent = await createTestAgent({
       organizationId: organization.id,
@@ -60,13 +60,13 @@ describe('device management deletion', () => {
     });
   });
 
-  it('returns an actionable conflict for an owned device pinned by an active Behavior, then succeeds after archive', async () => {
+  it('returns an actionable conflict for an owned device pinned by an active Automation, then succeeds after archive', async () => {
     const sql = getTestDb();
     const deviceRows = (await sql`
       INSERT INTO device_workers (
         user_id, worker_id, platform, capabilities, label, organization_id
       ) VALUES (
-        ${userId}, 'device-delete-behavior-worker', 'macos', ${sql.json([])},
+        ${userId}, 'device-delete-automation-worker', 'macos', ${sql.json([])},
         'Pinned Mac', ${organizationId}
       )
       RETURNING id
@@ -82,28 +82,28 @@ describe('device management deletion', () => {
       WHERE id = ${connection.id}
     `;
 
-    const created = (await owner.behaviors.manage({
+    const created = (await owner.automations.manage({
       action: 'create',
       slug: 'device-delete-blocker',
-      name: 'Pinned Device Behavior',
+      name: 'Pinned Device Automation',
       prompt: 'Run only on the explicitly selected device.',
       triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
       agent_id: agentId,
       device_worker_id: deviceId,
-    })) as { behavior_id: string };
-    const behaviorId = created.behavior_id;
+    })) as { automation_id: string };
+    const automationId = created.automation_id;
 
     const conflict = await deleteDeviceWorker(deleteContext(userId, deviceId));
     expect(conflict.status).toBe(409);
     await expect(conflict.json()).resolves.toMatchObject({
       error: expect.stringMatching(/reassign or archive.*retry/i),
-      behaviors: [
+      automations: [
         {
-          behavior_id: behaviorId,
-          name: 'Pinned Device Behavior',
+          automation_id: automationId,
+          name: 'Pinned Device Automation',
           organization_slug: organizationSlug,
           view_url: expect.stringMatching(
-            new RegExp(`/${organizationSlug}/behaviors/${behaviorId}$`)
+            new RegExp(`/${organizationSlug}/automations/${automationId}$`)
           ),
         },
       ],
@@ -114,8 +114,8 @@ describe('device management deletion', () => {
         EXISTS(SELECT 1 FROM device_workers WHERE id = ${deviceId}) AS device_exists,
         status,
         device_worker_id::text AS device_worker_id
-      FROM watchers
-      WHERE id = ${behaviorId}
+      FROM automations
+      WHERE id = ${automationId}
     `) as unknown as Array<{
       device_exists: boolean;
       status: string;
@@ -147,7 +147,7 @@ describe('device management deletion', () => {
 
     // The public delete action is the existing archival semantic: the row is
     // retained and scheduling stops. It must no longer block its device.
-    await owner.behaviors.delete({ behavior_ids: [behaviorId] });
+    await owner.automations.delete({ automation_ids: [automationId] });
 
     const deleted = await deleteDeviceWorker(deleteContext(userId, deviceId));
     expect(deleted.status).toBe(200);
@@ -158,8 +158,8 @@ describe('device management deletion', () => {
         EXISTS(SELECT 1 FROM device_workers WHERE id = ${deviceId}) AS device_exists,
         status,
         device_worker_id::text AS device_worker_id
-      FROM watchers
-      WHERE id = ${behaviorId}
+      FROM automations
+      WHERE id = ${automationId}
     `) as unknown as Array<{
       device_exists: boolean;
       status: string;

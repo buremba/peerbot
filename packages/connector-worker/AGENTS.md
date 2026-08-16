@@ -19,7 +19,7 @@ pipeline also used by `@lobu/cli` and `@lobu/server`.
 - No durable state lives on the worker: connector checkpoints are persisted by
   the gateway, not here, and the child has no direct Lobu DB handle.
 - The executor is generic; device-pinned connectors and cloud-fleet daemons are
-  caller concerns (capability/platform), not executor behavior.
+  caller concerns (capability/platform), not executor semantics.
 - `@lobu/connector-sdk` is externalized; the worker provides it at runtime.
 
 ## Key modules

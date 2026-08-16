@@ -154,7 +154,7 @@ function formatWhyApprovalNeeded(reason: string | null | undefined): string {
 	const fallback =
 		"This change needs a human approval before it is applied.";
 	if (!reason) return fallback;
-	return reason.replace(/^Watcher proposes updating /i, "Field is protected: ");
+	return reason.replace(/^Automation proposes updating /i, "Field is protected: ");
 }
 
 export function formatActionApprovalTitle(
@@ -276,9 +276,9 @@ function renderApprovalBody(
 		: model.entityId
 			? `${label} (#${model.entityId})`
 			: label;
-	const who = escapeMarkdownText(model.requestedBy ?? "A watcher");
+	const who = escapeMarkdownText(model.requestedBy ?? "An automation");
 
-	// One summary line: "<Watcher> wants to <verb> <entity>."
+	// One summary line: "<Automation> wants to <verb> <entity>."
 	if (model.diffs) {
 		lines.push(`**${who}** wants to update ${entityLink}:`);
 		for (const d of model.diffs)
@@ -368,7 +368,7 @@ export function formatActionApprovalBody(params: {
  * Sharing `resolveAskAffordance` is the point: the decision "can this be
  * settled in one click, or does it need real input?" is derived once from the
  * schema and answered identically on every surface. It previously returned
- * undefined for anything that was not an entity change, so Behavior and agent
+ * undefined for anything that was not an entity change, so Automation and agent
  * write approvals reached Slack with NO card and no way to act.
  *
  * Decision-only approvals get Approve/Reject. Anything needing input gets the

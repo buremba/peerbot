@@ -35,7 +35,7 @@ const CONTEXT_CASE_SQL = `
 const FINAL_JOINS_SQL = `
       LEFT JOIN connections c ON c.id = f.connection_id
       LEFT JOIN feeds fd ON fd.id = f.feed_id
-      LEFT JOIN watcher_versions wv ON wv.id = f.behavior_version_id
+      LEFT JOIN automation_versions wv ON wv.id = f.automation_version_id
       LEFT JOIN thread_meta tm ON tm.content_id = f.id`;
 
 const FINAL_JOINS_WITH_CLASSIFICATIONS_SQL = `${FINAL_JOINS_SQL}
@@ -64,7 +64,7 @@ const PARENT_ROOT_JOINS_SQL = `
         LIMIT 1
       ) root ON true`;
 
-const BASE_COLUMNS_SQL = `f.id, f.entity_ids, f.connection_id, f.feed_id, f.feed_key, f.behavior_id, fd.display_name as feed_name, COALESCE(wv.name, 'Behavior #' || f.behavior_id) as behavior_name, f.payload_text, f.title, f.author_name, f.source_url, f.occurred_at, f.semantic_type,
+const BASE_COLUMNS_SQL = `f.id, f.entity_ids, f.connection_id, f.feed_id, f.feed_key, f.automation_id, fd.display_name as feed_name, COALESCE(wv.name, 'Automation #' || f.automation_id) as automation_name, f.payload_text, f.title, f.author_name, f.source_url, f.occurred_at, f.semantic_type,
           f.connector_key as platform, f.origin_id, f.origin_parent_id, f.score, f.metadata, f.payload_type, f.payload_data, f.payload_template, f.attachments, f.origin_type,
           f.interaction_type, f.interaction_status, f.interaction_input_schema, f.interaction_input, f.interaction_output, f.interaction_error, f.supersedes_event_id, f.run_id`;
 

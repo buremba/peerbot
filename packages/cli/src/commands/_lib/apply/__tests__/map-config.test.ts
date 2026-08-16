@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   defineAgent,
   defineAuthProfile,
-  defineBehavior,
+  defineAutomation,
   defineConfig,
   defineConnection,
   defineConnector,
@@ -11,7 +11,7 @@ import {
   secret,
 } from "@lobu/cli/config";
 import type { AgentSettings } from "@lobu/core";
-import { resolveBehaviorConnectionRefs } from "../apply-cmd.js";
+import { resolveAutomationConnectionRefs } from "../apply-cmd.js";
 import {
   mapProjectToDesiredState,
   mergeAgentDirArtifacts,
@@ -149,22 +149,22 @@ describe("mapProjectToDesiredState", () => {
       )
     ).toThrow(/duplicate connection slug "gh"/i);
 
-    const w1 = defineBehavior({
+    const w1 = defineAutomation({
       slug: "w",
       agent: a,
       skills: ["s"],
     });
-    const w2 = defineBehavior({
+    const w2 = defineAutomation({
       slug: "w",
       agent: a,
       skills: ["s"],
     });
     expect(() =>
       mapProjectToDesiredState(
-        defineConfig({ org: "o", agents: [a], behaviors: [w1, w2] }),
+        defineConfig({ org: "o", agents: [a], automations: [w1, w2] }),
         env
       )
-    ).toThrow(/duplicate Behavior slug "w"/i);
+    ).toThrow(/duplicate Automation slug "w"/i);
   });
 
   test("maps entities + relationships with typed-handle slugs", () => {
@@ -190,19 +190,19 @@ describe("mapProjectToDesiredState", () => {
     ]);
   });
 
-  test("preserves explicit null outputs so apply can clear a Behavior", () => {
+  test("preserves explicit null outputs so apply can clear an Automation", () => {
     const agent = defineAgent({ id: "radar" });
-    const behavior = defineBehavior({
+    const automation = defineAutomation({
       agent,
       slug: "social-radar",
       prompt: "Rank social posts.",
       outputs: null,
     });
     const state = mapProjectToDesiredState(
-      defineConfig({ agents: [agent], behaviors: [behavior] })
+      defineConfig({ agents: [agent], automations: [automation] })
     );
 
-    expect(state.watchers[0]?.outputs).toBeNull();
+    expect(state.automations[0]?.outputs).toBeNull();
   });
 
   test("BYO chat connection carries credentialMode + resolves secret config", () => {
@@ -532,13 +532,13 @@ describe("mapProjectToDesiredState", () => {
     ).toBe(false);
   });
 
-  test("maps behaviors: agent handle, sources record, notification", () => {
+  test("maps automations: agent handle, sources record, notification", () => {
     const crm = defineAgent({ id: "crm" });
     const github = defineConnection({
       slug: "github-main",
       connector: "github",
     });
-    const watcher = defineBehavior({
+    const automation = defineAutomation({
       agent: crm,
       slug: "health",
       skills: ["s"],
@@ -561,11 +561,11 @@ describe("mapProjectToDesiredState", () => {
     const state = mapProjectToDesiredState(
       defineConfig({
         agents: [crm],
-        behaviors: [watcher],
+        automations: [automation],
         connections: [github],
       })
     );
-    const dw = state.watchers[0];
+    const dw = state.automations[0];
     expect(dw?.agent).toBe("crm");
     expect(dw?.sources).toEqual([
       { name: "accounts", query: "SELECT 1" },
@@ -593,26 +593,26 @@ describe("mapProjectToDesiredState", () => {
       skip_if_unchanged: true,
     });
 
-    resolveBehaviorConnectionRefs(
-      state.watchers,
+    resolveAutomationConnectionRefs(
+      state.automations,
       new Map([["github-main", 91]]),
       true
     );
-    expect(state.watchers[0]?.triggers?.[0]).toMatchObject({
+    expect(state.automations[0]?.triggers?.[0]).toMatchObject({
       source: "connector",
       connector_key: "github",
       connection_id: 91,
     });
-    expect(state.watchers[0]?.triggers?.[0]).not.toHaveProperty(
+    expect(state.automations[0]?.triggers?.[0]).not.toHaveProperty(
       "connectionSlug"
     );
   });
 
-  test("rejects missing and connector-mismatched Behavior connections", () => {
+  test("rejects missing and connector-mismatched Automation connections", () => {
     const crm = defineAgent({ id: "crm" });
     const slack = defineConnection({ slug: "chat", connector: "slack" });
-    const behavior = (connection: string) =>
-      defineBehavior({
+    const automation = (connection: string) =>
+      defineAutomation({
         agent: crm,
         slug: "review-pr",
         triggers: [
@@ -630,7 +630,7 @@ describe("mapProjectToDesiredState", () => {
 
     expect(() =>
       mapProjectToDesiredState(
-        defineConfig({ agents: [crm], behaviors: [behavior("missing")] })
+        defineConfig({ agents: [crm], automations: [automation("missing")] })
       )
     ).toThrow(/connection "missing".*not declared/i);
     expect(() =>
@@ -638,7 +638,7 @@ describe("mapProjectToDesiredState", () => {
         defineConfig({
           agents: [crm],
           connections: [slack],
-          behaviors: [behavior("chat")],
+          automations: [automation("chat")],
         })
       )
     ).toThrow(/trigger is github.*uses slack/i);
@@ -646,7 +646,7 @@ describe("mapProjectToDesiredState", () => {
 
   test("maps workspace event triggers without connector fields", () => {
     const crm = defineAgent({ id: "crm" });
-    const behavior = defineBehavior({
+    const automation = defineAutomation({
       agent: crm,
       slug: "risk-follow-up",
       prompt: "Investigate the account risk.",
@@ -662,9 +662,9 @@ describe("mapProjectToDesiredState", () => {
     });
 
     const state = mapProjectToDesiredState(
-      defineConfig({ agents: [crm], behaviors: [behavior] })
+      defineConfig({ agents: [crm], automations: [automation] })
     );
-    expect(state.watchers[0]?.triggers).toEqual([
+    expect(state.automations[0]?.triggers).toEqual([
       {
         kind: "event",
         source: "workspace",
@@ -677,7 +677,7 @@ describe("mapProjectToDesiredState", () => {
     ]);
   });
 
-  test("rejects a Behavior trigger with both connection forms", () => {
+  test("rejects an Automation trigger with both connection forms", () => {
     const crm = defineAgent({ id: "crm" });
     const github = defineConnection({
       slug: "github-main",
@@ -688,8 +688,8 @@ describe("mapProjectToDesiredState", () => {
         defineConfig({
           agents: [crm],
           connections: [github],
-          behaviors: [
-            defineBehavior({
+          automations: [
+            defineAutomation({
               agent: crm,
               slug: "review-pr",
               triggers: [
@@ -711,9 +711,9 @@ describe("mapProjectToDesiredState", () => {
     ).toThrow(/either connection or connection_id/i);
   });
 
-  test("maps watcher reactionsGuidance + agentKind", () => {
+  test("maps automation reactionsGuidance + agentKind", () => {
     const crm = defineAgent({ id: "crm" });
-    const watcher = defineBehavior({
+    const automation = defineAutomation({
       agent: crm,
       slug: "w",
       skills: ["s"],
@@ -721,15 +721,15 @@ describe("mapProjectToDesiredState", () => {
       agentKind: "notifier",
     });
     const dw = mapProjectToDesiredState(
-      defineConfig({ agents: [crm], behaviors: [watcher] })
-    ).watchers[0];
+      defineConfig({ agents: [crm], automations: [automation] })
+    ).automations[0];
     expect(dw?.reactionsGuidance).toBe("Notify the account owner.");
     expect(dw?.agentKind).toBe("notifier");
   });
 
-  test("maps watcher deviceWorkerId + model for device-pinned runs", () => {
+  test("maps automation deviceWorkerId + model for device-pinned runs", () => {
     const crm = defineAgent({ id: "crm" });
-    const watcher = defineBehavior({
+    const automation = defineAutomation({
       agent: crm,
       slug: "w",
       prompt: "do the thing",
@@ -738,8 +738,8 @@ describe("mapProjectToDesiredState", () => {
       model: "opencode-go/deepseek-v4-flash",
     });
     const dw = mapProjectToDesiredState(
-      defineConfig({ agents: [crm], behaviors: [watcher] })
-    ).watchers[0];
+      defineConfig({ agents: [crm], automations: [automation] })
+    ).automations[0];
     expect(dw?.deviceWorkerId).toBe("11111111-1111-1111-1111-111111111111");
     expect(dw?.agentKind).toBe("opencode");
     expect(dw?.model).toBe("opencode-go/deepseek-v4-flash");
@@ -748,7 +748,7 @@ describe("mapProjectToDesiredState", () => {
   test("maps entity handles and event outputs to the server contract", () => {
     const crm = defineAgent({ id: "crm" });
     const price = defineEntityType({ key: "price" });
-    const watcher = defineBehavior({
+    const automation = defineAutomation({
       agent: crm,
       slug: "pricing",
       skills: ["s"],
@@ -758,8 +758,12 @@ describe("mapProjectToDesiredState", () => {
       },
     });
     const dw = mapProjectToDesiredState(
-      defineConfig({ agents: [crm], entities: [price], behaviors: [watcher] })
-    ).watchers[0];
+      defineConfig({
+        agents: [crm],
+        entities: [price],
+        automations: [automation],
+      })
+    ).automations[0];
     expect(dw?.outputs).toEqual({
       prices: { entity: "price", key: ["sku"] },
       alerts: { event: "price_changed" },
@@ -768,7 +772,7 @@ describe("mapProjectToDesiredState", () => {
 
   test("rejects declared outputs on conversational turn triggers", () => {
     const crm = defineAgent({ id: "crm" });
-    const watcher = defineBehavior({
+    const automation = defineAutomation({
       agent: crm,
       slug: "reply-and-persist",
       outputs: { alerts: { event: "observation" } },
@@ -784,20 +788,20 @@ describe("mapProjectToDesiredState", () => {
 
     expect(() =>
       mapProjectToDesiredState(
-        defineConfig({ agents: [crm], behaviors: [watcher] })
+        defineConfig({ agents: [crm], automations: [automation] })
       )
     ).toThrow(/outputs require execution "window"/i);
   });
 
-  test("throws when a watcher names an unknown agent", () => {
-    const watcher = defineBehavior({
+  test("throws when an automation names an unknown agent", () => {
+    const automation = defineAutomation({
       agent: "ghost",
       slug: "x",
       skills: ["s"],
     });
     expect(() =>
       mapProjectToDesiredState(
-        defineConfig({ agents: [], behaviors: [watcher] })
+        defineConfig({ agents: [], automations: [automation] })
       )
     ).toThrow(/ghost/);
   });
@@ -920,7 +924,7 @@ describe("mapProjectToDesiredState", () => {
 
   test("rejects an invalid cron schedule", () => {
     const crm = defineAgent({ id: "crm" });
-    const watcher = defineBehavior({
+    const automation = defineAutomation({
       agent: crm,
       slug: "w",
       skills: ["s"],
@@ -928,14 +932,14 @@ describe("mapProjectToDesiredState", () => {
     });
     expect(() =>
       mapProjectToDesiredState(
-        defineConfig({ agents: [crm], behaviors: [watcher] })
+        defineConfig({ agents: [crm], automations: [automation] })
       )
     ).toThrow(/invalid schedule/);
   });
 
   test("rejects a sub-minute cron schedule (parity with TOML/server)", () => {
     const crm = defineAgent({ id: "crm" });
-    const watcher = defineBehavior({
+    const automation = defineAutomation({
       agent: crm,
       slug: "w",
       skills: ["s"],
@@ -943,14 +947,14 @@ describe("mapProjectToDesiredState", () => {
     });
     expect(() =>
       mapProjectToDesiredState(
-        defineConfig({ agents: [crm], behaviors: [watcher] })
+        defineConfig({ agents: [crm], automations: [automation] })
       )
     ).toThrow(/too frequent/);
   });
 
   test("rejects multiple schedule triggers before apply", () => {
     const crm = defineAgent({ id: "crm" });
-    const behavior = defineBehavior({
+    const automation = defineAutomation({
       agent: crm,
       slug: "w",
       skills: ["s"],
@@ -961,21 +965,21 @@ describe("mapProjectToDesiredState", () => {
     });
     expect(() =>
       mapProjectToDesiredState(
-        defineConfig({ agents: [crm], behaviors: [behavior] })
+        defineConfig({ agents: [crm], automations: [automation] })
       )
     ).toThrow(/more than one schedule trigger/i);
   });
 
-  test("requires prompt OR >=1 skill for schedule, window-event, and manual Behaviors", () => {
+  test("requires prompt OR >=1 skill for schedule, window-event, and manual Automations", () => {
     const crm = defineAgent({ id: "crm" });
-    const map = (behavior: ReturnType<typeof defineBehavior>) => () =>
+    const map = (automation: ReturnType<typeof defineAutomation>) => () =>
       mapProjectToDesiredState(
-        defineConfig({ agents: [crm], behaviors: [behavior] })
+        defineConfig({ agents: [crm], automations: [automation] })
       );
     // Schedule trigger, no skills → rejected.
     expect(
       map(
-        defineBehavior({
+        defineAutomation({
           agent: crm,
           slug: "sched",
           triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
@@ -985,7 +989,7 @@ describe("mapProjectToDesiredState", () => {
     // Event trigger with execution "window", no skills → rejected.
     expect(
       map(
-        defineBehavior({
+        defineAutomation({
           agent: crm,
           slug: "win",
           triggers: [
@@ -1003,7 +1007,7 @@ describe("mapProjectToDesiredState", () => {
     // omitted, so the same instruction requirement applies.
     expect(
       map(
-        defineBehavior({
+        defineAutomation({
           agent: crm,
           slug: "workspace-default-window",
           triggers: [
@@ -1017,15 +1021,15 @@ describe("mapProjectToDesiredState", () => {
       )
     ).toThrow(/needs instructions/i);
     // No triggers (manual-only), no skills → rejected.
-    expect(map(defineBehavior({ agent: crm, slug: "manual" }))).toThrow(
+    expect(map(defineAutomation({ agent: crm, slug: "manual" }))).toThrow(
       /needs instructions/i
     );
     // EITHER source satisfies the rule on its own: a prompt with no skills is a
-    // valid schedule Behavior, and demanding both would reject configs the
+    // valid schedule Automation, and demanding both would reject configs the
     // server accepts.
     expect(
       map(
-        defineBehavior({
+        defineAutomation({
           agent: crm,
           slug: "prompt-only",
           prompt: "Summarise yesterday's signups.",
@@ -1035,9 +1039,9 @@ describe("mapProjectToDesiredState", () => {
     ).not.toThrow();
   });
 
-  test("event-turn Behaviors may omit skills; mapper carries skills + empty prompt", () => {
+  test("event-turn Automations may omit skills; mapper carries skills + empty prompt", () => {
     const crm = defineAgent({ id: "crm" });
-    const listen = defineBehavior({
+    const listen = defineAutomation({
       agent: crm,
       slug: "listen",
       triggers: [
@@ -1049,7 +1053,7 @@ describe("mapProjectToDesiredState", () => {
         },
       ],
     });
-    const packs = defineBehavior({
+    const packs = defineAutomation({
       agent: crm,
       slug: "packs",
       skills: ["triage", "sql-style"],
@@ -1063,21 +1067,21 @@ describe("mapProjectToDesiredState", () => {
       ],
     });
     const state = mapProjectToDesiredState(
-      defineConfig({ agents: [crm], behaviors: [listen, packs] })
+      defineConfig({ agents: [crm], automations: [listen, packs] })
     );
     // The mapper cannot read skill files — the loader resolves their snapshots.
-    expect(state.watchers[0]?.prompt).toBe("");
-    expect(state.watchers[0]?.skills).toBeUndefined();
-    expect(state.watchers[1]?.skills).toEqual(["triage", "sql-style"]);
+    expect(state.automations[0]?.prompt).toBe("");
+    expect(state.automations[0]?.skills).toBeUndefined();
+    expect(state.automations[1]?.skills).toEqual(["triage", "sql-style"]);
   });
 
-  test("rejects duplicate and over-cap Behavior skills", () => {
+  test("rejects duplicate and over-cap Automation skills", () => {
     const crm = defineAgent({ id: "crm" });
     const map = (skills: string[]) => () =>
       mapProjectToDesiredState(
         defineConfig({
           agents: [crm],
-          behaviors: [defineBehavior({ agent: crm, slug: "w", skills })],
+          automations: [defineAutomation({ agent: crm, slug: "w", skills })],
         })
       );
     expect(map(["a", "b", "a"])).toThrow(/duplicate skill/i);
@@ -1178,9 +1182,9 @@ describe("mapProjectToDesiredState", () => {
     expect(state.agents).toHaveLength(1);
   });
 
-  test("--only agents excludes Behaviors before validating their connections", () => {
+  test("--only agents excludes Automations before validating their connections", () => {
     const crm = defineAgent({ id: "crm" });
-    const behavior = defineBehavior({
+    const automation = defineAutomation({
       agent: crm,
       slug: "review-pr",
       triggers: [
@@ -1196,20 +1200,20 @@ describe("mapProjectToDesiredState", () => {
       ],
     });
     const state = mapProjectToDesiredState(
-      defineConfig({ agents: [crm], behaviors: [behavior] }),
+      defineConfig({ agents: [crm], automations: [automation] }),
       env,
       "agents"
     );
-    expect(state.watchers).toEqual([]);
+    expect(state.automations).toEqual([]);
   });
 
-  test("--only memory validates Behavior handles without reconciling connections", () => {
+  test("--only memory validates Automation handles without reconciling connections", () => {
     const crm = defineAgent({ id: "crm" });
     const github = defineConnection({
       slug: "github-main",
       connector: "github",
     });
-    const behavior = defineBehavior({
+    const automation = defineAutomation({
       agent: crm,
       slug: "review-pr",
       triggers: [
@@ -1227,13 +1231,13 @@ describe("mapProjectToDesiredState", () => {
     const state = mapProjectToDesiredState(
       defineConfig({
         agents: [crm],
-        behaviors: [behavior],
+        automations: [automation],
         connections: [github],
       }),
       env,
       "memory"
     );
-    expect(state.watchers[0]?.triggers?.[0]).toMatchObject({
+    expect(state.automations[0]?.triggers?.[0]).toMatchObject({
       connectionSlug: "github-main",
     });
     expect(state.connectors.connections).toEqual([]);

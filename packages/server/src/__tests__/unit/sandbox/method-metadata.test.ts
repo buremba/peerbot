@@ -53,8 +53,7 @@ describe("method-metadata", () => {
 
 	it("has a runtime method for every namespace metadata entry (no phantom docs)", () => {
 		// The reverse direction: a METHOD_METADATA key without a runtime method is
-		// dead documentation that search_sdk advertises but the sandbox rejects
-		// (e.g. the retired `behaviors.upgrade`).
+		// dead documentation that search_sdk advertises but the sandbox rejects.
 		const { namespaceMethods, topLevelMethods } = enumerateSdkMethods();
 		const runtime = new Set([...namespaceMethods, ...topLevelMethods]);
 		const phantom = Object.keys(METHOD_METADATA).filter(
@@ -97,14 +96,14 @@ describe("method-metadata", () => {
 	it("classifies external side-effects correctly for known methods", () => {
 		expect(METHOD_METADATA["operations.execute"].access).toBe("external");
 		expect(METHOD_METADATA["feeds.trigger"].access).toBe("external");
-		expect(METHOD_METADATA["behaviors.trigger"].access).toBe("external");
+		expect(METHOD_METADATA["automations.trigger"].access).toBe("external");
 		expect(METHOD_METADATA["connections.test"].access).toBe("external");
 		expect(METHOD_METADATA["authProfiles.test"].access).toBe("external");
 	});
 
 	it("classifies reads correctly for known methods", () => {
 		expect(METHOD_METADATA["entities.list"].access).toBe("read");
-		expect(METHOD_METADATA["behaviors.list"].access).toBe("read");
+		expect(METHOD_METADATA["automations.list"].access).toBe("read");
 		expect(METHOD_METADATA["organizations.list"].access).toBe("read");
 	});
 
@@ -161,9 +160,9 @@ describe("method-metadata", () => {
 			"feeds.delete",
 			"classifiers.delete",
 			"schedules.cancel",
-			"behaviors.get",
-			"behaviors.trigger",
-			"behaviors.delete",
+			"automations.get",
+			"automations.trigger",
+			"automations.delete",
 			"entitySchema.deleteType",
 			"entitySchema.deleteRelType",
 			"entitySchema.listRules",
@@ -277,10 +276,10 @@ describe("method-metadata", () => {
 		expect(create.usageExample ?? "").toContain("send_notification");
 	});
 
-	it("documents that behaviors.create sources[] entries require name AND query", () => {
+	it("documents that automations.create sources[] entries require name AND query", () => {
 		// A create call whose sources lack `name` fails validation, but the doc
 		// only described sources[].query — the client had no way to recover.
-		const create = METHOD_METADATA["behaviors.create"];
+		const create = METHOD_METADATA["automations.create"];
 		expect(create.summary).toMatch(/sources\[\] entry requires `name`/);
 		expect(create.summary).toContain("`query`");
 		expect(create.example ?? "").toContain("name: 'content'");
@@ -293,9 +292,9 @@ describe("method-metadata", () => {
 		const sig = list.signature ?? "";
 		expect(sig).toContain("'connectors'");
 		expect(sig).toContain("'skills'");
-		expect(sig).toContain("'behaviors'");
+		expect(sig).toContain("'automations'");
 		expect(list.summary).toContain("'connectors'");
-		expect(list.summary).toContain("'behaviors'");
+		expect(list.summary).toContain("'automations'");
 	});
 
 	it("documents knowledge.read's content_ids (array) arg — the shape save_memory's exact_read hint points at", () => {
@@ -329,7 +328,7 @@ describe("method-metadata", () => {
 			["entitySchema.getRelType", "slug"],
 			["entitySchema.auditType", "slug"],
 			["operations.getRun", "run_id"],
-			["behaviors.getVersions", "behavior_id"],
+			["automations.getVersions", "automation_id"],
 			["authProfiles.get", "auth_profile_slug"],
 			["authProfiles.test", "auth_profile_slug"],
 			["authProfiles.delete", "auth_profile_slug"],
@@ -348,7 +347,7 @@ describe("method-metadata", () => {
 			["schedules.pause", ["id: string"]],
 			["schedules.cancel", ["id: string"]],
 			["viewTemplates.rollback", ["version: number"]],
-			["behaviors.setReactionScript", ["reaction_script: string"]],
+			["automations.setReactionScript", ["reaction_script: string"]],
 			[
 				"notifications.send",
 				[
@@ -363,7 +362,7 @@ describe("method-metadata", () => {
 			["classifiers.classify", ["classifier_slug: string", "'llm' | 'user'"]],
 			[
 				"classifiers.create",
-				["behavior_id?: string", "attribute_values", "examples: string[]"],
+				["automation_id?: string", "attribute_values", "examples: string[]"],
 			],
 		];
 		for (const [path, fragments] of expectations) {

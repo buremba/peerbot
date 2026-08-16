@@ -2,7 +2,7 @@
  * Managed Slack OAuth install routing in the unified `connections` model.
  *
  *   1. A managed install (`slackinst-` slug, agent_id NULL) resolves its bound
- *      channels via the Behavior trigger's connection id — the legacy
+ *      channels via the Automation trigger's connection id — the legacy
  *      (org, agent, platform) tuple join never matched a NULL agent_id, so
  *      managed installs were invisible to ACL-sync / list / delivery.
  *   2. One-active-per-WORKSPACE for managed installs: a Slack team binds to
@@ -18,7 +18,7 @@ import { createPostgresAppInstallationStore } from "../../../lobu/stores/app-ins
 import { upsertChatConnectionProjection } from "../../../lobu/stores/connections-projection";
 import { upsertSlackInstallByTeam } from "../../../lobu/stores/slack-installations";
 import { initWorkspaceProvider } from "../../../workspace";
-import { createTestBehaviorSubscription } from "../../setup/behavior-subscriptions";
+import { createTestAutomationSubscription } from "../../setup/automation-subscriptions";
 import {
 	createTestAgent,
 	createTestOrganization,
@@ -70,7 +70,7 @@ describe("connections-unify managed-install routing", () => {
 
 	afterAll(async () => {
 		const sql = getDb();
-		await sql`DELETE FROM watchers WHERE organization_id IN (${orgId}, ${orgB})`;
+		await sql`DELETE FROM automations WHERE organization_id IN (${orgId}, ${orgB})`;
 		await sql`DELETE FROM connections WHERE organization_id IN (${orgId}, ${orgB})`;
 		await sql`DELETE FROM app_installations WHERE organization_id IN (${orgId}, ${orgB})`;
 	});
@@ -93,7 +93,7 @@ describe("connections-unify managed-install routing", () => {
 		// A binding linked to it by connection_id. agent_id is the LINKING agent
 		// (non-null) — the legacy tuple join (b.agent_id = ac.agent_id) would fail
 		// because the managed connection's agent_id is NULL; only the link resolves.
-		await createTestBehaviorSubscription({
+		await createTestAutomationSubscription({
 			organizationId: orgId,
 			agentId,
 			connectionId: Number(conn.id),

@@ -30,7 +30,7 @@ export async function handleSetChannelAbout(
 
 	const subscribedTeam = await sql<{ team_id: string | null }>`
 		SELECT team_id
-		FROM behavior_message_subscriptions
+		FROM automation_message_subscriptions
 		WHERE organization_id = ${organizationId}
 		  AND connection_id = ${connection.id}
 		  AND channel_id = ${args.channel_id}

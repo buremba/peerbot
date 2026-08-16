@@ -22,7 +22,7 @@ import { buildClientSDK } from "../../../sandbox/client-sdk";
 import { getNextNumericId } from "../../../tools/admin/helpers/db-helpers";
 import type { AuthContext } from "../../../tools/execute";
 import { executeTool } from "../../../tools/execute";
-import { getPastReactionsSummary } from "../../../utils/watcher-reactions";
+import { getPastReactionsSummary } from "../../../utils/automation-reactions";
 import { initWorkspaceProvider } from "../../../workspace";
 import { getTestDb } from "../../setup/test-db";
 import {
@@ -64,8 +64,8 @@ describe("notify input_schema — agent asks a human", () => {
 	let orgId: string;
 	let humanCtx: AuthContext;
 	let agentCtx: AuthContext;
-	let behaviorCtx: AuthContext;
-	let behaviorId: number;
+	let automationCtx: AuthContext;
+	let automationId: number;
 	let windowId: number;
 
 	const baseCtx = (
@@ -91,9 +91,9 @@ describe("notify input_schema — agent asks a human", () => {
 	beforeAll(async () => {
 		// No cleanupTestDatabase: every assertion is scoped to this run's fresh
 		// org id, and the full-table wipe alone exceeds the 60s hook budget. Allocate
-		// the Behavior id with the same transaction-safe MAX(id)+1 path as the
+		// the Automation id with the same transaction-safe MAX(id)+1 path as the
 		// production create handler because earlier suites may leave the legacy
-		// watchers_id_seq behind the table.
+		// automations_id_seq behind the table.
 		await initWorkspaceProvider();
 		const org = await createTestOrganization({ name: "agent ask e2e" });
 		orgId = org.id;
@@ -102,27 +102,28 @@ describe("notify input_schema — agent asks a human", () => {
 		humanCtx = baseCtx(owner.id, null);
 		agentCtx = baseCtx(owner.id, "asking-agent");
 		const sql = getTestDb();
-		const [behavior] = await sql.begin(async (tx) => {
-			const id = await getNextNumericId(tx, "watchers");
+		const [automation] = await sql.begin(async (tx) => {
+			const id = await getNextNumericId(tx, "automations");
 			return tx`
-				INSERT INTO watchers (
-					id, watcher_group_id, organization_id, agent_id, created_by, name, slug
+				INSERT INTO automations (
+					id, automation_group_id, organization_id, agent_id, created_by, name, slug
 				) VALUES (
 					${id}, ${id}, ${org.id}, 'asking-agent', ${owner.id},
-					'Ask provenance behavior', 'ask-provenance-behavior'
+					'Ask provenance automation', 'ask-provenance-automation'
 				)
 				RETURNING id
 			`;
 		});
-		behaviorId = Number(behavior.id);
+		automationId = Number(automation.id);
 		const [window] = await sql`
 			INSERT INTO events (
 				organization_id, semantic_type, payload_type, payload_data,
-				metadata, occurred_at, created_at, created_by
+				automation_id, metadata, occurred_at, created_at, created_by
 			) VALUES (
 				${org.id}, 'canvas_state', 'json_template', '{}'::jsonb,
+				${automationId},
 				${sql.json({
-					watcher_id: behaviorId,
+					automation_id: automationId,
 					granularity: "hour",
 					window_start: "2026-08-10T00:00:00.000Z",
 					window_end: "2026-08-10T01:00:00.000Z",
@@ -132,9 +133,9 @@ describe("notify input_schema — agent asks a human", () => {
 			RETURNING id
 		`;
 		windowId = Number(window.id);
-		behaviorCtx = {
+		automationCtx = {
 			...baseCtx(owner.id, null),
-			actingWatcherId: behaviorId,
+			actingAutomationId: automationId,
 			actingWindowId: windowId,
 		};
 	});
@@ -1007,7 +1008,7 @@ describe("notify input_schema — agent asks a human", () => {
 		expect(run.approval_status).toBe("pending");
 	});
 
-	it("binds a Behavior ask and its rejection reason back to the firing window", async () => {
+	it("binds an Automation ask and its rejection reason back to the firing window", async () => {
 		const sent = (await executeTool(
 			"notify",
 			{
@@ -1023,26 +1024,26 @@ describe("notify input_schema — agent asks a human", () => {
 					},
 					required: ["outcome"],
 				},
-				behavior_source: {
-					behavior_id: behaviorId,
+				automation_source: {
+					automation_id: automationId,
 					window_id: windowId,
 				},
 			},
 			TEST_ENV,
-			behaviorCtx,
+			automationCtx,
 		)) as SendResult;
 
 		const sql = getTestDb();
 		const [run] = await sql`
-			SELECT watcher_id, window_id
+			SELECT automation_id, window_id
 			FROM runs WHERE id = ${sent.run_id}
 		`;
-		expect(Number(run.watcher_id)).toBe(behaviorId);
+		expect(Number(run.automation_id)).toBe(automationId);
 		expect(Number(run.window_id)).toBe(windowId);
 
 		const [reaction] = await sql`
-			SELECT run_id FROM watcher_reactions
-			WHERE watcher_id = ${behaviorId} AND window_id = ${windowId}
+			SELECT run_id FROM automation_reactions
+			WHERE automation_id = ${automationId} AND window_id = ${windowId}
 			ORDER BY id DESC LIMIT 1
 		`;
 		expect(Number(reaction.run_id)).toBe(sent.run_id);
@@ -1057,7 +1058,7 @@ describe("notify input_schema — agent asks a human", () => {
 			TEST_ENV,
 			humanCtx,
 		);
-		const summary = await getPastReactionsSummary(behaviorId);
+		const summary = await getPastReactionsSummary(automationId);
 		expect(summary).toContain("Durable state makes this workflow dependable.");
 		expect(summary).toMatch(/rejected/i);
 		expect(summary).toContain(
@@ -1065,7 +1066,7 @@ describe("notify input_schema — agent asks a human", () => {
 		);
 	});
 
-	it("cannot attach a caller-supplied ask to another organization's Behavior history", async () => {
+	it("cannot attach a caller-supplied ask to another organization's Automation history", async () => {
 		const victimOrg = await createTestOrganization({
 			name: "ask provenance victim",
 		});
@@ -1074,26 +1075,27 @@ describe("notify input_schema — agent asks a human", () => {
 		});
 		await addUserToOrganization(victimOwner.id, victimOrg.id, "owner");
 		const sql = getTestDb();
-		const [victimBehavior] = await sql.begin(async (tx) => {
-			const id = await getNextNumericId(tx, "watchers");
+		const [victimAutomation] = await sql.begin(async (tx) => {
+			const id = await getNextNumericId(tx, "automations");
 			return tx`
-				INSERT INTO watchers (
-					id, watcher_group_id, organization_id, agent_id, created_by, name, slug
+				INSERT INTO automations (
+					id, automation_group_id, organization_id, agent_id, created_by, name, slug
 				) VALUES (
 					${id}, ${id}, ${victimOrg.id}, 'victim-agent', ${victimOwner.id},
-					'Victim behavior', ${`victim-behavior-${Date.now()}`}
+					'Victim automation', ${`victim-automation-${Date.now()}`}
 				)
 				RETURNING id
 			`;
 		});
-		const victimBehaviorId = Number(victimBehavior.id);
+		const victimAutomationId = Number(victimAutomation.id);
 		const [victimWindow] = await sql`
 			INSERT INTO events (
 				organization_id, semantic_type, payload_type, payload_data,
-				metadata, occurred_at, created_at, created_by
+				automation_id, metadata, occurred_at, created_at, created_by
 			) VALUES (
 				${victimOrg.id}, 'canvas_state', 'json_template', '{}'::jsonb,
-				${sql.json({ watcher_id: victimBehaviorId })},
+				${victimAutomationId},
+				${sql.json({ automation_id: victimAutomationId })},
 				NOW(), NOW(), ${victimOwner.id}
 			)
 			RETURNING id
@@ -1102,39 +1104,39 @@ describe("notify input_schema — agent asks a human", () => {
 
 		const sent = await send({
 			title: "Forged cross-org review",
-			body: "This must never enter the victim Behavior prompt.",
+			body: "This must never enter the victim Automation prompt.",
 			input_schema: { type: "object" },
-			behavior_source: {
-				behavior_id: victimBehaviorId,
+			automation_source: {
+				automation_id: victimAutomationId,
 				window_id: victimWindowId,
 			},
 		});
 		const [run] = await sql`
-			SELECT watcher_id, window_id FROM runs WHERE id = ${sent.run_id}
+			SELECT automation_id, window_id FROM runs WHERE id = ${sent.run_id}
 		`;
-		expect(run.watcher_id).toBeNull();
+		expect(run.automation_id).toBeNull();
 		expect(run.window_id).toBeNull();
 		const linked = await sql`
-			SELECT id FROM watcher_reactions WHERE run_id = ${sent.run_id}
+			SELECT id FROM automation_reactions WHERE run_id = ${sent.run_id}
 		`;
 		expect(linked).toHaveLength(0);
 
 		// Historical malformed rows are filtered on read as well: a feedback row
-		// cannot borrow a run or Behavior from a different organization.
+		// cannot borrow a run or Automation from a different organization.
 		await sql`
-			INSERT INTO watcher_reactions (
-				organization_id, watcher_id, window_id, reaction_type,
+			INSERT INTO automation_reactions (
+				organization_id, automation_id, window_id, reaction_type,
 				tool_name, tool_args, run_id
 			) VALUES (
-				${orgId}, ${victimBehaviorId}, ${victimWindowId},
+				${orgId}, ${victimAutomationId}, ${victimWindowId},
 				'notification_sent', 'notify',
 				${sql.json({ title: "Forged cross-org review" })}, ${sent.run_id}
 			)
 		`;
-		expect(await getPastReactionsSummary(victimBehaviorId)).toBeUndefined();
+		expect(await getPastReactionsSummary(victimAutomationId)).toBeUndefined();
 	});
 
-	it("repairs a missing Behavior feedback edge when an idempotent ask retries", async () => {
+	it("repairs a missing Automation feedback edge when an idempotent ask retries", async () => {
 		const sql = getTestDb();
 		const suffix = `${process.pid}_${Date.now()}`;
 		const sequenceName = `ask_reaction_fail_seq_${suffix}`;
@@ -1145,7 +1147,7 @@ describe("notify input_schema — agent asks a human", () => {
 			CREATE FUNCTION ${functionName}() RETURNS trigger AS $$
 			BEGIN
 				IF nextval('${sequenceName}') = 1 THEN
-					RAISE EXCEPTION 'forced watcher reaction failure';
+					RAISE EXCEPTION 'forced automation reaction failure';
 				END IF;
 				RETURN NEW;
 			END;
@@ -1153,9 +1155,9 @@ describe("notify input_schema — agent asks a human", () => {
 		`);
 		await sql.unsafe(`
 			CREATE TRIGGER ${triggerName}
-			BEFORE INSERT ON watcher_reactions
+			BEFORE INSERT ON automation_reactions
 			FOR EACH ROW
-			WHEN (NEW.watcher_id = ${behaviorId} AND NEW.tool_name = 'notify')
+			WHEN (NEW.automation_id = ${automationId} AND NEW.tool_name = 'notify')
 			EXECUTE FUNCTION ${functionName}()
 		`);
 
@@ -1176,8 +1178,8 @@ describe("notify input_schema — agent asks a human", () => {
 
 		try {
 			await expect(
-				executeTool("notify", args, TEST_ENV, behaviorCtx),
-			).rejects.toThrow(/forced watcher reaction failure/i);
+				executeTool("notify", args, TEST_ENV, automationCtx),
+			).rejects.toThrow(/forced automation reaction failure/i);
 
 			const notificationsAfterFailure = await sql`
 				SELECT id FROM events
@@ -1190,7 +1192,7 @@ describe("notify input_schema — agent asks a human", () => {
 				"notify",
 				args,
 				TEST_ENV,
-				behaviorCtx,
+				automationCtx,
 			)) as SendResult;
 			expect(retry).toMatchObject({
 				notified_count: 0,
@@ -1199,9 +1201,9 @@ describe("notify input_schema — agent asks a human", () => {
 			expect(retry.run_id).toBeGreaterThan(0);
 
 			const reactions = await sql`
-				SELECT id FROM watcher_reactions
+				SELECT id FROM automation_reactions
 				WHERE organization_id = ${orgId}
-				  AND watcher_id = ${behaviorId}
+				  AND automation_id = ${automationId}
 				  AND window_id = ${windowId}
 				  AND run_id = ${retry.run_id}
 				  AND tool_name = 'notify'
@@ -1218,14 +1220,14 @@ describe("notify input_schema — agent asks a human", () => {
 				TEST_ENV,
 				humanCtx,
 			);
-			const summary = await getPastReactionsSummary(behaviorId);
+			const summary = await getPastReactionsSummary(automationId);
 			expect(summary).toContain("Was the staged LinkedIn comment relevant?");
 			expect(summary).toContain(
 				"This discussion was not relevant to our product.",
 			);
 		} finally {
 			await sql.unsafe(
-				`DROP TRIGGER IF EXISTS ${triggerName} ON watcher_reactions`,
+				`DROP TRIGGER IF EXISTS ${triggerName} ON automation_reactions`,
 			);
 			await sql.unsafe(`DROP FUNCTION IF EXISTS ${functionName}()`);
 			await sql.unsafe(`DROP SEQUENCE IF EXISTS ${sequenceName}`);

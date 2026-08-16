@@ -11,7 +11,7 @@
  * completeWindow") with no hint at provisioning.
  *
  * So this test fails on an UNKNOWN insert site rather than trying to prove
- * runtime behavior. A new site is not necessarily wrong — but it must be looked
+ * runtime semantics. A new site is not necessarily wrong — but it must be looked
  * at and then listed here deliberately, which is the whole point.
  */
 

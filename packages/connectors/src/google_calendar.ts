@@ -202,7 +202,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
         name: 'Calendar changes',
         requiredScopes: ['https://www.googleapis.com/auth/calendar.readonly'],
         description:
-          'Durable incremental Google Calendar changes for Behaviors and event-driven workflows. Collected only when explicitly created.',
+          'Durable incremental Google Calendar changes for Automations and event-driven workflows. Collected only when explicitly created.',
         configSchema: {
           type: 'object',
           properties: {

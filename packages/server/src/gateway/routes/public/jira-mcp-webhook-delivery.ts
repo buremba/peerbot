@@ -1,13 +1,13 @@
 import type { DbClient } from "../../../db/client.js";
 import {
-	activateBehaviorSignal,
-	dispatchBehaviorRunsBestEffort,
-	type BehaviorActivationResult,
-} from "../../../behaviors/activation.js";
+	activateAutomationSignal,
+	dispatchAutomationRunsBestEffort,
+	type AutomationActivationResult,
+} from "../../../automations/activation.js";
 import {
 	deriveConnectorActivationSignals,
 	loadConnectorDeriveFeedContext,
-} from "../../../behaviors/connector-derived.js";
+} from "../../../automations/connector-derived.js";
 import {
 	atlassianDocumentToText,
 	ATLASSIAN_JIRA_ISSUES_FEED_KEY,
@@ -293,7 +293,7 @@ async function landJiraMcpWebhookEvent(params: {
 	// never have sync runs, so bypass only that gate and retain the persisted
 	// eventKinds catalog check.
 	deriveContext.feedPreviouslySynced = true;
-	const activations: BehaviorActivationResult[] = [];
+	const activations: AutomationActivationResult[] = [];
 	await insertEvent(
 		{
 			organizationId: params.organizationId,
@@ -334,7 +334,7 @@ async function landJiraMcpWebhookEvent(params: {
 				);
 				for (const signal of signals) {
 					activations.push(
-						...(await activateBehaviorSignal({
+						...(await activateAutomationSignal({
 							organizationId: params.organizationId,
 							signal,
 							db: tx,
@@ -344,7 +344,7 @@ async function landJiraMcpWebhookEvent(params: {
 			},
 		},
 	);
-	await dispatchBehaviorRunsBestEffort(activations);
+	await dispatchAutomationRunsBestEffort(activations);
 	return true;
 }
 

@@ -22,7 +22,7 @@ export interface ConnectorMetadata {
   webhook: Record<string, unknown> | null;
   feeds: Record<string, unknown> | null;
   actions: Record<string, unknown> | null;
-  behaviorEvents: Array<Record<string, unknown>> | null;
+  automationEvents: Array<Record<string, unknown>> | null;
   optionsSchema: Record<string, unknown> | null;
   faviconDomain?: string | null;
   mcpConfig?: Record<string, unknown> | null;
@@ -58,7 +58,7 @@ export interface ConnectorMetadata {
  * This is the "it isn't a connector" signal, not a malfunction: the catalog
  * scan compiles every `.ts` in the connectors directory, and that directory
  * legitimately also holds support modules (identity modules, egress guards,
- * behavior-event definitions) which were never meant to be connectors.
+ * automation-event definitions) which were never meant to be connectors.
  *
  * It is a shared constant rather than two copies of a sentence because the
  * throw happens inside CONNECTOR_RUNNER_CODE — a subprocess — and comes back
@@ -131,7 +131,7 @@ async function main() {
       webhook: def.webhook || null,
       feeds: def.feeds || null,
       actions: def.actions || null,
-      behaviorEvents: def.behaviorEvents || null,
+      automationEvents: def.automationEvents || null,
       optionsSchema: def.optionsSchema || null,
       faviconDomain: def.faviconDomain || null,
       mcpConfig: def.mcpConfig || null,

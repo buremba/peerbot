@@ -5,7 +5,7 @@ import {
 } from "../services/platform-helpers.js";
 
 describe("resolveAgentOptions model resolution (layered fallback)", () => {
-  test("behavior override (baseOptions.model) wins over the agent default", async () => {
+  test("automation override (baseOptions.model) wins over the agent default", async () => {
     const settingsStore = {
       getSettings: async () => ({ models: ["openai/gpt-5"] }) as any,
     };
@@ -17,11 +17,11 @@ describe("resolveAgentOptions model resolution (layered fallback)", () => {
       "org-1",
     );
 
-    // The per-behavior override is highest priority.
+    // The per-automation override is highest priority.
     expect(resolved.model).toBe("claude/claude-opus-4-8");
   });
 
-  test("uses the agent models[0] when no behavior override", async () => {
+  test("uses the agent models[0] when no automation override", async () => {
     const settingsStore = {
       getSettings: async () => ({ models: ["openai/gpt-5"] }) as any,
     };
@@ -123,7 +123,7 @@ describe("resolveAgentOptions model resolution (layered fallback)", () => {
     expect(resolved.model).toBe("gemini/gemini-2.5-flash");
   });
 
-  test("clears model when neither behavior nor agent nor org sets one (worker throws)", async () => {
+  test("clears model when neither automation nor agent nor org sets one (worker throws)", async () => {
     const settingsStore = {
       getSettings: async () => ({}) as any,
     };
@@ -171,7 +171,7 @@ describe("resolveAgentId", () => {
       agentId: "connection-agent",
 			connectionId: "conn-1",
 			organizationId: "org-1",
-      behaviorSubscriptionService: bindingService as any,
+      automationSubscriptionService: bindingService as any,
     });
 
     expect(resolved).toEqual({
@@ -180,7 +180,7 @@ describe("resolveAgentId", () => {
     });
   });
 
-  test("per-binding model override propagates from the binding (Listen behavior)", async () => {
+  test("per-binding model override propagates from the binding (Listen automation)", async () => {
     const bindingService = {
       resolveForConnection: async (
         _connectionId: string,
@@ -200,7 +200,7 @@ describe("resolveAgentId", () => {
       agentId: "connection-agent",
       connectionId: "conn-1",
       organizationId: "org-1",
-      behaviorSubscriptionService: bindingService as any,
+      automationSubscriptionService: bindingService as any,
     });
 
     expect(resolved).toEqual({
@@ -221,7 +221,7 @@ describe("resolveAgentId", () => {
       channelId: "C1",
       teamId: "T1",
       agentId: "connection-agent",
-      behaviorSubscriptionService: bindingService as any,
+      automationSubscriptionService: bindingService as any,
     });
 
     expect(resolved).toEqual({
@@ -239,7 +239,7 @@ describe("resolveAgentId", () => {
       platform: "slack",
       channelId: "C1",
       teamId: "T1",
-      behaviorSubscriptionService: bindingService as any,
+      automationSubscriptionService: bindingService as any,
     });
 
     expect(resolved).toBeNull();
@@ -254,7 +254,7 @@ describe("resolveAgentId", () => {
       platform: "telegram",
       channelId: "12345",
       agentId: "my-tg-agent",
-      behaviorSubscriptionService: bindingService as any,
+      automationSubscriptionService: bindingService as any,
     });
 
     expect(resolved).toEqual({
@@ -267,7 +267,7 @@ describe("resolveAgentId", () => {
     let createCount = 0;
     const bindingService = {
 			resolveForConnection: async () => null,
-      createChatBehavior: async () => {
+      createChatAutomation: async () => {
         createCount += 1;
       },
     };
@@ -277,7 +277,7 @@ describe("resolveAgentId", () => {
       channelId: "C1",
       teamId: "T1",
       agentId: "connection-agent",
-      behaviorSubscriptionService: bindingService as any,
+      automationSubscriptionService: bindingService as any,
     });
 
     // Bridge owns the auto-bind side effect, not the resolver.
@@ -289,14 +289,14 @@ describe("resolveAgentId", () => {
  * The payload carries the resolved REF and nothing else — routing is the ref's
  * own business, decided by `resolveModelRef` in the worker.
  *
- * There used to be a permission flag (`behaviorModelOverride` here,
+ * There used to be a permission flag (`automationModelOverride` here,
  * `allowInstalledProviderOverride` at the worker) that a `<provider>/<model>`
  * ref needed before it was allowed to beat the gateway's `defaultProvider`.
  * Only the per-run dispatch sites set it, so a ref that was just as explicit but
  * arrived from `agent.models[0]` or the org default authorized nothing.
  *
  * Measured on prod 2026-08-06: org `buremba` had agent `personal-agent` pinned to
- * `gemini/gemini-2.5-pro`, no Behavior override, and NO z-ai provider, secret, or
+ * `gemini/gemini-2.5-pro`, no Automation override, and NO z-ai provider, secret, or
  * system key of its own — yet 79 runs over three days failed with
  * `z.ai returned an error: 429 Insufficient balance`. `defaultProvider` is a
  * deployment-level fact and the ref is a run-level one, so the precedence was
@@ -316,10 +316,10 @@ describe("the layered fallback resolves the ref and adds no routing flag", () =>
     );
 
     expect(resolved.model).toBe("gemini/gemini-2.5-pro");
-    expect(resolved.behaviorModelOverride).toBeUndefined();
+    expect(resolved.automationModelOverride).toBeUndefined();
   });
 
-  test("a per-behavior override still wins over the agent default", async () => {
+  test("a per-automation override still wins over the agent default", async () => {
     const resolved = await resolveAgentOptions(
       "agent-1",
       { model: "qwen/qwen3.8-max-preview" },
@@ -328,7 +328,7 @@ describe("the layered fallback resolves the ref and adds no routing flag", () =>
     );
 
     expect(resolved.model).toBe("qwen/qwen3.8-max-preview");
-    expect(resolved.behaviorModelOverride).toBeUndefined();
+    expect(resolved.automationModelOverride).toBeUndefined();
   });
 
   test("an unqualified agent model is passed through as-is", async () => {
@@ -340,7 +340,7 @@ describe("the layered fallback resolves the ref and adds no routing flag", () =>
     );
 
     expect(resolved.model).toBe("gpt-4o");
-    expect(resolved.behaviorModelOverride).toBeUndefined();
+    expect(resolved.automationModelOverride).toBeUndefined();
   });
 
   // A malformed per-request override is dropped in favour of the agent default.
@@ -353,7 +353,7 @@ describe("the layered fallback resolves the ref and adds no routing flag", () =>
     );
 
     expect(resolved.model).toBe("gemini/gemini-2.5-pro");
-    expect(resolved.behaviorModelOverride).toBeUndefined();
+    expect(resolved.automationModelOverride).toBeUndefined();
   });
 
   // The clearing branch that used to exist alongside the flag: a rejected
@@ -367,6 +367,6 @@ describe("the layered fallback resolves the ref and adds no routing flag", () =>
     );
 
     expect(resolved.model).toBe("gpt-4o");
-    expect(resolved.behaviorModelOverride).toBeUndefined();
+    expect(resolved.automationModelOverride).toBeUndefined();
   });
 });

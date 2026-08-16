@@ -88,16 +88,16 @@
   <div class="hd">
     <div class="tag">Design brainstorm</div>
     <h1>Workflows &amp; the WAIT primitive</h1>
-    <p>A Behavior fires once. A Workflow needs to <b style="color:var(--text)">do → wait → do</b>. The only genuinely-new piece is <b style="color:var(--amber)">WAIT</b> — and it turns out approval is a wait too. Everything else rides behaviors + events + a scheduler you already have.</p>
+    <p>An Automation fires once. A Workflow needs to <b style="color:var(--text)">do → wait → do</b>. The only genuinely-new piece is <b style="color:var(--amber)">WAIT</b> — and it turns out approval is a wait too. Everything else rides automations + events + a scheduler you already have.</p>
   </div>
 
   <!-- 1. the idea -->
   <h2>1 · The one new primitive</h2>
-  <p class="lead">A Workflow = <b>a Behavior whose action is a sequence with WAIT steps</b> — not a new engine, just a richer body. Simple behavior = one step. Workflow = steps + waits. The list still shows one sentence; you expand to see the flow.</p>
+  <p class="lead">A Workflow = <b>an Automation whose action is a sequence with WAIT steps</b> — not a new engine, just a richer body. Simple Automation = one step. Workflow = steps + waits. The list still shows one sentence; you expand to see the flow.</p>
   <div class="grid3">
-    <div class="card"><div class="k">Behavior (today)</div><h3 style="margin-top:6px">When X → do Y</h3><p>One event, one action. Fires and finishes.</p></div>
+    <div class="card"><div class="k">Automation (today)</div><h3 style="margin-top:6px">When X → do Y</h3><p>One event, one action. Fires and finishes.</p></div>
     <div class="card"><div class="k">The gap</div><h3 style="margin-top:6px">…then wait…</h3><p>Suspend until a deadline / a count / an event / a human. Collect while waiting.</p></div>
-    <div class="card" style="border-color:rgba(72,184,102,.4)"><div class="k">Workflow</div><h3 style="margin-top:6px">do → <span style="color:var(--amber)">wait</span> → do</h3><p>A behavior with a multi-step body. WAIT is the only new node.</p></div>
+    <div class="card" style="border-color:rgba(72,184,102,.4)"><div class="k">Workflow</div><h3 style="margin-top:6px">do → <span style="color:var(--amber)">wait</span> → do</h3><p>An Automation with a multi-step body. WAIT is the only new node.</p></div>
   </div>
 
   <!-- 2. the concrete flow -->
@@ -133,7 +133,7 @@
   <table class="map">
     <thead><tr><th style="width:150px">Piece</th><th>Maps to what exists</th></tr></thead>
     <tbody>
-      <tr><td><b>Workflow def</b></td><td>An ordered list of steps + waits, stored on the behavior. (Behavior body = array instead of a single action.)</td></tr>
+      <tr><td><b>Workflow def</b></td><td>An ordered list of steps + waits, stored on the automation. (Automation body = array instead of a single action.)</td></tr>
       <tr><td><b>Run state</b></td><td>A <span class="mono">workflow_run</span> row (or a keyed Surface via <span class="mono">supersedes_event_id</span>) holding: current step, accumulated events, resume condition.</td></tr>
       <tr><td><b>Collect</b></td><td>Inbound events (replies) correlated to the run and appended — the same event ingest you already have, tagged with <span class="mono">run_id</span>.</td></tr>
       <tr><td><b>The wait itself</b></td><td>A <span class="mono">scheduled_jobs</span> row for the deadline (<span class="mono">wake_agent</span>, <b>exists + grantable today</b>) + a cheap threshold/event check on each new correlated event. Whichever fires first resumes.</td></tr>
@@ -147,8 +147,8 @@
   <h2>5 · How to represent a workflow — brainstorm the shape</h2>
   <div class="grid3">
     <div class="opt pick">
-      <div class="h">A · Multi-step Behavior <span class="rec">lean</span></div>
-      <p class="small">A behavior can have a multi-step body (do/wait/do). Simple ones stay one step. Same tab, same list, expand to edit the flow.</p>
+      <div class="h">A · Multi-step Automation <span class="rec">lean</span></div>
+      <p class="small">An Automation can have a multi-step body (do/wait/do). Simple ones stay one step. Same tab, same list, expand to edit the flow.</p>
       <div class="pro">+ One model, no new tab; simple stays simple</div>
       <div class="con">– Editor must handle both simple + flow modes</div>
     </div>
@@ -159,13 +159,13 @@
       <div class="con">– New tab, new metaphor; Zapier-drawer risk; overkill for do→wait→do</div>
     </div>
     <div class="opt">
-      <div class="h">C · Chained behaviors</div>
-      <p class="small">Behavior A completes → emits an event → Behavior B listens for it. No explicit workflow object.</p>
+      <div class="h">C · Chained automations</div>
+      <p class="small">Automation A completes → emits an event → Automation B listens for it. No explicit workflow object.</p>
       <div class="pro">+ Zero new concepts</div>
-      <div class="con">– State + wait scattered across behaviors; no single thing to debug/toggle</div>
+      <div class="con">– State + wait scattered across automations; no single thing to debug/toggle</div>
     </div>
   </div>
-  <div class="note"><b>✓ LOCKED: Option A</b> — a workflow is a Behavior with a longer body + WAIT nodes. One sentence, expand for detail; no second builder. Reach for B only if real branching shows up. <b>Time‑waits work today</b> (`manage_schedules(wake_agent)` is grantable, enabled by default for workflow agents). <b>Event‑waits</b> ride the Watch detector via a resume‑subscription (§below). Watch is near‑real‑time (cron + incremental + skip‑if‑empty batching) — real‑time reserved for chat.</div>
+  <div class="note"><b>✓ LOCKED: Option A</b> — a workflow is an Automation with a longer body + WAIT nodes. One sentence, expand for detail; no second builder. Reach for B only if real branching shows up. <b>Time‑waits work today</b> (`manage_schedules(wake_agent)` is grantable, enabled by default for workflow agents). <b>Event‑waits</b> ride the Watch detector via a resume‑subscription (§below). Watch is near‑real‑time (cron + incremental + skip‑if‑empty batching) — real‑time reserved for chat.</div>
 
   <!-- 6. open questions -->
   <h2>6 · Open questions to brainstorm</h2>

@@ -7,14 +7,14 @@
 import { type AuthProfile, isSdkCompat } from "@lobu/core";
 import { SkillsConfigSchema } from "@lobu/core/contracts/agent-settings";
 import {
-	type ManageBehaviorsArgs,
-	normalizeBehaviorUpdatePatch,
-} from "@lobu/core/contracts/tools/manage-behaviors";
+	type ManageAutomationsArgs,
+	normalizeAutomationUpdatePatch,
+} from "@lobu/core/contracts/tools/manage-automations";
 import { Value } from "@sinclair/typebox/value";
 import { Hono } from "hono";
 import { mcpAuth } from "../auth/middleware";
 import { resolveNewAgentProvisioningDefaults } from "../auth/system-provider-resolution";
-import { resolveBehaviorTriggerWrite } from "../behaviors/triggers";
+import { resolveAutomationTriggerWrite } from "../automations/triggers";
 import { getDb } from "../db/client";
 import { grantStrategyFor } from "../gateway/auth/oauth/grant-strategy";
 import {
@@ -370,16 +370,16 @@ routes.get("/", async (c) => {
 
 	const [
 		runtimeClientCounts,
-		watcherCounts,
+		automationCounts,
 		userCounts,
 		platformRows,
 		providerRows,
 	] = await Promise.all([
 		countRuntimeMessagingClientsByAgent(orgId),
-		// Watchers owned by each agent (active only).
+		// Automations owned by each agent (active only).
 		sql`
         SELECT agent_id, count(*)::int as count
-        FROM watchers
+        FROM automations
         WHERE organization_id = ${orgId} AND status = 'active' AND agent_id IS NOT NULL
         GROUP BY agent_id
       `,
@@ -421,8 +421,8 @@ routes.get("/", async (c) => {
 		}
 		for (const clientId of runtimeIds) ids.add(clientId);
 	}
-	const watcherCountMap = new Map(
-		watcherCounts.map((r: any) => [r.agent_id, r.count])
+	const automationCountMap = new Map(
+		automationCounts.map((r: any) => [r.agent_id, r.count])
 	);
 	const userCountMap = new Map(
 		userCounts.map((r: any) => [r.agent_id, r.count])
@@ -447,7 +447,7 @@ routes.get("/", async (c) => {
 			connectionCount: countMap.get(a.agentId) ?? 0,
 			activeConnectionCount: activeCountMap.get(a.agentId) ?? 0,
 			clientCount: clientCountMap.get(a.agentId)?.size ?? 0,
-			behaviorCount: watcherCountMap.get(a.agentId) ?? 0,
+			automationCount: automationCountMap.get(a.agentId) ?? 0,
 			userCount: userCountMap.get(a.agentId) ?? 0,
 			platforms: platformsMap.get(a.agentId) ?? [],
 			providers: providersMap.get(a.agentId) ?? [],
@@ -588,7 +588,7 @@ routes.get("/inference-providers/catalog", async (c) => {
 //
 // Generic start/complete for every providers.json entry with an `oauth` block.
 // Profiles land in the per-user ORG BUCKET so one sign-in covers all of this
-// user's agents in the org. Behavior is dispatched by config.grant via
+// user's agents in the org. Grant handling is dispatched by config.grant via
 // grantStrategyFor.
 //
 // Auth: interactive session only.
@@ -1099,7 +1099,7 @@ routes.put("/inference-providers/:slug", async (c) => {
 
 // Mark one org inference provider as THE org default. Its `capabilities.text.model`
 // becomes the org-default model — the tail of the layered fallback
-// (behavior → agent → org default). Exactly one live default per org (enforced
+// (automation → agent → org default). Exactly one live default per org (enforced
 // by a partial unique index); setting a new one clears the prior in one txn.
 routes.put("/inference-providers/:slug/default", async (c) => {
 	const denied = requireSessionOrAdminPat(c);
@@ -1131,7 +1131,7 @@ routes.put("/inference-providers/:slug/default", async (c) => {
 				error:
 					`Provider '${slug}' is signed in with OAuth, so its credential ` +
 					`belongs to one user. An org default is inherited by every member ` +
-					`and by headless Behavior runs, which cannot read that token. Use ` +
+					`and by headless Automation runs, which cannot read that token. Use ` +
 					`a provider added with an API key instead.`,
 			},
 			400
@@ -1299,7 +1299,7 @@ routes.delete("/inference-providers/:slug", async (c) => {
 // feature.
 
 /**
- * Promote a real Behavior run into a reusable eval case.
+ * Promote a real Automation run into a reusable eval case.
  *
  * `expectation` is what the judge grades against; without one a case is still
  * useful (the code metrics run) but nothing measures whether the OUTPUT was
@@ -1366,12 +1366,12 @@ routes.post("/evals/cases", async (c) => {
 });
 
 /**
- * Replay a Behavior's active case suite under capture mode.
+ * Replay an Automation's active case suite under capture mode.
  *
  * Defaults to several trials per case because a single run is not a
  * measurement — our own research evals swung ±1 task on identical batteries.
  */
-routes.post("/behaviors/:behaviorId/evals/run", async (c) => {
+routes.post("/automations/:automationId/evals/run", async (c) => {
 	// Admin-tier: each call queues up to cases × trials replays, and every one
 	// of them spends inference budget.
 	const denied = requireSessionOrAdminPat(c);
@@ -1379,9 +1379,9 @@ routes.post("/behaviors/:behaviorId/evals/run", async (c) => {
 	const orgId = requireOrgId(c);
 	if (typeof orgId !== "string") return orgId;
 
-	const behaviorId = Number(c.req.param("behaviorId"));
-	if (!Number.isSafeInteger(behaviorId) || behaviorId < 1) {
-		return c.json({ error: "behaviorId must be a number" }, 400);
+	const automationId = Number(c.req.param("automationId"));
+	if (!Number.isSafeInteger(automationId) || automationId < 1) {
+		return c.json({ error: "automationId must be a number" }, 400);
 	}
 
 	const body = (await c.req.json().catch(() => ({}))) as {
@@ -1394,7 +1394,7 @@ routes.post("/behaviors/:behaviorId/evals/run", async (c) => {
 
 	const result = await runEvalSuite({
 		organizationId: orgId,
-		behaviorId,
+		automationId,
 		caseIds: caseIds?.length ? caseIds : undefined,
 		trials: typeof body.trials === "number" ? body.trials : undefined,
 	});
@@ -1409,19 +1409,19 @@ routes.post("/behaviors/:behaviorId/evals/run", async (c) => {
  * materializes each case's rolling window at write time precisely so this stays
  * a bounded config-table read.
  */
-routes.get("/behaviors/:behaviorId/evals/results", async (c) => {
+routes.get("/automations/:automationId/evals/results", async (c) => {
 	const orgId = requireOrgId(c);
 	if (typeof orgId !== "string") return orgId;
 
-	const behaviorId = Number(c.req.param("behaviorId"));
-	if (!Number.isSafeInteger(behaviorId) || behaviorId < 1) {
-		return c.json({ error: "behaviorId must be a number" }, 400);
+	const automationId = Number(c.req.param("automationId"));
+	if (!Number.isSafeInteger(automationId) || automationId < 1) {
+		return c.json({ error: "automationId must be a number" }, 400);
 	}
 
 	const trialsParam = Number(c.req.query("trials"));
 	const results = await readEvalResults({
 		organizationId: orgId,
-		behaviorId,
+		automationId,
 		trials: Number.isFinite(trialsParam) ? trialsParam : undefined,
 	});
 	return c.json(results);
@@ -1549,7 +1549,7 @@ routes.get("/:agentId/config", async (c) => {
 //
 // AuthZ: org-scoped by the middleware `organizationId`; the held proposal must
 // also TARGET `:agentId`. Scoped to manage_agents update runs, whose proposal
-// carries agent_id at the top level (manage_behaviors, whose proposal nests
+// carries agent_id at the top level (manage_automations, whose proposal nests
 // agent_id under `args`, is excluded — see below).
 routes.get("/:agentId/config/pending/:runId", async (c) => {
 	const { agentId } = c.req.param();
@@ -1588,9 +1588,9 @@ routes.get("/:agentId/config/pending/:runId", async (c) => {
 	// description / identity), which binds agent fields only and only makes sense
 	// for an update. A create has no existing agent to render; a delete would show
 	// ordinary config fields + a generic Approve that silently DELETES the agent —
-	// so both 404 here (they keep the run-permalink review path). manage_behaviors
-	// proposals (`{ args, actingAgentId, ... }`, watcher-shaped, agent_id in args)
-	// belong to a separate watcher review surface. Anything else 404s.
+	// so both 404 here (they keep the run-permalink review path). manage_automations
+	// proposals (`{ args, actingAgentId, ... }`, automation-shaped, agent_id in args)
+	// belong to a separate automation review surface. Anything else 404s.
 	const rawProposal = row.proposal ?? null;
 	if (
 		row.tool !== "manage_agents" ||
@@ -1619,17 +1619,18 @@ routes.get("/:agentId/config/pending/:runId", async (c) => {
 	});
 });
 
-// GET /:agentId/behaviors/:watcherId/pending/:runId — the Behavior parity of the
-// agent config-prefill endpoint above. A pending `manage_behaviors` update run is
-// reviewed on the watcher edit form (nested under its owning agent), prefilled
-// via `?run_id=`. Returns the held proposal so the form can render + approve it.
+// GET /:agentId/automations/:automationId/pending/:runId — the Automation parity of the
+// agent config-prefill endpoint above. A pending `manage_automations` update run is
+// reviewed on the workspace Automation edit form, prefilled via `?run_id=`. The
+// data endpoint remains agent-scoped to enforce ownership. Returns the held proposal
+// so the form can render + approve it.
 //
-// AuthZ: org-scoped by middleware; the held proposal must target `:watcherId`
-// AND be owned by `:agentId`. A manage_behaviors proposal is `{ args, ... }` with
-// watcher_id / agent_id nested INSIDE `args` (unlike manage_agents, top-level) —
+// AuthZ: org-scoped by middleware; the held proposal must target `:automationId`
+// AND be owned by `:agentId`. A manage_automations proposal is `{ args, ... }` with
+// automation_id / agent_id nested INSIDE `args` (unlike manage_agents, top-level) —
 // hence a separate endpoint rather than folding into the agent one.
-routes.get("/:agentId/behaviors/:watcherId/pending/:runId", async (c) => {
-	const { agentId, watcherId } = c.req.param();
+routes.get("/:agentId/automations/:automationId/pending/:runId", async (c) => {
+	const { agentId, automationId } = c.req.param();
 	const organizationId = c.get("organizationId") as string;
 	const runId = Number(c.req.param("runId"));
 	if (!Number.isInteger(runId) || runId <= 0) {
@@ -1661,12 +1662,12 @@ routes.get("/:agentId/behaviors/:watcherId/pending/:runId", async (c) => {
 	const row = rows[0];
 	if (!row) return c.json({ error: "No pending proposal for this run" }, 404);
 
-	// Scoped to manage_behaviors UPDATE: the watcher edit form reviews a single
-	// existing watcher's config. create / create_from_version / set_reaction_script
+	// Scoped to manage_automations UPDATE: the automation edit form reviews a single
+	// existing automation's config. create / create_from_version / set_reaction_script
 	// aren't a single-form review (they keep the run-permalink path), so 404 here.
 	const rawProposal = row.proposal ?? null;
 	if (
-		row.tool !== "manage_behaviors" ||
+		row.tool !== "manage_automations" ||
 		row.action !== "update" ||
 		!rawProposal ||
 		typeof rawProposal !== "object"
@@ -1674,16 +1675,16 @@ routes.get("/:agentId/behaviors/:watcherId/pending/:runId", async (c) => {
 		return c.json({ error: "No pending proposal for this run" }, 404);
 	}
 
-	// manage_behaviors proposal nests the target under `args`. The held proposal
-	// must target the watcher in the path, and its owning agent (args.agent_id ??
+	// manage_automations proposal nests the target under `args`. The held proposal
+	// must target the automation in the path, and its owning agent (args.agent_id ??
 	// current owner) must be the agent in the path. Don't leak cross-target/agent
 	// existence — same 404 as "no pending proposal".
 	const args = (rawProposal as { args?: Record<string, unknown> }).args ?? null;
 	if (!args || typeof args !== "object") {
 		return c.json({ error: "No pending proposal for this run" }, 404);
 	}
-	const targetBehaviorId = args.behavior_id ?? null;
-	if (String(targetBehaviorId) !== String(watcherId)) {
+	const targetAutomationId = args.automation_id ?? null;
+	if (String(targetAutomationId) !== String(automationId)) {
 		return c.json({ error: "No pending proposal for this run" }, 404);
 	}
 	const current = row.current ?? null;
@@ -1699,18 +1700,18 @@ routes.get("/:agentId/behaviors/:watcherId/pending/:runId", async (c) => {
 	// SAME normalizer the apply handler (handleUpdate) uses. The review renders
 	// current→proposedAfter directly, so "displayed == applied" needs no coercion
 	// knowledge on the client and can't drift from the handler.
-	const proposedAfter = normalizeBehaviorUpdatePatch(
-		args as ManageBehaviorsArgs
+	const proposedAfter = normalizeAutomationUpdatePatch(
+		args as ManageAutomationsArgs
 	);
 	if (args.triggers !== undefined) {
-		proposedAfter.triggers = resolveBehaviorTriggerWrite({
-			triggers: args.triggers as ManageBehaviorsArgs["triggers"],
+		proposedAfter.triggers = resolveAutomationTriggerWrite({
+			triggers: args.triggers as ManageAutomationsArgs["triggers"],
 		}).triggers;
 	}
 
 	return c.json({
 		runId,
-		resourceKind: "behavior" as const,
+		resourceKind: "automation" as const,
 		action: row.action,
 		proposal: rawProposal,
 		current,

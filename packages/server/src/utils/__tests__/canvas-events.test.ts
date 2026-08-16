@@ -6,7 +6,10 @@ import {
 } from "../../__tests__/setup/test-db";
 import { createTestEntity } from "../../__tests__/setup/test-fixtures";
 import { TestWorkspace } from "../../__tests__/setup/test-mcp-client";
-import { ensureCanvasEntity, WATCHER_CANVAS_NAMESPACE } from "../canvas-events";
+import {
+	AUTOMATION_CANVAS_NAMESPACE,
+	ensureCanvasEntity,
+} from "../canvas-events";
 
 /**
  * Wait until the losing transaction has passed its empty identity fast-path
@@ -51,11 +54,11 @@ describe("canvas entity materialization", () => {
 			organization_id: workspace.org.id,
 			created_by: workspace.users.owner.id,
 		});
-		const watcherId = 7001;
+		const automationId = 7001;
 		const ensure = (tx: DbClient, parentEntityId: number) =>
 			ensureCanvasEntity({
 				tx,
-				watcherId,
+				automationId,
 				organizationId: workspace.org.id,
 				parentEntityId,
 				createdBy: workspace.users.owner.id,
@@ -92,16 +95,16 @@ describe("canvas entity materialization", () => {
 			SELECT id, parent_id
 			FROM entities
 			WHERE organization_id = ${workspace.org.id}
-				AND metadata->>'source' = 'watcher_canvas'
-				AND (metadata->>'watcher_id')::bigint = ${watcherId}
+				AND metadata->>'source' = 'automation_canvas'
+				AND (metadata->>'automation_id')::bigint = ${automationId}
 		`;
 		expect(entities).toEqual([{ id: winnerId, parent_id: parentA.id }]);
 		const claims = await sql<{ entity_id: number }>`
 			SELECT entity_id
 			FROM entity_identities
 			WHERE organization_id = ${workspace.org.id}
-				AND namespace = ${WATCHER_CANVAS_NAMESPACE}
-				AND identifier = ${String(watcherId)}
+				AND namespace = ${AUTOMATION_CANVAS_NAMESPACE}
+				AND identifier = ${String(automationId)}
 				AND deleted_at IS NULL
 		`;
 		expect(claims).toEqual([{ entity_id: winnerId }]);

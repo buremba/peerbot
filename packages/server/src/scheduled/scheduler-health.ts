@@ -27,11 +27,11 @@ interface SchedulerHealthStatus {
       failed: number;
       timeout: number;
     };
-    /** Behavior (watcher-lane) scheduling health — item 3.2, #2033. */
-    activeBehaviors: number;
-    overdueBehaviors: number;
-    behaviorsOverdueByHours: number;
-    stalePendingBehaviorRuns: number;
+    /** Automation (automation-lane) scheduling health — item 3.2, #2033. */
+    activeAutomations: number;
+    overdueAutomations: number;
+    automationsOverdueByHours: number;
+    stalePendingAutomationRuns: number;
     /** Approvals still undecided past PENDING_APPROVAL_TTL_DAYS. */
     stalePendingApprovals: number;
     /** Age of the oldest undecided approval, in days. */
@@ -41,11 +41,11 @@ interface SchedulerHealthStatus {
 
 const OVERDUE_THRESHOLD_HOURS = 1; // Alert if feeds are overdue by more than 1 hour
 const EXECUTION_GAP_THRESHOLD_HOURS = 2; // Alert if no runs are created in 2 hours
-// Behaviors are dispatched by reconcileWatcherRuns on a 5-minute cron, so an
-// active behavior can sit up to one cron period past next_run_at between ticks.
+// Automations are dispatched by reconcileAutomationRuns on a 5-minute cron, so an
+// active automation can sit up to one cron period past next_run_at between ticks.
 // Alert only once it is overdue by more than an hour — matches the feed
 // threshold and avoids flapping on normal tick jitter.
-const BEHAVIOR_OVERDUE_THRESHOLD_HOURS = 1;
+const AUTOMATION_OVERDUE_THRESHOLD_HOURS = 1;
 // Cadence of the pending-approval expiry sweep (`expire-pending-approvals` is
 // registered on a daily cron in scheduled/jobs.ts). Used as the grace window on
 // top of the TTL before a stale approval counts as a fault rather than drift.
@@ -109,47 +109,47 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
       timeout: Number(recentStats[0]?.timeout || 0),
     };
 
-    // Behavior-lane scheduling health (item 3.2, #2033). Previously this
-    // health check filtered run_type='sync' ONLY, so behaviors (the watcher
+    // Automation-lane scheduling health (item 3.2, #2033). Previously this
+    // health check filtered run_type='sync' ONLY, so automations (the automation
     // lane) were invisible to the overdue/alarm path even though they share the
     // same "scheduler stopped firing" failure mode. Surface overdue active
-    // behaviors (by watchers.next_run_at) and pending behavior runs stuck past
+    // automations (by automations.next_run_at) and pending automation runs stuck past
     // the stale interval, feeding the SAME issues[] the feed path uses.
-    const behaviorStats = await sql`
+    const automationStats = await sql`
       SELECT
         CAST(COUNT(*) FILTER (WHERE status = 'active' AND schedule IS NOT NULL) AS INTEGER)
-          AS active_behaviors,
+          AS active_automations,
         CAST(COUNT(*) FILTER (
           WHERE status = 'active' AND schedule IS NOT NULL
             AND next_run_at < current_timestamp
-        ) AS INTEGER) AS overdue_behaviors,
+        ) AS INTEGER) AS overdue_automations,
         MAX(CASE
           WHEN status = 'active' AND schedule IS NOT NULL
             AND next_run_at < current_timestamp
             THEN EXTRACT(EPOCH FROM (current_timestamp - next_run_at)) / 3600.0
           ELSE NULL
         END) AS max_overdue_hours
-      FROM watchers
+      FROM automations
     `;
 
-    const activeBehaviors = Number(behaviorStats[0]?.active_behaviors || 0);
-    const overdueBehaviors = Number(behaviorStats[0]?.overdue_behaviors || 0);
-    const behaviorsOverdueByHours = Number(behaviorStats[0]?.max_overdue_hours || 0);
+    const activeAutomations = Number(automationStats[0]?.active_automations || 0);
+    const overdueAutomations = Number(automationStats[0]?.overdue_automations || 0);
+    const automationsOverdueByHours = Number(automationStats[0]?.max_overdue_hours || 0);
 
-    // Pending behavior runs stuck past WATCHER_RUN_STALE_INTERVAL — the reaper
+    // Pending automation runs stuck past AUTOMATION_RUN_STALE_INTERVAL — the reaper
     // should have timed these out; a growing count means the reaper/dispatch is
     // wedged.
-    const staleBehaviorRunStats = await sql.unsafe(
+    const staleAutomationRunStats = await sql.unsafe(
       `
       SELECT CAST(COUNT(*) AS INTEGER) AS stale_pending
       FROM runs
-      WHERE run_type = 'behavior'
+      WHERE run_type = 'automation'
         AND status = 'pending'
-        AND created_at < current_timestamp - INTERVAL '${intervals.watcherRunStaleInterval}'
+        AND created_at < current_timestamp - INTERVAL '${intervals.automationRunStaleInterval}'
     `
     );
-    const stalePendingBehaviorRuns = Number(
-      (staleBehaviorRunStats as unknown as Array<{ stale_pending: number }>)[0]
+    const stalePendingAutomationRuns = Number(
+      (staleAutomationRunStats as unknown as Array<{ stale_pending: number }>)[0]
         ?.stale_pending || 0
     );
 
@@ -206,15 +206,15 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
       );
     }
 
-    if (behaviorsOverdueByHours > BEHAVIOR_OVERDUE_THRESHOLD_HOURS) {
+    if (automationsOverdueByHours > AUTOMATION_OVERDUE_THRESHOLD_HOURS) {
       issues.push(
-        `${overdueBehaviors} behaviors overdue by up to ${behaviorsOverdueByHours.toFixed(1)} hours`
+        `${overdueAutomations} automations overdue by up to ${automationsOverdueByHours.toFixed(1)} hours`
       );
     }
 
-    if (stalePendingBehaviorRuns > 0) {
+    if (stalePendingAutomationRuns > 0) {
       issues.push(
-        `${stalePendingBehaviorRuns} behavior runs stuck pending past the stale interval`
+        `${stalePendingAutomationRuns} automation runs stuck pending past the stale interval`
       );
     }
 
@@ -248,10 +248,10 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
         lastRunCreatedAt,
         lastSuccessfulRun,
         runsLast24h,
-        activeBehaviors,
-        overdueBehaviors,
-        behaviorsOverdueByHours: Math.round(behaviorsOverdueByHours * 10) / 10,
-        stalePendingBehaviorRuns,
+        activeAutomations,
+        overdueAutomations,
+        automationsOverdueByHours: Math.round(automationsOverdueByHours * 10) / 10,
+        stalePendingAutomationRuns,
         stalePendingApprovals,
         oldestPendingApprovalDays: Math.round(oldestPendingApprovalDays * 10) / 10,
       },
@@ -270,10 +270,10 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
         lastRunCreatedAt: null,
         lastSuccessfulRun: null,
         runsLast24h: { success: 0, failed: 0, timeout: 0 },
-        activeBehaviors: 0,
-        overdueBehaviors: 0,
-        behaviorsOverdueByHours: 0,
-        stalePendingBehaviorRuns: 0,
+        activeAutomations: 0,
+        overdueAutomations: 0,
+        automationsOverdueByHours: 0,
+        stalePendingAutomationRuns: 0,
         stalePendingApprovals: 0,
         oldestPendingApprovalDays: 0,
       },

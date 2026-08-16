@@ -25,19 +25,19 @@ describe("resolveRunInitiator", () => {
 		});
 	});
 
-	it("classifies a reaction as its behavior, not its owning agent", () => {
+	it("classifies a reaction as its automation, not its owning agent", () => {
 		expect(
 			resolveRunInitiator({
 				userId: null,
 				agentId: "personal-agent",
-				actingWatcherId: 42,
+				actingAutomationId: 42,
 				actingWindowId: 7,
 				actingRunId: 99,
 			}),
 		).toEqual({
-			initiatorKind: "behavior",
+			initiatorKind: "automation",
 			initiatorRef: {
-				watcher_id: 42,
+				automation_id: 42,
 				window_id: 7,
 				run_id: 99,
 			},
@@ -63,28 +63,28 @@ describe("resolveRunInitiator", () => {
 });
 
 describe("runPermalinkResource", () => {
-	const behavior = {
-		initiatorKind: "behavior",
-		initiatorRef: { watcher_id: 42, window_id: 7, run_id: 99 },
+	const automation = {
+		initiatorKind: "automation",
+		initiatorRef: { automation_id: 42, window_id: 7, run_id: 99 },
 	};
 
-	it("sends a Behavior's run to that Behavior's drill-down", () => {
-		expect(runPermalinkResource(behavior, 500, "personal-agent")).toEqual({
-			kind: "behavior_run",
+	it("sends an Automation's run to that Automation's drill-down", () => {
+		expect(runPermalinkResource(automation, 500, "personal-agent")).toEqual({
+			kind: "automation_run",
 			runId: 500,
 			agentId: "personal-agent",
-			behaviorId: 42,
+			automationId: 42,
 		});
 	});
 
 	it("falls back to the workspace log when the owning agent is unknown", () => {
-		expect(runPermalinkResource(behavior, 500, null)).toEqual({
+		expect(runPermalinkResource(automation, 500, null)).toEqual({
 			kind: "run",
 			runId: 500,
 		});
 	});
 
-	it("leaves non-Behavior runs on the workspace log", () => {
+	it("leaves non-Automation runs on the workspace log", () => {
 		expect(
 			runPermalinkResource(
 				{
@@ -111,10 +111,10 @@ describe("runPermalinkResource", () => {
 		-1,
 		1.5,
 		"not-a-number",
-	])("falls back when a behavior ref carries watcher id %j", (watcherId) => {
+	])("falls back when an automation ref carries automation id %j", (automationId) => {
 		expect(
 			runPermalinkResource(
-				{ initiatorKind: "behavior", initiatorRef: { watcher_id: watcherId } },
+				{ initiatorKind: "automation", initiatorRef: { automation_id: automationId } },
 				500,
 				"personal-agent",
 			),

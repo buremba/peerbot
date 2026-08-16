@@ -242,7 +242,7 @@ export function probeSandboxStrategy(): SandboxStrategy {
  * because the refusal is the runtime's uid_map restriction rather than a
  * missing package (charts/lobu/values.yaml records the measurement). An
  * operator who follows that advice loses time and still ends up with
- * contributed CLIs exiting 127 — which is the intended, documented behaviour
+ * contributed CLIs exiting 127 — which is the intended, documented semantics
  * for that environment, not a fault to chase.
  *
  * So: report the platform, what was looked for, what was found, and the

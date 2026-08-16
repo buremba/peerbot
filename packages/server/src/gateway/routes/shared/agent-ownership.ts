@@ -71,7 +71,7 @@ export function sessionMatchesMetadataOwner(
  * When `agent_users` has multiple rows (same user, same agentId,
  * multiple orgs) we deliberately take none — there's no way to pick
  * tenant-safely from a session that doesn't carry an org id. The HTTP
- * URL has no org slug for this route, so the only safe behaviour is to
+ * URL has no org slug for this route, so the only safe result is to
  * decline and let the snapshot path fall through to the on-disk file
  * (which is already pinned to the deployment's single workspace).
  */

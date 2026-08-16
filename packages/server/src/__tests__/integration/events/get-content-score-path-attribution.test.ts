@@ -12,7 +12,7 @@
  * THREE filters were missing, i.e. a class not a one-off:
  *   - `client_ids`             — added alongside the filter in this branch
  *   - `agent_id`               — pre-existing
- *   - `analyzed_by_behavior_id`— pre-existing; the handler always passed it
+ *   - `analyzed_by_automation_id`— pre-existing; the handler always passed it
  *
  * Fixtures deliberately give the NON-matching rows the higher score, so a
  * dropped filter surfaces them first and fails loudly rather than passing by
@@ -41,8 +41,8 @@ const CHATGPT = 'mcp_score_path_chatgpt';
 const CLI = 'mcp_score_path_cli';
 const AGENT_A = 'agent_score_path_a';
 const AGENT_B = 'agent_score_path_b';
-const BEHAVIOR_A = 910_001;
-const BEHAVIOR_B = 910_002;
+const AUTOMATION_A = 910_001;
+const AUTOMATION_B = 910_002;
 const QUOTED_SEMANTIC_TYPE = 'score"quoted';
 const BACKSLASH_SEMANTIC_TYPE = 'score\\backslash';
 
@@ -200,10 +200,10 @@ describe('getContent > score path honours forwarded filters', () => {
 
     const sql = getTestDb();
     await sql`
-      INSERT INTO watcher_window_events (window_id, event_id, watcher_id)
+      INSERT INTO automation_window_events (window_id, event_id, automation_id)
       VALUES
-        (${chatgptEventId}, ${chatgptEventId}, ${BEHAVIOR_A}),
-        (${cliEventId}, ${cliEventId}, ${BEHAVIOR_B})
+        (${chatgptEventId}, ${chatgptEventId}, ${AUTOMATION_A}),
+        (${cliEventId}, ${cliEventId}, ${AUTOMATION_B})
     `;
 
     ctx = {
@@ -275,12 +275,12 @@ describe('getContent > score path honours forwarded filters', () => {
     expect(result.content.map((c) => c.title)).toEqual(['cli low score row']);
   });
 
-  it('analyzed_by_behavior_id scopes score-sorted rows to that behavior', async () => {
+  it('analyzed_by_automation_id scopes score-sorted rows to that automation', async () => {
     const result = await getContent(
       {
         entity_id: entityId,
         sort_by: 'score',
-        analyzed_by_behavior_id: BEHAVIOR_B,
+        analyzed_by_automation_id: AUTOMATION_B,
         limit: 100,
       } as never,
       {} as never,

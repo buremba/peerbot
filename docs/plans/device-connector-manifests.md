@@ -86,7 +86,7 @@ Cloud-side `BridgeOnlyConnector.sync()` always throws — only a safety net if c
 1. Devices **own** connector metadata for bridges they implement; server **validates and persists**, never trusts blindly.
 2. **`manifest_hash` on every poll** to detect per-device drift (Fable review recommendation).
 3. **device-reconcile** wires connectors from **poll-registered manifests** (per org), with bundled-stub fallback during rollout.
-4. Preserve existing behavior: capability gating (`@lobu/core/capabilities.ts`), advisory-lock idempotency, feed pause on capability revoke, device pin semantics, `userManaged` feed exclusion.
+4. Preserve existing runtime rules: capability gating (`@lobu/core/capabilities.ts`), advisory-lock idempotency, feed pause on capability revoke, device pin semantics, `userManaged` feed exclusion.
 5. **Multi-replica safe**: per-device poll is independent; reconcile uses existing `pg_advisory_xact_lock(hashtext('lobu:autowire'), …)`.
 
 ### Non-Goals
@@ -388,7 +388,7 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
       // 2. Per-org connector sources
       const sourcesPromise = useManifestReconcile
         ? getDeviceConnectorSourcesForOrg(userId, orgId)
-        : bundledCatalog.map(bundledToSource); // flag-off: today’s behavior
+        : bundledCatalog.map(bundledToSource); // flag-off: today’s semantics
 
       return sourcesPromise.then((sources) =>
         sources.flatMap((src) => {
@@ -530,7 +530,7 @@ export const DEVICE_IDENTITY_NAMESPACE_ALLOWLIST = [
 
 ### Rollout Plan
 
-| Phase | Poll behavior | Reconcile behavior | Enforcement |
+| Phase | Poll semantics | Reconcile semantics | Enforcement |
 |-------|---------------|-------------------|-------------|
 | **0** | Store manifests when field present | Bundled only (`DEVICE_MANIFEST_RECONCILE=0`) | None |
 | **1** | Store + drift metrics | Manifest-primary + bundled fallback (`=1` staging) | Flag |

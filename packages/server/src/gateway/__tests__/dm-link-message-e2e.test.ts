@@ -9,7 +9,7 @@ import { beforeAll, describe, expect, mock, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { CommandRegistry } from "@lobu/core";
 import { getDb } from "../../db/client.js";
-import { listTestBehaviorSubscriptions } from "../../__tests__/setup/behavior-subscriptions.js";
+import { listTestAutomationSubscriptions } from "../../__tests__/setup/automation-subscriptions.js";
 import { registerBuiltInCommands } from "../commands/built-in-commands.js";
 import { CommandDispatcher } from "../commands/command-dispatcher.js";
 import { ConversationStateStore } from "../connections/conversation-state-store.js";
@@ -86,7 +86,7 @@ describe("DM bare-code message → real consume→bind (previewMode)", () => {
       registerBuiltInCommands(registry, { agentSettingsStore: {} as never });
       const dispatcher = new CommandDispatcher({
         registry,
-				behaviorSubscriptionService: {
+				automationSubscriptionService: {
 					resolveForConnection: mock(async () => null),
 				} as never,
       });
@@ -109,7 +109,7 @@ describe("DM bare-code message → real consume→bind (previewMode)", () => {
       const services = {
         getArtifactStore: () => null,
         getPublicGatewayUrl: () => "https://gateway.example.com",
-				getBehaviorSubscriptionService: () => ({
+				getAutomationSubscriptionService: () => ({
 					resolveForConnection: mock(async () => null),
 				}),
         getAgentMetadataStore: () => undefined,
@@ -167,7 +167,7 @@ describe("DM bare-code message → real consume→bind (previewMode)", () => {
         SELECT 1 FROM oauth_states WHERE id = ${codeHash(code)}
       `;
       expect(remaining.length).toBe(0);
-      const binding = await listTestBehaviorSubscriptions({
+      const binding = await listTestAutomationSubscriptions({
         platform: "slack",
         channelId: canonical,
         teamId: "T_E2E",
@@ -177,7 +177,7 @@ describe("DM bare-code message → real consume→bind (previewMode)", () => {
       expect(binding[0]?.organization_id).toBe(organizationId);
     } finally {
 			await sql`
-				DELETE FROM watchers
+				DELETE FROM automations
 				WHERE EXISTS (
 					SELECT 1
 					FROM jsonb_array_elements(COALESCE(triggers, '[]'::jsonb)) trigger

@@ -5,7 +5,7 @@ import {
   defineSkill,
   defineEntityType,
   defineRelationshipType,
-  defineBehavior,
+  defineAutomation,
   secret,
 } from "@lobu/cli/config";
 import type StripeChargesConnector from "./stripe-charges.connector.ts";
@@ -166,7 +166,7 @@ const subscribedTo = defineRelationshipType({
   description: "Track which plans and products each customer subscribes to.",
 });
 
-const customerActivityTracker = defineBehavior({
+const customerActivityTracker = defineAutomation({
   agent: ecommerceOps,
   slug: "customer-activity-tracker",
   name: "Customer activity tracker",
@@ -190,5 +190,5 @@ export default defineConfig({
   agents: [ecommerceOps],
   entities: [customer, order, product, subscription],
   relationships: [hasPreference, placedOrder, subscribedTo],
-  behaviors: [customerActivityTracker],
+  automations: [customerActivityTracker],
 });

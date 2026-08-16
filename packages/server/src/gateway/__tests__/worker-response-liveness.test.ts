@@ -103,7 +103,7 @@ function mintToken(opts?: {
     ...(opts?.omitOrganizationId ? {} : { organizationId: "org-1" }),
     ...(opts?.omitConnectionId ? {} : { connectionId: "connection-1" }),
     platform: "slack",
-    source: "watcher-run",
+    source: "automation-run",
     ...(opts?.omitResponseThreadId
       ? {}
       : { responseThreadId: "slack:chan-1:conv-1" }),
@@ -271,7 +271,7 @@ describe("POST /worker/response — authoritative tenant", () => {
       responseChannel: "chan-1",
       responseThreadId: "slack:chan-1:conv-1",
       teamId: "team-1",
-      source: "watcher-run",
+      source: "automation-run",
       senderId: "user-1",
     });
     expect(input.customEvent?.data?.event).toMatchObject({
@@ -284,12 +284,12 @@ describe("POST /worker/response — authoritative tenant", () => {
       connectionId: "connection-1",
       agentId: "agent-1",
       organizationId: "org-1",
-      source: "watcher-run",
+      source: "automation-run",
       question: "Proceed?",
     });
   });
 
-  test("binds reply Behavior routing to the signed turn row, not worker metadata", async () => {
+  test("binds reply Automation routing to the signed turn row, not worker metadata", async () => {
     await armLiveTurn("m1");
     const trustedRunId = Number(
       await queue.send(`thread_message_${DEPLOYMENT}`, {
@@ -301,7 +301,7 @@ describe("POST /worker/response — authoritative tenant", () => {
         agentId: "agent-1",
         organizationId: "org-1",
         platform: "slack",
-        platformMetadata: { behaviorId: 41 },
+        platformMetadata: { automationId: 41 },
       })
     );
 
@@ -311,17 +311,17 @@ describe("POST /worker/response — authoritative tenant", () => {
         conversationId: "conv-spoofed",
         error: "429 Limit Exhausted. Your limit will reset at 2026-08-04 06:00:00",
         errorCode: "PROVIDER_QUOTA_EXHAUSTED",
-        platformMetadata: { behaviorId: 99 },
+        platformMetadata: { automationId: 99 },
       },
       { tokenRunId: trustedRunId }
     );
     expect(res.status).toBe(200);
 
     const { input } = await latestThreadResponse();
-    expect(input.platformMetadata?.behaviorId).toBe(41);
+    expect(input.platformMetadata?.automationId).toBe(41);
   });
 
-  test("drops reply Behavior routing when the signed turn row has no Behavior", async () => {
+  test("drops reply Automation routing when the signed turn row has no Automation", async () => {
     await armLiveTurn("m1");
     const trustedRunId = Number(
       await queue.send(`thread_message_${DEPLOYMENT}`, {
@@ -342,14 +342,14 @@ describe("POST /worker/response — authoritative tenant", () => {
         messageId: "m1",
         error: "429 Limit Exhausted. Your limit will reset at 2026-08-04 06:00:00",
         errorCode: "PROVIDER_QUOTA_EXHAUSTED",
-        platformMetadata: { behaviorId: 99 },
+        platformMetadata: { automationId: 99 },
       },
       { tokenRunId: trustedRunId }
     );
     expect(res.status).toBe(200);
 
     const { input } = await latestThreadResponse();
-    expect(input.platformMetadata?.behaviorId).toBeUndefined();
+    expect(input.platformMetadata?.automationId).toBeUndefined();
   });
 
   test("an orgless worker token cannot inject a body organization id", async () => {
@@ -382,7 +382,7 @@ describe("POST /worker/response — authoritative tenant", () => {
           chatId: "C-SPOOFED",
           responseThreadId: "thread-spoofed",
           senderId: "sender-spoofed",
-          behaviorId: 99,
+          automationId: 99,
         },
         customEvent: {
           name: "chat-interaction",
@@ -409,7 +409,7 @@ describe("POST /worker/response — authoritative tenant", () => {
       chatId: "chan-1",
       responseChannel: "chan-1",
       teamId: "team-1",
-      source: "watcher-run",
+      source: "automation-run",
       senderId: "user-1",
     });
     expect(
@@ -424,7 +424,7 @@ describe("POST /worker/response — authoritative tenant", () => {
       platform: "slack",
       agentId: "agent-1",
       organizationId: "org-1",
-      source: "watcher-run",
+      source: "automation-run",
     });
   });
 });

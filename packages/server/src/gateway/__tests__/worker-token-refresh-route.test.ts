@@ -123,7 +123,7 @@ function mintToken(opts: {
     organizationId: "org-1",
     connectionId: "connection-1",
     responseThreadId: "slack:chan-1:thread-1",
-    source: "watcher-run",
+    source: "automation-run",
     runId: opts.runId,
     messageId: opts.messageId,
     ...(opts.adminGrant
@@ -139,7 +139,7 @@ function mintToken(opts: {
     // mode that has something to lose. Both halves are required: the verifier
     // rejects `capture` without a run id.
     executionMode: "capture",
-    behaviorRunId: 874626,
+    automationRunId: 874626,
   });
 }
 
@@ -179,7 +179,7 @@ describe("POST /worker/token/refresh", () => {
     expect(data!.messageId).toBe("m1");
     expect(data!.connectionId).toBe("connection-1");
     expect(data!.responseThreadId).toBe("slack:chan-1:thread-1");
-    expect(data!.source).toBe("watcher-run");
+    expect(data!.source).toBe("automation-run");
     expect(data!.deploymentName).toBe(DEPLOYMENT);
     expect(data!.organizationId).toBe("org-1");
     expect(data!.adminTools).toEqual(["manage_agents"]);
@@ -198,7 +198,7 @@ describe("POST /worker/token/refresh", () => {
     // the eval replay performs real side effects against the org it is
     // scoring instead of recording them.
     expect(data!.executionMode).toBe("capture");
-    expect(data!.behaviorRunId).toBe(874626);
+    expect(data!.automationRunId).toBe(874626);
   });
 
   test("REVOCATION: denied (403) once this turn has no live marker", async () => {

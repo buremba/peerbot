@@ -3,7 +3,7 @@ import { getErrorMessage } from "@lobu/core";
 import { ExecuteAction, type ManageOperationsResult } from "../schemas";
 import type { Static } from "@sinclair/typebox";
 import { readGrantedScopesFromAuthData } from "../../../../auth/oauth/scopes";
-import { resolveBehaviorConnectionVisibilityUserId } from "../../../../authz/behavior-connection-visibility";
+import { resolveAutomationConnectionVisibilityUserId } from "../../../../authz/automation-connection-visibility";
 import { compileConnectionRowVisibility } from "../../../../authz/connection-visibility";
 import { resolveActingPrincipal, resolveWritePolicyDecision } from "../../../../authz/entity-policy";
 import { authzScopeFromToolContext } from "../../../../authz/scope";
@@ -30,7 +30,7 @@ import { resolveExecutionAuth } from "../../../../utils/execution-context";
 import { insertEvent } from "../../../../utils/insert-event";
 import logger from "../../../../utils/logger";
 import { buildResourcePermalink } from "../../../../utils/url-builder";
-import { trackWatcherReaction } from "../../../../utils/watcher-reactions";
+import { trackAutomationReaction } from "../../../../utils/automation-reactions";
 import { dispatchChromeActionToExtension } from "../../../../worker-api/dispatch-chrome-action";
 import type { ToolContext } from "../../../registry";
 import { getOrgUrlContext } from "../../../view-urls";
@@ -415,7 +415,7 @@ export async function handleExecute(
 			422,
 		);
 	}
-	const visibilityUserId = await resolveBehaviorConnectionVisibilityUserId(
+	const visibilityUserId = await resolveAutomationConnectionVisibilityUserId(
 		ctx,
 		sql,
 	);
@@ -477,15 +477,15 @@ export async function handleExecute(
 	}
 
 	const input = args.input ?? {};
-	// A caller-provided behavior_source is only an attribution hint. Durable
-	// feedback must follow the server-stamped Behavior execution context.
-	const reactionBehaviorId = ctx.actingWatcherId ?? null;
+	// A caller-provided automation_source is only an attribution hint. Durable
+	// feedback must follow the server-stamped Automation execution context.
+	const reactionAutomationId = ctx.actingAutomationId ?? null;
 	const reactionWindowId = ctx.actingWindowId ?? null;
 	const trackOperationReaction = async (runId: number): Promise<void> => {
-		if (reactionBehaviorId === null || reactionWindowId === null) return;
-		await trackWatcherReaction({
+		if (reactionAutomationId === null || reactionWindowId === null) return;
+		await trackAutomationReaction({
 			organizationId: ctx.organizationId,
-			watcherId: reactionBehaviorId,
+			automationId: reactionAutomationId,
 			windowId: reactionWindowId,
 			reactionType: "action_executed",
 			toolName: "manage_operations",
@@ -516,17 +516,17 @@ export async function handleExecute(
 	// restrictive-wins: a `deny` blocks outright; an `approval` upgrades a
 	// connection that would auto-run to queued. A human applies immediately (the
 	// policy governs non-human principals); with no policy row, the class default
-	// is auto, so the connection mode alone decides — today's behavior is intact.
+	// is auto, so the connection mode alone decides — existing semantics remain intact.
 	// Resolve WHO is acting through the single seam — merges the explicit
-	// behavior_source and the reaction session's own watcher, looks up the owning
-	// agent, and pins autonomous mode for a watcher. Persisted with the run so the
+	// automation_source and the reaction session's own automation, looks up the owning
+	// agent, and pins autonomous mode for an automation. Persisted with the run so the
 	// approve-time recheck re-evaluates in the SAME mode/principal.
 	const actor = await resolveActingPrincipal(sql, {
 		organizationId: ctx.organizationId,
 		userId: ctx.userId,
 		agentId: ctx.agentId,
-		explicitWatcherId: args.behavior_source?.behavior_id ?? null,
-		sessionWatcherId: ctx.actingWatcherId ?? null,
+		explicitAutomationId: args.automation_source?.automation_id ?? null,
+		sessionAutomationId: ctx.actingAutomationId ?? null,
 	});
 	// Agent write-policy applies to WRITE ops only. Reads stay available under
 	// connection action_modes alone (default auto) — same idea as MCP readOnlyHint.
@@ -678,7 +678,7 @@ export async function handleExecute(
 				policyPrincipalKind: actor.kind,
 				policyPrincipalId: actor.id,
 				createdByUserId: ctx.userId,
-				watcherId: ctx.actingWatcherId,
+				automationId: ctx.actingAutomationId,
 				windowId: ctx.actingWindowId,
 				idempotencyKey: args.idempotency_key,
 				db: tx,
@@ -784,7 +784,7 @@ export async function handleExecute(
 		policyPrincipalKind: actor.kind,
 		policyPrincipalId: actor.id,
 		createdByUserId: activation ? visibilityUserId : ctx.userId,
-		watcherId: ctx.actingWatcherId,
+		automationId: ctx.actingAutomationId,
 		windowId: ctx.actingWindowId,
 		idempotencyKey: args.idempotency_key,
 		activation,

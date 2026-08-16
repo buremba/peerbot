@@ -21,7 +21,7 @@
 
 import type { DispatchChromeActionRequest } from '@lobu/core/contracts/worker/protocol';
 import type { Context } from 'hono';
-import { resolveBehaviorConnectionVisibilityUserId } from '../authz/behavior-connection-visibility';
+import { resolveAutomationConnectionVisibilityUserId } from '../authz/automation-connection-visibility';
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
 import { getDb, parsePgTextArray, pgTextArray } from '../db/client';
 import type { Env } from '../index';
@@ -632,14 +632,14 @@ export async function dispatchChromeActionToExtension(params: {
   const sql = getDb();
 
   let createdByUserId = visibilityUserId;
-  let watcherId: number | null = null;
+  let automationId: number | null = null;
   let windowId: number | null = null;
   let activatedDeviceWorkerId: string | null = null;
   let activationTabId: number | null = null;
   let activationTargetUrls: string[] = [];
   if (parentRunId != null) {
     const parentRows = (await sql`
-      SELECT created_by_user_id, watcher_id, window_id,
+      SELECT created_by_user_id, automation_id, window_id,
              activated_by_device_worker_id, activation_tab_id,
              activation_target_urls
       FROM runs
@@ -648,7 +648,7 @@ export async function dispatchChromeActionToExtension(params: {
       LIMIT 1
     `) as Array<{
       created_by_user_id: string | null;
-      watcher_id: number | null;
+      automation_id: number | null;
       window_id: number | null;
       activated_by_device_worker_id: string | null;
       activation_tab_id: number | null;
@@ -661,8 +661,8 @@ export async function dispatchChromeActionToExtension(params: {
       };
     }
     createdByUserId = parentRows[0].created_by_user_id;
-    watcherId =
-      parentRows[0].watcher_id == null ? null : Number(parentRows[0].watcher_id);
+    automationId =
+      parentRows[0].automation_id == null ? null : Number(parentRows[0].automation_id);
     windowId =
       parentRows[0].window_id == null ? null : Number(parentRows[0].window_id);
     activatedDeviceWorkerId = parentRows[0].activated_by_device_worker_id;
@@ -785,7 +785,7 @@ export async function dispatchChromeActionToExtension(params: {
       approvalMode: 'device',
       requireCompiledCode: false,
       createdByUserId,
-      watcherId,
+      automationId,
       windowId,
     });
     runId = claim.runId;
@@ -847,7 +847,7 @@ export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {
   // overrides it.
   const parentRows = (await sql`
     SELECT r.organization_id, r.status, r.claimed_by, r.run_type, r.connection_id,
-           r.created_by_user_id, r.watcher_id
+           r.created_by_user_id, r.automation_id
     FROM runs r
     WHERE r.id = ${body.parent_run_id}
     LIMIT 1
@@ -858,7 +858,7 @@ export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {
     run_type: string;
     connection_id: number | null;
     created_by_user_id: string | null;
-    watcher_id: number | null;
+    automation_id: number | null;
   }>;
   if (parentRows.length === 0) {
     return c.json({ error: 'parent_run not found' }, 404);
@@ -880,11 +880,11 @@ export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {
     );
   }
 
-  const visibilityUserId = await resolveBehaviorConnectionVisibilityUserId(
+  const visibilityUserId = await resolveAutomationConnectionVisibilityUserId(
     {
       organizationId: parentRun.organization_id,
       userId: parentRun.created_by_user_id,
-      actingWatcherId: parentRun.watcher_id,
+      actingAutomationId: parentRun.automation_id,
     },
     sql
   );

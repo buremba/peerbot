@@ -145,30 +145,30 @@ describe('requiresOwnerAdmin', () => {
     expect(requiresOwnerAdmin('manage_feeds', { action: 'trigger_feed' }, false)).toBe(true);
   });
 
-  it('should require admin for manage_behaviors mutating actions', () => {
-    expect(requiresOwnerAdmin('manage_behaviors', { action: 'create' }, false)).toBe(true);
-    expect(requiresOwnerAdmin('manage_behaviors', { action: 'create_version' }, false)).toBe(true);
-    expect(requiresOwnerAdmin('manage_behaviors', { action: 'set_reaction_script' }, false)).toBe(
+  it('should require admin for manage_automations mutating actions', () => {
+    expect(requiresOwnerAdmin('manage_automations', { action: 'create' }, false)).toBe(true);
+    expect(requiresOwnerAdmin('manage_automations', { action: 'create_version' }, false)).toBe(true);
+    expect(requiresOwnerAdmin('manage_automations', { action: 'set_reaction_script' }, false)).toBe(
       true
     );
     // `trigger` is write-tier (manual activation — the open execution lane),
-    // guarded per-behavior by requireWatcherAccess in the handler, like
+    // guarded per-automation by requireAutomationAccess in the handler, like
     // `complete_window`. It is execution, not administration.
-    expect(requiresOwnerAdmin('manage_behaviors', { action: 'trigger' }, false)).toBe(false);
-    expect(requiresOwnerAdmin('manage_behaviors', { action: 'create_from_version' }, false)).toBe(
+    expect(requiresOwnerAdmin('manage_automations', { action: 'trigger' }, false)).toBe(false);
+    expect(requiresOwnerAdmin('manage_automations', { action: 'create_from_version' }, false)).toBe(
       true
     );
   });
 
-  it('should not require admin for manage_behaviors read actions', () => {
-    expect(requiresOwnerAdmin('manage_behaviors', { action: 'get_versions' }, false)).toBe(false);
-    expect(requiresOwnerAdmin('manage_behaviors', { action: 'get_version_details' }, false)).toBe(
+  it('should not require admin for manage_automations read actions', () => {
+    expect(requiresOwnerAdmin('manage_automations', { action: 'get_versions' }, false)).toBe(false);
+    expect(requiresOwnerAdmin('manage_automations', { action: 'get_version_details' }, false)).toBe(
       false
     );
     expect(
-      requiresOwnerAdmin('manage_behaviors', { action: 'get_component_reference' }, false)
+      requiresOwnerAdmin('manage_automations', { action: 'get_component_reference' }, false)
     ).toBe(false);
-    expect(requiresOwnerAdmin('manage_behaviors', { action: 'get_feedback' }, false)).toBe(false);
+    expect(requiresOwnerAdmin('manage_automations', { action: 'get_feedback' }, false)).toBe(false);
   });
 
   it('should require admin for view template mutations while leaving reads as read-tier', () => {
@@ -310,7 +310,7 @@ describe('extractAuthContext adminTools — only the verified worker allowlist r
   it('does NOT derive an allowlist for an admin caller on the REST proxy', () => {
     const ctx = ctxFor({
       scopes: ['mcp:admin'],
-      url: 'http://localhost/api/v1/tools/manage_behaviors',
+      url: 'http://localhost/api/v1/tools/manage_automations',
     });
     expect(ctx.adminTools).toBeNull();
   });
@@ -384,8 +384,8 @@ describe('isPublicReadable', () => {
     expect(isPublicReadable('read_knowledge', {})).toBe(true);
   });
 
-  it('should allow public read for get_behavior', () => {
-    expect(isPublicReadable('get_behavior', {})).toBe(true);
+  it('should allow public read for get_automation', () => {
+    expect(isPublicReadable('get_automation', {})).toBe(true);
   });
 
   it('should allow public read for manage_entity list', () => {
@@ -413,21 +413,21 @@ describe('isPublicReadable', () => {
     expect(isPublicReadable('unknown_tool', {})).toBe(false);
   });
 
-  it('should allow public read for manage_behaviors read actions', () => {
-    expect(isPublicReadable('manage_behaviors', { action: 'list' })).toBe(true);
-    expect(isPublicReadable('manage_behaviors', { action: 'get_versions' })).toBe(true);
-    expect(isPublicReadable('manage_behaviors', { action: 'get_version_details' })).toBe(true);
+  it('should allow public read for manage_automations read actions', () => {
+    expect(isPublicReadable('manage_automations', { action: 'list' })).toBe(true);
+    expect(isPublicReadable('manage_automations', { action: 'get_versions' })).toBe(true);
+    expect(isPublicReadable('manage_automations', { action: 'get_version_details' })).toBe(true);
     expect(
-      isPublicReadable('manage_behaviors', {
+      isPublicReadable('manage_automations', {
         action: 'get_component_reference',
       })
     ).toBe(true);
   });
 
-  it('should deny public read for manage_behaviors mutations', () => {
-    expect(isPublicReadable('manage_behaviors', { action: 'create' })).toBe(false);
-    expect(isPublicReadable('manage_behaviors', { action: 'create_version' })).toBe(false);
-    expect(isPublicReadable('manage_behaviors', { action: 'set_reaction_script' })).toBe(false);
+  it('should deny public read for manage_automations mutations', () => {
+    expect(isPublicReadable('manage_automations', { action: 'create' })).toBe(false);
+    expect(isPublicReadable('manage_automations', { action: 'create_version' })).toBe(false);
+    expect(isPublicReadable('manage_automations', { action: 'set_reaction_script' })).toBe(false);
   });
 
   it('should allow public read for manage_classifiers list', () => {
@@ -653,7 +653,7 @@ describe('first-party tool-name coverage', () => {
   // entry is dead code — kept here so the test fails the day someone wires
   // it up without first registering the tool. Empty this set when cleaned up.
   const KNOWN_DEAD_NAMES = new Set<string>([
-    // useDeleteWindow in web/src/hooks/use-watchers.ts has no caller;
+    // useDeleteWindow in web/src/hooks/use-automations.ts has no caller;
     // manage_queue was never registered. Delete the hook or add the tool.
     'manage_queue',
   ]);
@@ -744,8 +744,8 @@ manage_auth_profiles: list_auth_profiles=read+public get_auth_profile=read+publi
 manage_operations: list_available=read+public execute=write list_runs=read+public get_run=read+public list_activity=read+public approve=write reject=write approve_batch=write reject_batch=write ?=read
 notify: send=admin ?=admin
 manage_schedules: create=admin list=admin update=admin pause=admin cancel=admin ?=read
-manage_behaviors: create=admin list=read+public update=admin create_version=admin complete_window=write trigger=write delete=admin set_reaction_script=admin get_versions=read+public get_version_details=read+public get_component_reference=read+public submit_feedback=admin get_feedback=read+public list_promoted=read create_from_version=admin ?=read
-get_behavior: read+public ?=read+public
+manage_automations: create=admin list=read+public update=admin create_version=admin complete_window=write trigger=write delete=admin set_reaction_script=admin get_versions=read+public get_version_details=read+public get_component_reference=read+public submit_feedback=admin get_feedback=read+public list_promoted=read create_from_version=admin ?=read
+get_automation: read+public ?=read+public
 read_knowledge: read+public ?=read+public
 manage_classifiers: create=admin list=read+public generate_embeddings=admin delete=admin classify=admin apply=admin ?=read
 manage_view_templates: set=admin get=read+public rollback=admin remove_tab=admin clear=admin ?=read

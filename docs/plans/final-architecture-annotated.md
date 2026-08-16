@@ -3,7 +3,7 @@
 > **Status (2026-07-15): ARCHIVED SNAPSHOT.** The annotations were verified against `main` at
 > authoring time (2026-07-14); treat every `file:line` citation and every "does not exist today"
 > claim as historical, not current. Known items that have **shipped since**: WI-0.1
-> watcher-definition approval queue (`queueWatcherWriteForApproval`, #1903); WI-0.3 Slack-decidable
+> automation-definition approval queue (`queueAutomationWriteForApproval`, #1903); WI-0.3 Slack-decidable
 > config approvals (#1918/#1924/#1926/#1928); §16.2's run-backed configuration link — `run_id`
 > prefill and the guarded pending-proposal endpoints now exist (#1918/#1924). Re-verify against
 > `main` before acting on any remaining item.
@@ -43,10 +43,10 @@
 > depends on. Three of them appear in **no** section at all; the fourth is scheduled behind four
 > phases of sandbox work the demo never touches. Build these first.
 >
-> **WI-0.1 — Watcher-definition approval queue (critical): SHIPPED.**
-> `gateWatcherWrite` now sends `require_approval` decisions to
-> `queueWatcherWriteForApproval`, which persists a pending internal run and approval event.
-> The implementation lives in `packages/server/src/tools/admin/manage_behaviors.ts`; the
+> **WI-0.1 — Automation-definition approval queue (critical): SHIPPED.**
+> `gateAutomationWrite` now sends `require_approval` decisions to
+> `queueAutomationWriteForApproval`, which persists a pending internal run and approval event.
+> The implementation lives in `packages/server/src/tools/admin/manage_automations.ts`; the
 > `agent_config` approval default remains in `packages/server/src/authz/write-action-manifest.ts`.
 > This landed in #1903; do not re-implement it.
 >
@@ -114,7 +114,7 @@ The design should be reviewed as a clean end state. Manual database and API migr
 
 ## 1.1 Reuse existing Lobu infrastructure
 
-The implementation must reuse: existing embedded Bash execution; existing remote runtime-provider execution; existing Vercel Sandbox integration; existing persistent filesystem behaviour; existing secret store; existing auth-profile flows; existing OAuth and device-code flows; existing generic `runs` infrastructure; existing approval cards and operation approval logic; existing append-only events; existing run permalinks; existing environment and inference-provider forms; existing GitHub connector.
+The implementation must reuse: existing embedded Bash execution; existing remote runtime-provider execution; existing Vercel Sandbox integration; existing persistent filesystem semantics; existing secret store; existing auth-profile flows; existing OAuth and device-code flows; existing generic `runs` infrastructure; existing approval cards and operation approval logic; existing append-only events; existing run permalinks; existing environment and inference-provider forms; existing GitHub connector.
 
 Do not create parallel implementations for the same concern.
 
@@ -133,7 +133,7 @@ Do not create parallel implementations for the same concern.
 
 ## 1.2 One domain layer, multiple adapters
 
-REST, ClientSDK, UI, CLI, `lobu apply`, agent tools, watchers, and external MCP clients must call the same application-level services and actions.
+REST, ClientSDK, UI, CLI, `lobu apply`, agent tools, automations, and external MCP clients must call the same application-level services and actions.
 
 REST must not call ClientSDK internally. ClientSDK must not call REST internally. Both call the same domain service.
 
@@ -192,7 +192,7 @@ RuntimeProvider · RuntimeConnection · Sandbox · Run · InferenceProvider · A
 
 # 3. RuntimeProvider
 
-A `RuntimeProvider` is a read-only implementation of an execution backend. Examples: builtin, vercel, e2b, daytona, cloudflare, device. It defines credential fields, capabilities, sandbox create/lookup, persistent-filesystem behaviour, command execution, resource config, network-policy translation, stop/resume/delete, and diagnostics. Users do not create runtime providers.
+A `RuntimeProvider` is a read-only implementation of an execution backend. Examples: builtin, vercel, e2b, daytona, cloudflare, device. It defines credential fields, capabilities, sandbox create/lookup, persistent-filesystem semantics, command execution, resource config, network-policy translation, stop/resume/delete, and diagnostics. Users do not create runtime providers.
 
 ## Required consistency
 
@@ -239,7 +239,7 @@ scope = org → ownerUserId must be null. scope = private → ownerUserId must b
 
 # 5. Sandbox
 
-A `Sandbox` is the actual execution workspace created through a runtime connection. It owns runtime connection, provider sandbox identifier, persistent filesystem, lifecycle state, resource settings, network policy, ownership, optional conversation/agent binding, and timestamps. One connection may back many sandboxes; a sandbox may be reused by ChatGPT/Claude via MCP, a Lobu agent/conversation, CLI, UI, jobs, watchers.
+A `Sandbox` is the actual execution workspace created through a runtime connection. It owns runtime connection, provider sandbox identifier, persistent filesystem, lifecycle state, resource settings, network policy, ownership, optional conversation/agent binding, and timestamps. One connection may back many sandboxes; a sandbox may be reused by ChatGPT/Claude via MCP, a Lobu agent/conversation, CLI, UI, jobs, automations.
 
 ## Stable public identity
 
@@ -288,7 +288,7 @@ A `Run` is one durable Lobu action or execution attempt. Reuse the existing gene
 
 ## Parent and child runs
 
-Blocked task → parent run `status: blocked`, `blocked_reason`; child config run `status: waiting_for_user`. On success: child → completed, parent → queued, dispatcher resumes parent. Automatic continuation optional for external MCP, supported for Lobu-native agents/jobs/watchers.
+Blocked task → parent run `status: blocked`, `blocked_reason`; child config run `status: waiting_for_user`. On success: child → completed, parent → queued, dispatcher resumes parent. Automatic continuation optional for external MCP, supported for Lobu-native agents/jobs/automations.
 
 > **FIX (high/plan-vs-reality) — this is greenfield, not "add explicit fields," and it has
 > multi-replica + sweeper traps.** Verified across 7 of 11 readers:
@@ -569,7 +569,7 @@ Every public action has one `ActionDefinition` (input/output schemas, access tie
 > `packages/server/src/tools/admin/manage_schedules.ts:128`). Build: the `run_id`-reading form route,
 > the guarded proposal-serve endpoint, the run-completing submit, and `sourceRunId` threading through
 > OAuth state.
-> **Update (2026-07-15): largely SHIPPED** — agent/watcher `run_id` prefill and the guarded pending
+> **Update (2026-07-15): largely SHIPPED** — agent/automation `run_id` prefill and the guarded pending
 > endpoints landed in #1918/#1924; the still-missing piece is the inference/runtime-connection flow
 > (`sourceRunId` through OAuth state).
 
@@ -592,7 +592,7 @@ Reuse existing flows; preserve `sourceRunId` inside signed server-controlled OAu
 
 # 19. Approval policy
 
-Direct human admin action applies immediately (host tool-confirmation may count as human confirmation where policy allows — avoid double approval). Agent/watcher/unattended changes create pending run + pending event + configureUrl. Destructive actions always require confirmation. Every pending mutation carries `expectedUpdatedAt` or a pre-image; approval fails with conflict on change.
+Direct human admin action applies immediately (host tool-confirmation may count as human confirmation where policy allows — avoid double approval). Agent/automation/unattended changes create pending run + pending event + configureUrl. Destructive actions always require confirmation. Every pending mutation carries `expectedUpdatedAt` or a pre-image; approval fails with conflict on change.
 
 > **FIX (high) — reconcile with the shipped write-gate, don't restate it (see §14 directive).**
 > - "Destructive always confirms" → implement as an **unloosenable floor** (`min_effect`) in the
@@ -716,7 +716,7 @@ Connect GitHub → RuntimeConnection → Sandbox → clone → edit → test →
 
 > **FIX (critical/scope) — the phase order is inverted relative to the demo. Reordered:**
 >
-> **Phase 0 — Demo-viable cut (NEW, first).** WI-0.1 watcher-approval queue; WI-0.2 Slack identity
+> **Phase 0 — Demo-viable cut (NEW, first).** WI-0.1 automation-approval queue; WI-0.2 Slack identity
 > mapping; WI-0.3 Slack-decidable approvals; WI-0.4 chat/MCP inference setup + cold-start fix; WI-0.5
 > event-supersede fix; the §16.2 run-backed configure-link flow. **This is the launch demo.**
 >
@@ -761,7 +761,7 @@ Connect GitHub → RuntimeConnection → Sandbox → clone → edit → test →
 > **CUT** the matrix rows for cut features: process APIs, file methods, stop/resume, shared/on_demand,
 > org/agent ownership, GitHub merge, the REST-vs-SDK schema-drift CI.
 > **ADD (demo/public):** Slack-identity-maps-to-correct-member (not owner); Slack approval card
-> resolves a non-entity run; watcher-create-by-agent queues (not 403); builder-with-no-model posts
+> resolves a non-entity run; automation-create-by-agent queues (not 403); builder-with-no-model posts
 > configureUrl (not error); pending+terminal approval events supersede correctly; base_url row refuses
 > user/deployment token; per-org exec cap + rate limit enforced; idle sandbox swept.
 
@@ -771,7 +771,7 @@ Connect GitHub → RuntimeConnection → Sandbox → clone → edit → test →
 > sandboxes are **vercel-only**; item 20 (GitHub merge) is **post-launch**; item 21 (no parallel
 > approval subsystem) is satisfied by **extending the write-gate** (§14), which the original §14 would
 > have violated. Add three launch DoD items: **Slack turns attributed to the correct member; approvals
-> decidable in Slack; the builder guides project/agent/provider/watcher setup end-to-end without a
+> decidable in Slack; the builder guides project/agent/provider/automation setup end-to-end without a
 > human touching the web UI first.**
 
 # 29. Final architecture

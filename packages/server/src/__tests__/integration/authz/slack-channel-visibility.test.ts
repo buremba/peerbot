@@ -7,7 +7,7 @@
  * never reaches a user beyond their access in the source system. Also proves the
  * two fail-closed edges (unresolved requester sees nothing of an enforced
  * connection) and that a connection WITHOUT a materialized ACL graph keeps the
- * legacy per-agent behavior (no regression until a workspace is graphed).
+ * legacy per-agent access semantics (no regression until a workspace is graphed).
  */
 
 import { normalizeSlackUserId } from "@lobu/connectors/slack-identity";
@@ -34,7 +34,7 @@ import { clearEntityLinkRulesCache } from "../../../utils/entity-link-upsert";
 import { ensureMemberEntity } from "../../../utils/member-entity";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
-import { createTestBehaviorSubscription } from "../../setup/behavior-subscriptions";
+import { createTestAutomationSubscription } from "../../setup/automation-subscriptions";
 import {
   addUserToOrganization,
   createTestAgent,
@@ -80,7 +80,7 @@ async function bindChannel(opts: {
   text: string;
 }): Promise<void> {
   const sql = getTestDb();
-  await createTestBehaviorSubscription({
+  await createTestAutomationSubscription({
     organizationId: opts.orgId,
     agentId: opts.agentId,
     connectionSlug: `agentconn-${CONN}`,
@@ -473,7 +473,7 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
     });
     // Bindings carry the concrete WORKSPACE T… (post-invariant), NOT the E….
     for (const channel of ["C01ENG", "C01SEC"]) {
-			await createTestBehaviorSubscription({
+			await createTestAutomationSubscription({
 				organizationId: org.id,
 				agentId: agent.agentId,
 				connectionSlug: GRID_CONN,
@@ -605,7 +605,7 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
     `;
     // Bindings carry the concrete sibling WORKSPACE T… (post-invariant).
     for (const channel of ["C01ENG", "C01SEC"]) {
-			await createTestBehaviorSubscription({
+			await createTestAutomationSubscription({
 				organizationId: org.id,
 				agentId: agent.agentId,
 				connectionSlug: INSTALL_ID,
@@ -722,7 +722,7 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
     // A binding to a channel in a DIFFERENT workspace (the same agent's second
     // Slack connection) must NOT be synced under CONN — otherwise CONN would
     // fetch it with the wrong token and fail closed, or stamp it under itself.
-		await createTestBehaviorSubscription({
+		await createTestAutomationSubscription({
 			organizationId: org.id,
 			agentId: agent.agentId,
 			connectionSlug: `agentconn-${CONN}`,
@@ -987,7 +987,7 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
 		const TEAM_B = "T02SIBLING";
 
 		// A second workspace on the SAME connection, bound to its own channel.
-		await createTestBehaviorSubscription({
+		await createTestAutomationSubscription({
 			organizationId: org.id,
 			agentId: agent.agentId,
 			connectionSlug: `agentconn-${CONN}`,

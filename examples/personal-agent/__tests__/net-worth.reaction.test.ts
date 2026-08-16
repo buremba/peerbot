@@ -149,13 +149,13 @@ const ctx: ReactionContext = {
   window: {
     id: 91,
     run_id: 300,
-    behavior_id: 45,
+    automation_id: 45,
     window_start: "2026-08-12T08:59:00.000Z",
     window_end: "2026-08-12T09:00:00.000Z",
     granularity: "week",
     content_analyzed: 0,
   },
-  behavior: {
+  automation: {
     id: 45,
     slug: "midas-net-worth",
     name: "Net worth",

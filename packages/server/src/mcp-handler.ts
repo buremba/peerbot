@@ -304,7 +304,7 @@ const MCP_SKILL_RESOURCES: Record<
   'skill://lobu': {
     name: 'Lobu',
     description:
-      'How to work with a Lobu project and Lobu memory: run/validate/evaluate/connect, MCP client setup, knowledge search/save, Behaviors, and connectors.',
+      'How to work with a Lobu project and Lobu memory: run/validate/evaluate/connect, MCP client setup, knowledge search/save, Automations, and connectors.',
     text: LOBU_SKILL_MARKDOWN,
   },
 };

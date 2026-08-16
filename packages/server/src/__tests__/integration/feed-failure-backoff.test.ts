@@ -1,6 +1,6 @@
 /**
  * Feed failure backoff + hard auto-pause (item 5a/5b, #2033) and
- * feed.auto_paused Behavior activation (replaces the deleted repair-agent).
+ * feed.auto_paused Automation activation (replaces the deleted repair-agent).
  *
  * After:
  *  - 5a: a failed completion sets next_run_at = max(cron_next, now + backoff)
@@ -10,7 +10,7 @@
  *    plain cron cadence.
  *  - 5b: once consecutive_failures crosses the hard threshold the feed is
  *    paused (status='paused', next_run_at=NULL via the feeds trigger) and a
- *    feed.auto_paused signal activates matching Behaviors once.
+ *    feed.auto_paused signal activates matching Automations once.
  *
  * Drives the REAL completeWorkerJob handler against the embedded DB, same shape
  * as complete-worker-job-status-guard.test.ts.
@@ -21,9 +21,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   emitFeedAutoPaused,
   retryPendingFeedAutoPausedSignals,
-} from '../../behaviors/platform-events';
+} from '../../automations/platform-events';
 import type { Env } from '../../index';
-import { manageBehaviors } from '../../tools/admin/manage_behaviors';
+import { manageAutomations } from '../../tools/admin/manage_automations';
 import { manageFeeds } from '../../tools/admin/manage_feeds';
 import { completeWorkerJob } from '../../worker-api';
 import { initWorkspaceProvider } from '../../workspace';
@@ -131,11 +131,11 @@ async function declareChromeFeeds(organizationId: string): Promise<void> {
   const sql = getTestDb();
   // sql.json, not raw strings: postgres.js JSON-encodes a bare JS string, so
   // `${"[]"}::jsonb` lands as the jsonb STRING "[]" and trips
-  // connector_definitions_behavior_events_array_check.
+  // connector_definitions_automation_events_array_check.
   await sql`
     INSERT INTO connector_definitions
       (organization_id, key, name, version, auth_schema, feeds_schema,
-       behavior_events, status)
+       automation_events, status)
     VALUES (${organizationId}, 'chrome', 'Chrome', '1.0.0',
       ${sql.json({ methods: [] })},
       ${sql.json({ 'chrome-feed': { name: 'Chrome feed' } })},
@@ -234,7 +234,7 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
     }
   });
 
-  it('5b: crossing the failure threshold hard-pauses the feed and activates feed.auto_paused Behaviors', async () => {
+  it('5b: crossing the failure threshold hard-pauses the feed and activates feed.auto_paused Automations', async () => {
     const { org, user, ctx: toolCtx } = await seedOwnerContext();
     const agent = await createTestAgent({
       organizationId: org.id,
@@ -243,7 +243,7 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
     const connId = await insertConnection(org.id);
     await declareChromeFeeds(org.id);
     // Connector-wide event trigger (platform event injected into every catalog).
-    const created = await manageBehaviors(
+    const created = await manageAutomations(
       {
         action: 'create',
         slug: 'feed-auto-pause-test',
@@ -264,10 +264,10 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
       {} as Env,
       toolCtx,
     );
-    if (created.action !== 'create' || !('behavior_id' in created)) {
-      throw new Error(`Behavior create failed: ${JSON.stringify(created)}`);
+    if (created.action !== 'create' || !('automation_id' in created)) {
+      throw new Error(`Automation create failed: ${JSON.stringify(created)}`);
     }
-    const behaviorId = Number(created.behavior_id);
+    const automationId = Number(created.automation_id);
 
     // 2 prior failures → this failure makes 3 = PAUSE_THRESHOLD → pause.
     const feedId = await insertFeed(org.id, connId, PAUSE_THRESHOLD - 1);
@@ -296,25 +296,25 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
     expect(Number(after[0].consecutive_failures)).toBe(PAUSE_THRESHOLD);
     expect(after[0].next_run_at).toBeNull();
 
-    const behaviorRuns = (await sql`
+    const automationRuns = (await sql`
       SELECT id, status, approved_input
       FROM runs
-      WHERE watcher_id = ${behaviorId}
-        AND run_type = 'behavior'
+      WHERE automation_id = ${automationId}
+        AND run_type = 'automation'
       ORDER BY id ASC
     `) as Array<{
       id: number;
       status: string;
       approved_input: Record<string, unknown> | null;
     }>;
-    // One matching Behavior, one threshold crossing — exactly one run, so a
+    // One matching Automation, one threshold crossing — exactly one run, so a
     // duplicate dispatch cannot pass this gate.
-    expect(behaviorRuns).toHaveLength(1);
-    expect(behaviorRuns[0]?.approved_input).toMatchObject({
+    expect(automationRuns).toHaveLength(1);
+    expect(automationRuns[0]?.approved_input).toMatchObject({
       dispatch_source: 'event',
       trigger_execution: 'turn',
     });
-    const deliveryIds = behaviorRuns[0]?.approved_input?.delivery_ids as
+    const deliveryIds = automationRuns[0]?.approved_input?.delivery_ids as
       | string[]
       | undefined;
     expect(deliveryIds?.[0]).toMatch(
@@ -332,9 +332,9 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
     });
     await completeWorkerJob(b.ctx);
     const runsAfter = (await sql`
-      SELECT count(*)::int AS n FROM runs WHERE watcher_id = ${behaviorId}
+      SELECT count(*)::int AS n FROM runs WHERE automation_id = ${automationId}
     `) as Array<{ n: number }>;
-    expect(Number(runsAfter[0]?.n)).toBe(behaviorRuns.length);
+    expect(Number(runsAfter[0]?.n)).toBe(automationRuns.length);
   });
 
   it('5b-resume: unpausing resets the failure episode so a later pause gets a new delivery_id', async () => {
@@ -345,7 +345,7 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
     });
     const connId = await insertConnection(org.id, 'chrome-resume-test');
     await declareChromeFeeds(org.id);
-    const created = await manageBehaviors(
+    const created = await manageAutomations(
       {
         action: 'create',
         slug: 'feed-auto-pause-resume-test',
@@ -368,10 +368,10 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
       {} as Env,
       toolCtx,
     );
-    if (created.action !== 'create' || !('behavior_id' in created)) {
-      throw new Error(`Behavior create failed: ${JSON.stringify(created)}`);
+    if (created.action !== 'create' || !('automation_id' in created)) {
+      throw new Error(`Automation create failed: ${JSON.stringify(created)}`);
     }
-    const behaviorId = Number(created.behavior_id);
+    const automationId = Number(created.automation_id);
 
     const feedId = await insertFeed(org.id, connId, PAUSE_THRESHOLD - 1);
     const runId = await insertRunningRun(org.id, connId, feedId);
@@ -387,7 +387,7 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
     const sql = getTestDb();
     const firstRuns = (await sql`
       SELECT approved_input FROM runs
-      WHERE watcher_id = ${behaviorId} AND run_type = 'behavior'
+      WHERE automation_id = ${automationId} AND run_type = 'automation'
       ORDER BY id ASC
     `) as Array<{ approved_input: Record<string, unknown> | null }>;
     expect(firstRuns).toHaveLength(1);
@@ -418,7 +418,7 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
     expect(afterResume[0]?.first_failure_at).toBeNull();
     expect(afterResume[0]?.next_run_at).not.toBeNull();
 
-    // Fail up to threshold again — must create a second Behavior run with a
+    // Fail up to threshold again — must create a second Automation run with a
     // distinct delivery_id for the new failure episode.
     for (let i = 0; i < PAUSE_THRESHOLD; i++) {
       const rid = await insertRunningRun(org.id, connId, feedId);
@@ -433,7 +433,7 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
     }
     const secondRuns = (await sql`
       SELECT approved_input FROM runs
-      WHERE watcher_id = ${behaviorId} AND run_type = 'behavior'
+      WHERE automation_id = ${automationId} AND run_type = 'automation'
       ORDER BY id ASC
     `) as Array<{ approved_input: Record<string, unknown> | null }>;
     expect(secondRuns).toHaveLength(2);

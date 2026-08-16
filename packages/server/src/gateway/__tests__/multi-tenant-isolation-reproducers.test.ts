@@ -17,7 +17,7 @@
  *     ("rejects when callback session org differs from install state"
  *     asserts the row is preserved for a legitimate retry).
  *
- * Each test in this file asserts the post-fix behaviour. The PR description
+ * Each test in this file asserts the post-fix semantics. The PR description
  * pastes the corresponding pre-fix `bun test` output so the reproducer
  * doubles as a regression gate — flip a single fix line and the listed
  * assertion fails.
@@ -531,7 +531,7 @@ describe("[finding 4] persisted Telegram polling rows are refused in cloud (clai
         getPublicGatewayUrl: () => "https://gw.example.com",
         getSecretStore: () => ({ get: async () => null, put: async () => "" }),
         getConnectionStore: () => connectionStore,
-        getBehaviorSubscriptionService: () => ({ resolveForConnection: async () => null }),
+        getAutomationSubscriptionService: () => ({ resolveForConnection: async () => null }),
       } as any;
       const manager = new mod.ChatInstanceManager() as any;
       // A persisted polling row in cloud is an exclusive transport whose

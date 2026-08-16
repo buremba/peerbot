@@ -1,7 +1,7 @@
 /**
  * Visibility and org-scope WHERE clause helpers:
- * buildOrgScopeWhere, buildConnectionVisibilityClause, buildExcludeWatcherClause,
- * buildAnalyzedByBehaviorClause, buildProducedByBehaviorClause.
+ * buildOrgScopeWhere, buildConnectionVisibilityClause, buildExcludeAutomationClause,
+ * buildAnalyzedByAutomationClause, buildProducedByAutomationClause.
  */
 
 import { compileConnectionFkVisibility } from '../../authz/connection-visibility';
@@ -11,72 +11,72 @@ import { useLinkedOrgScope } from '../linked-org-ids';
 import { validateNumericId } from '../sql-validation';
 
 /**
- * Exclude content already in any window for a given watcher. The id is bound as
+ * Exclude content already in any window for a given automation. The id is bound as
  * a query parameter; `validateNumericId` is the belt to that suspenders.
  *
  * Returns empty strings/arrays when no filter is applied.
  */
-export function buildExcludeWatcherClause(
-  excludeWatcherId: number | undefined,
+export function buildExcludeAutomationClause(
+  excludeAutomationId: number | undefined,
   baseParamIndex: number
 ): { sql: string; params: unknown[] } {
-  if (excludeWatcherId === undefined) return { sql: '', params: [] };
-  const validated = validateNumericId(excludeWatcherId, 'exclude_watcher_id');
+  if (excludeAutomationId === undefined) return { sql: '', params: [] };
+  const validated = validateNumericId(excludeAutomationId, 'exclude_automation_id');
   return {
     sql: ` AND NOT EXISTS (
-    SELECT 1 FROM watcher_window_events exc_iwe
-    WHERE exc_iwe.event_id = f.id AND exc_iwe.watcher_id = $${baseParamIndex}::bigint
+    SELECT 1 FROM automation_window_events exc_iwe
+    WHERE exc_iwe.event_id = f.id AND exc_iwe.automation_id = $${baseParamIndex}::bigint
   )`,
     params: [validated],
   };
 }
 
 /**
- * Restrict to events a Behavior ANALYZED — the rows that were linked into one
- * of its windows (`watcher_window_events`). The opposite direction to
- * {@link buildProducedByBehaviorClause}.
+ * Restrict to events an Automation ANALYZED — the rows that were linked into one
+ * of its windows (`automation_window_events`). The opposite direction to
+ * {@link buildProducedByAutomationClause}.
  *
  * Shared by the two builders that had each dropped it: the chronological list
  * path applied it only inside its classification-filter branch, and the search
  * path never applied it at all. (The score and include-superseded builders
  * bind their own equivalent EXISTS.) A dropped filter is worse than a rejected
  * one: the request returns 200 with the org's ENTIRE activity stream, which
- * looks plausible — an unqualified `?behavior=<id>` drill lands on the
+ * looks plausible — an unqualified `?automation=<id>` drill lands on the
  * standard list branch, so that drill was unscoped for exactly this reason.
  */
-export function buildAnalyzedByBehaviorClause(
-  analyzedByWatcherId: number | undefined,
+export function buildAnalyzedByAutomationClause(
+  analyzedByAutomationId: number | undefined,
   baseParamIndex: number
 ): { sql: string; params: unknown[] } {
-  if (analyzedByWatcherId === undefined) return { sql: '', params: [] };
-  const validated = validateNumericId(analyzedByWatcherId, 'analyzed_by_watcher_id');
+  if (analyzedByAutomationId === undefined) return { sql: '', params: [] };
+  const validated = validateNumericId(analyzedByAutomationId, 'analyzed_by_automation_id');
   return {
     sql: ` AND EXISTS (
-    SELECT 1 FROM watcher_window_events ana_iwe
-    WHERE ana_iwe.event_id = f.id AND ana_iwe.watcher_id = $${baseParamIndex}::bigint
+    SELECT 1 FROM automation_window_events ana_iwe
+    WHERE ana_iwe.event_id = f.id AND ana_iwe.automation_id = $${baseParamIndex}::bigint
   )`,
     params: [validated],
   };
 }
 
 /**
- * Restrict to events a Behavior PRODUCED (`events.behavior_id`).
+ * Restrict to events an Automation PRODUCED (`events.automation_id`).
  *
  * All four `read_knowledge` builders must call it: a filter added to only some
  * is worse than one added to none, since the same scope would then return
  * different rows depending on whether a search term was typed.
  *
- * A column equality, NOT an EXISTS over `watcher_window_events` — that table
- * records what a Behavior READ. Backed by idx_events_behavior_produced.
+ * A column equality, NOT an EXISTS over `automation_window_events` — that table
+ * records what an Automation READ. Backed by idx_events_automation_produced.
  */
-export function buildProducedByBehaviorClause(
-  producedByBehaviorId: number | undefined,
+export function buildProducedByAutomationClause(
+  producedByAutomationId: number | undefined,
   baseParamIndex: number
 ): { sql: string; params: unknown[] } {
-  if (producedByBehaviorId === undefined) return { sql: '', params: [] };
-  const validated = validateNumericId(producedByBehaviorId, 'produced_by_behavior_id');
+  if (producedByAutomationId === undefined) return { sql: '', params: [] };
+  const validated = validateNumericId(producedByAutomationId, 'produced_by_automation_id');
   return {
-    sql: ` AND f.behavior_id = $${baseParamIndex}::bigint`,
+    sql: ` AND f.automation_id = $${baseParamIndex}::bigint`,
     params: [validated],
   };
 }
@@ -134,7 +134,7 @@ export function buildOrgScopeWhere(options: {
  *    are visible in both authed and unauthed cases.
  *
  * Returns an empty fragment when no scope is requested (callers like the
- * behavior-mode path that already select by other constraints).
+ * automation-mode path that already select by other constraints).
  *
  * Thin adapter over the one connection-visibility compiler (M1): builds an
  * {@link AuthzScope} from this seam's legacy `{ organizationId, userId }` shape

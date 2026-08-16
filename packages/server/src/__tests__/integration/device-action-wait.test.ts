@@ -79,7 +79,7 @@ async function insertPendingActionRun(
 }
 
 // Mirror of waitForDeviceActionRun, with shrunk budgets so tests run
-// in milliseconds instead of minutes. Behavior is identical to the
+// in milliseconds instead of minutes. Control flow is identical to the
 // production helper.
 async function waitForDeviceActionRunForTest(
   runId: number,
@@ -328,7 +328,7 @@ describe('waitForDeviceActionRun', () => {
   });
 
   // Exercises the REAL exported helper (not the mirror) for the abortSignal
-  // path added so a watcher reaction hitting its wall-clock budget cancels the
+  // path added so an automation reaction hitting its wall-clock budget cancels the
   // poll loop instead of leaking it. An already-aborted signal short-circuits
   // on the first iteration, so this stays fast despite the real 60s budget.
   it('aborts the wait + finalizes the run as timeout when the abort signal fires', async () => {

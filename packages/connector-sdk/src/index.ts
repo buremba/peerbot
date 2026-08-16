@@ -3,7 +3,7 @@
 // =============================================================================
 
 // TypeBox (schema authoring convenience for connector definitions / fact
-// schemas). NOTE: do NOT import these into a behavior reaction — bundling
+// schemas). NOTE: do NOT import these into an automation reaction — bundling
 // typebox into the isolate breaks the SDK client proxy (see
 // reaction-execute-typebox.test.ts). A reaction declares its `input` as a
 // PLAIN JSON Schema object; the host validates `ctx.extracted_data` against it.
@@ -159,35 +159,35 @@ export { withHttpRetry } from './retry.js';
 // Scoring
 export { calculateEngagementScore } from './scoring.js';
 export {
-  ConnectorBehaviorEventSchema,
-  ConnectorBehaviorSignalDraftSchema,
+  ConnectorAutomationEventSchema,
+  ConnectorAutomationSignalDraftSchema,
   SubscriptionCandidateSchema,
-} from './behavior-triggers.js';
+} from './automation-triggers.js';
 export type {
-  BehaviorEventTrigger,
-  BehaviorScheduleTrigger,
-  BehaviorTrigger,
-  BehaviorWorkspaceEventTrigger,
-  ConnectorBehaviorEvent,
-  ConnectorBehaviorSignalDraft,
+  AutomationEventTrigger,
+  AutomationScheduleTrigger,
+  AutomationTrigger,
+  AutomationWorkspaceEventTrigger,
+  ConnectorAutomationEvent,
+  ConnectorAutomationSignalDraft,
   ConnectorTriggerSignal,
   SubscriptionCandidate,
-} from './behavior-triggers.js';
-export type { BehaviorTimeGranularity } from './behavior-time.js';
+} from './automation-triggers.js';
+export type { AutomationTimeGranularity } from './automation-time.js';
 export {
-  addBehaviorPeriod,
-  alignToBehaviorWindowStart,
-  getAvailableBehaviorGranularities,
-  getFinerBehaviorGranularities,
-  getNextBehaviorGranularity,
-  getBehaviorDateTruncUnit,
-  inferBehaviorGranularityFromDays,
-  inferBehaviorGranularityFromSchedule,
-  isBehaviorTimeGranularity,
-  shiftBehaviorPeriod,
-  subtractBehaviorPeriod,
-  BEHAVIOR_TIME_GRANULARITIES,
-} from './behavior-time.js';
+  addAutomationPeriod,
+  alignToAutomationWindowStart,
+  getAvailableAutomationGranularities,
+  getFinerAutomationGranularities,
+  getNextAutomationGranularity,
+  getAutomationDateTruncUnit,
+  inferAutomationGranularityFromDays,
+  inferAutomationGranularityFromSchedule,
+  isAutomationTimeGranularity,
+  shiftAutomationPeriod,
+  subtractAutomationPeriod,
+  AUTOMATION_TIME_GRANULARITIES,
+} from './automation-time.js';
 
 // =============================================================================
 // Browser SDK

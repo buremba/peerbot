@@ -7,7 +7,7 @@ Use this as a starting point for new projects. It shows every Lobu concept in on
 
 ```
 lobu-crm/                                  # single agent → dir: "." keeps it flat
-├── lobu.config.ts                         # Agent, entities, relationships, Behaviors, connections, auth profiles
+├── lobu.config.ts                         # Agent, entities, relationships, Automations, connections, auth profiles
 ├── SOUL.md                                # Agent personality
 ├── IDENTITY.md                            # Agent identity
 ├── USER.md                                # User context
@@ -24,6 +24,6 @@ The built-in GitHub, X, Hacker News, and website connections are declared inline
 
 | File | What it shows |
 |------|--------------|
-| `lobu.config.ts` | Agent config, providers, network allowlist, entity + relationship + Behavior definitions, connections, auth profiles |
+| `lobu.config.ts` | Agent config, providers, network allowlist, entity + relationship + Automation definitions, connections, auth profiles |
 | `npm-downloads.connector.ts` | Custom connector with typed checkpoint + config against a live no-auth API (listed via `connectorFromFile`) |
-| `inbound-triage.reaction.ts` | Notification-only reaction; events come from declared Behavior outputs |
+| `inbound-triage.reaction.ts` | Notification-only reaction; events come from declared Automation outputs |

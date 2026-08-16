@@ -4,23 +4,23 @@
  * Verifies that scope=all surfaces, for one agent in one org:
  *   - the requesting user's own WEB threads (platform "web"),
  *   - PLATFORM conversations (e.g. `slack:…`) tagged with the derived platform,
- *   - one Behavior entry per Behavior (platform "behavior", carrying behaviorId),
- * sorted newest-first — and that a Behavior's per-run snapshot never leaks in as
+ *   - one Automation entry per Automation (platform "automation", carrying automationId),
+ * sorted newest-first — and that an Automation's per-run snapshot never leaks in as
  * its own platform row. Also drives the two read endpoints the feed links to:
- * readConversationMessages (platform, by raw id) and readWatcherRunThreads.
+ * readConversationMessages (platform, by raw id) and readAutomationRunThreads.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { BehaviorSubscriptionService } from "../../gateway/channels/behavior-subscription-service";
+import { AutomationSubscriptionService } from "../../gateway/channels/automation-subscription-service";
 import {
 	listAgentThreads,
 	readConversationMessages,
 } from "../../gateway/services/agent-thread-list";
 import { buildApiConversationId } from "../../gateway/services/api-conversation-id";
-import { readWatcherRunThreads } from "../../gateway/services/watcher-run-thread";
+import { readAutomationRunThreads } from "../../gateway/services/automation-run-thread";
 import { insertEvent } from "../../utils/insert-event";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
-import { createTestBehaviorSubscription } from "../setup/behavior-subscriptions";
+import { createTestAutomationSubscription } from "../setup/automation-subscriptions";
 import {
 	addUserToOrganization,
 	createTestAgent,
@@ -35,10 +35,10 @@ const SLACK_UNBOUND_CONV = "slack:CSECRET:1781641725.99"; // channel the agent i
 const CSECRET_CONN_RUNTIME_ID = "slackinst-csecret"; // managed connection owning CSECRET, initially no chat-link
 const TELEGRAM_DM_CONV = "telegram:6570514069"; // an unbound DM, gated on org role
 const TELEGRAM_LEGACY_CONV = "telegram:111222333"; // platform row with is_direct NULL (unknown)
-const WATCHER_ID = 990001;
-const ARCHIVED_WATCHER_ID = 990003; // completed a run, then archived
+const AUTOMATION_ID = 990001;
+const ARCHIVED_AUTOMATION_ID = 990003; // completed a run, then archived
 const OTHER_AGENT = "thread-list-other-agent";
-const OTHER_WATCHER_ID = 990002;
+const OTHER_AUTOMATION_ID = 990002;
 
 function sessionJsonl(text: string): string {
 	return [
@@ -82,7 +82,7 @@ describe("listAgentThreads scope=all", () => {
 		const sql = getTestDb();
 
 		// A transcript snapshot backs the read endpoints (readConversationMessages
-		// and readWatcherRunThreads). Ordinary conversation listing reads the
+		// and readAutomationRunThreads). Ordinary conversation listing reads the
 		// `conversations` entity, so one appears only when it also has that row.
 		const insertSnapshot = async (
 			conversationId: string,
@@ -129,7 +129,7 @@ describe("listAgentThreads scope=all", () => {
 		);
 		// The agent is bound to channel C123 (per-agent fence) — so its transcript
 		// is listable; CSECRET has no binding and must never surface.
-		const connId = `conn_${WATCHER_ID}`;
+		const connId = `conn_${AUTOMATION_ID}`;
 		await insertChatConnectionRow({
 			id: connId,
 			organizationId: org,
@@ -137,7 +137,7 @@ describe("listAgentThreads scope=all", () => {
 			platform: "slack",
 			status: "active",
 		});
-		await createTestBehaviorSubscription({
+		await createTestAutomationSubscription({
 			organizationId: org,
 			agentId: AGENT,
 			connectionSlug: `agentconn-${connId}`,
@@ -147,7 +147,7 @@ describe("listAgentThreads scope=all", () => {
 		});
 
 		// The managed connection's fallback agent handles CSECRET, but no chat-link
-		// Behavior makes that channel visible yet.
+		// Automation makes that channel visible yet.
 		await insertChatConnectionRow({
 			id: CSECRET_CONN_RUNTIME_ID,
 			organizationId: org,
@@ -183,7 +183,7 @@ describe("listAgentThreads scope=all", () => {
 				userId: null,
 			},
 		);
-		// A Telegram DM with no chat-link Behavior. The channel fence can only fail
+		// A Telegram DM with no chat-link Automation. The channel fence can only fail
 		// closed on it, so it is listable on the DM rule (owner/admin) or not at
 		// all.
 		await insertSnapshot(
@@ -198,7 +198,7 @@ describe("listAgentThreads scope=all", () => {
 			},
 		);
 		// A platform row predating the column: is_direct unknown. Must keep the
-		// old fail-closed behaviour rather than riding in on the DM rule.
+		// old fail-closed semantics rather than riding in on the DM rule.
 		await insertSnapshot(
 			TELEGRAM_LEGACY_CONV,
 			"legacy row with unknown surface",
@@ -211,91 +211,91 @@ describe("listAgentThreads scope=all", () => {
 			},
 		);
 
-		// A watcher + one of its run snapshots.
+		// An automation + one of its run snapshots.
 		await sql`
-      INSERT INTO watchers
-        (id, organization_id, agent_id, created_by, watcher_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
-      VALUES (${WATCHER_ID}, ${org}, ${AGENT}, ${userId}, 0, 'Test Watcher', 'active', 'notification', 'normal', 0, now(), now())`;
+      INSERT INTO automations
+        (id, organization_id, agent_id, created_by, automation_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
+      VALUES (${AUTOMATION_ID}, ${org}, ${AGENT}, ${userId}, 0, 'Test Automation', 'active', 'notification', 'normal', 0, now(), now())`;
 		await sql`
-      INSERT INTO watchers
-        (id, organization_id, agent_id, created_by, watcher_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
-      VALUES (${OTHER_WATCHER_ID}, ${org}, ${OTHER_AGENT}, ${userId}, 0, 'Other Agent Watcher', 'active', 'notification', 'normal', 0, now(), now())`;
+      INSERT INTO automations
+        (id, organization_id, agent_id, created_by, automation_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
+      VALUES (${OTHER_AUTOMATION_ID}, ${org}, ${OTHER_AGENT}, ${userId}, 0, 'Other Agent Automation', 'active', 'notification', 'normal', 0, now(), now())`;
 		await sql`
 			INSERT INTO runs
-			  (run_type, status, organization_id, watcher_id, approval_status,
+			  (run_type, status, organization_id, automation_id, approval_status,
 			   run_metadata, created_at, completed_at)
 			VALUES
-			  ('behavior', 'completed', ${org}, ${OTHER_WATCHER_ID}, 'auto',
-			   ${sql.json({ prompt_rendered: "Other agent secret watcher task" })},
+			  ('automation', 'completed', ${org}, ${OTHER_AUTOMATION_ID}, 'auto',
+			   ${sql.json({ prompt_rendered: "Other agent secret automation task" })},
 			   '2026-06-28T00:31:00Z', '2026-06-28T00:32:00Z')
 		`;
-		const [watcherRun] = await sql<{ id: number }[]>`
+		const [automationRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, watcher_id, window_id,
+			  (run_type, status, organization_id, automation_id, window_id,
 			   approval_status, run_metadata, created_at, completed_at)
 			VALUES
-			  ('behavior', 'completed', ${org}, ${WATCHER_ID}, 700001,
-			   'auto', ${sql.json({ prompt_rendered: "Rendered watcher task" })},
+			  ('automation', 'completed', ${org}, ${AUTOMATION_ID}, 700001,
+			   'auto', ${sql.json({ prompt_rendered: "Rendered automation task" })},
 			   '2026-06-28T00:29:00Z', '2026-06-28T00:30:00Z')
 			RETURNING id`;
-		const watcherJsonl = sessionJsonl("watcher run output");
-		const watcherConversationId = `${AGENT}_watcher_${WATCHER_ID}_run_${watcherRun.id}`;
+		const automationJsonl = sessionJsonl("automation run output");
+		const automationConversationId = `${AGENT}_automation_${AUTOMATION_ID}_run_${automationRun.id}`;
 		await sql`
 			INSERT INTO agent_transcript_snapshot
 			  (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl,
 			   byte_size, terminal_status, created_at)
 			VALUES
-			  (${org}, ${AGENT}, ${watcherConversationId},
-			   ${watcherRun.id}, ${watcherJsonl}, ${Buffer.byteLength(watcherJsonl)},
+			  (${org}, ${AGENT}, ${automationConversationId},
+			   ${automationRun.id}, ${automationJsonl}, ${Buffer.byteLength(automationJsonl)},
 			   'completed', '2026-06-28T00:30:00Z')
 		`;
 
-		// The completed run above stamps the Behavior at the database boundary.
+		// The completed run above stamps the Automation at the database boundary.
 		// Its sidebar entry is read from that column, not re-derived from the
 		// snapshot on every request.
 
-		// An ARCHIVED Behavior that completed a run is stamped like any other. Its
+		// An ARCHIVED Automation that completed a run is stamped like any other. Its
 		// snapshot rows are permanent — archiving cannot unmake them — which is why
 		// the old query kept it listed. The listing now filters on live `status`, so
 		// it drops out with no lifecycle sync anywhere.
 		await sql`
-      INSERT INTO watchers
-        (id, organization_id, agent_id, created_by, watcher_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
-      VALUES (${ARCHIVED_WATCHER_ID}, ${org}, ${AGENT}, ${userId}, 0, 'Archived Watcher', 'archived', 'notification', 'normal', 0, now(), now())`;
+      INSERT INTO automations
+        (id, organization_id, agent_id, created_by, automation_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
+      VALUES (${ARCHIVED_AUTOMATION_ID}, ${org}, ${AGENT}, ${userId}, 0, 'Archived Automation', 'archived', 'notification', 'normal', 0, now(), now())`;
 		const [archivedRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, watcher_id, approval_status,
+			  (run_type, status, organization_id, automation_id, approval_status,
 			   run_metadata, created_at, completed_at)
 			VALUES
-			  ('behavior', 'completed', ${org}, ${ARCHIVED_WATCHER_ID}, 'auto',
-			   ${sql.json({ prompt_rendered: "Archived watcher task" })},
+			  ('automation', 'completed', ${org}, ${ARCHIVED_AUTOMATION_ID}, 'auto',
+			   ${sql.json({ prompt_rendered: "Archived automation task" })},
 			   '2026-06-28T00:40:00Z', '2026-06-28T00:41:00Z')
 			RETURNING id`;
-		const archivedJsonl = sessionJsonl("archived watcher run output");
+		const archivedJsonl = sessionJsonl("archived automation run output");
 		await sql`
 			INSERT INTO agent_transcript_snapshot
 			  (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl,
 			   byte_size, terminal_status, created_at)
 			VALUES
-			  (${org}, ${AGENT}, ${`${AGENT}_watcher_${ARCHIVED_WATCHER_ID}_run_${archivedRun.id}`},
+			  (${org}, ${AGENT}, ${`${AGENT}_automation_${ARCHIVED_AUTOMATION_ID}_run_${archivedRun.id}`},
 			   ${archivedRun.id}, ${archivedJsonl}, ${Buffer.byteLength(archivedJsonl)},
 			   'completed', '2026-06-28T00:41:00Z')
 		`;
 
 		const [approvalRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, watcher_id, window_id,
+			  (run_type, status, organization_id, automation_id, window_id,
 			   approval_status, action_key, created_at)
 			VALUES
-			  ('internal', 'pending', ${org}, ${WATCHER_ID}, 700001,
+			  ('internal', 'pending', ${org}, ${AUTOMATION_ID}, 700001,
 			   'pending', 'entity_field_change', now())
 			RETURNING id`;
 		await insertEvent({
 			entityIds: [],
 			organizationId: org,
-			originId: `watcher-approval-${approvalRun.id}`,
-			title: "Approve watcher change",
-			content: "A watcher proposed changing a contact.",
+			originId: `automation-approval-${approvalRun.id}`,
+			title: "Approve automation change",
+			content: "An automation proposed changing a contact.",
 			semanticType: "operation",
 			runId: approvalRun.id,
 			interactionType: "approval",
@@ -305,7 +305,7 @@ describe("listAgentThreads scope=all", () => {
 				tool: "entity_field_change",
 				resourceKind: "entity",
 				fields: { email: "new@example.com" },
-				attribution: "behavior",
+				attribution: "automation",
 			},
 		});
 	});
@@ -364,7 +364,7 @@ describe("listAgentThreads scope=all", () => {
 		expect(threads.map((t) => t.id)).toContain(SLACK_CONV);
 	});
 
-	it("returns web + platform + watcher entries with correct platforms, newest-first", async () => {
+	it("returns web + platform + automation entries with correct platforms, newest-first", async () => {
 		const threads = await listAgentThreads({
 			agentId: AGENT,
 			organizationId: org,
@@ -379,21 +379,21 @@ describe("listAgentThreads scope=all", () => {
 		expect(slack?.id).toBe(SLACK_CONV);
 		expect(slack?.conversationId).toBe(SLACK_CONV);
 
-		const behavior = byPlatform.get("behavior");
-		expect(behavior?.behaviorId).toBe(WATCHER_ID);
-		expect(behavior?.title).toBe("Test Watcher");
-		expect(behavior?.createdAt).toBe(behavior?.updatedAt);
+		const automation = byPlatform.get("automation");
+		expect(automation?.automationId).toBe(AUTOMATION_ID);
+		expect(automation?.title).toBe("Test Automation");
+		expect(automation?.createdAt).toBe(automation?.updatedAt);
 
 		// Newest VISIBLE is the bound Slack channel at 02:00 — the unbound channel
 		// at 03:00 is fenced out, so it must not take the top slot (or any slot).
 		expect(threads[0]?.platform).toBe("slack");
 		expect(threads[0]?.id).toBe(SLACK_CONV);
 
-		// A watcher's per-run snapshot must NOT surface as its own platform row.
-		expect(threads.some((t) => t.id.includes("_watcher_"))).toBe(false);
+		// An automation's per-run snapshot must NOT surface as its own platform row.
+		expect(threads.some((t) => t.id.includes("_automation_"))).toBe(false);
 	});
 
-	it("drops an archived Behavior even though its completed runs remain", async () => {
+	it("drops an archived Automation even though its completed runs remain", async () => {
 		const threads = await listAgentThreads({
 			agentId: AGENT,
 			organizationId: org,
@@ -401,31 +401,31 @@ describe("listAgentThreads scope=all", () => {
 			scope: "all",
 		});
 
-		// The archived Behavior's transcript snapshot is still in the table and
+		// The archived Automation's transcript snapshot is still in the table and
 		// still terminal_status='completed' — permanent history. The old query
-		// ignored the current Behavior status and listed it.
+		// ignored the current Automation status and listed it.
 		expect(
-			threads.some((t) => t.behaviorId === ARCHIVED_WATCHER_ID),
+			threads.some((t) => t.automationId === ARCHIVED_AUTOMATION_ID),
 		).toBe(false);
-		expect(threads.some((t) => t.title === "Archived Watcher")).toBe(false);
+		expect(threads.some((t) => t.title === "Archived Automation")).toBe(false);
 
-		// The live Behavior beside it is untouched — this is a lifecycle filter,
-		// not a blanket exclusion of Behaviors.
-		expect(threads.some((t) => t.behaviorId === WATCHER_ID)).toBe(true);
+		// The live Automation beside it is untouched — this is a lifecycle filter,
+		// not a blanket exclusion of Automations.
+		expect(threads.some((t) => t.automationId === AUTOMATION_ID)).toBe(true);
 	});
 
-	it("orders a Behavior by its stored last-run stamp, not by run history", async () => {
+	it("orders an Automation by its stored last-run stamp, not by run history", async () => {
 		const threads = await listAgentThreads({
 			agentId: AGENT,
 			organizationId: org,
 			userId,
 			scope: "all",
 		});
-		const behavior = threads.find((t) => t.behaviorId === WATCHER_ID);
+		const automation = threads.find((t) => t.automationId === AUTOMATION_ID);
 
-		expect(behavior?.id).toBe(`watcher_${WATCHER_ID}`);
+		expect(automation?.id).toBe(`automation_${AUTOMATION_ID}`);
 		// The stamped value, not max(created_at) over the snapshots.
-		expect(behavior?.updatedAt).toBe(
+		expect(automation?.updatedAt).toBe(
 			new Date("2026-06-28T00:30:00Z").getTime(),
 		);
 	});
@@ -447,7 +447,7 @@ describe("listAgentThreads scope=all", () => {
 
 	it("does not materialize a connection into a different organization", async () => {
 		const created =
-			await new BehaviorSubscriptionService().materializeConnectionFallbackLink(
+			await new AutomationSubscriptionService().materializeConnectionFallbackLink(
 				CSECRET_CONN_RUNTIME_ID,
 				otherOrg,
 				AGENT,
@@ -472,7 +472,7 @@ describe("listAgentThreads scope=all", () => {
 		// Materialize the chat-link the fallback path would have written on the
 		// first inbound group message (idempotent upsert on org+connection+channel).
 		const created =
-			await new BehaviorSubscriptionService().materializeConnectionFallbackLink(
+			await new AutomationSubscriptionService().materializeConnectionFallbackLink(
 				CSECRET_CONN_RUNTIME_ID,
 				org,
 				AGENT,
@@ -495,7 +495,7 @@ describe("listAgentThreads scope=all", () => {
 
 		// Idempotent: a second materialize doesn't duplicate the binding or error.
 		const again =
-			await new BehaviorSubscriptionService().materializeConnectionFallbackLink(
+			await new AutomationSubscriptionService().materializeConnectionFallbackLink(
 				CSECRET_CONN_RUNTIME_ID,
 				org,
 				AGENT,
@@ -517,11 +517,11 @@ describe("listAgentThreads scope=all", () => {
 
 	it("is create-only: never relinks an existing explicit chat-link to the connection owner", async () => {
 		const sql = getTestDb();
-		const svc = new BehaviorSubscriptionService();
+		const svc = new AutomationSubscriptionService();
 		const [conn] = await sql<{ id: number }[]>`
 			SELECT id FROM connections WHERE slug = ${CSECRET_CONN_RUNTIME_ID} LIMIT 1`;
 		// An explicit /lobu link bound this channel to a DIFFERENT agent first.
-		await svc.createChatBehavior(OTHER_AGENT, "slack", "slack:CEXPLICIT", "T1", {
+		await svc.createChatAutomation(OTHER_AGENT, "slack", "slack:CEXPLICIT", "T1", {
 			organizationId: org,
 			connectionId: conn!.id,
 		});
@@ -529,7 +529,7 @@ describe("listAgentThreads scope=all", () => {
 			(
 				await sql<{ agent_id: string }[]>`
 					SELECT w.agent_id
-					FROM watchers w
+					FROM automations w
 					CROSS JOIN LATERAL jsonb_array_elements(w.triggers) t
 					WHERE w.organization_id = ${org}
 					  AND w.status = 'active'
@@ -554,7 +554,7 @@ describe("listAgentThreads scope=all", () => {
 
 	it("declines (returns false) when the connection slug can't be resolved", async () => {
 		const created =
-			await new BehaviorSubscriptionService().materializeConnectionFallbackLink(
+			await new AutomationSubscriptionService().materializeConnectionFallbackLink(
 				"conn_does_not_exist",
 				org,
 				AGENT,
@@ -565,7 +565,7 @@ describe("listAgentThreads scope=all", () => {
 		expect(created).toBe(false);
 	});
 
-	it("scope=user (default) excludes platform + watcher conversations", async () => {
+	it("scope=user (default) excludes platform + automation conversations", async () => {
 		const threads = await listAgentThreads({
 			agentId: AGENT,
 			organizationId: org,
@@ -587,18 +587,18 @@ describe("listAgentThreads scope=all", () => {
 		expect(JSON.stringify(data.messages)).toContain("hello from slack");
 	});
 
-	it("readWatcherRunThreads returns the watcher's runs", async () => {
-		const data = await readWatcherRunThreads({
+	it("readAutomationRunThreads returns the automation's runs", async () => {
+		const data = await readAutomationRunThreads({
 			agentId: AGENT,
 			organizationId: org,
-			watcherId: WATCHER_ID,
+			automationId: AUTOMATION_ID,
 			limit: 20,
 		});
 		expect(data.runs).toHaveLength(1);
 		expect(JSON.stringify(data.runs[0]?.messages)).toContain(
-			"watcher run output",
+			"automation run output",
 		);
-		expect(data.runs[0]?.task).toBe("Rendered watcher task");
+		expect(data.runs[0]?.task).toBe("Rendered automation task");
 		expect(data.runs[0]?.pendingActionCount).toBe(1);
 		expect(data.runs[0]?.actions).toEqual([
 			expect.objectContaining({
@@ -606,48 +606,48 @@ describe("listAgentThreads scope=all", () => {
 				eventId: expect.any(Number),
 				action: "update",
 				fields: { email: "new@example.com" },
-				attribution: "behavior",
+				attribution: "automation",
 				resourceKind: "entity",
 			}),
 		]);
 		expect(data).not.toHaveProperty("interactions");
 	});
 
-	it("does not read a different agent's watcher in the same organization", async () => {
-		const data = await readWatcherRunThreads({
+	it("does not read a different agent's automation in the same organization", async () => {
+		const data = await readAutomationRunThreads({
 			agentId: AGENT,
 			organizationId: org,
-			watcherId: OTHER_WATCHER_ID,
+			automationId: OTHER_AUTOMATION_ID,
 			limit: 20,
 		});
 
 		expect(data.runs).toEqual([]);
 		expect(JSON.stringify(data)).not.toContain(
-			"Other agent secret watcher task",
+			"Other agent secret automation task",
 		);
 	});
 
-	// Production shape, which every other fixture in this file gets wrong: a
-	// Behavior execution writes TWO run rows. The scheduler's `behavior` row is
+	// Production shape, which every other fixture in this file gets wrong: an
+	// Automation execution writes TWO run rows. The scheduler's `automation` row is
 	// what the thread is built from, but the worker is dispatched under a
 	// separate `chat_message` row and posts its snapshot against THAT run id —
-	// it never learns the behavior run id except inside the conversationId. A
+	// it never learns the automation run id except inside the conversationId. A
 	// snapshot joined on `run_id` therefore matched nothing in prod, and the
-	// behavior page rendered the prompt with no transcript under it at all.
+	// automation page rendered the prompt with no transcript under it at all.
 	it("reads the transcript posted under the sibling dispatch run", async () => {
 		const sql = getTestDb();
-		const [behaviorRun] = await sql<{ id: number }[]>`
+		const [automationRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, watcher_id, window_id,
+			  (run_type, status, organization_id, automation_id, window_id,
 			   approval_status, run_metadata, created_at, completed_at)
 			VALUES
-			  ('behavior', 'completed', ${org}, ${WATCHER_ID}, 700004,
-			   'auto', ${sql.json({ prompt_rendered: "Dispatched behavior task" })},
+			  ('automation', 'completed', ${org}, ${AUTOMATION_ID}, 700004,
+			   'auto', ${sql.json({ prompt_rendered: "Dispatched automation task" })},
 			   '2026-06-28T04:30:00Z', '2026-06-28T04:31:00Z')
 			RETURNING id
 		`;
-		// The row the worker actually claims: no watcher_id, run_type
-		// 'chat_message'. Its only tie to the Behavior is the conversationId.
+		// The row the worker actually claims: no automation_id, run_type
+		// 'chat_message'. Its only tie to the Automation is the conversationId.
 		const [dispatchRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
 			  (run_type, status, organization_id, approval_status,
@@ -657,43 +657,43 @@ describe("listAgentThreads scope=all", () => {
 			   '2026-06-28T04:30:01Z', '2026-06-28T04:30:02Z')
 			RETURNING id
 		`;
-		const jsonl = sessionJsonl("dispatched behavior transcript");
+		const jsonl = sessionJsonl("dispatched automation transcript");
 		await sql`
 			INSERT INTO agent_transcript_snapshot
 			  (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl,
 			   byte_size, terminal_status, created_at)
 			VALUES
-			  (${org}, ${AGENT}, ${`${AGENT}_watcher_${WATCHER_ID}_run_${behaviorRun.id}`},
+			  (${org}, ${AGENT}, ${`${AGENT}_automation_${AUTOMATION_ID}_run_${automationRun.id}`},
 			   ${dispatchRun.id}, ${jsonl}, ${Buffer.byteLength(jsonl)}, 'completed',
 			   '2026-06-28T04:31:00Z')
 		`;
 
-		const data = await readWatcherRunThreads({
+		const data = await readAutomationRunThreads({
 			agentId: AGENT,
 			organizationId: org,
-			watcherId: WATCHER_ID,
+			automationId: AUTOMATION_ID,
 			limit: 20,
 		});
 		const run = data.runs.find(
-			(candidate) => candidate.runId === behaviorRun.id,
+			(candidate) => candidate.runId === automationRun.id,
 		);
 		expect(run).toBeDefined();
 		// The prompt alone is what the broken join left on the page.
-		expect(run?.task).toBe("Dispatched behavior task");
+		expect(run?.task).toBe("Dispatched automation task");
 		expect(run?.messages.length).toBeGreaterThan(0);
 		expect(JSON.stringify(run?.messages)).toContain(
-			"dispatched behavior transcript",
+			"dispatched automation transcript",
 		);
 	});
 
-	it("keeps terminal approval decisions attached to their watcher run", async () => {
+	it("keeps terminal approval decisions attached to their automation run", async () => {
 		const sql = getTestDb();
-		const [watcherRun] = await sql<{ id: number }[]>`
+		const [automationRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, watcher_id, window_id,
+			  (run_type, status, organization_id, automation_id, window_id,
 			   approval_status, created_at, completed_at)
 			VALUES
-			  ('behavior', 'completed', ${org}, ${WATCHER_ID}, 700002,
+			  ('automation', 'completed', ${org}, ${AUTOMATION_ID}, 700002,
 			   'auto', '2026-06-28T04:00:00Z', '2026-06-28T04:01:00Z')
 			RETURNING id
 		`;
@@ -703,25 +703,25 @@ describe("listAgentThreads scope=all", () => {
 			  (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl,
 			   byte_size, terminal_status, created_at)
 			VALUES
-			  (${org}, ${AGENT}, ${`${AGENT}_watcher_${WATCHER_ID}_run_${watcherRun.id}`},
-			   ${watcherRun.id}, ${jsonl}, ${Buffer.byteLength(jsonl)}, 'completed',
+			  (${org}, ${AGENT}, ${`${AGENT}_automation_${AUTOMATION_ID}_run_${automationRun.id}`},
+			   ${automationRun.id}, ${jsonl}, ${Buffer.byteLength(jsonl)}, 'completed',
 			   '2026-06-28T04:01:00Z')
 		`;
 		const [approvalRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, watcher_id, window_id,
+			  (run_type, status, organization_id, automation_id, window_id,
 			   approval_status, action_key, action_input, created_at, completed_at)
 			VALUES
-			  ('internal', 'cancelled', ${org}, ${WATCHER_ID}, 700002,
+			  ('internal', 'cancelled', ${org}, ${AUTOMATION_ID}, 700002,
 			   'rejected', 'entity_change',
-			   ${sql.json({ source_run_id: watcherRun.id, operation: "merge" })},
+			   ${sql.json({ source_run_id: automationRun.id, operation: "merge" })},
 			   '2026-06-28T04:01:00Z', '2026-06-28T04:02:00Z')
 			RETURNING id
 		`;
 		await insertEvent({
 			entityIds: [],
 			organizationId: org,
-			originId: `watcher-rejected-${approvalRun.id}`,
+			originId: `automation-rejected-${approvalRun.id}`,
 			title: "Merge kept separate",
 			content: "The reviewer kept these entities separate.",
 			semanticType: "operation",
@@ -738,14 +738,14 @@ describe("listAgentThreads scope=all", () => {
 			},
 		});
 
-		const data = await readWatcherRunThreads({
+		const data = await readAutomationRunThreads({
 			agentId: AGENT,
 			organizationId: org,
-			watcherId: WATCHER_ID,
+			automationId: AUTOMATION_ID,
 			limit: 20,
 		});
 		const run = data.runs.find(
-			(candidate) => candidate.runId === watcherRun.id,
+			(candidate) => candidate.runId === automationRun.id,
 		);
 		expect(run?.pendingActionCount).toBe(0);
 		expect(run?.actions).toEqual([
@@ -759,33 +759,33 @@ describe("listAgentThreads scope=all", () => {
 		]);
 	});
 
-	it("keeps pending approvals visible when the watcher run has no transcript", async () => {
+	it("keeps pending approvals visible when the automation run has no transcript", async () => {
 		const sql = getTestDb();
-		const [watcherRun] = await sql<{ id: number }[]>`
+		const [automationRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, watcher_id, window_id,
+			  (run_type, status, organization_id, automation_id, window_id,
 			   approval_status, run_metadata, created_at, completed_at)
 			VALUES
-			  ('behavior', 'completed', ${org}, ${WATCHER_ID}, 700003,
+			  ('automation', 'completed', ${org}, ${AUTOMATION_ID}, 700003,
 			   'auto', ${sql.json({ prompt_rendered: "Run without a transcript" })},
 			   '2026-06-28T05:00:00Z', '2026-06-28T05:01:00Z')
 			RETURNING id
 		`;
 		const [approvalRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
-			  (run_type, status, organization_id, watcher_id, window_id,
+			  (run_type, status, organization_id, automation_id, window_id,
 			   approval_status, action_key, action_input, created_at)
 			VALUES
-			  ('internal', 'pending', ${org}, ${WATCHER_ID}, 700003,
+			  ('internal', 'pending', ${org}, ${AUTOMATION_ID}, 700003,
 			   'pending', 'entity_change',
-			   ${sql.json({ source_run_id: watcherRun.id, operation: "merge" })},
+			   ${sql.json({ source_run_id: automationRun.id, operation: "merge" })},
 			   '2026-06-28T05:01:00Z')
 			RETURNING id
 		`;
 		await insertEvent({
 			entityIds: [],
 			organizationId: org,
-			originId: `watcher-no-transcript-${approvalRun.id}`,
+			originId: `automation-no-transcript-${approvalRun.id}`,
 			title: "Review merge without transcript",
 			content: "A durable approval must remain visible.",
 			semanticType: "operation",
@@ -799,14 +799,14 @@ describe("listAgentThreads scope=all", () => {
 			},
 		});
 
-		const data = await readWatcherRunThreads({
+		const data = await readAutomationRunThreads({
 			agentId: AGENT,
 			organizationId: org,
-			watcherId: WATCHER_ID,
+			automationId: AUTOMATION_ID,
 			limit: 20,
 		});
 		const run = data.runs.find(
-			(candidate) => candidate.runId === watcherRun.id,
+			(candidate) => candidate.runId === automationRun.id,
 		);
 		expect(run?.task).toBe("Run without a transcript");
 		expect(run?.messages).toEqual([]);
@@ -823,7 +823,7 @@ describe("listAgentThreads scope=all", () => {
 /**
  * An EXPLICITLY bound DM (Slack Preview `/link`, claim onboarding) is the case
  * that makes the owner/admin rule a BYPASS rather than a replacement: it is a DM
- * (`is_direct = true`) but it does have a chat-link Behavior, so the ordinary
+ * (`is_direct = true`) but it does have a chat-link Automation, so the ordinary
  * channel fence already admits it and a plain member must keep that access.
  *
  * It gets its own org/agent because the shared fixture above asserts a single
@@ -853,7 +853,7 @@ describe("listAgentThreads scope=all — an explicitly bound DM", () => {
 			platform: "slack",
 			status: "active",
 		});
-		await createTestBehaviorSubscription({
+		await createTestAutomationSubscription({
 			organizationId: org,
 			agentId: BOUND_DM_AGENT,
 			connectionSlug: `agentconn-${connId}`,

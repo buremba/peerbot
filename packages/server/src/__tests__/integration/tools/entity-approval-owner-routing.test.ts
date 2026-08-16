@@ -4,7 +4,7 @@
  *  1. Propose-time owner resolution: proposeEntityFieldChange records
  *     action_input.owner_user_id ONLY when the gated fields have exactly one
  *     distinct field_controls.set_by. Mixed owners or $-attribute-only
- *     proposals record nothing (admin-only behavior).
+ *     proposals record nothing (admin-only automation).
  *  2. Delivery-tier selection: resolveOwnerDmTarget picks the owner's Slack
  *     identity in a workspace one of the org's bot connections is bound to;
  *     no identity → null (caller falls back to channel delivery).
@@ -18,7 +18,7 @@ import { proposeEntityFieldChange } from "../../../tools/admin/entity-field-appr
 import type { ToolContext } from "../../../tools/registry";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
-import { createTestBehaviorSubscription } from "../../setup/behavior-subscriptions";
+import { createTestAutomationSubscription } from "../../setup/automation-subscriptions";
 import {
 	addUserToOrganization,
 	createTestAgent,
@@ -154,7 +154,7 @@ describe("owner-routed approvals — DM delivery tier selection", () => {
 			platform: "slack",
 			metadata: { teamId: TEAM_ID },
 		});
-		await createTestBehaviorSubscription({
+		await createTestAutomationSubscription({
 			organizationId: orgId,
 			agentId: agent.agentId,
 			connectionSlug: `agentconn-${connectionId}`,

@@ -3,7 +3,7 @@
  *
  * Single source of truth for the device/connector-worker job protocol:
  * `POST /api/workers/poll`, `/api/workers/complete`, `/complete-action`,
- * `/complete-embeddings`, `/complete-behavior`, `/emit-auth-artifact`,
+ * `/complete-embeddings`, `/complete-automation`, `/emit-auth-artifact`,
  * `/poll-auth-signal`, `/stream`, and the chrome-action dispatch.
  *
  * Before this module the wire shapes were typed twice with no compiler link:
@@ -26,10 +26,10 @@
 
 import { type Static, Type } from "@sinclair/typebox";
 
-// Wire mirror of connector-sdk's ConnectorBehaviorSignalDraftSchema. Core is
+// Wire mirror of connector-sdk's ConnectorAutomationSignalDraftSchema. Core is
 // deliberately dependency-free from connector-sdk; both the worker and gateway
 // compile against this schema at the HTTP boundary.
-const ConnectorBehaviorSignalDraftSchema = Type.Object(
+const ConnectorAutomationSignalDraftSchema = Type.Object(
   {
     event_type: Type.String({ minLength: 1, maxLength: 100 }),
     updated_event_type: Type.Optional(
@@ -60,7 +60,7 @@ const ConnectorBehaviorSignalDraftSchema = Type.Object(
 export const RunTypeSchema = Type.Union([
   Type.Literal("sync"),
   Type.Literal("action"),
-  Type.Literal("behavior"),
+  Type.Literal("automation"),
   Type.Literal("embed_backfill"),
   Type.Literal("auth"),
 ]);
@@ -210,8 +210,8 @@ export const ContentItemSchema = Type.Object({
   embedding_model: Type.Optional(Type.String()),
   origin_type: Type.Optional(Type.String()),
   semantic_type: Type.Optional(Type.String()),
-  behavior_signals: Type.Optional(
-    Type.Array(ConnectorBehaviorSignalDraftSchema, { maxItems: 16 })
+  automation_signals: Type.Optional(
+    Type.Array(ConnectorAutomationSignalDraftSchema, { maxItems: 16 })
   ),
 });
 
@@ -230,7 +230,7 @@ export const StreamBatchSchema = Type.Object({
 
 // ── complete family ─────────────────────────────────────────────────────────
 
-/** `POST /api/workers/complete` (sync/watcher run terminal report). */
+/** `POST /api/workers/complete` (sync/automation run terminal report). */
 export const CompleteRequestSchema = Type.Composite([
   Type.Object({
     run_id: Type.Integer(),

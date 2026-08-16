@@ -4,7 +4,7 @@
  *   TestMcpClient  — full HTTP/JSON-RPC round-trip. Exercises auth, session
  *                    init, tool dispatch, and (for `runSdk`/`querySdk`) the
  *                    isolated-vm sandbox. Use it for tests that have to
- *                    verify MCP wire behavior (auth headers, JSON-RPC error
+ *                    verify MCP wire automation (auth headers, JSON-RPC error
  *                    framing, sandbox timeouts). Surface mirrors the public
  *                    MCP tools: `searchSdk`, `searchMemory`, `saveMemory`,
  *                    `querySql`, `resolvePath`, `listOrganizations`, `runSdk`,
@@ -14,7 +14,7 @@
  *                    same namespace builders the sandbox exposes. Fast,
  *                    deterministic, and the right tool for CRUD permutations,
  *                    cross-org isolation, and error-path edges. Surface is
- *                    the typed SDK: `client.entities`, `client.behaviors`,
+ *                    the typed SDK: `client.entities`, `client.automations`,
  *                    `client.classifiers`, etc. — `withAuth()` produces a new
  *                    client with overridden role/scopes for denial-path tests.
  *
@@ -27,7 +27,7 @@ import type { Env } from '../../index';
 import type { ToolContext, TokenType } from '../../tools/registry';
 import {
   buildAuthProfilesNamespace,
-  buildBehaviorsNamespace,
+  buildAutomationsNamespace,
   buildClassifiersNamespace,
   buildConnectionsNamespace,
   buildEntitiesNamespace,
@@ -100,7 +100,7 @@ const DEFAULT_TEST_ENV: Env = {
 
 /**
  * Wire-level test client. Boots no HTTP server — calls go straight into the
- * Hono app via `app.fetch`. Use when the test has to verify behavior the
+ * Hono app via `app.fetch`. Use when the test has to verify automation the
  * sandbox or auth layer adds on top of the raw handler.
  */
 export class TestMcpClient {
@@ -159,7 +159,7 @@ export class TestMcpClient {
 
   /**
    * Issue a raw JSON-RPC method (e.g. `tools/list`). Most callers don't
-   * need this — it exists for tests that assert wire-level behavior.
+   * need this — it exists for tests that assert wire-level protocol details.
    */
   async raw<T = unknown>(method: string, params?: Record<string, unknown>) {
     return mcpRequest<T>(method, params, this.opts);
@@ -185,7 +185,7 @@ export class TestApiClient {
   readonly operations: ReturnType<typeof buildOperationsNamespace>;
   readonly organizations: ReturnType<typeof buildOrganizationsNamespace>;
   readonly view_templates: ReturnType<typeof buildViewTemplatesNamespace>;
-  readonly behaviors: ReturnType<typeof buildBehaviorsNamespace>;
+  readonly automations: ReturnType<typeof buildAutomationsNamespace>;
 
   private constructor(
     private readonly env: Env,
@@ -201,7 +201,7 @@ export class TestApiClient {
     this.operations = buildOperationsNamespace(ctx, env);
     this.organizations = buildOrganizationsNamespace(ctx);
     this.view_templates = buildViewTemplatesNamespace(ctx, env);
-    this.behaviors = buildBehaviorsNamespace(ctx, env);
+    this.automations = buildAutomationsNamespace(ctx, env);
   }
 
   /**

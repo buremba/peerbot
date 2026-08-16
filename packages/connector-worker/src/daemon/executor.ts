@@ -107,9 +107,9 @@ export function resolveEffectiveEnv(env: Env, job: PollResponse): Env {
 }
 
 /**
- * Execute a run (sync, action, or watcher).
+ * Execute a run (sync, action, or automation).
  *
- * Dispatches to sync, action, or behavior execution based on run_type.
+ * Dispatches to sync, action, or automation execution based on run_type.
  */
 export async function executeRun(
   client: ExecutorClient,
@@ -124,15 +124,15 @@ export async function executeRun(
   switch (job.run_type) {
     case 'action':
       return executeActionRun(client, job, env, cfg);
-    case 'behavior':
-      // Behavior reactions execute inline in the API process (complete_window) and
-      // the poll endpoint's run_type allowlist should never hand a behavior run to
+    case 'automation':
+      // Automation reactions execute inline in the API process (complete_window) and
+      // the poll endpoint's run_type allowlist should never hand an automation run to
       // this daemon. If one slips through (deploy skew, regression), do NOT mark
-      // it success — that would stomp a live behavior run and prevent any retry.
+      // it success — that would stomp a live automation run and prevent any retry.
       console.error(
-        `[executor] Refusing to handle behavior run ${job.run_id} — behavior runs must not reach the connector-worker daemon`
+        `[executor] Refusing to handle automation run ${job.run_id} — automation runs must not reach the connector-worker daemon`
       );
-      return { itemsCollected: 0, error: 'behavior run not handled by daemon' };
+      return { itemsCollected: 0, error: 'automation run not handled by daemon' };
     case 'embed_backfill':
       return executeEmbedBackfillRun(client, job, env, cfg);
     case 'auth':
@@ -842,7 +842,7 @@ function toContentItem(event: EventEnvelope): ContentItem {
     origin_parent_id: event.origin_parent_id ?? undefined,
     origin_type: event.origin_type,
     semantic_type: event.semantic_type ?? event.origin_type,
-    behavior_signals: event.behavior_signals,
+    automation_signals: event.automation_signals,
   };
 }
 
@@ -852,7 +852,7 @@ function toContentItem(event: EventEnvelope): ContentItem {
  * pass) instead of one per event. Vectors are mapped back to their source
  * event by index; events with empty text get no embedding. A batch failure is
  * logged and the items stream through without embeddings (same fail-open
- * behaviour as the previous per-event path).
+ * semantics as the previous per-event path).
  */
 async function processEventChunk(
   events: EventEnvelope[],

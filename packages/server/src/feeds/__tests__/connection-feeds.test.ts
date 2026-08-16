@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { cleanupTestDatabase, getTestDb } from "../../__tests__/setup/test-db";
-import { createTestBehaviorSubscription } from "../../__tests__/setup/behavior-subscriptions";
+import { createTestAutomationSubscription } from "../../__tests__/setup/automation-subscriptions";
 import {
 	createTestAgent,
 	createTestOrganization,
@@ -98,7 +98,7 @@ describe("listConnectionFeeds", () => {
 		});
 
 		// Bind the streaming channel to the agent so `target_agent_id` populates.
-		await createTestBehaviorSubscription({
+		await createTestAutomationSubscription({
 			organizationId: orgId,
 			agentId,
 			connectionId,

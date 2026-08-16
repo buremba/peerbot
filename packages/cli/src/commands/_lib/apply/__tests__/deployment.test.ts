@@ -17,7 +17,7 @@ function baseState(overrides: Partial<DesiredState> = {}): DesiredState {
     agents: [],
     prune: false,
     memorySchema: { entityTypes: [], relationshipTypes: [] },
-    watchers: [],
+    automations: [],
     connectors: { definitions: [], authProfiles: [], connections: [] },
     providers: [],
     requiredSecrets: [],
@@ -103,11 +103,30 @@ describe("deployment baseline encoding", () => {
       baseState(),
       {},
       {
-        attribution: { entityTypes: [], relationshipTypes: [], watchers: [] },
+        attribution: {
+          entityTypes: [],
+          relationshipTypes: [],
+          automations: [],
+        },
         owned: [],
       }
     );
     expect(toBaseline(loadBaselineFromManifest(recorded)).recorded).toBe(true);
+  });
+
+  test("treats an incomplete attribution schema as an absent baseline", () => {
+    const incomplete = {
+      attribution: {
+        entityTypes: [],
+        relationshipTypes: [],
+      },
+      owned: ["automation:a1"],
+    } as unknown as Parameters<typeof loadBaselineFromManifest>[0];
+
+    expect(loadBaselineFromManifest(incomplete)).toBeNull();
+    expect(toBaseline(loadBaselineFromManifest(incomplete)).recorded).toBe(
+      false
+    );
   });
 });
 
@@ -116,14 +135,14 @@ describe("buildCountsByKind", () => {
     const rows = [
       { kind: "agent", verb: "create" },
       { kind: "agent", verb: "noop" },
-      { kind: "watcher", verb: "update" },
-      { kind: "watcher", verb: "update" },
+      { kind: "automation", verb: "update" },
+      { kind: "automation", verb: "update" },
       { kind: "connection", verb: "drift" },
       { kind: "feed", verb: "delete" },
     ] as unknown as DiffRow[];
     expect(buildCountsByKind(rows)).toEqual({
       agent: { create: 1 },
-      behavior: { update: 2 },
+      automation: { update: 2 },
       feed: { delete: 1 },
     });
   });

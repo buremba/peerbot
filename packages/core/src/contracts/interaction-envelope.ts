@@ -3,9 +3,8 @@
  * (`tool_approval` transport via POST /internal/interactions/create).
  *
  * Why this exists: resourceKind / attribution were scattered string literals
- * across plugin-mcp, server tools, gateway routes, and the SPA. A rename on
- * one side (e.g. watcher → behavior) silently broke card routing on another
- * (plugin-mcp kept emitting "watcher" while owletto routed on "behavior").
+ * across plugin-mcp, server tools, gateway routes, and the SPA. A one-sided
+ * vocabulary change silently breaks card routing between those components.
  *
  * Contract:
  *  - Worker and server approval emitters import the named constants below.
@@ -23,12 +22,12 @@ import { type Static, Type } from "@sinclair/typebox";
 
 /**
  * Canonical resourceKind values on the tool_approval interaction envelope.
- * Produced by plugin-mcp (card post) and manage_behaviors (event metadata);
+ * Produced by plugin-mcp (card post) and manage_automations (event metadata);
  * consumed by the SPA to pick the right approval card renderer.
  */
 export const InteractionResourceKind = {
   Agent: "agent",
-  Behavior: "behavior",
+  Automation: "automation",
   Entity: "entity",
 } as const;
 
@@ -55,11 +54,11 @@ export function isInteractionResourceKind(
  * Who proposed a human-owned field change (entity_field_change cards).
  * manage_entity emits this as approval_attribution; plugin-mcp forwards it as
  * `attribution` on the interaction envelope; the SPA labels "An agent" vs
- * "A Behavior".
+ * "An Automation".
  */
 export const ApprovalAttribution = {
   Agent: "agent",
-  Behavior: "behavior",
+  Automation: "automation",
 } as const;
 
 export type ApprovalAttribution =

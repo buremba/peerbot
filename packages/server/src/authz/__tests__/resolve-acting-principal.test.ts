@@ -4,16 +4,16 @@ import { resolveActingPrincipal } from "../entity-policy";
 
 /**
  * The single seam every write surface resolves identity through. It merges the
- * two channels an acting watcher arrives on (an explicit `watcher_source` and the
- * reaction session's own watcher), looks up the owning agent —
+ * two channels an acting automation arrives on (an explicit `automation_source` and the
+ * reaction session's own automation), looks up the owning agent —
  * so no call site has to merge them and a reaction can't dodge its agent's
  * envelope by omitting attribution.
  *
- * The stub routes by query text: the watcher-owner JOIN (`FROM watchers`) returns a
+ * The stub routes by query text: the automation-owner JOIN (`FROM automations`) returns a
  * row iff `ownerAgentId` is set; the direct-agent existence probe (`FROM agents`,
  * no join) returns a row iff `agentExists`. This lets a test model an agent that was
  * deleted out from under a live session (agentExists=false) distinctly from a
- * missing watcher.
+ * missing automation.
  */
 function stubSql(
 	ownerAgentId: string | null,
@@ -21,7 +21,7 @@ function stubSql(
 ): DbClient {
 	const sql = (strings: TemplateStringsArray) => {
 		const text = strings.join(" ");
-		if (text.includes("FROM watchers")) {
+		if (text.includes("FROM automations")) {
 			return Promise.resolve(
 				ownerAgentId == null ? [] : [{ agent_id: ownerAgentId }],
 			);
@@ -32,40 +32,40 @@ function stubSql(
 	return sql as unknown as DbClient;
 }
 
-/** A stub where the watcher row is GONE — the owner JOIN returns no rows. */
-function stubSqlNoWatcher(): DbClient {
+/** A stub where the automation row is GONE — the owner JOIN returns no rows. */
+function stubSqlNoAutomation(): DbClient {
 	return stubSql(null);
 }
 
 const ORG = "org-1";
 
 describe("resolveActingPrincipal", () => {
-	it("the trusted session watcher wins over the agent id AND a caller tag", async () => {
-		// The session watcher is stamped by the executor (trusted), so it binds even
+	it("the trusted session automation wins over the agent id AND a caller tag", async () => {
+		// The session automation is stamped by the executor (trusted), so it binds even
 		// with an agentId and a different explicit tag present. It folds its owner.
 		const actor = await resolveActingPrincipal(stubSql("owner-agent"), {
 			organizationId: ORG,
 			agentId: "agent-1",
-			explicitWatcherId: 7,
-			sessionWatcherId: 9,
+			explicitAutomationId: 7,
+			sessionAutomationId: 9,
 		});
 		expect(actor).toEqual({
-			kind: "watcher",
-			// The trusted SESSION watcher (9) wins over the caller-supplied tag (7).
-			id: "watcher:9",
+			kind: "automation",
+			// The trusted SESSION automation (9) wins over the caller-supplied tag (7).
+			id: "automation:9",
 			ownerAgentId: "owner-agent",
 			ownerResolved: true,
 		});
 	});
 
-	it("an authed agent's caller-supplied tag for a FOREIGN watcher is ignored", async () => {
-		// The exploit: a restricted agent tags a watcher owned by someone else (or a
+	it("an authed agent's caller-supplied tag for a FOREIGN automation is ignored", async () => {
+		// The exploit: a restricted agent tags an automation owned by someone else (or a
 		// nonexistent id) to null out ownerAgentId and skip its own deny rows. The
 		// explicit tag must NOT override the authenticated agent identity.
 		const actor = await resolveActingPrincipal(stubSql("other-owner"), {
 			organizationId: ORG,
 			agentId: "agent-1",
-			explicitWatcherId: 7,
+			explicitAutomationId: 7,
 		});
 		expect(actor).toEqual({
 			kind: "agent",
@@ -75,55 +75,55 @@ describe("resolveActingPrincipal", () => {
 		});
 	});
 
-	it("an authed agent tagging its OWN watcher is honored (owner matches)", async () => {
+	it("an authed agent tagging its OWN automation is honored (owner matches)", async () => {
 		const actor = await resolveActingPrincipal(stubSql("agent-1"), {
 			organizationId: ORG,
 			agentId: "agent-1",
-			explicitWatcherId: 7,
+			explicitAutomationId: 7,
 		});
 		expect(actor).toEqual({
-			kind: "watcher",
-			id: "watcher:7",
+			kind: "automation",
+			id: "automation:7",
 			ownerAgentId: "agent-1",
 			ownerResolved: true,
 		});
 	});
 
-	it("an explicit watcher_source binds the watcher + folds its owning agent", async () => {
+	it("an explicit automation_source binds the automation + folds its owning agent", async () => {
 		const actor = await resolveActingPrincipal(stubSql("owner-agent"), {
 			organizationId: ORG,
-			explicitWatcherId: 7,
+			explicitAutomationId: 7,
 		});
 		expect(actor).toEqual({
-			kind: "watcher",
-			id: "watcher:7",
+			kind: "automation",
+			id: "automation:7",
 			ownerAgentId: "owner-agent",
 			ownerResolved: true,
 		});
 	});
 
-	it("the reaction SESSION watcher binds even with no explicit watcher_source", async () => {
-		// This is the reaction root fix: a script that omits watcher_source still
-		// acts as its watcher, so its agent's envelope binds.
+	it("the reaction SESSION automation binds even with no explicit automation_source", async () => {
+		// This is the reaction root fix: a script that omits automation_source still
+		// acts as its automation, so its agent's envelope binds.
 		const actor = await resolveActingPrincipal(stubSql("owner-agent"), {
 			organizationId: ORG,
-			sessionWatcherId: 9,
+			sessionAutomationId: 9,
 		});
 		expect(actor).toEqual({
-			kind: "watcher",
-			id: "watcher:9",
+			kind: "automation",
+			id: "automation:9",
 			ownerAgentId: "owner-agent",
 			ownerResolved: true,
 		});
 	});
 
-	it("the trusted session watcher wins over an explicit tag (no retag to dodge policy)", async () => {
+	it("the trusted session automation wins over an explicit tag (no retag to dodge policy)", async () => {
 		const actor = await resolveActingPrincipal(stubSql("owner-agent"), {
 			organizationId: ORG,
-			explicitWatcherId: 7,
-			sessionWatcherId: 9,
+			explicitAutomationId: 7,
+			sessionAutomationId: 9,
 		});
-		expect(actor.id).toBe("watcher:9");
+		expect(actor.id).toBe("automation:9");
 	});
 
 	it("a plain user turn has no owner to fold", async () => {
@@ -139,17 +139,17 @@ describe("resolveActingPrincipal", () => {
 		});
 	});
 
-	it("a session watcher whose row is GONE resolves ownerResolved=false (gate fails closed)", async () => {
-		// The reaction's watcher was hard-deleted mid-flight. We still act as the
-		// watcher, but the owner lookup fails → ownerResolved=false, so the gate must
+	it("a session automation whose row is GONE resolves ownerResolved=false (gate fails closed)", async () => {
+		// The reaction's automation was hard-deleted mid-flight. We still act as the
+		// automation, but the owner lookup fails → ownerResolved=false, so the gate must
 		// deny rather than run the write against the looser org default.
-		const actor = await resolveActingPrincipal(stubSqlNoWatcher(), {
+		const actor = await resolveActingPrincipal(stubSqlNoAutomation(), {
 			organizationId: ORG,
-			sessionWatcherId: 9,
+			sessionAutomationId: 9,
 		});
 		expect(actor).toEqual({
-			kind: "watcher",
-			id: "watcher:9",
+			kind: "automation",
+			id: "automation:9",
 			ownerAgentId: null,
 			ownerResolved: false,
 		});
@@ -173,16 +173,16 @@ describe("resolveActingPrincipal", () => {
 		});
 	});
 
-	it("a session watcher whose OWNING AGENT was deleted resolves ownerResolved=false", async () => {
-		// There is no watcher→agent FK, so an in-flight watcher's agent_id can dangle
+	it("a session automation whose OWNING AGENT was deleted resolves ownerResolved=false", async () => {
+		// There is no automation→agent FK, so an in-flight automation's agent_id can dangle
 		// after the owner is deleted. The owner JOIN requires the agent row, so the
 		// lookup returns no rows → ownerResolved=false → gate denies. (stubSql(null)
 		// models the JOIN finding nothing because the agent side is gone.)
 		const actor = await resolveActingPrincipal(stubSql(null), {
 			organizationId: ORG,
-			sessionWatcherId: 9,
+			sessionAutomationId: 9,
 		});
 		expect(actor.ownerResolved).toBe(false);
-		expect(actor.kind).toBe("watcher");
+		expect(actor.kind).toBe("automation");
 	});
 });

@@ -14,8 +14,8 @@ import {
 import { hasRequiredMcpScope } from '../../auth/tool-access';
 import { isInProcessSystemCall } from '../../tools/access-control';
 import { createDbClientFromEnv, getDb, pgBigintArray } from '../../db/client';
-import { BEHAVIOR_RUN_SOURCE } from '../../gateway/behavior-run-session';
-import { parseBehaviorRunConversationId } from '../../gateway/permissions/behavior-run-intent';
+import { AUTOMATION_RUN_SOURCE } from '../../gateway/automation-run-session';
+import { parseAutomationRunConversationId } from '../../gateway/permissions/automation-run-intent';
 import type { Env } from '../../index';
 import { ToolUserError } from '../../utils/errors';
 import {
@@ -46,44 +46,44 @@ import {
 } from './render';
 import { GetContentSchema, type GetContentArgs, getIncludeSupersededValidationErrors } from './schema';
 import type { ContentRow, GetContentResult, IdRow } from './types';
-import { handleBehaviorMode } from './behavior-mode';
+import { handleAutomationMode } from './automation-mode';
 import { resolveMcpActivitySessionIds } from './mcp-activity-filter';
 import { withValidatedArgs } from '../validate-args';
 
 const MAX_EXACT_CONTENT_IDS = 2000;
 
 /**
- * Connection-visibility principal for Behavior knowledge.read.
+ * Connection-visibility principal for Automation knowledge.read.
  *
  * - Interactive (human MCP / ordinary agent chat): the verified caller.
- * - Signed Behavior run (`BEHAVIOR_RUN_SOURCE`): null → Behavior.created_by,
- *   but only when the verified run identity matches `requestedBehaviorId`.
- *   Fails closed on mismatch so a worker cannot request another Behavior and
+ * - Signed Automation run (`AUTOMATION_RUN_SOURCE`): null → Automation.created_by,
+ *   but only when the verified run identity matches `requestedAutomationId`.
+ *   Fails closed on mismatch so a worker cannot request another Automation and
  *   inherit that author's private oauth_account feeds.
  */
-export function resolveBehaviorVisibilityUserId(
+export function resolveAutomationVisibilityUserId(
   ctx: ToolContext,
-  requestedBehaviorId: number
+  requestedAutomationId: number
 ): string | null {
-  if (ctx.sourceContext?.source !== BEHAVIOR_RUN_SOURCE) {
+  if (ctx.sourceContext?.source !== AUTOMATION_RUN_SOURCE) {
     return ctx.userId;
   }
 
   const fromConversation = ctx.sourceContext.conversationId
-    ? parseBehaviorRunConversationId(ctx.sourceContext.conversationId)
+    ? parseAutomationRunConversationId(ctx.sourceContext.conversationId)
     : null;
-  const verifiedBehaviorId =
-    ctx.actingWatcherId != null
-      ? Number(ctx.actingWatcherId)
-      : (fromConversation?.behaviorId ?? null);
+  const verifiedAutomationId =
+    ctx.actingAutomationId != null
+      ? Number(ctx.actingAutomationId)
+      : (fromConversation?.automationId ?? null);
 
   if (
-    verifiedBehaviorId == null ||
-    !Number.isSafeInteger(verifiedBehaviorId) ||
-    verifiedBehaviorId !== Number(requestedBehaviorId)
+    verifiedAutomationId == null ||
+    !Number.isSafeInteger(verifiedAutomationId) ||
+    verifiedAutomationId !== Number(requestedAutomationId)
   ) {
     throw new ToolUserError(
-      'A Behavior run may only call knowledge.read for its own behavior_id.',
+      'An Automation run may only call knowledge.read for its own automation_id.',
       403
     );
   }
@@ -160,7 +160,7 @@ async function getContentImpl(
 
   // Workspace-identity audit events record member/invitation lifecycle
   // (titles, member names, invitation status). Exclude them for everyone
-  // EXCEPT owners/admins and trusted in-process system contexts (behavior
+  // EXCEPT owners/admins and trusted in-process system contexts (automation
   // runs: userId=null, isAuthenticated=true) — the $member read policy
   // reserves that lifecycle data for owner/admin.
   const excludeWorkspaceAudit =
@@ -182,9 +182,9 @@ async function getContentImpl(
   if (hasMcpActivityId && !args.client_ids?.length) {
     throw new ToolUserError('mcp_activity_id requires client_ids.', 400);
   }
-  if (hasMcpActivityId && args.behavior_id) {
+  if (hasMcpActivityId && args.automation_id) {
     throw new ToolUserError(
-      'mcp_activity_id cannot be combined with behavior_id.',
+      'mcp_activity_id cannot be combined with automation_id.',
       400
     );
   }
@@ -201,14 +201,14 @@ async function getContentImpl(
     );
   }
 
-  // Agent/watcher: entity-type read policy (same envelope as manage_entity /
+  // Agent/automation: entity-type read policy (same envelope as manage_entity /
   // search_memory). Humans skip — role ACL is separate.
-  if (ctx.agentId || ctx.actingWatcherId) {
+  if (ctx.agentId || ctx.actingAutomationId) {
     const actor = await resolveActingPrincipal(getDb(), {
       organizationId: ctx.organizationId,
       userId: ctx.userId,
       agentId: ctx.agentId,
-      sessionWatcherId: ctx.actingWatcherId ?? null,
+      sessionAutomationId: ctx.actingAutomationId ?? null,
     });
     if (actor.kind !== 'user') {
       const typeSlugs = new Set<string>();
@@ -308,27 +308,27 @@ async function getContentImpl(
   const offset = args.offset || 0;
 
   try {
-    // If behavior_id is provided, use behavior mode: fetch content for all sources and generate window_token
-    if (args.behavior_id) {
-      // Behavior mode executes the Behavior's authored SQL sources (which may
+    // If automation_id is provided, use automation mode: fetch content for all sources and generate window_token
+    if (args.automation_id) {
+      // Automation mode executes the Automation's authored SQL sources (which may
       // include `events` reads). Callers with NO membership in this workspace
-      // have no legitimate reason to run another Behavior's source read —
+      // have no legitimate reason to run another Automation's source read —
       // deny them outright. Ordinary members may read, but must not receive
-      // workspace-audit rows (handled inside behavior mode).
+      // workspace-audit rows (handled inside automation mode).
       if (ctx.memberRole === null && !isInProcessSystemCall(ctx)) {
         throw new ToolUserError(
-          'Behavior read mode requires workspace membership.',
+          'Automation read mode requires workspace membership.',
           403
         );
       }
-      return await handleBehaviorMode(args, env, sql, {
+      return await handleAutomationMode(args, env, sql, {
         organizationId: ctx.organizationId,
         // Interactive reads keep the caller's private-connection scope.
-        // Signed Behavior runs act for the durable Behavior *author*, but only
-        // when the verified run identity matches the requested behavior_id —
-        // otherwise a same-org worker could pass another Behavior's id and
+        // Signed Automation runs act for the durable Automation *author*, but only
+        // when the verified run identity matches the requested automation_id —
+        // otherwise a same-org worker could pass another Automation's id and
         // inherit that author's private feeds.
-        userId: resolveBehaviorVisibilityUserId(ctx, args.behavior_id),
+        userId: resolveAutomationVisibilityUserId(ctx, args.automation_id),
         excludeWorkspaceAudit,
       });
     }
@@ -543,14 +543,14 @@ async function getContentImpl(
         ...(args.engagement_min !== undefined && { engagement_min: args.engagement_min }),
         ...(args.engagement_max !== undefined && { engagement_max: args.engagement_max }),
         ...(args.window_id !== undefined && { window_id: args.window_id }),
-        ...(args.analyzed_by_behavior_id !== undefined && {
-          analyzed_by_watcher_id: args.analyzed_by_behavior_id,
+        ...(args.analyzed_by_automation_id !== undefined && {
+          analyzed_by_automation_id: args.analyzed_by_automation_id,
         }),
-        ...(args.exclude_behavior_id !== undefined && {
-          exclude_watcher_id: args.exclude_behavior_id,
+        ...(args.exclude_automation_id !== undefined && {
+          exclude_automation_id: args.exclude_automation_id,
         }),
-        ...(args.produced_by_behavior_id !== undefined && {
-          produced_by_behavior_id: args.produced_by_behavior_id,
+        ...(args.produced_by_automation_id !== undefined && {
+          produced_by_automation_id: args.produced_by_automation_id,
         }),
         ...(classificationFilters?.length && { classification_filters: classificationFilters }),
         ...(args.classification_source && { classification_source: args.classification_source }),
@@ -588,9 +588,9 @@ async function getContentImpl(
         ...(mcpSessionIds !== undefined && { mcp_session_ids: mcpSessionIds }),
         visibility_scope: visibilityScope,
         window_id: args.window_id,
-        analyzed_by_watcher_id: args.analyzed_by_behavior_id,
-        exclude_watcher_id: args.exclude_behavior_id,
-        produced_by_behavior_id: args.produced_by_behavior_id,
+        analyzed_by_automation_id: args.analyzed_by_automation_id,
+        exclude_automation_id: args.exclude_automation_id,
+        produced_by_automation_id: args.produced_by_automation_id,
         platform: effectivePlatform,
         since: args.since,
         until: args.until,
@@ -768,8 +768,8 @@ async function getContentImpl(
       );
     }
 
-    // Entity summary: when searching org-wide (query provided, no entity_id/watcher_id)
-    if (args.query && !args.entity_id && !args.behavior_id && contentItems.length > 0) {
+    // Entity summary: when searching org-wide (query provided, no entity_id/automation_id)
+    if (args.query && !args.entity_id && !args.automation_id && contentItems.length > 0) {
       const entityCountMap = new Map<number, number>();
       for (const item of contentItems) {
         for (const eid of item.entity_ids) {

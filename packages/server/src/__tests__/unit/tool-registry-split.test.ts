@@ -44,8 +44,8 @@ const ADMIN_TOOL_SDK_NAMESPACE: Record<
 	manage_operations: "operations",
 	notify: "notifications",
 	manage_schedules: "schedules",
-	manage_behaviors: "behaviors",
-	get_behavior: "behaviors",
+	manage_automations: "automations",
+	get_automation: "automations",
 	read_knowledge: "knowledge",
 	manage_classifiers: "classifiers",
 	manage_view_templates: "viewTemplates",
@@ -188,18 +188,17 @@ describe("tool registry split", () => {
 		);
 	});
 
-	it("keeps only Behavior-native admin tools dispatchable", () => {
-		expect(getTool("list_watchers")).toBeUndefined();
-		expect(getTool("get_watcher")).toBeUndefined();
-		expect(getTool("get_behavior")).toBeDefined();
+	it("keeps canonical Automation admin tools dispatchable", () => {
+		expect(getTool("list_automations")).toBeUndefined();
+		expect(getTool("get_automation")).toBeDefined();
 		expect(getTool("manage_entity")).toBeDefined();
-		expect(isInternalDispatchTool("manage_behaviors")).toBe(true);
+		expect(isInternalDispatchTool("manage_automations")).toBe(true);
 		expect(isInternalDispatchTool("run_sdk")).toBe(false);
 
 		const rest = getAllTools();
 		expect(rest.length).toBeGreaterThan(getMcpTools().length);
 		const internal = rest.filter((t) => "internal" in t && t.internal);
-		expect(internal.map((t) => t.name)).toContain("manage_behaviors");
+		expect(internal.map((t) => t.name)).toContain("manage_automations");
 		expect(internal.map((t) => t.name)).not.toContain("run_sdk");
 	});
 });

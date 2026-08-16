@@ -22,7 +22,7 @@ async function waitFor(
 /**
  * Build a target whose `post(iterable)` drains the AsyncIterable into
  * `collected`. Returns a `drained` promise that resolves when the adapter
- * finishes draining (mirroring real adapter behavior of `target.post`).
+ * finishes draining (mirroring real adapter semantics of `target.post`).
  */
 function createStreamingTarget() {
   const collected: string[] = [];

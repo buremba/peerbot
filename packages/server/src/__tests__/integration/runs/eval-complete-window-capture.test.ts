@@ -1,12 +1,12 @@
 /**
- * An eval replay must not be able to damage the Behavior it is scoring.
+ * An eval replay must not be able to damage the Automation it is scoring.
  *
  * `complete_window` is the one write lane that does NOT go through the SDK
  * sandbox, so the capture claim has to be honoured by the handler itself. The
  * danger is specific: an eval replays the SAME window as its source run, so the
- * canvas chain root (watcher + granularity + window_start) is byte-identical.
+ * canvas chain root (automation + granularity + window_start) is byte-identical.
  * A `replace_existing: true` completion from an eval would therefore supersede
- * the REAL Behavior's canvas head and unlink its content.
+ * the REAL Automation's canvas head and unlink its content.
  *
  * Proves, against real Postgres:
  *   1. A live completion writes a canvas head (the control).
@@ -17,16 +17,16 @@
  *   4. The reaction script does not fire.
  */
 
-import { inferBehaviorGranularityFromSchedule } from '@lobu/connector-sdk';
+import { inferAutomationGranularityFromSchedule } from '@lobu/connector-sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../../db/client';
 import type { Env } from '../../../index';
 import type { ToolContext } from '../../../tools/registry';
-import { handleCompleteWindow } from '../../../tools/admin/manage_behaviors/complete-window';
+import { handleCompleteWindow } from '../../../tools/admin/manage_automations/complete-window';
 import { captureSideEffect } from '../../../gateway/routes/internal/capture-mode';
 import { createEvalRun } from '../../../runs/eval-runs';
-import { BEHAVIOR_EVAL_RUN_TYPE } from '../../../runs/run-types';
-import { createWatcherRun } from '../../../runs/queue-service';
+import { AUTOMATION_EVAL_RUN_TYPE } from '../../../runs/run-types';
+import { createAutomationRun } from '../../../runs/queue-service';
 import { findCanvasHead } from '../../../utils/canvas-events';
 import { computePendingWindow } from '../../../utils/window-utils';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -82,17 +82,17 @@ async function setup() {
     name: 'Eval Capture Agent',
   });
 
-  const behavior = (await workspace.owner.behaviors.create({
+  const automation = (await workspace.owner.automations.create({
     entity_id: parentEntity.id,
-    slug: 'eval-capture-behavior',
-    name: 'Eval Capture Behavior',
+    slug: 'eval-capture-automation',
+    name: 'Eval Capture Automation',
     prompt: 'Summarize activity for {{entities}}.',
     triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
     agent_id: agent.agentId,
-  })) as { behavior_id: string };
-  const watcherId = Number(behavior.behavior_id);
+  })) as { automation_id: string };
+  const automationId = Number(automation.automation_id);
 
-  await sql`UPDATE watchers SET next_run_at = NOW() - INTERVAL '10 minutes' WHERE id = ${watcherId}`;
+  await sql`UPDATE automations SET next_run_at = NOW() - INTERVAL '10 minutes' WHERE id = ${automationId}`;
 
   await createTestEvent({
     entity_id: parentEntity.id,
@@ -107,12 +107,12 @@ async function setup() {
     memberRole: 'owner',
   });
 
-  const granularity = inferBehaviorGranularityFromSchedule('0 9 * * *');
-  const { windowStart, windowEnd } = await computePendingWindow(dbClient, watcherId, granularity);
+  const granularity = inferAutomationGranularityFromSchedule('0 9 * * *');
+  const { windowStart, windowEnd } = await computePendingWindow(dbClient, automationId, granularity);
 
-  const queued = await createWatcherRun({
+  const queued = await createAutomationRun({
     organizationId: workspace.org.id,
-    watcherId,
+    automationId,
     agentId: agent.agentId,
     windowStart: windowStart.toISOString(),
     windowEnd: windowEnd.toISOString(),
@@ -123,7 +123,7 @@ async function setup() {
     WHERE id = ${queued.runId}
   `;
 
-  const knowledge = (await api.knowledge.read({ behavior_id: watcherId })) as {
+  const knowledge = (await api.knowledge.read({ automation_id: automationId })) as {
     window_token: string;
   };
 
@@ -131,34 +131,34 @@ async function setup() {
     sql,
     orgId: workspace.org.id,
     ownerUserId,
-    watcherId,
+    automationId,
     sourceRunId: queued.runId,
     windowToken: knowledge.window_token,
     canvasPeriod: {
-      watcherId,
+      automationId,
       granularity,
       windowStart: windowStart.toISOString(),
     },
   };
 }
 
-describe('an eval replay cannot overwrite the Behavior it is scoring', () => {
+describe('an eval replay cannot overwrite the Automation it is scoring', () => {
   beforeEach(async () => {
     await cleanupTestDatabase();
   });
 
   it('leaves the live canvas head intact and records the extraction instead', async () => {
     const ctx = await setup();
-    const { sql, orgId, ownerUserId, watcherId, sourceRunId, windowToken, canvasPeriod } = ctx;
+    const { sql, orgId, ownerUserId, automationId, sourceRunId, windowToken, canvasPeriod } = ctx;
 
     // 1. The control: a real completion writes a real canvas head.
     const live = await handleCompleteWindow(
       {
         action: 'complete_window',
-        behavior_id: String(watcherId),
+        automation_id: String(automationId),
         window_token: windowToken,
         extracted_data: LIVE_EXTRACTION,
-        behavior_run_id: sourceRunId,
+        automation_run_id: sourceRunId,
       } as never,
       TEST_ENV,
       toolCtx(orgId, ownerUserId, 'live')
@@ -186,11 +186,11 @@ describe('an eval replay cannot overwrite the Behavior it is scoring', () => {
     const captured = await handleCompleteWindow(
       {
         action: 'complete_window',
-        behavior_id: String(watcherId),
+        automation_id: String(automationId),
         window_token: windowToken,
         extracted_data: EVAL_EXTRACTION,
         replace_existing: true,
-        behavior_run_id: evalRun?.runId,
+        automation_run_id: evalRun?.runId,
       } as never,
       TEST_ENV,
       toolCtx(orgId, ownerUserId, 'capture')
@@ -207,7 +207,7 @@ describe('an eval replay cannot overwrite the Behavior it is scoring', () => {
     const [{ count }] = await sql<{ count: string }[]>`
       SELECT count(*) AS count FROM events
       WHERE semantic_type = 'canvas_state'
-        AND (metadata->>'watcher_id')::bigint = ${watcherId}
+        AND automation_id = ${automationId}
         AND superseded_by IS NULL
     `;
     expect(Number(count)).toBe(1);
@@ -242,10 +242,10 @@ describe('an eval replay cannot overwrite the Behavior it is scoring', () => {
 
   it('a live completer with no run id never adopts an in-flight eval run', async () => {
     const ctx = await setup();
-    const { sql, orgId, ownerUserId, watcherId, sourceRunId, windowToken } = ctx;
+    const { sql, orgId, ownerUserId, automationId, sourceRunId, windowToken } = ctx;
 
     // The live run stays RUNNING — it is the one a completion should land on.
-    // An eval replay of the same Behavior is also running and is NEWER, so the
+    // An eval replay of the same Automation is also running and is NEWER, so the
     // fallback lookup's "prefer running, then newest" ordering would pick the
     // EVAL if it were not scoped to the caller's own lane.
     const evalRun = await createEvalRun(
@@ -254,11 +254,11 @@ describe('an eval replay cannot overwrite the Behavior it is scoring', () => {
     );
     await sql`UPDATE runs SET status = 'running' WHERE id = ${evalRun?.runId ?? 0}`;
 
-    // A LIVE completion that omits behavior_run_id entirely.
+    // A LIVE completion that omits automation_run_id entirely.
     const live = await handleCompleteWindow(
       {
         action: 'complete_window',
-        behavior_id: String(watcherId),
+        automation_id: String(automationId),
         window_token: windowToken,
         extracted_data: LIVE_EXTRACTION,
       } as never,
@@ -281,14 +281,14 @@ describe('an eval replay cannot overwrite the Behavior it is scoring', () => {
     >`
       SELECT status, window_id, run_type FROM runs WHERE id = ${evalRun?.runId ?? 0}
     `;
-    expect(evalRow.run_type).toBe(BEHAVIOR_EVAL_RUN_TYPE);
+    expect(evalRow.run_type).toBe(AUTOMATION_EVAL_RUN_TYPE);
     expect(evalRow.window_id).toBe(null);
     expect(evalRow.status).toBe('running');
   });
 
   it('a live completer cannot claim or complete a pending eval by passing its id', async () => {
     const ctx = await setup();
-    const { sql, orgId, ownerUserId, watcherId, sourceRunId, windowToken } = ctx;
+    const { sql, orgId, ownerUserId, automationId, sourceRunId, windowToken } = ctx;
 
     const evalRun = await createEvalRun(
       { sourceRunId, caseKey: 'claim' },
@@ -306,10 +306,10 @@ describe('an eval replay cannot overwrite the Behavior it is scoring', () => {
     await handleCompleteWindow(
       {
         action: 'complete_window',
-        behavior_id: String(watcherId),
+        automation_id: String(automationId),
         window_token: windowToken,
         extracted_data: LIVE_EXTRACTION,
-        behavior_run_id: evalRun?.runId,
+        automation_run_id: evalRun?.runId,
       } as never,
       TEST_ENV,
       toolCtx(orgId, ownerUserId, 'live')
@@ -326,19 +326,19 @@ describe('an eval replay cannot overwrite the Behavior it is scoring', () => {
     expect(evalRow.claimed_at).toBe(null);
   });
 
-  it('does not stamp dry_run onto a real Behavior run', async () => {
+  it('does not stamp dry_run onto a real Automation run', async () => {
     const ctx = await setup();
-    const { sql, orgId, ownerUserId, watcherId, sourceRunId, windowToken } = ctx;
+    const { sql, orgId, ownerUserId, automationId, sourceRunId, windowToken } = ctx;
 
     // A forged capture claim naming a LIVE run: the UPDATE is guarded on
     // run_type, so the real run must not be marked as a dry run.
     await handleCompleteWindow(
       {
         action: 'complete_window',
-        behavior_id: String(watcherId),
+        automation_id: String(automationId),
         window_token: windowToken,
         extracted_data: EVAL_EXTRACTION,
-        behavior_run_id: sourceRunId,
+        automation_run_id: sourceRunId,
       } as never,
       TEST_ENV,
       toolCtx(orgId, ownerUserId, 'capture')
@@ -358,7 +358,7 @@ describe('an eval replay cannot overwrite the Behavior it is scoring', () => {
     // to post to Slack and then finished lost the attempt — the exact record a
     // score is computed from.
     const ctx = await setup();
-    const { sql, orgId, ownerUserId, watcherId, sourceRunId, windowToken } = ctx;
+    const { sql, orgId, ownerUserId, automationId, sourceRunId, windowToken } = ctx;
 
     const evalRun = await createEvalRun(
       { sourceRunId, caseKey: 'merge' },
@@ -370,7 +370,7 @@ describe('an eval replay cannot overwrite the Behavior it is scoring', () => {
       {
         get: (key: string) =>
           key === 'worker'
-            ? { executionMode: 'capture', behaviorRunId: evalRunId, organizationId: orgId }
+            ? { executionMode: 'capture', automationRunId: evalRunId, organizationId: orgId }
             : undefined,
         json: (body: unknown) => new Response(JSON.stringify(body)),
       } as never,
@@ -381,10 +381,10 @@ describe('an eval replay cannot overwrite the Behavior it is scoring', () => {
     await handleCompleteWindow(
       {
         action: 'complete_window',
-        behavior_id: String(watcherId),
+        automation_id: String(automationId),
         window_token: windowToken,
         extracted_data: EVAL_EXTRACTION,
-        behavior_run_id: evalRunId,
+        automation_run_id: evalRunId,
       } as never,
       TEST_ENV,
       toolCtx(orgId, ownerUserId, 'capture')

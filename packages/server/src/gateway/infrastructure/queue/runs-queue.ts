@@ -2,7 +2,7 @@
  * Postgres `runs`-table-backed message queue.
  *
  * SKIP-LOCKED claim loop on `public.runs`. The connector worker (run_type IN
- * 'sync', 'action', 'embed_backfill', 'behavior', 'auth') keeps its existing
+ * 'sync', 'action', 'embed_backfill', 'automation', 'auth') keeps its existing
  * HTTP-poll claim path; this queue strictly handles the lobu-queue lanes
  * ('chat_message', 'schedule', 'agent_run', 'internal').
  *
@@ -80,7 +80,7 @@ function queueBreadcrumb(
 // keeps its claim indefinitely and only crashed/wedged workers fall past it.
 
 /** Lobu-queue run types. Inserts/claims are restricted to these so connector
- *  lanes (sync, action, embed_backfill, behavior, auth) are never disturbed. */
+ *  lanes (sync, action, embed_backfill, automation, auth) are never disturbed. */
 const LOBU_RUN_TYPES = [
   "chat_message",
   "schedule",
@@ -890,7 +890,7 @@ export async function sweepCompletedRuns(): Promise<number> {
   // them at least as long as completed runs, but allow a longer, independent
   // window via FAILED_RUNS_RETENTION_DAYS so the dead-letter lane isn't pruned
   // at the same cadence as routine completions. Defaults to retentionDays, so
-  // behavior is unchanged unless an operator opts into a longer window.
+  // execution is unchanged unless an operator opts into a longer window.
   const failedRetentionDays = (() => {
     const raw = Number(process.env.FAILED_RUNS_RETENTION_DAYS);
     return Number.isFinite(raw) && raw > 0

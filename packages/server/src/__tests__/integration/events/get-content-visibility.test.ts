@@ -1137,31 +1137,31 @@ describe('getContent > source attribution fields across query branches', () => {
     `;
     feedId = feed.id as number;
 
-    // Behavior (watchers) + the version whose name we attribute to.
-    const watcherId = 900001;
+    // Automation (automations) + the version whose name we attribute to.
+    const automationId = 900001;
     await sql`
-      INSERT INTO watchers (
+      INSERT INTO automations (
         id, name, slug, organization_id, entity_ids, schedule, timezone,
         next_run_at, agent_id, model_config, sources, version, tags, status,
-        created_by, created_at, updated_at, watcher_group_id, triggers
+        created_by, created_at, updated_at, automation_group_id, triggers
       ) VALUES (
-        ${watcherId}, 'Attribution Behavior', 'attribution-behavior',
+        ${automationId}, 'Attribution Automation', 'attribution-automation',
         ${org.id}, '{}'::bigint[], '0 9 * * *', 'Europe/London', NOW(),
         'attr-agent', '{}'::jsonb, '[]'::jsonb, 1, '{}'::text[],
-        'active', ${user.id}, NOW(), NOW(), ${watcherId}, '[]'::jsonb
+        'active', ${user.id}, NOW(), NOW(), ${automationId}, '[]'::jsonb
       )
     `;
     const [version] = await sql`
-      INSERT INTO watcher_versions (
-        watcher_id, version, name, created_by, prompt, created_at
+      INSERT INTO automation_versions (
+        automation_id, version, name, created_by, prompt, created_at
       ) VALUES (
-        ${watcherId}, 1, 'Attribution Behavior', ${user.id}, 'prompt', NOW()
+        ${automationId}, 1, 'Attribution Automation', ${user.id}, 'prompt', NOW()
       )
       RETURNING id
     `;
     const versionId = version.id as number;
     await sql`
-      UPDATE watchers SET current_version_id = ${versionId} WHERE id = ${watcherId}
+      UPDATE automations SET current_version_id = ${versionId} WHERE id = ${automationId}
     `;
 
     const ev = await createTestEvent({
@@ -1169,8 +1169,8 @@ describe('getContent > source attribution fields across query branches', () => {
       connection_id: connId,
       feed_id: feedId,
       feed_key: 'home_feed',
-      behavior_id: watcherId,
-      behavior_version_id: versionId,
+      automation_id: automationId,
+      automation_version_id: versionId,
       connector_key: 'attr-test-connector',
       title: 'Attribution event',
       content: 'attribution unique marker payload for source row',
@@ -1178,23 +1178,23 @@ describe('getContent > source attribution fields across query branches', () => {
     });
     eventId = ev.id;
 
-    // Divergence probe: bump the behavior's CURRENT version after the event was
+    // Divergence probe: bump the automation's CURRENT version after the event was
     // produced. Attribution must keep the producing version's name (version 1,
-    // 'Attribution Behavior'), not the current version's ('Renamed Behavior').
+    // 'Attribution Automation'), not the current version's ('Renamed Automation').
     const [v2] = await sql`
-      INSERT INTO watcher_versions (
-        watcher_id, version, name, created_by, prompt, created_at
+      INSERT INTO automation_versions (
+        automation_id, version, name, created_by, prompt, created_at
       ) VALUES (
-        ${watcherId}, 2, 'Renamed Behavior', ${user.id}, 'prompt', NOW()
+        ${automationId}, 2, 'Renamed Automation', ${user.id}, 'prompt', NOW()
       )
       RETURNING id
     `;
     await sql`
-      UPDATE watchers SET current_version_id = ${v2.id} WHERE id = ${watcherId}
+      UPDATE automations SET current_version_id = ${v2.id} WHERE id = ${automationId}
     `;
   });
 
-  it('carries connection/feed/behavior attribution through every branch', async () => {
+  it('carries connection/feed/automation attribution through every branch', async () => {
     const branches = [
       { name: 'list/date', args: { entity_id: entity.id, limit: 100, sort_by: 'date', sort_order: 'desc' } },
       { name: 'content_ids', args: { content_ids: [eventId], limit: 100 } },
@@ -1211,20 +1211,20 @@ describe('getContent > source attribution fields across query branches', () => {
       expect(item!.feed_id, `${branch.name}: feed_id`).toBe(feedId);
       expect(item!.feed_key, `${branch.name}: feed_key`).toBe('home_feed');
       expect(item!.feed_name, `${branch.name}: feed_name`).toBe('Attr Home Feed');
-      expect(item!.behavior_id, `${branch.name}: behavior_id`).toBe(900001);
-      expect(item!.behavior_name, `${branch.name}: behavior_name`).toBe('Attribution Behavior');
+      expect(item!.automation_id, `${branch.name}: automation_id`).toBe(900001);
+      expect(item!.automation_name, `${branch.name}: automation_name`).toBe('Attribution Automation');
     }
   });
 
-  it('names version-less behavior events without internal vocabulary', async () => {
+  it('names version-less automation events without internal vocabulary', async () => {
     const sql = getTestDb();
-    // behavior_id set, behavior_version_id NULL — historical rows pre-versioning.
+    // automation_id set, automation_version_id NULL — historical rows pre-versioning.
     const ev = await createTestEvent({
       entity_id: entity.id,
       connection_id: connId,
-      behavior_id: 900001,
+      automation_id: 900001,
       connector_key: 'attr-test-connector',
-      title: 'Versionless behavior event',
+      title: 'Versionless automation event',
       content: 'versionless marker payload',
       embedding: Array.from({ length: 768 }, () => Math.random()),
     });
@@ -1235,9 +1235,9 @@ describe('getContent > source attribution fields across query branches', () => {
     );
     const item = result.content.find((c) => c.id === ev.id);
     expect(item, 'versionless event should surface').toBeTruthy();
-    expect(item!.behavior_id).toBe(900001);
-    // User-facing fallback label, never the internal `watcher` term.
-    expect(item!.behavior_name).toBe('Behavior #900001');
-    expect(item!.behavior_name).not.toContain('watcher');
+    expect(item!.automation_id).toBe(900001);
+    // User-facing fallback label, never the internal `automation` term.
+    expect(item!.automation_name).toBe('Automation #900001');
+    expect(item!.automation_name).not.toContain('automation');
   });
 });

@@ -12,24 +12,24 @@ type InitiatorSource = Partial<
 		| "agentId"
 		| "clientId"
 		| "sourceContext"
-		| "actingWatcherId"
+		| "actingAutomationId"
 		| "actingWindowId"
 		| "actingRunId"
 	>
 >;
 
 type RunInitiatorColumns = {
-	initiatorKind: "user" | "behavior" | "agent_session" | "system";
+	initiatorKind: "user" | "automation" | "agent_session" | "system";
 	initiatorRef: Record<string, unknown>;
 	createdByUserId: string | null;
 };
 
 export function resolveRunInitiator(ctx: InitiatorSource): RunInitiatorColumns {
-	if (ctx.actingWatcherId != null) {
+	if (ctx.actingAutomationId != null) {
 		return {
-			initiatorKind: "behavior",
+			initiatorKind: "automation",
 			initiatorRef: {
-				watcher_id: ctx.actingWatcherId,
+				automation_id: ctx.actingAutomationId,
 				window_id: ctx.actingWindowId ?? null,
 				run_id: ctx.actingRunId ?? null,
 			},
@@ -74,23 +74,23 @@ export function runPermalinkResource(
 	runId: number,
 	ownerAgentId: string | null | undefined,
 ): MemoryResource {
-	if (initiator.initiatorKind !== "behavior" || !ownerAgentId) {
+	if (initiator.initiatorKind !== "automation" || !ownerAgentId) {
 		return { kind: "run", runId };
 	}
 	// Reject the empty cases before coercing: Number(null) and Number("") are
-	// both 0, a valid-looking id that would build a link to "Behavior 0".
-	const rawBehaviorId = initiator.initiatorRef?.watcher_id;
-	if (rawBehaviorId == null || rawBehaviorId === "") {
+	// both 0, a valid-looking id that would build a link to "Automation 0".
+	const rawAutomationId = initiator.initiatorRef?.automation_id;
+	if (rawAutomationId == null || rawAutomationId === "") {
 		return { kind: "run", runId };
 	}
-	const behaviorId = Number(rawBehaviorId);
-	if (!Number.isSafeInteger(behaviorId) || behaviorId <= 0) {
+	const automationId = Number(rawAutomationId);
+	if (!Number.isSafeInteger(automationId) || automationId <= 0) {
 		return { kind: "run", runId };
 	}
 	return {
-		kind: "behavior_run",
+		kind: "automation_run",
 		runId,
 		agentId: ownerAgentId,
-		behaviorId,
+		automationId,
 	};
 }

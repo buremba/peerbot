@@ -64,7 +64,7 @@ export function buildWorkerInvocation(entryPoint: string): {
   // Dev path: a .ts entrypoint runs under Bun (JavaScriptCore, not V8), which
   // ignores --max-old-space-size. Bun's memory knob is --smol; it trades CPU for
   // a smaller footprint rather than enforcing a hard ceiling, but it's the
-  // closest available lever and keeps dev behaviour honest (no no-op V8 flag).
+  // closest available lever and keeps dev semantics honest (no no-op V8 flag).
   return {
     command: getBunExecutable(),
     args: ["--smol", "run", entryPoint],

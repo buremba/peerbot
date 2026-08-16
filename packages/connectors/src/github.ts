@@ -25,11 +25,11 @@ import {
   type WebhookRegistrationContext,
 } from '@lobu/connector-sdk';
 import {
-  GITHUB_BEHAVIOR_EVENTS,
-  githubBehaviorSignalDrafts,
+  GITHUB_AUTOMATION_EVENTS,
+  githubAutomationSignalDrafts,
   githubPullRequestSubscribable,
-  githubSyncShouldEmitBehaviorSignals,
-} from './github-behavior-events.js';
+  githubSyncShouldEmitAutomationSignals,
+} from './github-automation-events.js';
 import {
   GITHUB_IDENTITY,
   githubKeyForOriginId,
@@ -302,11 +302,11 @@ const GITHUB_PERSON_ATTRIBUTION: EventAttributionRule = {
   traits: {
     github_login: {
       eventPath: 'metadata.author_login',
-      behavior: 'prefer_non_empty',
+      mergeStrategy: 'prefer_non_empty',
     },
     last_authored_at: {
       eventPath: 'occurred_at',
-      behavior: 'overwrite',
+      mergeStrategy: 'overwrite',
     },
   },
 };
@@ -338,7 +338,7 @@ export default class GitHubConnector extends ConnectorRuntime {
     name: 'GitHub',
     description: 'Collects GitHub issues/discussions and executes repo actions.',
     version: '1.3.0',
-    behaviorEvents: GITHUB_BEHAVIOR_EVENTS,
+    automationEvents: GITHUB_AUTOMATION_EVENTS,
     faviconDomain: 'github.com',
     // A GitHub connection gives the agent's sandbox an authenticated `gh`.
     // GH_TOKEN is a LEASE: the App installation token is derived per deployment
@@ -865,16 +865,16 @@ export default class GitHubConnector extends ConnectorRuntime {
     const contentType = (ctx.feedKey ?? 'issues') as GitHubContentType;
     // Cold start / checkpoint reset: resolveSince falls back to lookback_days
     // (default 365). Every PR in that window is first-seen and would flood
-    // pull_request.created Behavior activations. Only attach behavior_signals
+    // pull_request.created Automation activations. Only attach automation_signals
     // once a prior last_sync_at exists (steady-state delta).
-    const attachBehaviorSignals = githubSyncShouldEmitBehaviorSignals(
+    const attachAutomationSignals = githubSyncShouldEmitAutomationSignals(
       ctx.checkpoint as GitHubCheckpoint | null,
     );
     const sinceIso = this.resolveSince(ctx.checkpoint, config.lookback_days ?? 365);
 
     if (contentType === 'stargazers') {
       const result = await this.syncStargazers(repo, ctx.checkpoint, token);
-      this.stampRepoAttribution(result.events, repo, { attachBehaviorSignals });
+      this.stampRepoAttribution(result.events, repo, { attachAutomationSignals });
       return {
         events: result.events,
         checkpoint: {
@@ -895,7 +895,7 @@ export default class GitHubConnector extends ConnectorRuntime {
       labelsFilter: config.labels_filter ?? [],
       token,
     });
-    this.stampRepoAttribution(events, repo, { attachBehaviorSignals });
+    this.stampRepoAttribution(events, repo, { attachAutomationSignals });
 
     return {
       events,
@@ -1104,20 +1104,20 @@ export default class GitHubConnector extends ConnectorRuntime {
   private stampRepoAttribution(
     events: EventEnvelope[],
     repo: RepoRef,
-    options?: { attachBehaviorSignals?: boolean },
+    options?: { attachAutomationSignals?: boolean },
   ): void {
     const fullName =
       normalizeGithubRepoFullName(`${repo.owner}/${repo.repo}`) ??
       `${repo.owner}/${repo.repo}`.toLowerCase();
-    const attachBehaviorSignals = options?.attachBehaviorSignals !== false;
+    const attachAutomationSignals = options?.attachAutomationSignals !== false;
     for (const event of events) {
       event.metadata = {
         ...(event.metadata ?? {}),
         github_repo_full_name: fullName,
       };
-      if (!attachBehaviorSignals) continue;
-      const behaviorSignals = githubBehaviorSignalDrafts(event);
-      if (behaviorSignals.length > 0) event.behavior_signals = behaviorSignals;
+      if (!attachAutomationSignals) continue;
+      const automationSignals = githubAutomationSignalDrafts(event);
+      if (automationSignals.length > 0) event.automation_signals = automationSignals;
     }
   }
 

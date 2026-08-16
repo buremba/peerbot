@@ -278,7 +278,7 @@ describe("slack OAuth install routes", () => {
       "/slack/oauth_callback?code=test-code&state=test-state"
     );
 
-    // Converged behavior: EVEN WITH state, the workspace lands in the claim
+    // Converged automation: EVEN WITH state, the workspace lands in the claim
     // flow (org picker), NOT silently bound to the state's org. This is the
     // Bug C fix — no `/{orgSlug}/agents?connected=slack` redirect.
     expect(response.status).toBe(302);

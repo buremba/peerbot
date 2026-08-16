@@ -18,7 +18,7 @@ import {
 } from "../../__tests__/setup/test-fixtures";
 import { initWorkspaceProvider } from "../../workspace";
 import { search } from "../search";
-import { createTestBehaviorSubscription } from "../../__tests__/setup/behavior-subscriptions";
+import { createTestAutomationSubscription } from "../../__tests__/setup/automation-subscriptions";
 
 async function bindChannelWithMessages(opts: {
   organizationId: string;
@@ -35,7 +35,7 @@ async function bindChannelWithMessages(opts: {
     organizationId: opts.organizationId,
 		status: "active",
   });
-  await createTestBehaviorSubscription({
+  await createTestAutomationSubscription({
     organizationId: opts.organizationId,
     agentId: opts.agentId,
     connectionSlug: `agentconn-${opts.connectionId}`,

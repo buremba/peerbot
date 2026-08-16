@@ -1,7 +1,7 @@
 /**
  * Tests for the shared ref-token codec.
  *
- * This module is consumed by BOTH the server (`watchers/source-refs.ts`) and
+ * This module is consumed by BOTH the server (`automations/source-refs.ts`) and
  * the SPA (`owletto/src/lib/references.ts`). Before consolidation each side
  * carried its own transcription of the grammar, and the failure mode of a
  * mismatch is silent: a token the regex does not match is skipped, so the
@@ -11,8 +11,8 @@
 
 import { describe, expect, it } from "bun:test";
 import {
-  behaviorSourcesFromPrompt,
-  behaviorSourcesWithRef,
+  automationSourcesFromPrompt,
+  automationSourcesWithRef,
   mergePromptSources,
   parseRefs,
   serializeRef,
@@ -69,10 +69,10 @@ describe("sql payload codec", () => {
   });
 });
 
-describe("behaviorSourcesFromPrompt", () => {
+describe("automationSourcesFromPrompt", () => {
   it("compiles entity_type to the @entity: type-slug mode", () => {
     expect(
-      behaviorSourcesFromPrompt(
+      automationSourcesFromPrompt(
         "@[entity_type:company:Companies](/acme/company)"
       )
     ).toEqual([{ name: "companies", query: "@entity:company" }]);
@@ -82,7 +82,7 @@ describe("behaviorSourcesFromPrompt", () => {
     const prompt =
       "@[entity:42:Spotify](/acme/company/spotify) " +
       "@[entity_type:company:Companies](/acme/company)";
-    expect(behaviorSourcesFromPrompt(prompt)).toEqual([
+    expect(automationSourcesFromPrompt(prompt)).toEqual([
       { name: "companies", query: "@entity:company" },
     ]);
   });
@@ -95,24 +95,41 @@ describe("behaviorSourcesFromPrompt", () => {
       "@[feed:k2:Issues](/b)",
       `@[sql:recent:Recent](${sqlRefPath(query)})`,
     ].join(" ");
-    expect(behaviorSourcesFromPrompt(prompt)).toEqual([
+    expect(automationSourcesFromPrompt(prompt)).toEqual([
       { name: "issues", query: "@feed:k1" },
       { name: "issues_2", query: "@feed:k2" },
       { name: "recent", query },
     ]);
   });
 
+  it("trims repeated separators from generated source names", () => {
+    expect(automationSourcesFromPrompt("@[feed:k1:___Issues___](/a)")).toEqual([
+      { name: "issues", query: "@feed:k1" },
+    ]);
+  });
+
+  it("trims long underscore runs from generated source names", () => {
+    const underscores = "_".repeat(100_000);
+    expect(
+      automationSourcesFromPrompt(
+        `@[feed:issues:${underscores}issues${underscores}](/a)`
+      )
+    ).toEqual([{ name: "issues", query: "@feed:issues" }]);
+  });
+
   it("never treats a skill chip as a source", () => {
-    expect(behaviorSourcesFromPrompt("@[skill:triage:triage](/a)")).toEqual([]);
+    expect(automationSourcesFromPrompt("@[skill:triage:triage](/a)")).toEqual(
+      []
+    );
     expect(skillNamesFromPrompt("@[skill:triage:triage](/a)")).toEqual([
       "triage",
     ]);
   });
 });
 
-describe("behaviorSourcesWithRef", () => {
+describe("automationSourcesWithRef", () => {
   it("appends an entity_type ref and leaves an existing duplicate alone", () => {
-    const first = behaviorSourcesWithRef(
+    const first = automationSourcesWithRef(
       {
         kind: "entity_type",
         id: "company",
@@ -123,7 +140,7 @@ describe("behaviorSourcesWithRef", () => {
     );
     expect(first).toEqual([{ name: "companies", query: "@entity:company" }]);
 
-    const again = behaviorSourcesWithRef(
+    const again = automationSourcesWithRef(
       {
         kind: "entity_type",
         id: "company",

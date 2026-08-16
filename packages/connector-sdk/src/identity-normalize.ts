@@ -3,7 +3,7 @@
  *
  * Connectors call these before emitting identifiers on events. The ingestion
  * pipeline also re-runs normalization as a defensive pass, so mismatched
- * connector behavior can't poison cross-channel matching.
+ * connector semantics can't poison cross-channel matching.
  *
  * Glossary — "namespace" in this file:
  *   The string `namespace` here means an *identity scope* — the type of an

@@ -30,40 +30,6 @@ import { cleanupTestDatabase } from "../../setup/test-db";
 const HEAL_MIGRATIONS = [
 	{
 		files: [
-			"20260717121009_behavior_triggers_index_heal.sql",
-			"20260717121010_behavior_triggers_index.sql",
-		],
-		index: "idx_watchers_triggers_gin",
-		/** Plain (non-unique) index definition used only to seed an INVALID carcass. */
-		seedSql: `
-      CREATE INDEX IF NOT EXISTS idx_watchers_triggers_gin
-        ON watchers (id)
-    `,
-	},
-	{
-		files: [
-			"20260717121019_watcher_run_execution_index_heal.sql",
-			"20260717121020_watcher_run_execution_index.sql",
-		],
-		index: "idx_runs_executing_watcher_per_watcher",
-		seedSql: `
-      CREATE INDEX IF NOT EXISTS idx_runs_executing_watcher_per_watcher
-        ON runs (id)
-    `,
-	},
-	{
-		files: [
-			"20260717121024_pending_non_event_watcher_run_index_heal.sql",
-			"20260717121025_pending_non_event_watcher_run_index.sql",
-		],
-		index: "idx_runs_pending_non_event_watcher_per_watcher",
-		seedSql: `
-      CREATE INDEX IF NOT EXISTS idx_runs_pending_non_event_watcher_per_watcher
-        ON runs (id)
-    `,
-	},
-	{
-		files: [
 			"20260719115959_channel_messages_org_dedupe_heal.sql",
 			"20260719120000_channel_messages_org_dedupe.sql",
 		],

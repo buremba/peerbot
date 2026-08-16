@@ -222,7 +222,7 @@ describe("validateToolArgs error humanization", () => {
           Type.Union([
             Type.Literal("connectors"),
             Type.Literal("skills"),
-            Type.Literal("watchers"),
+            Type.Literal("automations"),
           ])
         )
       ),
@@ -238,7 +238,7 @@ describe("validateToolArgs error humanization", () => {
     expect(msg).not.toMatch(/Expected union value/);
     expect(msg).toMatch(/connectors/);
     expect(msg).toMatch(/skills/);
-    expect(msg).toMatch(/watchers/);
+    expect(msg).toMatch(/automations/);
   });
 
   it("reports a missing required field AND an unknown field together (not just the first)", () => {
@@ -358,11 +358,11 @@ describe("registry completeness", () => {
     expect(unwrapped).toEqual([]);
   });
 
-  it("manage_behaviors accepts the consolidated list filters", () => {
-    const schema = getTool("manage_behaviors")?.inputSchema;
-    if (!schema) throw new Error("manage_behaviors is not registered");
+  it("manage_automations accepts the consolidated list filters", () => {
+    const schema = getTool("manage_automations")?.inputSchema;
+    if (!schema) throw new Error("manage_automations is not registered");
     expect(
-      validateToolArgs("manage_behaviors", schema, {
+      validateToolArgs("manage_automations", schema, {
         action: "list",
         agent_id: "agent-1",
         status: "active",
@@ -379,7 +379,7 @@ describe("registry completeness", () => {
       order_dir: "asc",
     });
     expect(() =>
-      validateToolArgs("manage_behaviors", schema, {
+      validateToolArgs("manage_automations", schema, {
         action: "list",
         status: "unknown",
       })
@@ -427,9 +427,9 @@ describe("registry outputSchema normalization (MCP spec: must be an object schem
     // The 8 admin tools declare Type.Union result schemas → bare `{ anyOf }`.
     // A spec-strict host rejects an outputSchema without top-level type:object.
     const byName = new Map(getAllTools().map((t) => [t.name, t]));
-    const watchers = byName.get("manage_behaviors") as { outputSchema?: any } | undefined;
-    expect(watchers?.outputSchema?.type).toBe("object");
-    expect(Array.isArray(watchers?.outputSchema?.anyOf)).toBe(true);
+    const automations = byName.get("manage_automations") as { outputSchema?: any } | undefined;
+    expect(automations?.outputSchema?.type).toBe("object");
+    expect(Array.isArray(automations?.outputSchema?.anyOf)).toBe(true);
   });
 
   it("leaves an already-object result schema (search_memory) untouched", () => {

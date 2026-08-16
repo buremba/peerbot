@@ -291,9 +291,9 @@ export function formatToolResult(
   const formatters: Record<string, (result: any, options: FormatterOptions) => string> = {
     search_memory: formatSearchResult,
     save_memory: formatSaveMemoryResult,
-    get_behavior: formatGetBehaviorResult,
+    get_automation: formatGetAutomationResult,
     read_knowledge: formatGetContentResult,
-    manage_behaviors: formatManageBehaviorsResult,
+    manage_automations: formatManageAutomationsResult,
     query_sql: formatQuerySqlResult,
     render_lobu_view: formatLobuViewResult,
   };
@@ -776,14 +776,14 @@ function formatSearchChildEntityResult(result: any, _options: FormatterOptions):
 }
 
 /**
- * Format get_behavior result (window-based)
+ * Format get_automation result (window-based)
  */
-function formatGetBehaviorResult(result: any, _options: FormatterOptions): string {
-  const { windows, warnings, pending_analysis, behavior } = result;
+function formatGetAutomationResult(result: any, _options: FormatterOptions): string {
+  const { windows, warnings, pending_analysis, automation } = result;
 
   // No windows found - show diagnostic info
   if (!windows || windows.length === 0) {
-    let md = '# ℹ️ No Behavior Windows Available\n\n';
+    let md = '# ℹ️ No Automation Windows Available\n\n';
 
     if (warnings && warnings.length > 0) {
       md += '## ⚠️ Warnings\n\n';
@@ -796,11 +796,11 @@ function formatGetBehaviorResult(result: any, _options: FormatterOptions): strin
     return md;
   }
 
-  // Windows found - show Behaviors
-  let md = `# 📊 Behavior Windows (${windows.length})\n\n`;
+  // Windows found - show Automations
+  let md = `# 📊 Automation Windows (${windows.length})\n\n`;
 
   windows.forEach((window: any, idx: number) => {
-    md += `## ${idx + 1}. ${window.behavior_name}\n\n`;
+    md += `## ${idx + 1}. ${window.automation_name}\n\n`;
 
     md += `**Window**: ${new Date(window.window_start).toLocaleDateString()} - ${new Date(window.window_end).toLocaleDateString()}  \n`;
     md += `**Granularity**: ${window.granularity}  \n`;
@@ -819,27 +819,27 @@ function formatGetBehaviorResult(result: any, _options: FormatterOptions): strin
   });
 
   if (pending_analysis?.unprocessed_ranges?.length > 0) {
-    md += formatUnprocessedRanges(pending_analysis.unprocessed_ranges, behavior?.behavior_id);
+    md += formatUnprocessedRanges(pending_analysis.unprocessed_ranges, automation?.automation_id);
   }
 
   return md;
 }
 
 /**
- * Tell the run which periods were skipped to bring this Behavior current.
+ * Tell the run which periods were skipped to bring this Automation current.
  *
  * Silent unless something actually was skipped, which never happens on a healthy
  * run — `window_lag.guidance` is absent whenever `periods_skipped` is zero, so
  * the threshold lives in `describeWindowLag` and there is none to tune here.
  *
- * The catching-up itself is not this notice's job: `nextBehaviorWindowStart`
+ * The catching-up itself is not this notice's job: `nextAutomationWindowStart`
  * floors the dispatched window at one period, so the gap closes whether or not
  * the run reads a word of this. What is left is the one decision that is the
  * run's — whether the skipped span is worth reading back.
  */
 function formatWindowLag(lag: any): string {
   // The prose is `describeWindowLag`'s string, the SAME one the JSON payload
-  // carries as `guidance` — Behavior runs read this response as JSON through
+  // carries as `guidance` — Automation runs read this response as JSON through
   // run_sdk and never render markdown, so the payload is the surface that
   // matters; this render is for clients that do read markdown.
   const guidance = typeof lag?.guidance === 'string' ? lag.guidance : '';
@@ -850,7 +850,7 @@ function formatWindowLag(lag: any): string {
 /**
  * Format unprocessed ranges as markdown with read_knowledge call examples
  */
-function formatUnprocessedRanges(ranges: any[], watcherId?: string): string {
+function formatUnprocessedRanges(ranges: any[], automationId?: string): string {
   const rangesToProcess = ranges.filter((r: any) => r.unprocessed_content > 0);
   if (rangesToProcess.length === 0) return '';
 
@@ -858,7 +858,7 @@ function formatUnprocessedRanges(ranges: any[], watcherId?: string): string {
     (sum: number, r: any) => sum + r.unprocessed_content,
     0
   );
-  const id = watcherId || '<watcher_id>';
+  const id = automationId || '<automation_id>';
 
   let md = `## 📋 Ranges To Process (${totalUnprocessed} unprocessed items)\n\n`;
   md += `Process these ${rangesToProcess.length} range(s) sequentially:\n\n`;
@@ -869,7 +869,7 @@ function formatUnprocessedRanges(ranges: any[], watcherId?: string): string {
     md += `### ${i + 1}. ${range.month} (${range.unprocessed_content} items${isPartial ? `, ${range.processed_content} already processed` : ''})\n\n`;
     md += '```\n';
     md += 'read_knowledge(\n';
-    md += `  watcher_id: ${id},\n`;
+    md += `  automation_id: ${id},\n`;
     md += `  since: "${range.window_start.slice(0, 10)}",\n`;
     md += `  until: "${range.window_end.slice(0, 10)}",\n`;
     md += `  limit: ${Math.min(range.total_content, 2000)}\n`;
@@ -885,7 +885,7 @@ function formatUnprocessedRanges(ranges: any[], watcherId?: string): string {
 }
 
 /**
- * Format extracted watcher data (recursive)
+ * Format extracted automation data (recursive)
  */
 function formatExtractedData(data: any, indent: number = 0): string {
   const prefix = '  '.repeat(indent);
@@ -913,12 +913,12 @@ function formatExtractedData(data: any, indent: number = 0): string {
 }
 
 /**
- * Format manage_behaviors result
+ * Format manage_automations result
  */
-function formatManageBehaviorsResult(result: any, _options: FormatterOptions): string {
-  const { action, summary, behaviors, results } = result;
+function formatManageAutomationsResult(result: any, _options: FormatterOptions): string {
+  const { action, summary, automations, results } = result;
 
-  let md = `# 📊 Behavior Management: ${action}\n\n`;
+  let md = `# 📊 Automation Management: ${action}\n\n`;
 
   if (Array.isArray(result.templates)) {
     md += `## Templates (${result.templates.length})\n\n`;
@@ -933,8 +933,8 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
       if (template.slug) md += `- **Slug**: ${template.slug}\n`;
       if (template.current_version) md += `- **Current Version**: ${template.current_version}\n`;
       if (template.version) md += `- **Version**: ${template.version}\n`;
-      if (template.behaviors_count !== undefined) {
-        md += `- **Behaviors**: ${template.behaviors_count}\n`;
+      if (template.automations_count !== undefined) {
+        md += `- **Automations**: ${template.automations_count}\n`;
       }
       if (template.installed !== undefined) {
         md += `- **Installed**: ${template.installed ? 'Yes' : 'No'}\n`;
@@ -946,7 +946,7 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
     return md;
   }
 
-  if (action === 'create' && result.template_id && !result.behavior_id) {
+  if (action === 'create' && result.template_id && !result.automation_id) {
     md += '## New Template Created\n\n';
     md += `- **ID**: \`${result.template_id}\`\n`;
     md += `- **Slug**: ${result.slug}\n`;
@@ -966,7 +966,7 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
 
   if (action === 'set_reaction_script') {
     md += '## Reaction Script\n\n';
-    md += `- **Behavior ID**: \`${result.behavior_id}\`\n`;
+    md += `- **Automation ID**: \`${result.automation_id}\`\n`;
     md += `- **Installed**: ${result.has_script ? 'Yes' : 'No'}\n`;
     if (result.message) md += `- **Message**: ${result.message}\n`;
     return md;
@@ -987,7 +987,7 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
     if (failedResults.length > 0) {
       md += '## ❌ Failed Operations\n\n';
       for (const r of failedResults) {
-        md += `- **Behavior ID**: \`${r.behavior_id}\`\n`;
+        md += `- **Automation ID**: \`${r.automation_id}\`\n`;
         md += `  - **Error**: ${r.message}\n\n`;
       }
     }
@@ -995,15 +995,15 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
     if (successfulResults.length > 0) {
       md += '## ✅ Successful Operations\n\n';
       for (const r of successfulResults) {
-        md += `- **Behavior ID**: \`${r.behavior_id}\`\n`;
+        md += `- **Automation ID**: \`${r.automation_id}\`\n`;
         md += `  - **Status**: ${r.message}\n\n`;
       }
     }
   }
 
-  if (action === 'create' && result.behavior_id) {
-    md += '## New Behavior Created\n\n';
-    md += `- **ID**: \`${result.behavior_id}\`\n`;
+  if (action === 'create' && result.automation_id) {
+    md += '## New Automation Created\n\n';
+    md += `- **ID**: \`${result.automation_id}\`\n`;
     md += `- **Template Version**: ${result.template_version}\n`;
     md += `- **Status**: ${result.status}\n`;
     if (result.view_url) {
@@ -1023,28 +1023,28 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
 
   if (action === 'complete_window') {
     md += '## ✅ Window Completed\n\n';
-    md += `- **Behavior ID**: \`${result.behavior_id}\`\n`;
+    md += `- **Automation ID**: \`${result.automation_id}\`\n`;
     md += `- **Window ID**: \`${result.window_id}\`\n`;
     md += `- **Period**: ${result.window_start?.substring(0, 10)} - ${result.window_end?.substring(0, 10)}\n`;
     md += `- **Content Linked**: ${result.content_linked}\n`;
   }
 
-  if (action === 'list' && behaviors && behaviors.length > 0) {
-    md += `## Behaviors (${behaviors.length})\n\n`;
-    for (const watcher of behaviors) {
-      md += `### ${watcher.name || watcher.template_slug}\n`;
-      md += `- **ID**: \`${watcher.behavior_id}\`\n`;
-      md += `- **Template**: ${watcher.template_slug} (v${watcher.template_version})\n`;
-      md += `- **Status**: ${watcher.status}\n`;
-      md += `- **Entity**: ${watcher.entity_name} (${watcher.entity_type})\n`;
-      if (watcher.schedule) {
-        md += `- **Schedule**: ${watcher.schedule}\n`;
+  if (action === 'list' && automations && automations.length > 0) {
+    md += `## Automations (${automations.length})\n\n`;
+    for (const automation of automations) {
+      md += `### ${automation.name || automation.template_slug}\n`;
+      md += `- **ID**: \`${automation.automation_id}\`\n`;
+      md += `- **Template**: ${automation.template_slug} (v${automation.template_version})\n`;
+      md += `- **Status**: ${automation.status}\n`;
+      md += `- **Entity**: ${automation.entity_name} (${automation.entity_type})\n`;
+      if (automation.schedule) {
+        md += `- **Schedule**: ${automation.schedule}\n`;
       }
-      md += `- **Pending Content**: ${watcher.pending_content_count ?? 'N/A'}\n`;
+      md += `- **Pending Content**: ${automation.pending_content_count ?? 'N/A'}\n`;
       md += '\n';
     }
   } else if (action === 'list') {
-    md += '*No Behaviors found.*\n';
+    md += '*No Automations found.*\n';
   }
 
   return md;
@@ -1253,9 +1253,9 @@ function formatGetContentResult(result: any, _options: FormatterOptions): string
 
   let md = `# \uD83D\uDCDD Content (${total} total)\n\n`;
 
-  // Behavior mode: show window info and token
+  // Automation mode: show window info and token
   if (window_token) {
-    md += '## 🎯 Behavior Window\n\n';
+    md += '## 🎯 Automation Window\n\n';
     md += `- **Window Start**: ${window_start}\n`;
     md += `- **Window End**: ${window_end}\n`;
     md += `- **Window Token**: \`${window_token}\`\n`;

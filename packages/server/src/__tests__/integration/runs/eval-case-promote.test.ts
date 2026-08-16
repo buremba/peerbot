@@ -1,5 +1,5 @@
 /**
- * Promoting a Behavior run into a reusable eval case, and replaying it.
+ * Promoting an Automation run into a reusable eval case, and replaying it.
  *
  * The load-bearing claims here are that a case is a POINTER (not a copy of the
  * dispatch payload, which would be free to drift from the run it replays), that
@@ -21,18 +21,18 @@ import {
 	setEvalCaseJudgeModel,
 } from "../../../runs/eval-cases";
 import { EVAL_CASE_ENTITY_TYPE_SLUG } from "../../../tools/constants";
-import { BEHAVIOR_EVAL_RUN_TYPE } from "../../../runs/run-types";
+import { AUTOMATION_EVAL_RUN_TYPE } from "../../../runs/run-types";
 
 const sql = getTestDb();
 
 let organizationId: string;
-let behaviorId: number;
+let automationId: number;
 let sourceRunId: number;
 /** A run the eval lanes could never claim — device-pinned. */
 let devicePinnedRunId: number;
 
 const payload = {
-	watcher_id: 0,
+	automation_id: 0,
 	agent_id: "11111111-2222-3333-4444-555555555555",
 	window_start: "2026-08-01T00:00:00.000Z",
 	window_end: "2026-08-01T01:00:00.000Z",
@@ -40,16 +40,16 @@ const payload = {
 	version_id: 42,
 };
 
-async function insertBehaviorRun(
+async function insertAutomationRun(
 	extraPayload: Record<string, unknown>,
 ): Promise<number> {
 	const [run] = await sql<{ id: number }[]>`
     INSERT INTO runs (
-      organization_id, run_type, watcher_id, approval_status, status,
+      organization_id, run_type, automation_id, approval_status, status,
       approved_input, completed_at, created_at
     ) VALUES (
-      ${organizationId}, 'behavior', ${behaviorId}, 'auto', 'completed',
-      ${sql.json({ ...payload, watcher_id: behaviorId, ...extraPayload })},
+      ${organizationId}, 'automation', ${automationId}, 'auto', 'completed',
+      ${sql.json({ ...payload, automation_id: automationId, ...extraPayload })},
       current_timestamp, current_timestamp
     )
     RETURNING id
@@ -58,8 +58,8 @@ async function insertBehaviorRun(
 }
 
 beforeAll(async () => {
-	// See eval-run-capture.test.ts: Behavior ids come from a MAX(id)+1 helper,
-	// so a Behavior created by an earlier file leaves the sequence behind.
+	// See eval-run-capture.test.ts: Automation ids come from a MAX(id)+1 helper,
+	// so an Automation created by an earlier file leaves the sequence behind.
 	await cleanupTestDatabase();
 
 	const org = await createTestOrganization();
@@ -70,21 +70,21 @@ beforeAll(async () => {
 	// promoted at all.
 	await addUserToOrganization(creator.id, organizationId, "owner");
 
-	const [behavior] = (await sql`
+	const [automation] = (await sql`
     WITH next_id AS (
-      SELECT nextval('watchers_id_seq')::integer AS id
+      SELECT nextval('automations_id_seq')::integer AS id
     )
-    INSERT INTO watchers (
-      id, watcher_group_id, organization_id, created_by, name, slug, schedule, status
+    INSERT INTO automations (
+      id, automation_group_id, organization_id, created_by, name, slug, schedule, status
     )
     SELECT id, id, ${organizationId}, ${creator.id}, 'Eval Case Source', 'eval-case-src', '0 * * * *', 'active'
     FROM next_id
     RETURNING id
   `) as unknown as Array<{ id: number }>;
-	behaviorId = Number(behavior.id);
+	automationId = Number(automation.id);
 
-	sourceRunId = await insertBehaviorRun({});
-	devicePinnedRunId = await insertBehaviorRun({
+	sourceRunId = await insertAutomationRun({});
+	devicePinnedRunId = await insertAutomationRun({
 		device_worker_id: "device-abc",
 	});
 });
@@ -101,7 +101,7 @@ describe("promoteEvalCase", () => {
 		if (!result.ok) return;
 		expect(result.created).toBe(true);
 		expect(result.evalCase.sourceRunId).toBe(sourceRunId);
-		expect(result.evalCase.behaviorId).toBe(behaviorId);
+		expect(result.evalCase.automationId).toBe(automationId);
 
 		const [entity] = (await sql`
       SELECT e.metadata, et.slug AS type_slug
@@ -115,7 +115,7 @@ describe("promoteEvalCase", () => {
 
 		expect(entity.type_slug).toBe(EVAL_CASE_ENTITY_TYPE_SLUG);
 		expect(entity.metadata.source_run_id).toBe(sourceRunId);
-		expect(entity.metadata.behavior_id).toBe(behaviorId);
+		expect(entity.metadata.automation_id).toBe(automationId);
 		expect(entity.metadata.case_key).toBe("case-1");
 		expect(entity.metadata.expectation).toBe("names the duplicate groups");
 		expect(entity.metadata.status).toBe("active");
@@ -409,11 +409,11 @@ describe("replayEvalCase", () => {
 			approved_input: Record<string, unknown>;
 		}>;
 
-		expect(row.run_type).toBe(BEHAVIOR_EVAL_RUN_TYPE);
+		expect(row.run_type).toBe(AUTOMATION_EVAL_RUN_TYPE);
 		expect(row.status).toBe("pending");
 		// The case key — not the entity id — scopes replay idempotency.
 		expect(row.idempotency_key).toBe(
-			`behavior_eval:${sourceRunId}:replayable`,
+			`automation_eval:${sourceRunId}:replayable`,
 		);
 		// Resolved from the SOURCE run at replay time, verbatim.
 		expect(row.approved_input.window_start).toBe(payload.window_start);

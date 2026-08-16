@@ -2,7 +2,7 @@
  * Shared helpers for the worker API.
  *
  * `authorizeRunForWorker` — re-used by heartbeat, stream, complete,
- * complete-behavior, complete-action, and complete-auth to verify the caller
+ * complete-automation, complete-action, and complete-auth to verify the caller
  * owns the run it's acting on.
  *
  * `normalizeAdvertisedCapabilities` — sanitises the raw capabilities map the
@@ -47,8 +47,8 @@ export async function authorizeRunForWorker(
   expectedWorkerId?: string,
   opts?: {
     /**
-     * Accept runs already in a terminal state. Used by the device watcher
-     * EXIT REPORT (`/runs/:id/complete-behavior`): the CLI agent completes
+     * Accept runs already in a terminal state. Used by the device automation
+     * EXIT REPORT (`/runs/:id/complete-automation`): the CLI agent completes
      * the run itself via MCP `complete_window` before the subprocess exits,
      * so by the time the dispatcher reports the exit the run is normally
      * `completed` — that's the happy path, not a conflict. Ownership
@@ -66,11 +66,11 @@ export async function authorizeRunForWorker(
   const rows = (await sql`
     SELECT r.status, r.claimed_by, r.organization_id,
            dw.user_id AS device_owner,
-           wdw.user_id AS watcher_device_owner
+           wdw.user_id AS automation_device_owner
     FROM runs r
     LEFT JOIN connections con ON con.id = r.connection_id
     LEFT JOIN device_workers dw ON dw.id = con.device_worker_id
-    LEFT JOIN watchers w ON w.id = r.watcher_id
+    LEFT JOIN automations w ON w.id = r.automation_id
     LEFT JOIN device_workers wdw ON wdw.id = w.device_worker_id
     WHERE r.id = ${runId}
     LIMIT 1
@@ -79,13 +79,13 @@ export async function authorizeRunForWorker(
     claimed_by: string | null;
     organization_id: string;
     device_owner: string | null;
-    watcher_device_owner: string | null;
+    automation_device_owner: string | null;
   }>;
   if (rows.length === 0) {
     return c.json({ error: 'Run not found' }, 404);
   }
   const run = rows[0];
-  // Watcher runs pinned to a device the worker owns are in scope too (the pin
+  // Automation runs pinned to a device the worker owns are in scope too (the pin
   // is the owner's consent), so a device can FINISH a cross-org run it claimed —
   // not just claim it. Without this the poll widening would 403 on completion.
   const inScope = runInWorkerScope(run, { workerUserId, orgIds });

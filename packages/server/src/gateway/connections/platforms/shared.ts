@@ -260,7 +260,7 @@ export function createChatSdkFileHandler(
  * Legacy routing-info fallback: before the capability registry existed,
  * `extractPlatformRoutingInfo` fell through to the WhatsApp body shape
  * (`body.whatsapp.chat`) for every platform that wasn't Slack or Telegram.
- * Discord/Teams/GChat keep that exact behavior by pointing their descriptors
+ * Discord/Teams/GChat preserve those exact semantics by pointing their descriptors
  * here alongside WhatsApp itself.
  */
 export function extractWhatsAppStyleRoutingInfo(

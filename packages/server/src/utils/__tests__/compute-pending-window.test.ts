@@ -1,5 +1,5 @@
 /**
- * Window rollover for scheduled Behaviors.
+ * Window rollover for scheduled Automations.
  *
  * `canvas_windows` is a VIEW over `canvas_state` event chains: one row per chain
  * ROOT, content from the chain HEAD. The ROOT carries the period. So "did the
@@ -20,36 +20,40 @@
  *
  *  1. The `windowEnd > currentPeriodEnd` clamp collapses a misaligned window to
  *     ZERO duration (`23:59:59.999` → `00:00:00`). Five such windows exist on
- *     prod and all five have `content_analyzed = 0` — a Behavior that analyzed
+ *     prod and all five have `content_analyzed = 0` — an Automation that analyzed
  *     nothing and reported success.
  *  2. The misaligned start never matches a fresh period, so no new root is
  *     created, so `lastWindow` never advances, so the scheduler re-dispatches
- *     the same window forever. Behavior 71 ran hourly for a full day writing
+ *     the same window forever. Automation 71 ran hourly for a full day writing
  *     into the previous day's window (dispatched `2026-07-30T23:59:59.999Z`,
  *     wrote `2026-07-30T00:00:00.000Z`).
  *
  * The fix must ALSO not run away in the other direction: granularity has no
- * 'hourly' (`BEHAVIOR_TIME_GRANULARITIES` is daily/weekly/monthly/quarterly),
+ * 'hourly' (`AUTOMATION_TIME_GRANULARITIES` is daily/weekly/monthly/quarterly),
  * so an hourly cron necessarily gets a DAILY window and must re-dispatch the
  * SAME period all day. "Always advance one period" would mint tomorrow's window
  * at 00:01 and march into the future.
  *
  * Fixtures here are RELATIVE to the clock, not absolute dates. `computePendingWindow`
- * now floors the window at `now - 1 period` so a lagging Behavior catches up in one
+ * now floors the window at `now - 1 period` so a lagging Automation catches up in one
  * run, which means a fixture pinned to a fixed past date is always floored — and a
  * test about boundary conventions would silently become a test about the floor,
  * passing for the wrong reason. Seed a chain that is genuinely current and the
  * assertions stay about what they were written for. The floor itself is pinned
- * separately, below and in `__tests__/unit/behavior-window-lag.test.ts`.
+ * separately, below and in `__tests__/unit/automation-window-lag.test.ts`.
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { computePendingWindow, nextBehaviorWindowStart } from '../window-utils';
+import { computePendingWindow, nextAutomationWindowStart } from '../window-utils';
 import { cleanupTestDatabase, getTestDb } from '../../__tests__/setup/test-db';
-import { createTestOrganization, createTestUser } from '../../__tests__/setup/test-fixtures';
+import {
+  createTestAgent,
+  createTestOrganization,
+  createTestUser,
+} from '../../__tests__/setup/test-fixtures';
 
 /**
- * Insert a canvas ROOT event for `watcherId` covering [start, end).
+ * Insert a canvas ROOT event for `automationId` covering [start, end).
  *
  * Written as a raw `canvas_state` event because that is what a window IS — the
  * view derives from it. `end` is caller-supplied precisely so both boundary
@@ -58,22 +62,36 @@ import { createTestOrganization, createTestUser } from '../../__tests__/setup/te
 async function seedWindow(opts: {
   orgId: string;
   userId: string;
-  watcherId: number;
+  automationId: number;
   granularity: string;
   start: string;
   end: string;
 }): Promise<void> {
   const sql = getTestDb();
+  const agent = await createTestAgent({
+    organizationId: opts.orgId,
+    ownerUserId: opts.userId,
+  });
+  await sql`
+    INSERT INTO automations (
+      id, name, slug, created_by, organization_id, agent_id, automation_group_id
+    ) VALUES (
+      ${opts.automationId}, ${`Window ${opts.automationId}`},
+      ${`window-${opts.automationId}`}, ${opts.userId}, ${opts.orgId},
+      ${agent.agentId}, ${opts.automationId}
+    )
+    ON CONFLICT (id) DO NOTHING
+  `;
   await sql`
     INSERT INTO events (
       organization_id, origin_id, semantic_type, payload_type, payload_data,
-      occurred_at, created_by, metadata
+      occurred_at, created_by, automation_id, metadata
     ) VALUES (
-      ${opts.orgId}, ${`canvas_${opts.watcherId}_${opts.start}`}, 'canvas_state',
+      ${opts.orgId}, ${`canvas_${opts.automationId}_${opts.start}`}, 'canvas_state',
       'json_template', ${sql.json({ items: [] } as never)},
-      ${opts.end}, ${opts.userId},
+      ${opts.end}, ${opts.userId}, ${opts.automationId},
       ${sql.json({
-        watcher_id: opts.watcherId,
+        automation_id: opts.automationId,
         granularity: opts.granularity,
         window_start: opts.start,
         window_end: opts.end,
@@ -113,16 +131,16 @@ describe('computePendingWindow', () => {
     await cleanupTestDatabase();
   });
 
-  // The behaviour-71 failure, reduced. A daily window closed with an INCLUSIVE
+  // The Automation 71 failure, reduced. A daily window closed with an INCLUSIVE
   // end must still roll the period forward to the next midnight.
   it('rolls forward to the next aligned period after an inclusive-end window', async () => {
     const { orgId, userId } = await seedOrg();
-    const watcherId = 9001;
+    const automationId = 9001;
     const previous = dayStart(2);
     await seedWindow({
       orgId,
       userId,
-      watcherId,
+      automationId,
       granularity: 'daily',
       start: previous.toISOString(),
       end: new Date(previous.getTime() + DAY_MS - 1).toISOString(), // inclusive convention
@@ -130,7 +148,7 @@ describe('computePendingWindow', () => {
 
     const { windowStart, windowEnd } = await computePendingWindow(
       getTestDb(),
-      watcherId,
+      automationId,
       'daily'
     );
 
@@ -141,12 +159,12 @@ describe('computePendingWindow', () => {
 
   it('rolls forward identically when the previous end was exclusive', async () => {
     const { orgId, userId } = await seedOrg();
-    const watcherId = 9002;
+    const automationId = 9002;
     const previous = dayStart(2);
     await seedWindow({
       orgId,
       userId,
-      watcherId,
+      automationId,
       granularity: 'daily',
       start: previous.toISOString(),
       end: dayStart(1).toISOString(), // exclusive convention
@@ -154,7 +172,7 @@ describe('computePendingWindow', () => {
 
     const { windowStart, windowEnd } = await computePendingWindow(
       getTestDb(),
-      watcherId,
+      automationId,
       'daily'
     );
 
@@ -168,12 +186,12 @@ describe('computePendingWindow', () => {
   // it unaligned would carry the `23:59:59.999` into the next window forever.
   it('recovers from an already-misaligned stored window', async () => {
     const { orgId, userId } = await seedOrg();
-    const watcherId = 9003;
+    const automationId = 9003;
     const corruptStart = new Date(dayStart(2).getTime() + DAY_MS - 1);
     await seedWindow({
       orgId,
       userId,
-      watcherId,
+      automationId,
       granularity: 'daily',
       start: corruptStart.toISOString(),
       end: new Date(dayStart(1).getTime() + DAY_MS - 1).toISOString(),
@@ -181,7 +199,7 @@ describe('computePendingWindow', () => {
 
     const { windowStart, windowEnd } = await computePendingWindow(
       getTestDb(),
-      watcherId,
+      automationId,
       'daily'
     );
 
@@ -203,7 +221,7 @@ describe('computePendingWindow', () => {
       await seedWindow({
         orgId,
         userId,
-        watcherId: c.id,
+        automationId: c.id,
         granularity: 'daily',
         start: c.start,
         end: c.end,
@@ -217,7 +235,7 @@ describe('computePendingWindow', () => {
         'daily'
       );
       const duration = windowEnd.getTime() - windowStart.getTime();
-      expect(duration, `watcher ${c.id} window duration`).toBe(DAY_MS);
+      expect(duration, `automation ${c.id} window duration`).toBe(DAY_MS);
       expect(windowStart.toISOString().endsWith('T00:00:00.000Z')).toBe(true);
     }
   });
@@ -225,10 +243,10 @@ describe('computePendingWindow', () => {
   // The other direction. An hourly cron gets a DAILY window (there is no hourly
   // granularity), so every run inside the same day must resolve to the SAME
   // period — otherwise `replace_existing` can't refresh today's digest and the
-  // Behavior mints future windows instead.
+  // Automation mints future windows instead.
   it('re-dispatches the CURRENT period rather than minting a future one', async () => {
     const { orgId, userId } = await seedOrg();
-    const watcherId = 9004;
+    const automationId = 9004;
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
     const todayIso = today.toISOString();
@@ -238,7 +256,7 @@ describe('computePendingWindow', () => {
     await seedWindow({
       orgId,
       userId,
-      watcherId,
+      automationId,
       granularity: 'daily',
       start: todayIso,
       end: tomorrowIso,
@@ -246,7 +264,7 @@ describe('computePendingWindow', () => {
 
     const { windowStart, windowEnd } = await computePendingWindow(
       getTestDb(),
-      watcherId,
+      automationId,
       'daily'
     );
 
@@ -256,16 +274,16 @@ describe('computePendingWindow', () => {
   });
 
   // The contract this branch changed. Walking forward one period per run never
-  // closed a gap — the clock advances a period per period too — so prod Behavior 2
-  // sat 50 days behind for weeks. A Behavior months behind is now dispatched the
+  // closed a gap — the clock advances a period per period too — so prod Automation 2
+  // sat 50 days behind for weeks. An Automation months behind is now dispatched the
   // period that just closed, and catches up in a single run.
   it('jumps to the current period when far behind, not one period per run', async () => {
     const { orgId, userId } = await seedOrg();
-    const watcherId = 9005;
+    const automationId = 9005;
     await seedWindow({
       orgId,
       userId,
-      watcherId,
+      automationId,
       granularity: 'daily',
       start: '2026-01-10T00:00:00.000Z',
       end: '2026-01-11T00:00:00.000Z',
@@ -273,7 +291,7 @@ describe('computePendingWindow', () => {
 
     const { windowStart, windowEnd } = await computePendingWindow(
       getTestDb(),
-      watcherId,
+      automationId,
       'daily'
     );
 
@@ -284,12 +302,12 @@ describe('computePendingWindow', () => {
 
   it('aligns weekly windows to the week boundary', async () => {
     const { orgId, userId } = await seedOrg();
-    const watcherId = 9006;
+    const automationId = 9006;
     const previousWeek = weekStart(2);
     await seedWindow({
       orgId,
       userId,
-      watcherId,
+      automationId,
       granularity: 'weekly',
       start: previousWeek.toISOString(), // a Monday
       end: new Date(previousWeek.getTime() + 7 * DAY_MS - 1).toISOString(), // inclusive, as stored on prod
@@ -297,7 +315,7 @@ describe('computePendingWindow', () => {
 
     const { windowStart, windowEnd } = await computePendingWindow(
       getTestDb(),
-      watcherId,
+      automationId,
       'weekly'
     );
 
@@ -306,7 +324,7 @@ describe('computePendingWindow', () => {
     expect(windowStart.getUTCDay()).toBe(1); // Monday
   });
 
-  it('starts from an aligned period when the Behavior has no windows yet', async () => {
+  it('starts from an aligned period when the Automation has no windows yet', async () => {
     await seedOrg();
 
     const { windowStart, windowEnd } = await computePendingWindow(
@@ -323,19 +341,19 @@ describe('computePendingWindow', () => {
 /**
  * The rule itself, at a fixed instant and with no database.
  *
- * `get_behavior`'s `next_window` PREVIEWS what `computePendingWindow`
+ * `get_automation`'s `next_window` PREVIEWS what `computePendingWindow`
  * dispatches. While those were two implementations they drifted — the preview
  * chained off `window_end` and the dispatcher off `window_start`, a full period
  * apart on a legacy row with an inclusive end, so the agent was shown one
  * window and the run was handed another. They now share this function, and
  * these cases pin the shared contract rather than either caller.
  */
-describe('nextBehaviorWindowStart', () => {
+describe('nextAutomationWindowStart', () => {
   const NOW = new Date('2026-07-31T17:26:00.000Z');
 
   it('advances one aligned period from the previous start', () => {
     expect(
-      nextBehaviorWindowStart(new Date('2026-07-30T00:00:00.000Z'), NOW, 'daily').toISOString()
+      nextAutomationWindowStart(new Date('2026-07-30T00:00:00.000Z'), NOW, 'daily').toISOString()
     ).toBe('2026-07-31T00:00:00.000Z');
   });
 
@@ -345,7 +363,7 @@ describe('nextBehaviorWindowStart', () => {
     ['inclusive-end-derived start', '2026-07-30T23:59:59.999Z'],
     ['mid-period start', '2026-07-30T11:17:03.221Z'],
   ])('normalises a %s to the same next period', (_label, stored) => {
-    expect(nextBehaviorWindowStart(new Date(stored), NOW, 'daily').toISOString()).toBe(
+    expect(nextAutomationWindowStart(new Date(stored), NOW, 'daily').toISOString()).toBe(
       '2026-07-31T00:00:00.000Z'
     );
   });
@@ -353,28 +371,28 @@ describe('nextBehaviorWindowStart', () => {
   it('caps at the current period instead of minting a future one', () => {
     // Today is already done — a sub-daily cron must get today again, not tomorrow.
     expect(
-      nextBehaviorWindowStart(new Date('2026-07-31T00:00:00.000Z'), NOW, 'daily').toISOString()
+      nextAutomationWindowStart(new Date('2026-07-31T00:00:00.000Z'), NOW, 'daily').toISOString()
     ).toBe('2026-07-31T00:00:00.000Z');
   });
 
   // The floor. Chaining alone returns 2026-01-11 here and needs one successful run
   // per missed day to reach the present, so a gap freezes instead of closing —
-  // prod Behavior 2 sat 50 days behind on exactly this. Never older than one period.
+  // prod Automation 2 sat 50 days behind on exactly this. Never older than one period.
   it('jumps to the previous period when far behind, not one period at a time', () => {
     expect(
-      nextBehaviorWindowStart(new Date('2026-01-10T00:00:00.000Z'), NOW, 'daily').toISOString()
+      nextAutomationWindowStart(new Date('2026-01-10T00:00:00.000Z'), NOW, 'daily').toISOString()
     ).toBe('2026-07-30T00:00:00.000Z');
   });
 
   it('starts one aligned period back when there is no previous window', () => {
-    expect(nextBehaviorWindowStart(null, NOW, 'daily').toISOString()).toBe(
+    expect(nextAutomationWindowStart(null, NOW, 'daily').toISOString()).toBe(
       '2026-07-30T00:00:00.000Z'
     );
   });
 
-  // Chaining a weekly Behavior lands on a Monday...
+  // Chaining a weekly Automation lands on a Monday...
   it('aligns weekly to Monday', () => {
-    const out = nextBehaviorWindowStart(new Date('2026-07-19T23:59:59.999Z'), NOW, 'weekly');
+    const out = nextAutomationWindowStart(new Date('2026-07-19T23:59:59.999Z'), NOW, 'weekly');
     expect(out.getUTCDay()).toBe(1);
     expect(out.toISOString()).toBe('2026-07-20T00:00:00.000Z');
   });
@@ -382,7 +400,7 @@ describe('nextBehaviorWindowStart', () => {
   // ...and so does the floor, which is a separate code path and could have landed
   // mid-week by subtracting seven days from an unaligned instant.
   it('floors weekly to a Monday too', () => {
-    const out = nextBehaviorWindowStart(new Date('2026-06-28T23:59:59.999Z'), NOW, 'weekly');
+    const out = nextAutomationWindowStart(new Date('2026-06-28T23:59:59.999Z'), NOW, 'weekly');
     expect(out.getUTCDay()).toBe(1);
     expect(out.toISOString()).toBe('2026-07-20T00:00:00.000Z');
   });

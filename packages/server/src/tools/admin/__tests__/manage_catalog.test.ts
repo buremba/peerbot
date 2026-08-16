@@ -47,7 +47,7 @@ describe("manage_catalog list_installed", () => {
 			{
 				action: "list_installed",
 				agent_id: "agent-1",
-				kinds: ["behaviors"],
+				kinds: ["automations"],
 			},
 			{} as never,
 			ctx
@@ -55,7 +55,7 @@ describe("manage_catalog list_installed", () => {
 
 		expect(installed.listOrgInstalled).toHaveBeenCalledWith(
 			"org-1",
-			["behaviors"],
+			["automations"],
 			expect.objectContaining({
 				organizationId: "org-1",
 				userId: "user-1",

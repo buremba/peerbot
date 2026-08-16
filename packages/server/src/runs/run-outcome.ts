@@ -7,7 +7,7 @@
  * genuine agent protocol violations shared the `failed` bucket.
  *
  * This is THE classifier, and its stamping scope is deliberate:
- *  - every Behavior-run terminal-status writer stamps
+ *  - every Automation-run terminal-status writer stamps
  *    `outcome = classifyRunOutcome(...)` in the same UPDATE;
  *  - every `status = 'timeout'` writer and every poll.ts dispatch-failure
  *    writer stamps regardless of run_type — those classifications are
@@ -15,8 +15,8 @@
  *    infra for any run type);
  *  - connector/internal-queue/builder completed+failed writers do NOT stamp:
  *    agent_error/scoreable are agent-run concepts, and the message patterns
- *    below are tuned on Behavior-run failures. Eval reads filter
- *    `run_type = 'behavior'`.
+ *    below are tuned on Automation-run failures. Eval reads filter
+ *    `run_type = 'automation'`.
  * The historical backfill (scripts/backfill-run-outcomes.ts) mirrors exactly
  * that scope by calling this exact function — never a SQL re-encoding of it.
  *
@@ -42,9 +42,9 @@ const KNOWN_AGENT_ERROR_CODES: ReadonlySet<string> = new Set(
 );
 
 /**
- * The agent ran its turn and violated the Behavior protocol. Matches the
+ * The agent ran its turn and violated the Automation protocol. Matches the
  * cloud finalize miss (run-completion.ts describeFinalizeMiss) and the device
- * variant (run-lifecycle.ts completeBehaviorRun) — both phrase the miss as
+ * variant (run-lifecycle.ts completeAutomationRun) — both phrase the miss as
  * "without calling".
  */
 const AGENT_PROTOCOL_PATTERNS: readonly RegExp[] = [

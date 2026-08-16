@@ -2,7 +2,7 @@
  * Scoped bulk approve/reject over queued connector-operation approvals.
  *
  * `approve_batch` / `reject_batch` already existed but were reachable ONLY via
- * `window_id` — i.e. only for the Behavior-proposal lane (`run_type='internal'`).
+ * `window_id` — i.e. only for the Automation-proposal lane (`run_type='internal'`).
  * The lane that actually accumulates undecided rows, queued connector operations
  * (`run_type='action'`), had no bulk action at all: an operator had to decide
  * them one at a time or leave them pending forever.
@@ -92,7 +92,7 @@ describe("manage_operations batch scope (connector-approval lane)", () => {
 		connectorKey: string;
 		actionKey: string;
 		ageDays?: number;
-		behaviorId?: number;
+		automationId?: number;
 		connectionId?: number;
 	}): Promise<number> {
 		const sql = getTestDb();
@@ -105,8 +105,8 @@ describe("manage_operations batch scope (connector-approval lane)", () => {
         ${orgId}, 'action', 'pending', 'pending',
         ${opts.connectionId ?? null},
         ${opts.connectorKey}, ${opts.actionKey},
-        ${opts.behaviorId === undefined ? null : "watcher"},
-        ${opts.behaviorId === undefined ? null : `watcher:${opts.behaviorId}`},
+        ${opts.automationId === undefined ? null : "automation"},
+        ${opts.automationId === undefined ? null : `automation:${opts.automationId}`},
         NOW() - (${opts.ageDays ?? 0}::int * interval '1 day')
       )
       RETURNING id
@@ -227,22 +227,22 @@ describe("manage_operations batch scope (connector-approval lane)", () => {
 		expect(await approvalStatusOf(sibling)).toBe("pending");
 	});
 
-	it("behavior_id matches the trusted watcher principal stored on action runs", async () => {
+	it("automation_id matches the trusted automation principal stored on action runs", async () => {
 		const target = await seedPendingAction({
 			connectorKey: "github",
 			actionKey: "create_issue",
-			behaviorId: 41,
+			automationId: 41,
 		});
 		const sibling = await seedPendingAction({
 			connectorKey: "github",
 			actionKey: "create_issue",
-			behaviorId: 42,
+			automationId: 42,
 		});
 
 		const result = (await manageOperations(
 			{
 				action: "reject_batch",
-				scope: { behavior_id: 41 },
+				scope: { automation_id: 41 },
 			},
 			{} as Env,
 			ownerCtx,

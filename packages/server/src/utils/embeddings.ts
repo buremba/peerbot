@@ -33,7 +33,7 @@ export function getConfiguredEmbeddingModel(): string {
 /**
  * Resolve the embedding model an operation should read/write, given an optional
  * caller-supplied override. Falls back to the deployment's configured model, so
- * every existing call site keeps its current behaviour by passing nothing.
+ * every existing call site keeps its current semantics by passing nothing.
  *
  * A non-default model is only meaningful where vectors under it actually exist
  * — `event_embeddings` is keyed `(event_id, embedding_model, chunk_index)`, so
@@ -138,7 +138,7 @@ export async function validateEmbeddingsService(env: Env): Promise<void> {
     }
     throw new Error(
       `Embeddings service unavailable at ${url}. ` +
-        'Cannot save watcher window without generating embeddings. ' +
+        'Cannot save automation window without generating embeddings. ' +
         'Start the embeddings service or provide embeddings in extracted_data. ' +
         `Original error: ${error instanceof Error ? error.message : 'Unknown'}`
     );

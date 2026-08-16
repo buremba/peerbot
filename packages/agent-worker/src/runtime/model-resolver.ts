@@ -287,11 +287,11 @@ export function resolveModelRef(
   if (!modelRef) {
     throw new Error(
       "No model resolved for this run. Set the agent's default model, a " +
-        "per-behavior model, or an org default inference provider."
+        "per-automation model, or an org default inference provider."
     );
   }
 
-  // An explicit "<provider>/<model>" ref selects its own provider — a Behavior
+  // An explicit "<provider>/<model>" ref selects its own provider — an Automation
   // pinned to a provider the base agent does not use, or simply an agent pinned
   // to a provider the deployment does not publish as its default. `defaultProvider`
   // is a deployment-level fact and the ref is a run-level one, so the ref wins;

@@ -51,18 +51,18 @@ describe("collapseAdjacentActivityCards", () => {
 });
 
 describe("runHref", () => {
-	it("links watcher runs to the canonical Behavior route", () => {
+	it("links automation runs to the canonical Automation route", () => {
 		expect(
 			runHref("acme", {
 				id: 42,
-				run_type: "behavior",
-				watcher_id: 7,
+				run_type: "automation",
+				automation_id: 7,
 				connection_id: null,
 				connector_key: null,
 				approval_status: null,
-				agent_id: "agent-1",
+				agent_id: null,
 			}),
-		).toBe("/acme/agents/agent-1/behaviors/7");
+		).toBe("/acme/automations/7");
 	});
 });
 

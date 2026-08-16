@@ -35,7 +35,7 @@ let savedEncryptionKey: string | undefined;
 
 /**
  * E2E of the two worker model-delivery channels against the REAL DB, proving
- * the layered fallback (behavior → agent → org default) reaches a worker.
+ * the layered fallback (automation → agent → org default) reaches a worker.
  *
  * - Channel 1 (`agentOptions.model` → worker rawOptions.model): built at
  *   enqueue by `resolveAgentOptions`, which calls the real `getOrgDefaultModel`
@@ -174,7 +174,7 @@ describe("worker model fallback (real DB, both channels)", () => {
     expect(opts.model).toBe("claude/claude-sonnet-4-6");
   });
 
-  test("Channel 1: behavior override wins over both agent and org", async () => {
+  test("Channel 1: automation override wins over both agent and org", async () => {
     const store = {
       getSettings: async () => ({ models: ["claude/claude-sonnet-4-6"] }),
     } as any;

@@ -6,7 +6,7 @@
 
 ## Goal
 
-Answer: for customer-issue workflows, can Lobu match **Claude/Atlassian Rovo MCP–quality live Q&A**, and what **extra** do we need for Lobu-only Behaviors/entities — without Glean-scale crawling?
+Answer: for customer-issue workflows, can Lobu match **Claude/Atlassian Rovo MCP–quality live Q&A**, and what **extra** do we need for Lobu-only Automations/entities — without Glean-scale crawling?
 
 ## Competitor models (measured from public docs + our authz RFC)
 
@@ -14,19 +14,19 @@ Answer: for customer-issue workflows, can Lobu match **Claude/Atlassian Rovo MCP
 
 Source: [Atlassian Rovo MCP](https://github.com/atlassian/atlassian-mcp-server), [Supported tools](https://support.atlassian.com/atlassian-rovo-mcp-server/docs/supported-tools/).
 
-| Layer | Behavior |
+| Layer | Automation |
 | --- | --- |
 | Auth | OAuth 2.1 or API token **as the human user** |
 | Reads | Live tools: `searchJiraIssuesUsingJql`, `getJiraIssue`, projects, transitions meta |
 | Writes | `createJiraIssue`, `editJiraIssue`, `transitionJiraIssue`, `addCommentToJiraIssue`, worklogs |
 | Search | Classic JQL + beta `searchAtlassian` (Rovo NL) |
 | Corpus | No Lobu-side copy — source of truth stays Atlassian |
-| Automation | Session / client-bound — no multi-user org Behavior plane |
+| Automation | Session / client-bound — no multi-user org Automation plane |
 | Permissions | Source-enforced (user token) |
 
 ### B) Index + ACL — Glean / Copilot Graph / Rovo Search
 
-| Layer | Behavior |
+| Layer | Automation |
 | --- | --- |
 | Auth | Admin crawl + SSO identity (Glean/Copilot); native site ACLs (Rovo Search) |
 | Reads | Index (BM25 + KNN / semantic), not pure live JQL every time |
@@ -36,14 +36,14 @@ Source: [Atlassian Rovo MCP](https://github.com/atlassian/atlassian-mcp-server),
 
 ### C) Lobu (this branch)
 
-| Layer | Behavior |
+| Layer | Automation |
 | --- | --- |
 | Auth | Connection OAuth (`read:jira-work`, user, webhook) — **connection principal**, not per-chat-user by default |
 | Reads | Virtual feed: `query()` / `search()` → `/search/jql` (implemented in this branch) |
 | Writes | **None** (no `actions`, no `write:` scopes) |
 | Corpus | Optional collected feed; virtual default = no issue copy |
 | Signals | App-webhook **raw** land for Jira/Linear (not GitHub structured store/trigger) |
-| Automation | Behaviors on events + entities — Lobu differentiator **if** signals are usable |
+| Automation | Automations on events + entities — Lobu differentiator **if** signals are usable |
 
 ## Scenario matrix (S1–S10)
 
@@ -55,7 +55,7 @@ Source: [Atlassian Rovo MCP](https://github.com/atlassian/atlassian-mcp-server),
 | S4 | Comment-heavy thread summarize | **Yes** (`getJiraIssue`) | Yes | **Gap** — description only in row | Thin / raw webhook | Connector `ISSUE_FIELDS` excludes comments |
 | S5 | Custom field “Customer tier” | **Yes** | If indexed | **Gap** until `ISSUE_FIELDS` extended | Same | No `customfield_*` in request |
 | S6 | Status change while watching | No (no org push) | Index refresh | **Raw webhook only** | Sync + raw | Gateway: Jira falls through to raw store (`app-webhooks.ts`) |
-| S7 | Offline Behavior: Escalated → Slack + entity | **No** | Platform agents | **Possible** if webhook → Behavior + entity | Stronger if events match | Product design; not e2e proven |
+| S7 | Offline Automation: Escalated → Slack + entity | **No** | Platform agents | **Possible** if webhook → Automation + entity | Stronger if events match | Product design; not e2e proven |
 | S8 | 20 concurrent live reads | Per-user API limits | Index absorbs | **Every read hits Jira** | Poll budget | Architecture; not load-tested |
 | S9 | Transition / comment with approval | **Yes** | Varies | **No** | **No** | Connector has no actions or write scopes |
 | S10 | Answer during Jira outage | No | Stale index | **No** | Stale events | By design of virtual |
@@ -66,7 +66,7 @@ Source: [Atlassian Rovo MCP](https://github.com/atlassian/atlassian-mcp-server),
 | --- | --- | --- |
 | **Parity with Claude on reads** | S1 | Ship virtual as default for “current state” Q&A |
 | **Claude still wins** | S2, S4, S5, S9 | Need user principal, richer get-issue, write actions |
-| **Lobu can win** | S7 | Only if webhook → structured Behavior path is built |
+| **Lobu can win** | S7 | Only if webhook → structured Automation path is built |
 | **Hybrid required** | S3, S6, S10 | Narrow collected and/or entities for memory + push |
 
 ## Connector auth / tenant survey
@@ -122,8 +122,8 @@ From `app-webhooks.ts`:
 Implications:
 
 1. Declaring `feeds.issues.webhook.mode = 'store'` does **not** run GitHub’s `storeGithubWebhookEvent` path.
-2. Behaviors cannot reliably key on `origin_id = jira_issue_<id>` from webhooks today (body-hash origin).
-3. Virtual feed never polls, so **trigger-mode** would be useless even if wired — Jira needs a **structured store** lander or Behavior signals from raw payload parse.
+2. Automations cannot reliably key on `origin_id = jira_issue_<id>` from webhooks today (body-hash origin).
+3. Virtual feed never polls, so **trigger-mode** would be useless even if wired — Jira needs a **structured store** lander or Automation signals from raw payload parse.
 
 ### Writes — **missing vs Rovo MCP**
 
@@ -142,14 +142,14 @@ Implications:
 ```text
 READS     → virtual issues feed (JQL) + prefer per-user token for multi-tenant
 GET ONE   → future action/query getIssue (full fields + comments) on demand
-SIGNALS   → structured webhook lander (issue key, status, origin_id) → Behaviors
+SIGNALS   → structured webhook lander (issue key, status, origin_id) → Automations
 MEMORY    → sparse entities (escalation/customer), NOT full issue history default
 OPTIONAL  → narrow collected JQL only when semantic history is required
 WRITES    → actions + write scopes + approval + user token (Claude parity)
 AVOID     → Glean-scale full-site crawl until ACL program is paid for
 ```
 
-**Do not compete with Rovo on pure Jira chat.** Compete on cross-system graph + durable Behaviors + entities.
+**Do not compete with Rovo on pure Jira chat.** Compete on cross-system graph + durable Automations + entities.
 
 ## Runnable verification
 
@@ -186,7 +186,7 @@ These need a sandbox Atlassian site; offline verification still closed the archi
 | Claim | Confidence | Basis |
 | --- | --- | --- |
 | Virtual JQL is right default for ops reads | **High** | Code + unit tests + Rovo MCP tool map |
-| Raw webhooks insufficient for Behaviors | **High** | Gateway tests + raw store path |
+| Raw webhooks insufficient for Automations | **High** | Gateway tests + raw store path |
 | Writes are the main Claude gap | **High** | Supported-tools doc vs connector definition |
 | User principal required for safe multi-tenant | **High** | Authz RFC + product model |
 | Exact live latency / rate limits | **Low** | Not hit real cloud in this run |

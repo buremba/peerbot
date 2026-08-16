@@ -31,7 +31,7 @@ describe("migrate-up --check-pending", () => {
 
   it("fails closed when the ledger cannot be read", () => {
     writeFileSync(
-      join(dir, "20260803140000_behavior_outputs.sql"),
+      join(dir, "20260803140000_automation_outputs.sql"),
       "-- migrate:up\nSELECT 1;"
     );
 
@@ -61,7 +61,7 @@ describe("migrate-up --check-pending", () => {
 
   it("fails closed on a duplicate migration version", () => {
     writeFileSync(
-      join(dir, "20260803140000_behavior_outputs.sql"),
+      join(dir, "20260803140000_automation_outputs.sql"),
       "-- migrate:up\nSELECT 1;"
     );
     writeFileSync(

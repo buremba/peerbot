@@ -48,10 +48,10 @@ export interface ThreadSession {
   /** Process without persisting history */
   dryRun?: boolean;
   /** Internal automation intent for one-shot system sessions. */
-  intent?: { kind: "behavior_run"; runId: number; behaviorId: number };
+  intent?: { kind: "automation_run"; runId: number; automationId: number };
   /**
-   * Server-derived side-effect mode for a verified Behavior session. Set once
-   * from the run row at session creation (behavior-run-intent.ts) and never
+   * Server-derived side-effect mode for a verified Automation session. Set once
+   * from the run row at session creation (automation-run-intent.ts) and never
    * from the caller; `capture` marks an eval replay whose writes must be
    * recorded instead of performed. Carried onto the queue payload and then
    * into the signed worker token, so enforcement never re-derives it.

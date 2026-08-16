@@ -50,7 +50,7 @@ export async function setup({ provide }: GlobalSetupContext): Promise<void> {
   provide('databaseUrl', process.env.DATABASE_URL ?? null);
 
   // Deterministic 32-byte hex key for AES-256-GCM in tests. Same value the
-  // gateway's secret-store test harness uses so behavior is aligned.
+  // gateway's secret-store test harness uses so the two remain aligned.
   if (!process.env.ENCRYPTION_KEY) {
     process.env.ENCRYPTION_KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
   }

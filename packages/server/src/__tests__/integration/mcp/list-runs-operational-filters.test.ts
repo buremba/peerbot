@@ -2,7 +2,7 @@
  * operations.list_runs — operational filters + streaming-noise exclusion (#2051).
  *
  * A production MCP run showed list_runs mixing connector actions, feed syncs,
- * behavior runs, AND every chat-message transport row (complete replies and
+ * automation runs, AND every chat-message transport row (complete replies and
  * per-delta streaming fragments are each a `runs` row with
  * run_type='chat_message'). Real operation history was buried under tens of
  * thousands of streaming fragments.
@@ -111,7 +111,7 @@ describe("manage_operations list_runs — operational filters (#2051)", () => {
 			created_at: "2026-07-12T12:00:00Z",
 		});
 		await insertRun({
-			run_type: "behavior",
+			run_type: "automation",
 			created_at: "2026-07-14T12:00:00Z",
 		});
 		// Chat transport noise: complete reply + streaming fragments all land as
@@ -140,7 +140,7 @@ describe("manage_operations list_runs — operational filters (#2051)", () => {
 		// Operational lanes still present.
 		expect(types.has("action")).toBe(true);
 		expect(types.has("sync")).toBe(true);
-		expect(types.has("behavior")).toBe(true);
+		expect(types.has("automation")).toBe(true);
 	});
 
 	it("default total also excludes the transport noise", async () => {

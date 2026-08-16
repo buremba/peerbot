@@ -15,7 +15,7 @@ import type {
   DesiredRelationshipType,
 } from "./desired-state.js";
 import {
-  type BehaviorSource,
+  type AutomationSource,
   type EntityBacking,
   isRecord,
   type RelationshipRule,
@@ -48,7 +48,7 @@ export interface RemoteDeployment {
     attribution?: {
       entityTypes: unknown[];
       relationshipTypes: unknown[];
-      watchers: unknown[];
+      automations: unknown[];
     };
     /** Kind-qualified incarnation identities this config applied. */
     owned?: string[];
@@ -138,12 +138,12 @@ export interface RemoteInferenceProvider {
   createdAt: string;
 }
 
-export interface RemoteBehavior {
+export interface RemoteAutomation {
   slug: string;
   name?: string;
-  behavior_id?: string;
+  automation_id?: string;
   agent_id?: string | null;
-  triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
+  triggers?: import("@lobu/core/contracts/tools/manage-automations").AutomationTrigger[];
   device_worker_id?: string | null;
   goal_id?: number | null;
   agent_kind?: string | null;
@@ -152,12 +152,12 @@ export interface RemoteBehavior {
   notification_priority?: string | null;
   min_cooldown_seconds?: number | null;
   tags?: string[] | null;
-  sources?: BehaviorSource[] | null;
+  sources?: AutomationSource[] | null;
   // include_details=true → version-bound fields
   description?: string | null;
   prompt?: string | null;
   /**
-   * Pinned skill snapshots on the current version. NULL/absent on Behaviors
+   * Pinned skill snapshots on the current version. NULL/absent on Automations
    * created before the column existed, which the diff treats as "no skills" —
    * so the first re-apply of a config that references skills pins them.
    */
@@ -165,7 +165,7 @@ export interface RemoteBehavior {
   classifiers?: unknown[] | null;
   outputs?: Record<string, unknown> | null;
   reactions_guidance?: string | null;
-  // NB: reaction_script is not included in Behavior lists — push always (idempotent).
+  // NB: reaction_script is not included in Automation lists — push always (idempotent).
 }
 
 interface UpsertEntityTypeResult {
@@ -832,7 +832,7 @@ export class ApplyClient {
     }
     // Facets are declared-only, with an explicit clear when the diff flagged
     // them (prune removal / derived-revert / metric removal). Sending `null`
-    // unconditionally — the old behavior — wiped out-of-band values whenever
+    // unconditionally — the old semantics — wiped out-of-band values whenever
     // ANY field changed; the server clears a facet only when its key is present.
     if (eventKinds !== undefined || clearFacets?.has("eventKinds")) {
       payload.event_kinds = eventKinds ?? null;
@@ -1018,58 +1018,58 @@ export class ApplyClient {
     });
   }
 
-  // ── Behaviors ─────────────────────────────────────────────────────────────
+  // ── Automations ─────────────────────────────────────────────────────────────
 
   /**
-   * Fetch a single Behavior's full payload, including the reaction script
+   * Fetch a single Automation's full payload, including the reaction script
    * (not in the list response). Used by `lobu init --from-org` to round-trip
    * reaction scripts back to sibling `.ts` files.
    */
-  async getBehaviorDetail(watcherId: string): Promise<{
+  async getAutomationDetail(automationId: string): Promise<{
     reaction_script?: string | null;
     description?: string | null;
   } | null> {
     try {
       const { body } = await this.request<{
-        behavior?: {
+        automation?: {
           reaction_script?: string | null;
           description?: string | null;
         };
       }>(
         "GET",
-        `/api/${this.orgSlug}/behaviors?behavior_id=${encodeURIComponent(watcherId)}`
+        `/api/${this.orgSlug}/automations?automation_id=${encodeURIComponent(automationId)}`
       );
-      return body.behavior ?? null;
+      return body.automation ?? null;
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) return null;
       throw err;
     }
   }
 
-  async listBehaviors(): Promise<RemoteBehavior[]> {
+  async listAutomations(): Promise<RemoteAutomation[]> {
     // `include_details=true` pulls the version-bound fields (prompt,
     // classifiers, outputs, reactions_guidance) too.
     // Apply diffs against these to detect drift on prompt / sources / etc.
-    const { body } = await this.request<{ behaviors?: RemoteBehavior[] }>(
+    const { body } = await this.request<{ automations?: RemoteAutomation[] }>(
       "GET",
-      `/api/${this.orgSlug}/behaviors?include_details=true`
+      `/api/${this.orgSlug}/automations?include_details=true`
     );
-    return body.behaviors ?? [];
+    return body.automations ?? [];
   }
 
   /**
-   * Create a Behavior owned by `agentId`. Duplicate-slug surfaces as a
+   * Create an Automation owned by `agentId`. Duplicate-slug surfaces as a
    * structured error the caller swallows for idempotency.
    */
-  async createBehavior(payload: {
+  async createAutomation(payload: {
     slug: string;
     agentId: string;
     name?: string;
     description?: string;
     prompt: string;
     skills?: Array<{ name: string; content: string }>;
-    triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
-    sources?: BehaviorSource[];
+    triggers?: import("@lobu/core/contracts/tools/manage-automations").AutomationTrigger[];
+    sources?: AutomationSource[];
     reactions_guidance?: string;
     device_worker_id?: string;
     notification_channel?: "canvas" | "notification" | "both";
@@ -1080,10 +1080,10 @@ export class ApplyClient {
     execution_config?: Record<string, unknown> | null;
     outputs?: Record<string, unknown> | null;
     classifiers?: unknown[];
-  }): Promise<{ behavior_id?: string }> {
-    const { body } = await this.request<{ behavior_id?: string }>(
+  }): Promise<{ automation_id?: string }> {
+    const { body } = await this.request<{ automation_id?: string }>(
       "POST",
-      `/api/${this.orgSlug}/manage_behaviors`,
+      `/api/${this.orgSlug}/manage_automations`,
       {
         action: "create",
         slug: payload.slug,
@@ -1124,21 +1124,23 @@ export class ApplyClient {
           : {}),
       }
     );
-    return { ...(body.behavior_id ? { behavior_id: body.behavior_id } : {}) };
+    return {
+      ...(body.automation_id ? { automation_id: body.automation_id } : {}),
+    };
   }
 
   /**
-   * Update the **scalar** fields on the `watchers` row — these don't require
+   * Update the **scalar** fields on the `automations` row — these don't require
    * a new version. Version-bound fields (prompt / sources / reactions_guidance /
-   * outputs / classifiers) require `createBehaviorVersion`
+   * outputs / classifiers) require `createAutomationVersion`
    * instead.
    *
    * `null` clears nullable fields (device_worker_id, agent_kind) per the
    * server contract.
    */
-  async updateBehavior(payload: {
-    behavior_id: string;
-    triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
+  async updateAutomation(payload: {
+    automation_id: string;
+    triggers?: import("@lobu/core/contracts/tools/manage-automations").AutomationTrigger[];
     agent_id?: string;
     device_worker_id?: string | null;
     notification_channel?: "canvas" | "notification" | "both";
@@ -1148,9 +1150,9 @@ export class ApplyClient {
     agent_kind?: string | null;
     execution_config?: Record<string, unknown> | null;
   }): Promise<void> {
-    await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
+    await this.request("POST", `/api/${this.orgSlug}/manage_automations`, {
       action: "update",
-      behavior_id: payload.behavior_id,
+      automation_id: payload.automation_id,
       ...(payload.triggers !== undefined ? { triggers: payload.triggers } : {}),
       ...(payload.agent_id !== undefined ? { agent_id: payload.agent_id } : {}),
       ...(payload.device_worker_id !== undefined
@@ -1176,31 +1178,31 @@ export class ApplyClient {
   }
 
   /**
-   * Create a new watcher_versions row carrying the version-bound fields, then
-   * upgrade the watcher's `current_version_id` to that new version. Server
+   * Create a new automation_versions row carrying the version-bound fields, then
+   * upgrade the automation's `current_version_id` to that new version. Server
    * inherits unset fields from the previous version row.
    * name/description/prompt/sources are version-owned (update rejects them).
    */
-  async createBehaviorVersion(payload: {
-    behavior_id: string;
+  async createAutomationVersion(payload: {
+    automation_id: string;
     name?: string;
     description?: string | null;
     prompt?: string;
     skills?: Array<{ name: string; content: string }>;
-    sources?: BehaviorSource[];
+    sources?: AutomationSource[];
     outputs?: Record<string, unknown> | null;
     classifiers?: unknown[];
     reactions_guidance?: string;
     change_notes?: string;
     /** When set, written atomically with the new version (set_as_current). */
-    triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
+    triggers?: import("@lobu/core/contracts/tools/manage-automations").AutomationTrigger[];
   }): Promise<{ version?: number }> {
     const { body } = await this.request<{ version?: number }>(
       "POST",
-      `/api/${this.orgSlug}/manage_behaviors`,
+      `/api/${this.orgSlug}/manage_automations`,
       {
         action: "create_version",
-        behavior_id: payload.behavior_id,
+        automation_id: payload.automation_id,
         set_as_current: true,
         ...(payload.name !== undefined ? { name: payload.name } : {}),
         ...(payload.description !== undefined
@@ -1232,25 +1234,25 @@ export class ApplyClient {
    * matches the admin tool contract.
    */
   async setReactionScript(
-    watcherId: string,
+    automationId: string,
     reactionScript: string
   ): Promise<void> {
-    await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
+    await this.request("POST", `/api/${this.orgSlug}/manage_automations`, {
       action: "set_reaction_script",
-      behavior_id: watcherId,
+      automation_id: automationId,
       reaction_script: reactionScript,
     });
   }
 
   /**
-   * Delete a Behavior by its numeric `behavior_id` (code-managed prune). The
-   * admin tool takes an array; we delete one slug's Behavior at a time so a
+   * Delete an Automation by its numeric `automation_id` (code-managed prune). The
+   * admin tool takes an array; we delete one slug's Automation at a time so a
    * failure is attributable.
    */
-  async deleteBehavior(watcherId: string): Promise<void> {
-    await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
+  async deleteAutomation(automationId: string): Promise<void> {
+    await this.request("POST", `/api/${this.orgSlug}/manage_automations`, {
       action: "delete",
-      behavior_ids: [watcherId],
+      automation_ids: [automationId],
     });
   }
 
@@ -1498,7 +1500,7 @@ export class ApplyClient {
    * Apply a BYO chat connection (a chat connector with a credential in `config`)
    * through the secret-aware `apply_chat_connection` path. Keyed by the
    * declared connection `slug` as the stable id (server stores it as
-   * `agentconn-<slug>`); no owning agent — chat routing is a Behavior created
+   * `agentconn-<slug>`); no owning agent — chat routing is an Automation created
    * when a channel is linked. The server compares resolved credentials under a
    * PG advisory lock, so an unchanged declaration is a true no-op.
    */

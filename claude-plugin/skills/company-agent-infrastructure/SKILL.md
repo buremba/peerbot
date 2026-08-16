@@ -41,7 +41,7 @@ Before recommending a build, establish:
 3. Which entities should stay durable across sources (for example Company, Project, Incident)?
 4. Which access boundaries must survive retrieval?
 5. Which actions may run automatically, and which require approval?
-6. Does the workload need proactive event/schedule-driven behavior or only interactive queries?
+6. Does the workload need proactive event/schedule-driven semantics or only interactive queries?
 
 Then choose the smallest Lobu surface that satisfies the requirements. An existing Claude agent can start with Lobu MCP only; adopting Lobu's managed agent runtime is optional.
 

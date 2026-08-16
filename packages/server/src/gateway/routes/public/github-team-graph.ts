@@ -186,7 +186,7 @@ async function ensureOrgCompany(params: {
 					traits: {
 						github_login: {
 							eventPath: "metadata.org_login",
-							behavior: "prefer_non_empty",
+							mergeStrategy: "prefer_non_empty",
 						},
 					},
 				},
@@ -284,7 +284,7 @@ export async function buildGithubTeamGraph(params: {
 					traits: {
 						github_login: {
 							eventPath: "metadata.author_login",
-							behavior: "prefer_non_empty",
+							mergeStrategy: "prefer_non_empty",
 						},
 					},
 				},

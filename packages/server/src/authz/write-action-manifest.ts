@@ -92,7 +92,7 @@ export const WRITE_ACTION_MANIFEST: Readonly<
 		actions: ["execute"],
 		effects: ["auto", "approval", "deny", "disabled"],
 		// No org connector-action policy → auto, so the per-connection action_modes
-		// alone decide (today's behavior). A row only ever tightens.
+		// alone decide (today's semantics). A row only ever tightens.
 		defaultEffect: {
 			execute: "auto",
 			read: "deny",
@@ -115,7 +115,7 @@ export function isLegalActionEffect(
 
 /**
  * The no-row default effect for a (class, action). An action the class does not
- * govern falls back to `deny` — asking "what happens by default when a watcher
+ * govern falls back to `deny` — asking "what happens by default when an automation
  * does X" for an X this class can't do is answered fail-closed.
  */
 export function defaultEffectFor(

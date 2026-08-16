@@ -98,7 +98,7 @@ async function main(): Promise<void> {
 			// Derive a STABLE secret from ENCRYPTION_KEY so window_tokens survive a
 			// restart and verify across replicas — a random per-boot secret broke
 			// both (a token signed before a restart or on a sibling replica failed
-			// verification, so watcher complete_window silently failed). Fall back
+			// verification, so automation complete_window silently failed). Fall back
 			// to random only when ENCRYPTION_KEY is unset (the ephemeral-key opt-in,
 			// which is itself per-boot and non-persistent by design).
 			process.env.JWT_SECRET = process.env.ENCRYPTION_KEY
@@ -147,7 +147,7 @@ async function main(): Promise<void> {
 				// resolveMigrationsDir covers the published CLI (migrations live next
 				// to the bundle, where the repo-root-relative path resolved to
 				// node_modules/db/migrations → ENOENT warning); the PACKAGE_REPO_ROOT
-				// fallback preserves the previous behaviour everywhere else.
+				// fallback preserves the previous semantics everywhere else.
 				const migrationsDir =
 					process.env.LOBU_MIGRATIONS_DIR?.trim() ||
 					resolveMigrationsDir() ||

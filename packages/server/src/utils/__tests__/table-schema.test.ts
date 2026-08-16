@@ -2,7 +2,6 @@ import { describe, expect, inject, it } from 'vitest';
 import { buildScopedQuery, validateAndScopeQuery } from '../execute-data-sources';
 import {
   buildColumnList,
-  physicalTableFor,
   QUERYABLE_SCHEMA,
   QUERYABLE_TABLE_NAMES,
   SAFE_COLUMN_DEFS,
@@ -15,11 +14,10 @@ describe('QUERYABLE_TABLE_NAMES', () => {
       'entities',
       'events',
       'connections',
-      // Agent-facing relation names: the engine's `watchers` /
-      // `watcher_versions` are exposed as Behavior vocabulary.
-      'behaviors',
+      // Canonical Automation relations.
+      'automations',
       'event_classifications',
-      'behavior_versions',
+      'automation_versions',
       'oauth_clients',
       'oauth_tokens',
       'user',
@@ -33,10 +31,8 @@ describe('QUERYABLE_TABLE_NAMES', () => {
     }
   });
 
-  it('should not expose the retired watcher_windows table (canvas-on-events)', () => {
-    // Windows are canvas_state event chains now; schema exposure is removed
-    // ahead of the two-phase table drop.
-    expect(QUERYABLE_TABLE_NAMES.has('watcher_windows')).toBe(false);
+  it('should expose canvas_windows as the window projection', () => {
+    expect(QUERYABLE_TABLE_NAMES.has('canvas_windows')).toBe(true);
   });
 
   it('should not include non-allowlisted tables', () => {
@@ -74,14 +70,14 @@ describe('SAFE_COLUMN_DEFS', () => {
     expect(cols).not.toContain('"content_tsv"');
   });
 
-  it('should emit direct columns for behavior_versions', () => {
-    const cols = colList('behavior_versions');
+  it('should emit direct columns for automation_versions', () => {
+    const cols = colList('automation_versions');
     expect(cols).toContain('"prompt"');
     expect(cols).toContain('"classifiers"');
   });
 
   it('should prefix columns with alias', () => {
-    const defs = SAFE_COLUMN_DEFS.get('behavior_versions')!;
+    const defs = SAFE_COLUMN_DEFS.get('automation_versions')!;
     const cols = buildColumnList(defs, 'wv');
     expect(cols).toContain('wv."prompt"');
     expect(cols).toContain('wv."id"');
@@ -213,9 +209,9 @@ describe('validateAndScopeQuery', () => {
  * takes a relation down entirely: `buildColumnList` emits an EXPLICIT
  * projection into the generated CTE, so a schema column that does not exist in
  * the database is injected into every query against that relation — including
- * `SELECT 1 AS one FROM behavior_versions`, which references no column at all.
- * `behavior_versions` listed `sources` (a `watchers` column that has never
- * existed on `watcher_versions`) and was therefore 100% unqueryable in prod,
+ * `SELECT 1 AS one FROM automation_versions`, which references no column at all.
+ * `automation_versions` listed `sources` (an `automations` column that has never
+ * existed on `automation_versions`) and was therefore 100% unqueryable in prod,
  * with an error naming a column no caller ever wrote, while this gate stayed
  * green. A one-directional drift check is a half gate.
  *
@@ -266,19 +262,12 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
       'last_repair_at',
       'last_repair_post_hash',
     ]),
-    // scheduler_client_id: retired with the Behavior scheduler rework in #2499,
+    // scheduler_client_id: retired with the Automation scheduler rework in #2499,
     // which stopped writing it and replaced it with agent_kind on the read path.
     // Prod has it NULL on every row. Schema exposure is removed ahead of the
     // two-phase column drop, so the physical column outlives its
     // QUERYABLE_SCHEMA entry until the phase-2 migration.
-    // Keyed by the QUERYABLE_SCHEMA entry name (`behaviors`), not the physical
-    // table (`watchers`) — this map is indexed by `t.name` from that schema.
-    behaviors: new Set([
-      'scheduler_client_id',
-      // Physical storage names replaced by public derived aliases below.
-      'source_watcher_id',
-      'watcher_group_id',
-    ]),
+    automations: new Set(['scheduler_client_id']),
     user: new Set(['email', 'phoneNumber', 'phoneNumberVerified']),
   };
 
@@ -290,7 +279,6 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
   const DERIVED_COLUMNS: Record<string, Set<string>> = {
     // entities CTE JOINs entity_types and aliases et.slug AS entity_type.
     entities: new Set(['entity_type']),
-    behaviors: new Set(['source_behavior_id', 'behavior_group_id']),
   };
 
   /** relation name → physical column set, read once per drift test. */
@@ -298,11 +286,7 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
     const { getDb, pgTextArray } = await import('../../db/client');
     const sql = getDb();
 
-    // Query by PHYSICAL table: an exposed relation may be renamed for the
-    // agent-facing surface (behaviors → watchers). Looking up the relation name
-    // in information_schema would find nothing and silently skip the table —
-    // exactly the "guard skips its own surface" failure mode.
-    const physicalNames = QUERYABLE_SCHEMA.tables.map((t) => physicalTableFor(t.name));
+    const physicalNames = QUERYABLE_SCHEMA.tables.map((t) => t.name);
 
     const rows = await sql`
       SELECT table_name, column_name
@@ -321,7 +305,7 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
 
     const byRelation = new Map<string, Set<string>>();
     for (const t of QUERYABLE_SCHEMA.tables) {
-      const physical = byPhysical.get(physicalTableFor(t.name));
+      const physical = byPhysical.get(t.name);
       if (physical) byRelation.set(t.name, physical);
     }
     return byRelation;
@@ -390,7 +374,7 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
     // The direction that was missing. A phantom column is injected into the
     // generated CTE's explicit projection, so it does not degrade one query —
     // it breaks EVERY query against the relation. This is what let
-    // `behavior_versions.sources` reach prod.
+    // `automation_versions.sources` reach prod.
     const byRelation = await loadDbColumns();
 
     const phantom: string[] = [];

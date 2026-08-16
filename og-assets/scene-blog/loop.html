@@ -4,7 +4,7 @@
 <!--
   In-post "operating loop" diagram — a literal circle.
   4 stages around a clockwise ring: EVENTS STREAM IN → APPEND-ONLY LOG
-  → WATCHER FIRES / AGENT ACTS → ACTION EMITS A NEW EVENT (loop closes).
+  → AUTOMATION FIRES / AGENT ACTS → ACTION EMITS A NEW EVENT (loop closes).
   Dark Lobu OG theme: warm-dark bg (#0f0e0c), red accent (#f5333a).
 -->
 <style>
@@ -96,12 +96,12 @@
       <div class="lab"><div class="e">APPEND-ONLY LOG</div><div class="d">Shared memory</div></div>
     </div>
 
-    <!-- 3. WATCHER FIRES, AGENT ACTS (bottom, 0,150) -->
+    <!-- 3. AUTOMATION FIRES, AGENT ACTS (bottom, 0,150) -->
     <div class="node" style="left:0; top:138px;">
       <div class="disc"><span class="num">3</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 20 5v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V5Z"/><path d="M9 12l2 2 4-4"/></svg>
       </div>
-      <div class="lab"><div class="e">WATCHER FIRES</div><div class="d">Agent acts on goals</div></div>
+      <div class="lab"><div class="e">AUTOMATION FIRES</div><div class="d">Agent acts on goals</div></div>
     </div>
 
     <!-- 4. ACTION EMITS A NEW EVENT (left, -150,0) -->

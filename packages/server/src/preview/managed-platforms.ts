@@ -1,4 +1,4 @@
-/** Platforms that support the hosted Lobu managed bot (link codes, channel Behaviors). */
+/** Platforms that support the hosted Lobu managed bot (link codes, channel Automations). */
 export const MANAGED_CHAT_PLATFORMS = ["slack", "telegram"] as const;
 
 export const MANAGED_CHAT_PLATFORMS_SET = new Set<string>(

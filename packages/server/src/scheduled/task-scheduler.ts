@@ -103,7 +103,7 @@ interface TransactionalTask<P = unknown> {
 /**
  * Transactional task enqueue for writers that must commit their domain rows
  * and their durable handoffs atomically. Unlike `spawn()`, this never opens a
- * nested transaction and acquires no domain/Behavior locks. Postgres holds the
+ * nested transaction and acquires no domain/Automation locks. Postgres holds the
  * NOTIFY until the caller commits; the queue poller remains the fallback if
  * notification delivery fails. Domain writers persist a bounded set of rows in
  * one transaction, so the whole batch takes one INSERT and one NOTIFY rather
@@ -332,7 +332,7 @@ export class TaskScheduler {
     }
 
     // Per-tick outcome counter — the scheduler heartbeat that backs the
-    // "watcher-automation silent / failing" alerts. Counts every dispatched
+    // "automation silent / failing" alerts. Counts every dispatched
     // task; alerts filter by job name. Re-throw is preserved so the runs-queue
     // retry path is unchanged.
     try {
@@ -342,7 +342,7 @@ export class TaskScheduler {
       });
       // Label is `task`, NOT `job`: Prometheus reserves `job` for the scrape
       // target and overwrites any same-named metric label, which silently
-      // collapses per-task series (and broke the watcher-automation alert).
+      // collapses per-task series (and broke the automation alert).
       incrementCounter('lobu_scheduled_job_runs_total', {
         task: data.name,
         outcome: 'success',

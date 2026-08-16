@@ -17,7 +17,7 @@ import { randomBytes } from "node:crypto";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import type { AgentSettings } from "@lobu/core";
-import { resolvedEventExecution } from "@lobu/core/contracts/tools/manage-behaviors";
+import { resolvedEventExecution } from "@lobu/core/contracts/tools/manage-automations";
 import chalk from "chalk";
 import { UNRESOLVED_MODEL_SUFFIX } from "../../../config/index.js";
 import { printText } from "../../../internal/output.js";
@@ -26,7 +26,7 @@ import type {
   ApplyClient,
   RemoteAgent,
   RemoteAuthProfile,
-  RemoteBehavior,
+  RemoteAutomation,
   RemoteConnection,
   RemoteConnectorDefinition,
   RemoteEntityType,
@@ -259,7 +259,7 @@ const IMPORTABLE = [
   "defineConfig",
   "defineEntityType",
   "defineRelationshipType",
-  "defineBehavior",
+  "defineAutomation",
   "defineConnection",
   "defineAuthProfile",
   "reactionFromFile",
@@ -438,7 +438,7 @@ function ensureTrailingNewline(s: string): string {
   return s.endsWith("\n") ? s : `${s}\n`;
 }
 
-// ── Entity / relationship / watcher / connection / auth (inverse maps) ──────
+// ── Entity / relationship / automation / connection / auth (inverse maps) ──────
 
 function emitEntityType(
   e: RemoteEntityType,
@@ -503,11 +503,11 @@ function emitRelationshipType(
 
 /**
  * Instruction-presence rule, mirrored from `lobu apply` validation: only an
- * event-turn-only Behavior may omit both prompt and skills (the built-in
+ * event-turn-only Automation may omit both prompt and skills (the built-in
  * default applies).
  */
-function behaviorRequiresInstructions(
-  triggers: RemoteBehavior["triggers"]
+function automationRequiresInstructions(
+  triggers: RemoteAutomation["triggers"]
 ): boolean {
   const list = triggers ?? [];
   if (list.length === 0) return true;
@@ -518,15 +518,15 @@ function behaviorRequiresInstructions(
   );
 }
 
-function emitBehavior(
-  w: RemoteBehavior,
+function emitAutomation(
+  w: RemoteAutomation,
   reactionScript: string | null,
   agentHandles: Map<string, string>,
   connectionHandlesById: ReadonlyMap<number, string>,
   imports: ImportTracker,
   minter: IdentMinter
 ): { handle: Handle; reactionFile?: { relPath: string; body: string } } {
-  imports.use("defineBehavior");
+  imports.use("defineAutomation");
   const agentRef = w.agent_id ? agentHandles.get(w.agent_id) : undefined;
   const fields: string[] = [
     `agent: ${agentRef ?? str(w.agent_id ?? "")}`,
@@ -607,10 +607,10 @@ function emitBehavior(
     };
   }
 
-  const name = minter.mint(w.slug, "Behavior");
+  const name = minter.mint(w.slug, "Automation");
   const handle: Handle = {
     name,
-    decl: `const ${name} = defineBehavior(${objectLiteral(fields, 0)});`,
+    decl: `const ${name} = defineAutomation(${objectLiteral(fields, 0)});`,
   };
   return reactionFile ? { handle, reactionFile } : { handle };
 }
@@ -817,7 +817,10 @@ interface FetchedState {
   }>;
   entityTypes: RemoteEntityType[];
   relationshipTypes: RemoteRelationshipType[];
-  watchers: Array<{ watcher: RemoteBehavior; reactionScript: string | null }>;
+  automations: Array<{
+    automation: RemoteAutomation;
+    reactionScript: string | null;
+  }>;
   authProfiles: RemoteAuthProfile[];
   connections: Array<{ connection: RemoteConnection; feeds: RemoteFeed[] }>;
   /** connector_key → auth_schema (for emitting real credential field keys). */
@@ -832,7 +835,7 @@ async function fetchOrgState(
     agentList,
     entityTypes,
     relationshipTypes,
-    watcherList,
+    automationList,
     authProfiles,
     connectionList,
     connectorDefinitions,
@@ -840,7 +843,7 @@ async function fetchOrgState(
     client.listAgents(),
     client.listEntityTypes(),
     client.listRelationshipTypes(),
-    client.listBehaviors(),
+    client.listAutomations(),
     client.listAuthProfiles(),
     client.listConnections(),
     // Connector defs carry each connector's auth_schema, so init-from-org can
@@ -874,21 +877,23 @@ async function fetchOrgState(
       }))
   );
 
-  // reaction_script isn't on the list response — fetch each watcher's detail.
-  const watchers = await Promise.all(
-    watcherList
+  // reaction_script isn't on the list response — fetch each automation's detail.
+  const automations = await Promise.all(
+    automationList
       .slice()
       .sort((a, b) => a.slug.localeCompare(b.slug))
-      .map(async (watcher) => {
+      .map(async (automation) => {
         let reactionScript: string | null = null;
-        if (watcher.behavior_id) {
-          const detail = await client.getBehaviorDetail(watcher.behavior_id);
+        if (automation.automation_id) {
+          const detail = await client.getAutomationDetail(
+            automation.automation_id
+          );
           reactionScript = detail?.reaction_script ?? null;
-          if (detail?.description && !watcher.description) {
-            watcher.description = detail.description;
+          if (detail?.description && !automation.description) {
+            automation.description = detail.description;
           }
         }
-        return { watcher, reactionScript };
+        return { automation, reactionScript };
       })
   );
 
@@ -928,7 +933,7 @@ async function fetchOrgState(
     relationshipTypes: relationshipTypes
       .filter(isOwnDeclarable)
       .sort((a, b) => a.slug.localeCompare(b.slug)),
-    watchers,
+    automations,
     authProfiles: authProfiles
       .slice()
       .sort((a, b) => a.slug.localeCompare(b.slug)),
@@ -961,53 +966,53 @@ function generateProject(
 
   // Prompt text round-trips directly. Skill references resolve through the
   // generated agent library, whose bodies are the library's current state, not
-  // necessarily the older snapshots pinned on each Behavior version. Surface
+  // necessarily the older snapshots pinned on each Automation version. Surface
   // that drift honestly: the generated config is an upgrade when bodies differ.
   const agentsById = new Map(
     state.agents.map(({ agent, settings }) => [agent.agentId, settings])
   );
-  for (const { watcher } of state.watchers) {
+  for (const { automation } of state.automations) {
     if (
-      !watcher.prompt?.trim() &&
-      !watcher.skills?.length &&
-      behaviorRequiresInstructions(watcher.triggers)
+      !automation.prompt?.trim() &&
+      !automation.skills?.length &&
+      automationRequiresInstructions(automation.triggers)
     ) {
       warnings.push(
-        `Behavior "${watcher.slug}" has no stored instructions but is not event-turn-only — give it a prompt or attach at least one skill before the next \`lobu apply\`.`
+        `Automation "${automation.slug}" has no stored instructions but is not event-turn-only — give it a prompt or attach at least one skill before the next \`lobu apply\`.`
       );
     }
     const library =
-      agentsById.get(watcher.agent_id ?? "")?.skillsConfig?.skills ?? [];
-    for (const snapshot of watcher.skills ?? []) {
+      agentsById.get(automation.agent_id ?? "")?.skillsConfig?.skills ?? [];
+    for (const snapshot of automation.skills ?? []) {
       const current = library.find(
         (skill) => !skill.system && skill.name === snapshot.name
       );
       if (!current) {
         warnings.push(
-          `Behavior "${watcher.slug}" pins skill "${snapshot.name}", but that skill is absent from agent "${watcher.agent_id ?? ""}"'s current library — restore it or remove the Behavior reference before \`lobu apply\`.`
+          `Automation "${automation.slug}" pins skill "${snapshot.name}", but that skill is absent from agent "${automation.agent_id ?? ""}"'s current library — restore it or remove the Automation reference before \`lobu apply\`.`
         );
         continue;
       }
       if (!current.content?.trim()) {
         warnings.push(
-          `Behavior "${watcher.slug}" pins skill "${snapshot.name}", but its current agent-library body is empty — restore the body or remove the Behavior reference before \`lobu apply\`.`
+          `Automation "${automation.slug}" pins skill "${snapshot.name}", but its current agent-library body is empty — restore the body or remove the Automation reference before \`lobu apply\`.`
         );
         continue;
       }
       if (current.enabled === false) {
         warnings.push(
-          `Behavior "${watcher.slug}" pins disabled skill "${snapshot.name}" — the generated config declares it as enabled, so the next \`lobu apply\` will re-enable it and publish the current body.`
+          `Automation "${automation.slug}" pins disabled skill "${snapshot.name}" — the generated config declares it as enabled, so the next \`lobu apply\` will re-enable it and publish the current body.`
         );
       }
       if (current.content.trim() !== snapshot.content.trim()) {
         warnings.push(
-          `Behavior "${watcher.slug}" pins an older body of skill "${snapshot.name}" — the generated config uses the agent library's current body, so the next \`lobu apply\` will publish that upgrade.`
+          `Automation "${automation.slug}" pins an older body of skill "${snapshot.name}" — the generated config uses the agent library's current body, so the next \`lobu apply\` will publish that upgrade.`
         );
       }
     }
   }
 
-  // Agents first (watchers reference their handles).
+  // Agents first (automations reference their handles).
   const agentHandles = new Map<string, string>();
   const agentDecls: string[] = [];
   for (const { agent, settings } of state.agents) {
@@ -1090,26 +1095,26 @@ function generateProject(
     connHandles.push(h.name);
   }
 
-  // Behaviors last.
-  const watcherDecls: string[] = [];
-  const watcherHandles: string[] = [];
+  // Automations last.
+  const automationDecls: string[] = [];
+  const automationHandles: string[] = [];
   const connectionHandlesById = new Map<number, string>();
   for (let index = 0; index < state.connections.length; index++) {
     const connection = state.connections[index]?.connection;
     const handle = connHandles[index];
     if (connection && handle) connectionHandlesById.set(connection.id, handle);
   }
-  for (const { watcher, reactionScript } of state.watchers) {
-    const { handle, reactionFile } = emitBehavior(
-      watcher,
+  for (const { automation, reactionScript } of state.automations) {
+    const { handle, reactionFile } = emitAutomation(
+      automation,
       reactionScript,
       agentHandles,
       connectionHandlesById,
       imports,
       minter
     );
-    watcherDecls.push(handle.decl);
-    watcherHandles.push(handle.name);
+    automationDecls.push(handle.decl);
+    automationHandles.push(handle.name);
     if (reactionFile) files.push(reactionFile);
   }
 
@@ -1131,8 +1136,8 @@ function generateProject(
       `authProfiles: [${[...authHandles.values()].join(", ")}]`
     );
   }
-  if (watcherHandles.length > 0) {
-    configFields.push(`behaviors: [${watcherHandles.join(", ")}]`);
+  if (automationHandles.length > 0) {
+    configFields.push(`automations: [${automationHandles.join(", ")}]`);
   }
 
   const blocks: string[] = [];
@@ -1144,7 +1149,7 @@ function generateProject(
   pushBlock(relDecls);
   pushBlock(authDecls);
   pushBlock(connDecls);
-  pushBlock(watcherDecls);
+  pushBlock(automationDecls);
 
   const header = [
     "// lobu.config.ts — bootstrapped by `lobu init --from-org`",

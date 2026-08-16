@@ -27,7 +27,7 @@ afterAll(() => {
 
 function wrapped(cwd: string, command: string): { out: string; code: number } {
   try {
-    // codeql[js/shell-command-injection-from-environment]: the temp path reaches
+    // lgtm[js/shell-command-injection-from-environment]: the temp path reaches
     // bash as a positional argv entry (`"$1"`), never interpolated into the
     // script text — which is precisely the property the hostile-cwd test below
     // asserts. The directory is this test's own mkdtemp, not attacker input.
@@ -42,7 +42,7 @@ function wrapped(cwd: string, command: string): { out: string; code: number } {
   }
 }
 
-/** The same command under a plain login shell — the behaviour to match. */
+/** The same command under a plain login shell — the semantics to match. */
 function direct(command: string): { out: string; code: number } {
   try {
     const out = execFileSync("/bin/bash", ["-lc", command], {

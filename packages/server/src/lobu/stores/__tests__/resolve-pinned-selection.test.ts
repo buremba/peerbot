@@ -119,35 +119,35 @@ describe("resolvePinnedSelection", () => {
     });
   });
 
-  it("never materializes a conversations row for a watcher run (honors the exclusion)", async () => {
-    // Watcher runs are ephemeral and have NO conversations row (message-consumer
+  it("never materializes a conversations row for an automation run (honors the exclusion)", async () => {
+    // Automation runs are ephemeral and have NO conversations row (message-consumer
     // excludes them from the dual-write). The resolver must honor the same
     // exclusion — resolve live, and NOT upsert a listing row (which would pollute
-    // the sidebar and break the watcher no-row contract).
-    const org = await createTestOrganization({ name: "Pin Watcher Org" });
+    // the sidebar and break the automation no-row contract).
+    const org = await createTestOrganization({ name: "Pin Automation Org" });
     const agent = await createTestAgent({ organizationId: org.id });
     const sandbox = await createSandbox(org.id, {
-      name: "vercel-watcher",
+      name: "vercel-automation",
       providerKind: "vercel",
     });
     await setAgentSandbox(org.id, agent.agentId, sandbox.id);
 
-    const watcherConvId = `${agent.agentId}_watcher_1_run_42`;
+    const automationConvId = `${agent.agentId}_automation_1_run_42`;
     const sel = await resolvePinnedSelection({
       organizationId: org.id,
       agentId: agent.agentId,
       platform: PLATFORM,
-      conversationId: watcherConvId,
+      conversationId: automationConvId,
     });
 
     // Live selection returned (the agent's current provider) …
     expect(sel.runtimeProviderId).toBe("vercel");
-    // … but NO row was created for the watcher conversation id.
+    // … but NO row was created for the automation conversation id.
     const sql = getTestDb();
     const rows = (await sql`
       SELECT 1 FROM public.conversations
       WHERE organization_id = ${org.id} AND agent_id = ${agent.agentId}
-        AND conversation_id = ${watcherConvId}
+        AND conversation_id = ${automationConvId}
     `) as unknown[];
     expect(rows.length).toBe(0);
   });

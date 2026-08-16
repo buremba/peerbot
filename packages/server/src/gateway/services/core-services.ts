@@ -50,7 +50,7 @@ import { AuthProfilesManager } from "../auth/settings/auth-profiles-manager.js";
 import { ModelPreferenceStore } from "../auth/settings/model-preference-store.js";
 import { UserAuthProfileStore } from "../auth/settings/user-auth-profile-store.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
-import { BehaviorSubscriptionService } from "../channels/behavior-subscription-service.js";
+import { AutomationSubscriptionService } from "../channels/automation-subscription-service.js";
 import { registerBuiltInCommands } from "../commands/built-in-commands.js";
 import type { AgentConfig, GatewayConfig } from "../config/index.js";
 import { ConversationStateStore } from "../connections/conversation-state-store.js";
@@ -158,7 +158,7 @@ export class CoreServices {
 	// Agent Configuration Services
 	// ============================================================================
 	private agentSettingsStore?: AgentSettingsStore;
-	private behaviorSubscriptionService?: BehaviorSubscriptionService;
+	private automationSubscriptionService?: AutomationSubscriptionService;
 	private transcriptionService?: TranscriptionService;
 	private imageGenerationService?: ImageGenerationService;
 	private bedrockOpenAIService?: BedrockOpenAIService;
@@ -406,7 +406,7 @@ export class CoreServices {
 		// Always Postgres-backed; only exercised on the OAuth/webhook path.
 		this.appInstallationStore = createPostgresAppInstallationStore();
 
-		this.behaviorSubscriptionService = new BehaviorSubscriptionService();
+		this.automationSubscriptionService = new AutomationSubscriptionService();
 		this.userAgentsStore = new UserAgentsStore();
 
 		// Initialize agent sub-stores. The configStore here owns all Postgres I/O
@@ -1116,10 +1116,10 @@ export class CoreServices {
 		return this.agentSettingsStore;
 	}
 
-	getBehaviorSubscriptionService(): BehaviorSubscriptionService {
-		if (!this.behaviorSubscriptionService)
-			throw new Error("Behavior subscription service not initialized");
-		return this.behaviorSubscriptionService;
+	getAutomationSubscriptionService(): AutomationSubscriptionService {
+		if (!this.automationSubscriptionService)
+			throw new Error("Automation subscription service not initialized");
+		return this.automationSubscriptionService;
 	}
 
 	getTranscriptionService(): TranscriptionService | undefined {

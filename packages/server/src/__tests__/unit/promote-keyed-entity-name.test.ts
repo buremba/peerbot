@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { buildEntityName } from '../../utils/promote-keyed-entities';
-import type { EntityOutput } from '../../types/watchers';
+import type { EntityOutput } from '../../types/automations';
 
 const base: EntityOutput = {
   entity: 'social-signal',

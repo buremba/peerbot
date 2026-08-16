@@ -105,7 +105,7 @@ export async function resetTestDatabase(): Promise<void> {
 
 /**
  * Convenience for tests that need an org_id present in `organizations` and
- * a row in `agents` so the FK-constrained tables (agent_users, watchers,
+ * a row in `agents` so the FK-constrained tables (agent_users, automations,
  * grants, etc.) accept inserts.
  *
  * Returns the org_id used; defaults to "test-org".
@@ -168,8 +168,8 @@ export async function seedGithubConnectorDef(orgId: string): Promise<void> {
       ],
     },
     traits: {
-      github_login: { eventPath: "metadata.author_login", behavior: "prefer_non_empty" },
-      last_authored_at: { eventPath: "occurred_at", behavior: "overwrite" },
+      github_login: { eventPath: "metadata.author_login", mergeStrategy: "prefer_non_empty" },
+      last_authored_at: { eventPath: "occurred_at", mergeStrategy: "overwrite" },
     },
   };
   const kind = (k: string) => ({ eventKinds: { [k]: { attributions: [personAttribution] } } });

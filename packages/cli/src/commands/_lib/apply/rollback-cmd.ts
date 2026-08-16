@@ -30,7 +30,7 @@ import {
   executePlan,
   fetchRemoteSnapshot,
   type PendingAuthEntry,
-  resolveBehaviorConnectionRefs,
+  resolveAutomationConnectionRefs,
 } from "./apply-cmd.js";
 import { resolveApplyClient } from "./client.js";
 import {
@@ -102,7 +102,7 @@ export function sanitizeSnapshotState(
       };
       // A BYO chat connection is applied through one secret-aware upsert, so
       // its non-secret options cannot be reconciled separately from its
-      // write-only credential. Keep the live row untouched; Behaviors still
+      // write-only credential. Keep the live row untouched; Automations still
       // resolve its id from the independently fetched remote snapshot.
       if (c.credentialMode === "byo") {
         notes.push(
@@ -225,11 +225,11 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
     manifest.state,
     remoteConnectionConfigs
   );
-  // Behaviors declare event triggers by connection SLUG; the API contract
+  // Automations declare event triggers by connection SLUG; the API contract
   // wants integer ids — resolve against the live connections, exactly as
   // apply does.
-  resolveBehaviorConnectionRefs(
-    sanitized.state.watchers,
+  resolveAutomationConnectionRefs(
+    sanitized.state.automations,
     new Map(remote.connections.map((c) => [c.slug, c.id])),
     false
   );

@@ -1200,8 +1200,8 @@ async function notifyNeedsAttention(
     title: "Net worth needs attention",
     body: reason,
     idempotency_key: `${IDEMPOTENCY_PREFIX}:needs-attention:week:${isoWeekInTimeZone(ctx.window.window_end, "Europe/London")}`,
-    behavior_source: {
-      behavior_id: ctx.behavior.id,
+    automation_source: {
+      automation_id: ctx.automation.id,
       window_id: ctx.window.id,
     },
   });
@@ -1339,8 +1339,8 @@ export default async function runNetWorthSnapshot(
         operation_key: "quote",
         input: { symbols: batch },
         idempotency_key: `${IDEMPOTENCY_PREFIX}:quotes:week:${week}:batch:${index + 1}`,
-        behavior_source: {
-          behavior_id: ctx.behavior.id,
+        automation_source: {
+          automation_id: ctx.automation.id,
           window_id: ctx.window.id,
         },
       });
@@ -1380,8 +1380,8 @@ export default async function runNetWorthSnapshot(
     metadata: snapshot as unknown as Record<string, unknown>,
     occurred_at: snapshot.calculated_at,
     idempotency_key: `${IDEMPOTENCY_PREFIX}:snapshot:week:${week}`,
-    behavior_source: {
-      behavior_id: ctx.behavior.id,
+    automation_source: {
+      automation_id: ctx.automation.id,
       window_id: ctx.window.id,
     },
   });
@@ -1392,8 +1392,8 @@ export default async function runNetWorthSnapshot(
     title: "Net worth updated",
     body: snapshotDigest(persistedSnapshot).slice(0, 1_000),
     idempotency_key: `${IDEMPOTENCY_PREFIX}:notification:week:${week}`,
-    behavior_source: {
-      behavior_id: ctx.behavior.id,
+    automation_source: {
+      automation_id: ctx.automation.id,
       window_id: ctx.window.id,
     },
   });

@@ -94,7 +94,7 @@ describe('event_embeddings model stamp (Finding #3)', () => {
     // vector search scopes comparison to the configured model — so the inline
     // path skips it and the embed backfill produces a properly-stamped (and, for
     // long content, chunked) set instead. This replaces the old "NULL stamp
-    // legacy row" behaviour.
+    // legacy row" semantics.
     const inserted = await insertEvent(
       {
         entityIds: [entityId],

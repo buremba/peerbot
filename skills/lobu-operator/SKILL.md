@@ -10,9 +10,9 @@ This is a fast index, not a replacement for repository instructions. Root `AGENT
 ## Before You Act
 
 1. Read root `AGENTS.md`, the touched package's nearest `AGENTS.md`, and the relevant `docs/GOTCHAS.md` section.
-2. Read the concept docs before touching behavior: `docs/CONCEPTS.md` (entities vs events, identity, end-to-end lifecycle), `docs/BEHAVIORS.md` (Behavior contract), `docs/connector-authoring.md` (custom connectors), `docs/README.md` (index).
+2. Read the concept docs before touching automation: `docs/CONCEPTS.md` (entities vs events, identity, end-to-end lifecycle), `docs/AUTOMATIONS.md` (Automation contract), `docs/connector-authoring.md` (custom connectors), `docs/README.md` (index).
 3. Run `make task-setup NAME=<slug>` and work only in the resulting `.claude/worktrees/<slug>/` directory. Never switch branches or edit in the main checkout.
-4. Read `lobu.config.ts` when configuration or runtime behavior matters; inspect the active agent and skill directories because composition is data-driven.
+4. Read `lobu.config.ts` when configuration or runtime semantics matters; inspect the active agent and skill directories because composition is data-driven.
 5. Reproduce a bug before changing code. Capture red→fix→green evidence and exercise every branch touched; a typecheck alone is not completion.
 
 ## Dev Workflow
@@ -33,7 +33,7 @@ Prerequisites are Bun, the supported Node version, and Postgres with pgvector vi
 - User-facing reads must not aggregate growing history. Materialize bounded answers on writes and read them back by index.
 - Never bulk-delete production organizations. Treat apparently empty organizations as real signups requiring individual confirmation.
 - Workers receive placeholders/proxied access, device-pinned credentials, or short-lived provider-derived leases—never durable stored credentials.
-- Agent-facing vocabulary always says **Behavior**; engine-only vocabulary stays internal.
+- Agent-facing vocabulary always says **Automation**; engine-only vocabulary stays internal.
 - Durable dispatch and delivery failures fail closed. Retry, defer, or surface terminal failure; never reinterpret an ambiguous coordination error as permission to proceed.
 
 ## Validate and Ship

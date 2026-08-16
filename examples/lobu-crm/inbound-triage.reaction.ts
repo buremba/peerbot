@@ -1,5 +1,5 @@
 /**
- * Notification-only reaction for the `inbound-triage` Behavior.
+ * Notification-only reaction for the `inbound-triage` Automation.
  *
  * Declared outputs persist every triage note. This reaction only delivers the
  * human-facing notification when the output array is non-empty.
@@ -41,8 +41,8 @@ export default async (
   await client.notifications.send({
     title: notes[0].title ?? `Inbound triage — ${notes.length} action(s)`,
     body: notes.map((note) => note.content).join("\n\n"),
-    behavior_source: {
-      behavior_id: ctx.window.behavior_id,
+    automation_source: {
+      automation_id: ctx.window.automation_id,
       window_id: ctx.window.id,
     },
   });

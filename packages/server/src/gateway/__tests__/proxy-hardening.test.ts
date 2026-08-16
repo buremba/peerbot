@@ -13,7 +13,7 @@
  * NOTE: Per-call judge timeout (judgeTimeoutMs / EGRESS_JUDGE_TIMEOUT_MS) is
  * documented in AGENTS.md and was present in an earlier version of EgressJudge
  * but the current implementation directly awaits this.client.judge() with no
- * deadline. Tests for timeout behaviour are omitted until the feature is re-added.
+ * deadline. Tests for timeout semantics are omitted until the feature is re-added.
  *
  * NOTE: NAT64 address translation (64:ff9b::/96 prefix) IS handled. The IP
  * normalization + reserved-range matcher now live in the shared
@@ -950,9 +950,9 @@ describe("PolicyStore.resolve — edge cases", () => {
   });
 });
 
-// ─── EgressJudge — additional behavioral coverage ────────────────────────────
+// ─── EgressJudge — additional policy coverage ────────────────────────────
 
-describe("EgressJudge — additional behavioral coverage", () => {
+describe("EgressJudge — additional policy coverage", () => {
   test("uses the configured default model when no per-rule override is set", async () => {
     let capturedModel = "";
     const client: JudgeClient = {

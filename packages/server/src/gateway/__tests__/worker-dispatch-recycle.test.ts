@@ -9,7 +9,7 @@
  * connected, even when that worker's connector lease is dying or its tooling
  * no longer matches the org's connections — the worker read its env once at
  * process start and cannot be fixed in place. Delete the gate call in
- * `handleJob` (main's behavior) and every "not delivered" assertion here goes
+ * `handleJob` (main's automation) and every "not delivered" assertion here goes
  * red.
  *
  * The DB-backed halves live elsewhere: the liveness probe SQL in

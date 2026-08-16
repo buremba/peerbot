@@ -601,9 +601,9 @@ export function createGatewayApp(
       );
     }
 
-    // Agent routes still use the Behavior-backed channel projection for recall
+    // Agent routes still use the Automation-backed channel projection for recall
     // and streaming-feed materialization. Subscription configuration itself is
-    // owned by manage_behaviors.
+    // owned by manage_automations.
     {
       const userAgentsStore = coreServices.getUserAgentsStore();
       const agentMetadataStore = coreServices.getAgentMetadataStore();
@@ -896,7 +896,7 @@ curl -X POST http://localhost:8787/api/v1/agents/{agentId}/messages \\
   // One merged OpenAPI document: the defineRoute registry (agent-session
   // orchestration, TypeBox), the openapi-auto walk of the remaining gateway
   // routes (`getOpenAPI31Document`), PLUS the full dispatch-tool surface
-  // (`POST /api/{orgSlug}/{tool}` — entities, watchers, feeds, metrics, …),
+  // (`POST /api/{orgSlug}/{tool}` — entities, automations, feeds, metrics, …),
   // all sourced from the same TypeBox schemas the server validates against.
   // The first-party `@lobu/client` is generated from THIS single document, so
   // the CLI and UI get a typed client for BOTH surfaces instead of only agent

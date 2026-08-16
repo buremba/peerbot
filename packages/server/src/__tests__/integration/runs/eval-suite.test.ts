@@ -3,7 +3,7 @@
  *
  * This is the test that says whether the feature is USEFUL, not merely correct.
  * Scoring a run produces a number; what a person actually asks is "I changed
- * this Behavior — did I break it?" So the assertions here are about the answer:
+ * this Automation — did I break it?" So the assertions here are about the answer:
  * that N trials stay N distinct runs rather than collapsing into one, that a
  * real drop is reported as a regression, and — the one that matters most — that
  * a wobble SMALLER than the case's own observed noise is NOT.
@@ -17,7 +17,7 @@ import { beforeAll, describe, expect, test } from "vitest";
 import { promoteEvalCase, trialCaseKey } from "../../../runs/eval-cases";
 import { scoreEvalRun } from "../../../runs/eval-scores";
 import { readEvalResults, runEvalSuite } from "../../../runs/eval-suite";
-import { BEHAVIOR_RUN_TYPE } from "../../../runs/run-types";
+import { AUTOMATION_RUN_TYPE } from "../../../runs/run-types";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	addUserToOrganization,
@@ -28,18 +28,18 @@ import {
 const sql = getTestDb();
 
 let organizationId: string;
-let behaviorId: number;
+let automationId: number;
 let sourceRunId: number;
 
-async function insertBehaviorRun(): Promise<number> {
+async function insertAutomationRun(): Promise<number> {
 	const [run] = (await sql`
     INSERT INTO runs (
-      organization_id, run_type, watcher_id, approval_status, status,
+      organization_id, run_type, automation_id, approval_status, status,
       approved_input, completed_at, created_at
     ) VALUES (
-      ${organizationId}, ${BEHAVIOR_RUN_TYPE}, ${behaviorId}, 'auto', 'completed',
+      ${organizationId}, ${AUTOMATION_RUN_TYPE}, ${automationId}, 'auto', 'completed',
       ${sql.json({
-				watcher_id: behaviorId,
+				automation_id: automationId,
 				agent_id: "11111111-2222-3333-4444-555555555555",
 				window_start: "2026-08-01T00:00:00.000Z",
 				window_end: "2026-08-01T01:00:00.000Z",
@@ -62,13 +62,13 @@ async function landTrial(
 	trial: number,
 	opts: { good: boolean },
 ): Promise<number> {
-	const key = `behavior_eval:${sourceRunId}:${trialCaseKey(caseKey, trial)}`;
+	const key = `automation_eval:${sourceRunId}:${trialCaseKey(caseKey, trial)}`;
 	const [run] = (await sql`
     INSERT INTO runs (
-      organization_id, run_type, watcher_id, approval_status, status,
+      organization_id, run_type, automation_id, approval_status, status,
       dry_run_preview, idempotency_key, completed_at, created_at
     ) VALUES (
-      ${organizationId}, 'behavior_eval', ${behaviorId}, 'auto', 'completed',
+      ${organizationId}, 'automation_eval', ${automationId}, 'auto', 'completed',
       ${sql.json(
 				opts.good
 					? { captured: "complete_window", extracted_data: { a: 1 } }
@@ -92,17 +92,17 @@ beforeAll(async () => {
 	const creator = await createTestUser();
 	await addUserToOrganization(creator.id, organizationId, "owner");
 
-	const [behavior] = (await sql`
-    WITH next_id AS (SELECT nextval('watchers_id_seq')::integer AS id)
-    INSERT INTO watchers (
-      id, watcher_group_id, organization_id, created_by, name, slug, schedule, status
+	const [automation] = (await sql`
+    WITH next_id AS (SELECT nextval('automations_id_seq')::integer AS id)
+    INSERT INTO automations (
+      id, automation_group_id, organization_id, created_by, name, slug, schedule, status
     )
-    SELECT id, id, ${organizationId}, ${creator.id}, 'Suite Behavior', 'suite-behavior', '0 * * * *', 'active'
+    SELECT id, id, ${organizationId}, ${creator.id}, 'Suite Automation', 'suite-automation', '0 * * * *', 'active'
     FROM next_id
     RETURNING id
   `) as unknown as Array<{ id: number }>;
-	behaviorId = Number(behavior.id);
-	sourceRunId = await insertBehaviorRun();
+	automationId = Number(automation.id);
+	sourceRunId = await insertAutomationRun();
 });
 
 describe("runEvalSuite", () => {
@@ -120,7 +120,7 @@ describe("runEvalSuite", () => {
 
 		const suite = await runEvalSuite({
 			organizationId,
-			behaviorId,
+			automationId,
 			caseIds: [promoted.evalCase.entityId],
 			trials: 3,
 		});
@@ -174,7 +174,7 @@ describe("readEvalResults", () => {
 
 		const results = await readEvalResults({
 			organizationId,
-			behaviorId,
+			automationId,
 			trials: 2,
 		});
 		const row = results.cases.find(
@@ -212,7 +212,7 @@ describe("readEvalResults", () => {
 
 		const results = await readEvalResults({
 			organizationId,
-			behaviorId,
+			automationId,
 			trials: 2,
 		});
 		const row = results.cases.find(
@@ -233,7 +233,7 @@ describe("readEvalResults", () => {
 
 	test("a changed metric set between suites is not read as a regression", async () => {
 		// A quality score is a pass fraction over the verdicts that happened to
-		// run. If the judge is lost between suites, the same behavior scores
+		// run. If the judge is lost between suites, the same Automation scores
 		// [pass,fail,judge-pass]=0.667 then [pass,fail]=0.5 — a denominator
 		// change that must NOT read as a regression.
 		const promoted = await promoteEvalCase({
@@ -285,7 +285,7 @@ describe("readEvalResults", () => {
 
 		const results = await readEvalResults({
 			organizationId,
-			behaviorId,
+			automationId,
 			trials: 2,
 		});
 		const row = results.cases.find(
@@ -295,7 +295,7 @@ describe("readEvalResults", () => {
 		if (!row) return;
 
 		// The numbers are real: 0.5 against 1.0. But the denominators differ, so
-		// this is not a signal about the Behavior.
+		// this is not a signal about the Automation.
 		expect(row.latest).toBe(0.5);
 		expect(row.previous).toBe(1);
 		expect(row.delta).toBeNull();
@@ -336,7 +336,7 @@ describe("readEvalResults", () => {
 
 		const results = await readEvalResults({
 			organizationId,
-			behaviorId,
+			automationId,
 			trials: 2,
 		});
 		const row = results.cases.find(
@@ -414,7 +414,7 @@ describe("readEvalResults", () => {
 
 		// Deliberately the DEFAULT trials (3), the configuration that used to
 		// split the 5-batch and report a regression.
-		const results = await readEvalResults({ organizationId, behaviorId });
+		const results = await readEvalResults({ organizationId, automationId });
 		const row = results.cases.find(
 			(c) => c.caseId === promoted.evalCase.entityId,
 		);
@@ -432,7 +432,7 @@ describe("readEvalResults", () => {
 
 	test("a never-scored case reports null rather than zero", async () => {
 		// A case with no runs yet must not read as "scored 0" — that would drag
-		// the Behavior's summary down for work nobody has measured.
+		// the Automation's summary down for work nobody has measured.
 		const promoted = await promoteEvalCase({
 			sourceRunId,
 			caseKey: "unscored",
@@ -441,7 +441,7 @@ describe("readEvalResults", () => {
 		expect(promoted.ok).toBe(true);
 		if (!promoted.ok) return;
 
-		const results = await readEvalResults({ organizationId, behaviorId });
+		const results = await readEvalResults({ organizationId, automationId });
 		const row = results.cases.find(
 			(c) => c.caseId === promoted.evalCase.entityId,
 		);

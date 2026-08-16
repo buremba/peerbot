@@ -130,7 +130,7 @@ export interface AgentConfigStore {
 /**
  * Platform wiring storage.
  * Runtime connections (Telegram, Slack, etc.). Channel subscriptions are
- * canonical Behaviors and are resolved by the server's Behavior store.
+ * canonical Automations and are resolved by the server's Automation store.
  */
 export interface AgentConnectionStore {
   getConnection(connectionId: string): Promise<StoredConnection | null>;

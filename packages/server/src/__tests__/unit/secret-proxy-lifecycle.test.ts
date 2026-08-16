@@ -6,7 +6,7 @@
  *    threshold (compromised-worker probe / log-spam guard)
  *  - a valid placeholder always resolves and is swapped into the auth header
  *  - a placeholder bound to agent A used on agent B's URL is still 403
- *    (cross-agent credential theft — unchanged behaviour, pinned here)
+ *    (cross-agent credential theft — unchanged semantics, pinned here)
  */
 
 import { randomBytes } from "node:crypto";

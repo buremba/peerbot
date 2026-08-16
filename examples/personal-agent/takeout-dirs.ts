@@ -10,7 +10,7 @@
  * empty directory until it was repaired by hand.
  *
  * Lives in its own module (rather than inline in `lobu.config.ts`) so the
- * behaviour is testable without importing `@lobu/cli`.
+ * resolution logic is testable without importing `@lobu/cli`.
  */
 
 /**

@@ -34,11 +34,11 @@ import {
 } from './types';
 import { buildEntityTypesFilterClause } from './entity-types-filter';
 import {
-  buildAnalyzedByBehaviorClause,
+  buildAnalyzedByAutomationClause,
   buildConnectionVisibilityClause,
-  buildExcludeWatcherClause,
+  buildExcludeAutomationClause,
   buildOrgScopeWhere,
-  buildProducedByBehaviorClause,
+  buildProducedByAutomationClause,
 } from './visibility';
 import {
   buildSemanticTypeFilterSql,
@@ -52,7 +52,7 @@ import {
  *
  * The two branches differ only in how they assemble `whereExpr` (the full
  * WHERE body, excluding the date cursor clause) and whether they need the
- * `watcher_window_events` join (`joinSql`). Everything past the count — the
+ * `automation_window_events` join (`joinSql`). Everything past the count — the
  * empty-result short-circuit, the `candidate_set/result_set` vs `result_set`
  * CTE pair, param indexing, dedup, and the response shape — is identical, so
  * it lives here. The generated SQL and parameter binding are unchanged.
@@ -342,7 +342,7 @@ export async function listContentInternal(
     if (options.window_id != null) {
       baseParams.push(options.window_id);
       baseConditions.push(
-        `EXISTS (SELECT 1 FROM watcher_window_events iwf WHERE iwf.event_id = f.id AND iwf.window_id = $${baseParams.length})`
+        `EXISTS (SELECT 1 FROM automation_window_events iwf WHERE iwf.event_id = f.id AND iwf.window_id = $${baseParams.length})`
       );
     }
     if (options.engagement_min != null) {
@@ -403,18 +403,18 @@ export async function listContentInternal(
     baseConditions.push(...classificationExists.clauses);
     const whereSql = baseConditions.length > 0 ? baseConditions.join(' AND ') : '1=1';
     const filterParamsBeforeExclude = [...baseParams, ...classificationExists.params];
-    const excludeClause = buildExcludeWatcherClause(
-      options.exclude_watcher_id,
+    const excludeClause = buildExcludeAutomationClause(
+      options.exclude_automation_id,
       filterParamsBeforeExclude.length + 1
     );
     const paramsBeforeProduced = [...filterParamsBeforeExclude, ...excludeClause.params];
-    const producedClause = buildProducedByBehaviorClause(
-      options.produced_by_behavior_id,
+    const producedClause = buildProducedByAutomationClause(
+      options.produced_by_automation_id,
       paramsBeforeProduced.length + 1
     );
     const paramsBeforeAnalyzed = [...paramsBeforeProduced, ...producedClause.params];
-    const analyzedClause = buildAnalyzedByBehaviorClause(
-      options.analyzed_by_watcher_id,
+    const analyzedClause = buildAnalyzedByAutomationClause(
+      options.analyzed_by_automation_id,
       paramsBeforeAnalyzed.length + 1
     );
     const filterParamsBeforeVisibility = [...paramsBeforeAnalyzed, ...analyzedClause.params];
@@ -498,21 +498,21 @@ export async function listContentInternal(
     baseParamIndex: paramsAfterEntityLink.length + 1,
   });
   const paramsBeforeExclude = [...paramsAfterEntityLink, ...orgScope.params];
-  const excludeClause = buildExcludeWatcherClause(
-    options.exclude_watcher_id,
+  const excludeClause = buildExcludeAutomationClause(
+    options.exclude_automation_id,
     paramsBeforeExclude.length + 1
   );
   const paramsBeforeProducedFilter = [...paramsBeforeExclude, ...excludeClause.params];
-  const producedFilterClause = buildProducedByBehaviorClause(
-    options.produced_by_behavior_id,
+  const producedFilterClause = buildProducedByAutomationClause(
+    options.produced_by_automation_id,
     paramsBeforeProducedFilter.length + 1
   );
   const paramsBeforeAnalyzedFilter = [
     ...paramsBeforeProducedFilter,
     ...producedFilterClause.params,
   ];
-  const analyzedFilterClause = buildAnalyzedByBehaviorClause(
-    options.analyzed_by_watcher_id,
+  const analyzedFilterClause = buildAnalyzedByAutomationClause(
+    options.analyzed_by_automation_id,
     paramsBeforeAnalyzedFilter.length + 1
   );
   const paramsBeforeVisibility = [...paramsBeforeAnalyzedFilter, ...analyzedFilterClause.params];

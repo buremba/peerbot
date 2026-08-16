@@ -102,11 +102,11 @@ import {
 	publicRestEventsStream,
 	publicRestGetConnector,
 	publicRestGetOrganization,
-	publicRestGetBehaviors,
+	publicRestGetAutomations,
 	publicRestListClassifiers,
 	publicRestListConnectors,
 	publicRestSearchKnowledge,
-	restGetBehaviors,
+	restGetAutomations,
 	restHealth,
 	restListTools,
 	restSearchKnowledge,
@@ -813,7 +813,7 @@ import {
 	completeActionRun,
 	completeAuthRun,
 	completeEmbeddings,
-	completeBehaviorRun,
+	completeAutomationRun,
 	completeWorkerJob,
 	createMyDeviceAuthProfile,
 	createMyDeviceFeed,
@@ -833,7 +833,7 @@ import {
 	pollWorkerJob,
 	postAuthSignal,
 	streamContent,
-	triggerBehaviorForDevice,
+	triggerAutomationForDevice,
 	updateDeviceWorkerOrg,
 } from "./worker-api";
 
@@ -856,7 +856,7 @@ import {
 //      reach into org B.
 //
 // In dev (no WORKER_API_TOKEN configured) and with no user auth, requests pass
-// through unauthenticated — the existing local-dev behavior.
+// through unauthenticated — the existing local-dev access semantics.
 app.use("/api/workers/*", async (c, next) => {
 	const expected = c.env.WORKER_API_TOKEN;
 	const provided = c.req.header("Authorization")?.replace("Bearer ", "");
@@ -916,24 +916,24 @@ app.use("/api/workers/*", async (c, next) => {
 				"/api/workers/me/auth-profiles",
 			);
 			const isFeedSubpath = requestPath.startsWith("/api/workers/me/feeds");
-			// /api/workers/me/runs/<runId>/complete-behavior — device-side Behavior
+			// /api/workers/me/runs/<runId>/complete-automation — device-side Automation
 			// completion endpoint added in #798. The handler does its own
 			// `authorizeRunForWorker` claim-ownership check, so an org-scope
 			// gate here would just block legitimate posts from the bound device.
-			const isBehaviorCompleteSubpath =
-				/^\/api\/workers\/me\/runs\/\d+\/complete-behavior$/.test(requestPath);
-			// /api/workers/me/behaviors/<behavior_id>/trigger — device-side manual
+			const isAutomationCompleteSubpath =
+				/^\/api\/workers\/me\/runs\/\d+\/complete-automation$/.test(requestPath);
+			// /api/workers/me/automations/<automation_id>/trigger — device-side manual
 			// re-run endpoint. The handler does its own bound-workerId →
 			// device_worker_id match, so the org-scope gate here would block
 			// legitimate triggers from the pinned device.
-			const isBehaviorTriggerSubpath =
-				/^\/api\/workers\/me\/behaviors\/\d+\/trigger$/.test(requestPath);
+			const isAutomationTriggerSubpath =
+				/^\/api\/workers\/me\/automations\/\d+\/trigger$/.test(requestPath);
 			if (
 				!allowedPathsForUserWorker.has(requestPath) &&
 				!isAuthProfileSubpath &&
 				!isFeedSubpath &&
-				!isBehaviorCompleteSubpath &&
-				!isBehaviorTriggerSubpath
+				!isAutomationCompleteSubpath &&
+				!isAutomationTriggerSubpath
 			) {
 				return c.json(
 					{ error: "Endpoint not available to user-scoped workers" },
@@ -1009,10 +1009,10 @@ import { collapseSessionCookies, resolveSession } from './auth/resolve-session';
 
 app.post("/api/workers/dispatch-chrome-action", dispatchChromeAction);
 app.post("/api/workers/complete-embeddings", completeEmbeddings);
-app.post("/api/workers/me/runs/:runId/complete-behavior", completeBehaviorRun);
+app.post("/api/workers/me/runs/:runId/complete-automation", completeAutomationRun);
 app.post(
-	"/api/workers/me/behaviors/:behavior_id/trigger",
-	triggerBehaviorForDevice,
+	"/api/workers/me/automations/:automation_id/trigger",
+	triggerAutomationForDevice,
 );
 app.post("/api/workers/fetch-events", fetchEventsForEmbedding);
 app.post("/api/workers/emit-auth-artifact", emitAuthArtifact);
@@ -1170,8 +1170,8 @@ app.patch(
 	mcpAuth,
 	restUpdateContentClassification,
 );
-app.get("/api/:orgSlug/behaviors", mcpAuth, restGetBehaviors);
-app.get("/api/:orgSlug/public/behaviors", publicRestGetBehaviors);
+app.get("/api/:orgSlug/automations", mcpAuth, restGetAutomations);
+app.get("/api/:orgSlug/public/automations", publicRestGetAutomations);
 
 async function handleContentDistribution(c: Context<{ Bindings: Env }>) {
 	const sql = getDb();
@@ -1348,8 +1348,8 @@ app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 	//  - KIND-WIDE agent rows (principal_kind 'agent', principal_id NULL) — an
 	//    "all agents" policy that applies to every agent. Omitting these made the
 	//    matrix show/permit values LOOSER than the resolver enforces.
-	// Agent = rows pinned to THIS agent id (the editable overrides). A watcher-kind
-	// row is NOT the agent's envelope (watchers inherit the agent envelope in
+	// Agent = rows pinned to THIS agent id (the editable overrides). An automation-kind
+	// row is NOT the agent's envelope (automations inherit the agent envelope in
 	// autonomous mode; they have no separate principal here).
 	const floor = all.filter(
 		(p) =>

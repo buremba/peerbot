@@ -42,7 +42,7 @@ function reasonFor(
 	entityTypeSlug: string,
 	name: string | undefined,
 ): string {
-	const actor = attribution === "behavior" ? "A Behavior" : "An agent";
+	const actor = attribution === "automation" ? "An Automation" : "An agent";
 	const label = name ? `${entityTypeSlug} "${name}"` : entityTypeSlug;
 	return `${actor} proposes ${verb} ${label}.`;
 }
@@ -51,7 +51,7 @@ function fieldChangeReason(
 	attribution: MutationAttribution,
 	fields: string[],
 ): string {
-	const actor = attribution === "behavior" ? "A Behavior" : "An agent";
+	const actor = attribution === "automation" ? "An Automation" : "An agent";
 	return `${actor} proposes updating ${fields.join(", ")} on this entity.`;
 }
 
@@ -59,7 +59,7 @@ export function buildCreateDeferral(args: {
 	entityData: EntityData;
 	proposal: Record<string, unknown>;
 	attribution: MutationAttribution;
-	watcherId?: number | null;
+	automationId?: number | null;
 	windowId?: number | null;
 }): DeferredMutation {
 	const name =
@@ -74,7 +74,7 @@ export function buildCreateDeferral(args: {
 			proposeEntityCreate(ctx, {
 				entity_data: args.entityData,
 				proposal: args.proposal,
-				watcher_id: args.watcherId ?? null,
+				automation_id: args.automationId ?? null,
 				window_id: args.windowId ?? null,
 				attribution: args.attribution,
 				reason: reasonFor(
@@ -92,7 +92,7 @@ export function buildFieldChangeDeferral(args: {
 	fields: Record<string, unknown>;
 	current: Record<string, unknown>;
 	attribution: MutationAttribution;
-	watcherId?: number | null;
+	automationId?: number | null;
 	windowId?: number | null;
 }): DeferredMutation {
 	return {
@@ -107,7 +107,7 @@ export function buildFieldChangeDeferral(args: {
 				entity_id: args.entityId,
 				fields: args.fields,
 				current: args.current,
-				watcher_id: args.watcherId ?? null,
+				automation_id: args.automationId ?? null,
 				window_id: args.windowId ?? null,
 				attribution: args.attribution,
 				reason: fieldChangeReason(args.attribution, Object.keys(args.fields)),
@@ -124,11 +124,11 @@ async function evaluate(
 	| UpdateDecision
 	| null
 > {
-	// A watcher acting under its owning agent folds the AGENT'S rows in too, so
-	// the agent envelope binds while a pre-existing watcher-specific restriction
+	// An automation acting under its owning agent folds the AGENT'S rows in too, so
+	// the agent envelope binds while a pre-existing automation-specific restriction
 	// can only tighten (the agent envelope never loosens it away).
 	const ownerAgentId = req.ownerAgentId ?? null;
-	// A watcher whose owning agent couldn't be resolved fails closed downstream.
+	// An automation whose owning agent couldn't be resolved fails closed downstream.
 	const ownerResolved = req.ownerResolved ?? true;
 
 	if (req.action === "update") {
@@ -189,7 +189,7 @@ async function evaluate(
 				entityData: req.entityData,
 				proposal: req.proposal,
 				attribution: req.attribution,
-				watcherId: req.watcherId,
+				automationId: req.automationId,
 				windowId: req.windowId,
 			}),
 		};
@@ -222,7 +222,7 @@ async function evaluate(
 						parent_id?: number | null;
 						metadata?: Record<string, unknown> | null;
 					},
-					watcher_id: req.watcherId ?? null,
+					automation_id: req.automationId ?? null,
 					window_id: req.windowId ?? null,
 					attribution: req.attribution,
 					reason: reasonFor(

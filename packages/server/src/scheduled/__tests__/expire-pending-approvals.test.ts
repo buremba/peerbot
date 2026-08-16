@@ -59,7 +59,7 @@ afterEach(async () => {
 interface SeedApprovalOpts {
 	approvalStatus: "pending" | "approved" | "rejected" | "auto";
 	ageDays: number;
-	runType?: "action" | "internal" | "sync" | "behavior";
+	runType?: "action" | "internal" | "sync" | "automation";
 	status?: string;
 	organizationId?: string;
 }

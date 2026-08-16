@@ -25,7 +25,7 @@ describe("classifyProviderHealthStatus", () => {
   test("reports no health signal for caller-fault statuses", () => {
     // The regression this guards: a malformed request or a typo'd model id must
     // never mark the provider unhealthy — the row is how the settings page
-    // explains quiet Behaviors, and one bad caller must not label a healthy
+    // explains quiet Automations, and one bad caller must not label a healthy
     // provider broken.
     expect(classifyProviderHealthStatus(400)).toBeUndefined();
     expect(classifyProviderHealthStatus(404)).toBeUndefined();

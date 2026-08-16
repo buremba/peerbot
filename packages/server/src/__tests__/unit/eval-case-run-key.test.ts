@@ -3,7 +3,7 @@
  *
  * This pair is the ONLY join between a scored eval run and the case it
  * measures — there is no column behind it. `createEvalRun` stamps
- * `idempotency_key = 'behavior_eval:<sourceRunId>:<caseKey>'`, `promoteEvalCase`
+ * `idempotency_key = 'automation_eval:<sourceRunId>:<caseKey>'`, `promoteEvalCase`
  * claims `entity_identities` under '<sourceRunId>:<caseKey>', and the scorer
  * recovers one from the other. When they drift nothing throws: scores land
  * unanchored, the suite reports an empty case, and no error appears anywhere.
@@ -18,7 +18,7 @@ import {
 } from "../../runs/eval-cases";
 
 const key = (sourceRunId: number, caseKey: string) =>
-	`behavior_eval:${sourceRunId}:${caseKey}`;
+	`automation_eval:${sourceRunId}:${caseKey}`;
 
 describe("trialCaseKey", () => {
 	test("trial 0 keeps the bare key", () => {
@@ -61,9 +61,9 @@ describe("evalCaseIdentifierFromRunKey", () => {
 	});
 
 	test("rejects a key that is not an eval run's", () => {
-		// Guards against scoring anchoring itself to a live Behavior run's key.
-		expect(evalCaseIdentifierFromRunKey("watcher:41:weekly")).toBeNull();
-		expect(evalCaseIdentifierFromRunKey("behavior_eval:")).toBeNull();
+		// Guards against scoring anchoring itself to a live Automation run's key.
+		expect(evalCaseIdentifierFromRunKey("automation:41:weekly")).toBeNull();
+		expect(evalCaseIdentifierFromRunKey("automation_eval:")).toBeNull();
 		expect(evalCaseIdentifierFromRunKey(null)).toBeNull();
 	});
 });

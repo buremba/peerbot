@@ -25,7 +25,7 @@ import {
 
 describe('query_sql unknown-table errors are never rendered as an empty result', () => {
   it('shared validation seam throws (not returns empty) for an unknown table', () => {
-    // This is the behaviour query_sdk/client.query already exposes verbatim.
+    // This is the contract query_sdk/client.query already exposes verbatim.
     expect(() =>
       validateAndScopeQuery('SELECT platform FROM conversations', 'org_1', {
         safeColumns: SAFE_COLUMN_DEFS,

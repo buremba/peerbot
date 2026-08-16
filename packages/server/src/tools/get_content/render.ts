@@ -296,8 +296,8 @@ export async function buildContentItems(opts: {
       feed_id: f.feed_id == null ? null : Number(f.feed_id),
       feed_key: f.feed_key ?? null,
       feed_name: f.feed_name ?? null,
-      behavior_id: f.behavior_id == null ? null : Number(f.behavior_id),
-      behavior_name: f.behavior_name ?? null,
+      automation_id: f.automation_id == null ? null : Number(f.automation_id),
+      automation_name: f.automation_name ?? null,
       agent_id: includePrivateAttribution
         ? (f.agent_id ?? attribution?.agent_id ?? null)
         : null,

@@ -13,7 +13,7 @@ import {
 import { isSkippedUnderDryRun } from "../../sandbox/run-script";
 
 const base = {
-	channelId: "api_watcher_7",
+	channelId: "api_automation_7",
 	agentId: "agent_1",
 	organizationId: "org_1",
 	platform: "api",
@@ -28,10 +28,10 @@ describe("buildWorkerTokenClaims — executionMode", () => {
 		expect(claims.executionMode).toBe("capture");
 	});
 
-	test("a live Behavior run carries no claim", () => {
+	test("a live Automation run carries no claim", () => {
 		const claims = buildWorkerTokenClaims({
 			...base,
-			platformMetadata: { source: "watcher-run" },
+			platformMetadata: { source: "automation-run" },
 		});
 		expect(claims.executionMode).toBeUndefined();
 	});
@@ -62,7 +62,7 @@ describe("buildWorkerTokenClaims — executionMode", () => {
 	});
 });
 
-describe("buildWorkerTokenClaims — behaviorRunId", () => {
+describe("buildWorkerTokenClaims — automationRunId", () => {
 	// The claim addresses the row the internal-route guard writes its capture
 	// record onto. It rides the token so the guard never has to re-derive a run
 	// id from the conversationId string.
@@ -71,10 +71,10 @@ describe("buildWorkerTokenClaims — behaviorRunId", () => {
 			...base,
 			platformMetadata: {
 				executionMode: "capture",
-				intent: { kind: "behavior_run", runId: 874626, behaviorId: 5 },
+				intent: { kind: "automation_run", runId: 874626, automationId: 5 },
 			},
 		});
-		expect(claims.behaviorRunId).toBe(874626);
+		expect(claims.automationRunId).toBe(874626);
 	});
 
 	// Live tokens stay byte-identical to what they were before this claim
@@ -84,27 +84,27 @@ describe("buildWorkerTokenClaims — behaviorRunId", () => {
 		const claims = buildWorkerTokenClaims({
 			...base,
 			platformMetadata: {
-				intent: { kind: "behavior_run", runId: 874626, behaviorId: 5 },
+				intent: { kind: "automation_run", runId: 874626, automationId: 5 },
 			},
 		});
-		expect(claims.behaviorRunId).toBeUndefined();
+		expect(claims.automationRunId).toBeUndefined();
 	});
 
 	test.each([
 		["absent intent", undefined],
-		["no runId", { kind: "behavior_run", behaviorId: 5 }],
+		["no runId", { kind: "automation_run", automationId: 5 }],
 		["string runId", { runId: "874626" }],
 		["zero", { runId: 0 }],
 		["negative", { runId: -1 }],
 		["fractional", { runId: 1.5 }],
-		["not an object", "behavior_run"],
+		["not an object", "automation_run"],
 		["null", null],
 	])("%s yields no run id", (_label, intent) => {
 		const claims = buildWorkerTokenClaims({
 			...base,
 			platformMetadata: { executionMode: "capture", intent },
 		});
-		expect(claims.behaviorRunId).toBeUndefined();
+		expect(claims.automationRunId).toBeUndefined();
 	});
 });
 
@@ -159,7 +159,7 @@ describe("resolveSandboxDryRun — capture forcing", () => {
 
 describe("the finalize call survives the capture skip", () => {
 	// The blocker this pins: the dispatch prompt tells an eval to finalize via
-	// `client.behaviors.completeWindow`, which is access 'write'. The sandbox's
+	// `client.automations.completeWindow`, which is access 'write'. The sandbox's
 	// blanket dry-run skip would swallow exactly that call, so the run ends with
 	// no window, gets nudged into a SECOND full replay, and is then failed with
 	// "finished without calling run_sdk" — about a call it did make.
@@ -172,7 +172,7 @@ describe("the finalize call survives the capture skip", () => {
 		});
 
 	test("completeWindow is dispatched, not skipped, under capture", () => {
-		expect(capture("behaviors.completeWindow")).toBe(false);
+		expect(capture("automations.completeWindow")).toBe(false);
 	});
 
 	test("every other write still captures", () => {
@@ -190,7 +190,7 @@ describe("the finalize call survives the capture skip", () => {
 				dryRun: true,
 				dryRunDispatchPaths: undefined,
 				access: "write",
-				path: "behaviors.completeWindow",
+				path: "automations.completeWindow",
 			}),
 		).toBe(true);
 	});

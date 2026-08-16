@@ -332,7 +332,7 @@ pre-pr:
 	@bun run knip --include files
 	@echo "🔎 [4/7] Lint/format (biome)..."
 	@bun run check
-	@echo "🔎 [5/7] Exposed surface naming (no agent-facing 'watcher')..."
+	@echo "🔎 [5/7] Exposed surface naming (Automation is canonical)..."
 	@bun scripts/check-exposed-surface-naming.ts
 	@echo "🔎 [6/7] Gateway LLM calls (no unapproved one-off clients)..."
 	@node scripts/check-gateway-llm-calls.mjs

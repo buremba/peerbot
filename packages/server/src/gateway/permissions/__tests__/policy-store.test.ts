@@ -306,7 +306,7 @@ describe("egressGuardrailsToPolicyBundle — equivalence with the legacy path", 
 
     expect(fromNew).toBeDefined();
     expect(fromOld).toBeDefined();
-    // Behaviour-preserving for EgressJudge.decide: identical composed policy,
+    // Semantics-preserving for EgressJudge.decide: identical composed policy,
     // cache-keying hash, judge name, and per-judge model.
     expect(fromNew!.policy).toBe(fromOld!.policy);
     expect(fromNew!.policyHash).toBe(fromOld!.policyHash);

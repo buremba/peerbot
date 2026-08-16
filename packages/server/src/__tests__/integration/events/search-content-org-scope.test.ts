@@ -115,8 +115,8 @@ describe('searchContentByText > org-scope visibility', () => {
     ).id;
 
     // 5. Cross-linked event: stamped to otherOrg but its entity_ids points
-    //    at callerEntity. Pre-existing entity-bridge behavior says caller
-    //    sees it. Pin that behavior didn't regress.
+    //    at callerEntity. Pre-existing entity-bridge logic says caller
+    //    sees it. Pin that this contract didn't regress.
     crossLinkedFromOtherEventId = (
       await createTestEvent({
         organization_id: otherOrg.id,

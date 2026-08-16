@@ -40,7 +40,7 @@ export interface WorkerTokenData {
   timestamp: number;
   platform?: string;
   /**
-   * Headless run origin (`platformMetadata.source`, e.g. watcher-run /
+   * Headless run origin (`platformMetadata.source`, e.g. automation-run /
    * scheduled-job / connector-repair / internal). Carried so interaction
    * cards emitted from a headless turn can be stamped headless and exempted
    * from the SSE-owner gate — no browser SSE connection exists on any pod for
@@ -57,12 +57,12 @@ export interface WorkerTokenData {
    */
   executionMode?: "live" | "capture";
   /**
-   * The Behavior `runs.id` a capture session records its suppressed side
-   * effects onto. NOT {@link runId} — a Behavior execution writes two rows and
+   * The Automation `runs.id` a capture session records its suppressed side
+   * effects onto. NOT {@link runId} — an Automation execution writes two rows and
    * that one is the per-turn chat_message run. Set only alongside
    * `executionMode: 'capture'`.
    */
-  behaviorRunId?: number;
+  automationRunId?: number;
   sessionKey?: string;
   traceId?: string;
   /** Unique token ID — enables targeted revocation. */
@@ -159,8 +159,8 @@ export interface WorkerTokenOptions {
   source?: string;
   /** Side-effect mode — see WorkerTokenData.executionMode. */
   executionMode?: "live" | "capture";
-  /** Behavior run this capture session replays — see WorkerTokenData.behaviorRunId. */
-  behaviorRunId?: number;
+  /** Automation run this capture session replays — see WorkerTokenData.automationRunId. */
+  automationRunId?: number;
   sessionKey?: string;
   traceId?: string;
   /**
@@ -222,7 +222,7 @@ function generateToken(
     platform: options.platform,
     source: options.source,
     executionMode: options.executionMode,
-    behaviorRunId: options.behaviorRunId,
+    automationRunId: options.automationRunId,
     sessionKey: options.sessionKey,
     traceId: options.traceId,
     jti,
@@ -355,17 +355,17 @@ function verifyToken(
         return null;
       }
     }
-    // Same shape rule for `behaviorRunId` — it addresses the row the capture
+    // Same shape rule for `automationRunId` — it addresses the row the capture
     // guard writes its record onto, so a non-integer must be rejected here
     // rather than reaching a query as a coerced value.
-    if (data.behaviorRunId !== undefined) {
+    if (data.automationRunId !== undefined) {
       if (
-        typeof data.behaviorRunId !== "number" ||
-        !Number.isInteger(data.behaviorRunId) ||
-        data.behaviorRunId <= 0
+        typeof data.automationRunId !== "number" ||
+        !Number.isInteger(data.automationRunId) ||
+        data.automationRunId <= 0
       ) {
         logger.error(
-          "Worker token rejected: behaviorRunId must be a positive integer"
+          "Worker token rejected: automationRunId must be a positive integer"
         );
         return null;
       }
@@ -386,7 +386,7 @@ function verifyToken(
     }
     // The capture pair is inseparable, for the same reason the admin pair
     // below is: the mode says the run must not perform side effects and
-    // `behaviorRunId` says which row records what it tried to do. A capture
+    // `automationRunId` says which row records what it tried to do. A capture
     // run that cannot record is the state evals must never reach — its side
     // effects are suppressed but nothing says what was suppressed, so the
     // replay scores as clean. A diverged pair is either a forged token or a
@@ -397,10 +397,10 @@ function verifyToken(
     // honouring the pair would run an eval nothing can score.
     if (
       (data.executionMode === "capture") !==
-      (data.behaviorRunId !== undefined)
+      (data.automationRunId !== undefined)
     ) {
       logger.error(
-        "Worker token rejected: executionMode 'capture' and behaviorRunId must be set together"
+        "Worker token rejected: executionMode 'capture' and automationRunId must be set together"
       );
       return null;
     }

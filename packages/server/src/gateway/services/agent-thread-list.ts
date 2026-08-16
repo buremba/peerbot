@@ -31,13 +31,13 @@ export interface AgentThreadSummary {
 	locationLabel?: string | null;
 	createdAt: number;
 	updatedAt: number;
-	/** "web" for the app's own threads; "behavior" for behavior activity; otherwise
+	/** "web" for the app's own threads; "automation" for automation activity; otherwise
 	 *  the source platform derived from the conversation id prefix (slack, …). */
 	platform: string;
 	/** Raw conversation id — used to read a platform conversation read-only. */
 	conversationId: string;
-	/** Set on `platform: "behavior"` entries — routes to the behavior's page. */
-	behaviorId?: number;
+	/** Set on `platform: "automation"` entries — routes to the automation's page. */
+	automationId?: number;
 }
 
 /** `{platform}:{team}:{channel}` — team-scoped so the same channel id in two
@@ -269,39 +269,39 @@ export async function listAgentThreads(args: {
 		}
 	}
 
-	// Behavior activity comes from bounded `watchers` config rather than
-	// aggregating append-only transcript history. A Behavior is not a conversation,
-	// so it keeps the existing `watcher_<id>` route key without a `conversations`
+	// Automation activity comes from bounded `automations` config rather than
+	// aggregating append-only transcript history. An Automation is not a conversation,
+	// so it keeps the existing `automation_<id>` route key without a `conversations`
 	// row. Reading status and name live also drops archived rows immediately.
 	if (scope === "all") {
 		const sql = getDb();
-		const behaviorRows = await sql<{
+		const automationRows = await sql<{
 			id: number;
 			name: string | null;
 			last_run_completed_at: Date;
 		}>`
       SELECT id, name, last_run_completed_at
-      FROM public.watchers
+      FROM public.automations
       WHERE organization_id = ${organizationId}
         AND agent_id = ${agentId}
         AND status = 'active'
         AND last_run_completed_at IS NOT NULL
       ORDER BY last_run_completed_at DESC
     `;
-		for (const row of behaviorRows) {
-			// `watcher_<id>` is the key the panel has always rendered and routed on.
-			const key = `watcher_${row.id}`;
+		for (const row of automationRows) {
+			// `automation_<id>` is the key the panel has always rendered and routed on.
+			const key = `automation_${row.id}`;
 			const at = row.last_run_completed_at.getTime();
 			byKey.set(key, {
 				id: key,
-				title: row.name ?? `Behavior ${row.id}`,
-				// Preserves the derived contract: a Behavior entry represents latest
+				title: row.name ?? `Automation ${row.id}`,
+				// Preserves the derived contract: an Automation entry represents latest
 				// activity, so both timestamps track the last completed run.
 				createdAt: at,
 				updatedAt: at,
-				platform: "behavior",
+				platform: "automation",
 				conversationId: key,
-				behaviorId: row.id,
+				automationId: row.id,
 			});
 		}
 	}

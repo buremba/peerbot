@@ -124,7 +124,7 @@ export type SearchMemoryResponses = {
         connection_count: number;
         active_connection_count: number;
         children_count: number;
-        behavior_count: number;
+        automation_count: number;
       };
       match_score: number;
       match_reason: string;
@@ -147,7 +147,7 @@ export type SearchMemoryResponses = {
         connection_count: number;
         active_connection_count: number;
         children_count: number;
-        behavior_count: number;
+        automation_count: number;
       };
       match_score: number;
       match_reason: string;
@@ -294,13 +294,13 @@ export type SaveMemoryData = {
      */
     supersedes_event_id?: number;
     /**
-     * Attribution source when save is triggered by a Behavior reaction
+     * Attribution source when save is triggered by an Automation reaction
      */
-    behavior_source?: {
+    automation_source?: {
       /**
-       * Behavior that triggered this save
+       * Automation that triggered this save
        */
-      behavior_id: number;
+      automation_id: number;
       /**
        * Window that triggered this save
        */
@@ -375,7 +375,7 @@ export type SaveMemoryResponse = SaveMemoryResponses[keyof SaveMemoryResponses];
 export type SearchSdkData = {
   body: {
     /**
-     * SDK method or runtime-helper discovery query. Use a namespace (e.g. 'behaviors'), one or more dotted paths separated by whitespace (e.g. 'behaviors.create ctx.sleep'), an optional client. prefix, or free text. Pass mode='read' for query_sdk-safe methods only; omit mode for your full run_sdk tier. Namespaces: agents, authProfiles, behaviors, catalog, classifiers, connections, conversations, ctx, entities, entitySchema, feeds, knowledge, metrics, notifications, operations, organizations, schedules, viewTemplates.
+     * SDK method or runtime-helper discovery query. Use a namespace (e.g. 'automations'), one or more dotted paths separated by whitespace (e.g. 'automations.create ctx.sleep'), an optional client. prefix, or free text. Pass mode='read' for query_sdk-safe methods only; omit mode for your full run_sdk tier. Namespaces: agents, authProfiles, automations, catalog, classifiers, connections, conversations, ctx, entities, entitySchema, feeds, knowledge, metrics, notifications, operations, organizations, schedules, viewTemplates.
      */
     query: string;
     /**
@@ -451,7 +451,7 @@ export type QuerySdkData = {
      */
     timeout_ms?: number;
     /**
-     * Optional human-friendly heading for this result (e.g. "Company pipeline"). When set, the UI renders it above the execution status.
+     * Human-friendly heading for this result (e.g. "Companies missing a domain"). The UI renders it above the execution status; without it the result card has no subject line. Set it whenever a person will read the result.
      */
     title?: string;
   };
@@ -496,124 +496,70 @@ export type QuerySdkResponses = {
      */
     success: boolean;
     /**
-     * The script's default-export return value. Omitted when the return exceeded the output cap (see return_value_preview).
+     * The script's default-export return value. Omitted when it exceeded the output cap.
      */
     return_value?: unknown;
     /**
-     * UTF-8-safe head of the serialized return value when it exceeded the output cap; return_value is then omitted. This is a preview, not the value — rerun with filtering / LIMIT / OFFSET, or pull slices with client.query / query_sql. Don't re-return the whole set.
+     * UTF-8-safe head of an oversized serialized return value. Rerun with filtering or pagination for the rest.
      */
     return_value_preview?: string;
     /**
-     * Present with return_value_preview: the original and preview byte sizes.
+     * Present when return_value_preview is only a partial result.
      */
     return_truncated?: {
-      /**
-       * Serialized size of the original return value.
-       */
       total_bytes: number;
-      /**
-       * UTF-8 size of the preview string.
-       */
       kept_bytes: number;
     };
     /**
-     * console.log/warn/error output captured from the script.
-     */
-    logs: Array<{
-      level: "log" | "warn" | "error";
-      message: string;
-      ts: number;
-    }>;
-    /**
-     * Present when success=false: the thrown error, with script position.
+     * Concise script failure information, without stack traces or internal diagnostics.
      */
     error?: {
       name: string;
       message: string;
-      /**
-       * Redacted structured business-error details returned by the SDK action.
-       */
-      details?: unknown;
-      stack?: string;
-      line?: number;
-      column?: number;
-      /**
-       * Structured error code (lobu#2051 Item 2), e.g. UPSTREAM_TIMEOUT / RATE_LIMITED / VALIDATION.
-       */
       code?: string;
-      /**
-       * Whether re-running the identical script may succeed. Advisory — run_sdk is never auto-retried (may have side effects).
-       */
       retryable?: boolean;
     };
-    duration_ms: number;
     /**
-     * Number of SDK calls the script made (dispatched + skipped).
-     */
-    sdk_calls: number;
-    /**
-     * Total calls skipped because dry_run=true — the full dry-run surface, even when side_effect_preview is truncated.
+     * Number of write/admin/external calls skipped by dry-run.
      */
     skipped_calls: number;
     /**
-     * Every dispatched SDK call, in order. Bounded (tail-kept): when the total exceeds the trace cap the oldest entries are dropped and reported in sdk_call_trace_truncated; a single entry larger than the cap is dropped and counted too.
-     */
-    sdk_call_trace: Array<{
-      /**
-       * Dotted SDK method path (e.g. entities.list).
-       */
-      path: string;
-      /**
-       * Org slugs traversed via client.org(...) before the call, if any.
-       */
-      orgPath: Array<string>;
-      /**
-       * Access class of the method.
-       */
-      access: "read" | "write" | "external" | "admin" | "unknown";
-      /**
-       * Call arguments (redacted + truncated).
-       */
-      args: Array<unknown>;
-      /**
-       * true when dry_run skipped this write/external call.
-       */
-      skipped: boolean;
-    }>;
-    /**
-     * Write/admin/external calls that were skipped because dry_run=true (skipped: true). Bounded like sdk_call_trace; see skipped_calls for the total. Method-level side-effect preview, not proof the skipped handler would accept the payload.
+     * Proposed write/admin/external calls skipped because dry_run=true.
      */
     side_effect_preview: Array<{
       /**
-       * Dotted SDK method path (e.g. entities.list).
+       * Dotted SDK method path for the proposed action.
        */
       path: string;
       /**
-       * Org slugs traversed via client.org(...) before the call, if any.
+       * Access class of the proposed action.
        */
-      orgPath: Array<string>;
+      access: "write" | "external" | "admin" | "unknown";
       /**
-       * Access class of the method.
-       */
-      access: "read" | "write" | "external" | "admin" | "unknown";
-      /**
-       * Call arguments (redacted + truncated).
+       * Redacted, bounded arguments for the proposed action.
        */
       args: Array<unknown>;
-      /**
-       * true when dry_run skipped this write/external call.
-       */
-      skipped: boolean;
     }>;
-    /**
-     * Present when sdk_call_trace or side_effect_preview was truncated (oldest entries dropped).
-     */
-    sdk_call_trace_truncated?: {
-      /**
-       * Trace/preview entries dropped because the trace cap was exceeded.
-       */
+    side_effect_preview_truncated?: {
       dropped_entries: number;
     };
+    /**
+     * Change-capable calls dispatched before a live script failed, grouped by method path. Present only when success=false and dry_run=false. Dispatch is not confirmation — a call listed here may or may not have completed.
+     */
+    started_side_effects?: Array<{
+      /**
+       * Dotted SDK method path that was dispatched.
+       */
+      path: string;
+      /**
+       * Access class of the dispatched call.
+       */
+      access: "write" | "external" | "admin";
+      /**
+       * How many times this path was dispatched before the failure.
+       */
+      count: number;
+    }>;
     dry_run: boolean;
   };
 };
@@ -737,7 +683,7 @@ export type RunSdkData = {
      */
     timeout_ms?: number;
     /**
-     * Optional human-friendly heading for this result (e.g. "Company pipeline"). When set, the UI renders it above the execution status.
+     * Human-friendly heading for this result (e.g. "Companies missing a domain"). The UI renders it above the execution status; without it the result card has no subject line. Set it whenever a person will read the result.
      */
     title?: string;
     /**
@@ -786,124 +732,70 @@ export type RunSdkResponses = {
      */
     success: boolean;
     /**
-     * The script's default-export return value. Omitted when the return exceeded the output cap (see return_value_preview).
+     * The script's default-export return value. Omitted when it exceeded the output cap.
      */
     return_value?: unknown;
     /**
-     * UTF-8-safe head of the serialized return value when it exceeded the output cap; return_value is then omitted. This is a preview, not the value — rerun with filtering / LIMIT / OFFSET, or pull slices with client.query / query_sql. Don't re-return the whole set.
+     * UTF-8-safe head of an oversized serialized return value. Rerun with filtering or pagination for the rest.
      */
     return_value_preview?: string;
     /**
-     * Present with return_value_preview: the original and preview byte sizes.
+     * Present when return_value_preview is only a partial result.
      */
     return_truncated?: {
-      /**
-       * Serialized size of the original return value.
-       */
       total_bytes: number;
-      /**
-       * UTF-8 size of the preview string.
-       */
       kept_bytes: number;
     };
     /**
-     * console.log/warn/error output captured from the script.
-     */
-    logs: Array<{
-      level: "log" | "warn" | "error";
-      message: string;
-      ts: number;
-    }>;
-    /**
-     * Present when success=false: the thrown error, with script position.
+     * Concise script failure information, without stack traces or internal diagnostics.
      */
     error?: {
       name: string;
       message: string;
-      /**
-       * Redacted structured business-error details returned by the SDK action.
-       */
-      details?: unknown;
-      stack?: string;
-      line?: number;
-      column?: number;
-      /**
-       * Structured error code (lobu#2051 Item 2), e.g. UPSTREAM_TIMEOUT / RATE_LIMITED / VALIDATION.
-       */
       code?: string;
-      /**
-       * Whether re-running the identical script may succeed. Advisory — run_sdk is never auto-retried (may have side effects).
-       */
       retryable?: boolean;
     };
-    duration_ms: number;
     /**
-     * Number of SDK calls the script made (dispatched + skipped).
-     */
-    sdk_calls: number;
-    /**
-     * Total calls skipped because dry_run=true — the full dry-run surface, even when side_effect_preview is truncated.
+     * Number of write/admin/external calls skipped by dry-run.
      */
     skipped_calls: number;
     /**
-     * Every dispatched SDK call, in order. Bounded (tail-kept): when the total exceeds the trace cap the oldest entries are dropped and reported in sdk_call_trace_truncated; a single entry larger than the cap is dropped and counted too.
-     */
-    sdk_call_trace: Array<{
-      /**
-       * Dotted SDK method path (e.g. entities.list).
-       */
-      path: string;
-      /**
-       * Org slugs traversed via client.org(...) before the call, if any.
-       */
-      orgPath: Array<string>;
-      /**
-       * Access class of the method.
-       */
-      access: "read" | "write" | "external" | "admin" | "unknown";
-      /**
-       * Call arguments (redacted + truncated).
-       */
-      args: Array<unknown>;
-      /**
-       * true when dry_run skipped this write/external call.
-       */
-      skipped: boolean;
-    }>;
-    /**
-     * Write/admin/external calls that were skipped because dry_run=true (skipped: true). Bounded like sdk_call_trace; see skipped_calls for the total. Method-level side-effect preview, not proof the skipped handler would accept the payload.
+     * Proposed write/admin/external calls skipped because dry_run=true.
      */
     side_effect_preview: Array<{
       /**
-       * Dotted SDK method path (e.g. entities.list).
+       * Dotted SDK method path for the proposed action.
        */
       path: string;
       /**
-       * Org slugs traversed via client.org(...) before the call, if any.
+       * Access class of the proposed action.
        */
-      orgPath: Array<string>;
+      access: "write" | "external" | "admin" | "unknown";
       /**
-       * Access class of the method.
-       */
-      access: "read" | "write" | "external" | "admin" | "unknown";
-      /**
-       * Call arguments (redacted + truncated).
+       * Redacted, bounded arguments for the proposed action.
        */
       args: Array<unknown>;
-      /**
-       * true when dry_run skipped this write/external call.
-       */
-      skipped: boolean;
     }>;
-    /**
-     * Present when sdk_call_trace or side_effect_preview was truncated (oldest entries dropped).
-     */
-    sdk_call_trace_truncated?: {
-      /**
-       * Trace/preview entries dropped because the trace cap was exceeded.
-       */
+    side_effect_preview_truncated?: {
       dropped_entries: number;
     };
+    /**
+     * Change-capable calls dispatched before a live script failed, grouped by method path. Present only when success=false and dry_run=false. Dispatch is not confirmation — a call listed here may or may not have completed.
+     */
+    started_side_effects?: Array<{
+      /**
+       * Dotted SDK method path that was dispatched.
+       */
+      path: string;
+      /**
+       * Access class of the dispatched call.
+       */
+      access: "write" | "external" | "admin";
+      /**
+       * How many times this path was dispatched before the failure.
+       */
+      count: number;
+    }>;
     dry_run: boolean;
   };
 };
@@ -941,7 +833,7 @@ export type ManageEntityData = {
      */
     candidate_entity_ids?: Array<number>;
     /**
-     * [merge] Optional structured evidence for human-initiated merge provenance. Agent and Behavior evidence is always recomputed from the entity type's resolution policy.
+     * [merge] Optional structured evidence for human-initiated merge provenance. Agent and Automation evidence is always recomputed from the entity type's resolution policy.
      */
     merge_evidence?: Array<{
       kind: string;
@@ -1011,11 +903,11 @@ export type ManageEntityData = {
       [key: string]: unknown;
     };
     /**
-     * [update] Optional note explaining a human correction. Stored on the per-field ownership marker for every metadata field this update sets, so a Behavior (and the UI) can see why the value was set.
+     * [update] Optional note explaining a human correction. Stored on the per-field ownership marker for every metadata field this update sets, so an Automation (and the UI) can see why the value was set.
      */
     field_note?: string;
     /**
-     * [update] Metadata field names whose CURRENT value the human approves as-is. No value change, but each is marked human-owned so a Behavior can't later overwrite it without an approval. The 'approve' half of the recap feedback loop.
+     * [update] Metadata field names whose CURRENT value the human approves as-is. No value change, but each is marked human-owned so an Automation can't later overwrite it without an approval. The 'approve' half of the recap feedback loop.
      */
     affirm_fields?: Array<string>;
     /**
@@ -1031,7 +923,7 @@ export type ManageEntityData = {
      */
     offset?: number;
     /**
-     * [list] Sort by column (name, created_at, domain, total_content, active_connections, behaviors_count, children_count)
+     * [list] Sort by column (name, created_at, domain, total_content, active_connections, automations_count, children_count)
      */
     sort_by?: string;
     /**
@@ -1083,13 +975,13 @@ export type ManageEntityData = {
      */
     include_deleted?: boolean;
     /**
-     * Attribution source when mutation is triggered by a Behavior reaction
+     * Attribution source when mutation is triggered by an Automation reaction
      */
-    behavior_source?: {
+    automation_source?: {
       /**
-       * Behavior that triggered this mutation
+       * Automation that triggered this mutation
        */
-      behavior_id: number;
+      automation_id: number;
       /**
        * Window that triggered this mutation
        */
@@ -1146,7 +1038,7 @@ export type ManageEntityResponses = {
           created_at?: string;
           total_content?: number | null;
           active_connections?: number | null;
-          behaviors_count?: number | null;
+          automations_count?: number | null;
           children_count?: number | null;
           space_name?: string | null;
           view_url?: string;
@@ -1163,7 +1055,7 @@ export type ManageEntityResponses = {
         approval_current?: {
           [key: string]: unknown;
         };
-        approval_attribution?: "agent" | "behavior";
+        approval_attribution?: "agent" | "automation";
       }
     | {
         action: "update";
@@ -1183,7 +1075,7 @@ export type ManageEntityResponses = {
           created_at?: string;
           total_content?: number | null;
           active_connections?: number | null;
-          behaviors_count?: number | null;
+          automations_count?: number | null;
           children_count?: number | null;
           space_name?: string | null;
           view_url?: string;
@@ -1199,7 +1091,7 @@ export type ManageEntityResponses = {
         approval_current?: {
           [key: string]: unknown;
         };
-        approval_attribution?: "agent" | "behavior";
+        approval_attribution?: "agent" | "automation";
       }
     | {
         action: "list";
@@ -1219,7 +1111,7 @@ export type ManageEntityResponses = {
           created_at?: string;
           total_content?: number | null;
           active_connections?: number | null;
-          behaviors_count?: number | null;
+          automations_count?: number | null;
           children_count?: number | null;
           space_name?: string | null;
           view_url?: string;
@@ -1266,7 +1158,7 @@ export type ManageEntityResponses = {
           created_at?: string;
           total_content?: number | null;
           active_connections?: number | null;
-          behaviors_count?: number | null;
+          automations_count?: number | null;
           children_count?: number | null;
           space_name?: string | null;
           view_url?: string;
@@ -1281,8 +1173,8 @@ export type ManageEntityResponses = {
         tree?: {
           entities: number;
           relationships: number;
-          behaviors_deleted: number;
-          behaviors_detached: number;
+          automations_deleted: number;
+          automations_detached: number;
           feeds_deleted: number;
           feeds_detached: number;
           events_detached: number;
@@ -1297,7 +1189,7 @@ export type ManageEntityResponses = {
         approval_current?: {
           [key: string]: unknown;
         };
-        approval_attribution?: "agent" | "behavior";
+        approval_attribution?: "agent" | "automation";
       }
     | {
         action: "link";
@@ -1425,7 +1317,7 @@ export type ManageEntityResponses = {
           entity_ids?: Array<number>;
           winner_entity_id: number;
         };
-        approval_attribution: "agent" | "behavior";
+        approval_attribution: "agent" | "automation";
         next_steps: Array<string>;
         resolution?: {
           decision: "review";
@@ -2154,7 +2046,7 @@ export type ManageConnectionsData = {
         connection_id: number;
         display_name?: string;
         /**
-         * Fallback agent for a chat connection when no Behavior subscription matches. Null clears the fallback.
+         * Fallback agent for a chat connection when no Automation subscription matches. Null clears the fallback.
          */
         agent_id?: string | null;
         /**
@@ -2198,7 +2090,7 @@ export type ManageConnectionsData = {
         connector_key: string;
         display_name?: string;
         /**
-         * Declarative fallback agent. Behavior subscriptions remain authoritative when present.
+         * Declarative fallback agent. Automation subscriptions remain authoritative when present.
          */
         agent_id?: string;
         config: {
@@ -2842,21 +2734,21 @@ export type ManageCatalogData = {
   body:
     | {
         /**
-         * List available (manifest) catalog entries — connectors, skills, Behavior templates. Each connector entry's `detail.source_uri` can be passed to `manage_connections` action `install_connector`.
+         * List available (manifest) catalog entries — connectors, skills, Automation templates. Each connector entry's `detail.source_uri` can be passed to `manage_connections` action `install_connector`.
          */
         action: "list_catalog";
         /**
          * Manifest catalog kinds. Defaults to all.
          */
-        kinds?: Array<"connectors" | "skills" | "behaviors">;
+        kinds?: Array<"connectors" | "skills" | "automations">;
       }
     | {
         /**
-         * List installed kinds for the org (connectors, behaviors) and/or agent (skills, providers, guardrails). Pass `include_catalog: true` to merge available catalog entries with `installed`/`installable` flags.
+         * List installed kinds for the org (connectors, automations) and/or agent (skills, providers, guardrails). Pass `include_catalog: true` to merge available catalog entries with `installed`/`installable` flags.
          */
         action: "list_installed";
         /**
-         * Installed kinds. Org: connectors, behaviors. Agent: skills, providers, guardrails.
+         * Installed kinds. Org: connectors, automations. Agent: skills, providers, guardrails.
          */
         kinds?: Array<string>;
         /**
@@ -3713,8 +3605,8 @@ export type ManageOperationsData = {
           urls: Array<string>;
           expires_in_seconds?: number;
         };
-        behavior_source?: {
-          behavior_id: number;
+        automation_source?: {
+          automation_id: number;
           window_id: number;
         };
       }
@@ -3758,7 +3650,7 @@ export type ManageOperationsData = {
          * Only runs created before this ISO 8601 timestamp (exclusive)
          */
         created_before?: string;
-        behavior_ids?: Array<number>;
+        automation_ids?: Array<number>;
         /**
          * Keyset cursor: return runs before this ID
          */
@@ -3785,7 +3677,7 @@ export type ManageOperationsData = {
       }
     | {
         /**
-         * Org attention feed: notifications + recent user-facing runs (Behavior/sync/action/internal), with optional adjacent aggregation and deep-links for the UI and agent context.
+         * Org attention feed: notifications + recent user-facing runs (Automation/sync/action/internal), with optional adjacent aggregation and deep-links for the UI and agent context.
          */
         action: "list_activity";
         /**
@@ -3821,12 +3713,12 @@ export type ManageOperationsData = {
       }
     | {
         /**
-         * Approve many pending approvals at once. Either scope by window_id (a Behavior run's proposals) or by `scope` (queued connector operations). Exactly one of the two is required — there is no unscoped approve-everything.
+         * Approve many pending approvals at once. Either scope by window_id (an Automation run's proposals) or by `scope` (queued connector operations). Exactly one of the two is required — there is no unscoped approve-everything.
          */
         action: "approve_batch";
         window_id?: number;
         /**
-         * Scope filters for a connector-approval batch. At least one of connection_id / connector_key / action_key / behavior_id is required.
+         * Scope filters for a connector-approval batch. At least one of connection_id / connector_key / action_key / automation_id is required.
          */
         scope?: {
           /**
@@ -3842,9 +3734,9 @@ export type ManageOperationsData = {
            */
           action_key?: string;
           /**
-           * Only approvals queued by this Behavior.
+           * Only approvals queued by this Automation.
            */
-          behavior_id?: number;
+          automation_id?: number;
           /**
            * Only approvals queued more than this many days ago. Narrows further; never widens.
            */
@@ -3857,12 +3749,12 @@ export type ManageOperationsData = {
       }
     | {
         /**
-         * Reject many pending approvals at once. Either scope by window_id (a Behavior run's proposals — the reason is fed back so the agent revises) or by `scope` (queued connector operations). Exactly one of the two is required.
+         * Reject many pending approvals at once. Either scope by window_id (an Automation run's proposals — the reason is fed back so the agent revises) or by `scope` (queued connector operations). Exactly one of the two is required.
          */
         action: "reject_batch";
         window_id?: number;
         /**
-         * Scope filters for a connector-approval batch. At least one of connection_id / connector_key / action_key / behavior_id is required.
+         * Scope filters for a connector-approval batch. At least one of connection_id / connector_key / action_key / automation_id is required.
          */
         scope?: {
           /**
@@ -3878,9 +3770,9 @@ export type ManageOperationsData = {
            */
           action_key?: string;
           /**
-           * Only approvals queued by this Behavior.
+           * Only approvals queued by this Automation.
            */
-          behavior_id?: number;
+          automation_id?: number;
           /**
            * Only approvals queued more than this many days ago. Narrows further; never widens.
            */
@@ -4011,8 +3903,8 @@ export type ManageOperationsResponses = {
           feed_id?: number;
           feed_key?: string;
           feed_name?: string;
-          behavior_id?: number;
-          behavior_name?: string;
+          automation_id?: number;
+          automation_name?: string;
           agent_id?: string;
           agent_name?: string;
           client_id?: string;
@@ -4111,13 +4003,13 @@ export type NotifyData = {
       [key: string]: unknown;
     };
     /**
-     * Attribution source when notification is triggered by a Behavior reaction
+     * Attribution source when notification is triggered by an Automation reaction
      */
-    behavior_source?: {
+    automation_source?: {
       /**
-       * Behavior that triggered this notification
+       * Automation that triggered this notification
        */
-      behavior_id: number;
+      automation_id: number;
       /**
        * Window that triggered this notification
        */
@@ -4286,7 +4178,7 @@ export type ManageSchedulesResponses = {
 export type ManageSchedulesResponse =
   ManageSchedulesResponses[keyof ManageSchedulesResponses];
 
-export type ManageBehaviorsData = {
+export type ManageAutomationsData = {
   body: {
     /**
      * Action to perform
@@ -4308,15 +4200,15 @@ export type ManageBehaviorsData = {
       | "list_promoted"
       | "create_from_version";
     /**
-     * [list/update/upgrade/get_versions/get_version_details/set_reaction_script/trigger] Behavior ID (numeric string)
+     * [list/update/upgrade/get_versions/get_version_details/set_reaction_script/trigger] Automation ID (numeric string)
      */
-    behavior_id?: string;
+    automation_id?: string;
     /**
-     * [delete] Array of Behavior IDs (numeric strings)
+     * [delete] Array of Automation IDs (numeric strings)
      */
-    behavior_ids?: Array<string>;
+    automation_ids?: Array<string>;
     /**
-     * [create] Unique Behavior identifier
+     * [create] Unique Automation identifier
      */
     slug?: string;
     /**
@@ -4324,27 +4216,27 @@ export type ManageBehaviorsData = {
      */
     name?: string;
     /**
-     * [create/create_version] Behavior description
+     * [create/create_version] Automation description
      */
     description?: string;
     /**
-     * Entity ID. Optional for create — provide it to attach the Behavior to an entity; omit it for an org-scoped/global Behavior. Optional for list.
+     * Entity ID. Optional for create — provide it to attach the Automation to an entity; omit it for an org-scoped/global Automation. Optional for list.
      */
     entity_id?: number;
     /**
-     * [create_from_version] Array of entity IDs to create individual Behaviors for.
+     * [create_from_version] Array of entity IDs to create individual Automations for.
      */
     entity_ids?: Array<number>;
     /**
-     * [create_from_version] Source version ID to use as template for new Behaviors.
+     * [create_from_version] Source version ID to use as template for new Automations.
      */
     version_id?: number;
     /**
-     * [create_from_version] Name pattern for created Behaviors. Use {{entity_name}} for substitution. Default: "{version_name}: {entity_name}".
+     * [create_from_version] Name pattern for created Automations. Use {{entity_name}} for substitution. Default: "{version_name}: {entity_name}".
      */
     name_pattern?: string;
     /**
-     * [create/create_version] Literal LLM instruction text for the Behavior — the task statement, frozen into the version. No template expansion happens: the text is delivered to the agent verbatim, and the window's data (content, sources, entities, extraction_schema) arrives alongside it in the knowledge-read payload. Reusable know-how belongs in `skills` instead, which is delivered as readable files rather than pasted in here. A schedule trigger, an event trigger with execution 'window', and a Behavior with no triggers each need an instruction source — supply `prompt`, `skills`, or both; an event trigger with execution 'turn' may omit both and use the built-in default.
+     * [create/create_version] Literal LLM instruction text for the Automation — the task statement, frozen into the version. No template expansion happens: the text is delivered to the agent verbatim, and the window's data (content, sources, entities, extraction_schema) arrives alongside it in the knowledge-read payload. Reusable know-how belongs in `skills` instead, which is delivered as readable files rather than pasted in here. A schedule trigger, an event trigger with execution 'window', and an Automation with no triggers each need an instruction source — supply `prompt`, `skills`, or both; an event trigger with execution 'turn' may omit both and use the built-in default.
      */
     prompt?: string;
     /**
@@ -4361,7 +4253,7 @@ export type ManageBehaviorsData = {
       content: string;
     }>;
     /**
-     * [create/create_version] Array of SQL data sources. Each source is { name, query }. To change them on an existing Behavior, publish a new version with action: 'create_version'. On create_version this array is the ONLY way to change them and is a FULL REPLACEMENT: passing it (even []) makes it the complete source set, [] clears everything, and OMITTING it keeps the stored sources unchanged. Instruction text is never an input: @-mention chips in an inherited prompt neither add nor remove sources. (On create only, chips in the prompt still seed the initial list, which is how the web composer authors them.) The response returns source_count and removed_sources so you can see what a replacement dropped.
+     * [create/create_version] Array of SQL data sources. Each source is { name, query }. To change them on an existing Automation, publish a new version with action: 'create_version'. On create_version this array is the ONLY way to change them and is a FULL REPLACEMENT: passing it (even []) makes it the complete source set, [] clears everything, and OMITTING it keeps the stored sources unchanged. Instruction text is never an input: @-mention chips in an inherited prompt neither add nor remove sources. (On create only, chips in the prompt still seed the initial list, which is how the web composer authors them.) The response returns source_count and removed_sources so you can see what a replacement dropped.
      */
     sources?: Array<{
       /**
@@ -4378,7 +4270,7 @@ export type ManageBehaviorsData = {
       context?: boolean;
     }>;
     /**
-     * [create/create_version] Named durable outputs for window execution. `{ entity, key, name? }` validates and upserts entities; `{ event }` appends standard event drafts. The object key is the top-level extracted_data array name. Event rows require content and may include title, metadata, author, source_url, occurred_at, parent_event_id, payload_type, and idempotency_key. Event triggers on a Behavior with outputs must use execution="window". Pass null on create_version to remove all declared outputs.
+     * [create/create_version] Named durable outputs for window execution. `{ entity, key, name? }` validates and upserts entities; `{ event }` appends standard event drafts. The object key is the top-level extracted_data array name. Event rows require content and may include title, metadata, author, source_url, occurred_at, parent_event_id, payload_type, and idempotency_key. Event triggers on an Automation with outputs must use execution="window". Pass null on create_version to remove all declared outputs.
      */
     outputs?:
       | string
@@ -4390,7 +4282,7 @@ export type ManageBehaviorsData = {
                  */
                 entity: string;
                 /**
-                 * One to four fields whose exact non-blank string (up to 256 UTF-8 bytes), safe-integer, or boolean values compose each row's stable identity across Behavior runs. Every key field is required in every row; changing the fields, their order, the output name, or the entity type changes identity. Use durable source IDs rather than editable labels.
+                 * One to four fields whose exact non-blank string (up to 256 UTF-8 bytes), safe-integer, or boolean values compose each row's stable identity across Automation runs. Every key field is required in every row; changing the fields, their order, the output name, or the entity type changes identity. Use durable source IDs rather than editable labels.
                  */
                 key: Array<string>;
                 /**
@@ -4404,7 +4296,7 @@ export type ManageBehaviorsData = {
                  */
                 event: string;
                 /**
-                 * One to four metadata fields whose exact values compose each draft's stable identity across Behavior runs (e.g. channel + mode for per-channel voice profiles). Every key field must be present in every draft's `metadata` and be a non-blank string, safe integer, or boolean — the type is part of the identity, so 3 and "3" are different keys. Changing the fields, their order, or the semantic type changes identity and starts a new chain. When set, each run supersedes the current event carrying the same key values.
+                 * One to four metadata fields whose exact values compose each draft's stable identity across Automation runs (e.g. channel + mode for per-channel voice profiles). Every key field must be present in every draft's `metadata` and be a non-blank string, safe integer, or boolean — the type is part of the identity, so 3 and "3" are different keys. Changing the fields, their order, or the semantic type changes identity and starts a new chain. When set, each run supersedes the current event carrying the same key values.
                  */
                 key?: Array<string>;
               };
@@ -4432,7 +4324,7 @@ export type ManageBehaviorsData = {
           [key: string]: unknown;
         }>;
     /**
-     * [create/update/create_version] Canonical Behavior activations. Use a schedule trigger for cadence and timezone.
+     * [create/update/create_version] Canonical Automation activations. Use a schedule trigger for cadence and timezone.
      */
     triggers?: Array<
       | {
@@ -4451,11 +4343,11 @@ export type ManageBehaviorsData = {
             [key: string]: unknown | string | number | boolean | null;
           };
           /**
-           * "turn" renders the incoming event as the agent input (chat/listen); "window" runs the Behavior analysis flow.
+           * "turn" renders the incoming event as the agent input (chat/listen); "window" runs the Automation analysis flow.
            */
           execution?: "turn" | "window";
           /**
-           * What to do when this Behavior is busy: queue every event, combine waiting events, or steer the current trusted chat turn.
+           * What to do when this Automation is busy: queue every event, combine waiting events, or steer the current trusted chat turn.
            */
           active_run?: "queue" | "coalesce" | "steer";
           /**
@@ -4475,7 +4367,7 @@ export type ManageBehaviorsData = {
            */
           entity_type?: string;
           /**
-           * Exact durable event semantic types that activate this Behavior.
+           * Exact durable event semantic types that activate this Automation.
            */
           event_types: Array<string>;
           /**
@@ -4485,11 +4377,11 @@ export type ManageBehaviorsData = {
             [key: string]: unknown | string | number | boolean | null;
           };
           /**
-           * "turn" handles the exact event pointer once; "window" runs the Behavior analysis flow.
+           * "turn" handles the exact event pointer once; "window" runs the Automation analysis flow.
            */
           execution?: "turn" | "window";
           /**
-           * What to do when this Behavior is busy: queue every event or combine waiting events.
+           * What to do when this Automation is busy: queue every event or combine waiting events.
            */
           active_run?: "queue" | "coalesce";
         }
@@ -4503,11 +4395,11 @@ export type ManageBehaviorsData = {
         }
     >;
     /**
-     * [create/update] Agent ID that owns/executes this Behavior. [list] Optional owner filter.
+     * [create/update] Agent ID that owns/executes this Automation. [list] Optional owner filter.
      */
     agent_id?: string;
     /**
-     * [list] Optional status filter. Omit to include active Behaviors only.
+     * [list] Optional status filter. Omit to include active Automations only.
      */
     status?: "active" | "archived";
     /**
@@ -4523,15 +4415,15 @@ export type ManageBehaviorsData = {
      */
     order_dir?: "asc" | "desc";
     /**
-     * [list] Filter by each Behavior's latest run status (active runs take precedence). Discovery for executors: run_status='pending' lists Behaviors with unhandled runs — manual-open pending runs are completable by any client via complete_window.
+     * [list] Filter by each Automation's latest run status (active runs take precedence). Discovery for executors: run_status='pending' lists Automations with unhandled runs — manual-open pending runs are completable by any client via complete_window.
      */
     run_status?: "pending" | "claimed" | "running" | "completed" | "failed";
     /**
-     * [create/update] Optional device worker UUID to pin this Behavior to (when its inputs live on that device). Null clears the pin.
+     * [create/update] Optional device worker UUID to pin this Automation to (when its inputs live on that device). Null clears the pin.
      */
     device_worker_id?: string | null;
     /**
-     * [create/update] Which local CLI a device-pinned Behavior runs on. Only meaningful alongside device_worker_id. Null (the default) uses whatever agent the device itself is set to. A kind the device has no executor for fails at dispatch, so this is validated here rather than accepted and discovered later.
+     * [create/update] Which local CLI a device-pinned Automation runs on. Only meaningful alongside device_worker_id. Null (the default) uses whatever agent the device itself is set to. A kind the device has no executor for fails at dispatch, so this is validated here rather than accepted and discovered later.
      */
     agent_kind?: "claude-code" | "codex" | "opencode" | "pi" | "agy" | null;
     /**
@@ -4543,7 +4435,7 @@ export type ManageBehaviorsData = {
      */
     notification_priority?: "low" | "normal" | "high";
     /**
-     * [create/update] Strict bound chat channel for this Behavior's notifications. Null clears it; omitted keeps the current destination on update.
+     * [create/update] Strict bound chat channel for this Automation's notifications. Null clears it; omitted keeps the current destination on update.
      */
     delivery_target?: null | {
       /**
@@ -4556,7 +4448,7 @@ export type ManageBehaviorsData = {
       channel_id: string;
     };
     /**
-     * [create/update] Minimum seconds between two firings of this Behavior (0 = no cooldown).
+     * [create/update] Minimum seconds between two firings of this Automation (0 = no cooldown).
      */
     min_cooldown_seconds?: number;
     /**
@@ -4591,7 +4483,7 @@ export type ManageBehaviorsData = {
        */
       effort?: "low" | "medium" | "high";
       /**
-       * How many extra times to re-dispatch a server-side Behavior run that finished WITHOUT calling complete_window before failing it. 0 disables; omitted = global default.
+       * How many extra times to re-dispatch a server-side Automation run that finished WITHOUT calling complete_window before failing it. 0 disables; omitted = global default.
        */
       finalize_nudges?: number;
     };
@@ -4620,7 +4512,7 @@ export type ManageBehaviorsData = {
      */
     reactions_guidance?: string;
     /**
-     * [complete_window] Required. LLM analysis results. Must match the Behavior's extraction contract (derived from its entity type).
+     * [complete_window] Required. LLM analysis results. Must match the Automation's extraction contract (derived from its entity type).
      */
     extracted_data?: {
       [key: string]: unknown;
@@ -4630,11 +4522,11 @@ export type ManageBehaviorsData = {
      */
     replace_existing?: boolean;
     /**
-     * [complete_window] JWT from read_knowledge(behavior_id, since, until). Pass this or window_tokens.
+     * [complete_window] JWT from read_knowledge(automation_id, since, until). Pass this or window_tokens.
      */
     window_token?: string;
     /**
-     * [complete_window] Multiple page JWTs from read_knowledge for the same Behavior window. Content IDs are unioned and linked atomically.
+     * [complete_window] Multiple page JWTs from read_knowledge for the same Automation window. Content IDs are unioned and linked atomically.
      */
     window_tokens?: Array<string>;
     /**
@@ -4650,15 +4542,15 @@ export type ManageBehaviorsData = {
      */
     run_metadata?: unknown;
     /**
-     * [complete_window] Optional Behavior run id for completion/provenance. Workers should pass the run ID from the dispatch prompt.
+     * [complete_window] Optional Automation run id for completion/provenance. Workers should pass the run ID from the dispatch prompt.
      */
-    behavior_run_id?: number;
+    automation_run_id?: number;
     /**
-     * [complete_window] Pin to a specific persisted Behavior version. Workers receive this from the run dispatch payload and pass it back so validation uses the same version that produced the extraction. Defaults to the run row's snapshot if available, else the Behavior's current version.
+     * [complete_window] Pin to a specific persisted Automation version. Workers receive this from the run dispatch payload and pass it back so validation uses the same version that produced the extraction. Defaults to the run row's snapshot if available, else the Automation's current version.
      */
     template_version_id?: number;
     /**
-     * [create/set_reaction_script] TypeScript source for an automated reaction. On create, it is compiled before the Behavior and its reaction fields are stored in one transaction. Pass an empty string to set_reaction_script to remove an existing script.
+     * [create/set_reaction_script] TypeScript source for an automated reaction. On create, it is compiled before the Automation and its reaction fields are stored in one transaction. Pass an empty string to set_reaction_script to remove an existing script.
      */
     reaction_script?: string;
     /**
@@ -4687,7 +4579,7 @@ export type ManageBehaviorsData = {
       note?: string;
     }>;
     /**
-     * [list/get_feedback] Maximum records to return. get_feedback defaults to 50; list defaults to all matching Behaviors.
+     * [list/get_feedback] Maximum records to return. get_feedback defaults to 50; list defaults to all matching Automations.
      */
     limit?: number;
   };
@@ -4698,10 +4590,10 @@ export type ManageBehaviorsData = {
     orgSlug: string;
   };
   query?: never;
-  url: "/api/{orgSlug}/manage_behaviors";
+  url: "/api/{orgSlug}/manage_automations";
 };
 
-export type ManageBehaviorsErrors = {
+export type ManageAutomationsErrors = {
   /**
    * Bad request - invalid parameters
    */
@@ -4716,23 +4608,23 @@ export type ManageBehaviorsErrors = {
   };
 };
 
-export type ManageBehaviorsError =
-  ManageBehaviorsErrors[keyof ManageBehaviorsErrors];
+export type ManageAutomationsError =
+  ManageAutomationsErrors[keyof ManageAutomationsErrors];
 
-export type ManageBehaviorsResponses = {
+export type ManageAutomationsResponses = {
   /**
    * Successful response
    */
   200:
     | {
         action: "list";
-        behaviors: Array<{
+        automations: Array<{
           [key: string]: unknown;
         }>;
       }
     | {
         action: "create";
-        behavior_id: string;
+        automation_id: string;
         version: number;
         status: string;
         sources?: Array<{
@@ -4744,19 +4636,19 @@ export type ManageBehaviorsResponses = {
       }
     | {
         action: "update";
-        behavior_id: string;
+        automation_id: string;
         updated_fields: Array<string>;
       }
     | {
         action: "create_version";
-        behavior_id: string;
+        automation_id: string;
         version_id: string;
         version: number;
         previous_version: number;
       }
     | {
         action: "complete_window";
-        behavior_id: string;
+        automation_id: string;
         window_id: number;
         window_start: string;
         window_end: string;
@@ -4764,14 +4656,14 @@ export type ManageBehaviorsResponses = {
       }
     | {
         action: "trigger";
-        behavior_id: string;
+        automation_id: string;
         run_id: number;
         status: string;
       }
     | {
         action: "delete";
         results: Array<{
-          behavior_id: string;
+          automation_id: string;
           success: boolean;
           message: string;
           version?: number;
@@ -4784,18 +4676,18 @@ export type ManageBehaviorsResponses = {
       }
     | {
         action: "set_reaction_script";
-        behavior_id: string;
+        automation_id: string;
         has_script: boolean;
         message: string;
       }
     | {
         action: "get_versions";
-        behavior_id: string;
+        automation_id: string;
         versions: Array<unknown>;
       }
     | ({
         action: "get_version_details";
-        behavior_id: string;
+        automation_id: string;
       } & {
         [key: string]: unknown;
       })
@@ -4805,13 +4697,13 @@ export type ManageBehaviorsResponses = {
       }
     | {
         action: "submit_feedback";
-        behavior_id: string;
+        automation_id: string;
         window_id: number;
         feedback_ids: Array<number>;
       }
     | {
         action: "get_feedback";
-        behavior_id: string;
+        automation_id: string;
         feedback: Array<{
           id: number;
           window_id: number;
@@ -4827,7 +4719,7 @@ export type ManageBehaviorsResponses = {
       }
     | {
         action: "list_promoted";
-        behavior_id: string;
+        automation_id: string;
         entities: Array<{
           id: number;
           name: string;
@@ -4845,7 +4737,7 @@ export type ManageBehaviorsResponses = {
     | {
         action: "create_from_version";
         created: Array<{
-          behavior_id: string;
+          automation_id: string;
           entity_id: number;
           name: string;
         }>;
@@ -4869,15 +4761,15 @@ export type ManageBehaviorsResponses = {
       };
 };
 
-export type ManageBehaviorsResponse =
-  ManageBehaviorsResponses[keyof ManageBehaviorsResponses];
+export type ManageAutomationsResponse =
+  ManageAutomationsResponses[keyof ManageAutomationsResponses];
 
-export type GetBehaviorData = {
+export type GetAutomationData = {
   body: {
     /**
-     * Behavior ID to query
+     * Automation ID to query
      */
-    behavior_id: string;
+    automation_id: string;
     /**
      * Optional entity ID for access validation and URL context
      */
@@ -4895,11 +4787,11 @@ export type GetBehaviorData = {
      */
     granularity?: "daily" | "weekly" | "monthly" | "quarterly";
     /**
-     * Override template version *number* for viewing results. If not provided, uses the Behavior's current pinned version. Useful for viewing results with a different renderer or schema. Prefer `template_version_id` when you need a stable reference (version numbers can change if a chain is reorganized).
+     * Override template version *number* for viewing results. If not provided, uses the Automation's current pinned version. Useful for viewing results with a different renderer or schema. Prefer `template_version_id` when you need a stable reference (version numbers can change if a chain is reorganized).
      */
     template_version?: number;
     /**
-     * Pin to a specific persisted Behavior version. Workers receive this from runs.approved_input.version_id and pass it back so the agent loop reads the same version it extracted with, even if the group is edited mid-run.
+     * Pin to a specific persisted Automation version. Workers receive this from runs.approved_input.version_id and pass it back so the agent loop reads the same version it extracted with, even if the group is edited mid-run.
      */
     template_version_id?: number;
     /**
@@ -4930,10 +4822,10 @@ export type GetBehaviorData = {
     orgSlug: string;
   };
   query?: never;
-  url: "/api/{orgSlug}/get_behavior";
+  url: "/api/{orgSlug}/get_automation";
 };
 
-export type GetBehaviorErrors = {
+export type GetAutomationErrors = {
   /**
    * Bad request - invalid parameters
    */
@@ -4948,17 +4840,17 @@ export type GetBehaviorErrors = {
   };
 };
 
-export type GetBehaviorError = GetBehaviorErrors[keyof GetBehaviorErrors];
+export type GetAutomationError = GetAutomationErrors[keyof GetAutomationErrors];
 
-export type GetBehaviorResponses = {
+export type GetAutomationResponses = {
   /**
    * Successful response
    */
   200: {
     windows: Array<{
       window_id: number;
-      behavior_id: string;
-      behavior_name: string;
+      automation_id: string;
+      automation_name: string;
       granularity: string;
       window_start: string;
       window_end: string;
@@ -4997,9 +4889,9 @@ export type GetBehaviorResponses = {
         created_at: string;
       }>;
     }>;
-    behavior?: {
-      behavior_id: string;
-      behavior_name: string;
+    automation?: {
+      automation_id: string;
+      automation_name: string;
       slug: string;
       status: "active" | "archived";
       triggers?: Array<
@@ -5019,11 +4911,11 @@ export type GetBehaviorResponses = {
               [key: string]: unknown | string | number | boolean | null;
             };
             /**
-             * "turn" renders the incoming event as the agent input (chat/listen); "window" runs the Behavior analysis flow.
+             * "turn" renders the incoming event as the agent input (chat/listen); "window" runs the Automation analysis flow.
              */
             execution?: "turn" | "window";
             /**
-             * What to do when this Behavior is busy: queue every event, combine waiting events, or steer the current trusted chat turn.
+             * What to do when this Automation is busy: queue every event, combine waiting events, or steer the current trusted chat turn.
              */
             active_run?: "queue" | "coalesce" | "steer";
             /**
@@ -5043,7 +4935,7 @@ export type GetBehaviorResponses = {
              */
             entity_type?: string;
             /**
-             * Exact durable event semantic types that activate this Behavior.
+             * Exact durable event semantic types that activate this Automation.
              */
             event_types: Array<string>;
             /**
@@ -5053,11 +4945,11 @@ export type GetBehaviorResponses = {
               [key: string]: unknown | string | number | boolean | null;
             };
             /**
-             * "turn" handles the exact event pointer once; "window" runs the Behavior analysis flow.
+             * "turn" handles the exact event pointer once; "window" runs the Automation analysis flow.
              */
             execution?: "turn" | "window";
             /**
-             * What to do when this Behavior is busy: queue every event or combine waiting events.
+             * What to do when this Automation is busy: queue every event or combine waiting events.
              */
             active_run?: "queue" | "coalesce";
           }
@@ -5100,7 +4992,7 @@ export type GetBehaviorResponses = {
                */
               entity: string;
               /**
-               * One to four fields whose exact non-blank string (up to 256 UTF-8 bytes), safe-integer, or boolean values compose each row's stable identity across Behavior runs. Every key field is required in every row; changing the fields, their order, the output name, or the entity type changes identity. Use durable source IDs rather than editable labels.
+               * One to four fields whose exact non-blank string (up to 256 UTF-8 bytes), safe-integer, or boolean values compose each row's stable identity across Automation runs. Every key field is required in every row; changing the fields, their order, the output name, or the entity type changes identity. Use durable source IDs rather than editable labels.
                */
               key: Array<string>;
               /**
@@ -5114,7 +5006,7 @@ export type GetBehaviorResponses = {
                */
               event: string;
               /**
-               * One to four metadata fields whose exact values compose each draft's stable identity across Behavior runs (e.g. channel + mode for per-channel voice profiles). Every key field must be present in every draft's `metadata` and be a non-blank string, safe integer, or boolean — the type is part of the identity, so 3 and "3" are different keys. Changing the fields, their order, or the semantic type changes identity and starts a new chain. When set, each run supersedes the current event carrying the same key values.
+               * One to four metadata fields whose exact values compose each draft's stable identity across Automation runs (e.g. channel + mode for per-channel voice profiles). Every key field must be present in every draft's `metadata` and be a non-blank string, safe integer, or boolean — the type is part of the identity, so 3 and "3" are different keys. Changing the fields, their order, or the semantic type changes identity and starts a new chain. When set, each run supersedes the current event carrying the same key values.
                */
               key?: Array<string>;
             };
@@ -5128,7 +5020,7 @@ export type GetBehaviorResponses = {
         is_current: boolean;
       }>;
       reaction_script?: string;
-      behavior_run?: {
+      automation_run?: {
         run_id: number;
         status:
           | "pending"
@@ -5196,8 +5088,8 @@ export type GetBehaviorResponses = {
   };
 };
 
-export type GetBehaviorResponse =
-  GetBehaviorResponses[keyof GetBehaviorResponses];
+export type GetAutomationResponse =
+  GetAutomationResponses[keyof GetAutomationResponses];
 
 export type ReadKnowledgeData = {
   body: {
@@ -5206,15 +5098,15 @@ export type ReadKnowledgeData = {
      */
     query?: string;
     /**
-     * Entity ID to filter by. Required unless behavior_id is provided.
+     * Entity ID to filter by. Required unless automation_id is provided.
      */
     entity_id?: number;
     /**
-     * Persisted Behavior ID (`behavior_id`) to fetch content for. When provided, uses the Behavior's sources and computes its pending window. Returns window_token for complete_window action.
+     * Persisted Automation ID (`automation_id`) to fetch content for. When provided, uses the Automation's sources and computes its pending window. Returns window_token for complete_window action.
      */
-    behavior_id?: number;
+    automation_id?: number;
     /**
-     * Pin to a specific persisted Behavior version when reading the prompt/schema. Workers receive this from runs.approved_input.version_id and pass it back so a group edit landing mid-run can't make extraction use a different schema. When omitted, defaults to the Behavior's current version.
+     * Pin to a specific persisted Automation version when reading the prompt/schema. Workers receive this from runs.approved_input.version_id and pass it back so a group edit landing mid-run can't make extraction use a different schema. When omitted, defaults to the Automation's current version.
      */
     template_version_id?: number;
     /**
@@ -5242,23 +5134,23 @@ export type ReadKnowledgeData = {
      */
     platforms?: Array<string>;
     /**
-     * Behavior window ID to filter by (shows only content analyzed in this window)
+     * Automation window ID to filter by (shows only content analyzed in this window)
      */
     window_id?: number;
     /**
-     * Limit results to events this Behavior has analyzed (any window). Distinct from behavior_id, which enters Behavior read mode.
+     * Limit results to events this Automation has analyzed (any window). Distinct from automation_id, which enters Automation read mode.
      */
-    analyzed_by_behavior_id?: number;
+    analyzed_by_automation_id?: number;
     /**
-     * Limit results to events this Behavior WROTE — its outputs, entity change sets, canvas revisions and notifications. The counterpart to analyzed_by_behavior_id, which returns what it READ; the two are not interchangeable.
+     * Limit results to events this Automation WROTE — its outputs, entity change sets, canvas revisions and notifications. The counterpart to analyzed_by_automation_id, which returns what it READ; the two are not interchangeable.
      */
-    produced_by_behavior_id?: number;
+    produced_by_automation_id?: number;
     /**
-     * Filter events published since this date. Supports: ISO 8601 ("2025-01-01"), named aliases ("yesterday", "last_week"), or relative ("7d", "30d", "1m", "1y"). When used with behavior_id, also sets window_start in the generated token.
+     * Filter events published since this date. Supports: ISO 8601 ("2025-01-01"), named aliases ("yesterday", "last_week"), or relative ("7d", "30d", "1m", "1y"). When used with automation_id, also sets window_start in the generated token.
      */
     since?: string;
     /**
-     * Filter events published until this date. Supports: ISO 8601 ("2025-01-31"), named aliases ("today", "yesterday"), or relative ("7d", "30d", "1m", "1y"). When used with behavior_id, also sets window_end in the generated token.
+     * Filter events published until this date. Supports: ISO 8601 ("2025-01-31"), named aliases ("today", "yesterday"), or relative ("7d", "30d", "1m", "1y"). When used with automation_id, also sets window_end in the generated token.
      */
     until?: string;
     /**
@@ -5328,13 +5220,13 @@ export type ReadKnowledgeData = {
      */
     classification_source?: "user" | "embedding" | "llm";
     /**
-     * Filter to specific content IDs. With behavior_id, these exact durable rows are added to the Behavior read and signed into its window token in addition to authored sources; this is how workspace-sourced event activations pass bounded event pointers without copying payloads.
+     * Filter to specific content IDs. With automation_id, these exact durable rows are added to the Automation read and signed into its window token in addition to authored sources; this is how workspace-sourced event activations pass bounded event pointers without copying payloads.
      */
     content_ids?: Array<number>;
     /**
-     * Exclude content already analyzed in any window for this Behavior. Returns only unprocessed content for client-driven Behavior generation.
+     * Exclude content already analyzed in any window for this Automation. Returns only unprocessed content for client-driven Automation generation.
      */
-    exclude_behavior_id?: number;
+    exclude_automation_id?: number;
     /**
      * Filter by semantic type. Pass a single value (e.g. "note") or an array (e.g. ["note","summary"]) to match any. The reserved "notification" value matches events with notification targets, including kind-backed notifications whose stored semantic_type is their content kind.
      */
@@ -5482,9 +5374,9 @@ export type ManageClassifiersData = {
      */
     entity_id?: number;
     /**
-     * [create] Persisted Behavior ID returned by manage_behaviors (numeric string). OMIT for an org-level classifier — only those are matched by `apply` and the reconciliation job. Pass it only to scope the classifier to a single Behavior.
+     * [create] Persisted Automation ID returned by manage_automations (numeric string). OMIT for an org-level classifier — only those are matched by `apply` and the reconciliation job. Pass it only to scope the classifier to a single Automation.
      */
-    behavior_id?: string;
+    automation_id?: string;
     /**
      * [generate_embeddings/delete] Classifier ID
      */
@@ -5839,7 +5731,7 @@ export type ListMetricsData = {
      */
     entity_type?: string;
     /**
-     * Keyword filter (case-insensitive) over measure/dimension/segment names + descriptions.
+     * Keyword filter over available measure, dimension, and segment names and descriptions.
      */
     q?: string;
   };
@@ -5885,11 +5777,11 @@ export type ListMetricsResponse =
 export type QueryMetricData = {
   body: {
     /**
-     * Entity type slug that declares the metric (e.g. "company"). See list_metrics.
+     * Entity type slug exposing the measure (e.g. "company"). See list_metrics.
      */
     entity_type: string;
     /**
-     * Declared measure name on that entity type (e.g. "spend").
+     * Available declared or derived measure name (e.g. "spend" or "net_worth_gbp").
      */
     measure: string;
     /**
@@ -6111,7 +6003,7 @@ export type ResolvePathResponses = {
           created_at: string;
           total_content: number;
           active_connections: number;
-          behaviors_count: number;
+          automations_count: number;
           is_derived?: boolean;
           measure_columns?: Array<string>;
           merged_records?: Array<{
@@ -6187,7 +6079,7 @@ export type ResolvePathResponses = {
     } | null;
     counts: {
       connections: number;
-      behaviors: number;
+      automations: number;
       agents: number;
       devices: number;
       clients: number;
@@ -6287,9 +6179,9 @@ export type PostApiV1AgentsData = {
     forceNew?: boolean;
     dryRun?: boolean;
     intent?: {
-      kind: "behavior_run";
+      kind: "automation_run";
       runId: number;
-      behaviorId: number;
+      automationId: number;
     };
     networkConfig?: {
       allowedDomains?: Array<string>;
@@ -6517,7 +6409,7 @@ export type PostApiV1AgentsByAgentIdMessagesData = {
     message?: string;
     messageId?: string;
     /**
-     * Optional per-message model override (a `provider/model` ref or "auto"). Wins over the agent/org default. Used by Behavior dispatch.
+     * Optional per-message model override (a `provider/model` ref or "auto"). Wins over the agent/org default. Used by Automation dispatch.
      */
     model?: string;
     /**
@@ -6702,17 +6594,18 @@ export type GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesR
     200: unknown;
   };
 
-export type GetApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThreadData = {
-  body?: never;
-  path: {
-    agentId: string;
-    behaviorId: string;
+export type GetApiV1AgentsByAgentIdHistoryAutomationsByAutomationIdThreadData =
+  {
+    body?: never;
+    path: {
+      agentId: string;
+      automationId: string;
+    };
+    query?: never;
+    url: "/api/v1/agents/{agentId}/history/automations/{automationId}/thread";
   };
-  query?: never;
-  url: "/api/v1/agents/{agentId}/history/behaviors/{behaviorId}/thread";
-};
 
-export type GetApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThreadResponses =
+export type GetApiV1AgentsByAgentIdHistoryAutomationsByAutomationIdThreadResponses =
   {
     /**
      * OK

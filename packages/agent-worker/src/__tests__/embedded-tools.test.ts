@@ -356,7 +356,7 @@ describe("bash tool prefix policy (carried by the tool object)", () => {
     const bashTool = tools.find((t) => t.name === "bash")!;
 
     // Without a policy, an otherwise-denyable command runs (matches the prior
-    // behavior when session-runner only re-wrapped for a non-empty policy).
+    // semantics when session-runner only re-wrapped for a non-empty policy).
     await bashTool.execute(
       "call-nopolicy",
       { command: "rm -rf /workspace/data" },

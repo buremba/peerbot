@@ -27,7 +27,7 @@ function stateWith(connectors: DesiredState["connectors"]): DesiredState {
     agents: [],
     prune: false,
     memorySchema: { entityTypes: [], relationshipTypes: [] },
-    watchers: [],
+    automations: [],
     connectors,
     providers: [],
     requiredSecrets: [],
@@ -162,7 +162,7 @@ describe("validateConnectionAgainstConnector — chat capability", () => {
 });
 
 describe("executePlan — BYO chat connection dependencies", () => {
-  test("uses the newly created chat connection id for a Behavior in the same apply", async () => {
+  test("uses the newly created chat connection id for an Automation in the same apply", async () => {
     const connection: DesiredConnection = {
       slug: "team-slack",
       connector: "slack",
@@ -171,7 +171,7 @@ describe("executePlan — BYO chat connection dependencies", () => {
       feeds: [],
       sourceFile: "lobu.config.ts",
     };
-    const watcher: DesiredState["watchers"][number] = {
+    const automation: DesiredState["automations"][number] = {
       slug: "reply-in-support",
       agent: "triage",
       prompt: "Reply helpfully.",
@@ -192,7 +192,7 @@ describe("executePlan — BYO chat connection dependencies", () => {
       authProfiles: [],
       connections: [connection],
     });
-    state.watchers = [watcher];
+    state.automations = [automation];
     const plan: DiffPlan = {
       rows: [
         {
@@ -202,10 +202,10 @@ describe("executePlan — BYO chat connection dependencies", () => {
           desired: connection,
         },
         {
-          kind: "watcher",
+          kind: "automation",
           verb: "create",
-          id: watcher.slug,
-          desired: watcher,
+          id: automation.slug,
+          desired: automation,
         },
       ],
       counts: { create: 2, update: 0, noop: 0, drift: 0, delete: 0 },
@@ -216,7 +216,7 @@ describe("executePlan — BYO chat connection dependencies", () => {
       agentSettings: new Map(),
       entityTypes: [],
       relationshipTypes: [],
-      watchers: [],
+      automations: [],
       connectorDefinitions: [
         {
           key: "slack",
@@ -239,17 +239,17 @@ describe("executePlan — BYO chat connection dependencies", () => {
       created: true,
       changed: true,
     }));
-    const createBehavior = mock(async () => ({ behavior_id: "b-1" }));
+    const createAutomation = mock(async () => ({ automation_id: "b-1" }));
     const client = {
       applyChatConnection,
-      createBehavior,
+      createAutomation,
     } as unknown as ApplyClient;
 
     await executePlan({ client, state, plan, remote }, []);
 
     expect(applyChatConnection).toHaveBeenCalledTimes(1);
-    expect(createBehavior).toHaveBeenCalledTimes(1);
-    expect(createBehavior.mock.calls[0]?.[0].triggers).toEqual([
+    expect(createAutomation).toHaveBeenCalledTimes(1);
+    expect(createAutomation.mock.calls[0]?.[0].triggers).toEqual([
       {
         kind: "event",
         connector_key: "slack",
@@ -305,7 +305,7 @@ describe("executePlan — managed MCP connector install", () => {
       agentSettings: new Map(),
       entityTypes: [],
       relationshipTypes: [],
-      watchers: [],
+      automations: [],
       connectorDefinitions: [installable],
       authProfiles: [],
       connections: [],
@@ -448,7 +448,7 @@ describe("executePlan — entity-type schema fidelity", () => {
       agentSettings: new Map(),
       entityTypes: [ownedRemote, foreignPublic],
       relationshipTypes: [],
-      watchers: [],
+      automations: [],
       connectorDefinitions: [],
       authProfiles: [],
       connections: [],
@@ -504,7 +504,7 @@ describe("executePlan — entity-type schema fidelity", () => {
       agentSettings: new Map(),
       entityTypes: [remoteType as any],
       relationshipTypes: [],
-      watchers: [],
+      automations: [],
       connectorDefinitions: [],
       authProfiles: [],
       connections: [],
@@ -534,7 +534,7 @@ describe("fetchRemoteSnapshot — view-template fetch is org-scoped", () => {
         { slug: "task", organization_id: "org-acme" },
       ],
       listRelationshipTypes: async () => [],
-      listBehaviors: async () => [],
+      listAutomations: async () => [],
       listConnectors: async () => [],
       listAuthProfiles: async () => [],
       listConnections: async () => [],
@@ -555,7 +555,7 @@ describe("fetchRemoteSnapshot — view-template fetch is org-scoped", () => {
         ],
         relationshipTypes: [],
       },
-      watchers: [],
+      automations: [],
       connectors: { definitions: [], authProfiles: [], connections: [] },
       providers: [],
       requiredSecrets: [],
@@ -580,8 +580,8 @@ describe("fetchRemoteSnapshot — view-template fetch is org-scoped", () => {
   });
 });
 
-describe("executePlan — atomic Behavior triggers+prompt update", () => {
-  test("sends simultaneous prompt+trigger drift through createBehaviorVersion only", async () => {
+describe("executePlan — atomic Automation triggers+prompt update", () => {
+  test("sends simultaneous prompt+trigger drift through createAutomationVersion only", async () => {
     const desired = {
       slug: "digest",
       agent: "triage",
@@ -593,11 +593,11 @@ describe("executePlan — atomic Behavior triggers+prompt update", () => {
       authProfiles: [],
       connections: [],
     });
-    state.watchers = [desired];
+    state.automations = [desired];
     const plan: DiffPlan = {
       rows: [
         {
-          kind: "watcher",
+          kind: "automation",
           verb: "update",
           id: desired.slug,
           desired,
@@ -613,10 +613,10 @@ describe("executePlan — atomic Behavior triggers+prompt update", () => {
       agentSettings: new Map(),
       entityTypes: [],
       relationshipTypes: [],
-      watchers: [
+      automations: [
         {
           slug: "digest",
-          behavior_id: "42",
+          automation_id: "42",
           agent_id: "triage",
           prompt: "",
           triggers: [
@@ -635,27 +635,27 @@ describe("executePlan — atomic Behavior triggers+prompt update", () => {
       feedsByConnectionId: new Map(),
       inferenceProviders: [],
     };
-    const updateBehavior = mock(async () => ({}));
-    const createBehaviorVersion = mock(async () => ({ version: 2 }));
+    const updateAutomation = mock(async () => ({}));
+    const createAutomationVersion = mock(async () => ({ version: 2 }));
     const client = {
-      updateBehavior,
-      createBehaviorVersion,
+      updateAutomation,
+      createAutomationVersion,
     } as unknown as ApplyClient;
 
     await executePlan({ client, state, plan, remote }, []);
 
     // Must not split triggers onto update (would fail the instruction rule
     // against the empty current prompt before create_version lands).
-    expect(updateBehavior).not.toHaveBeenCalled();
-    expect(createBehaviorVersion).toHaveBeenCalledTimes(1);
-    expect(createBehaviorVersion.mock.calls[0]?.[0]).toMatchObject({
-      behavior_id: "42",
+    expect(updateAutomation).not.toHaveBeenCalled();
+    expect(createAutomationVersion).toHaveBeenCalledTimes(1);
+    expect(createAutomationVersion.mock.calls[0]?.[0]).toMatchObject({
+      automation_id: "42",
       prompt: "Now scheduled digest instructions.",
       triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
     });
   });
 
-  test("sends simultaneous skills+trigger drift through createBehaviorVersion only", async () => {
+  test("sends simultaneous skills+trigger drift through createAutomationVersion only", async () => {
     const desired = {
       slug: "skills-digest",
       agent: "triage",
@@ -670,11 +670,11 @@ describe("executePlan — atomic Behavior triggers+prompt update", () => {
       authProfiles: [],
       connections: [],
     });
-    state.watchers = [desired];
+    state.automations = [desired];
     const plan: DiffPlan = {
       rows: [
         {
-          kind: "watcher",
+          kind: "automation",
           verb: "update",
           id: desired.slug,
           desired,
@@ -690,10 +690,10 @@ describe("executePlan — atomic Behavior triggers+prompt update", () => {
       agentSettings: new Map(),
       entityTypes: [],
       relationshipTypes: [],
-      watchers: [
+      automations: [
         {
           slug: desired.slug,
-          behavior_id: "43",
+          automation_id: "43",
           agent_id: "triage",
           prompt: "",
           skills: null,
@@ -713,19 +713,19 @@ describe("executePlan — atomic Behavior triggers+prompt update", () => {
       feedsByConnectionId: new Map(),
       inferenceProviders: [],
     };
-    const updateBehavior = mock(async () => ({}));
-    const createBehaviorVersion = mock(async () => ({ version: 2 }));
+    const updateAutomation = mock(async () => ({}));
+    const createAutomationVersion = mock(async () => ({ version: 2 }));
     const client = {
-      updateBehavior,
-      createBehaviorVersion,
+      updateAutomation,
+      createAutomationVersion,
     } as unknown as ApplyClient;
 
     await executePlan({ client, state, plan, remote }, []);
 
-    expect(updateBehavior).not.toHaveBeenCalled();
-    expect(createBehaviorVersion).toHaveBeenCalledTimes(1);
-    expect(createBehaviorVersion.mock.calls[0]?.[0]).toMatchObject({
-      behavior_id: "43",
+    expect(updateAutomation).not.toHaveBeenCalled();
+    expect(createAutomationVersion).toHaveBeenCalledTimes(1);
+    expect(createAutomationVersion.mock.calls[0]?.[0]).toMatchObject({
+      automation_id: "43",
       skills: desired.skillSnapshots,
       triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
     });
@@ -743,11 +743,11 @@ describe("executePlan — atomic Behavior triggers+prompt update", () => {
       authProfiles: [],
       connections: [],
     });
-    state.watchers = [desired];
+    state.automations = [desired];
     const plan: DiffPlan = {
       rows: [
         {
-          kind: "watcher",
+          kind: "automation",
           verb: "update",
           id: desired.slug,
           desired,
@@ -763,10 +763,10 @@ describe("executePlan — atomic Behavior triggers+prompt update", () => {
       agentSettings: new Map(),
       entityTypes: [],
       relationshipTypes: [],
-      watchers: [
+      automations: [
         {
           slug: desired.slug,
-          behavior_id: "44",
+          automation_id: "44",
           agent_id: "triage",
           prompt: desired.prompt,
           triggers: desired.triggers,
@@ -779,17 +779,17 @@ describe("executePlan — atomic Behavior triggers+prompt update", () => {
       feedsByConnectionId: new Map(),
       inferenceProviders: [],
     };
-    const createBehaviorVersion = mock(async () => ({ version: 2 }));
+    const createAutomationVersion = mock(async () => ({ version: 2 }));
     const client = {
-      updateBehavior: mock(async () => ({})),
-      createBehaviorVersion,
+      updateAutomation: mock(async () => ({})),
+      createAutomationVersion,
     } as unknown as ApplyClient;
 
     await executePlan({ client, state, plan, remote }, []);
 
-    expect(createBehaviorVersion).toHaveBeenCalledTimes(1);
-    expect(createBehaviorVersion.mock.calls[0]?.[0]).toMatchObject({
-      behavior_id: "44",
+    expect(createAutomationVersion).toHaveBeenCalledTimes(1);
+    expect(createAutomationVersion.mock.calls[0]?.[0]).toMatchObject({
+      automation_id: "44",
       outputs: null,
     });
   });
@@ -813,11 +813,11 @@ describe("executePlan — atomic Behavior triggers+prompt update", () => {
       authProfiles: [],
       connections: [],
     });
-    state.watchers = [desired];
+    state.automations = [desired];
     const plan: DiffPlan = {
       rows: [
         {
-          kind: "watcher",
+          kind: "automation",
           verb: "update",
           id: desired.slug,
           desired,
@@ -833,10 +833,10 @@ describe("executePlan — atomic Behavior triggers+prompt update", () => {
       agentSettings: new Map(),
       entityTypes: [],
       relationshipTypes: [],
-      watchers: [
+      automations: [
         {
           slug: desired.slug,
-          behavior_id: "45",
+          automation_id: "45",
           agent_id: "triage",
           prompt: desired.prompt,
           triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
@@ -849,21 +849,21 @@ describe("executePlan — atomic Behavior triggers+prompt update", () => {
       feedsByConnectionId: new Map(),
       inferenceProviders: [],
     };
-    const updateBehavior = mock(async () => {
+    const updateAutomation = mock(async () => {
       throw new ApiError("turn execution cannot retain durable outputs");
     });
-    const createBehaviorVersion = mock(async () => ({ version: 2 }));
+    const createAutomationVersion = mock(async () => ({ version: 2 }));
     const client = {
-      updateBehavior,
-      createBehaviorVersion,
+      updateAutomation,
+      createAutomationVersion,
     } as unknown as ApplyClient;
 
     await executePlan({ client, state, plan, remote }, []);
 
-    expect(updateBehavior).not.toHaveBeenCalled();
-    expect(createBehaviorVersion).toHaveBeenCalledTimes(1);
-    expect(createBehaviorVersion.mock.calls[0]?.[0]).toMatchObject({
-      behavior_id: "45",
+    expect(updateAutomation).not.toHaveBeenCalled();
+    expect(createAutomationVersion).toHaveBeenCalledTimes(1);
+    expect(createAutomationVersion.mock.calls[0]?.[0]).toMatchObject({
+      automation_id: "45",
       outputs: null,
       triggers: desired.triggers,
     });

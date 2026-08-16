@@ -1,11 +1,11 @@
 /**
  * Connector-owned "which workspace does this subscription belong to" resolver.
  *
- * A chat Behavior subscription's `team_id` projection is a HARD invariant: it
+ * A chat Automation subscription's `team_id` projection is a HARD invariant: it
  * ALWAYS names the
  * concrete workspace/tenant a channel lives in, never a broader install
  * identity (for Slack Grid: the workspace `T…`, NEVER the enterprise `E…`).
- * The generic Behavior-subscription write path
+ * The generic Automation-subscription write path
  * must not know how any connector computes that —
  * it just calls {@link resolveSubscriptionTeam}. Each connector owns its own rule.
  *

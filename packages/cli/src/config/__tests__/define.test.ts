@@ -10,7 +10,7 @@ import {
   defineConnection,
   defineEntityType,
   defineRelationshipType,
-  defineBehavior,
+  defineAutomation,
   type EntityType,
   reactionFromFile,
 } from "../define.js";
@@ -41,7 +41,7 @@ describe("authoring producers", () => {
     expect((worksAt.rules?.[0]?.source as EntityType).key).toBe("person");
   });
 
-  test("agent + behavior use typed handles", () => {
+  test("agent + automation use typed handles", () => {
     const crm = defineAgent({
       id: "crm",
       providers: [
@@ -51,12 +51,12 @@ describe("authoring producers", () => {
     expect(crm.kind).toBe("agent");
     expect(isSecretRef(crm.providers?.[0]?.key)).toBe(true);
 
-    const w = defineBehavior({
+    const w = defineAutomation({
       agent: crm,
       slug: "health",
       prompt: "assess",
     });
-    expect(w.kind).toBe("behavior");
+    expect(w.kind).toBe("automation");
     expect((w.agent as Agent).id).toBe("crm");
   });
 
@@ -67,7 +67,7 @@ describe("authoring producers", () => {
       path: "./reactions/health.reaction.ts",
     });
 
-    const w = defineBehavior({
+    const w = defineAutomation({
       agent: "crm",
       slug: "health",
       prompt: "assess",

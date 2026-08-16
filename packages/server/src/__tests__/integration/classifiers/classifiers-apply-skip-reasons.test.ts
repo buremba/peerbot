@@ -11,7 +11,7 @@
  * the reader after a bug that does not exist.
  *   1. precheck ignored `embedding_model` → a stale-model vector counted as
  *      embedded, and its (absent) score was blamed on `below_threshold`.
- *   2. precheck omitted `watcher_id IS NULL` → a Behavior-owned classifier of
+ *   2. precheck omitted `automation_id IS NULL` → an Automation-owned classifier of
  *      the same slug counted as "found", and its zero results likewise.
  *   3. precheck read `events` while the engine reads `current_event_records` →
  *      a superseded event counted as reachable, same false blame.
@@ -82,7 +82,7 @@ describe('manage_classifiers apply — skip reasons', () => {
     await sql`
       INSERT INTO classify_facet (
         organization_id, slug, name, attribute_key, status, created_by,
-        watcher_id, entity_ids, min_similarity, fallback_value, attribute_values
+        automation_id, entity_ids, min_similarity, fallback_value, attribute_values
       ) VALUES (
         ${org.id}, 'apply-reasons', 'apply reasons classifier', 'apply-reasons', 'active', ${user.id},
         NULL, NULL, 0.5, NULL, ${sql.json(attributeValues as never)}
@@ -213,42 +213,42 @@ describe('manage_classifiers apply — skip reasons', () => {
     expect(written.map((r) => Number(r.event_id))).toEqual([Number(classifiable.id)]);
   });
 
-  it('does not count a Behavior-owned classifier of the same slug as the one to apply', async () => {
+  it('does not count an Automation-owned classifier of the same slug as the one to apply', async () => {
     await cleanupTestDatabase();
-    const org = await createTestOrganization({ name: 'Apply Behavior-Owned Org' });
-    const user = await createTestUser({ email: 'apply-behavior@test.com' });
+    const org = await createTestOrganization({ name: 'Apply Automation-Owned Org' });
+    const user = await createTestUser({ email: 'apply-automation@test.com' });
     const sql = getTestDb();
 
-    // Only a Behavior-scoped classifier carries this slug. The engine ignores it
-    // (it selects `watcher_id IS NULL`), so `apply` must fail loudly rather than
+    // Only an Automation-scoped classifier carries this slug. The engine ignores it
+    // (it selects `automation_id IS NULL`), so `apply` must fail loudly rather than
     // report a successful run that classified nothing.
     const agent = await createTestAgent({ organizationId: org.id, ownerUserId: user.id });
-    const [behavior] = (await sql`
-      INSERT INTO watchers (organization_id, agent_id, watcher_group_id, name, created_by, status)
-      VALUES (${org.id}, ${agent.agentId}, 0, 'owning behavior', ${user.id}, 'active')
+    const [automation] = (await sql`
+      INSERT INTO automations (organization_id, agent_id, automation_group_id, name, created_by, status)
+      VALUES (${org.id}, ${agent.agentId}, 0, 'owning automation', ${user.id}, 'active')
       RETURNING id
     `) as unknown as Array<{ id: number }>;
     await sql`
       INSERT INTO classify_facet (
         organization_id, slug, name, attribute_key, status, created_by,
-        watcher_id, entity_ids, min_similarity, fallback_value, attribute_values
+        automation_id, entity_ids, min_similarity, fallback_value, attribute_values
       ) VALUES (
-        ${org.id}, 'behavior-owned', 'behavior owned', 'behavior-owned', 'active', ${user.id},
-        ${behavior.id}, NULL, 0.5, NULL,
+        ${org.id}, 'automation-owned', 'automation owned', 'automation-owned', 'active', ${user.id},
+        ${automation.id}, NULL, 0.5, NULL,
         ${sql.json({ positive: { embedding: basisVector(0), embedding_model: getConfiguredEmbeddingModel() } } as never)}
       )
     `;
 
     const event = await createTestEvent({
       organization_id: org.id,
-      content: 'would match the behavior-owned classifier exactly',
+      content: 'would match the automation-owned classifier exactly',
       embedding: basisVector(0),
     });
 
     const result = await manageClassifiers(
       {
         action: 'apply',
-        classifier_slug: 'behavior-owned',
+        classifier_slug: 'automation-owned',
         content_ids: [Number(event.id)],
       } as never,
       {} as never,
@@ -264,7 +264,7 @@ describe('manage_classifiers apply — skip reasons', () => {
     );
 
     expect(result.success).toBe(false);
-    expect(result.message).toContain('behavior-owned');
+    expect(result.message).toContain('automation-owned');
   });
 
   it('stamps the configured embedding model on fixtures, so the stale-model bucket means what it says', async () => {

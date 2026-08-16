@@ -85,7 +85,7 @@ interface ChatOptions {
  *
  * Returns `undefined` when nothing is configured — the server then falls back
  * to the PAT-bound org / the user's default membership, preserving the
- * pre-flag behavior for callers that never pass `--org`.
+ * pre-flag semantics for callers that never pass `--org`.
  */
 export async function resolveChatOrg(
   options: Pick<ChatOptions, "org" | "context">
@@ -98,7 +98,7 @@ export async function resolveChatOrg(
  * Build the Authorization header plus an optional `x-lobu-org` override the
  * embedded gateway honors per-request (membership-checked server-side). The
  * header is omitted entirely when no org is resolved, so unflagged invocations
- * are byte-for-byte identical to the previous behavior.
+ * are byte-for-byte identical to the previous semantics.
  */
 function agentApiHeaders(
   authToken: string,

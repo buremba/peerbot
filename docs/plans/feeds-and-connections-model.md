@@ -117,7 +117,7 @@ lenses are not: metric runs via the connector `query()` / `metric_series` path,
 `query_sql` via `QUERYABLE_SCHEMA` → `buildScopedQuery` CTEs (plus its own
 virtual-feed / connector-query branches). Folding them under the SAME
 tuple-dispatched registry is a **consolidation of existing capability, not a new
-one** — pure refactor across two working subsystems, with no behavior change and
+one** — pure refactor across two working subsystems, with no runtime change and
 real regression surface. It is deferred until a concrete second-lens need forces
 it (e.g. a new lens that must share the source-adapter layer), per the "design
 the seam, not the framework" discipline. The recall registry was shaped as the

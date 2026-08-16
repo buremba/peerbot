@@ -124,7 +124,7 @@ describe("ClientSDK.org() accessor", () => {
       expect(sdk.feeds).toBeDefined();
       expect(sdk.authProfiles).toBeDefined();
       expect(sdk.operations).toBeDefined();
-      expect(sdk.behaviors).toBeDefined();
+      expect(sdk.automations).toBeDefined();
       expect(sdk.classifiers).toBeDefined();
       expect(sdk.viewTemplates).toBeDefined();
       expect(sdk.knowledge).toBeDefined();

@@ -148,7 +148,7 @@ function rewriteWorkspaceRefs(pkg) {
  * referenced paths all ship is kept (@lobu/connector-worker's
  * `start: node dist/bin.js` is real and still works), and one that reaches
  * outside `files` is dropped. Lifecycle scripts are kept unconditionally —
- * npm runs those itself on install, so dropping one changes install behaviour.
+ * npm runs those itself on install, so dropping one changes install semantics.
  */
 const PUBLISHED_LIFECYCLE_SCRIPTS = new Set([
   "preinstall",

@@ -905,8 +905,8 @@ export class ChatInstanceManager {
   /**
    * Post a message to a channel as the bot — a one-shot outbound post, NOT an
    * inbound message that triggers an agent run (that's `routePlatformMessage`).
-   * Used by the notification fan-out (`deliverToBotConnections`) to surface a
-   * watcher digest / approval in a bound channel.
+   * Used by the notification fan-out (`deliverToBotConnections`) to surface an
+   * automation digest / approval in a bound channel.
    *
    * `content` is any `chat` `AdapterPostableMessage` — `{ markdown }` (rendered
    * to each platform's native format rather than HTML-escaped), `{ card }` (a
@@ -990,7 +990,7 @@ export class ChatInstanceManager {
       /**
        * Subscribe to the thread this message opens/continues, so the bot
        * RECEIVES (and captures) replies to it. Without this, a thread the bot
-       * opens proactively (e.g. a watcher's lunch thread) is invisible to it —
+       * opens proactively (e.g. an automation's lunch thread) is invisible to it —
        * Slack only delivers thread replies for subscribed threads. Used by
        * send_message; a one-off notify does NOT subscribe.
        */
@@ -1291,8 +1291,8 @@ export class ChatInstanceManager {
             bridged.connectorKey === "github"
               ? {
                   // Poll-canonical: mark the feed due (or store stars) so
-                  // Behavior signals ride the real github poll path. Do not
-                  // raw-store under webhook:<id> — that never activates Behaviors.
+                  // Automation signals ride the real github poll path. Do not
+                  // raw-store under webhook:<id> — that never activates Automations.
                   handleInsteadOfPersist: async ({
                     rawBody,
                     headers,
@@ -1645,7 +1645,7 @@ export class ChatInstanceManager {
 
       const commandDispatcher = new CommandDispatcher({
         registry: this.services.getCommandRegistry(),
-        behaviorSubscriptionService: this.services.getBehaviorSubscriptionService(),
+        automationSubscriptionService: this.services.getAutomationSubscriptionService(),
       });
       const messageBridge = registerMessageHandlers(
         chat,
@@ -2166,7 +2166,7 @@ export class ChatInstanceManager {
         // through the failure (no releaseClaim) on purpose — releasing it would
         // just bounce the same transient failure around N replicas (flapping).
         // One owner retrying on a capped backoff is the calmer,
-        // multi-replica-correct behaviour.
+        // multi-replica-correct semantics.
         const reread = await this.connectionStore.getConnection(s.id);
         const rowVersion = reread?.updatedAt ?? s.updatedAt;
         const prior =

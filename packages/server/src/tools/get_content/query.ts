@@ -86,9 +86,9 @@ function buildContentQuery(opts: {
       ${a}.connection_id,
       ${a}.feed_id,
       ${a}.feed_key,
-      ${a}.behavior_id,
+      ${a}.automation_id,
       fd.display_name AS feed_name,
-      COALESCE(wv.name, 'Behavior #' || ${a}.behavior_id) AS behavior_name,
+      COALESCE(wv.name, 'Automation #' || ${a}.automation_id) AS automation_name,
       oc.client_name,
       -- Per-event classifications keyed by classifier attribute, matching the
       -- list/search path shape so exact reads (content_ids / include_superseded)
@@ -132,7 +132,7 @@ function buildContentQuery(opts: {
     LEFT JOIN connections c ON c.id = ${a}.connection_id
     LEFT JOIN oauth_clients oc ON oc.id = ${a}.client_id
     LEFT JOIN feeds fd ON fd.id = ${a}.feed_id
-    LEFT JOIN watcher_versions wv ON wv.id = ${a}.behavior_version_id
+    LEFT JOIN automation_versions wv ON wv.id = ${a}.automation_version_id
     WHERE ${where}
     ORDER BY ${orderBy}
     LIMIT ${limit}
@@ -419,29 +419,29 @@ export async function fetchIncludeSuperseded(opts: {
   }
   if (args.window_id !== undefined) {
     conditions.push(
-      `EXISTS (SELECT 1 FROM watcher_window_events iwf WHERE iwf.event_id = e.id AND iwf.window_id = $${paramIndex})`
+      `EXISTS (SELECT 1 FROM automation_window_events iwf WHERE iwf.event_id = e.id AND iwf.window_id = $${paramIndex})`
     );
     queryParams.push(args.window_id);
     paramIndex += 1;
   }
-  if (args.analyzed_by_behavior_id !== undefined) {
+  if (args.analyzed_by_automation_id !== undefined) {
     conditions.push(
-      `EXISTS (SELECT 1 FROM watcher_window_events iwf WHERE iwf.event_id = e.id AND iwf.watcher_id = $${paramIndex})`
+      `EXISTS (SELECT 1 FROM automation_window_events iwf WHERE iwf.event_id = e.id AND iwf.automation_id = $${paramIndex})`
     );
-    queryParams.push(args.analyzed_by_behavior_id);
+    queryParams.push(args.analyzed_by_automation_id);
     paramIndex += 1;
   }
-  if (args.exclude_behavior_id !== undefined) {
+  if (args.exclude_automation_id !== undefined) {
     conditions.push(
-      `NOT EXISTS (SELECT 1 FROM watcher_window_events exc_iwe WHERE exc_iwe.event_id = e.id AND exc_iwe.watcher_id = $${paramIndex})`
+      `NOT EXISTS (SELECT 1 FROM automation_window_events exc_iwe WHERE exc_iwe.event_id = e.id AND exc_iwe.automation_id = $${paramIndex})`
     );
-    queryParams.push(args.exclude_behavior_id);
+    queryParams.push(args.exclude_automation_id);
     paramIndex += 1;
   }
-  if (args.produced_by_behavior_id !== undefined) {
-    conditions.push(`e.behavior_id = $${paramIndex}`);
+  if (args.produced_by_automation_id !== undefined) {
+    conditions.push(`e.automation_id = $${paramIndex}`);
     queryParams.push(
-      validateNumericId(args.produced_by_behavior_id, 'produced_by_behavior_id')
+      validateNumericId(args.produced_by_automation_id, 'produced_by_automation_id')
     );
     paramIndex += 1;
   }
@@ -636,30 +636,30 @@ export async function fetchClassificationStats(opts: {
   }
   let windowJoinSql = '';
   if (args.window_id) {
-    windowJoinSql = `JOIN watcher_window_events iwf ON iwf.event_id = f.id AND iwf.window_id = $${paramIndex}`;
+    windowJoinSql = `JOIN automation_window_events iwf ON iwf.event_id = f.id AND iwf.window_id = $${paramIndex}`;
     params.push(args.window_id);
     paramIndex++;
   }
-  if (args.analyzed_by_behavior_id !== undefined) {
+  if (args.analyzed_by_automation_id !== undefined) {
     conditions.push(
-      `EXISTS (SELECT 1 FROM watcher_window_events iwf WHERE iwf.event_id = f.id AND iwf.watcher_id = $${paramIndex++})`
+      `EXISTS (SELECT 1 FROM automation_window_events iwf WHERE iwf.event_id = f.id AND iwf.automation_id = $${paramIndex++})`
     );
-    params.push(args.analyzed_by_behavior_id);
+    params.push(args.analyzed_by_automation_id);
   }
-  if (args.exclude_behavior_id !== undefined) {
+  if (args.exclude_automation_id !== undefined) {
     conditions.push(
-      `NOT EXISTS (SELECT 1 FROM watcher_window_events exc_iwe WHERE exc_iwe.event_id = f.id AND exc_iwe.watcher_id = $${paramIndex++})`
+      `NOT EXISTS (SELECT 1 FROM automation_window_events exc_iwe WHERE exc_iwe.event_id = f.id AND exc_iwe.automation_id = $${paramIndex++})`
     );
-    params.push(args.exclude_behavior_id);
+    params.push(args.exclude_automation_id);
   }
   // Produced, not analyzed. A column read rather than an EXISTS over
-  // `watcher_window_events`, because that table records what a Behavior READ.
-  // Index: idx_events_behavior_produced (organization_id, behavior_id,
+  // `automation_window_events`, because that table records what an Automation READ.
+  // Index: idx_events_automation_produced (organization_id, automation_id,
   // occurred_at DESC) — the org predicate and the ORDER BY are already there.
-  if (args.produced_by_behavior_id !== undefined) {
-    conditions.push(`f.behavior_id = $${paramIndex++}`);
+  if (args.produced_by_automation_id !== undefined) {
+    conditions.push(`f.automation_id = $${paramIndex++}`);
     params.push(
-      validateNumericId(args.produced_by_behavior_id, 'produced_by_behavior_id')
+      validateNumericId(args.produced_by_automation_id, 'produced_by_automation_id')
     );
   }
   if (args.agent_id) {

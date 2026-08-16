@@ -1,16 +1,18 @@
 /**
- * Correction-events (P1) STEADY STATE (post phase-4 contract): watcher_window_field_feedback is
- * retired; every submit emits a correction event directly and every read comes from the events
- * spine (semantic_type='correction'). No flags, no table. This is the end-state round-trip.
+ * Correction-events (P1) STEADY STATE (post phase-4 contract): the dedicated
+ * window-feedback table is retired; every submit emits a correction event
+ * directly and every read comes from the events spine
+ * (semantic_type='correction'). No flags, no table. This is the end-state
+ * round-trip.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   handleGetFeedback,
   handleSubmitFeedback,
-} from '../../../tools/admin/manage_behaviors/feedback';
+} from '../../../tools/admin/manage_automations/feedback';
 import type { ToolContext } from '../../../tools/registry';
-import { getRecentFeedbackSummary } from '../../../utils/watcher-feedback';
+import { getRecentFeedbackSummary } from '../../../utils/automation-feedback';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   createCanvasWindow,
@@ -30,15 +32,15 @@ describe('feedback correction-events steady state (P1 phase 4)', () => {
     const org = await createTestOrganization({ name: 'FSS Org' });
     const user = await createTestUser({ email: 'fss@test.com' });
     const agent = await createTestAgent({ organizationId: org.id, ownerUserId: user.id });
-    const watcherId = 953000;
+    const automationId = 953000;
     await sql`
-      INSERT INTO watchers (id, name, slug, created_by, organization_id, agent_id, watcher_group_id)
-      VALUES (${watcherId}, 'w', 'w-fss', ${user.id}, ${org.id}, ${agent.agentId}, ${watcherId})
+      INSERT INTO automations (id, name, slug, created_by, organization_id, agent_id, automation_group_id)
+      VALUES (${automationId}, 'w', 'w-fss', ${user.id}, ${org.id}, ${agent.agentId}, ${automationId})
     `;
     // Canvas-on-events: the window is a canvas_state chain root; its event id is
     // the window_id submit_feedback keys on.
     const windowId = await createCanvasWindow({
-      watcherId,
+      automationId,
       organizationId: org.id,
       granularity: 'daily',
       windowStart: new Date(),
@@ -49,7 +51,7 @@ describe('feedback correction-events steady state (P1 phase 4)', () => {
 
     const submitted = await handleSubmitFeedback(
       {
-        behavior_id: watcherId,
+        automation_id: automationId,
         window_id: windowId,
         corrections: [
           { field_path: 'a', mutation: 'set', value: 'v', note: 'n' },
@@ -60,14 +62,20 @@ describe('feedback correction-events steady state (P1 phase 4)', () => {
     );
     expect((submitted as { feedback_ids: number[] }).feedback_ids).toHaveLength(2);
 
-    // The table is retired — this PR's migration drops it; the submit went entirely to events.
+    // The table is retired — the submit went entirely to events. Match the
+    // structural name instead of naming the pre-cutover relation in live code.
     const reg = (await sql`
-      SELECT to_regclass('public.watcher_window_field_feedback') AS t
-    `) as Array<{ t: string | null }>;
-    expect(reg[0].t).toBeNull();
+      SELECT c.relname
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public'
+        AND c.relkind IN ('r', 'p')
+        AND c.relname LIKE '%window%field%feedback%'
+    `) as Array<{ relname: string }>;
+    expect(reg).toEqual([]);
 
     // get_feedback returns both, from events, with recovered ids + org scoping.
-    const got = (await handleGetFeedback({ behavior_id: watcherId } as never, ctx)) as {
+    const got = (await handleGetFeedback({ automation_id: automationId } as never, ctx)) as {
       feedback: Array<{ id: number; field_path: string; mutation: string; created_by: string }>;
     };
     expect(got.feedback).toHaveLength(2);
@@ -75,7 +83,7 @@ describe('feedback correction-events steady state (P1 phase 4)', () => {
     expect(got.feedback.map((f) => f.field_path).sort()).toEqual(['a', 'b']);
 
     // The prompt summary renders the latest-per-field corrections from events.
-    const summary = await getRecentFeedbackSummary(watcherId);
+    const summary = await getRecentFeedbackSummary(automationId);
     expect(summary).toContain('"a" → v');
     expect(summary).toContain('drop "b"');
   });

@@ -10,7 +10,7 @@ import type { Env } from "../../../index";
 import type { ToolContext } from "../../../tools/registry";
 
 const calls: Array<{ action: string; input?: Record<string, unknown> }> = [];
-const behaviorGets: Array<Record<string, unknown>> = [];
+const automationGets: Array<Record<string, unknown>> = [];
 
 const captureAction = async (input: Record<string, unknown>) => {
 	const { action, ...rest } = input;
@@ -49,15 +49,15 @@ mock.module("../../../tools/admin/notify", () => ({
 	notify: captureAction,
 }));
 
-mock.module("../../../tools/get_behavior", () => ({
-	getBehavior: async (input: Record<string, unknown>) => {
-		behaviorGets.push(input);
+mock.module("../../../tools/get_automation", () => ({
+	getAutomation: async (input: Record<string, unknown>) => {
+		automationGets.push(input);
 		return input;
 	},
 }));
 
-mock.module("../../../tools/admin/manage_behaviors", () => ({
-	manageBehaviors: captureAction,
+mock.module("../../../tools/admin/manage_automations", () => ({
+	manageAutomations: captureAction,
 }));
 
 const ctx = {} as ToolContext;
@@ -69,7 +69,7 @@ describe("ClientSDK object signature contract", () => {
 		feeds: typeof import("../../../sandbox/namespaces/feeds").buildFeedsNamespace;
 		classifiers: typeof import("../../../sandbox/namespaces/classifiers").buildClassifiersNamespace;
 		schedules: typeof import("../../../sandbox/namespaces/schedules").buildSchedulesNamespace;
-		behaviors: typeof import("../../../sandbox/namespaces/behaviors").buildBehaviorsNamespace;
+		automations: typeof import("../../../sandbox/namespaces/automations").buildAutomationsNamespace;
 		entitySchema: typeof import("../../../sandbox/namespaces/entity-schema").buildEntitySchemaNamespace;
 		connections: typeof import("../../../sandbox/namespaces/connections").buildConnectionsNamespace;
 		authProfiles: typeof import("../../../sandbox/namespaces/auth-profiles").buildAuthProfilesNamespace;
@@ -84,7 +84,7 @@ describe("ClientSDK object signature contract", () => {
 			feeds,
 			classifiers,
 			schedules,
-			behaviors,
+			automations,
 			entitySchema,
 			connections,
 			authProfiles,
@@ -96,7 +96,7 @@ describe("ClientSDK object signature contract", () => {
 			import("../../../sandbox/namespaces/feeds"),
 			import("../../../sandbox/namespaces/classifiers"),
 			import("../../../sandbox/namespaces/schedules"),
-			import("../../../sandbox/namespaces/behaviors"),
+			import("../../../sandbox/namespaces/automations"),
 			import("../../../sandbox/namespaces/entity-schema"),
 			import("../../../sandbox/namespaces/connections"),
 			import("../../../sandbox/namespaces/auth-profiles"),
@@ -109,7 +109,7 @@ describe("ClientSDK object signature contract", () => {
 			feeds: feeds.buildFeedsNamespace,
 			classifiers: classifiers.buildClassifiersNamespace,
 			schedules: schedules.buildSchedulesNamespace,
-			behaviors: behaviors.buildBehaviorsNamespace,
+			automations: automations.buildAutomationsNamespace,
 			entitySchema: entitySchema.buildEntitySchemaNamespace,
 			connections: connections.buildConnectionsNamespace,
 			authProfiles: authProfiles.buildAuthProfilesNamespace,
@@ -121,7 +121,7 @@ describe("ClientSDK object signature contract", () => {
 
 	beforeEach(() => {
 		calls.length = 0;
-		behaviorGets.length = 0;
+		automationGets.length = 0;
 	});
 
 	it("forwards named id objects instead of treating them as positional ids", async () => {
@@ -129,7 +129,7 @@ describe("ClientSDK object signature contract", () => {
 		const feeds = builders.feeds(ctx, env);
 		const classifiers = builders.classifiers(ctx, env);
 		const schedules = builders.schedules(ctx, env);
-		const behaviors = builders.behaviors(ctx, env);
+		const automations = builders.automations(ctx, env);
 		const entitySchema = builders.entitySchema(ctx, env);
 
 		await entities.get({ entity_id: 11 });
@@ -139,14 +139,14 @@ describe("ClientSDK object signature contract", () => {
 		await feeds.delete({ feed_id: 23 });
 		await classifiers.delete({ classifier_id: 31 });
 		await schedules.cancel({ id: "schedule-41" });
-		await behaviors.get({ behavior_id: "51" });
-		await behaviors.trigger({ behavior_id: "52" });
-		await behaviors.delete({ behavior_ids: ["53", "54"] });
+		await automations.get({ automation_id: "51" });
+		await automations.trigger({ automation_id: "52" });
+		await automations.delete({ automation_ids: ["53", "54"] });
 		await entitySchema.deleteType({ slug: "company" });
 		await entitySchema.deleteRelType({ slug: "works-at" });
 		await entitySchema.listRules({ slug: "works-at" });
 
-		expect(behaviorGets).toEqual([{ behavior_id: "51" }]);
+		expect(automationGets).toEqual([{ automation_id: "51" }]);
 		expect(calls).toEqual([
 			{ action: "get", input: { entity_id: 11 } },
 			{
@@ -161,8 +161,8 @@ describe("ClientSDK object signature contract", () => {
 			{ action: "delete_feed", input: { feed_id: 23 } },
 			{ action: "delete", input: { classifier_id: 31 } },
 			{ action: "cancel", input: { id: "schedule-41" } },
-			{ action: "trigger", input: { behavior_id: "52" } },
-			{ action: "delete", input: { behavior_ids: ["53", "54"] } },
+			{ action: "trigger", input: { automation_id: "52" } },
+			{ action: "delete", input: { automation_ids: ["53", "54"] } },
 			{
 				action: "delete",
 				input: { schema_type: "entity_type", slug: "company" },
@@ -200,7 +200,7 @@ describe("ClientSDK object signature contract", () => {
 		const entities = builders.entities(ctx, env);
 		const feeds = builders.feeds(ctx, env);
 		const schedules = builders.schedules(ctx, env);
-		const behaviors = builders.behaviors(ctx, env);
+		const automations = builders.automations(ctx, env);
 		const connections = builders.connections(ctx, env);
 		const notifications = builders.notifications(ctx, env);
 
@@ -210,8 +210,8 @@ describe("ClientSDK object signature contract", () => {
 		await schedules.update({ schedule_id: "s-1", description: "d" } as never);
 		await schedules.pause({ schedule_id: "s-2" } as never);
 		await schedules.cancel({ schedule_id: "s-3" } as never);
-		await behaviors.setReactionScript({
-			behavior_id: "42",
+		await automations.setReactionScript({
+			automation_id: "42",
 			script: "export default async () => {};",
 		} as never);
 		await connections.update({ connection_id: 9, name: "Renamed" } as never);
@@ -227,7 +227,7 @@ describe("ClientSDK object signature contract", () => {
 			{
 				action: "set_reaction_script",
 				input: {
-					behavior_id: "42",
+					automation_id: "42",
 					reaction_script: "export default async () => {};",
 				},
 			},
@@ -248,7 +248,7 @@ describe("ClientSDK object signature contract", () => {
 		const agents = builders.agents(ctx, env);
 		const entitySchema = builders.entitySchema(ctx, env);
 		const operations = builders.operations(ctx, env);
-		const behaviors = builders.behaviors(ctx, env);
+		const automations = builders.automations(ctx, env);
 
 		await connections.get({ connection_id: 418 } as never);
 		await connections.test({ connection_id: 419 } as never);
@@ -261,7 +261,7 @@ describe("ClientSDK object signature contract", () => {
 		await entitySchema.getRelType({ slug: "works-at" } as never);
 		await entitySchema.auditType({ slug: "company" } as never);
 		await operations.getRun({ run_id: 7 } as never);
-		await behaviors.getVersions({ behavior_id: "42" } as never);
+		await automations.getVersions({ automation_id: "42" } as never);
 
 		expect(calls).toEqual([
 			{ action: "get", input: { connection_id: 418 } },
@@ -278,7 +278,7 @@ describe("ClientSDK object signature contract", () => {
 			},
 			{ action: "audit", input: { schema_type: "entity_type", slug: "company" } },
 			{ action: "get_run", input: { run_id: 7 } },
-			{ action: "get_versions", input: { behavior_id: "42" } },
+			{ action: "get_versions", input: { automation_id: "42" } },
 		]);
 	});
 
@@ -287,20 +287,20 @@ describe("ClientSDK object signature contract", () => {
 		const agents = builders.agents(ctx, env);
 		const entitySchema = builders.entitySchema(ctx, env);
 		const operations = builders.operations(ctx, env);
-		const behaviors = builders.behaviors(ctx, env);
+		const automations = builders.automations(ctx, env);
 
 		await connections.get(1);
 		await agents.get("builder");
 		await entitySchema.getType("company");
 		await operations.getRun(7);
-		await behaviors.getVersions("42");
+		await automations.getVersions("42");
 
 		expect(calls).toEqual([
 			{ action: "get", input: { connection_id: 1 } },
 			{ action: "get", input: { agent_id: "builder" } },
 			{ action: "get", input: { schema_type: "entity_type", slug: "company" } },
 			{ action: "get_run", input: { run_id: 7 } },
-			{ action: "get_versions", input: { behavior_id: "42" } },
+			{ action: "get_versions", input: { automation_id: "42" } },
 		]);
 	});
 

@@ -33,22 +33,26 @@ describe("GatewayClient heartbeat ACKs", () => {
       JSON.stringify({
         payload: {
           botId: "lobu-api",
-          userId: "watcher_218",
+          userId: "automation_218",
           organizationId: "org-1",
           agentId: "marketing",
-          conversationId: "marketing_watcher_218_run_120947",
+          conversationId: "marketing_automation_218_run_120947",
           platform: "api",
-          channelId: "api_watcher_218",
+          channelId: "api_automation_218",
           messageId: "message-1",
-          messageText: "run watcher",
+          messageText: "run automation",
           platformMetadata: {
             agentId: "marketing",
-            source: "watcher-run",
-            intent: { kind: "watcher_run", runId: 120947, watcherId: 218 },
+            source: "automation-run",
+            intent: {
+              kind: "automation_run",
+              runId: 120947,
+              automationId: 218,
+            },
           },
           agentOptions: {},
           runId: 120947,
-          runJobToken: "per-run-watcher-token",
+          runJobToken: "per-run-automation-token",
         },
       })
     );
@@ -57,9 +61,9 @@ describe("GatewayClient heartbeat ACKs", () => {
     expect(
       handleThreadMessage.mock.calls[0]?.[0].platformMetadata.intent
     ).toEqual({
-      kind: "watcher_run",
+      kind: "automation_run",
       runId: 120947,
-      watcherId: 218,
+      automationId: 218,
     });
   });
 

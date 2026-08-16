@@ -3,7 +3,7 @@
  * from. M1 introduces the type and routes the existing per-user
  * connection-visibility logic through one compiler (see ./connection-visibility);
  * later milestones grow `principal` into a verified `$member` (M3) and put
- * `policyVersion` to work (M2/M6). No behavior change at M1: `principal` is the
+ * `policyVersion` to work (M2/M6). No runtime change at M1: `principal` is the
  * requesting user id and `null` means a headless/service caller (org-visible
  * rows only, fail-closed for private data).
  */
@@ -50,7 +50,7 @@ export function authzScopeFromToolContext(ctx: {
 
 /**
  * A headless/service scope: no principal, so only org-visible rows are returned
- * (fail-closed for private data). Use for watchers / scheduled jobs / internal
+ * (fail-closed for private data). Use for automations / scheduled jobs / internal
  * reads that run without a requesting user.
  */
 export function headlessScope(organizationId: string): AuthzScope {

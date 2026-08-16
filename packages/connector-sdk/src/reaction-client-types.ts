@@ -1,5 +1,5 @@
 /**
- * Type declarations for Behavior reaction scripts.
+ * Type declarations for Automation reaction scripts.
  *
  * Reaction scripts run inside an isolated-vm sandbox where `client` is a
  * Proxy that dispatches calls to the host. You can't import real packages
@@ -48,13 +48,13 @@ export interface KnowledgeSaveInput {
   /** Stable producer key used to collapse reaction retries. */
   idempotency_key?: string;
   occurred_at?: string;
-  behavior_source?: { behavior_id: number; window_id: number };
+  automation_source?: { automation_id: number; window_id: number };
 }
 
 export interface KnowledgeReadInput {
   /** Fetch specific content events by id (read_knowledge takes an array). */
   content_ids?: number[];
-  behavior_id?: number;
+  automation_id?: number;
   since?: string;
   until?: string;
   limit?: number;
@@ -143,8 +143,8 @@ export interface NotificationsSendInput {
    * markdown `body`. Mutually exclusive with `input_schema`.
    */
   semantic_type?: string;
-  /** Attribution when sent from a behavior reaction. */
-  behavior_source?: { behavior_id: number; window_id: number };
+  /** Attribution when sent from an automation reaction. */
+  automation_source?: { automation_id: number; window_id: number };
   /**
    * Turn the notification into a human question on the existing approval rail.
    * `{}` is a binary Approve/Reject decision; a field-shaped schema renders a
@@ -175,7 +175,7 @@ export interface OperationsListRunsInput {
   run_types?: string[];
   created_after?: string;
   created_before?: string;
-  behavior_ids?: number[];
+  automation_ids?: number[];
   limit?: number;
   offset?: number;
   before_id?: number;
@@ -192,7 +192,7 @@ export interface OperationsListRunsInput {
  * `client.connections`   — list/get configured connections (server-computed device liveness)
  * `client.notifications` — push a notification to the org's inbox + bot connections (Slack/Telegram)
  * `client.query`         — raw SQL (results as JSON rows)
- * `client.log`           — structured logging (appears in Behavior run logs)
+ * `client.log`           — structured logging (appears in Automation run logs)
  */
 export interface ReactionClient {
   knowledge: {
@@ -255,9 +255,9 @@ export interface ReactionClient {
 
   /**
    * Run a connection's operations (connector actions / MCP tools) on demand.
-   * Reactions run in the Behavior's system context, so they may execute
+   * Reactions run in the Automation's system context, so they may execute
    * operations the agent itself can't call in-turn — e.g. driving the paired
-   * Owletto Chrome extension via a connector action. Pass `behavior_source` for
+   * Owletto Chrome extension via a connector action. Pass `automation_source` for
    * run attribution back to the firing window.
    */
   operations: {
@@ -288,7 +288,7 @@ export interface ReactionClient {
         urls: string[];
         expires_in_seconds?: number;
       };
-      behavior_source?: { behavior_id: number; window_id: number };
+      automation_source?: { automation_id: number; window_id: number };
     }): Promise<{
       status?:
         | "completed"
@@ -305,6 +305,6 @@ export interface ReactionClient {
   /** Run a read-only SQL query against the org's Postgres. */
   query(sql: string): Promise<unknown[]>;
 
-  /** Structured log — appears in the Behavior run output. */
+  /** Structured log — appears in the Automation run output. */
   log(message: string, data?: Record<string, unknown>): void;
 }

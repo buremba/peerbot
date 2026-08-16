@@ -42,7 +42,7 @@ interface KnowledgeSaveBase {
 	parent_event_id?: number;
 	idempotency_key?: string;
 	occurred_at?: string;
-	behavior_source?: { behavior_id: number; window_id: number };
+	automation_source?: { automation_id: number; window_id: number };
 }
 
 export type KnowledgeSaveInput =
@@ -63,8 +63,8 @@ export type KnowledgeSaveInput =
 export interface KnowledgeReadInput {
 	/** Fetch specific content events by id. */
 	content_ids?: number[];
-	/** Fetch structured knowledge for a Behavior window. */
-	behavior_id?: number;
+	/** Fetch structured knowledge for an Automation window. */
+	automation_id?: number;
 	since?: string;
 	until?: string;
 	limit?: number;

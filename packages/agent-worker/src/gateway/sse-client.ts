@@ -40,7 +40,7 @@ const ConnectedEventSchema = z.object({
 
 // Platform metadata is a transport envelope for platform-specific details.
 // Known chat fields are typed below, but gateway callers may include nested
-// objects such as watcher run intent metadata, file descriptors, or provider
+// objects such as automation run intent metadata, file descriptors, or provider
 // context. Preserve those values instead of rejecting otherwise valid jobs.
 const PlatformMetadataSchema = z
   .object({
@@ -556,7 +556,7 @@ export class GatewayClient {
         data.messageId
       );
       if (steered) {
-        // Telemetry: tag whether this steer came from a Behavior (active_run:
+        // Telemetry: tag whether this steer came from an Automation (active_run:
         // "steer") vs an ordinary human follow-up, so usage of the steer policy
         // can be measured downstream (decide keep/drop of the knob on data).
         logger.info(
@@ -564,12 +564,12 @@ export class GatewayClient {
             traceId,
             messageId: data.messageId,
             conversationId,
-            steerSource: data.platformMetadata?.behaviorId
-              ? "behavior"
+            steerSource: data.platformMetadata?.automationId
+              ? "automation"
               : "human",
-            behaviorId: data.platformMetadata?.behaviorId ?? null,
-            behaviorActiveRunPolicy:
-              data.platformMetadata?.behaviorActiveRunPolicy ?? null,
+            automationId: data.platformMetadata?.automationId ?? null,
+            automationActiveRunPolicy:
+              data.platformMetadata?.automationActiveRunPolicy ?? null,
           },
           "Message steered into active agent turn"
         );
@@ -808,22 +808,23 @@ export class GatewayClient {
       return;
     }
 
-    const batchBehaviorId = messages[0]?.payload.platformMetadata?.behaviorId;
-    const canCoalesceBehaviorBatch = messages.every((message) => {
+    const batchAutomationId =
+      messages[0]?.payload.platformMetadata?.automationId;
+    const canCoalesceAutomationBatch = messages.every((message) => {
       const metadata = message.payload.platformMetadata;
-      return batchBehaviorId === undefined
-        ? metadata?.behaviorId === undefined
-        : metadata?.behaviorId === batchBehaviorId &&
-            metadata.behaviorActiveRunPolicy === "coalesce";
+      return batchAutomationId === undefined
+        ? metadata?.automationId === undefined
+        : metadata?.automationId === batchAutomationId &&
+            metadata.automationActiveRunPolicy === "coalesce";
     });
 
     // Some deliveries require one isolated turn: a `!`-bash command would be
-    // buried by the "Message N:" join, while Behavior metadata/instructions may
-    // only be shared by deliveries for the same coalescing Behavior. Preserve
-    // arrival order for mixed Behaviors, Behavior/human batches, and non-
+    // buried by the "Message N:" join, while Automation metadata/instructions may
+    // only be shared by deliveries for the same coalescing Automation. Preserve
+    // arrival order for mixed Automations, Automation/human batches, and non-
     // coalescing policies so the first delivery cannot overwrite the rest.
     if (
-      !canCoalesceBehaviorBatch ||
+      !canCoalesceAutomationBatch ||
       messages.some(
         (message) => message.payload.platformMetadata?.bangBash !== undefined
       )
@@ -1154,7 +1155,7 @@ export class GatewayClient {
 }
 
 const AUTOMATION_SOURCES = new Set([
-  "watcher-run",
+  "automation-run",
   "scheduled-job",
   "connector-repair",
   "internal",
@@ -1163,8 +1164,8 @@ const AUTOMATION_SOURCES = new Set([
 
 export function isSteerableHumanMessage(payload: MessagePayload): boolean {
   if (
-    payload.platformMetadata?.behaviorId &&
-    payload.platformMetadata?.behaviorActiveRunPolicy !== "steer"
+    payload.platformMetadata?.automationId &&
+    payload.platformMetadata?.automationActiveRunPolicy !== "steer"
   ) {
     return false;
   }

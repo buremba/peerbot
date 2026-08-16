@@ -8,7 +8,7 @@ import {
 } from "../utils/connector-catalog";
 import type { CatalogEntry, CatalogManifest } from "./types";
 import { CATALOG_MANIFEST_VERSION } from "./types";
-import { BEHAVIOR_CATALOG_TEMPLATES } from "./behavior-templates";
+import { AUTOMATION_CATALOG_TEMPLATES } from "./automation-templates";
 
 function repoSkillsDir(): string {
 	const here =
@@ -73,7 +73,7 @@ export async function generateConnectorsManifest(): Promise<CatalogManifest> {
 				webhook: metadata.webhook,
 				feeds_schema: metadata.feeds_schema,
 				actions_schema: metadata.actions_schema,
-				behavior_events: metadata.behavior_events,
+				automation_events: metadata.automation_events,
 				options_schema: metadata.options_schema,
 				favicon_domain: metadata.favicon_domain,
 				required_capability: metadata.required_capability,
@@ -125,17 +125,17 @@ export async function generateSkillsManifest(): Promise<CatalogManifest> {
 	return { version: CATALOG_MANIFEST_VERSION, kind: "skills", entries };
 }
 
-export function generateBehaviorsManifest(): CatalogManifest {
-	const entries = [...BEHAVIOR_CATALOG_TEMPLATES].sort((a, b) =>
+export function generateAutomationsManifest(): CatalogManifest {
+	const entries = [...AUTOMATION_CATALOG_TEMPLATES].sort((a, b) =>
 		a.name.localeCompare(b.name)
 	);
-	return { version: CATALOG_MANIFEST_VERSION, kind: "behaviors", entries };
+	return { version: CATALOG_MANIFEST_VERSION, kind: "automations", entries };
 }
 
 export async function generateInMemoryManifests(): Promise<CatalogManifest[]> {
 	return [
 		await generateConnectorsManifest(),
 		await generateSkillsManifest(),
-		generateBehaviorsManifest(),
+		generateAutomationsManifest(),
 	];
 }

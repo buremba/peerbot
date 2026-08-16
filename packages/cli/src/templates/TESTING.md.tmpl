@@ -1,7 +1,7 @@
 # Testing Your Lobu Project
 
 Use this checklist to prove the paths the user selected. Replace placeholders
-with ids returned by Lobu; do not invent agent, connection, feed, Behavior, or
+with ids returned by Lobu; do not invent agent, connection, feed, Automation, or
 event ids.
 
 ## Local runtime
@@ -16,7 +16,7 @@ npx @lobu/cli@latest run
 Leave `lobu run` running. With the embedded database default, it creates and
 selects the `local` context, applies the project to the embedded runtime, and
 prints the authoritative Web UI URL. Open that exact URL and verify the expected
-agent, connections, feeds, and Behaviors are visible. With an external
+agent, connections, feeds, and Automations are visible. With an external
 `DATABASE_URL`, authenticate and apply to that runtime explicitly instead of
 using the `local` commands below.
 
@@ -88,25 +88,25 @@ Virtual feeds are read live rather than triggered. Verify those with
 If the connector declares no collected or virtual feed, as with some chat
 integrations, skip feed verification and prove its inbound message path instead.
 
-## Behaviors and resulting data
+## Automations and resulting data
 
-List configured Behaviors, then trigger each selected Behavior by its returned
+List configured Automations, then trigger each selected Automation by its returned
 id:
 
 ```bash
 npx @lobu/cli@latest memory exec \
-  'export default async (_ctx, client) => client.behaviors.list();' \
+  'export default async (_ctx, client) => client.automations.list();' \
   --context local
 
 npx @lobu/cli@latest memory exec \
-  'export default async (_ctx, client) => client.behaviors.trigger({ behavior_id: "<behavior-id>" });' \
+  'export default async (_ctx, client) => client.automations.trigger({ automation_id: "<automation-id>" });' \
   --context local
 ```
 
 The trigger returns a `run_id`; poll
 `client.operations.getRun(Number("<run-id>"))` until it reaches a terminal
 status. Keep external actions approval-gated unless the user explicitly approves
-them. If the Behavior declares persisted output, search for a distinctive value
+them. If the Automation declares persisted output, search for a distinctive value
 from that output:
 
 ```bash
@@ -115,8 +115,8 @@ npx @lobu/cli@latest memory run search_memory \
 ```
 
 Show the returned event or entity and its returned `view_url`. For a Canvas-only
-or reaction-only Behavior, show the completed run and use the Behavior's
-`view_url` from `client.behaviors.list()` instead. Never construct a Lobu URL
+or reaction-only Automation, show the completed run and use the Automation's
+`view_url` from `client.automations.list()` instead. Never construct a Lobu URL
 from an id.
 
 ## Cloud deployment
@@ -133,4 +133,4 @@ npx @lobu/cli@latest apply --dry-run
 
 Show the target organization and plan, then wait for confirmation before the
 real `lobu apply`. Repeat the selected Web UI, direct chat, MCP, connector,
-Behavior, and chat-platform checks against the deployed target.
+Automation, and chat-platform checks against the deployed target.

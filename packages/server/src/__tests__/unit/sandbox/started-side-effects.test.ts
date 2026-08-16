@@ -12,7 +12,7 @@ import { runOrSkip, stubSDK } from "./_helpers";
  * These run only where isolated-vm loads (CI Linux). `runOrSkip` returns null
  * otherwise, so a green result on a machine without the runtime proves nothing
  * — check `result === null` before reading a local pass as evidence. The
- * boundary behaviour these feed is covered runtime-free in
+ * boundary semantics these feed is covered runtime-free in
  * `sdk-mcp-public-result.test.ts`.
  */
 describe("sandbox started-side-effect tally", () => {

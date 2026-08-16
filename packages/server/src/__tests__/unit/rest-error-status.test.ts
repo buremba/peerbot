@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { Hono } from "hono";
 import type { Env } from "../../index";
-import { restGetBehaviors, restSearchKnowledge } from "../../rest-api";
+import { restGetAutomations, restSearchKnowledge } from "../../rest-api";
 
 describe("REST ToolUserError responses", () => {
 	it("preserves the status thrown by the wrapped tool", async () => {
@@ -33,15 +33,15 @@ describe("REST ToolUserError responses", () => {
 		});
 	});
 
-	it("rejects a malformed behavior_id instead of partially parsing it", async () => {
+	it("rejects a malformed automation_id instead of partially parsing it", async () => {
 		const app = new Hono<{ Bindings: Env }>();
-		app.get("/api/:orgSlug/behaviors", restGetBehaviors);
+		app.get("/api/:orgSlug/automations", restGetAutomations);
 
-		const response = await app.request("/api/test-org/behaviors?behavior_id=71%29");
+		const response = await app.request("/api/test-org/automations?automation_id=71%29");
 
 		expect(response.status).toBe(400);
 		expect(await response.json()).toEqual({
-			error: "behavior_id must be a positive integer",
+			error: "automation_id must be a positive integer",
 		});
 	});
 });

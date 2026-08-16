@@ -1,10 +1,10 @@
 /**
- * Promote keyed watcher-window rows into real child entities (P2 phase 1).
+ * Promote keyed automation-window rows into real child entities (P2 phase 1).
  *
  * For each row in one declared entity output, this module computes an internal
  * stable key and upserts a child entity. The key is persisted as an
- * `entity_identities` row in a dedicated `watcher_key` namespace. Its identifier
- * is a fixed-size SHA-256 digest of the Behavior, output, entity type, and exact
+ * `entity_identities` row in a dedicated `automation_key` namespace. Its identifier
+ * is a fixed-size SHA-256 digest of the Automation, output, entity type, and exact
  * typed key tuple; the full tuple remains in entity metadata for inspection,
  * so a re-run — or a second replica racing the same window — resolves to the
  * existing entity instead of creating a duplicate. The partial unique index
@@ -12,8 +12,8 @@
  * WHERE deleted_at IS NULL` is the lock.
  *
  * Origin provenance (the window that first produced the entity, its stable key,
- * and the watcher) is stamped onto the entity's own `metadata` at creation —
- * `metadata.window_id` / `stable_key` / `watcher_id`. There is NO separate
+ * and the automation) is stamped onto the entity's own `metadata` at creation —
+ * `metadata.window_id` / `stable_key` / `automation_id`. There is NO separate
  * observation event: an entity is promoted once (it's an identity, not a time
  * series), so its origin lives on the row itself.
  *
@@ -42,10 +42,10 @@ import {
 } from '../authz/entity-mutation-gate';
 import {
   mutationPrincipalId,
-  resolveWatcherOwner,
+  resolveAutomationOwner,
 } from '../authz/entity-policy';
 import type { DbClient } from '../db/client';
-import type { EntityOutput } from '../types/watchers';
+import type { EntityOutput } from '../types/automations';
 import type { AppliedChange, BlockedChange } from './entity-field-merge';
 import {
   hardDeleteEntityRows,
@@ -55,10 +55,10 @@ import {
 import logger from './logger';
 import { isUniqueViolation } from './pg-errors';
 import { resolveEntityCreator } from './resolve-entity-creator';
-import { computeStableKey, formatBehaviorEntityIdentity } from './stable-keys';
+import { computeStableKey, formatAutomationEntityIdentity } from './stable-keys';
 
 /** Namespace for the stable-key identity claim in `entity_identities`. */
-const WATCHER_KEY_NAMESPACE = 'watcher_key';
+const AUTOMATION_KEY_NAMESPACE = 'automation_key';
 
 /** Agent-authored field naming the content a promoted row came from. */
 const SOURCE_EVENT_ID_FIELD = 'source_event_id';
@@ -70,7 +70,7 @@ export interface PromoteKeyedEntitiesParams {
   extractedData: Record<string, unknown>;
   outputName: string;
   output: EntityOutput;
-  watcherId: number;
+  automationId: number;
   organizationId: string;
   /** The finalized window identity (canvas ROOT event id) this completion produced/reused. */
   windowId: number;
@@ -82,12 +82,12 @@ export interface PromoteKeyedEntitiesParams {
    * dropped (the row still promotes — only the unverifiable claim is removed).
    */
   validContentIds: Set<number>;
-  /** The watcher's bound parent entity (entity_ids[0]); null when unbound. */
+  /** The automation's bound parent entity (entity_ids[0]); null when unbound. */
   parentEntityId: number | null;
   /**
    * Attribution for created entities — MUST be a live `user(id)` because
    * `entities.created_by` is NOT NULL with an ON DELETE RESTRICT FK. The
-   * watcher's own `created_by` satisfies this. When null, an org owner/admin is
+   * automation's own `created_by` satisfies this. When null, an org owner/admin is
    * resolved as a fallback; if none exists, entity creation is skipped.
    */
   createdBy?: string | null;
@@ -96,7 +96,7 @@ export interface PromoteKeyedEntitiesParams {
 /**
  * One entity this run touched inline, for the first-class run change-set. Emitted
  * for auto-applied changes too — the diff is a property of the run, not of the
- * approval flow, so a fully-auto watcher run still shows exactly what it changed.
+ * approval flow, so a fully-auto automation run still shows exactly what it changed.
  */
 export interface PromotedEntityChange {
   entityId: number;
@@ -153,7 +153,7 @@ export function buildEntityName(
 }
 
 /**
- * Resolve an entity-type slug → entity_types(id), searching the watcher's own
+ * Resolve an entity-type slug → entity_types(id), searching the automation's own
  * org first then any public catalog (same precedence as createEntity). Skips
  * derived (view-backed) types — they have no stored rows to insert into.
  */
@@ -195,8 +195,8 @@ const SLUG_DISAMBIGUATION_ATTEMPTS = 5;
  * promotion runs inside the window-completion transaction — roll the whole
  * completion back; since the slug is deterministic, every retry re-hits it and
  * the window is permanently poison-pilled. The entity's real identity is its
- * `watcher_key` claim, so the slug is cosmetic: retry with `-2`, `-3`, … and
- * finally an identifier-derived suffix (unique per watcher+key). Each attempt is
+ * `automation_key` claim, so the slug is cosmetic: retry with `-2`, `-3`, … and
+ * finally an identifier-derived suffix (unique per automation+key). Each attempt is
  * savepoint-isolated so a failed INSERT doesn't abort the outer transaction.
  */
 async function insertEntityWithUniqueSlug(params: {
@@ -237,7 +237,7 @@ async function insertEntityWithUniqueSlug(params: {
       throw err;
     }
   }
-  // Readable suffixes exhausted: the identifier is unique per (watcher, key), so
+  // Readable suffixes exhausted: the identifier is unique per (automation, key), so
   // this slug is collision-free among promotions (and effectively so against any
   // sibling). A final failure here propagates to the per-row guard in the loop.
   const inserted = await insertWithSlug(`${params.baseSlug}-${slugify(params.identifier)}`);
@@ -264,26 +264,26 @@ async function upsertKeyedEntity(params: {
   /** Extracted entity field values to sync into metadata (excludes the stable key). */
   fieldValues: Record<string, unknown>;
   createdBy: string;
-  /** Watcher whose run is promoting this entity — used for per-principal policy. */
-  watcherId: number;
+  /** Automation whose run is promoting this entity — used for per-principal policy. */
+  automationId: number;
   /**
-   * The agent that owns this watcher (watchers.agent_id). The gate resolves the
-   * principal to this agent id so the agent's own envelope binds the watcher's
-   * writes; null when the watcher row is missing (see watcherOwnerResolved).
+   * The agent that owns this automation (automations.agent_id). The gate resolves the
+   * principal to this agent id so the agent's own envelope binds the automation's
+   * writes; null when the automation row is missing (see automationOwnerResolved).
    */
-  watcherAgentId: string | null;
+  automationAgentId: string | null;
   /**
-   * False iff the watcher row was gone when we resolved its owner — the gate then
+   * False iff the automation row was gone when we resolved its owner — the gate then
    * fails closed (deny) rather than promote under no agent envelope.
    */
-  watcherOwnerResolved: boolean;
+  automationOwnerResolved: boolean;
   /** Org policy: creates of this type queue an approval instead of inserting. */
   createNeedsApproval: boolean;
 }): Promise<{
   entityId: number;
   created: boolean;
   blocked: Record<string, BlockedChange>;
-  /** Fields the watcher actually wrote inline (auto-applied), old→new. */
+  /** Fields the automation actually wrote inline (auto-applied), old→new. */
   applied: Record<string, AppliedChange>;
   blockedCreate: boolean;
   deniedUpdate?: true;
@@ -300,7 +300,7 @@ async function upsertKeyedEntity(params: {
     FROM entity_identities ei
     JOIN entities e ON e.id = ei.entity_id
     WHERE ei.organization_id = ${organizationId}
-      AND ei.namespace = ${WATCHER_KEY_NAMESPACE}
+      AND ei.namespace = ${AUTOMATION_KEY_NAMESPACE}
       AND ei.identifier = ${identifier}
       AND ei.deleted_at IS NULL
       AND e.deleted_at IS NULL
@@ -313,17 +313,17 @@ async function upsertKeyedEntity(params: {
     const decision = await runMutationGate({
       action: 'update',
       organizationId,
-      // The watcher is the acting principal (its OWN rows bind); its owning agent
+      // The automation is the acting principal (its OWN rows bind); its owning agent
       // is folded in as the ancestor via `ownerAgentId` so the agent's envelope
-      // ALSO binds — max-restrictive, so the agent can tighten but a watcher-
+      // ALSO binds — max-restrictive, so the agent can tighten but an automation-
       // specific restriction is never loosened away.
-      principalKind: 'watcher',
+      principalKind: 'automation',
       sql: tx,
-      attribution: ApprovalAttribution.Behavior,
-      watcherId: params.watcherId,
-      principalId: mutationPrincipalId({ watcherId: params.watcherId }),
-      ownerAgentId: params.watcherAgentId,
-      ownerResolved: params.watcherOwnerResolved,
+      attribution: ApprovalAttribution.Automation,
+      automationId: params.automationId,
+      principalId: mutationPrincipalId({ automationId: params.automationId }),
+      ownerAgentId: params.automationAgentId,
+      ownerResolved: params.automationOwnerResolved,
       entityTypeSlug: params.entityTypeSlug,
       entityId,
       fields: Object.fromEntries(
@@ -347,7 +347,7 @@ async function upsertKeyedEntity(params: {
       tx,
       entityId,
       fields: params.fieldValues,
-      source: 'watcher',
+      source: 'automation',
       actorId: null,
       requireApproval,
     });
@@ -388,7 +388,7 @@ async function upsertKeyedEntity(params: {
     INSERT INTO entity_identities (
       organization_id, entity_id, namespace, identifier, source_connector
     ) VALUES (
-      ${organizationId}, ${entityId}, ${WATCHER_KEY_NAMESPACE}, ${identifier}, 'watcher'
+      ${organizationId}, ${entityId}, ${AUTOMATION_KEY_NAMESPACE}, ${identifier}, 'automation'
     )
     ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
     DO NOTHING
@@ -405,7 +405,7 @@ async function upsertKeyedEntity(params: {
     SELECT entity_id
     FROM entity_identities
     WHERE organization_id = ${organizationId}
-      AND namespace = ${WATCHER_KEY_NAMESPACE}
+      AND namespace = ${AUTOMATION_KEY_NAMESPACE}
       AND identifier = ${identifier}
       AND deleted_at IS NULL
     LIMIT 1
@@ -439,7 +439,7 @@ async function upsertKeyedEntity(params: {
  * the completion transaction: declared outputs are an atomic contract, not a
  * best-effort side channel that may silently lose rows.
  */
-export async function promoteBehaviorEntityOutput(
+export async function promoteAutomationEntityOutput(
   params: PromoteKeyedEntitiesParams
 ): Promise<PromoteKeyedEntitiesResult> {
   const {
@@ -447,7 +447,7 @@ export async function promoteBehaviorEntityOutput(
     extractedData,
     outputName,
     output,
-    watcherId,
+    automationId,
     organizationId,
     windowId,
     parentEntityId,
@@ -468,7 +468,7 @@ export async function promoteBehaviorEntityOutput(
   const entityTypeId = await resolveEntityTypeId(tx, organizationId, entityTypeSlug);
   if (entityTypeId == null) {
     logger.warn(
-      { watcherId, organizationId, entityTypeSlug, outputName },
+      { automationId, organizationId, entityTypeSlug, outputName },
       '[promote-keyed-entities] target entity type not found (or derived) — skipping promotion'
     );
     return result;
@@ -477,21 +477,21 @@ export async function promoteBehaviorEntityOutput(
   const createdBy = await resolveEntityCreator(tx, organizationId, params.createdBy);
   if (createdBy == null) {
     logger.warn(
-      { watcherId, organizationId },
+      { automationId, organizationId },
       '[promote-keyed-entities] no live user to attribute created entities to — skipping promotion'
     );
     return result;
   }
 
-  // A watcher IS an agent's autonomous mode: resolve the owning agent so its
-  // write envelope binds these promotions (watchers.agent_id is NOT NULL). The
+  // An automation IS an agent's autonomous mode: resolve the owning agent so its
+  // write envelope binds these promotions (automations.agent_id is NOT NULL). The
   // principal resolves to the agent id — the same id the agent uses when acting
-  // attended — and mode 'autonomous' lets the agent set a stricter watcher-only
+  // attended — and mode 'autonomous' lets the agent set a stricter automation-only
   // envelope. Without this, an agent's own delete=deny would NOT bind its own
-  // watcher (the write would fall through to the looser org default).
-  const watcherOwner = await resolveWatcherOwner(tx, watcherId, organizationId);
+  // automation (the write would fall through to the looser org default).
+  const automationOwner = await resolveAutomationOwner(tx, automationId, organizationId);
 
-  // Gate decision for creates of this type (watchers are never human): resolved
+  // Gate decision for creates of this type (automations are never human): resolved
   // once per promotion — every row in this window is the same entity type, so
   // one create decision governs them all. We only read the outcome here (the
   // probe's deferral is discarded); each held-back row builds its own deferral
@@ -500,18 +500,18 @@ export async function promoteBehaviorEntityOutput(
   const createGate = await runMutationGate({
     action: 'create',
     organizationId,
-    // The watcher is the acting principal (its OWN rows bind, e.g. a watcher-
+    // The automation is the acting principal (its OWN rows bind, e.g. an automation-
     // specific deny). Its owning agent is folded in as the ancestor via
     // `ownerAgentId` so the agent's envelope ALSO binds — max-restrictive, so
-    // the agent envelope can tighten but a watcher-specific restriction can only
+    // the agent envelope can tighten but an automation-specific restriction can only
     // tighten further, never be loosened away.
-    principalKind: 'watcher',
+    principalKind: 'automation',
     sql: tx,
-    attribution: ApprovalAttribution.Behavior,
-    watcherId,
-    principalId: mutationPrincipalId({ watcherId }),
-    ownerAgentId: watcherOwner.ownerAgentId,
-    ownerResolved: watcherOwner.resolved,
+    attribution: ApprovalAttribution.Automation,
+    automationId,
+    principalId: mutationPrincipalId({ automationId }),
+    ownerAgentId: automationOwner.ownerAgentId,
+    ownerResolved: automationOwner.resolved,
     entityTypeSlug,
     entityData: { entity_type: entityTypeSlug, name: '' },
     proposal: {},
@@ -519,7 +519,7 @@ export async function promoteBehaviorEntityOutput(
   const createNeedsApproval = createGate.outcome !== 'allow';
   if (createGate.outcome === 'deny') {
     logger.warn(
-      { watcherId, organizationId, entityTypeSlug, reason: createGate.reason },
+      { automationId, organizationId, entityTypeSlug, reason: createGate.reason },
       '[promote-keyed-entities] mutation gate denied creates for this type — new rows will be skipped'
     );
   }
@@ -533,7 +533,7 @@ export async function promoteBehaviorEntityOutput(
     const stableKey = computeStableKey(entityRecord, output.key);
     if (seenKeys.has(stableKey)) {
       throw new Error(
-        `Behavior output "${outputName}" contains a duplicate exact key (${stableKey})`
+        `Automation output "${outputName}" contains a duplicate exact key (${stableKey})`
       );
     }
     seenKeys.add(stableKey);
@@ -541,8 +541,8 @@ export async function promoteBehaviorEntityOutput(
   });
 
   for (const { entityRecord, stableKey } of keyedRows) {
-    const identifier = formatBehaviorEntityIdentity(
-      watcherId,
+    const identifier = formatAutomationEntityIdentity(
+      automationId,
       outputName,
       entityTypeSlug,
       stableKey
@@ -562,7 +562,7 @@ export async function promoteBehaviorEntityOutput(
       if (typeof claimed !== 'number' || !validContentIds.has(claimed)) {
         logger.warn(
           {
-            watcherId,
+            automationId,
             organizationId,
             windowId,
             stableKey,
@@ -576,10 +576,10 @@ export async function promoteBehaviorEntityOutput(
     }
     const metadata: Record<string, unknown> = {
       ...fieldValues,
-      watcher_id: watcherId,
-      behavior_output: outputName,
+      automation_id: automationId,
+      automation_output: outputName,
       stable_key: stableKey,
-      source: 'watcher_promotion',
+      source: 'automation_promotion',
       // Origin provenance lives on the entity itself — the window that first
       // produced it. (No separate append-only observation event in phase 1;
       // the entity is upserted once, so this is its origin, not a time series.)
@@ -600,15 +600,15 @@ export async function promoteBehaviorEntityOutput(
           metadata,
           fieldValues,
           createdBy,
-          watcherId,
-          watcherAgentId: watcherOwner.ownerAgentId,
-          watcherOwnerResolved: watcherOwner.resolved,
+          automationId,
+          automationAgentId: automationOwner.ownerAgentId,
+          automationOwnerResolved: automationOwner.resolved,
           createNeedsApproval,
         })
       );
       if (deniedUpdate) {
         logger.warn(
-          { watcherId, organizationId, windowId, stableKey, entityId },
+          { automationId, organizationId, windowId, stableKey, entityId },
           '[promote-keyed-entities] mutation gate denied update — row skipped'
         );
         continue;
@@ -632,8 +632,8 @@ export async function promoteBehaviorEntityOutput(
                 metadata,
               },
               proposal: createProposal,
-              attribution: ApprovalAttribution.Behavior,
-              watcherId,
+              attribution: ApprovalAttribution.Automation,
+              automationId,
               windowId,
             })
           );
@@ -643,7 +643,7 @@ export async function promoteBehaviorEntityOutput(
       result.promoted += 1;
       if (created) result.created += 1;
       // Record the applied change on the run's change-set. A brand-new entity is
-      // a `created` change; an existing entity is `updated` only if the watcher
+      // a `created` change; an existing entity is `updated` only if the automation
       // actually wrote a field inline (an all-blocked or no-op sync adds nothing).
       if (created) {
         result.changes.push({ entityId, name, kind: 'created', applied: {} });
@@ -657,8 +657,8 @@ export async function promoteBehaviorEntityOutput(
             entityId,
             fields: Object.fromEntries(blockedFields.map((f) => [f, blocked[f].proposed])),
             current: Object.fromEntries(blockedFields.map((f) => [f, blocked[f].current])),
-            attribution: ApprovalAttribution.Behavior,
-            watcherId,
+            attribution: ApprovalAttribution.Automation,
+            automationId,
             windowId,
           })
         );
@@ -669,7 +669,7 @@ export async function promoteBehaviorEntityOutput(
       // the caller can fix or retry it. Known slug collisions are recovered in
       // upsertKeyedEntity and policy outcomes are modeled explicitly above.
       logger.error(
-        { err, watcherId, windowId, stableKey, organizationId },
+        { err, automationId, windowId, stableKey, organizationId },
         '[promote-keyed-entities] keyed output failed; rolling back window completion'
       );
       throw err;
@@ -678,7 +678,7 @@ export async function promoteBehaviorEntityOutput(
 
   logger.info(
     {
-      watcherId,
+      automationId,
       windowId,
       entityTypeSlug,
       promoted: result.promoted,

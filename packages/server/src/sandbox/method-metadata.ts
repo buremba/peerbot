@@ -279,7 +279,7 @@ export default async (_ctx, client) => {
 		access: "read",
 		example:
 			"const hits = await client.knowledge.search({ query: 'revenue update', limit: 10 });",
-		usageExample: `// Pull recent revenue updates across all Behavior windows.
+		usageExample: `// Pull recent revenue updates across all Automation windows.
 export default async (_ctx, client) => {
   return client.knowledge.search({ query: 'revenue update', limit: 10 });
 };`,
@@ -297,7 +297,7 @@ export default async (_ctx, client) => {
 	},
 	"knowledge.read": {
 		summary:
-			"Read knowledge events by id (`content_ids`, an array — there is no singular `content_id` arg), or Behavior-window context.",
+			"Read knowledge events by id (`content_ids`, an array — there is no singular `content_id` arg), or Automation-window context.",
 		access: "read",
 		example: "await client.knowledge.read({ content_ids: [2321593] });",
 	},
@@ -494,10 +494,10 @@ export default async (_ctx, client) => {
 	},
 	"notifications.send": {
 		summary:
-			"Send a notification to org users. With a flat object `input_schema`, it becomes a human question on the existing approval/rejection rail: in-app surfaces render answer controls, chat delivery links to Lobu when input is needed, and the returned `run_id` can be read with `operations.getRun` until its output contains `{ answer: ... }`. Supported answer schemas contain primitive fields, scalar enum choices, string or scalar-enum arrays, and optional nullable wrappers; nested objects, references, combinators other than those nullable wrappers, constants, and string/number/array constraints are rejected. An unsupported `input_schema` fails the call with HTTP 422. Without `input_schema`, it sends an FYI. With `semantic_type`, the notification renders as a content event through the event-kind pipeline: `data` feeds the kind's `jsonTemplate` in the Memory/Events view, the inbox keeps the markdown `body`, and the kind is validated against `$member.event_kinds` (422 on an unregistered kind or invalid non-empty data). Both fan out to active bot connections. Pass `behavior_source` from a reaction for feedback attribution.",
+			"Send a notification to org users. With a flat object `input_schema`, it becomes a human question on the existing approval/rejection rail: in-app surfaces render answer controls, chat delivery links to Lobu when input is needed, and the returned `run_id` can be read with `operations.getRun` until its output contains `{ answer: ... }`. Supported answer schemas contain primitive fields, scalar enum choices, string or scalar-enum arrays, and optional nullable wrappers; nested objects, references, combinators other than those nullable wrappers, constants, and string/number/array constraints are rejected. An unsupported `input_schema` fails the call with HTTP 422. Without `input_schema`, it sends an FYI. With `semantic_type`, the notification renders as a content event through the event-kind pipeline: `data` feeds the kind's `jsonTemplate` in the Memory/Events view, the inbox keeps the markdown `body`, and the kind is validated against `$member.event_kinds` (422 on an unregistered kind or invalid non-empty data). Both fan out to active bot connections. Pass `automation_source` from a reaction for feedback attribution.",
 		access: "write",
 		signature:
-			"notifications.send(input: { title: string; body?: string; card?: CardElement; recipients?: 'admins' | 'all' | string[]; resource_url?: string; idempotency_key?: string; connection_id?: string; data?: object; semantic_type?: string; input_schema?: object; behavior_source?: { behavior_id: number; window_id: number } }): Promise<{ notified_count: number; event_id: number | null; url: string | null; run_id?: number }>",
+			"notifications.send(input: { title: string; body?: string; card?: CardElement; recipients?: 'admins' | 'all' | string[]; resource_url?: string; idempotency_key?: string; connection_id?: string; data?: object; semantic_type?: string; input_schema?: object; automation_source?: { automation_id: number; window_id: number } }): Promise<{ notified_count: number; event_id: number | null; url: string | null; run_id?: number }>",
 		example:
 			"await client.notifications.send({ title: 'Choose a launch window', input_schema: { type: 'object', properties: { window: { enum: ['Monday', 'Friday'] } }, required: ['window'] } });",
 		usageExample: `// Ask a human and return the durable handle the caller can poll.
@@ -515,44 +515,44 @@ export default async (_ctx, client) => {
 };`,
 	},
 
-	// Behaviors
-	"behaviors.manage": {
+	// Automations
+	"automations.manage": {
 		summary:
-			"Raw manage_behaviors action wrapper. Prefer named methods such as behaviors.trigger or behaviors.createVersion.",
+			"Raw manage_automations action wrapper. Prefer named methods such as automations.trigger or automations.createVersion.",
 		access: "external",
 		example:
-			"await client.behaviors.manage({ action: 'trigger', behavior_id: '42' });",
+			"await client.automations.manage({ action: 'trigger', automation_id: '42' });",
 	},
-	"behaviors.list": {
+	"automations.list": {
 		summary:
-			"List Behaviors, optionally filtered by entity. Returns `{ behaviors: [...] }`.",
+			"List Automations, optionally filtered by entity. Returns `{ automations: [...] }`.",
 		access: "read",
 		example:
-			"const { behaviors } = await client.behaviors.list({ entity_id: 42 });",
+			"const { automations } = await client.automations.list({ entity_id: 42 });",
 		usageExample: `export default async (_ctx, client) => {
-  const { behaviors } = await client.behaviors.list({ entity_id: 42 });
-  return behaviors;
+  const { automations } = await client.automations.list({ entity_id: 42 });
+  return automations;
 };`,
 	},
-	"behaviors.get": {
-		summary: "Fetch a Behavior by id.",
+	"automations.get": {
+		summary: "Fetch an Automation by id.",
 		access: "read",
-		throws: ["BehaviorNotFound"],
+		throws: ["AutomationNotFound"],
 		example:
-			"const behavior = await client.behaviors.get({ behavior_id: '42' });",
+			"const automation = await client.automations.get({ automation_id: '42' });",
 	},
-	"behaviors.create": {
+	"automations.create": {
 		summary:
-			"Create a Behavior. Requires slug and agent_id; window/manual Behaviors also need prompt or skills. Declare named outputs as `{ entity, key, name? }` or `{ event }`, or omit outputs for a Canvas/reaction-only Behavior. Event output rows are standard drafts with required content and optional title, metadata, author, source_url, occurred_at, parent_event_id, payload_type, and idempotency_key. Outputs require window execution. Each sources[] entry requires `name` and a read-only SELECT/WITH `query` projecting an `id` column; optional `context: true` marks the source as context-only. entity_id is optional for an org-scoped Behavior.",
+			"Create an Automation. Requires slug and agent_id; window/manual Automations also need prompt or skills. Declare named outputs as `{ entity, key, name? }` or `{ event }`, or omit outputs for a Canvas/reaction-only Automation. Event output rows are standard drafts with required content and optional title, metadata, author, source_url, occurred_at, parent_event_id, payload_type, and idempotency_key. Outputs require window execution. Each sources[] entry requires `name` and a read-only SELECT/WITH `query` projecting an `id` column; optional `context: true` marks the source as context-only. entity_id is optional for an org-scoped Automation.",
 		access: "admin",
 		throws: ["EntityNotFound"],
 		example:
-			"await client.behaviors.create({ slug: 'pricing', agent_id: 'agt_123', prompt: 'Extract pricing records and notable changes.', outputs: { prices: { entity: 'price', key: ['sku'] }, alerts: { event: 'observation' } }, sources: [{ name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' }] });",
-		usageExample: `// Stand up a Behavior that extracts pricing entities from recent events.
+			"await client.automations.create({ slug: 'pricing', agent_id: 'agt_123', prompt: 'Extract pricing records and notable changes.', outputs: { prices: { entity: 'price', key: ['sku'] }, alerts: { event: 'observation' } }, sources: [{ name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' }] });",
+		usageExample: `// Stand up an Automation that extracts pricing entities from recent events.
 // The output contract is derived from the \`price\` entity type metadata_schema;
 // sources[].query is a read-only SELECT projecting \`id\` (a URL here would be rejected).
 export default async (_ctx, client) => {
-  return client.behaviors.create({
+  return client.automations.create({
     slug: 'pricing',
     agent_id: 'agt_123',
     prompt: 'Extract current pricing records from the window content.',
@@ -563,73 +563,73 @@ export default async (_ctx, client) => {
   });
 };`,
 	},
-	"behaviors.update": {
+	"automations.update": {
 		summary:
-			"Update runtime config only: triggers, agent_id, model_config, execution_config, device_worker_id, agent_kind, notification_channel, notification_priority, delivery_target, min_cooldown_seconds, tags. delivery_target is a strict bound chat destination `{ connection_id, channel_id }`; null clears it. Version-owned fields (name, description, prompt, sources) are immutable here — use createVersion. Status is not patchable here (a Behavior is retired via delete → archived).",
+			"Update runtime config only: triggers, agent_id, model_config, execution_config, device_worker_id, agent_kind, notification_channel, notification_priority, delivery_target, min_cooldown_seconds, tags. delivery_target is a strict bound chat destination `{ connection_id, channel_id }`; null clears it. Version-owned fields (name, description, prompt, sources) are immutable here — use createVersion. Status is not patchable here (an Automation is retired via delete → archived).",
 		access: "admin",
 	},
-	"behaviors.createVersion": {
+	"automations.createVersion": {
 		summary:
-			"Create a new Behavior version. Version-owned fields include name, description, prompt, skills, sources, outputs, classifiers, and reactions guidance. Outputs use the same entity/event contract as create and require window execution.",
+			"Create a new Automation version. Version-owned fields include name, description, prompt, skills, sources, outputs, classifiers, and reactions guidance. Outputs use the same entity/event contract as create and require window execution.",
 		access: "admin",
 	},
-	"behaviors.trigger": {
+	"automations.trigger": {
 		summary:
-			"Trigger an immediate Behavior run and dispatch it to its assigned agent.",
+			"Trigger an immediate Automation run and dispatch it to its assigned agent.",
 		access: "external",
-		example: "await client.behaviors.trigger({ behavior_id: '42' });",
+		example: "await client.automations.trigger({ automation_id: '42' });",
 		usageExample: `export default async (_ctx, client) => {
-  return client.behaviors.trigger({ behavior_id: '42' });
+  return client.automations.trigger({ automation_id: '42' });
 };`,
 	},
-	"behaviors.delete": {
+	"automations.delete": {
 		summary:
-			"Archive one or more Behaviors (soft delete): sets status='archived' and stops scheduling. The row and its versions are retained; there is no hard delete.",
+			"Archive one or more Automations (soft delete): sets status='archived' and stops scheduling. The row and its versions are retained; there is no hard delete.",
 		access: "admin",
-		example: "await client.behaviors.delete({ behavior_ids: ['42'] });",
+		example: "await client.automations.delete({ automation_ids: ['42'] });",
 	},
-	"behaviors.setReactionScript": {
+	"automations.setReactionScript": {
 		summary:
 			"Attach a raw TS reaction script (fires on window completion). The source goes in `reaction_script`; empty string removes it.",
 		access: "admin",
 		signature:
-			"behaviors.setReactionScript(input: { behavior_id: string; reaction_script: string }): Promise<unknown>",
+			"automations.setReactionScript(input: { automation_id: string; reaction_script: string }): Promise<unknown>",
 		example:
-			"await client.behaviors.setReactionScript({ behavior_id: '42', reaction_script: 'export default async (ctx, client) => { /* … */ };' });",
+			"await client.automations.setReactionScript({ automation_id: '42', reaction_script: 'export default async (ctx, client) => { /* … */ };' });",
 		throws: ["CompileError"],
 	},
-	"behaviors.completeWindow": {
+	"automations.completeWindow": {
 		summary:
-			"Submit LLM-extracted data for a Behavior window. Requires a signed window_token.",
+			"Submit LLM-extracted data for an Automation window. Requires a signed window_token.",
 		access: "write",
 	},
-	"behaviors.getVersions": {
-		summary: "List template versions for a Behavior.",
+	"automations.getVersions": {
+		summary: "List template versions for an Automation.",
 		access: "read",
 		signature:
-			"behaviors.getVersions(behavior_id: string): Promise<unknown> // or behaviors.getVersions({ behavior_id })",
-		example: "const versions = await client.behaviors.getVersions('42');",
+			"automations.getVersions(automation_id: string): Promise<unknown> // or automations.getVersions({ automation_id })",
+		example: "const versions = await client.automations.getVersions('42');",
 	},
-	"behaviors.getVersionDetails": {
-		summary: "Fetch a specific Behavior template version.",
+	"automations.getVersionDetails": {
+		summary: "Fetch a specific Automation template version.",
 		access: "read",
 	},
-	"behaviors.getComponentReference": {
-		summary: "Return Behavior UI/component reference documentation.",
+	"automations.getComponentReference": {
+		summary: "Return Automation UI/component reference documentation.",
 		access: "read",
 	},
-	"behaviors.submitFeedback": {
-		summary: "Submit field-level corrections for a Behavior window.",
+	"automations.submitFeedback": {
+		summary: "Submit field-level corrections for an Automation window.",
 		access: "admin",
 	},
-	"behaviors.getFeedback": {
+	"automations.getFeedback": {
 		summary:
-			"Read field-level feedback for a Behavior, optionally scoped to a window.",
+			"Read field-level feedback for an Automation, optionally scoped to a window.",
 		access: "read",
 	},
-	"behaviors.createFromVersion": {
+	"automations.createFromVersion": {
 		summary:
-			"Create Behaviors for multiple entities from an existing Behavior version.",
+			"Create Automations for multiple entities from an existing Automation version.",
 		access: "admin",
 	},
 
@@ -646,15 +646,15 @@ export default async (_ctx, client) => {
 	},
 	"catalog.listCatalog": {
 		summary:
-			"List global catalog entries. `kinds` values are plural: 'connectors', 'skills', 'behaviors' (defaults to all).",
+			"List global catalog entries. `kinds` values are plural: 'connectors', 'skills', 'automations' (defaults to all).",
 		access: "read",
 		signature:
-			"catalog.listCatalog(input?: { kinds?: Array<'connectors' | 'skills' | 'behaviors'> }): Promise<unknown> // not paginated",
+			"catalog.listCatalog(input?: { kinds?: Array<'connectors' | 'skills' | 'automations'> }): Promise<unknown> // not paginated",
 		example: "await client.catalog.listCatalog({ kinds: ['connectors'] });",
 	},
 	"catalog.listInstalled": {
 		summary:
-			"List installed resources. `kinds` values are plural: org kinds 'connectors'/'behaviors', agent kinds 'skills'/'providers'/'guardrails' (agent kinds need `agent_id`). Pass `include_catalog: true` to merge global catalog entries with installed/installable flags. Each connector entry carries identity + capability flags. For an INSTALLED connector's full auth/feeds/actions/options schema, query it directly with `query_sql` → `SELECT auth_schema, feeds_schema, actions_schema, options_schema FROM connector_definitions WHERE key = '<connector>' AND status = 'active'` instead of pulling every connector's schemas through this list; for an AVAILABLE (not-yet-installed) connector, its schema is on the `list_catalog` entry's `detail`.",
+			"List installed resources. `kinds` values are plural: org kinds 'connectors'/'automations', agent kinds 'skills'/'providers'/'guardrails' (agent kinds need `agent_id`). Pass `include_catalog: true` to merge global catalog entries with installed/installable flags. Each connector entry carries identity + capability flags. For an INSTALLED connector's full auth/feeds/actions/options schema, query it directly with `query_sql` → `SELECT auth_schema, feeds_schema, actions_schema, options_schema FROM connector_definitions WHERE key = '<connector>' AND status = 'active'` instead of pulling every connector's schemas through this list; for an AVAILABLE (not-yet-installed) connector, its schema is on the `list_catalog` entry's `detail`.",
 		access: "read",
 		signature:
 			"catalog.listInstalled(input?: { kinds?: string[]; agent_id?: string; include_catalog?: boolean }): Promise<unknown>",
@@ -814,7 +814,7 @@ export default async (_ctx, client) => {
 	},
 	"operations.execute": {
 		summary:
-			"Execute a connector action. OBJECT signature: execute({ connection_id: number, operation_key: string, input?: object, idempotency_key?: string, behavior_source?: { behavior_id: number, window_id: number } }). connector_key is not accepted. A durable idempotency_key replays the original run instead of repeating the external request.",
+			"Execute a connector action. OBJECT signature: execute({ connection_id: number, operation_key: string, input?: object, idempotency_key?: string, automation_source?: { automation_id: number, window_id: number } }). connector_key is not accepted. A durable idempotency_key replays the original run instead of repeating the external request.",
 		access: "external",
 		cost: "expensive",
 		example:
@@ -822,7 +822,7 @@ export default async (_ctx, client) => {
 	},
 	"operations.listRuns": {
 		summary:
-			"List past operational runs. Filters: run_types, connector_key, operation_key, connection_id(s), feed_ids, behavior_ids, status, created_after/created_before. Chat-message transport runs (streaming deltas) are excluded by default — pass run_types: ['chat_message'] for the low-level trace view.",
+			"List past operational runs. Filters: run_types, connector_key, operation_key, connection_id(s), feed_ids, automation_ids, status, created_after/created_before. Chat-message transport runs (streaming deltas) are excluded by default — pass run_types: ['chat_message'] for the low-level trace view.",
 		access: "read",
 		example:
 			"await client.operations.listRuns({ connector_key: 'github', status: 'failed', created_after: '2026-07-01T00:00:00Z' });",
@@ -962,10 +962,10 @@ export default async (_ctx, client) => {
 	},
 	"classifiers.create": {
 		summary:
-			"Create a classifier template. Requires `slug`, `name`, and `attribute_key`. `attribute_values` is an OBJECT keyed by value slug — each entry needs a `description` and `examples` (string array), not a flat list. OMIT `behavior_id` for an org-level classifier, which is the only kind `apply` and the reconciliation job can match; pass it only to scope the classifier to one Behavior.",
+			"Create a classifier template. Requires `slug`, `name`, and `attribute_key`. `attribute_values` is an OBJECT keyed by value slug — each entry needs a `description` and `examples` (string array), not a flat list. OMIT `automation_id` for an org-level classifier, which is the only kind `apply` and the reconciliation job can match; pass it only to scope the classifier to one Automation.",
 		access: "admin",
 		signature:
-			"classifiers.create(input: { slug: string; name: string; attribute_key: string; behavior_id?: string; attribute_values?: Record<string, { description: string; examples: string[] }>; entity_id?: number; min_similarity?: number; fallback_value?: unknown; description?: string }): Promise<unknown>",
+			"classifiers.create(input: { slug: string; name: string; attribute_key: string; automation_id?: string; attribute_values?: Record<string, { description: string; examples: string[] }>; entity_id?: number; min_similarity?: number; fallback_value?: unknown; description?: string }): Promise<unknown>",
 		example:
 			"await client.classifiers.create({ slug: 'sentiment', name: 'Sentiment', attribute_key: 'sentiment', attribute_values: { positive: { description: 'Positive tone', examples: ['Great work!'] } } });",
 	},
@@ -993,7 +993,7 @@ export default async (_ctx, client) => {
 	},
 	"classifiers.apply": {
 		summary:
-			"Run a classifier's embedding match over content ids you supply and STORE the labels. Needs no entity link, so this is how org-scoped feed content gets classified. Returns `classified` plus a `skipped` breakdown (not_in_organization | superseded | not_embedded | below_threshold) — a zero result always says why. Only matches org-level classifiers (those created without `behavior_id`). `embedding_model` selects the vector space for BOTH the labels and the events; ids with no vector in that model are reported `not_embedded`.",
+			"Run a classifier's embedding match over content ids you supply and STORE the labels. Needs no entity link, so this is how org-scoped feed content gets classified. Returns `classified` plus a `skipped` breakdown (not_in_organization | superseded | not_embedded | below_threshold) — a zero result always says why. Only matches org-level classifiers (those created without `automation_id`). `embedding_model` selects the vector space for BOTH the labels and the events; ids with no vector in that model are reported `not_embedded`.",
 		access: "admin",
 		cost: "expensive",
 		signature:

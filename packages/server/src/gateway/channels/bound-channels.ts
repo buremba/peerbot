@@ -90,7 +90,7 @@ export async function resolveBoundChannelRows(
         SELECT
           b.runtime_connection_id AS id,
           b.platform, b.channel_id, b.team_id, b.created_at
-        FROM behavior_message_subscriptions b
+        FROM automation_message_subscriptions b
         WHERE b.connection_organization_id = ${organizationId}
           AND b.organization_id = ${organizationId}
           AND b.connection_status = 'active'
@@ -108,7 +108,7 @@ export async function resolveBoundChannelRows(
         SELECT
           b.runtime_connection_id AS id,
           b.platform, b.channel_id, b.team_id, b.created_at
-        FROM behavior_message_subscriptions b
+        FROM automation_message_subscriptions b
         WHERE b.organization_id = ${organizationId}
           AND b.connection_status = 'active'
           AND b.credential_mode IS NOT NULL
@@ -123,7 +123,7 @@ export async function resolveBoundChannelRows(
           -- Skip channels the org/agent already owns via branch A.
           AND NOT EXISTS (
             SELECT 1
-            FROM behavior_message_subscriptions ob
+            FROM automation_message_subscriptions ob
             WHERE ob.connection_organization_id = ${organizationId}
               AND ob.organization_id = ${organizationId}
               AND ob.connection_status = 'active'

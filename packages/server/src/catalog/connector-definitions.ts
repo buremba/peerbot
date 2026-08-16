@@ -56,7 +56,7 @@ export type ScopedConnectorDefinitionRow = {
 	auth_schema: AuthSchema;
 	feeds_schema: Record<string, unknown> | null;
 	actions_schema: Record<string, unknown> | null;
-	behavior_events: Array<Record<string, unknown>> | null;
+	automation_events: Array<Record<string, unknown>> | null;
 	options_schema: Record<string, unknown> | null;
 	mcp_config?: Record<string, unknown> | null;
 	openapi_config?: Record<string, unknown> | null;
@@ -120,7 +120,7 @@ export async function listScopedConnectorDefinitions(params: {
       d.auth_schema,
       d.feeds_schema,
       d.actions_schema,
-      d.behavior_events,
+      d.automation_events,
       d.options_schema,
       d.mcp_config,
       d.openapi_config,
@@ -295,7 +295,7 @@ export async function installConnectorFromMcpUrl(params: {
 		webhook: null,
 		feeds: isAtlassianMcpUrl(params.mcpUrl) ? ATLASSIAN_MCP_FEEDS : null,
 		actions: null,
-		behaviorEvents: null,
+		automationEvents: null,
 		optionsSchema: null,
 		faviconDomain: (() => {
 			try {

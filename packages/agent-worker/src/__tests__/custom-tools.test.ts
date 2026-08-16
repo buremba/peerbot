@@ -214,7 +214,7 @@ describe("maybePostApprovalCard", () => {
     });
   });
 
-  test("posts a tool_approval card for a manage_behaviors pending_approval result", async () => {
+  test("posts a tool_approval card for a manage_automations pending_approval result", async () => {
     const posts: Array<{ url: string; body: any }> = [];
     globalThis.fetch = mock(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -249,7 +249,7 @@ describe("maybePostApprovalCard", () => {
 
     const posted = await maybePostApprovalCard(
       gw,
-      "manage_behaviors",
+      "manage_automations",
       resultText
     );
 
@@ -259,7 +259,7 @@ describe("maybePostApprovalCard", () => {
       interactionType: "tool_approval",
       runId: 77,
       action: "create",
-      resourceKind: "behavior",
+      resourceKind: "automation",
       proposal: {
         action: "create",
         slug: "launch-tracker",
@@ -376,7 +376,7 @@ describe("maybePostApprovalCard", () => {
     });
   });
 
-  test("carries behavior attribution when a manage_entity update was Behavior-sourced", async () => {
+  test("carries automation attribution when a manage_entity update was Automation-sourced", async () => {
     const posts: Array<{ body: any }> = [];
     globalThis.fetch = mock(
       async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -394,12 +394,12 @@ describe("maybePostApprovalCard", () => {
         approval_run_id: 43,
         approval_fields: { "metadata.stage": "won" },
         approval_current: { "metadata.stage": "lead" },
-        approval_attribution: "behavior",
+        approval_attribution: "automation",
       })
     );
 
     expect(posted).toBe(true);
-    expect(posts[0]!.body.attribution).toBe("behavior");
+    expect(posts[0]!.body.attribution).toBe("automation");
   });
 
   test("does nothing for a manage_entity update with no blocked fields", async () => {

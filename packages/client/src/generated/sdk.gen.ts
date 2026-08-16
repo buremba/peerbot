@@ -28,8 +28,8 @@ import type {
   GetApiV1AgentsByAgentIdEventsErrors,
   GetApiV1AgentsByAgentIdEventsResponse,
   GetApiV1AgentsByAgentIdEventsResponses,
-  GetApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThreadData,
-  GetApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThreadResponses,
+  GetApiV1AgentsByAgentIdHistoryAutomationsByAutomationIdThreadData,
+  GetApiV1AgentsByAgentIdHistoryAutomationsByAutomationIdThreadResponses,
   GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesData,
   GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesResponses,
   GetApiV1AgentsByAgentIdHistorySessionMessagesData,
@@ -49,9 +49,9 @@ import type {
   GetApiV1AgentsResponses,
   GetApiV1FilesByArtifactIdData,
   GetApiV1FilesByArtifactIdResponses,
-  GetBehaviorData,
-  GetBehaviorErrors,
-  GetBehaviorResponses,
+  GetAutomationData,
+  GetAutomationErrors,
+  GetAutomationResponses,
   GetConnectClaimData,
   GetConnectClaimResponses,
   GetGithubAppInstallCallbackData,
@@ -70,9 +70,9 @@ import type {
   ManageAuthProfilesData,
   ManageAuthProfilesErrors,
   ManageAuthProfilesResponses,
-  ManageBehaviorsData,
-  ManageBehaviorsErrors,
-  ManageBehaviorsResponses,
+  ManageAutomationsData,
+  ManageAutomationsErrors,
+  ManageAutomationsResponses,
   ManageCatalogData,
   ManageCatalogErrors,
   ManageCatalogResponses,
@@ -177,7 +177,7 @@ export type Options<
 /**
  * Search saved workspace memory: entities, facts, decisions, preferences, observations, and notes
  *
- * Search saved workspace memory: entities, facts, decisions, preferences, observations, and notes. Use this to answer “what do we know?” Pair writes with `save_memory`; use `search_sdk` / `query_sdk` only when you need SDK capabilities or programmable reads.
+ * Search saved workspace memory: entities, facts, decisions, preferences, observations, and notes. Use this to answer “what do we know?” A query such as `memory 4939822` performs an exact permission-checked content read.
  */
 export const searchMemory = <ThrowOnError extends boolean = false>(
   options: Options<SearchMemoryData, ThrowOnError>,
@@ -219,7 +219,7 @@ export const saveMemory = <ThrowOnError extends boolean = false>(
 /**
  * Discover available SDK methods and runtime helpers
  *
- * Discover available SDK methods and runtime helpers. Search by method name, namespace (e.g. "entities", "connections", "behaviors"), or keyword. Returns documentation, signatures, and access requirements for each method. (Then call methods via query_sdk for reads or run_sdk for writes.
+ * Discover available SDK methods and runtime helpers. Search by method name, namespace (e.g. "entities", "connections", "automations"), or keyword. Returns documentation, signatures, and access requirements for each method. (Then call methods via query_sdk for reads or run_sdk for writes.
  */
 export const searchSdk = <ThrowOnError extends boolean = false>(
   options: Options<SearchSdkData, ThrowOnError>,
@@ -238,9 +238,9 @@ export const searchSdk = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Read workspace data through typed SDK methods
+ * Run capability-scoped, read-only TypeScript through the Lobu SDK
  *
- * Read workspace data through typed SDK methods. Query entities, relationships, feeds, operations, metrics, and more. Use this for lookups and searches that do not change workspace content or external systems. (For writes: use run_sdk. To discover available methods: use search_sdk.
+ * Run capability-scoped, read-only TypeScript through the Lobu SDK. Query entities, relationships, feeds, operations, metrics, and authorized connected-source data; write, administrative, and external-action methods are rejected by the sandbox.
  */
 export const querySdk = <ThrowOnError extends boolean = false>(
   options: Options<QuerySdkData, ThrowOnError>,
@@ -280,9 +280,9 @@ export const querySql = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Perform any workspace action: create/update/delete entities, set up connections (e
+ * Execute a capability-scoped Lobu SDK script against the current workspace
  *
- * Perform any workspace action: create/update/delete entities, set up connections (e.g. client.connections.connect({ connector_key: "github" })), manage Behaviors and feeds, run operations, or modify templates. Use this for anything that changes data. (For read-only access: use query_sdk.
+ * Execute a capability-scoped Lobu SDK script against the current workspace.
  */
 export const runSdk = <ThrowOnError extends boolean = false>(
   options: Options<RunSdkData, ThrowOnError>,
@@ -368,9 +368,9 @@ export const manageConnections = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Browse installable connectors, skills, and Behavior templates
+ * Browse installable connectors, skills, and Automation templates
  *
- * Browse installable connectors, skills, and Behavior templates. Use `list_catalog` to see available (manifest) entries — each connector entry's `detail.source_uri` feeds into `manage_connections` action `install_connector`.
+ * Browse installable connectors, skills, and Automation templates. Use `list_catalog` to see available (manifest) entries — each connector entry's `detail.source_uri` feeds into `manage_connections` action `install_connector`.
  */
 export const manageCatalog = <ThrowOnError extends boolean = false>(
   options: Options<ManageCatalogData, ThrowOnError>,
@@ -548,23 +548,23 @@ export const manageSchedules = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Create, list, and manage Behaviors
+ * Create, list, and manage Automations
  *
- * Create, list, and manage Behaviors. SDK alternative: client.behaviors.
+ * Create, list, and manage Automations. SDK alternative: client.automations.
  */
-export const manageBehaviors = <ThrowOnError extends boolean = false>(
-  options: Options<ManageBehaviorsData, ThrowOnError>,
+export const manageAutomations = <ThrowOnError extends boolean = false>(
+  options: Options<ManageAutomationsData, ThrowOnError>,
 ): RequestResult<
-  ManageBehaviorsResponses,
-  ManageBehaviorsErrors,
+  ManageAutomationsResponses,
+  ManageAutomationsErrors,
   ThrowOnError
 > =>
   (options.client ?? client).post<
-    ManageBehaviorsResponses,
-    ManageBehaviorsErrors,
+    ManageAutomationsResponses,
+    ManageAutomationsErrors,
     ThrowOnError
   >({
-    url: "/api/{orgSlug}/manage_behaviors",
+    url: "/api/{orgSlug}/manage_automations",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -573,19 +573,19 @@ export const manageBehaviors = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Behavior detail + windows
+ * Automation detail + windows
  *
- * Behavior detail + windows. SDK alternative: client.behaviors.get.
+ * Automation detail + windows. SDK alternative: client.automations.get.
  */
-export const getBehavior = <ThrowOnError extends boolean = false>(
-  options: Options<GetBehaviorData, ThrowOnError>,
-): RequestResult<GetBehaviorResponses, GetBehaviorErrors, ThrowOnError> =>
+export const getAutomation = <ThrowOnError extends boolean = false>(
+  options: Options<GetAutomationData, ThrowOnError>,
+): RequestResult<GetAutomationResponses, GetAutomationErrors, ThrowOnError> =>
   (options.client ?? client).post<
-    GetBehaviorResponses,
-    GetBehaviorErrors,
+    GetAutomationResponses,
+    GetAutomationErrors,
     ThrowOnError
   >({
-    url: "/api/{orgSlug}/get_behavior",
+    url: "/api/{orgSlug}/get_automation",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -690,9 +690,9 @@ export const listOrganizations = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * List declared governed metrics per entity type
+ * List governed declared and SQL-derived metrics per entity type, including business KPIs such as spend and net worth
  *
- * List declared governed metrics per entity type. SDK alternative: client.metrics.list.
+ * List governed declared and SQL-derived metrics per entity type, including business KPIs such as spend and net worth. SDK alternative: client.metrics.list.
  */
 export const listMetrics = <ThrowOnError extends boolean = false>(
   options: Options<ListMetricsData, ThrowOnError>,
@@ -711,9 +711,9 @@ export const listMetrics = <ThrowOnError extends boolean = false>(
   });
 
 /**
- * Run a declared metric
+ * Run a governed declared or SQL-derived measure, such as spend or net worth
  *
- * Run a declared metric. SDK alternative: client.metrics.query.
+ * Run a governed declared or SQL-derived measure, such as spend or net worth. SDK alternative: client.metrics.query.
  */
 export const queryMetric = <ThrowOnError extends boolean = false>(
   options: Options<QueryMetricData, ThrowOnError>,
@@ -1074,26 +1074,26 @@ export const getApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessages
     });
 
 /**
- * GET /api/v1/agents/{agentId}/history/behaviors/{behaviorId}/thread
+ * GET /api/v1/agents/{agentId}/history/automations/{automationId}/thread
  */
-export const getApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThread = <
+export const getApiV1AgentsByAgentIdHistoryAutomationsByAutomationIdThread = <
   ThrowOnError extends boolean = false,
 >(
   options: Options<
-    GetApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThreadData,
+    GetApiV1AgentsByAgentIdHistoryAutomationsByAutomationIdThreadData,
     ThrowOnError
   >,
 ): RequestResult<
-  GetApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThreadResponses,
+  GetApiV1AgentsByAgentIdHistoryAutomationsByAutomationIdThreadResponses,
   unknown,
   ThrowOnError
 > =>
   (options.client ?? client).get<
-    GetApiV1AgentsByAgentIdHistoryBehaviorsByBehaviorIdThreadResponses,
+    GetApiV1AgentsByAgentIdHistoryAutomationsByAutomationIdThreadResponses,
     unknown,
     ThrowOnError
   >({
-    url: "/api/v1/agents/{agentId}/history/behaviors/{behaviorId}/thread",
+    url: "/api/v1/agents/{agentId}/history/automations/{automationId}/thread",
     ...options,
   });
 

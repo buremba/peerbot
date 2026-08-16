@@ -1,7 +1,7 @@
 /**
  * Unit tests for TaskScheduler. The dispatch loop and DB-backed claim are
  * exercised end-to-end by RunsQueue integration tests; this file pins the
- * scheduler-specific behavior using a mock IMessageQueue:
+ * scheduler-specific automation using a mock IMessageQueue:
  *
  *  - register() rejects duplicates and post-start additions
  *  - spawn() encodes name/payload + sets actionKey for observability

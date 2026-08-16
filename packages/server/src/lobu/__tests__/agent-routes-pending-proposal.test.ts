@@ -46,11 +46,11 @@ async function seedOrgAndAgent(): Promise<void> {
 /** Insert a pending write-gate run + held-proposal event (queueWriteForApproval shape). */
 async function insertPendingProposal(opts: {
 	organizationId?: string;
-	tool: "manage_agents" | "manage_behaviors";
+	tool: "manage_agents" | "manage_automations";
 	proposal: Record<string, unknown>;
 	current?: Record<string, unknown> | null;
 	// The event's top-level action. manage_agents keeps `action` on the proposal;
-	// manage_behaviors nests it in `args`, so the producer stamps args.action into
+	// manage_automations nests it in `args`, so the producer stamps args.action into
 	// metadata.action explicitly — mirror that here rather than reading it off the
 	// (possibly nested) proposal.
 	action?: string;
@@ -170,23 +170,23 @@ describe("GET /:agentId/config/pending/:runId", () => {
 		expect(res.status).toBe(404);
 	});
 
-	test("404 for a manage_behaviors run (real shape: agent_id nested in args)", async () => {
-		// buildWatcherProposal returns `{ args, actingAgentId, actingWatcherId }`
-		// with agent_id INSIDE args — a watcher-shaped proposal can't prefill the
-		// agent config form, so this endpoint excludes it (watcher review is a
-		// separate surface). Fixture matches the real ManageBehaviorsProposal shape.
+	test("404 for a manage_automations run (real shape: agent_id nested in args)", async () => {
+		// buildAutomationProposal returns `{ args, actingAgentId, actingAutomationId }`
+		// with agent_id INSIDE args — an automation-shaped proposal can't prefill the
+		// agent config form, so this endpoint excludes it (automation review is a
+		// separate surface). Fixture matches the real ManageAutomationsProposal shape.
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
-			tool: "manage_behaviors",
+			tool: "manage_automations",
 			proposal: {
 				args: {
 					action: "update",
-					behavior_id: "w1",
+					automation_id: "w1",
 					agent_id: AGENT,
 					prompt: "x",
 				},
 				actingAgentId: null,
-				actingWatcherId: null,
+				actingAutomationId: null,
 			},
 		});
 
@@ -235,36 +235,36 @@ describe("GET /:agentId/config/pending/:runId", () => {
 	});
 });
 
-const WATCHER_ID = 501;
+const AUTOMATION_ID = 501;
 
-// The endpoint reads the watcher's owner + target from the held proposal/event
-// metadata (`current.agent_id`, `args.behavior_id`), NOT from the `watchers`
-// table — so no watcher row needs seeding; the proposal fixtures carry it all.
+// The endpoint reads the automation's owner + target from the held proposal/event
+// metadata (`current.agent_id`, `args.automation_id`), NOT from the `automations`
+// table — so no automation row needs seeding; the proposal fixtures carry it all.
 
-/** A real ManageBehaviorsProposal: `{ args: {...}, actingAgentId, actingWatcherId }`
- *  with behavior_id / agent_id nested INSIDE args. */
-function watcherProposal(
+/** A real ManageAutomationsProposal: `{ args: {...}, actingAgentId, actingAutomationId }`
+ *  with automation_id / agent_id nested INSIDE args. */
+function automationProposal(
 	args: Record<string, unknown>
 ): Record<string, unknown> {
-	return { args, actingAgentId: null, actingWatcherId: null };
+	return { args, actingAgentId: null, actingAutomationId: null };
 }
 
-describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
-	test("returns the held manage_behaviors update proposal for the target watcher", async () => {
+describe("GET /:agentId/automations/:automationId/pending/:runId", () => {
+	test("returns the held manage_automations update proposal for the target automation", async () => {
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
-			tool: "manage_behaviors",
-			proposal: watcherProposal({
+			tool: "manage_automations",
+			proposal: automationProposal({
 				action: "update",
-				behavior_id: WATCHER_ID,
-				name: "New Watcher Name",
+				automation_id: AUTOMATION_ID,
+				name: "New Automation Name",
 				prompt: "Watch for X",
 			}),
-			current: { id: WATCHER_ID, agent_id: AGENT, name: "Old" },
+			current: { id: AUTOMATION_ID, agent_id: AGENT, name: "Old" },
 		});
 
 		const res = await app.request(
-			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
+			`/${AGENT}/automations/${AUTOMATION_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as {
@@ -275,24 +275,24 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 			current: Record<string, unknown> | null;
 		};
 		expect(body.runId).toBe(runId);
-		expect(body.resourceKind).toBe("behavior");
+		expect(body.resourceKind).toBe("automation");
 		expect(body.action).toBe("update");
 		expect((body.proposal as { args?: { name?: string } }).args?.name).toBe(
-			"New Watcher Name"
+			"New Automation Name"
 		);
-		expect(body.current).toMatchObject({ id: WATCHER_ID });
+		expect(body.current).toMatchObject({ id: AUTOMATION_ID });
 	});
 
 	test("returns a normalized proposedAfter (displayed == applied)", async () => {
 		// The endpoint computes proposedAfter with the SAME normalizer handleUpdate
 		// uses, so the review shows the canonical trigger values that are stored,
-		// and version-owned/routing keys (name/behavior_id/action) are excluded.
+		// and version-owned/routing keys (name/automation_id/action) are excluded.
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
-			tool: "manage_behaviors",
-			proposal: watcherProposal({
+			tool: "manage_automations",
+			proposal: automationProposal({
 				action: "update",
-				behavior_id: WATCHER_ID,
+				automation_id: AUTOMATION_ID,
 				triggers: [
 					{
 						kind: "schedule",
@@ -302,10 +302,10 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 				],
 				name: "ignored-version-owned",
 			}),
-			current: { id: WATCHER_ID, agent_id: AGENT },
+			current: { id: AUTOMATION_ID, agent_id: AGENT },
 		});
 		const res = await app.request(
-			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
+			`/${AGENT}/automations/${AUTOMATION_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as {
@@ -325,7 +325,7 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 		});
 		// version-owned/routing keys never appear in the applied patch
 		expect(body.proposedAfter && "name" in body.proposedAfter).toBe(false);
-		expect(body.proposedAfter && "behavior_id" in body.proposedAfter).toBe(
+		expect(body.proposedAfter && "automation_id" in body.proposedAfter).toBe(
 			false
 		);
 	});
@@ -336,81 +336,81 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 		// agent-nested route.
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
-			tool: "manage_behaviors",
-			proposal: watcherProposal({
+			tool: "manage_automations",
+			proposal: automationProposal({
 				action: "update",
-				behavior_id: WATCHER_ID,
+				automation_id: AUTOMATION_ID,
 				agent_id: AGENT,
 				name: "N",
 			}),
-			current: { id: WATCHER_ID, agent_id: "old-owner" },
+			current: { id: AUTOMATION_ID, agent_id: "old-owner" },
 		});
 		const res = await app.request(
-			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
+			`/${AGENT}/automations/${AUTOMATION_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(200);
 	});
 
-	test("404 for a manage_behaviors CREATE proposal (not single-form review)", async () => {
+	test("404 for a manage_automations CREATE proposal (not single-form review)", async () => {
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
-			tool: "manage_behaviors",
-			proposal: watcherProposal({
+			tool: "manage_automations",
+			proposal: automationProposal({
 				action: "create",
-				behavior_id: WATCHER_ID,
+				automation_id: AUTOMATION_ID,
 				agent_id: AGENT,
 			}),
 		});
 		const res = await app.request(
-			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
+			`/${AGENT}/automations/${AUTOMATION_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(404);
 	});
 
-	test("404 for a manage_agents run on the watcher endpoint (wrong tool)", async () => {
+	test("404 for a manage_agents run on the automation endpoint (wrong tool)", async () => {
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
 			tool: "manage_agents",
 			proposal: { action: "update", agent_id: AGENT, name: "X" },
 		});
 		const res = await app.request(
-			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
+			`/${AGENT}/automations/${AUTOMATION_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(404);
 	});
 
-	test("404 when the proposal targets a DIFFERENT watcher", async () => {
+	test("404 when the proposal targets a DIFFERENT automation", async () => {
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
-			tool: "manage_behaviors",
-			proposal: watcherProposal({
+			tool: "manage_automations",
+			proposal: automationProposal({
 				action: "update",
-				behavior_id: 999,
+				automation_id: 999,
 				name: "X",
 			}),
 			current: { id: 999, agent_id: AGENT },
 		});
 		const res = await app.request(
-			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
+			`/${AGENT}/automations/${AUTOMATION_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(404);
 	});
 
-	test("404 when the watcher is owned by a DIFFERENT agent (authz boundary)", async () => {
+	test("404 when the automation is owned by a DIFFERENT agent (authz boundary)", async () => {
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
-			tool: "manage_behaviors",
-			proposal: watcherProposal({
+			tool: "manage_automations",
+			proposal: automationProposal({
 				action: "update",
-				behavior_id: WATCHER_ID,
+				automation_id: AUTOMATION_ID,
 				name: "X",
 			}),
-			current: { id: WATCHER_ID, agent_id: "other-agent" },
+			current: { id: AUTOMATION_ID, agent_id: "other-agent" },
 		});
-		// Path agent is AGENT, but the watcher's owner (current + no args.agent_id)
+		// Path agent is AGENT, but the automation's owner (current + no args.agent_id)
 		// is other-agent → 404.
 		const res = await app.request(
-			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
+			`/${AGENT}/automations/${AUTOMATION_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(404);
 	});
@@ -425,16 +425,16 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 		`;
 		const runId = await insertPendingProposal({
 			organizationId: "other-w-org",
-			tool: "manage_behaviors",
-			proposal: watcherProposal({
+			tool: "manage_automations",
+			proposal: automationProposal({
 				action: "update",
-				behavior_id: WATCHER_ID,
+				automation_id: AUTOMATION_ID,
 				name: "X",
 			}),
-			current: { id: WATCHER_ID, agent_id: AGENT },
+			current: { id: AUTOMATION_ID, agent_id: AGENT },
 		});
 		const res = await app.request(
-			`/${AGENT}/behaviors/${WATCHER_ID}/pending/${runId}`
+			`/${AGENT}/automations/${AUTOMATION_ID}/pending/${runId}`
 		);
 		expect(res.status).toBe(404);
 	});
@@ -442,7 +442,7 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 	test("400 on a non-numeric run id", async () => {
 		const app = await importAgentRoutes();
 		const res = await app.request(
-			`/${AGENT}/behaviors/${WATCHER_ID}/pending/not-a-number`
+			`/${AGENT}/automations/${AUTOMATION_ID}/pending/not-a-number`
 		);
 		expect(res.status).toBe(400);
 	});

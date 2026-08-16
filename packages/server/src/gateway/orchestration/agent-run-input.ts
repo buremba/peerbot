@@ -55,7 +55,7 @@ function durableClaims(token: WorkerTokenData): DurableRunTokenClaims {
     // comes back live. `executionMode` is the whole safety property; without
     // it the replay performs for real everything it should only record.
     executionMode: token.executionMode,
-    behaviorRunId: token.behaviorRunId,
+    automationRunId: token.automationRunId,
   };
 }
 
@@ -122,7 +122,7 @@ export function attachFreshRunJobToken(
         // token, and the replay would perform for real everything it was
         // supposed to only record.
         executionMode: token.executionMode,
-        behaviorRunId: token.behaviorRunId,
+        automationRunId: token.automationRunId,
       },
     ),
   };

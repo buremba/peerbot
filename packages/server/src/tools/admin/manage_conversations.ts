@@ -235,7 +235,7 @@ async function handleSend(
   const channelId = `api_${userId}`;
   const messageId = randomUUID();
 
-  const behaviorModel =
+  const automationModel =
     typeof args.model === "string" && args.model.trim()
       ? args.model.trim()
       : undefined;
@@ -243,7 +243,7 @@ async function handleSend(
     args.agent_id,
     {
       provider: "claude",
-      model: behaviorModel,
+      model: automationModel,
     },
     agentSettingsStore,
     ctx.organizationId,

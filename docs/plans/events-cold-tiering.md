@@ -343,7 +343,7 @@ Qdrant HNSW     ✓ ef=128        1.93      502    7734 MB   334 s
 
 **Reads at 1M:**
 
-- **pgvector default (m=16) recall collapses.** Tunable to m=24/32 with better recall, but out-of-box behavior is what most teams ship with. The biggest org today (1.23M) is past this cliff.
+- **pgvector default (m=16) recall collapses.** Tunable to m=24/32 with better recall, but the out-of-box configuration is what most teams ship with. The biggest org today (1.23M) is past this cliff.
 - **VectorChord is the in-place Postgres-native upgrade.** 0.95+ recall at ~6 ms, no sidecar service, same SQL surface (`SELECT … ORDER BY embedding <-> $1 LIMIT N`), drop-in replacement for the existing `event_embeddings` ivfflat. Requires `shared_preload_libraries='vchord'` + a restart (chart change).
 - **Qdrant is fastest but adds a service.** ~1.93 ms p50, 502 qps, 7.7 GB index (1.8× VectorChord). Worth it only if payload filtering or dynamic schemas become a real need.
 - **pgvectorscale's recall was a config bug on my side** (SBQ single-bit quantization needs `diskann.query_rescore` which I didn't sweep). Its 6× index compression (683 MB vs 4.4 GB) is real and worth a fair re-test before locking VectorChord.
@@ -362,4 +362,4 @@ Vector spike data: `~/vector-spike/results_pg18_{100k,1m}_4eng.json` and `~/vect
 
 Both stacks loaded from the same TSV (`events.tsv`, 2.99 GB) over the same VM, same disk, same network. pg_lake used the official `docker/Dockerfile` from Snowflake-Labs/pg_lake@release-3.4 with the postgis URL patch + MinIO override compose described above. DuckLake used DuckDB 1.5.3 native CLI with `INSTALL ducklake; LOAD ducklake; INSTALL postgres; LOAD postgres; ATTACH 'ducklake:postgres:...';`. Same partition scheme on both: `month(occurred_at) + bucket(8, org_id)` (year separately bucketed in DuckLake because its partition syntax is slightly different but the effect is the same).
 
-Queries ran once each (no warm-cache repeat). 10–15 % run-to-run variation expected on the 100–700 ms queries; the 12.6 s pg_lake Q4 result is far enough above noise to be conclusive. The point of the spike was the **shape** of the gaps and the planner behavior, not benchmark-grade absolute numbers — for those, re-run with real-org embedding data and a warm-cache pass.
+Queries ran once each (no warm-cache repeat). 10–15 % run-to-run variation expected on the 100–700 ms queries; the 12.6 s pg_lake Q4 result is far enough above noise to be conclusive. The point of the spike was the **shape** of the gaps and the planner semantics, not benchmark-grade absolute numbers — for those, re-run with real-org embedding data and a warm-cache pass.

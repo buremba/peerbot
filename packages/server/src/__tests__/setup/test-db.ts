@@ -20,7 +20,7 @@ import { clearMcpSessions } from './mcp-session-cache';
 
 /**
  * Walk up from startDir looking for `db/migrations`. Falls back to cwd so the
- * historical behaviour (vitest invoked from repo root) still works even when
+ * historical semantics (vitest invoked from repo root) still works even when
  * no match is found upstream.
  */
 function resolveMigrationsDir(startDir: string): string {
@@ -107,9 +107,9 @@ export function getTestDb(): postgres.Sql {
       // reduce noisy output and hook slowdowns.
       onnotice: () => {},
       // Share prod's value-serialization config (fetch_types:false + JSON/bigint
-      // handling) so tests exercise the SAME client behavior as production. A
+      // handling) so tests exercise the SAME client semantics as production. A
       // forgiving test client masked the `= ANY(${jsArray})` bug that wedged
-      // watchers for 12 days (it only throws under fetch_types:false).
+      // automations for 12 days (it only throws under fetch_types:false).
       ...PROD_PG_VALUE_OPTIONS,
     });
   }
@@ -204,7 +204,7 @@ export async function setupTestDatabase(): Promise<void> {
  * `public` (true on embedded Postgres / superuser / schema-owner connections).
  *
  * Preferred path (owner / superuser): take ownership of `public` if we can,
- * then DROP/CREATE the whole schema — the historical behaviour, which also
+ * then DROP/CREATE the whole schema — the historical semantics, which also
  * clears objects left by *other* roles.
  *
  * Fallback path (non-owner on PG15+): the user can't drop the schema, so drop
@@ -509,10 +509,8 @@ async function connectionCanDisableTriggers(db: postgres.Sql): Promise<boolean> 
 async function fixSchemaConstraints(db: postgres.Sql): Promise<void> {
   try {
     // runs.run_type needs the connector lanes plus the lobu-queue lanes. Keep
-    // this in sync with db/migrations/20260429060000_extend_runs_for_lobu_queue.sql,
-    // db/migrations/20260720140000_rename_run_type_watcher_to_behavior.sql
-    // (the 'watcher' lane was renamed to 'behavior'), and
-    // db/migrations/20260807120000_behavior_eval_run_type.sql.
+    // this in sync with the latest constraint definition in
+    // db/migrations/20260816000010_automation_vocabulary.sql.
     //
     // This runs on every cleanupTestDatabase(), so a lane missing here is
     // re-narrowed away between tests: the migration applies at setup, the first
@@ -522,7 +520,7 @@ async function fixSchemaConstraints(db: postgres.Sql): Promise<void> {
       ALTER TABLE IF EXISTS runs DROP CONSTRAINT IF EXISTS runs_run_type_check;
       ALTER TABLE IF EXISTS runs ADD CONSTRAINT runs_run_type_check
         CHECK (run_type IN (
-          'sync','action','behavior','behavior_eval','embed_backfill','auth',
+          'sync','action','automation','automation_eval','embed_backfill','auth',
           'chat_message','schedule','agent_run','internal','task'
         ));
     `);

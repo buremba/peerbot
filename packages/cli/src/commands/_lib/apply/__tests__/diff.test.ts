@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { defineAgent, defineBehavior, defineConfig } from "@lobu/cli/config";
+import { defineAgent, defineAutomation, defineConfig } from "@lobu/cli/config";
 import type { AgentSettings } from "@lobu/core";
 import chalk from "chalk";
 import type { DesiredAgent, DesiredState } from "../desired-state.js";
@@ -36,7 +36,7 @@ function buildState(
     agents,
     prune: false,
     memorySchema: { entityTypes: [], relationshipTypes: [] },
-    watchers: [],
+    automations: [],
     connectors: { definitions: [], authProfiles: [], connections: [] },
     providers: [],
     requiredSecrets: [],
@@ -50,7 +50,7 @@ function emptyRemote(): RemoteSnapshot {
     agentSettings: new Map(),
     entityTypes: [],
     relationshipTypes: [],
-    watchers: [],
+    automations: [],
     connectorDefinitions: [],
     authProfiles: [],
     connections: [],
@@ -246,7 +246,7 @@ describe("apply diff — memory schema", () => {
           },
         ],
       },
-      watchers: [],
+      automations: [],
       requiredSecrets: [],
     };
     const plan = computeDiff(desired, emptyRemote());
@@ -261,7 +261,7 @@ describe("apply diff — memory schema", () => {
         entityTypes: [{ slug: "company", name: "Company" }],
         relationshipTypes: [],
       },
-      watchers: [],
+      automations: [],
       requiredSecrets: [],
     };
     const remote: RemoteSnapshot = {
@@ -287,7 +287,7 @@ describe("apply diff — memory schema", () => {
         entityTypes: [{ slug: "person", resolutionPolicy: declared }],
         relationshipTypes: [],
       },
-      watchers: [],
+      automations: [],
       requiredSecrets: [],
     };
 
@@ -320,7 +320,7 @@ describe("apply diff — memory schema", () => {
         entityTypes: [{ slug: "person", name: "Person" }],
         relationshipTypes: [],
       },
-      watchers: [],
+      automations: [],
       requiredSecrets: [],
     };
     const plan = computeDiff(desired, {
@@ -362,7 +362,7 @@ describe("apply diff — memory schema", () => {
         entityTypes: [{ slug: "person", name: "Person" }],
         relationshipTypes: [],
       },
-      watchers: [],
+      automations: [],
       requiredSecrets: [],
     };
 
@@ -406,7 +406,7 @@ describe("apply diff — memory schema", () => {
         entityTypes: [{ slug: "person", resolutionPolicy: declared }],
         relationshipTypes: [],
       },
-      watchers: [],
+      automations: [],
       requiredSecrets: [],
     };
     // The live type has a full schema + the same policy. Omitted properties/
@@ -451,7 +451,7 @@ describe("apply diff — memory schema", () => {
         ],
         relationshipTypes: [],
       },
-      watchers: [],
+      automations: [],
       requiredSecrets: [],
     };
     // Prune treats the config as the source of truth: a live `required` schema
@@ -511,7 +511,7 @@ describe("apply diff — memory schema", () => {
         ],
         relationshipTypes: [],
       },
-      watchers: [],
+      automations: [],
       requiredSecrets: [],
     };
     // After the first prune apply cleared the live schema, a second apply sees
@@ -563,7 +563,7 @@ describe("apply diff — memory schema", () => {
           },
         ],
       },
-      watchers: [],
+      automations: [],
       requiredSecrets: [],
     };
     const remote: RemoteSnapshot = {
@@ -594,7 +594,7 @@ describe("apply diff — memory schema", () => {
           },
         ],
       },
-      watchers: [],
+      automations: [],
       requiredSecrets: [],
     };
     const remote: RemoteSnapshot = {
@@ -671,8 +671,8 @@ describe("apply diff — empty container preservation", () => {
   });
 });
 
-describe("apply diff — watchers", () => {
-  const desiredWatcher = {
+describe("apply diff — automations", () => {
+  const desiredAutomation = {
     slug: "weekly-digest",
     agent: "triage",
     name: "Weekly digest",
@@ -680,19 +680,19 @@ describe("apply diff — watchers", () => {
     triggers: [{ kind: "schedule" as const, cron: "0 9 * * 1" }],
   };
 
-  test("create when watcher missing remotely", () => {
-    const desired = buildState([], { watchers: [desiredWatcher] });
+  test("create when automation missing remotely", () => {
+    const desired = buildState([], { automations: [desiredAutomation] });
     const plan = computeDiff(desired, emptyRemote());
-    const row = plan.rows.find((r) => r.kind === "watcher");
+    const row = plan.rows.find((r) => r.kind === "automation");
     expect(row?.verb).toBe("create");
     expect(row?.id).toBe("weekly-digest");
   });
 
   test("noop when remote matches every field the diff covers", () => {
-    const desired = buildState([], { watchers: [desiredWatcher] });
+    const desired = buildState([], { automations: [desiredAutomation] });
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
-      watchers: [
+      automations: [
         {
           slug: "weekly-digest",
           name: "Weekly digest",
@@ -703,7 +703,7 @@ describe("apply diff — watchers", () => {
       ],
     };
     const plan = computeDiff(desired, remote);
-    const row = plan.rows.find((r) => r.kind === "watcher");
+    const row = plan.rows.find((r) => r.kind === "automation");
     expect(row?.verb).toBe("noop");
     expect(plan.counts.create).toBe(0);
   });
@@ -713,8 +713,8 @@ describe("apply diff — watchers", () => {
     const desired = mapProjectToDesiredState(
       defineConfig({
         agents: [agent],
-        behaviors: [
-          defineBehavior({
+        automations: [
+          defineAutomation({
             agent,
             slug: "minimal-schedule",
             skills: ["digest"],
@@ -725,12 +725,13 @@ describe("apply diff — watchers", () => {
     );
     // The loader compiles skills[] into prompt before diffing; this test maps
     // directly, so stand in for the compile step.
-    if (desired.watchers[0]) desired.watchers[0].prompt = "Produce a digest.";
+    if (desired.automations[0])
+      desired.automations[0].prompt = "Produce a digest.";
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
       agents: [{ agentId: "triage", name: "triage" }],
       agentSettings: new Map([["triage", null]]),
-      watchers: [
+      automations: [
         {
           slug: "minimal-schedule",
           agent_id: "triage",
@@ -750,16 +751,16 @@ describe("apply diff — watchers", () => {
     };
 
     const row = computeDiff(desired, remote).rows.find(
-      (candidate) => candidate.kind === "watcher"
+      (candidate) => candidate.kind === "automation"
     );
     expect(row?.verb).toBe("noop");
   });
 
   test("noop when desired model matches the remote execution_config model", () => {
     const desired = buildState([], {
-      watchers: [
+      automations: [
         {
-          ...desiredWatcher,
+          ...desiredAutomation,
           deviceWorkerId: "dev-1",
           agentKind: "opencode",
           model: "opencode-go/deepseek-v4-flash",
@@ -768,7 +769,7 @@ describe("apply diff — watchers", () => {
     });
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
-      watchers: [
+      automations: [
         {
           slug: "weekly-digest",
           name: "Weekly digest",
@@ -782,16 +783,16 @@ describe("apply diff — watchers", () => {
       ],
     };
     const row = computeDiff(desired, remote).rows.find(
-      (r) => r.kind === "watcher"
+      (r) => r.kind === "automation"
     );
     expect(row?.verb).toBe("noop");
   });
 
   test("noop when the config omits a model but the remote has one (unmanaged)", () => {
-    const desired = buildState([], { watchers: [desiredWatcher] });
+    const desired = buildState([], { automations: [desiredAutomation] });
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
-      watchers: [
+      automations: [
         {
           slug: "weekly-digest",
           name: "Weekly digest",
@@ -803,16 +804,16 @@ describe("apply diff — watchers", () => {
       ],
     };
     const row = computeDiff(desired, remote).rows.find(
-      (r) => r.kind === "watcher"
+      (r) => r.kind === "automation"
     );
     expect(row?.verb).toBe("noop");
   });
 
   test("update with execution_config scalar drift when the model differs", () => {
     const desired = buildState([], {
-      watchers: [
+      automations: [
         {
-          ...desiredWatcher,
+          ...desiredAutomation,
           deviceWorkerId: "dev-1",
           agentKind: "opencode",
           model: "opencode-go/deepseek-v4-flash",
@@ -821,7 +822,7 @@ describe("apply diff — watchers", () => {
     });
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
-      watchers: [
+      automations: [
         {
           slug: "weekly-digest",
           name: "Weekly digest",
@@ -835,17 +836,17 @@ describe("apply diff — watchers", () => {
       ],
     };
     const row = computeDiff(desired, remote).rows.find(
-      (r) => r.kind === "watcher"
+      (r) => r.kind === "automation"
     );
     expect(row?.verb).toBe("update");
     expect(row?.changedFields).toContain("execution_config");
   });
 
   test("update when a schedule trigger changes remotely", () => {
-    const desired = buildState([], { watchers: [desiredWatcher] });
+    const desired = buildState([], { automations: [desiredAutomation] });
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
-      watchers: [
+      automations: [
         {
           slug: "weekly-digest",
           name: "Weekly digest",
@@ -856,7 +857,7 @@ describe("apply diff — watchers", () => {
       ],
     };
     const plan = computeDiff(desired, remote);
-    const row = plan.rows.find((r) => r.kind === "watcher");
+    const row = plan.rows.find((r) => r.kind === "automation");
     expect(row?.verb).toBe("update");
     expect(row?.changedFields).toContain("triggers");
     expect(
@@ -865,10 +866,10 @@ describe("apply diff — watchers", () => {
   });
 
   test("update with version-bound drift when prompt changes remotely", () => {
-    const desired = buildState([], { watchers: [desiredWatcher] });
+    const desired = buildState([], { automations: [desiredAutomation] });
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
-      watchers: [
+      automations: [
         {
           slug: "weekly-digest",
           name: "Weekly digest",
@@ -879,7 +880,7 @@ describe("apply diff — watchers", () => {
       ],
     };
     const plan = computeDiff(desired, remote);
-    const row = plan.rows.find((r) => r.kind === "watcher");
+    const row = plan.rows.find((r) => r.kind === "automation");
     expect(row?.verb).toBe("update");
     expect(
       (row as { versionBoundFields?: string[] }).versionBoundFields
@@ -888,11 +889,11 @@ describe("apply diff — watchers", () => {
 
   test("explicit null outputs clears remote declarations", () => {
     const desired = buildState([], {
-      watchers: [{ ...desiredWatcher, outputs: null }],
+      automations: [{ ...desiredAutomation, outputs: null }],
     });
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
-      watchers: [
+      automations: [
         {
           slug: "weekly-digest",
           name: "Weekly digest",
@@ -907,7 +908,7 @@ describe("apply diff — watchers", () => {
     };
 
     const row = computeDiff(desired, remote).rows.find(
-      (candidate) => candidate.kind === "watcher"
+      (candidate) => candidate.kind === "automation"
     );
     expect(row?.verb).toBe("update");
     expect(row?.changedFields).toContain("outputs");
@@ -917,10 +918,10 @@ describe("apply diff — watchers", () => {
   });
 
   test("removing outputs from the declaration clears remote declarations", () => {
-    const desired = buildState([], { watchers: [desiredWatcher] });
+    const desired = buildState([], { automations: [desiredAutomation] });
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
-      watchers: [
+      automations: [
         {
           slug: "weekly-digest",
           name: "Weekly digest",
@@ -935,7 +936,7 @@ describe("apply diff — watchers", () => {
     };
 
     const row = computeDiff(desired, remote).rows.find(
-      (candidate) => candidate.kind === "watcher"
+      (candidate) => candidate.kind === "automation"
     );
     expect(row?.verb).toBe("update");
     expect(
@@ -945,9 +946,9 @@ describe("apply diff — watchers", () => {
 
   test("reaction_script declared → always re-pushed (idempotent)", () => {
     const desired = buildState([], {
-      watchers: [
+      automations: [
         {
-          ...desiredWatcher,
+          ...desiredAutomation,
           reactionScript: {
             sourcePath: "/abs/path/r.ts",
             sourceCode: "export default async () => {};",
@@ -957,7 +958,7 @@ describe("apply diff — watchers", () => {
     });
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
-      watchers: [
+      automations: [
         {
           slug: "weekly-digest",
           name: "Weekly digest",
@@ -968,7 +969,7 @@ describe("apply diff — watchers", () => {
       ],
     };
     const plan = computeDiff(desired, remote);
-    const row = plan.rows.find((r) => r.kind === "watcher");
+    const row = plan.rows.find((r) => r.kind === "automation");
     expect(row?.verb).toBe("update");
     expect(row?.changedFields).toEqual(["reaction_script"]);
     expect(
@@ -976,14 +977,14 @@ describe("apply diff — watchers", () => {
     ).toBe(true);
   });
 
-  test("drift when remote watcher not declared in models", () => {
-    const desired = buildState([], { watchers: [] });
+  test("drift when remote automation not declared in models", () => {
+    const desired = buildState([], { automations: [] });
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
-      watchers: [{ slug: "orphan-watcher" }],
+      automations: [{ slug: "orphan-automation" }],
     };
     const plan = computeDiff(desired, remote);
-    const row = plan.rows.find((r) => r.kind === "watcher");
+    const row = plan.rows.find((r) => r.kind === "automation");
     expect(row?.verb).toBe("drift");
     expect(plan.counts.drift).toBe(1);
   });
@@ -997,37 +998,29 @@ describe("renderSummary", () => {
   });
 });
 
-describe("renderPlan — behavior labels (not watcher)", () => {
-  /** Labels/headings only — not substrings of resource slugs. */
-  function expectNoWatcherLabels(text: string): void {
-    expect(text).not.toMatch(/(?:^|\n)\s*watchers?:\s*(?:\n|$)/);
-    expect(text).not.toMatch(/[+=~?-]\s+watcher\s+\S/);
-  }
-
-  test("plan create/update/drift rows print behavior, never watcher", () => {
+describe("renderPlan — automation labels", () => {
+  test("plan create/update/drift rows print automation", () => {
     const plan: DiffPlan = {
       rows: [
-        { kind: "watcher", verb: "update", id: "weekly-digest" },
-        { kind: "watcher", verb: "create", id: "new-digest" },
-        { kind: "watcher", verb: "drift", id: "orphaned-digest" },
+        { kind: "automation", verb: "update", id: "weekly-digest" },
+        { kind: "automation", verb: "create", id: "new-digest" },
+        { kind: "automation", verb: "drift", id: "orphaned-digest" },
       ],
       counts: { create: 1, update: 1, noop: 0, drift: 1, delete: 0 },
       notes: [],
     };
 
     const text = renderPlan(plan);
-    expect(text).toContain("behaviors:");
-    expect(text).toContain("behavior new-digest");
-    expect(text).toContain("behavior weekly-digest");
-    expect(text).toContain("behavior orphaned-digest");
-    expectNoWatcherLabels(text);
+    expect(text).toContain("automations:");
+    expect(text).toContain("automation new-digest");
+    expect(text).toContain("automation weekly-digest");
+    expect(text).toContain("automation orphaned-digest");
     expect(text).toMatchSnapshot();
   });
 
-  test("renderProgress uses the behavior label for watcher-kind rows", () => {
-    const line = renderProgress("create", "watcher", "weekly-digest");
-    expect(line).toContain("behavior weekly-digest");
-    expectNoWatcherLabels(line);
+  test("renderProgress uses the automation label for automation-kind rows", () => {
+    const line = renderProgress("create", "automation", "weekly-digest");
+    expect(line).toContain("automation weekly-digest");
   });
 });
 
@@ -1735,7 +1728,7 @@ describe("apply diff — prune", () => {
         { id: 2, slug: "stale-entity" },
       ],
       relationshipTypes: [{ id: 3, slug: "stale-rel" }],
-      watchers: [{ slug: "stale-watcher", behavior_id: "42" }],
+      automations: [{ slug: "stale-automation", automation_id: "42" }],
       // stale-conn is dropped from config but exempt (drift); the connector "x"
       // it still uses must therefore be spared from prune.
       connections: [
@@ -1762,7 +1755,8 @@ describe("apply diff — prune", () => {
           remote.entityTypes as Baseline["attribution"]["entityTypes"],
         relationshipTypes:
           remote.relationshipTypes as Baseline["attribution"]["relationshipTypes"],
-        watchers: remote.watchers as Baseline["attribution"]["watchers"],
+        automations:
+          remote.automations as Baseline["attribution"]["automations"],
       },
       owned: new Set(owned),
     };
@@ -1773,7 +1767,7 @@ describe("apply diff — prune", () => {
       ownedKey("entity-type", 1),
       ownedKey("entity-type", 2),
       ownedKey("relationship-type", 3),
-      ownedKey("watcher", "42"),
+      ownedKey("automation", "42"),
       ownedKey("connector-definition", 11),
     ]);
   }
@@ -1797,7 +1791,7 @@ describe("apply diff — prune", () => {
     ).toBe("drift");
   });
 
-  test("prune deletes removed entity/relationship/watcher/connector definitions", () => {
+  test("prune deletes removed entity/relationship/automation/connector definitions", () => {
     const plan = computeDiff(desiredKeepingLead(), remoteWithExtras(), {
       prune: true,
       baseline: baselineOwningExtras(),
@@ -1805,10 +1799,10 @@ describe("apply diff — prune", () => {
     const deletes = plan.rows.filter((r) => r.verb === "delete");
     const deletedIds = deletes.map((r) => `${r.kind}:${r.id}`).sort();
     expect(deletedIds).toEqual([
+      "automation:stale-automation",
       "connector-definition:orphan-connector",
       "entity-type:stale-entity",
       "relationship-type:stale-rel",
-      "watcher:stale-watcher",
     ]);
     expect(plan.counts.delete).toBe(4);
     // The kept entity type is a noop, not a delete.
@@ -1896,7 +1890,7 @@ describe("apply diff — prune", () => {
       relationshipTypes: [
         { id: 6, slug: "$system-rel", organization_id: "org_self" },
       ],
-      watchers: [{ slug: "$system-watcher", behavior_id: "b-sys" }],
+      automations: [{ slug: "$system-automation", automation_id: "b-sys" }],
     };
     const plan = computeDiff(desiredKeepingLead(), remote, {
       prune: true,
@@ -1912,21 +1906,21 @@ describe("apply diff — prune", () => {
     expect(verbOf("entity-type", "$resource")).toBe("drift");
     expect(verbOf("entity-type", "goal")).toBe("delete");
     expect(verbOf("entity-type", "channel")).toBe("delete");
-    // $ on rel/watcher still uses slug heuristic
+    // $ on rel/automation still uses slug heuristic
     expect(verbOf("relationship-type", "$system-rel")).toBe("drift");
-    expect(verbOf("watcher", "$system-watcher")).toBe("drift");
+    expect(verbOf("automation", "$system-automation")).toBe("drift");
   });
 
-  test("prune never deletes or blocks a system-tagged (non-$ slug) Behavior", () => {
+  test("prune never deletes or blocks a system-tagged (non-$ slug) Automation", () => {
     // chat-link bindings (e.g. chat-slack-97) are system-created with a
     // `system:chat-link` tag and a plain slug — they are NOT config-owned, so
     // they must be ignored (drift), not pruned or made to block the apply.
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
-      watchers: [
+      automations: [
         {
           slug: "chat-slack-97",
-          behavior_id: "97",
+          automation_id: "97",
           tags: ["system:chat-link"],
         },
       ],
@@ -1936,7 +1930,7 @@ describe("apply diff — prune", () => {
       orgId: "org_self",
     });
     const row = plan.rows.find(
-      (r) => r.kind === "watcher" && r.id === "chat-slack-97"
+      (r) => r.kind === "automation" && r.id === "chat-slack-97"
     );
     expect(row?.verb).toBe("drift");
     expect(plan.counts.delete).toBe(0);

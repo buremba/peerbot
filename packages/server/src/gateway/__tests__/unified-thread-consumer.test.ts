@@ -185,7 +185,7 @@ describe("UnifiedThreadResponseConsumer interaction card owner-routing", () => {
   });
 
   test("delivers a headless-sourced card on first claim without an SSE owner (F12)", async () => {
-    // A card emitted from a headless turn (watcher/scheduled/repair/internal)
+    // A card emitted from a headless turn (automation/scheduled/repair/internal)
     // has no browser SSE on ANY pod. Before the source was stamped onto the
     // card it owner-gated, re-queued 30x and dead-lettered, hanging the worker.
     // Stamped headless, it must deliver on first claim instead.
@@ -196,7 +196,7 @@ describe("UnifiedThreadResponseConsumer interaction card owner-routing", () => {
       data: {
         ...interactionPayload,
         messageId: "m-int-headless",
-        platformMetadata: { source: "watcher-run" },
+        platformMetadata: { source: "automation-run" },
       },
     });
 
@@ -300,30 +300,30 @@ describe("UnifiedThreadResponseConsumer headless owner-gate exemption", () => {
 
   // Worker terminal rows for headless turns carry teamId "api" without
   // `platform`, plus the dispatch-time source echoed in platformMetadata.
-  const watcherTerminal = {
+  const automationTerminal = {
     messageId: "m-w-1",
-    channelId: "api_watcher_7",
-    conversationId: "api_watcher_7",
-    userId: "watcher-7",
+    channelId: "api_automation_7",
+    conversationId: "api_automation_7",
+    userId: "automation-7",
     teamId: "api",
     timestamp: 99,
     processedMessageIds: ["m-w-1"],
-    platformMetadata: { source: "watcher-run" },
+    platformMetadata: { source: "automation-run" },
   };
 
-  test("watcher terminal success row is delivered on first claim with no SSE anywhere", async () => {
+  test("automation terminal success row is delivered on first claim with no SSE anywhere", async () => {
     const { consumer, renderer, sseManager } = makeApiConsumer(false);
 
-    await consumer.handleThreadResponse({ id: "job-1", data: watcherTerminal });
+    await consumer.handleThreadResponse({ id: "job-1", data: automationTerminal });
 
     expect(renderer.handleCompletion).toHaveBeenCalledTimes(1);
     expect(sseManager.hasActiveConnection).not.toHaveBeenCalled();
   });
 
-  test("watcher terminal error row resolves immediately (was: 2h stale sweep)", async () => {
+  test("automation terminal error row resolves immediately (was: 2h stale sweep)", async () => {
     const { consumer, renderer } = makeApiConsumer(false);
     const errorRow = {
-      ...watcherTerminal,
+      ...automationTerminal,
       processedMessageIds: undefined,
       error: "worker exited 1",
     };
@@ -341,7 +341,7 @@ describe("UnifiedThreadResponseConsumer headless owner-gate exemption", () => {
       await consumer.handleThreadResponse({
         id: `job-${source}`,
         data: {
-          ...watcherTerminal,
+          ...automationTerminal,
           platformMetadata: { source },
         },
       });
@@ -357,7 +357,7 @@ describe("UnifiedThreadResponseConsumer headless owner-gate exemption", () => {
       consumer.handleThreadResponse({
         id: "job-3",
         data: {
-          ...watcherTerminal,
+          ...automationTerminal,
           userId: "u1",
           platformMetadata: { source: "direct-api" },
         },
@@ -368,7 +368,7 @@ describe("UnifiedThreadResponseConsumer headless owner-gate exemption", () => {
 
   test("terminal row without any source is still owner-gated", async () => {
     const { consumer, renderer } = makeApiConsumer(false);
-    const { platformMetadata, ...noMeta } = watcherTerminal;
+    const { platformMetadata, ...noMeta } = automationTerminal;
     void platformMetadata;
 
     await expect(
@@ -471,7 +471,7 @@ describe("UnifiedThreadResponseConsumer Chat SDK hydrate-on-claim", () => {
     // an exclusive transport leased elsewhere) — fail the job so the retry
     // can land on a replica that can serve it.
     const chatResponseBridge = {
-      parkQuotaExhaustedBehavior: mock(async () => undefined),
+      parkQuotaExhaustedAutomation: mock(async () => undefined),
       ensureDeliverable: mock(async () => false),
       handleCompletion: mock(async () => undefined),
       handleError: mock(async () => undefined),
@@ -489,7 +489,7 @@ describe("UnifiedThreadResponseConsumer Chat SDK hydrate-on-claim", () => {
 
   test("parks quota errors before checking whether the chat connection is deliverable", async () => {
     const chatResponseBridge = {
-      parkQuotaExhaustedBehavior: mock(async () => undefined),
+      parkQuotaExhaustedAutomation: mock(async () => undefined),
       ensureDeliverable: mock(async () => false),
       handleCompletion: mock(async () => undefined),
       handleError: mock(async () => undefined),
@@ -509,14 +509,14 @@ describe("UnifiedThreadResponseConsumer Chat SDK hydrate-on-claim", () => {
       })
     ).rejects.toThrow(/cannot be served by this gateway instance/);
 
-    expect(chatResponseBridge.parkQuotaExhaustedBehavior).toHaveBeenCalledTimes(1);
+    expect(chatResponseBridge.parkQuotaExhaustedAutomation).toHaveBeenCalledTimes(1);
     expect(chatResponseBridge.ensureDeliverable).toHaveBeenCalledTimes(1);
     expect(chatResponseBridge.handleError).not.toHaveBeenCalled();
   });
 
   test("routes Chat SDK responses after hydrating on the claiming replica", async () => {
     const chatResponseBridge = {
-      parkQuotaExhaustedBehavior: mock(async () => undefined),
+      parkQuotaExhaustedAutomation: mock(async () => undefined),
       ensureDeliverable: mock(async () => true),
       handleCompletion: mock(async () => undefined),
       handleError: mock(async () => undefined),

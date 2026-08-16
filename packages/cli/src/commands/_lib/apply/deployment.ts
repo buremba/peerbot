@@ -20,7 +20,7 @@ import {
   canonical,
   effectiveEntityTypeAfterApply,
   effectiveRelationshipTypeAfterApply,
-  projectDesiredWatcher,
+  projectDesiredAutomation,
 } from "./diff.js";
 
 export function mintApplyId(): string {
@@ -114,7 +114,7 @@ export interface DeploymentManifest {
   connector_versions: Record<string, string>;
   /**
    * The attribution baseline for the three-way drift compare: the effective
-   * entity/rel-type and Behavior state AFTER this apply (declared config
+   * entity/rel-type and Automation state AFTER this apply (declared config
    * values + preserved unmanaged facets). When absent, declared definitions
    * use the ordinary two-way diff while provenance-dependent deletes fail
    * closed.
@@ -122,11 +122,11 @@ export interface DeploymentManifest {
   attribution?: {
     entityTypes: unknown[];
     relationshipTypes: unknown[];
-    watchers: unknown[];
+    automations: unknown[];
   };
   /**
    * Kind-qualified definition incarnation identities (`entity-type:12`,
-   * `behavior:b7-…`) this config actually applied — the delete-eligible set.
+   * `automation:b7-…`) this config actually applied — the delete-eligible set.
    */
   owned?: string[];
 }
@@ -135,14 +135,19 @@ export interface BaselineRecord {
   attribution: {
     entityTypes: unknown[];
     relationshipTypes: unknown[];
-    watchers: unknown[];
+    automations: unknown[];
   };
   owned: string[];
   /** Connector key → version from the deployment's post-apply pins. */
   connectorVersions?: Record<string, string>;
 }
 
-/** Parse the stored baseline; null when attribution was never recorded. */
+/**
+ * Parse the stored baseline; null when attribution was never recorded. A
+ * partially-shaped attribution (a manifest written before the Automation
+ * cutover carries no `automations` array) is treated the same way: it cannot
+ * prove ownership, so it must fail closed rather than read as "empty".
+ */
 export function loadBaselineFromManifest(
   manifest: {
     attribution?: DeploymentManifest["attribution"];
@@ -150,12 +155,21 @@ export function loadBaselineFromManifest(
     connector_versions?: Record<string, string>;
   } | null
 ): BaselineRecord | null {
-  if (!manifest?.attribution || !manifest.owned) return null;
+  const attribution = manifest?.attribution;
+  if (
+    !attribution ||
+    !Array.isArray(manifest.owned) ||
+    !Array.isArray(attribution.entityTypes) ||
+    !Array.isArray(attribution.relationshipTypes) ||
+    !Array.isArray(attribution.automations)
+  ) {
+    return null;
+  }
   return {
     attribution: {
-      entityTypes: manifest.attribution.entityTypes ?? [],
-      relationshipTypes: manifest.attribution.relationshipTypes ?? [],
-      watchers: manifest.attribution.watchers ?? [],
+      entityTypes: attribution.entityTypes,
+      relationshipTypes: attribution.relationshipTypes,
+      automations: attribution.automations,
     },
     owned: manifest.owned,
     ...(manifest.connector_versions
@@ -172,7 +186,7 @@ export function toBaseline(record: BaselineRecord | null): Baseline {
   if (!record) {
     return {
       recorded: false,
-      attribution: { entityTypes: [], relationshipTypes: [], watchers: [] },
+      attribution: { entityTypes: [], relationshipTypes: [], automations: [] },
       owned: new Set<string>(),
     };
   }
@@ -188,7 +202,7 @@ export function toBaseline(record: BaselineRecord | null): Baseline {
 
 /**
  * The post-apply attribution snapshot + owned identities. Attribution records
- * the effective entity/rel/Behavior state AFTER a successful apply — config's
+ * the effective entity/rel/Automation state AFTER a successful apply — config's
  * declared values merged with preserved unmanaged facets (eventKinds /
  * viewTemplate / schemaExtras the config never declared) from the pre-apply
  * remote — so `remote == attribution` means "unchanged since last apply".
@@ -244,20 +258,22 @@ export function buildAttributionAndOwned(
       ...effectiveRelationshipTypeAfterApply(d, r),
     };
   });
-  const remoteWatcherBySlug = new Map(remote.watchers.map((w) => [w.slug, w]));
+  const remoteAutomationBySlug = new Map(
+    remote.automations.map((w) => [w.slug, w])
+  );
   // Effective remote after apply: declared fields from config, undeclared
   // optional fields preserved from the pre-apply remote (two-way apply only
-  // writes declared Behavior fields — see `diffWatcher`). Recording the
+  // writes declared Automation fields — see `diffAutomation`). Recording the
   // config-only shape left sources/skills/tags as undefined and made the next
   // apply permanently block as "remote moved".
-  const watchers = state.watchers.map((d) => {
-    const r = remoteWatcherBySlug.get(d.slug);
+  const automations = state.automations.map((d) => {
+    const r = remoteAutomationBySlug.get(d.slug);
     // Same projection the gate compares against; only the wire key names differ
-    // (the stored attribution is remote-shaped, `projectDesiredWatcher` is not).
-    const p = projectDesiredWatcher(d, r);
+    // (the stored attribution is remote-shaped, `projectDesiredAutomation` is not).
+    const p = projectDesiredAutomation(d, r);
     return {
       slug: d.slug,
-      behavior_id: r?.behavior_id,
+      automation_id: r?.automation_id,
       agent_id: p.agent,
       name: p.name,
       description: p.description,
@@ -291,9 +307,9 @@ export function buildAttributionAndOwned(
     const id = remoteRelBySlug.get(r.slug)?.id;
     if (id !== undefined) owned.push(`relationship-type:${id}`);
   }
-  for (const w of state.watchers) {
-    const id = remoteWatcherBySlug.get(w.slug)?.behavior_id;
-    if (id !== undefined) owned.push(`watcher:${id}`);
+  for (const w of state.automations) {
+    const id = remoteAutomationBySlug.get(w.slug)?.automation_id;
+    if (id !== undefined) owned.push(`automation:${id}`);
   }
   // Connector definitions this config declared (or references through an
   // auth-profile/connection) and has installed — delete-eligible under prune.
@@ -314,7 +330,7 @@ export function buildAttributionAndOwned(
     }
   }
   return {
-    attribution: { entityTypes, relationshipTypes, watchers },
+    attribution: { entityTypes, relationshipTypes, automations },
     owned,
   };
 }
@@ -365,7 +381,7 @@ export function buildCountsByKind(rows: DiffRow[]): CountsByKind {
   for (const row of rows) {
     if (row.verb !== "create" && row.verb !== "update" && row.verb !== "delete")
       continue;
-    const key = row.kind === "watcher" ? "behavior" : row.kind;
+    const key = row.kind;
     const bucket = out[key] ?? {};
     out[key] = bucket;
     bucket[row.verb] = (bucket[row.verb] ?? 0) + 1;

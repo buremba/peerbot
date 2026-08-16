@@ -184,12 +184,12 @@ const DIFF_ROUTING_KEYS = new Set([
   'action',
   'agent_id',
   'base',
-  'behavior_id',
+  'automation_id',
   'entity_id',
   'id',
   'owner_user_id',
   'reason',
-  'watcher_id',
+  'automation_id',
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {

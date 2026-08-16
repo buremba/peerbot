@@ -4,7 +4,7 @@ import { loadDesiredStateFromConfig } from "./_lib/apply/desired-state.js";
 export async function validateCommand(cwd: string): Promise<boolean> {
   let state: Awaited<ReturnType<typeof loadDesiredStateFromConfig>>["state"];
   try {
-    // Loading runs the full structural validation: slug/cron checks, watcher
+    // Loading runs the full structural validation: slug/cron checks, automation
     // agent refs, reaction-script paths, connector/auth shapes, etc. Secrets
     // are not required here (the gate runs at `lobu apply`).
     ({ state } = await loadDesiredStateFromConfig({ cwd }));

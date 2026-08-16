@@ -21,10 +21,10 @@ export interface OperationsExecuteInput {
 		expires_in_seconds?: number;
 	};
 	/**
-	 * Watcher provenance when this operation fires from a reaction. Both ids are
+	 * Automation provenance when this operation fires from a reaction. Both ids are
 	 * numeric.
 	 */
-	behavior_source?: { behavior_id: number; window_id: number };
+	automation_source?: { automation_id: number; window_id: number };
 }
 
 export interface OperationsNamespace {
@@ -53,12 +53,12 @@ export interface OperationsNamespace {
 		status?: string;
 		approval_status?: string;
 		/**
-		 * Omit to list every OPERATIONAL run type (sync, action, behavior, auth,
+		 * Omit to list every OPERATIONAL run type (sync, action, automation, auth,
 		 * …). Chat-message transport runs (streaming deltas) are excluded by
 		 * default; pass run_types: ['chat_message'] for the trace view.
 		 */
 		run_types?: string[];
-		behavior_ids?: number[];
+		automation_ids?: number[];
 		/** ISO 8601 inclusive lower bound on created_at. */
 		created_after?: string;
 		/** ISO 8601 exclusive upper bound on created_at. */

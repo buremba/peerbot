@@ -106,12 +106,12 @@ corresponding `ConnectorRuntime` methods.
   sync; use `ctx.emitEvents` / `ctx.updateCheckpoint` mid-sync for long runs so a
   crash resumes from the last saved point.
 - **`eventKinds`.** Declare the event types the feed can emit. A feed's
-  `eventKinds` are also the default Behavior trigger catalog: each kind becomes
+  `eventKinds` are also the default Automation trigger catalog: each kind becomes
   a subscribable event type. The first successful non-dry sync establishes the
   feed's baseline without activation; later inserts activate subscribers. The
   derived path fires feed `eventKinds` only — if you declare explicit
-  `behaviorEvents` keys that differ from your feed `eventKinds`, attach matching
-  `behavior_signals` to each emitted `EventEnvelope`, or those triggers never
+  `automationEvents` keys that differ from your feed `eventKinds`, attach matching
+  `automation_signals` to each emitted `EventEnvelope`, or those triggers never
   fire (the picker advertises them but ingestion never emits them).
 - **No real credentials in code.** Secrets flow through `ctx.credentials` /
   `ctx.config`; workers never receive durable stored credentials.

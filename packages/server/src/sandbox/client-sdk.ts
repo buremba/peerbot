@@ -1,5 +1,5 @@
 /**
- * In-process SDK shared by the `query_sdk` / `run_sdk` MCP tools and behavior reactions.
+ * In-process SDK shared by the `query_sdk` / `run_sdk` MCP tools and automation reactions.
  * `mode: "read"` filters namespaces against `METHOD_METADATA[*].access === "read"`;
  * `allowCrossOrg: false` makes `client.org(...)` throw `CrossOrgAccessDenied`.
  */
@@ -34,7 +34,7 @@ export { enumerateSDKManifest, type SDKMode } from "./sdk-manifest";
 import {
 	buildAgentsNamespace,
 	buildAuthProfilesNamespace,
-	buildBehaviorsNamespace,
+	buildAutomationsNamespace,
 	buildCatalogNamespace,
 	buildClassifiersNamespace,
 	buildConnectionsNamespace,
@@ -66,7 +66,7 @@ import type { OperationsNamespace } from "./namespaces/operations";
 import type { OrganizationsNamespace } from "./namespaces/organizations";
 import type { ViewTemplatesNamespace } from "./namespaces/view-templates";
 import type { SchedulesNamespace } from "./namespaces/schedules";
-import type { BehaviorsNamespace } from "./namespaces/behaviors";
+import type { AutomationsNamespace } from "./namespaces/automations";
 
 export interface ClientSDK {
 	agents: AgentsNamespace;
@@ -78,7 +78,7 @@ export interface ClientSDK {
 	feeds: FeedsNamespace;
 	authProfiles: AuthProfilesNamespace;
 	operations: OperationsNamespace;
-	behaviors: BehaviorsNamespace;
+	automations: AutomationsNamespace;
 	classifiers: ClassifiersNamespace;
 	viewTemplates: ViewTemplatesNamespace;
 	knowledge: KnowledgeNamespace;
@@ -201,7 +201,7 @@ export function buildClientSDK(
 		feeds: buildFeedsNamespace(ctx, env),
 		authProfiles: buildAuthProfilesNamespace(ctx, env),
 		operations: buildOperationsNamespace(ctx, env),
-		behaviors: buildBehaviorsNamespace(ctx, env),
+		automations: buildAutomationsNamespace(ctx, env),
 		classifiers: buildClassifiersNamespace(ctx, env),
 		viewTemplates: buildViewTemplatesNamespace(ctx, env),
 		knowledge: buildKnowledgeNamespace(ctx, env),

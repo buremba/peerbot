@@ -122,7 +122,7 @@ interface EnqueueAgentMessageArgs {
   /** Free-form source tag for log lines / platformMetadata. */
   source?: string;
   /**
-   * Optional per-behavior model override (a `provider/model` ref or "auto").
+   * Optional per-automation model override (a `provider/model` ref or "auto").
    * When set it wins over the thread session's model; when omitted the
    * session's model is used (which itself resolves the agent/org fallback).
    */

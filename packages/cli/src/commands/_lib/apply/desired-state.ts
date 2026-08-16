@@ -11,10 +11,10 @@ import type {
 import type { AgentSettings } from "@lobu/core";
 import { createAjv } from "@lobu/core/ajv";
 import type {
-  BehaviorEventTrigger,
-  BehaviorScheduleTrigger,
-  BehaviorWorkspaceEventTrigger,
-} from "@lobu/core/contracts/tools/manage-behaviors";
+  AutomationEventTrigger,
+  AutomationScheduleTrigger,
+  AutomationWorkspaceEventTrigger,
+} from "@lobu/core/contracts/tools/manage-automations";
 import type Ajv from "ajv";
 import type {
   ConnectorSource,
@@ -30,7 +30,7 @@ import {
   mergeAgentDirArtifacts,
 } from "./map-config.js";
 import {
-  type BehaviorSource,
+  type AutomationSource,
   type EntityBacking,
   isRecord,
   type RelationshipRule,
@@ -97,23 +97,23 @@ export interface DesiredRelationshipType {
   metadata?: Record<string, unknown>;
 }
 
-export interface DesiredWatcher {
+export interface DesiredAutomation {
   slug: string;
-  /** Owning agent id. Every watcher belongs to exactly one agent. */
+  /** Owning agent id. Every automation belongs to exactly one agent. */
   agent: string;
   name?: string;
   description?: string;
-  triggers?: DesiredBehaviorTrigger[];
+  triggers?: DesiredAutomationTrigger[];
   /**
-   * The Behavior's task statement, authored via `defineBehavior({ prompt })`.
+   * The Automation's task statement, authored via `defineAutomation({ prompt })`.
    * Stored as the version's frozen instruction text (the internal `prompt`
-   * column). Empty when the Behavior's whole job is its skills, or when an
-   * event-turn Behavior relies on the server-side default at run time.
+   * column). Empty when the Automation's whole job is its skills, or when an
+   * event-turn Automation relies on the server-side default at run time.
    */
   prompt: string;
   /**
    * Ordered skill names as written in config — the authoring input, resolved
-   * into {@link DesiredWatcher.skillSnapshots} at load time.
+   * into {@link DesiredAutomation.skillSnapshots} at load time.
    */
   skills?: string[];
   /**
@@ -124,17 +124,17 @@ export interface DesiredWatcher {
    */
   skillSnapshots?: Array<{ name: string; content: string }>;
   /** Optional SQL data sources; server applies a default when omitted. */
-  sources?: BehaviorSource[];
+  sources?: AutomationSource[];
   /**
    * Reaction script — TypeScript source compiled + executed in an isolate at
-   * watcher-firing time. Authored as a sibling `.ts` file referenced by
-   * `defineBehavior({ reaction: reactionFromFile("./reactions/foo.reaction.ts") })`;
+   * automation-firing time. Authored as a sibling `.ts` file referenced by
+   * `defineAutomation({ reaction: reactionFromFile("./reactions/foo.reaction.ts") })`;
    * the CLI reads it and pushes raw source via `set_reaction_script`.
    */
   reactionScript?: { sourcePath: string; sourceCode: string };
-  /** LLM guidance for the watcher's downstream reaction agent. */
+  /** LLM guidance for the automation's downstream reaction agent. */
   reactionsGuidance?: string;
-  /** UUID of a device worker to pin this watcher's runs to (see `device_workers.id`). */
+  /** UUID of a device worker to pin this automation's runs to (see `device_workers.id`). */
   deviceWorkerId?: string;
   /** Model alias/id passed to the device's local CLI (`--model`) on device runs. */
   model?: string;
@@ -142,7 +142,7 @@ export interface DesiredWatcher {
   notificationChannel?: "canvas" | "notification" | "both";
   /** Priority class used by the dispatcher interrupt budget. */
   notificationPriority?: "low" | "normal" | "high";
-  /** Minimum seconds between two firings of this watcher (0 = no cooldown). */
+  /** Minimum seconds between two firings of this automation (0 = no cooldown). */
   minCooldownSeconds?: number;
   /** Free-form tags for filtering. */
   tags?: string[];
@@ -155,13 +155,13 @@ export interface DesiredWatcher {
 }
 
 /** Apply-internal trigger form; `connectionSlug` is resolved before mutation. */
-export type DesiredBehaviorEventTrigger = BehaviorEventTrigger & {
+export type DesiredAutomationEventTrigger = AutomationEventTrigger & {
   connectionSlug?: string;
 };
-export type DesiredBehaviorTrigger =
-  | DesiredBehaviorEventTrigger
-  | BehaviorWorkspaceEventTrigger
-  | BehaviorScheduleTrigger;
+export type DesiredAutomationTrigger =
+  | DesiredAutomationEventTrigger
+  | AutomationWorkspaceEventTrigger
+  | AutomationScheduleTrigger;
 
 export interface DesiredFeed {
   /** Feed key from the connector definition (`FeedDefinition.key`). */
@@ -284,7 +284,7 @@ export interface DesiredOrgProvider {
   displayName?: string;
   /** Resolved API key value (never the `$VAR` placeholder). */
   apiKey: string;
-  /** Per-modality upstream overrides; empty ⇒ static behavior. */
+  /** Per-modality upstream overrides; empty ⇒ static semantics. */
   capabilities: Partial<Record<InferenceModality, InferenceCapabilityBlock>>;
 }
 
@@ -292,7 +292,7 @@ export interface DesiredState {
   agents: DesiredAgent[];
   /**
    * When true (`defineConfig({ prune: true })`), `lobu apply` deletes org-owned
-   * definitions (entity/relationship types, watchers, connector definitions)
+   * definitions (entity/relationship types, automations, connector definitions)
    * absent from this config — including ones created in the UI. Data,
    * connections, auth profiles, and agents are never pruned. Default false.
    */
@@ -312,8 +312,8 @@ export interface DesiredState {
     entityTypes: DesiredEntityType[];
     relationshipTypes: DesiredRelationshipType[];
   };
-  /** Behaviors declared via `defineBehavior`. */
-  watchers: DesiredWatcher[];
+  /** Automations declared via `defineAutomation`. */
+  automations: DesiredAutomation[];
   /**
    * Connectors: local `*.connector.ts` definitions (declared via
    * `connectorFromFile`), `defineConnection`s, and `defineAuthProfile`s.
@@ -442,44 +442,44 @@ async function resolveSkill(
   });
 }
 
-/** Byte cap on the skill snapshots pinned to one Behavior version (issue #2320). */
+/** Byte cap on the skill snapshots pinned to one Automation version (issue #2320). */
 const MAX_COMPILED_INSTRUCTIONS_BYTES = 32 * 1024;
 
 /**
- * Resolve a Behavior's ordered `skills[]` into frozen `{name, content}`
+ * Resolve an Automation's ordered `skills[]` into frozen `{name, content}`
  * snapshots. Fails loud on a name the owning agent's library does not declare,
  * a name the worker cannot materialize safely, an empty body, or a total payload
  * over {@link MAX_COMPILED_INSTRUCTIONS_BYTES}.
  */
-function resolveBehaviorSkills(
-  watcher: DesiredWatcher,
+function resolveAutomationSkills(
+  automation: DesiredAutomation,
   agentSkills: SkillConfigEntry[]
 ): Array<{ name: string; content: string }> {
-  const names = watcher.skills ?? [];
+  const names = automation.skills ?? [];
   if (names.length === 0) return [];
   const byName = new Map(agentSkills.map((skill) => [skill.name, skill]));
   const resolved = names.map((name) => {
     if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
       throw new ValidationError(
-        `Behavior "${watcher.slug}" cannot pin skill "${name}" — names may contain only letters, numbers, ".", "_", and "-"`
+        `Automation "${automation.slug}" cannot pin skill "${name}" — names may contain only letters, numbers, ".", "_", and "-"`
       );
     }
     const skill = byName.get(name);
     if (!skill) {
       throw new ValidationError(
-        `Behavior "${watcher.slug}" references skill "${name}", but agent "${watcher.agent}" declares no skill with that name in its skills library`
+        `Automation "${automation.slug}" references skill "${name}", but agent "${automation.agent}" declares no skill with that name in its skills library`
       );
     }
     const body = skill.content?.trim();
     if (!body) {
       throw new ValidationError(
-        `Behavior "${watcher.slug}" references skill "${name}", but its body is empty — a pinned skill needs text`
+        `Automation "${automation.slug}" references skill "${name}", but its body is empty — a pinned skill needs text`
       );
     }
     return { name, content: body };
   });
   // The cap is on total pinned text, not on any one skill: the whole set is
-  // written into the worker's `.skills/` tree and, for a device-pinned Behavior,
+  // written into the worker's `.skills/` tree and, for a device-pinned Automation,
   // shipped in the dispatch payload.
   const bytes = resolved.reduce(
     (total, skill) => total + Buffer.byteLength(skill.content, "utf8"),
@@ -487,7 +487,7 @@ function resolveBehaviorSkills(
   );
   if (bytes > MAX_COMPILED_INSTRUCTIONS_BYTES) {
     throw new ValidationError(
-      `Behavior "${watcher.slug}" pins ${bytes} bytes of skill text — the maximum is ${MAX_COMPILED_INSTRUCTIONS_BYTES} (${MAX_COMPILED_INSTRUCTIONS_BYTES / 1024}KB)`
+      `Automation "${automation.slug}" pins ${bytes} bytes of skill text — the maximum is ${MAX_COMPILED_INSTRUCTIONS_BYTES} (${MAX_COMPILED_INSTRUCTIONS_BYTES / 1024}KB)`
     );
   }
   return resolved;
@@ -862,7 +862,7 @@ interface LoadDesiredStateOptions {
  * (the platform indexes on them statically), declared as the first `key:` in
  * the `definition` object — e.g. `readonly definition: ConnectorDefinition = {
  * key: "linkedin", ...`. Returns `null` when the shape can't be matched with
- * confidence, preserving the prior null-key behavior (the server remains the
+ * confidence, preserving the prior null-key semantics (the server remains the
  * authoritative source of the compiled key; this hint only affects which
  * connectors the pre-diff pass treats as locally-declared).
  */
@@ -945,35 +945,35 @@ function resolveConnectorSources(
 const REACTION_SCRIPT_MAX_BYTES = 256 * 1024;
 
 /**
- * Resolve + read a Behavior reaction script (`reactionFromFile(path)`): relative
+ * Resolve + read an Automation reaction script (`reactionFromFile(path)`): relative
  * POSIX path under the config directory, ends in `.ts`, no `..` / absolute /
  * backslash segments, ≤256KB. Ships RAW source — the server compiles it on
  * receipt via `set_reaction_script`.
  */
 function resolveReactionScript(
   cwd: string,
-  watcherSlug: string,
+  automationSlug: string,
   rel: string
 ): { sourcePath: string; sourceCode: string } {
   const trimmed = rel.trim();
   if (!trimmed) {
     throw new ValidationError(
-      `Behavior "${watcherSlug}" \`reaction\` must be a path to a sibling .ts file (e.g. \`reaction: reactionFromFile("./reactions/foo.reaction.ts")\`)`
+      `Automation "${automationSlug}" \`reaction\` must be a path to a sibling .ts file (e.g. \`reaction: reactionFromFile("./reactions/foo.reaction.ts")\`)`
     );
   }
   if (trimmed.startsWith("/") || trimmed.includes("\\")) {
     throw new ValidationError(
-      `Behavior "${watcherSlug}" \`reaction\` must be a relative POSIX path (./foo.reaction.ts) — absolute paths and backslashes are not allowed`
+      `Automation "${automationSlug}" \`reaction\` must be a relative POSIX path (./foo.reaction.ts) — absolute paths and backslashes are not allowed`
     );
   }
   if (trimmed.split("/").some((seg) => seg === "..")) {
     throw new ValidationError(
-      `Behavior "${watcherSlug}" \`reaction\` must not contain \`..\` segments — keep the script under the config directory`
+      `Automation "${automationSlug}" \`reaction\` must not contain \`..\` segments — keep the script under the config directory`
     );
   }
   if (!trimmed.endsWith(".ts")) {
     throw new ValidationError(
-      `Behavior "${watcherSlug}" \`reaction\` must end in \`.ts\` (got ${JSON.stringify(trimmed)})`
+      `Automation "${automationSlug}" \`reaction\` must end in \`.ts\` (got ${JSON.stringify(trimmed)})`
     );
   }
   const baseDir = resolve(cwd);
@@ -989,7 +989,7 @@ function resolveReactionScript(
     isAbsolute(relPath)
   ) {
     throw new ValidationError(
-      `Behavior "${watcherSlug}" \`reaction\` resolves outside the config directory (${abs})`
+      `Automation "${automationSlug}" \`reaction\` resolves outside the config directory (${abs})`
     );
   }
   let sourceCode: string;
@@ -997,12 +997,12 @@ function resolveReactionScript(
     sourceCode = readFileSync(abs, "utf-8");
   } catch {
     throw new ValidationError(
-      `Behavior "${watcherSlug}" \`reaction\` ${trimmed} does not exist (resolved to ${abs})`
+      `Automation "${automationSlug}" \`reaction\` ${trimmed} does not exist (resolved to ${abs})`
     );
   }
   if (Buffer.byteLength(sourceCode, "utf8") > REACTION_SCRIPT_MAX_BYTES) {
     throw new ValidationError(
-      `Behavior "${watcherSlug}" \`reaction\` exceeds the ${REACTION_SCRIPT_MAX_BYTES}-byte cap — reaction scripts should be a few hundred lines, not a vendored library`
+      `Automation "${automationSlug}" \`reaction\` exceeds the ${REACTION_SCRIPT_MAX_BYTES}-byte cap — reaction scripts should be a few hundred lines, not a vendored library`
     );
   }
   return { sourcePath: abs, sourceCode };
@@ -1068,7 +1068,7 @@ export async function loadProjectConfig(
 /**
  * Load desired state from a TypeScript entrypoint (`lobu.config.ts`): import the
  * `defineConfig()` project, map it to `DesiredState`, then attach the
- * file-based artifacts (agent-dir markdown + skills, watcher reaction scripts,
+ * file-based artifacts (agent-dir markdown + skills, automation reaction scripts,
  * local connector source).
  */
 export async function loadDesiredStateFromConfig(
@@ -1099,45 +1099,45 @@ export async function loadDesiredStateFromConfig(
     })
   );
 
-  // Resolve each Behavior's `skills[]` to {name, content} snapshots against the
+  // Resolve each Automation's `skills[]` to {name, content} snapshots against the
   // owning agent's library. This happens BEFORE the diff reads them, so a change
   // to a referenced skill's BODY still drives version churn — re-applying is how
   // a config project takes a skill update, and the diff is what notices.
   //
   // The bodies are no longer folded into `prompt`: the prompt is the author's
   // task statement (or empty), and skills ride alongside as pinned files.
-  for (const watcher of state.watchers) {
-    watcher.skillSnapshots = resolveBehaviorSkills(
-      watcher,
-      skillsByAgentId.get(watcher.agent) ?? []
+  for (const automation of state.automations) {
+    automation.skillSnapshots = resolveAutomationSkills(
+      automation,
+      skillsByAgentId.get(automation.agent) ?? []
     );
   }
 
-  // Behavior reaction scripts: a sibling `.ts` file referenced by path. The
+  // Automation reaction scripts: a sibling `.ts` file referenced by path. The
   // mapper stays pure; resolve + read the source here (raw, server compiles
-  // it) and attach it. state.watchers[i] aligns with typedProject.behaviors[i]
+  // it) and attach it. state.automations[i] aligns with typedProject.automations[i]
   // (the mapper maps them in order).
-  (typedProject.behaviors ?? []).forEach((watcher, i) => {
+  (typedProject.automations ?? []).forEach((automation, i) => {
     // Gate on absence, not truthiness — a present-but-empty
     // `reactionFromFile("")` must reach the validator (which rejects it),
-    // matching parseWatcher.
-    if (watcher.reaction === undefined) return;
-    const dw = state.watchers[i];
+    // matching parseAutomation.
+    if (automation.reaction === undefined) return;
+    const dw = state.automations[i];
     if (!dw) return;
     // `reaction` is typed ReactionSource, but jiti evaluates the config without
     // typechecking, so a stale `reaction: "./x.reaction.ts"` string slips
     // through and would read `.path` as undefined. Reject it with a clear
     // message instead of a downstream TypeError. (An empty `reactionFromFile("")`
     // keeps a string path and still reaches the validator, which rejects it.)
-    const reactionPath = (watcher.reaction as { path?: unknown }).path;
+    const reactionPath = (automation.reaction as { path?: unknown }).path;
     if (typeof reactionPath !== "string") {
       throw new Error(
-        `Behavior "${watcher.slug}": set reaction with reactionFromFile("./x.reaction.ts"), not a bare string path.`
+        `Automation "${automation.slug}": set reaction with reactionFromFile("./x.reaction.ts"), not a bare string path.`
       );
     }
     dw.reactionScript = resolveReactionScript(
       opts.cwd,
-      watcher.slug,
+      automation.slug,
       reactionPath
     );
   });

@@ -39,12 +39,12 @@ interface NormalizedScoreFilters {
   engagement_max?: number;
   // Additional filters to match searchContentByText
   window_id?: number;
-  /** Restrict to content some behavior has analyzed. The handler always passed
+  /** Restrict to content some automation has analyzed. The handler always passed
    *  this; the builder used to ignore it — the same dropped-filter class. */
-  analyzed_by_watcher_id?: number;
-  exclude_watcher_id?: number; // Exclude content already in any window for this watcher
-  /** Restrict to events this Behavior WROTE (events.behavior_id). */
-  produced_by_behavior_id?: number;
+  analyzed_by_automation_id?: number;
+  exclude_automation_id?: number; // Exclude content already in any window for this automation
+  /** Restrict to events this Automation WROTE (events.automation_id). */
+  produced_by_automation_id?: number;
   classification_filters?: Array<{ classifier_slug: string; value: string }>;
   classification_source?: 'user' | 'embedding' | 'llm';
   semantic_type?: string | string[];
@@ -207,38 +207,38 @@ async function buildFilterConditionsAndJoins(
 
   if (filters?.window_id !== undefined) {
     const validatedWindowId = validateNumericId(filters.window_id, 'window_id');
-    additionalJoins.push('JOIN watcher_window_events iwc ON iwc.event_id = f.id');
+    additionalJoins.push('JOIN automation_window_events iwc ON iwc.event_id = f.id');
     params.push(validatedWindowId);
     filterConditions.push(`iwc.window_id = $${paramIndex++}`);
   }
 
-  if (filters?.analyzed_by_watcher_id !== undefined) {
-    const validatedWatcherId = validateNumericId(
-      filters.analyzed_by_watcher_id,
-      'analyzed_by_watcher_id'
+  if (filters?.analyzed_by_automation_id !== undefined) {
+    const validatedAutomationId = validateNumericId(
+      filters.analyzed_by_automation_id,
+      'analyzed_by_automation_id'
     );
-    params.push(validatedWatcherId);
+    params.push(validatedAutomationId);
     filterConditions.push(`EXISTS (
-      SELECT 1 FROM watcher_window_events iwc
-      WHERE iwc.event_id = f.id AND iwc.watcher_id = $${paramIndex++}
+      SELECT 1 FROM automation_window_events iwc
+      WHERE iwc.event_id = f.id AND iwc.automation_id = $${paramIndex++}
     )`);
   }
 
-  if (filters?.produced_by_behavior_id !== undefined) {
-    const validatedBehaviorId = validateNumericId(
-      filters.produced_by_behavior_id,
-      'produced_by_behavior_id'
+  if (filters?.produced_by_automation_id !== undefined) {
+    const validatedAutomationId = validateNumericId(
+      filters.produced_by_automation_id,
+      'produced_by_automation_id'
     );
-    params.push(validatedBehaviorId);
-    filterConditions.push(`f.behavior_id = $${paramIndex++}`);
+    params.push(validatedAutomationId);
+    filterConditions.push(`f.automation_id = $${paramIndex++}`);
   }
 
-  if (filters?.exclude_watcher_id !== undefined) {
-    const validatedWatcherId = validateNumericId(filters.exclude_watcher_id, 'exclude_watcher_id');
-    params.push(validatedWatcherId);
+  if (filters?.exclude_automation_id !== undefined) {
+    const validatedAutomationId = validateNumericId(filters.exclude_automation_id, 'exclude_automation_id');
+    params.push(validatedAutomationId);
     filterConditions.push(`NOT EXISTS (
-      SELECT 1 FROM watcher_window_events exc_iwc
-      WHERE exc_iwc.event_id = f.id AND exc_iwc.watcher_id = $${paramIndex++}
+      SELECT 1 FROM automation_window_events exc_iwc
+      WHERE exc_iwc.event_id = f.id AND exc_iwc.automation_id = $${paramIndex++}
     )`);
   }
 
@@ -435,9 +435,9 @@ export async function getNormalizedScoreContent(
         f.connection_id,
         f.feed_id,
         f.feed_key,
-        f.behavior_id,
+        f.automation_id,
         fd.display_name as feed_name,
-        COALESCE(wv.name, 'Behavior #' || f.behavior_id) as behavior_name,
+        COALESCE(wv.name, 'Automation #' || f.automation_id) as automation_name,
         f.origin_id,
         f.title,
         f.payload_text,
@@ -466,7 +466,7 @@ export async function getNormalizedScoreContent(
       FROM current_event_records f
       LEFT JOIN connections s ON f.connection_id = s.id
       LEFT JOIN feeds fd ON fd.id = f.feed_id
-      LEFT JOIN watcher_versions wv ON wv.id = f.behavior_version_id
+      LEFT JOIN automation_versions wv ON wv.id = f.automation_version_id
       ${joinClause}
       WHERE ${whereClause}
     )
@@ -476,9 +476,9 @@ export async function getNormalizedScoreContent(
       sc.connection_id,
       sc.feed_id,
       sc.feed_key,
-      sc.behavior_id,
+      sc.automation_id,
       sc.feed_name,
-      sc.behavior_name,
+      sc.automation_name,
       sc.origin_id,
       sc.title,
       sc.payload_text,

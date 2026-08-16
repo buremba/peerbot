@@ -9,7 +9,7 @@ import { runtimeConnectionIdToSlug } from "../../../lobu/stores/connections-proj
 import { registerScheduledJobsTicker } from "../../../scheduled/scheduled-jobs-service";
 import type { ToolContext } from "../../registry";
 import { manageSchedules } from "../manage_schedules";
-import { createTestBehaviorSubscription } from "../../../__tests__/setup/behavior-subscriptions";
+import { createTestAutomationSubscription } from "../../../__tests__/setup/automation-subscriptions";
 
 const ORG = "org-scheduled-delivery";
 const AGENT = "agent-scheduled-delivery";
@@ -229,7 +229,7 @@ describe("manage_schedules wake_agent chat delivery", () => {
     });
   });
 
-  test("requires agentless managed connections to have a matching message Behavior", async () => {
+  test("requires agentless managed connections to have a matching message Automation", async () => {
     await seedChatConnection({
       id: "slackinst-real",
       agentId: null,
@@ -255,7 +255,7 @@ describe("manage_schedules wake_agent chat delivery", () => {
     );
     expect(missingBinding.error).toMatch(/channel is not bound/);
 
-		await createTestBehaviorSubscription({
+		await createTestAutomationSubscription({
 			organizationId: ORG,
 			agentId: AGENT,
 			connectionSlug: runtimeConnectionIdToSlug("slackinst-real"),
@@ -288,7 +288,7 @@ describe("manage_schedules wake_agent chat delivery", () => {
     expect(rows[0].delivery_context.connectionId).toBe("slackinst-real");
   });
 
-  test("does not authorize a schedule through another connection's matching channel Behavior", async () => {
+  test("does not authorize a schedule through another connection's matching channel Automation", async () => {
     await seedChatConnection({
       id: "slackinst-target",
       agentId: null,
@@ -300,7 +300,7 @@ describe("manage_schedules wake_agent chat delivery", () => {
       externalTenantId: "T-other",
     });
 
-    await createTestBehaviorSubscription({
+    await createTestAutomationSubscription({
       organizationId: ORG,
       agentId: AGENT,
       connectionSlug: runtimeConnectionIdToSlug("slackinst-other"),
@@ -329,7 +329,7 @@ describe("manage_schedules wake_agent chat delivery", () => {
     );
     expect(wrongConnection.error).toMatch(/channel is not bound/);
 
-    await createTestBehaviorSubscription({
+    await createTestAutomationSubscription({
       organizationId: ORG,
       agentId: AGENT,
       connectionSlug: runtimeConnectionIdToSlug("slackinst-target"),

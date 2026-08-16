@@ -50,7 +50,7 @@ DATABASE_URL=postgresql://localhost:5432/lobu_mcp_discovery_test \
   ./run.sh --trials 2
 # optional: --tasks connect-website,create-entity
 # --scope admin|default  (default: admin) — `default` is the mcp:read+mcp:write
-#   token `lobu token create` mints; admin-gated actions (connect, Behaviors,
+#   token `lobu token create` mints; admin-gated actions (connect, Automations,
 #   operations.execute, schedules) are blocked for it. Use to measure scope
 #   sensitivity (e.g. PR #1955's connector-discovery visibility fix).
 # optional overrides: NODE22_BIN=/path/to/node22  GEMINI_MODEL_ID=gemini-3-flash-preview
@@ -69,7 +69,7 @@ Bare-intent discovery tasks spanning the MCP surface — see `tasks.ts`:
 3. `run-operation` — run a connector operation (→ a completed `runs` row).
 4. `create-entity` — add a company with 50 employees (type must be created first).
 5. `query-entities` — count + name the seeded companies (reply-scored).
-6. `create-behavior` — watch the workspace and notify on a condition.
+6. `create-automation` — watch the workspace and notify on a condition.
 7. `save-and-recall-memory` — save a fact, then recall it (reply-scored).
 8. `sql-discovery` — which tables can I query; how to find collected pages (reply-scored).
 9. `org-discovery` — which workspace + installed connectors (reply-scored).

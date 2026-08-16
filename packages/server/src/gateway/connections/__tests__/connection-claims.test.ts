@@ -56,7 +56,7 @@ async function buildReplica() {
     getPublicGatewayUrl: () => "",
     getSecretStore: () => secretStore,
     getConnectionStore: () => connectionStore,
-		getBehaviorSubscriptionService: () => ({ resolveForConnection: async () => null }),
+		getAutomationSubscriptionService: () => ({ resolveForConnection: async () => null }),
     getCommandRegistry: () => undefined,
   } as any;
 
@@ -259,7 +259,7 @@ describe("connection_claims lease (exclusive transports)", () => {
 
     // Register a minimal instance whose conversationState is a no-op stub, so
     // removeConnection's history-cleanup is network/DB-free and the test
-    // isolates the claim-row deletion (the behaviour under test).
+    // isolates the claim-row deletion (the semantics under test).
     manager.hydrateFromRow = async (stored: any) => {
       manager.instances.set(stored.id, {
         connection: { id: stored.id, platform: stored.platform },

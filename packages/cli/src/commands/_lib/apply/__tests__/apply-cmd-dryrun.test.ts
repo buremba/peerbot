@@ -83,7 +83,7 @@ function makeAuthFetch(
   /**
    * A minimal fetch stub that handles the OAuth userinfo endpoint (for org
    * resolution) and returns empty lists for every GET (agents, entity-types,
-   * watchers, etc.) and a success body for POSTs.
+   * automations, etc.) and a success body for POSTs.
    *
    * MUTATING calls (POST that creates/patches, PATCH) are tracked in
    * `mutateCalls` so tests can assert no writes happen in dry-run mode.
@@ -129,8 +129,10 @@ function makeAuthFetch(
           { status: 200 }
         );
       }
-      if (urlStr.includes("/behaviors")) {
-        return new Response(JSON.stringify({ behaviors: [] }), { status: 200 });
+      if (urlStr.includes("/automations")) {
+        return new Response(JSON.stringify({ automations: [] }), {
+          status: 200,
+        });
       }
     }
 
@@ -175,10 +177,10 @@ describe("applyCommand orchestration", () => {
       fetchImpl: fetchStub,
     });
 
-    // The snapshot phase uses POST for manage_entity_schema (list), manage_behaviors,
+    // The snapshot phase uses POST for manage_entity_schema (list), manage_automations,
     // manage_connections (list) — these are read-only POSTs. The key invariant is:
     // no agent-create (POST /agents), no agent-patch (PATCH /agents/*), no settings
-    // patch, no watcher create, and no connection/feed creates.
+    // patch, no automation create, and no connection/feed creates.
     const writingCalls = mutateCalls.filter((c) => {
       // PATCH always writes
       if (c.method === "PATCH") return true;
@@ -188,7 +190,7 @@ describe("applyCommand orchestration", () => {
       if (c.method === "POST") {
         // List-action POSTs are OK (snapshot)
         if (c.url.includes("manage_entity_schema")) return false;
-        if (c.url.includes("manage_behaviors")) return false;
+        if (c.url.includes("manage_automations")) return false;
         if (c.url.includes("manage_connections")) return false;
         if (c.url.includes("manage_feeds")) return false;
         if (c.url.includes("manage_auth_profiles")) return false;
@@ -201,15 +203,15 @@ describe("applyCommand orchestration", () => {
     expect(writingCalls).toEqual([]);
   });
 
-  test("--only memory fetches connection IDs for Behaviors without reconciling connectors", async () => {
+  test("--only memory fetches connection IDs for Automations without reconciling connectors", async () => {
     const dir =
-      mkProject(`import { defineAgent, defineBehavior, defineConfig, defineConnection } from "@lobu/cli/config";
+      mkProject(`import { defineAgent, defineAutomation, defineConfig, defineConnection } from "@lobu/cli/config";
 const agent = defineAgent({ id: "triage", dir: "./agents/triage" });
 const github = defineConnection({ slug: "github-main", connector: "github" });
 export default defineConfig({
   agents: [agent],
   connections: [github],
-  behaviors: [defineBehavior({
+  automations: [defineAutomation({
     agent,
     slug: "review-pr",
     triggers: [{

@@ -1,11 +1,11 @@
 /**
- * Reproduction: save_memory from a worker/behavior-window session.
+ * Reproduction: save_memory from a worker/automation-window session.
  *
  * Worker direct-auth (workspace/multi-tenant.ts) sets
  * `clientId: 'lobu-worker'` — a synthetic id with no oauth_clients row. If a
  * tool passes that to `events.client_id` unconditionally, the insert trips
  * `events_client_id_fkey`. This reproduces the save_memory failure the
- * voice-profile Behavior hit live ("persistent 'events_client_id_fkey'
+ * voice-profile Automation hit live ("persistent 'events_client_id_fkey'
  * foreign key constraint"), and proves the fix keeps worker saves working.
  */
 
@@ -21,7 +21,7 @@ import {
   seedSystemEntityTypes,
 } from '../../setup/test-fixtures';
 
-describe('saveContent > worker/behavior-window session (synthetic client id)', () => {
+describe('saveContent > worker/automation-window session (synthetic client id)', () => {
   let org: Awaited<ReturnType<typeof createTestOrganization>>;
   let user: Awaited<ReturnType<typeof createTestUser>>;
   const sql = getTestDb();
@@ -53,7 +53,7 @@ describe('saveContent > worker/behavior-window session (synthetic client id)', (
   it('saves cleanly from a worker session (no events_client_id_fkey)', async () => {
     const result = await saveContent(
       {
-        content: 'A memory saved from a behavior-window worker session.',
+        content: 'A memory saved from an automation-window worker session.',
         semantic_type: 'note',
         title: 'worker-session note',
         metadata: {},
@@ -73,9 +73,9 @@ describe('saveContent > worker/behavior-window session (synthetic client id)', (
   });
 
   it('supersedes cleanly from a worker session (supersede runs inside a tx)', async () => {
-    // The voice-profile behavior refines profiles with `supersedes_event_id`,
+    // The voice-profile automation refines profiles with `supersedes_event_id`,
     // which routes insertEvent through `sql.begin`. The FK retry must not
-    // abort that transaction — this is the exact failure the behavior hit
+    // abort that transaction — this is the exact failure the automation hit
     // live ("persistent 'events_client_id_fkey' constraint ... errors").
     const first = (await saveContent(
       {

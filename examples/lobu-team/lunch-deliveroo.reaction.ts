@@ -1,9 +1,9 @@
 /**
- * Reaction for the `lobu-team-lunch-finalize` Behavior.
+ * Reaction for the `lobu-team-lunch-finalize` Automation.
  *
  * The agent's turn collects orders and picks a restaurant; this reaction then
  * does the Deliveroo work the agent itself can't (executing connector actions
- * needs the Behavior's system context):
+ * needs the Automation's system context):
  *
  *   1. search_restaurants(restaurant) on the office's Deliveroo connection →
  *      the matching restaurant's live URL.
@@ -84,8 +84,8 @@ export default async (
     return;
   }
   const connectionId = Number(connRows[0].id);
-  const behaviorSource = {
-    behavior_id: ctx.window.behavior_id,
+  const automationSource = {
+    automation_id: ctx.window.automation_id,
     window_id: ctx.window.id,
   };
 
@@ -94,7 +94,7 @@ export default async (
     connection_id: connectionId,
     operation_key: "search_restaurants",
     input: { query: restaurant },
-    behavior_source: behaviorSource,
+    automation_source: automationSource,
   });
   if (search.status !== "completed") {
     client.log(
@@ -119,7 +119,7 @@ export default async (
     connection_id: connectionId,
     operation_key: "read_menu",
     input: { restaurant_url: pick.url, max_scrolls: 6 },
-    behavior_source: behaviorSource,
+    automation_source: automationSource,
   });
   if (menu.status !== "completed") {
     client.log(
@@ -148,7 +148,7 @@ export default async (
   await client.notifications.send({
     title: `${pick.name} — live menu (${items.length} items)`,
     body,
-    behavior_source: behaviorSource,
+    automation_source: automationSource,
   });
 
   client.log(

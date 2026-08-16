@@ -79,7 +79,7 @@ describe("entity resolution module", () => {
 		expect(result.groups).toEqual([]);
 	});
 
-	it("keeps the built-in person watcher useful with review-only defaults", () => {
+	it("keeps the built-in person automation useful with review-only defaults", () => {
 		const result = discoverEntityResolutionGroups({
 			metadataSchema: { type: "object" },
 			entityTypeSlug: "person",

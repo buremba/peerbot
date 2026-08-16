@@ -53,7 +53,7 @@ export interface WorkerTokenClaimsArgs {
 	nixPackages?: string[];
 }
 
-function behaviorRunIdFromIntent(intent: unknown): number | undefined {
+function automationRunIdFromIntent(intent: unknown): number | undefined {
 	if (!intent || typeof intent !== "object") return undefined;
 	const runId = (intent as { runId?: unknown }).runId;
 	return typeof runId === "number" && Number.isInteger(runId) && runId > 0
@@ -89,7 +89,7 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
 	responseThreadId?: string;
 	source?: string;
 	executionMode?: ExecutionMode;
-	behaviorRunId?: number;
+	automationRunId?: number;
 	runtimeProviderId?: string;
 	sandboxId?: string;
 	allowedDomains?: string[];
@@ -118,13 +118,13 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
 				? args.platformMetadata.source
 				: undefined,
 		// Only the literal 'capture' is honoured, and it originates server-side
-		// from the run row (behavior-run-intent.ts) — never from a caller.
+		// from the run row (automation-run-intent.ts) — never from a caller.
 		//
 		// An absent claim means live. That direction is deliberate: making
 		// "absent" mean capture would, for the length of a rollout, silence
-		// every real Behavior still running on a token minted before this
+		// every real Automation still running on a token minted before this
 		// deploy. The claim is instead kept honest at its source — an eval run
-		// cannot obtain a session without `verifyBehaviorRunIntent` deriving
+		// cannot obtain a session without `verifyAutomationRunIntent` deriving
 		// its mode from `runs.run_type` — and that chain is covered by tests.
 		executionMode:
 			args.platformMetadata?.executionMode === "capture"
@@ -133,10 +133,10 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
 		// Capture only: nothing reads it on a live run, and leaving live tokens
 		// byte-identical keeps this off the rollout risk surface. The id comes
 		// from `intent`, already checked against the runs row by
-		// `verifyBehaviorRunIntent` — not caller-authored.
-		behaviorRunId:
+		// `verifyAutomationRunIntent` — not caller-authored.
+		automationRunId:
 			args.platformMetadata?.executionMode === "capture"
-				? behaviorRunIdFromIntent(args.platformMetadata?.intent)
+				? automationRunIdFromIntent(args.platformMetadata?.intent)
 				: undefined,
 		runtimeProviderId,
 		sandboxId: runtimeProviderId ? args.sandboxId : undefined,

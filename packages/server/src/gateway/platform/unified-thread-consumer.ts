@@ -18,7 +18,7 @@ import { TERMINAL_DELIVERY_SEND_OPTS } from "../infrastructure/queue/index.js";
 import type { InteractionService } from "../interactions.js";
 import type { PlatformRegistry } from "../platform.js";
 import type { SseManager } from "../services/sse-manager.js";
-import { BEHAVIOR_RUN_SOURCE } from "../behavior-run-session.js";
+import { AUTOMATION_RUN_SOURCE } from "../automation-run-session.js";
 import {
   finalizeTurnSuggestions,
   readCurrentSuggestion,
@@ -65,7 +65,7 @@ interface ChatInteractionEnvelope {
 /**
  * `platformMetadata.source` values for turns dispatched server-side with no
  * SSE client on any pod. These bypass the API owner-gate in routeToRenderer.
- * Producers: routes/public/agent.ts (watcher-run/direct-api from session
+ * Producers: routes/public/agent.ts (automation-run/direct-api from session
  * intent), services/agent-threads.ts (internal default), connectors/
  * scheduled/jobs.ts.
  *
@@ -75,7 +75,7 @@ interface ChatInteractionEnvelope {
  * autonomous-only restrictions.
  */
 const HEADLESS_SOURCES = new Set([
-  BEHAVIOR_RUN_SOURCE,
+  AUTOMATION_RUN_SOURCE,
   "connector-repair",
   "scheduled-job",
   "internal",
@@ -223,7 +223,7 @@ export class UnifiedThreadResponseConsumer {
       // somewhere that can, instead of silently completing an undelivered reply.
       const chatConnectionId = data.platformMetadata?.connectionId as string | undefined;
       if (chatConnectionId && data.error) {
-        await this.chatResponseBridge?.parkQuotaExhaustedBehavior(data);
+        await this.chatResponseBridge?.parkQuotaExhaustedAutomation(data);
       }
       if (await this.chatResponseBridge?.ensureDeliverable(data)) {
         const sessionKey = `${data.userId}:${data.originalMessageId || data.messageId}`;
@@ -292,7 +292,7 @@ export class UnifiedThreadResponseConsumer {
    * replica and returns false only when this replica genuinely can't run it
    * (deleted/stopped, or an exclusive transport leased to another replica). On
    * false we throw so the row re-queues until the owning pod claims it — exactly
-   * the chat-response text path's behaviour. On true the connection is warm
+   * the chat-response text path's semantics. On true the connection is warm
    * here, so `registerInteractionBridge` is subscribed to this pod's
    * `InteractionService`; re-emitting the original event renders the card.
    *
@@ -403,7 +403,7 @@ export class UnifiedThreadResponseConsumer {
 
     // Preserve the original terminal error before output guardrails replace the
     // user-visible text. The API renderer consumes this field only for durable
-    // Behavior scheduling; it is never included in an SSE event.
+    // Automation scheduling; it is never included in an SSE event.
     if (typeof data.error === "string") {
       data = { ...data, bookkeepingError: data.error };
     }
@@ -459,11 +459,11 @@ export class UnifiedThreadResponseConsumer {
       // and the same raised-retry send opts as terminal rows so the re-queue
       // window covers the cross-pod hand-off and the browser's POST→connect gap.
       //
-      // Headless rows are exempt: turns dispatched server-side (watcher runs,
+      // Headless rows are exempt: turns dispatched server-side (automation runs,
       // connector repair, scheduled jobs, internal threads) never open an SSE
       // connection on ANY pod, so gating them re-queues 30x, dead-letters the
-      // row, and skips the renderer side-effects (watcher run resolution most
-      // critically — a failed watcher run otherwise surfaces only via the 2h
+      // row, and skips the renderer side-effects (automation run resolution most
+      // critically — a failed automation run otherwise surfaces only via the 2h
       // stale sweep). No pod is "the owner"; the first claimer delivers, and
       // the SSE broadcast is a harmless no-op. `source` is stamped at dispatch
       // (routes/public/agent.ts from session intent; agent-threads/repair/

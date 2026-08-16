@@ -45,7 +45,7 @@ tests:
 
   # ─── tax-year-anchoring — 6 April UK fiscal year boundary ───────────────
   # Original YAML had these as sequential turns; in fact they're independent
-  # behavioural checks. Splitting into two test cases preserves the signal.
+  # runtime-affecting checks. Splitting into two test cases preserves the signal.
 
   - description: tax-year-anchoring — date in 2024-25
     vars:

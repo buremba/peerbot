@@ -1,6 +1,6 @@
 /**
  * `workspaceUnlinkedNotice` — the reply from a tenant connection with no owning
- * agent when a chat is not bound to a Behavior. Slack gets agent deep links and
+ * agent when a chat is not bound to an Automation. Slack gets agent deep links and
  * `/lobu link`; other platforms get generic dashboard and `/link` instructions.
  * The notice must remain available when the Slack agent lookup fails.
  */
@@ -47,7 +47,7 @@ describe("workspaceUnlinkedNotice", () => {
 		expect(text).not.toContain("<http");
 	});
 
-	it('deep-links each agent to the Behaviors "new" step with the channel prefilled', async () => {
+	it('deep-links each agent to the Automations "new" step with the channel prefilled', async () => {
 		setOrigin("https://app.lobu.ai/lobu");
 		const org = await createTestOrganization({ slug: "acme" });
 		await createTestAgent({
@@ -70,16 +70,16 @@ describe("workspaceUnlinkedNotice", () => {
 
 		// getConfiguredPublicOrigin() returns the URL *origin* (scheme+host), so the
 		// /lobu gateway mount is dropped — the SPA lives at the bare origin. The link
-		// targets the Behavior editor with its connection event prefilled.
+		// targets the Automation editor with its connection event prefilled.
 		// `slack:C…`, `T0TEAM`, and the `#general` label are URL-encoded. Each agent
 		// is a Slack mrkdwn inline link `<url|Name>` so it renders clickable (the
 		// notice goes out via chat.postMessage text, which Slack reads as mrkdwn;
 		// unfurl_links is off so a bare URL would render as flat text).
 		expect(text).toContain(
-			"<https://app.lobu.ai/acme/agents/planner/behaviors/new?listen=slack%3AC0ABC123&platform=slack&team=T0TEAM&connection=42&label=%23general|Planner>",
+			"<https://app.lobu.ai/acme/automations/new?agent=planner&listen=slack%3AC0ABC123&platform=slack&team=T0TEAM&connection=42&label=%23general|Planner>",
 		);
 		expect(text).toContain(
-			"<https://app.lobu.ai/acme/agents/builder/behaviors/new?listen=slack%3AC0ABC123&platform=slack&team=T0TEAM&connection=42&label=%23general|Builder>",
+			"<https://app.lobu.ai/acme/automations/new?agent=builder&listen=slack%3AC0ABC123&platform=slack&team=T0TEAM&connection=42&label=%23general|Builder>",
 		);
 		expect(text).toContain("Planner");
 		expect(text).toContain("Builder");
@@ -109,7 +109,7 @@ describe("workspaceUnlinkedNotice", () => {
 		expect(text).not.toContain("|A&B <Co>>");
 	});
 
-	it("deep-links to the plain Behaviors page when no channel context is given", async () => {
+	it("deep-links to Automation creation with the agent prefilled when no channel context is given", async () => {
 		setOrigin("https://app.lobu.ai");
 		const org = await createTestOrganization({ slug: "acme" });
 		await createTestAgent({
@@ -119,8 +119,9 @@ describe("workspaceUnlinkedNotice", () => {
 		});
 
 		const text = await workspaceUnlinkedNotice("slack", org.id);
-		expect(text).toContain("https://app.lobu.ai/acme/agents/planner/behaviors");
-		expect(text).not.toContain("/behaviors/new?");
+		expect(text).toContain(
+			"https://app.lobu.ai/acme/automations/new?agent=planner",
+		);
 	});
 
 	it("lists agents by name (no URLs) when the public origin is not configured", async () => {
@@ -134,7 +135,7 @@ describe("workspaceUnlinkedNotice", () => {
 
 		const text = await workspaceUnlinkedNotice("slack", org.id);
 		expect(text).toContain("Planner");
-		expect(text).not.toContain("/agents/planner/behaviors");
+		expect(text).not.toContain("/agents/planner/automations");
 		expect(text).toContain("lobu run"); // CLI path still present
 	});
 
@@ -146,7 +147,7 @@ describe("workspaceUnlinkedNotice", () => {
 		expect(text).toContain("lobu run");
 		expect(text).toContain("/lobu link");
 		// No agent-list section.
-		expect(text).not.toContain("Behaviors page");
+		expect(text).not.toContain("Automations page");
 	});
 
 	it("never throws / dead-drops for an unknown org (returns the CLI-only notice)", async () => {

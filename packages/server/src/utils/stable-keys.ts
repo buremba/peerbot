@@ -11,49 +11,49 @@ export const MAX_STABLE_KEY_FIELD_LENGTH = 128;
 export const MAX_STABLE_KEY_COMPONENT_BYTES = 256;
 
 const STABLE_KEY_VERSION = 'v1';
-const BEHAVIOR_ENTITY_IDENTITY_VERSION = 'v2';
-const BEHAVIOR_EVENT_IDENTITY_VERSION = 'v1';
+const AUTOMATION_ENTITY_IDENTITY_VERSION = 'v2';
+const AUTOMATION_EVENT_IDENTITY_VERSION = 'v1';
 
-/** `events.identity_ns` for a keyed Behavior event output. */
-export const BEHAVIOR_EVENT_IDENTITY_NS = 'behavior_event';
+/** `events.identity_ns` for a keyed Automation event output. */
+export const AUTOMATION_EVENT_IDENTITY_NS = 'automation_event';
 
 /**
- * Scope a stable tuple to the Behavior output and its declared entity type.
+ * Scope a stable tuple to the Automation output and its declared entity type.
  * The full exact tuple stays in entity metadata; the indexed identity is a
  * fixed-size digest so every contract-valid tuple fits PostgreSQL B-tree keys.
  */
-export function formatBehaviorEntityIdentity(
-  watcherId: number,
+export function formatAutomationEntityIdentity(
+  automationId: number,
   outputName: string,
   entityTypeSlug: string,
   stableKey: string
 ): string {
-  const scopedTuple = `${watcherId}::${outputName}::${entityTypeSlug}::${stableKey}`;
+  const scopedTuple = `${automationId}::${outputName}::${entityTypeSlug}::${stableKey}`;
   const digest = createHash('sha256').update(scopedTuple, 'utf8').digest('hex');
-  return `${BEHAVIOR_ENTITY_IDENTITY_VERSION}::${digest}`;
+  return `${AUTOMATION_ENTITY_IDENTITY_VERSION}::${digest}`;
 }
 
 /**
  * Scope a stable tuple to a keyed EVENT output's semantic type.
  *
- * Deliberately NOT scoped by Behavior, unlike the entity sibling above. An
- * event carrying a keyed identity may predate the Behavior that now maintains
+ * Deliberately NOT scoped by Automation, unlike the entity sibling above. An
+ * event carrying a keyed identity may predate the Automation that now maintains
  * it — prod's first four `voice_profile` rows were written by a migration with
- * no `behavior_id` and were adopted (superseded) by the Behavior's first run.
- * Watcher-scoping would have made those rows unadoptable and left them live
- * forever beside the Behavior's own. Entities can afford watcher-scoping
- * because an entity is only ever created by its Behavior; events cannot.
+ * no `automation_id` and were adopted (superseded) by the Automation's first run.
+ * Automation-scoping would have made those rows unadoptable and left them live
+ * forever beside the Automation's own. Entities can afford automation-scoping
+ * because an entity is only ever created by its Automation; events cannot.
  *
  * The digest keeps every contract-valid tuple inside PostgreSQL's B-tree key
  * limit; the exact key fields remain in `metadata` for inspection.
  */
-export function formatBehaviorEventIdentity(
+export function formatAutomationEventIdentity(
   semanticType: string,
   stableKey: string
 ): string {
   const scopedTuple = `${semanticType}::${stableKey}`;
   const digest = createHash('sha256').update(scopedTuple, 'utf8').digest('hex');
-  return `${BEHAVIOR_EVENT_IDENTITY_VERSION}::${digest}`;
+  return `${AUTOMATION_EVENT_IDENTITY_VERSION}::${digest}`;
 }
 
 function encode(value: string): string {
@@ -127,7 +127,7 @@ export function validateStableKeyComponents(
 }
 
 /**
- * Compute one Behavior-scoped stable key without adding transport-only fields
+ * Compute one Automation-scoped stable key without adding transport-only fields
  * to the model's output or the entity's metadata.
  */
 export function computeStableKey(

@@ -158,7 +158,7 @@ describe("parseScopes", () => {
   test("scope string with only unknown values → empty array (not defaults)", () => {
     // Non-empty string bypasses the !scope early-return, so unknown scopes
     // are filtered to [] — NOT DEFAULT_SCOPES. This documents the actual
-    // behavior: defaults are only returned for null/undefined/"".
+    // automation: defaults are only returned for null/undefined/"".
     expect(parseScopes("completely:invented scope:xyz")).toEqual([]);
   });
 });
@@ -190,7 +190,7 @@ describe("validateRedirectUri", () => {
 
   test("http://::1 bare (no brackets) is rejected — not a valid URL", () => {
     // The URL parser requires brackets for IPv6: http://[::1]/ is valid,
-    // http://::1/ is not. This documents the code's actual behavior.
+    // http://::1/ is not. This documents the code's actual semantics.
     expect(validateRedirectUri("http://::1/callback")).toBe(false);
   });
 

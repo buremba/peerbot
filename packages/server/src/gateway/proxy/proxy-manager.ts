@@ -48,7 +48,7 @@ export function wireProxyEgressStores(services: {
  * only reach the internet through this proxy, which enforces domain
  * allowlist/blocklist + LLM egress judge.
  *
- * Behavior based on environment configuration:
+ * Automation based on environment configuration:
  * - Empty/unset: Deny all (complete isolation)
  * - WORKER_ALLOWED_DOMAINS=*: Allow all (unrestricted)
  * - WORKER_ALLOWED_DOMAINS=domains: Allowlist mode

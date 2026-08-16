@@ -62,7 +62,7 @@ Lobu is provider-agnostic. The bundled `config/providers.json` ships 17 provider
 
 Add API keys via the admin UI (Settings → Providers) at runtime. No env-var required. Per-agent model selection picks among configured providers.
 
-**Agent runtime**: Lobu's worker runs its native Pi-based agent loop per task. A Behavior can still select a CLI agent kind where a Behavior explicitly drives one. Runtime choice is independent from the LLM provider serving the agent.
+**Agent runtime**: Lobu's worker runs its native Pi-based agent loop per task. An Automation can still select a CLI agent kind where an Automation explicitly drives one. Runtime choice is independent from the LLM provider serving the agent.
 
 ## What's in the image
 

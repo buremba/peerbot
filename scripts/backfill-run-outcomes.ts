@@ -11,7 +11,7 @@
  * construction.
  *
  * ─── Exactly what it does ────────────────────────────────────────────────────
- * Walks the rows the live write path stamps — Behavior runs in any terminal
+ * Walks the rows the live write path stamps — Automation runs in any terminal
  * status (`completed`/`failed`/`timeout`) plus `timeout` rows of every
  * run_type (the shared reapers stamp those message-independently) — by id
  * range in batches, classifies each row from (status, error_message) in TS,
@@ -19,12 +19,12 @@
  * batch. Only rows still NULL are touched, so the script is idempotent and
  * resumable.
  *
- * Non-behavior `completed`/`failed` rows are NOT walked: their live writers
+ * Non-automation `completed`/`failed` rows are NOT walked: their live writers
  * don't stamp either (agent_error/scoreable are agent-run concepts and the
- * classifier's message patterns are tuned on Behavior failures), so walking
+ * classifier's message patterns are tuned on Automation failures), so walking
  * them here would mint labels the write path never produces. `cancelled` rows
  * are skipped (classifier returns null: a human choice is neither infra nor
- * agent evidence) — same as the write path. Historical non-behavior dispatch
+ * agent evidence) — same as the write path. Historical non-automation dispatch
  * failures stay NULL (they are plain `failed` rows we cannot identify by
  * message), unlike future ones which poll.ts stamps.
  *
@@ -74,7 +74,7 @@ for (;;) {
     WHERE id > ${cursor}
       AND outcome IS NULL
       AND (
-        (run_type = 'behavior' AND status IN ('completed', 'failed'))
+        (run_type = 'automation' AND status IN ('completed', 'failed'))
         OR status = 'timeout'
       )
     ORDER BY id ASC

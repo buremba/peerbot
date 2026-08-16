@@ -14,7 +14,7 @@
 # Companion: `make task-clean NAME=<name> [FORCE=1]` removes the worktree,
 # its branches in both repos, and the Lobu CLI context.
 #
-# Behavior (idempotent — re-running on an existing worktree refreshes .env
+# Automation (idempotent — re-running on an existing worktree refreshes .env
 # and .env.local only):
 #   1. Creates a lobu worktree at .claude/worktrees/<name> on branch feat/<name>.
 #   2. Initializes packages/owletto submodule on a real named branch feat/<name>

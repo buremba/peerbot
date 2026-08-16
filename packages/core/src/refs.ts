@@ -1,9 +1,9 @@
 /**
  * LobuRef — one portable, typed reference to any first-class object the UI can
- * point at: an entity, entity type, connection, connector, feed, behavior,
+ * point at: an entity, entity type, connection, connector, feed, automation,
  * member, metric, skill, event, or an inline SQL query. The reference picker
  * emits these, the chat composer serializes them into a message so an agent
- * turn can be told "this is about <that object>", and the Behavior create path
+ * turn can be told "this is about <that object>", and the Automation create path
  * compiles the source-bearing ones into `sources[]`.
  *
  * Inline wire form (rides inside an ordinary message `content` string — no new
@@ -14,14 +14,14 @@
  *   @[sql:recent:Recent events](#sql=SELECT%20…)
  *
  * `kind`  — object family (drives worker-side expansion and source compilation).
- * `id`    — stable id as a string (entity id, connection id, behavior uuid,
+ * `id`    — stable id as a string (entity id, connection id, automation uuid,
  *           connector key, feed_key, entity-type slug, `type.measure`).
  * `path`  — frontend route to the object; makes the chip clickable and lets the
  *           ref be re-resolved. For `sql` it is the query payload, not a route.
  * `label` — display name captured at pick time (what the chip shows).
  *
  * THIS FILE IS THE ONLY COPY of the grammar. Both consumers — the server
- * (`watchers/source-refs.ts`) and the SPA (`owletto/src/lib/references.ts`) —
+ * (`automations/source-refs.ts`) and the SPA (`owletto/src/lib/references.ts`) —
  * import it; neither may re-derive a token regex locally. A mismatched copy
  * fails SILENTLY: a token the regex does not match is skipped, so the caller
  * gets `[]` and never an error.
@@ -33,7 +33,7 @@ export type LobuRefKind =
   | "connection"
   | "connector"
   | "feed"
-  | "behavior"
+  | "automation"
   | "member"
   | "metric"
   | "sql"
@@ -46,7 +46,7 @@ export const LOBU_REF_KINDS: readonly LobuRefKind[] = [
   "connection",
   "connector",
   "feed",
-  "behavior",
+  "automation",
   "member",
   "metric",
   "sql",
@@ -61,8 +61,8 @@ export interface LobuRef {
   label: string;
 }
 
-/** `{name, query}` — one entry of a Behavior's `sources[]`. */
-export interface BehaviorSource {
+/** `{name, query}` — one entry of an Automation's `sources[]`. */
+export interface AutomationSource {
   name: string;
   query: string;
 }
@@ -162,20 +162,20 @@ export function isSqlRefPath(path: string): boolean {
   return path.startsWith(SQL_PATH_PREFIX);
 }
 
-// ── Behavior source compilation ─────────────────────────────────────────────
+// ── Automation source compilation ─────────────────────────────────────────────
 
 /**
- * Which chip kinds compile to a Behavior source, and the `@mode:` each uses.
+ * Which chip kinds compile to an Automation source, and the `@mode:` each uses.
  *
  * `entity_type` maps to mode `entity` because the source grammar has always
  * spelled it `@entity:<type_slug>` (every row of one type). The chip kind
  * cannot ALSO be called `entity`: an `@[entity:…]` chip is an entity *instance*
- * that scopes the Behavior, and sending an instance id where a type slug
+ * that scopes the Automation, and sending an instance id where a type slug
  * belongs resolves to nothing. Same word, two meanings; the kind keeps them
  * apart — which is exactly why `entity` is absent from this map.
  *
  * `sql` is handled separately (its query rides inline in the path).
- * `skill`, `behavior`, `member` and `event` are never sources.
+ * `skill`, `automation`, `member` and `event` are never sources.
  */
 export const SOURCE_KIND_TO_MODE: Readonly<Record<string, string>> = {
   feed: "feed",
@@ -188,22 +188,24 @@ export const SOURCE_KIND_TO_MODE: Readonly<Record<string, string>> = {
 
 /** Slugify a label into a safe output-field name. */
 function sourceFieldName(value: string): string {
-  return (
-    value
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9_]+/g, "_")
-      .replace(/^_+|_+$/g, "") || "source"
-  );
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_");
+  let start = 0;
+  let end = slug.length;
+  while (slug.charCodeAt(start) === 95) start += 1;
+  while (end > start && slug.charCodeAt(end - 1) === 95) end -= 1;
+  return slug.slice(start, end) || "source";
 }
 
 /**
  * Append `{name, query}` unless the query is already present, uniquifying the
- * derived name with a numeric suffix. Shared by the chip codec and the Behavior
+ * derived name with a numeric suffix. Shared by the chip codec and the Automation
  * sources editor so both name and dedupe identically.
  */
-function appendBehaviorSource(
-  sources: BehaviorSource[],
+function appendAutomationSource(
+  sources: AutomationSource[],
   seenQueries: Set<string>,
   usedNames: Set<string>,
   label: string,
@@ -228,17 +230,17 @@ function appendBehaviorSource(
  * `existing` unchanged when the ref carries no query or already appears — the
  * caller can compare lengths to tell whether anything was added.
  */
-export function behaviorSourcesWithRef(
+export function automationSourcesWithRef(
   ref: LobuRef,
-  existing: BehaviorSource[]
-): BehaviorSource[] {
+  existing: AutomationSource[]
+): AutomationSource[] {
   const sources = [...existing];
   const seenQueries = new Set(existing.map((source) => source.query.trim()));
   const usedNames = new Set(existing.map((source) => source.name));
   if (ref.kind === "sql") {
     const query = sqlQueryFromPath(ref.path);
     if (query) {
-      appendBehaviorSource(
+      appendAutomationSource(
         sources,
         seenQueries,
         usedNames,
@@ -252,7 +254,7 @@ export function behaviorSourcesWithRef(
   const mode = SOURCE_KIND_TO_MODE[ref.kind];
   const value = ref.id.trim();
   if (mode && value) {
-    appendBehaviorSource(
+    appendAutomationSource(
       sources,
       seenQueries,
       usedNames,
@@ -265,25 +267,25 @@ export function behaviorSourcesWithRef(
 }
 
 /**
- * Derive Behavior `sources[]` from the `@`-mention tokens in a prompt. Each
+ * Derive Automation `sources[]` from the `@`-mention tokens in a prompt. Each
  * source-bearing token becomes `{ name, query: '@mode:id' }`; a `sql` token
  * carries its raw query URL-encoded in the path (`#sql=…`), decoded here to the
- * SELECT itself. Entity INSTANCES are excluded (they scope the Behavior).
+ * SELECT itself. Entity INSTANCES are excluded (they scope the Automation).
  *
  * Returns [] for a prompt with no source tokens. Malformed tokens are skipped
- * rather than thrown — the server's `assertWatcherSourcesResolve` is what
+ * rather than thrown — the server's `assertAutomationSourcesResolve` is what
  * enforces that every derived source actually resolves against the org.
  */
-export function behaviorSourcesFromPrompt(
+export function automationSourcesFromPrompt(
   text: string,
-  explicit: BehaviorSource[] = []
-): BehaviorSource[] {
+  explicit: AutomationSource[] = []
+): AutomationSource[] {
   const sources = [...explicit];
   const seenQueries = new Set(explicit.map((source) => source.query.trim()));
   const usedNames = new Set(explicit.map((source) => source.name));
 
   const push = (label: string, fallback: string, query: string) =>
-    appendBehaviorSource(
+    appendAutomationSource(
       sources,
       seenQueries,
       usedNames,
@@ -334,14 +336,14 @@ export function skillNamesFromPrompt(text: string): string[] {
  * names and order); prompt sources fill in the rest.
  */
 export function mergePromptSources(
-  explicit: BehaviorSource[],
-  fromPrompt: BehaviorSource[]
-): BehaviorSource[] {
+  explicit: AutomationSource[],
+  fromPrompt: AutomationSource[]
+): AutomationSource[] {
   const merged = [...explicit];
   const seenQueries = new Set(explicit.map((s) => s.query.trim()));
   const usedNames = new Set(explicit.map((s) => s.name));
   for (const source of fromPrompt) {
-    appendBehaviorSource(
+    appendAutomationSource(
       merged,
       seenQueries,
       usedNames,

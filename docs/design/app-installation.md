@@ -208,7 +208,7 @@ future org-scoped provider (Jira, Google Workspace) reuses the primitive instead
 - 1 table `app_installations` (+2 indexes).
 - 1 interface `InstallationTokenProvider` + GitHub minting (Slack impl = resolve existing ref → ~no logic).
 - GitHub webhook verifier/extractor plugin (Slack = the relocated existing code; Jira later).
-- ~3 additive connector-sdk types (no behavior change to existing connectors).
+- ~3 additive connector-sdk types (no runtime change to existing connectors).
 - owletto "Install on GitHub" flow (UI).
 
 Net for the *next* provider after GitHub: a token-provider impl + a verifier/extractor plugin — no new table, no new

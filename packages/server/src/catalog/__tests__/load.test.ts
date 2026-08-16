@@ -47,17 +47,17 @@ describe("catalog/load", () => {
 		clearCatalogCacheForTests();
 	});
 
-	it("serves bundled Behavior templates when LOBU_CATALOG_URIS is unset", async () => {
+	it("serves bundled Automation templates when LOBU_CATALOG_URIS is unset", async () => {
 		const prev = process.env.LOBU_CATALOG_URIS;
 		delete process.env.LOBU_CATALOG_URIS;
 		clearCatalogCacheForTests();
 
-		const entries = await listCatalogEntries(["behaviors"]);
-		expect(entries.behaviors.length).toBeGreaterThan(0);
-		const first = entries.behaviors[0];
+		const entries = await listCatalogEntries(["automations"]);
+		expect(entries.automations.length).toBeGreaterThan(0);
+		const first = entries.automations[0];
 		expect(first?.id).toBeTruthy();
 		expect(first?.name).toBeTruthy();
-		// detail mirrors manage_behaviors create fields (used for prefill)
+		// detail mirrors manage_automations create fields (used for prefill)
 		expect(first?.detail.prompt).toBeTruthy();
 		expect(first?.detail.triggers).toBeTruthy();
 		expect(first?.detail.schedule).toBeUndefined();

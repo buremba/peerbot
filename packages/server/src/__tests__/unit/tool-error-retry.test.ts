@@ -29,7 +29,7 @@ async function runWithRetry(fn: () => Promise<unknown>) {
   try {
     const result = await retryWithBackoff(wrapped, {
       maxRetries: 2,
-      baseDelay: 1, // keep the test fast; behavior is identical
+      baseDelay: 1, // keep the test fast; retry rules are identical
       shouldRetry: (err) => isRetryableToolError(err),
     });
     return { calls, result, threw: undefined as unknown };

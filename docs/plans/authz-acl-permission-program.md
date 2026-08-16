@@ -67,7 +67,7 @@ use a **`can_read`** relationship type (max reuse of `entity_relationships`).
   events.
 - **Linking:** auto-link two providers only on verified-email match both sides +
   no primary-id conflict; conflict → durable approval plane (reuse manage_agents/
-  watcher field-ownership gate). Per-org `$member`.
+  automation field-ownership gate). Per-org `$member`.
 
 ## 3. The graph (reuse, zero new tables)
 - **Principals = `entities`** (person/`$member`, company=workspace, group=channel/

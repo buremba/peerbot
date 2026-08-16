@@ -8,7 +8,7 @@
  * with a real ChatInstanceManager wired to the Postgres connection store via
  * the gateway test seam, proving:
  *   1. `update` with agent_id persists connections.agent_id (the runtime
- *      fallback; channel Behaviors remain authoritative) and audits the change
+ *      fallback; channel Automations remain authoritative) and audits the change
  *      with `agent_id` in changed_fields;
  *   2. `agent_id: null` clears the fallback;
  *   3. an agent_id outside the org rejects ("Agent not found") without

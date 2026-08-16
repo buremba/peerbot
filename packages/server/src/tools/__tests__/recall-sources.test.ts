@@ -5,7 +5,7 @@
  * `(source, lens='recall')` row of the FeedReader matrix. Uses fake sources so it
  * asserts the registry CONTRACT (canRead gating, merge, failure isolation, empty
  * omission, unique kinds, GATE forwarding) independent of any one source's
- * behavior. Per-source behavior is covered separately
+ * implementation. Per-source rules are covered separately
  * (search-channel-recall.test.ts, search-content-*.test.ts).
  */
 

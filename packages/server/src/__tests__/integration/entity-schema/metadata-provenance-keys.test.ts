@@ -1,8 +1,8 @@
 /**
- * Watcher-promotion provenance keys must survive metadata round-trips.
+ * Automation-promotion provenance keys must survive metadata round-trips.
  *
- * `promote-keyed-entities.ts` stamps `watcher_id` / `stable_key` / `window_id`
- * / `behavior_output` (plus `source`) onto promoted entity metadata via raw SQL — outside
+ * `promote-keyed-entities.ts` stamps `automation_id` / `stable_key` / `window_id`
+ * / `automation_output` (plus `source`) onto promoted entity metadata via raw SQL — outside
  * schema validation. Under an `additionalProperties: false` entity-type schema
  * that meant a promoted entity's metadata could never be written back through
  * `entities.update`: reading the metadata, editing one domain field, and
@@ -19,7 +19,7 @@ import {
 import { cleanupTestDatabase } from '../../setup/test-db';
 import { TestApiClient } from '../../setup/test-mcp-client';
 
-describe('entity metadata validation > watcher provenance keys', () => {
+describe('entity metadata validation > automation provenance keys', () => {
   let owner: TestApiClient;
 
   beforeAll(async () => {
@@ -64,11 +64,11 @@ describe('entity metadata validation > watcher provenance keys', () => {
       metadata: {
         action: 'Ship the fix',
         status: 'done',
-        source: 'watcher_promotion',
-        watcher_id: 5,
+        source: 'automation_promotion',
+        automation_id: 5,
         stable_key: 'ship-the-fix',
         window_id: 4288453,
-        behavior_output: 'tasks',
+        automation_output: 'tasks',
       },
     });
 
@@ -77,7 +77,7 @@ describe('entity metadata validation > watcher provenance keys', () => {
     };
     expect(got.entity?.metadata?.status).toBe('done');
     expect(got.entity?.metadata?.window_id).toBe(4288453);
-    expect(got.entity?.metadata?.behavior_output).toBe('tasks');
+    expect(got.entity?.metadata?.automation_output).toBe('tasks');
   });
 
   it('still rejects genuinely unknown metadata keys', async () => {

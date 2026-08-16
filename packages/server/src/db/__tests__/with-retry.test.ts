@@ -7,7 +7,7 @@ import { isTransientDbError, withDbRetry } from '../with-retry';
 // (one shared module graph), under which `vi.mock` of a shared singleton
 // silently no-ops in the full run — the test passes alone but fails in CI. The
 // metric side-effect is covered by review + registration; here we assert the
-// observable behavior contract (retry/no-retry/exhaust), which is what matters.
+// observable semantics contract (retry/no-retry/exhaust), which is what matters.
 
 /** Shapes a postgres.js connection error: `Errors.connection('CONNECTION_ENDED', …)`
  *  stamps the code into `.code` and prefixes the message ("write CONNECTION_ENDED …"). */

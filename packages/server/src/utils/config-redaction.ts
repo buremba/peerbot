@@ -19,19 +19,30 @@ export { REDACTED_SENTINEL };
  * `kind` union so per-kind counts and per-resource rows line up in the
  * deployments UI without a mapping table.
  */
-export type ConfigResourceKind =
-  | 'agent'
-  | 'agent-settings'
-  | 'platform'
-  | 'entity-type'
-  | 'relationship-type'
-  | 'behavior'
-  | 'connector-definition'
-  | 'auth-profile'
-  | 'connection'
-  | 'feed'
-  | 'inference-provider'
-  | 'provider-key';
+const CONFIG_RESOURCE_KINDS = [
+  'agent',
+  'agent-settings',
+  'platform',
+  'entity-type',
+  'relationship-type',
+  'automation',
+  'connector-definition',
+  'auth-profile',
+  'connection',
+  'feed',
+  'inference-provider',
+  'provider-key',
+] as const;
+
+export type ConfigResourceKind = (typeof CONFIG_RESOURCE_KINDS)[number];
+
+const CONFIG_RESOURCE_KIND_SET = new Set<string>(CONFIG_RESOURCE_KINDS);
+
+export function isConfigResourceKind(
+  kind: unknown
+): kind is ConfigResourceKind {
+  return typeof kind === 'string' && CONFIG_RESOURCE_KIND_SET.has(kind);
+}
 
 /** Server-emitted workspace identity resources; never part of `lobu apply`. */
 export type WorkspaceAuditResourceKind =

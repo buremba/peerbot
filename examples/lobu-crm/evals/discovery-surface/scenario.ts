@@ -114,7 +114,7 @@ export async function dispatchTool(
  * Token scope of the eval session.
  * - `admin`   — an owner with `mcp:admin` (a full workspace-management agent).
  * - `default` — the `mcp:read`+`mcp:write` scope `lobu token create` mints by
- *   default. Admin-gated actions (connect, behaviors.create, operations.execute,
+ *   default. Admin-gated actions (connect, automations.create, operations.execute,
  *   schedules, catalog discovery pre-#1955) are blocked for this principal.
  */
 export type SessionScope = "admin" | "default";

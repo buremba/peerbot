@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { CardElement } from "chat";
-import { loadConfiguredBehaviorDeliveryTarget } from "../behaviors/delivery-target";
+import { loadConfiguredAutomationDeliveryTarget } from "../automations/delivery-target";
 import { getDb, pgTextArray } from "../db/client";
 import { resolveBoundChannelRows } from "../gateway/channels/bound-channels";
 import { getChatInstanceManager, isLobuGatewayRunning } from "../lobu/gateway";
@@ -41,7 +41,7 @@ interface CreateNotificationParams {
 	idempotencyKey?: string | null;
 	/** When set, deliver only through this specific bot connection */
 	connectionId?: string | null;
-	/** When set, deliver only to this Behavior-subscribed channel. */
+	/** When set, deliver only to this Automation-subscribed channel. */
 	channelId?: string | null;
 	/** Optional workspace/team guard for channel-scoped delivery. */
 	teamId?: string | null;
@@ -60,7 +60,7 @@ interface CreateNotificationParams {
 	 */
 	card?: CardElement | null;
 	/**
-	 * Optional entity ids to anchor the notification event to (e.g. a watcher's
+	 * Optional entity ids to anchor the notification event to (e.g. an automation's
 	 * canvas entity, so the notification threads under the canvas). Stamped onto
 	 * the notification event's `entity_ids`.
 	 */
@@ -68,29 +68,29 @@ interface CreateNotificationParams {
 	/** Exact MCP conversation or transport session that caused this notification. */
 	mcpActivity?: McpActivityAttribution | null;
 	/**
-	 * The Behavior run that emitted this notification, when one did.
+	 * The Automation run that emitted this notification, when one did.
 	 *
-	 * These MUST come from server-set context (`ctx.actingWatcherId` /
+	 * These MUST come from server-set context (`ctx.actingAutomationId` /
 	 * `actingRunId`, stamped by the reaction executor), never from a caller-
-	 * supplied `behavior_source`. `behavior_id` drives window self-exclusion, so
-	 * an id a caller could choose would let one Behavior hide rows from another
-	 * Behavior's input.
+	 * supplied `automation_source`. `automation_id` drives window self-exclusion, so
+	 * an id a caller could choose would let one Automation hide rows from another
+	 * Automation's input.
 	 *
 	 * Before this existed, a notification was written with no run and no
-	 * Behavior at all — prod notification 4858497 had `run_id` NULL while every
+	 * Automation at all — prod notification 4858497 had `run_id` NULL while every
 	 * sibling output of the same run carried 880183 — so the thing a user
 	 * actually clicks could not be traced back to the run that sent it.
 	 */
-	behaviorId?: number | null;
-	behaviorVersionId?: number | null;
+	automationId?: number | null;
+	automationVersionId?: number | null;
 	runId?: number | null;
 }
 
 /**
  * Forward a notification to the org's active chat-bot connections so it lands
- * in the bound channel — e.g. a watcher digest posting to #leads.
+ * in the bound channel — e.g. an automation digest posting to #leads.
  *
- * Resolves connections + their Behavior subscriptions straight from Postgres and
+ * Resolves connections + their Automation subscriptions straight from Postgres and
  * posts in-process via the chat manager. Every app pod loads every active
  * connection at boot, so the locally-held instance can post regardless of
  * which pod fired the notification — correct under N>1 replicas, no cross-pod
@@ -194,29 +194,29 @@ export async function resolveBotDeliveryTargets(
 
 export async function resolveNotificationDeliveryPlan(params: {
 	organizationId: string;
-	behaviorId?: number | null;
+	automationId?: number | null;
 	connectionId?: string | null;
 	channelId?: string | null;
 	teamId?: string | null;
-}): Promise<{ strictBehaviorTarget: boolean; targets: BotDeliveryTarget[] }> {
-	const configuredBehaviorTarget =
-		params.behaviorId == null
+}): Promise<{ strictAutomationTarget: boolean; targets: BotDeliveryTarget[] }> {
+	const configuredAutomationTarget =
+		params.automationId == null
 			? { configured: false, target: null }
-			: await loadConfiguredBehaviorDeliveryTarget(
+			: await loadConfiguredAutomationDeliveryTarget(
 					getDb(),
 					params.organizationId,
-					params.behaviorId,
+					params.automationId,
 				);
-	if (configuredBehaviorTarget.configured) {
-		if (!configuredBehaviorTarget.target) {
-			return { strictBehaviorTarget: true, targets: [] };
+	if (configuredAutomationTarget.configured) {
+		if (!configuredAutomationTarget.target) {
+			return { strictAutomationTarget: true, targets: [] };
 		}
 		return {
-			strictBehaviorTarget: true,
+			strictAutomationTarget: true,
 			targets: await resolveBotDeliveryTargets(params.organizationId, {
-				connectionId: configuredBehaviorTarget.target.connectionId,
-				channelId: configuredBehaviorTarget.target.channelId,
-				teamId: configuredBehaviorTarget.target.teamId,
+				connectionId: configuredAutomationTarget.target.connectionId,
+				channelId: configuredAutomationTarget.target.channelId,
+				teamId: configuredAutomationTarget.target.teamId,
 			}),
 		};
 	}
@@ -241,7 +241,7 @@ export async function resolveNotificationDeliveryPlan(params: {
 		);
 		targets = await resolveBotDeliveryTargets(params.organizationId, null);
 	}
-	return { strictBehaviorTarget: false, targets };
+	return { strictAutomationTarget: false, targets };
 }
 
 /**
@@ -382,7 +382,7 @@ async function recordDelivery(
 
 async function recordDeliveryError(
 	eventId: number,
-	code: "behavior_target_unavailable" | "behavior_target_post_failed",
+	code: "automation_target_unavailable" | "automation_target_post_failed",
 ): Promise<void> {
 	try {
 		const sql = getDb();
@@ -416,20 +416,20 @@ async function deliverToBotConnections(
 	const content = params.card ? { card: params.card } : { markdown: text };
 	const deliveryPlan = await resolveNotificationDeliveryPlan({
 		organizationId: params.organizationId,
-		behaviorId: params.behaviorId,
+		automationId: params.automationId,
 		connectionId: params.connectionId,
 		channelId: params.channelId,
 		teamId: params.teamId,
 	});
-	if (deliveryPlan.strictBehaviorTarget && deliveryPlan.targets.length === 0) {
+	if (deliveryPlan.strictAutomationTarget && deliveryPlan.targets.length === 0) {
 		logger.error(
 			{
 				organizationId: params.organizationId,
-				behaviorId: params.behaviorId,
+				automationId: params.automationId,
 			},
-			"[Notifications] Behavior delivery target is unavailable — refusing org-wide fallback",
+			"[Notifications] Automation delivery target is unavailable — refusing org-wide fallback",
 		);
-		await recordDeliveryError(eventId, "behavior_target_unavailable");
+		await recordDeliveryError(eventId, "automation_target_unavailable");
 		return;
 	}
 
@@ -438,7 +438,7 @@ async function deliverToBotConnections(
 	// buttons — the interaction bridge is connection-scoped, so clicks route
 	// identically). Any miss — no identity row, DM open/post failure — logs and
 	// falls through to the configured-target/org-wide chain unchanged.
-	if (params.ownerUserId && !deliveryPlan.strictBehaviorTarget) {
+	if (params.ownerUserId && !deliveryPlan.strictAutomationTarget) {
 		try {
 			const dm = await resolveOwnerDmTarget(
 				params.organizationId,
@@ -517,8 +517,8 @@ async function deliverToBotConnections(
 			);
 		});
 		await recordDelivery(eventId, delivered);
-		if (deliveryPlan.strictBehaviorTarget && delivered.length === 0) {
-			await recordDeliveryError(eventId, "behavior_target_post_failed");
+		if (deliveryPlan.strictAutomationTarget && delivered.length === 0) {
+			await recordDeliveryError(eventId, "automation_target_post_failed");
 		}
 	} catch (err) {
 		logger.warn(
@@ -600,8 +600,8 @@ export async function createNotificationForUsers(
 					metadata,
 					clientId: params.mcpActivity?.clientId ?? null,
 					runId: params.runId ?? null,
-					behaviorId: params.behaviorId ?? null,
-					behaviorVersionId: params.behaviorVersionId ?? null,
+					automationId: params.automationId ?? null,
+					automationVersionId: params.automationVersionId ?? null,
 				},
 				{ sql: tx },
 			);
@@ -687,8 +687,8 @@ export async function listNotifications(opts: {
       e.feed_id,
       e.feed_key,
       fd.display_name AS feed_name,
-      e.behavior_id,
-      COALESCE(wv.name, 'Behavior #' || e.behavior_id) AS behavior_name,
+      e.automation_id,
+      COALESCE(wv.name, 'Automation #' || e.automation_id) AS automation_name,
       COALESCE(
         NULLIF(e.metadata->>'agent_id', ''),
         NULLIF(source_run.approved_input->>'agent_id', '')
@@ -725,7 +725,7 @@ export async function listNotifications(opts: {
     FROM notification_targets t
     JOIN events e ON e.id = t.event_id
     LEFT JOIN feeds fd ON fd.id = e.feed_id
-    LEFT JOIN watcher_versions wv ON wv.id = e.behavior_version_id
+    LEFT JOIN automation_versions wv ON wv.id = e.automation_version_id
     LEFT JOIN connections source_connection
       ON source_connection.id = e.connection_id
      AND source_connection.organization_id = e.organization_id

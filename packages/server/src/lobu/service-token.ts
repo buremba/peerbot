@@ -31,7 +31,7 @@ export async function getLobuServiceToken(organizationId?: string): Promise<stri
     // oauth_tokens.client_id (FK → oauth_clients.id). That system client isn't
     // created by any migration or signup flow, so on a fresh DB — notably the
     // embedded `lobu run` one — the token INSERT below would fail the FK and
-    // every watcher dispatch / notification would error ("Failed to generate an
+    // every automation dispatch / notification would error ("Failed to generate an
     // embedded Lobu service token"). Ensure it exists (idempotent); it's a
     // credential-less system client used only as the FK anchor for these
     // short-lived internal tokens, never in a real OAuth grant.

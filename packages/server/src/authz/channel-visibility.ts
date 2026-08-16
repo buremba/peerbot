@@ -14,7 +14,7 @@
  * Enforcement is per-connection and OFF by default: a connection's rows are
  * gated only once it has a fresh `authz_source_acl_state` row (`acl_support
  * = 'full'` AND `freshness_state = 'fresh'`). A connection that was NEVER graphed
- * (no `authz_source_acl_state` row) keeps the existing per-agent behavior, so an
+ * (no `authz_source_acl_state` row) keeps the existing per-agent access semantics, so an
  * absent graph never silently hides a channel. But once a row exists, anything
  * short of full+fresh — partial/none support, stale/failed freshness, or a fresh
  * row aged past the window — fails CLOSED rather than passing through, so a
@@ -35,7 +35,7 @@ export interface GatedChannelRow {
   /** Connection id that owns the channel subscription. */
   id: string;
   platform: string;
-  /** As projected from the Behavior — may be platform-prefixed (`slack:C…`) or bare. */
+  /** As projected from the Automation — may be platform-prefixed (`slack:C…`) or bare. */
   channel_id: string;
   /** Workspace/tenant id (Slack `T…`); required to form the team-scoped key. */
   team_id: string | null;
@@ -229,7 +229,7 @@ export async function filterChannelsForRequester<T extends GatedChannelRow>(
     rows.map((r) => r.id),
   );
   // No connection onboarded into authz → no per-user gating to apply; preserve
-  // legacy behavior without paying for member resolution.
+  // legacy semantics without paying for member resolution.
   if (states.size === 0) return allowNotGraphed ? rows : [];
 
   // Only resolve the requester's membership when at least one connection is

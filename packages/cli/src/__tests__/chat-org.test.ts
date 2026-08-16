@@ -5,7 +5,7 @@
  *  - `resolveChatOrg` precedence: explicit --org > LOBU_ORG env > context activeOrg.
  *  - The resolved org rides every Agent API call as the `x-lobu-org` header
  *    (POST /agents session create, POST /messages, GET /events SSE), and is
- *    absent when no org is configured (preserving the pre-flag behavior).
+ *    absent when no org is configured (preserving the pre-flag semantics).
  */
 
 import {

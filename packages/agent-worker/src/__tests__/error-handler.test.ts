@@ -252,7 +252,7 @@ describe("classifyError", () => {
     // `{"name":"Error","message":"You have no credits remaining…"}` because no
     // pre-split worker pattern matched this sentence. `undefined` here is not a
     // cosmetic miss — it silently disables the downstream feature that gates on
-    // the code: `providerQuotaResetNotBefore` (24h Behavior park). The provider
+    // the code: `providerQuotaResetNotBefore` (24h Automation park). The provider
     // health row no longer depends on this classification — the proxy marks it
     // from the upstream HTTP status (`classifyProviderHealthStatus`). The parker
     // shipped believing this message classified.
@@ -296,13 +296,13 @@ describe("classifyError", () => {
   });
 
   test("model-resolver's 'No model resolved' now classifies (was unclassified)", () => {
-    // model-resolver.ts throws this when no default/per-behavior/org model is
+    // model-resolver.ts throws this when no default/per-automation/org model is
     // set. It previously fell through to `undefined` → raw crash delta + dodged
     // the PROVIDER_* Sentry alert. Now it renders the actionable catalog line.
     expect(
       classifyError(
         new Error(
-          "No model resolved for this run. Set the agent's default model, a per-behavior model, or an org default inference provider."
+          "No model resolved for this run. Set the agent's default model, a per-automation model, or an org default inference provider."
         )
       )
     ).toBe("NO_MODEL_CONFIGURED");

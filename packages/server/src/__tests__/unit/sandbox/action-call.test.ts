@@ -74,8 +74,8 @@ describe("createActionCaller", () => {
 		const handler = async () => ({
 			success: false,
 			action: "create",
-			message: "Watcher not found: 404",
-			data: { watcher_id: 404 },
+			message: "Automation not found: 404",
+			data: { automation_id: 404 },
 		});
 		const { action } = createActionCaller(
 			handler as never,
@@ -84,12 +84,12 @@ describe("createActionCaller", () => {
 		);
 
 		const thrown = await action("create", {
-			watcher_id: 404,
+			automation_id: 404,
 		}).catch((error: unknown) => error);
 		expect(thrown).toBeInstanceOf(ClientSdkActionError);
 		expect(thrown).toBeInstanceOf(ToolUserError);
 		expect(thrown).toMatchObject({
-			message: "Watcher not found: 404",
+			message: "Automation not found: 404",
 			httpStatus: 400,
 			action: "create",
 		});
@@ -143,9 +143,9 @@ describe("createActionCaller", () => {
 			action: "delete",
 			results: [
 				{
-					watcher_id: "missing-watcher",
+					automation_id: "missing-automation",
 					success: false,
-					message: "Watcher not found or already archived",
+					message: "Automation not found or already archived",
 				},
 			],
 			summary: { total: 1, successful: 0, failed: 1 },

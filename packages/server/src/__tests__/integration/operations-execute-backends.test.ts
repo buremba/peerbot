@@ -34,7 +34,7 @@ describe("operations.execute backend lifecycle", () => {
 	let mcpConnectionId: number;
 	let secondMcpConnectionId: number;
 	let httpConnectionId: number;
-	let behaviorId: number;
+	let automationId: number;
 	let windowId: number;
 	let failedTransportCallCount = 0;
 	let failDiscoveryConnectionId: number | null = null;
@@ -53,7 +53,7 @@ describe("operations.execute backend lifecycle", () => {
 		orgId = org.id;
 		userId = user.id;
 		ctx = ownerCtx;
-		const behaviorAgent = await createTestAgent({
+		const automationAgent = await createTestAgent({
 			organizationId: orgId,
 			ownerUserId: userId,
 		});
@@ -72,24 +72,25 @@ describe("operations.execute backend lifecycle", () => {
 		}
 
 		const sql = getTestDb();
-		const [behavior] = await sql`
-			WITH next_id AS (SELECT nextval('watchers_id_seq')::integer AS id)
-			INSERT INTO watchers (
-				id, watcher_group_id, organization_id, agent_id, created_by, name, slug
+		const [automation] = await sql`
+			WITH next_id AS (SELECT nextval('automations_id_seq')::integer AS id)
+			INSERT INTO automations (
+				id, automation_group_id, organization_id, agent_id, created_by, name, slug
 			)
-			SELECT id, id, ${orgId}, ${behaviorAgent.agentId}, ${userId},
-				'Operation provenance behavior', 'operation-provenance-behavior'
+			SELECT id, id, ${orgId}, ${automationAgent.agentId}, ${userId},
+				'Operation provenance automation', 'operation-provenance-automation'
 			FROM next_id
 			RETURNING id
 		`;
-		behaviorId = Number(behavior.id);
+		automationId = Number(automation.id);
 		const [window] = await sql`
 			INSERT INTO events (
 				organization_id, semantic_type, payload_type, payload_data,
-				metadata, occurred_at, created_at, created_by
+				automation_id, metadata, occurred_at, created_at, created_by
 			) VALUES (
 				${orgId}, 'canvas_state', 'json_template', '{}'::jsonb,
-				${sql.json({ watcher_id: behaviorId })}, NOW(), NOW(), ${userId}
+				${automationId},
+				${sql.json({ automation_id: automationId })}, NOW(), NOW(), ${userId}
 			)
 			RETURNING id
 		`;
@@ -396,18 +397,18 @@ describe("operations.execute backend lifecycle", () => {
 		expect(runs).toHaveLength(1);
 	});
 
-	it("binds an action and its feedback record to the trusted Behavior window", async () => {
+	it("binds an action and its feedback record to the trusted Automation window", async () => {
 		const execute = () =>
 			manageOperations(
 				{
 				action: "execute",
 				connection_id: localConnectionId,
 				operation_key: "echo",
-				input: { value: "behavior-provenance" },
-				idempotency_key: "operation-backend-test:behavior-provenance",
+				input: { value: "automation-provenance" },
+				idempotency_key: "operation-backend-test:automation-provenance",
 				},
 				{} as Env,
-				{ ...ctx, actingWatcherId: behaviorId, actingWindowId: windowId },
+				{ ...ctx, actingAutomationId: automationId, actingWindowId: windowId },
 			);
 		const result = (await execute()) as { run_id: number; status: string };
 		const replay = (await execute()) as { run_id: number; status: string };
@@ -416,13 +417,13 @@ describe("operations.execute backend lifecycle", () => {
 		expect(replay.run_id).toBe(result.run_id);
 		const sql = getTestDb();
 		const [run] = await sql`
-			SELECT watcher_id, window_id FROM runs WHERE id = ${result.run_id}
+			SELECT automation_id, window_id FROM runs WHERE id = ${result.run_id}
 		`;
-		expect(Number(run.watcher_id)).toBe(behaviorId);
+		expect(Number(run.automation_id)).toBe(automationId);
 		expect(Number(run.window_id)).toBe(windowId);
 		const reactions = await sql`
-			SELECT run_id FROM watcher_reactions
-			WHERE watcher_id = ${behaviorId}
+			SELECT run_id FROM automation_reactions
+			WHERE automation_id = ${automationId}
 			  AND window_id = ${windowId}
 			  AND run_id = ${result.run_id}
 		`;
@@ -430,38 +431,38 @@ describe("operations.execute backend lifecycle", () => {
 		expect(Number(reactions[0]?.run_id)).toBe(result.run_id);
 	});
 
-	it("lets a headless Behavior execute through its author's private connection", async () => {
+	it("lets a headless Automation execute through its author's private connection", async () => {
 		const result = (await manageOperations(
 			{
 				action: "execute",
 				connection_id: localConnectionId,
 				operation_key: "echo",
-				input: { value: "behavior-private-connection" },
-				idempotency_key: "operation-backend-test:behavior-private-connection",
+				input: { value: "automation-private-connection" },
+				idempotency_key: "operation-backend-test:automation-private-connection",
 			},
 			{} as Env,
 			{
 				...ctx,
 				userId: null,
 				memberRole: null,
-				actingWatcherId: behaviorId,
+				actingAutomationId: automationId,
 				actingWindowId: windowId,
-				sourceContext: { source: "watcher-run" },
+				sourceContext: { source: "automation-run" },
 			},
 		)) as { run_id: number; status: string };
 
 		expect(result.status).toBe("completed");
 		const [run] = await getTestDb()`
-			SELECT created_by_user_id, watcher_id, window_id
+			SELECT created_by_user_id, automation_id, window_id
 			FROM runs
 			WHERE id = ${result.run_id}
 		`;
 		expect(run.created_by_user_id).toBeNull();
-		expect(Number(run.watcher_id)).toBe(behaviorId);
+		expect(Number(run.automation_id)).toBe(automationId);
 		expect(Number(run.window_id)).toBe(windowId);
 	});
 
-	it("lets a headless Behavior discover its author's private operation target", async () => {
+	it("lets a headless Automation discover its author's private operation target", async () => {
 		const otherUser = await createTestUser();
 		await addUserToOrganization(otherUser.id, orgId);
 		const otherPrivate = await createTestConnection({
@@ -480,9 +481,9 @@ describe("operations.execute backend lifecycle", () => {
 				...ctx,
 				userId: null,
 				memberRole: null,
-				actingWatcherId: behaviorId,
+				actingAutomationId: automationId,
 				actingWindowId: windowId,
-				sourceContext: { source: "watcher-run" },
+				sourceContext: { source: "automation-run" },
 			},
 		)) as {
 			operations: Array<{
@@ -502,15 +503,15 @@ describe("operations.execute backend lifecycle", () => {
 		);
 	});
 
-	it("carries the Behavior author through private browser target authorization", async () => {
+	it("carries the Automation author through private browser target authorization", async () => {
 		const sql = getTestDb();
 		const [worker] = await sql`
 			INSERT INTO device_workers (
 				user_id, worker_id, platform, capabilities, label,
 				organization_id, last_seen_at
 			) VALUES (
-				${userId}, 'behavior-private-browser', 'chrome-extension',
-				${sql.json(["browser.tabs", "browser.debugger"])}, 'Behavior Browser',
+				${userId}, 'automation-private-browser', 'chrome-extension',
+				${sql.json(["browser.tabs", "browser.debugger"])}, 'Automation Browser',
 				${orgId}, NOW() - INTERVAL '1 day'
 			)
 			RETURNING id
@@ -520,7 +521,7 @@ describe("operations.execute backend lifecycle", () => {
 				organization_id, connector_key, slug, display_name, status,
 				created_by, visibility, device_worker_id, created_at, updated_at
 			) VALUES (
-				${orgId}, 'chrome', 'behavior-private-browser', 'Behavior Browser', 'active',
+				${orgId}, 'chrome', 'automation-private-browser', 'Automation Browser', 'active',
 				${userId}, 'private', ${worker.id}::uuid, NOW(), NOW()
 			)
 			RETURNING id
@@ -538,9 +539,9 @@ describe("operations.execute backend lifecycle", () => {
 				...ctx,
 				userId: null,
 				memberRole: null,
-				actingWatcherId: behaviorId,
+				actingAutomationId: automationId,
 				actingWindowId: windowId,
-				sourceContext: { source: "watcher-run" },
+				sourceContext: { source: "automation-run" },
 			},
 		);
 
@@ -552,7 +553,7 @@ describe("operations.execute backend lifecycle", () => {
 		});
 	});
 
-	it("does not let a Behavior use another member's private connection", async () => {
+	it("does not let an Automation use another member's private connection", async () => {
 		const otherUser = await createTestUser();
 		await addUserToOrganization(otherUser.id, orgId);
 		const otherPrivate = await createTestConnection({
@@ -574,16 +575,16 @@ describe("operations.execute backend lifecycle", () => {
 				...ctx,
 				userId: null,
 				memberRole: null,
-				actingWatcherId: behaviorId,
+				actingAutomationId: automationId,
 				actingWindowId: windowId,
-				sourceContext: { source: "watcher-run" },
+				sourceContext: { source: "automation-run" },
 			},
 		);
 
 		expect(result).toEqual({ error: "Connection not found or not visible." });
 	});
 
-	it("keeps organization-visible operations available to a headless Behavior", async () => {
+	it("keeps organization-visible operations available to a headless Automation", async () => {
 		const orgConnection = await createTestConnection({
 			organization_id: orgId,
 			connector_key: LOCAL,
@@ -595,26 +596,26 @@ describe("operations.execute backend lifecycle", () => {
 				action: "execute",
 				connection_id: orgConnection.id,
 				operation_key: "echo",
-				input: { value: "behavior-org-connection" },
+				input: { value: "automation-org-connection" },
 			},
 			{} as Env,
 			{
 				...ctx,
 				userId: null,
 				memberRole: null,
-				actingWatcherId: behaviorId,
+				actingAutomationId: automationId,
 				actingWindowId: windowId,
-				sourceContext: { source: "watcher-run" },
+				sourceContext: { source: "automation-run" },
 			},
 		);
 
 		expect(result).toMatchObject({
 			status: "completed",
-			output: { backend: "local_action", value: "behavior-org-connection" },
+			output: { backend: "local_action", value: "automation-org-connection" },
 		});
 	});
 
-	it("fails closed when the stamped Behavior no longer exists", async () => {
+	it("fails closed when the stamped Automation no longer exists", async () => {
 		const result = await manageOperations(
 			{
 				action: "execute",
@@ -627,9 +628,9 @@ describe("operations.execute backend lifecycle", () => {
 				...ctx,
 				userId: null,
 				memberRole: null,
-				actingWatcherId: 2_147_483_647,
+				actingAutomationId: 2_147_483_647,
 				actingWindowId: windowId,
-				sourceContext: { source: "watcher-run" },
+				sourceContext: { source: "automation-run" },
 			},
 		);
 
@@ -642,7 +643,7 @@ describe("operations.execute backend lifecycle", () => {
 			CREATE SEQUENCE operation_reaction_failure_seq;
 			CREATE FUNCTION fail_first_operation_reaction() RETURNS trigger AS $$
 			BEGIN
-				IF NEW.watcher_id = ${behaviorId}
+				IF NEW.automation_id = ${automationId}
 					AND NEW.tool_name = 'manage_operations'
 					AND nextval('operation_reaction_failure_seq') = 1 THEN
 					RAISE EXCEPTION 'forced operation reaction failure';
@@ -651,7 +652,7 @@ describe("operations.execute backend lifecycle", () => {
 			END;
 			$$ LANGUAGE plpgsql;
 			CREATE TRIGGER fail_first_operation_reaction_trigger
-				BEFORE INSERT ON watcher_reactions
+				BEFORE INSERT ON automation_reactions
 				FOR EACH ROW EXECUTE FUNCTION fail_first_operation_reaction();
 		`);
 
@@ -665,7 +666,7 @@ describe("operations.execute backend lifecycle", () => {
 					idempotency_key: "operation-backend-test:repair-feedback",
 				},
 				{} as Env,
-				{ ...ctx, actingWatcherId: behaviorId, actingWindowId: windowId },
+				{ ...ctx, actingAutomationId: automationId, actingWindowId: windowId },
 			);
 
 		try {
@@ -695,15 +696,15 @@ describe("operations.execute backend lifecycle", () => {
 			`;
 			expect(runs).toHaveLength(1);
 			const reactions = await sql`
-				SELECT run_id FROM watcher_reactions
-				WHERE watcher_id = ${behaviorId}
+				SELECT run_id FROM automation_reactions
+				WHERE automation_id = ${automationId}
 				  AND window_id = ${windowId}
 				  AND run_id = ${Number(persisted.id)}
 			`;
 			expect(reactions).toHaveLength(1);
 		} finally {
 			await sql.unsafe(`
-				DROP TRIGGER IF EXISTS fail_first_operation_reaction_trigger ON watcher_reactions;
+				DROP TRIGGER IF EXISTS fail_first_operation_reaction_trigger ON automation_reactions;
 				DROP FUNCTION IF EXISTS fail_first_operation_reaction();
 				DROP SEQUENCE IF EXISTS operation_reaction_failure_seq;
 			`);

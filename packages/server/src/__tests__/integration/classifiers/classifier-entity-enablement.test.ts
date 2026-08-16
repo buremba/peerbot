@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { parsePgTextArray } from '../../../db/client';
-import { enableClassifiersOnEntity } from '../../../watchers/classifier-extraction';
+import { enableClassifiersOnEntity } from '../../../automations/classifier-extraction';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestEntity } from '../../setup/test-fixtures';
 import { TestWorkspace } from '../../setup/test-mcp-client';
@@ -36,7 +36,7 @@ describe('classifier entity enablement', () => {
     await cleanupTestDatabase();
   });
 
-  it('preserves both classifier additions when two Behavior creates race', async () => {
+  it('preserves both classifier additions when two Automations are created concurrently', async () => {
     const sql = getTestDb();
     const workspace = await TestWorkspace.create({ name: 'Classifier enablement race' });
     const entity = await createTestEntity({

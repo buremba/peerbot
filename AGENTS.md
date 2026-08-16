@@ -17,10 +17,10 @@
 
 ## Facts you cannot derive
 - **`events.id` is a stored-version id, not stable source identity.** A resync supersedes the row and mints a new id for the same source item, so cross-sync identity and dedupe must key on the connector's `origin_id` (scoped to its connection/source) or an explicit domain key.
-- **Request paths never aggregate history.** No `GROUP BY`, `DISTINCT ON`, per-row `regexp_*`, or leading-wildcard `LIKE` over `events`, `agent_transcript_snapshot`, `session_calls`, … on a user-facing read path: history grows, the answer doesn't. Materialize at write time, read back by index, backfill in a migration. Bounded config tables (`connections`, `watchers`, `agent_users`) are fine.
+- **Request paths never aggregate history.** No `GROUP BY`, `DISTINCT ON`, per-row `regexp_*`, or leading-wildcard `LIKE` over `events`, `agent_transcript_snapshot`, `session_calls`, … on a user-facing read path: history grows, the answer doesn't. Materialize at write time, read back by index, backfill in a migration. Bounded config tables (`connections`, `automations`, `agent_users`) are fine.
 - **Shared state must be Postgres-mediated.** An in-memory Map or singleton is invisible to other replicas — correct in dev, broken in prod.
 - **Workers never receive real credentials** — placeholders or proxied access only. The exceptions are device-pinned connectors and short-lived provider-derived leases (`packages/server/AGENTS.md`); a durable stored credential is never one.
-- **The product word is Behavior; `watcher` is DB/engine vocabulary.** `watcher` must not appear in MCP tool schemas, names, or descriptions, ClientSDK discovery metadata, or the connector-sdk public reaction contract — `make pre-pr-remote` fails on it. Internal identifiers and columns are fine.
+- **Automation is the product, API, and storage vocabulary.** Use it consistently in public contracts and internal identifiers; `make pre-pr-remote` rejects retired product and engine terminology.
 - **`make review` is the semantic review gate, not CI.** It runs no typecheck, knip, or tests; a verdict or safe-class skip is not evidence CI will pass.
 - **Depot serializes org-wide.** A newer dispatch silently cancels a peer session's running gate, and `gh run rerun` counts as a dispatch. Check `pgrep -f "make pre-pr-remote"` before dispatching.
 - Default to static `import`; a new production dynamic import needs measured justification plus a call-site rationale comment. Tests may import dynamically after mocks; two Node-version gates are grandfathered (playbook).
@@ -33,7 +33,7 @@
 5. Stage by explicit path, then `make pre-pr-remote`; it fails closed on unstaged or untracked changes. Reviewed workflow/action changes need `DEPOT_ALLOW_WORKFLOW_CHANGES=1`.
 6. Commit, then confirm `git diff --name-only origin/main...HEAD` is exactly your intended file list.
 7. `git push -u origin <branch>` → `gh pr create` (fill `.github/pull_request_template.md`; conventional-commit title).
-8. `make review` **once** on the settled HEAD; it posts the required `pi-review` status. Narrow path/content-gated safe classes skip the cross-harness review; this includes pure `packages/owletto` pointer bumps and exact `model:` literal swaps, but not mixed behavioral/source changes. The submodule's own repo owns its content review.
+8. `make review` **once** on the settled HEAD; it posts the required `pi-review` status. Narrow path/content-gated safe classes skip the cross-harness review; this includes pure `packages/owletto` pointer bumps and exact `model:` literal swaps, but not mixed runtime and source changes. The submodule's own repo owns its content review.
 9. `make ui-review`. Non-Owletto changes and complete, forward-only Owletto pointer diffs confined to `deploy/` pass as not applicable; other pointer changes need exact hosted proof (`ARTIFACT=<url>`; see the playbook).
 10. `gh pr merge <n> --squash --admin` once green — never `--admin` past a check that has not reported. Lobu's required `integration` fan-in is absent from `gh pr checks` until it starts, not pending, so diff against the branch-protection list (playbook).
 11. Prod-visible surface? Verify live after rollout: gate on the **squash commit**, not your branch head, keeping the argument order `git merge-base --is-ancestor "$MERGE_SHA" "$DEPLOYED_SHA"`. Record the result.

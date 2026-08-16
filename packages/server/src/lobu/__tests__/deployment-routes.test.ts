@@ -216,7 +216,7 @@ describe('GET /deployments (feed)', () => {
     // One standalone UI edit.
     await insertConfigEvent({
       organizationId: ORG,
-      resourceKind: 'behavior',
+      resourceKind: 'automation',
       resourceId: 'w-1',
       op: 'created',
       state: { prompt: 'watch things' },
@@ -225,7 +225,7 @@ describe('GET /deployments (feed)', () => {
     // Noise in another org must not leak.
     await insertConfigEvent({
       organizationId: OTHER_ORG,
-      resourceKind: 'behavior',
+      resourceKind: 'automation',
       resourceId: 'w-other',
       op: 'created',
       state: {},
@@ -246,7 +246,7 @@ describe('GET /deployments (feed)', () => {
     expect(deployment.gitSha).toBe('deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
 
     const change = body.items.find((i) => i.type === 'change');
-    expect(change.resourceKind).toBe('behavior');
+    expect(change.resourceKind).toBe('automation');
     expect(change.actorSource).toBe('ui');
     // Feed rows never carry state snapshots.
     expect(change.before).toBeUndefined();
@@ -324,6 +324,29 @@ describe('GET /deployments/:applyId (detail)', () => {
     expect(change.before.soulMd).toBe('v1');
   });
 
+  test('does not expose unrecognized config resource kinds', async () => {
+    const app = await importDeploymentRoutes();
+    const eventId = await insertConfigEvent({
+      organizationId: ORG,
+      resourceKind: 'retired-kind',
+      resourceId: 'retired-1',
+      op: 'updated',
+      state: { value: 'historical' },
+    });
+
+    const feedRes = await app.request('/');
+    expect(feedRes.status).toBe(200);
+    const feed = (await feedRes.json()) as { items: any[] };
+    expect(
+      feed.items.find((item) => item.id === eventId)?.resourceKind
+    ).toBeNull();
+
+    const detailRes = await app.request(`/changes/${eventId}`);
+    expect(detailRes.status).toBe(200);
+    const detail = (await detailRes.json()) as { change: any };
+    expect(detail.change.resourceKind).toBeNull();
+  });
+
   test('404s for an unknown apply id', async () => {
     const app = await importDeploymentRoutes();
     const res = await app.request('/apl_00000000-0000-0000-0000-000000000000');
@@ -336,14 +359,14 @@ describe('GET /deployments/changes/:eventId', () => {
     const app = await importDeploymentRoutes();
     await insertConfigEvent({
       organizationId: ORG,
-      resourceKind: 'behavior',
+      resourceKind: 'automation',
       resourceId: 'w-1',
       op: 'created',
       state: { prompt: 'v1' },
     });
     const secondId = await insertConfigEvent({
       organizationId: ORG,
-      resourceKind: 'behavior',
+      resourceKind: 'automation',
       resourceId: 'w-1',
       op: 'updated',
       state: { prompt: 'v2' },
@@ -603,7 +626,7 @@ describe('blocked deployments + GET /deployments/latest', () => {
     });
     await insertConfigEvent({
       organizationId: ORG,
-      resourceKind: 'behavior',
+      resourceKind: 'automation',
       resourceId: 'w-late',
       op: 'created',
       state: {},

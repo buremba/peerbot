@@ -305,7 +305,7 @@ export default async (
   const previousRows = (await client.query(`
     SELECT created_at
     FROM events
-    WHERE behavior_id = ${ctx.window.behavior_id}
+    WHERE automation_id = ${ctx.window.automation_id}
       AND semantic_type = 'notification'
       AND title = 'Lobu production activity digest'
     ORDER BY created_at DESC, id DESC
@@ -395,8 +395,8 @@ export default async (
     }),
     recipients: "admins",
     idempotency_key: `product-activity-digest:run:${runId}`,
-    behavior_source: {
-      behavior_id: ctx.window.behavior_id,
+    automation_source: {
+      automation_id: ctx.window.automation_id,
       window_id: ctx.window.id,
     },
   });

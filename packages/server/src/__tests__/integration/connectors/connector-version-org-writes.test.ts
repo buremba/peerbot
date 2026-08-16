@@ -31,7 +31,7 @@ function metadataFor(key: string, version: string): ConnectorMetadata {
     webhook: null,
     feeds: null,
     actions: null,
-    behaviorEvents: null,
+    automationEvents: null,
     optionsSchema: null,
   };
 }

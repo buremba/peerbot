@@ -108,7 +108,7 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
       INSERT INTO entity_types (organization_id, slug, name, description, icon, created_at, updated_at)
       VALUES
         (${publicOrg.id}, ${MEMBER_ENTITY_TYPE_SLUG}, 'Member', 'Organization member', '👤', NOW(), NOW()),
-        (${publicOrg.id}, ${CANVAS_ENTITY_TYPE_SLUG}, 'Canvas', 'Behavior canvas', 'layout', NOW(), NOW())
+        (${publicOrg.id}, ${CANVAS_ENTITY_TYPE_SLUG}, 'Canvas', 'Automation canvas', 'layout', NOW(), NOW())
     `;
     await createTestEntity({
       name: 'Roster Person',
@@ -117,7 +117,7 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
       created_by: user.id,
     });
     const canvas = await createTestEntity({
-      name: 'Behavior Canvas',
+      name: 'Automation Canvas',
       entity_type: CANVAS_ENTITY_TYPE_SLUG,
       organization_id: publicOrg.id,
       parent_id: brand.id,
@@ -162,7 +162,7 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
     // `events` is append-only, so soft-deleting a system entity leaves its
     // events behind. They must stay suppressed, not become public.
     const deletedCanvas = await createTestEntity({
-      name: 'Deleted Behavior Canvas',
+      name: 'Deleted Automation Canvas',
       entity_type: CANVAS_ENTITY_TYPE_SLUG,
       organization_id: publicOrg.id,
       parent_id: brand.id,
@@ -250,7 +250,7 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
     expect(sitemapXml).not.toContain(`/${MEMBER_ENTITY_TYPE_SLUG}`);
     expect(sitemapXml).not.toContain('roster-person');
     expect(sitemapXml).not.toContain(`/${CANVAS_ENTITY_TYPE_SLUG}`);
-    expect(sitemapXml).not.toContain('behavior-canvas');
+    expect(sitemapXml).not.toContain('automation-canvas');
     // Guard the whole class, not just today's built-ins.
     expect(sitemapXml).not.toMatch(/<loc>[^<]*\/\$/);
   });
@@ -259,13 +259,13 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
     // The two-segment type lookup does not cover deep paths — a $canvas child
     // hanging off a public parent must 404 on its own full route.
     const response = await get(
-      `/public-contract-org/brand/acme-brand/${CANVAS_ENTITY_TYPE_SLUG}/behavior-canvas`,
+      `/public-contract-org/brand/acme-brand/${CANVAS_ENTITY_TYPE_SLUG}/automation-canvas`,
       { headers: { Accept: 'text/html' }, env: { PUBLIC_GATEWAY_URL: publicGatewayUrl } }
     );
     const body = await response.text();
     expect(response.status).toBe(404);
     expect(body).toContain('noindex,nofollow');
-    expect(body).not.toContain('Behavior Canvas');
+    expect(body).not.toContain('Automation Canvas');
   });
 
   it('omits system types and their entities from rendered HTML and bootstrap', async () => {
@@ -283,7 +283,7 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
     expect(workspaceBody).toContain('"brand"');
 
     // Recent knowledge must not carry a system entity's name or payload.
-    expect(workspaceBody).not.toContain('Behavior Canvas');
+    expect(workspaceBody).not.toContain('Automation Canvas');
     expect(workspaceBody).not.toContain('Canvas internal state');
     expect(workspaceBody).not.toContain('CANVAS INTERNAL PAYLOAD');
     // Identity-linked (entity_ids empty) must be filtered on the same footing.
@@ -300,7 +300,7 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
     const entityBody = await (
       await get('/public-contract-org/brand/acme-brand', { headers: { Accept: 'text/html' }, env })
     ).text();
-    expect(entityBody).not.toContain('Behavior Canvas');
+    expect(entityBody).not.toContain('Automation Canvas');
     expect(entityBody).not.toContain(`"${CANVAS_ENTITY_TYPE_SLUG}"`);
     // The ordinary child is still listed.
     expect(entityBody).toContain('Acme Product');

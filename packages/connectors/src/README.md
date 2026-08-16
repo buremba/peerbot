@@ -78,7 +78,7 @@ interface ConnectorDefinition {
   authSchema?: ConnectorAuthSchema;         // Authentication configuration
   feeds?: Record<string, FeedDefinition>;   // Data sources (keyed by feed_key)
   actions?: Record<string, ActionDefinition>; // Write-back actions
-  behaviorEvents?: ConnectorBehaviorEvent[]; // Explicit Behavior trigger catalog
+  automationEvents?: ConnectorAutomationEvent[]; // Explicit Automation trigger catalog
   optionsSchema?: Record<string, unknown>;  // Global connector options (JSON Schema)
   mcpConfig?: { upstreamUrl: string };      // Proxy an upstream MCP server
   openapiConfig?: {                         // Generate actions from an OpenAPI spec
@@ -214,7 +214,7 @@ interface FeedDefinition {
 
 The feed key is passed to `sync()` as `ctx.feedKey`, so a single connector can handle multiple feed types by switching on `ctx.feedKey`.
 
-A feed's `eventKinds` are also the **default Behavior trigger catalog**. The first successful non-dry sync establishes a baseline without activation; later inserts whose kind matches a declared `eventKinds` key activate subscribers. A non-empty `behaviorEvents` declaration (camelCase in `ConnectorDefinition`, persisted as `behavior_events` in the catalog) replaces that derived catalog in the trigger picker. Keys that differ from the feed's `eventKinds` fire only when the emitted `EventEnvelope` carries matching `behavior_signals`.
+A feed's `eventKinds` are also the **default Automation trigger catalog**. The first successful non-dry sync establishes a baseline without activation; later inserts whose kind matches a declared `eventKinds` key activate subscribers. A non-empty `automationEvents` declaration (camelCase in `ConnectorDefinition`, persisted as `automation_events` in the catalog) replaces that derived catalog in the trigger picker. Keys that differ from the feed's `eventKinds` fire only when the emitted `EventEnvelope` carries matching `automation_signals`.
 
 ## Syncing Data
 
@@ -268,7 +268,7 @@ interface EventEnvelope {
   origin_parent_id?: string;   // Parent reference for threaded content
   metadata?: Record<string, unknown>; // Matches the eventKind's metadataSchema
   embedding?: number[];        // Pre-computed embedding vector (optional)
-  behavior_signals?: ConnectorBehaviorSignalDraft[]; // Explicit Behavior activations
+  automation_signals?: ConnectorAutomationSignalDraft[]; // Explicit Automation activations
 }
 ```
 

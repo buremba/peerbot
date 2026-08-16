@@ -84,8 +84,8 @@ interface InsertEventParams {
   feedId?: number | null;
   runId?: number | null;
   /**
-   * The Behavior that PRODUCED this row, and the version of it that ran.
-   * Produced, never analyzed — a Behavior reading an event does not stamp it.
+   * The Automation that PRODUCED this row, and the version of it that ran.
+   * Produced, never analyzed — an Automation reading an event does not stamp it.
    *
    * Set it on the first write. A supersede copies producer/source lineage
    * from the predecessor — omit or null cannot drop it. A later number
@@ -93,8 +93,8 @@ interface InsertEventParams {
    * on this column; human canvas corrections stay visible via
    * `metadata.correction`, not by clearing the stamp.
    */
-  behaviorId?: number | null;
-  behaviorVersionId?: number | null;
+  automationId?: number | null;
+  automationVersionId?: number | null;
   parentOriginId?: string | null;
   score?: number | null;
   embedding?: number[] | null;
@@ -123,7 +123,7 @@ interface InsertEventParams {
    * — so it can never serve as cross-version identity.
    *
    * Namespaces that claim uniqueness get their own partial unique index over
-   * chain ROOTS (see `idx_events_identity_root_behavior`), which is what makes
+   * chain ROOTS (see `idx_events_identity_root_automation`), which is what makes
    * "exactly one current version per thing" a database guarantee rather than a
    * convention two concurrent writers can silently violate. Roots, not live
    * heads: this function inserts the successor before stamping the
@@ -289,8 +289,8 @@ type EventLineage = {
   feedKey: string | null;
   feedId: number | null;
   runId: number | null;
-  behaviorId: number | null;
-  behaviorVersionId: number | null;
+  automationId: number | null;
+  automationVersionId: number | null;
   parentOriginId: string | null;
   identityNs: string | null;
   identityKey: string | null;
@@ -314,7 +314,7 @@ async function loadEventLineage(
 ): Promise<EventLineage> {
   const rows = await sql`
     SELECT connector_key, connection_id, feed_key, feed_id, run_id,
-           behavior_id, behavior_version_id, origin_parent_id,
+           automation_id, automation_version_id, origin_parent_id,
            identity_ns, identity_key
     FROM events
     WHERE id = ${supersedesEventId}
@@ -328,8 +328,8 @@ async function loadEventLineage(
         feed_key: string | null;
         feed_id: number | string | null;
         run_id: number | string | null;
-        behavior_id: number | string | null;
-        behavior_version_id: number | string | null;
+        automation_id: number | string | null;
+        automation_version_id: number | string | null;
         origin_parent_id: string | null;
         identity_ns: string | null;
         identity_key: string | null;
@@ -346,9 +346,9 @@ async function loadEventLineage(
     feedKey: prior.feed_key ?? null,
     feedId: nullableNumber(prior.feed_id),
     runId: params.runId ?? nullableNumber(prior.run_id),
-    behaviorId: params.behaviorId ?? nullableNumber(prior.behavior_id),
-    behaviorVersionId:
-      params.behaviorVersionId ?? nullableNumber(prior.behavior_version_id),
+    automationId: params.automationId ?? nullableNumber(prior.automation_id),
+    automationVersionId:
+      params.automationVersionId ?? nullableNumber(prior.automation_version_id),
     parentOriginId: params.parentOriginId ?? prior.origin_parent_id ?? null,
     identityNs: prior.identity_ns ?? null,
     identityKey: prior.identity_key ?? null,
@@ -384,7 +384,7 @@ export async function insertEvent(
   options?: {
     onConflictUpdate?: boolean;
     sql?: DbClient;
-    /** Transactional hook for durable derived work such as Behavior runs. */
+    /** Transactional hook for durable derived work such as Automation runs. */
     afterPersist?: (event: InsertedEvent, sql: DbClient) => Promise<void>;
   }
 ): Promise<InsertedEvent> {
@@ -470,8 +470,8 @@ export async function insertEvent(
             feedKey: params.feedKey ?? null,
             feedId: params.feedId ?? null,
             runId: params.runId ?? null,
-            behaviorId: params.behaviorId ?? null,
-            behaviorVersionId: params.behaviorVersionId ?? null,
+            automationId: params.automationId ?? null,
+            automationVersionId: params.automationVersionId ?? null,
             parentOriginId: params.parentOriginId ?? null,
             identityNs: params.identity?.ns ?? null,
             identityKey: params.identity?.key ?? null,
@@ -483,7 +483,7 @@ export async function insertEvent(
       payload_type, payload_text, payload_data, payload_template, attachments, metadata,
       score, author_name, source_url, occurred_at, origin_parent_id, origin_type,
       connector_key, connection_id, feed_key, feed_id, run_id,
-      behavior_id, behavior_version_id,
+      automation_id, automation_version_id,
       semantic_type, client_id, created_by,
       interaction_type, interaction_status, interaction_input_schema, interaction_input,
       interaction_output, interaction_error, supersedes_event_id,
@@ -511,8 +511,8 @@ export async function insertEvent(
       ${lineage.feedKey},
       ${lineage.feedId},
       ${lineage.runId},
-      ${lineage.behaviorId},
-      ${lineage.behaviorVersionId},
+      ${lineage.automationId},
+      ${lineage.automationVersionId},
       ${params.semanticType},
       ${clientId},
       ${params.createdBy ?? null},
@@ -749,7 +749,7 @@ export async function insertConnectionlessAuditEvent(
  * originId is reconciled before re-insert so an ambiguous success cannot
  * append a duplicate. If both attempts fail the dropped audit row is logged
  * at ERROR with full event context so it's visible in alerting rather than
- * silently lost. Used for entity updates, watcher archival, connection/feed
+ * silently lost. Used for entity updates, automation archival, connection/feed
  * deletion, etc.
  */
 export function recordChangeEvent(params: ChangeEventParams): void {
@@ -798,7 +798,7 @@ interface LifecycleEventParams {
    * Entity-type slug used by dashboard SQL to pivot lifecycle rows
    * (`metadata->>'entity_type'`). Kept as a free-form string so new entity
    * types can emit without touching this file — keep slugs short, lowercase,
-   * singular: `agent`, `connection`, `watcher`, `device`, `member`, `client`.
+   * singular: `agent`, `connection`, `automation`, `device`, `member`, `client`.
    */
   entityType: string;
   op: LifecycleOp;

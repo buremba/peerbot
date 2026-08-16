@@ -4,7 +4,7 @@
  * Extracted from manage_operations so dispatch-chrome-action can await device
  * completion without importing the full manage_operations module (breaks a
  * circular init cycle: manage_operations → dispatch-chrome-action →
- * manage_operations that left MANAGE_BEHAVIORS_ACTION_KEY / manageBehaviors in
+ * manage_operations that left MANAGE_AUTOMATIONS_ACTION_KEY / manageAutomations in
  * TDZ and red-failed CI unit on main).
  */
 
@@ -61,7 +61,7 @@ export async function waitForDeviceActionRun(
   runId: number,
   organizationId: string,
   /**
-   * Abort the wait early (e.g. a watcher reaction hit its wall-clock budget).
+   * Abort the wait early (e.g. an automation reaction hit its wall-clock budget).
    * On abort we stop polling and finalize the run as `timeout` so the orphaned
    * poll loop and any in-flight device work don't leak past the caller.
    */

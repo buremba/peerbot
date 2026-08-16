@@ -258,7 +258,7 @@ export function generateOpenAPISpec(serverUrl: string) {
     servers: [
       {
         url: serverUrl,
-        description: 'Manage workspace knowledge and Behaviors',
+        description: 'Manage workspace knowledge and Automations',
       },
     ],
     paths,
@@ -289,7 +289,7 @@ const ERROR_RESPONSE = {
 /**
  * OpenAPI `paths` for the whole dispatch-tool surface (`POST /api/{orgSlug}/{tool}`),
  * with faithful TypeBox input/output schemas. Merged into the gateway document so the
- * generated client covers domain data (entities, watchers, feeds, metrics, …) — not
+ * generated client covers domain data (entities, automations, feeds, metrics, …) — not
  * only agent-session orchestration.
  */
 export function generateStrictToolPaths(): Record<string, any> {

@@ -103,7 +103,7 @@ export interface InferenceProviderListItem {
 	 * Why the provider last failed terminally, when `status = 'error'`. Written
 	 * by `markInferenceProviderUnhealthy` with the failure the caller observed
 	 * (currently the proxy's upstream HTTP status), so a workspace whose
-	 * Behaviors went quiet can read the cause here instead of seeing a row that
+	 * Automations went quiet can read the cause here instead of seeing a row that
 	 * still says `active`.
 	 */
 	errorMessage: string | null;
@@ -317,7 +317,7 @@ async function lockInferenceProviderDefaults(
  *     credentials live in per-user `auth_profiles` and are fetched by
  *     `getBestProfile(agentId, providerId, …, context)`; `oauth://` joins to no
  *     `agent_secrets` row, so `readOrgSharedProviderApiKey` returns null for
- *     them. A headless Behavior run carries a synthetic user id with no
+ *     them. A headless Automation run carries a synthetic user id with no
  *     profile, so inheriting an OAuth row as the ORG default hands every agent
  *     in the org a model it cannot authenticate — worse than having no default,
  *     because it fails at egress instead of falling back. (The gateway
@@ -386,8 +386,8 @@ function withPromotion(
  * `{ error: 'slug_conflict' }` rather than throwing.
  *
  * Why (d): the org default is the tail of the layered model fallback
- * (behavior → agent → org default), so `getOrgDefaultModel` returns null when
- * neither a behavior nor an agent supplies a model. Marking a provider default
+ * (automation → agent → org default), so `getOrgDefaultModel` returns null when
+ * neither an automation nor an agent supplies a model. Marking a provider default
  * was a SEPARATE explicit call (`PUT /inference-providers/:slug/default`) that
  * nothing chained to creation.
  *
@@ -571,7 +571,7 @@ export async function ensureOAuthInferenceProvider(args: {
 				// and {@link setInferenceProviderDefault} both refuse as an org
 				// default — its credential belongs to ONE user. Keeping the flag
 				// would strand the org on a model no other member and no headless
-				// Behavior run can authenticate, and promotion could not repair it:
+				// Automation run can authenticate, and promotion could not repair it:
 				// the NOT EXISTS guard sees a default already present and no-ops.
 				// Clearing first lets the promotion below hand off to an eligible
 				// row, or leave the org default-less when none exists — which is
@@ -682,7 +682,7 @@ const PROVIDER_ERROR_MESSAGE_LIMIT = 500;
 
 /**
  * Record that an org's inference provider failed terminally on a quota or
- * credential error, so the settings page can say WHY a workspace's Behaviors
+ * credential error, so the settings page can say WHY a workspace's Automations
  * stopped instead of showing a row that still reads `active`.
  *
  * **Observational only.** Nothing in credential resolution or model routing
@@ -795,7 +795,7 @@ function modelRefFromDefaultRow(row: OrgDefaultModelRow | null): string | null {
 }
 
 /**
- * The org's default model — the fallback tail of `behavior → agent → org` —
+ * The org's default model — the fallback tail of `automation → agent → org` —
  * as a ROUTABLE `slug/model` ref, or null when the org has nothing runnable.
  *
  * The `slug/` prefix is load-bearing: the worker derives the provider from a
@@ -863,7 +863,7 @@ export async function getOrgDefaultModel(
  *
  *  - an `oauth://` row. Its credential lives in ONE user's `auth_profiles` and
  *    is fetched with `getProviderProfiles(agentId, provider, context.userId)`,
- *    so no other member of the org — and no headless Behavior run, which
+ *    so no other member of the org — and no headless Automation run, which
  *    carries a synthetic user id — can read it. An ORG-WIDE default backed by
  *    one person's token hands everyone else a model they cannot authenticate.
  *    Being a deliberate choice does not help: the chooser is not the only one

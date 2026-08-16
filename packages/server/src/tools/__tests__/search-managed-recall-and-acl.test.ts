@@ -3,7 +3,7 @@
  *
  * Item 2 — a MANAGED Slack install is a `connections` row with `slug=slackinst-…`
  * and `agent_id NULL`. `resolveBoundChannelRows` resolves it through the
- * connection-scoped Behavior trigger, so the managed install remains visible
+ * connection-scoped Automation trigger, so the managed install remains visible
  * even though the connection itself has no fallback agent.
  *
  * Item 3 — `author_entity_id` is surfaced in recalled snippets, additively: the
@@ -14,7 +14,7 @@
 import { normalizeSlackUserId } from "@lobu/connectors/slack-identity";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { cleanupTestDatabase, getTestDb } from "../../__tests__/setup/test-db";
-import { listTestBehaviorSubscriptions } from "../../__tests__/setup/behavior-subscriptions";
+import { listTestAutomationSubscriptions } from "../../__tests__/setup/automation-subscriptions";
 import {
   addUserToOrganization,
   createTestAgent,
@@ -28,8 +28,8 @@ import {
   slackChannelsToResources,
 } from "@lobu/connectors/slack-identity";
 import { buildAccessGraph } from "../../authz/access-graph";
-import { BehaviorSubscriptionService } from "../../gateway/channels/behavior-subscription-service";
-import { createTestBehaviorSubscription } from "../../__tests__/setup/behavior-subscriptions";
+import { AutomationSubscriptionService } from "../../gateway/channels/automation-subscription-service";
+import { createTestAutomationSubscription } from "../../__tests__/setup/automation-subscriptions";
 import { clearEntityLinkRulesCache } from "../../utils/entity-link-upsert";
 import { initWorkspaceProvider } from "../../workspace";
 import { search } from "../search";
@@ -94,7 +94,7 @@ describe("managed-install recall (Item 2) + author attribution surfacing (Item 3
     return { org, user, agent };
   }
 
-	it("a connection-scoped Behavior makes a managed install recallable", async () => {
+	it("a connection-scoped Automation makes a managed install recallable", async () => {
     const { org, user, agent } = await setupManaged();
     const sql = getTestDb();
 		const [connection] = await sql`
@@ -104,7 +104,7 @@ describe("managed-install recall (Item 2) + author attribution surfacing (Item 3
 
     // The REAL runtime bind path — links connection_id to the active managed
     // connection for (org, slack, TEAM).
-		await new BehaviorSubscriptionService().createChatBehavior(
+		await new AutomationSubscriptionService().createChatAutomation(
 			agent.agentId,
 			"slack",
 			"slack:CMANAGED",
@@ -118,7 +118,7 @@ describe("managed-install recall (Item 2) + author attribution surfacing (Item 3
 
     // The fix's load-bearing assertion: the binding is now linked to the managed
     // connection (this is what makes branch (A) resolve a NULL-agent install).
-    const [subscription] = await listTestBehaviorSubscriptions({
+    const [subscription] = await listTestAutomationSubscriptions({
       organizationId: org.id,
       channelId: "slack:CMANAGED",
     });
@@ -194,7 +194,7 @@ describe("managed-install recall (Item 2) + author attribution surfacing (Item 3
 
     // Bind both channels; Alice is a member of #eng only.
 		for (const ch of ["C01ENG", "C01SEC"]) {
-			await createTestBehaviorSubscription({
+			await createTestAutomationSubscription({
 				organizationId: org.id,
 				agentId: agent.agentId,
 				connectionSlug: `agentconn-${CONN}`,

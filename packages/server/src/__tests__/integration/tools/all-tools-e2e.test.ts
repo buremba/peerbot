@@ -17,7 +17,7 @@
  *
  * Coverage classes (documentary `coverage` field on each plan entry):
  *   - 'round-trip': performs a real mutation/read whose effect we assert
- *     (e.g. manage_entity create→delete, watcher create→get-versions).
+ *     (e.g. manage_entity create→delete, automation create→get-versions).
  *   - 'reachable':  invoked with valid minimal args and asserted to return a
  *     structured result.
  *
@@ -64,7 +64,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 	let orgSlug: string;
 	let agentId: string;
 	let entityId: number;
-	let watcherId: string;
+	let automationId: string;
 	let authCtx: AuthContext;
 
 	/**
@@ -100,7 +100,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 				note: "returns the orgs the seeded owner belongs to (must include ours)",
 			},
 			search_sdk: {
-				args: { query: "watchers" },
+				args: { query: "automations" },
 				coverage: "reachable",
 				note: "returns ClientSDK method metadata for the namespace",
 			},
@@ -228,16 +228,16 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 				coverage: "round-trip",
 				note: "writes an in-app notification to org admins (no external delivery)",
 			},
-			// ── Behaviors ───────────────────────────────────────────────────────────
-			manage_behaviors: {
+			// ── Automations ───────────────────────────────────────────────────────────
+			manage_automations: {
 				args: () => ({ action: "list", entity_id: entityId }),
 				coverage: "round-trip",
-				note: "lists the seeded Behavior attached to the entity",
+				note: "lists the seeded Automation attached to the entity",
 			},
-			get_behavior: {
-				args: () => ({ behavior_id: watcherId, entity_id: entityId }),
+			get_automation: {
+				args: () => ({ automation_id: automationId, entity_id: entityId }),
 				coverage: "round-trip",
-				note: "reads back the Behavior seeded in beforeAll",
+				note: "reads back the Automation seeded in beforeAll",
 			},
 			// ── path resolution ─────────────────────────────────────────────────────
 			resolve_path: {
@@ -336,22 +336,22 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 			authCtx
 		);
 
-		// Seed one Behavior so get_behavior / manage_behaviors list are real round-trips.
-		const watcher = (await executeTool(
-			"manage_behaviors",
+		// Seed one Automation so get_automation / manage_automations list are real round-trips.
+		const automation = (await executeTool(
+			"manage_automations",
 			{
 				action: "create",
 				entity_id: entityId,
-				slug: "coverage-watcher",
-				name: "Coverage Watcher",
+				slug: "coverage-automation",
+				name: "Coverage Automation",
 				prompt: "Track coverage signals.",
 				agent_id: agentId,
 			},
 			TEST_ENV,
 			authCtx
-		)) as { behavior_id: string };
-		expect(watcher.behavior_id).toBeDefined();
-		watcherId = watcher.behavior_id;
+		)) as { automation_id: string };
+		expect(automation.automation_id).toBeDefined();
+		automationId = automation.automation_id;
 	});
 
 	it("covers every registry tool in the args fixture (catches new uncovered tools)", () => {

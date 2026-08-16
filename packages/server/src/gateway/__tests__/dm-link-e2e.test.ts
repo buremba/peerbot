@@ -10,7 +10,7 @@ import { beforeAll, describe, expect, mock, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { CommandRegistry } from "@lobu/core";
 import { getDb } from "../../db/client.js";
-import { listTestBehaviorSubscriptions } from "../../__tests__/setup/behavior-subscriptions.js";
+import { listTestAutomationSubscriptions } from "../../__tests__/setup/automation-subscriptions.js";
 import { registerBuiltInCommands } from "../commands/built-in-commands.js";
 import { CommandDispatcher } from "../commands/command-dispatcher.js";
 import { ensureDbForGatewayTests, seedAgentRow } from "./helpers/db-setup.js";
@@ -93,7 +93,7 @@ describe("DM /lobu link <code> — real consume→bind chain", () => {
 			});
 			const dispatcher = new CommandDispatcher({
 				registry,
-				behaviorSubscriptionService: {
+				automationSubscriptionService: {
 					resolveForConnection: mock(async () => null),
 				} as never,
 			});
@@ -128,7 +128,7 @@ describe("DM /lobu link <code> — real consume→bind chain", () => {
 			expect(remaining.length).toBe(0);
 
 			// Binding written under the canonical slack:<id> key, scoped to team+agent.
-			const binding = await listTestBehaviorSubscriptions({
+			const binding = await listTestAutomationSubscriptions({
 				platform: "slack",
 				channelId: canonical,
 				teamId: "T_E2E",
@@ -138,7 +138,7 @@ describe("DM /lobu link <code> — real consume→bind chain", () => {
 			expect(binding[0]?.organization_id).toBe(organizationId);
 		} finally {
 			await sql`
-				DELETE FROM watchers
+				DELETE FROM automations
 				WHERE EXISTS (
 					SELECT 1
 					FROM jsonb_array_elements(COALESCE(triggers, '[]'::jsonb)) trigger

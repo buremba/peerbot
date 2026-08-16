@@ -2,7 +2,7 @@
  * Integration test for the notification → bot-connection delivery path.
  *
  * Exercises `resolveBotDeliveryTargets` against a real DB: it JOINs the org's
- * active chat connections to their Behavior subscriptions and returns the channel(s)
+ * active chat connections to their Automation subscriptions and returns the channel(s)
  * each notification should post to. This is the path that was a silent no-op
  * after #846 removed the HTTP endpoints the old implementation called.
  */
@@ -17,7 +17,7 @@ import {
 import { notify } from "../../../tools/admin/notify";
 import type { ToolContext } from "../../../tools/registry";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
-import { createTestBehaviorSubscription } from "../../setup/behavior-subscriptions";
+import { createTestAutomationSubscription } from "../../setup/automation-subscriptions";
 import {
 	addUserToOrganization,
   createTestAgent,
@@ -54,7 +54,7 @@ async function seedBinding(opts: {
 }): Promise<void> {
 	const configuredBy = await createTestUser();
 	await addUserToOrganization(configuredBy.id, opts.organizationId, "owner");
-  await createTestBehaviorSubscription({
+  await createTestAutomationSubscription({
     organizationId: opts.organizationId,
     agentId: opts.agentId,
     connectionSlug: opts.connectionId.startsWith("slackinst-")
@@ -105,7 +105,7 @@ describe("resolveBotDeliveryTargets", () => {
     ]);
   });
 
-	it("returns one target when multiple Behaviors share a physical channel", async () => {
+	it("returns one target when multiple Automations share a physical channel", async () => {
 		const org = await createTestOrganization();
 		const agent = await createTestAgent({
 			organizationId: org.id,
@@ -143,9 +143,9 @@ describe("resolveBotDeliveryTargets", () => {
 			organizationId: org.id,
 			type: "agent_message" as const,
 			title: "Social signal",
-			body: "A retry-safe Behavior notification.",
+			body: "A retry-safe Automation notification.",
 			resourceUrl: `/${org.slug}/memory?content_ids=42`,
-			idempotencyKey: "behavior:71:run:9001:notification",
+			idempotencyKey: "automation:71:run:9001:notification",
 		};
 
 		await Promise.all(
@@ -191,8 +191,8 @@ describe("resolveBotDeliveryTargets", () => {
 		const args = {
 			action: "send" as const,
 			title: "Social signal",
-			body: "A retry-safe Behavior notification.",
-			idempotency_key: "behavior:71:run:9002:notification",
+			body: "A retry-safe Automation notification.",
+			idempotency_key: "automation:71:run:9002:notification",
 		};
 
 		const first = (await notify(args, {} as never, ctx)) as {
@@ -356,7 +356,7 @@ describe("resolveBotDeliveryTargets", () => {
 		expect(targets.map((t) => t.connectionId)).toEqual(["conn-2"]);
   });
 
-	it("routes a Behavior only to its configured channel and fails closed when that binding disappears", async () => {
+	it("routes an Automation only to its configured channel and fails closed when that binding disappears", async () => {
 		const org = await createTestOrganization();
 		const agent = await createTestAgent({
 			organizationId: org.id,
@@ -390,34 +390,34 @@ describe("resolveBotDeliveryTargets", () => {
 			  AND slug = 'slackinst-routing'
 		`;
 		const subscriptions = await sql<{
-			behavior_id: number;
+			automation_id: number;
 			channel_id: string;
 		}>`
-			SELECT behavior_id, channel_id
-			FROM behavior_message_subscriptions
+			SELECT automation_id, channel_id
+			FROM automation_message_subscriptions
 			WHERE organization_id = ${org.id}
-			ORDER BY behavior_id
+			ORDER BY automation_id
 		`;
 		const tasks = subscriptions.find((row) => row.channel_id === "slack:C_TASKS")!;
 		const finance = subscriptions.find((row) => row.channel_id === "slack:C_FINANCE")!;
 		await sql`
-			UPDATE watchers
+			UPDATE automations
 			SET delivery_target = ${sql.json({
 				connection_id: Number(connection.id),
 				channel_id: "slack:C_TASKS",
 			})}
-			WHERE id = ${finance.behavior_id}
+			WHERE id = ${finance.automation_id}
 		`;
 
 		const targeted = await resolveNotificationDeliveryPlan({
 			organizationId: org.id,
-			behaviorId: finance.behavior_id,
-			// A worker-supplied target cannot override the server-owned Behavior route.
+			automationId: finance.automation_id,
+			// A worker-supplied target cannot override the server-owned Automation route.
 			connectionId: "slackinst-routing",
 			channelId: "slack:C_FINANCE",
 		});
 		expect(targeted).toEqual({
-			strictBehaviorTarget: true,
+			strictAutomationTarget: true,
 			targets: [
 				{
 					connectionId: "slackinst-routing",
@@ -430,7 +430,7 @@ describe("resolveBotDeliveryTargets", () => {
 
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
-		const behaviorCtx = {
+		const automationCtx = {
 			organizationId: org.id,
 			userId: user.id,
 			memberRole: "owner",
@@ -440,35 +440,35 @@ describe("resolveBotDeliveryTargets", () => {
 			allowCrossOrg: true,
 			scopes: ["mcp:admin"],
 			sourceContext: null,
-			actingWatcherId: finance.behavior_id,
+			actingAutomationId: finance.automation_id,
 		} as ToolContext;
 		const repeatArgs = {
 			action: "send" as const,
-			title: "Strict Behavior delivery",
-			idempotency_key: "strict-behavior-delivery",
+			title: "Strict Automation delivery",
+			idempotency_key: "strict-automation-delivery",
 		};
 		const first = (await notify(
 			repeatArgs,
 			{} as never,
-			behaviorCtx,
+			automationCtx,
 		)) as { event_id: number | null };
 
-		await sql`UPDATE watchers SET status = 'archived' WHERE id = ${tasks.behavior_id}`;
+		await sql`UPDATE automations SET status = 'archived' WHERE id = ${tasks.automation_id}`;
 		const unavailable = await resolveNotificationDeliveryPlan({
 			organizationId: org.id,
-			behaviorId: finance.behavior_id,
+			automationId: finance.automation_id,
 		});
 		// #finance is still bound, but a stale strict #tasks target must never fan
 		// out there as a fallback.
 		expect(unavailable).toEqual({
-			strictBehaviorTarget: true,
+			strictAutomationTarget: true,
 			targets: [],
 		});
 
 		const retry = (await notify(
 			repeatArgs,
 			{} as never,
-			behaviorCtx,
+			automationCtx,
 		)) as { event_id: number | null; notified_count: number };
 		expect(retry).toMatchObject({
 			event_id: first.event_id,
@@ -477,9 +477,9 @@ describe("resolveBotDeliveryTargets", () => {
 
 		await expect(
 			notify(
-				{ action: "send", title: "New strict Behavior delivery" },
+				{ action: "send", title: "New strict Automation delivery" },
 				{} as never,
-				behaviorCtx,
+				automationCtx,
 			),
 		).rejects.toThrow(/delivery channel is no longer available/);
 	});

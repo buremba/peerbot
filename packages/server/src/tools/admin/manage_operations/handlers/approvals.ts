@@ -8,9 +8,9 @@ import {
 import type { Static } from "@sinclair/typebox";
 import {
 	agentExistsInOrg,
-	resolveWatcherOwner,
+	resolveAutomationOwner,
 	resolveWritePolicyDecision,
-	watcherIdFromPrincipalId,
+	automationIdFromPrincipalId,
 } from "../../../../authz/entity-policy";
 import { type DbClient, getDb, parsePgNumberArray, pgTextArray } from "../../../../db/client";
 import { lockResolutionCandidate, wasResolutionRejected } from "../../../../entity-resolution/rejection";
@@ -47,10 +47,10 @@ import {
 	type ManageAgentsProposal,
 } from "../../manage_agents";
 import {
-	applyManageBehaviorsProposal,
-	MANAGE_BEHAVIORS_ACTION_KEY,
-	type ManageBehaviorsProposal,
-} from "../../manage_behaviors";
+	applyManageAutomationsProposal,
+	MANAGE_AUTOMATIONS_ACTION_KEY,
+	type ManageAutomationsProposal,
+} from "../../manage_automations";
 import { executeOperationInline } from "./execute";
 import { qualifiedOperationKey } from "./shared";
 /**
@@ -171,7 +171,7 @@ async function resolveReviewer(
 
 /**
  * Builder-gate approval handler: the per-family knobs the ONE generic
- * claim/approve/reject path varies over. manage_agents and manage_behaviors both
+ * claim/approve/reject path varies over. manage_agents and manage_automations both
  * queue a pending `run_type='internal'` run keyed by `action_key`, hold the
  * proposal in `action_input`, and apply it via `apply(proposal, ctx, env,
  * ownerUserId)` on approval — so the whole lifecycle is shared and only these
@@ -180,7 +180,7 @@ async function resolveReviewer(
 interface BuilderApprovalHandler {
 	/** `runs.action_key` this family's pending rows carry. */
 	actionKey: string;
-	/** Noun for the result message, e.g. "Agent" / "Behavior". */
+	/** Noun for the result message, e.g. "Agent" / "Automation". */
 	nounLabel: string;
 	/** The proposal shape stored in `action_input` is valid for this family. */
 	isValidProposal(proposal: unknown): boolean;
@@ -213,21 +213,21 @@ interface BuilderApprovalHandler {
 	): string | null;
 	/**
 	 * Optional soft-failure detector for handlers that return `{ error }` /
-	 * partial-failure summaries instead of throwing (manage_behaviors). A non-null
+	 * partial-failure summaries instead of throwing (manage_automations). A non-null
 	 * string marks the apply failed even though it didn't throw.
 	 */
 	detectSoftFailure?(output: unknown): string | null;
 }
 
 /**
- * Soft failures from manage_behaviors write handlers that return errors instead
+ * Soft failures from manage_automations write handlers that return errors instead
  * of throwing. create throws (ToolUserError); update returns `{ error: string }`
  * for invalid cron/timezone; delete returns a summary with per-id results and
  * never throws on individual archive failures. Partial delete success (some
  * succeeded, some failed) is treated as completed — the summary is preserved in
  * action_output so the reviewer can see which ids failed.
  */
-function detectManageBehaviorsApplyFailure(output: unknown): string | null {
+function detectManageAutomationsApplyFailure(output: unknown): string | null {
 	if (!output || typeof output !== "object") return null;
 	const result = output as Record<string, unknown>;
 	if (result.error) {
@@ -246,15 +246,15 @@ function detectManageBehaviorsApplyFailure(output: unknown): string | null {
 	) {
 		const total =
 			typeof summary.total === "number" ? summary.total : summary.failed;
-		return `Behavior delete failed: 0 of ${total} succeeded`;
+		return `Automation delete failed: 0 of ${total} succeeded`;
 	}
 	return null;
 }
 
 // Lazy: BUILDER_APPROVAL_HANDLERS used to be a top-level const that read
-// MANAGE_BEHAVIORS_ACTION_KEY during module init. Under the circular graph
-// manage_operations → dispatch-chrome / manage_behaviors → … → manage_operations,
-// that access hit TDZ and red-failed CI unit (`Cannot access 'MANAGE_BEHAVIORS_ACTION_KEY'
+// MANAGE_AUTOMATIONS_ACTION_KEY during module init. Under the circular graph
+// manage_operations → dispatch-chrome / manage_automations → … → manage_operations,
+// that access hit TDZ and red-failed CI unit (`Cannot access 'MANAGE_AUTOMATIONS_ACTION_KEY'
 // before initialization`). Defer until first call after all modules settle.
 let builderApprovalHandlers: BuilderApprovalHandler[] | null = null;
 function getBuilderApprovalHandlers(): BuilderApprovalHandler[] {
@@ -272,19 +272,19 @@ function getBuilderApprovalHandlers(): BuilderApprovalHandler[] {
 			},
 		},
 		{
-			actionKey: MANAGE_BEHAVIORS_ACTION_KEY,
-			nounLabel: "Behavior",
+			actionKey: MANAGE_AUTOMATIONS_ACTION_KEY,
+			nounLabel: "Automation",
 			isValidProposal: (p) =>
-				(p as ManageBehaviorsProposal | null)?.args != null,
+				(p as ManageAutomationsProposal | null)?.args != null,
 			apply: (p, ctx, env, owner) =>
-				applyManageBehaviorsProposal(
-					p as ManageBehaviorsProposal,
+				applyManageAutomationsProposal(
+					p as ManageAutomationsProposal,
 					ctx,
 					env,
 					owner,
 				),
-			describe: (p) => (p as ManageBehaviorsProposal).args.action,
-			detectSoftFailure: detectManageBehaviorsApplyFailure,
+			describe: (p) => (p as ManageAutomationsProposal).args.action,
+			detectSoftFailure: detectManageAutomationsApplyFailure,
 		},
 		{
 			// An agent-authored ask. Unlike the builder families there is no held
@@ -747,7 +747,7 @@ async function isPendingEntityRunOwner(
  * user session, never from any non-human context. This is the security floor
  * beneath {@link requireApprovalAuthority}'s role check.
  *
- * Rejecting `ctx.clientId` alone is not enough: an in-process watcher/system
+ * Rejecting `ctx.clientId` alone is not enough: an in-process automation/system
  * context runs with `userId=null` and NO client id, so it would slip past a
  * client-id-only guard AND past {@link isSystemContext}'s role bypass — letting
  * an automation approve a run it queued (sol review #3). We therefore require a
@@ -855,7 +855,7 @@ async function tryApproveEntityChangeRun(
 			"stale" in result
 				? Object.keys((result as { stale: Record<string, unknown> }).stale)
 				: [];
-		// The human re-edited every proposed field after the watcher queued this — the
+		// The human re-edited every proposed field after the automation queued this — the
 		// proposal is stale. Resolve the run without clobbering the newer human value.
 		const allStale =
 			operation === "update" &&
@@ -896,7 +896,7 @@ async function tryApproveEntityChangeRun(
 			run_id: args.run_id,
 			event_id: eventId,
 			message: allStale
-				? `Field change skipped: ${staleFields.join(", ")} was changed by a human after the Behavior proposed it.`
+				? `Field change skipped: ${staleFields.join(", ")} was changed by a human after the Automation proposed it.`
 				: operation === "update"
 					? `Field change approved and applied: ${description}.`
 					: `Entity ${operation} approved and applied: ${description}.`,
@@ -1033,7 +1033,7 @@ async function tryApproveEntityChangeRun(
 			ctx.organizationId,
 			"rejected",
 			"entity_merge — rejected",
-			"This unchanged duplicate candidate was already rejected in another Behavior run.",
+			"This unchanged duplicate candidate was already rejected in another Automation run.",
 			{
 				reject_reason: "The same resolution candidate was already rejected",
 			},
@@ -1043,7 +1043,7 @@ async function tryApproveEntityChangeRun(
 		requireApprovalCard(args.run_id, eventId, "rejected");
 		return {
 			error:
-				"This duplicate candidate was already rejected. Refresh the Behavior run.",
+				"This duplicate candidate was already rejected. Refresh the Automation run.",
 		};
 	};
 
@@ -1229,14 +1229,14 @@ export async function handleApprove(
 	const reconciled = await tryReconcileTerminalization(args, ctx, reviewer);
 	if (reconciled) return reconciled;
 
-	// Builder-gate runs (manage_agents / manage_behaviors create/update/delete)
+	// Builder-gate runs (manage_agents / manage_automations create/update/delete)
 	// reuse this same durable approval path but have run_type='internal' + no
 	// connection. One generic path applies them via their registered handler
 	// rather than the connector-operation executor.
 	const builderResult = await tryApproveBuilderRun(args, ctx, env);
 	if (builderResult) return builderResult;
 
-	// Watcher field-change gate (run_type='internal', action_key='entity_field_change'):
+	// Automation field-change gate (run_type='internal', action_key='entity_field_change'):
 	// approve applies the proposed value to the entity (now human-owned).
 	const fieldChangeResult = await tryApproveEntityChangeRun(args, ctx, env);
 	if (fieldChangeResult) return fieldChangeResult;
@@ -1285,18 +1285,18 @@ export async function handleApprove(
 	);
 	const recheckPrincipalKind =
 		pendingRun.policy_principal_kind === "agent" ||
-		pendingRun.policy_principal_kind === "watcher"
+		pendingRun.policy_principal_kind === "automation"
 			? pendingRun.policy_principal_kind
 			: "user";
-	// A watcher-attributed run must fold its OWNING AGENT'S envelope at recheck too,
+	// An automation-attributed run must fold its OWNING AGENT'S envelope at recheck too,
 	// exactly as at queue time — else an agent-level deny installed before approval
-	// would be missed. Re-resolve the owner from the persisted `watcher:<id>` id
+	// would be missed. Re-resolve the owner from the persisted `automation:<id>` id
 	// (no need to persist it separately).
-	const recheckWatcherId = watcherIdFromPrincipalId(
+	const recheckAutomationId = automationIdFromPrincipalId(
 		pendingRun.policy_principal_id,
 	);
-	// Re-resolve the principal's resolvability from persistence. A WATCHER principal
-	// re-resolves its owning agent via `watcher:<id>`. A direct AGENT principal must be
+	// Re-resolve the principal's resolvability from persistence. A AUTOMATION principal
+	// re-resolves its owning agent via `automation:<id>`. A direct AGENT principal must be
 	// existence-checked too: if the agent was DELETED between queue and approve, the
 	// r16 cascade removed its deny/approval rows, so folding candidates for a gone
 	// agent would fall back to the looser org default (connector_action → auto) and let
@@ -1305,10 +1305,10 @@ export async function handleApprove(
 	// cancelling the approval. (Same fail-closed invariant resolveActingPrincipal
 	// enforces for live sessions; this is the persisted-principal path.)
 	let recheckOwner: { ownerAgentId: string | null; resolved: boolean };
-	if (recheckWatcherId != null) {
-		recheckOwner = await resolveWatcherOwner(
+	if (recheckAutomationId != null) {
+		recheckOwner = await resolveAutomationOwner(
 			sql,
-			recheckWatcherId,
+			recheckAutomationId,
 			ctx.organizationId,
 		);
 	} else if (
@@ -1558,7 +1558,7 @@ export async function handleReject(
 	const builderReject = await tryRejectBuilderRun(args, ctx, reason, reviewer);
 	if (builderReject) return builderReject;
 
-	// Watcher field-change gate? Cancel it; the entity keeps its human-owned value.
+	// Automation field-change gate? Cancel it; the entity keeps its human-owned value.
 	const fieldChangeReject = await tryRejectEntityChangeRun(args, ctx);
 	if (fieldChangeReject) return fieldChangeReject;
 
@@ -1601,7 +1601,7 @@ export async function handleReject(
 	};
 }
 
-/** Pending proposal runs a single watcher run produced, grouped by its window. */
+/** Pending proposal runs a single automation run produced, grouped by its window. */
 async function pendingRunIdsForWindow(
 	windowId: number,
 	organizationId: string,
@@ -1626,7 +1626,7 @@ async function pendingRunIdsForWindow(
  *
  * At least one narrowing filter is REQUIRED. Batch approve fires queued side
  * effects en masse, so there is deliberately no "everything pending in the org"
- * shape: the caller must name the connection, connector, operation, or Behavior
+ * shape: the caller must name the connection, connector, operation, or Automation
  * they are deciding for. `older_than_days` only narrows further.
  */
 async function pendingActionRunIdsForScope(
@@ -1637,11 +1637,11 @@ async function pendingActionRunIdsForScope(
 		scope.connection_id !== undefined ||
 		scope.connector_key !== undefined ||
 		scope.action_key !== undefined ||
-		scope.behavior_id !== undefined;
+		scope.automation_id !== undefined;
 	if (!hasNarrowingFilter) {
 		return {
 			error:
-				"A batch decision must be scoped: provide at least one of connection_id, connector_key, action_key, or behavior_id. Approving every pending operation in the organization is not supported.",
+				"A batch decision must be scoped: provide at least one of connection_id, connector_key, action_key, or automation_id. Approving every pending operation in the organization is not supported.",
 		};
 	}
 
@@ -1658,10 +1658,10 @@ async function pendingActionRunIdsForScope(
 	if (scope.action_key !== undefined) {
 		where = sql`${where} AND r.action_key = ${scope.action_key}`;
 	}
-	if (scope.behavior_id !== undefined) {
+	if (scope.automation_id !== undefined) {
 		where = sql`${where}
-      AND r.policy_principal_kind = 'watcher'
-      AND r.policy_principal_id = ${`watcher:${scope.behavior_id}`}`;
+      AND r.policy_principal_kind = 'automation'
+      AND r.policy_principal_id = ${`automation:${scope.automation_id}`}`;
 	}
 	if (scope.older_than_days !== undefined) {
 		where = sql`${where} AND r.created_at < NOW() - (${scope.older_than_days}::int * interval '1 day')`;
@@ -1700,7 +1700,7 @@ async function resolveBatchRunIds(
 	}
 	return {
 		error:
-			"A batch decision requires a target: pass window_id (a Behavior run's proposals) or scope (queued connector operations).",
+			"A batch decision requires a target: pass window_id (an Automation run's proposals) or scope (queued connector operations).",
 	};
 }
 
@@ -1747,7 +1747,7 @@ async function requireBatchApprovalAuthority(
  * first mutation, then enforced again by each single-run path, so whoever may
  * approve every row individually is exactly who may bulk-approve them.
  *
- * The target is either a window (a Behavior run's proposals) or an explicit
+ * The target is either a window (an Automation run's proposals) or an explicit
  * scope over queued connector operations. There is no unscoped variant: batch
  * approve fires real side effects en masse, so the blast radius must always be
  * named by the caller.
@@ -1803,18 +1803,18 @@ export async function handleApproveBatch(
 }
 
 /**
- * The watcher + touched entities behind a window's proposal runs. Resolved from
- * the change_set event the watcher run recorded for this window (it carries both
- * watcher_id and the entity_ids the run touched), so the rejection feedback can
- * be keyed to the watcher and associated with those entities.
+ * The automation + touched entities behind a window's proposal runs. Resolved from
+ * the change_set event the automation run recorded for this window (it carries both
+ * automation_id and the entity_ids the run touched), so the rejection feedback can
+ * be keyed to the automation and associated with those entities.
  */
 async function resolveWindowRevisionContext(
 	windowId: number,
 	organizationId: string,
-): Promise<{ watcherId: number | null; entityIds: number[] }> {
+): Promise<{ automationId: number | null; entityIds: number[] }> {
 	const sql = getDb();
-	const rows = await sql<{ watcher_id: string | null; entity_ids: unknown }>`
-    SELECT (metadata->>'watcher_id')::bigint AS watcher_id, entity_ids
+	const rows = await sql<{ automation_id: string | null; entity_ids: unknown }>`
+    SELECT (metadata->>'automation_id')::bigint AS automation_id, entity_ids
     FROM events
     WHERE organization_id = ${organizationId}
       AND semantic_type = 'change_set'
@@ -1822,9 +1822,9 @@ async function resolveWindowRevisionContext(
     ORDER BY id DESC
     LIMIT 1
   `;
-	if (rows.length === 0) return { watcherId: null, entityIds: [] };
+	if (rows.length === 0) return { automationId: null, entityIds: [] };
 	return {
-		watcherId: rows[0].watcher_id != null ? Number(rows[0].watcher_id) : null,
+		automationId: rows[0].automation_id != null ? Number(rows[0].automation_id) : null,
 		// entity_ids arrives as a raw PG array string under fetch_types:false — never
 		// call .map on it directly. parsePgNumberArray handles both string and array.
 		entityIds: parsePgNumberArray(rows[0].entity_ids),
@@ -1832,12 +1832,12 @@ async function resolveWindowRevisionContext(
 }
 
 /**
- * Reject every pending proposal a watcher run produced, feeding the reason back
- * so the watcher's next run revises (the conversational revision loop — no inline
+ * Reject every pending proposal an automation run produced, feeding the reason back
+ * so the automation's next run revises (the conversational revision loop — no inline
  * diff editor). Reuses the single-run reject path per proposal, then records the
- * reason as a `correction` feedback event keyed to the watcher — the SAME channel
- * getRecentFeedbackSummary injects into future watcher runs. That closes the loop
- * for real: the run view shows why the batch was rejected AND the watcher's next
+ * reason as a `correction` feedback event keyed to the automation — the SAME channel
+ * getRecentFeedbackSummary injects into future automation runs. That closes the loop
+ * for real: the run view shows why the batch was rejected AND the automation's next
  * turn reads "Past Corrections from User Feedback" and adjusts, rather than the
  * feedback sitting inert (sol review #10).
  */
@@ -1866,18 +1866,18 @@ export async function handleRejectBatch(
 		if (!("error" in result)) rejected += 1;
 	}
 	// The `correction` feedback event is a WINDOW concept — it is keyed to the
-	// watcher that produced the proposals so its next turn reads the rejection
+	// automation that produced the proposals so its next turn reads the rejection
 	// and revises. A scope-targeted batch over queued connector operations has no
 	// such producing run, so it records no correction; each rejected row still
 	// supersedes its own card through the single-run reject path.
 	if (rejected > 0 && args.window_id !== undefined) {
-		const { watcherId, entityIds } = await resolveWindowRevisionContext(
+		const { automationId, entityIds } = await resolveWindowRevisionContext(
 			args.window_id,
 			ctx.organizationId,
 		);
 		// A `correction` event — the durable, run-linked revision channel. Keyed to
-		// the watcher (getRecentFeedbackSummary reads by watcher_id) and associated
-		// with the entities the run touched, so both the watcher's next turn and the
+		// the automation (getRecentFeedbackSummary reads by automation_id) and associated
+		// with the entities the run touched, so both the automation's next turn and the
 		// entity/run views surface it. field_path='$batch_reject' marks it a
 		// whole-run rejection (distinct from a single-field correction); the reason
 		// rides `note`, which the summary renders verbatim.
@@ -1890,9 +1890,9 @@ export async function handleRejectBatch(
 			semanticType: "correction",
 			createdBy: ctx.userId ?? null,
 			metadata: {
-				kind: "watcher_batch_reject",
+				kind: "automation_batch_reject",
 				window_id: args.window_id,
-				watcher_id: watcherId,
+				automation_id: automationId,
 				field_path: "$batch_reject",
 				mutation: "set",
 				note: reason,
@@ -1912,7 +1912,7 @@ export async function handleRejectBatch(
 					? "No pending proposals for this run."
 					: "No pending approvals matched this scope."
 				: args.window_id !== undefined
-				? `Rejected ${rejected} proposals. The Behavior's next run will see this feedback and revise.`
+				? `Rejected ${rejected} proposals. The Automation's next run will see this feedback and revise.`
 					: `Rejected ${rejected} queued operations.`,
 	};
 }

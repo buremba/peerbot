@@ -1,10 +1,10 @@
 /**
  * Scoring an eval replay (evals PR 4, lobu#2564).
  *
- * A `behavior_eval` run executes under capture mode: it does the same reads and
+ * A `automation_eval` run executes under capture mode: it does the same reads and
  * the same reasoning a live run does, but every write is recorded onto
  * `runs.dry_run_preview` instead of committed. That preview is therefore the
- * complete, honest record of what the Behavior produced — and it is what this
+ * complete, honest record of what the Automation produced — and it is what this
  * module scores.
  *
  * Two kinds of metric, kept deliberately separate:
@@ -27,7 +27,7 @@
  * run cannot double-write. Rescoring supersedes the head rather than editing it.
  *
  * The request-path rule holds: nothing reads these events to answer "how good is
- * this Behavior". The pass fraction is stamped onto the `watchers` row here, at
+ * this Automation". The pass fraction is stamped onto the `automations` row here, at
  * write time, so the surface that eventually renders it reads a column rather
  * than aggregating history.
  */
@@ -45,7 +45,7 @@ import {
 	EVAL_CASE_NAMESPACE,
 	evalCaseIdentifierFromRunKey,
 } from "./eval-cases.js";
-import { BEHAVIOR_EVAL_RUN_TYPE } from "./run-types.js";
+import { AUTOMATION_EVAL_RUN_TYPE } from "./run-types.js";
 
 /** `semantic_type` of a score event. */
 const EVAL_SCORE_SEMANTIC_TYPE = "eval_score";
@@ -81,7 +81,7 @@ export type ScoreEvalRunResult =
 	| {
 			ok: true;
 			runId: number;
-			behaviorId: number;
+			automationId: number;
 			verdicts: EvalMetricVerdict[];
 			/** Pass fraction across the verdicts actually produced. */
 			qualityScore: number;
@@ -105,7 +105,7 @@ export type ScoreEvalRunResult =
  *
  * The full terminal set `runs_status_check` allows, matching
  * `check-stalled-executions.ts`. `timeout` in particular is NOT optional:
- * `markStaleRunsAsTimeout` runs over `BEHAVIOR_RUN_TYPES`, so a crashed or
+ * `markStaleRunsAsTimeout` runs over `AUTOMATION_RUN_TYPES`, so a crashed or
  * abandoned eval reaches `timeout` and never any other terminal status.
  * Omitting it would silently drop exactly the runs worth measuring — an eval
  * that hung is a `completed_window` FAILURE, not an unscoreable run.
@@ -135,7 +135,7 @@ const JUDGE_TIMEOUT_MS = 30_000;
 interface EvalRunRow {
 	id: number;
 	organization_id: string;
-	behavior_id: number;
+	automation_id: number;
 	status: string;
 	dry_run_preview: Record<string, unknown> | null;
 	idempotency_key: string | null;
@@ -159,7 +159,7 @@ interface CaptureRecord {
 }
 
 /**
- * Did the run terminate through the Behavior protocol?
+ * Did the run terminate through the Automation protocol?
  *
  * `captured: 'complete_window'` is written by the ONE capture branch in
  * `complete-window.ts`, so its presence is proof the agent called the tool.
@@ -248,7 +248,7 @@ export function parseJudgeVerdict(
  * honestly: no expectation, no resolvable provider, a transport failure, or a
  * reply that is not a verdict. That is the whole point of returning null rather
  * than a 0: an unasked question must never be recorded as a failed one, because
- * the pass fraction would then punish a Behavior for the platform's outage.
+ * the pass fraction would then punish an Automation for the platform's outage.
  *
  * `judgeModelRef` should name a model DIFFERENT from the one under eval
  * (self-preference bias); the caller owns that choice.
@@ -376,7 +376,7 @@ async function findCaseForRun(
 }
 
 /**
- * Score one terminal eval run: write its metric events and stamp the Behavior.
+ * Score one terminal eval run: write its metric events and stamp the Automation.
  *
  * Idempotent. Re-scoring the same run supersedes each metric's chain head
  * rather than appending a second live row, so the metrics layer always sees
@@ -389,7 +389,7 @@ export async function scoreEvalRun(
 	const sql = db ?? getDb();
 
 	const rows = (await sql`
-    SELECT id, organization_id, watcher_id AS behavior_id, status, run_type,
+    SELECT id, organization_id, automation_id AS automation_id, status, run_type,
            dry_run_preview, idempotency_key
     FROM runs
     WHERE id = ${params.runId}
@@ -397,7 +397,7 @@ export async function scoreEvalRun(
   `) as unknown as Array<{
 		id: number | string;
 		organization_id: string | null;
-		behavior_id: number | null;
+		automation_id: number | null;
 		status: string;
 		run_type: string;
 		dry_run_preview: unknown;
@@ -406,14 +406,14 @@ export async function scoreEvalRun(
 	if (rows.length === 0) return { ok: false, reason: "not_found" };
 
 	// Read the discriminator off the row rather than trusting the caller:
-	// scoring a live Behavior run would stamp production quality from a run
+	// scoring a live Automation run would stamp production quality from a run
 	// nobody ever evaluated.
-	if (rows[0].run_type !== BEHAVIOR_EVAL_RUN_TYPE) {
+	if (rows[0].run_type !== AUTOMATION_EVAL_RUN_TYPE) {
 		return { ok: false, reason: "not_an_eval_run" };
 	}
 
 	const row = rows[0] as unknown as EvalRunRow;
-	if (!row.organization_id || row.behavior_id == null) {
+	if (!row.organization_id || row.automation_id == null) {
 		return { ok: false, reason: "not_found" };
 	}
 	if (!TERMINAL_RUN_STATUSES.includes(row.status)) {
@@ -426,7 +426,7 @@ export async function scoreEvalRun(
 			: {};
 
 	const organizationId = row.organization_id;
-	const behaviorId = Number(row.behavior_id);
+	const automationId = Number(row.automation_id);
 
 	const evalCase = await findCaseForRun(
 		sql,
@@ -483,24 +483,24 @@ export async function scoreEvalRun(
 				sql: tx,
 				organizationId,
 				runId: Number(row.id),
-				behaviorId,
+				automationId,
 				caseEntityId: evalCase?.entityId ?? null,
 				createdBy,
 				verdict,
 			});
 		}
 
-		// Materialize at WRITE time so a reader gets it from the `watchers` row it
+		// Materialize at WRITE time so a reader gets it from the `automations` row it
 		// already selects and never aggregates the events above. The guard keeps an
 		// OLD run scored late (another replica, a later queue tick) from overwriting
 		// a newer run's stamp: the queue only orders within a batch, so nothing else
-		// stops out-of-order scoring from regressing the Behavior's latest picture.
+		// stops out-of-order scoring from regressing the Automation's latest picture.
 		await tx`
-      UPDATE watchers
+      UPDATE automations
       SET latest_eval_score = ${qualityScore},
           latest_eval_at = current_timestamp,
           latest_eval_run_id = ${Number(row.id)}
-      WHERE id = ${behaviorId}
+      WHERE id = ${automationId}
         AND organization_id = ${organizationId}
         AND (latest_eval_run_id IS NULL OR latest_eval_run_id <= ${Number(row.id)})
     `;
@@ -518,7 +518,7 @@ export async function scoreEvalRun(
 	logger.info(
 		{
 			runId: Number(row.id),
-			behaviorId,
+			automationId,
 			caseEntityId: evalCase?.entityId ?? null,
 			metrics: verdicts.map((v) => `${v.metric}=${v.passed ? "pass" : "fail"}`),
 			qualityScore,
@@ -529,7 +529,7 @@ export async function scoreEvalRun(
 	return {
 		ok: true,
 		runId: Number(row.id),
-		behaviorId,
+		automationId,
 		verdicts,
 		qualityScore,
 		caseEntityId: evalCase?.entityId ?? null,
@@ -596,7 +596,7 @@ async function pushCaseScore(
 	// Newest run first, always: `readEvalResults` groups positionally, so a run
 	// scored late (a retry after newer runs) must not land at position 0 and
 	// corrupt the latest-vs-previous split. Same out-of-order hazard the
-	// watchers stamp guards, deduplicated here against the window cap.
+	// automations stamp guards, deduplicated here against the window cap.
 	const next = [
 		entry,
 		...existing.filter((e) => Number(e?.run_id) !== entry.run_id),
@@ -623,7 +623,7 @@ async function writeScoreEvent(params: {
 	sql: DbClient;
 	organizationId: string;
 	runId: number;
-	behaviorId: number;
+	automationId: number;
 	caseEntityId: number | null;
 	createdBy: string;
 	verdict: EvalMetricVerdict;
@@ -654,7 +654,7 @@ async function writeScoreEvent(params: {
 			content: null,
 			payloadData: {
 				run_id: params.runId,
-				behavior_id: params.behaviorId,
+				automation_id: params.automationId,
 				metric: verdict.metric,
 				score: verdict.score,
 				passed: verdict.passed,
@@ -666,7 +666,7 @@ async function writeScoreEvent(params: {
 			// `entities.metadata->'aliases'`, which `$eval_case` does not carry.)
 			metadata: {
 				run_id: params.runId,
-				behavior_id: params.behaviorId,
+				automation_id: params.automationId,
 				metric: verdict.metric,
 			},
 			runId: params.runId,

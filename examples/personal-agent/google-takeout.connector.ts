@@ -63,7 +63,7 @@ export default class GoogleTakeoutConnector extends ConnectorRuntime<
     key: "google.takeout",
     name: "Google Takeout",
     // Minor bump for the added `maps` feed. Connector source is retained per
-    // version, so shipping new behaviour under 1.0.0 would overwrite the
+    // version, so shipping new semantics under 1.0.0 would overwrite the
     // existing artifact and leave version-pinned runs and rollback pointing at
     // code that no longer matches.
     version: "1.1.0",

@@ -32,13 +32,13 @@ export interface ContentSearchOptions {
    * never retrieve them through the public read path.
    */
   exclude_workspace_audit?: boolean;
-  window_id?: number; // Filter by watcher window ID
-  /** Events linked in any window for this watcher (`watcher_window_events`). */
-  analyzed_by_watcher_id?: number;
-  exclude_watcher_id?: number; // Exclude content already in any window for this watcher
-  /** Restrict to events this Behavior WROTE (events.behavior_id). The
-   *  counterpart to analyzed_by_watcher_id, which is what it READ. */
-  produced_by_behavior_id?: number;
+  window_id?: number; // Filter by automation window ID
+  /** Events linked in any window for this automation (`automation_window_events`). */
+  analyzed_by_automation_id?: number;
+  exclude_automation_id?: number; // Exclude content already in any window for this automation
+  /** Restrict to events this Automation WROTE (events.automation_id). The
+   *  counterpart to analyzed_by_automation_id, which is what it READ. */
+  produced_by_automation_id?: number;
   platform?: string;
   since?: string; // ISO date or relative ("7d", "30d")
   until?: string; // ISO date
@@ -94,7 +94,7 @@ export interface ContentSearchOptions {
 
   // Ranking tuning. combined_score = vector_weight*cosine + (1-vector_weight)*text_rank
   // when both signals are available. Defaults to 0.6 (60% vector, 40% text) which
-  // matches the prior hard-coded behavior. Raise toward 1.0 for noisy/long-form content
+  // matches the prior hard-coded weighting. Raise toward 1.0 for noisy/long-form content
   // where text rank is dominated by stopword-like matches (e.g. conversational logs).
   vector_weight?: number;
 
@@ -119,8 +119,8 @@ export interface ContentSearchResult {
   feed_id?: number | null;
   feed_key?: string | null;
   feed_name?: string | null;
-  behavior_id?: number | null;
-  behavior_name?: string | null;
+  automation_id?: number | null;
+  automation_name?: string | null;
   payload_text: string;
   title: string | null;
   author_name: string | null;

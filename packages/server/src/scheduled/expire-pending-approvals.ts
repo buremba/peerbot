@@ -16,12 +16,12 @@
  * not overlap in the horizons they cover.
  *
  * 'expired' is a distinct value, not a reuse of 'rejected': rejection is a HUMAN
- * decision the batch-reject path feeds back to the Behavior as a `correction` to
+ * decision the batch-reject path feeds back to the Automation as a `correction` to
  * learn from, while expiry is the system giving up on an undecided run. An agent
  * must not train on silence as if it were disapproval.
  *
  * Scope is both human-gated lanes — `action` (connector operations) and
- * `internal` (builder / entity-change / Behavior proposals). Nothing else can
+ * `internal` (builder / entity-change / Automation proposals). Nothing else can
  * hold `approval_status='pending'`.
  *
  * Fairness + throughput: candidates are selected round-robin across

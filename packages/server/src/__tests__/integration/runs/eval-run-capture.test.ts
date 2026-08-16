@@ -1,6 +1,6 @@
 /**
- * End-to-end shape of an eval replay: a real Behavior run is cloned into a
- * `behavior_eval` run, the execution path accepts it, and the scheduling and
+ * End-to-end shape of an eval replay: a real Automation run is cloned into a
+ * `automation_eval` run, the execution path accepts it, and the scheduling and
  * health predicates do not see it.
  */
 
@@ -12,18 +12,18 @@ import {
 } from "../../setup/test-fixtures";
 import { createEvalRun } from "../../../runs/eval-runs";
 import {
-	BEHAVIOR_EVAL_RUN_TYPE,
+	AUTOMATION_EVAL_RUN_TYPE,
 	executionModeForRunType,
 } from "../../../runs/run-types";
 
 const sql = getTestDb();
 
 let organizationId: string;
-let behaviorId: number;
+let automationId: number;
 let sourceRunId: number;
 
 const payload = {
-	watcher_id: 0,
+	automation_id: 0,
 	// A server-dispatchable source: `createEvalRun` refuses device-pinned and
 	// manual-open runs, because neither eval lane could ever claim the clone.
 	agent_id: "11111111-2222-3333-4444-555555555555",
@@ -34,9 +34,9 @@ const payload = {
 };
 
 beforeAll(async () => {
-	// Start from an empty schema. Behavior ids are handed out by a MAX(id)+1
-	// helper, not by `watchers_id_seq`, so any earlier file that created a
-	// Behavior leaves the sequence BEHIND the table — and the explicit
+	// Start from an empty schema. Automation ids are handed out by a MAX(id)+1
+	// helper, not by `automations_id_seq`, so any earlier file that created an
+	// Automation leaves the sequence BEHIND the table — and the explicit
 	// `nextval` below then collides on `insights_pkey`. Truncating first keeps
 	// this suite independent of what ran before it.
 	await cleanupTestDatabase();
@@ -45,28 +45,28 @@ beforeAll(async () => {
 	organizationId = org.id;
 	const creator = await createTestUser();
 
-	// watchers.watcher_group_id is NOT NULL and self-referential for a new
-	// Behavior — mint the id first, same shape as operations-getrun-internal.
-	const [behavior] = (await sql`
+	// automations.automation_group_id is NOT NULL and self-referential for a new
+	// Automation — mint the id first, same shape as operations-getrun-internal.
+	const [automation] = (await sql`
     WITH next_id AS (
-      SELECT nextval('watchers_id_seq')::integer AS id
+      SELECT nextval('automations_id_seq')::integer AS id
     )
-    INSERT INTO watchers (
-      id, watcher_group_id, organization_id, created_by, name, slug, schedule, status
+    INSERT INTO automations (
+      id, automation_group_id, organization_id, created_by, name, slug, schedule, status
     )
     SELECT id, id, ${organizationId}, ${creator.id}, 'Eval Source', 'eval-src', '0 * * * *', 'active'
     FROM next_id
     RETURNING id
   `) as unknown as Array<{ id: number }>;
-	behaviorId = Number(behavior.id);
+	automationId = Number(automation.id);
 
 	const [run] = await sql<{ id: number }[]>`
     INSERT INTO runs (
-      organization_id, run_type, watcher_id, approval_status, status,
+      organization_id, run_type, automation_id, approval_status, status,
       approved_input, completed_at, created_at
     ) VALUES (
-      ${organizationId}, 'behavior', ${behaviorId}, 'auto', 'completed',
-      ${sql.json({ ...payload, watcher_id: behaviorId })},
+      ${organizationId}, 'automation', ${automationId}, 'auto', 'completed',
+      ${sql.json({ ...payload, automation_id: automationId })},
       current_timestamp, current_timestamp
     )
     RETURNING id
@@ -87,7 +87,7 @@ describe("createEvalRun", () => {
 		>`
       SELECT run_type, status, approved_input FROM runs WHERE id = ${result?.runId ?? 0}
     `;
-		expect(row.run_type).toBe(BEHAVIOR_EVAL_RUN_TYPE);
+		expect(row.run_type).toBe(AUTOMATION_EVAL_RUN_TYPE);
 		expect(row.status).toBe("pending");
 		// The window and version must match the original question exactly.
 		expect(row.approved_input.window_start).toBe(payload.window_start);
@@ -98,7 +98,7 @@ describe("createEvalRun", () => {
 	test("the cloned run resolves to capture mode", async () => {
 		const [row] = await sql<{ run_type: string }[]>`
       SELECT run_type FROM runs
-      WHERE run_type = ${BEHAVIOR_EVAL_RUN_TYPE} AND watcher_id = ${behaviorId}
+      WHERE run_type = ${AUTOMATION_EVAL_RUN_TYPE} AND automation_id = ${automationId}
       LIMIT 1
     `;
 		expect(executionModeForRunType(row.run_type)).toBe("capture");
@@ -110,7 +110,7 @@ describe("createEvalRun", () => {
 
 		const [{ count }] = await sql<{ count: string }[]>`
       SELECT count(*) AS count FROM runs
-      WHERE idempotency_key = ${`behavior_eval:${sourceRunId}:case-1`}
+      WHERE idempotency_key = ${`automation_eval:${sourceRunId}:case-1`}
     `;
 		expect(Number(count)).toBe(1);
 	});
@@ -121,7 +121,7 @@ describe("createEvalRun", () => {
 		expect(second?.runId).not.toBe(sourceRunId);
 	});
 
-	test("refuses to replay something that is not a Behavior run", async () => {
+	test("refuses to replay something that is not an Automation run", async () => {
 		const [sync] = await sql<{ id: number }[]>`
       INSERT INTO runs (organization_id, run_type, status, created_at)
       VALUES (${organizationId}, 'sync', 'completed', current_timestamp)
@@ -133,7 +133,7 @@ describe("createEvalRun", () => {
 	});
 
 	// A clone no lane can claim would sit `pending` forever, and since the claim
-	// guards are same-lane it would wedge every later eval of that Behavior.
+	// guards are same-lane it would wedge every later eval of that Automation.
 	// Nothing reaps a stranded pending eval, so refuse at mint instead.
 	test.each([
 		[
@@ -144,11 +144,11 @@ describe("createEvalRun", () => {
 	])("refuses to replay a %s run it could never dispatch", async (_l, input) => {
 		const [run] = await sql<{ id: number }[]>`
       INSERT INTO runs (
-        organization_id, run_type, watcher_id, approval_status, status,
+        organization_id, run_type, automation_id, approval_status, status,
         approved_input, completed_at, created_at
       ) VALUES (
-        ${organizationId}, 'behavior', ${behaviorId}, 'auto', 'completed',
-        ${sql.json({ ...input, watcher_id: behaviorId } as never)},
+        ${organizationId}, 'automation', ${automationId}, 'auto', 'completed',
+        ${sql.json({ ...input, automation_id: automationId } as never)},
         current_timestamp, current_timestamp
       )
       RETURNING id
@@ -159,40 +159,40 @@ describe("createEvalRun", () => {
 	});
 });
 
-describe("eval runs are invisible to the Behavior scheduling predicates", () => {
+describe("eval runs are invisible to the Automation scheduling predicates", () => {
 	// This is the property the run_type design buys: ~18 existing predicates say
-	// `run_type = 'behavior'`, so an eval never competes with, suppresses, or
-	// degrades the Behavior it is replaying — with no code change in any of them.
-	test("the pending-per-behavior unique index does not count evals", async () => {
+	// `run_type = 'automation'`, so an eval never competes with, suppresses, or
+	// degrades the Automation it is replaying — with no code change in any of them.
+	test("the pending-per-automation unique index does not count evals", async () => {
 		const [{ count }] = await sql<{ count: string }[]>`
       SELECT count(*) AS count FROM runs
-      WHERE watcher_id = ${behaviorId}
-        AND run_type = ${BEHAVIOR_EVAL_RUN_TYPE}
+      WHERE automation_id = ${automationId}
+        AND run_type = ${AUTOMATION_EVAL_RUN_TYPE}
         AND status = 'pending'
     `;
-		// Two pending evals coexist — impossible for run_type='behavior'.
+		// Two pending evals coexist — impossible for run_type='automation'.
 		expect(Number(count)).toBeGreaterThanOrEqual(2);
 
-		// And a real Behavior run can still be queued alongside them.
+		// And a real Automation run can still be queued alongside them.
 		const [live] = await sql<{ id: number }[]>`
       INSERT INTO runs (
-        organization_id, run_type, watcher_id, approval_status, status,
+        organization_id, run_type, automation_id, approval_status, status,
         approved_input, created_at
       ) VALUES (
-        ${organizationId}, 'behavior', ${behaviorId}, 'auto', 'pending',
-        ${sql.json({ ...payload, watcher_id: behaviorId })}, current_timestamp
+        ${organizationId}, 'automation', ${automationId}, 'auto', 'pending',
+        ${sql.json({ ...payload, automation_id: automationId })}, current_timestamp
       )
       RETURNING id
     `;
 		expect(live.id).toBeGreaterThan(0);
 	});
 
-	test("a behavior-scoped latest-run read skips evals", async () => {
+	test("an automation-scoped latest-run read skips evals", async () => {
 		const rows = await sql<{ run_type: string }[]>`
       SELECT run_type FROM runs
-      WHERE watcher_id = ${behaviorId} AND run_type = 'behavior'
+      WHERE automation_id = ${automationId} AND run_type = 'automation'
     `;
 		expect(rows.length).toBeGreaterThan(0);
-		expect(rows.every((r) => r.run_type === "behavior")).toBe(true);
+		expect(rows.every((r) => r.run_type === "automation")).toBe(true);
 	});
 });

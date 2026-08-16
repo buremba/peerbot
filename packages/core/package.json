@@ -141,11 +141,11 @@
       "import": "./dist/contracts/tools/manage-entity.js",
       "require": "./dist/contracts/tools/manage-entity.js"
     },
-    "./contracts/tools/manage-behaviors": {
-      "types": "./dist/contracts/tools/manage-behaviors.d.ts",
-      "bun": "./src/contracts/tools/manage-behaviors.ts",
-      "import": "./dist/contracts/tools/manage-behaviors.js",
-      "require": "./dist/contracts/tools/manage-behaviors.js"
+    "./contracts/tools/manage-automations": {
+      "types": "./dist/contracts/tools/manage-automations.d.ts",
+      "bun": "./src/contracts/tools/manage-automations.ts",
+      "import": "./dist/contracts/tools/manage-automations.js",
+      "require": "./dist/contracts/tools/manage-automations.js"
     },
     "./reserved": {
       "types": "./dist/reserved.d.ts",

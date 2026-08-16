@@ -184,12 +184,12 @@ describe('formatToolResult', () => {
     });
   });
 
-  describe('get_behavior tool', () => {
-    it('should format Behavior windows', () => {
+  describe('get_automation tool', () => {
+    it('should format Automation windows', () => {
       const result = {
         windows: [
           {
-            behavior_name: 'Sentiment',
+            automation_name: 'Sentiment',
             window_start: '2025-01-01T00:00:00Z',
             window_end: '2025-01-07T00:00:00Z',
             granularity: 'weekly',
@@ -200,38 +200,38 @@ describe('formatToolResult', () => {
           },
         ],
       };
-      const md = formatToolResult('get_behavior', result);
-      expect(md).toContain('Behavior Windows');
+      const md = formatToolResult('get_automation', result);
+      expect(md).toContain('Automation Windows');
       expect(md).toContain('Sentiment');
       expect(md).toContain('weekly');
     });
 
-    it('should format no Behavior windows available', () => {
+    it('should format no Automation windows available', () => {
       const result = { windows: [] };
-      const md = formatToolResult('get_behavior', result);
-      expect(md).toContain('No Behavior Windows Available');
+      const md = formatToolResult('get_automation', result);
+      expect(md).toContain('No Automation Windows Available');
     });
   });
 
-  describe('manage_behaviors tool', () => {
+  describe('manage_automations tool', () => {
     it('should format create result', () => {
       const result = {
         action: 'create',
-        behavior_id: 42,
+        automation_id: 42,
         template_version: 1,
         status: 'active',
       };
-      const md = formatToolResult('manage_behaviors', result);
-      expect(md).toContain('Behavior Management');
+      const md = formatToolResult('manage_automations', result);
+      expect(md).toContain('Automation Management');
       expect(md).toContain('42');
     });
 
     it('should format list result', () => {
       const result = {
         action: 'list',
-        behaviors: [
+        automations: [
           {
-            behavior_id: 1,
+            automation_id: 1,
             template_slug: 'sentiment',
             status: 'active',
             entity_name: 'Acme',
@@ -240,8 +240,8 @@ describe('formatToolResult', () => {
           },
         ],
       };
-      const md = formatToolResult('manage_behaviors', result);
-      expect(md).toContain('Behaviors (1)');
+      const md = formatToolResult('manage_automations', result);
+      expect(md).toContain('Automations (1)');
     });
 
     it('should format template list result', () => {
@@ -253,11 +253,11 @@ describe('formatToolResult', () => {
             slug: 'reddit-opportunity-finder',
             name: 'Reddit Opportunity Finder',
             current_version: 1,
-            behaviors_count: 0,
+            automations_count: 0,
           },
         ],
       };
-      const md = formatToolResult('manage_behaviors', result);
+      const md = formatToolResult('manage_automations', result);
       expect(md).toContain('Templates (1)');
       expect(md).toContain('reddit-opportunity-finder');
     });
@@ -269,7 +269,7 @@ describe('formatToolResult', () => {
         slug: 'reddit-opportunity-finder',
         version: 1,
       };
-      const md = formatToolResult('manage_behaviors', result);
+      const md = formatToolResult('manage_automations', result);
       expect(md).toContain('New Template Created');
       expect(md).toContain('reddit-opportunity-finder');
     });
@@ -306,7 +306,7 @@ describe('formatToolResult', () => {
       expect(md).toContain('0 total');
     });
 
-    it('keeps structured Behavior context visible when window content is empty', () => {
+    it('keeps structured Automation context visible when window content is empty', () => {
       const result = {
         content: [],
         total: 0,

@@ -13,8 +13,8 @@
 
 import { beforeAll, describe, expect, test } from "vitest";
 import {
-	BEHAVIOR_EVAL_RUN_TYPE,
-	BEHAVIOR_RUN_TYPE,
+	AUTOMATION_EVAL_RUN_TYPE,
+	AUTOMATION_RUN_TYPE,
 } from "../../../runs/run-types";
 import { runScoreEvalRuns } from "../../../scheduled/score-eval-runs";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
@@ -27,7 +27,7 @@ import {
 const sql = getTestDb();
 
 let organizationId: string;
-let behaviorId: number;
+let automationId: number;
 
 /**
  * `agedSeconds` backdates `completed_at`. The settle window is 60s, so a run
@@ -41,10 +41,10 @@ async function insertRun(params: {
 }): Promise<number> {
 	const [run] = (await sql`
     INSERT INTO runs (
-      organization_id, run_type, watcher_id, approval_status, status,
+      organization_id, run_type, automation_id, approval_status, status,
       dry_run_preview, completed_at, created_at
     ) VALUES (
-      ${organizationId}, ${params.runType}, ${behaviorId}, 'auto',
+      ${organizationId}, ${params.runType}, ${automationId}, 'auto',
       ${params.status ?? "completed"},
       ${sql.json({ captured: "complete_window", extracted_data: { a: 1 } } as never)},
       now() - ${`${params.agedSeconds} seconds`}::interval,
@@ -74,22 +74,22 @@ beforeAll(async () => {
 	const creator = await createTestUser();
 	await addUserToOrganization(creator.id, organizationId, "owner");
 
-	const [behavior] = (await sql`
-    WITH next_id AS (SELECT nextval('watchers_id_seq')::integer AS id)
-    INSERT INTO watchers (
-      id, watcher_group_id, organization_id, created_by, name, slug, schedule, status
+	const [automation] = (await sql`
+    WITH next_id AS (SELECT nextval('automations_id_seq')::integer AS id)
+    INSERT INTO automations (
+      id, automation_group_id, organization_id, created_by, name, slug, schedule, status
     )
-    SELECT id, id, ${organizationId}, ${creator.id}, 'Queue Behavior', 'queue-behavior', '0 * * * *', 'active'
+    SELECT id, id, ${organizationId}, ${creator.id}, 'Queue Automation', 'queue-automation', '0 * * * *', 'active'
     FROM next_id
     RETURNING id
   `) as unknown as Array<{ id: number }>;
-	behaviorId = Number(behavior.id);
+	automationId = Number(automation.id);
 });
 
 describe("runScoreEvalRuns", () => {
 	test("scores a settled eval run, then never claims it again", async () => {
 		const runId = await insertRun({
-			runType: BEHAVIOR_EVAL_RUN_TYPE,
+			runType: AUTOMATION_EVAL_RUN_TYPE,
 			agedSeconds: 600,
 		});
 
@@ -108,12 +108,12 @@ describe("runScoreEvalRuns", () => {
 	});
 
 	test("scores a TIMED OUT eval run — that is the failure worth measuring", async () => {
-		// `markStaleRunsAsTimeout` runs over BEHAVIOR_RUN_TYPES, so a crashed or
+		// `markStaleRunsAsTimeout` runs over AUTOMATION_RUN_TYPES, so a crashed or
 		// abandoned eval reaches `timeout` and never any other terminal status.
 		// Leaving it out of the terminal set would silently exclude the runs that
 		// most need a score, and they would never leave the queue either.
 		const runId = await insertRun({
-			runType: BEHAVIOR_EVAL_RUN_TYPE,
+			runType: AUTOMATION_EVAL_RUN_TYPE,
 			agedSeconds: 600,
 			status: "timeout",
 		});
@@ -126,7 +126,7 @@ describe("runScoreEvalRuns", () => {
 
 	test("leaves a run inside the settle window alone", async () => {
 		const runId = await insertRun({
-			runType: BEHAVIOR_EVAL_RUN_TYPE,
+			runType: AUTOMATION_EVAL_RUN_TYPE,
 			agedSeconds: 0,
 		});
 
@@ -135,13 +135,13 @@ describe("runScoreEvalRuns", () => {
 		expect(await scoreCount(runId)).toBe(0);
 	});
 
-	test("never claims a live Behavior run or a non-terminal one", async () => {
+	test("never claims a live Automation run or a non-terminal one", async () => {
 		const liveRunId = await insertRun({
-			runType: BEHAVIOR_RUN_TYPE,
+			runType: AUTOMATION_RUN_TYPE,
 			agedSeconds: 600,
 		});
 		const runningRunId = await insertRun({
-			runType: BEHAVIOR_EVAL_RUN_TYPE,
+			runType: AUTOMATION_EVAL_RUN_TYPE,
 			agedSeconds: 600,
 			status: "running",
 		});

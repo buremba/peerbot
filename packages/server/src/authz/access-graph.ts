@@ -147,7 +147,7 @@ export async function markAclFresh(
     // the row; without this lock, deletion can remove the old ACL state and the
     // in-flight sync can recreate it after the delete commits. Standalone graph
     // tests intentionally use synthetic connection ids, so no matching row keeps
-    // the historical materializer behavior; a matching tombstoned row skips the
+    // the historical materializer semantics; a matching tombstoned row skips the
     // stamp.
     const connections = await tx<{ deleted_at: Date | string | null }>`
       SELECT c.deleted_at

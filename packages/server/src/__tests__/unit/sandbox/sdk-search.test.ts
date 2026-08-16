@@ -51,12 +51,12 @@ describe("sdkSearch", () => {
 
 	it("returns drill-down for an exact path", async () => {
 		const result = await sdkSearch(
-			{ query: "behaviors.list" },
+			{ query: "automations.list" },
 			stubEnv,
 			readCtx
 		);
 		expect(result.match_count).toBe(1);
-		expect(result.results[0]).toContain("behaviors.list");
+		expect(result.results[0]).toContain("automations.list");
 		expect(result.results[0]).toContain("access:");
 	});
 
@@ -118,9 +118,9 @@ describe("sdkSearch", () => {
 		["feeds.delete", "client.feeds.delete({ feed_id: 42 })"],
 		["classifiers.delete", "client.classifiers.delete({ classifier_id: 42 })"],
 		["schedules.cancel", "client.schedules.cancel({ id: 'schedule-id' })"],
-		["behaviors.get", "client.behaviors.get({ behavior_id: '42' })"],
-		["behaviors.trigger", "client.behaviors.trigger({ behavior_id: '42' })"],
-		["behaviors.delete", "client.behaviors.delete({ behavior_ids: ['42'] })"],
+		["automations.get", "client.automations.get({ automation_id: '42' })"],
+		["automations.trigger", "client.automations.trigger({ automation_id: '42' })"],
+		["automations.delete", "client.automations.delete({ automation_ids: ['42'] })"],
 	])("renders the current %s signature in exact drill-down", async (path, snippet) => {
 		const result = await sdkSearch({ query: path }, stubEnv, adminCtx);
 
@@ -142,22 +142,22 @@ describe("sdkSearch", () => {
 	});
 
 	it("returns namespace listing for a top-level namespace at write tier", async () => {
-		const result = await sdkSearch({ query: "behaviors" }, stubEnv, writeCtx);
+		const result = await sdkSearch({ query: "automations" }, stubEnv, writeCtx);
 		expect(result.match_count).toBeGreaterThan(2);
 		const joined = result.results.join("\n");
-		expect(joined).toContain("behaviors.list");
-		expect(joined).toContain("behaviors.create");
+		expect(joined).toContain("automations.list");
+		expect(joined).toContain("automations.create");
 	});
 
 	it("read mode hides write methods from namespace listing", async () => {
 		const result = await sdkSearch(
-			{ query: "behaviors", mode: "read" },
+			{ query: "automations", mode: "read" },
 			stubEnv,
 			writeCtx
 		);
 		const joined = result.results.join("\n");
-		expect(joined).toContain("behaviors.list");
-		expect(joined).not.toContain("behaviors.create");
+		expect(joined).toContain("automations.list");
+		expect(joined).not.toContain("automations.create");
 		expect(result.notes).toContain("query_sdk-safe");
 	});
 
@@ -315,8 +315,8 @@ describe("sdkSearch", () => {
 	});
 
 	it("substring-matches across paths and summaries", async () => {
-		// "Canvas" appears in behaviors.create's summary (output contract).
-		// behaviors.create is admin-tier (matches manage_behaviors.create being
+		// "Canvas" appears in automations.create's summary (output contract).
+		// automations.create is admin-tier (matches manage_automations.create being
 		// owner-admin), so only an admin-tier caller discovers it.
 		const result = await sdkSearch({ query: "Canvas" }, stubEnv, adminCtx);
 		expect(result.match_count).toBeGreaterThan(0);
@@ -364,7 +364,7 @@ describe("sdkSearch", () => {
 
 	it("respects the limit parameter", async () => {
 		const result = await sdkSearch(
-			{ query: "behaviors", limit: 2 },
+			{ query: "automations", limit: 2 },
 			stubEnv,
 			writeCtx
 		);
@@ -395,8 +395,8 @@ describe("sdkSearch", () => {
 			"feeds.trigger",
 			"classifiers.delete",
 			"schedules.cancel",
-			"behaviors.get",
-			"behaviors.trigger",
+			"automations.get",
+			"automations.trigger",
 		]) {
 			const result = await sdkSearch({ query: path }, stubEnv, adminCtx);
 			expect(result.match_count, path).toBe(1);
@@ -458,9 +458,9 @@ describe("sdkSearch", () => {
 			"client.entitySchema.getType('company')",
 		],
 		[
-			"behaviors.getVersions",
-			"behaviors.getVersions(behavior_id: string)",
-			"client.behaviors.getVersions('42')",
+			"automations.getVersions",
+			"automations.getVersions(automation_id: string)",
+			"client.automations.getVersions('42')",
 		],
 	])("documents the exact %s call shape", async (path, signature, example) => {
 		const result = await sdkSearch({ query: path }, stubEnv, adminCtx);

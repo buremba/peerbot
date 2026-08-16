@@ -34,7 +34,10 @@ import {
 import { assertResolutionFingerprintCurrent } from "../entity-resolution/staleness";
 import { transitionEntityMergeRows } from "./entity-management";
 import logger from "./logger";
-import { withAclPrivilege } from "./relationship-validation";
+import {
+	ACL_MANAGED_TYPE_SQL,
+	withAclPrivilege,
+} from "./relationship-validation";
 
 export interface MergeResolutionProvenance {
 	decision: "auto_merge" | "human";
@@ -246,8 +249,7 @@ async function applyMergeInTransaction(
       -- is whatever the provider says NOW. Leaving them out means the next ACL
       -- sync decides, which is the same fail-closed rule the merge followed.
       -- It also keeps unmerge's UPDATE off rows the trigger would refuse.
-      AND rt.purpose IS DISTINCT FROM 'authorization'
-      AND rt.slug <> 'member_of'
+      AND NOT ${tx.unsafe(ACL_MANAGED_TYPE_SQL)}
     ORDER BY r.id
     FOR UPDATE OF r
   `;
@@ -320,7 +322,7 @@ async function applyMergeInTransaction(
       SET deleted_at = current_timestamp, updated_at = current_timestamp
       FROM entity_relationship_types rt
       WHERE rt.id = r.relationship_type_id
-        AND (rt.purpose = 'authorization' OR rt.slug = 'member_of')
+        AND ${tx.unsafe(ACL_MANAGED_TYPE_SQL)}
         AND r.organization_id = ${orgId}
         AND r.deleted_at IS NULL
         AND (r.from_entity_id = ${loserId} OR r.to_entity_id = ${loserId})
@@ -697,7 +699,7 @@ export async function applyUnmerge(
 							acl_managed: boolean;
 						}>`
             SELECT r.id, r.from_entity_id, r.to_entity_id, r.deleted_at,
-                   (rt.purpose = 'authorization' OR rt.slug = 'member_of')
+                   ${tx.unsafe(ACL_MANAGED_TYPE_SQL)}
                      AS acl_managed
             FROM entity_relationships r
             JOIN entity_relationship_types rt ON rt.id = r.relationship_type_id
@@ -797,7 +799,7 @@ export async function applyUnmerge(
         SET deleted_at = current_timestamp, updated_at = current_timestamp
         FROM entity_relationship_types rt
         WHERE rt.id = r.relationship_type_id
-          AND (rt.purpose = 'authorization' OR rt.slug = 'member_of')
+          AND ${tx.unsafe(ACL_MANAGED_TYPE_SQL)}
           AND r.organization_id = ${orgId}
           AND r.deleted_at IS NULL
           AND (

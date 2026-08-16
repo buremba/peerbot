@@ -37,8 +37,24 @@ export const PURPOSE_AUTHORIZATION: RelationshipTypePurpose = 'authorization';
  * before the classification backfill lands.
  */
 export function isAclManagedRelationshipSlug(slug: string): boolean {
-  return slug === 'member_of';
+  return slug === ACL_MANAGED_SLUG;
 }
+
+const ACL_MANAGED_SLUG = 'member_of';
+
+/**
+ * The same test as {@link isAclManagedRelationshipSlug}, in SQL, for statements
+ * that select edges by their type. Expects the type table aliased `rt`. Static
+ * text with no interpolation, so it is safe through `sql.unsafe`.
+ *
+ * `IS NOT DISTINCT FROM` rather than `=` so the negation is sound: `purpose` is
+ * NULL on every unclassified type, and `NOT (NULL = 'authorization' OR …)`
+ * evaluates to NULL, which would silently drop every ordinary edge from a
+ * NOT-qualified query instead of keeping it.
+ */
+export const ACL_MANAGED_TYPE_SQL =
+  `(rt.purpose IS NOT DISTINCT FROM '${PURPOSE_AUTHORIZATION}'` +
+  ` OR rt.slug IS NOT DISTINCT FROM '${ACL_MANAGED_SLUG}')`;
 
 /**
  * Run `fn` with the transaction-local flag the ACL edge trigger requires for a
@@ -95,15 +111,47 @@ export async function withAclPrivilege<T>(tx: DbClient, fn: () => Promise<T>): P
 /**
  * Refuse a caller-driven mutation of an authorization-bearing relationship type.
  *
- * Once a type is classified, its schema lifecycle is platform-owned: callers
- * cannot archive it, change its rules, or attach it as another type's inverse.
- * Edge mutations use the stricter pre-classification guard below.
+ * Without this, classifying `member_of` would make the ACL gates depend on rows
+ * any caller holding the generic entity-link surface could create or soft-delete
+ * — classification alone would hand out a way to mint or revoke access.
  */
 export function assertNotAuthorizationType(
   type: { slug?: string | null; purpose?: string | null },
   action: string
 ): void {
-  if (type.purpose !== PURPOSE_AUTHORIZATION) return;
+  refuseAclManaged(type, action, false);
+}
+
+/**
+ * Stricter variant for the EDGE surfaces: also refuses the ACL-managed slug, not
+ * just a classified type.
+ *
+ * That gap is the entire pre-classification window. Until the backfill lands
+ * every live `member_of` row is unclassified while the ACL reads already trust
+ * the slug, so a purpose-only guard would leave callers free to mint or revoke
+ * grants and the backfill would then bless whatever they left behind.
+ *
+ * Deliberately NOT used on the relationship-TYPE surfaces: configs legitimately
+ * declare `member_of` (`examples/personal-agent/lobu.config.ts`), and refusing
+ * the declaration would break every such apply. Declaring a type grants nobody
+ * access; creating an edge on it does.
+ */
+export function assertNotAclManagedEdge(
+  type: { slug?: string | null; purpose?: string | null },
+  action: string
+): void {
+  refuseAclManaged(type, action, true);
+}
+
+function refuseAclManaged(
+  type: { slug?: string | null; purpose?: string | null },
+  action: string,
+  includeSlug: boolean
+): void {
+  const managed =
+    type.purpose === PURPOSE_AUTHORIZATION ||
+    (includeSlug && isAclManagedRelationshipSlug(type.slug ?? ''));
+  if (!managed) return;
   throw new ToolUserError(
     `Relationship type '${type.slug ?? 'unknown'}' is authorization-bearing and cannot be modified via ${action}. ` +
       'Access-granting edges are maintained by the connector ACL syncs.',
@@ -111,40 +159,6 @@ export function assertNotAuthorizationType(
   );
 }
 
-/**
- * Refuse a caller-driven mutation of an EDGE on an ACL-managed relationship type.
- *
- * Stricter than `assertNotAuthorizationType`: it also refuses the ACL-managed slug,
- * not just a classified type. That gap matters for the whole window between the
- * deploy that adds this mechanism and the deploy that backfills `purpose` —
- * during it every live `member_of` row is unclassified while the ACL reads
- * already trust the slug, so a purpose-only guard would leave callers free to
- * mint or revoke grants and the backfill would then bless whatever they left
- * behind.
- *
- * Deliberately not applied wholesale to relationship-type surfaces before
- * classification. Configs legitimately declare `member_of`
- * (`examples/personal-agent/lobu.config.ts`) and declaring a type grants nobody
- * access; creating an edge on it does. The schema handler separately blocks the
- * unsafe archive transition. Once classified, the purpose guard above protects
- * the rest of its schema lifecycle as well.
- */
-export function assertNotAclManagedEdge(
-  type: { slug?: string | null; purpose?: string | null },
-  action: string
-): void {
-  if (
-    type.purpose !== PURPOSE_AUTHORIZATION &&
-    !isAclManagedRelationshipSlug(type.slug ?? '')
-  ) {
-    return;
-  }
-  throw new ToolUserError(
-    `Relationship type '${type.slug ?? 'unknown'}' is authorization-bearing and cannot be modified via ${action}. ` +
-      'Access-granting edges are maintained by the connector ACL syncs.',
-    403
-  );
-}
 
 /** Source values used to select edges during reconciliation. */
 const RECONCILED_SOURCES = [EDGE_SOURCE_CONFIG, EDGE_SOURCE_MANUAL] as const;

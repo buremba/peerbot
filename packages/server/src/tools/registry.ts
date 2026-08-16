@@ -246,12 +246,17 @@ const LOBU_VIEW_MCP_META = {
 } as const;
 
 /**
- * Data and action tools advertised on MCP `tools/list` and external OpenAPI.
- * These deliberately have no Apps UI resource except save_memory: agents can
- * chain reads and general SDK actions without mounting an iframe for every
- * intermediate result, while a direct save mounts one card for the durable
- * event it just created. Other final user-facing views still use
- * render_lobu_view.
+ * Tools advertised on MCP `tools/list` and external OpenAPI.
+ *
+ * The data and action tools here (search_memory, search_sdk, query_sdk,
+ * query_sql, run_sdk) deliberately have no Apps UI resource: agents can chain
+ * reads and general SDK actions without mounting an iframe for every
+ * intermediate result. save_memory is the one exception among them — its single
+ * durable write is itself the final result a person inspects, so it mounts one
+ * card for the event it just created. The App tools further down
+ * (render_lobu_view, resolve_lobu_approval, restore_lobu_app_result,
+ * save_lobu_app_state) carry the UI resource by definition; any other
+ * final user-facing view still goes through render_lobu_view.
  */
 const AGENT_TOOLS: ToolDefinition[] = [
   // ─── Memory hot path — read ───────────────────────────────────────────────

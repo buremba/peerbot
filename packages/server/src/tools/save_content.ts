@@ -7,9 +7,9 @@
  * Embeddings are left null for background worker backfill.
  */
 
+import { Buffer } from 'node:buffer';
 import { normalizeAuthUserId, normalizeEmail } from '@lobu/connector-sdk/identity-normalize';
 import { type Static, Type } from '@sinclair/typebox';
-import { Buffer } from 'node:buffer';
 import { hasRequiredMcpScope } from '../auth/tool-access';
 import { resolveChannelEntityId } from '../authz/channel-entity';
 import { type DbClient, getDb, parsePgNumberArray } from '../db/client';

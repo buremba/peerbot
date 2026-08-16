@@ -251,8 +251,7 @@ jobs:
   # graph and ran these smokes serially, adding a second critical path after
   # required checks were already green.
   sdk-cli-build:
-    needs: check-author
-    runs-on: ${{ needs.check-author.outputs.runner }}
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -283,8 +282,8 @@ jobs:
   # artifact fan-out. It remains behind the required merge graph so GitHub's
   # finite hosted-runner pool gives merge-critical work priority.
   dead-code-report:
-    needs: [check-author, unit, frontend, integration, format-lint, typecheck, migrations]
-    runs-on: ${{ needs.check-author.outputs.runner }}
+    needs: [unit, frontend, integration, format-lint, typecheck, migrations]
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -304,8 +303,8 @@ jobs:
         run: bun run knip
 
   sdk-lifecycle-e2e:
-    needs: [check-author, sdk-cli-build]
-    runs-on: ${{ needs.check-author.outputs.runner }}
+    needs: sdk-cli-build
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -371,8 +370,8 @@ jobs:
           cat "$GITHUB_STEP_SUMMARY"
 
   sdk-error-taxonomy-e2e:
-    needs: [check-author, sdk-cli-build]
-    runs-on: ${{ needs.check-author.outputs.runner }}
+    needs: sdk-cli-build
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -400,8 +399,8 @@ jobs:
         run: bash scripts/sdk-e2e-error.sh
 
   cli-command-smoke:
-    needs: [check-author, sdk-cli-build]
-    runs-on: ${{ needs.check-author.outputs.runner }}
+    needs: sdk-cli-build
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -798,8 +797,7 @@ jobs:
           test "$BUN_RESULT" = success
 
   format-lint:
-    needs: check-author
-    runs-on: ${{ needs.check-author.outputs.runner }}
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -998,8 +996,7 @@ jobs:
           bash scripts/lib/__tests__/submodule-bump.test.sh
 
   typecheck:
-    needs: check-author
-    runs-on: ${{ needs.check-author.outputs.runner }}
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -1100,7 +1097,7 @@ jobs:
     # Migration coverage and its required check name remain unchanged for
     # existing open PRs.
     if: ${{ !cancelled() }}
-    needs: [check-author, format-lint]
+    needs: format-lint
     # Catches the class of bug that has now broken prod twice in one
     # session: a migration file that's syntactically a SQL file but that the
     # migration runner rejects (missing -- migrate:up directive, constraint
@@ -1109,7 +1106,7 @@ jobs:
     # uses (scripts/migrate-up.mjs), so a migration that only the prod runner
     # can apply (e.g. transaction:false heal-DO + CONCURRENTLY) is validated
     # here instead of silently diverging from `dbmate up`.
-    runs-on: ${{ needs.check-author.outputs.runner }}
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 10
     services:
       postgres:
@@ -1340,8 +1337,7 @@ jobs:
   # integer (the count of changed files), not a list — `contains()` over it
   # never matches. On push events there is no PR base, so both smokes run.
   optional-smoke-filter:
-    needs: check-author
-    runs-on: ${{ needs.check-author.outputs.runner }}
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     outputs:
       mac: ${{ steps.filter.outputs.mac }}
       connector: ${{ steps.filter.outputs.connector }}
@@ -1444,8 +1440,8 @@ jobs:
   # runConnectorRuntimeSelfCheck() over the same compile + default
   # SubprocessExecutor path.
   connector-parity-smoke:
-    needs: [check-author, optional-smoke-filter]
-    runs-on: ${{ needs.check-author.outputs.runner }}
+    needs: optional-smoke-filter
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7

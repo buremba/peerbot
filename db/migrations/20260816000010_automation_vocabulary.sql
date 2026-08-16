@@ -415,6 +415,17 @@ SELECT pg_temp.rename_column_if_present(
   'VIEW', 'canvas_windows', 'watcher_id', 'automation_id'
 );
 
+-- Both canvas indexes were keyed on the JSON `metadata->>'watcher_id'`, which no
+-- rename can reach. Re-key them onto the physical attribution column the readers
+-- now use, so the index, the `canvas_windows` view, and `findCanvasHead` all
+-- agree on one ownership source. A rename alone would leave them keyed on a
+-- metadata key that events, being append-only, keep forever.
+--
+-- Adding `automation_id IS NOT NULL` to the predicates loses no guarantee: NULLs
+-- are distinct in a unique btree, so unattributed rows were never constrained by
+-- the old index either. Superseders inherit the producer stamp
+-- (`loadEventLineage`), so a human canvas correction stays attributed and keeps
+-- its chain addressable.
 -- squawk-ignore require-concurrent-index-deletion -- replicas are quiesced
 DROP INDEX IF EXISTS public.idx_canvas_chain_root;
 -- squawk-ignore require-concurrent-index-deletion -- replicas are quiesced

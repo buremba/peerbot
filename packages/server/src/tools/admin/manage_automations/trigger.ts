@@ -15,6 +15,7 @@ import {
 import {
   compileReactionScript,
   extractReactionInputSchema,
+  validateReactionDefaultExport,
 } from "../../../automations/reaction-executor";
 import { assertAutomationInstructions } from "../../../automations/triggers";
 import type { AutomationTrigger } from "@lobu/core/contracts/tools/manage-automations";
@@ -157,6 +158,7 @@ export async function handleSetReactionScript(
   }
 
   const compiledCode = await compileReactionScript(script);
+  await validateReactionDefaultExport(compiledCode);
   // Derive the reaction's extraction contract from its exported `input` schema,
   // so the worker is told the exact shape the reaction will Value.Parse. NULL
   // when the reaction declares no `input` (free-form `{ summary }` fallback).

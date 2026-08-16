@@ -168,3 +168,31 @@ export async function compileReactionScript(source: string): Promise<string> {
   });
   return result.compiledCode;
 }
+
+/**
+ * Validate that a compiled reaction module exposes a default handler.
+ *
+ * `compileReactionScript` only checks syntax; a script with named exports
+ * but no default export would pass compilation but fail at runtime inside
+ * `runScript`. This runs the compiled code in an isolate with extract mode
+ * to verify the default export exists without invoking the handler.
+ */
+export async function validateReactionDefaultExport(
+  compiledScript: string,
+): Promise<void> {
+  const result = await runScript({
+    source: compiledScript,
+    sdk: {} as unknown as Parameters<typeof runScript>[0]['sdk'],
+    allowCrossOrg: false,
+    context: {},
+    // Extract the default export without invoking it.
+    extractExport: 'default',
+    limits: { timeoutMs: 5_000 },
+  });
+  if (!result.success) {
+    throw new Error(
+      'Reaction script must export a default async function. ' +
+        (result.error?.message ?? 'No default export found.'),
+    );
+  }
+}

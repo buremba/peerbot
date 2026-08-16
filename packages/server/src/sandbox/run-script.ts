@@ -679,6 +679,9 @@ const GUEST_RUNNER = `
 const EXTRACT_RUNNER = `
 (async () => {
   const __v = module.exports[__extract_name];
+  if (__extract_name === 'default') {
+    return typeof __v === 'function' ? '{"__valid":true}' : null;
+  }
   return __v === undefined || __v === null ? null : JSON.stringify(__v);
 })()
 `;

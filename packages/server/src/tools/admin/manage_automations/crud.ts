@@ -53,6 +53,7 @@ import { DEFAULT_AUTOMATION_SOURCE_QUERY, automationSourcesFromPrompt, mergeProm
 import {
   compileReactionScript,
   extractReactionInputSchema,
+  validateReactionDefaultExport,
 } from '../../../automations/reaction-executor';
 import {
   assertAutomationInstructions,
@@ -285,6 +286,9 @@ export async function handleCreate(
   const reactionScriptCompiled = reactionScript
     ? await compileReactionScript(reactionScript)
     : null;
+  if (reactionScriptCompiled) {
+    await validateReactionDefaultExport(reactionScriptCompiled);
+  }
   const reactionInputSchema = reactionScript
     ? await extractReactionInputSchema(reactionScript)
     : null;

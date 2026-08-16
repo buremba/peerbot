@@ -328,6 +328,17 @@ describe('Automation schema vocabulary', () => {
       RETURNING id
     `;
     const automationId = Number(created.id);
+    const [classifier] = await sql<{ id: number }[]>`
+      INSERT INTO classify_facet (
+        organization_id, slug, name, attribute_key, status,
+        automation_id, created_by
+      ) VALUES (
+        ${workspace.org.id}, 'identity-bridge-classifier',
+        'Identity bridge classifier', 'channel', 'active',
+        ${automationId}, ${ownerUserId}
+      )
+      RETURNING id
+    `;
     const identityKey = formatAutomationEventIdentity(
       'observation',
       computeStableKey({ channel: 'z', mode: 'voice' }, ['channel', 'mode'])
@@ -348,6 +359,19 @@ describe('Automation schema vocabulary', () => {
         'behavior_event', ${identityKey}, ${automationId}
       )
       RETURNING id
+    `;
+    await sql`
+      INSERT INTO event_classifications (
+        event_id, classifier_id, automation_id, window_id, "values", confidences,
+        source, is_manual, reasoning, met_threshold, threshold,
+        best_match_attribute, embedding_confidence, created_at, excerpts
+      ) VALUES (
+        ${legacy.id}, ${classifier.id}, ${automationId}, 9007,
+        ARRAY['social']::text[], ${sql.json({ social: 0.93 })}, 'user', true,
+        'manually confirmed', true, 0.8, 'social', 0.93,
+        '2026-08-15T12:00:00.000Z'::timestamptz,
+        ${sql.json({ social: 'voice profile' })}
+      )
     `;
 
     const bridge = loadMarkedSection(IDENTITY_BRIDGE_START, IDENTITY_BRIDGE_END, 'Automation event identity bridge');
@@ -379,6 +403,52 @@ describe('Automation schema vocabulary', () => {
       SELECT superseded_by FROM events WHERE id = ${legacy.id}
     `;
     expect(legacyAfterBridge.superseded_by).toBe(canonical.id);
+    const classifications = await sql<
+      {
+        event_id: number;
+        classifier_id: number;
+        automation_id: number;
+        window_id: number;
+        values: string;
+        confidences: Record<string, number>;
+        source: string;
+        is_manual: boolean;
+        reasoning: string;
+        met_threshold: boolean;
+        threshold: string;
+        best_match_attribute: string;
+        embedding_confidence: string;
+        created_at: string;
+        excerpts: Record<string, string>;
+      }[]
+    >`
+      SELECT
+        event_id, classifier_id, automation_id, window_id, "values", confidences,
+        source, is_manual, reasoning, met_threshold, threshold,
+        best_match_attribute, embedding_confidence,
+        to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at,
+        excerpts
+      FROM event_classifications
+      WHERE event_id = ${canonical.id}
+    `;
+    expect(classifications).toHaveLength(1);
+    expect(classifications[0]).toMatchObject({
+      event_id: canonical.id,
+      classifier_id: classifier.id,
+      automation_id: automationId,
+      window_id: 9007,
+      values: '{social}',
+      confidences: { social: 0.93 },
+      source: 'user',
+      is_manual: true,
+      reasoning: 'manually confirmed',
+      met_threshold: true,
+      threshold: '0.8000',
+      best_match_attribute: 'social',
+      embedding_confidence: '0.9300',
+      excerpts: { social: 'voice profile' },
+    });
+    expect(classifications[0]?.created_at).toBe('2026-08-15T12:00:00.000Z');
 
     await sql.begin((tx) =>
       persistAutomationEventOutput({

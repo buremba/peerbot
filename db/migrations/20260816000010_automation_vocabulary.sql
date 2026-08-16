@@ -6,6 +6,17 @@
 -- and worker replica to zero before this file runs, so there is no mixed-schema
 -- window and no compatibility view, alias, or dual-write period.
 
+-- OPERATIONAL COST: the catalog renames are metadata-only, but the keyed-output
+-- identity bridge writes one successor per live `behavior_event` head and copies
+-- its embeddings/classifications. Rebuilding the canvas and Automation identity
+-- indexes also scans the events table. Those steps are O(live keyed heads plus
+-- events rows) while the application is quiesced. This has not been timed on a
+-- production-sized copy in this sandbox; benchmark every statement against the
+-- current production row counts and 60-second migration-role statement timeout
+-- before rollout. On timeout, leave the application quiesced and use the manual
+-- transaction recovery procedure in docs/MIGRATIONS.md before recording this
+-- version in schema_migrations.
+
 DROP TRIGGER IF EXISTS archive_behaviors_for_deleted_agent ON public.agents;
 DROP TRIGGER IF EXISTS archive_chat_behaviors_for_deleted_connection ON public.connections;
 DROP TRIGGER IF EXISTS stamp_watcher_last_run_completed_at ON public.runs;
@@ -451,6 +462,31 @@ JOIN public.event_embeddings AS embedding ON embedding.event_id = legacy.id
 WHERE canonical.identity_ns = 'automation_event'
   AND legacy.identity_ns = 'behavior_event'
 ON CONFLICT (event_id, embedding_model, chunk_index) DO NOTHING;
+
+-- Classification filters join the current event id, so the canonical head must
+-- carry the predecessor's labels as well as its embedding. Preserve every
+-- classification field, including manual provenance and Automation/window
+-- attribution. A replay finds the same canonical successors and the existing
+-- per-source uniqueness constraint makes the copy idempotent.
+INSERT INTO public.event_classifications (
+  event_id, classifier_id, automation_id, window_id, "values", confidences,
+  source, is_manual, reasoning, met_threshold, threshold,
+  best_match_attribute, embedding_confidence, created_at, excerpts
+)
+SELECT
+  canonical.id, classification.classifier_id, classification.automation_id,
+  classification.window_id, classification."values", classification.confidences,
+  classification.source, classification.is_manual, classification.reasoning,
+  classification.met_threshold, classification.threshold,
+  classification.best_match_attribute, classification.embedding_confidence,
+  classification.created_at, classification.excerpts
+FROM public.events AS canonical
+JOIN public.events AS legacy ON legacy.id = canonical.supersedes_event_id
+JOIN public.event_classifications AS classification
+  ON classification.event_id = legacy.id
+WHERE canonical.identity_ns = 'automation_event'
+  AND legacy.identity_ns = 'behavior_event'
+ON CONFLICT DO NOTHING;
 -- automation-event-identity-bridge:end
 
 -- Views retain their output-column names across underlying relation renames.

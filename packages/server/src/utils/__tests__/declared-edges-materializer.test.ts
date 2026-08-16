@@ -33,6 +33,7 @@ const RULE_VERSION = '1';
 const DECLARED_RELATIONSHIPS: DeclaredEdgeRule[] = [
   {
     type: 'invoice_customer',
+    name: 'invoice_customer_rule',
     from: {
       entityType: '$member',
       identities: [{ namespace: 'erp_invoice', eventPath: 'metadata.origin_id' }],

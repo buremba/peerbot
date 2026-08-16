@@ -280,7 +280,12 @@ async function ensureAliases(
  * (assembled in identity/connector-identity-modules.ts); generic namespaces
  * fall back to the SDK's normalizer.
  */
-function normalizeIdentityValue(namespace: string, raw: string): string | null {
+/**
+ * Exported so any path that LOOKS UP an identity resolves it the same way this
+ * path STORED it. A second implementation that merely trims will silently miss
+ * every normalized namespace (`alice@example.com` vs `Alice@EXAMPLE.com`).
+ */
+export function normalizeIdentityValue(namespace: string, raw: string): string | null {
   const connector = normalizeConnectorIdentityValue(namespace, raw);
   if (connector !== undefined) return connector;
   return normalizeIdentifier(namespace, raw);

@@ -18,6 +18,7 @@
 import type { EntityIdentitySpec } from '@lobu/connector-sdk';
 import type { DbClient } from '../db/client';
 import { getDb, pgBigintArray } from '../db/client';
+import { normalizeIdentityValue } from './entity-link-upsert';
 
 /**
  * Proposed manifest shape, additive on `feeds_schema[feed].eventKinds[kind]`:
@@ -45,9 +46,22 @@ export type DeclaredEdgeEndpoint = {
 export type DeclaredEdgeRule = {
   /** Relationship type slug. Resolved against the DB, never trusted from the caller. */
   type: string;
+  /**
+   * Stable name for this rule within its connector manifest. Together with the
+   * connection it forms the edge's OWNER identity — the thing reconcile is
+   * scoped to. Deliberately independent of `ruleVersion`: an author bumping the
+   * version must keep owning the edges the previous version wrote, or they
+   * strand.
+   */
+  name: string;
   from: DeclaredEdgeEndpoint;
   to: DeclaredEdgeEndpoint;
 };
+
+/** `connectionId:ruleName` — stable across rule-version bumps. */
+function ownerIdOf(connectionId: number, ruleName: string): string {
+  return `${connectionId}:${ruleName}`;
+}
 
 function valueAtPath(item: Record<string, unknown>, path: string): string | null {
   let cur: unknown = item;
@@ -73,7 +87,12 @@ async function resolveEndpoint(
   item: Record<string, unknown>
 ): Promise<number | null> {
   for (const spec of endpoint.identities) {
-    const identifier = valueAtPath(item, spec.eventPath);
+    const raw = valueAtPath(item, spec.eventPath);
+    if (!raw) continue;
+    // The SAME function the attribution path used to store this identity.
+    // Re-implementing it (a bare trim) silently misses every normalized
+    // namespace — an email stored lowercase is never found by its raw form.
+    const identifier = normalizeIdentityValue(spec.namespace, raw);
     if (!identifier) continue;
     const rows = await sql<{ entity_id: number }[]>`
       SELECT entity_id FROM entity_identities
@@ -100,7 +119,8 @@ async function resolveRelationshipTypeId(
 ): Promise<number | null> {
   const rows = await sql<{ id: number }[]>`
     SELECT id FROM entity_relationship_types
-    WHERE organization_id = ${orgId} AND slug = ${slug} AND status = 'active'
+    WHERE organization_id = ${orgId} AND slug = ${slug}
+      AND status = 'active' AND deleted_at IS NULL
     LIMIT 1
   `;
   return rows.length > 0 ? Number(rows[0].id) : null;
@@ -182,6 +202,7 @@ export async function materializeDeclaredEdges(params: {
           relationshipTypeId: String(typeId),
           ruleVersion: params.ruleVersion,
           connectionId: String(params.connectionId),
+          ownerId: ownerIdOf(params.connectionId, rule.name),
         },
       };
       const inserted = await sql<{ id: number }[]>`
@@ -206,17 +227,18 @@ export async function materializeDeclaredEdges(params: {
     }
 
     if (!params.reconcile || asserted.size === 0) continue;
-    // Every DERIVED edge of this type, from a from-entity the batch observed,
+    // Every edge THIS OWNER derived, from a from-entity the batch observed,
     // whose target the batch no longer asserts. No separate state table is
     // consulted — the batch IS the snapshot, exactly as access-graph reconciles
     // departures.
     //
-    // Deliberately NOT filtered on ruleVersion: reconcile owns the whole
-    // derived slice for (from_entity, type). Scoping it to the current version
-    // would strand every edge the previous version wrote the moment a connector
-    // author bumps the rule — the stale edge stays live forever because no
-    // later sync ever claims it. Provenance stays on the row for retraction and
-    // audit; it is not an ownership boundary.
+    // Scoped to `ownerId`, not `ruleVersion` and not the bare (from, type)
+    // slice. Both alternatives are wrong in opposite directions: scoping to the
+    // version strands every edge the previous version wrote the moment an
+    // author bumps it, while scoping to nothing makes two owners delete each
+    // other's edges on alternating syncs. Owner identity is stable across
+    // version bumps and distinct between owners, so it is the only scope that
+    // is right in both cases.
     //
     // A hand-authored (`source='ui'`) edge carries no `derivedFrom` and is
     // therefore never touched, which is the point of keying on it at all.
@@ -229,6 +251,7 @@ export async function materializeDeclaredEdges(params: {
           AND relationship_type_id = ${typeId}
           AND deleted_at IS NULL
           AND metadata ? 'derivedFrom'
+          AND metadata -> 'derivedFrom' ->> 'ownerId' = ${ownerIdOf(params.connectionId, rule.name)}
           AND NOT (to_entity_id = ANY (${pgBigintArray([...targets])}::bigint[]))
         RETURNING id
       `;

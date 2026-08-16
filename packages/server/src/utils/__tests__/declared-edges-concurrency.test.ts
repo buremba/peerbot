@@ -24,6 +24,7 @@ const FEED_KEY = 'documents';
 const RULES: DeclaredEdgeRule[] = [
   {
     type: 'invoice_customer',
+    name: 'invoice_customer_rule',
     from: {
       entityType: '$member',
       identities: [{ namespace: 'erp_invoice', eventPath: 'metadata.origin_id' }],

@@ -112,6 +112,8 @@ describe('codex finding: resolveEndpoint bypasses identity normalization', () =>
     const rules: DeclaredEdgeRule[] = [
       {
         type: 'invoice_customer',
+        name: 'invoice_customer_rule',
+    name: 'invoice_customer_rule',
         from: {
           entityType: '$member',
           identities: [{ namespace: 'crm_deal', eventPath: 'metadata.deal_id' }],
@@ -207,6 +209,8 @@ describe('codex finding: one row cannot hold two independent claims', () => {
     const rules: DeclaredEdgeRule[] = [
       {
         type: 'invoice_customer',
+        name: 'invoice_customer_rule',
+    name: 'invoice_customer_rule',
         from: {
           entityType: '$member',
           identities: [{ namespace: 'erp_invoice', eventPath: 'metadata.origin_id' }],
@@ -222,11 +226,11 @@ describe('codex finding: one row cannot hold two independent claims', () => {
     // owner B's claim is silently dropped by ON CONFLICT DO NOTHING.
     const a = await materializeDeclaredEdges({
       orgId: org.id, connectionId: connection.id, ruleVersion: 'owner-a',
-      rules, items, createdBy: user.id,
+      rules: [{ ...rules[0], name: 'rule_a' }], items, createdBy: user.id,
     });
     const b = await materializeDeclaredEdges({
       orgId: org.id, connectionId: connection.id, ruleVersion: 'owner-b',
-      rules, items, createdBy: user.id,
+      rules: [{ ...rules[0], name: 'rule_b' }], items, createdBy: user.id,
     });
     expect(a.created).toBe(1);
     expect(b.duplicate).toBe(1);
@@ -249,5 +253,113 @@ describe('codex finding: one row cannot hold two independent claims', () => {
     `;
     // B never withdrew its claim, so the edge must survive.
     expect(live[0].count).toBe('1');
+  });
+});
+
+describe('codex finding: cross-owner reconcile oscillation', () => {
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+    clearEntityLinkRulesCache();
+  });
+
+  it('two owners asserting DIFFERENT targets no longer delete each other', async () => {
+    // A says invoice -> CARI-1, B says invoice -> CARI-2. Before reconcile was
+    // scoped to the owner, each sync deleted the other's edge and the live
+    // graph flipped with arrival order. Both are legitimate independent
+    // assertions and both must survive.
+    const { org, user, sql } = await baseOrg('cross owner org');
+    await createTestConnectorDefinition({
+      key: 'erp',
+      name: 'erp',
+      organization_id: org.id,
+      feeds_schema: {
+        [FEED_KEY]: {
+          eventKinds: {
+            invoice: {
+              attributions: [
+                {
+                  role: 'belongs_to',
+                  autoCreate: true,
+                  target: {
+                    entityType: '$member',
+                    titlePath: 'metadata.origin_id',
+                    identities: [{ namespace: 'erp_invoice', eventPath: 'metadata.origin_id' }],
+                  },
+                },
+                {
+                  role: 'about',
+                  autoCreate: true,
+                  target: {
+                    entityType: '$member',
+                    titlePath: 'metadata.customer_origin_id',
+                    identities: [
+                      { namespace: 'erp_customer', eventPath: 'metadata.customer_origin_id' },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+    clearEntityLinkRulesCache();
+    const connection = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'erp',
+      display_name: 'ERP',
+      created_by: user.id,
+      createDefaultFeed: false,
+    });
+
+    const itemsA = [
+      { origin_type: 'invoice', metadata: { origin_id: 'FTR-1', customer_origin_id: 'CARI-1' } },
+    ];
+    const itemsB = [
+      { origin_type: 'invoice', metadata: { origin_id: 'FTR-1', customer_origin_id: 'CARI-2' } },
+    ];
+    await applyEventAttributions({
+      connectorKey: 'erp',
+      connectionId: connection.id,
+      feedKey: FEED_KEY,
+      orgId: org.id,
+      items: [...itemsA, ...itemsB],
+    });
+
+    const base: DeclaredEdgeRule = {
+      type: 'invoice_customer',
+      name: 'placeholder',
+      from: {
+        entityType: '$member',
+        identities: [{ namespace: 'erp_invoice', eventPath: 'metadata.origin_id' }],
+      },
+      to: {
+        entityType: '$member',
+        identities: [{ namespace: 'erp_customer', eventPath: 'metadata.customer_origin_id' }],
+      },
+    };
+
+    // Interleave two full sync rounds, the sequence that used to oscillate.
+    for (let round = 0; round < 2; round++) {
+      await materializeDeclaredEdges({
+        orgId: org.id, connectionId: connection.id, ruleVersion: '1',
+        rules: [{ ...base, name: 'owner_a' }], items: itemsA,
+        createdBy: user.id, reconcile: true,
+      });
+      await materializeDeclaredEdges({
+        orgId: org.id, connectionId: connection.id, ruleVersion: '1',
+        rules: [{ ...base, name: 'owner_b' }], items: itemsB,
+        createdBy: user.id, reconcile: true,
+      });
+    }
+
+    const live = await sql<{ owner_id: string }[]>`
+      SELECT metadata -> 'derivedFrom' ->> 'ownerId' AS owner_id
+      FROM entity_relationships
+      WHERE organization_id = ${org.id} AND deleted_at IS NULL
+      ORDER BY 1
+    `;
+    expect(live).toHaveLength(2);
+    expect(live.map((r) => r.owner_id.split(':')[1])).toEqual(['owner_a', 'owner_b']);
   });
 });

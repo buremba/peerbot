@@ -189,7 +189,9 @@ export async function validateReactionDefaultExport(
     extractExport: 'default',
     limits: { timeoutMs: 5_000 },
   });
-  if (!result.success) {
+  // runScript returns success=true with returnValue=null when the default
+  // export is absent or not a function, so check both conditions.
+  if (!result.success || !result.returnValue) {
     throw new Error(
       'Reaction script must export a default async function. ' +
         (result.error?.message ?? 'No default export found.'),

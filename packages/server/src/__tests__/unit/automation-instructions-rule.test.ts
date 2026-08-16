@@ -117,3 +117,33 @@ describe("assertAutomationInstructions", () => {
 		}
 	});
 });
+
+describe("validateReactionDefaultExport", () => {
+	// Lazy import to avoid module-level side effects in the test harness.
+	const loadValidator = () =>
+		import("../../automations/reaction-executor").then(
+			(m) => m.validateReactionDefaultExport,
+		);
+
+	test.skip("accepts a script with a default export (requires isolated-vm)", async () => {
+		const validate = await loadValidator();
+		const { compileReactionScript } = await import(
+			"../../automations/reaction-executor",
+		);
+		const source = 'export default async () => { return "ok"; }';
+		const compiled = await compileReactionScript(source);
+		await expect(validate(compiled)).resolves.toBeUndefined();
+	});
+
+	test.skip("rejects a script with only named exports (requires isolated-vm)", async () => {
+		const validate = await loadValidator();
+		const { compileReactionScript } = await import(
+			"../../automations/reaction-executor",
+		);
+		const source = 'export const input = { type: "object" }';
+		const compiled = await compileReactionScript(source);
+		await expect(validate(compiled)).rejects.toThrow(
+			/default async function/,
+		);
+	});
+});

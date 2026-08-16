@@ -20,6 +20,7 @@ import type { DbClient } from '../db/client';
 import { getDb, pgBigintArray } from '../db/client';
 import { assertEdgeClaim, retractEdgeClaim } from './edge-claims-spike';
 import { normalizeIdentityValue } from './entity-link-upsert';
+import { canonicalizeSymmetricEdge, validateTypeRule } from './relationship-validation';
 
 /**
  * Proposed manifest shape, additive on `feeds_schema[feed].eventKinds[kind]`:
@@ -95,12 +96,21 @@ async function resolveEndpoint(
     // namespace — an email stored lowercase is never found by its raw form.
     const identifier = normalizeIdentityValue(spec.namespace, raw);
     if (!identifier) continue;
+    // Joined to the entity's TYPE, because `endpoint.entityType` is part of the
+    // declaration and must constrain what resolves. Matching on the identity
+    // alone would let a manifest that says `from: invoice` quietly attach the
+    // edge to whatever entity happens to hold that identifier.
     const rows = await sql<{ entity_id: number }>`
-      SELECT entity_id FROM entity_identities
-      WHERE organization_id = ${orgId}
-        AND namespace = ${spec.namespace}
-        AND identifier = ${identifier}
-        AND deleted_at IS NULL
+      SELECT ei.entity_id
+      FROM entity_identities ei
+      JOIN entities e ON e.id = ei.entity_id
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE ei.organization_id = ${orgId}
+        AND ei.namespace = ${spec.namespace}
+        AND ei.identifier = ${identifier}
+        AND ei.deleted_at IS NULL
+        AND e.deleted_at IS NULL
+        AND et.slug = ${endpoint.entityType}
       LIMIT 1
     `;
     if (rows.length > 0) return Number(rows[0].entity_id);
@@ -113,18 +123,20 @@ async function resolveEndpoint(
  * alone — the `$links` gate decision requires exactly this, so that a connector
  * cannot name an authz-bearing type into existence.
  */
-async function resolveRelationshipTypeId(
+async function resolveRelationshipType(
   sql: DbClient,
   orgId: string,
   slug: string
-): Promise<number | null> {
-  const rows = await sql<{ id: number }>`
-    SELECT id FROM entity_relationship_types
+): Promise<{ id: number; isSymmetric: boolean } | null> {
+  const rows = await sql<{ id: number; is_symmetric: boolean }>`
+    SELECT id, is_symmetric FROM entity_relationship_types
     WHERE organization_id = ${orgId} AND slug = ${slug}
       AND status = 'active' AND deleted_at IS NULL
     LIMIT 1
   `;
-  return rows.length > 0 ? Number(rows[0].id) : null;
+  return rows.length > 0
+    ? { id: Number(rows[0].id), isSymmetric: Boolean(rows[0].is_symmetric) }
+    : null;
 }
 
 export type MaterializeResult = {
@@ -134,6 +146,12 @@ export type MaterializeResult = {
   unknownType: number;
   /** Live edges withdrawn because the batch no longer asserts them. */
   retracted: number;
+  /**
+   * Resolved to a real pair, but the org's `entity_relationship_type_rules`
+   * forbid that type pairing. Counted rather than thrown: one bad item in a
+   * 10k-item sync must not abort the batch.
+   */
+  rejected: number;
 };
 
 /**
@@ -191,21 +209,38 @@ export async function materializeDeclaredEdges(params: {
     unresolved: 0,
     unknownType: 0,
     retracted: 0,
+    rejected: 0,
   };
 
   for (const rule of params.rules) {
-    const typeId = await resolveRelationshipTypeId(sql, params.orgId, rule.type);
-    if (typeId == null) {
+    const relType = await resolveRelationshipType(sql, params.orgId, rule.type);
+    if (relType == null) {
       out.unknownType += params.items.length;
       continue;
     }
+    const typeId = relType.id;
     /** from_entity_id -> the to_entity_ids THIS batch asserts for it. */
     const asserted = new Map<number, Set<number>>();
     for (const item of params.items) {
-      const fromId = await resolveEndpoint(sql, params.orgId, rule.from, item);
-      const toId = await resolveEndpoint(sql, params.orgId, rule.to, item);
-      if (fromId == null || toId == null || fromId === toId) {
+      const resolvedFrom = await resolveEndpoint(sql, params.orgId, rule.from, item);
+      const resolvedTo = await resolveEndpoint(sql, params.orgId, rule.to, item);
+      if (resolvedFrom == null || resolvedTo == null || resolvedFrom === resolvedTo) {
         out.unresolved += 1;
+        continue;
+      }
+      // A symmetric type must land on ONE canonical ordering, or a connector
+      // that happens to emit b->a creates a second edge for the same fact and
+      // the claim set is split across two rows that never converge.
+      const { from: fromId, to: toId } = relType.isSymmetric
+        ? canonicalizeSymmetricEdge(resolvedFrom, resolvedTo)
+        : { from: resolvedFrom, to: resolvedTo };
+
+      // The SAME type-pair rules the MCP link path enforces. Without this a
+      // connector manifest can assert pairings an operator explicitly forbade.
+      try {
+        await validateTypeRule(typeId, fromId, toId, sql);
+      } catch {
+        out.rejected += 1;
         continue;
       }
       // A claim, not a bare insert. Two owners asserting the same triple share

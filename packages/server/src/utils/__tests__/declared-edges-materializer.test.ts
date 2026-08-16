@@ -180,7 +180,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       createdBy: user.id,
       syncToken: 'sync-1',
     });
-    expect(first).toEqual({ created: 3, duplicate: 0, unresolved: 0, unknownType: 0, retracted: 0 });
+    expect(first).toEqual({ created: 3, duplicate: 0, unresolved: 0, unknownType: 0, retracted: 0 , rejected: 0 });
 
     // Two invoices point at CARI-001; both edges exist because the SOURCE
     // differs. Collapsing them would lose an invoice.
@@ -201,7 +201,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       createdBy: user.id,
       syncToken: 'sync-1',
     });
-    expect(replay).toEqual({ created: 0, duplicate: 3, unresolved: 0, unknownType: 0, retracted: 0 });
+    expect(replay).toEqual({ created: 0, duplicate: 3, unresolved: 0, unknownType: 0, retracted: 0 , rejected: 0 });
 
     const afterReplay = await sql<{ count: string }[]>`
       SELECT COUNT(*)::text AS count FROM entity_relationships
@@ -294,7 +294,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       createdBy: user.id,
       syncToken: 'sync-1',
     });
-    expect(result).toEqual({ created: 0, duplicate: 0, unresolved: 3, unknownType: 0, retracted: 0 });
+    expect(result).toEqual({ created: 0, duplicate: 0, unresolved: 3, unknownType: 0, retracted: 0 , rejected: 0 });
 
     const edges = await sql<{ count: string }[]>`
       SELECT COUNT(*)::text AS count FROM entity_relationships
@@ -321,7 +321,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       createdBy: user.id,
       syncToken: 'sync-1',
     });
-    expect(second).toEqual({ created: 3, duplicate: 0, unresolved: 0, unknownType: 0, retracted: 0 });
+    expect(second).toEqual({ created: 3, duplicate: 0, unresolved: 0, unknownType: 0, retracted: 0 , rejected: 0 });
   });
 
   it('writes no edge when only ONE endpoint resolves', async () => {
@@ -372,7 +372,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       createdBy: user.id,
       syncToken: 'sync-1',
     });
-    expect(result).toEqual({ created: 0, duplicate: 0, unresolved: 1, unknownType: 0, retracted: 0 });
+    expect(result).toEqual({ created: 0, duplicate: 0, unresolved: 1, unknownType: 0, retracted: 0 , rejected: 0 });
 
     const edges = await sql<{ count: string }[]>`
       SELECT COUNT(*)::text AS count FROM entity_relationships
@@ -456,6 +456,7 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
       unresolved: 0,
       unknownType: 0,
       retracted: 1,
+      rejected: 0,
     });
 
     const live = await sql<{ from_entity_id: number; to_entity_id: number }[]>`
@@ -733,5 +734,170 @@ describe('SPIKE: honouring a connector-declared edge rule', () => {
     `;
     expect(survivors).toHaveLength(2);
     expect(survivors.every((r) => Number(r.relationship_type_id) === otherTypeId)).toBe(true);
+  });
+
+  it('resolves nothing when the manifest declares the WRONG entity type', async () => {
+    // `endpoint.entityType` is part of the declaration, so it must constrain
+    // what resolves. Matching on the identity alone would attach the edge to
+    // whatever entity happened to hold that identifier, under any type.
+    const { org, user } = await setupOrg('entity type mismatch org');
+    const sql = getTestDb();
+    await installConnector(org.id);
+    const connection = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'prodma',
+      display_name: 'Prodma',
+      created_by: user.id,
+      createDefaultFeed: false,
+    });
+    await ensureRelType(org.id, 'invoice_customer');
+    await applyEventAttributions({
+      connectorKey: 'prodma',
+      connectionId: connection.id,
+      feedKey: FEED_KEY,
+      orgId: org.id,
+      items: INVOICES,
+    });
+
+    const result = await materializeDeclaredEdges({
+      orgId: org.id,
+      connectionId: connection.id,
+      ruleVersion: RULE_VERSION,
+      rules: [
+        {
+          ...DECLARED_RELATIONSHIPS[0],
+          // The identities still resolve; the declared type does not match.
+          from: { ...DECLARED_RELATIONSHIPS[0].from, entityType: 'not_a_member' },
+        },
+      ],
+      items: INVOICES,
+      createdBy: user.id,
+      syncToken: 'sync-1',
+    });
+    expect(result.created).toBe(0);
+    expect(result.unresolved).toBe(3);
+
+    const edges = await sql<{ count: string }[]>`
+      SELECT COUNT(*)::text AS count FROM entity_relationships
+      WHERE organization_id = ${org.id} AND deleted_at IS NULL
+    `;
+    expect(edges[0].count).toBe('0');
+  });
+
+  it('rejects a pairing the org type rules forbid, without aborting the batch', async () => {
+    // The same `entity_relationship_type_rules` the MCP link path enforces. A
+    // connector manifest must not be able to assert a pairing an operator
+    // explicitly forbade, and one bad item must not kill the whole sync.
+    const { org, user } = await setupOrg('type rule org');
+    const sql = getTestDb();
+    await installConnector(org.id);
+    const connection = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'prodma',
+      display_name: 'Prodma',
+      created_by: user.id,
+      createDefaultFeed: false,
+    });
+    const typeId = await ensureRelType(org.id, 'invoice_customer');
+    await applyEventAttributions({
+      connectorKey: 'prodma',
+      connectionId: connection.id,
+      feedKey: FEED_KEY,
+      orgId: org.id,
+      items: INVOICES,
+    });
+
+    // Permit only a pairing that these entities do not have.
+    await sql`
+      INSERT INTO entity_relationship_type_rules
+        (relationship_type_id, source_entity_type_slug, target_entity_type_slug, created_at, updated_at)
+      VALUES (${typeId}::int, 'invoice', 'customer', current_timestamp, current_timestamp)
+    `;
+
+    const result = await materializeDeclaredEdges({
+      orgId: org.id,
+      connectionId: connection.id,
+      ruleVersion: RULE_VERSION,
+      rules: DECLARED_RELATIONSHIPS,
+      items: INVOICES,
+      createdBy: user.id,
+      syncToken: 'sync-1',
+    });
+    expect(result.rejected).toBe(3);
+    expect(result.created).toBe(0);
+
+    const edges = await sql<{ count: string }[]>`
+      SELECT COUNT(*)::text AS count FROM entity_relationships
+      WHERE organization_id = ${org.id} AND deleted_at IS NULL
+    `;
+    expect(edges[0].count).toBe('0');
+  });
+
+  it('a SYMMETRIC type collapses both emission orders onto one canonical row', async () => {
+    // A symmetric fact has no direction, so a connector emitting b->a states
+    // the same thing as a->b. Without canonicalization each ordering lands its
+    // own row, the claim set splits across two rows that never converge, and
+    // the graph reports the relationship twice.
+    const { org, user } = await setupOrg('symmetric org');
+    const sql = getTestDb();
+    await installConnector(org.id);
+    const connection = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'prodma',
+      display_name: 'Prodma',
+      created_by: user.id,
+      createDefaultFeed: false,
+    });
+    const rows = await sql<{ id: number }>`
+      INSERT INTO entity_relationship_types
+        (organization_id, slug, name, status, is_symmetric, created_at, updated_at)
+      VALUES (${org.id}, 'peer_of', 'peer_of', 'active', true, current_timestamp, current_timestamp)
+      RETURNING id
+    `;
+    expect(Number(rows[0].id)).toBeGreaterThan(0);
+
+    await applyEventAttributions({
+      connectorKey: 'prodma',
+      connectionId: connection.id,
+      feedKey: FEED_KEY,
+      orgId: org.id,
+      items: INVOICES,
+    });
+
+    const forward = { ...DECLARED_RELATIONSHIPS[0], type: 'peer_of', name: 'forward' };
+    const reversed = {
+      type: 'peer_of',
+      name: 'reversed',
+      from: DECLARED_RELATIONSHIPS[0].to,
+      to: DECLARED_RELATIONSHIPS[0].from,
+    };
+
+    await materializeDeclaredEdges({
+      orgId: org.id, connectionId: connection.id, ruleVersion: RULE_VERSION,
+      rules: [forward], items: INVOICES, createdBy: user.id, syncToken: 'fwd',
+    });
+    await materializeDeclaredEdges({
+      orgId: org.id, connectionId: connection.id, ruleVersion: RULE_VERSION,
+      rules: [reversed], items: INVOICES, createdBy: user.id, syncToken: 'rev',
+    });
+
+    // Three invoice/customer pairs, stated twice in opposite orders = three rows.
+    const live = await sql<{ count: string }>`
+      SELECT COUNT(*)::text AS count FROM entity_relationships
+      WHERE organization_id = ${org.id} AND deleted_at IS NULL
+    `;
+    expect(live[0].count).toBe('3');
+
+    // And each row carries BOTH rules as co-owners, which is only possible if
+    // they landed on the same canonical (from, to).
+    const owners = await sql<{ owners: unknown }>`
+      SELECT coalesce(jsonb_agg(DISTINCT k), '[]'::jsonb) AS owners
+      FROM entity_relationships r, LATERAL jsonb_object_keys(r.metadata -> 'claims') AS k
+      WHERE r.organization_id = ${org.id} AND r.deleted_at IS NULL
+    `;
+    expect((owners[0].owners as string[]).map((o) => o.split(':')[1]).sort()).toEqual([
+      'forward',
+      'reversed',
+    ]);
   });
 });

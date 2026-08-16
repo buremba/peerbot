@@ -941,6 +941,9 @@ export async function executePlan(
           description: w.description,
           prompt: w.prompt,
           ...(w.skillSnapshots?.length ? { skills: w.skillSnapshots } : {}),
+          ...(w.reactionScript
+            ? { reaction_script: w.reactionScript.sourceCode }
+            : {}),
           triggers: w.triggers,
           sources: w.sources,
           reactions_guidance: w.reactionsGuidance,
@@ -1022,7 +1025,20 @@ export async function executePlan(
               : {}),
           });
         }
-        // b) Version-bound fields → manage_automations create_version (server
+        // b) Reaction script — attach BEFORE the version write below. The final
+        //    version can be valid only because of the reaction (a reaction-only
+        //    transition clears the prompt), and the server's instruction rule
+        //    validates the version against the group's CURRENT reaction. Push
+        //    first (idempotent server-side, no drift signal because it's not
+        //    returned by Automation lists) so the rule sees it. Reaction
+        //    removal is never pushed — apply only ever sets scripts.
+        if (w.reactionScript) {
+          await ctx.client.setReactionScript(
+            automationId,
+            w.reactionScript.sourceCode
+          );
+        }
+        // c) Version-bound fields → manage_automations create_version (server
         //    inherits unset fields from the previous version row, but we always
         //    send the desired-side values for the changed keys). name/description
         //    are version-owned (update rejects them).
@@ -1057,14 +1073,6 @@ export async function executePlan(
               : {}),
           });
         }
-      }
-      // c) Reaction script — push when declared (idempotent server-side, no
-      //    drift signal available because it's not returned by Automation lists).
-      if (w.reactionScript && automationId) {
-        await ctx.client.setReactionScript(
-          automationId,
-          w.reactionScript.sourceCode
-        );
       }
       printText(
         renderProgress(

@@ -566,18 +566,21 @@ function mapAutomationOutputs(
 const MAX_AUTOMATION_SKILLS = 5;
 
 /**
- * Skills-presence rule. An event trigger executing as "turn" carries its own
- * content (the incoming message/event), so it may run with zero skills on the
- * built-in default instruction. Everything else — schedule triggers, event
- * triggers with execution "window", and Automations with no triggers at all
- * (manual runs) — needs a prompt, at least one skill, or both.
+ * Instruction-presence rule. An event trigger executing as "turn" carries its own
+ * content (the incoming message/event), so it may run with zero instructions on
+ * the built-in default. Everything else — schedule triggers, event triggers with
+ * execution "window", and Automations with no triggers at all (manual runs) —
+ * needs a prompt, at least one skill, or a reaction script.
  *
  * This CLI preflight mirrors the server rule, catching the error against the
  * config file (naming the slug) rather than as a 422 mid-apply. When both
  * triggers and instructions change, apply sends them together through
  * create_version so the final pair is validated atomically.
  */
-function assertAutomationSkills(automation: DesiredAutomation): void {
+function assertAutomationSkills(
+  automation: DesiredAutomation,
+  reactionDeclared: boolean
+): void {
   const skills = automation.skills ?? [];
   const duplicates = skills.filter((name, i) => skills.indexOf(name) !== i);
   if (duplicates.length > 0) {
@@ -611,13 +614,17 @@ function assertAutomationSkills(automation: DesiredAutomation): void {
         (trigger.kind === "event" &&
           resolvedEventExecution(trigger) === "window")
     );
-  // Either instruction source satisfies the rule. An Automation whose whole job is
-  // "run this skill" has no task statement to write, and one that spells its
-  // task out inline needs no skill — demanding both would be stricter than the
-  // server and would reject configs the API accepts.
-  if (requiresSkills && skills.length === 0 && !automation.prompt.trim()) {
+  // Any one of the three instruction sources satisfies the rule. An Automation
+  // whose whole job is "run this skill" has no task statement to write, one
+  // that spells its task out inline needs no skill, and one that runs entirely
+  // as a reaction script needs neither — demanding two would be stricter than
+  // the server and would reject configs the API accepts. The mapper runs
+  // BEFORE the loader reads the reaction file, so `reactionDeclared` is the
+  // config marker (present for `reactionFromFile(path)`); the loader validates
+  // the file and the server enforces the final rule on its source.
+  if (requiresSkills && skills.length === 0 && !automation.prompt.trim() && !reactionDeclared) {
     throw new ValidationError(
-      `Automation "${automation.slug}" needs instructions: schedule triggers, event triggers with execution "window", and Automations with no triggers run on stored instructions alone, so give it a "prompt", at least one skill, or both. Only event triggers with execution "turn" may omit both.`
+      `Automation "${automation.slug}" needs instructions: schedule triggers, event triggers with execution "window", and Automations with no triggers run on stored instructions alone, so give it a "prompt", at least one skill, or a reaction script. Only event triggers with execution "turn" may omit all three.`
     );
   }
 }
@@ -981,13 +988,22 @@ export function mapProjectToDesiredState(
   assertUniqueBy(providers, (p) => p.slug, "provider slug");
 
   const agentIds = new Set(project.agents.map((agent) => agent.id));
-  for (const automation of automations) {
+  for (let i = 0; i < automations.length; i++) {
+    const automation = automations[i];
+    if (!automation) continue;
     if (!agentIds.has(automation.agent)) {
       throw new ValidationError(
         `Automation "${automation.slug}" names agent "${automation.agent}", but no agent with that id is declared in lobu.config.ts`
       );
     }
-    assertAutomationSkills(automation);
+    // The config's `reaction` marker (from `reactionFromFile(path)`) drives the
+    // instruction-presence preflight — the reaction SOURCE is only resolved
+    // later by the loader. `automations` is index-aligned with
+    // `project.automations` (the mapper maps in order).
+    assertAutomationSkills(
+      automation,
+      project.automations?.[i]?.reaction !== undefined
+    );
     for (const trigger of automation.triggers ?? []) {
       if (
         trigger.kind !== "event" ||

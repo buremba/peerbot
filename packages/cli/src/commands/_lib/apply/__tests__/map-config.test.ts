@@ -8,6 +8,7 @@ import {
   defineConnector,
   defineEntityType,
   defineRelationshipType,
+  reactionFromFile,
   secret,
 } from "@lobu/cli/config";
 import type { AgentSettings } from "@lobu/core";
@@ -970,7 +971,7 @@ describe("mapProjectToDesiredState", () => {
     ).toThrow(/more than one schedule trigger/i);
   });
 
-  test("requires prompt OR >=1 skill for schedule, window-event, and manual Automations", () => {
+  test("requires prompt, >=1 skill, or a reaction script for schedule, window-event, and manual Automations", () => {
     const crm = defineAgent({ id: "crm" });
     const map = (automation: ReturnType<typeof defineAutomation>) => () =>
       mapProjectToDesiredState(
@@ -1033,6 +1034,19 @@ describe("mapProjectToDesiredState", () => {
           agent: crm,
           slug: "prompt-only",
           prompt: "Summarise yesterday's signups.",
+          triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
+        })
+      )
+    ).not.toThrow();
+    // A reaction script is the third instruction source: a schedule Automation
+    // with a reaction and no prompt/skills is valid (the loader resolves the
+    // file; the server enforces the final rule on its source).
+    expect(
+      map(
+        defineAutomation({
+          agent: crm,
+          slug: "reaction-only",
+          reaction: reactionFromFile("./reactions/dedupe.reaction.ts"),
           triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
         })
       )

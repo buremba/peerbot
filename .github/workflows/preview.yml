@@ -56,6 +56,11 @@ jobs:
 
       - name: Deploy preview
         run: |
+          # Clean up any existing resources from previous runs
+          kubectl -n "$PREVIEW_NS" delete deployment "$PREVIEW_NAME" --ignore-not-found
+          kubectl -n "$PREVIEW_NS" delete svc "$PREVIEW_NAME" --ignore-not-found
+          kubectl -n "$PREVIEW_NS" delete ingress "$PREVIEW_NAME" --ignore-not-found
+
           kubectl create deployment "$PREVIEW_NAME" \
             -n "$PREVIEW_NS" \
             --image=${{ env.PREVIEW_IMAGE }}:pr-${{ github.event.pull_request.number }} \

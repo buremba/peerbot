@@ -67,9 +67,9 @@ jobs:
           author="${AUTHOR:-$ACTOR}"
           if [ -n "$K8S" ] && [ -n "$PR_NUMBER" ] && [ -n "$author" ] \
             && echo "$TRUSTED" | tr '[:space:]' '\n' | grep -qxF "$author"; then
-            echo "runner=$K8S"
+            echo "runner=$K8S" >> "$GITHUB_OUTPUT"
           else
-            echo "runner=$LINUX"
+            echo "runner=$LINUX" >> "$GITHUB_OUTPUT"
           fi
 
   # Fast unit tests — no Postgres, no submodule needed for most.

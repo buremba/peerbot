@@ -15,6 +15,7 @@ import {
 	pgBigintArray,
 	pgTextArray,
 } from "../db/client.js";
+import { upsertEdges } from "../utils/edge-writes.js";
 import { resolveEventAttributionsForItems } from "../utils/entity-link-upsert.js";
 import { ensureResourceEntityType } from "./access-graph.js";
 import {
@@ -256,35 +257,39 @@ export async function resolveAboutEntityRefs(
 	return [...new Set([...ids, ...fromSlugs])];
 }
 
-async function upsertAboutEdge(opts: {
+/**
+ * Take ownership of one channel's `about` edges: create what is missing and
+ * re-stamp metadata/source on what already exists.
+ *
+ * The metadata is per-channel (it carries `channel_key`), so this is one batch
+ * per channel rather than one for the whole sync.
+ */
+async function upsertAboutEdges(opts: {
 	organizationId: string;
 	fromChannelEntityId: number;
-	toBusinessEntityId: number;
+	toBusinessEntityIds: number[];
 	source: string;
 	metadata: ChannelAboutMetadata;
 	userId: string | null | undefined;
 	typeId: number;
 	sql: DbClient;
 }): Promise<void> {
-	await opts.sql`
-    INSERT INTO entity_relationships (
-      organization_id, from_entity_id, to_entity_id, relationship_type_id,
-      metadata, confidence, source, created_by, updated_by, created_at, updated_at
-    ) VALUES (
-      ${opts.organizationId}, ${opts.fromChannelEntityId}, ${opts.toBusinessEntityId},
-      ${opts.typeId}, ${opts.sql.json(opts.metadata)}, 1.0, ${opts.source},
-      ${opts.userId ?? null}, ${opts.userId ?? null},
-      current_timestamp, current_timestamp
-    )
-    ON CONFLICT (from_entity_id, to_entity_id, relationship_type_id)
-      WHERE deleted_at IS NULL
-    DO UPDATE SET
-      metadata = EXCLUDED.metadata,
-      source = EXCLUDED.source,
-      updated_by = EXCLUDED.updated_by,
-      updated_at = current_timestamp,
-      deleted_at = NULL
-  `;
+	// The partial conflict target only matches live rows; a tombstoned triple
+	// therefore gets a fresh live row, exactly as this path did before.
+	await upsertEdges({
+		db: opts.sql,
+		organizationId: opts.organizationId,
+		relationshipTypeId: opts.typeId,
+		pairs: opts.toBusinessEntityIds.map((toBusinessEntityId) => ({
+			fromEntityId: opts.fromChannelEntityId,
+			toEntityId: toBusinessEntityId,
+		})),
+		source: opts.source,
+		confidence: 1.0,
+		createdBy: opts.userId ?? null,
+		metadata: opts.metadata,
+		onConflict: 'update',
+	});
 }
 
 /**
@@ -338,20 +343,19 @@ export async function syncConnectionChannelAboutEdges(opts: {
 		};
 
 		for (const businessEntityId of channel.aboutEntityIds) {
-			const pairKey = `${channelEntityId}:${businessEntityId}`;
-			desiredPairs.add(pairKey);
-			await upsertAboutEdge({
-				organizationId: opts.organizationId,
-				fromChannelEntityId: channelEntityId,
-				toBusinessEntityId: businessEntityId,
-				source: EDGE_SOURCE_CONFIG,
-				metadata,
-				userId: opts.userId,
-				typeId,
-				sql,
-			});
-			linked += 1;
+			desiredPairs.add(`${channelEntityId}:${businessEntityId}`);
 		}
+		await upsertAboutEdges({
+			organizationId: opts.organizationId,
+			fromChannelEntityId: channelEntityId,
+			toBusinessEntityIds: channel.aboutEntityIds,
+			source: EDGE_SOURCE_CONFIG,
+			metadata,
+			userId: opts.userId,
+			typeId,
+			sql,
+		});
+		linked += channel.aboutEntityIds.length;
 	}
 
 	const existing = await sql<{
@@ -445,18 +449,16 @@ export async function setManualChannelAboutEdges(opts: {
     `;
 	}
 
-	for (const businessEntityId of desired) {
-		await upsertAboutEdge({
-			organizationId: opts.organizationId,
-			fromChannelEntityId: channelEntityId,
-			toBusinessEntityId: businessEntityId,
-			source: EDGE_SOURCE_MANUAL,
-			metadata,
-			userId: opts.userId,
-			typeId,
-			sql,
-		});
-	}
+	await upsertAboutEdges({
+		organizationId: opts.organizationId,
+		fromChannelEntityId: channelEntityId,
+		toBusinessEntityIds: [...desired],
+		source: EDGE_SOURCE_MANUAL,
+		metadata,
+		userId: opts.userId,
+		typeId,
+		sql,
+	});
 }
 
 export interface ChannelAboutEntity {

@@ -17,6 +17,8 @@ import {
   defineConfig,
   defineConnection,
   defineEntityType,
+  field,
+  Type,
 } from "@lobu/cli/config";
 import { CHURN_ROLLUP_SQL } from "./scripts/lib/env.ts";
 
@@ -98,16 +100,11 @@ const businessEvent = defineEntityType({
     "pricing change. Before explaining any movement in a metric, check the " +
     "business events overlapping that period; if one exists, cite it (with its " +
     "source_link) instead of speculating.",
-  required: ["event_date", "event_type"],
   properties: {
-    event_date: {
-      type: "string",
+    event_date: field("Date", {
       description: "ISO date (YYYY-MM-DD) the event took effect.",
-      "x-table-label": "Date",
-      "x-table-column": true,
-    },
-    event_type: {
-      type: "string",
+    }),
+    event_type: field("Type", {
       enum: [
         "data_incident",
         "definition_change",
@@ -116,40 +113,41 @@ const businessEvent = defineEntityType({
         "pricing_change",
       ],
       description:
-        "What kind of why this is. data_incident = the numbers are wrong " +
-        "(exclude/repair them); definition_change = the metric's meaning moved; " +
-        "external_shock = the numbers are right but the cause is external and " +
-        "temporary; campaign/pricing_change = self-inflicted, expected shifts.",
-      "x-table-label": "Type",
-      "x-table-column": true,
-    },
-    affected_metrics: {
-      type: "array",
-      items: { type: "string" },
-      description:
-        "Metric slugs this event distorts or shifts (must match a " +
-        "metric-definition entity's metric slug, e.g. churn_rate).",
-      "x-table-label": "Affects",
-      "x-table-column": true,
-    },
-    expected_effect: {
-      type: "string",
-      description:
-        "Operative instruction for anyone reading the affected metrics: what " +
-        "the series will look like and how to treat it (e.g. 'exclude 2026-03 " +
-        "from churn trend — rows are migration artifacts, not real churn').",
-    },
-    owner: {
-      type: "string",
+        "What kind of why this is. data_incident = the numbers are wrong (exclude/repair them); definition_change = the metric's meaning moved; external_shock = the numbers are right but the cause is external and temporary; campaign/pricing_change = self-inflicted, expected shifts.",
+    }),
+    affected_metrics: Type.Optional(
+      Type.Unsafe({
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Metric slugs this event distorts or shifts (must match a " +
+          "metric-definition entity's metric slug, e.g. churn_rate).",
+        "x-table-label": "Affects",
+        "x-table-column": true,
+      })
+    ),
+    expected_effect: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          "Operative instruction for anyone reading the affected metrics: what " +
+          "the series will look like and how to treat it (e.g. 'exclude 2026-03 " +
+          "from churn trend — rows are migration artifacts, not real churn').",
+      })
+    ),
+    owner: field("Owner", {
       description: "Person or team accountable for this record being correct.",
-      "x-table-label": "Owner",
-    },
-    source_link: {
-      type: "string",
-      description:
-        "Deep link to the source of truth — incident ticket, decision doc, or " +
-        "Slack thread. Always cite this when the event is used in an answer.",
-    },
+      column: false,
+      optional: true,
+    }),
+    source_link: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          "Deep link to the source of truth — incident ticket, decision doc, or " +
+          "Slack thread. Always cite this when the event is used in an answer.",
+      })
+    ),
   },
 });
 
@@ -172,30 +170,31 @@ const metricDefinition = defineEntityType({
     "when a month straddles a definition change, say which version was in " +
     "effect. metadata.aliases carries the metric slug so observation events " +
     "resolve to this entity.",
-  required: ["metric"],
   properties: {
-    metric: {
-      type: "string",
+    metric: field("Metric", {
       description: "Stable metric slug, e.g. churn_rate.",
-      "x-table-label": "Metric",
-      "x-table-column": true,
-    },
-    unit: {
-      type: "string",
-      description: "Unit of the metric's readings (e.g. cancellations/month).",
-    },
-    owner: {
-      type: "string",
+    }),
+    unit: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description:
+          "Unit of the metric's readings (e.g. cancellations/month).",
+      })
+    ),
+    owner: field("Owner", {
       description: "Team that owns this metric's definition.",
-      "x-table-label": "Owner",
-    },
-    aliases: {
-      type: "array",
-      items: { type: "string" },
-      description:
-        "Alias strings observation events use to resolve to this entity — an " +
-        "observation's metadata.metric must equal one of these.",
-    },
+      column: false,
+      optional: true,
+    }),
+    aliases: Type.Optional(
+      Type.Unsafe({
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Alias strings observation events use to resolve to this entity — an " +
+          "observation's metadata.metric must equal one of these.",
+      })
+    ),
   },
   eventKinds: {
     definition: {
@@ -286,38 +285,34 @@ const verifiedQuery = defineEntityType({
     "ad-hoc SQL when one matches the question. If the drift check reports a " +
     "mismatch, treat the pinned answer as stale and flag it for " +
     "re-verification — do not silently quote either side.",
-  required: ["question", "sql"],
   properties: {
-    question: {
-      type: "string",
+    question: field("Question", {
       description: "The business question this query answers, verbatim.",
-      "x-table-label": "Question",
-      "x-table-column": true,
-    },
+    }),
     sql: {
       type: "string",
       description:
         "The exact read-only SQL that produced the approved answer. Runs " +
         "against the warehouse connection (same query the virtual feed uses).",
     },
-    approved_answer: {
-      type: "array",
-      items: { type: "object" },
-      description:
-        "The result rows pinned at approval time. The drift canary diffs live " +
-        "results against these.",
-    },
-    approved_by: {
-      type: "string",
+    approved_answer: Type.Optional(
+      Type.Unsafe({
+        type: "array",
+        items: { type: "object" },
+        description:
+          "The result rows pinned at approval time. The drift canary diffs live " +
+          "results against these.",
+      })
+    ),
+    approved_by: field("Approved by", {
       description: "Who verified and approved the answer.",
-      "x-table-label": "Approved by",
-    },
-    approved_at: {
-      type: "string",
+      column: false,
+      optional: true,
+    }),
+    approved_at: field("Approved", {
       description: "ISO date of approval.",
-      "x-table-label": "Approved",
-      "x-table-column": true,
-    },
+      optional: true,
+    }),
   },
 });
 

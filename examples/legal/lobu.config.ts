@@ -8,6 +8,7 @@ import {
   defineAutomation,
   every,
   secret,
+  field,
 } from "@lobu/cli/config";
 import type DocuSignEnvelopesConnector from "./docusign-envelopes.connector.ts";
 
@@ -48,26 +49,10 @@ const clause = defineEntityType({
   description:
     "A specific provision or section within a contract that defines terms or obligations",
   properties: {
-    clause_type: {
-      type: "string",
-      "x-table-label": "Type",
-      "x-table-column": true,
-    },
-    section: {
-      type: "string",
-      "x-table-label": "Section",
-      "x-table-column": true,
-    },
-    risk_level: {
-      type: "string",
-      "x-table-label": "Risk Level",
-      "x-table-column": true,
-    },
-    language_summary: {
-      type: "string",
-      "x-table-label": "Summary",
-      "x-table-column": true,
-    },
+    clause_type: field("Type", { optional: true }),
+    section: field("Section", { optional: true }),
+    risk_level: field("Risk Level", { optional: true }),
+    language_summary: field("Summary", { optional: true }),
   },
 });
 
@@ -77,27 +62,11 @@ const contract = defineEntityType({
   description:
     "A legal agreement between parties with defined terms, obligations, and conditions",
   properties: {
-    contract_type: {
-      type: "string",
-      "x-table-label": "Type",
-      "x-table-column": true,
-    },
-    status: {
-      type: "string",
-      "x-table-label": "Status",
-      "x-table-column": true,
-    },
-    effective_date: {
-      type: "string",
-      "x-table-label": "Effective Date",
-      "x-table-column": true,
-    },
-    counterparty_name: {
-      type: "string",
-      "x-table-label": "Counterparty",
-      "x-table-column": true,
-    },
-    governing_law: { type: "string", "x-table-label": "Governing Law" },
+    contract_type: field("Type", { optional: true }),
+    status: field("Status", { optional: true }),
+    effective_date: field("Effective Date", { optional: true }),
+    counterparty_name: field("Counterparty", { optional: true }),
+    governing_law: field("Governing Law", { column: false, optional: true }),
   },
 });
 
@@ -106,26 +75,10 @@ const counterparty = defineEntityType({
   name: "Counterparty",
   description: "An external party involved in a contract or legal agreement",
   properties: {
-    organization_name: {
-      type: "string",
-      "x-table-label": "Organization",
-      "x-table-column": true,
-    },
-    jurisdiction: {
-      type: "string",
-      "x-table-label": "Jurisdiction",
-      "x-table-column": true,
-    },
-    contact_person: {
-      type: "string",
-      "x-table-label": "Contact",
-      "x-table-column": true,
-    },
-    relationship_status: {
-      type: "string",
-      "x-table-label": "Status",
-      "x-table-column": true,
-    },
+    organization_name: field("Organization", { optional: true }),
+    jurisdiction: field("Jurisdiction", { optional: true }),
+    contact_person: field("Contact", { optional: true }),
+    relationship_status: field("Status", { optional: true }),
   },
 });
 
@@ -135,26 +88,10 @@ const risk = defineEntityType({
   description:
     "A legal risk identified in a contract or clause that requires attention or mitigation",
   properties: {
-    severity: {
-      type: "string",
-      "x-table-label": "Severity",
-      "x-table-column": true,
-    },
-    category: {
-      type: "string",
-      "x-table-label": "Category",
-      "x-table-column": true,
-    },
-    mitigation: {
-      type: "string",
-      "x-table-label": "Mitigation",
-      "x-table-column": true,
-    },
-    source_clause: {
-      type: "string",
-      "x-table-label": "Source Clause",
-      "x-table-column": true,
-    },
+    severity: field("Severity", { optional: true }),
+    category: field("Category", { optional: true }),
+    mitigation: field("Mitigation", { optional: true }),
+    source_clause: field("Source Clause", { optional: true }),
   },
 });
 

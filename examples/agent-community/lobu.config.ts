@@ -8,6 +8,7 @@ import {
   defineAutomation,
   every,
   secret,
+  field,
 } from "@lobu/cli/config";
 import type DiscoursePostsConnector from "./discourse-posts.connector.ts";
 
@@ -48,26 +49,10 @@ const match = defineEntityType({
   description:
     "A suggested introduction between two members with reasons and confidence",
   properties: {
-    member_a: {
-      type: "string",
-      "x-table-label": "Member A",
-      "x-table-column": true,
-    },
-    member_b: {
-      type: "string",
-      "x-table-label": "Member B",
-      "x-table-column": true,
-    },
-    reason: {
-      type: "string",
-      "x-table-label": "Reason",
-      "x-table-column": true,
-    },
-    status: {
-      type: "string",
-      "x-table-label": "Status",
-      "x-table-column": true,
-    },
+    member_a: field("Member A", { optional: true }),
+    member_b: field("Member B", { optional: true }),
+    reason: field("Reason", { optional: true }),
+    status: field("Status", { optional: true }),
   },
 });
 
@@ -77,22 +62,10 @@ const post = defineEntityType({
   description:
     "A blog post, newsletter, or public writing by a community member",
   properties: {
-    title: { type: "string", "x-table-label": "Title", "x-table-column": true },
-    source: {
-      type: "string",
-      "x-table-label": "Source",
-      "x-table-column": true,
-    },
-    author: {
-      type: "string",
-      "x-table-label": "Author",
-      "x-table-column": true,
-    },
-    topics: {
-      type: "string",
-      "x-table-label": "Topics",
-      "x-table-column": true,
-    },
+    title: field("Title", { optional: true }),
+    source: field("Source", { optional: true }),
+    author: field("Author", { optional: true }),
+    topics: field("Topics", { optional: true }),
   },
 });
 
@@ -102,22 +75,10 @@ const topic = defineEntityType({
   description:
     "A durable interest or subject area used for member matching and discovery",
   properties: {
-    topic_name: {
-      type: "string",
-      "x-table-label": "Topic",
-      "x-table-column": true,
-    },
-    evidence: {
-      type: "string",
-      "x-table-label": "Evidence",
-      "x-table-column": true,
-    },
-    member_count: {
-      type: "string",
-      "x-table-label": "Members",
-      "x-table-column": true,
-    },
-    relevance: { type: "string", "x-table-label": "Relevance" },
+    topic_name: field("Topic", { optional: true }),
+    evidence: field("Evidence", { optional: true }),
+    member_count: field("Members", { optional: true }),
+    relevance: field("Relevance", { column: false, optional: true }),
   },
 });
 

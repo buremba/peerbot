@@ -8,6 +8,7 @@ import {
   defineAutomation,
   every,
   secret,
+  field,
 } from "@lobu/cli/config";
 import type SalesforcePipelineConnector from "./salesforce-pipeline.connector.ts";
 
@@ -51,18 +52,10 @@ const organization = defineEntityType({
   description:
     "A customer account or prospect being tracked by the revenue team",
   properties: {
-    company_name: {
-      type: "string",
-      "x-table-label": "Company",
-      "x-table-column": true,
-    },
-    stage: { type: "string", "x-table-label": "Stage", "x-table-column": true },
-    arr: { type: "string", "x-table-label": "ARR", "x-table-column": true },
-    renewal_date: {
-      type: "string",
-      "x-table-label": "Renewal Date",
-      "x-table-column": true,
-    },
+    company_name: field("Company", { optional: true }),
+    stage: field("Stage", { optional: true }),
+    arr: field("ARR", { optional: true }),
+    renewal_date: field("Renewal Date", { optional: true }),
   },
 });
 
@@ -71,26 +64,10 @@ const product = defineEntityType({
   name: "Product",
   description: "A product rollout or pilot being tracked at a customer account",
   properties: {
-    product_name: {
-      type: "string",
-      "x-table-label": "Product",
-      "x-table-column": true,
-    },
-    pilot_status: {
-      type: "string",
-      "x-table-label": "Status",
-      "x-table-column": true,
-    },
-    owner_team: {
-      type: "string",
-      "x-table-label": "Owner",
-      "x-table-column": true,
-    },
-    account: {
-      type: "string",
-      "x-table-label": "Account",
-      "x-table-column": true,
-    },
+    product_name: field("Product", { optional: true }),
+    pilot_status: field("Status", { optional: true }),
+    owner_team: field("Owner", { optional: true }),
+    account: field("Account", { optional: true }),
   },
 });
 
@@ -99,22 +76,10 @@ const region = defineEntityType({
   name: "Region",
   description: "A geographic region where an account is expanding or operating",
   properties: {
-    region_name: {
-      type: "string",
-      "x-table-label": "Region",
-      "x-table-column": true,
-    },
-    expansion_status: {
-      type: "string",
-      "x-table-label": "Status",
-      "x-table-column": true,
-    },
-    parent_account: {
-      type: "string",
-      "x-table-label": "Account",
-      "x-table-column": true,
-    },
-    market_size: { type: "string", "x-table-label": "Market Size" },
+    region_name: field("Region", { optional: true }),
+    expansion_status: field("Status", { optional: true }),
+    parent_account: field("Account", { optional: true }),
+    market_size: field("Market Size", { column: false, optional: true }),
   },
 });
 
@@ -124,26 +89,10 @@ const renewalRisk = defineEntityType({
   description:
     "A commercial signal or concern that affects an upcoming renewal or expansion",
   properties: {
-    signal: {
-      type: "string",
-      "x-table-label": "Signal",
-      "x-table-column": true,
-    },
-    severity: {
-      type: "string",
-      "x-table-label": "Severity",
-      "x-table-column": true,
-    },
-    affects: {
-      type: "string",
-      "x-table-label": "Affects",
-      "x-table-column": true,
-    },
-    next_step: {
-      type: "string",
-      "x-table-label": "Next Step",
-      "x-table-column": true,
-    },
+    signal: field("Signal", { optional: true }),
+    severity: field("Severity", { optional: true }),
+    affects: field("Affects", { optional: true }),
+    next_step: field("Next Step", { optional: true }),
   },
 });
 
@@ -153,18 +102,10 @@ const team = defineEntityType({
   description:
     "An internal team or customer function that owns a pilot or initiative",
   properties: {
-    team_name: {
-      type: "string",
-      "x-table-label": "Team",
-      "x-table-column": true,
-    },
-    role: { type: "string", "x-table-label": "Role", "x-table-column": true },
-    owns: { type: "string", "x-table-label": "Owns", "x-table-column": true },
-    account: {
-      type: "string",
-      "x-table-label": "Account",
-      "x-table-column": true,
-    },
+    team_name: field("Team", { optional: true }),
+    role: field("Role", { optional: true }),
+    owns: field("Owns", { optional: true }),
+    account: field("Account", { optional: true }),
   },
 });
 

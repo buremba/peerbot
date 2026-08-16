@@ -23,6 +23,15 @@ import type {
   ReactionContext,
   Segment,
 } from "@lobu/connector-sdk";
+import {
+  Kind,
+  OptionalKind,
+  Type,
+  type StringOptions,
+  type TOptional,
+  type TSchema,
+  type TString,
+} from "@sinclair/typebox";
 import type { SecretRef } from "./secret.js";
 
 /** A connector referenced by its key, or by the class produced by `defineConnector`. */
@@ -96,9 +105,15 @@ export interface EntityType {
   key: string;
   name?: string;
   description?: string;
-  /** Required property names for the entity's metadata. */
+  /** Required property names for the entity's metadata. Omit when the properties
+   * use `field()`/TypeBox — the required list is then derived from which fields
+   * are not marked `optional`. An explicit list always wins. */
   required?: string[];
-  /** JSON Schema properties for the entity's metadata. */
+  /**
+   * JSON Schema properties for the entity's metadata. Author with the `field()`
+   * shorthand (or bare TypeBox `Type.*` schemas) for labels, table-column
+   * placement, and per-field optionality; raw JSON Schema objects stay valid.
+   */
   properties?: Record<string, unknown>;
   /**
    * Event kinds (semantic types) valid for events linked to this entity type,
@@ -155,8 +170,125 @@ export interface EntityType {
   segments?: Record<string, Segment>;
 }
 
+/**
+ * Entity property shorthand — a JSON Schema field with Lobu's display metadata
+ * attached. Emits a TypeBox schema, so it composes with `Type.*` and
+ * `Type.Object({...})` and survives `JSON.stringify` as a plain JSON Schema
+ * object.
+ *
+ * The common case is a string column shown in the admin table — just the label:
+ *
+ * ```ts
+ * properties: {
+ *   name: field("Name"),                                     // string column
+ *   stage: field("Stage", { enum: ["signal", "trial", "customer"] }),
+ *   seats: field(Type.Integer(), "Seats"),                   // non-string column
+ *   x_handle: field("X", { column: false }),                 // labeled, not a column
+ *   email: field("Email", { optional: true }),               // optional (derived required)
+ *   notes: Type.String(),                                    // bare TypeBox stays valid
+ * }
+ * ```
+ *
+ * `opts` are TypeBox string-schema options plus `column` (show as a table
+ * column; default true) and `optional` (wrap in `Type.Optional`, which marks
+ * the field optional in the entity's derived `required` array).
+ */
+export function field(
+  label: string,
+  opts: FieldOptions & { optional: true }
+): TOptional<TString>;
+export function field(
+  label: string,
+  opts?: FieldOptions & { optional?: false }
+): TString;
+export function field(
+  label: string,
+  opts: FieldOptions
+): TString | TOptional<TString>;
+/** Any TypeBox schema as a labeled table column — `field(Type.Integer(), "Seats")`. */
+export function field<T extends TSchema>(schema: T, label: string): T;
+export function field(
+  labelOrSchema: string | TSchema,
+  labelOrOpts?: string | FieldOptions
+): TSchema {
+  if (typeof labelOrSchema === "string") {
+    const label = labelOrSchema;
+    const opts = (labelOrOpts ?? {}) as FieldOptions;
+    const { column, optional, ...schemaOpts } = opts;
+    const base = Type.String({
+      "x-table-label": label,
+      ...(column !== false ? { "x-table-column": true } : {}),
+      ...schemaOpts,
+    });
+    return optional ? Type.Optional(base) : base;
+  }
+  return {
+    ...labelOrSchema,
+    "x-table-label": String(labelOrOpts),
+    "x-table-column": true,
+  } as TSchema;
+}
+
+export interface FieldOptions extends StringOptions {
+  /** Show this field as a column in the admin table. Default true. */
+  column?: boolean;
+  /** Make the field optional. Default false. Emits `Type.Optional(...)`. */
+  optional?: boolean;
+}
+
+function isTypeBoxSchema(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    (value as { [Kind]?: unknown })[Kind] !== undefined
+  );
+}
+
+function isOptionalSchema(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    (value as { [OptionalKind]?: unknown })[OptionalKind] !== undefined
+  );
+}
+
+/**
+ * Derive the entity's `required` list from its property schemas when the author
+ * uses `field()`/TypeBox and supplies no explicit list: every field not wrapped
+ * in `Type.Optional` is required. An explicit `required` always wins, and raw
+ * JSON-Schema properties (no TypeBox types) keep today's all-optional default.
+ */
+function deriveRequired(
+  required: string[] | undefined,
+  properties: Record<string, unknown> | undefined
+): string[] | undefined {
+  if (required || !properties) return required;
+  const usesTypeBox = Object.values(properties).some(isTypeBoxSchema);
+  if (!usesTypeBox) return undefined;
+  const derived = Object.entries(properties)
+    .filter(([, schema]) => !isOptionalSchema(schema))
+    .map(([key]) => key);
+  return derived.length > 0 ? derived : undefined;
+}
+
 export function defineEntityType(config: Omit<EntityType, "kind">): EntityType {
-  return { ...config, kind: "entityType" };
+  const { required, properties, ...rest } = config;
+  const resolvedRequired = deriveRequired(required, properties);
+  return {
+    ...rest,
+    kind: "entityType",
+    ...(properties !== undefined
+      ? { properties: stripSymbols(properties) }
+      : {}),
+    ...(resolvedRequired ? { required: resolvedRequired } : {}),
+  };
+}
+
+/** Deep JSON round-trip drops TypeBox symbol keys (`Kind`, `Optional`), so the
+ * stored properties stay pure JSON Schema and the apply diff against the remote
+ * metadata_schema never churns on invisible symbol keys. */
+function stripSymbols(value: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 }
 
 export interface RelationshipType {

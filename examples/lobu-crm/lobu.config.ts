@@ -12,6 +12,8 @@ import {
   reactionFromFile,
   secret,
   skillFromFile,
+  field,
+  Type,
 } from "@lobu/cli/config";
 import type NpmDownloadsConnector from "./npm-downloads.connector.ts";
 import type funnelDigestReaction from "./funnel-digest.reaction.ts";
@@ -71,50 +73,29 @@ const lead = defineEntityType({
   name: "Lead",
   description:
     "A person who has shown a signal toward Lobu — starred, engaged, asked, or talked to us",
-  required: ["name", "source", "stage"],
   properties: {
-    name: { type: "string", "x-table-label": "Name", "x-table-column": true },
-    company: {
-      type: "string",
-      "x-table-label": "Company",
-      "x-table-column": true,
-    },
-    stage: {
-      type: "string",
+    name: field("Name"),
+    company: field("Company", { optional: true }),
+    source: field("Source", {
+      description:
+        'Where they first showed up — "github:stargazer", "x:mention", "github:issue-comment", "demo-form", "intro", etc.',
+    }),
+    stage: field("Stage", {
       enum: ["signal", "trial", "conversation", "pilot", "customer", "cold"],
-      "x-table-label": "Stage",
-      "x-table-column": true,
       // Board layout is deliberate for the CRM pipeline — the stage enum IS
       // the board column set. Declared explicitly so the pipeline defaults to
       // Board; a status/state/stage name alone no longer implies a board.
       "x-lobu": { role: "workflowState" },
-    },
-    source: {
-      type: "string",
-      description:
-        'Where they first showed up — "github:stargazer", "x:mention", "github:issue-comment", "demo-form", "intro", etc.',
-      "x-table-label": "Source",
-      "x-table-column": true,
-    },
-    github_handle: {
-      type: "string",
-      "x-table-label": "GitHub",
-      "x-table-column": true,
-    },
-    x_handle: { type: "string", "x-table-label": "X" },
-    email: { type: "string", "x-table-label": "Email" },
-    last_touch: {
-      type: "string",
+    }),
+    github_handle: field("GitHub", { optional: true }),
+    x_handle: field("X", { column: false, optional: true }),
+    email: field("Email", { column: false, optional: true }),
+    last_touch: field("Last touch", {
       description: "ISO date of the most recent interaction",
-      "x-table-label": "Last touch",
-      "x-table-column": true,
-    },
-    next_action: {
-      type: "string",
-      "x-table-label": "Next action",
-      "x-table-column": true,
-    },
-    notes: { type: "string" },
+      optional: true,
+    }),
+    next_action: field("Next action", { optional: true }),
+    notes: Type.Optional(Type.Unsafe({ type: "string" })),
   },
 });
 
@@ -123,45 +104,25 @@ const pilot = defineEntityType({
   name: "Pilot",
   description:
     "A paid pilot — a company running Lobu for their team under a time-boxed agreement",
-  required: ["company", "status"],
   properties: {
-    company: {
-      type: "string",
-      "x-table-label": "Company",
-      "x-table-column": true,
-    },
-    status: {
-      type: "string",
-      enum: ["active", "won", "lost", "paused"],
-      "x-table-label": "Status",
-      "x-table-column": true,
-    },
-    seats: {
-      type: "integer",
-      "x-table-label": "Seats",
-      "x-table-column": true,
-    },
-    mrr: {
-      type: "string",
+    company: field("Company"),
+    status: field("Status", { enum: ["active", "won", "lost", "paused"] }),
+    seats: Type.Optional(field(Type.Integer(), "Seats")),
+    mrr: field("MRR", {
       description: 'Monthly recurring revenue for the pilot, e.g. "$750"',
-      "x-table-label": "MRR",
-      "x-table-column": true,
-    },
-    start_date: {
-      type: "string",
-      "x-table-label": "Start",
-      "x-table-column": true,
-    },
-    success_metric: {
-      type: "string",
+      optional: true,
+    }),
+    start_date: field("Start", { optional: true }),
+    success_metric: field("Success metric", {
       description: "The one metric agreed up front that defines pilot success",
-      "x-table-label": "Success metric",
-      "x-table-column": true,
-    },
-    lead_id: {
-      type: "string",
-      description: "The lead entity this pilot converted from",
-    },
+      optional: true,
+    }),
+    lead_id: Type.Optional(
+      Type.Unsafe({
+        type: "string",
+        description: "The lead entity this pilot converted from",
+      })
+    ),
   },
 });
 

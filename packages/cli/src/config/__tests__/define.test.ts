@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Kind, OptionalKind, Type } from "@sinclair/typebox";
 import {
   type Agent,
   type AuthProfile,
@@ -14,6 +15,7 @@ import {
   defineRelationshipType,
   type EntityType,
   every,
+  field,
   on,
   reactionFromFile,
 } from "../define.js";
@@ -171,6 +173,126 @@ describe("authoring producers", () => {
     expect(context("SELECT id, name FROM entities")).toEqual({
       query: "SELECT id, name FROM entities",
       context: true,
+    });
+  });
+
+  test("field() emits a TypeBox string column with display metadata", () => {
+    const f = field("Name");
+    expect(f[Kind]).toBe("String");
+    expect(JSON.parse(JSON.stringify(f))).toEqual({
+      type: "string",
+      "x-table-label": "Name",
+      "x-table-column": true,
+    });
+  });
+
+  test("field() opts: enum passthrough, column opt-out, optional wrapper", () => {
+    const withEnum = field("Stage", { enum: ["a", "b"] });
+    expect(JSON.parse(JSON.stringify(withEnum))).toEqual({
+      type: "string",
+      enum: ["a", "b"],
+      "x-table-label": "Stage",
+      "x-table-column": true,
+    });
+
+    const noColumn = field("X", { column: false });
+    expect(JSON.parse(JSON.stringify(noColumn))).toEqual({
+      type: "string",
+      "x-table-label": "X",
+    });
+
+    const opt = field("Email", { optional: true });
+    expect(opt[OptionalKind]).toBe("Optional");
+    // the Optional marker is a symbol: serialized schema stays plain JSON Schema
+    expect(JSON.parse(JSON.stringify(opt))).toEqual({
+      type: "string",
+      "x-table-label": "Email",
+      "x-table-column": true,
+    });
+  });
+
+  test("field() accepts any TypeBox schema for non-string columns", () => {
+    const seats = field(Type.Integer(), "Seats");
+    expect(JSON.parse(JSON.stringify(seats))).toEqual({
+      type: "integer",
+      "x-table-label": "Seats",
+      "x-table-column": true,
+    });
+  });
+
+  test("defineEntityType derives required from field() optionality", () => {
+    const lead = defineEntityType({
+      key: "lead",
+      properties: {
+        name: field("Name"),
+        company: field("Company", { optional: true }),
+        stage: field("Stage", { enum: ["a", "b"] }),
+        email: field("Email", { column: false, optional: true }),
+      },
+    });
+    expect(lead.required).toEqual(["name", "stage"]);
+    expect(lead.properties?.name).toHaveProperty("x-table-label", "Name");
+    // symbols are stripped: stored properties are pure JSON Schema
+    expect(
+      Object.getOwnPropertySymbols(lead.properties?.company ?? {})
+    ).toEqual([]);
+    expect(JSON.parse(JSON.stringify(lead.properties))).toEqual({
+      name: { type: "string", "x-table-label": "Name", "x-table-column": true },
+      company: {
+        type: "string",
+        "x-table-label": "Company",
+        "x-table-column": true,
+      },
+      stage: {
+        type: "string",
+        enum: ["a", "b"],
+        "x-table-label": "Stage",
+        "x-table-column": true,
+      },
+      email: { type: "string", "x-table-label": "Email" },
+    });
+  });
+
+  test("defineEntityType: explicit required wins; raw JSON keeps all-optional", () => {
+    const explicit = defineEntityType({
+      key: "x",
+      required: ["name"],
+      properties: {
+        name: field("Name"),
+        email: field("Email", { optional: true }),
+      },
+    });
+    expect(explicit.required).toEqual(["name"]);
+
+    // no field()/TypeBox → today's default: no derived required list
+    const raw = defineEntityType({
+      key: "y",
+      properties: { name: { type: "string" }, email: { type: "string" } },
+    });
+    expect(raw.required).toBeUndefined();
+  });
+
+  test("field() schemas compose inside Type.Object", () => {
+    const schema = Type.Object({
+      name: field("Name"),
+      email: field("Email", { optional: true }),
+    });
+    expect(schema.required).toEqual(["name"]);
+    expect(JSON.parse(JSON.stringify(schema))).toEqual({
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          "x-table-label": "Name",
+          "x-table-column": true,
+        },
+        email: {
+          type: "string",
+          "x-table-label": "Email",
+          "x-table-column": true,
+        },
+      },
+      required: ["name"],
     });
   });
 

@@ -28,6 +28,36 @@ async function waitForChangeEvent(entityId: number) {
   throw new Error(`Timed out waiting for change event for entity ${entityId}`);
 }
 
+/**
+ * Wait for a relationship audit event to land.
+ *
+ * `recordEdgeChangeEvent` is deliberately fire-and-forget — an audit write must
+ * not fail the mutation that caused it — so the row appears some time AFTER
+ * link/unlink has already returned. A test that deletes the entity in between
+ * races the delete's entity_ids detach sweep against the arriving event.
+ *
+ * Keyed on the relationship rather than the entity, because `waitForChangeEvent`
+ * would return the metadata update's own change event immediately and prove
+ * nothing about this one.
+ */
+async function waitForEdgeChangeEvent(relationshipId: number, op: 'link' | 'unlink') {
+  const sql = getTestDb();
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const rows = await sql`
+      SELECT id
+      FROM events
+      WHERE semantic_type = 'change'
+        AND metadata->>'category' = 'relationship'
+        AND metadata->>'relationshipId' = ${String(relationshipId)}
+        AND metadata->>'op' = ${op}
+      LIMIT 1
+    `;
+    if (rows.length > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Timed out waiting for ${op} audit event on relationship ${relationshipId}`);
+}
+
 describe('entity history contracts', () => {
   let workspace: TestWorkspace;
 
@@ -168,10 +198,22 @@ describe('entity history contracts', () => {
       to_entity_id: b.entity.id,
       relationship_type_slug: 'related-brand',
     })) as { relationship: { id: number } };
+    await waitForEdgeChangeEvent(linked.relationship.id, 'link');
     await workspace.owner.entities.manage({
       action: 'unlink',
       relationship_id: linked.relationship.id,
     });
+    await waitForEdgeChangeEvent(linked.relationship.id, 'unlink');
+
+    // Prove the events are ATTACHED before deleting. Without this, the final
+    // assertion below passes vacuously whenever the audit rows simply had not
+    // arrived yet — it would prove nothing about detachment.
+    const beforeDelete = await getTestDb()`
+      SELECT COUNT(*)::int AS count FROM events
+      WHERE semantic_type = 'change'
+        AND ${a.entity.id} = ANY(entity_ids)
+    `;
+    expect(beforeDelete[0].count).toBeGreaterThanOrEqual(3);
 
     for (const id of [a.entity.id, b.entity.id]) {
       const result = (await workspace.owner.entities.delete({

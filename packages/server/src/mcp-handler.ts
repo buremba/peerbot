@@ -124,6 +124,74 @@ const MCP_APP_RESOURCE_ALIASES: ReadonlyMap<
     'ui://lobu/interaction/v13.html',
     { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
   ],
+  [
+    'ui://lobu/interaction/v14.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
+  ],
+  [
+    'ui://lobu/interaction/v15.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
+  ],
+  [
+    'ui://lobu/interaction/v20.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
+  ],
+  [
+    'ui://lobu/interaction/v21.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
+  ],
+  [
+    'ui://lobu/interaction/v22.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
+  ],
+  [
+    'ui://lobu/interaction/v23.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
+  ],
+  [
+    'ui://lobu/interaction/v24.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
+  ],
+  [
+    'ui://lobu/interaction/v25.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
+  ],
+  [
+    'ui://lobu/interaction/v26.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
+  ],
+  [
+    'ui://lobu/interaction/v27.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
+  ],
+  [
+    'ui://lobu/interaction/v28.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
+  ],
+  [
+    'ui://lobu/interaction/v29.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'embedded' },
+  ],
+  [
+    'ui://lobu/interaction/v30.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
+  ],
+  [
+    'ui://lobu/interaction/v31.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
+  ],
+  [
+    'ui://lobu/interaction/v32.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
+  ],
+  [
+    'ui://lobu/interaction/v33.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
+  ],
+  [
+    'ui://lobu/interaction/v34.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
+  ],
 ]);
 // ---------------------------------------------------------------------------
 // Session store
@@ -160,6 +228,21 @@ function approvalCapabilityFromMeta(value: unknown): string | null {
   if (typeof token !== 'string') return null;
   const trimmed = token.trim();
   return trimmed && trimmed.length <= 4_096 ? trimmed : null;
+}
+
+function approvalCapabilityFromCompatArgs(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const compatMeta = (value as Record<string, unknown>)._meta;
+  return approvalCapabilityFromMeta(compatMeta);
+}
+
+function stripApprovalCompatMeta(
+  value: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
+  if (!value) return value;
+  const clean = { ...value };
+  delete clean._meta;
+  return clean;
 }
 
 // Periodic cleanup of stale IN-MEMORY sessions. This must stay as a per-pod
@@ -260,9 +343,7 @@ const MCP_APP_RESOURCES: Record<
     description:
       'Interactive Lobu cards rendered in a sandboxed iframe; actions use standard MCP tool calls or host-mediated external links.',
     appDir: 'interaction',
-    // Keep the host resource self-contained. The public /mcp-apps route still
-    // serves the external build for Lobu's own same-origin views and review.
-    template: 'embedded',
+    template: 'external',
     csp: { connectDomains: [], resourceDomains: [], frameDomains: [] },
     prefersBorder: true,
   },
@@ -465,11 +546,15 @@ function createServerForContext(
   // tools/call — access control + execution + formatting
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+    const compatApprovalCapability =
+      name === 'resolve_approval' ? approvalCapabilityFromCompatArgs(args) : null;
+    const callArgs = compatApprovalCapability ? stripApprovalCompatMeta(args) : args;
     const callAuthCtx = {
       ...authCtx,
       mcpAppsSupported,
       mcpConversationId: hostConversationIdFromMeta(request.params._meta),
-      mcpAppApprovalCapability: approvalCapabilityFromMeta(request.params._meta),
+      mcpAppApprovalCapability:
+        approvalCapabilityFromMeta(request.params._meta) ?? compatApprovalCapability,
     };
     const tool = getTool(name);
     // Every App-facing result carries the viewer's org role because the app
@@ -494,7 +579,7 @@ function createServerForContext(
       : undefined;
     // Regular tool execution
     try {
-      const result = await executeTool(name, args ?? {}, env, callAuthCtx);
+      const result = await executeTool(name, callArgs ?? {}, env, callAuthCtx);
 
       if (authCtx.agentId && authCtx.organizationId) {
         await touchAgentLastUsed(authCtx.organizationId, authCtx.agentId);
@@ -537,9 +622,22 @@ function createServerForContext(
         Array.isArray(attachedMeta?.['mcp/www_authenticate']) &&
         attachedMeta['mcp/www_authenticate'].length > 0;
       const softError = isSoftErrorResult(publicResult) || attachedAuthChallenge;
-      const resultMeta = uiMemberRoleMeta
-        ? { ...attachedMeta, ...uiMemberRoleMeta }
-        : attachedMeta;
+      const uiResourceUri = mcpAppsSupported
+        ? (tool?.mcpMeta?.ui as { resourceUri?: unknown } | undefined)?.resourceUri
+        : undefined;
+      // The standard MCP Apps linkage lives on the tool descriptor. ChatGPT's
+      // compatibility path also reads openai/outputTemplate from the concrete
+      // successful tool result before it fetches and mounts the resource. Keep
+      // the URI server-authored and omit it for clients that did not negotiate
+      // Apps support so headless callers retain their text-only result path.
+      const appResultMeta =
+        typeof uiResourceUri === 'string'
+          ? { 'openai/outputTemplate': uiResourceUri }
+          : undefined;
+      const resultMeta =
+        appResultMeta || uiMemberRoleMeta
+          ? { ...attachedMeta, ...appResultMeta, ...uiMemberRoleMeta }
+          : attachedMeta;
       if (tool?.outputSchema && result && typeof result === 'object') {
         const structured = validateToolResult(tool.outputSchema, publicResult);
         if (structured !== null) {
@@ -699,6 +797,22 @@ async function readInitializeRequest(req: Request): Promise<{
           capabilities: null,
         }
       : null;
+  }
+}
+
+async function readServerDiscoverRequestId(
+  req: Request
+): Promise<string | number | null | undefined> {
+  try {
+    const body = await req.clone().json();
+    const messages = Array.isArray(body) ? body : [body];
+    const discover = messages.find((m: any) => m?.method === 'server/discover');
+    if (!discover) return undefined;
+    return typeof discover.id === 'string' || typeof discover.id === 'number'
+      ? discover.id
+      : null;
+  } catch {
+    return undefined;
   }
 }
 
@@ -1185,6 +1299,25 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
   const wantsSSE = clientAcceptsSSE(c.req.raw);
   const req = normalizeAcceptHeader(c.req.raw);
   const sessionId = req.headers.get('mcp-session-id') ?? undefined;
+
+  if (req.method === 'POST' && !sessionId) {
+    const discoverId = await readServerDiscoverRequestId(req);
+    if (discoverId !== undefined) {
+      // `server/discover` belongs to the sessionless 2026-07-28 protocol era.
+      // This server still implements the stateful 2025-11-25 era, so answer
+      // with the spec-defined legacy signal instead of feeding the probe into
+      // a transport that has not been initialized (which returns -32000 and
+      // prevents modern clients such as ChatGPT from falling back).
+      return new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          error: { code: -32601, message: 'Method not found' },
+          id: discoverId,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+  }
 
   // Existing session → reuse
   if (sessionId && sessions.has(sessionId)) {

@@ -226,6 +226,9 @@ const LOBU_VIEW_MCP_META = {
     visibility: ['model', 'app'],
   },
   'openai/outputTemplate': LOBU_INTERACTION_RESOURCE_URI,
+  'openai/widgetAccessible': true,
+  'openai/toolInvocation/invoking': 'Loading Lobu',
+  'openai/toolInvocation/invoked': 'Lobu ready',
 } as const;
 
 /**
@@ -331,7 +334,7 @@ const MCP_APP_TOOLS: ToolDefinition[] = [
   {
     name: 'get_approval',
     description:
-      'Get the server-authored review card for one approval run returned by a pending action. The card reads the canonical durable approval, exposes in-card controls only when this OAuth app session can resolve it, and always includes a review link while pending. Reading does not change workspace content or external systems. OAuth and PAT calls append a private audit/activity record.',
+      'Get the server-authored review card for one approval run returned by a pending action. The card reads the canonical durable approval, exposes in-card controls only when this OAuth app context can resolve it, and always includes a review link while pending. Reading does not change workspace content or external systems. OAuth and PAT calls append a private audit/activity record.',
     inputSchema: GetApprovalSchema,
     outputSchema: LobuViewSchema,
     annotations: { ...AUDITED_READ, title: 'Get approval' },
@@ -343,7 +346,7 @@ const MCP_APP_TOOLS: ToolDefinition[] = [
   {
     name: 'resolve_approval',
     description:
-      'Resolve the exact pending approval represented by this Lobu MCP App. This tool is app-only and requires the hidden, session-bound capability delivered with the review card.',
+      'Resolve the exact pending approval represented by this Lobu MCP App. This tool is app-only and requires the hidden, host-bound capability delivered with the review card.',
     inputSchema: ResolveApprovalSchema,
     outputSchema: LobuViewSchema,
     annotations: {

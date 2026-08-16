@@ -32,6 +32,7 @@ import {
 	type ResolutionEvidence,
 } from "../entity-resolution/policy";
 import { assertResolutionFingerprintCurrent } from "../entity-resolution/staleness";
+import { transitionEntityMergeRows } from "./entity-management";
 import logger from "./logger";
 
 export interface MergeResolutionProvenance {
@@ -275,13 +276,19 @@ async function applyMergeInTransaction(
 			fieldControls: loser.field_controls ?? {},
 		},
 	);
-  await tx`
-    UPDATE entities
-    SET metadata = ${tx.json(mergedState.metadata)},
-        field_controls = ${tx.json(mergedState.fieldControls)},
-        updated_at = current_timestamp
-    WHERE id = ${winnerId} AND organization_id = ${orgId}
-  `;
+	const updatedWinnerIds = await transitionEntityMergeRows({
+		tx,
+		organizationId: orgId,
+		ids: [winnerId],
+		expectedMergedInto: null,
+		transition: {
+			metadata: mergedState.metadata,
+			fieldControls: mergedState.fieldControls,
+		},
+	});
+	if (updatedWinnerIds.length !== 1) {
+		throw new Error("applyMerge: canonical entity changed after locking");
+	}
 
   // 3. Tombstone loser edges that would become self-loops or collide with an
   //    existing winner edge. This must happen before repointing: the live-edge
@@ -333,20 +340,39 @@ async function applyMergeInTransaction(
   //    one-time indexed lookup even when X is an outer column, which a recursive
   //    chain walk would NOT be on list/count/order call sites. The identities'
   //    COALESCE'd `merged_from` markers (step 1) preserve reversibility that
-  //    the flattened `merged_into` pointer alone would lose.
-	const redirected = await tx<{ id: number }>`
-    UPDATE entities
-    SET merged_into = ${winnerId}, updated_at = current_timestamp
+  //    the flattened `merged_into` pointer alone would lose. The funnel writes
+  //    an explicit id set, so the redirects are locked here first and the write
+  //    below re-asserts the topology this read proved.
+	const redirectsToFlatten = await tx<{ id: number }>`
+    SELECT id
+    FROM entities
     WHERE organization_id = ${orgId} AND merged_into = ${loserId}
-    RETURNING id
+    ORDER BY id
+    FOR UPDATE
   `;
+	const redirectIds = redirectsToFlatten.map((entity) => Number(entity.id));
+	const redirectedIds = await transitionEntityMergeRows({
+		tx,
+		organizationId: orgId,
+		ids: redirectIds,
+		expectedMergedInto: loserId,
+		transition: { mergedInto: winnerId },
+	});
+	if (redirectedIds.length !== redirectIds.length) {
+		throw new Error("applyMerge: redirect topology changed after locking");
+	}
 
   // 5. Tombstone the loser and point it at the winner.
-  await tx`
-    UPDATE entities
-    SET merged_into = ${winnerId}, deleted_at = current_timestamp, updated_at = current_timestamp
-    WHERE organization_id = ${orgId} AND id = ${loserId}
-  `;
+	const tombstonedIds = await transitionEntityMergeRows({
+		tx,
+		organizationId: orgId,
+		ids: [loserId],
+		expectedMergedInto: null,
+		transition: { mergedInto: winnerId, liveness: "deleted" },
+	});
+	if (tombstonedIds.length !== 1) {
+		throw new Error("applyMerge: duplicate entity changed after locking");
+	}
 
 	const relationshipIds = relationshipsBefore.map((row) => Number(row.id));
 	const relationshipsAfter =
@@ -383,7 +409,7 @@ async function applyMergeInTransaction(
 					? null
 					: Number(identity.merged_from_entity_id),
 		})),
-		redirectedEntityIds: redirected.map((entity) => Number(entity.id)),
+		redirectedEntityIds: redirectedIds,
 		relationships: relationshipsBefore.map((before) => {
 			const after = afterById.get(Number(before.id));
 			if (!after)
@@ -673,27 +699,34 @@ export async function applyUnmerge(
 			}
 			const redirectedEntityIds = ledger.redirectedEntityIds ?? [];
 			if (redirectedEntityIds.length > 0) {
-				const restoredRedirects = await tx<{ id: number }>`
-          UPDATE entities
-          SET merged_into = ${loserId}, updated_at = current_timestamp
-          WHERE organization_id = ${orgId}
-            AND id = ANY(${pgBigintArray(redirectedEntityIds)}::bigint[])
-            AND merged_into = ${winnerId}
-          RETURNING id
-        `;
+				const restoredRedirects = await transitionEntityMergeRows({
+					tx,
+					organizationId: orgId,
+					ids: redirectedEntityIds,
+					expectedMergedInto: winnerId,
+					transition: { mergedInto: loserId },
+				});
 				if (restoredRedirects.length !== redirectedEntityIds.length) {
 					throw new Error(
 						"applyUnmerge: a flattened redirect changed after this merge; exact undo is unsafe",
 					);
 				}
 			}
-			await tx`
-        UPDATE entities
-        SET metadata = ${tx.json(ledger.winner.metadataBefore)},
-            field_controls = ${tx.json(ledger.winner.fieldControlsBefore)},
-            updated_at = current_timestamp
-        WHERE organization_id = ${orgId} AND id = ${winnerId}
-      `;
+			const restoredWinnerIds = await transitionEntityMergeRows({
+				tx,
+				organizationId: orgId,
+				ids: [winnerId],
+				expectedMergedInto: null,
+				transition: {
+					metadata: ledger.winner.metadataBefore,
+					fieldControls: ledger.winner.fieldControlsBefore,
+				},
+			});
+			if (restoredWinnerIds.length !== 1) {
+				throw new Error(
+					"applyUnmerge: canonical topology changed after locking; exact undo is unsafe",
+				);
+			}
 		}
 
 		// 1. Restore every identity this operation moved, including identities an
@@ -730,11 +763,18 @@ export async function applyUnmerge(
 		// 2. Un-forward and un-tombstone the loser. Ledger-backed merges restored
 		//    redirects flattened through it above; legacy merges retain the old
 		//    single-row automation because no redirect history exists for them.
-    await tx`
-      UPDATE entities
-      SET merged_into = NULL, deleted_at = NULL, updated_at = current_timestamp
-      WHERE organization_id = ${orgId} AND id = ${loserId}
-    `;
+		const revivedIds = await transitionEntityMergeRows({
+			tx,
+			organizationId: orgId,
+			ids: [loserId],
+			expectedMergedInto: winnerId,
+			transition: { mergedInto: null, liveness: "live" },
+		});
+		if (revivedIds.length !== 1) {
+			throw new Error(
+				"applyUnmerge: duplicate topology changed after locking; exact undo is unsafe",
+			);
+		}
 		if (operation) {
 			await tx`
         UPDATE entity_merge_operations

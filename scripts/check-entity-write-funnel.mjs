@@ -114,50 +114,6 @@ const ALLOWED_BYPASSES = [
     reason: "lost identity or mint race cleanup",
   },
 
-  // Merge and unmerge compound transaction. Never add runMutationGate here.
-  {
-    file: "packages/server/src/utils/entity-merge.ts",
-    operation: "update",
-    dynamic: false,
-    fingerprint: "e77cba72098c5fbf",
-    reason: "merge winner state",
-  },
-  {
-    file: "packages/server/src/utils/entity-merge.ts",
-    operation: "update",
-    dynamic: false,
-    fingerprint: "d6bda7fd7951c50a",
-    reason: "merge flattened redirects",
-  },
-  {
-    file: "packages/server/src/utils/entity-merge.ts",
-    operation: "update",
-    dynamic: false,
-    fingerprint: "57edeaf7d0e925bb",
-    reason: "merge loser tombstone",
-  },
-  {
-    file: "packages/server/src/utils/entity-merge.ts",
-    operation: "update",
-    dynamic: false,
-    fingerprint: "7629cfa8fba9cac8",
-    reason: "unmerge redirect restore",
-  },
-  {
-    file: "packages/server/src/utils/entity-merge.ts",
-    operation: "update",
-    dynamic: false,
-    fingerprint: "454f4072c996a016",
-    reason: "unmerge winner restore",
-  },
-  {
-    file: "packages/server/src/utils/entity-merge.ts",
-    operation: "update",
-    dynamic: false,
-    fingerprint: "45cc1d85cddd8374",
-    reason: "unmerge loser revive",
-  },
-
   // Member lifecycle projections.
   {
     file: "packages/server/src/utils/member-entity.ts",

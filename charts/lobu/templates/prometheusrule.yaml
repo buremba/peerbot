@@ -39,8 +39,9 @@ spec:
     - name: lobu-automations
       rules:
         # Heartbeat / dead-man's-switch. The 12-day outage (lobu#1046) was a
-        # SILENT one: the app was healthy but automation produced zero
-        # successful ticks. Alert on the ABSENCE of success, not just on errors.
+        # SILENT one: the app was healthy but the automation scheduler produced
+        # zero successful ticks. Alert on the ABSENCE of success, not just on
+        # errors.
         # `or on() vector(0)` makes it fire even if the series disappears (all
         # replicas down / never scraped).
         - alert: AutomationSilent

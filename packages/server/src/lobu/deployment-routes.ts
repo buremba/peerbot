@@ -20,6 +20,10 @@ import { mcpAuth } from "../auth/middleware";
 import { getDb } from "../db/client";
 import type { Env } from "../index";
 import { getApplyContext, parseApplyId } from "../utils/apply-context";
+import {
+	type ConfigResourceKind,
+	isConfigResourceKind,
+} from "../utils/config-redaction";
 import { insertEvent } from "../utils/insert-event";
 import { requireSessionOrAdminPat } from "./agent-routes";
 import { orgContext } from "./stores/org-context";
@@ -41,6 +45,15 @@ const DEPLOYMENT_STATUSES = new Set([
 	// blocking candidates so the reconciler/Deployments tab can act on them.
 	"blocked",
 ]);
+
+// `events` is append-only, so the config ledger still holds rows whose
+// `resource_kind` predates the current union — pre-cutover Automation rows
+// carry the retired kind verbatim. The wire field IS the `ConfigResourceKind`
+// union, so anything outside it is reported as unknown rather than echoed
+// back; the change itself, its fields, and its diff stay fully visible.
+function canonicalConfigResourceKind(kind: unknown): ConfigResourceKind | null {
+	return isConfigResourceKind(kind) ? kind : null;
+}
 
 // Stored manifest ceiling. The manifest is the REDACTED desired-state
 // snapshot minus connector source bytes (those live in connector_versions and
@@ -261,8 +274,7 @@ routes.get("/", async (c) => {
 			id: row.id,
 			createdAt: row.created_at,
 			title: row.title,
-			resourceKind:
-				metadata.resource_kind == null ? null : String(metadata.resource_kind),
+			resourceKind: canonicalConfigResourceKind(metadata.resource_kind),
 			resourceId: metadata.resource_id ?? null,
 			op: metadata.op ?? null,
 			changedFields: metadata.changed_fields ?? null,
@@ -325,8 +337,7 @@ function toChangeDetail(row: Record<string, any>) {
 		id: row.id,
 		createdAt: row.created_at,
 		title: row.title,
-		resourceKind:
-			metadata.resource_kind == null ? null : String(metadata.resource_kind),
+		resourceKind: canonicalConfigResourceKind(metadata.resource_kind),
 		resourceId: metadata.resource_id ?? null,
 		op: metadata.op ?? null,
 		changedFields: metadata.changed_fields ?? null,

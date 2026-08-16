@@ -533,6 +533,15 @@ function scanCanonicalVocabulary(violations: Violation[]): void {
       if (!path) continue;
       const repoPath = `${prefix}${path}`;
       if (isCanonicalScanException(repoPath)) continue;
+      // Before the content read: a binary or unreadable file still has a path,
+      // and the path is exposed vocabulary on its own.
+      if (RETIRED_CANONICAL_VOCABULARY.test(repoPath)) {
+        violations.push({
+          file: repoPath,
+          line: 1,
+          excerpt: "retired term in path",
+        });
+      }
       const file = join(repository, path);
       let content: string;
       try {
@@ -565,13 +574,6 @@ function scanCanonicalVocabulary(violations: Violation[]): void {
           });
         }
       });
-      if (RETIRED_CANONICAL_VOCABULARY.test(repoPath)) {
-        violations.push({
-          file: repoPath,
-          line: 1,
-          excerpt: "retired term in path",
-        });
-      }
     }
   }
 }

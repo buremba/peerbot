@@ -113,6 +113,21 @@ describe("deployment baseline encoding", () => {
     );
     expect(toBaseline(loadBaselineFromManifest(recorded)).recorded).toBe(true);
   });
+
+  test("treats an incomplete attribution schema as an absent baseline", () => {
+    const incomplete = {
+      attribution: {
+        entityTypes: [],
+        relationshipTypes: [],
+      },
+      owned: ["automation:a1"],
+    } as unknown as Parameters<typeof loadBaselineFromManifest>[0];
+
+    expect(loadBaselineFromManifest(incomplete)).toBeNull();
+    expect(toBaseline(loadBaselineFromManifest(incomplete)).recorded).toBe(
+      false
+    );
+  });
 });
 
 describe("buildCountsByKind", () => {

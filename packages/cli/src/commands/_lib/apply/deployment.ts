@@ -142,7 +142,12 @@ export interface BaselineRecord {
   connectorVersions?: Record<string, string>;
 }
 
-/** Parse the stored baseline; null when attribution was never recorded. */
+/**
+ * Parse the stored baseline; null when attribution was never recorded. A
+ * partially-shaped attribution (a manifest written before the Automation
+ * cutover carries no `automations` array) is treated the same way: it cannot
+ * prove ownership, so it must fail closed rather than read as "empty".
+ */
 export function loadBaselineFromManifest(
   manifest: {
     attribution?: DeploymentManifest["attribution"];
@@ -150,12 +155,21 @@ export function loadBaselineFromManifest(
     connector_versions?: Record<string, string>;
   } | null
 ): BaselineRecord | null {
-  if (!manifest?.attribution || !manifest.owned) return null;
+  const attribution = manifest?.attribution;
+  if (
+    !attribution ||
+    !Array.isArray(manifest.owned) ||
+    !Array.isArray(attribution.entityTypes) ||
+    !Array.isArray(attribution.relationshipTypes) ||
+    !Array.isArray(attribution.automations)
+  ) {
+    return null;
+  }
   return {
     attribution: {
-      entityTypes: manifest.attribution.entityTypes ?? [],
-      relationshipTypes: manifest.attribution.relationshipTypes ?? [],
-      automations: manifest.attribution.automations ?? [],
+      entityTypes: attribution.entityTypes,
+      relationshipTypes: attribution.relationshipTypes,
+      automations: attribution.automations,
     },
     owned: manifest.owned,
     ...(manifest.connector_versions
@@ -367,7 +381,7 @@ export function buildCountsByKind(rows: DiffRow[]): CountsByKind {
   for (const row of rows) {
     if (row.verb !== "create" && row.verb !== "update" && row.verb !== "delete")
       continue;
-    const key = row.kind === "automation" ? "automation" : row.kind;
+    const key = row.kind;
     const bucket = out[key] ?? {};
     out[key] = bucket;
     bucket[row.verb] = (bucket[row.verb] ?? 0) + 1;

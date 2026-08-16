@@ -324,6 +324,29 @@ describe('GET /deployments/:applyId (detail)', () => {
     expect(change.before.soulMd).toBe('v1');
   });
 
+  test('does not expose unrecognized config resource kinds', async () => {
+    const app = await importDeploymentRoutes();
+    const eventId = await insertConfigEvent({
+      organizationId: ORG,
+      resourceKind: 'retired-kind',
+      resourceId: 'retired-1',
+      op: 'updated',
+      state: { value: 'historical' },
+    });
+
+    const feedRes = await app.request('/');
+    expect(feedRes.status).toBe(200);
+    const feed = (await feedRes.json()) as { items: any[] };
+    expect(
+      feed.items.find((item) => item.id === eventId)?.resourceKind
+    ).toBeNull();
+
+    const detailRes = await app.request(`/changes/${eventId}`);
+    expect(detailRes.status).toBe(200);
+    const detail = (await detailRes.json()) as { change: any };
+    expect(detail.change.resourceKind).toBeNull();
+  });
+
   test('404s for an unknown apply id', async () => {
     const app = await importDeploymentRoutes();
     const res = await app.request('/apl_00000000-0000-0000-0000-000000000000');

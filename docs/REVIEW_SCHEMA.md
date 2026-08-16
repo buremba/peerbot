@@ -284,9 +284,9 @@ signal: docs, CI-verified generated output, the root `bun.lock`, snapshots,
 exact renames between safe-class paths, additive-only tests, exact `model:`
 literal swaps in `lobu.config.ts`, or a pure `packages/owletto` pointer bump.
 Everything else — non-test `src/`, migrations, package manifests,
-runtime-affecting config, other lockfiles, static assets, other submodule changes, an Owletto bump
-mixed with any other path, and the gate/CI machinery itself — always runs the
-LLM pass regardless of size.
+runtime-affecting config, other lockfiles, static assets, other submodule
+changes, an Owletto bump mixed with any other path, and the gate/CI machinery
+itself — always runs the LLM pass regardless of size.
 The skip is deterministic and path-gated: the driving agent may only escalate,
 never skip on self-assessed confidence. A skipped `make review` posts the same
 `pi-review` status as green under a distinct `<!-- pi-review-skipped -->` PR

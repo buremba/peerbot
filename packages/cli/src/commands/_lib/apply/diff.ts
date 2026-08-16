@@ -1126,8 +1126,8 @@ function remoteOnlyDefinitionRow(
   } as DiffRow;
 }
 
-// Automation (Automation) three-way — whole-definition, over a normalized
-// camelCase projection of the fields the diff cares about. Write-only fields
+// Automation three-way — whole-definition, over a normalized camelCase
+// projection of the fields the diff cares about. Write-only fields
 // (`reactionScript`) are excluded (always-repush, never attributed).
 //
 // Optional fields the config omits are UNMANAGED — same contract as the

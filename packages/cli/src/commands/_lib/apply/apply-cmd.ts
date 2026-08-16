@@ -1674,13 +1674,12 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
       ),
       candidates: {
         items: blockingDrift.map((b) => {
-          // Field-level Automation drift is a
-          // revert of the remote edit; a whole remote-only definition is a
-          // named delete (UI-created / unowned).
-          const kind = b.kind === "automation" ? "automation" : b.kind;
+          // Field-level Automation drift is a revert of the remote edit; a
+          // whole remote-only definition is a named delete (UI-created /
+          // unowned).
           const action = b.field ? ("revert" as const) : ("delete" as const);
           return {
-            kind,
+            kind: b.kind,
             slug: b.id,
             ...(b.field ? { field: b.field } : {}),
             action,

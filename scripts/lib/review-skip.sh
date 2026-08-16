@@ -7,8 +7,8 @@
 # lockfile, snapshots, exact renames between safe-class paths, additive-only
 # test changes, exact model-literal swaps in lobu.config.ts, or a pure
 # packages/owletto pointer bump. Everything else — non-test source, migrations,
-# runtime-affecting config, static assets, other/mixed submodule changes, and the
-# gate/CI machinery itself — forces the full review regardless of size.
+# runtime-affecting config, static assets, other/mixed submodule changes, and
+# the gate/CI machinery itself — forces the full review regardless of size.
 #
 # The classifier is deterministic and path-gated. The driving agent may only
 # escalate (REVIEWER_MODE=full), never skip on self-assessed confidence: the
@@ -20,9 +20,9 @@
 REVIEW_SKIP_REASON=""
 
 # Any diff that touches these paths must run the full review, no matter how
-# small. Package manifests and runtime-affecting config control the same subsystems
-# (auth, queues, deps) that a src change would escalate on; and the gate
-# machinery itself must never be reviewed by its own skip rule.
+# small. Package manifests and runtime-affecting config control the same
+# subsystems (auth, queues, deps) that a src change would escalate on; and the
+# gate machinery itself must never be reviewed by its own skip rule.
 #
 # The packages/owletto pointer is handled below: Owletto owns semantic review
 # of its content, and `check-drift` forbids pinning anything not on its main

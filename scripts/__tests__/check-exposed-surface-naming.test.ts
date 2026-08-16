@@ -45,6 +45,10 @@ const GENERIC_BEHAVIOR_PROBE_FILE = join(
   REPO_ROOT,
   "packages/core/src/guard-probe.json"
 );
+const RETIRED_PATH_PROBE_FILE = join(
+  REPO_ROOT,
+  "packages/core/src/watcher-probe.bin"
+);
 const ROOT_AGENT_FILE = join(REPO_ROOT, "AGENTS.md");
 
 const touched: string[] = [];
@@ -96,6 +100,11 @@ describe("check-exposed-surface-naming", () => {
 
   it("does not turn the generic-option exception into a product-term escape", () => {
     create(GENERIC_BEHAVIOR_PROBE_FILE, '{"behavior":"product"}\n');
+    expect(runGuard()).toBe(1);
+  });
+
+  it("fails on a retired term in a binary file path", () => {
+    create(RETIRED_PATH_PROBE_FILE, "\0binary fixture");
     expect(runGuard()).toBe(1);
   });
 

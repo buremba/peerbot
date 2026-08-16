@@ -758,7 +758,8 @@ export const QUERYABLE_SCHEMA = {
         'deleted_at',
         'created_at',
         'updated_at',
-        'metadata'
+        'metadata',
+        'purpose'
       ),
     },
   ],

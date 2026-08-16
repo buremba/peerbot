@@ -17,6 +17,135 @@ const CALLER_SETTABLE_SOURCES = ['ui', 'llm', 'feed', 'api'] as const;
 export const EDGE_SOURCE_CONFIG = 'config';
 export const EDGE_SOURCE_MANUAL = 'manual';
 
+/**
+ * System-controlled classification of what a relationship type is FOR.
+ *
+ * `authorization` marks a type for ACL reads in the follow-up deployment. It is
+ * deliberately not caller-settable: the whole point is that the platform, not
+ * a caller or connector manifest, decides which vocabulary grants access.
+ */
+export type RelationshipTypePurpose = 'authorization';
+export const PURPOSE_AUTHORIZATION: RelationshipTypePurpose = 'authorization';
+
+/**
+ * Relationship slugs whose EDGES the ACL engine owns. Configs legitimately
+ * declare the `member_of` type and may update its harmless fields before
+ * classification; caller-created edges on it are never allowed.
+ *
+ * `purpose` is the durable enforcement boundary. During the staged rollout the
+ * mutation guard also checks this ACL-managed slug, because ACL reads trust it
+ * before the classification backfill lands.
+ */
+export function isAclManagedRelationshipSlug(slug: string): boolean {
+  return slug === 'member_of';
+}
+
+/**
+ * Run `fn` with the transaction-local flag the ACL edge trigger requires for a
+ * classified relationship type.
+ *
+ * Enforcement of "only the ACL syncs write authorization edges" lives in a
+ * database trigger, not in call-site checks, because `entity_relationships` has
+ * several write paths and guarding a subset only ever means the next writer is
+ * the bypass. `source` cannot carry the boundary either: the syncs write
+ * `source='feed'`, which is also caller-settable, so a caller-minted edge is
+ * byte-identical to a sync-minted one.
+ *
+ * `set_config(..., true)` is transaction-LOCAL. On a pooled connection a session
+ * GUC would leak the privilege to whatever ran next; this cannot.
+ *
+ * This opens a top-level transaction. A writer that is already inside a
+ * transaction uses `withAclPrivilege` instead. The privilege is released
+ * explicitly so the grant is bounded by `fn`, not by the rest of the caller's
+ * transaction.
+ */
+export async function withAclEdgeWrite<T>(
+  db: DbClient,
+  fn: (tx: DbClient) => Promise<T>
+): Promise<T> {
+  return db.begin((tx: DbClient) => withAclPrivilege(tx, () => fn(tx))) as Promise<T>;
+}
+
+/**
+ * Grant the ACL-write privilege for exactly `fn`, inside a transaction the
+ * caller already owns.
+ *
+ * `withAclEdgeWrite` opens its own transaction; this is for a writer that is
+ * already mid-transaction and must drop the privilege again before its
+ * remaining statements run. Merge is the motivating case: it tombstones
+ * authorization edges early and then repoints ordinary ones, and if the flag
+ * stayed set for the rest of that transaction the trigger could no longer
+ * refuse a repoint of any authorization edge the first statement missed.
+ *
+ * The reset is best-effort: if `fn` failed with a database error the
+ * transaction is already aborted and every later statement — including this
+ * one — will fail, so swallowing keeps the caller's original error rather than
+ * masking it with `current transaction is aborted`. Nothing leaks in that case
+ * because the whole transaction rolls back.
+ */
+export async function withAclPrivilege<T>(tx: DbClient, fn: () => Promise<T>): Promise<T> {
+  await tx`SELECT set_config('lobu.acl_write', 'on', true)`;
+  try {
+    return await fn();
+  } finally {
+    await tx`SELECT set_config('lobu.acl_write', 'off', true)`.catch(() => {});
+  }
+}
+
+/**
+ * Refuse a caller-driven mutation of an authorization-bearing relationship type.
+ *
+ * Once a type is classified, its schema lifecycle is platform-owned: callers
+ * cannot archive it, change its rules, or attach it as another type's inverse.
+ * Edge mutations use the stricter pre-classification guard below.
+ */
+export function assertNotAuthorizationType(
+  type: { slug?: string | null; purpose?: string | null },
+  action: string
+): void {
+  if (type.purpose !== PURPOSE_AUTHORIZATION) return;
+  throw new ToolUserError(
+    `Relationship type '${type.slug ?? 'unknown'}' is authorization-bearing and cannot be modified via ${action}. ` +
+      'Access-granting edges are maintained by the connector ACL syncs.',
+    403
+  );
+}
+
+/**
+ * Refuse a caller-driven mutation of an EDGE on an ACL-managed relationship type.
+ *
+ * Stricter than `assertNotAuthorizationType`: it also refuses the ACL-managed slug,
+ * not just a classified type. That gap matters for the whole window between the
+ * deploy that adds this mechanism and the deploy that backfills `purpose` —
+ * during it every live `member_of` row is unclassified while the ACL reads
+ * already trust the slug, so a purpose-only guard would leave callers free to
+ * mint or revoke grants and the backfill would then bless whatever they left
+ * behind.
+ *
+ * Deliberately not applied wholesale to relationship-type surfaces before
+ * classification. Configs legitimately declare `member_of`
+ * (`examples/personal-agent/lobu.config.ts`) and declaring a type grants nobody
+ * access; creating an edge on it does. The schema handler separately blocks the
+ * unsafe archive transition. Once classified, the purpose guard above protects
+ * the rest of its schema lifecycle as well.
+ */
+export function assertNotAclManagedEdge(
+  type: { slug?: string | null; purpose?: string | null },
+  action: string
+): void {
+  if (
+    type.purpose !== PURPOSE_AUTHORIZATION &&
+    !isAclManagedRelationshipSlug(type.slug ?? '')
+  ) {
+    return;
+  }
+  throw new ToolUserError(
+    `Relationship type '${type.slug ?? 'unknown'}' is authorization-bearing and cannot be modified via ${action}. ` +
+      'Access-granting edges are maintained by the connector ACL syncs.',
+    403
+  );
+}
+
 /** Source values used to select edges during reconciliation. */
 const RECONCILED_SOURCES = [EDGE_SOURCE_CONFIG, EDGE_SOURCE_MANUAL] as const;
 

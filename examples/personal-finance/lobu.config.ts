@@ -5,6 +5,7 @@ import {
   defineEntityType,
   defineRelationshipType,
   defineAutomation,
+  every,
   secret,
 } from "@lobu/cli/config";
 
@@ -1125,7 +1126,7 @@ const gmailTxAutomation = defineAutomation({
   agent: personal_finance,
   slug: "gmail-tx",
   name: "Gmail financial-event extractor",
-  triggers: [{ kind: "schedule", cron: "*/30 * * * *" }],
+  triggers: [every("*/30 * * * *")],
   notification: { priority: "low" },
   minCooldownSeconds: 300,
   tags: ["personal-finance", "gmail", "ingestion"],

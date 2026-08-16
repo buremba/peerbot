@@ -108,7 +108,7 @@ const detectRisk = defineAutomation({
   agent,
   slug: "detect-risk",
   prompt: "Find material account risks. Emit observations with namespace account-risk.",
-  triggers: [{ kind: "schedule", cron: "0 * * * *" }],
+  triggers: [every("0 * * * *")],
   sources: {
     accounts:
       "SELECT id, payload_text, metadata, occurred_at FROM events ORDER BY occurred_at DESC LIMIT 200",
@@ -140,6 +140,44 @@ The downstream Automation may also declare ordinary SQL sources. The triggering
 events are included even when those sources return nothing. They are read
 through the same governed `events` scope as any source, so an Automation bound to
 specific entities still only sees trigger inputs linked to those entities.
+
+### Authoring shorthand in config
+
+The `@lobu/cli/config` authoring API exposes factories for the canonical config
+objects — `lobu apply` sees the same JSON whether you use them or write the
+literal:
+
+- `on(connectorKey, eventType, opts?)` — a connector event trigger. Connector
+  key and event type are separate arguments because connector keys may contain
+  dots (`google.gmail`); pass an array of event types to listen to several.
+  `opts` carries the same fields as the raw object (`connection` or
+  `connection_id`, `match`, `execution`, `active_run`, `output`,
+  `skip_if_unchanged`).
+- `every(cron, opts?)` — a schedule trigger. `opts` may carry `timezone` and the
+  other raw schedule fields.
+- `context(query)` — a context-only SQL source. Emits `{ query, context: true }`:
+  reference data handed to the agent for reasoning but never linked into the
+  window's event set, so a projected `id` is not interpreted as an `events.id`.
+  Plain event-content sources stay bare strings; each may be SQL or a source ref
+  (`@feed:`, `@connection:`, …).
+
+```ts
+triggers: [
+  on("slack", "message.created", {
+    connection: supportChannel,        // connection handle or slug
+    match: { channel_id: "#support" }, // exact-match filters
+  }),
+  every("0 9 * * 1", { timezone: "Europe/Istanbul" }),
+],
+sources: {
+  recent_issues: "SELECT … FROM events …",   // event content (bare string)
+  candidates: context("SELECT id, … FROM entities …"), // reference data
+},
+```
+
+All factories return plain data, so the raw literal forms stay valid anywhere
+the shorthand is used. There is no shorthand for a workspace-source trigger yet
+— write `{ kind: "event", source: "workspace", event_types: [...] }` directly.
 
 ## Notification routing
 

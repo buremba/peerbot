@@ -6,6 +6,7 @@ import {
   defineEntityType,
   defineRelationshipType,
   defineAutomation,
+  every,
   secret,
 } from "@lobu/cli/config";
 import type ShopifyOrdersConnector from "./shopify-orders.connector.ts";
@@ -161,7 +162,7 @@ const phoenixRolloutTracker = defineAutomation({
   agent: delivery,
   slug: "phoenix-rollout-tracker",
   name: "Phoenix rollout tracker",
-  triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
+  triggers: [every("0 9 * * 1")],
   notification: { priority: "high", channel: "both" },
   tags: ["delivery", "weekly", "rollout"],
   minCooldownSeconds: 3600,

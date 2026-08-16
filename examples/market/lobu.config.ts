@@ -6,6 +6,7 @@ import {
   defineEntityType,
   defineRelationshipType,
   defineSkill,
+  every,
   secret,
 } from "@lobu/cli/config";
 import type ExaNewsFeedConnector from "./exa-news-feed.connector.ts";
@@ -479,7 +480,7 @@ const founderActivityTracker = defineAutomation({
   agent: marketIntelligence,
   slug: "founder-activity-tracker",
   name: "Founder Activity Tracker",
-  triggers: [{ kind: "schedule", cron: "0 10 * * *" }],
+  triggers: [every("0 10 * * *")],
   notification: { priority: "normal" },
   tags: ["market", "people", "daily"],
   minCooldownSeconds: 600,
@@ -497,7 +498,7 @@ const opportunityMatcher = defineAutomation({
   agent: marketIntelligence,
   slug: "opportunity-matcher",
   name: "Opportunity Matcher",
-  triggers: [{ kind: "schedule", cron: "0 */12 * * *" }],
+  triggers: [every("0 */12 * * *")],
   notification: { priority: "normal" },
   tags: ["market", "matching"],
   minCooldownSeconds: 600,

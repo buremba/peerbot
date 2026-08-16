@@ -6,6 +6,7 @@ import {
   defineEntityType,
   defineRelationshipType,
   defineAutomation,
+  every,
   secret,
 } from "@lobu/cli/config";
 import type SalesforcePipelineConnector from "./salesforce-pipeline.connector.ts";
@@ -192,7 +193,7 @@ const accountHealthMonitor = defineAutomation({
   agent: sales,
   slug: "account-health-monitor",
   name: "Account health monitor",
-  triggers: [{ kind: "schedule", cron: "0 */12 * * *" }],
+  triggers: [every("0 */12 * * *")],
   notification: { priority: "high", channel: "both" },
   tags: ["sales", "health", "renewals"],
   minCooldownSeconds: 1800,

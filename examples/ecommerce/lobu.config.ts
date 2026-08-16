@@ -6,6 +6,7 @@ import {
   defineEntityType,
   defineRelationshipType,
   defineAutomation,
+  every,
   secret,
 } from "@lobu/cli/config";
 import type StripeChargesConnector from "./stripe-charges.connector.ts";
@@ -170,7 +171,7 @@ const customerActivityTracker = defineAutomation({
   agent: ecommerceOps,
   slug: "customer-activity-tracker",
   name: "Customer activity tracker",
-  triggers: [{ kind: "schedule", cron: "0 */6 * * *" }],
+  triggers: [every("0 */6 * * *")],
   notification: { priority: "normal" },
   tags: ["ecommerce", "customer-ops"],
   minCooldownSeconds: 300,

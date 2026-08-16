@@ -4,14 +4,17 @@ import {
   type AuthProfile,
   type ConnectorClassExport,
   connectorFromFile,
+  context,
   defineAgent,
   defineAuthProfile,
+  defineAutomation,
   defineConfig,
   defineConnection,
   defineEntityType,
   defineRelationshipType,
-  defineAutomation,
   type EntityType,
+  every,
+  on,
   reactionFromFile,
 } from "../define.js";
 import { isSecretRef, secret } from "../secret.js";
@@ -116,6 +119,59 @@ describe("authoring producers", () => {
     expect(conn.kind).toBe("connection");
     expect((conn.authProfile as AuthProfile).slug).toBe("gh-app");
     expect(isSecretRef(auth.credentials?.clientSecret)).toBe(true);
+  });
+
+  test("on() emits the canonical connector event trigger", () => {
+    const t = on("slack", "message.created", {
+      match: { channel_id: "#support" },
+    });
+    expect(t).toEqual({
+      kind: "event",
+      source: "connector",
+      connector_key: "slack",
+      event_types: ["message.created"],
+      match: { channel_id: "#support" },
+    });
+    // Downstream normalization owns defaults; the shorthand must not bake them.
+    expect(t.execution).toBeUndefined();
+  });
+
+  test("on() accepts several event types and dedupes", () => {
+    expect(
+      on("jira", ["issue.created", "issue.updated", "issue.created"])
+        .event_types
+    ).toEqual(["issue.created", "issue.updated"]);
+  });
+
+  test("on() wires a connection handle and overridable execution fields", () => {
+    const conn = defineConnection({ slug: "support", connector: "slack" });
+    const t = on("slack", "message.created", {
+      connection: conn,
+      execution: "window",
+      active_run: "coalesce",
+    });
+    expect(t.connection).toBe(conn);
+    expect(t.execution).toBe("window");
+    expect(t.active_run).toBe("coalesce");
+  });
+
+  test("every() emits the canonical schedule trigger", () => {
+    expect(every("0 9 * * 1", { timezone: "Europe/Istanbul" })).toEqual({
+      kind: "schedule",
+      cron: "0 9 * * 1",
+      timezone: "Europe/Istanbul",
+    });
+    expect(every("0 9 * * 1")).toEqual({
+      kind: "schedule",
+      cron: "0 9 * * 1",
+    });
+  });
+
+  test("context() emits a context-only SQL source", () => {
+    expect(context("SELECT id, name FROM entities")).toEqual({
+      query: "SELECT id, name FROM entities",
+      context: true,
+    });
   });
 
   test("defineConfig aggregates the project manifest", () => {

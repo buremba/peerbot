@@ -4,8 +4,12 @@ import { join } from 'node:path';
 import { MCP_PROTOCOL_VERSION } from '@lobu/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { getDb } from '../../../db/client';
+import type { Env } from '../../../index';
 import { clearInMemoryMcpSessionsForTests } from '../../../mcp-handler';
+import { buildClientSDK } from '../../../sandbox/client-sdk';
+import type { ToolContext } from '../../../tools/registry';
 import { insertEvent } from '../../../utils/insert-event';
+import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -143,14 +147,14 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     return sessionId!;
   }
 
-  it('serves the self-contained v12 interaction bundle over resources/read', async () => {
+  it('serves the self-contained v13 interaction bundle over resources/read', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const response = await post(`/mcp/${org.slug}`, {
       body: {
         jsonrpc: '2.0',
         id: 1,
         method: 'resources/read',
-        params: { uri: 'ui://lobu/interaction/v12.html' },
+        params: { uri: 'ui://lobu/interaction/v13.html' },
       },
       headers: { 'mcp-session-id': sessionId },
       token,
@@ -159,7 +163,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const content = body.result?.contents?.[0];
-    expect(content?.uri).toBe('ui://lobu/interaction/v12.html');
+    expect(content?.uri).toBe('ui://lobu/interaction/v13.html');
     expect(content?.mimeType).toBe('text/html;profile=mcp-app');
     expect(content?.text).toContain('mcp-app-embedded-stub');
     expect(content?.text).not.toContain('mcp-app-external-stub');
@@ -268,7 +272,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     }
   });
 
-  it('keeps the v7 through v11 aliases on the packed, network-free template', async () => {
+  it('keeps the v7 through v12 aliases on the packed, network-free template', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     for (const uri of [
       'ui://lobu/interaction/v7.html',
@@ -276,6 +280,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       'ui://lobu/interaction/v9.html',
       'ui://lobu/interaction/v10.html',
       'ui://lobu/interaction/v11.html',
+      'ui://lobu/interaction/v12.html',
     ]) {
       const response = await post(`/mcp/${org.slug}`, {
         body: {
@@ -310,7 +315,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const resource = body.result?.resources?.find(
-      (r: { uri: string }) => r.uri === 'ui://lobu/interaction/v12.html'
+      (r: { uri: string }) => r.uri === 'ui://lobu/interaction/v13.html'
     );
     expect(resource).toBeDefined();
     expect(
@@ -333,7 +338,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(resource._meta?.ui?.domain).toBeUndefined();
   });
 
-  it('links only view-producing tools to the App resource and keeps helpers app-only', async () => {
+  it('links direct saves and explicit view-producing tools to the App resource and keeps helpers app-only', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const response = await post(`/mcp/${org.slug}`, {
       body: { jsonrpc: '2.0', id: 1, method: 'tools/list' },
@@ -358,21 +363,36 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         _meta: expect.objectContaining({
           securitySchemes: [{ type: 'oauth2', scopes: ['mcp:read'] }],
           ui: expect.objectContaining({
-            resourceUri: 'ui://lobu/interaction/v12.html',
+            resourceUri: 'ui://lobu/interaction/v13.html',
             visibility: ['model', 'app'],
           }),
-          'openai/outputTemplate': 'ui://lobu/interaction/v12.html',
+          'openai/outputTemplate': 'ui://lobu/interaction/v13.html',
         }),
       })
     );
 
-    // Data and action tools stay headless so multi-step SDK/memory work does
-    // not mount an iframe for every intermediate call. The model explicitly
-    // calls render_lobu_view once it has selected the final content a person
-    // should inspect, edit, or approve.
+    const saveMemory = body.result?.tools?.find(
+      (entry: { name?: string }) => entry.name === 'save_memory'
+    );
+    expect(saveMemory).toEqual(
+      expect.objectContaining({
+        securitySchemes: [{ type: 'oauth2', scopes: ['mcp:write'] }],
+        _meta: expect.objectContaining({
+          securitySchemes: [{ type: 'oauth2', scopes: ['mcp:write'] }],
+          ui: expect.objectContaining({
+            resourceUri: 'ui://lobu/interaction/v13.html',
+            visibility: ['model', 'app'],
+          }),
+          'openai/outputTemplate': 'ui://lobu/interaction/v13.html',
+        }),
+      })
+    );
+
+    // Reads and general SDK actions stay headless so multi-step work does not
+    // mount an iframe for every intermediate call. save_memory is the narrow
+    // exception: its one durable write is itself the final inspectable result.
     for (const name of [
       'search_memory',
-      'save_memory',
       'search_sdk',
       'query_sdk',
       'query_sql',
@@ -402,10 +422,10 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         securitySchemes: [{ type: 'oauth2', scopes: ['mcp:write'] }],
         _meta: expect.objectContaining({
           ui: expect.objectContaining({
-            resourceUri: 'ui://lobu/interaction/v12.html',
+            resourceUri: 'ui://lobu/interaction/v13.html',
             visibility: ['app'],
           }),
-          'openai/outputTemplate': 'ui://lobu/interaction/v12.html',
+          'openai/outputTemplate': 'ui://lobu/interaction/v13.html',
         }),
       })
     );
@@ -453,10 +473,213 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     );
     expect(tool?._meta?.ui).toEqual(
       expect.objectContaining({
-        resourceUri: 'ui://lobu/interaction/v12.html',
+        resourceUri: 'ui://lobu/interaction/v13.html',
         visibility: ['model', 'app'],
       })
     );
+  });
+
+  it('returns the exact saved event payload for the save_memory App card', async () => {
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const payloadTemplate = {
+      root: {
+        type: 'bar-chart',
+        data: '{{points}}',
+        labelField: 'label',
+        valueField: 'value',
+      },
+    };
+    const payloadData = {
+      points: [
+        { label: 'Saved', value: 12 },
+        { label: 'Rendered', value: 7 },
+      ],
+    };
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'save-memory-app-result',
+        method: 'tools/call',
+        params: {
+          name: 'save_memory',
+          arguments: {
+            title: 'Saved chart',
+            semantic_type: 'content',
+            payload_type: 'json_template',
+            payload_template: payloadTemplate,
+            payload_data: payloadData,
+            metadata: {},
+            idempotency_key: 'mcp-app-save-memory-render-result',
+          },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    expect(body.result?.structuredContent).toEqual(
+      expect.objectContaining({
+        title: 'Saved chart',
+        payload_type: 'json_template',
+        payload_data: payloadData,
+        payload_template: payloadTemplate,
+        payload_text: null,
+        attachments: [],
+        source_url: null,
+        view_url: expect.stringContaining('content_ids='),
+      })
+    );
+    expect(body.result?.content?.[0]?.text).toContain('"title": "Saved chart"');
+    expect(body.result?.content?.[0]?.text).not.toContain('payload_data');
+    expect(body.result?.content?.[0]?.text).not.toContain('payload_template');
+  });
+
+  it('keeps oversized saved payloads out of the App response', async () => {
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'save-memory-oversized-result',
+        method: 'tools/call',
+        params: {
+          name: 'save_memory',
+          arguments: {
+            title: 'Large durable note',
+            semantic_type: 'content',
+            payload_type: 'json_template',
+            payload_template: { root: { type: 'data', path: 'body' } },
+            payload_data: { body: 'x'.repeat(600 * 1024) },
+            metadata: {},
+            idempotency_key: 'mcp-app-save-memory-oversized-result',
+          },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    expect(body.result?.structuredContent).toEqual(
+      expect.objectContaining({
+        title: 'Large durable note',
+        view_url: expect.stringContaining('content_ids='),
+        exact_read: expect.objectContaining({
+          method: 'client.knowledge.read',
+        }),
+      })
+    );
+    for (const key of [
+      'payload_type',
+      'payload_text',
+      'payload_data',
+      'payload_template',
+      'attachments',
+      'source_url',
+    ]) {
+      expect(body.result?.structuredContent).not.toHaveProperty(key);
+    }
+    expect(body.result?.content?.[0]?.text.length).toBeLessThan(10_000);
+  });
+
+  it('omits the saved payload when the client does not advertise MCP Apps', async () => {
+    const sessionId = await initSession(`/mcp/${org.slug}`, {
+      advertiseMcpApps: false,
+    });
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'save-memory-no-app-result',
+        method: 'tools/call',
+        params: {
+          name: 'save_memory',
+          arguments: {
+            title: 'Plain note',
+            semantic_type: 'content',
+            content: 'body-visible-only-to-app-hosts',
+            metadata: {},
+            idempotency_key: 'mcp-app-save-memory-no-app-result',
+          },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    // The write still succeeds and stays exactly readable by id — only the
+    // inline render payload, which this client cannot render, is withheld.
+    expect(body.result?.structuredContent).toEqual(
+      expect.objectContaining({
+        title: 'Plain note',
+        exact_read: expect.objectContaining({ method: 'client.knowledge.read' }),
+      })
+    );
+    for (const key of [
+      'payload_type',
+      'payload_text',
+      'payload_data',
+      'payload_template',
+      'attachments',
+      'source_url',
+    ]) {
+      expect(body.result?.structuredContent).not.toHaveProperty(key);
+    }
+    expect(body.result?.content?.[0]?.text).not.toContain(
+      'body-visible-only-to-app-hosts'
+    );
+  });
+
+  it('keeps ClientSDK saves headless when their source session supports Apps', async () => {
+    // run_sdk builds this same in-process SDK from the outer MCP session. The
+    // direct SDK call keeps the boundary test independent of isolated-vm.
+    await initWorkspaceProvider();
+    const ctx: ToolContext = {
+      organizationId: org.id,
+      userId: owner.id,
+      memberRole: 'owner',
+      isAuthenticated: true,
+      tokenType: 'oauth',
+      scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
+      scopedToOrg: true,
+      allowCrossOrg: false,
+      mcpAppsSupported: true,
+    };
+    const sdk = buildClientSDK(ctx, {
+      ENVIRONMENT: 'test',
+      DATABASE_URL: process.env.DATABASE_URL,
+    } as Env);
+    const receipt = await sdk.knowledge.save({
+      title: 'Nested SDK save',
+      semantic_type: 'content',
+      content: 'nested-sdk-save-body-must-stay-headless',
+      metadata: {},
+      idempotency_key: 'mcp-app-nested-sdk-save-headless',
+    });
+
+    expect(receipt).toEqual(
+      expect.objectContaining({
+        title: 'Nested SDK save',
+        exact_read: expect.objectContaining({ method: 'client.knowledge.read' }),
+      })
+    );
+    for (const key of [
+      'payload_type',
+      'payload_text',
+      'payload_data',
+      'payload_template',
+      'attachments',
+      'source_url',
+    ]) {
+      expect(receipt).not.toHaveProperty(key);
+    }
+    expect(JSON.stringify(receipt)).not.toContain('nested-sdk-save-body-must-stay-headless');
   });
 
   it('returns a validated LobuViewV1 with a safe text fallback', async () => {

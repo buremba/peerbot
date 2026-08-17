@@ -409,7 +409,10 @@ async function ensureDeviceConnectorWired(
       // `default_connection_config` into the new row's config — auto-wire is
       // the only creation path that previously skipped this, so a device swap
       // silently regressed action modes to descriptor fallbacks. Feed-scoped
-      // default keys belong on feeds (wired below), never on the connection.
+      // default keys are dropped here — auto-wired feeds are minted with
+      // `config = NULL` (unchanged from prior behavior); the fast-path gate
+      // accounts for this so a wholly feed-scoped default does not re-wire
+      // forever.
       const defaultConnectionConfig =
         (await tx`
           SELECT default_connection_config

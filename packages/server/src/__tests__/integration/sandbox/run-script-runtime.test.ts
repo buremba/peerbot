@@ -16,9 +16,24 @@
  * `isolated-vm` so the regression cannot ship again.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ClientSDK } from "../../../sandbox/client-sdk";
 import { runScript } from "../../../sandbox/run-script";
+
+// Counts compiles so the memo is asserted by call count rather than by
+// wall-clock timing, which is unassertable at the ~3ms scale a warm run costs.
+// The spy delegates to the real compiler, so every test in this file still
+// exercises genuine esbuild + isolated-vm.
+vi.mock("../../../utils/compiler-core", async (importActual) => {
+  const actual =
+    await importActual<typeof import("../../../utils/compiler-core")>();
+  return { ...actual, compileSource: vi.fn(actual.compileSource) };
+});
+
+async function compileCallCount(): Promise<number> {
+  const { compileSource } = await import("../../../utils/compiler-core");
+  return vi.mocked(compileSource).mock.calls.length;
+}
 
 describe("sandbox runtime", () => {
   it("loads isolated-vm and runs a trivial script", async () => {
@@ -240,6 +255,62 @@ describe("sandbox runtime", () => {
     expect(result.success).toBe(false);
     expect(result.error?.name).toBe("TimeoutError");
     expect(result.sdkCalls).toBe(1);
+  });
+});
+
+describe("compiled-source memo", () => {
+  const stub = stubSDK();
+
+  /** Unique per run so a previous test cannot have warmed the entry. */
+  const uniqueSource = (tag: string) =>
+    `// ${tag}\nexport default async () => ${tag.length};`;
+
+  it("re-running identical source skips compilation", async () => {
+    const source = uniqueSource(`memo_hit_${process.pid}`);
+
+    const before = await compileCallCount();
+    const first = await runScript({ source, sdk: stub });
+    const afterCold = await compileCallCount();
+    const second = await runScript({ source, sdk: stub });
+    const afterWarm = await compileCallCount();
+
+    expect(first.success).toBe(true);
+    expect(second.returnValue).toBe(first.returnValue);
+    expect(afterCold - before).toBe(1);
+    expect(afterWarm - afterCold).toBe(0);
+  });
+
+  it("different source is compiled separately, not served from the memo", async () => {
+    const before = await compileCallCount();
+    const a = await runScript({
+      source: uniqueSource(`memo_a_${process.pid}`),
+      sdk: stub,
+    });
+    const b = await runScript({
+      source: uniqueSource(`memo_bb_${process.pid}`),
+      sdk: stub,
+    });
+
+    expect(a.success).toBe(true);
+    expect(b.success).toBe(true);
+    expect((await compileCallCount()) - before).toBe(2);
+    // Return values are derived from the tag length, so a collision here would
+    // mean one entry was served for both sources.
+    expect(a.returnValue).not.toBe(b.returnValue);
+  });
+
+  it("a compile error is not cached as a success", async () => {
+    const broken = `export default async () => { this is not valid ts`;
+    const before = await compileCallCount();
+    const first = await runScript({ source: broken, sdk: stub });
+    const second = await runScript({ source: broken, sdk: stub });
+
+    expect(first.success).toBe(false);
+    expect(first.error?.name).toBe("CompileError");
+    expect(second.success).toBe(false);
+    expect(second.error?.name).toBe("CompileError");
+    // A failed compile leaves no entry, so the retry recompiles.
+    expect((await compileCallCount()) - before).toBe(2);
   });
 });
 

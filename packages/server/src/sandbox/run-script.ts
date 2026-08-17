@@ -686,6 +686,19 @@ const EXTRACT_RUNNER = `
 })()
 `;
 
+/**
+ * Compiled-output memo, keyed by a hash of the source text. Insertion-ordered
+ * `Map` used as an LRU: a hit re-inserts, an overflow evicts the oldest key.
+ *
+ * Bounded by bytes as well as by entries, because an entry is a whole bundle:
+ * ~1 KB for an import-free script but ~530 KB for one importing `npm:zod`
+ * (measured), so an entry-only cap would let 256 heavy scripts pin >100 MB.
+ */
+const compiledSourceCache = new Map<string, { code: string; bytes: number }>();
+const COMPILED_SOURCE_CACHE_MAX_ENTRIES = 256;
+const COMPILED_SOURCE_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+let compiledSourceCacheBytes = 0;
+
 export async function runScript(
 	options: RunScriptOptions,
 ): Promise<RunScriptResult> {
@@ -859,18 +872,61 @@ export async function runScript(
 
 	let compiled: string;
 	try {
-		const { compileSource } = await import("../utils/compiler-core");
-		const result = await compileSource(options.source, {
-			tmpPrefix: ".execute-compile-",
-			label: "ExecuteCompiler",
-			buildOptions: {
-				format: "cjs",
-				target: "esnext",
-				platform: "node",
-				external: [],
-			},
-		});
-		compiled = result.compiledCode;
+		// Deferred: `compiler-core` pulls in esbuild and resolves the connector
+		// SDK entry at module scope, neither of which a run-free process needs.
+		const { compileSource, computeCodeHash } = await import(
+			"../utils/compiler-core"
+		);
+		// Compilation is `mkdtemp` + `writeFile` + a full esbuild bundle + read
+		// back — filesystem I/O and a bundler per call. Measured locally, a cold
+		// `runScript` costs 6–25ms end to end where a memo hit costs ~3ms, so
+		// compilation, not the isolate, is the bulk of a short run. That was
+		// affordable while the only callers were automation reactions (once per
+		// window) and `sdk_run` (once per agent turn); anything that runs per
+		// entity write would pay it on every write.
+		//
+		// Source text is the whole compile input, so its hash is a total cache
+		// key. Process-local by design: this memoizes a pure function, it does
+		// not hold shared state, so replicas diverging is not a correctness
+		// concern (cf. AGENTS.md on Postgres-mediated state).
+		const cacheKey = computeCodeHash(options.source);
+		const cached = compiledSourceCache.get(cacheKey);
+		if (cached !== undefined) {
+			// Refresh LRU recency.
+			compiledSourceCache.delete(cacheKey);
+			compiledSourceCache.set(cacheKey, cached);
+			compiled = cached.code;
+		} else {
+			const result = await compileSource(options.source, {
+				tmpPrefix: ".execute-compile-",
+				label: "ExecuteCompiler",
+				buildOptions: {
+					format: "cjs",
+					target: "esnext",
+					platform: "node",
+					external: [],
+				},
+			});
+			compiled = result.compiledCode;
+			const bytes = Buffer.byteLength(compiled, "utf8");
+			// Two concurrent runs of one new source both compile and both land
+			// here; without discounting the entry the loser already stored, the
+			// byte counter would over-count permanently and eventually evict on
+			// every insert.
+			compiledSourceCacheBytes -=
+				compiledSourceCache.get(cacheKey)?.bytes ?? 0;
+			compiledSourceCache.set(cacheKey, { code: compiled, bytes });
+			compiledSourceCacheBytes += bytes;
+			while (
+				compiledSourceCache.size > COMPILED_SOURCE_CACHE_MAX_ENTRIES ||
+				compiledSourceCacheBytes > COMPILED_SOURCE_CACHE_MAX_BYTES
+			) {
+				const oldest = compiledSourceCache.entries().next();
+				if (oldest.done) break;
+				compiledSourceCache.delete(oldest.value[0]);
+				compiledSourceCacheBytes -= oldest.value[1].bytes;
+			}
+		}
 	} catch (err) {
 		clearTimeout(abortTimer);
 		const e = err as Error & {

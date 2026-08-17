@@ -780,11 +780,10 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(body.result?._meta?.['lobu/member-role']).toBe('owner');
   });
 
-  it('keeps the standalone GET SSE channel available for server notifications', async () => {
+  it('keeps the standalone GET SSE channel available when Accept is omitted', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const response = await get(`/mcp/${org.slug}`, {
       headers: {
-        Accept: 'text/event-stream',
         'mcp-session-id': sessionId,
         'mcp-protocol-version': MCP_PROTOCOL_VERSION,
       },

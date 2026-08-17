@@ -1186,7 +1186,11 @@ async function handleAndMaybeConvert(
 ): Promise<Response> {
   const rawJson = req.headers.get('x-mcp-format')?.toLowerCase() === 'json';
   const response = await mcpRequestFormat.run({ rawJson }, () => transport.handleRequest(req));
-  if (!wantsSSE && response.headers.get('content-type')?.includes('text/event-stream')) {
+  if (
+    req.method === 'POST' &&
+    !wantsSSE &&
+    response.headers.get('content-type')?.includes('text/event-stream')
+  ) {
     return sseToJson(response);
   }
   // Inject SSE heartbeat pings to keep the stream alive through proxies.

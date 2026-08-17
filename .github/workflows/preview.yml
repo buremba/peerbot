@@ -78,7 +78,7 @@ jobs:
             {"op": "replace", "path": "/spec/template/spec/containers/0/command", "value": ["node", "packages/server/dist/server.bundle.mjs"]},
             {"op": "add", "path": "/spec/template/spec/containers/0/env", "value": [
               {"name": "PORT", "value": "8787"},
-              {"name": "DATABASE_URL", "value": "file:///var/lib/lobu/data/lobu.db"},
+              {"name": "DATABASE_URL", "value": "postgresql://app:${{ secrets.DB_PASSWORD }}@lobu-db-prod-pooler.summaries-prod.svc.cluster.local:5432/app?sslmode=require"},
               {"name": "NODE_ENV", "value": "development"}
             ]},
             {"op": "add", "path": "/spec/template/spec/containers/0/readinessProbe", "value": {
@@ -91,12 +91,8 @@ jobs:
               "requests": {"cpu": "2", "memory": "4Gi"},
               "limits": {"cpu": "4", "memory": "8Gi"}
             }},
-            {"op": "add", "path": "/spec/template/spec/containers/0/volumeMounts", "value": [
-              {"name": "data", "mountPath": "/var/lib/lobu/data"}
-            ]},
-            {"op": "add", "path": "/spec/template/spec/volumes", "value": [
-              {"name": "data", "emptyDir": {}}
-            ]}
+            {"op": "add", "path": "/spec/template/spec/containers/0/volumeMounts", "value": []},
+            {"op": "add", "path": "/spec/template/spec/volumes", "value": []}
           ]'
 
           kubectl expose deployment "$PREVIEW_NAME" \

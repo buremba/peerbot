@@ -11,6 +11,8 @@
  *   4. connector_definitions.description
  *   5. ACL-managed relationship types render a `read-only: access control` hint,
  *      on the same purpose-OR-slug test that link/unlink already 403 on
+ *   6. an inverse pair only collapses to one line when both halves share that
+ *      hint, so the ACL-managed half is never dropped by the name ordering
  *
  * Org guidance pinned here:
  *   - admin-authored `guidance` events render under "### Organization Context"
@@ -137,6 +139,42 @@ describe('buildWorkspaceInstructions render fixes', () => {
       WHERE organization_id = ${org.id} AND slug = 'grants_role'
     `;
 
+    // Two inverse pairs. The listing collapses a pair to one line, but the
+    // write rule is decided per type, so a pair whose halves disagree cannot be
+    // collapsed without losing one half's rule. `reports_to`/`has_report`
+    // disagree; `ships_to`/`shipped_from` agree and must still collapse.
+    //
+    // Written in this order deliberately: assertNotAuthorizationType refuses to
+    // pair a type that is ALREADY classified, so a straddling pair is reached
+    // by pairing while both halves are ordinary and letting the ACL sync
+    // classify one half afterwards — which is exactly what happens below.
+    await sql`
+      INSERT INTO entity_relationship_types (slug, name, description, organization_id)
+      VALUES
+        ('has_report', 'Has report', 'Reporting line, ordinary vocabulary', ${org.id}),
+        ('reports_to', 'Reports to', 'Reporting line synced from the IdP', ${org.id}),
+        ('shipped_from', 'Shipped from', 'Ordinary pair, both halves writable', ${org.id}),
+        ('ships_to', 'Ships to', 'Ordinary pair, both halves writable', ${org.id})
+    `;
+    await sql`
+      UPDATE entity_relationship_types a
+      SET inverse_type_id = b.id
+      FROM entity_relationship_types b
+      WHERE a.organization_id = ${org.id}
+        AND b.organization_id = ${org.id}
+        AND (a.slug, b.slug) IN (
+          ('has_report', 'reports_to'),
+          ('reports_to', 'has_report'),
+          ('shipped_from', 'ships_to'),
+          ('ships_to', 'shipped_from')
+        )
+    `;
+    await sql`
+      UPDATE entity_relationship_types
+      SET purpose = 'authorization'
+      WHERE organization_id = ${org.id} AND slug = 'reports_to'
+    `;
+
     // Org-scoped connector definition with a description + an active connection.
     await sql`
       INSERT INTO connector_definitions (key, name, description, actions_schema, organization_id, status)
@@ -215,6 +253,35 @@ describe('buildWorkspaceInstructions render fixes', () => {
     // Guards the other direction: ACL_MANAGED_TYPE_SQL uses IS NOT DISTINCT
     // FROM precisely so a NULL purpose does not sweep every type in.
     expect(out).not.toContain('- supplies (read-only: access control)');
+  });
+
+  it('keeps both halves of an inverse pair when only one is access-controlled', async () => {
+    const out = await buildWorkspaceInstructions(org.id);
+    // A blanket collapse keeps whichever half `ORDER BY name ASC` reaches
+    // first, so `reports_to` — the half that 403s — can vanish from the
+    // vocabulary entirely, leaving the agent unaware the slug exists at all,
+    // let alone that it is read-only. Both halves are asserted, so this holds
+    // whichever way the ordering falls.
+    expect(out).toContain(
+      '- reports_to (inverse: has_report, read-only: access control) — Reporting line synced from the IdP'
+    );
+    expect(out).toContain('- has_report (inverse: reports_to) — Reporting line, ordinary vocabulary');
+  });
+
+  it('still collapses an inverse pair whose halves share the same write rule', async () => {
+    const out = await buildWorkspaceInstructions(org.id);
+    // The other direction: keeping both halves unconditionally would double
+    // every ordinary pair in the listing for no gain.
+    // Asserted as "exactly one of the pair" rather than naming the winner:
+    // which half survives is decided by `ORDER BY name ASC` under whatever
+    // collation the database runs, and that is not the property under test.
+    const emitted = out!
+      .split('\n')
+      .filter((l) => l.startsWith('- ships_to') || l.startsWith('- shipped_from'));
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatch(
+      /^- (ships_to \(inverse: shipped_from\)|shipped_from \(inverse: ships_to\)) — Ordinary pair, both halves writable$/
+    );
   });
 
   it('renders connector definition descriptions', async () => {

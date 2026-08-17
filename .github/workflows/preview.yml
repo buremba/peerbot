@@ -4,6 +4,11 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, closed]
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number for manual trigger'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -11,19 +16,21 @@ permissions:
   packages: write
 
 concurrency:
-  group: preview-${{ github.event.pull_request.number }}
+  group: preview-${{ github.event.pull_request.number || inputs.pr_number }}
   cancel-in-progress: true
 
 env:
-  PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number }}
-  PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number }}
-  PREVIEW_IMAGE: ghcr.io/${{ github.repository }}/preview
+  PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
   KUBECONFIG: /tmp/kubeconfig
 
 jobs:
   preview:
     runs-on: ubuntu-24.04
     if: github.event.action != 'closed'
+    env:
+      PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number || inputs.pr_number }}
+      PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number || inputs.pr_number }}
+      PREVIEW_IMAGE: ghcr.io/${{ github.repository }}/preview
     steps:
       - uses: actions/checkout@v7
 
@@ -173,6 +180,9 @@ jobs:
   cleanup:
     runs-on: ubuntu-24.04
     if: github.event.action == 'closed'
+    env:
+      PREVIEW_NS: lobu-preview-${{ github.event.pull_request.number }}
+      PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number }}
     steps:
       - name: Setup kubeconfig
         run: |

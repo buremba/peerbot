@@ -15,7 +15,8 @@
  *      (status='running' AND claimed_by=worker_id guard) must reject
  *      the worker write so the gateway's verdict stands.
  *
- * The test stubs `setTimeout` to keep poll loops fast.
+ * The tests use real timers; the poll loops stay fast because the budgets are
+ * shrunk, not because the clock is stubbed.
  *
  * The abort path calls the production helper directly. The longer phase and
  * race tests use a budget-parameterized mirror so they complete in
@@ -213,6 +214,17 @@ async function claim(runId: number, workerId: string): Promise<void> {
 }
 
 const FAST_BUDGETS = { queueMs: 400, postClaimMs: 600, pollMs: 30 };
+
+// The late-claim test deliberately schedules its claim near the QUEUE deadline,
+// so unlike the tests above its margin has to absorb the claim's round trip to
+// Postgres, not just timer drift. Under FAST_BUDGETS that margin was 80ms,
+// which a contended CI database blows through: the claim commits after the poll
+// that already observed `now >= queueDeadline`, so the wait returns 'timeout'
+// and the test reds with `expected 'timeout' to be 'completed'`. These budgets
+// keep the claim late in relative terms while widening that margin to 400ms.
+// To re-verify, prefix `claim()` with `await sql`SELECT pg_sleep(0.2)``: that is
+// 3/3 red on the old 80ms margin and 3/3 green on this one (still green at 0.35).
+const LATE_CLAIM_BUDGETS = { queueMs: 1200, postClaimMs: 1800, pollMs: 30 };
 const WORKER_ID = 'worker-test';
 
 describe('waitForDeviceActionRun', () => {
@@ -282,16 +294,24 @@ describe('waitForDeviceActionRun', () => {
     const connId = await insertChromeConnection(org.id);
     const runId = await insertPendingActionRun(org.id, connId, {});
 
-    // Claim near the end of the queue budget; ensure the post-claim
-    // budget kicks in and we don't timeout immediately.
-    setTimeout(() => void claim(runId, WORKER_ID), FAST_BUDGETS.queueMs - 80);
+    // Claim late in the queue budget, then complete AFTER the queue deadline
+    // has already passed. Only the post-claim budget can carry the wait that
+    // far, so a 'completed' verdict is what proves the phase switch happened.
+    setTimeout(
+      () => void claim(runId, WORKER_ID),
+      LATE_CLAIM_BUDGETS.queueMs - 400,
+    );
     setTimeout(
       () =>
         void workerCompleteAction(runId, WORKER_ID, 'success', { ok: true }),
-      FAST_BUDGETS.queueMs + 100,
+      LATE_CLAIM_BUDGETS.queueMs + 300,
     );
 
-    const out = await waitForDeviceActionRunForTest(runId, org.id, FAST_BUDGETS);
+    const out = await waitForDeviceActionRunForTest(
+      runId,
+      org.id,
+      LATE_CLAIM_BUDGETS,
+    );
     expect(out.status).toBe('completed');
   });
 

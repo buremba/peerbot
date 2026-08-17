@@ -33,8 +33,11 @@ jobs:
       PREVIEW_IMAGE: ghcr.io/${{ github.repository }}/preview
     steps:
       - uses: actions/checkout@v7
+
+      - id: submodule
+        uses: ./.github/actions/setup-submodule
         with:
-          submodules: recursive
+          deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
 
       - name: Login to GHCR
         uses: docker/login-action@v3

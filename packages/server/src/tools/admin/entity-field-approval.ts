@@ -97,6 +97,12 @@ export interface EntityFieldChangeProposal {
 	 * compares the canonical change identity, so replays still collapse.
 	 */
 	owner_user_id?: string | null;
+	/**
+	 * Fields the RULE escalated when this card was minted — exactly what the
+	 * approver is consenting to. Applying waives only these; an escalation the
+	 * rule raises for the first time later still needs its own card.
+	 */
+	escalated_fields?: string[];
 }
 
 export interface EntityDeleteProposal {
@@ -127,6 +133,12 @@ export interface EntityCreateProposal {
 	window_id?: number | null;
 	attribution?: ApprovalAttributionType;
 	reason?: string | null;
+	/**
+	 * Fields the RULE escalated when this card was minted — exactly what the
+	 * approver is consenting to. Applying waives only these; an escalation the
+	 * rule raises for the first time later still needs its own card.
+	 */
+	escalated_fields?: string[];
 }
 
 export interface EntityMergeProposal {
@@ -1110,9 +1122,8 @@ export async function applyEntityFieldChangeProposal(
 						note: proposal.reason ?? null,
 						// Don't overwrite a field the human re-edited after this proposal was queued.
 						expectedCurrent: proposal.current ?? null,
-						// This IS the approval. A rule that escalated to get here must not
-						// escalate again, or the card it asked for could never be cleared.
-						onEscalate: "approved",
+						// This IS the approval — but only for what the card showed.
+						approvedFields: proposal.escalated_fields ?? [],
 					})
 				: ({
 						changed: false,
@@ -1180,11 +1191,11 @@ export async function applyEntityFieldChangeProposal(
 								? { content: apply.$content as string | null }
 								: {}),
 						},
-						// Same reason as the metadata half above, and it has to be set on
-						// BOTH: a card mixing `$name` with a metadata field runs through
-						// both writers inside one transaction, so an escalate re-thrown
-						// here rolls the approved metadata back out too.
-						onEscalate: "approved",
+						// Same as the metadata half above, and it has to be set on BOTH: a
+						// card mixing `$name` with a metadata field runs through both
+						// writers inside one transaction, so an escalate re-thrown here
+						// rolls the approved metadata back out too.
+						approvedFields: proposal.escalated_fields ?? [],
 					}),
 				});
 			}
@@ -1279,11 +1290,9 @@ export async function applyEntityChangeProposal(
 					userId: ctx.userId,
 					env,
 				},
-				// This IS the approval. A rule that escalated to produce this card
-				// must not escalate again, or the card could never be cleared — the
-				// same dead end the update path's `onEscalate` closes. A `deny` still
+				// This IS the approval, scoped to what the card showed. A `deny` still
 				// throws: approval cannot make an illegal row legal.
-				onEscalate: "approved",
+				approvedFields: createProposal.escalated_fields ?? [],
 			},
 		);
 	}

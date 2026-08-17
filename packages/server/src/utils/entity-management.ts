@@ -194,13 +194,12 @@ interface EntityCreateOptions {
 	skipHooks?: boolean;
 	hookContext?: EntityHookContext;
 	/**
-	 * What a rule's `escalate` means for this create. Defaults to `"defer"`,
-	 * which throws so the caller can route the create into an approval card.
-	 * The path APPLYING an approved create passes `"approved"`.
+	 * Fields a human already approved on a create card. Absent means none, so an
+	 * escalate throws and the caller routes the create into an approval.
 	 *
-	 * See `validateEntityRowInsert`'s `onEscalate`.
+	 * See `validateEntityRowInsert`'s `approvedFields`.
 	 */
-	onEscalate?: "defer" | "approved";
+	approvedFields?: readonly string[];
 }
 
 interface EntityUpdateOptions {
@@ -639,9 +638,9 @@ export async function mergeEntityFields(params: {
 	/**
 	 * Set when this merge IS the application of a human-approved proposal, so a
 	 * rule that escalates does not escalate the very write its escalation asked
-	 * for. See `validateEntityRowPatch`'s `onEscalate`.
+	 * for. See `validateEntityRowPatch`'s `approvedFields`.
 	 */
-	onEscalate?: "defer" | "approved";
+	approvedFields?: readonly string[];
 }): Promise<FieldMergeResult> {
 	const { tx, entityId, fields, source, actorId } = params;
 	const rows = await tx<{ metadata: unknown; field_controls: unknown }>`
@@ -682,7 +681,7 @@ export async function mergeEntityFields(params: {
 					metadata: merge.nextMetadata,
 					fieldControls: merge.nextControls,
 				},
-				onEscalate: params.onEscalate,
+				approvedFields: params.approvedFields,
 			}),
 		});
 	}
@@ -916,7 +915,7 @@ export async function createEntity(
 						embedding: data.embedding,
 						contentHash,
 					},
-					onEscalate: opts?.onEscalate,
+					approvedFields: opts?.approvedFields,
 				}),
 			});
 		});
@@ -1206,6 +1205,9 @@ export async function updateEntity(
 		// residual fails and fields were held, nothing commits and the ENTIRE
 		// proposal defers as one approval unit.
 		let deferWholeWrite: string | null = null;
+		// What the rule named when it escalated — carried onto the card so applying
+		// it waives exactly these and nothing else.
+		let deferEscalatedFields: string[] = [];
 		let validated: ValidatedEntityRowPatch | null = null;
 		try {
 			validated = await validateEntityRowPatch({
@@ -1216,41 +1218,62 @@ export async function updateEntity(
 		} catch (err) {
 			if (!(err instanceof EntityRowValidationError)) throw err;
 			const heldFields = Object.keys(fieldMerge?.blocked ?? {});
+
+			// Whatever the verdict, the card replays the FULL proposal — so the full
+			// proposal is what has to be legal. Only a SPLIT write may be rescued: if
+			// the caller's own proposal is illegal too, deferring would mint a card no
+			// approval could clear, because applying re-runs validation and a deny
+			// throws in approved mode.
+			//
+			// Checked for BOTH outcomes, not just deny. A rule can escalate the
+			// residual while denying the full proposal — approving then skips the
+			// escalate and hits the deny, which is the same dead end by a longer road.
+			//
+			// Skipped when nothing was held: the residual IS the full proposal then,
+			// so the rule has already answered this exact question.
+			const denial =
+				heldFields.length > 0
+					? await fullProposalDenial({
+							tx,
+							entityId,
+							patch: {
+								...rowPatch,
+								metadata: {
+									...(mergedMetadata ?? existing),
+									...metadataUpdates,
+								},
+								...(attributeProposals.$name
+									? { name: attributeProposals.$name.proposed as string }
+									: {}),
+								...(attributeProposals.$parent_id
+									? {
+											parentId: attributeProposals.$parent_id.proposed as
+												| number
+												| null,
+										}
+									: {}),
+								...(attributeProposals.$content
+									? {
+											content: attributeProposals.$content.proposed as
+												| string
+												| null,
+										}
+									: {}),
+							},
+						})
+					: null;
+			// Stated in the terms the caller proposed, not the residual's.
+			if (denial) throw denial;
+
 			if (err.verdict.outcome === "escalate") {
 				// `escalate(fields, reason)` documents those fields as what the
 				// approver reads; the card itself carries the whole proposal.
+				deferEscalatedFields = err.verdict.fields;
 				deferWholeWrite =
 					err.verdict.fields.length > 0
 						? `${err.verdict.reason} (${err.verdict.fields.join(", ")})`
 						: err.verdict.reason;
 			} else if (heldFields.length > 0) {
-				// Only a SPLIT write may be rescued. If the caller's own proposal is
-				// illegal too, deferring would mint a card no approval could clear —
-				// so that denial stands, stated in the terms the caller proposed.
-				const denial = await fullProposalDenial({
-					tx,
-					entityId,
-					patch: {
-						...rowPatch,
-						metadata: { ...(mergedMetadata ?? existing), ...metadataUpdates },
-						...(attributeProposals.$name
-							? { name: attributeProposals.$name.proposed as string }
-							: {}),
-						...(attributeProposals.$parent_id
-							? {
-									parentId: attributeProposals.$parent_id.proposed as
-										| number
-										| null,
-								}
-							: {}),
-						...(attributeProposals.$content
-							? {
-									content: attributeProposals.$content.proposed as string | null,
-								}
-							: {}),
-					},
-				});
-				if (denial) throw denial;
 				deferWholeWrite =
 					`${err.verdict.reason} — the write is legal as proposed but ` +
 					`${heldFields.join(", ")} awaits approval, so it applies as one unit`;
@@ -1306,11 +1329,13 @@ export async function updateEntity(
 			...sel[0],
 			fieldMerge,
 			deferWholeWrite,
+			deferEscalatedFields,
 			proposedFields,
 			proposedCurrent,
 		} as CreatedEntity & {
 			fieldMerge?: FieldMergeInfo;
 			deferWholeWrite: string | null;
+			deferEscalatedFields: string[];
 			proposedFields: Record<string, unknown>;
 			proposedCurrent: Record<string, unknown>;
 		};
@@ -1318,7 +1343,13 @@ export async function updateEntity(
 
 	// Split the deferral inputs off the returned row: they are this function's
 	// own bookkeeping, and every caller downstream reads `entity` as an entity.
-	const { deferWholeWrite, proposedFields, proposedCurrent, ...entity } = result;
+	const {
+		deferWholeWrite,
+		deferEscalatedFields,
+		proposedFields,
+		proposedCurrent,
+		...entity
+	} = result;
 
 	// Post-commit: package any blocked (human-owned or policy-gated) fields as a
 	// single deferred approval. The caller queues it AFTER its own tx + change
@@ -1334,6 +1365,7 @@ export async function updateEntity(
 				fields: proposedFields,
 				current: proposedCurrent,
 				reason: deferWholeWrite,
+				escalatedFields: deferEscalatedFields,
 				attribution: opts?.attribution ?? "agent",
 				automationId: automationIdFromPrincipalId(opts?.principalId ?? null),
 				windowId: opts?.windowId ?? null,

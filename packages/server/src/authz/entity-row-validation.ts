@@ -23,6 +23,7 @@
  */
 
 import { type DbClient, pgBigintArray } from "../db/client";
+import logger from "../utils/logger";
 import type {
 	EntityRowInsert,
 	EntityRowPatch,
@@ -176,22 +177,25 @@ export async function validateEntityRowPatch(params: {
 	ids: number[];
 	patch: EntityRowPatch;
 	/**
-	 * What an `escalate` verdict means for THIS caller.
+	 * The fields a human already approved, taken from the proposal that minted
+	 * their card. Empty/absent (the default) means nothing is approved, so any
+	 * escalate throws and the caller decides whether to route it into an approval
+	 * or fail closed.
 	 *
-	 * `"defer"` (the default) throws, and the caller decides whether to route
-	 * that into an approval or simply fail closed. `"approved"` treats it as an
-	 * allow, and belongs to exactly one caller: the path applying a proposal a
-	 * human already approved.
+	 * Without this, escalation is a dead end: approving re-runs the same rule
+	 * against the same state, it escalates again, and the write throws — so the
+	 * approval a rule asked for could never be honoured.
 	 *
-	 * Without it, escalation is a dead end. Approving the card re-runs the same
-	 * rule against the same committed state, it escalates again, and the write
-	 * throws — so the approval a rule asked for could never be honoured and the
-	 * card could never be cleared. A `deny` still throws in both modes: approval
-	 * cannot make an illegal state legal.
+	 * SCOPED, not a blanket waiver. A mode flag would wave through every escalate
+	 * the rule can raise, including one raised for the first time after the card
+	 * was minted (a redeployed rule, a moved row) — consent to a field nobody
+	 * reviewed. Only fields actually on the card are covered; a new escalation
+	 * needs its own card. A `deny` still throws regardless: approval cannot make
+	 * an illegal state legal.
 	 */
-	onEscalate?: "defer" | "approved";
+	approvedFields?: readonly string[];
 }): Promise<ValidatedEntityRowPatch> {
-	const { tx, ids, patch, onEscalate = "defer" } = params;
+	const { tx, ids, patch, approvedFields } = params;
 	const branded = patch as ValidatedEntityRowPatch;
 	if (ids.length === 0) return branded;
 	// Fast path: nothing a rule could govern, so no read and no evaluation.
@@ -234,14 +238,31 @@ export async function validateEntityRowPatch(params: {
 		for (const [index, verdict] of verdicts.entries()) {
 			const entityId = group.ids[index] ?? null;
 			if (verdict.outcome === "deny") {
+				// The ONLY trace a denial leaves. Without it a rule that rejects a
+				// write in prod is structurally invisible — no event, no audit row —
+				// and the first incident gets debugged blind.
+				logger.info(
+					{
+						module: "entity-rules",
+						entityId,
+						outcome: "deny",
+						reason: verdict.reason,
+					},
+					"entity rule verdict",
+				);
 				throw new EntityRowValidationError(
 					`entity ${entityId}: ${verdict.reason}`,
 					{ outcome: "deny", reason: verdict.reason, fields: [], entityId },
 				);
 			}
 			if (verdict.outcome === "escalate") {
-				// A human already said yes to this exact proposal.
-				if (onEscalate === "approved") continue;
+				// Every escalated field was on the card a human approved.
+				if (
+					verdict.fields.length > 0 &&
+					verdict.fields.every((f) => approvedFields?.includes(f))
+				) {
+					continue;
+				}
 				throw new EntityRowValidationError(
 					`entity ${entityId}: ${verdict.reason} ` +
 						`(approval required for ${verdict.fields.join(", ")})`,
@@ -315,17 +336,12 @@ export async function validateEntityRowInsert(params: {
 	tx: DbClient;
 	row: EntityRowInsert;
 	/**
-	 * What an `escalate` verdict means for THIS caller — same contract as
-	 * {@link validateEntityRowPatch}.
-	 *
-	 * `"approved"` belongs to the path applying a create card a human already
-	 * approved. Without it, approving re-runs the rule against the same proposed
-	 * row, it escalates again, and the create throws — the same unclearable-card
-	 * dead end the update path has.
+	 * Fields a human already approved — same scoped contract as
+	 * {@link validateEntityRowPatch}. Set by the path applying a create card.
 	 */
-	onEscalate?: "defer" | "approved";
+	approvedFields?: readonly string[];
 }): Promise<ValidatedEntityRowInsert> {
-	const { tx, row, onEscalate = "defer" } = params;
+	const { tx, row, approvedFields } = params;
 	const branded = row as ValidatedEntityRowInsert;
 
 	const types = await tx<{ rules_compiled: string | null }>`
@@ -365,8 +381,13 @@ export async function validateEntityRowInsert(params: {
 		});
 	}
 	if (verdict?.outcome === "escalate") {
-		// A human already said yes to this exact row.
-		if (onEscalate === "approved") return branded;
+		// Every escalated field was on the card a human approved.
+		if (
+			verdict.fields.length > 0 &&
+			verdict.fields.every((f) => approvedFields?.includes(f))
+		) {
+			return branded;
+		}
 		// Otherwise stop the create and let the caller route it. A create needs no
 		// held-field bookkeeping — the row does not exist, so an aborted
 		// transaction leaves nothing behind and the whole proposal is the card.

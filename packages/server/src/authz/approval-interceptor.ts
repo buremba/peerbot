@@ -65,6 +65,8 @@ export function buildCreateDeferral(args: {
 	 * instead of a sentence that does not say why this create needs a human.
 	 */
 	reason?: string;
+	/** Fields the rule escalated — what the approver is consenting to. */
+	escalatedFields?: string[];
 	automationId?: number | null;
 	windowId?: number | null;
 }): DeferredMutation {
@@ -80,6 +82,7 @@ export function buildCreateDeferral(args: {
 			proposeEntityCreate(ctx, {
 				entity_data: args.entityData,
 				proposal: args.proposal,
+				escalated_fields: args.escalatedFields,
 				automation_id: args.automationId ?? null,
 				window_id: args.windowId ?? null,
 				attribution: args.attribution,
@@ -106,6 +109,8 @@ export function buildFieldChangeDeferral(args: {
 	 * instead of a field list that does not explain itself.
 	 */
 	reason?: string;
+	/** Fields the rule escalated — what the approver is consenting to. */
+	escalatedFields?: string[];
 	automationId?: number | null;
 	windowId?: number | null;
 }): DeferredMutation {
@@ -121,6 +126,7 @@ export function buildFieldChangeDeferral(args: {
 				entity_id: args.entityId,
 				fields: args.fields,
 				current: args.current,
+				escalated_fields: args.escalatedFields,
 				automation_id: args.automationId ?? null,
 				window_id: args.windowId ?? null,
 				attribution: args.attribution,

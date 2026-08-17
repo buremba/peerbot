@@ -69,8 +69,38 @@ export default (row) => {
 };
 `;
 
+/**
+ * Separates the two verdicts cleanly: no frozen-field logic, so a residual that
+ * only touches `amount` ESCALATES instead of tripping a deny first. That split
+ * is the point — with the frozen loop above, the residual denies before it can
+ * ever escalate, which hides the branch under test.
+ */
+const ESCALATE_RESIDUAL_RULE = `
+export default (row) => {
+  if (row.op === "create") return;
+  if (row.changed("status") && row.committed.status === "issued" && row.next.status === "draft") {
+    row.deny("cannot move issued -> draft");
+  }
+  if (row.next.amount > 50000) {
+    row.escalate(["amount"], "an invoice over 50k needs sign-off");
+  }
+};
+`;
+
+/**
+ * Stands in for the rule being redeployed between propose and approve: it
+ * escalates a field the approver never saw on their card.
+ */
+const ESCALATE_VENDOR_RULE = `
+export default (row) => {
+  if (row.op === "update") row.escalate(["vendor"], "vendor needs sign-off");
+};
+`;
+
 const TEST_ENV = {} as Env;
 let invoiceCompiled: string;
+let escalateResidualCompiled: string;
+let escalateVendorCompiled: string;
 
 function ctxFor(
 	organizationId: string,
@@ -110,7 +140,7 @@ async function runCount(organizationId: string): Promise<number> {
 	return Number(rows[0].n);
 }
 
-async function seed() {
+async function seed(rules?: string) {
 	const sql = getTestDb();
 	const org = await createTestOrganization({ name: "Approval Hold" });
 	const user = await createTestUser();
@@ -120,7 +150,7 @@ async function seed() {
     INSERT INTO entity_types (organization_id, slug, name, metadata_schema,
                               rules_compiled, created_at, updated_at)
     VALUES (${org.id}, 'invoice', 'invoice', ${sql.json({ type: "object" })},
-            ${invoiceCompiled}, current_timestamp, current_timestamp)
+            ${rules ?? invoiceCompiled}, current_timestamp, current_timestamp)
   `;
 	const invoice = await createEntity({
 		entity_type: "invoice",
@@ -136,7 +166,12 @@ describe("approval hold vs a frozen-state rule", () => {
 	beforeAll(async () => {
 		// `queue()` builds an approval URL, which needs the workspace provider.
 		await initWorkspaceProvider();
-		invoiceCompiled = await compileEntityRule(INVOICE_RULE);
+		[invoiceCompiled, escalateResidualCompiled, escalateVendorCompiled] =
+			await Promise.all([
+				compileEntityRule(INVOICE_RULE),
+				compileEntityRule(ESCALATE_RESIDUAL_RULE),
+				compileEntityRule(ESCALATE_VENDOR_RULE),
+			]);
 	}, 60_000);
 
 	beforeEach(async () => {
@@ -244,6 +279,23 @@ describe("approval hold vs a frozen-state rule", () => {
 		await result.deferred?.queue(agentCtx, TEST_ENV);
 		expect(await runCount(org.id)).toBe(runsBefore + 1);
 
+		// The card must RECORD what the rule escalated. Every apply-path test here
+		// hand-builds its proposal, so without this assertion a broken
+		// updateEntity -> deferral thread would go unnoticed: the tests would be
+		// approving fields they supplied themselves.
+		const sql = getTestDb();
+		const [queued] = await sql<{ action_input: unknown }[]>`
+      SELECT action_input FROM runs
+      WHERE organization_id = ${org.id}
+      ORDER BY id DESC LIMIT 1
+    `;
+		const input = (
+			typeof queued.action_input === "string"
+				? JSON.parse(queued.action_input)
+				: queued.action_input
+		) as { escalated_fields?: string[] };
+		expect(input.escalated_fields).toEqual(["amount"]);
+
 		// Queueing the card is not the point — APPLYING it is. Approving re-runs
 		// the same rule against the same committed state, so without an
 		// approved-write signal the rule escalates again and throws, and the card
@@ -254,6 +306,7 @@ describe("approval hold vs a frozen-state rule", () => {
 				entity_id: invoice.id,
 				fields: result.deferred?.display.fields ?? {},
 				current: result.deferred?.display.current ?? {},
+				escalated_fields: ["amount"],
 				reason: "approved in test",
 			} as Parameters<typeof applyEntityFieldChangeProposal>[0],
 			user.id,
@@ -288,6 +341,7 @@ describe("approval hold vs a frozen-state rule", () => {
 				entity_id: invoice.id,
 				fields: result.deferred?.display.fields ?? {},
 				current: result.deferred?.display.current ?? {},
+				escalated_fields: ["amount"],
 				reason: "approved in test",
 			} as Parameters<typeof applyEntityFieldChangeProposal>[0],
 			user.id,
@@ -332,6 +386,78 @@ describe("approval hold vs a frozen-state rule", () => {
 		const after = await readMetadata(invoice.id);
 		expect(after.status).toBe("issued");
 		expect(after.einvoice_uuid ?? null).toBeNull();
+	}, 60_000);
+
+	it("DENIES when the residual ESCALATES but the full proposal is illegal", async () => {
+		const { org, user, agent, invoice } = await seed(escalateResidualCompiled);
+
+		// A HUMAN moves draft -> issued, claiming ownership of `status`.
+		await updateEntity(
+			invoice.id,
+			{ metadata: { status: "issued" } },
+			TEST_ENV,
+			ctxFor(org.id, { userId: user.id }),
+		);
+
+		// `status` is held, so the residual is `{ amount: 90000 }` — which the rule
+		// ESCALATES (over 50k) rather than denying. The full proposal, though, also
+		// moves `issued -> draft`, which the rule DENIES.
+		//
+		// Deferring on the escalate would mint a card that can never be cleared:
+		// approving replays the full proposal with the granted fields, which
+		// skips the escalate and then hits the deny. The deny branch already
+		// guarded against this; the escalate branch did not.
+		await expect(
+			updateEntity(
+				invoice.id,
+				{ metadata: { status: "draft", amount: 90000 } },
+				TEST_ENV,
+				ctxFor(org.id, { agentId: agent.agentId }),
+			),
+		).rejects.toThrow(/cannot move issued -> draft/);
+
+		const after = await readMetadata(invoice.id);
+		expect(after.status).toBe("issued");
+		expect(after.amount ?? null).toBeNull();
+	}, 60_000);
+
+	it("does NOT wave through an escalation the approver never saw", async () => {
+		const sql = getTestDb();
+		const { org, user, agent, invoice } = await seed();
+		const agentCtx = ctxFor(org.id, { agentId: agent.agentId });
+
+		// The card is minted for `amount` — that is what the human reviews.
+		const result = await updateEntity(
+			invoice.id,
+			{ metadata: { amount: 90000 } },
+			TEST_ENV,
+			agentCtx,
+		);
+		expect(result.deferred?.display.fields).toEqual({ amount: 90000 });
+
+		// The rule is redeployed before anyone approves. It now escalates a
+		// DIFFERENT field, which no card ever showed to a human.
+		await sql`
+      UPDATE entity_types SET rules_compiled = ${escalateVendorCompiled}
+      WHERE organization_id = ${org.id} AND slug = 'invoice'
+    `;
+
+		// Approving must not bless it. An approval is consent to what was on the
+		// card, not a blanket waiver of every escalation the rule can raise.
+		await expect(
+			applyEntityFieldChangeProposal(
+				{
+					entity_id: invoice.id,
+					fields: result.deferred?.display.fields ?? {},
+					current: result.deferred?.display.current ?? {},
+					escalated_fields: ["amount"],
+					reason: "approved in test",
+				} as Parameters<typeof applyEntityFieldChangeProposal>[0],
+				user.id,
+			),
+		).rejects.toThrow(/vendor/);
+
+		expect((await readMetadata(invoice.id)).amount ?? null).toBeNull();
 	}, 60_000);
 
 	it("still DENIES outright when nothing was held and the caller's own proposal is illegal", async () => {

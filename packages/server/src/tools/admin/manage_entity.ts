@@ -403,6 +403,9 @@ async function handleCreate(
 			// The rule's own words, not "an agent proposes creating x" — the
 			// approver needs to know WHY this row needs a human.
 			reason: err.verdict.reason,
+			// Exactly what the approver consents to; a later, different escalation
+			// still needs its own card.
+			escalatedFields: err.verdict.fields,
 			automationId:
 				ctx.actingAutomationId ?? args.automation_source?.automation_id ?? null,
 			windowId: ctx.actingWindowId ?? args.automation_source?.window_id ?? null,

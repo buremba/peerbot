@@ -274,6 +274,7 @@ describe("creates reach the validation seam", () => {
 					metadata: { status: "draft", amount: 90000 },
 				},
 				proposal: held.approval_proposal ?? {},
+				escalated_fields: ["amount"],
 			} as Parameters<typeof applyEntityChangeProposal>[0],
 			{ ...authCtx, userId: user.id } as unknown as ToolContext,
 			TOOL_ENV,

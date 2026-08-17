@@ -202,6 +202,8 @@ export function deferEntityFieldChange(args: {
 	attribution: MutationAttribution;
 	/** Replaces the generated reason line — see `buildFieldChangeDeferral`. */
 	reason?: string;
+	/** Fields the rule escalated — what the approver is consenting to. */
+	escalatedFields?: string[];
 	automationId?: number | null;
 	/** Groups this proposal's run into a per-window batch approval card. */
 	windowId?: number | null;
@@ -216,6 +218,8 @@ export function deferEntityCreate(args: {
 	attribution: MutationAttribution;
 	/** Replaces the generated reason line — see `buildCreateDeferral`. */
 	reason?: string;
+	/** Fields the rule escalated — what the approver is consenting to. */
+	escalatedFields?: string[];
 	automationId?: number | null;
 	/** Groups this proposal's run into a per-window batch approval card. */
 	windowId?: number | null;

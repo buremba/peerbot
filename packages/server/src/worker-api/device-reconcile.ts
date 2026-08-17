@@ -410,7 +410,7 @@ async function ensureDeviceConnectorWired(
       // the only creation path that previously skipped this, so a device swap
       // silently regressed action modes to descriptor fallbacks. Feed-scoped
       // default keys are dropped here — auto-wired feeds are minted with
-      // `config = NULL` (unchanged from prior behavior); the fast-path gate
+      // `config = NULL` (unchanged from the pre-seed path); the fast-path gate
       // accounts for this so a wholly feed-scoped default does not re-wire
       // forever.
       const defaultConnectionConfig =

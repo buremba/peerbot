@@ -104,7 +104,6 @@ Record the result when it lands.
 ## Session efficiency
 
 - Exact local tests remain the fastest red-green loop; Depot owns CPU-heavy breadth. Never start a local full gate alongside a remote one.
-- `make dev-remote` syncs committed code to private Daytona compute by default, resumes or starts Lobu, and prints a signed preview URL. Commit first. Run `make dev-remote-pause` when finished, and keep it private — no hooks, public preview, or custom proxy.
 - `gh pr checks <n> --required` plus `gh pr view <n> --json number,title,isDraft,mergeStateStatus,reviewDecision` is the compact status read; avoid the much larger `statusCheckRollup` payload.
 - Delegated CLIs (OpenCode, Claude CLI) get polled at most once per 4.5 minutes unless they finish, request input or approval, or the user asks for an immediate update. Read only output since the last cursor. Ask them to persist detailed evidence to files and return compact status, counts, failures, and exit codes; never replay a full session or stream verbose diffs into the supervising context.
 - Screenshots are the single largest context-bloat source. Prefer `get_page_text` / `read_page` / `javascript_tool`, and screenshot only when visual layout itself is under test.

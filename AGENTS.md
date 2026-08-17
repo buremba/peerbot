@@ -51,4 +51,3 @@
 - Never poll in the foreground — run long waits in the background and act on the notification. Poll delegated CLIs at most once every 4.5 minutes unless they finish or request input.
 - Prefer DOM reads over screenshots, the top context-bloat source. The paired Owletto extension drives the user's real logged-in browser; CDP is not required (`docs/BROWSER_TESTING.md`).
 - Slack link pasted → run `scripts/slack-thread-viewer.js "<link>"` first.
-- `make dev-remote` runs the live app on remote compute (commit first; `make dev-remote-pause` when finished).

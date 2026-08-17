@@ -41,7 +41,6 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.2.2",
-    "@daytona/sdk": "0.203.0",
     "@types/bun": "1.2.11",
     "@types/node": "20.19.9",
     "husky": "^9.1.7",

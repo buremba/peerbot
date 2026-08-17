@@ -19,6 +19,7 @@
  * request time; `events` is not, and is never touched on this path.
  */
 
+import { validateEntityRowPatch } from "../authz/entity-row-validation";
 import { type DbClient, getDb } from "../db/client.js";
 import { EVAL_CASE_ENTITY_TYPE_SLUG } from "../tools/constants.js";
 import {
@@ -144,9 +145,13 @@ async function stampSuiteTrials(
 		await patchEntityRows({
 			tx,
 			ids: [caseEntityId],
-			patch: {
-				metadata: { ...(rows[0].metadata ?? {}), suite_trials: trials },
-			},
+			patch: await validateEntityRowPatch({
+				tx,
+				ids: [caseEntityId],
+				patch: {
+					metadata: { ...(rows[0].metadata ?? {}), suite_trials: trials },
+				},
+			}),
 		});
 	});
 }

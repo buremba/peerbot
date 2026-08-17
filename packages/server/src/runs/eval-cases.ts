@@ -25,6 +25,7 @@
  * promoting the same run concurrently resolve to one case rather than two.
  */
 
+import { validateEntityRowPatch } from "../authz/entity-row-validation";
 import { type DbClient, getDb } from "../db/client.js";
 import { EVAL_CASE_ENTITY_TYPE_SLUG } from "../tools/constants.js";
 import {
@@ -373,9 +374,13 @@ export async function setEvalCaseJudgeModel(
 		await patchEntityRows({
 			tx,
 			ids: [entityId],
-			patch: {
-				metadata: { ...(rows[0].metadata ?? {}), judge_model: judgeModel },
-			},
+			patch: await validateEntityRowPatch({
+				tx,
+				ids: [entityId],
+				patch: {
+					metadata: { ...(rows[0].metadata ?? {}), judge_model: judgeModel },
+				},
+			}),
 		});
 	});
 }

@@ -6,6 +6,7 @@
  */
 
 
+import { validateEntityRowPatch } from "../../authz/entity-row-validation";
 import {
   ManageViewTemplatesResultSchema,
   ManageViewTemplatesSchema,
@@ -109,7 +110,11 @@ async function setCurrentDefaultVersion(
     await patchEntityRows({
       tx,
       ids: [rowId],
-      patch: { currentViewTemplateVersionId: versionId },
+      patch: await validateEntityRowPatch({
+        tx,
+        ids: [rowId],
+        patch: { currentViewTemplateVersionId: versionId },
+      }),
     });
     return;
   }

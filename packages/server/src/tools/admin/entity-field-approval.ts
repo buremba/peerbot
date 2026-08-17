@@ -7,6 +7,7 @@
  * lives in manage_operations next to `supersedeActionEvent`.
  */
 
+import { validateEntityRowPatch } from "../../authz/entity-row-validation";
 import { createHash } from "node:crypto";
 import {
 	ApprovalAttribution,
@@ -1158,18 +1159,25 @@ export async function applyEntityFieldChangeProposal(
 			if (Object.keys(apply).length > 0) {
 				const nextName =
 					"$name" in apply ? String(apply.$name ?? "") || null : null;
+				// Applying an approval is a WRITE, so it revalidates. A human blessing
+				// a field cannot bless an illegal state: without this, a rule could be
+				// satisfied by escalating, and the approval would then commit unchecked.
 				await patchEntityRows({
 					tx,
 					ids: [proposal.entity_id],
-					patch: {
-						...(nextName !== null ? { name: nextName } : {}),
-						...("$parent_id" in apply
-							? { parentId: apply.$parent_id as number | null }
-							: {}),
-						...("$content" in apply
-							? { content: apply.$content as string | null }
-							: {}),
-					},
+					patch: await validateEntityRowPatch({
+						tx,
+						ids: [proposal.entity_id],
+						patch: {
+							...(nextName !== null ? { name: nextName } : {}),
+							...("$parent_id" in apply
+								? { parentId: apply.$parent_id as number | null }
+								: {}),
+							...("$content" in apply
+								? { content: apply.$content as string | null }
+								: {}),
+						},
+					}),
 				});
 			}
 		}

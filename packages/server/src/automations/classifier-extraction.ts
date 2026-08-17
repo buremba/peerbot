@@ -8,6 +8,7 @@
  * 4. LLM-based content classification from automations (via processExtractedClassifications)
  */
 
+import { validateEntityRowPatch } from "../authz/entity-row-validation";
 import {
 	type DbClient,
 	parsePgTextArray,
@@ -758,7 +759,11 @@ export async function enableClassifiersOnEntity(
 	await patchEntityRows({
 		tx,
 		ids: [entityId],
-		patch: { enabledClassifiers: combined },
+		patch: await validateEntityRowPatch({
+			tx,
+			ids: [entityId],
+			patch: { enabledClassifiers: combined },
+		}),
 	});
 
 	logger.info(

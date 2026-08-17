@@ -31,6 +31,7 @@
  * data-shaped problem (the CALLER's fetch layer owns fail-closed-on-error).
  */
 
+import { validateEntityRowPatch } from "./entity-row-validation";
 import { createLogger } from '@lobu/core';
 import {
   ACL_RESOURCE_TYPE_SLUG,
@@ -536,7 +537,15 @@ export async function buildAccessGraph(params: {
         const id = Number(row.id);
         const name = resourceNames.get(id);
         if (name !== undefined && row.name !== name) {
-          await patchEntityRows({ tx, ids: [id], patch: { name } });
+          await patchEntityRows({
+            tx,
+            ids: [id],
+            patch: await validateEntityRowPatch({
+              tx,
+              ids: [id],
+              patch: { name },
+            }),
+          });
         }
       }
     });

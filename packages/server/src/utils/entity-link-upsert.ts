@@ -16,6 +16,7 @@
  * recovers the relationship via entity_identities.
  */
 
+import { validateEntityRowPatch } from "../authz/entity-row-validation";
 import { randomBytes } from 'node:crypto';
 import {
   ACL_RESOURCE_TYPE_SLUG,
@@ -287,12 +288,16 @@ async function ensureAliases(
   await patchEntityRows({
     tx: sql,
     ids: [params.entityId],
-    patch: {
-      metadata: {
-        ...current,
-        aliases: [...new Set([...aliases, ...params.identifiers])].sort(),
+    patch: await validateEntityRowPatch({
+      tx: sql,
+      ids: [params.entityId],
+      patch: {
+        metadata: {
+          ...current,
+          aliases: [...new Set([...aliases, ...params.identifiers])].sort(),
+        },
       },
-    },
+    }),
   });
 }
 
@@ -641,7 +646,11 @@ async function applyTraits(
   await patchEntityRows({
     tx: sql,
     ids: [params.entityId],
-    patch: { metadata: next },
+    patch: await validateEntityRowPatch({
+      tx: sql,
+      ids: [params.entityId],
+      patch: { metadata: next },
+    }),
   });
 }
 

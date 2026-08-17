@@ -8,6 +8,11 @@
 
 import { slugify } from "@lobu/core";
 import { feedLinkedToBusinessEntitySql } from "../authz/channel-about";
+import type { ValidatedEntityRowPatch } from "../authz/entity-row-validation";
+import {
+	unvalidatedEntityRowPatch,
+	validateEntityRowPatch,
+} from "../authz/entity-row-validation";
 import {
 	deferEntityFieldChange,
 	type DeferredMutation,
@@ -479,7 +484,14 @@ export function tryInsertEntityRow(params: {
 export async function patchEntityRows(params: {
 	tx: DbClient;
 	ids: number[];
-	patch: EntityRowPatch;
+	/**
+	 * Only a validated patch may be written. Mint one with
+	 * `validateEntityRowPatch` (state rules run against the effective patch), or
+	 * `unvalidatedEntityRowPatch` for platform bookkeeping outside tenant rules.
+	 * The brand has no public constructor, so a caller that skips validation
+	 * fails to compile rather than silently bypassing it.
+	 */
+	patch: ValidatedEntityRowPatch;
 }): Promise<number[]> {
 	if (params.ids.length === 0) return [];
 	const { tx, patch } = params;
@@ -628,10 +640,14 @@ export async function mergeEntityFields(params: {
 		await patchEntityRows({
 			tx,
 			ids: [entityId],
-			patch: {
-				metadata: merge.nextMetadata,
-				fieldControls: merge.nextControls,
-			},
+			patch: await validateEntityRowPatch({
+				tx,
+				ids: [entityId],
+				patch: {
+					metadata: merge.nextMetadata,
+					fieldControls: merge.nextControls,
+				},
+			}),
 		});
 	}
 	return merge;
@@ -1096,7 +1112,14 @@ export async function updateEntity(
 		if (hasEmbedding && (applyContent || !hasContent)) {
 			rowPatch.embedding = data.embedding ?? null;
 		}
-		await patchEntityRows({ tx, ids: [entityId], patch: rowPatch });
+		// Validate the EFFECTIVE patch, not the caller's proposal: approval-held
+		// fields were stripped above and the ownership merge rewrote the rest, so
+		// this is the first point where what-will-commit is known.
+		await patchEntityRows({
+			tx,
+			ids: [entityId],
+			patch: await validateEntityRowPatch({ tx, ids: [entityId], patch: rowPatch }),
+		});
 
     const sel = await tx<CreatedEntity>`
       SELECT e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at
@@ -1520,7 +1543,20 @@ export async function deleteEntity(
   }
   // Soft delete: stamp deleted_at. Stays a single pool-level statement, so the
   // semantic layer's existing transaction boundary is unchanged.
-  await patchEntityRows({ tx: sql, ids: [entityId], patch: { softDelete: true } });
+  // KNOWN GAP: state rules do not cover soft-delete. Validating here would mean
+  // reading and writing on the same POOL handle (this path is deliberately a
+  // single pool-level statement, not a transaction), so the check could be
+  // overtaken between read and write. A racy check that looks like enforcement
+  // is worse than an honest exemption; closing this needs a transaction
+  // boundary, which is a separate change.
+  await patchEntityRows({
+    tx: sql,
+    ids: [entityId],
+    patch: unvalidatedEntityRowPatch({
+      patch: { softDelete: true },
+      reason: 'soft-delete runs outside a transaction; see KNOWN GAP above',
+    }),
+  });
 
   return {
     message: 'Entity soft-deleted successfully',

@@ -32,6 +32,7 @@
  * than aggregating history.
  */
 
+import { validateEntityRowPatch } from "../authz/entity-row-validation";
 import { getErrorMessage } from "@lobu/core";
 import { type DbClient, getDb, pgTextArray } from "../db/client.js";
 import {
@@ -613,7 +614,11 @@ async function pushCaseScore(
 	await patchEntityRows({
 		tx,
 		ids: [caseEntityId],
-		patch: { metadata: { ...metadata, recent_scores: next } },
+		patch: await validateEntityRowPatch({
+			tx,
+			ids: [caseEntityId],
+			patch: { metadata: { ...metadata, recent_scores: next } },
+		}),
 	});
 }
 

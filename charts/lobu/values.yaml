@@ -12,8 +12,8 @@ image:
   # Tag defaults to chart appVersion
   tag: "latest"
 
-imagePullSecrets:
-  - name: ghcr-credentials
+# Set pull secrets when using a private registry or mirror.
+imagePullSecrets: []
 
 # App deployment settings (API backend)
 app:

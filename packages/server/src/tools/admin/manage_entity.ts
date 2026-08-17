@@ -70,6 +70,7 @@ import {
 } from "../../utils/insert-event";
 import { resolveMemberSchemaFieldsFromSchema } from "../../utils/member-entity-type";
 import {
+	ACL_MANAGED_TYPE_SQL,
 	assertNotAclManagedEdge,
 	canonicalizeSymmetricEdge,
 	checkDuplicateEdge,
@@ -1471,6 +1472,7 @@ const RELATIONSHIP_SELECT = `
   rt.slug as relationship_type_slug,
   rt.name as relationship_type_name,
   rt.is_symmetric,
+  ${ACL_MANAGED_TYPE_SQL} as acl_managed,
   fe.name as from_entity_name,
   fet.slug as from_entity_type,
   te.name as to_entity_name,

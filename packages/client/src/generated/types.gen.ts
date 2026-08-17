@@ -1202,6 +1202,7 @@ export type ManageEntityResponses = {
           relationship_type_slug: string;
           relationship_type_name: string;
           is_symmetric: boolean;
+          acl_managed: boolean;
           from_entity_name?: string;
           from_entity_type?: string;
           to_entity_name?: string;
@@ -1229,6 +1230,7 @@ export type ManageEntityResponses = {
           relationship_type_slug: string;
           relationship_type_name: string;
           is_symmetric: boolean;
+          acl_managed: boolean;
           from_entity_name?: string;
           from_entity_type?: string;
           to_entity_name?: string;
@@ -1261,6 +1263,7 @@ export type ManageEntityResponses = {
           relationship_type_slug: string;
           relationship_type_name: string;
           is_symmetric: boolean;
+          acl_managed: boolean;
           from_entity_name?: string;
           from_entity_type?: string;
           to_entity_name?: string;

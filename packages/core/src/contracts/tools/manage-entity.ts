@@ -327,6 +327,20 @@ export const RelationshipRowSchema = Type.Object({
   relationship_type_slug: Type.String(),
   relationship_type_name: Type.String(),
   is_symmetric: Type.Boolean(),
+  // Server-derived: this edge cannot be created or removed through this
+  // surface — `unlink`/`update_link`/`link` all refuse it via
+  // assertNotAclManagedEdge, because ACL edges are what the access gates read.
+  // A client without this renders an unlink control that is guaranteed to 403.
+  //
+  // A derived flag rather than the raw `purpose`: the edge guard tests
+  // purpose OR slug, so an unclassified `member_of` (declared by a config
+  // before its first ACL sync) reads `purpose: null` and is still refused.
+  // Only the server can evaluate that pair, so it ships the answer.
+  //
+  // Required, not optional: an absent flag reads as writable, which is the
+  // dead affordance this exists to remove. Every producer projects it from
+  // the one shared RELATIONSHIP_SELECT, so no path needs to omit it.
+  acl_managed: Type.Boolean(),
   from_entity_name: Type.Optional(Type.String()),
   from_entity_type: Type.Optional(Type.String()),
   to_entity_name: Type.Optional(Type.String()),

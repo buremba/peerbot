@@ -429,4 +429,83 @@ describe("authorization-bearing relationship types are not caller-writable", () 
 			),
 		).rejects.toThrow(/authorization-bearing/);
 	});
+
+	it("reports acl_managed on LIST_LINKS so a client can predict the unlink refusal", async () => {
+		await seedAclEdge();
+
+		const listed = (await manageEntity(
+			{ action: "list_links", entity_id: person },
+			env,
+			ctx(orgId, userId),
+		)) as { relationships: Array<Record<string, unknown>> };
+
+		const edge = listed.relationships.find(
+			(r) => r.relationship_type_slug === "member_of",
+		);
+		// toHaveProperty, not a truthiness check: an absent key is falsy too, so
+		// the loose form would keep passing if a handler stopped projecting the
+		// column — which is exactly the regression that revives the dead button.
+		expect(edge).toHaveProperty("acl_managed", true);
+	});
+
+	it("reports acl_managed BEFORE classification — purpose alone would say writable", async () => {
+		const edgeId = await seedAclEdge();
+		const sql = getTestDb();
+		await sql`
+      UPDATE entity_relationship_types SET purpose = NULL WHERE id = ${typeId}
+    `;
+
+		const listed = (await manageEntity(
+			{ action: "list_links", entity_id: person },
+			env,
+			ctx(orgId, userId),
+		)) as { relationships: Array<Record<string, unknown>> };
+
+		const edge = listed.relationships.find((r) => Number(r.id) === edgeId);
+		// The slug half of the guard: assertNotAclManagedEdge refuses on slug OR
+		// purpose, so unlink still 403s here (the test above covers the same
+		// window on the link side). The read path has to agree, or the client is
+		// told it may remove an edge the server will refuse.
+		expect(edge).toHaveProperty("acl_managed", true);
+	});
+
+	it("reports acl_managed false for ordinary domain vocabulary", async () => {
+		await manageEntitySchema(
+			{
+				schema_type: "relationship_type",
+				action: "create",
+				slug: "billed_to",
+				name: "Billed to",
+			},
+			env,
+			ctx(orgId, userId),
+		);
+		const linked = (await manageEntity(
+			{
+				action: "link",
+				from_entity_id: person,
+				to_entity_id: channel,
+				relationship_type_slug: "billed_to",
+			},
+			env,
+			ctx(orgId, userId),
+		)) as { relationship: Record<string, unknown> };
+		// `link` returns the same row shape, so cover that producer here too: a
+		// client switching on the flag must not see it appear and disappear
+		// across actions.
+		expect(linked.relationship).toHaveProperty("acl_managed", false);
+
+		const listed = (await manageEntity(
+			{ action: "list_links", entity_id: person },
+			env,
+			ctx(orgId, userId),
+		)) as { relationships: Array<Record<string, unknown>> };
+
+		const edge = listed.relationships.find(
+			(r) => r.relationship_type_slug === "billed_to",
+		);
+		// The other direction: a predicate that swept everything in would hide the
+		// unlink control on every ordinary edge in the product.
+		expect(edge).toHaveProperty("acl_managed", false);
+	});
 });

@@ -1254,6 +1254,13 @@ function createSessionTransport(
 ): { transport: WebStandardStreamableHTTPServerTransport; server: Server } {
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator,
+    // Keep request/response traffic in-band. Inspector and other clients keep
+    // one standalone GET SSE stream open for server notifications; finite
+    // POST-SSE responses can strand a tools/call until the client timeout when
+    // that stream reconnects through a proxy and hits the SDK's one-GET-stream
+    // session guard. JSON responses avoid that split delivery path while the
+    // standalone GET stream remains available for notifications.
+    enableJsonResponse: true,
     onsessioninitialized: (id) => {
       // The per-session authCtx object is shared by every request on this
       // session, so stamping once here threads the session id into each

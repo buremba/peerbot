@@ -7,6 +7,7 @@ import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
 import { clearInMemoryMcpSessionsForTests } from '../../../mcp-handler';
 import { buildClientSDK } from '../../../sandbox/client-sdk';
+import { LOBU_INTERACTION_RESOURCE_URI } from '../../../tools/mcp_app';
 import type { ToolContext } from '../../../tools/registry';
 import { insertEvent } from '../../../utils/insert-event';
 import { initWorkspaceProvider } from '../../../workspace';
@@ -273,25 +274,23 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     }
   });
 
-  it('serves every external-mapped alias from the external template', async () => {
+  it('keeps v3-v6 and every v30-and-later retired URI on the external template', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
-    for (const uri of [
-      'ui://lobu/interaction/v3.html',
-      'ui://lobu/interaction/v4.html',
-      'ui://lobu/interaction/v5.html',
-      'ui://lobu/interaction/v6.html',
-      'ui://lobu/interaction/v30.html',
-      'ui://lobu/interaction/v31.html',
-      'ui://lobu/interaction/v32.html',
-      'ui://lobu/interaction/v33.html',
-      'ui://lobu/interaction/v34.html',
-      'ui://lobu/interaction/v35.html',
-      'ui://lobu/interaction/v36.html',
-      'ui://lobu/interaction/v37.html',
-      'ui://lobu/interaction/v38.html',
-      'ui://lobu/interaction/v39.html',
-      'ui://lobu/interaction/v40.html',
-    ]) {
+    // Derive the retired range from the live constant so a bump that forgets
+    // to alias the URI it replaced fails here instead of in a live chat.
+    const currentVersion = Number(
+      LOBU_INTERACTION_RESOURCE_URI.match(/\/v(\d+)\.html$/)?.[1]
+    );
+    expect(currentVersion).toBeGreaterThan(30);
+    const externalAliases = [
+      3,
+      4,
+      5,
+      6,
+      ...Array.from({ length: currentVersion - 30 }, (_, index) => 30 + index),
+    ].map((version) => `ui://lobu/interaction/v${version}.html`);
+
+    for (const uri of externalAliases) {
       const response = await post(`/mcp/${org.slug}`, {
         body: {
           jsonrpc: '2.0',
@@ -743,6 +742,58 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       expect(receipt).not.toHaveProperty(key);
     }
     expect(JSON.stringify(receipt)).not.toContain('nested-sdk-save-body-must-stay-headless');
+  });
+
+  it('returns tools/call as JSON when an Inspector-style client accepts JSON and SSE', async () => {
+    const accept = 'application/json, text/event-stream';
+    const sessionId = await initSession(`/mcp/${org.slug}`, {
+      headers: { Accept: accept },
+    });
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'inspector-get-approval',
+        method: 'tools/call',
+        params: {
+          name: 'get_approval',
+          arguments: { run_id: 999_999_999 },
+        },
+      },
+      headers: {
+        Accept: accept,
+        'mcp-session-id': sessionId,
+        'mcp-protocol-version': MCP_PROTOCOL_VERSION,
+      },
+      token,
+    });
+
+    // Inspector keeps a standalone GET SSE channel for server notifications.
+    // Ordinary POST request/response traffic must complete in-band as JSON;
+    // a finite POST-SSE response leaves Inspector waiting out its request
+    // timeout while a reconnecting GET stream collides with the SDK's
+    // one-standalone-stream session guard (handleGetRequest → 409).
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('application/json');
+    const body = await response.json();
+    expect(body.id).toBe('inspector-get-approval');
+    expect(body.result?.isError).toBe(true);
+    expect(body.result?._meta?.['lobu/member-role']).toBe('owner');
+  });
+
+  it('keeps the standalone GET SSE channel available for server notifications', async () => {
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await get(`/mcp/${org.slug}`, {
+      headers: {
+        Accept: 'text/event-stream',
+        'mcp-session-id': sessionId,
+        'mcp-protocol-version': MCP_PROTOCOL_VERSION,
+      },
+      token,
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    await response.body?.cancel();
   });
 
   it('returns the viewer member role on every app-rendered result and nowhere else', async () => {

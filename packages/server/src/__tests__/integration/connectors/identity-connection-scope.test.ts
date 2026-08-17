@@ -185,6 +185,37 @@ describe('connector identity scope', () => {
     expect(emails[0].scope_connection_id).toBeNull();
   });
 
+  it('is idempotent when the same connection re-syncs a scoped identifier', async () => {
+    const { org, tenantA } = await seed();
+    const sql = getTestDb();
+
+    // The ON CONFLICT DO UPDATE path with a NON-NULL scope_connection_id — the
+    // conflict target is an expression index, so a re-sync is where a
+    // mismatched inference would surface as a duplicate row rather than an
+    // error.
+    for (let i = 0; i < 2; i++) {
+      await applyEventAttributions({
+        connectorKey,
+        feedKey,
+        orgId: org.id,
+        connectionId: tenantA.id,
+        items: [customerEvent('CARI-042', 'Repeat Customer')],
+      });
+    }
+
+    expect(await memberCount(org.id)).toBe(1);
+    const rows = await sql<{ scope_connection_id: string | null }[]>`
+      SELECT scope_connection_id
+      FROM entity_identities
+      WHERE organization_id = ${org.id}
+        AND namespace = 'erp_customer'
+        AND identifier = 'CARI-042'
+        AND deleted_at IS NULL
+    `;
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0].scope_connection_id)).toBe(tenantA.id);
+  });
+
   it('falls back to org scope when there is no ingesting connection', async () => {
     const { org } = await seed();
     const sql = getTestDb();

@@ -148,7 +148,9 @@ export async function ensureChannelResourceEntity(opts: {
 		opts.teamId,
 		opts.channelId,
 	);
-	await ensureResourceEntityType(opts.organizationId);
+	// `sql`, never `getDb()` — the caller may have handed us its transaction, and
+	// a pooled query inside one starves the pool (#2818).
+	await ensureResourceEntityType(sql, opts.organizationId);
 
 	const resolved = await resolveEventAttributionsForItems(
 		{

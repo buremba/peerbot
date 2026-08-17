@@ -9,7 +9,7 @@ import {
 	GITHUB_IDENTITY,
 	normalizeGithubLogin,
 } from "@lobu/connectors/github-identity";
-import type { DbClient } from "../../../db/client.js";
+import { type DbClient, getDb } from "../../../db/client.js";
 import {
 	loadAttributionRuleByType,
 	resolveEventAttributionsForItems,
@@ -117,7 +117,10 @@ export async function resolveGithubWebhookActor(params: {
 	// The person entity-link rule is read from the connector definition (same
 	// source the poll path uses) — not mirrored here. Absent def/rule → no
 	// attribution (best-effort).
-	const rule = await loadAttributionRuleByType({
+	// Raw-webhook winners pass their open transaction here; a pooled read would
+	// hold that transaction's connection while waiting for a second one (#2818).
+	const sql = params.sql ?? getDb();
+	const rule = await loadAttributionRuleByType(sql, {
 		connectorKey: "github",
 		orgId: params.organizationId,
 		entityType: "person",
@@ -150,7 +153,7 @@ export async function resolveGithubWebhookActor(params: {
 			items: [item],
 			rules: { [kind]: [rule] },
 		},
-		params.sql,
+		sql,
 	);
 
 	const entityIds = resolved.get(0) ?? [];

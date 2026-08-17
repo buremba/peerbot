@@ -375,7 +375,7 @@ export async function buildAccessGraph(params: {
     return EMPTY_RESULT;
   }
 
-  await ensureResourceEntityType(organizationId);
+  await ensureResourceEntityType(getDb(), organizationId);
   await ensurePersonEntityType(organizationId);
 
   // ACL state uses a runtime connection id, while identity provenance references

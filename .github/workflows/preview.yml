@@ -79,7 +79,8 @@ jobs:
             {"op": "add", "path": "/spec/template/spec/containers/0/env", "value": [
               {"name": "PORT", "value": "8787"},
               {"name": "DATABASE_URL", "value": "postgresql://app:${{ secrets.DB_PASSWORD }}@lobu-db-prod-pooler.summaries-prod.svc.cluster.local:5432/app?sslmode=require"},
-              {"name": "NODE_ENV", "value": "development"}
+              {"name": "NODE_ENV", "value": "development"},
+              {"name": "LOBU_RUN_OWNS_DB", "value": "1"}
             ]},
             {"op": "add", "path": "/spec/template/spec/containers/0/readinessProbe", "value": {
               "httpGet": {"path": "/api/health", "port": 8787},

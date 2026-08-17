@@ -606,11 +606,11 @@ export interface Automation {
    * Automation until the next `lobu apply`; re-applying is the explicit upgrade
    * action for a declarative project.
    *
-   * Supply {@link Automation.prompt}, `skills`, or both. One of the two is
-   * required for schedule triggers, event triggers with execution `"window"`,
-   * and Automations with no triggers (manual runs); an event trigger with
-   * execution `"turn"` may omit both, since the incoming event is the content
-   * and a built-in default applies.
+   * Supply {@link Automation.prompt}, `skills`, or a {@link Automation.reaction}
+   * script. Any one of the three is required for schedule triggers, event
+   * triggers with execution `"window"`, and Automations with no triggers
+   * (manual runs); an event trigger with execution `"turn"` may omit all three,
+   * since the incoming event is the content and a built-in default applies.
    */
   skills?: string[];
   /**

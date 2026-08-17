@@ -469,9 +469,15 @@ function buildAutomationProposal(
   }
   if (args.action === 'create') {
     if (!args.slug) throw new ToolUserError('slug is required for create action');
-    // An event-turn Automation may omit both instruction sources (built-in
-    // default); every other shape needs a prompt, pinned skills, or both.
-    assertAutomationInstructions(args.triggers ?? [], args.prompt, args.skills);
+    // An event-turn Automation may omit all three instruction sources (built-in
+    // default); every other shape needs a prompt, pinned skills, or a reaction
+    // script.
+    assertAutomationInstructions(
+      args.triggers ?? [],
+      args.prompt,
+      args.skills,
+      args.reaction_script
+    );
     if (!args.agent_id) {
       throw new ToolUserError(
         'agent_id is required to create an Automation (the agent that executes it).'

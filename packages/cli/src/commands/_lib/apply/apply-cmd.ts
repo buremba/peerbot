@@ -941,6 +941,9 @@ export async function executePlan(
           description: w.description,
           prompt: w.prompt,
           ...(w.skillSnapshots?.length ? { skills: w.skillSnapshots } : {}),
+          ...(w.reactionScript
+            ? { reaction_script: w.reactionScript.sourceCode }
+            : {}),
           triggers: w.triggers,
           sources: w.sources,
           reactions_guidance: w.reactionsGuidance,
@@ -977,7 +980,20 @@ export async function executePlan(
         const scalarForUpdate = triggersWithVersionChange
           ? scalarChanges.filter((f) => f !== "triggers")
           : scalarChanges;
-        // a) Scalar fields → manage_automations update
+        // a) Reaction script — attach BEFORE scalar updates and version writes.
+        //    The server's instruction rule validates trigger/prompt/skills
+        //    against the group's CURRENT reaction, so a reaction-only transition
+        //    (no prompt/skills) must install the reaction before the trigger
+        //    update reaches the server. Push first (idempotent, no drift signal
+        //    because it's not returned by Automation lists) so the rule sees it.
+        //    Reaction removal is never pushed — apply only ever sets scripts.
+        if (w.reactionScript) {
+          await ctx.client.setReactionScript(
+            automationId,
+            w.reactionScript.sourceCode
+          );
+        }
+        // b) Scalar fields → manage_automations update
         if (scalarForUpdate.length > 0) {
           await ctx.client.updateAutomation({
             automation_id: automationId,
@@ -1022,7 +1038,7 @@ export async function executePlan(
               : {}),
           });
         }
-        // b) Version-bound fields → manage_automations create_version (server
+        // c) Version-bound fields → manage_automations create_version (server
         //    inherits unset fields from the previous version row, but we always
         //    send the desired-side values for the changed keys). name/description
         //    are version-owned (update rejects them).
@@ -1057,14 +1073,6 @@ export async function executePlan(
               : {}),
           });
         }
-      }
-      // c) Reaction script — push when declared (idempotent server-side, no
-      //    drift signal available because it's not returned by Automation lists).
-      if (w.reactionScript && automationId) {
-        await ctx.client.setReactionScript(
-          automationId,
-          w.reactionScript.sourceCode
-        );
       }
       printText(
         renderProgress(

@@ -868,6 +868,85 @@ describe("executePlan — atomic Automation triggers+prompt update", () => {
       triggers: desired.triggers,
     });
   });
+
+  test("reaction-only event-turn→schedule transition installs reaction before updateAutomation", async () => {
+    const reactionSource = "export const input = z.object({});";
+    const desired = {
+      slug: "reaction-digest",
+      agent: "triage",
+      prompt: "",
+      reactionScript: { sourceCode: reactionSource },
+      triggers: [{ kind: "schedule" as const, cron: "0 9 * * *" }],
+    };
+    const state = stateWith({
+      definitions: [],
+      authProfiles: [],
+      connections: [],
+    });
+    state.automations = [desired];
+    const plan: DiffPlan = {
+      rows: [
+        {
+          kind: "automation",
+          verb: "update",
+          id: desired.slug,
+          desired,
+          changedFields: ["triggers", "reaction_script"],
+          versionBoundFields: [],
+        },
+      ],
+      counts: { create: 0, update: 1, noop: 0, drift: 0, delete: 0 },
+      notes: [],
+    };
+    const remote: RemoteSnapshot = {
+      agents: [],
+      agentSettings: new Map(),
+      entityTypes: [],
+      relationshipTypes: [],
+      automations: [
+        {
+          slug: desired.slug,
+          automation_id: "50",
+          agent_id: "triage",
+          prompt: "",
+          triggers: [
+            {
+              kind: "event",
+              connector_key: "slack",
+              event_types: ["message.created"],
+              execution: "turn",
+            },
+          ],
+        },
+      ],
+      connectorDefinitions: [],
+      authProfiles: [],
+      connections: [],
+      feedsByConnectionId: new Map(),
+      inferenceProviders: [],
+    };
+    const callOrder: string[] = [];
+    const setReactionScript = mock(async () => {
+      callOrder.push("setReactionScript");
+    });
+    const updateAutomation = mock(async () => {
+      callOrder.push("updateAutomation");
+    });
+    const client = {
+      setReactionScript,
+      updateAutomation,
+      createAutomationVersion: mock(async () => ({})),
+    } as unknown as ApplyClient;
+
+    await executePlan({ client, state, plan, remote }, []);
+
+    // Reaction must be installed before the scalar update so the server's
+    // instruction rule sees the reaction when validating the trigger change.
+    expect(setReactionScript).toHaveBeenCalledTimes(1);
+    expect(setReactionScript).toHaveBeenCalledWith("50", reactionSource);
+    expect(updateAutomation).toHaveBeenCalledTimes(1);
+    expect(callOrder).toEqual(["setReactionScript", "updateAutomation"]);
+  });
 });
 
 describe("normalizeConnectionConfigScope — feed-scoped keys demote to feeds", () => {

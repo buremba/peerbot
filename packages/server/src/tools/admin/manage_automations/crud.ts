@@ -53,6 +53,7 @@ import { DEFAULT_AUTOMATION_SOURCE_QUERY, automationSourcesFromPrompt, mergeProm
 import {
   compileReactionScript,
   extractReactionInputSchema,
+  validateReactionDefaultExport,
 } from '../../../automations/reaction-executor';
 import {
   assertAutomationInstructions,
@@ -252,7 +253,7 @@ export async function handleCreate(
       )
     : null;
   const skills = args.skills ?? [];
-  assertAutomationInstructions(triggerWrite.triggers, args.prompt, skills);
+  assertAutomationInstructions(triggerWrite.triggers, args.prompt, skills, args.reaction_script);
   assertPromptSkillTokensPinned(args.prompt, skills);
   // v1 constraint: skill bodies resolve against ONE agent library at save
   // time — the Automation-level default executor when it is an agent.
@@ -285,6 +286,9 @@ export async function handleCreate(
   const reactionScriptCompiled = reactionScript
     ? await compileReactionScript(reactionScript)
     : null;
+  if (reactionScriptCompiled) {
+    await validateReactionDefaultExport(reactionScriptCompiled);
+  }
   const reactionInputSchema = reactionScript
     ? await extractReactionInputSchema(reactionScript)
     : null;
@@ -498,7 +502,7 @@ export async function handleUpdate(
   const currentRows = await sql`
     SELECT w.organization_id, w.agent_id, w.schedule, w.timezone, w.triggers,
            w.device_worker_id::text AS device_worker_id, w.agent_kind,
-           w.delivery_target,
+           w.delivery_target, w.reaction_script,
            cv.prompt AS current_prompt, cv.skills AS current_skills,
            cv.outputs AS current_outputs
     FROM automations w
@@ -515,6 +519,7 @@ export async function handleUpdate(
     timezone: string | null;
     triggers: ManageAutomationsArgs['triggers'];
     delivery_target: ManageAutomationsArgs['delivery_target'];
+    reaction_script: string | null;
     current_prompt: string | null;
     current_skills: Array<{ name: string; content: string }> | null;
     current_outputs: Record<string, unknown> | null;
@@ -542,7 +547,8 @@ export async function handleUpdate(
     assertAutomationInstructions(
       triggerWrite.triggers,
       currentRow.current_prompt,
-      currentRow.current_skills
+      currentRow.current_skills,
+      currentRow.reaction_script
     );
   }
 
@@ -946,14 +952,15 @@ export async function handleCreateFromVersion(
         // cloneTriggers is computed once above (it does not depend on entity).
         // After stripping, the residual trigger shape must still satisfy the
         // instruction rule (chat-link-only sources become manual/empty triggers
-        // and require a non-empty prompt).
+        // and require a non-empty prompt, a pinned skill, or a reaction script).
         // The clone SHARES the source's automation_versions row, so its pinned
         // skills come along with it — they satisfy the rule here exactly as they
         // will at dispatch.
         assertAutomationInstructions(
           (Array.isArray(cloneTriggers) ? cloneTriggers : []) as AutomationTrigger[],
           version.prompt as string | null | undefined,
-          version.skills as Array<{ name: string; content: string }> | null
+          version.skills as Array<{ name: string; content: string }> | null,
+          version.reaction_script as string | null | undefined
         );
         assertAutomationOutputsUseWindowExecution(
           (Array.isArray(cloneTriggers) ? cloneTriggers : []) as AutomationTrigger[],

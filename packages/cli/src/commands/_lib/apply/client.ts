@@ -1068,6 +1068,7 @@ export class ApplyClient {
     description?: string;
     prompt: string;
     skills?: Array<{ name: string; content: string }>;
+    reaction_script?: string;
     triggers?: import("@lobu/core/contracts/tools/manage-automations").AutomationTrigger[];
     sources?: AutomationSource[];
     reactions_guidance?: string;
@@ -1092,6 +1093,9 @@ export class ApplyClient {
         ...(payload.description ? { description: payload.description } : {}),
         prompt: payload.prompt,
         ...(payload.skills?.length ? { skills: payload.skills } : {}),
+        ...(payload.reaction_script !== undefined
+          ? { reaction_script: payload.reaction_script }
+          : {}),
         ...(payload.triggers !== undefined
           ? { triggers: payload.triggers }
           : {}),

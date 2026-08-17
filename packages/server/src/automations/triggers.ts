@@ -242,8 +242,8 @@ export function resolveAutomationTriggerWrite(args: {
  * executing as "turn" carries its own content — the incoming message/event is
  * the input, and the built-in default instruction applies when the Automation
  * has none. Schedule triggers, event triggers with execution "window", and an
- * empty trigger set (manual runs) have no such content, so they need
- * instruction text.
+ * empty trigger set (manual runs) have no such content, so they need an
+ * instruction source.
  */
 export function automationRequiresInstructions(
 	triggers: AutomationTrigger[]
@@ -282,23 +282,24 @@ export function assertAutomationOutputsUseWindowExecution(
  * values (inherited prompt/skills when omitted, resolved triggers after
  * write-merge).
  *
- * Either source satisfies the requirement on its own. They are no longer the
- * same field: skills used to be concatenated into `prompt` at save time, so one
- * check covered both, but pinned skills now remain separate from the stored
- * prompt. Requiring both would be stricter than the prior contract —
- * an Automation whose whole job is "run this skill" has nothing to put in a task
- * statement, and one that spells its task out inline needs no skill.
+ * Any one of the three sources satisfies the requirement on its own. Pinned
+ * skills remain separate from the stored prompt, while a reaction script
+ * supplies the extraction contract through its exported `input` schema or the
+ * free-form fallback. Dispatch provides the built-in extraction instruction
+ * when a reaction-only Automation has no authored prompt.
  */
 export function assertAutomationInstructions(
 	triggers: AutomationTrigger[],
 	instructions: string | null | undefined,
-	skills?: ReadonlyArray<{ name: string; content: string }> | null
+	skills?: ReadonlyArray<{ name: string; content: string }> | null,
+	reactionScript?: string | null
 ): void {
 	if (!automationRequiresInstructions(triggers)) return;
 	if (instructions?.trim()) return;
 	if (skills?.some((skill) => skill.content.trim())) return;
+	if (reactionScript?.trim()) return;
 	throw new ToolUserError(
-		"This Automation runs from a schedule, an analysis window, or manual runs, so it needs instructions: attach at least one skill or provide instruction text. Only event triggers with execution 'turn' may omit both."
+		"This Automation runs from a schedule, an analysis window, or manual runs, so it needs instructions: attach at least one skill, provide instruction text, or set a reaction script. Only event triggers with execution 'turn' may omit all three."
 	);
 }
 

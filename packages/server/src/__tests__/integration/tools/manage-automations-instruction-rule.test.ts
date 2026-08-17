@@ -1,12 +1,15 @@
 /**
  * manage_automations — instruction-presence rule (issue #2320, thin Automations).
  *
- * An Automation needs at least one instruction source (`prompt` or pinned skills)
- * only for trigger shapes that run on it alone: schedule triggers, event
- * triggers with execution "window", and no triggers (manual). An event trigger
- * with execution "turn" carries its own content and may omit both.
+ * An Automation needs at least one instruction source (`prompt`, pinned skills,
+ * or a reaction script) only for trigger shapes that run on it alone: schedule
+ * triggers, event triggers with execution "window", and no triggers (manual).
+ * An event trigger with execution "turn" carries its own content and may omit
+ * all three.
  *
- * create_version enforces the same rule when it writes instruction text.
+ * create_version and set_reaction_script enforce the same rule when they mutate
+ * instruction sources: a version bump is validated against the group's
+ * reaction, and clearing a sole-source reaction is rejected.
  */
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Env } from "../../../index";
@@ -189,6 +192,227 @@ describe("manage_automations — instruction-presence rule", () => {
 		`;
 		expect(v2.prompt).toBe("");
 		expect(v2.skills).toEqual(v1.skills);
+	});
+
+	const REACTION_SCRIPT = `export const input = {
+	type: "object",
+	properties: { summary: { type: "string" } },
+	required: ["summary"],
+	additionalProperties: false,
+};
+
+export default async function reaction(ctx, client) {
+	await client.entities.manage({ action: "resolve_duplicates", candidate_entity_ids: [1] });
+}`;
+
+	it("creates a schedule Automation from a reaction script without a prompt", async () => {
+		const created = (await executeTool(
+			"manage_automations",
+			{
+				action: "create",
+				slug: "ir-reaction-only",
+				agent_id: agentId,
+				reaction_script: REACTION_SCRIPT,
+				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { automation_id?: string };
+		expect(created.automation_id).toBeTruthy();
+
+		const sql = getTestDb();
+		const [row] = await sql`
+			SELECT automation.reaction_script, automation.reaction_input_schema,
+			       version.prompt
+			FROM automations automation
+			JOIN automation_versions version ON version.id = automation.current_version_id
+			WHERE automation.id = ${Number(created.automation_id)}
+		`;
+		expect(row.prompt).toBe("");
+		expect(row.reaction_script).toContain("resolve_duplicates");
+		expect(row.reaction_input_schema).toEqual({
+			type: "object",
+			properties: { summary: { type: "string" } },
+			required: ["summary"],
+			additionalProperties: false,
+		});
+	});
+
+	it("create_version keeps a reaction-only schedule Automation valid when it blanks the prompt", async () => {
+		const created = (await executeTool(
+			"manage_automations",
+			{
+				action: "create",
+				slug: "ir-reaction-versioned",
+				agent_id: agentId,
+				reaction_script: REACTION_SCRIPT,
+				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { automation_id?: string };
+
+		const versioned = (await executeTool(
+			"manage_automations",
+			{
+				action: "create_version",
+				automation_id: created.automation_id!,
+				prompt: "",
+				set_as_current: true,
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { version?: number };
+		expect(versioned.version).toBeGreaterThan(1);
+	});
+
+	it("update accepts a reaction-only Automation when its trigger becomes a schedule", async () => {
+		const created = (await executeTool(
+			"manage_automations",
+			{
+				action: "create",
+				slug: "ir-reaction-updated",
+				agent_id: agentId,
+				reaction_script: REACTION_SCRIPT,
+				triggers: [TURN_TRIGGER],
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { automation_id?: string };
+
+		await expect(
+			executeTool(
+				"manage_automations",
+				{
+					action: "update",
+					automation_id: created.automation_id!,
+					triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
+				},
+				TEST_ENV,
+				ownerCtx
+			)
+		).resolves.toBeTruthy();
+	});
+
+	it("create_from_version preserves a reaction-only schedule Automation", async () => {
+		const rootEntity = await createTestEntity({
+			name: "IR Reaction Root",
+			organization_id: orgId,
+			created_by: ownerCtx.userId!,
+		});
+		const siblingEntity = await createTestEntity({
+			name: "IR Reaction Sibling",
+			organization_id: orgId,
+			created_by: ownerCtx.userId!,
+		});
+		const created = (await executeTool(
+			"manage_automations",
+			{
+				action: "create",
+				slug: "ir-reaction-cloned",
+				agent_id: agentId,
+				entity_id: rootEntity.id,
+				reaction_script: REACTION_SCRIPT,
+				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { automation_id?: string };
+
+		const sql = getTestDb();
+		const [root] = await sql`
+			SELECT current_version_id FROM automations
+			WHERE id = ${Number(created.automation_id)}
+		`;
+		const cloned = (await executeTool(
+			"manage_automations",
+			{
+				action: "create_from_version",
+				version_id: String(root.current_version_id),
+				entity_ids: [siblingEntity.id],
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { created?: Array<{ automation_id: string }> };
+
+		expect(cloned.created?.[0]?.automation_id).toBeTruthy();
+		const siblingId = Number(cloned.created?.[0]?.automation_id);
+		const [sibling] = await sql`
+			SELECT reaction_script FROM automations WHERE id = ${siblingId}
+		`;
+		expect(sibling.reaction_script).toContain("resolve_duplicates");
+	});
+
+	it("rejects clearing the reaction script that was the sole instruction source", async () => {
+		const created = (await executeTool(
+			"manage_automations",
+			{
+				action: "create",
+				slug: "ir-reaction-cleared",
+				agent_id: agentId,
+				reaction_script: REACTION_SCRIPT,
+				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { automation_id?: string };
+
+		await expect(
+			executeTool(
+				"manage_automations",
+				{
+					action: "set_reaction_script",
+					automation_id: created.automation_id!,
+					reaction_script: "",
+				},
+				TEST_ENV,
+				ownerCtx
+			)
+		).rejects.toThrow(/needs instructions/i);
+
+		const sql = getTestDb();
+		const [row] = await sql`
+			SELECT reaction_script
+			FROM automations
+			WHERE id = ${Number(created.automation_id)}
+		`;
+		expect(row.reaction_script).toContain("resolve_duplicates");
+	});
+
+	it("allows clearing a reaction when the prompt alone satisfies the rule", async () => {
+		const created = (await executeTool(
+			"manage_automations",
+			{
+				action: "create",
+				slug: "ir-reaction-cleared-with-prompt",
+				agent_id: agentId,
+				prompt: "Daily digest instructions.",
+				reaction_script: REACTION_SCRIPT,
+				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { automation_id?: string };
+
+		const cleared = (await executeTool(
+			"manage_automations",
+			{
+				action: "set_reaction_script",
+				automation_id: created.automation_id!,
+				reaction_script: "",
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { has_script?: boolean };
+		expect(cleared.has_script).toBe(false);
+
+		const sql = getTestDb();
+		const [row] = await sql`
+			SELECT reaction_script
+			FROM automations
+			WHERE id = ${Number(created.automation_id)}
+		`;
+		expect(row.reaction_script).toBeNull();
 	});
 
 	it("create_version rejects blanking instructions on a schedule Automation, accepts real text", async () => {

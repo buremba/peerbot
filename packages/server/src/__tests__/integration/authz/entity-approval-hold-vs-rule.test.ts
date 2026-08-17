@@ -1,0 +1,280 @@
+/**
+ * An approval hold may not manufacture an illegal state.
+ *
+ * Sequence under test:
+ *   1. invoice sits in `draft`
+ *   2. a HUMAN moves it to `issued` — legal, and claims ownership of `status`
+ *   3. an AGENT proposes the legal exit `issued -> posted` together with
+ *      `einvoice_uuid`, the one field that move unlocks
+ *   4. the permission gate holds `status` (human-owned), so `computeFieldMerge`
+ *      strips it from the patch
+ *   5. the effective patch is `{ einvoice_uuid }` with NO transition — a naked
+ *      field edit in a frozen state, which the rule rejects
+ *
+ * This used to throw. The agent had proposed something legal; an unrelated
+ * ownership hold made it illegal, and because the deferral is built AFTER the
+ * transaction returns, the throw skipped it — so the work was denied under a
+ * misattributed reason AND the approval card was lost.
+ *
+ * The fix is not to weaken validation but to stop splitting the write: when the
+ * residual fails and fields were held, nothing commits and the ENTIRE proposal
+ * defers as one approval unit. The control test proves the hold is what changes
+ * the outcome — the identical agent write commits outright when no human owns
+ * `status`.
+ */
+
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { compileEntityRule } from "../../../authz/entity-rule-executor";
+import type { Env } from "../../../index";
+import type { ToolContext } from "../../../tools/registry";
+import { createEntity, updateEntity } from "../../../utils/entity-management";
+import { applyEntityFieldChangeProposal } from "../../../tools/admin/entity-field-approval";
+import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
+import { initWorkspaceProvider } from "../../../workspace";
+import {
+	addUserToOrganization,
+	createTestAgent,
+	createTestOrganization,
+	createTestUser,
+} from "../../setup/test-fixtures";
+
+const INVOICE_RULE = `
+const ALLOWED = { draft: ["issued"], issued: ["posted"], posted: [] };
+const FROZEN = ["issued", "posted"];
+const WRITABLE_ON_EXIT = { "issued->posted": ["einvoice_uuid"] };
+
+export default (row) => {
+  if (row.op === "create") {
+    if (row.next.status !== "draft") {
+      row.deny("an invoice is created in draft, not " + row.next.status);
+    }
+    return;
+  }
+  const from = row.committed.status;
+  const to = row.next.status;
+  if (row.changed("status") && !(ALLOWED[from] || []).includes(to)) {
+    row.deny("cannot move " + from + " -> " + to);
+  }
+  if (row.next.amount > 50000) {
+    row.escalate(["amount"], "an invoice over 50k needs sign-off");
+  }
+
+  if (!FROZEN.includes(from)) return;
+  const permitted = ["status"].concat(WRITABLE_ON_EXIT[from + "->" + to] || []);
+  for (const field of Object.keys(row.patch)) {
+    if (permitted.includes(field)) continue;
+    if (!row.changed(field)) continue;
+    row.deny(from + " is frozen: " + field + " is not writable");
+  }
+};
+`;
+
+const TEST_ENV = {} as Env;
+let invoiceCompiled: string;
+
+function ctxFor(
+	organizationId: string,
+	opts: { userId?: string | null; agentId?: string | null },
+): ToolContext {
+	return {
+		organizationId,
+		userId: opts.userId ?? null,
+		memberRole: "owner",
+		agentId: opts.agentId ?? null,
+		isAuthenticated: true,
+		clientId: null,
+		scopes: ["mcp:read", "mcp:write", "mcp:admin"],
+		tokenType: "oauth",
+		scopedToOrg: true,
+		allowCrossOrg: false,
+	} as unknown as ToolContext;
+}
+
+async function readMetadata(id: number): Promise<Record<string, unknown>> {
+	const sql = getTestDb();
+	const rows = await sql<{ metadata: unknown }[]>`
+    SELECT metadata FROM entities WHERE id = ${id}
+  `;
+	const raw = rows[0].metadata;
+	return (typeof raw === "string" ? JSON.parse(raw) : raw) as Record<
+		string,
+		unknown
+	>;
+}
+
+async function runCount(organizationId: string): Promise<number> {
+	const sql = getTestDb();
+	const rows = await sql<{ n: string }[]>`
+    SELECT count(*)::text AS n FROM runs WHERE organization_id = ${organizationId}
+  `;
+	return Number(rows[0].n);
+}
+
+async function seed() {
+	const sql = getTestDb();
+	const org = await createTestOrganization({ name: "Approval Hold" });
+	const user = await createTestUser();
+	await addUserToOrganization(user.id, org.id, "owner");
+	const agent = await createTestAgent({ organizationId: org.id });
+	await sql`
+    INSERT INTO entity_types (organization_id, slug, name, metadata_schema,
+                              rules_compiled, created_at, updated_at)
+    VALUES (${org.id}, 'invoice', 'invoice', ${sql.json({ type: "object" })},
+            ${invoiceCompiled}, current_timestamp, current_timestamp)
+  `;
+	const invoice = await createEntity({
+		entity_type: "invoice",
+		name: "INV-HOLD",
+		organization_id: org.id,
+		created_by: user.id,
+		metadata: { status: "draft", einvoice_uuid: null },
+	} as Parameters<typeof createEntity>[0]);
+	return { org, user, agent, invoice };
+}
+
+describe("approval hold vs a frozen-state rule", () => {
+	beforeAll(async () => {
+		// `queue()` builds an approval URL, which needs the workspace provider.
+		await initWorkspaceProvider();
+		invoiceCompiled = await compileEntityRule(INVOICE_RULE);
+	}, 60_000);
+
+	beforeEach(async () => {
+		await cleanupTestDatabase();
+	});
+
+	it("CONTROL: the agent's legal exit succeeds when no human owns `status`", async () => {
+		const { org, agent, invoice } = await seed();
+		const agentCtx = ctxFor(org.id, { agentId: agent.agentId });
+
+		// An AGENT moves draft -> issued, so no human ownership is claimed.
+		await updateEntity(
+			invoice.id,
+			{ metadata: { status: "issued" } },
+			TEST_ENV,
+			agentCtx,
+		);
+		expect((await readMetadata(invoice.id)).status).toBe("issued");
+
+		// The legal exit, carrying the field that move unlocks.
+		await updateEntity(
+			invoice.id,
+			{ metadata: { status: "posted", einvoice_uuid: "uuid-xyz" } },
+			TEST_ENV,
+			agentCtx,
+		);
+
+		const after = await readMetadata(invoice.id);
+		expect(after.status).toBe("posted");
+		expect(after.einvoice_uuid).toBe("uuid-xyz");
+	}, 60_000);
+
+	it("defers the WHOLE write once a human owns `status`, instead of denying it", async () => {
+		const { org, user, agent, invoice } = await seed();
+
+		// A HUMAN moves draft -> issued. Legal, and it claims ownership of `status`.
+		await updateEntity(
+			invoice.id,
+			{ metadata: { status: "issued" } },
+			TEST_ENV,
+			ctxFor(org.id, { userId: user.id }),
+		);
+		expect((await readMetadata(invoice.id)).status).toBe("issued");
+
+		const runsBefore = await runCount(org.id);
+		const agentCtx = ctxFor(org.id, { agentId: agent.agentId });
+
+		// The SAME legal exit the control test just performed successfully.
+		const result = await updateEntity(
+			invoice.id,
+			{ metadata: { status: "posted", einvoice_uuid: "uuid-xyz" } },
+			TEST_ENV,
+			agentCtx,
+		);
+
+		// Nothing landed — the fragment that could not stand on its own was not
+		// committed, and neither was the half of it the gate would have allowed.
+		const after = await readMetadata(invoice.id);
+		expect(after.status).toBe("issued");
+		expect(after.einvoice_uuid ?? null).toBeNull();
+
+		// The card carries the WHOLE proposal, not the held subset: approving it
+		// replays a legal transition rather than the naked field edit.
+		expect(result.deferred).toBeDefined();
+		expect(result.deferred?.display.fields).toEqual({
+			status: "posted",
+			einvoice_uuid: "uuid-xyz",
+		});
+		expect(result.deferred?.display.current).toMatchObject({
+			status: "issued",
+			einvoice_uuid: null,
+		});
+
+		// The approval is real, not merely described: queueing it opens a run.
+		await result.deferred?.queue(agentCtx, TEST_ENV);
+		expect(await runCount(org.id)).toBe(runsBefore + 1);
+	}, 60_000);
+
+	it("defers the whole write when a RULE escalates, carrying the rule's own reason", async () => {
+		const { org, user, agent, invoice } = await seed();
+		const agentCtx = ctxFor(org.id, { agentId: agent.agentId });
+		const runsBefore = await runCount(org.id);
+
+		// The invoice stays in `draft`, which is not frozen. A deny legitimately
+		// outranks an escalate, so exercising escalation on a frozen row would only
+		// ever observe the frozen-field denial.
+		//
+		// No human owns anything here either, so nothing is held by the permission
+		// gate — the escalation is the rule's own decision.
+		const result = await updateEntity(
+			invoice.id,
+			{ metadata: { amount: 90000 } },
+			TEST_ENV,
+			agentCtx,
+		);
+
+		// An escalation holds everything: partial application is what produced the
+		// bug above, so a rule asking for review never gets a half-applied write.
+		const after = await readMetadata(invoice.id);
+		expect(after.status).toBe("draft");
+		expect(after.amount ?? null).toBeNull();
+
+		expect(result.deferred?.display.fields).toEqual({ amount: 90000 });
+
+		await result.deferred?.queue(agentCtx, TEST_ENV);
+		expect(await runCount(org.id)).toBe(runsBefore + 1);
+
+		// Queueing the card is not the point — APPLYING it is. Approving re-runs
+		// the same rule against the same committed state, so without an
+		// approved-write signal the rule escalates again and throws, and the card
+		// can never be cleared. That dead end shipped in the first cut of this
+		// change; this assertion is what would have caught it.
+		await applyEntityFieldChangeProposal(
+			{
+				entity_id: invoice.id,
+				fields: result.deferred?.display.fields ?? {},
+				current: result.deferred?.display.current ?? {},
+				reason: "approved in test",
+			} as Parameters<typeof applyEntityFieldChangeProposal>[0],
+			user.id,
+		);
+		expect((await readMetadata(invoice.id)).amount).toBe(90000);
+	}, 60_000);
+
+	it("still DENIES outright when nothing was held and the caller's own proposal is illegal", async () => {
+		const { org, agent, invoice } = await seed();
+
+		// Deferring here would be the over-correction: no hold split anything and
+		// no rule asked for review, so the agent simply proposed something illegal.
+		await expect(
+			updateEntity(
+				invoice.id,
+				{ metadata: { status: "posted" } },
+				TEST_ENV,
+				ctxFor(org.id, { agentId: agent.agentId }),
+			),
+		).rejects.toThrow(/cannot move draft -> posted/);
+
+		expect((await readMetadata(invoice.id)).status).toBe("draft");
+	}, 60_000);
+});

@@ -8,9 +8,14 @@
 
 import { slugify } from "@lobu/core";
 import { feedLinkedToBusinessEntitySql } from "../authz/channel-about";
-import type { ValidatedEntityRowPatch } from "../authz/entity-row-validation";
+import type {
+	ValidatedEntityRowInsert,
+	ValidatedEntityRowPatch,
+} from "../authz/entity-row-validation";
 import {
+	EntityRowValidationError,
 	unvalidatedEntityRowPatch,
+	validateEntityRowInsert,
 	validateEntityRowPatch,
 } from "../authz/entity-row-validation";
 import {
@@ -449,10 +454,17 @@ async function insertEntityRowWithConflictMode(
 	return rows[0] ?? null;
 }
 
-/** Insert one physical entity row using exactly the caller's DB handle. */
+/**
+ * Insert one physical entity row using exactly the caller's DB handle.
+ *
+ * Takes only a validated row — mint one with `validateEntityRowInsert`, or
+ * `unvalidatedEntityRowInsert` for platform bookkeeping outside tenant rules.
+ * Same brand as {@link patchEntityRows}, for the same reason: skipping the
+ * check has to be a compile error, not a thing a caller can simply forget.
+ */
 export async function insertEntityRow(params: {
 	tx: DbClient;
-	row: EntityRowInsert;
+	row: ValidatedEntityRowInsert;
 }): Promise<InsertedEntityRow> {
 	const inserted = await insertEntityRowWithConflictMode(params, false);
 	if (!inserted) throw new Error("Failed to create entity");
@@ -463,10 +475,13 @@ export async function insertEntityRow(params: {
  * Try one physical entity insert and return null on any uniqueness conflict.
  * This deliberately mirrors PostgreSQL's untargeted `ON CONFLICT DO NOTHING`;
  * callers own the domain-specific lookup that resolves the winning row.
+ *
+ * Validated-only, exactly like {@link insertEntityRow} — a create that routes
+ * through the conflict-tolerant writer is still a create.
  */
 export function tryInsertEntityRow(params: {
 	tx: DbClient;
-	row: EntityRowInsert;
+	row: ValidatedEntityRowInsert;
 }): Promise<InsertedEntityRow | null> {
 	return insertEntityRowWithConflictMode(params, true);
 }
@@ -607,6 +622,12 @@ export async function mergeEntityFields(params: {
 	affirm?: string[];
 	/** Additional fields a non-human policy decision requires approval for. */
 	requireApproval?: string[] | Set<string>;
+	/**
+	 * Set when this merge IS the application of a human-approved proposal, so a
+	 * rule that escalates does not escalate the very write its escalation asked
+	 * for. See `validateEntityRowPatch`'s `onEscalate`.
+	 */
+	onEscalate?: "defer" | "approved";
 }): Promise<FieldMergeResult> {
 	const { tx, entityId, fields, source, actorId } = params;
 	const rows = await tx<{ metadata: unknown; field_controls: unknown }>`
@@ -647,6 +668,7 @@ export async function mergeEntityFields(params: {
 					metadata: merge.nextMetadata,
 					fieldControls: merge.nextControls,
 				},
+				onEscalate: params.onEscalate,
 			}),
 		});
 	}
@@ -827,19 +849,25 @@ export async function createEntity(
 		const inserted = await sql.begin(async (tx) => {
 			return insertEntityRow({
 				tx,
-				row: {
-					organizationId: data.organization_id as string,
-					entityTypeId,
-					name: data.name.trim(),
-					slug,
-					parentId: data.parent_id || null,
-					metadata,
-					enabledClassifiers: data.enabled_classifiers,
-					createdBy,
-					content: contentValue,
-					embedding: data.embedding,
-					contentHash,
-				},
+				// THE create path. Everything a tenant, an agent or the API creates
+				// arrives here, so this is where a rule has to be able to reject a row
+				// born in a state no transition would have reached.
+				row: await validateEntityRowInsert({
+					tx,
+					row: {
+						organizationId: data.organization_id as string,
+						entityTypeId,
+						name: data.name.trim(),
+						slug,
+						parentId: data.parent_id || null,
+						metadata,
+						enabledClassifiers: data.enabled_classifiers,
+						createdBy,
+						content: contentValue,
+						embedding: data.embedding,
+						contentHash,
+					},
+				}),
 			});
 		});
 
@@ -986,36 +1014,39 @@ export async function updateEntity(
 		let applyName = data.name !== undefined;
 		let applyParent = data.parent_id !== undefined;
 		let applyContent = hasContent;
+		// Computed for EVERY caller, not just the gated ones: when a write defers
+		// as a whole, the card has to name every field the caller PROPOSED, and a
+		// rule can escalate a human edit just as readily as an agent's.
+		const attributeProposals: Record<
+			string,
+			{ current: unknown; proposed: unknown }
+		> = {};
+		if (applyName && (data.name ?? null) !== (current[0].name ?? null)) {
+			attributeProposals.$name = {
+				current: current[0].name ?? null,
+				proposed: data.name ?? null,
+			};
+		}
+		const currentParentId =
+			current[0].parent_id == null ? null : Number(current[0].parent_id);
+		if (applyParent && (data.parent_id ?? null) !== currentParentId) {
+			attributeProposals.$parent_id = {
+				current: currentParentId,
+				proposed: data.parent_id ?? null,
+			};
+		}
+		if (
+			applyContent &&
+			contentValue !== ((current[0].content as string | null) ?? null)
+		) {
+			attributeProposals.$content = {
+				current: current[0].content ?? null,
+				proposed: contentValue,
+			};
+		}
 		if (!isHumanEdit) {
 			const principalKind: MutationPrincipalKind =
 				opts?.policyPrincipalKind ?? "agent";
-			const attributeProposals: Record<
-				string,
-				{ current: unknown; proposed: unknown }
-			> = {};
-			if (applyName && (data.name ?? null) !== (current[0].name ?? null)) {
-				attributeProposals.$name = {
-					current: current[0].name ?? null,
-					proposed: data.name ?? null,
-				};
-			}
-			const currentParentId =
-				current[0].parent_id == null ? null : Number(current[0].parent_id);
-			if (applyParent && (data.parent_id ?? null) !== currentParentId) {
-				attributeProposals.$parent_id = {
-					current: currentParentId,
-					proposed: data.parent_id ?? null,
-				};
-			}
-			if (
-				applyContent &&
-				contentValue !== ((current[0].content as string | null) ?? null)
-			) {
-				attributeProposals.$content = {
-					current: current[0].content ?? null,
-					proposed: contentValue,
-				};
-			}
 			const fieldOwners = {
 				...(Object.fromEntries(
 					Object.keys(metadataUpdates).map((field) => [
@@ -1115,11 +1146,81 @@ export async function updateEntity(
 		// Validate the EFFECTIVE patch, not the caller's proposal: approval-held
 		// fields were stripped above and the ownership merge rewrote the rest, so
 		// this is the first point where what-will-commit is known.
-		await patchEntityRows({
-			tx,
-			ids: [entityId],
-			patch: await validateEntityRowPatch({ tx, ids: [entityId], patch: rowPatch }),
-		});
+		//
+		// Validating the effective patch is right, but it means a hold can hand the
+		// rule a write the caller never proposed. An agent proposing a legal
+		// `issued -> posted` transition plus the one field that move unlocks gets
+		// `status` stripped (human-owned), leaving a naked field edit in a frozen
+		// state — illegal, and denied under a reason that describes neither what the
+		// agent asked for nor why it failed. The proposal was legal; the SPLIT is
+		// what was not.
+		//
+		// So: an approval hold may not manufacture an illegal state. When the
+		// residual fails validation and fields were held, nothing commits and the
+		// ENTIRE proposal defers as one approval unit. Same for an escalating rule,
+		// which is asking for exactly that. Only a rule rejecting a write the caller
+		// actually proposed, with nothing held, still throws.
+		let deferWholeWrite: string | null = null;
+		let validated: ValidatedEntityRowPatch | null = null;
+		try {
+			validated = await validateEntityRowPatch({
+				tx,
+				ids: [entityId],
+				patch: rowPatch,
+			});
+		} catch (err) {
+			if (!(err instanceof EntityRowValidationError)) throw err;
+			const heldFields = Object.keys(fieldMerge?.blocked ?? {});
+			if (err.verdict.outcome === "escalate") {
+				// Name the fields the rule flagged. The card already carries the whole
+				// proposal, which does not say which part of it the rule objected to —
+				// and `escalate(fields, reason)` documents those fields as exactly what
+				// the approver reads.
+				deferWholeWrite =
+					err.verdict.fields.length > 0
+						? `${err.verdict.reason} (${err.verdict.fields.join(", ")})`
+						: err.verdict.reason;
+			} else if (heldFields.length > 0) {
+				deferWholeWrite =
+					`${err.verdict.reason} — the write is legal as proposed but ` +
+					`${heldFields.join(", ")} awaits approval, so it applies as one unit`;
+			} else {
+				throw err;
+			}
+		}
+
+		// The full proposal, for a deferral that must carry what the caller asked
+		// for rather than the mutilated remainder.
+		const proposedFields: Record<string, unknown> = {
+			...metadataUpdates,
+			...Object.fromEntries(
+				Object.entries(attributeProposals).map(([k, v]) => [k, v.proposed]),
+			),
+		};
+		const proposedCurrent: Record<string, unknown> = {
+			...Object.fromEntries(
+				Object.keys(metadataUpdates).map((k) => [k, existing[k] ?? null]),
+			),
+			...Object.fromEntries(
+				Object.entries(attributeProposals).map(([k, v]) => [k, v.current]),
+			),
+		};
+
+		if (validated) {
+			await patchEntityRows({ tx, ids: [entityId], patch: validated });
+		} else {
+			// Nothing applied, so report every proposed field as blocked rather than
+			// letting `fieldMerge.applied` claim a write that did not happen.
+			fieldMerge = {
+				applied: [],
+				blocked: Object.fromEntries(
+					Object.keys(proposedFields).map((k) => [
+						k,
+						{ current: proposedCurrent[k] ?? null, proposed: proposedFields[k] },
+					]),
+				),
+			};
+		}
 
     const sel = await tx<CreatedEntity>`
       SELECT e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at
@@ -1131,19 +1232,50 @@ export async function updateEntity(
 		if (sel.length === 0) {
 			throw new Error(`Entity ${entityId} not found`);
 		}
-		return { ...sel[0], fieldMerge } as CreatedEntity & {
+		return {
+			...sel[0],
+			fieldMerge,
+			deferWholeWrite,
+			proposedFields,
+			proposedCurrent,
+		} as CreatedEntity & {
 			fieldMerge?: FieldMergeInfo;
+			deferWholeWrite: string | null;
+			proposedFields: Record<string, unknown>;
+			proposedCurrent: Record<string, unknown>;
 		};
 	});
+
+	// Split the deferral inputs off the returned row: they are this function's
+	// own bookkeeping, and every caller downstream reads `entity` as an entity.
+	const { deferWholeWrite, proposedFields, proposedCurrent, ...entity } = result;
 
 	// Post-commit: package any blocked (human-owned or policy-gated) fields as a
 	// single deferred approval. The caller queues it AFTER its own tx + change
 	// event so the approval never rides — nor rolls back with — the edit.
-	const blockedPaths = Object.keys(result.fieldMerge?.blocked ?? {});
-	if (blockedPaths.length > 0) {
-		const blocked = result.fieldMerge?.blocked ?? {};
+	// A write held back in full: the card carries the entire proposal, so approving
+	// it re-runs the whole thing as one legal transition instead of the fragment
+	// that could not stand on its own.
+	if (deferWholeWrite) {
 		return {
-			...result,
+			...entity,
+			deferred: deferEntityFieldChange({
+				entityId,
+				fields: proposedFields,
+				current: proposedCurrent,
+				reason: deferWholeWrite,
+				attribution: opts?.attribution ?? "agent",
+				automationId: automationIdFromPrincipalId(opts?.principalId ?? null),
+				windowId: opts?.windowId ?? null,
+			}),
+		};
+	}
+
+	const blockedPaths = Object.keys(entity.fieldMerge?.blocked ?? {});
+	if (blockedPaths.length > 0) {
+		const blocked = entity.fieldMerge?.blocked ?? {};
+		return {
+			...entity,
 			deferred: deferEntityFieldChange({
 				entityId,
 				fields: Object.fromEntries(
@@ -1161,7 +1293,7 @@ export async function updateEntity(
 		};
 	}
 
-	return result;
+	return entity;
 }
 
 /**

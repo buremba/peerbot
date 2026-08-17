@@ -525,6 +525,16 @@ function diffEntityType(
         },
       },
       {
+        // Write rules — prune-aware, like eventKinds. Compares SOURCE, never the
+        // compiled artifact: the server owns compilation, so a compiler change
+        // must not read as a rule change.
+        name: "rules",
+        changed: (d, r) =>
+          d.rulesSource !== undefined
+            ? d.rulesSource.sourceCode !== (r.rulesSource ?? undefined)
+            : prune && r.rulesSource != null,
+      },
+      {
         // View template — prune-aware. Declared: diff against the remote current
         // default (apply sets on change). Omitted + prune: a present remote
         // template is a removal (apply clears it). Omitted + no prune: unmanaged
@@ -699,6 +709,12 @@ function compareEntityTypeThreeWay(
       remote: remote.schemaExtras?.["x-lobu-resolution"],
       attribution: attribution?.schemaExtras?.["x-lobu-resolution"],
     },
+    {
+      field: "rules",
+      desired: desired.rulesSource?.sourceCode,
+      remote: remote.rulesSource ?? undefined,
+      attribution: attribution?.rulesSource ?? undefined,
+    },
   ];
   const propKeys = new Set<string>();
   for (const p of Object.keys(desired.properties ?? {})) propKeys.add(p);
@@ -726,6 +742,7 @@ function compareEntityTypeThreeWay(
     "eventKinds",
     "viewTemplate",
     "resolutionPolicy",
+    "rules",
   ]);
   return classifyThreeWay(
     triples.filter((t) => {

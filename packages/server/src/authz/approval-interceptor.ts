@@ -92,6 +92,12 @@ export function buildFieldChangeDeferral(args: {
 	fields: Record<string, unknown>;
 	current: Record<string, unknown>;
 	attribution: MutationAttribution;
+	/**
+	 * Overrides the generated "agent wants to change x, y" line. Set when a
+	 * WRITE RULE caused the hold, so the approver reads the rule's own words
+	 * instead of a field list that does not explain itself.
+	 */
+	reason?: string;
 	automationId?: number | null;
 	windowId?: number | null;
 }): DeferredMutation {
@@ -110,7 +116,9 @@ export function buildFieldChangeDeferral(args: {
 				automation_id: args.automationId ?? null,
 				window_id: args.windowId ?? null,
 				attribution: args.attribution,
-				reason: fieldChangeReason(args.attribution, Object.keys(args.fields)),
+				reason:
+					args.reason ??
+					fieldChangeReason(args.attribution, Object.keys(args.fields)),
 			}),
 	};
 }

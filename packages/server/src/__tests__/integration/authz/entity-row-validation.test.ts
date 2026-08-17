@@ -1,14 +1,16 @@
 /**
- * The validation seam at `patchEntityRows`, exercised against real Postgres.
+ * Entity row validation at the physical writer, driven by a type's compiled
+ * write rules.
  *
- * The property under test is not "transitions work" but WHERE they are enforced.
- * Validation sits on the physical row writer, so it applies to every caller
- * regardless of principal and regardless of which door the write came through —
- * which is why the human-edit case below passes without touching the
- * `isHumanEdit` carve-out in `updateEntity`.
+ * These run the REAL path: an author's rule source is compiled exactly as the
+ * apply path would store it, written to `entity_types.rules_compiled`, and then
+ * exercised through `updateEntity` — not through the validator in isolation. A
+ * rule that is never reached would pass a unit test of the evaluator and fail
+ * here, which is the failure mode worth catching.
  */
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { compileEntityRule } from "../../../authz/entity-rule-executor";
 import type { Env } from "../../../index";
 import type { ToolContext } from "../../../tools/registry";
 import { createEntity, updateEntity } from "../../../utils/entity-management";
@@ -20,36 +22,59 @@ import {
 	createTestUser,
 } from "../../setup/test-fixtures";
 
-const INVOICE_TRANSITIONS = {
-	field: "status",
-	states: {
-		draft: { to: ["issued", "cancelled"] },
-		issued: {
-			to: ["posted", "cancelled"],
-			frozen: true,
-			writableOnExit: { posted: ["einvoice_uuid"] },
-		},
-		posted: { to: [], frozen: true },
-		cancelled: { to: [], frozen: true },
-	},
+/**
+ * The invoice lifecycle as an author would write it.
+ *
+ * `row.patch` carries the fully MERGED metadata, not a delta, so every key shows
+ * up on every write — which is exactly why `changed()` compares VALUES. Both
+ * guards here lean on that: `changed("status")` is the transition test, and
+ * `changed(field)` in the frozen loop is what lets an unchanged value ride along
+ * in a write that touches something else. An earlier cut had `changed()` report
+ * key presence instead, and every rule had to hand-roll both comparisons.
+ */
+const INVOICE_RULE = `
+const ALLOWED = { draft: ["issued"], issued: ["posted"], posted: [] };
+const FROZEN = ["issued", "posted"];
+const WRITABLE_ON_EXIT = { "issued->posted": ["einvoice_uuid"] };
+
+export default (row) => {
+  if (row.op === "create") {
+    if (row.next.status !== "draft") {
+      row.deny("an invoice is created in draft, not " + row.next.status);
+    }
+    return;
+  }
+
+  const from = row.committed.status;
+  const to = row.next.status;
+  if (row.changed("status") && !(ALLOWED[from] || []).includes(to)) {
+    row.deny("cannot move " + from + " -> " + to);
+  }
+
+  if (!FROZEN.includes(from)) return;
+  const permitted = ["status"].concat(WRITABLE_ON_EXIT[from + "->" + to] || []);
+  for (const field of Object.keys(row.patch)) {
+    if (permitted.includes(field)) continue;
+    if (!row.changed(field)) continue;
+    row.deny(from + " is frozen: " + field + " is not writable");
+  }
 };
+`;
+
+/** A lifecycle with nothing ERP about it, to prove the seam is type-scoped. */
+const TICKET_RULE = `
+export default (row) => {
+  if (row.op === "update" && row.committed.state === "closed" && row.next.state === "open") {
+    row.deny("a closed ticket cannot be reopened");
+  }
+};
+`;
 
 const TEST_ENV = {} as Env;
 
-async function seedType(
-	orgId: string,
-	slug: string,
-	transitions: unknown,
-): Promise<void> {
-	const sql = getTestDb();
-	await sql`
-    INSERT INTO entity_types (organization_id, slug, name, metadata_schema,
-                              created_at, updated_at)
-    VALUES (${orgId}, ${slug}, ${slug},
-            ${sql.json({ type: "object", "x-transitions": transitions })},
-            current_timestamp, current_timestamp)
-  `;
-}
+// esbuild costs ~100ms per call, so compile each rule once for the whole file.
+let invoiceCompiled: string;
+let ticketCompiled: string;
 
 function ctxFor(
 	organizationId: string,
@@ -69,6 +94,20 @@ function ctxFor(
 	} as unknown as ToolContext;
 }
 
+async function seedType(
+	organizationId: string,
+	slug: string,
+	rulesCompiled: string | null,
+) {
+	const sql = getTestDb();
+	await sql`
+    INSERT INTO entity_types (organization_id, slug, name, metadata_schema,
+                              rules_compiled, created_at, updated_at)
+    VALUES (${organizationId}, ${slug}, ${slug}, ${sql.json({ type: "object" })},
+            ${rulesCompiled}, current_timestamp, current_timestamp)
+  `;
+}
+
 async function readMetadata(id: number): Promise<Record<string, unknown>> {
 	const sql = getTestDb();
 	const rows = await sql<{ metadata: unknown }[]>`
@@ -81,23 +120,62 @@ async function readMetadata(id: number): Promise<Record<string, unknown>> {
 	>;
 }
 
-async function seedInvoice(status: string, transitions: unknown = INVOICE_TRANSITIONS) {
-	const org = await createTestOrganization({ name: "Row Validation" });
+async function seedOrg(name: string) {
+	const org = await createTestOrganization({ name });
 	const user = await createTestUser();
 	await addUserToOrganization(user.id, org.id, "owner");
 	const agent = await createTestAgent({ organizationId: org.id });
-	await seedType(org.id, "invoice", transitions);
+	return { org, user, agent };
+}
+
+/**
+ * Seed an invoice and walk it to `status` through legal transitions only.
+ * Creates are validated now, so a fixture cannot be born mid-lifecycle — it has
+ * to get there the way a tenant would.
+ */
+async function seedInvoice(
+	status: "draft" | "issued" | "posted",
+	rule: string | null = invoiceCompiled,
+) {
+	const { org, user, agent } = await seedOrg(`Invoice ${status}`);
+	await seedType(org.id, "invoice", rule);
+
 	const invoice = await createEntity({
 		entity_type: "invoice",
-		name: `INV-${status}`,
+		name: "INV-1",
 		organization_id: org.id,
 		created_by: user.id,
-		metadata: { status, grand_total: 100 },
+		metadata: { status: "draft", einvoice_uuid: null, amount: 100 },
 	} as Parameters<typeof createEntity>[0]);
+
+	const ctx = ctxFor(org.id, { userId: user.id });
+	if (status === "issued" || status === "posted") {
+		await updateEntity(
+			invoice.id,
+			{ metadata: { status: "issued" } },
+			TEST_ENV,
+			ctx,
+		);
+	}
+	if (status === "posted") {
+		await updateEntity(
+			invoice.id,
+			{ metadata: { status: "posted", einvoice_uuid: "uuid-seed" } },
+			TEST_ENV,
+			ctx,
+		);
+	}
 	return { org, user, agent, invoice };
 }
 
 describe("entity row validation at the physical writer", () => {
+	beforeAll(async () => {
+		[invoiceCompiled, ticketCompiled] = await Promise.all([
+			compileEntityRule(INVOICE_RULE),
+			compileEntityRule(TICKET_RULE),
+		]);
+	}, 60_000);
+
 	beforeEach(async () => {
 		await cleanupTestDatabase();
 	});
@@ -108,36 +186,29 @@ describe("entity row validation at the physical writer", () => {
 		await expect(
 			updateEntity(
 				invoice.id,
-				{ metadata: { grand_total: 999 } },
+				{ metadata: { amount: 999 } },
 				TEST_ENV,
 				ctxFor(org.id, { agentId: agent.agentId }),
 			),
-		).rejects.toThrow(/frozen/i);
+		).rejects.toThrow(/posted is frozen: amount/);
 
-		expect((await readMetadata(invoice.id)).grand_total).toBe(100);
-	});
+		expect((await readMetadata(invoice.id)).amount).toBe(100);
+	}, 60_000);
 
-	/**
-	 * The point of moving validation to the row writer. `updateEntity` still wraps
-	 * the PERMISSION gate in `if (!isHumanEdit)`, so a human write reaches no
-	 * interceptor — yet it is still refused here, because validation is not keyed
-	 * on a principal. If this ever starts passing, validation has drifted back up
-	 * into the principal-aware pass.
-	 */
-	it("denies a HUMAN editing a frozen document, with the gate carve-out untouched", async () => {
+	it("denies a HUMAN editing a frozen document — validation has no principal in it", async () => {
 		const { org, user, invoice } = await seedInvoice("posted");
 
+		// The permission gate carves out humans. This seam answers a different
+		// question ("is the resulting state legal"), so an owner is denied too.
 		await expect(
 			updateEntity(
 				invoice.id,
-				{ metadata: { grand_total: 999 } },
+				{ metadata: { amount: 999 } },
 				TEST_ENV,
 				ctxFor(org.id, { userId: user.id }),
 			),
-		).rejects.toThrow(/frozen/i);
-
-		expect((await readMetadata(invoice.id)).grand_total).toBe(100);
-	});
+		).rejects.toThrow(/posted is frozen: amount/);
+	}, 60_000);
 
 	it("denies an illegal transition and permits a legal one", async () => {
 		const { org, user, invoice } = await seedInvoice("draft");
@@ -145,7 +216,7 @@ describe("entity row validation at the physical writer", () => {
 
 		await expect(
 			updateEntity(invoice.id, { metadata: { status: "posted" } }, TEST_ENV, ctx),
-		).rejects.toThrow(/illegal transition/i);
+		).rejects.toThrow(/cannot move draft -> posted/);
 		expect((await readMetadata(invoice.id)).status).toBe("draft");
 
 		await updateEntity(
@@ -155,121 +226,103 @@ describe("entity row validation at the physical writer", () => {
 			ctx,
 		);
 		expect((await readMetadata(invoice.id)).status).toBe("issued");
-	});
+	}, 60_000);
 
 	it("permits a writableOnExit field in the same write as its move", async () => {
 		const { org, user, invoice } = await seedInvoice("issued");
 
 		await updateEntity(
 			invoice.id,
-			{ metadata: { status: "posted", einvoice_uuid: "GIB-1" } },
+			{ metadata: { status: "posted", einvoice_uuid: "uuid-xyz" } },
 			TEST_ENV,
 			ctxFor(org.id, { userId: user.id }),
 		);
 
 		const after = await readMetadata(invoice.id);
 		expect(after.status).toBe("posted");
-		expect(after.einvoice_uuid).toBe("GIB-1");
-	});
+		expect(after.einvoice_uuid).toBe("uuid-xyz");
+	}, 60_000);
 
 	it("denies renaming a frozen document", async () => {
 		const { org, user, invoice } = await seedInvoice("posted");
 
+		// Freezing a document has to stop a rename, not merely a metadata edit —
+		// which is why `$name` is a governed column rather than an ungoverned one.
 		await expect(
-			updateEntity(invoice.id, { name: "Renamed" }, TEST_ENV, ctxFor(org.id, {
+			updateEntity(invoice.id, { name: "INV-RENAMED" }, TEST_ENV, ctxFor(org.id, {
 				userId: user.id,
 			})),
-		).rejects.toThrow(/frozen/i);
-	});
+		).rejects.toThrow(/posted is frozen: \$name/);
+	}, 60_000);
 
 	it("permits an idempotent rewrite of an unchanged value while frozen", async () => {
 		const { org, user, invoice } = await seedInvoice("posted");
 
+		// The merged patch carries every metadata key on every write, so a rule
+		// that denied on presence rather than on change would reject this.
 		await updateEntity(
 			invoice.id,
-			{ metadata: { grand_total: 100 } },
+			{ metadata: { amount: 100 } },
 			TEST_ENV,
 			ctxFor(org.id, { userId: user.id }),
 		);
 
-		expect((await readMetadata(invoice.id)).grand_total).toBe(100);
-	});
+		expect((await readMetadata(invoice.id)).amount).toBe(100);
+	}, 60_000);
 
-	it("fails closed when a type declares a malformed spec", async () => {
-		const { org, user, invoice } = await seedInvoice("posted", {
-			field: "status",
-			states: "not-an-object",
-		});
+	it("leaves a type declaring no rules untouched", async () => {
+		const { org, user, invoice } = await seedInvoice("draft", null);
 
-		await expect(
-			updateEntity(
-				invoice.id,
-				{ metadata: { grand_total: 999 } },
-				TEST_ENV,
-				ctxFor(org.id, { userId: user.id }),
-			),
-		).rejects.toThrow(/invalid x-transitions/i);
-	});
-
-	it("leaves a type declaring no transitions untouched", async () => {
-		const org = await createTestOrganization({ name: "No Spec" });
-		const user = await createTestUser();
-		await addUserToOrganization(user.id, org.id, "owner");
-		const sql = getTestDb();
-		await sql`
-      INSERT INTO entity_types (organization_id, slug, name, created_at, updated_at)
-      VALUES (${org.id}, 'note', 'note', current_timestamp, current_timestamp)
-    `;
-		const note = await createEntity({
-			entity_type: "note",
-			name: "Free-form",
-			organization_id: org.id,
-			created_by: user.id,
-			metadata: { status: "posted", body: "x" },
-		} as Parameters<typeof createEntity>[0]);
-
+		// No rule means no isolate — the write that the invoice rule would have
+		// rejected outright goes straight through.
 		await updateEntity(
-			note.id,
-			{ metadata: { body: "y" } },
+			invoice.id,
+			{ metadata: { status: "posted" } },
 			TEST_ENV,
 			ctxFor(org.id, { userId: user.id }),
 		);
-		expect((await readMetadata(note.id)).body).toBe("y");
-	});
 
-	/**
-	 * Domain-neutrality check. The engine must know nothing about invoices; the
-	 * cheapest way to keep that true is to run the identical path over a support
-	 * ticket. If this ever needs its own branch in the rules module, domain
-	 * vocabulary has leaked in.
-	 */
-	it("runs unchanged on a non-ERP lifecycle", async () => {
-		const org = await createTestOrganization({ name: "Tickets" });
-		const user = await createTestUser();
-		await addUserToOrganization(user.id, org.id, "owner");
-		await seedType(org.id, "ticket", {
-			field: "state",
-			states: {
-				open: { to: ["triaged"] },
-				triaged: { to: ["closed"] },
-				closed: { to: [], frozen: true },
-			},
-		});
+		expect((await readMetadata(invoice.id)).status).toBe("posted");
+	}, 60_000);
+
+	it("ignores a write that leaves the governed field untouched", async () => {
+		const { org, user, invoice } = await seedInvoice("posted");
+
+		// Regression for a real defect: `changed()` reported key presence, so this
+		// write — which does not touch `status` at all — was denied by the
+		// transition guard. A unit test missed it because its fixtures were
+		// delta-shaped; only the seam produces the merged shape that exposes it.
+		await updateEntity(
+			invoice.id,
+			{ metadata: { einvoice_uuid: "uuid-seed" } },
+			TEST_ENV,
+			ctxFor(org.id, { userId: user.id }),
+		);
+
+		expect((await readMetadata(invoice.id)).status).toBe("posted");
+	}, 60_000);
+
+	it("scopes rules to their own type", async () => {
+		const { org, user } = await seedOrg("Mixed types");
+		await seedType(org.id, "invoice", invoiceCompiled);
+		await seedType(org.id, "ticket", ticketCompiled);
+		const ctx = ctxFor(org.id, { userId: user.id });
+
 		const ticket = await createEntity({
 			entity_type: "ticket",
-			name: "TKT-1",
+			name: "TCK-1",
 			organization_id: org.id,
 			created_by: user.id,
-			metadata: { state: "closed", title: "boom" },
+			metadata: { state: "open" },
 		} as Parameters<typeof createEntity>[0]);
 
+		// The invoice rule would have denied a create whose status is not "draft".
+		// The ticket has no `status` at all and its own rule permits the create.
+		await updateEntity(ticket.id, { metadata: { state: "closed" } }, TEST_ENV, ctx);
+		expect((await readMetadata(ticket.id)).state).toBe("closed");
+
 		await expect(
-			updateEntity(
-				ticket.id,
-				{ metadata: { title: "edited" } },
-				TEST_ENV,
-				ctxFor(org.id, { userId: user.id }),
-			),
-		).rejects.toThrow(/frozen/i);
-	});
+			updateEntity(ticket.id, { metadata: { state: "open" } }, TEST_ENV, ctx),
+		).rejects.toThrow(/closed ticket cannot be reopened/);
+	}, 60_000);
 });

@@ -1110,6 +1110,9 @@ export async function applyEntityFieldChangeProposal(
 						note: proposal.reason ?? null,
 						// Don't overwrite a field the human re-edited after this proposal was queued.
 						expectedCurrent: proposal.current ?? null,
+						// This IS the approval. A rule that escalated to get here must not
+						// escalate again, or the card it asked for could never be cleared.
+						onEscalate: "approved",
 					})
 				: ({
 						changed: false,

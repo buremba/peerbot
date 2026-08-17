@@ -138,6 +138,12 @@ export const ManageEntitySchemaSchema = Type.Object({
         "[entity_type: create/update] Declared metric contract (eventSets/measures/dimensions/segments — see @lobu/connector-sdk) stored verbatim. The metric compiler lowers it into backing SQL. `null` clears it; omit to leave unchanged.",
     })
   ),
+  rules_source: Type.Optional(
+    Type.Union([Type.Null(), Type.String()], {
+      description:
+        "[entity_type: create/update] TypeScript write rules for this type, as source. The default export receives one row per write — `{ committed, patch, next, op, changed(field), deny(reason), escalate(fields, reason) }` — and may only NARROW what is allowed: there is no `allow`. Compiled server-side on save and executed at the entity write seam, so an illegal state is rejected no matter which caller proposed it. Note `patch` is the fully MERGED value set, not a delta, so compare against `committed` rather than testing for a key's presence. `null` clears the rules; omit to leave unchanged.",
+    })
+  ),
 
   // Relationship type fields
   is_symmetric: Type.Optional(
@@ -224,6 +230,12 @@ export const EntityTypeRowSchema = Type.Object({
   metrics_config: Type.Optional(
     Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()])
   ),
+  /**
+   * Write rules as authored. The compiled artifact is deliberately NOT returned:
+   * it is a build output, it is large, and a caller that diffs against it would
+   * churn on every compiler change rather than on an actual rule change.
+   */
+  rules_source: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   /**
    * Platform-owned type when true (slug starts with `$`: $member, $resource).
    * Derived from slug — not a DB column, not created_by. true → hidden from

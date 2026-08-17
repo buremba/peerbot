@@ -99,6 +99,79 @@ export interface EntityEventKind {
   jsonTemplate?: Record<string, unknown>;
 }
 
+/**
+ * The row handed to a write rule, one per row in the write.
+ *
+ * `patch` is the fully MERGED value set, not a delta — every key of the object
+ * is present on every write, most of them carrying unchanged values. Use
+ * {@link EntityWriteRow.changed}, which compares values, rather than inspecting
+ * `patch` for a key.
+ */
+export interface EntityWriteRow<Fields = Record<string, unknown>> {
+  /** The row as committed, read under its write lock. `{}` for a create. */
+  committed: Partial<Fields> & Record<string, unknown>;
+  /** The EFFECTIVE merged values — post approval-hold, so held fields are gone. */
+  patch: Partial<Fields> & Record<string, unknown>;
+  /** `{ ...committed, ...patch }`, i.e. the row as it would commit. */
+  next: Partial<Fields> & Record<string, unknown>;
+  /** Deletes do not reach the rule seam yet, so a rule only ever sees these two. */
+  op: "create" | "update";
+  /**
+   * True when `field`'s value differs between {@link committed} and
+   * {@link next}. Compared structurally, with `undefined` and `null` treated as
+   * the same absence.
+   *
+   * This is a value comparison rather than a presence check because `patch` is
+   * the merged value set: every field of the object arrives on every write, so
+   * "is this key present" would be true for writes that never touched it.
+   */
+  changed: (field: string) => boolean;
+  /** Reject the write. Terminal: nothing after it in the rule runs. */
+  deny: (reason: string) => never;
+  /**
+   * Hold the write for human approval. The whole write is held, never part of
+   * it — `fields` names what triggered the review, for the approver to read.
+   */
+  escalate: (fields: string | string[], reason: string) => void;
+}
+
+/**
+ * The shape a write-rule module's default export must satisfy. Used to
+ * type-check the `<Rule>` generic on {@link rulesFromFile}.
+ */
+export type EntityWriteRule<Fields = Record<string, unknown>> = (
+  row: EntityWriteRow<Fields>
+) => void | Promise<void>;
+
+/**
+ * A local write-rule source file, compiled server-side at apply time and run at
+ * the entity write seam. Carries only the path as plain data — the module is
+ * NOT imported at config-eval time. Mirrors {@link ReactionSource}.
+ */
+export interface EntityRulesSource {
+  readonly kind: "entityRulesSource";
+  /** Path to the rule module, relative to the config file. */
+  path: string;
+}
+
+/**
+ * Reference a local write-rule file to compile + ship at apply time.
+ *
+ * ```ts
+ * import type invoiceRules from "./rules/invoice.ts";
+ * rules: rulesFromFile<typeof invoiceRules>("./rules/invoice.ts"),
+ * ```
+ *
+ * A rule may only NARROW what is allowed — `deny` and `escalate`, no `allow`.
+ * It runs at the physical writer, so it binds every caller equally: an agent,
+ * the API and a connector sync all reach the same seam.
+ */
+export function rulesFromFile<
+  _Rule extends EntityWriteRule<never> = EntityWriteRule<never>,
+>(path: string): EntityRulesSource {
+  return { kind: "entityRulesSource", path };
+}
+
 export interface EntityType {
   readonly kind: "entityType";
   /** Stable slug — diff key. */
@@ -122,6 +195,12 @@ export interface EntityType {
    * the rest of the schema (mirrors a connector feed's `eventKinds`).
    */
   eventKinds?: Record<string, EntityEventKind>;
+  /**
+   * Write rules for this type, referenced with {@link rulesFromFile}. Compiled
+   * server-side on apply and enforced at the entity write seam, so an illegal
+   * state is rejected regardless of which caller proposed it.
+   */
+  rules?: EntityRulesSource;
   /**
    * Entity-resolution policy (the `x-lobu-resolution` metadata_schema key the
    * server reads to decide whether duplicate entities sharing a normalized

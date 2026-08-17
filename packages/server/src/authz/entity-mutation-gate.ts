@@ -200,6 +200,8 @@ export function deferEntityFieldChange(args: {
 	fields: Record<string, unknown>;
 	current: Record<string, unknown>;
 	attribution: MutationAttribution;
+	/** Replaces the generated reason line — see `buildFieldChangeDeferral`. */
+	reason?: string;
 	automationId?: number | null;
 	/** Groups this proposal's run into a per-window batch approval card. */
 	windowId?: number | null;

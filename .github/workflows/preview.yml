@@ -3,6 +3,7 @@ name: PR Preview
 on:
   pull_request:
     types: [opened, synchronize, reopened, closed]
+  workflow_dispatch:
 
 permissions:
   contents: read

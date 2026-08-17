@@ -138,12 +138,13 @@ COPY --from=preview-deps /app/packages/server ./packages/server
 COPY --from=preview-deps /app/packages/cli ./packages/cli
 COPY --from=preview-deps /app/packages/owletto ./packages/owletto
 
-# Copy pgvector-embedded dist into both node_modules (for import("@lobu/pgvector-embedded"))
-# and the vendored fallback path (for ./vendor/pgvector-embedded/dist/index.js).
-# The hoisted bun symlink node_modules/@lobu/pgvector-embedded -> ../../packages/pgvector-embedded
-# may not resolve in the runtime image, so we create real directories.
+# Copy pgvector-embedded into both node_modules and the vendored fallback path.
+# The hoisted bun symlink may not resolve in the runtime image.
+# prebuilt/ contains the native .so binaries; dist/ has the TS wrapper.
 COPY --from=preview-deps /app/packages/pgvector-embedded/dist /app/packages/server/dist/vendor/pgvector-embedded/dist
+COPY --from=preview-deps /app/packages/pgvector-embedded/prebuilt /app/packages/server/dist/vendor/pgvector-embedded/prebuilt
 COPY --from=preview-deps /app/packages/pgvector-embedded/dist /app/node_modules/@lobu/pgvector-embedded/dist
+COPY --from=preview-deps /app/packages/pgvector-embedded/prebuilt /app/node_modules/@lobu/pgvector-embedded/prebuilt
 
 COPY db/migrations ./db/migrations
 COPY scripts/migrate-up.mjs ./scripts/migrate-up.mjs

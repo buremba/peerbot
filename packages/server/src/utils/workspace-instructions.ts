@@ -111,20 +111,31 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
       return `- ${et.slug} ("${et.name}")${desc ? ` — ${desc}` : ''}${fields ? ` — fields: ${fields}` : ''}`;
     });
 
-    const emittedRelSlugs = new Set<string>();
+    // An inverse pair renders as one line, but `acl_managed` is decided per
+    // type, so the halves can disagree: pairing is only refused against an
+    // ALREADY-classified type, and classification later sets `purpose` without
+    // touching `inverse_type_id`, so it lands on one half of a live pair.
+    // Collapsing regardless drops whichever half loses the name ordering, and
+    // when that is the ACL-managed half the agent never learns the slug exists,
+    // let alone that writing it 403s. So collapse a pair only when both halves
+    // carry the same rule. A slug not yet emitted maps to `undefined`, which
+    // never equals a boolean — that is what keeps the first half of a pair (and
+    // a type whose inverse is inactive, hence absent here) from skipping itself.
+    const emittedRelAclManaged = new Map<string, boolean>();
     const relTypeLines: string[] = [];
     for (const rt of relationshipTypes) {
       const slug = rt.slug as string;
       const inverseSlug = rt.inverse_type_slug as string | null;
-      if (inverseSlug && emittedRelSlugs.has(inverseSlug)) continue;
-      emittedRelSlugs.add(slug);
+      const aclManaged = Boolean(rt.acl_managed);
+      if (inverseSlug && emittedRelAclManaged.get(inverseSlug) === aclManaged) continue;
+      emittedRelAclManaged.set(slug, aclManaged);
       const parts: string[] = [];
       if (rt.is_symmetric) parts.push('symmetric');
       if (inverseSlug) parts.push(`inverse: ${inverseSlug}`);
       // Annotated rather than filtered out: reading these edges is legitimate,
       // so hiding the type would blind the agent to real schema. Only the WRITE
       // is refused, so say exactly that.
-      if (rt.acl_managed) parts.push('read-only: access control');
+      if (aclManaged) parts.push('read-only: access control');
       const meta = parts.length > 0 ? ` (${parts.join(', ')})` : '';
       const desc = singleLine(rt.description);
       relTypeLines.push(`- ${slug}${meta}${desc ? ` — ${desc}` : ''}`);

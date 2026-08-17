@@ -1,5 +1,94 @@
 # Changelog
 
+## [15.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.22.0...lobu-v15.0.0) (2026-08-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **connector-sdk:** IdentityNamespaceDefinition no longer declares uniquePerOrg, and the entries in IDENTITY_NAMESPACE_REGISTRY no longer carry it. Nothing consumed the field — uniqueness is enforced solely by the blanket idx_entity_identities_live_unique index — so there is no behavioural change and no migration to perform. Consumers reading definition.uniquePerOrg should drop the read; consumers needing per-namespace uniqueness should track #2798.
+* make Automation canonical ([#2784](https://github.com/lobu-ai/lobu/issues/2784))
+
+### Features
+
+* allow reaction-only Automations (prompt optional) with codified-vs-agentic UI ([#2822](https://github.com/lobu-ai/lobu/issues/2822)) ([a79c6ef](https://github.com/lobu-ai/lobu/commit/a79c6ef5845fa84d9248af3b13c86b2d230e4355))
+* **attention:** browser-handoff drafts stay until Done + HN draft staging + device-pinned behaviors ([#2758](https://github.com/lobu-ai/lobu/issues/2758)) ([d9d42aa](https://github.com/lobu-ai/lobu/commit/d9d42aa908b7cde6b32c4aac36adf7fef7e559ed))
+* **behaviors:** route notifications to one channel ([#2789](https://github.com/lobu-ai/lobu/issues/2789)) ([140b000](https://github.com/lobu-ai/lobu/commit/140b000bed631df5eeb72077ccde0f2523ad6201))
+* **browser:** activate operations on visited pages ([#2734](https://github.com/lobu-ai/lobu/issues/2734)) ([3180c94](https://github.com/lobu-ai/lobu/commit/3180c94e2015b793a9620a3609a224e78e388010))
+* **ci:** make Owletto pointer updates non-blocking ([#2782](https://github.com/lobu-ai/lobu/issues/2782)) ([ed46903](https://github.com/lobu-ai/lobu/commit/ed46903951e394ef521403085ab90c3ec750abc3))
+* **cli:** add field() shorthand for entity properties; route CI by trusted author ([#2823](https://github.com/lobu-ai/lobu/issues/2823)) ([5d1ef28](https://github.com/lobu-ai/lobu/commit/5d1ef28f3d5843a9a1d2b724ee8c0f26baada8d7))
+* **cli:** add on/every/context shorthands for automation triggers and sources ([#2819](https://github.com/lobu-ai/lobu/issues/2819)) ([228c75b](https://github.com/lobu-ai/lobu/commit/228c75b4409101a2f512d6eedd24344a264c7380))
+* **connectors:** sync Revolut investment balances ([#2693](https://github.com/lobu-ai/lobu/issues/2693)) ([60b0151](https://github.com/lobu-ai/lobu/commit/60b0151ce3d2cedec74cf469dd7f7b9e1b4094a3))
+* make Automation canonical ([#2784](https://github.com/lobu-ai/lobu/issues/2784)) ([03c2904](https://github.com/lobu-ai/lobu/commit/03c2904aea0fed68adfa17898ac08bc1acc4baae))
+* **personal-agent:** consolidate household net worth ([#2737](https://github.com/lobu-ai/lobu/issues/2737)) ([7e6d247](https://github.com/lobu-ai/lobu/commit/7e6d2477b9d504eecf39247424c93a6cc8287c4c))
+* **review:** skip LLM passes for deterministic changes ([#2780](https://github.com/lobu-ai/lobu/issues/2780)) ([0e64b7b](https://github.com/lobu-ai/lobu/commit/0e64b7bee69d2d99208cf68295ce499de5193c47))
+* **review:** skip the cross-harness review for pure submodule pointer bumps ([#2773](https://github.com/lobu-ai/lobu/issues/2773)) ([1d11ce9](https://github.com/lobu-ai/lobu/commit/1d11ce9b4b11af742bf905d145b0510a92e674d3))
+* **server:** classify authorization-bearing relationship types ([#2825](https://github.com/lobu-ai/lobu/issues/2825)) ([629b531](https://github.com/lobu-ai/lobu/commit/629b5314c9d1ffeaf808ea26672e1a9c31bc7623))
+* **server:** classify member_of as authorization-bearing ([#2833](https://github.com/lobu-ai/lobu/issues/2833)) ([87e9f69](https://github.com/lobu-ai/lobu/commit/87e9f6945c5ab85e91f8ff9d88f994dd97c40628))
+* **server:** complete Atlassian Rovo Jira feeds [client-regen-not-needed] ([#2733](https://github.com/lobu-ai/lobu/issues/2733)) ([dcfd8ae](https://github.com/lobu-ai/lobu/commit/dcfd8aed89c2d23767f87c9e1a3d052d0e63ee08))
+* **server:** deliver Jira webhooks through Atlassian MCP ([#2745](https://github.com/lobu-ai/lobu/issues/2745)) ([96665f2](https://github.com/lobu-ai/lobu/commit/96665f25d8d26dee3aff0fa3ffc313dbf1a3614e))
+* **server:** give Atlassian Rovo MCP the Jira virtual issues feed ([#2731](https://github.com/lobu-ai/lobu/issues/2731)) ([d5b86cc](https://github.com/lobu-ai/lobu/commit/d5b86cca7ec245c234fa624ca4c510c7b7ec49b6))
+* **server:** lower the declared asOf metric read mode ([#2766](https://github.com/lobu-ai/lobu/issues/2766)) ([88fa2e8](https://github.com/lobu-ai/lobu/commit/88fa2e84d36da716d2bff4326953617e14d1ed10))
+* **server:** record edge change history for link, unlink and update_link ([#2807](https://github.com/lobu-ai/lobu/issues/2807)) ([e76dcc1](https://github.com/lobu-ai/lobu/commit/e76dcc1b3f531b8cc29e857ad276fa3473e93fcd)), closes [#2805](https://github.com/lobu-ai/lobu/issues/2805)
+* **server:** surface ACL sync failures instead of failing silently ([#2788](https://github.com/lobu-ai/lobu/issues/2788)) ([078be4c](https://github.com/lobu-ai/lobu/commit/078be4c03a7d61c693c033be89196fb4b41c7c6a))
+* **ui-review:** pass deploy-only Owletto pointer moves as not applicable ([#2767](https://github.com/lobu-ai/lobu/issues/2767)) ([e6f605b](https://github.com/lobu-ai/lobu/commit/e6f605b8df5c2c477255417cbf0322ac27459021))
+* **x-connector:** support scraping the user's open x.com tab for home_feed ([#2755](https://github.com/lobu-ai/lobu/issues/2755)) ([d4ec400](https://github.com/lobu-ai/lobu/commit/d4ec4003dea79fd9d68771794ff916dc0f2e5ea4))
+
+
+### Bug Fixes
+
+* **apply:** never block or prune system-tagged Behaviors ([#2783](https://github.com/lobu-ai/lobu/issues/2783)) ([5fce260](https://github.com/lobu-ai/lobu/commit/5fce2601c7f3214a9ba21292db4ec2add83229f9))
+* **auth:** preserve extension sidebar organization ([#2746](https://github.com/lobu-ai/lobu/issues/2746)) ([875095e](https://github.com/lobu-ai/lobu/commit/875095e13b6439aeb21da45c248de313f120c0f7))
+* **cli:** treat ACL-managed relationship types as platform-owned in apply ([#2827](https://github.com/lobu-ai/lobu/issues/2827)) ([b4ce5d4](https://github.com/lobu-ai/lobu/commit/b4ce5d435717f1f658c969809092ef689872e56f))
+* **connectors:** align health and deletion lifecycle ([#2775](https://github.com/lobu-ai/lobu/issues/2775)) ([e6c8778](https://github.com/lobu-ai/lobu/commit/e6c87789f31ac5a438133468d3f88cb5064c96e4))
+* **connectors:** expose Jira webhook delivery scopes ([#2753](https://github.com/lobu-ai/lobu/issues/2753)) ([4eccc45](https://github.com/lobu-ai/lobu/commit/4eccc458b965f41e6db659c192dbba2af4c6b698))
+* **example:** describe page-activated browser drafts ([#2738](https://github.com/lobu-ai/lobu/issues/2738)) ([41e5f09](https://github.com/lobu-ai/lobu/commit/41e5f096ea45b2fc59296ec27c2ed440141d4f9a))
+* **example:** do not close Midas holdings a partial render has not painted ([#2722](https://github.com/lobu-ai/lobu/issues/2722)) ([2f10837](https://github.com/lobu-ai/lobu/commit/2f1083709c2615ab8c11ce9f18ed5b3e0cdc3432))
+* **examples:** adopt Lobu Team lunch schema ([#2725](https://github.com/lobu-ai/lobu/issues/2725)) ([6f642b4](https://github.com/lobu-ai/lobu/commit/6f642b41ad5f721239731d99d2ae5c2ebd4193f0))
+* **examples:** avoid archived Lobu Team Behavior slugs ([#2723](https://github.com/lobu-ai/lobu/issues/2723)) ([644e150](https://github.com/lobu-ai/lobu/commit/644e150c11a93ccd0d904a3fde08e0c2baee5085))
+* **examples:** make Lobu Team digest headless-safe ([#2729](https://github.com/lobu-ai/lobu/issues/2729)) ([d88d52c](https://github.com/lobu-ai/lobu/commit/d88d52cc4462629dc4cfc72274599c9a440451f8))
+* **examples:** pre-approve digest completion ([#2730](https://github.com/lobu-ai/lobu/issues/2730)) ([bcf37e6](https://github.com/lobu-ai/lobu/commit/bcf37e683e0f03f42f17163fdb627b2d7a7770f1))
+* **example:** wait for Midas position rows ([#2724](https://github.com/lobu-ai/lobu/issues/2724)) ([b4b390e](https://github.com/lobu-ai/lobu/commit/b4b390e80d90f8a775a775b6f3b6e4e23dfc3f4f))
+* **handoff:** retry stale composer refs on X + Open post opens a fresh tab ([#2768](https://github.com/lobu-ai/lobu/issues/2768)) ([d973ebe](https://github.com/lobu-ai/lobu/commit/d973ebe7b1887380fd063980bcbeda941dcea415))
+* **mcp:** decouple data tools from app rendering ([#2763](https://github.com/lobu-ai/lobu/issues/2763)) ([c314660](https://github.com/lobu-ai/lobu/commit/c3146601cb1eb2d9ad264c0094aac9c8aa1095c4))
+* **mcp:** make approval apps resume hosts ([#2828](https://github.com/lobu-ai/lobu/issues/2828)) ([7f48127](https://github.com/lobu-ai/lobu/commit/7f481272b1a418c2935e0cad5856801a081d0829))
+* **mcp:** rehydrate approval apps after reload ([#2831](https://github.com/lobu-ai/lobu/issues/2831)) ([d29877b](https://github.com/lobu-ai/lobu/commit/d29877b1f88551fa4d68fe20d14183b6918ed24e))
+* **mcp:** render saved memory inline ([#2793](https://github.com/lobu-ai/lobu/issues/2793)) ([b331352](https://github.com/lobu-ai/lobu/commit/b3313527a87872e90f790b3ebfbb0b62d4780999))
+* **mcp:** simplify app approvals ([#2814](https://github.com/lobu-ai/lobu/issues/2814)) ([3b5766f](https://github.com/lobu-ai/lobu/commit/3b5766f792f498b3e4e6b35d5b6b124ec0715097))
+* **owletto:** render SDK results for MCP clients, not just the Lobu SPA ([#2756](https://github.com/lobu-ai/lobu/issues/2756)) ([9d59c6a](https://github.com/lobu-ai/lobu/commit/9d59c6a158ddd159c25a94c9ac5c9a97a991c87a))
+* **personal-agent:** route task behavior through Hetzner ([#2778](https://github.com/lobu-ai/lobu/issues/2778)) ([a3e887a](https://github.com/lobu-ai/lobu/commit/a3e887a0857f0d13e3cacc5ae64a0da1dbf4162e))
+* **personal-agent:** version net-worth idempotency keys ([#2727](https://github.com/lobu-ai/lobu/issues/2727)) ([69eee6a](https://github.com/lobu-ai/lobu/commit/69eee6a17930aae21a4f484e5eed9ae5a533fd98))
+* **security:** keep worker tokens out of run history ([#2774](https://github.com/lobu-ai/lobu/issues/2774)) ([0b82326](https://github.com/lobu-ai/lobu/commit/0b8232639a484310842be44eb0c84ac4a20aa36e))
+* **server,owletto:** surface truncated columns and started side effects in run_sdk results ([#2748](https://github.com/lobu-ai/lobu/issues/2748)) ([968e54f](https://github.com/lobu-ai/lobu/commit/968e54f1ea69c3ce5295e4dc5bf436c5c2fa9448))
+* **server:** bound the cleanup TRUNCATE lock wait instead of hanging ([#2820](https://github.com/lobu-ai/lobu/issues/2820)) ([3d92ace](https://github.com/lobu-ai/lobu/commit/3d92aceaaf31b2ff15be775669cf7365e2d516a4))
+* **server:** close prod-readiness auth and device lifecycle gaps ([#2757](https://github.com/lobu-ai/lobu/issues/2757)) ([28c13d2](https://github.com/lobu-ai/lobu/commit/28c13d20e51c518f2f7b3f4749c1316dcfc12a63))
+* **server:** copy event lineage on supersede ([#2732](https://github.com/lobu-ai/lobu/issues/2732)) ([4f14ab4](https://github.com/lobu-ai/lobu/commit/4f14ab4050c5a5124d5b09135ae835b5bf7c0396))
+* **server:** count connection-scoped MCP operations on get/list ([#2728](https://github.com/lobu-ai/lobu/issues/2728)) ([bd13740](https://github.com/lobu-ai/lobu/commit/bd13740cec505e095ea38f11252b01b446c61462))
+* **server:** declare the stored relationship source vocabulary and protect reconciled edges ([#2810](https://github.com/lobu-ai/lobu/issues/2810)) ([69206db](https://github.com/lobu-ai/lobu/commit/69206db42b4c5373514f9bb869f21aaa3dc998a1)), closes [#2811](https://github.com/lobu-ai/lobu/issues/2811) [#2799](https://github.com/lobu-ai/lobu/issues/2799)
+* **server:** harden ACL sync failure observability ([#2790](https://github.com/lobu-ai/lobu/issues/2790)) ([a665ec5](https://github.com/lobu-ai/lobu/commit/a665ec5a5c3babd8cf137347d27be4d72bed1b26))
+* **server:** make connector entity writes atomic ([#2808](https://github.com/lobu-ai/lobu/issues/2808)) ([dd4207d](https://github.com/lobu-ai/lobu/commit/dd4207d31218aae92984cd39b14c43509dba33f1))
+* **server:** preserve behavior attribution on approvals ([#2726](https://github.com/lobu-ai/lobu/issues/2726)) ([c612a5e](https://github.com/lobu-ai/lobu/commit/c612a5e2edc019cba7dd14828d3793388473c20f))
+* **server:** prod-health fixes — z.ai removal, MCP refresh-on-401, member-claim healing, reaction retry, 4xx tool errors ([#2744](https://github.com/lobu-ai/lobu/issues/2744)) ([d7ea443](https://github.com/lobu-ai/lobu/commit/d7ea4437d35fc4232aa50432b3a7114eda7a144d))
+* **server:** redact connector signature headers ([#2791](https://github.com/lobu-ai/lobu/issues/2791)) ([0748e11](https://github.com/lobu-ai/lobu/commit/0748e11317a21e8c7b1ace36c481e25cd1b1829a))
+* **server:** register URI tool format ([#2739](https://github.com/lobu-ai/lobu/issues/2739)) ([337d147](https://github.com/lobu-ai/lobu/commit/337d1472542681cb2606b07c01fe0069f43eb94b))
+* **server:** scope Jira dynamic webhooks to visible projects ([#2751](https://github.com/lobu-ai/lobu/issues/2751)) ([cc0c97f](https://github.com/lobu-ai/lobu/commit/cc0c97f7549c7067e17c4cd4497902caa8e064a2))
+* **server:** serialize ACL syncs per connection and fence the projection ([#2830](https://github.com/lobu-ai/lobu/issues/2830)) ([30e506c](https://github.com/lobu-ai/lobu/commit/30e506c7e03daabbc321f44a35683af55352b0fa))
+* **server:** serialize classifier entity enablement ([#2800](https://github.com/lobu-ai/lobu/issues/2800)) ([dba3767](https://github.com/lobu-ai/lobu/commit/dba3767563dcf1604c75cc9e863323d36c63a3d9))
+* **server:** stop passing retired Behavior REST args ([#2720](https://github.com/lobu-ai/lobu/issues/2720)) ([6e4d66f](https://github.com/lobu-ai/lobu/commit/6e4d66f29d5cb25a58d4699fbcbee02204eb1240))
+* **server:** stop validating the metadata clear sentinel as a value ([#2770](https://github.com/lobu-ai/lobu/issues/2770)) ([3922c87](https://github.com/lobu-ai/lobu/commit/3922c877d7f04fd9c201b4e179d941830679f9a7))
+* **server:** thread the caller's handle through entity-write helpers ([#2829](https://github.com/lobu-ai/lobu/issues/2829)) ([acb9c26](https://github.com/lobu-ai/lobu/commit/acb9c262e5fe62e33bf16008e526ce1bc2d66c3e))
+* **server:** verify Atlassian webhook bearer JWTs ([#2754](https://github.com/lobu-ai/lobu/issues/2754)) ([b261cf7](https://github.com/lobu-ai/lobu/commit/b261cf7ed61a21e6e16bcd67870236f630ad4930))
+* **slack:** invalidate ACL freshness on channel membership changes ([#2771](https://github.com/lobu-ai/lobu/issues/2771)) ([b6e36ad](https://github.com/lobu-ai/lobu/commit/b6e36adaca80a3e935bdc7d2e21edda32129b3ef))
+
+
+### Reverts
+
+* **server:** move Lobu Team digest out of core ([#2717](https://github.com/lobu-ai/lobu/issues/2717)) ([3fb2a5b](https://github.com/lobu-ai/lobu/commit/3fb2a5b4134b0bd27190ce10e2bad12e63374382))
+
+
+### Code Refactoring
+
+* **connector-sdk:** drop the dead uniquePerOrg identity flag ([#2817](https://github.com/lobu-ai/lobu/issues/2817)) ([9519967](https://github.com/lobu-ai/lobu/commit/9519967ae408509914cea96111b0e9e742a76422)), closes [#2798](https://github.com/lobu-ai/lobu/issues/2798)
+
 ## [14.22.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.21.0...lobu-v14.22.0) (2026-08-13)
 
 

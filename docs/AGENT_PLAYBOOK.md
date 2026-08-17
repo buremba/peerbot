@@ -50,16 +50,16 @@ Mechanical traps (build, SQL, testing, submodule, browser) live in `docs/GOTCHAS
 
 | Command | What it actually does |
 |---|---|
-| `make pre-pr-remote` | Full Linux CI graph on Depot against the **staged** tree; builds before checks that consume dist, which is what protects against a stale-dist false green. Fails closed on untracked/unstaged changes so the tree attestation survives the following commit. |
-| `make pre-pr-remote-fast` | Broad interim confidence, remote. Never substitutes for the final gate. |
-| `make pre-pr` | CPU-heavy local fallback for when Depot is unavailable. |
+| `make pre-pr` | Local fast gates (typecheck, knip, lint, naming/LLM/entity checks) — catches the cheap common misses before push. No DB, no remote. |
+| GitHub CI (`ci.yml`) | **The canonical gate** — full Linux graph on GitHub-hosted runners, free on this public repo, ~5–7 min per PR. |
+| `make pre-pr-remote` | Optional: full graph on Depot (or `K8S=1` in a local cluster). Not part of the required loop. |
 | `make review` | Handles the review verdict/status or safe-class skip. Runs no typecheck, knip, or tests — **not** proof CI will pass. |
 | `make review-fix` | Unposted fixer pass. Edits the working tree; re-read files before trusting them. |
 | `make ui-review` | Records exact UI proof for Owletto pointer changes; passes non-Owletto changes and complete, forward-only pointer diffs confined to `deploy/` as not applicable. |
 
-The macOS app lane stays on GitHub/Mac hardware. Subset runs (`make pre-pr-remote REMOTE_JOBS=unit`) rerun one lane but never attest. A fresh full `make review` requires the matching Depot tree attestation and refuses a surprise local build; safe-class skips and cached verdicts do not rebuild. Only a documented Depot outage permits `REVIEW_ALLOW_LOCAL_BUILD=1 make review`.
+The macOS app lane stays on GitHub/Mac hardware. A fresh full `make review` requires GitHub CI (`ci.yml`) to have passed for the exact HEAD commit and refuses a surprise local package build; safe-class skips and cached verdicts do not rebuild. `REVIEW_ALLOW_LOCAL_BUILD=1 make review` overrides only when CI cannot run for HEAD.
 
-**Depot serializes org-wide.** A newer dispatch silently cancels the older run, and `gh run rerun` counts as a dispatch — re-running an *old* commit's CI cancels the run for the current HEAD. Check `pgrep -f "make pre-pr-remote"` immediately before dispatching.
+**GitHub CI cancels per-ref.** A new push to a PR cancels its in-flight CI run (superseded runs die); each branch/PR has its own group, so runs across PRs are independent.
 
 **Knowing when every required check has reported.** `gh pr checks <n> --required` prints only contexts GitHub has returned for the pull request. Lobu's required `integration` fan-in waits on the `integration-vitest` shards and `integration-bun`, and GitHub does not return it until it starts. Early on it is therefore absent rather than `pending`. A wait loop that counts `pending` rows exits successfully while that required check is still missing, and the merge fails with `Required status check "integration" is expected.`
 
@@ -103,7 +103,7 @@ Record the result when it lands.
 
 ## Session efficiency
 
-- Exact local tests remain the fastest red-green loop; Depot owns CPU-heavy breadth. Never start a local full gate alongside a remote one.
+- Exact local tests remain the fastest red-green loop; GitHub CI owns CPU-heavy breadth. `make pre-pr` covers the cheap local gates before push.
 - `gh pr checks <n> --required` plus `gh pr view <n> --json number,title,isDraft,mergeStateStatus,reviewDecision` is the compact status read; avoid the much larger `statusCheckRollup` payload.
 - Delegated CLIs (OpenCode, Claude CLI) get polled at most once per 4.5 minutes unless they finish, request input or approval, or the user asks for an immediate update. Read only output since the last cursor. Ask them to persist detailed evidence to files and return compact status, counts, failures, and exit codes; never replay a full session or stream verbose diffs into the supervising context.
 - Screenshots are the single largest context-bloat source. Prefer `get_page_text` / `read_page` / `javascript_tool`, and screenshot only when visual layout itself is under test.

@@ -25,9 +25,10 @@ help:
 	@echo "  make review [BASE=<branch>]                - Run the cross-harness LLM reviewer against the local diff (deterministic suites run in CI); posts pi-review status and PR comment"
 	@echo "  make review-fix [BASE=<branch>]            - Pre-review fixer: reviewer CLI with write access fixes review-grade findings in the tree; posts nothing"
 	@echo "  make ui-review [ARTIFACT=<https-url>]       - Record Owletto UI proof; complete forward deploy-only pointer diffs pass as not applicable; OPEN=1 opens the merged PR"
-	@echo "  make pre-pr-remote-fast                    - Run required Linux merge jobs on Depot (broad iteration; no attestation)"
-	@echo "  make pre-pr-remote [REMOTE_JOBS='unit …']  - Run staged full Linux CI on Depot (default final gate; no local CPU)"
-	@echo "  K8S=1 make pre-pr-remote                   - Run CI in local K8s cluster via kubectl (no Depot)"
+	@echo "  make pre-pr                                 - Local fast gates before push (GitHub CI is the canonical gate)"
+	@echo "  make pre-pr-remote-fast                    - Optional: Linux merge jobs on Depot (broad iteration)"
+	@echo "  make pre-pr-remote [REMOTE_JOBS='unit …']  - Optional: staged full Linux CI on Depot"
+	@echo "  K8S=1 make pre-pr-remote                   - Optional: run CI in local K8s cluster via kubectl (no Depot)"
 	@echo "  make pre-pr                                - Run the CPU-heavy deterministic gate locally (explicit fallback)"
 	@echo "  make owletto-mac [INSTALL=1] [OPEN=1]      - Build Owletto.app with the Developer ID identity (TCC grants match the notarized release); INSTALL=1 replaces /Applications/Owletto.app, OPEN=1 launches it"
 	@echo "  make owletto-mac-e2e [SKIP_BUILD=1]        - Build/install the signed Owletto.app then probe prod computer_use (permissions + list_windows) via the paired device connection"
@@ -322,10 +323,9 @@ pre-pr:
 	@echo "✅ pre-pr gates clean. NOTE: confirm your fix is in 'git show HEAD:<file>',"
 	@echo "   not just the working tree — a fix that isn't committed won't reach CI."
 
-# Default deterministic gate for development sessions. Stage intended files
-# explicitly first: Depot applies tracked local changes and runs Linux jobs in
-# parallel without consuming the developer Mac. REMOTE_JOBS narrows the run;
-# omit it for the full settled-tree attested gate.
+# OPTIONAL remote gate (GitHub CI is canonical). Stage intended files first:
+# Depot applies tracked local changes and runs Linux jobs in parallel without
+# consuming the developer Mac. REMOTE_JOBS narrows the run.
 REMOTE_FAST_JOBS := unit frontend server-integration-vitest server-integration-bun integration format-lint typecheck migrations
 
 # Broad iteration gate: the entire required Linux merge graph, without the

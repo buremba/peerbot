@@ -474,18 +474,30 @@ if [ -n "$CACHE_FILE" ]; then
   fi
 fi
 
-# A fresh full review must reuse the exact settled tree that passed Depot.
-# Refuse to surprise the operator with a CPU-heavy local package build; the
-# explicit override is reserved for a documented Depot outage.
-REMOTE_PREFLIGHT_FILE="$(git rev-parse --git-path lobu-remote-preflight)"
-HEAD_TREE="$(git rev-parse 'HEAD^{tree}')"
-REMOTE_BUILD_ATTESTED=0
-if [ -z "$(git status --porcelain)" ] && remote_ci_attestation_matches "$HEAD_TREE" "$REMOTE_PREFLIGHT_FILE"; then
-  REMOTE_BUILD_ATTESTED=1
-elif [ "$CACHE_HIT" != "1" ] && [ "$REVIEW_ALLOW_LOCAL_BUILD" != "1" ]; then
-  echo "make review requires a full Depot preflight for the current committed tree." >&2
-  echo "Run make pre-pr-remote before committing, or again on the clean commit." >&2
-  echo "During a Depot outage only: REVIEW_ALLOW_LOCAL_BUILD=1 make review" >&2
+# True when the ci.yml workflow's latest run for the exact commit passed.
+# ci.yml triggers on pull_request events, so the run is found by head sha.
+ci_run_green_for_head() {
+  local sha="$1"
+  local run
+  run="$(gh run list --workflow=ci.yml --commit "$sha" --limit 1 \
+    --json status,conclusion --jq '.[0] // empty' 2>/dev/null)"
+  [ -n "$run" ] || return 1
+  [ "$(jq -r '.status' <<<"$run")" = "completed" ] || return 1
+  [ "$(jq -r '.conclusion' <<<"$run")" = "success" ]
+}
+
+# A fresh full review must reuse the exact committed tree that GitHub CI
+# validated. Refuse to surprise the operator with a CPU-heavy local package
+# build; the explicit override is for when CI cannot run for this HEAD.
+HEAD_SHA="$(git rev-parse HEAD)"
+GITHUB_CI_GREEN=0
+if [ -z "$(git status --porcelain)" ] && ci_run_green_for_head "$HEAD_SHA"; then
+  GITHUB_CI_GREEN=1
+fi
+if [ "$GITHUB_CI_GREEN" != "1" ] && [ "$CACHE_HIT" != "1" ] && [ "$REVIEW_ALLOW_LOCAL_BUILD" != "1" ]; then
+  echo "make review requires GitHub CI (workflow ci.yml) to have passed for $HEAD_SHA." >&2
+  echo "Push the commit and wait for the PR's CI to finish, then re-run." >&2
+  echo "Override only when CI cannot run: REVIEW_ALLOW_LOCAL_BUILD=1 make review" >&2
   exit 2
 fi
 
@@ -525,13 +537,13 @@ sed 's/^/>>   /' "$CI_CHECKS_FILE"
 
 # --- build ------------------------------------------------------------------
 # The reviewer's exploratory probes (targeted bun test runs, CLI invocations)
-# need workspace packages built. Reuse a clean exact-tree full Depot preflight;
+# need workspace packages built. Reuse the clean tree GitHub CI already built;
 # otherwise rebuild locally so a stale or missing dist cannot create noise.
 
 BUILD_LOG="$REVIEW_RUN_DIR/build.log"
-if [ "$REMOTE_BUILD_ATTESTED" = "1" ]; then
-  echo ">> full Depot preflight already passed for tree $HEAD_TREE; skipping duplicate local package build"
-  printf 'Skipped: full Depot preflight passed for tree %s\n' "$HEAD_TREE" > "$BUILD_LOG"
+if [ "$GITHUB_CI_GREEN" = "1" ]; then
+  echo ">> GitHub CI already passed for $HEAD_SHA; skipping duplicate local package build"
+  printf 'Skipped: GitHub CI passed for %s\n' "$HEAD_SHA" > "$BUILD_LOG"
   BUILD_EXIT=0
 else
   echo ">> make build-packages → $BUILD_LOG"

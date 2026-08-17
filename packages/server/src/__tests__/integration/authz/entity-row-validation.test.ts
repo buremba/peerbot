@@ -22,16 +22,7 @@ import {
 	createTestUser,
 } from "../../setup/test-fixtures";
 
-/**
- * The invoice lifecycle as an author would write it.
- *
- * `row.patch` carries the fully MERGED metadata, not a delta, so every key shows
- * up on every write — which is exactly why `changed()` compares VALUES. Both
- * guards here lean on that: `changed("status")` is the transition test, and
- * `changed(field)` in the frozen loop is what lets an unchanged value ride along
- * in a write that touches something else. An earlier cut had `changed()` report
- * key presence instead, and every rule had to hand-roll both comparisons.
- */
+/** The invoice lifecycle as an author would write it. */
 const INVOICE_RULE = `
 const ALLOWED = { draft: ["issued"], issued: ["posted"], posted: [] };
 const FROZEN = ["issued", "posted"];
@@ -258,8 +249,6 @@ describe("entity row validation at the physical writer", () => {
 	it("permits an idempotent rewrite of an unchanged value while frozen", async () => {
 		const { org, user, invoice } = await seedInvoice("posted");
 
-		// The merged patch carries every metadata key on every write, so a rule
-		// that denied on presence rather than on change would reject this.
 		await updateEntity(
 			invoice.id,
 			{ metadata: { amount: 100 } },

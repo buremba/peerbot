@@ -193,6 +193,14 @@ export async function getEntityCountsByTypes(
 interface EntityCreateOptions {
 	skipHooks?: boolean;
 	hookContext?: EntityHookContext;
+	/**
+	 * What a rule's `escalate` means for this create. Defaults to `"defer"`,
+	 * which throws so the caller can route the create into an approval card.
+	 * The path APPLYING an approved create passes `"approved"`.
+	 *
+	 * See `validateEntityRowInsert`'s `onEscalate`.
+	 */
+	onEscalate?: "defer" | "approved";
 }
 
 interface EntityUpdateOptions {
@@ -551,6 +559,12 @@ export async function patchEntityRows(params: {
  * transaction and supply the topology value it already proved under lock.
  * Merge and unmerge are one compound transaction — never run `runMutationGate`
  * from here.
+ *
+ * KNOWN GAP: a type's write rules do not cover this path either, so a rule that
+ * freezes a row does not stop that row being merged away or restored. Merge is a
+ * topology change rather than a field edit — `committed`/`patch` do not describe
+ * it, so a rule written against fields could not judge it as-is. Closing this
+ * needs a merge-shaped verdict, not a call to `validateEntityRowPatch` here.
  */
 export async function transitionEntityMergeRows(params: {
 	tx: DbClient;
@@ -690,6 +704,41 @@ function parseEntityJsonObject(value: unknown): Record<string, unknown> {
 // ============================================
 // Validation Helpers
 // ============================================
+
+/**
+ * Why the write the caller ACTUALLY proposed is illegal, or `null` if it is not.
+ *
+ * A hold can split a legal write into an illegal fragment, and rescuing that is
+ * the whole point of deferring. But the rescue only makes sense if the full
+ * proposal stands on its own: a card built from a proposal the rule rejects
+ * anyway could never be applied, because approving replays it and the rule
+ * denies it again — an approval request nobody can satisfy.
+ *
+ * Returning the denial rather than a boolean is what lets the caller fail in the
+ * proposer's own terms. Throwing the RESIDUAL's error instead would describe a
+ * write nobody made — the misattribution this whole branch exists to avoid.
+ *
+ * An `escalate` is not a denial: the rule asking for review IS the card. A rule
+ * that crashes or times out IS one, so a broken rule surfaces as an error rather
+ * than an unanswerable approval.
+ */
+async function fullProposalDenial(params: {
+	tx: DbClient;
+	entityId: number;
+	patch: EntityRowPatch;
+}): Promise<EntityRowValidationError | null> {
+	try {
+		await validateEntityRowPatch({
+			tx: params.tx,
+			ids: [params.entityId],
+			patch: params.patch,
+		});
+		return null;
+	} catch (err) {
+		if (!(err instanceof EntityRowValidationError)) throw err;
+		return err.verdict.outcome === "escalate" ? null : err;
+	}
+}
 
 /**
  * Check for circular parent references in entity hierarchy.
@@ -867,6 +916,7 @@ export async function createEntity(
 						embedding: data.embedding,
 						contentHash,
 					},
+					onEscalate: opts?.onEscalate,
 				}),
 			});
 		});
@@ -1147,19 +1197,14 @@ export async function updateEntity(
 		// fields were stripped above and the ownership merge rewrote the rest, so
 		// this is the first point where what-will-commit is known.
 		//
-		// Validating the effective patch is right, but it means a hold can hand the
-		// rule a write the caller never proposed. An agent proposing a legal
-		// `issued -> posted` transition plus the one field that move unlocks gets
-		// `status` stripped (human-owned), leaving a naked field edit in a frozen
-		// state — illegal, and denied under a reason that describes neither what the
-		// agent asked for nor why it failed. The proposal was legal; the SPLIT is
-		// what was not.
+		// That also means a hold can hand the rule a write nobody proposed. An
+		// agent proposing a legal `issued -> posted` plus the field that move
+		// unlocks gets `status` stripped (human-owned), leaving a naked field edit
+		// in a frozen state — illegal. The proposal was legal; the SPLIT was not.
 		//
-		// So: an approval hold may not manufacture an illegal state. When the
-		// residual fails validation and fields were held, nothing commits and the
-		// ENTIRE proposal defers as one approval unit. Same for an escalating rule,
-		// which is asking for exactly that. Only a rule rejecting a write the caller
-		// actually proposed, with nothing held, still throws.
+		// So an approval hold may not manufacture an illegal state: when the
+		// residual fails and fields were held, nothing commits and the ENTIRE
+		// proposal defers as one approval unit.
 		let deferWholeWrite: string | null = null;
 		let validated: ValidatedEntityRowPatch | null = null;
 		try {
@@ -1172,15 +1217,40 @@ export async function updateEntity(
 			if (!(err instanceof EntityRowValidationError)) throw err;
 			const heldFields = Object.keys(fieldMerge?.blocked ?? {});
 			if (err.verdict.outcome === "escalate") {
-				// Name the fields the rule flagged. The card already carries the whole
-				// proposal, which does not say which part of it the rule objected to —
-				// and `escalate(fields, reason)` documents those fields as exactly what
-				// the approver reads.
+				// `escalate(fields, reason)` documents those fields as what the
+				// approver reads; the card itself carries the whole proposal.
 				deferWholeWrite =
 					err.verdict.fields.length > 0
 						? `${err.verdict.reason} (${err.verdict.fields.join(", ")})`
 						: err.verdict.reason;
 			} else if (heldFields.length > 0) {
+				// Only a SPLIT write may be rescued. If the caller's own proposal is
+				// illegal too, deferring would mint a card no approval could clear —
+				// so that denial stands, stated in the terms the caller proposed.
+				const denial = await fullProposalDenial({
+					tx,
+					entityId,
+					patch: {
+						...rowPatch,
+						metadata: { ...(mergedMetadata ?? existing), ...metadataUpdates },
+						...(attributeProposals.$name
+							? { name: attributeProposals.$name.proposed as string }
+							: {}),
+						...(attributeProposals.$parent_id
+							? {
+									parentId: attributeProposals.$parent_id.proposed as
+										| number
+										| null,
+								}
+							: {}),
+						...(attributeProposals.$content
+							? {
+									content: attributeProposals.$content.proposed as string | null,
+								}
+							: {}),
+					},
+				});
+				if (denial) throw denial;
 				deferWholeWrite =
 					`${err.verdict.reason} — the write is legal as proposed but ` +
 					`${heldFields.join(", ")} awaits approval, so it applies as one unit`;

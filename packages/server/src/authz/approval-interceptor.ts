@@ -59,6 +59,12 @@ export function buildCreateDeferral(args: {
 	entityData: EntityData;
 	proposal: Record<string, unknown>;
 	attribution: MutationAttribution;
+	/**
+	 * Overrides the generated "an agent proposes creating x" line. Set when a
+	 * WRITE RULE caused the hold, so the approver reads the rule's own words
+	 * instead of a sentence that does not say why this create needs a human.
+	 */
+	reason?: string;
 	automationId?: number | null;
 	windowId?: number | null;
 }): DeferredMutation {
@@ -77,12 +83,14 @@ export function buildCreateDeferral(args: {
 				automation_id: args.automationId ?? null,
 				window_id: args.windowId ?? null,
 				attribution: args.attribution,
-				reason: reasonFor(
-					args.attribution,
-					"creating",
-					args.entityData.entity_type,
-					name,
-				),
+				reason:
+					args.reason ??
+					reasonFor(
+						args.attribution,
+						"creating",
+						args.entityData.entity_type,
+						name,
+					),
 			}),
 	};
 }

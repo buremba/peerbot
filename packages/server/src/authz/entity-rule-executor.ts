@@ -100,12 +100,9 @@ export interface EntityRuleBatch {
  */
 const RULE_RUNNER = `
 const __lobuRule = __lobuRuleModule.default;
-// Value comparison, not key presence. \`patch\` carries the fully MERGED value
-// set, so every metadata key is present on every metadata write — asking whether
-// a key EXISTS answers "did this write touch metadata at all", which is true for
-// essentially every update. Structural compare over JSON so nested objects and
-// arrays behave, with undefined and null collapsed: a field absent from committed
-// and written as null has not changed.
+// Structural compare over JSON so nested objects and arrays behave, with
+// undefined and null collapsed: a field absent from committed and written as
+// null has not changed. See this module's doc for why it is not key presence.
 const __lobuNorm = (v) => (v === undefined ? null : v);
 const __lobuDiffers = (a, b) =>
   JSON.stringify(__lobuNorm(a)) !== JSON.stringify(__lobuNorm(b));

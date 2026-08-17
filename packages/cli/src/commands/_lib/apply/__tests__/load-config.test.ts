@@ -587,4 +587,122 @@ describe("loadDesiredStateFromConfig", () => {
     const { state } = await loadDesiredStateFromConfig({ cwd: dir });
     expect(state.connectors.definitions).toHaveLength(0);
   });
+
+  test("reads entity write rules off disk as RAW source", async () => {
+    dir = mkdtempSync(join(import.meta.dir, "rules-"));
+    mkdirSync(join(dir, "rules"));
+    writeFileSync(
+      join(dir, "rules", "invoice.ts"),
+      `export default (row) => { if (row.changed("status")) row.deny("nope"); };\n`
+    );
+    writeFileSync(
+      join(dir, "lobu.config.ts"),
+      [
+        `import { defineConfig, defineEntityType, rulesFromFile } from "@lobu/cli/config";`,
+        `export default defineConfig({ agents: [], entities: [`,
+        `  defineEntityType({ key: "invoice", rules: rulesFromFile("./rules/invoice.ts") }),`,
+        `] });`,
+        ``,
+      ].join("\n")
+    );
+
+    const { state } = await loadDesiredStateFromConfig({ cwd: dir });
+    const type = state.memorySchema.entityTypes[0];
+    expect(type?.slug).toBe("invoice");
+    expect(type?.rulesSource?.sourcePath).toContain("invoice.ts");
+    // RAW source, not a compiled artifact — the server owns compilation, so a
+    // bundled blob arriving here would mean the CLI compiled it first.
+    expect(type?.rulesSource?.sourceCode).toContain(`row.deny("nope")`);
+    expect(type?.rulesSource?.sourceCode).toContain("export default");
+  });
+
+  test("attaches rules to the right entity type when only one of several has them", async () => {
+    dir = mkdtempSync(join(import.meta.dir, "rulesidx-"));
+    mkdirSync(join(dir, "rules"));
+    writeFileSync(
+      join(dir, "rules", "second.ts"),
+      `export default () => {};\n`
+    );
+    writeFileSync(
+      join(dir, "lobu.config.ts"),
+      [
+        `import { defineConfig, defineEntityType, rulesFromFile } from "@lobu/cli/config";`,
+        `export default defineConfig({ agents: [], entities: [`,
+        `  defineEntityType({ key: "first" }),`,
+        `  defineEntityType({ key: "second", rules: rulesFromFile("./rules/second.ts") }),`,
+        `  defineEntityType({ key: "third" }),`,
+        `] });`,
+        ``,
+      ].join("\n")
+    );
+
+    // The attach step walks entities by INDEX against the mapped types, so an
+    // off-by-one would silently rule-govern the wrong type — the failure mode
+    // worth pinning, since both types would still apply cleanly.
+    const { state } = await loadDesiredStateFromConfig({ cwd: dir });
+    const types = state.memorySchema.entityTypes;
+    expect(types.map((t) => t.slug)).toEqual(["first", "second", "third"]);
+    expect(types[0]?.rulesSource).toBeUndefined();
+    expect(types[1]?.rulesSource?.sourcePath).toContain("second.ts");
+    expect(types[2]?.rulesSource).toBeUndefined();
+  });
+
+  test("rejects a bare string path instead of rulesFromFile()", async () => {
+    dir = mkdtempSync(join(import.meta.dir, "rulesbare-"));
+    writeFileSync(
+      join(dir, "lobu.config.ts"),
+      [
+        `import { defineConfig, defineEntityType } from "@lobu/cli/config";`,
+        `export default defineConfig({ agents: [], entities: [`,
+        `  defineEntityType({ key: "invoice", rules: "./rules/invoice.ts" }),`,
+        `] });`,
+        ``,
+      ].join("\n")
+    );
+
+    // jiti evaluates the config without typechecking, so the type error does not
+    // stop this — it would read `.path` off a string and ship `undefined`.
+    await expect(loadDesiredStateFromConfig({ cwd: dir })).rejects.toThrow(
+      /rulesFromFile/
+    );
+  });
+
+  test("rejects a rules path that escapes the config directory", async () => {
+    dir = mkdtempSync(join(import.meta.dir, "rulesesc-"));
+    writeFileSync(
+      join(dir, "lobu.config.ts"),
+      [
+        `import { defineConfig, defineEntityType, rulesFromFile } from "@lobu/cli/config";`,
+        `export default defineConfig({ agents: [], entities: [`,
+        `  defineEntityType({ key: "invoice", rules: rulesFromFile("../outside.ts") }),`,
+        `] });`,
+        ``,
+      ].join("\n")
+    );
+
+    await expect(loadDesiredStateFromConfig({ cwd: dir })).rejects.toThrow(
+      /\.\./
+    );
+  });
+
+  test("rejects a rules file over the size cap", async () => {
+    dir = mkdtempSync(join(import.meta.dir, "rulesbig-"));
+    mkdirSync(join(dir, "rules"));
+    writeFileSync(
+      join(dir, "rules", "huge.ts"),
+      `export default () => {};\n// ${"x".repeat(33 * 1024)}\n`
+    );
+    writeFileSync(
+      join(dir, "lobu.config.ts"),
+      [
+        `import { defineConfig, defineEntityType, rulesFromFile } from "@lobu/cli/config";`,
+        `export default defineConfig({ agents: [], entities: [`,
+        `  defineEntityType({ key: "invoice", rules: rulesFromFile("./rules/huge.ts") }),`,
+        `] });`,
+        ``,
+      ].join("\n")
+    );
+
+    await expect(loadDesiredStateFromConfig({ cwd: dir })).rejects.toThrow();
+  });
 });

@@ -214,6 +214,8 @@ export function deferEntityCreate(args: {
 	entityData: EntityData;
 	proposal: Record<string, unknown>;
 	attribution: MutationAttribution;
+	/** Replaces the generated reason line — see `buildCreateDeferral`. */
+	reason?: string;
 	automationId?: number | null;
 	/** Groups this proposal's run into a per-window batch approval card. */
 	windowId?: number | null;

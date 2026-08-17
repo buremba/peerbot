@@ -261,6 +261,79 @@ describe("approval hold vs a frozen-state rule", () => {
 		expect((await readMetadata(invoice.id)).amount).toBe(90000);
 	}, 60_000);
 
+	it("applies a card carrying an ATTRIBUTE key alongside metadata", async () => {
+		const { org, user, agent, invoice } = await seed();
+		const agentCtx = ctxFor(org.id, { agentId: agent.agentId });
+
+		// `applyEntityFieldChangeProposal` splits a card in two: metadata goes
+		// through `mergeEntityFields`, reserved `$name`/`$parent_id`/`$content` go
+		// through `patchEntityRows`. Both revalidate, so both need the
+		// approved-write signal — the first cut set it on the metadata half only,
+		// and a card mixing the two rolled back whole (the attribute half threw
+		// inside the same transaction, taking the metadata half with it).
+		const result = await updateEntity(
+			invoice.id,
+			{ name: "INV-RENAMED", metadata: { amount: 90000 } },
+			TEST_ENV,
+			agentCtx,
+		);
+
+		expect(result.deferred?.display.fields).toMatchObject({
+			$name: "INV-RENAMED",
+			amount: 90000,
+		});
+
+		await applyEntityFieldChangeProposal(
+			{
+				entity_id: invoice.id,
+				fields: result.deferred?.display.fields ?? {},
+				current: result.deferred?.display.current ?? {},
+				reason: "approved in test",
+			} as Parameters<typeof applyEntityFieldChangeProposal>[0],
+			user.id,
+		);
+
+		// BOTH halves land. Asserting only the metadata half would still pass with
+		// the attribute half silently rolled back.
+		const sql = getTestDb();
+		const [row] = await sql<{ name: string }[]>`
+      SELECT name FROM entities WHERE id = ${invoice.id}
+    `;
+		expect(row.name).toBe("INV-RENAMED");
+		expect((await readMetadata(invoice.id)).amount).toBe(90000);
+	}, 60_000);
+
+	it("DENIES when the full proposal is illegal too, even though a field was held", async () => {
+		const { org, user, agent, invoice } = await seed();
+
+		// A HUMAN moves draft -> issued, claiming ownership of `status`.
+		await updateEntity(
+			invoice.id,
+			{ metadata: { status: "issued" } },
+			TEST_ENV,
+			ctxFor(org.id, { userId: user.id }),
+		);
+
+		// The agent now proposes an ILLEGAL move (`issued -> draft`) plus a field.
+		// `status` is held, so the residual fails — but so does the full proposal.
+		// Deferring here would mint a card that can never be applied: approving
+		// replays `issued -> draft`, the rule denies it again, and the write
+		// throws forever. The hold is only allowed to rescue a write that was
+		// legal as proposed.
+		await expect(
+			updateEntity(
+				invoice.id,
+				{ metadata: { status: "draft", einvoice_uuid: "uuid-xyz" } },
+				TEST_ENV,
+				ctxFor(org.id, { agentId: agent.agentId }),
+			),
+		).rejects.toThrow(/cannot move issued -> draft/);
+
+		const after = await readMetadata(invoice.id);
+		expect(after.status).toBe("issued");
+		expect(after.einvoice_uuid ?? null).toBeNull();
+	}, 60_000);
+
 	it("still DENIES outright when nothing was held and the caller's own proposal is illegal", async () => {
 		const { org, agent, invoice } = await seed();
 

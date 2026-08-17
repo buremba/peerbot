@@ -164,8 +164,8 @@ function committedState(row: CommittedRow): Record<string, unknown> {
  *
  * Rows are grouped by their type's compiled rule so each distinct rule runs in
  * ONE isolate over its whole group. Per-row isolates do not scale — measured at
- * ~300 evals/sec, or ~21s for a 5,000-row sync, against ~13.5ms for the same
- * rows batched.
+ * ~300 evals/sec, or ~21s for a 5,000-row sync, against ~29.7ms for the same
+ * rows batched (see `entity-rule-executor.ts` for the full curve).
  *
  * @throws EntityRowValidationError when a rule denies the write, when a rule
  * crashes or times out (fail closed: a rule that did not finish cannot bless a
@@ -308,13 +308,24 @@ export type ValidatedEntityRowInsert = EntityRowInsert & {
  * the row does not exist yet — that is the only structural difference from the
  * update path.
  *
- * @throws EntityRowValidationError when the rule denies the create.
+ * @throws EntityRowValidationError when the rule denies the create, or when it
+ * escalates and the caller has not opted into approval routing.
  */
 export async function validateEntityRowInsert(params: {
 	tx: DbClient;
 	row: EntityRowInsert;
+	/**
+	 * What an `escalate` verdict means for THIS caller — same contract as
+	 * {@link validateEntityRowPatch}.
+	 *
+	 * `"approved"` belongs to the path applying a create card a human already
+	 * approved. Without it, approving re-runs the rule against the same proposed
+	 * row, it escalates again, and the create throws — the same unclearable-card
+	 * dead end the update path has.
+	 */
+	onEscalate?: "defer" | "approved";
 }): Promise<ValidatedEntityRowInsert> {
-	const { tx, row } = params;
+	const { tx, row, onEscalate = "defer" } = params;
 	const branded = row as ValidatedEntityRowInsert;
 
 	const types = await tx<{ rules_compiled: string | null }>`
@@ -354,13 +365,14 @@ export async function validateEntityRowInsert(params: {
 		});
 	}
 	if (verdict?.outcome === "escalate") {
-		// A create has no row to hold fields against and no `deferEntityCreate`
-		// in scope here, so an escalating rule stops the create. Routing a held
-		// CREATE into an approval card is a separate surface from the update path
-		// wired in `updateEntity`, and is deliberately not faked here.
+		// A human already said yes to this exact row.
+		if (onEscalate === "approved") return branded;
+		// Otherwise stop the create and let the caller route it. A create needs no
+		// held-field bookkeeping — the row does not exist, so an aborted
+		// transaction leaves nothing behind and the whole proposal is the card.
 		throw new EntityRowValidationError(
 			`new ${row.slug}: ${verdict.reason} ` +
-				`(a rule cannot escalate a create — approval routing exists for updates only)`,
+				`(approval required for ${verdict.fields.join(", ")})`,
 			{
 				outcome: "escalate",
 				reason: verdict.reason,

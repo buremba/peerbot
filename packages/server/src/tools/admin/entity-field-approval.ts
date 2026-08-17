@@ -1180,6 +1180,11 @@ export async function applyEntityFieldChangeProposal(
 								? { content: apply.$content as string | null }
 								: {}),
 						},
+						// Same reason as the metadata half above, and it has to be set on
+						// BOTH: a card mixing `$name` with a metadata field runs through
+						// both writers inside one transaction, so an escalate re-thrown
+						// here rolls the approved metadata back out too.
+						onEscalate: "approved",
 					}),
 				});
 			}
@@ -1274,6 +1279,11 @@ export async function applyEntityChangeProposal(
 					userId: ctx.userId,
 					env,
 				},
+				// This IS the approval. A rule that escalated to produce this card
+				// must not escalate again, or the card could never be cleared — the
+				// same dead end the update path's `onEscalate` closes. A `deny` still
+				// throws: approval cannot make an illegal row legal.
+				onEscalate: "approved",
 			},
 		);
 	}

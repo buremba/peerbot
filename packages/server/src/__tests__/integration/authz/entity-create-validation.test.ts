@@ -17,8 +17,12 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { compileEntityRule } from "../../../authz/entity-rule-executor";
 import type { Env } from "../../../index";
+import type { AuthContext } from "../../../tools/execute";
+import { executeTool } from "../../../tools/execute";
+import { applyEntityChangeProposal } from "../../../tools/admin/entity-field-approval";
 import type { ToolContext } from "../../../tools/registry";
 import { createEntity, updateEntity } from "../../../utils/entity-management";
+import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	addUserToOrganization,
@@ -56,8 +60,31 @@ export default (row) => {
 };
 `;
 
+/**
+ * A rule that holds a CREATE for review rather than rejecting it. The row does
+ * not exist yet, so there is nothing to hold fields against — the whole
+ * proposed row is either created or it is not.
+ */
+const BIG_INVOICE_RULE = `
+export default (row) => {
+  if (row.op === "create" && row.next.amount > 50000) {
+    row.escalate(["amount"], "a new invoice over 50k needs sign-off");
+  }
+};
+`;
+
 const TEST_ENV = {} as Env;
+
+/** `executeTool` goes through the real access-controlled path, so it needs a real env. */
+const TOOL_ENV: Env = {
+	ENVIRONMENT: "test",
+	DATABASE_URL: process.env.DATABASE_URL,
+	JWT_SECRET: "test-jwt-secret-for-testing-only",
+	BETTER_AUTH_SECRET: "test-auth-secret-for-testing-only",
+} as Env;
+
 let invoiceCompiled: string;
+let bigInvoiceCompiled: string;
 
 function ctxFor(
 	organizationId: string,
@@ -77,7 +104,7 @@ function ctxFor(
 	} as unknown as ToolContext;
 }
 
-async function seedOrg() {
+async function seedOrg(rules: string = invoiceCompiled) {
 	const sql = getTestDb();
 	const org = await createTestOrganization({ name: "Create Validation" });
 	const user = await createTestUser();
@@ -87,9 +114,29 @@ async function seedOrg() {
     INSERT INTO entity_types (organization_id, slug, name, metadata_schema,
                               rules_compiled, created_at, updated_at)
     VALUES (${org.id}, 'invoice', 'invoice', ${sql.json({ type: "object" })},
-            ${invoiceCompiled}, current_timestamp, current_timestamp)
+            ${rules}, current_timestamp, current_timestamp)
   `;
 	return { org, user, agent };
+}
+
+/** Agent auth context — an agent run, so a hold routes to a human. */
+function agentAuthCtx(orgId: string, userId: string, agentId: string): AuthContext {
+	return {
+		organizationId: orgId,
+		tokenOrganizationId: orgId,
+		userId,
+		memberRole: "owner",
+		agentId,
+		requestedAgentId: agentId,
+		isAuthenticated: true,
+		clientId: null,
+		scopes: ["mcp:read", "mcp:write", "mcp:admin"],
+		tokenType: "oauth",
+		requestUrl: `http://localhost/api/${orgId}`,
+		baseUrl: "",
+		scopedToOrg: true,
+		allowCrossOrg: false,
+	};
 }
 
 async function statusOf(id: number): Promise<unknown> {
@@ -114,7 +161,12 @@ async function countInvoices(organizationId: string): Promise<number> {
 
 describe("creates reach the validation seam", () => {
 	beforeAll(async () => {
-		invoiceCompiled = await compileEntityRule(INVOICE_RULE);
+		// `queue()` builds an approval URL, which needs the workspace provider.
+		await initWorkspaceProvider();
+		[invoiceCompiled, bigInvoiceCompiled] = await Promise.all([
+			compileEntityRule(INVOICE_RULE),
+			compileEntityRule(BIG_INVOICE_RULE),
+		]);
 	}, 60_000);
 
 	beforeEach(async () => {
@@ -161,5 +213,95 @@ describe("creates reach the validation seam", () => {
 
 		// And the row is untouched — the deny rolled the write back.
 		expect(await statusOf(invoice.id)).toBe("draft");
+	}, 60_000);
+
+	it("routes an escalating CREATE into an approval card instead of throwing", async () => {
+		const { org, user, agent } = await seedOrg(bigInvoiceCompiled);
+
+		// Through `executeTool`, the real access-controlled path — the routing
+		// lives in the tool handler, so calling `createEntity` directly would
+		// only ever observe the throw.
+		const result = (await executeTool(
+			"manage_entity",
+			{
+				action: "create",
+				entity_type: "invoice",
+				name: "INV-BIG",
+				metadata: { status: "draft", amount: 90000 },
+			},
+			TOOL_ENV,
+			agentAuthCtx(org.id, user.id, agent.agentId),
+		)) as {
+			approval_queued?: boolean;
+			approval_run_id?: number;
+			approval_proposal?: Record<string, unknown>;
+		};
+
+		expect(result.approval_queued).toBe(true);
+		expect(result.approval_run_id).toBeGreaterThan(0);
+
+		// Nothing was created. A create that needs review must leave no row
+		// behind — there is no half-created state to reconcile later.
+		expect(await countInvoices(org.id)).toBe(0);
+	}, 60_000);
+
+	it("creates the row when the escalated card is APPROVED", async () => {
+		const { org, user, agent } = await seedOrg(bigInvoiceCompiled);
+		const authCtx = agentAuthCtx(org.id, user.id, agent.agentId);
+
+		const held = (await executeTool(
+			"manage_entity",
+			{
+				action: "create",
+				entity_type: "invoice",
+				name: "INV-BIG",
+				metadata: { status: "draft", amount: 90000 },
+			},
+			TOOL_ENV,
+			authCtx,
+		)) as { approval_queued?: boolean; approval_proposal?: Record<string, unknown> };
+		expect(held.approval_queued).toBe(true);
+
+		// Approving re-runs the SAME rule against the SAME proposed row. Without
+		// the approved-write signal it escalates again and throws, so the card
+		// could never be cleared — the dead end the update path already had.
+		await applyEntityChangeProposal(
+			{
+				operation: "create",
+				entity_data: {
+					entity_type: "invoice",
+					name: "INV-BIG",
+					metadata: { status: "draft", amount: 90000 },
+				},
+				proposal: held.approval_proposal ?? {},
+			} as Parameters<typeof applyEntityChangeProposal>[0],
+			{ ...authCtx, userId: user.id } as unknown as ToolContext,
+			TOOL_ENV,
+			getTestDb(),
+		);
+
+		expect(await countInvoices(org.id)).toBe(1);
+	}, 60_000);
+
+	it("still DENIES a create outright — approval is not a way around a deny", async () => {
+		const { org, user, agent } = await seedOrg();
+
+		// The card path exists for `escalate` only. A rule that denies a create
+		// gets an error, not a human to ask.
+		await expect(
+			executeTool(
+				"manage_entity",
+				{
+					action: "create",
+					entity_type: "invoice",
+					name: "INV-BORN-POSTED",
+					metadata: { status: "posted", einvoice_uuid: "uuid-1" },
+				},
+				TOOL_ENV,
+				agentAuthCtx(org.id, user.id, agent.agentId),
+			),
+		).rejects.toThrow(/an invoice is created in draft, not posted/);
+
+		expect(await countInvoices(org.id)).toBe(0);
 	}, 60_000);
 });

@@ -341,6 +341,73 @@ describe("authorization-bearing relationship types are not caller-writable", () 
 		expect(freshnessAfter).toBe("stale");
 	});
 
+	it("reports purpose on LIST so callers can predict the refusal", async () => {
+		// A refusal a caller cannot anticipate becomes a dead button: `member_of`
+		// is org-owned, so ownership alone cannot separate it from an ordinary
+		// type, and the UI renders edit affordances that are guaranteed to 403.
+		const ordinary = await manageEntitySchema(
+			{
+				schema_type: "relationship_type",
+				action: "create",
+				slug: "mentions",
+				name: "Mentions",
+			},
+			env,
+			ctx(orgId, userId),
+		);
+		// `toHaveProperty` and not `?? null`: an absent key reads as null too, so
+		// the loose form still passes once a handler stops selecting the column —
+		// and on a missing row, `bySlug.get(…)?.purpose ?? null` would as well.
+		expect(ordinary.relationship_type).toHaveProperty("purpose", null);
+
+		const listed = await manageEntitySchema(
+			{ schema_type: "relationship_type", action: "list" },
+			env,
+			ctx(orgId, userId),
+		);
+		const bySlug = new Map(
+			(listed.relationship_types ?? []).map((rt) => [rt.slug, rt]),
+		);
+		expect(bySlug.get("member_of")).toHaveProperty("purpose", "authorization");
+		expect(bySlug.get("mentions")).toHaveProperty("purpose", null);
+	});
+
+	it("reports purpose on UPDATE too — the row shape does not vary by action", async () => {
+		// update refuses a classified type, so this path can only ever report
+		// null. It still carries the key: a client switching on `purpose` must
+		// not see the field appear and disappear across actions.
+		await manageEntitySchema(
+			{
+				schema_type: "relationship_type",
+				action: "create",
+				slug: "mentions",
+				name: "Mentions",
+			},
+			env,
+			ctx(orgId, userId),
+		);
+		const updated = await manageEntitySchema(
+			{
+				schema_type: "relationship_type",
+				action: "update",
+				slug: "mentions",
+				name: "Mentioned in",
+			},
+			env,
+			ctx(orgId, userId),
+		);
+		expect(updated.relationship_type).toHaveProperty("purpose", null);
+	});
+
+	it("reports purpose on GET too", async () => {
+		const got = await manageEntitySchema(
+			{ schema_type: "relationship_type", action: "get", slug: "member_of" },
+			env,
+			ctx(orgId, userId),
+		);
+		expect(got.relationship_type?.purpose).toBe("authorization");
+	});
+
 	it("refuses member_of by slug before it is classified", async () => {
 		// ACL reads still trust the slug during the staged cutover. The slug guard
 		// keeps a newly declared row fail-closed before its first sync classifies it.

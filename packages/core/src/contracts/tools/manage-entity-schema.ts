@@ -291,6 +291,18 @@ export const RelationshipTypeRowSchema = Type.Object({
   updated_at: Type.String(),
   deleted_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   relationship_count: Type.Optional(Type.Integer()),
+  /**
+   * System-controlled classification; `authorization` marks the vocabulary the
+   * ACL gates read. On the read paths because it is exactly what makes every
+   * write action on the TYPE 403 (`assertNotAuthorizationType`): `member_of` is
+   * org-owned, so without it a client cannot separate one from ordinary
+   * vocabulary and renders edit affordances guaranteed to fail. It does not
+   * cover the EDGE surfaces, which also refuse the ACL-managed slug while a
+   * freshly declared row is still unclassified. An open string, not a literal
+   * union, so a server that learns a new purpose still satisfies the result
+   * schema an older client validates against.
+   */
+  purpose: Type.Optional(Type.Union([Type.String(), Type.Null()])),
 });
 export type RelationshipTypeRow = Static<typeof RelationshipTypeRowSchema>;
 

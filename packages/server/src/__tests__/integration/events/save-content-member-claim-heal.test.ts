@@ -68,7 +68,7 @@ describe('saveContent > $member auth_user_id claim heals poison source', () => {
         (organization_id, entity_id, namespace, identifier, source_connector)
       VALUES
         (${org.id}, ${memberId}, 'auth_user_id', ${user.id}, 'save_content')
-      ON CONFLICT (organization_id, namespace, identifier)
+      ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0))
         WHERE deleted_at IS NULL
       DO NOTHING
     `;

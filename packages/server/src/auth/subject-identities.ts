@@ -45,7 +45,8 @@ type Sql = ReturnType<typeof getDb>;
 
 /**
  * Insert (or no-op on conflict) entity_identities rows pointing at the given
- * member entity. The unique index on (organization_id, namespace, identifier)
+ * member entity. The unique index on (organization_id, namespace, identifier,
+ * COALESCE(scope_connection_id, 0))
  * WHERE deleted_at IS NULL guards against duplicates.
  */
 async function writeIdentities(
@@ -62,7 +63,7 @@ async function writeIdentities(
       ) VALUES (
         ${organizationId}, ${memberEntityId}, ${row.namespace}, ${row.identifier}, ${source}
       )
-      ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
+      ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0)) WHERE deleted_at IS NULL
       DO NOTHING
     `;
 	}
@@ -73,8 +74,10 @@ async function writeIdentities(
  * from a `person` entity when one already owns it.
  *
  * Why an UPDATE and not another INSERT: `entity_identities` has a live-unique
- * index on `(organization_id, namespace, identifier)`, so the claim exists at
- * most once. `writeIdentities`' `ON CONFLICT DO NOTHING` therefore SILENTLY LOSES
+ * index on `(organization_id, namespace, identifier,
+ * COALESCE(scope_connection_id, 0))`, so the claim exists at most once —
+ * auth-written identities are always org-scoped (NULL). `writeIdentities`'
+ * `ON CONFLICT DO NOTHING` therefore SILENTLY LOSES
  * whenever the ACL sync minted a `person` for this workspace user before the
  * human ever signed in — which is the normal ordering, since channel sync runs
  * on a timer and sign-in is a one-off. The gate only ever resolves a `$member`
@@ -109,7 +112,7 @@ async function adoptSlackIdentityOntoMember(
     ) VALUES (
       ${organizationId}, ${memberEntityId}, ${SLACK_IDENTITY.USER_ID}, ${identifier}, 'auth:signup'
     )
-    ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
+    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0)) WHERE deleted_at IS NULL
     DO NOTHING
     RETURNING id
   `;

@@ -277,10 +277,13 @@ async function applyMergeInTransaction(
     FOR UPDATE OF r
   `;
 
-  // 1. Move the loser's LIVE identities to the winner. A live loser↔live winner
-  //    collision on the SAME (org, namespace, identifier) is impossible — the
-  //    global unique index `idx_entity_identities_live_unique` forbids two live
-  //    rows for one value org-wide — so the move can never hit the index. Stamp
+  // 1. Move the loser's LIVE identities to the winner. The move can never hit
+  //    `idx_entity_identities_live_unique`: `entity_id` is not part of that
+  //    index, so repointing a row leaves its key
+  //    (org, namespace, identifier, COALESCE(scope_connection_id, 0))
+  //    untouched. That holds even when loser and winner both claim the same
+  //    (namespace, identifier) under DIFFERENT connection scopes, which the
+  //    index legitimately permits as two live rows. Stamp
   //    origin with COALESCE so an identity that already carries a marker (moved
   //    here by an EARLIER merge, e.g. L→W then W→V) keeps its INNERMOST origin —
 	//    the outer operation ledger can then put it back on W without losing L's

@@ -54,6 +54,11 @@ describe("buildSenderIdentity", () => {
         identifier: normalizeSlackUserId(TEAM, USER) as string,
         matchOnly: false,
         primary: false,
+        // Org-scoped, and asserted rather than omitted: a Slack user id already
+        // carries its workspace, so it names the same person through every
+        // connection that observes it. Scoping it per connection would fork one
+        // person into one entity per connection.
+        scopeConnectionId: null,
       },
     ]);
   });

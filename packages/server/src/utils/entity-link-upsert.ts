@@ -6,7 +6,8 @@
  * The ingestion pipeline:
  *   1) Extracts + normalizes identifiers from each event.
  *   2) Looks them up in the normalized `entity_identities` table
- *      (UNIQUE per (org, namespace, identifier)).
+ *      (UNIQUE per (org, namespace, identifier, COALESCE(scope_connection_id, 0))
+ *       — see EntityIdentitySpec.scope).
  *   3) Links to the matched entity, creates on miss (when autoCreate=true),
  *      logs a merge candidate when one event's identifiers resolve to
  *      multiple distinct entities.
@@ -225,6 +226,69 @@ export type ResolvedIdentity = {
   identifier: string;
   matchOnly: boolean;
   primary: boolean;
+  /**
+   * Uniqueness scope, resolved once at extraction from the spec's `scope` and
+   * the ingesting connection. `null` = org-wide, which is every identity a
+   * connector has not explicitly declared connection-scoped.
+   *
+   * Carried on the identity rather than read from params at each use site so
+   * matching and insertion cannot disagree: `lookupMatches` and
+   * `insertIdentities` both key on this value, and a rule that scopes one of
+   * its namespaces but not another produces a mixed array here.
+   *
+   * OPTIONAL, and `undefined` is treated exactly as `null`. Callers outside the
+   * attribution path (`resolveSenderIdentity`, tests) hand-build identities and
+   * legitimately mean org scope; requiring the field would break them without
+   * the compiler noticing, because the server tsconfig excludes `__tests__`.
+   * Omission is safe in the only direction that matters: it can never
+   * accidentally CLAIM a connection scope, only decline one.
+   */
+  scopeConnectionId?: number | null;
+};
+
+/**
+ * The sentinel the unique index COALESCEs a NULL scope to. `connections.id` is
+ * a bigserial, so 0 can never collide with a real connection.
+ *
+ * Every `ON CONFLICT` below writes this sentinel as a LITERAL `0`, never as a
+ * bound parameter: conflict inference matches the target expression against the
+ * index's, and a Param node never equals the index's Const node — a
+ * parameterized `COALESCE(scope_connection_id, $n)` fails with "there is no
+ * unique or exclusion constraint matching the ON CONFLICT specification". If
+ * this value ever changes, the SQL literals must be updated by hand.
+ */
+const ORG_SCOPE_SENTINEL = 0;
+
+/** Index-shaped scope value: mirrors `COALESCE(scope_connection_id, 0)`. */
+function scopeKeyOf(identity: { scopeConnectionId?: number | null }): number {
+  return identity.scopeConnectionId ?? ORG_SCOPE_SENTINEL;
+}
+
+/**
+ * Match key for an identity. Includes the scope so a connection-scoped
+ * `erp_customer:CARI-001` never resolves to another connection's row — the
+ * whole point of the scope column.
+ */
+function identityKey(identity: {
+  namespace: string;
+  identifier: string;
+  scopeConnectionId?: number | null;
+}): string {
+  // NUL separator, as the pre-scope key used: a namespace or identifier may
+  // contain any printable character, so only a byte that cannot appear in
+  // either is a safe delimiter.
+  return `${identity.namespace}\u0000${identity.identifier}\u0000${scopeKeyOf(identity)}`;
+}
+
+/**
+ * An identity row that actually landed on the entity. Structurally a
+ * `ResolvedIdentity` minus the extraction-time tier flags, and it carries the
+ * scope so `identityKey` can be rebuilt from it.
+ */
+type AttachedIdentity = {
+  namespace: string;
+  identifier: string;
+  scopeConnectionId: number | null;
 };
 
 type ExtractedLink = {
@@ -307,7 +371,22 @@ function normalizeIdentityValue(namespace: string, raw: string): string | null {
   return normalizeIdentifier(namespace, raw);
 }
 
-function extractLink(item: BatchItem, rule: ResolvedEventAttributionRule): ExtractedLink | null {
+/**
+ * Extraction is the one place scope is decided. Everything downstream —
+ * matching, creation, insertion — reads `scopeConnectionId` off the identity
+ * rather than consulting the spec again, so there is no way for the lookup and
+ * the write to disagree about which row they mean.
+ *
+ * `scope: 'connection'` with no ingesting connection falls back to org scope:
+ * the webhook and manual paths pass `connectionId: null`, and inventing a
+ * scope there would strand those identities in a bucket nothing else can ever
+ * match.
+ */
+function extractLink(
+  item: BatchItem,
+  rule: ResolvedEventAttributionRule,
+  connectionId: number | null
+): ExtractedLink | null {
   const identities: ExtractedLink['identities'] = [];
   for (const spec of rule.identities) {
     const raw = getValueAtPath(item, spec.eventPath);
@@ -319,6 +398,7 @@ function extractLink(item: BatchItem, rule: ResolvedEventAttributionRule): Extra
       identifier: normalized,
       matchOnly: spec.matchOnly === true,
       primary: spec.primary === true,
+      scopeConnectionId: spec.scope === 'connection' ? connectionId : null,
     });
   }
   if (identities.length === 0) return null;
@@ -340,9 +420,12 @@ function extractLink(item: BatchItem, rule: ResolvedEventAttributionRule): Extra
 /**
  * Resolve identity keys to their owning entity — TYPE-AGNOSTIC.
  *
- * An identity value belongs to at most ONE entity org-wide (the
- * `idx_entity_identities_live_unique` index on `(org, namespace, identifier)`),
- * so a key resolves to a single entity of ANY type. We deliberately do NOT
+ * An identity value belongs to at most ONE entity within its scope (the
+ * `idx_entity_identities_live_unique` index on
+ * `(org, namespace, identifier, COALESCE(scope_connection_id, 0))`), so a key
+ * resolves to a single entity of ANY type. Org-scoped identities carry a NULL
+ * scope and therefore still resolve org-wide, which is every identity a
+ * connector has not declared `scope: 'connection'`. We deliberately do NOT
  * filter by the rule's target `entityType`: a `slack_user_id` owned by a
  * signed-in `$member` must resolve to that `$member` even when a `person`-typed
  * rule looks it up, so attribution and ACL converge on one entity instead of
@@ -357,35 +440,60 @@ async function lookupMatches(
     identities: ExtractedLink['identities'][];
   }
 ): Promise<Map<string, number>> {
-  const keys = new Set<string>();
+  // Deduplicated by the SCOPED key, so the same (namespace, identifier) under
+  // two different scopes stays two lookups instead of collapsing back into the
+  // collision this exists to prevent.
+  const wanted = new Map<string, ResolvedIdentity>();
   for (const arr of params.identities) {
-    for (const id of arr) keys.add(`${id.namespace}\u0000${id.identifier}`);
+    for (const id of arr) wanted.set(identityKey(id), id);
   }
-  if (keys.size === 0) return new Map();
+  if (wanted.size === 0) return new Map();
 
   const namespaces: string[] = [];
   const identifiers: string[] = [];
-  for (const key of keys) {
-    const [ns, ident] = key.split('\u0000');
-    namespaces.push(ns);
-    identifiers.push(ident);
+  const scopes: number[] = [];
+  for (const id of wanted.values()) {
+    namespaces.push(id.namespace);
+    identifiers.push(id.identifier);
+    scopes.push(scopeKeyOf(id));
   }
 
-  const rows = await sql<{ entity_id: number | string; namespace: string; identifier: string }>`
-    SELECT ei.entity_id, ei.namespace, ei.identifier
+  const rows = await sql<{
+    entity_id: number | string;
+    namespace: string;
+    identifier: string;
+    scope_key: number | string;
+  }>`
+    SELECT ei.entity_id, ei.namespace, ei.identifier,
+           COALESCE(ei.scope_connection_id, 0) AS scope_key
     FROM entity_identities ei
     JOIN entities e ON e.id = ei.entity_id
     WHERE ei.organization_id = ${params.orgId}
       AND ei.deleted_at IS NULL
       AND e.deleted_at IS NULL
-      AND (ei.namespace, ei.identifier) IN (
-        SELECT ns, ident FROM unnest(${pgTextArray(namespaces)}::text[], ${pgTextArray(identifiers)}::text[]) AS u(ns, ident)
+      AND (ei.namespace, ei.identifier, COALESCE(ei.scope_connection_id, 0)) IN (
+        SELECT ns, ident, scope
+        FROM unnest(
+          ${pgTextArray(namespaces)}::text[],
+          ${pgTextArray(identifiers)}::text[],
+          ${pgBigintArray(scopes)}::bigint[]
+        ) AS u(ns, ident, scope)
       )
   `;
 
   const out = new Map<string, number>();
   for (const row of rows) {
-    out.set(`${row.namespace}\u0000${row.identifier}`, Number(row.entity_id));
+    out.set(
+      identityKey({
+        namespace: row.namespace,
+        identifier: row.identifier,
+        // COALESCE already collapsed NULL to the sentinel; map it back so the
+        // key built from a DB row matches the key built from an extracted
+        // identity, whose org scope is null.
+        scopeConnectionId: Number(row.scope_key) || null,
+      }),
+      Number(row.entity_id)
+    );
   }
   return out;
 }
@@ -421,7 +529,7 @@ function resolveIdentityTier(
   const governing = primaries.length > 0 ? primaries : identities;
   const hits = new Set<number>();
   for (const id of governing) {
-    const h = matches.get(`${id.namespace}\u0000${id.identifier}`);
+    const h = matches.get(identityKey(id));
     if (h !== undefined) hits.add(h);
   }
   if (hits.size > 1) return 'ambiguous';
@@ -434,7 +542,7 @@ function firstIdentityHit(
   matches: Map<string, number>
 ): number | null {
   for (const id of identities) {
-    const hit = matches.get(`${id.namespace}\u0000${id.identifier}`);
+    const hit = matches.get(identityKey(id));
     if (hit !== undefined) return hit;
   }
   return null;
@@ -452,7 +560,7 @@ async function createEntityWithIdentities(
     traits: Map<string, unknown>;
     creatorUserId: string;
   }
-): Promise<{ entityId: number; attached: Array<{ namespace: string; identifier: string }> } | null> {
+): Promise<{ entityId: number; attached: AttachedIdentity[] } | null> {
   const persisted = params.identities.filter((i) => !i.matchOnly);
   if (persisted.length === 0) return null;
 
@@ -554,10 +662,14 @@ async function createEntityWithIdentities(
 }
 
 /**
- * Insert identities for `entityId`, RETURNING the `(namespace, identifier)` rows
- * attached to that entity. Re-observing a legacy row fills missing connection
- * provenance; a row owned by another entity is not returned, so the caller will
- * not mis-claim it.
+ * Insert identities for `entityId`, RETURNING the rows attached to that entity.
+ * Re-observing a legacy row fills missing connection provenance; a row owned by
+ * another entity is not returned, so the caller will not mis-claim it.
+ *
+ * The scope is RETURNED, not just written, because callers key the in-memory
+ * claim map on it. Returning `(namespace, identifier)` alone would let a
+ * connection-scoped identity be re-keyed as org-scoped on the way back, and the
+ * rest of the batch would then resolve it to the wrong entity.
  */
 async function insertIdentities(
   sql: DbClient,
@@ -568,25 +680,46 @@ async function insertIdentities(
     connectionId?: number | null;
     identities: ExtractedLink['identities'];
   }
-): Promise<Array<{ namespace: string; identifier: string }>> {
+): Promise<AttachedIdentity[]> {
   if (params.identities.length === 0) return [];
   const namespaces = params.identities.map((i) => i.namespace);
   const identifiers = params.identities.map((i) => i.identifier);
-  const attached = await sql<{ namespace: string; identifier: string }>`
+  // NULL, not the sentinel: the sentinel exists only inside the index
+  // expression. Storing 0 would make the row claim connection 0.
+  // `?? null` collapses undefined into null BEFORE serialization. Without it an
+  // omitted scope reached the array literal as String(undefined) === "undefined",
+  // which Postgres rejects with `invalid input syntax for type bigint`.
+  const scopes = params.identities.map((i) => i.scopeConnectionId ?? null);
+  const attached = await sql<{
+    namespace: string;
+    identifier: string;
+    scope_connection_id: number | string | null;
+  }>`
     INSERT INTO entity_identities (
-      organization_id, entity_id, namespace, identifier, source_connector, connection_id
+      organization_id, entity_id, namespace, identifier, source_connector, connection_id,
+      scope_connection_id
     )
     SELECT ${params.orgId}, ${params.entityId}, v.ns, v.ident,
-           ${`connector:${params.connectorKey}`}, ${params.connectionId ?? null}
-    FROM unnest(${pgTextArray(namespaces)}::text[], ${pgTextArray(identifiers)}::text[]) AS v(ns, ident)
-    ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
+           ${`connector:${params.connectorKey}`}, ${params.connectionId ?? null},
+           v.scope
+    FROM unnest(
+      ${pgTextArray(namespaces)}::text[],
+      ${pgTextArray(identifiers)}::text[],
+      ${pgTextArray(scopes.map((v) => (v === null ? null : String(v))))}::bigint[]
+    ) AS v(ns, ident, scope)
+    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0))
+      WHERE deleted_at IS NULL
     DO UPDATE SET connection_id = EXCLUDED.connection_id
     WHERE entity_identities.entity_id = EXCLUDED.entity_id
       AND entity_identities.connection_id IS NULL
       AND EXCLUDED.connection_id IS NOT NULL
-    RETURNING namespace, identifier
+    RETURNING namespace, identifier, scope_connection_id
   `;
-  return attached.map((r) => ({ namespace: r.namespace, identifier: r.identifier }));
+  return attached.map((r) => ({
+    namespace: r.namespace,
+    identifier: r.identifier,
+    scopeConnectionId: r.scope_connection_id === null ? null : Number(r.scope_connection_id),
+  }));
 }
 
 async function applyTraits(
@@ -707,7 +840,8 @@ export async function applyEventAttributions(
  * per item (keyed by `items` array index) so the caller can write
  * `events.entity_ids` (a webhook row is read by id, not via a feed-time JOIN).
  * `rules` is keyed by event kind (origin_type). Tenant-scoped on `orgId`;
- * entity_identities are UNIQUE per (org, namespace, identifier), so resolution
+ * entity_identities are UNIQUE per
+ * (org, namespace, identifier, COALESCE(scope_connection_id, 0)), so resolution
  * never crosses organizations.
  */
 export async function resolveEventAttributionsForItems(
@@ -780,7 +914,7 @@ async function resolveLinksByKind(
     const rules = params.rulesByKind[kind];
     if (!rules) return;
     for (const rule of rules) {
-      const link = extractLink(item, rule);
+      const link = extractLink(item, rule, params.connectionId ?? null);
       if (!link) continue;
       // Metadata stamping is deferred to post-resolution (below) — only
       // attached identifiers are stamped, so a stale one (e.g. a vacated
@@ -869,7 +1003,7 @@ async function resolveLinksByKind(
       // only ever claim THESE in the in-memory matches map below — an identifier
       // that ON CONFLICT-skipped because another entity already owns it stays
       // with that entity, so the map must not mis-claim it for this one.
-      let attached: Array<{ namespace: string; identifier: string }> = [];
+      let attached: AttachedIdentity[] = [];
       if (entityId !== null) {
         // Matched an existing entity: accrete the non-matchOnly identities; the
         // identifier(s) we matched on already belong to this entity.
@@ -894,8 +1028,12 @@ async function resolveLinksByKind(
         // The matched identifiers themselves are this entity's even if a
         // re-insert was a no-op (they were how we found it), so claim them too.
         for (const id of link.identities) {
-          if (matches.get(`${id.namespace}\u0000${id.identifier}`) === entityId) {
-            attached.push({ namespace: id.namespace, identifier: id.identifier });
+          if (matches.get(identityKey(id)) === entityId) {
+            attached.push({
+              namespace: id.namespace,
+              identifier: id.identifier,
+              scopeConnectionId: id.scopeConnectionId ?? null,
+            });
           }
         }
       } else if (rule.autoCreate && passesCreateWhen(rule.createWhen, item)) {
@@ -942,8 +1080,12 @@ async function resolveLinksByKind(
           if (typeof winnerTier === 'number') {
             entityId = winnerTier;
             for (const id of link.identities) {
-              if (winner.get(`${id.namespace}\u0000${id.identifier}`) === entityId) {
-                attached.push({ namespace: id.namespace, identifier: id.identifier });
+              if (winner.get(identityKey(id)) === entityId) {
+                attached.push({
+                  namespace: id.namespace,
+                  identifier: id.identifier,
+                  scopeConnectionId: id.scopeConnectionId ?? null,
+                });
               }
             }
           }
@@ -971,7 +1113,7 @@ async function resolveLinksByKind(
       // claim is exactly what that re-read returned — `lookupMatches` is
       // type-agnostic and an identity belongs to at most one entity org-wide.
       for (const id of attached) {
-        const key = `${id.namespace}\u0000${id.identifier}`;
+        const key = identityKey(id);
         for (const ruleMatches of matchesByRule.values()) ruleMatches.set(key, entityId);
       }
 

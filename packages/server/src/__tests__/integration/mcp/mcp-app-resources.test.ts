@@ -26,7 +26,7 @@ import { get, post } from '../../setup/test-helpers';
 const STUB_EMBEDDED_HTML =
   '<!doctype html><html><body data-test="mcp-app-embedded-stub">embedded</body></html>';
 const STUB_EXTERNAL_HTML =
-  '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="script-src __LOBU_MCP_APP_ORIGIN__"><link rel="stylesheet" href="./assets/app.css?v=css123"><script type="module" src="./assets/app.js?v=js123"></script></head><body data-test="mcp-app-external-stub">external</body></html>';
+  '<!doctype html><html><head><link rel="stylesheet" href="./assets/app.css?v=css123"><script defer src="./assets/app.js?v=js123"></script></head><body data-test="mcp-app-external-stub">external</body></html>';
 
 describe('MCP App resources — ui:// serving (host-authored view)', () => {
   let org: Awaited<ReturnType<typeof createTestOrganization>>;
@@ -147,14 +147,51 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     return sessionId!;
   }
 
-  it('serves the self-contained v14 interaction bundle over resources/read', async () => {
+  it('signals legacy fallback to a 2026 server/discover probe', async () => {
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'openai-mcp-discover',
+        method: 'server/discover',
+        params: {
+          _meta: {
+            'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+            'io.modelcontextprotocol/clientInfo': {
+              name: 'openai-mcp',
+              version: '1.0.0',
+            },
+            'io.modelcontextprotocol/clientCapabilities': {},
+          },
+        },
+      },
+      headers: {
+        'mcp-method': 'server/discover',
+        'mcp-protocol-version': '2026-07-28',
+      },
+      token,
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('mcp-session-id')).toBeNull();
+    expect(await response.json()).toEqual({
+      jsonrpc: '2.0',
+      error: { code: -32601, message: 'Method not found' },
+      id: 'openai-mcp-discover',
+    });
+
+    // A modern client treats -32601 as proof of a legacy server, then opens a
+    // normal 2025-era initialized session on the same endpoint.
+    expect(await initSession(`/mcp/${org.slug}`)).toBeTruthy();
+  });
+
+  it('serves the external v35 interaction bundle over resources/read', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const response = await post(`/mcp/${org.slug}`, {
       body: {
         jsonrpc: '2.0',
         id: 1,
         method: 'resources/read',
-        params: { uri: 'ui://lobu/interaction/v14.html' },
+        params: { uri: 'ui://lobu/interaction/v35.html' },
       },
       headers: { 'mcp-session-id': sessionId },
       token,
@@ -163,16 +200,17 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const content = body.result?.contents?.[0];
-    expect(content?.uri).toBe('ui://lobu/interaction/v14.html');
+    expect(content?.uri).toBe('ui://lobu/interaction/v35.html');
     expect(content?.mimeType).toBe('text/html;profile=mcp-app');
-    expect(content?.text).toContain('mcp-app-embedded-stub');
-    expect(content?.text).not.toContain('mcp-app-external-stub');
-    expect(content?.text).not.toContain('./assets/');
-    expect(content?.text).not.toContain('<base ');
+    expect(content?.text).toContain('mcp-app-external-stub');
+    expect(content?.text).not.toContain('mcp-app-embedded-stub');
+    expect(content?.text).toContain('./assets/app.js?v=js123');
+    expect(content?.text).toContain('<base href="http://localhost/mcp-apps/interaction/" />');
     expect(content?._meta?.ui?.csp).toEqual({
       connectDomains: [],
-      resourceDomains: [],
+      resourceDomains: ['http://localhost'],
       frameDomains: [],
+      baseUriDomains: ['http://localhost'],
     });
     expect(content?._meta?.ui?.permissions).toEqual({ clipboardWrite: {} });
     expect(content?._meta?.ui?.prefersBorder).toBe(true);
@@ -242,6 +280,11 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       'ui://lobu/interaction/v4.html',
       'ui://lobu/interaction/v5.html',
       'ui://lobu/interaction/v6.html',
+      'ui://lobu/interaction/v30.html',
+      'ui://lobu/interaction/v31.html',
+      'ui://lobu/interaction/v32.html',
+      'ui://lobu/interaction/v33.html',
+      'ui://lobu/interaction/v34.html',
     ]) {
       const response = await post(`/mcp/${org.slug}`, {
         body: {
@@ -272,7 +315,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     }
   });
 
-  it('keeps the v7 through v13 aliases on the packed, network-free template', async () => {
+  it('keeps prior packed resource aliases on the network-free template', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     for (const uri of [
       'ui://lobu/interaction/v7.html',
@@ -282,6 +325,18 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       'ui://lobu/interaction/v11.html',
       'ui://lobu/interaction/v12.html',
       'ui://lobu/interaction/v13.html',
+      'ui://lobu/interaction/v14.html',
+      'ui://lobu/interaction/v15.html',
+      'ui://lobu/interaction/v20.html',
+      'ui://lobu/interaction/v21.html',
+      'ui://lobu/interaction/v22.html',
+      'ui://lobu/interaction/v23.html',
+      'ui://lobu/interaction/v24.html',
+      'ui://lobu/interaction/v25.html',
+      'ui://lobu/interaction/v26.html',
+      'ui://lobu/interaction/v27.html',
+      'ui://lobu/interaction/v28.html',
+      'ui://lobu/interaction/v29.html',
     ]) {
       const response = await post(`/mcp/${org.slug}`, {
         body: {
@@ -316,7 +371,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const resource = body.result?.resources?.find(
-      (r: { uri: string }) => r.uri === 'ui://lobu/interaction/v14.html'
+      (r: { uri: string }) => r.uri === 'ui://lobu/interaction/v35.html'
     );
     expect(resource).toBeDefined();
     expect(
@@ -332,8 +387,9 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(resource.mimeType).toBe('text/html;profile=mcp-app');
     expect(resource._meta?.ui?.csp).toEqual({
       connectDomains: [],
-      resourceDomains: [],
+      resourceDomains: ['http://localhost'],
       frameDomains: [],
+      baseUriDomains: ['http://localhost'],
     });
     expect(resource._meta?.ui?.prefersBorder).toBe(true);
     expect(resource._meta?.ui?.domain).toBeUndefined();
@@ -364,10 +420,11 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         _meta: expect.objectContaining({
           securitySchemes: [{ type: 'oauth2', scopes: ['mcp:read'] }],
           ui: expect.objectContaining({
-            resourceUri: 'ui://lobu/interaction/v14.html',
+            resourceUri: 'ui://lobu/interaction/v35.html',
             visibility: ['model', 'app'],
           }),
-          'openai/outputTemplate': 'ui://lobu/interaction/v14.html',
+          'openai/outputTemplate': 'ui://lobu/interaction/v35.html',
+          'openai/widgetAccessible': true,
         }),
       })
     );
@@ -381,10 +438,11 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         _meta: expect.objectContaining({
           securitySchemes: [{ type: 'oauth2', scopes: ['mcp:write'] }],
           ui: expect.objectContaining({
-            resourceUri: 'ui://lobu/interaction/v14.html',
+            resourceUri: 'ui://lobu/interaction/v35.html',
             visibility: ['model', 'app'],
           }),
-          'openai/outputTemplate': 'ui://lobu/interaction/v14.html',
+          'openai/outputTemplate': 'ui://lobu/interaction/v35.html',
+          'openai/widgetAccessible': true,
         }),
       })
     );
@@ -422,11 +480,14 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         outputSchema: expect.objectContaining({ type: 'object' }),
         securitySchemes: [{ type: 'oauth2', scopes: ['mcp:write'] }],
         _meta: expect.objectContaining({
-          ui: { visibility: ['app'] },
+          ui: {
+            visibility: ['app'],
+          },
         }),
       })
     );
     expect(resolveApproval?._meta?.['openai/outputTemplate']).toBeUndefined();
+    expect(resolveApproval?._meta?.['openai/widgetAccessible']).toBeUndefined();
     for (const removed of [
       'render_lobu_view',
       'restore_lobu_app_result',
@@ -466,7 +527,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     );
     expect(tool?._meta?.ui).toEqual(
       expect.objectContaining({
-        resourceUri: 'ui://lobu/interaction/v14.html',
+        resourceUri: 'ui://lobu/interaction/v35.html',
         visibility: ['model', 'app'],
       })
     );
@@ -528,6 +589,9 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(body.result?.content?.[0]?.text).toContain('"title": "Saved chart"');
     expect(body.result?.content?.[0]?.text).not.toContain('payload_data');
     expect(body.result?.content?.[0]?.text).not.toContain('payload_template');
+    expect(body.result?._meta?.['openai/outputTemplate']).toBe(
+      'ui://lobu/interaction/v35.html'
+    );
   });
 
   it('keeps oversized saved payloads out of the App response', async () => {
@@ -912,6 +976,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     const renderBody = await renderResponse.json();
     expect(renderBody.result?.isError).not.toBe(true);
     expect(renderBody.result?._meta?.['lobu/approval-capability']).toBeUndefined();
+    expect(renderBody.result?._meta?.['openai/outputTemplate']).toBeUndefined();
     // The registered approval reader still carries the viewer role, while the
     // app-only approval capability is withheld from this non-App client.
     expect(renderBody.result?._meta?.['lobu/member-role']).toBe('owner');
@@ -1023,6 +1088,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       sessionToken: writeToken,
       agentId: actingAgent.agentId,
     });
+    const hostConversationId = 'chatgpt-approval-conversation';
     const renderResponse = await post(`/mcp/${org.slug}`, {
       body: {
         jsonrpc: '2.0',
@@ -1031,6 +1097,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         params: {
           name: 'get_approval',
           arguments: { run_id: runId },
+          _meta: { 'openai/session': hostConversationId },
         },
       },
       headers: { 'mcp-session-id': sessionId },
@@ -1066,6 +1133,9 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(typeof capability).toBe('string');
     expect(capability.length).toBeGreaterThan(40);
     expect(renderBody.result?._meta?.['lobu/member-role']).toBe('owner');
+    expect(renderBody.result?._meta?.['openai/outputTemplate']).toBe(
+      'ui://lobu/interaction/v35.html'
+    );
     expect(JSON.stringify(view)).not.toContain(capability);
     expect(renderBody.result?.content?.[0]?.text).not.toContain(capability);
 
@@ -1087,6 +1157,39 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(missingCapabilityBody.result?.content?.[0]?.text).toMatch(/approval capability/i);
     expect(missingCapabilityBody.result?._meta?.['lobu/member-role']).toBe('owner');
 
+    // ChatGPT keeps one host conversation but may broker every app-initiated
+    // call through a fresh MCP transport. The signed capability must follow
+    // that stable host boundary without becoming reusable in another chat.
+    const foreignConversationSessionId = await initSession(`/mcp/${org.slug}`, {
+      sessionToken: writeToken,
+      agentId: actingAgent.agentId,
+    });
+    const foreignConversationResponse = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'foreign-conversation-resolve-approval',
+        method: 'tools/call',
+        params: {
+          name: 'resolve_approval',
+          arguments: {
+            run_id: runId,
+            decision: 'reject',
+            _meta: { 'lobu/approval-capability': capability },
+          },
+          _meta: { 'openai/session': 'another-chatgpt-conversation' },
+        },
+      },
+      headers: { 'mcp-session-id': foreignConversationSessionId },
+      token: writeToken,
+    });
+    const foreignConversationBody = await foreignConversationResponse.json();
+    expect(foreignConversationBody.result?.isError).toBe(true);
+    expect(foreignConversationBody.result?.content?.[0]?.text).toMatch(/stale|match/i);
+
+    const resolutionSessionId = await initSession(`/mcp/${org.slug}`, {
+      sessionToken: writeToken,
+      agentId: actingAgent.agentId,
+    });
     const rejectResponse = await post(`/mcp/${org.slug}`, {
       body: {
         jsonrpc: '2.0',
@@ -1094,11 +1197,16 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         method: 'tools/call',
         params: {
           name: 'resolve_approval',
-          arguments: { run_id: runId, decision: 'reject', reason: 'Not this time' },
-          _meta: { 'lobu/approval-capability': capability },
+          arguments: {
+            run_id: runId,
+            decision: 'reject',
+            reason: 'Not this time',
+            _meta: { 'lobu/approval-capability': capability },
+          },
+          _meta: { 'openai/session': hostConversationId },
         },
       },
-      headers: { 'mcp-session-id': sessionId },
+      headers: { 'mcp-session-id': resolutionSessionId },
       token: writeToken,
     });
     const rejectBody = await rejectResponse.json();
@@ -1180,6 +1288,75 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
           { name: 'name', type: expect.any(String) },
         ],
         total_count: expect.any(Number),
+      })
+    );
+  });
+
+  it('renders a completed approval once and preserves its submitted form values', async () => {
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (organization_id, run_type, status, approval_status, action_output)
+      VALUES (
+        ${org.id},
+        'internal',
+        'completed',
+        'approved',
+        ${getDb().json({ answer: { reviewer_note: 'Looks good', release_window: 'Tomorrow' } })}
+      )
+      RETURNING id
+    `;
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_completed_approval_${run.id}`,
+      title: 'Question: Release readiness — completed',
+      content: 'Builder action completed: Release readiness',
+      semanticType: 'operation',
+      runId: Number(run.id),
+      interactionType: 'approval',
+      interactionStatus: 'completed',
+      interactionInputSchema: {
+        type: 'object',
+        properties: {
+          reviewer_note: { type: 'string' },
+          release_window: { type: 'string', enum: ['Today', 'Tomorrow'] },
+        },
+        required: ['release_window'],
+      },
+      interactionInput: {
+        reviewer_note: 'Initial note',
+        release_window: 'Today',
+      },
+      interactionOutput: {
+        answer: { reviewer_note: 'Looks good', release_window: 'Tomorrow' },
+      },
+    });
+
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'completed-approval-view',
+        method: 'tools/call',
+        params: {
+          name: 'get_approval',
+          arguments: { run_id: Number(run.id) },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    expect(body.result?.structuredContent).toEqual(
+      expect.objectContaining({
+        title: 'Question: Release readiness · completed',
+        actions: [],
+        blocks: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'form',
+            initialValues: { reviewer_note: 'Looks good', release_window: 'Tomorrow' },
+          }),
+        ]),
       })
     );
   });

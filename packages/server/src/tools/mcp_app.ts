@@ -18,7 +18,7 @@ import { getOrgUrlContext } from './view-urls';
 
 // The URI is the host cache key for the immutable template. Bump it whenever
 // the shipped HTML changes; ChatGPT caches both successful and failed fetches.
-export const LOBU_INTERACTION_RESOURCE_URI = 'ui://lobu/interaction/v14.html';
+export const LOBU_INTERACTION_RESOURCE_URI = 'ui://lobu/interaction/v35.html';
 
 const TITLE_MAX_LENGTH = 200;
 const BLOCK_MAX_ITEMS = 100;
@@ -278,6 +278,7 @@ function approvalBlocks(row: {
   content: string | null;
   interaction_input_schema: Record<string, unknown> | null;
   interaction_input: Record<string, unknown> | null;
+  interaction_output: Record<string, unknown> | null;
   metadata: Record<string, unknown> | null;
 }): LobuViewBlock[] {
   const metadata = row.metadata ?? {};
@@ -302,12 +303,16 @@ function approvalBlocks(row: {
   }
 
   if (row.interaction_input_schema) {
+    const submittedAnswer = isRecord(row.interaction_output?.answer)
+      ? row.interaction_output.answer
+      : null;
+    const formValues = submittedAnswer ?? row.interaction_input;
     blocks.push({
       type: 'form',
       schema: sanitizeFormSchema(row.interaction_input_schema) as Record<string, unknown>,
-      ...(row.interaction_input
+      ...(formValues
         ? {
-            initialValues: sanitizeFormInitialValues(row.interaction_input),
+            initialValues: sanitizeFormInitialValues(formValues),
           }
         : {}),
     });
@@ -337,6 +342,7 @@ type ApprovalContentItem = {
   interaction_status: string | null;
   interaction_input_schema: Record<string, unknown> | null;
   interaction_input: Record<string, unknown> | null;
+  interaction_output: Record<string, unknown> | null;
   metadata: Record<string, unknown> | null;
 };
 
@@ -351,26 +357,28 @@ function belongsToApprovalWindow(row: ApprovalContentItem): boolean {
 }
 
 type ApprovalCapability = {
-  v: 1;
+  v: 1 | 2;
   runId: number;
   eventId: number;
   organizationId: string;
   userId: string;
   clientId: string;
   sessionId: string;
+  conversationId?: string | null;
   expiresAt: number;
 };
 
 function isApprovalCapability(value: unknown): value is ApprovalCapability {
   if (!isRecord(value)) return false;
   return (
-    value.v === 1 &&
+    (value.v === 1 || value.v === 2) &&
     Number.isInteger(value.runId) &&
     Number.isInteger(value.eventId) &&
     typeof value.organizationId === 'string' &&
     typeof value.userId === 'string' &&
     typeof value.clientId === 'string' &&
     typeof value.sessionId === 'string' &&
+    (value.v === 1 || value.conversationId === null || typeof value.conversationId === 'string') &&
     typeof value.expiresAt === 'number'
   );
 }
@@ -395,16 +403,24 @@ function canIssueApprovalCapability(
 
 function issueApprovalCapability(row: ApprovalContentItem, ctx: ToolContext): string {
   const payload: ApprovalCapability = {
-    v: 1,
+    v: 2,
     runId: row.run_id,
     eventId: row.id,
     organizationId: ctx.organizationId,
     userId: ctx.userId!,
     clientId: ctx.clientId!,
     sessionId: ctx.mcpSessionId!,
+    conversationId: ctx.mcpConversationId ?? null,
     expiresAt: Date.now() + APPROVAL_CAPABILITY_TTL_MS,
   };
   return encrypt(JSON.stringify(payload));
+}
+
+function approvalCapabilityMatchesHost(capability: ApprovalCapability, ctx: ToolContext): boolean {
+  if (capability.v === 2 && capability.conversationId) {
+    return capability.conversationId === ctx.mcpConversationId;
+  }
+  return capability.sessionId === ctx.mcpSessionId;
 }
 
 function readApprovalCapability(token: string | null | undefined): ApprovalCapability {
@@ -444,7 +460,7 @@ async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Pro
 
   const status = row.interaction_status ?? 'pending';
   const baseTitle = displayValue(row.title ?? `Approval run ${runId}`, TITLE_MAX_LENGTH).replace(
-    /\s+—\s+pending approval$/i,
+    /\s+—\s+(?:pending approval|approved|rejected|completed|failed|cancelled)$/i,
     ''
   );
   const actions: LobuView['actions'] = [];
@@ -501,6 +517,7 @@ async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Pro
       content: row.payload_text,
       interaction_input_schema: row.interaction_input_schema,
       interaction_input: row.interaction_input,
+      interaction_output: row.interaction_output,
       metadata: row.metadata,
     }),
     actions,
@@ -539,7 +556,7 @@ const resolveApprovalImpl = async (
     capability.organizationId !== ctx.organizationId ||
     capability.userId !== ctx.userId ||
     capability.clientId !== ctx.clientId ||
-    capability.sessionId !== ctx.mcpSessionId ||
+    !approvalCapabilityMatchesHost(capability, ctx) ||
     capability.expiresAt <= Date.now()
   ) {
     throw new ToolUserError('The MCP App approval capability is stale or does not match.', 403);

@@ -124,10 +124,14 @@ jobs:
           metadata:
             name: $PREVIEW_NAME
             namespace: $PREVIEW_NS
-            annotations:
-              tailscale.com/tags: "tag:preview,tag:pr-$PR_NUMBER"
           spec:
             ingressClassName: tailscale
+            # The tailscale operator only serves rules whose host matches the
+            # TLS host, and rejects tags its OAuth client may not create
+            # (defaults to tag:k8s). No tags annotation here.
+            tls:
+              - hosts:
+                  - lobu-pr-$PR_NUMBER.${{ vars.TAILNET_DOMAIN }}
             rules:
               - host: lobu-pr-$PR_NUMBER.${{ vars.TAILNET_DOMAIN }}
                 http:

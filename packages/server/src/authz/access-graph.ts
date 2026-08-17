@@ -46,7 +46,10 @@ import {
   withEntityWriteTransaction,
 } from '../utils/entity-management.js';
 import { ensureRelationshipType, upsertEdges } from '../utils/edge-writes.js';
-import { withAclEdgeWrite } from '../utils/relationship-validation.js';
+import {
+  PURPOSE_AUTHORIZATION,
+  withAclEdgeWrite,
+} from '../utils/relationship-validation.js';
 import { aclConnectionIdSql } from './acl-observability.js';
 import { type AclSyncFence, captureAclSyncFence } from './acl-generation.js';
 import { ensureResourceEntityType } from './acl-resource-type.js';
@@ -114,12 +117,14 @@ export function ensureMemberOfType(orgId: string): Promise<number> {
     slug: MEMBER_OF_TYPE_SLUG,
     name: 'Member of',
     description: 'A member belongs to an ACL resource (channel, repo, org, …)',
-    // NOT classified in this deploy, and the omission is load-bearing rather
-    // than an oversight. Stamping `purpose` here would arm the trigger for an
-    // org the moment one new pod ran its sync, while older pods still writing
-    // that org's member_of edges without the flag would start being rejected.
-    // The follow-up deploy adds `purpose: PURPOSE_AUTHORIZATION` here together
-    // with the backfill, once every live pod sets the flag.
+    // lobu#2825 made every ACL writer set `lobu.acl_write` while leaving
+    // classification inert. This later release can therefore stamp the type
+    // without a rolling-deploy window in which an older pod's sync is rejected.
+    //
+    // This also REPAIRS: the upsert adopts a pre-existing `member_of` row, so an
+    // org whose type predates the backfill is classified on its next sync rather
+    // than staying an unguarded ACL type forever.
+    purpose: PURPOSE_AUTHORIZATION,
   });
 }
 
@@ -557,7 +562,7 @@ export async function buildAccessGraph(params: {
   // A resource's membership is re-affirmed rather than rewritten, so a
   // steady-state resync creates nothing.
   // Grants and departures commit together under the ACL write flag. The trigger
-  // starts requiring it once the follow-up deploy classifies `member_of`.
+  // requires it now that `member_of` is classified.
   // Enforcement lives in the database rather than at each call site because
   // this table has several writers, and `source='feed'` cannot mark a write as
   // ours — it is caller-settable too.

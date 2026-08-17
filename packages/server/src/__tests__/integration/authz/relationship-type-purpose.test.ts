@@ -5,12 +5,10 @@
  * `ensureMemberOfType` upserts on (organization_id, slug) — so it ADOPTS a
  * pre-existing row rather than create-or-failing.
  *
- * This deploy ships the classification MECHANISM without classifying anything:
- * stamping `member_of` is what arms the trigger, and arming it while older pods
- * still write ACL edges without the transaction-local flag would reject their
- * writes until the rollout drained. So these tests drive `ensureRelationshipType`
- * with an explicit purpose and pin the rollout invariant that
- * `ensureMemberOfType` does not yet classify.
+ * lobu#2825 shipped the classification mechanism inert, after making every ACL
+ * writer set the transaction-local flag. This follow-up stamps `member_of`, so
+ * the tests pin both the shared helper's repair path and the initializer
+ * that now arms the trigger for each organization.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -50,13 +48,31 @@ describe('relationship type purpose', () => {
     expect(await purposeOf(orgId, 'member_of')).toBe('authorization');
   });
 
-  it('does not classify member_of before every pod sets the flag', async () => {
-    // Guards the rollout seam. If a later change makes `ensureMemberOfType`
-    // stamp the purpose, it arms the trigger org-by-org as pods restart, and
-    // ACL syncs on not-yet-restarted pods start failing. Flipping this test is
-    // the deliberate follow-up deployment step.
+  it('classifies member_of at initialization', async () => {
+    // #2825 established the writer flag in the earlier release. Reverting this
+    // initializer to omit the purpose would now leave an org's ACL type
+    // unguarded from its next sync onward.
     await ensureMemberOfType(orgId);
+    expect(await purposeOf(orgId, 'member_of')).toBe('authorization');
+  });
+
+  it('repairs an unclassified member_of it adopts on the next sync', async () => {
+    // The backfill classifies rows that exist when it runs. This covers the
+    // other source of unclassified rows: one created during the deploy window by
+    // a pod still running the pre-classification code. Without this repair such
+    // a row is a live ACL type the trigger ignores — permanently, since nothing
+    // else revisits it.
+    const sql = getTestDb();
+    await sql`
+      INSERT INTO entity_relationship_types
+        (slug, name, description, organization_id, is_symmetric, created_by, created_at, updated_at)
+      VALUES ('member_of', 'Member of', 'pre-classification row', ${orgId}, false, NULL,
+              current_timestamp, current_timestamp)
+    `;
     expect(await purposeOf(orgId, 'member_of')).toBeNull();
+
+    await ensureMemberOfType(orgId);
+    expect(await purposeOf(orgId, 'member_of')).toBe('authorization');
   });
 
   it('repairs an unclassified row it adopts', async () => {

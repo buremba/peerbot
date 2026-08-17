@@ -20,7 +20,7 @@ export const EDGE_SOURCE_MANUAL = 'manual';
 /**
  * System-controlled classification of what a relationship type is FOR.
  *
- * `authorization` marks a type for ACL reads in the follow-up deployment. It is
+ * `authorization` marks a type for the purpose-based ACL-read cutover. It is
  * deliberately not caller-settable: the whole point is that the platform, not
  * a caller or connector manifest, decides which vocabulary grants access.
  */
@@ -28,13 +28,13 @@ export type RelationshipTypePurpose = 'authorization';
 export const PURPOSE_AUTHORIZATION: RelationshipTypePurpose = 'authorization';
 
 /**
- * Relationship slugs whose EDGES the ACL engine owns. Configs legitimately
- * declare the `member_of` type and may update its harmless fields before
- * classification; caller-created edges on it are never allowed.
+ * Relationship slugs whose EDGES the ACL engine owns. A config can declare the
+ * `member_of` type before its first ACL sync classifies it; caller-created edges
+ * on it are never allowed.
  *
- * `purpose` is the durable enforcement boundary. During the staged rollout the
- * mutation guard also checks this ACL-managed slug, because ACL reads trust it
- * before the classification backfill lands.
+ * `purpose` is the durable enforcement boundary. Until ACL reads switch fully
+ * to it, the mutation guard also checks the slug so a newly declared,
+ * not-yet-classified row cannot be used to mint access.
  */
 export function isAclManagedRelationshipSlug(slug: string): boolean {
   return slug === ACL_MANAGED_SLUG;
@@ -126,10 +126,10 @@ export function assertNotAuthorizationType(
  * Stricter variant for the EDGE surfaces: also refuses the ACL-managed slug, not
  * just a classified type.
  *
- * That gap is the entire pre-classification window. Until the backfill lands
- * every live `member_of` row is unclassified while the ACL reads already trust
- * the slug, so a purpose-only guard would leave callers free to mint or revoke
- * grants and the backfill would then bless whatever they left behind.
+ * ACL reads still trust the slug during the staged cutover. A config can create
+ * a new unclassified `member_of` row after the one-time backfill and before its
+ * first ACL sync; a purpose-only guard would leave callers free to mint or
+ * revoke grants on that row.
  *
  * Deliberately NOT used on the relationship-TYPE surfaces: configs legitimately
  * declare `member_of` (`examples/personal-agent/lobu.config.ts`), and refusing

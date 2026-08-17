@@ -142,6 +142,17 @@ expect_fail_grep() {
   else softfail "$desc (expected non-zero exit + '$marker', got exit=$RC) [lobu $*]"; fi
 }
 
+# expect_grep_absent <desc> <present> <absent> <cwd> <args...>  -> succeeds, and
+# the output carries <present> but NOT <absent>. The positive half is required:
+# without it a command that produced nothing at all would pass vacuously.
+expect_grep_absent() {
+  local desc="$1" present="$2" absent="$3" cwd="$4"; shift 4
+  runlobu "$cwd" "$@"
+  if [ "$RC" -eq 0 ] && grep -qF -- "$present" "$OUT" \
+     && ! grep -qF -- "$absent" "$OUT"; then pass "$desc"
+  else softfail "$desc (exit=$RC, want '$present' without '$absent') [lobu $*]"; fi
+}
+
 # expect_exit <desc> <code> <cwd> <args...>  -> exact exit code
 expect_exit() {
   local desc="$1" code="$2" cwd="$3"; shift 3
@@ -420,12 +431,29 @@ expect_grep "lobu memory org current -c local" "org:" "$PROJ" memory org current
 expect_grep "lobu memory org set -c local" "memory org" "$PROJ" memory org set "$ORG" -c local
 # memory seed needs a config with `org` set -- use a dedicated minimal project.
 SEEDPROJ="$RUN_DIR/seedproj"; mkdir -p "$SEEDPROJ"
+# It declares `member_of` on purpose: that slug is platform-owned, and seeding
+# it would 409-then-403 against a server that classifies it as
+# authorization-bearing. Seed must skip it while still seeding ordinary types.
 cat > "$SEEDPROJ/lobu.config.ts" <<TS
-import { defineConfig, defineEntityType } from "@lobu/cli/config";
+import {
+  defineConfig,
+  defineEntityType,
+  defineRelationshipType,
+} from "@lobu/cli/config";
 const note = defineEntityType({ key: "note", name: "Note" });
-export default defineConfig({ org: "$ORG", agents: [], entities: [note] });
+const mentions = defineRelationshipType({ key: "mentions", name: "Mentions" });
+const memberOf = defineRelationshipType({ key: "member_of", name: "Member of" });
+export default defineConfig({
+  org: "$ORG",
+  agents: [],
+  entities: [note],
+  relationships: [mentions, memberOf],
+});
 TS
 expect_grep "lobu memory seed --dry-run" "Dry run" "$SEEDPROJ" memory seed --dry-run -c local
+expect_grep_absent "lobu memory seed skips platform-owned member_of" \
+  "relationship_type: mentions" "relationship_type: member_of" \
+  "$SEEDPROJ" memory seed --dry-run -c local
 # memory exec -- run a trivial ClientSDK script.
 echo 'export default async () => "cli-smoke-exec-ok";' > "$RUN_DIR/exec.ts"
 expect_ok "lobu memory exec (ClientSDK script)" "$PROJ" memory exec "$RUN_DIR/exec.ts" -c local

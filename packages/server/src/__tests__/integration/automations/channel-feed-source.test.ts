@@ -16,6 +16,7 @@
 
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { getTestDb } from "../../setup/test-db";
+import { withAclEdgeWrite } from "../../../utils/relationship-validation";
 import { createTestConnection } from "../../setup/test-fixtures";
 import { TestWorkspace } from "../../setup/test-mcp-client";
 import {
@@ -50,7 +51,11 @@ describe("streaming feed as an automation @feed source", () => {
     const sql = getTestDb();
     await sql`DELETE FROM channel_messages WHERE organization_id = ${orgId}`;
     await sql`DELETE FROM authz_source_acl_state WHERE organization_id = ${orgId}`;
-    await sql`DELETE FROM entity_relationships WHERE organization_id = ${orgId}`;
+    // `member_of` is authorization-bearing, so the edge trigger refuses this
+    // teardown from outside a sync — a DELETE is guarded exactly like an INSERT.
+    await withAclEdgeWrite(sql, async (tx) => {
+      await tx`DELETE FROM entity_relationships WHERE organization_id = ${orgId}`;
+    });
     await sql`DELETE FROM entity_identities WHERE organization_id = ${orgId}`;
     await sql`DELETE FROM feeds WHERE organization_id = ${orgId}`;
     await sql`DELETE FROM connections WHERE organization_id = ${orgId}`;
@@ -270,13 +275,18 @@ describe("streaming feed as an automation @feed source", () => {
       WHERE organization_id = ${orgId} AND slug = 'member_of' AND status = 'active'
       LIMIT 1
     `;
-    await sql`
-      INSERT INTO entity_relationships (
-        organization_id, from_entity_id, to_entity_id, relationship_type_id, created_at, updated_at
-      ) VALUES (
-        ${orgId}, ${member.id}, ${channelEntityId}, ${mot.id}, NOW(), NOW()
-      )
-    `;
+    // Seeded under the ACL-write privilege because `member_of` is classified
+    // authorization-bearing: the chokepoint trigger refuses a grant minted
+    // outside a sync, which is the property this fixture is standing in for.
+    await withAclEdgeWrite(sql, async (tx) => {
+      await tx`
+        INSERT INTO entity_relationships (
+          organization_id, from_entity_id, to_entity_id, relationship_type_id, created_at, updated_at
+        ) VALUES (
+          ${orgId}, ${member.id}, ${channelEntityId}, ${mot.id}, NOW(), NOW()
+        )
+      `;
+    });
 
     const rows = (await readAsAutomationSource(readerUserId)) as Array<{ text: string }>;
     expect(rows.length).toBe(2);

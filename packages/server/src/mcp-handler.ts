@@ -196,6 +196,26 @@ const MCP_APP_RESOURCE_ALIASES: ReadonlyMap<
     'ui://lobu/interaction/v35.html',
     { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
   ],
+  [
+    'ui://lobu/interaction/v36.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
+  ],
+  [
+    'ui://lobu/interaction/v37.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
+  ],
+  [
+    'ui://lobu/interaction/v38.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
+  ],
+  [
+    'ui://lobu/interaction/v39.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
+  ],
+  [
+    'ui://lobu/interaction/v40.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
+  ],
 ]);
 // ---------------------------------------------------------------------------
 // Session store

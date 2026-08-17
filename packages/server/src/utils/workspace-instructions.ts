@@ -9,6 +9,7 @@
 import { getDb } from '../db/client';
 import logger from './logger';
 import { loadOrgGuidanceBlock } from './org-guidance';
+import { ACL_MANAGED_TYPE_SQL } from './relationship-validation';
 
 /** Collapse whitespace/newlines so an authored description stays one line. */
 function singleLine(value: unknown): string {
@@ -84,8 +85,15 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
          ORDER BY name ASC`,
         [organizationId]
       ),
+      // `acl_managed` reuses the mutation guard's own predicate rather than a
+      // second copy of it: `link`/`unlink` refuse these types through
+      // assertNotAclManagedEdge, which is purpose-OR-slug, so a purpose-only
+      // test here would still promise the agent a write it cannot make during
+      // the window between a config declaring `member_of` and the first ACL
+      // sync classifying it.
       sql.unsafe(
-        `SELECT rt.slug, rt.name, rt.description, rt.is_symmetric, inv.slug as inverse_type_slug
+        `SELECT rt.slug, rt.name, rt.description, rt.is_symmetric, inv.slug as inverse_type_slug,
+                ${ACL_MANAGED_TYPE_SQL} AS acl_managed
          FROM entity_relationship_types rt
          LEFT JOIN entity_relationship_types inv ON rt.inverse_type_id = inv.id
          WHERE rt.status = 'active'
@@ -113,6 +121,10 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
       const parts: string[] = [];
       if (rt.is_symmetric) parts.push('symmetric');
       if (inverseSlug) parts.push(`inverse: ${inverseSlug}`);
+      // Annotated rather than filtered out: reading these edges is legitimate,
+      // so hiding the type would blind the agent to real schema. Only the WRITE
+      // is refused, so say exactly that.
+      if (rt.acl_managed) parts.push('read-only: access control');
       const meta = parts.length > 0 ? ` (${parts.join(', ')})` : '';
       const desc = singleLine(rt.description);
       relTypeLines.push(`- ${slug}${meta}${desc ? ` — ${desc}` : ''}`);

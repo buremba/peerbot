@@ -9,6 +9,8 @@
  *      top-level-keys bug: a real JSON Schema used to render "type, properties")
  *   3. entity_relationship_types.description
  *   4. connector_definitions.description
+ *   5. ACL-managed relationship types render a `read-only: access control` hint,
+ *      on the same purpose-OR-slug test that link/unlink already 403 on
  *
  * Org guidance pinned here:
  *   - admin-authored `guidance` events render under "### Organization Context"
@@ -115,6 +117,26 @@ describe('buildWorkspaceInstructions render fixes', () => {
       VALUES ('supplies', 'Supplies', 'Which company supplies which product', ${org.id})
     `;
 
+    // Two ACL-managed types, one per branch of the guard's purpose-OR-slug
+    // test, so a regression that narrows the predicate to either half alone
+    // still fails here. `grants_role` is classified but NOT the ACL slug;
+    // `member_of` is the ACL slug but NOT yet classified — the real window
+    // between a config declaring it and the first ACL sync running.
+    await sql`
+      INSERT INTO entity_relationship_types (slug, name, description, organization_id)
+      VALUES
+        ('grants_role', 'Grants role', 'Role grant synced from the IdP', ${org.id}),
+        ('member_of', 'Member of', 'Access-control membership', ${org.id})
+    `;
+    // Classify directly: `lobu_guard_authorization_edges` fires on
+    // entity_relationships, not on the type table, so setting `purpose` needs no
+    // `lobu.acl_write` privilege.
+    await sql`
+      UPDATE entity_relationship_types
+      SET purpose = 'authorization'
+      WHERE organization_id = ${org.id} AND slug = 'grants_role'
+    `;
+
     // Org-scoped connector definition with a description + an active connection.
     await sql`
       INSERT INTO connector_definitions (key, name, description, actions_schema, organization_id, status)
@@ -174,6 +196,25 @@ describe('buildWorkspaceInstructions render fixes', () => {
   it('renders relationship type descriptions', async () => {
     const out = await buildWorkspaceInstructions(org.id);
     expect(out).toContain('- supplies — Which company supplies which product');
+  });
+
+  it('marks a CLASSIFIED relationship type read-only so agents stop attempting 403 writes', async () => {
+    const out = await buildWorkspaceInstructions(org.id);
+    expect(out).toContain('- grants_role (read-only: access control) — Role grant synced from the IdP');
+  });
+
+  it('marks the ACL slug read-only even before classification has run', async () => {
+    const out = await buildWorkspaceInstructions(org.id);
+    // purpose IS NULL here, so a purpose-only predicate would render this as
+    // freely writable — the exact case assertNotAclManagedEdge still 403s.
+    expect(out).toContain('- member_of (read-only: access control) — Access-control membership');
+  });
+
+  it('does not mark ordinary relationship types read-only', async () => {
+    const out = await buildWorkspaceInstructions(org.id);
+    // Guards the other direction: ACL_MANAGED_TYPE_SQL uses IS NOT DISTINCT
+    // FROM precisely so a NULL purpose does not sweep every type in.
+    expect(out).not.toContain('- supplies (read-only: access control)');
   });
 
   it('renders connector definition descriptions', async () => {

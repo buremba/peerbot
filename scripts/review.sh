@@ -489,7 +489,6 @@ ci_run_green_for_head() {
 # A fresh full review must reuse the exact committed tree that GitHub CI
 # validated. Refuse to surprise the operator with a CPU-heavy local package
 # build; the explicit override is for when CI cannot run for this HEAD.
-HEAD_SHA="$(git rev-parse HEAD)"
 GITHUB_CI_GREEN=0
 if [ -z "$(git status --porcelain)" ] && ci_run_green_for_head "$HEAD_SHA"; then
   GITHUB_CI_GREEN=1

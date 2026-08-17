@@ -100,7 +100,7 @@ jobs:
         run: |
           # Stable per-namespace key so stored secrets survive redeploys.
           if ! kubectl -n "$PREVIEW_NS" get secret preview-encryption >/dev/null 2>&1; then
-            kubectl -n "$PREVIEW_NS" create secret generic preview-encryption \\
+            kubectl -n "$PREVIEW_NS" create secret generic preview-encryption \
               --from-literal=key="$(openssl rand -base64 32)"
           fi
 
@@ -213,7 +213,7 @@ jobs:
             | | |
             |---|---|
             | **URL** | [${previewUrl}](${previewUrl}) |
-            | **Namespace** | \`${context.payload.repository.name}-${prNumber}\` |
+            | **Namespace** | \`lobu-preview-${prNumber}\` |
             | **Status** | Running |
 
             _This preview will be automatically deleted when the PR is closed._`;

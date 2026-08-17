@@ -1,9 +1,8 @@
 # Preview image: same as runtime but KEEPS embedded-postgres so preview
 # environments can use DATABASE_URL=file:///... (embedded mode).
 #
-# Usage:
+# Usage (build; the image declares no CMD - the k8s deployment patches command):
 #   docker build -f docker/app/Dockerfile.preview -t lobu-preview .
-#   docker run -e DATABASE_URL=file:///tmp/lobu.db -p 8787:8787 lobu-preview
 #
 # This reuses the builder stage from the main Dockerfile. To build, pass:
 #   --build-arg BUN_VERSION=1.3.5
@@ -76,7 +75,6 @@ COPY packages/owletto ./packages/owletto
 
 COPY db/migrations db/migrations
 COPY skills/lobu/ skills/lobu/
-COPY packages/owletto packages/owletto
 
 # Build dist for shared workspace packages whose `exports` map points at
 # dist subpaths. server and worker import these packages from their dist barrels.

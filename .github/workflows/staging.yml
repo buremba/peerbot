@@ -41,6 +41,8 @@ jobs:
       PREVIEW_NAME: lobu-pr-${{ github.event.pull_request.number || inputs.pr_number }}
       STAGING_INGRESS: lobu-staging
       STAGING_HOST: staging.${{ vars.TAILNET_DOMAIN }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
       # labeled = acquire, unlabeled = release (label event or manual dispatch)
       STAGING_ACTION: ${{ github.event_name == 'workflow_dispatch' && inputs.action || github.event.action }}
     steps:
@@ -51,7 +53,10 @@ jobs:
       - name: Release lock (unlabeled)
         if: env.STAGING_ACTION == 'unlabeled'
         run: |
-          kubectl delete ingress "$STAGING_INGRESS" -A --ignore-not-found
+          for ns in $(kubectl get ingress "$STAGING_INGRESS" -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' 2>/dev/null); do
+            kubectl delete ingress "$STAGING_INGRESS" -n "$ns" --ignore-not-found
+            echo "released staging ingress from $ns"
+          done
           echo "staging lock released (staging.${{ vars.TAILNET_DOMAIN }} no longer mapped)"
 
       - name: Acquire lock (labeled)

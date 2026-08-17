@@ -28,8 +28,6 @@ help:
 	@echo "  make pre-pr                                 - Local fast gates before push (GitHub CI is the canonical gate)"
 	@echo "  make pre-pr-remote-fast                    - Optional: Linux merge jobs on Depot (broad iteration)"
 	@echo "  make pre-pr-remote [REMOTE_JOBS='unit …']  - Optional: staged full Linux CI on Depot"
-	@echo "  K8S=1 make pre-pr-remote                   - Optional: run CI in local K8s cluster via kubectl (no Depot)"
-	@echo "  make pre-pr                                - Run the CPU-heavy deterministic gate locally (explicit fallback)"
 	@echo "  make owletto-mac [INSTALL=1] [OPEN=1]      - Build Owletto.app with the Developer ID identity (TCC grants match the notarized release); INSTALL=1 replaces /Applications/Owletto.app, OPEN=1 launches it"
 	@echo "  make owletto-mac-e2e [SKIP_BUILD=1]        - Build/install the signed Owletto.app then probe prod computer_use (permissions + list_windows) via the paired device connection"
 

@@ -52,7 +52,7 @@ Mechanical traps (build, SQL, testing, submodule, browser) live in `docs/GOTCHAS
 |---|---|
 | `make pre-pr` | Local fast gates (typecheck, knip, lint, naming/LLM/entity checks) — catches the cheap common misses before push. No DB, no remote. |
 | GitHub CI (`ci.yml`) | **The canonical gate** — full Linux graph on GitHub-hosted runners, free on this public repo, ~5–7 min per PR. |
-| `make pre-pr-remote` | Optional: full graph on Depot (or `K8S=1` in a local cluster). Not part of the required loop. |
+| `make pre-pr-remote` | Optional: full graph on Depot. Not part of the required loop. |
 | `make review` | Handles the review verdict/status or safe-class skip. Runs no typecheck, knip, or tests — **not** proof CI will pass. |
 | `make review-fix` | Unposted fixer pass. Edits the working tree; re-read files before trusting them. |
 | `make ui-review` | Records exact UI proof for Owletto pointer changes; passes non-Owletto changes and complete, forward-only pointer diffs confined to `deploy/` as not applicable. |

@@ -220,6 +220,15 @@ COPY --from=builder /app/packages/cli ./packages/cli
 RUN ln -s /app/packages/cli/bin/lobu.js /usr/local/bin/lobu
 COPY --from=builder /app/packages/owletto ./packages/owletto
 
+# The embedded runtime (DATABASE_URL=file://, previews) loads the pgvector
+# injector from the server bundle dist/vendor; the CLI build vendors it into
+# its own dist. Copy it when keeping the embedded-postgres runtime.
+ARG KEEP_EMBEDDED_PG=0
+RUN if [ "$KEEP_EMBEDDED_PG" = "1" ]; then \
+      mkdir -p /app/packages/server/dist/vendor \
+      && cp -r /app/packages/cli/dist/vendor/pgvector-embedded /app/packages/server/dist/vendor/pgvector-embedded; \
+    fi
+
 # Database migrations (+ statement-at-a-time runner for transaction:false)
 COPY db/migrations ./db/migrations
 COPY scripts/migrate-up.mjs ./scripts/migrate-up.mjs

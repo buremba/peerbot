@@ -192,6 +192,32 @@ const MCP_APP_RESOURCE_ALIASES: ReadonlyMap<
     'ui://lobu/interaction/v34.html',
     { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
   ],
+  [
+    'ui://lobu/interaction/v35.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
+  ],
+  // v36-v40 were issued to live ChatGPT preview apps while this reload fix
+  // was iterated. ChatGPT caches these immutable URIs, so keep them readable.
+  [
+    'ui://lobu/interaction/v36.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
+  ],
+  [
+    'ui://lobu/interaction/v37.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
+  ],
+  [
+    'ui://lobu/interaction/v38.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
+  ],
+  [
+    'ui://lobu/interaction/v39.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
+  ],
+  [
+    'ui://lobu/interaction/v40.html',
+    { canonicalUri: LOBU_INTERACTION_RESOURCE_URI, template: 'external' },
+  ],
 ]);
 // ---------------------------------------------------------------------------
 // Session store
@@ -1160,7 +1186,11 @@ async function handleAndMaybeConvert(
 ): Promise<Response> {
   const rawJson = req.headers.get('x-mcp-format')?.toLowerCase() === 'json';
   const response = await mcpRequestFormat.run({ rawJson }, () => transport.handleRequest(req));
-  if (!wantsSSE && response.headers.get('content-type')?.includes('text/event-stream')) {
+  if (
+    req.method === 'POST' &&
+    !wantsSSE &&
+    response.headers.get('content-type')?.includes('text/event-stream')
+  ) {
     return sseToJson(response);
   }
   // Inject SSE heartbeat pings to keep the stream alive through proxies.
@@ -1228,6 +1258,13 @@ function createSessionTransport(
 ): { transport: WebStandardStreamableHTTPServerTransport; server: Server } {
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator,
+    // Keep request/response traffic in-band. Inspector and other clients keep
+    // one standalone GET SSE stream open for server notifications; finite
+    // POST-SSE responses can strand a tools/call until the client timeout when
+    // that stream reconnects through a proxy and hits the SDK's one-GET-stream
+    // session guard. JSON responses avoid that split delivery path while the
+    // standalone GET stream remains available for notifications.
+    enableJsonResponse: true,
     onsessioninitialized: (id) => {
       // The per-session authCtx object is shared by every request on this
       // session, so stamping once here threads the session id into each

@@ -7,6 +7,7 @@ import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
 import { clearInMemoryMcpSessionsForTests } from '../../../mcp-handler';
 import { buildClientSDK } from '../../../sandbox/client-sdk';
+import { LOBU_INTERACTION_RESOURCE_URI } from '../../../tools/mcp_app';
 import type { ToolContext } from '../../../tools/registry';
 import { insertEvent } from '../../../utils/insert-event';
 import { initWorkspaceProvider } from '../../../workspace';
@@ -184,14 +185,14 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(await initSession(`/mcp/${org.slug}`)).toBeTruthy();
   });
 
-  it('serves the external v35 interaction bundle over resources/read', async () => {
+  it('serves the external v41 interaction bundle over resources/read', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
     const response = await post(`/mcp/${org.slug}`, {
       body: {
         jsonrpc: '2.0',
         id: 1,
         method: 'resources/read',
-        params: { uri: 'ui://lobu/interaction/v35.html' },
+        params: { uri: 'ui://lobu/interaction/v41.html' },
       },
       headers: { 'mcp-session-id': sessionId },
       token,
@@ -200,7 +201,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const content = body.result?.contents?.[0];
-    expect(content?.uri).toBe('ui://lobu/interaction/v35.html');
+    expect(content?.uri).toBe('ui://lobu/interaction/v41.html');
     expect(content?.mimeType).toBe('text/html;profile=mcp-app');
     expect(content?.text).toContain('mcp-app-external-stub');
     expect(content?.text).not.toContain('mcp-app-embedded-stub');
@@ -273,19 +274,23 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     }
   });
 
-  it('keeps v3 through v6 aliases on the external template they originally referenced', async () => {
+  it('keeps v3-v6 and every v30-and-later retired URI on the external template', async () => {
     const sessionId = await initSession(`/mcp/${org.slug}`);
-    for (const uri of [
-      'ui://lobu/interaction/v3.html',
-      'ui://lobu/interaction/v4.html',
-      'ui://lobu/interaction/v5.html',
-      'ui://lobu/interaction/v6.html',
-      'ui://lobu/interaction/v30.html',
-      'ui://lobu/interaction/v31.html',
-      'ui://lobu/interaction/v32.html',
-      'ui://lobu/interaction/v33.html',
-      'ui://lobu/interaction/v34.html',
-    ]) {
+    // Derive the retired range from the live constant so a bump that forgets
+    // to alias the URI it replaced fails here instead of in a live chat.
+    const currentVersion = Number(
+      LOBU_INTERACTION_RESOURCE_URI.match(/\/v(\d+)\.html$/)?.[1]
+    );
+    expect(currentVersion).toBeGreaterThan(30);
+    const externalAliases = [
+      3,
+      4,
+      5,
+      6,
+      ...Array.from({ length: currentVersion - 30 }, (_, index) => 30 + index),
+    ].map((version) => `ui://lobu/interaction/v${version}.html`);
+
+    for (const uri of externalAliases) {
       const response = await post(`/mcp/${org.slug}`, {
         body: {
           jsonrpc: '2.0',
@@ -371,7 +376,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const resource = body.result?.resources?.find(
-      (r: { uri: string }) => r.uri === 'ui://lobu/interaction/v35.html'
+      (r: { uri: string }) => r.uri === 'ui://lobu/interaction/v41.html'
     );
     expect(resource).toBeDefined();
     expect(
@@ -420,10 +425,10 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         _meta: expect.objectContaining({
           securitySchemes: [{ type: 'oauth2', scopes: ['mcp:read'] }],
           ui: expect.objectContaining({
-            resourceUri: 'ui://lobu/interaction/v35.html',
+            resourceUri: 'ui://lobu/interaction/v41.html',
             visibility: ['model', 'app'],
           }),
-          'openai/outputTemplate': 'ui://lobu/interaction/v35.html',
+          'openai/outputTemplate': 'ui://lobu/interaction/v41.html',
           'openai/widgetAccessible': true,
         }),
       })
@@ -438,10 +443,10 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         _meta: expect.objectContaining({
           securitySchemes: [{ type: 'oauth2', scopes: ['mcp:write'] }],
           ui: expect.objectContaining({
-            resourceUri: 'ui://lobu/interaction/v35.html',
+            resourceUri: 'ui://lobu/interaction/v41.html',
             visibility: ['model', 'app'],
           }),
-          'openai/outputTemplate': 'ui://lobu/interaction/v35.html',
+          'openai/outputTemplate': 'ui://lobu/interaction/v41.html',
           'openai/widgetAccessible': true,
         }),
       })
@@ -527,7 +532,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     );
     expect(tool?._meta?.ui).toEqual(
       expect.objectContaining({
-        resourceUri: 'ui://lobu/interaction/v35.html',
+        resourceUri: 'ui://lobu/interaction/v41.html',
         visibility: ['model', 'app'],
       })
     );
@@ -590,7 +595,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(body.result?.content?.[0]?.text).not.toContain('payload_data');
     expect(body.result?.content?.[0]?.text).not.toContain('payload_template');
     expect(body.result?._meta?.['openai/outputTemplate']).toBe(
-      'ui://lobu/interaction/v35.html'
+      'ui://lobu/interaction/v41.html'
     );
   });
 
@@ -737,6 +742,57 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       expect(receipt).not.toHaveProperty(key);
     }
     expect(JSON.stringify(receipt)).not.toContain('nested-sdk-save-body-must-stay-headless');
+  });
+
+  it('returns tools/call as JSON when an Inspector-style client accepts JSON and SSE', async () => {
+    const accept = 'application/json, text/event-stream';
+    const sessionId = await initSession(`/mcp/${org.slug}`, {
+      headers: { Accept: accept },
+    });
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'inspector-get-approval',
+        method: 'tools/call',
+        params: {
+          name: 'get_approval',
+          arguments: { run_id: 999_999_999 },
+        },
+      },
+      headers: {
+        Accept: accept,
+        'mcp-session-id': sessionId,
+        'mcp-protocol-version': MCP_PROTOCOL_VERSION,
+      },
+      token,
+    });
+
+    // Inspector keeps a standalone GET SSE channel for server notifications.
+    // Ordinary POST request/response traffic must complete in-band as JSON;
+    // a finite POST-SSE response leaves Inspector waiting out its request
+    // timeout while a reconnecting GET stream collides with the SDK's
+    // one-standalone-stream session guard (handleGetRequest → 409).
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('application/json');
+    const body = await response.json();
+    expect(body.id).toBe('inspector-get-approval');
+    expect(body.result?.isError).toBe(true);
+    expect(body.result?._meta?.['lobu/member-role']).toBe('owner');
+  });
+
+  it('keeps the standalone GET SSE channel available when Accept is omitted', async () => {
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await get(`/mcp/${org.slug}`, {
+      headers: {
+        'mcp-session-id': sessionId,
+        'mcp-protocol-version': MCP_PROTOCOL_VERSION,
+      },
+      token,
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    await response.body?.cancel();
   });
 
   it('returns the viewer member role on every app-rendered result and nowhere else', async () => {
@@ -1134,7 +1190,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(capability.length).toBeGreaterThan(40);
     expect(renderBody.result?._meta?.['lobu/member-role']).toBe('owner');
     expect(renderBody.result?._meta?.['openai/outputTemplate']).toBe(
-      'ui://lobu/interaction/v35.html'
+      'ui://lobu/interaction/v41.html'
     );
     expect(JSON.stringify(view)).not.toContain(capability);
     expect(renderBody.result?.content?.[0]?.text).not.toContain(capability);

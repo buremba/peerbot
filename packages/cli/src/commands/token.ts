@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import postgres from "postgres";
+import { select } from "@inquirer/prompts";
 import { getToken, resolveContext } from "../internal/index.js";
 import { resolveApiClient } from "../internal/api-client.js";
 
@@ -56,7 +57,28 @@ export async function tokenCreateCommand(
   });
   const name =
     options.name?.trim() || `lobu-cli-${new Date().toISOString().slice(0, 10)}`;
-  const scope = options.scope?.trim() || "mcp:read mcp:write";
+
+  let scope = options.scope?.trim();
+  if (!scope && process.stdin.isTTY) {
+    scope = await select({
+      message: "Token scope:",
+      choices: [
+        {
+          value: "mcp:read mcp:write",
+          name: "Read + Write — typical for CI scripts and MCP clients",
+        },
+        {
+          value: "mcp:read mcp:write mcp:admin",
+          name: "Read + Write + Admin — full workspace access (agent CRUD, config patches)",
+        },
+        {
+          value: "mcp:read",
+          name: "Read only — search and query, no mutations",
+        },
+      ],
+    });
+  }
+  scope ??= "mcp:read mcp:write";
 
   const response = await client.post<{ token: CreatedPersonalAccessToken }>(
     `/api/${encodeURIComponent(orgSlug)}/tokens`,

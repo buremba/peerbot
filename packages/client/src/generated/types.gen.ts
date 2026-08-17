@@ -1739,6 +1739,7 @@ export type ManageEntitySchemaResponses = {
           updated_at: string;
           deleted_at?: string | null;
           relationship_count?: number;
+          purpose?: string | null;
         }>;
         list_scope: "accessible" | "organization";
         organization_id: string;
@@ -1768,6 +1769,7 @@ export type ManageEntitySchemaResponses = {
           updated_at: string;
           deleted_at?: string | null;
           relationship_count?: number;
+          purpose?: string | null;
         } | null;
       }
     | {
@@ -1795,6 +1797,7 @@ export type ManageEntitySchemaResponses = {
           updated_at: string;
           deleted_at?: string | null;
           relationship_count?: number;
+          purpose?: string | null;
         };
       }
     | {
@@ -1822,6 +1825,7 @@ export type ManageEntitySchemaResponses = {
           updated_at: string;
           deleted_at?: string | null;
           relationship_count?: number;
+          purpose?: string | null;
         };
       }
     | {

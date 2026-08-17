@@ -940,7 +940,7 @@ async function rtHandleList(
       rt.id, rt.slug, rt.name, rt.description, rt.organization_id, rt.created_by,
       rt.metadata_schema, rt.metadata, rt.is_symmetric, rt.inverse_type_id,
       inv.slug as inverse_type_slug,
-      rt.status, rt.created_at, rt.updated_at, rt.deleted_at,
+      rt.status, rt.purpose, rt.created_at, rt.updated_at, rt.deleted_at,
       o.slug AS organization_slug,
       COALESCE(rc.relationship_count, 0) as relationship_count
     FROM entity_relationship_types rt
@@ -988,7 +988,7 @@ async function rtHandleGet(
       rt.id, rt.slug, rt.name, rt.description, rt.organization_id, rt.created_by,
       rt.metadata_schema, rt.metadata, rt.is_symmetric, rt.inverse_type_id,
       inv.slug as inverse_type_slug,
-      rt.status, rt.created_at, rt.updated_at, rt.deleted_at,
+      rt.status, rt.purpose, rt.created_at, rt.updated_at, rt.deleted_at,
       o.slug AS organization_slug
     FROM entity_relationship_types rt
     LEFT JOIN entity_relationship_types inv ON rt.inverse_type_id = inv.id
@@ -1103,7 +1103,7 @@ async function rtHandleCreate(
       rt.id, rt.slug, rt.name, rt.description, rt.organization_id, rt.created_by,
       rt.metadata_schema, rt.metadata, rt.is_symmetric, rt.inverse_type_id,
       inv.slug as inverse_type_slug,
-      rt.status, rt.created_at, rt.updated_at
+      rt.status, rt.purpose, rt.created_at, rt.updated_at
     FROM entity_relationship_types rt
     LEFT JOIN entity_relationship_types inv ON rt.inverse_type_id = inv.id
     WHERE rt.id = ${typeId}
@@ -1195,7 +1195,7 @@ async function rtHandleUpdate(
       rt.id, rt.slug, rt.name, rt.description, rt.organization_id, rt.created_by,
       rt.metadata_schema, rt.metadata, rt.is_symmetric, rt.inverse_type_id,
       inv.slug as inverse_type_slug,
-      rt.status, rt.created_at, rt.updated_at
+      rt.status, rt.purpose, rt.created_at, rt.updated_at
     FROM entity_relationship_types rt
     LEFT JOIN entity_relationship_types inv ON rt.inverse_type_id = inv.id
     WHERE rt.id = ${typeId}

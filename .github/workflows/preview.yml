@@ -67,6 +67,35 @@ jobs:
         run: |
           kubectl create namespace "$PREVIEW_NS" --dry-run=client -o yaml | kubectl apply -f -
 
+      - name: Cap preview capacity (half-node budget)
+        run: |
+          # Previews + herdr share half of the node (6 CPU / 63Gi on lobu-prod).
+          # A low priority class means prod pods preempt preview/herdr pods under
+          # pressure; the per-namespace quota caps one PR at its slice.
+          kubectl apply -f - <<'EOF'
+          apiVersion: scheduling.k8s.io/v1
+          kind: PriorityClass
+          metadata:
+            name: preview
+          value: -10
+          globalDefault: false
+          description: "PR previews + herdr - preempted by prod (default) pods"
+          EOF
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: ResourceQuota
+          metadata:
+            name: preview-quota
+            namespace: $PREVIEW_NS
+          spec:
+            hard:
+              requests.cpu: "1"
+              requests.memory: 2Gi
+              limits.cpu: "4"
+              limits.memory: 8Gi
+              pods: "2"
+          EOF
+
       - name: Provision encryption key
         run: |
           # Stable per-namespace key so stored secrets survive redeploys.
@@ -111,9 +140,10 @@ jobs:
               "failureThreshold": 30
             }},
             {"op": "add", "path": "/spec/template/spec/containers/0/resources", "value": {
-              "requests": {"cpu": "2", "memory": "4Gi"},
+              "requests": {"cpu": "1", "memory": "2Gi"},
               "limits": {"cpu": "4", "memory": "8Gi"}
             }},
+            {"op": "add", "path": "/spec/template/spec/priorityClassName", "value": "preview"},
             {"op": "add", "path": "/spec/template/spec/containers/0/volumeMounts", "value": [
               {"name": "data", "mountPath": "/var/lib/lobu/data"}
             ]},
